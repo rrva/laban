@@ -15,10 +15,22 @@ should use.
 - `dev_process.md` defines the required agent-driven development and
   autonomous test harness.
 - `impl_notes.md` captures non-binding prototype lessons and pitfalls.
+- `PLANS.md` defines how to write and execute self-contained ExecPlans.
 - If `spec.md` and `mvp.md` disagree, implement `mvp.md` first and leave a note
   explaining the deferred behavior.
 - Do not add product behavior that is not in either file unless the user asks
   for it or the behavior is required to make the MVP work.
+
+## Read This When
+
+| Open | When |
+| --- | --- |
+| `spec.md` | You need the long-term product behavior or a question goes beyond MVP scope. |
+| `mvp.md` | You are deciding what belongs in the first usable terminal app. |
+| `dev_process.md` | You are implementing or changing debug hooks, headless mode, screenshots, fixtures, CI E2E tests, or autonomous verification. |
+| `impl_notes.md` | You need prototype lessons, known pitfalls, or reusable terminal-core behavior. |
+| `PLANS.md` | You are creating or updating an ExecPlan, or an existing ExecPlan has a Review Gate. |
+| `execplans/` | The task names a plan, changes a planned feature, crosses major boundaries, or needs design history. |
 
 ## Working Style
 
