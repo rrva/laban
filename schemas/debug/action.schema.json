@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/action.schema.json",
+  "title": "Debug Action",
+  "oneOf": [
+    {"$ref": "#/$defs/newTab"},
+    {"$ref": "#/$defs/closeTab"},
+    {"$ref": "#/$defs/selectTab"},
+    {"$ref": "#/$defs/resizeWindow"},
+    {"$ref": "#/$defs/typeText"},
+    {"$ref": "#/$defs/key"},
+    {"$ref": "#/$defs/mouseWheel"},
+    {"$ref": "#/$defs/click"},
+    {"$ref": "#/$defs/advanceFrames"}
+  ],
+  "$defs": {
+    "newTab": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {"action": {"const": "newTab"}},
+      "additionalProperties": false
+    },
+    "closeTab": {
+      "type": "object",
+      "required": ["action", "tabId"],
+      "properties": {
+        "action": {"const": "closeTab"},
+        "tabId": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "selectTab": {
+      "type": "object",
+      "required": ["action", "tabId"],
+      "properties": {
+        "action": {"const": "selectTab"},
+        "tabId": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "resizeWindow": {
+      "type": "object",
+      "required": ["action", "width", "height"],
+      "properties": {
+        "action": {"const": "resizeWindow"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "typeText": {
+      "type": "object",
+      "required": ["action", "text"],
+      "properties": {
+        "action": {"const": "typeText"},
+        "text": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "key": {
+      "type": "object",
+      "required": ["action", "key"],
+      "properties": {
+        "action": {"const": "key"},
+        "key": {"type": "string"},
+        "modifiers": {
+          "type": "array",
+          "items": {"enum": ["shift", "control", "alt", "option", "command", "super"]},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "mouseWheel": {
+      "type": "object",
+      "required": ["action", "x", "y", "deltaY"],
+      "properties": {
+        "action": {"const": "mouseWheel"},
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "deltaY": {"type": "number"}
+      },
+      "additionalProperties": false
+    },
+    "click": {
+      "type": "object",
+      "required": ["action", "x", "y", "button"],
+      "properties": {
+        "action": {"const": "click"},
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "button": {"enum": ["left", "middle", "right"]}
+      },
+      "additionalProperties": false
+    },
+    "advanceFrames": {
+      "type": "object",
+      "required": ["action", "count"],
+      "properties": {
+        "action": {"const": "advanceFrames"},
+        "count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  }
+}

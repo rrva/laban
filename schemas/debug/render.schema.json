@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/render.schema.json",
+  "title": "Debug Render State",
+  "type": "object",
+  "required": ["frame", "backend", "surface", "terminalViewport", "cell", "damage", "lastDraw"],
+  "additionalProperties": true,
+  "properties": {
+    "frame": {"type": "integer", "minimum": 0},
+    "backend": {"type": "string"},
+    "surface": {"$ref": "#/$defs/rectWithScale"},
+    "terminalViewport": {"$ref": "#/$defs/rect"},
+    "cell": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "damage": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/rect"}
+    },
+    "lastDraw": {
+      "type": "object",
+      "required": ["cells", "glyphs", "backgroundRects", "images", "cursor"],
+      "additionalProperties": true,
+      "properties": {
+        "cells": {"type": "integer", "minimum": 0},
+        "glyphs": {"type": "integer", "minimum": 0},
+        "backgroundRects": {"type": "integer", "minimum": 0},
+        "images": {"type": "integer", "minimum": 0},
+        "cursor": {"type": "boolean"}
+      }
+    }
+  },
+  "$defs": {
+    "rect": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rectWithScale": {
+      "type": "object",
+      "required": ["width", "height", "scale"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "scale": {"type": "number", "exclusiveMinimum": 0}
+      }
+    }
+  }
+}

@@ -70,7 +70,7 @@ style, workflow, or verification rules.
 - Give yourself a way to verify the work. If no verifier exists, add the
   smallest useful one or clearly report the gap.
 - For user-visible terminal behavior, prefer debug-server end-to-end tests from
-  `dev_process.md` over manual-only verification.
+  `docs/process/dev-process.md` over manual-only verification.
 - Treat autonomous verification as the authority. Code is shippable only when
   the relevant tests, debug-state checks, and screenshot artifacts support it.
 - Near the end of non-trivial work, ask what might still be missing: cleanup
@@ -83,8 +83,8 @@ style, workflow, or verification rules.
 - Keep changesets focused on one behavioral reason.
 - Prefer several small commits over one broad mutable commit when work naturally
   separates into lifecycle, input, rendering, UI, docs, or tests.
-- Commit messages should explain why the change exists, not only what files
-  changed.
+- Commit messages are single-line and explain why the change exists, not what
+  files changed.
 - Do not mix speculative refactors with behavior fixes.
 - Do not rewrite working code just to match a new style unless it unblocks a
   concrete requirement.
@@ -92,9 +92,10 @@ style, workflow, or verification rules.
 ## Documentation
 
 - Capture decisions in files, not only in chat.
-- Update `mvp.md` when the MVP boundary changes.
-- Update `spec.md` when product behavior changes.
-- Update `dev_process.md` when the debug/test harness contract changes.
+- Update `docs/product/mvp.md` when the MVP boundary changes.
+- Update `docs/product/spec.md` when product behavior changes.
+- Update `docs/process/dev-process.md` when the debug/test harness contract
+  changes.
 - Keep docs operational and behavior-focused. Avoid aspirational architecture
   documents that cannot guide implementation.
 

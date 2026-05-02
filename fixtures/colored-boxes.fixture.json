@@ -1,0 +1,29 @@
+{
+  "name": "colored-boxes",
+  "version": 1,
+  "description": "Renders colored text and box drawing so headless tests can catch monochrome output and missing glyph coverage.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 24
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Fixture: Colored Boxes"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "\u001b[38;2;255;204;0m┌────────────┐\u001b[0m\r\n\u001b[38;2;116;199;236m│ hello mvp  │\u001b[0m\r\n\u001b[38;2;255;204;0m└────────────┘\u001b[0m\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "title": "Fixture: Colored Boxes",
+    "nonEmptyScreenshot": true,
+    "containsText": ["hello mvp"]
+  }
+}

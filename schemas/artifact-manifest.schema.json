@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/artifact-manifest.schema.json",
+  "title": "E2E Artifact Manifest",
+  "type": "object",
+  "required": ["runId", "startedAt", "command", "artifacts"],
+  "additionalProperties": true,
+  "properties": {
+    "runId": {"type": "string"},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "finishedAt": {"type": "string", "format": "date-time"},
+    "command": {"type": "array", "items": {"type": "string"}},
+    "debugServer": {"type": "string"},
+    "status": {"enum": ["passed", "failed", "interrupted"]},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path"],
+        "additionalProperties": true,
+        "properties": {
+          "kind": {"type": "string"},
+          "path": {"type": "string"}
+        }
+      }
+    }
+  }
+}

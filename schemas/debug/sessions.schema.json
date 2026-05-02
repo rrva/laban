@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/sessions.schema.json",
+  "title": "Debug Sessions Response",
+  "type": "object",
+  "required": ["sessions"],
+  "additionalProperties": true,
+  "properties": {
+    "sessions": {
+      "type": "array",
+      "items": {"$ref": "session.schema.json"}
+    }
+  }
+}

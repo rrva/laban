@@ -1,9 +1,9 @@
 # Minimal Terminal Application MVP
 
 This document defines an implementation-agnostic MVP for a desktop terminal
-application based on the behavioral direction in `spec.md`. It intentionally
-does not prescribe programming language, GUI framework, renderer, build
-system, or terminal-emulation library.
+application based on the behavioral direction in `docs/product/spec.md`. It
+intentionally does not prescribe programming language, GUI framework, renderer,
+build system, or terminal-emulation library.
 
 ## Goal
 
@@ -231,7 +231,7 @@ The MVP is acceptable when it can:
 
 ## Later Milestones
 
-After the MVP is stable, extend toward `spec.md` in this order:
+After the MVP is stable, extend toward `docs/product/spec.md` in this order:
 
 1. split panes backed by stable session IDs
 2. multi-window scene identity

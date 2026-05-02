@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/session.schema.json",
+  "title": "Debug Session",
+  "type": "object",
+  "required": [
+    "id",
+    "tabId",
+    "status",
+    "exitStatus",
+    "rows",
+    "cols",
+    "cellWidth",
+    "cellHeight",
+    "scrollbackLines",
+    "viewportOffset",
+    "title",
+    "mouseTracking",
+    "focusReporting",
+    "dirty"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "id": {"type": "string"},
+    "tabId": {"type": "string"},
+    "pid": {"type": ["integer", "null"]},
+    "status": {
+      "type": "string",
+      "enum": ["starting", "running", "exited", "failed"]
+    },
+    "exitStatus": {"type": ["integer", "null"]},
+    "rows": {"type": "integer", "minimum": 1},
+    "cols": {"type": "integer", "minimum": 1},
+    "cellWidth": {"type": "integer", "minimum": 1},
+    "cellHeight": {"type": "integer", "minimum": 1},
+    "scrollbackLines": {"type": "integer", "minimum": 0},
+    "viewportOffset": {"type": "integer", "minimum": 0},
+    "title": {"type": "string"},
+    "mouseTracking": {"type": "boolean"},
+    "focusReporting": {"type": "boolean"},
+    "dirty": {"type": "boolean"}
+  }
+}

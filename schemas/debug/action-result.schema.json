@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/action-result.schema.json",
+  "title": "Debug Action Result",
+  "type": "object",
+  "required": ["ok", "frame"],
+  "additionalProperties": true,
+  "properties": {
+    "ok": {"type": "boolean"},
+    "frame": {"type": "integer", "minimum": 0},
+    "activeTabId": {"type": ["string", "null"]},
+    "activeSessionId": {"type": ["string", "null"]},
+    "error": {"type": "string"}
+  }
+}

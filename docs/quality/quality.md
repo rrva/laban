@@ -1,0 +1,50 @@
+# Quality Tracker
+
+This document tracks whether the repository is legible and enforceable enough
+for autonomous agents. Update it when a quality dimension materially changes.
+
+## Current Score
+
+Overall: **Planning scaffold only**
+
+The repo has product/process contracts but no runnable implementation yet.
+Quality is therefore judged by agent readiness rather than app behavior.
+
+## Dimensions
+
+| Area | Status | Evidence | Gap |
+| --- | --- | --- | --- |
+| Product scope | Good | `docs/product/mvp.md`, `docs/product/spec.md` | Needs acceptance tests once implementation starts. |
+| Agent map | Good | `AGENTS.md` is a small map. | Keep it short as docs grow. |
+| ExecPlans | Partial | `PLANS.md`, `execplans/README.md` | Needs first completed plan and active/completed workflow. |
+| Debug harness contract | Good | `docs/process/dev-process.md`, `schemas/debug/` | Needs implementation and contract tests. |
+| Headless graphics contract | Good | `docs/process/dev-process.md` | Needs renderer choice and offscreen proof. |
+| Fixture format | Partial | `schemas/fixture.schema.json`, `fixtures/` | Needs fixture runner after stack selection. |
+| Observability | Partial | `docs/process/observability.md` and debug events schema exist. | Needs implementation and query command. |
+| Mechanical enforcement | Partial | `./scripts/check` validates JSON, AGENTS size, ExecPlan sections, and whitespace. | Needs CI and deeper link/schema semantic checks. |
+| Architecture boundaries | Not started | Product docs define boundaries. | Needs language-specific structural checks after stack selection. |
+| Drift control | Partial | This document and `tech-debt.md`. | Needs recurring check command. |
+
+## Quality Gates To Add Before Major Implementation
+
+- CI job running `./scripts/check`.
+- Markdown link check for repository-local docs.
+- Check that `AGENTS.md` stays small and only points to deeper docs.
+- Check that every active ExecPlan has `Progress` and `Validation and Acceptance`.
+- Check that debug endpoint examples in `docs/process/dev-process.md` match
+  schemas.
+
+## Quality Gates To Add After Language Selection
+
+- Formatter and linter.
+- Unit test command.
+- Headless E2E command.
+- Architecture boundary checks.
+- Dependency policy checks.
+- Artifact collection on E2E failure.
+
+## Updating This File
+
+When an agent adds a new enforcement mechanism, update the relevant row from
+"Partial" or "Weak" to the new status and link the command or file that proves
+it.

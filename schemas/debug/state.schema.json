@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/state.schema.json",
+  "title": "Debug State",
+  "type": "object",
+  "required": ["mode", "frame", "window", "tabs", "activeTabId", "activeSessionId"],
+  "additionalProperties": true,
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["interactive", "headless", "fixture"]
+    },
+    "frame": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "window": {
+      "type": "object",
+      "required": ["width", "height", "focused"],
+      "additionalProperties": true,
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "focused": {"type": "boolean"}
+      }
+    },
+    "tabs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/tab"}
+    },
+    "activeTabId": {
+      "type": ["string", "null"]
+    },
+    "activeSessionId": {
+      "type": ["string", "null"]
+    }
+  },
+  "$defs": {
+    "tab": {
+      "type": "object",
+      "required": ["id", "index", "title", "active", "status", "sessionId"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "index": {"type": "integer", "minimum": 0},
+        "title": {"type": "string"},
+        "active": {"type": "boolean"},
+        "status": {
+          "type": "string",
+          "enum": ["starting", "running", "exited", "failed"]
+        },
+        "sessionId": {"type": "string"}
+      }
+    }
+  }
+}

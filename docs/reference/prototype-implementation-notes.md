@@ -2,8 +2,8 @@
 
 These notes capture lessons from a working terminal prototype. They are not a
 required architecture. The coding agent may choose a different language,
-framework, renderer, or project layout as long as `mvp.md` behavior is met and
-the choices remain compatible with `spec.md`.
+framework, renderer, or project layout as long as `docs/product/mvp.md`
+behavior is met and the choices remain compatible with `docs/product/spec.md`.
 
 Use this file as a source of known pitfalls and proven behavior, not as a
 license to copy prototype constraints into a product implementation.

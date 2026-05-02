@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+fail() {
+  printf 'check failed: %s\n' "$1" >&2
+  exit 1
+}
+
+command -v jq >/dev/null 2>&1 || fail "jq is required to validate JSON"
+
+find schemas fixtures -name '*.json' -print0 | xargs -0 -n1 jq empty
+
+agents_lines=$(wc -l < AGENTS.md | tr -d ' ')
+if [ "$agents_lines" -gt 100 ]; then
+  fail "AGENTS.md should stay map-sized; found ${agents_lines} lines"
+fi
+
+if [ -d execplans/active ]; then
+  for plan in execplans/active/*.md; do
+    [ -e "$plan" ] || continue
+    case "$plan" in
+      */README.md) continue ;;
+    esac
+    grep -q '^## Progress$' "$plan" || fail "$plan missing Progress section"
+    grep -q '^## Validation and Acceptance$' "$plan" || fail "$plan missing Validation and Acceptance section"
+  done
+fi
+
+git diff --check
+
+printf 'check passed\n'

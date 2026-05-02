@@ -363,7 +363,7 @@ Tests that launch the app through the debug server:
 - store artifacts on failure
 
 End-to-end tests should be fewer than unit/core tests, but they must cover the
-user workflows in `mvp.md`.
+user workflows in `docs/product/mvp.md`.
 
 ## Required MVP E2E Tests
 

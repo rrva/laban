@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/fixture.schema.json",
+  "title": "Terminal Fixture",
+  "type": "object",
+  "required": ["name", "version", "initialSize", "steps"],
+  "additionalProperties": true,
+  "properties": {
+    "name": {"type": "string"},
+    "version": {"type": "integer", "minimum": 1},
+    "description": {"type": "string"},
+    "initialSize": {
+      "type": "object",
+      "required": ["cols", "rows"],
+      "properties": {
+        "cols": {"type": "integer", "minimum": 1},
+        "rows": {"type": "integer", "minimum": 1}
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/step"}
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "title": {"type": "string"},
+        "nonEmptyScreenshot": {"type": "boolean"},
+        "containsText": {"type": "array", "items": {"type": "string"}},
+        "pixelProbes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/pixelProbe"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "step": {
+      "oneOf": [
+        {"$ref": "#/$defs/writeBytes"},
+        {"$ref": "#/$defs/waitFrames"},
+        {"$ref": "#/$defs/setTitle"},
+        {"$ref": "#/$defs/exit"}
+      ]
+    },
+    "writeBytes": {
+      "type": "object",
+      "required": ["op", "data"],
+      "properties": {
+        "op": {"const": "writeBytes"},
+        "data": {"type": "string"},
+        "encoding": {"enum": ["utf8", "base64"]}
+      },
+      "additionalProperties": false
+    },
+    "waitFrames": {
+      "type": "object",
+      "required": ["op", "count"],
+      "properties": {
+        "op": {"const": "waitFrames"},
+        "count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "setTitle": {
+      "type": "object",
+      "required": ["op", "title"],
+      "properties": {
+        "op": {"const": "setTitle"},
+        "title": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "exit": {
+      "type": "object",
+      "required": ["op", "status"],
+      "properties": {
+        "op": {"const": "exit"},
+        "status": {"type": "integer"}
+      },
+      "additionalProperties": false
+    },
+    "pixelProbe": {
+      "type": "object",
+      "required": ["x", "y", "not"],
+      "properties": {
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0},
+        "not": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0, "maximum": 255},
+          "minItems": 4,
+          "maxItems": 4
+        }
+      }
+    }
+  }
+}

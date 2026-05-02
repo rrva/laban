@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/events.schema.json",
+  "title": "Debug Events Response",
+  "type": "object",
+  "required": ["events", "next"],
+  "additionalProperties": true,
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "kind"],
+        "additionalProperties": true,
+        "properties": {
+          "seq": {"type": "integer", "minimum": 0},
+          "kind": {"type": "string"}
+        }
+      }
+    },
+    "next": {"type": "integer", "minimum": 0}
+  }
+}
