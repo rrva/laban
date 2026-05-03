@@ -160,12 +160,31 @@ int laban_session_create(
                 putenv((char *)config->envp[i]);
         }
 
-        if (config->cwd && config->cwd[0]) chdir(config->cwd);
+        /* Change to home directory if no explicit cwd is provided. */
+        if (config->cwd && config->cwd[0]) {
+            chdir(config->cwd);
+        } else {
+            const char *home = getenv("HOME");
+            if (!home || !home[0]) {
+                struct passwd *pw = getpwuid(getuid());
+                if (pw && pw->pw_dir) home = pw->pw_dir;
+            }
+            if (home && home[0]) chdir(home);
+        }
 
         if (config->argv) {
             execv(exe, (char *const *)config->argv);
         } else {
-            char *const dargv[] = { (char *)exe, NULL };
+            /* Invoke as login shell by prefixing argv[0] with '-'.
+               This causes shells to source login profiles and
+               start in $HOME. This is the standard approach used
+               by Ghostty, iTerm2, Warp, and other modern terminal
+               emulators. */
+            const char *base = strrchr(exe, '/');
+            base = base ? base + 1 : exe;
+            char login_arg[256];
+            snprintf(login_arg, sizeof(login_arg), "-%s", base);
+            char *dargv[] = { login_arg, NULL };
             execv(exe, dargv);
         }
         _exit(127);
