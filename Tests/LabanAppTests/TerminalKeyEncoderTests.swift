@@ -37,6 +37,19 @@ final class TerminalKeyEncoderTests: XCTestCase {
     )
   }
 
+  func testMouseTrackingRequiresMatchingTerminalOriginButton() {
+    XCTAssertEqual(
+      TerminalMouseInput.trackedTerminalButton(.left, matching: .left),
+      .left
+    )
+    XCTAssertEqual(
+      TerminalMouseInput.trackedTerminalButton(.right, matching: .right),
+      .right
+    )
+    XCTAssertNil(TerminalMouseInput.trackedTerminalButton(.none, matching: .left))
+    XCTAssertNil(TerminalMouseInput.trackedTerminalButton(.left, matching: .right))
+  }
+
   func testControlCProducedCharacterSendsETX() {
     XCTAssertEqual(
       TerminalKeyEncoder.bytes(
