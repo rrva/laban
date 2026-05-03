@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/input-log.schema.json",
+  "title": "Debug Input Log",
+  "type": "object",
+  "required": ["events", "next"],
+  "additionalProperties": true,
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "kind", "route"],
+        "additionalProperties": true,
+        "properties": {
+          "seq": {"type": "integer", "minimum": 0},
+          "kind": {"enum": ["key", "text", "mouse", "paste", "copy", "command"]},
+          "route": {"enum": ["terminal", "appCommand", "sidebar", "selection", "ignored"]},
+          "key": {"type": "string"},
+          "text": {"type": "string"},
+          "modifiers": {"type": "array", "items": {"type": "string"}},
+          "consumedModifiers": {"type": "array", "items": {"type": "string"}},
+          "command": {"type": "string"}
+        }
+      }
+    },
+    "next": {"type": "integer", "minimum": 0}
+  }
+}

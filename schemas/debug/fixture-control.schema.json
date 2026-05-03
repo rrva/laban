@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/fixture-control.schema.json",
+  "title": "Debug Fixture Control",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["action", "path"],
+      "properties": {
+        "action": {"const": "load"},
+        "path": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "restart"}
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["action", "count"],
+      "properties": {
+        "action": {"const": "step"},
+        "count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  ]
+}

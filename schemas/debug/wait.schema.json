@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/wait.schema.json",
+  "title": "Debug Wait Request",
+  "type": "object",
+  "required": ["timeoutMs", "condition"],
+  "additionalProperties": false,
+  "properties": {
+    "timeoutMs": {"type": "integer", "minimum": 1},
+    "condition": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": [
+            "frameAtLeast",
+            "eventSeen",
+            "tabCount",
+            "activeTab",
+            "sessionStatus",
+            "titleEquals",
+            "textVisible",
+            "renderCommandSeen",
+            "renderTraceInvariant"
+          ]
+        },
+        "frame": {"type": "integer", "minimum": 0},
+        "eventKind": {"type": "string"},
+        "count": {"type": "integer", "minimum": 0},
+        "tabId": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "status": {"type": "string"},
+        "title": {"type": "string"},
+        "text": {"type": "string"},
+        "commandKind": {"type": "string"},
+        "invariantKind": {"type": "string"},
+        "level": {"enum": ["ok", "info", "warning", "error"]}
+      }
+    }
+  }
+}

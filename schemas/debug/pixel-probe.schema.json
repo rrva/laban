@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/pixel-probe.schema.json",
+  "title": "Debug Pixel Probe Request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "points": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/point"}
+    },
+    "regions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/region"}
+    }
+  },
+  "$defs": {
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "properties": {
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "region": {
+      "type": "object",
+      "required": ["name", "x", "y", "width", "height"],
+      "properties": {
+        "name": {"type": "string"},
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  }
+}

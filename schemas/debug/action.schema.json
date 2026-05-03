@@ -11,7 +11,11 @@
     {"$ref": "#/$defs/key"},
     {"$ref": "#/$defs/mouseWheel"},
     {"$ref": "#/$defs/click"},
-    {"$ref": "#/$defs/advanceFrames"}
+    {"$ref": "#/$defs/advanceFrames"},
+    {"$ref": "#/$defs/copy"},
+    {"$ref": "#/$defs/paste"},
+    {"$ref": "#/$defs/setClipboardText"},
+    {"$ref": "#/$defs/scrollViewport"}
   ],
   "$defs": {
     "newTab": {
@@ -99,6 +103,37 @@
       "properties": {
         "action": {"const": "advanceFrames"},
         "count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "copy": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {"action": {"const": "copy"}},
+      "additionalProperties": false
+    },
+    "paste": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {"action": {"const": "paste"}},
+      "additionalProperties": false
+    },
+    "setClipboardText": {
+      "type": "object",
+      "required": ["action", "text"],
+      "properties": {
+        "action": {"const": "setClipboardText"},
+        "text": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "scrollViewport": {
+      "type": "object",
+      "required": ["action", "deltaRows"],
+      "properties": {
+        "action": {"const": "scrollViewport"},
+        "sessionId": {"type": "string"},
+        "deltaRows": {"type": "integer"}
       },
       "additionalProperties": false
     }

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/render-trace-request.schema.json",
+  "title": "Debug Render Trace Request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "frame": {"type": "integer", "minimum": 0},
+    "target": {
+      "type": "string",
+      "pattern": "^(window|terminal|sidebar|tab:[A-Za-z0-9_.:-]+)$"
+    },
+    "include": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "layout",
+          "packets",
+          "commands",
+          "resources",
+          "passes",
+          "pixels",
+          "invariants"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "commandIds": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "pixelProbes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/pixelProbe"}
+    },
+    "regionProbes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/regionProbe"}
+    },
+    "limit": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "pixelProbe": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"},
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0}
+      }
+    },
+    "regionProbe": {
+      "type": "object",
+      "required": ["name", "x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"},
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

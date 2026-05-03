@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/errors.schema.json",
+  "title": "Debug Errors",
+  "type": "object",
+  "required": ["errors", "next"],
+  "additionalProperties": true,
+  "properties": {
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "level", "kind", "message"],
+        "additionalProperties": true,
+        "properties": {
+          "seq": {"type": "integer", "minimum": 0},
+          "level": {"enum": ["debug", "info", "warning", "error"]},
+          "kind": {"type": "string"},
+          "message": {"type": "string"},
+          "sessionId": {"type": "string"},
+          "tabId": {"type": "string"}
+        }
+      }
+    },
+    "next": {"type": "integer", "minimum": 0}
+  }
+}

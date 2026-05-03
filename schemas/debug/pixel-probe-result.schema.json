@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/pixel-probe-result.schema.json",
+  "title": "Debug Pixel Probe Result",
+  "type": "object",
+  "required": ["frame", "points", "regions"],
+  "additionalProperties": true,
+  "properties": {
+    "frame": {"type": "integer", "minimum": 0},
+    "points": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/pointResult"}
+    },
+    "regions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/regionResult"}
+    }
+  },
+  "$defs": {
+    "rgba": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0, "maximum": 255},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "pointResult": {
+      "type": "object",
+      "required": ["x", "y", "rgba"],
+      "properties": {
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0},
+        "rgba": {"$ref": "#/$defs/rgba"}
+      }
+    },
+    "regionResult": {
+      "type": "object",
+      "required": ["name", "averageRgba", "nonBackgroundPixels"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string"},
+        "averageRgba": {"$ref": "#/$defs/rgba"},
+        "nonBackgroundPixels": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

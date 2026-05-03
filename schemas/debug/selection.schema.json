@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/selection.schema.json",
+  "title": "Debug Selection",
+  "type": "object",
+  "required": ["active", "sessionId", "anchor", "focus", "rects", "text"],
+  "additionalProperties": true,
+  "properties": {
+    "active": {"type": "boolean"},
+    "sessionId": {"type": ["string", "null"]},
+    "anchor": {
+      "oneOf": [
+        {"$ref": "#/$defs/cell"},
+        {"type": "null"}
+      ]
+    },
+    "focus": {
+      "oneOf": [
+        {"$ref": "#/$defs/cell"},
+        {"type": "null"}
+      ]
+    },
+    "rects": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/rect"}
+    },
+    "text": {"type": "string"}
+  },
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "required": ["row", "col"],
+      "properties": {
+        "row": {"type": "integer", "minimum": 0},
+        "col": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rect": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

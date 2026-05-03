@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/clipboard.schema.json",
+  "title": "Debug Clipboard Summary",
+  "type": "object",
+  "required": ["lastCopyText", "lastPasteText", "lastPasteUsedBracketedPaste", "lastPasteIgnoredNonText"],
+  "additionalProperties": true,
+  "properties": {
+    "lastCopyText": {"type": ["string", "null"]},
+    "lastPasteText": {"type": ["string", "null"]},
+    "lastPasteUsedBracketedPaste": {"type": ["boolean", "null"]},
+    "lastPasteIgnoredNonText": {"type": ["boolean", "null"]}
+  }
+}

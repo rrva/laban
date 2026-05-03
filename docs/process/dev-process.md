@@ -8,6 +8,10 @@ end to end without human-operated UI.
 The debug/test surface is product infrastructure. It should be implemented
 early, kept small, and treated as part of the MVP.
 
+The debug protocol is app-level. The terminal core exposes inspectable state
+and control primitives, but it does not own HTTP, JSON, artifact directories,
+or debug-server concerns.
+
 ## Principles
 
 - Every visible behavior must be observable by an agent.
@@ -50,6 +54,9 @@ Required capabilities:
   offscreen target
 - exposes the same debug state endpoints as interactive mode
 - can run with deterministic clocks and deterministic test shell/session input
+- supports fixture sessions as the primary CI gate
+- supports controlled real-shell smoke sessions with a sanitized fixed
+  shell/command
 
 Example shape:
 
@@ -59,9 +66,10 @@ app --headless --debug-server=127.0.0.1:0 --artifacts=.artifacts/run-001
 
 ### Test Fixture Mode
 
-Runs controlled sessions instead of the user's real shell. This allows exact,
-repeatable tests for colors, glyphs, resize, exit state, title updates, and
-mouse behavior.
+Runs controlled sessions instead of the user's real shell. This is the primary
+CI mode for visual and stateful headless tests. It allows exact, repeatable
+tests for colors, glyphs, resize, exit state, title updates, and mouse
+behavior.
 
 Required capabilities:
 
@@ -235,6 +243,350 @@ Returns renderer state that helps an agent diagnose blank or corrupt graphics:
 }
 ```
 
+### Frame Commands
+
+`GET /debug/frame-commands`
+
+Returns the bounded command stream for the current frame. This is the primary
+way for an agent to explain a screenshot: the screenshot shows pixels, while
+frame commands show what the renderer intended to draw.
+
+Query parameters:
+
+- `source=sidebar|terminal|selection|cursor|image|all`; default `all`
+- `limit=<n>`; default implementation-defined bounded limit
+- `includeText=true|false`; default `true` for bounded visible text
+
+Example response:
+
+```json
+{
+  "frame": 12,
+  "backend": "software",
+  "commands": [
+    {
+      "index": 0,
+      "kind": "rect",
+      "source": "sidebar",
+      "rect": {"x": 0, "y": 0, "width": 220, "height": 800},
+      "color": [246, 239, 218, 255]
+    },
+    {
+      "index": 14,
+      "kind": "glyphRun",
+      "source": "terminal",
+      "rect": {"x": 236, "y": 32, "width": 90, "height": 18},
+      "text": "hello mvp",
+      "foreground": [16, 31, 36, 255],
+      "background": null
+    }
+  ],
+  "truncated": false
+}
+```
+
+Frame-command dumps must use source tags so agents can distinguish sidebar,
+terminal grid, selection, cursor, and future image commands.
+
+### Render Trace
+
+`POST /debug/render-trace`
+
+Returns a bounded explanation of one rendered frame. This is the endpoint an
+agent uses when a screenshot is wrong and frame commands alone are not enough.
+It should connect terminal/app state to command extraction, resource lookup,
+backend draw calls, and selected final pixels by stable IDs.
+
+Example request:
+
+```json
+{
+  "frame": 12,
+  "target": "window",
+  "include": ["layout", "packets", "commands", "resources", "passes", "pixels", "invariants"],
+  "commandIds": ["cmd-14"],
+  "pixelProbes": [
+    {"name": "prompt-cursor", "x": 250, "y": 40}
+  ]
+}
+```
+
+Example response:
+
+```json
+{
+  "traceId": "frame-12",
+  "frame": 12,
+  "backend": "software",
+  "surface": {"width": 1280, "height": 800, "scale": 2},
+  "sources": [
+    {"id": "state-12", "kind": "appState", "revision": 12},
+    {"id": "term-snap-8", "kind": "terminalSnapshot", "sessionId": "session-1", "rows": 38, "cols": 120}
+  ],
+  "layout": [
+    {"id": "layout-terminal", "kind": "terminalViewport", "rect": {"x": 220, "y": 0, "width": 1060, "height": 800}, "sourceRefs": ["state-12"]}
+  ],
+  "packets": [
+    {"id": "pkt-term-1", "producer": "LabanTerminalCore", "sourceRefs": ["term-snap-8"], "dirtyRows": [0], "glyphRuns": 3, "backgroundRuns": 1}
+  ],
+  "commandRanges": [
+    {"producer": "terminal", "inputRefs": ["pkt-term-1"], "firstCommandId": "cmd-14", "lastCommandId": "cmd-18"}
+  ],
+  "commands": [
+    {
+      "id": "cmd-14",
+      "index": 14,
+      "kind": "glyphRun",
+      "source": "terminal",
+      "rect": {"x": 236, "y": 32, "width": 90, "height": 18},
+      "text": "hello mvp",
+      "sourceRefs": ["cell:session-1:0:0-8", "pkt-term-1"]
+    }
+  ],
+  "resources": [
+    {"id": "atlas-1", "kind": "glyphAtlas", "status": "resident", "width": 2048, "height": 2048},
+    {"id": "glyph-U+0068-style-1", "kind": "glyph", "status": "resident", "atlasId": "atlas-1"}
+  ],
+  "passes": [
+    {
+      "id": "pass-main",
+      "target": "window",
+      "draws": [
+        {
+          "id": "draw-7",
+          "kind": "glyphRun",
+          "commandRefs": ["cmd-14"],
+          "resourceRefs": ["atlas-1", "glyph-U+0068-style-1"],
+          "clip": {"x": 220, "y": 0, "width": 1060, "height": 800},
+          "drawRect": {"x": 236, "y": 32, "width": 90, "height": 18}
+        }
+      ]
+    }
+  ],
+  "pixelProbes": [
+    {
+      "name": "prompt-cursor",
+      "x": 250,
+      "y": 40,
+      "rgba": [16, 31, 36, 255],
+      "contributors": [
+        {
+          "passId": "pass-main",
+          "drawId": "draw-7",
+          "commandId": "cmd-14",
+          "sourceRefs": ["cell:session-1:0:1"],
+          "coverage": 1.0,
+          "rgbaBefore": [246, 239, 218, 255],
+          "rgbaAfter": [16, 31, 36, 255]
+        }
+      ]
+    }
+  ],
+  "invariants": [
+    {"level": "ok", "kind": "clip.containsDraws", "message": "all draw rects intersect their clip"}
+  ],
+  "truncated": false
+}
+```
+
+The trace should be rich enough for an agent to answer:
+
+- which app state, terminal snapshot, packet, and command produced a pixel
+- whether a command was dropped during backend translation
+- whether a glyph, image, buffer, texture, or pipeline resource was missing
+- whether clipping, scaling, z order, blending, or damage tracking hid output
+- whether the software and Metal backends consumed equivalent command ranges
+
+The trace must stay bounded. Pixel provenance is required only for requested
+points or small named regions; it must not dump the whole framebuffer. Metal
+does not need to expose private GPU internals, but it must expose the encoded
+draw plan, resource ledger, readback probes, and backend validation warnings.
+
+### Pixel Probe
+
+`POST /debug/pixel-probe`
+
+Samples pixels or regions from the current render target without requiring the
+agent to download and parse a full screenshot.
+
+Example request:
+
+```json
+{
+  "points": [{"x": 10, "y": 10}, {"x": 250, "y": 40}],
+  "regions": [
+    {"name": "sidebar", "x": 0, "y": 0, "width": 220, "height": 800}
+  ]
+}
+```
+
+Example response:
+
+```json
+{
+  "frame": 12,
+  "points": [
+    {"x": 10, "y": 10, "rgba": [246, 239, 218, 255]},
+    {"x": 250, "y": 40, "rgba": [16, 31, 36, 255]}
+  ],
+  "regions": [
+    {
+      "name": "sidebar",
+      "averageRgba": [239, 231, 210, 255],
+      "nonBackgroundPixels": 1240
+    }
+  ]
+}
+```
+
+### Glyph Atlas
+
+`GET /debug/atlas`
+
+Returns font and glyph-atlas diagnostics.
+
+```json
+{
+  "font": "JetBrains Mono",
+  "fontSize": 16,
+  "cell": {"width": 9, "height": 18, "baseline": 14},
+  "glyphs": {"loaded": 1532, "missing": 0},
+  "missingCodepoints": [],
+  "atlases": [
+    {"id": "atlas-1", "width": 2048, "height": 2048, "occupancy": 0.42}
+  ]
+}
+```
+
+Agents use this endpoint to diagnose question-mark glyphs, baseline drift, and
+cell metric errors.
+
+### Selection
+
+`GET /debug/selection`
+
+Returns terminal selection state for copy behavior.
+
+```json
+{
+  "active": true,
+  "sessionId": "session-1",
+  "anchor": {"row": 2, "col": 4},
+  "focus": {"row": 2, "col": 14},
+  "rects": [{"x": 236, "y": 46, "width": 90, "height": 18}],
+  "text": "hello mvp"
+}
+```
+
+The text field is bounded to visible selected text.
+
+### Clipboard
+
+`GET /debug/clipboard`
+
+Returns a test-safe summary of copy/paste behavior. It must not expose arbitrary
+system clipboard contents unless the debug server itself set or read them
+during the current run.
+
+```json
+{
+  "lastCopyText": "hello mvp",
+  "lastPasteText": "printf 'ok\\n'",
+  "lastPasteUsedBracketedPaste": true,
+  "lastPasteIgnoredNonText": false
+}
+```
+
+### Input Log
+
+`GET /debug/input-log?since=<sequence>`
+
+Returns recent normalized input events and their routing decisions.
+
+```json
+{
+  "events": [
+    {
+      "seq": 201,
+      "kind": "key",
+      "key": "v",
+      "modifiers": ["command"],
+      "route": "appCommand",
+      "command": "paste"
+    },
+    {
+      "seq": 202,
+      "kind": "text",
+      "text": "$",
+      "consumedModifiers": ["option"],
+      "route": "terminal"
+    }
+  ],
+  "next": 203
+}
+```
+
+Agents use this endpoint to diagnose wrong keyboard layout handling and
+Command/Option leakage into terminal input.
+
+### Terminal Log
+
+`GET /debug/terminal-log?sessionId=<id>&since=<sequence>`
+
+Returns bounded terminal byte-flow diagnostics. Raw bytes must be escaped or
+encoded; never expose unbounded transcripts.
+
+```json
+{
+  "sessionId": "session-1",
+  "events": [
+    {"seq": 301, "direction": "input", "escaped": "printf 'ok\\n'\\n"},
+    {"seq": 302, "direction": "output", "escaped": "ok\\r\\n"}
+  ],
+  "next": 303,
+  "truncated": false
+}
+```
+
+### Timing
+
+`GET /debug/timing`
+
+Returns frame and endpoint timings useful for diagnosing sluggishness.
+
+```json
+{
+  "frame": 12,
+  "lastFrameMs": 3.4,
+  "terminalPollMs": 0.2,
+  "snapshotMs": 0.4,
+  "commandExtractionMs": 0.7,
+  "renderMs": 1.6,
+  "screenshotMs": 2.1
+}
+```
+
+### Errors
+
+`GET /debug/errors?since=<sequence>`
+
+Returns structured warnings/errors captured by the app.
+
+```json
+{
+  "errors": [
+    {
+      "seq": 401,
+      "level": "warning",
+      "kind": "glyph.missing",
+      "message": "Missing glyph for U+E0B0",
+      "sessionId": "session-1"
+    }
+  ],
+  "next": 402
+}
+```
+
 ### Event Log
 
 `GET /debug/events?since=<sequence>`
@@ -274,6 +626,10 @@ Example actions:
 {"action":"mouseWheel","x":400,"y":300,"deltaY":-3}
 {"action":"click","x":24,"y":84,"button":"left"}
 {"action":"advanceFrames","count":3}
+{"action":"copy"}
+{"action":"paste"}
+{"action":"setClipboardText","text":"printf 'ok\\n'\\n"}
+{"action":"scrollViewport","sessionId":"session-1","deltaRows":-3}
 ```
 
 Actions return the resulting frame number and a state summary:
@@ -290,16 +646,97 @@ Actions return the resulting frame number and a state summary:
 Control actions are not a replacement for unit tests. They are the bridge that
 lets agents perform end-to-end tests without fragile desktop automation.
 
+### Wait Conditions
+
+`POST /debug/wait`
+
+Waits for a bounded condition without brittle sleeps.
+
+Example request:
+
+```json
+{
+  "timeoutMs": 2000,
+  "condition": {
+    "kind": "textVisible",
+    "sessionId": "session-1",
+    "text": "hello mvp"
+  }
+}
+```
+
+Supported condition kinds should include:
+
+- `frameAtLeast`
+- `eventSeen`
+- `tabCount`
+- `activeTab`
+- `sessionStatus`
+- `titleEquals`
+- `textVisible`
+- `renderCommandSeen`
+- `renderTraceInvariant`
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "frame": 18,
+  "elapsedMs": 41
+}
+```
+
+### Fixture Control
+
+`POST /debug/fixture`
+
+Loads, restarts, or steps a fixture session.
+
+Example requests:
+
+```json
+{"action":"load","path":"fixtures/colored-boxes.fixture.json"}
+{"action":"restart"}
+{"action":"step","count":1}
+```
+
+Fixture control is only available in fixture/headless-capable modes.
+
+### Artifact Snapshot
+
+`POST /debug/snapshot`
+
+Writes a diagnostic bundle into the artifact directory and returns the manifest
+path. A snapshot should include current state, sessions, render state, frame
+commands, render trace summary, events, input log, terminal log, errors, and
+screenshot metadata.
+
+```json
+{
+  "path": ".artifacts/run-001/snapshots/snapshot-000018/manifest.json",
+  "frame": 18
+}
+```
+
 ## Headless Rendering Contract
 
 Headless mode must render into an offscreen surface that can be captured as a
-PNG. The preferred design is:
+PNG. The product UI target remains macOS; headless and cross-platform code
+exists to make autonomous testing reliable in CI, not to replace the macOS app
+shell. The preferred design is:
 
 - terminal core and app state are identical in interactive and headless modes
-- renderer exposes a surface abstraction
-- interactive mode presents the surface to the OS
-- headless mode renders the same scene into an offscreen surface
-- screenshots read pixels from that surface
+- app/session state is extracted into unified frame commands
+- Metal and software/offscreen backends consume the same frame-command language
+- interactive mode presents the Metal surface to the OS
+- headless mode renders the same commands into an offscreen software surface
+- screenshots read pixels from the active render target
+
+The software backend must be deterministic and behavior-equivalent to Metal,
+but does not need to be bit-for-bit identical. Tests should combine
+frame-command assertions, deterministic software goldens, and Metal smoke or
+pixel-probe checks.
 
 If the production renderer cannot run in a given CI environment, provide a
 renderer-equivalent test backend that consumes the same render commands and
@@ -359,6 +796,8 @@ Tests that launch the app through the debug server:
 - drive actions through `/debug/actions`
 - inspect `/debug/state` and `/debug/sessions`
 - capture `/debug/screenshot`
+- inspect `/debug/render-trace` when pixels or frame commands do not explain a
+  failure
 - compare screenshots or pixel probes
 - store artifacts on failure
 
@@ -396,6 +835,7 @@ Every failed E2E run writes an artifact directory containing:
 - final `/debug/state`
 - final `/debug/sessions`
 - final `/debug/render`
+- final `/debug/render-trace` summary
 - recent `/debug/events`
 - screenshot PNGs
 - bounded stdout/stderr logs

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/atlas.schema.json",
+  "title": "Debug Glyph Atlas",
+  "type": "object",
+  "required": ["font", "fontSize", "cell", "glyphs", "missingCodepoints", "atlases"],
+  "additionalProperties": true,
+  "properties": {
+    "font": {"type": "string"},
+    "fontSize": {"type": "number", "exclusiveMinimum": 0},
+    "cell": {
+      "type": "object",
+      "required": ["width", "height", "baseline"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "baseline": {"type": "integer", "minimum": 0}
+      }
+    },
+    "glyphs": {
+      "type": "object",
+      "required": ["loaded", "missing"],
+      "properties": {
+        "loaded": {"type": "integer", "minimum": 0},
+        "missing": {"type": "integer", "minimum": 0}
+      }
+    },
+    "missingCodepoints": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "atlases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "width", "height", "occupancy"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {"type": "string"},
+          "width": {"type": "integer", "minimum": 1},
+          "height": {"type": "integer", "minimum": 1},
+          "occupancy": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/frame-commands.schema.json",
+  "title": "Debug Frame Commands",
+  "type": "object",
+  "required": ["frame", "backend", "commands", "truncated"],
+  "additionalProperties": true,
+  "properties": {
+    "frame": {"type": "integer", "minimum": 0},
+    "backend": {"type": "string"},
+    "commands": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/command"}
+    },
+    "truncated": {"type": "boolean"}
+  },
+  "$defs": {
+    "rect": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rgba": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0, "maximum": 255},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "command": {
+      "type": "object",
+      "required": ["index", "kind", "source"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "index": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["rect", "glyphRun", "texturedQuad", "clip", "cursor", "selection"]},
+        "source": {"enum": ["sidebar", "terminal", "selection", "cursor", "image", "chrome", "unknown"]},
+        "rect": {"$ref": "#/$defs/rect"},
+        "color": {"$ref": "#/$defs/rgba"},
+        "foreground": {"$ref": "#/$defs/rgba"},
+        "background": {
+          "oneOf": [
+            {"$ref": "#/$defs/rgba"},
+            {"type": "null"}
+          ]
+        },
+        "text": {"type": "string"},
+        "resourceId": {"type": "string"},
+        "sourceRefs": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}

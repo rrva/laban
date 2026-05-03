@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/wait-result.schema.json",
+  "title": "Debug Wait Result",
+  "type": "object",
+  "required": ["ok", "frame", "elapsedMs"],
+  "additionalProperties": true,
+  "properties": {
+    "ok": {"type": "boolean"},
+    "frame": {"type": "integer", "minimum": 0},
+    "elapsedMs": {"type": "number", "minimum": 0},
+    "error": {"type": "string"}
+  }
+}

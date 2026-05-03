@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/snapshot-result.schema.json",
+  "title": "Debug Artifact Snapshot Result",
+  "type": "object",
+  "required": ["path", "frame"],
+  "additionalProperties": true,
+  "properties": {
+    "path": {"type": "string"},
+    "frame": {"type": "integer", "minimum": 0}
+  }
+}

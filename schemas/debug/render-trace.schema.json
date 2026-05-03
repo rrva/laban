@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/render-trace.schema.json",
+  "title": "Debug Render Trace",
+  "type": "object",
+  "required": [
+    "traceId",
+    "frame",
+    "backend",
+    "surface",
+    "sources",
+    "layout",
+    "packets",
+    "commandRanges",
+    "commands",
+    "resources",
+    "passes",
+    "pixelProbes",
+    "invariants",
+    "truncated"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "traceId": {"type": "string"},
+    "frame": {"type": "integer", "minimum": 0},
+    "backend": {"type": "string"},
+    "surface": {"$ref": "#/$defs/surface"},
+    "sources": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "layout": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/layoutItem"}
+    },
+    "packets": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/packet"}
+    },
+    "commandRanges": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/commandRange"}
+    },
+    "commands": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/command"}
+    },
+    "resources": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/resource"}
+    },
+    "passes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/renderPass"}
+    },
+    "pixelProbes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/pixelProbe"}
+    },
+    "invariants": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/invariant"}
+    },
+    "truncated": {"type": "boolean"}
+  },
+  "$defs": {
+    "rgba": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0, "maximum": 255},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "rect": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0}
+      }
+    },
+    "surface": {
+      "type": "object",
+      "required": ["width", "height", "scale"],
+      "additionalProperties": true,
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "scale": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "source": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "kind": {
+          "enum": [
+            "appState",
+            "terminalSnapshot",
+            "terminalPacket",
+            "fixture",
+            "resourceCache",
+            "unknown"
+          ]
+        },
+        "revision": {"type": "integer", "minimum": 0},
+        "sessionId": {"type": "string"},
+        "tabId": {"type": "string"},
+        "rows": {"type": "integer", "minimum": 0},
+        "cols": {"type": "integer", "minimum": 0}
+      }
+    },
+    "layoutItem": {
+      "type": "object",
+      "required": ["id", "kind", "rect"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "kind": {"type": "string"},
+        "rect": {"$ref": "#/$defs/rect"},
+        "sourceRefs": {"$ref": "#/$defs/refs"}
+      }
+    },
+    "packet": {
+      "type": "object",
+      "required": ["id", "producer", "sourceRefs"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "producer": {"type": "string"},
+        "sourceRefs": {"$ref": "#/$defs/refs"},
+        "dirtyRows": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0}
+        },
+        "glyphRuns": {"type": "integer", "minimum": 0},
+        "backgroundRuns": {"type": "integer", "minimum": 0},
+        "styleTableEntries": {"type": "integer", "minimum": 0}
+      }
+    },
+    "commandRange": {
+      "type": "object",
+      "required": ["producer", "inputRefs", "firstCommandId", "lastCommandId"],
+      "additionalProperties": true,
+      "properties": {
+        "producer": {"type": "string"},
+        "inputRefs": {"$ref": "#/$defs/refs"},
+        "firstCommandId": {"type": "string"},
+        "lastCommandId": {"type": "string"}
+      }
+    },
+    "command": {
+      "type": "object",
+      "required": ["id", "index", "kind", "source"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "index": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["rect", "glyphRun", "texturedQuad", "clip", "cursor", "selection", "unknown"]},
+        "source": {"enum": ["sidebar", "terminal", "selection", "cursor", "image", "chrome", "unknown"]},
+        "rect": {"$ref": "#/$defs/rect"},
+        "text": {"type": "string"},
+        "sourceRefs": {"$ref": "#/$defs/refs"},
+        "resourceRefs": {"$ref": "#/$defs/refs"}
+      }
+    },
+    "resource": {
+      "type": "object",
+      "required": ["id", "kind", "status"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "kind": {
+          "enum": [
+            "font",
+            "glyph",
+            "glyphAtlas",
+            "image",
+            "texture",
+            "buffer",
+            "pipeline",
+            "shader",
+            "surface",
+            "unknown"
+          ]
+        },
+        "status": {"enum": ["resident", "created", "updated", "evicted", "missing", "invalid"]},
+        "atlasId": {"type": "string"},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0}
+      }
+    },
+    "renderPass": {
+      "type": "object",
+      "required": ["id", "target", "draws"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "target": {"type": "string"},
+        "clearColor": {"$ref": "#/$defs/rgba"},
+        "draws": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/draw"}
+        }
+      }
+    },
+    "draw": {
+      "type": "object",
+      "required": ["id", "kind", "commandRefs"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "kind": {"type": "string"},
+        "commandRefs": {"$ref": "#/$defs/refs"},
+        "resourceRefs": {"$ref": "#/$defs/refs"},
+        "clip": {"$ref": "#/$defs/rect"},
+        "drawRect": {"$ref": "#/$defs/rect"},
+        "vertices": {"type": "integer", "minimum": 0},
+        "instances": {"type": "integer", "minimum": 0},
+        "pipelineId": {"type": "string"}
+      }
+    },
+    "pixelProbe": {
+      "type": "object",
+      "required": ["x", "y", "rgba", "contributors"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string"},
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0},
+        "rgba": {"$ref": "#/$defs/rgba"},
+        "contributors": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/contributor"}
+        }
+      }
+    },
+    "contributor": {
+      "type": "object",
+      "required": ["passId", "drawId", "commandId"],
+      "additionalProperties": true,
+      "properties": {
+        "passId": {"type": "string"},
+        "drawId": {"type": "string"},
+        "commandId": {"type": "string"},
+        "sourceRefs": {"$ref": "#/$defs/refs"},
+        "coverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "rgbaBefore": {"$ref": "#/$defs/rgba"},
+        "rgbaAfter": {"$ref": "#/$defs/rgba"}
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "required": ["level", "kind", "message"],
+      "additionalProperties": true,
+      "properties": {
+        "level": {"enum": ["ok", "info", "warning", "error"]},
+        "kind": {"type": "string"},
+        "message": {"type": "string"},
+        "refs": {"$ref": "#/$defs/refs"}
+      }
+    }
+  }
+}
