@@ -1,4 +1,5 @@
 .build/
 .external/
+.claude/worktrees/
 *.o
 *.d
