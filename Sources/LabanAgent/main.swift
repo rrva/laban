@@ -22,6 +22,7 @@ func parseArgs() -> AgentArgs {
     switch arg {
     case "--headless": a.headless = true
     case "--deterministic": a.deterministic = true
+    case "--debug-server": a.debugServerAddress = "127.0.0.1:0"
     default:
       if arg.hasPrefix("--fixture=") {
         a.fixture = String(arg.dropFirst("--fixture=".count))

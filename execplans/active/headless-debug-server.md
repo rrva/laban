@@ -802,6 +802,13 @@ strings.
   paths; `.gitignore` currently ignores `.build/`, `.external/`,
   `.claude/worktrees/`, `compile_commands.json`, `*.o`, and `*.d`.
 
+## Follow-up (2026-05-03)
+
+- [x] Fixed `advanceFrames` to render `count` frames (was rendering 1 regardless of count — separate poll loop did not call `renderFrameUnlocked()` per iteration).
+- [x] Added bare `--debug-server` shorthand: `--debug-server` without `=value` resolves to `127.0.0.1:0`.
+- [x] Strengthened `scripts/test-e2e`: added unsupported-action `ok:false` check (step 19), `POST /debug/render-trace` required-fields check (step 12), `advanceFrames` exact-count check (step 18), bare `--debug-server` health check (step 22). `/debug/events` coverage already present (step 20).
+- Decision: bare `--debug-server` supported. Rationale: matches existing `--headless` bare-flag style; agents launching a debug server almost always want port 0 / loopback, making the address explicit in the common case is unnecessary ceremony.
+
 ## Outcomes & Retrospective
 
 All four milestones completed in one session (2026-05-03).
