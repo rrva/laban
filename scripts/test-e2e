@@ -313,14 +313,37 @@ FRAME_EXPECTED=$((FRAME_BEFORE + 3))
 [ "$FRAME_AFTER" -eq "$FRAME_EXPECTED" ] \
   || fail "advanceFrames: expected frame $FRAME_EXPECTED, got $FRAME_AFTER"
 
-# 20. Unsupported schema action — HTTP 200, ok:false, bounded error
-UNSUP=$(post_json /debug/actions '{"action":"mouseWheel","x":100,"y":100,"deltaY":-3}')
-[ "$(printf '%s' "$UNSUP" | jq -r '.ok')" = "false" ] \
-  || fail "unsupported action: expected ok:false, got: $UNSUP"
-UNSUP_ERR=$(printf '%s' "$UNSUP" | jq -r '.error // empty')
-[ -n "$UNSUP_ERR" ] || fail "unsupported action: missing error field in: $UNSUP"
+# 20. scrollViewport action — scroll up then reset
+SCROLL1=$(post_json /debug/actions '{"action":"scrollViewport","deltaRows":-4}')
+[ "$(printf '%s' "$SCROLL1" | jq -r '.ok')" = "true" ] \
+  || fail "scrollViewport (up) failed: $SCROLL1"
+SCROLL2=$(post_json /debug/actions '{"action":"scrollViewport","deltaRows":4}')
+[ "$(printf '%s' "$SCROLL2" | jq -r '.ok')" = "true" ] \
+  || fail "scrollViewport (down) failed: $SCROLL2"
 
-# 21. /debug/events — includes server.ready and frame.rendered
+# 21. mouseWheel in terminal region (normal mode) — should succeed
+MWHEEL=$(post_json /debug/actions '{"action":"mouseWheel","x":300,"y":200,"deltaY":3}')
+[ "$(printf '%s' "$MWHEEL" | jq -r '.ok')" = "true" ] \
+  || fail "mouseWheel in terminal failed: $MWHEEL"
+
+# 22. mouseWheel in sidebar — consumed locally, still ok:true
+MWHEEL_SIDE=$(post_json /debug/actions '{"action":"mouseWheel","x":10,"y":100,"deltaY":3}')
+[ "$(printf '%s' "$MWHEEL_SIDE" | jq -r '.ok')" = "true" ] \
+  || fail "mouseWheel in sidebar failed: $MWHEEL_SIDE"
+
+# 23. click without mouse tracking — ok:false, local selection message
+CLICK_NO=$(post_json /debug/actions '{"action":"click","x":300,"y":200,"button":"left"}')
+[ "$(printf '%s' "$CLICK_NO" | jq -r '.ok')" = "false" ] \
+  || fail "click without mouse tracking: expected ok:false, got: $CLICK_NO"
+CLICK_ERR=$(printf '%s' "$CLICK_NO" | jq -r '.error // empty')
+[ -n "$CLICK_ERR" ] || fail "click without mouse tracking: missing error"
+
+# 24. sidebar click — create tab then select existing
+CLICK_SIDE=$(post_json /debug/actions '{"action":"click","x":10,"y":390,"button":"left"}')
+[ "$(printf '%s' "$CLICK_SIDE" | jq -r '.ok')" = "true" ] \
+  || fail "sidebar click failed: $CLICK_SIDE"
+
+# 25. /debug/events — includes server.ready and frame.rendered
 # (events check already confirmed; events emitted includes server.ready from emitServerReady()
 # and frame.rendered from each renderFrameUnlocked() call)
 EVENTS=$(get_json /debug/events)

@@ -118,6 +118,16 @@ struct ActionResult: Encodable {
   var error: String?
 }
 
+struct MouseActionResult: Encodable {
+  var ok: Bool
+  var frame: Int
+  var activeTabId: String?
+  var activeSessionId: String?
+  var mouseTracking: Bool
+  var sent: Bool
+  var error: String?
+}
+
 struct ScreenshotResult: Encodable {
   var path: String
   var width: Int
@@ -202,6 +212,7 @@ struct EventResponse: Encodable {
   var text: String?
   var path: String?
   var action: String?
+  var deltaRows: Int?
   var error: String?
 }
 

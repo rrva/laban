@@ -89,4 +89,56 @@ void laban_snapshot_destroy(LabanSnapshot *snapshot);
 int laban_session_render_dirty(LabanSession *session, int *out_dirty);
 int laban_session_mark_rendered(LabanSession *session);
 
+/* --- Viewport scrolling and state --- */
+
+typedef struct {
+    int total_rows;
+    int scrollback_rows;
+    int viewport_offset;
+    int viewport_rows;
+    int mouse_tracking;
+} LabanViewportState;
+
+int laban_session_scroll_viewport(LabanSession *session, int delta_rows);
+int laban_session_viewport_state(LabanSession *session, LabanViewportState *out_state);
+
+/* --- Mouse event ABI (no Ghostty handles exposed) --- */
+
+typedef enum {
+    LABAN_MOUSE_ACTION_PRESS = 0,
+    LABAN_MOUSE_ACTION_RELEASE = 1,
+    LABAN_MOUSE_ACTION_MOTION = 2
+} LabanMouseAction;
+
+typedef enum {
+    LABAN_MOUSE_BUTTON_NONE = 0,
+    LABAN_MOUSE_BUTTON_LEFT = 1,
+    LABAN_MOUSE_BUTTON_MIDDLE = 2,
+    LABAN_MOUSE_BUTTON_RIGHT = 3,
+    LABAN_MOUSE_BUTTON_WHEEL_UP = 4,
+    LABAN_MOUSE_BUTTON_WHEEL_DOWN = 5
+} LabanMouseButton;
+
+typedef struct {
+    LabanMouseAction action;
+    LabanMouseButton button;
+    float x;
+    float y;
+    int screen_width;
+    int screen_height;
+    int cell_width;
+    int cell_height;
+    int modifiers;
+} LabanMouseEvent;
+
+int laban_session_encode_mouse(
+    LabanSession *session,
+    const LabanMouseEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+);
+
+int laban_session_send_mouse(LabanSession *session, const LabanMouseEvent *event);
+
 #endif /* LABAN_TERMINAL_CORE_H */

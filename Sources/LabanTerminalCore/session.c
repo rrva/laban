@@ -1,6 +1,7 @@
 #include "LabanTerminalCore.h"
 #include <ghostty/vt/terminal.h>
 #include <ghostty/vt/render.h>
+#include <ghostty/vt/mouse.h>
 #include <util.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -24,6 +25,8 @@ struct LabanSession {
     int status;          /* 0=running, 1=exited normally, 2=signaled */
     int exit_status;
     int fixture_mode;
+    GhosttyMouseEncoder mouse_encoder;
+    int mouse_button_pressed;  /* boolean: is any mouse button currently down */
 };
 
 /* Encode one Unicode codepoint to UTF-8. Returns bytes written (1-4). */
@@ -54,6 +57,7 @@ static void free_ghostty_resources(LabanSession *s) {
     ghostty_render_state_row_cells_free(s->row_cells);
     ghostty_render_state_row_iterator_free(s->row_iter);
     ghostty_render_state_free(s->render_state);
+    if (s->mouse_encoder) ghostty_mouse_encoder_free(s->mouse_encoder);
     ghostty_terminal_free(s->terminal);
 }
 
@@ -110,6 +114,17 @@ int laban_session_create(
 
     r = ghostty_render_state_row_cells_new(NULL, &s->row_cells);
     if (r != GHOSTTY_SUCCESS) {
+        ghostty_render_state_row_iterator_free(s->row_iter);
+        ghostty_render_state_free(s->render_state);
+        ghostty_terminal_free(s->terminal);
+        free(s);
+        return -1;
+    }
+
+    /* Create persistent mouse encoder. */
+    r = ghostty_mouse_encoder_new(NULL, &s->mouse_encoder);
+    if (r != GHOSTTY_SUCCESS) {
+        ghostty_render_state_row_cells_free(s->row_cells);
         ghostty_render_state_row_iterator_free(s->row_iter);
         ghostty_render_state_free(s->render_state);
         ghostty_terminal_free(s->terminal);
@@ -487,4 +502,150 @@ int laban_session_mark_rendered(LabanSession *session) {
     }
 
     return 0;
+}
+
+/* --- Viewport scrolling --- */
+
+int laban_session_scroll_viewport(LabanSession *s, int delta_rows) {
+    if (!s) return -1;
+    GhosttyTerminalScrollViewport behavior = {
+        .tag = GHOSTTY_SCROLL_VIEWPORT_DELTA,
+        .value.delta = (intptr_t)delta_rows,
+    };
+    ghostty_terminal_scroll_viewport(s->terminal, behavior);
+    /* Mark render state dirty so next snapshot picks up the change. */
+    GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+    ghostty_render_state_set(s->render_state,
+        GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty);
+    return 0;
+}
+
+int laban_session_viewport_state(LabanSession *s, LabanViewportState *out_state) {
+    if (!s || !out_state) return -1;
+    memset(out_state, 0, sizeof(*out_state));
+
+    GhosttyTerminalScrollbar scrollbar;
+    if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
+            == GHOSTTY_SUCCESS) {
+        out_state->total_rows = (int)scrollbar.total;
+        out_state->viewport_offset = (int)scrollbar.offset;
+        out_state->viewport_rows = (int)scrollbar.len;
+    }
+
+    size_t sbr = 0;
+    if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &sbr)
+            == GHOSTTY_SUCCESS) {
+        out_state->scrollback_rows = (int)sbr;
+    }
+
+    _Bool mt = 0;
+    if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mt)
+            == GHOSTTY_SUCCESS) {
+        out_state->mouse_tracking = mt ? 1 : 0;
+    }
+
+    return 0;
+}
+
+/* --- Mouse encoding and sending --- */
+
+static GhosttyMouseButton map_laban_button(LabanMouseButton btn) {
+    switch (btn) {
+        case LABAN_MOUSE_BUTTON_LEFT:      return GHOSTTY_MOUSE_BUTTON_LEFT;
+        case LABAN_MOUSE_BUTTON_MIDDLE:    return GHOSTTY_MOUSE_BUTTON_MIDDLE;
+        case LABAN_MOUSE_BUTTON_RIGHT:     return GHOSTTY_MOUSE_BUTTON_RIGHT;
+        case LABAN_MOUSE_BUTTON_WHEEL_UP:  return GHOSTTY_MOUSE_BUTTON_FOUR;
+        case LABAN_MOUSE_BUTTON_WHEEL_DOWN: return GHOSTTY_MOUSE_BUTTON_FIVE;
+        default:                            return GHOSTTY_MOUSE_BUTTON_UNKNOWN;
+    }
+}
+
+int laban_session_encode_mouse(
+    LabanSession *s,
+    const LabanMouseEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    if (!s || !event || !out_len) return -1;
+    *out_len = 0;
+
+    /* Sync encoder options from terminal state. */
+    ghostty_mouse_encoder_setopt_from_terminal(s->mouse_encoder, s->terminal);
+
+    /* Set geometry from event. */
+    GhosttyMouseEncoderSize enc_size = {
+        .size = sizeof(GhosttyMouseEncoderSize),
+        .screen_width = (uint32_t)(event->screen_width > 0 ? event->screen_width : 800),
+        .screen_height = (uint32_t)(event->screen_height > 0 ? event->screen_height : 600),
+        .cell_width = (uint32_t)(event->cell_width > 0 ? event->cell_width : 8),
+        .cell_height = (uint32_t)(event->cell_height > 0 ? event->cell_height : 16),
+        .padding_top = 0,
+        .padding_bottom = 0,
+        .padding_right = 0,
+        .padding_left = 0,
+    };
+    ghostty_mouse_encoder_setopt(s->mouse_encoder,
+        GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &enc_size);
+
+    /* Set any-button-pressed state. */
+    bool pressed = (s->mouse_button_pressed != 0);
+    ghostty_mouse_encoder_setopt(s->mouse_encoder,
+        GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
+
+    /* Create a Ghostty mouse event. */
+    GhosttyMouseEvent gev = NULL;
+    if (ghostty_mouse_event_new(NULL, &gev) != GHOSTTY_SUCCESS) return -1;
+
+    /* Action. */
+    GhosttyMouseAction ga = GHOSTTY_MOUSE_ACTION_PRESS;
+    switch (event->action) {
+        case LABAN_MOUSE_ACTION_RELEASE: ga = GHOSTTY_MOUSE_ACTION_RELEASE; break;
+        case LABAN_MOUSE_ACTION_MOTION:  ga = GHOSTTY_MOUSE_ACTION_MOTION; break;
+        default: break;
+    }
+    ghostty_mouse_event_set_action(gev, ga);
+
+    /* Button. */
+    GhosttyMouseButton gb = map_laban_button(event->button);
+    if (gb == GHOSTTY_MOUSE_BUTTON_UNKNOWN || event->action == LABAN_MOUSE_ACTION_MOTION) {
+        ghostty_mouse_event_clear_button(gev);
+    } else {
+        ghostty_mouse_event_set_button(gev, gb);
+    }
+
+    /* Modifiers. */
+    GhosttyMods mods = (GhosttyMods)(event->modifiers & 0xFFFF);
+    ghostty_mouse_event_set_mods(gev, mods);
+
+    /* Position. */
+    GhosttyMousePosition pos = { .x = event->x, .y = event->y };
+    ghostty_mouse_event_set_position(gev, pos);
+
+    /* Encode. */
+    char *buf = (char *)out_bytes;
+    GhosttyResult r = ghostty_mouse_encoder_encode(
+        s->mouse_encoder, gev, buf, out_capacity, out_len);
+
+    ghostty_mouse_event_free(gev);
+
+    return (r == GHOSTTY_SUCCESS) ? 0 : -1;
+}
+
+int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {
+    if (!s) return -1;
+    if (s->fixture_mode) {
+        /* Fixture mode: no PTY to write to; encoding is meaningful but sending is not. */
+        return 0;
+    }
+    if (s->pty_fd < 0) return -1;
+
+    uint8_t buf[128];
+    size_t len = 0;
+    int r = laban_session_encode_mouse(s, event, buf, sizeof(buf), &len);
+    if (r != 0) return r;
+    if (len == 0) return 0;  /* terminal says nothing to report */
+
+    ssize_t n = write(s->pty_fd, buf, len);
+    return (n < 0) ? -1 : 0;
 }

@@ -30,17 +30,17 @@ can verify both paths through `/debug/actions`, `/debug/sessions`,
   `GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS`,
   `GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING`, and the mouse encoder APIs in
   `.external/libghostty-vt/include/ghostty/vt/mouse/*.h`.
-- [ ] Add C session ABI for viewport scrolling, viewport metadata, mouse
+- [x] Add C session ABI for viewport scrolling, viewport metadata, mouse
   encoding, and mouse event delivery.
-- [ ] Add Swift wrappers and debug runtime actions for `mouseWheel`, `click`,
+- [x] Add Swift wrappers and debug runtime actions for `mouseWheel`, `click`,
   and `scrollViewport`.
-- [ ] Add AppKit `scrollWheel`, click, release, and drag routing in
+- [x] Add AppKit `scrollWheel`, click, release, and drag routing in
   `TerminalBitmapView`.
-- [ ] Update debug/session state so scrollback rows, viewport offset, and
+- [x] Update debug/session state so scrollback rows, viewport offset, and
   mouse-tracking state are real values instead of placeholders.
-- [ ] Add tests and E2E coverage for normal scrollback and mouse-tracking
+- [x] Add tests and E2E coverage for normal scrollback and mouse-tracking
   routing.
-- [ ] Update the umbrella plan and record validation evidence.
+- [x] Update the umbrella plan and record validation evidence.
 
 ## Decision Log
 

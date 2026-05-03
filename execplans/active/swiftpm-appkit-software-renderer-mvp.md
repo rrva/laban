@@ -97,7 +97,7 @@ plan as each shard lands.
 - [x] Cut idle AppKit CPU by making terminal rendering damage-driven and
   coalescing terminal frame commands. Shard:
   `execplans/active/appkit-idle-cpu-render-budget.md`.
-- [ ] Add mouse input and scrollback behavior. Shard:
+- [x] Add mouse input and scrollback behavior. Shard:
   `execplans/active/appkit-mouse-scrollback.md`.
 
 ## Decision Log
@@ -947,7 +947,7 @@ These are mechanical checks for a fresh agent or automation runner. They are
 not a human review loop. The umbrella plan is complete only when each check can
 be run from a clean working tree and produce the expected result.
 
-- [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0.
+- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0.
 - [ ] Run `swift test` from `/Users/rrj/wrk/laban`; expect exit 0.
 - [ ] Run `./scripts/build-app`; expect
   `.build/laban/Laban.app/Contents/MacOS/LabanApp` to exist and be executable.
@@ -978,7 +978,7 @@ be run from a clean working tree and produce the expected result.
 - [ ] Run the AppKit input fixture or debug trace; expect an Option-produced
   character to reach the PTY as text and a handled Command shortcut to produce
   no PTY input.
-- [ ] Run the mouse-routing fixture; expect sidebar clicks to be consumed,
+- [x] Run the mouse-routing fixture; expect sidebar clicks to be consumed,
   terminal mouse tracking to route wheel events to the terminal app, and
   normal-mode wheel input to scroll scrollback.
 - [ ] Inspect the run artifact manifest; expect every generated file path to be

@@ -325,11 +325,54 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     sendBytes(Array(str.utf8))
   }
 
-  // MARK: - Mouse (selection + sidebar hits)
+  // MARK: - Mouse (selection + sidebar hits + mouse tracking)
+
+  override func scrollWheel(with event: NSEvent) {
+    guard
+      let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId)
+    else {
+      return
+    }
+
+    let pt = convert(event.locationInWindow, from: nil)
+
+    // Sidebar scrolls are consumed locally.
+    guard pt.x >= sidebarWidth else { return }
+
+    guard let vs = session.viewportState() else { return }
+
+    // deltaY > 0 means scroll up (toward older history) in AppKit.
+    let isUp = event.deltaY > 0
+
+    if vs.mouseTracking {
+      // Mouse tracking active: encode wheel as press+release.
+      let button: MouseButton = isUp ? .wheelUp : .wheelDown
+      let (cx, cy) = termCellFloat(at: pt)
+      let me = MouseEvent(
+        action: .press,
+        button: button,
+        x: cx, y: cy,
+        screenWidth: Int(bounds.width),
+        screenHeight: Int(bounds.height),
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        modifiers: event.labanModifiers
+      )
+      session.sendMouse(me)
+      renderInvalidated = true
+    } else {
+      // Normal mode: scroll viewport.
+      let direction: Int = isUp ? -1 : 1
+      session.scrollViewport(deltaRows: direction)
+      renderInvalidated = true
+    }
+  }
 
   override func mouseDown(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
 
+    // Sidebar hit test.
     if pt.x < sidebarWidth {
       let sp = SidebarProducer(
         sidebarWidth: sidebarWidth,
@@ -352,19 +395,140 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
 
     window?.makeFirstResponder(self)
+
+    // Check if mouse tracking is active.
+    if let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let vs = session.viewportState(),
+      vs.mouseTracking
+    {
+      let (cx, cy) = termCellFloat(at: pt)
+      let pressEvent = MouseEvent(
+        action: .press,
+        button: .left,
+        x: cx, y: cy,
+        screenWidth: Int(bounds.width),
+        screenHeight: Int(bounds.height),
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        modifiers: event.labanModifiers
+      )
+      session.sendMouse(pressEvent)
+      renderInvalidated = true
+      return
+    }
+
+    // Fall back to selection.
     selectionAnchor = termCell(at: pt)
     selectionFocus = selectionAnchor
     renderInvalidated = true
   }
 
   override func mouseDragged(with event: NSEvent) {
+    // If mouse tracking is active, send motion events.
+    if let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let vs = session.viewportState(),
+      vs.mouseTracking
+    {
+      let pt = convert(event.locationInWindow, from: nil)
+      guard pt.x >= sidebarWidth else { return }
+      let (cx, cy) = termCellFloat(at: pt)
+      let motionEvent = MouseEvent(
+        action: .motion,
+        button: .none,
+        x: cx, y: cy,
+        screenWidth: Int(bounds.width),
+        screenHeight: Int(bounds.height),
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        modifiers: event.labanModifiers
+      )
+      session.sendMouse(motionEvent)
+      renderInvalidated = true
+      return
+    }
     selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
     renderInvalidated = true
   }
 
   override func mouseUp(with event: NSEvent) {
+    // If mouse tracking is active, send release event.
+    if let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let vs = session.viewportState(),
+      vs.mouseTracking
+    {
+      let pt = convert(event.locationInWindow, from: nil)
+      let (cx, cy) = termCellFloat(at: pt)
+      let releaseEvent = MouseEvent(
+        action: .release,
+        button: .left,
+        x: cx, y: cy,
+        screenWidth: Int(bounds.width),
+        screenHeight: Int(bounds.height),
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        modifiers: event.labanModifiers
+      )
+      session.sendMouse(releaseEvent)
+      renderInvalidated = true
+      return
+    }
     selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
     renderInvalidated = true
+  }
+
+  override func rightMouseDown(with event: NSEvent) {
+    let pt = convert(event.locationInWindow, from: nil)
+
+    // Sidebar right-click is consumed locally.
+    if pt.x < sidebarWidth {
+      return
+    }
+
+    if let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let vs = session.viewportState(),
+      vs.mouseTracking
+    {
+      let (cx, cy) = termCellFloat(at: pt)
+      let pressEvent = MouseEvent(
+        action: .press,
+        button: .right,
+        x: cx, y: cy,
+        screenWidth: Int(bounds.width),
+        screenHeight: Int(bounds.height),
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        modifiers: event.labanModifiers
+      )
+      session.sendMouse(pressEvent)
+      renderInvalidated = true
+    }
+  }
+
+  override func rightMouseUp(with event: NSEvent) {
+    if let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let vs = session.viewportState(),
+      vs.mouseTracking
+    {
+      let pt = convert(event.locationInWindow, from: nil)
+      let (cx, cy) = termCellFloat(at: pt)
+      let releaseEvent = MouseEvent(
+        action: .release,
+        button: .right,
+        x: cx, y: cy,
+        screenWidth: Int(bounds.width),
+        screenHeight: Int(bounds.height),
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        modifiers: event.labanModifiers
+      )
+      session.sendMouse(releaseEvent)
+      renderInvalidated = true
+    }
   }
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
@@ -376,6 +540,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let row = lastRows - 1 - Int(pt.y / CGFloat(cellHeight))
     guard row >= 0, row < lastRows, col >= 0 else { return nil }
     return (row, col)
+  }
+
+  // Convert a CG-coordinate view point to terminal grid float coordinates
+  // (x, y) in cell units where (0, 0) is the top-left visible cell.
+  private func termCellFloat(at pt: NSPoint) -> (Float, Float) {
+    let fx = (pt.x - sidebarWidth) / CGFloat(cellWidth)
+    // CG y=0 at bottom; terminal row 0 is at top
+    let fy = (bounds.height - pt.y) / CGFloat(cellHeight)
+    return (Float(max(0, fx)), Float(max(0, fy)))
   }
 
   // MARK: - Menu actions
@@ -397,5 +570,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard idx >= 0, idx < model.tabs.count else { return }
     model.selectTab(model.tabs[idx].id)
     renderInvalidated = true
+  }
+}
+
+// MARK: - NSEvent modifier conversion for mouse events
+
+extension NSEvent {
+  /// Convert AppKit modifier flags to the terminal-expected bit mask.
+  /// Bit 0 = Shift, Bit 1 = Meta (Option), Bit 2 = Ctrl, Bit 3 = Command (Super).
+  fileprivate var labanModifiers: Int {
+    var m = 0
+    if modifierFlags.contains(.shift) { m |= 1 }
+    if modifierFlags.contains(.option) { m |= 2 }
+    if modifierFlags.contains(.control) { m |= 4 }
+    if modifierFlags.contains(.command) { m |= 8 }
+    return m
   }
 }

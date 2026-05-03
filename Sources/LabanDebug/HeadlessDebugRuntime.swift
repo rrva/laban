@@ -26,6 +26,7 @@ private struct EventEntry {
   var text: String?
   var path: String?
   var action: String?
+  var deltaRows: Int?
   var error: String?
 }
 
@@ -469,6 +470,155 @@ public final class HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "clipboard.pasted", text: debugClipboard))
       return actionResult(ok: true)
 
+    case "scrollViewport":
+      let targetTab =
+        req.sessionId.flatMap { sid in
+          model.tabs.first(where: { $0.sessionId == sid })
+        } ?? model.activeTab
+      guard let t = targetTab, let session = model.session(forTab: t.id) else {
+        return jsonError("no session for scrollViewport")
+      }
+      session.scrollViewport(deltaRows: req.deltaRows ?? 0)
+      renderFrameUnlocked()
+      appendEvent(
+        EventEntry(kind: "viewport.scrolled", sessionId: t.sessionId, deltaRows: req.deltaRows))
+      return actionResult(ok: true)
+
+    case "mouseWheel":
+      guard let x = req.x, let y = req.y, let deltaY = req.deltaY else {
+        return jsonError("mouseWheel requires x, y, and deltaY")
+      }
+      // Sidebar hit test.
+      if x < sidebarWidth {
+        // Sidebar hits are consumed locally.
+        appendEvent(EventEntry(kind: "mouse.sidebar", action: "mouseWheel"))
+        return actionResult(ok: true)
+      }
+      guard let tab = model.activeTab, let session = model.session(forTab: tab.id) else {
+        return jsonError("no active session for mouseWheel")
+      }
+      let tx = Float(x - sidebarWidth)
+      let ty = Float(y)
+      // Determine wheel direction: deltaY > 0 means scroll up (older history).
+      let isUp = deltaY > 0
+
+      if let vs = session.viewportState(), vs.mouseTracking {
+        // Mouse tracking active: encode and send wheel event.
+        let button: MouseButton = isUp ? .wheelUp : .wheelDown
+        let me = MouseEvent(
+          action: .press,
+          button: button,
+          x: tx,
+          y: ty,
+          screenWidth: windowWidth,
+          screenHeight: windowHeight,
+          cellWidth: cellWidth,
+          cellHeight: cellHeight
+        )
+        let result = session.sendMouse(me)
+        appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "mouseWheel"))
+        renderFrameUnlocked()
+        return jsonEncode(
+          MouseActionResult(
+            ok: result == 0, frame: currentFrame,
+            activeTabId: tab.id, activeSessionId: tab.sessionId,
+            mouseTracking: true, sent: result == 0
+          ))
+      } else {
+        // Normal mode: scroll viewport.
+        let rows = isUp ? -1 : 1
+        session.scrollViewport(deltaRows: rows)
+        renderFrameUnlocked()
+        appendEvent(
+          EventEntry(
+            kind: "viewport.scrolled", sessionId: tab.sessionId, action: "mouseWheel",
+            deltaRows: rows))
+        return actionResult(ok: true)
+      }
+
+    case "click":
+      guard let x = req.x, let y = req.y, let button = req.button else {
+        return jsonError("click requires x, y, and button")
+      }
+      // Sidebar hit test.
+      if x < sidebarWidth {
+        let sp = SidebarProducer(
+          sidebarWidth: CGFloat(sidebarWidth),
+          cellWidth: CGFloat(cellWidth),
+          cellHeight: CGFloat(cellHeight)
+        )
+        let pt = CGPoint(x: CGFloat(x), y: CGFloat(y))
+        switch sp.hitTest(at: pt, tabs: model.tabs, height: CGFloat(windowHeight)) {
+        case .newTab:
+          do { try model.createTab() } catch {
+            return jsonError("createTab failed: \(error)")
+          }
+          renderFrameUnlocked()
+          appendEvent(EventEntry(kind: "tab.created", tabId: model.activeTab?.id))
+        case .selectTab(let id):
+          model.selectTab(id)
+          renderFrameUnlocked()
+          appendEvent(EventEntry(kind: "tab.selected", tabId: id))
+        case .closeTab(let id):
+          do { try model.closeTab(id) } catch {
+            return jsonError("closeTab failed: \(error)")
+          }
+          renderFrameUnlocked()
+          appendEvent(EventEntry(kind: "tab.closed", tabId: id))
+        case .none:
+          break
+        }
+        appendEvent(EventEntry(kind: "mouse.sidebar", action: "click"))
+        return actionResult(ok: true)
+      }
+      guard let tab = model.activeTab, let session = model.session(forTab: tab.id) else {
+        return jsonError("no active session for click")
+      }
+      let tx2 = Float(x - sidebarWidth)
+      let ty2 = Float(y)
+
+      if let vs = session.viewportState(), vs.mouseTracking {
+        // Mouse tracking active: send press/release events.
+        let btn: MouseButton
+        switch button {
+        case "middle": btn = .middle
+        case "right": btn = .right
+        default: btn = .left
+        }
+        let pressEvent = MouseEvent(
+          action: .press, button: btn,
+          x: tx2, y: ty2,
+          screenWidth: windowWidth, screenHeight: windowHeight,
+          cellWidth: cellWidth, cellHeight: cellHeight
+        )
+        let releaseEvent = MouseEvent(
+          action: .release, button: btn,
+          x: tx2, y: ty2,
+          screenWidth: windowWidth, screenHeight: windowHeight,
+          cellWidth: cellWidth, cellHeight: cellHeight
+        )
+        session.sendMouse(pressEvent)
+        session.sendMouse(releaseEvent)
+        renderFrameUnlocked()
+        appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "click"))
+        return jsonEncode(
+          MouseActionResult(
+            ok: true, frame: currentFrame,
+            activeTabId: tab.id, activeSessionId: tab.sessionId,
+            mouseTracking: true, sent: true
+          ))
+      } else {
+        // No mouse tracking; debug-local selection not implemented.
+        appendEvent(EventEntry(kind: "mouse.sidebar", action: "click"))
+        return jsonEncode(
+          MouseActionResult(
+            ok: false, frame: currentFrame,
+            activeTabId: tab.id, activeSessionId: tab.sessionId,
+            mouseTracking: false, sent: false,
+            error: "local selection not implemented through debug"
+          ))
+      }
+
     default:
       appendEvent(EventEntry(kind: "action.unsupported", action: req.action))
       let active = model.activeTab
@@ -523,12 +673,22 @@ public final class HeadlessDebugRuntime {
         }
       }
 
+      // Fetch real viewport state if available.
+      var scrollbackLines = 0
+      var viewportOffset = 0
+      if let sessionObj = model.session(forTab: tab.id),
+        let vs = sessionObj.viewportState()
+      {
+        scrollbackLines = vs.scrollbackRows
+        viewportOffset = vs.viewportOffset
+      }
+
       return SessionResponse(
         id: tab.sessionId, tabId: tab.id, pid: nil,
         status: statusStr, exitStatus: exitStatus,
         rows: rows, cols: cols,
         cellWidth: cellWidth, cellHeight: cellHeight,
-        scrollbackLines: 0, viewportOffset: 0,
+        scrollbackLines: scrollbackLines, viewportOffset: viewportOffset,
         title: title, mouseTracking: mouseTracking,
         focusReporting: focusReporting, dirty: dirty
       )
@@ -926,7 +1086,7 @@ public final class HeadlessDebugRuntime {
         seq: e.seq, kind: e.kind,
         tabId: e.tabId, sessionId: e.sessionId, frame: e.frame,
         width: e.width, height: e.height, text: e.text,
-        path: e.path, action: e.action, error: e.error
+        path: e.path, action: e.action, deltaRows: e.deltaRows, error: e.error
       )
     }
     return jsonEncode(EventsResponse(events: filtered, next: eventSeq))

@@ -216,6 +216,160 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertNotNil(obj["next"])
   }
 
+  func testRuntimeScrollViewportReturnsOk() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-scroll"
+    )
+
+    let body = #"{"action":"scrollViewport","deltaRows":-4}"#.data(using: .utf8)!
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
+  func testRuntimeMouseWheelNormalModeScrolls() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-mwheel"
+    )
+
+    // First write enough lines to create scrollback.
+    let typeBody = #"{"action":"typeText","text":"seq 1 20\n"}"#.data(using: .utf8)!
+    _ = runtime.applyAction(typeBody)
+
+    // Now wheel in terminal area (past sidebar) — should succeed.
+    let body = #"{"action":"mouseWheel","x":300,"y":200,"deltaY":3}"#.data(using: .utf8)!
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
+  func testRuntimeMouseWheelInSidebarIgnored() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-mw-side"
+    )
+
+    // Wheel in sidebar area — should be consumed locally (ok: true).
+    let body = #"{"action":"mouseWheel","x":10,"y":100,"deltaY":3}"#.data(using: .utf8)!
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
+  func testRuntimeClickSidebarNewTab() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-click-side"
+    )
+
+    // First create a second tab so we have something to click on in the sidebar.
+    let newTabBody = #"{"action":"newTab"}"#.data(using: .utf8)!
+    _ = runtime.applyAction(newTabBody)
+
+    // Now there are 2 tabs. Click in the sidebar area to select the first tab.
+    // The sidebar shows tab rows at y = height - (i+2) * rowHeight.
+    // Tab 0 (the original) is at y = height - 2*rowHeight from bottom.
+    // rowHeight ≈ 26, height ≈ 432, so tab 0 y ≈ 432-52 = 380, spans 380-406.
+    // Click near the center of that row.
+    let clickBody = #"{"action":"click","x":10,"y":390,"button":"left"}"#.data(using: .utf8)!
+    let result = runtime.applyAction(clickBody)
+    XCTAssertEqual(result.status, 200)
+
+    // We just verify the action succeeded - tab navigation via sidebar click works.
+    // The runtime returns ok:true even for sidebar hits.
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+
+    // Still have 2 tabs.
+    let state = runtime.state()
+    let stateObj = try JSONSerialization.jsonObject(with: state.body) as! [String: Any]
+    let tabs = stateObj["tabs"] as! [[String: Any]]
+    XCTAssertEqual(tabs.count, 2)
+  }
+
+  func testRuntimeClickWithoutMouseTrackingReturnsOkFalse() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-click-notrack"
+    )
+
+    // Click in terminal area (past sidebar) — should return ok:false with local selection msg.
+    let body = #"{"action":"click","x":300,"y":200,"button":"left"}"#.data(using: .utf8)!
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, false)
+    XCTAssertTrue((obj["error"] as? String ?? "").contains("selection"))
+  }
+
+  func testRuntimeSessionsReportsRealViewportState() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-session-vs"
+    )
+
+    // Write enough lines to create scrollback.
+    let typeBody = #"{"action":"typeText","text":"seq 1 100\n"}"#.data(using: .utf8)!
+    _ = runtime.applyAction(typeBody)
+
+    let resp = runtime.sessions()
+    let obj = try JSONSerialization.jsonObject(with: resp.body) as! [String: Any]
+    let sessions = obj["sessions"] as! [[String: Any]]
+    guard let s = sessions.first else {
+      XCTFail("no sessions")
+      return
+    }
+    XCTAssertGreaterThanOrEqual(s["scrollbackLines"] as? Int ?? 0, 0)
+    XCTAssertGreaterThanOrEqual(s["viewportOffset"] as? Int ?? -1, 0)
+  }
+
   func testRuntimeUnsupportedActionReturnsOkFalse() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
@@ -229,7 +383,7 @@ final class LabanDebugSmokeTests: XCTestCase {
       runId: "smoke-unsupported"
     )
 
-    let body = #"{"action":"mouseWheel","x":100,"y":100,"deltaY":-3}"#.data(using: .utf8)!
+    let body = #"{"action":"nonexistent_action"}"#.data(using: .utf8)!
     let result = runtime.applyAction(body)
     XCTAssertEqual(result.status, 200)
     let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
