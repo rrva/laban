@@ -147,7 +147,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       originX: sidebarWidth,
       originY: 0
     )
-    cmds += termProducer.commands(from: UnsafePointer(snap))
+    var selection: TerminalSelection?
+    if let anchor = selectionAnchor, let focus = selectionFocus {
+      selection = TerminalSelection(
+        sessionId: session.id,
+        anchor: TerminalCellCoordinate(row: anchor.row, col: anchor.col),
+        focus: TerminalCellCoordinate(row: focus.row, col: focus.col)
+      )
+    }
+    cmds += termProducer.commands(from: UnsafePointer(snap), selection: selection)
 
     renderer.render(cmds)
     cachedCGImage = surface.cgImage
