@@ -38,6 +38,7 @@ task matches them.
 | `execplans/` | The task names a plan, changes a planned feature, crosses major boundaries, or needs design history. |
 | `schemas/` | You are changing debug endpoints, fixture formats, artifact metadata, or typed contracts. |
 | `docs/quality/` | You are tracking drift, test gaps, debt, or quality gates. |
+| `docs/adr/` | A change touches the terminal library, PTY ownership, rendering architecture, SwiftPM target boundaries, or a decision that looks previously settled. |
 
 ## Project Landmarks
 
@@ -57,6 +58,12 @@ schemas/                               JSON schemas for debug contracts and fixt
 fixtures/                              Fixture format notes and examples.
 execplans/                             Active and completed ExecPlans.
 ```
+
+## Decision Index
+
+- `docs/adr/0001-libghostty-vt-owns-vt-parsing.md` — libghostty-vt (not GhosttyKit) owns VT parsing; application owns the PTY.
+
+Write a new ADR when a change establishes durable architectural policy, reverses a previously settled decision, or sets an adapter boundary. Number it sequentially in `docs/adr/`, follow the existing file's structure (Status, Context, Decision, Consequences, Applies To New Code), and add a one-line entry here with the path and summary.
 
 ## Hard Rules
 
