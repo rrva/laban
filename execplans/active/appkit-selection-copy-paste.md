@@ -8,11 +8,13 @@ working tree, then add MVP-visible terminal selection, copy, and paste behavior.
 ## Purpose / Big Picture
 
 Laban can now run a real terminal session, render text, accept keyboard input,
-show tabs, expose a local debug server, avoid idle redraws, and route mouse
-events or scrollback correctly. The next MVP gap is basic terminal selection:
-a user can drag in the terminal viewport, but there is no visible highlight,
-debug cannot model a local selection, `copy` is not implemented in headless
-mode, and paste writes raw text instead of using terminal paste rules.
+show tabs, expose a local debug server, avoid idle redraws, and route
+scrollback plus terminal mouse reporting through the reviewed libghostty mouse
+encoder path. The next MVP gap is basic terminal selection: a user can drag in
+the terminal viewport and `Command-C` has a private AppKit-only copy path, but
+there is no visible highlight, debug cannot model a local selection, `copy` is
+not implemented in headless mode, and paste writes raw text instead of using
+terminal paste rules.
 
 After this change, dragging visible terminal text highlights the selected
 cells, `Command-C` copies the selected visible text, and `Command-V` pastes
@@ -23,18 +25,26 @@ reading the user's real system clipboard.
 
 ## Progress
 
-- [x] (2026-05-03) Merged the mouse and scrollback shard
+- [x] (2026-05-03) Merged the initial mouse and scrollback shard
   `e63e6919a02ef2d0a11f6a9e592f34cb3275d55e` into `main`.
+- [x] (2026-05-03) Brought the mouse and scrollback baseline current through
+  review fixes and follow-ups on `main`: `0433471` fixes pixel coordinates,
+  modifier bit order, debug mouse `y`, and drag motion button preservation;
+  `6b1cefa` records the mouse/scrollback review as verified; `1ca45c7` keeps
+  sidebar-owned drags out of terminal mouse reporting; merge `1b7f51e` is the
+  current `main` head at the time this plan refresh was written.
 - [x] (2026-05-03) Identified selection/copy/paste as the next MVP work item
   after mouse input and scrollback in `docs/product/mvp.md`.
 - [x] (2026-05-03) Verified the current baseline: `TerminalBitmapView` stores
-  selection anchors privately and can copy through AppKit, but
-  `FrameProducer.commands(from:)` never emits selection commands and
-  `HeadlessDebugRuntime` returns `"local selection not implemented through
+  selection anchors privately and can copy selected visible cells through
+  AppKit, while `paste(_:)` still writes raw UTF-8 clipboard text with
+  `sendBytes`. `FrameProducer.commands(from:)` never emits selection commands
+  and `HeadlessDebugRuntime` returns `"local selection not implemented through
   debug"` for terminal clicks without mouse tracking.
 - [x] (2026-05-03) Verified `schemas/debug/selection.schema.json` and
   `schemas/debug/clipboard.schema.json` already define the debug contracts, but
-  `DebugHTTPServer` does not route `/debug/selection` or `/debug/clipboard`.
+  `DebugHTTPServer` does not route `/debug/selection` or `/debug/clipboard`,
+  and `schemas/debug/action.schema.json` does not yet define `setSelection`.
 - [ ] Add shared visible-selection geometry and text extraction helpers.
 - [ ] Render selection highlights in AppKit and headless frame commands.
 - [ ] Implement headless selection, copy, paste, `/debug/selection`, and
@@ -128,8 +138,9 @@ The relevant source files are:
 
 - `Sources/LabanApp/TerminalBitmapView.swift` owns AppKit input events,
   `Command-C`, `Command-V`, and the bitmap frame loop. It currently stores
-  `selectionAnchor` and `selectionFocus` as private row/column tuples and
-  extracts text directly in `copy(_:)`.
+  `selectionAnchor` and `selectionFocus` as private row/column tuples,
+  extracts text directly in `copy(_:)`, and pastes by writing raw UTF-8 bytes
+  from `NSPasteboard` through `sendBytes`.
 - `Sources/LabanCore/FrameProducer.swift` converts a `LabanSnapshot` into
   terminal `FrameCommand` values. It currently emits terminal background
   rectangles, glyph runs, and the cursor, but no selection commands.
@@ -146,8 +157,8 @@ The relevant source files are:
   Swift. Do not expose raw Ghostty handles here.
 - `Sources/LabanDebug/HeadlessDebugRuntime.swift` owns deterministic debug
   actions and frame production. It currently implements `paste` by writing raw
-  debug clipboard bytes, does not implement `copy`, and returns an error for
-  terminal-area clicks when mouse tracking is off.
+  debug clipboard bytes, does not implement `copy`, has no selection state,
+  and returns an error for terminal-area clicks when mouse tracking is off.
 - `Sources/LabanDebug/DebugHTTPServer.swift` routes debug endpoints. It already
   routes health, state, screenshots, actions, sessions, render, frame commands,
   render trace, wait, and events, but not selection or clipboard.
