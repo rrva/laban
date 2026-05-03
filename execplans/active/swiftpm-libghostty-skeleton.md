@@ -27,21 +27,21 @@ prove the build shape before deeper terminal behavior is written.
   `execplans/completed/choose-implementation.md`, and
   `execplans/active/swiftpm-appkit-software-renderer-mvp.md`.
 - [x] Create this focused first execution shard.
-- [ ] Add `Package.swift` with the target graph selected by the completed stack
+- [x] Add `Package.swift` with the target graph selected by the completed stack
   decision.
-- [ ] Add minimal source files for `LabanTerminalCore`, `LabanCore`,
+- [x] Add minimal source files for `LabanTerminalCore`, `LabanCore`,
   `LabanRenderer`, `LabanDebug`, `LabanApp`, and `LabanAgent`.
-- [ ] Add a C smoke function in `LabanTerminalCore` and a Swift test proving
+- [x] Add a C smoke function in `LabanTerminalCore` and a Swift test proving
   Swift can call it.
-- [ ] Pin libghostty or add a repeatable fetch/probe script with an exact
+- [x] Pin libghostty or add a repeatable fetch/probe script with an exact
   commit or release identifier.
-- [ ] Inspect the pinned libghostty source and record the exact C API headers,
+- [x] Inspect the pinned libghostty source and record the exact C API headers,
   symbols, and link/build implications in this plan.
-- [ ] Add `scripts/build-app` that creates `.build/laban/Laban.app` from the
+- [x] Add `scripts/build-app` that creates `.build/laban/Laban.app` from the
   SwiftPM-built `LabanApp` executable.
-- [ ] Add or update stable scripts needed for this shard, including
+- [x] Add or update stable scripts needed for this shard, including
   `scripts/test` and `scripts/check`.
-- [ ] Run validation commands and update this plan with any discoveries.
+- [x] Run validation commands and update this plan with any discoveries.
 
 ## Decision Log
 
@@ -296,20 +296,112 @@ record the failing command and output summary under `libghostty Probe Results`.
 The shard may still land the SwiftPM skeleton and C smoke test, but it is not
 complete until the pin/probe status is explicit.
 
+## libghostty Probe Results
+
+- **Source URL:** https://github.com/ghostty-org/ghostty
+- **Pinned tag:** v1.3.1 (annotated tag object
+  `22efb0be2bbea73e5339f5426fa3b20edabcaa11`; tree commit
+  `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`)
+- **Local source path:** `.external/libghostty` (fetched by
+  `scripts/fetch-libghostty`, not committed)
+- **Header path:** `.external/libghostty/include/ghostty.h` (1178 lines)
+- **Module map:** `.external/libghostty/include/module.modulemap` (defines
+  module `GhosttyKit` with umbrella header `ghostty.h`)
+
+### Initialization symbols
+
+```c
+int ghostty_init(uintptr_t argc, char** argv);  // global init, call first
+ghostty_config_t ghostty_config_new();
+void ghostty_config_finalize(ghostty_config_t);
+ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*, ghostty_config_t);
+ghostty_surface_t ghostty_surface_new(ghostty_app_t, ghostty_surface_config_s*);
+```
+
+`ghostty_surface_config_s` carries a `ghostty_platform_macos_s` containing
+`void* nsview`. A live NSView must be passed to create a surface. There is no
+headless-only surface constructor in this release.
+
+### Render and state symbols
+
+```c
+void ghostty_surface_draw(ghostty_surface_t);
+void ghostty_surface_refresh(ghostty_surface_t);
+void ghostty_app_tick(ghostty_app_t);
+ghostty_surface_size_s ghostty_surface_size(ghostty_surface_t);
+bool ghostty_surface_process_exited(ghostty_surface_t);   // new in v1.3.x
+bool ghostty_surface_has_selection(ghostty_surface_t);
+bool ghostty_surface_read_selection(ghostty_surface_t, ghostty_text_s*);
+bool ghostty_surface_read_text(ghostty_surface_t, ...);
+void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
+```
+
+There is no explicit snapshot or software-render export in this API version.
+Rendering is driven by Metal internally through the NSView. The software
+renderer required for headless tests will need to be built separately.
+
+### Key encoder symbols
+
+```c
+bool ghostty_surface_key(ghostty_surface_t, ghostty_input_key_s);
+bool ghostty_surface_key_is_binding(ghostty_surface_t, ghostty_input_key_s, ...);
+void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
+void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);  // IME
+ghostty_input_mods_e ghostty_surface_key_translation_mods(ghostty_surface_t,
+                                                          ghostty_input_mods_e);
+bool ghostty_app_key(ghostty_app_t, ghostty_input_key_s);
+```
+
+`ghostty_input_key_s` carries action, mods, keycode (uint32), text (const
+char*), and composing (bool).
+
+### Mouse encoder symbols
+
+```c
+bool ghostty_surface_mouse_captured(ghostty_surface_t);
+bool ghostty_surface_mouse_button(ghostty_surface_t,
+                                  ghostty_input_mouse_state_e,
+                                  ghostty_input_mouse_button_e,
+                                  ghostty_input_mods_e);
+void ghostty_surface_mouse_pos(ghostty_surface_t, double, double,
+                               ghostty_input_mods_e);
+void ghostty_surface_mouse_scroll(ghostty_surface_t, double, double,
+                                  ghostty_input_scroll_mods_t);
+void ghostty_surface_mouse_pressure(ghostty_surface_t, uint32_t, double);
+```
+
+### Link and build status
+
+Zig 0.15.2 is installed. Ghostty v1.3.1's `build.zig` requires Zig ≥ 0.13.0.
+
+On macOS, `zig build -Dapp-runtime=none -Demit-xcframework=true` (run inside
+`.external/libghostty`) produces an xcframework, not a plain `.a`. The
+xcframework contains a static library and the header. This is the form that
+Ghostty's own macOS Xcode project links against.
+
+A plain `libghostty.a` for macOS is not produced by the upstream build; the
+non-Darwin path produces `.so` and `.a` but is not the macOS path. Linking
+`LabanTerminalCore` against libghostty on macOS will require consuming the
+xcframework output or adjusting the build step.
+
+Full build was not attempted in this shard. Fetching all Zig dependencies and
+compiling requires network access and significant build time. Build integration
+is deferred to the next shard.
+
 ## Automated Acceptance Gate
 
 These are mechanical checks for a fresh agent or automation runner:
 
-- [ ] Run `./scripts/check`; expect exit 0.
-- [ ] Run `swift test`; expect exit 0.
-- [ ] Run `./scripts/build-app`; expect
+- [x] Run `./scripts/check`; expect exit 0.
+- [x] Run `swift test`; expect exit 0.
+- [x] Run `./scripts/build-app`; expect
   `.build/laban/Laban.app/Contents/MacOS/LabanApp` to exist and be executable.
-- [ ] Run `rg -n "MetalKit|\\bMTL" Package.swift Sources Tests`; expect zero
+- [x] Run `rg -n "MetalKit|\\bMTL" Package.swift Sources Tests`; expect zero
   matches.
-- [ ] Run `rg -n "VT|ANSI parser|escape parser" Sources`; expect zero matches
+- [x] Run `rg -n "VT|ANSI parser|escape parser" Sources`; expect zero matches
   unless the match is in a comment explaining that parsing belongs to
   libghostty.
-- [ ] Confirm this plan has a `libghostty Probe Results` section with source
+- [x] Confirm this plan has a `libghostty Probe Results` section with source
   URL, pin, local path, headers, discovered symbols, and link/build status.
 
 ## Surprises & Discoveries
@@ -317,3 +409,21 @@ These are mechanical checks for a fresh agent or automation runner:
 - Observation: This shard is deliberately narrower than the umbrella MVP plan.
   Evidence: It stops at SwiftPM targets, C interop smoke testing, libghostty
   pin/probe, local `.app` bundling, and script integration.
+
+- Discovery: On macOS, libghostty builds as an xcframework, not a plain static
+  lib. The xcframework is the form Ghostty's Xcode project links against.
+  Evidence: `build.zig` lines 51–76. The `libghostty.a` path in the same file is
+  the non-Darwin branch.
+
+- Discovery: `ghostty_surface_new` requires a live NSView pointer. There is no
+  headless or off-screen surface constructor in the v1.3.1 C API. The software
+  renderer for autonomous tests must be implemented separately from ghostty's
+  internal Metal renderer.
+
+- Discovery: Ghostty's module map defines the module as `GhosttyKit` (not
+  `ghostty`). Import in Swift: `import GhosttyKit`.
+
+- Discovery: `ghostty_init` signature changed between v1.1.0 and v1.3.1. In
+  v1.3.1 it takes `(uintptr_t argc, char** argv)` rather than `void`. The
+  runtime callbacks struct also changed: `ghostty_runtime_read_clipboard_cb`
+  now returns `bool` instead of `void`.

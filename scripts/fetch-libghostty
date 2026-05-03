@@ -1,13 +1,13 @@
 #!/usr/bin/env sh
 # Fetch the pinned Ghostty source for header inspection.
 # Fetched source goes to .external/libghostty (not committed).
-# Pin: ghostty v1.1.0 (annotated tag)
-#   tag object:  2f44bf55c3f89fa4dd44ea3238f567f9e7a36032
-#   tree commit: facda0c3fb1310c7698fc77ba193165ef38cd58e
+# Pin: ghostty v1.3.1 (annotated tag)
+#   tag object:  22efb0be2bbea73e5339f5426fa3b20edabcaa11
+#   tree commit: 332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28
 set -eu
 
-GHOSTTY_TAG="v1.1.0"
-GHOSTTY_COMMIT="facda0c3fb1310c7698fc77ba193165ef38cd58e"
+GHOSTTY_TAG="v1.3.1"
+GHOSTTY_COMMIT="332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28"
 GHOSTTY_URL="https://github.com/ghostty-org/ghostty"
 DEST=".external/libghostty"
 
