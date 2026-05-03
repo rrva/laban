@@ -13,9 +13,12 @@ title while preserving tab identity, session identity, focus, and tab order.
 Laban already has partial plumbing: `LabanTerminalCore` snapshots can expose
 the libghostty terminal title, `AppModel.updateTitle` updates a tab title
 without changing IDs, and debug `/state` opportunistically copies snapshot
-titles into tab state. The user-visible gap is that the visible AppKit window
-still starts with a fixed `"Laban"` title and title synchronization is not a
-deliberate, bounded behavior shared by AppKit and headless debug.
+titles into tab state. Re-fetching `GHOSTTY_TERMINAL_DATA_TITLE` for every
+snapshot is functional, but it couples title work to the render loop. The
+user-visible gap is that terminal title changes are not yet driven by the
+terminal title-change effect, the visible AppKit window still starts with a
+fixed `"Laban"` title, and title synchronization is not a deliberate, bounded
+behavior shared by AppKit and headless debug.
 
 After this change, a shell or fixture that emits an OSC title sequence updates
 the active tab label and the macOS window title. Background tab title changes
@@ -29,17 +32,19 @@ without needing an unrelated `/debug/state` call to mutate model state first.
   scrollback, selection, copy, and paste work landed on `main`.
 - [x] (2026-05-03) Verified current baseline:
   `Sources/LabanTerminalCore/session.c` copies
-  `GHOSTTY_TERMINAL_DATA_TITLE` into `LabanSnapshot.title`;
+  `GHOSTTY_TERMINAL_DATA_TITLE` into `LabanSnapshot.title` but does not
+  register `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED`;
   `Sources/LabanCore/AppModel.swift` has `updateTitle(_:forTab:)` and a unit
   test proving identity is preserved; `Sources/LabanDebug/HeadlessDebugRuntime.swift`
   updates titles during `/debug/state` but `titleEquals` checks only cached tab
   state; `Sources/LabanApp/MainWindowController.swift` sets `window.title =
   "Laban"` once; `Sources/LabanApp/TerminalBitmapView.swift` does not update
-  the AppKit window title or tab titles from render snapshots.
+  the AppKit window title or tab titles from terminal title effects.
 - [ ] Add a shared title policy that bounds, normalizes, and falls back from
   terminal-provided titles.
-- [ ] Synchronize titles from session snapshots during AppKit and headless
-  polling without relying on unrelated debug reads.
+- [ ] Register libghostty's title-changed effect in `LabanTerminalCore` and
+  expose a lightweight dirty/generation/copy path for AppKit and headless
+  debug, keeping snapshot titles as fallback/verification data.
 - [ ] Update the AppKit window title whenever the active tab title changes or
   tab selection changes.
 - [ ] Add focused unit, debug, and E2E coverage for active and background title
@@ -69,6 +74,17 @@ without needing an unrelated `/debug/state` call to mutate model state first.
   to `"Laban"` keeps the initial and empty-title state stable.
   Date/Author: 2026-05-03 / Codex.
 
+- Decision: Drive title synchronization from libghostty's title-changed
+  effect, not from render snapshots alone.
+  Rationale: Reading `GHOSTTY_TERMINAL_DATA_TITLE` on every snapshot works, but
+  it makes title handling incidental to rendering and misses the product model
+  where title is session/UI state. A tiny C callback can mark title state dirty
+  or advance a generation counter during `ghostty_terminal_vt_write()`, and
+  Swift can consume the bounded title on its normal AppKit/debug polling paths.
+  Snapshot titles should remain useful for verification and compatibility, but
+  title correctness must not depend on building a render snapshot.
+  Date/Author: 2026-05-03 / Codex.
+
 ## Review Gate
 
 A separate fresh-state review agent must verify the following before this
@@ -77,11 +93,15 @@ done until this gate has passed.
 
 - [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
   final output `check passed`.
+- [ ] Grep `Sources/LabanTerminalCore/session.c` and
+  `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
+  `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` registration plus a small public title
+  dirty/generation/copy API or equivalent session-owned title update path.
 - [ ] Grep `Sources/LabanCore`; expect a shared title helper or policy that
   bounds terminal titles and removes control characters before storing them.
 - [ ] Grep `Sources/LabanApp/TerminalBitmapView.swift`; expect title
-  synchronization from session snapshots into `AppModel` and an AppKit
-  `window?.title` update for the active tab.
+  synchronization from the terminal-core title update path into `AppModel` and
+  an AppKit `window?.title` update for the active tab.
 - [ ] Grep `Sources/LabanDebug/HeadlessDebugRuntime.swift`; expect title
   synchronization before `titleEquals` checks and debug state/session
   responses.
@@ -107,10 +127,12 @@ unexpectedly; terminal output is untrusted.
 The relevant source files are:
 
 - `Sources/LabanTerminalCore/session.c` owns libghostty terminal state and
-  copies `GHOSTTY_TERMINAL_DATA_TITLE` into `LabanSnapshot.title` during
-  `laban_session_snapshot`.
+  currently copies `GHOSTTY_TERMINAL_DATA_TITLE` into `LabanSnapshot.title`
+  during `laban_session_snapshot`. It does not yet register
+  `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED`.
 - `Sources/LabanTerminalCore/include/LabanTerminalCore.h` exposes
-  `LabanSnapshot.title` as an owned string freed by `laban_snapshot_destroy`.
+  `LabanSnapshot.title` as an owned string freed by `laban_snapshot_destroy`;
+  it does not yet expose a title dirty/generation/copy helper.
 - `Sources/LabanCore/AppModel.swift` owns tabs and sessions. It currently has
   `updateTitle(_:forTab:)`, which changes `Tab.title` while preserving tab ID
   and session ID.
@@ -120,14 +142,23 @@ The relevant source files are:
 - `Sources/LabanApp/MainWindowController.swift` creates the AppKit window and
   sets its initial title to `"Laban"`.
 - `Sources/LabanApp/TerminalBitmapView.swift` polls sessions and renders the
-  active snapshot. It does not currently read `snap.pointee.title` into the
-  model or update `window?.title`.
+  active snapshot. It does not currently consume terminal title-change effects
+  into the model or update `window?.title`.
 - `Sources/LabanDebug/HeadlessDebugRuntime.swift` currently copies snapshot
   titles into the model while building `/debug/state`, but `titleEquals` waits
   against cached `Tab.title`. This makes title waits depend on a previous
   debug-state read.
 - `fixtures/colored-boxes.fixture.json` already exercises OSC 0 title setting
   through `FixtureRunner`, which writes `ESC ] 0 ; title BEL` bytes.
+- `.external/libghostty-vt/include/ghostty/vt/terminal.h` documents
+  `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED`. The callback fires synchronously from
+  `ghostty_terminal_vt_write()`, must stay cheap and non-reentrant, and the new
+  title can be queried from the terminal after the callback returns via
+  `GHOSTTY_TERMINAL_DATA_TITLE`.
+- `docs/reference/prototype-implementation-notes.md` says terminal title
+  callbacks are enough to keep tab labels and window titles useful without a
+  separate title protocol, and warns that callback userdata must not point at
+  moved session storage.
 
 Definitions used in this plan:
 
@@ -138,9 +169,12 @@ Definitions used in this plan:
 - Display title means the sanitized, bounded string shown in the sidebar and
   window title. It should be nonempty; if the terminal title is empty or
   unusable, use the existing fallback tab title or `"Laban"` for the window.
-- Title synchronization means polling or snapshotting sessions, reading
-  `LabanSnapshot.title`, applying the title policy, and calling
-  `AppModel.updateTitle` only when the stored value changes.
+- Title synchronization means consuming a session-owned title dirty flag or
+  generation, querying/copying `GHOSTTY_TERMINAL_DATA_TITLE` through the C
+  boundary after a title effect, applying the title policy, and calling
+  `AppModel.updateTitle` only when the stored value changes. Snapshot titles
+  may remain as fallback and verification data, but they are not the primary
+  trigger.
 
 ## Plan of Work
 
@@ -159,29 +193,51 @@ existing tab title unchanged rather than replacing it with an empty string.
 Add a helper such as `displayTitle(for:)` or `windowTitle(for:)` if it keeps
 window title construction out of AppKit view code.
 
+Then wire the terminal-core title effect. Register
+`GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` when creating a session and route userdata
+back to the owning `LabanSession`. The callback must do only cheap session-local
+work: mark a title dirty flag, advance a generation counter, or both. It must
+not call back into Swift, block on locks that can be held around VT writes, or
+call `ghostty_terminal_vt_write()` on the same terminal. After the callback
+returns, the C layer can query `GHOSTTY_TERMINAL_DATA_TITLE` and copy it into
+session-owned bounded storage when Swift consumes the title update. If session
+storage can move, callbacks/userdata must be rebound or the session must store
+stable heap-owned callback state.
+
+Expose a narrow C ABI for title updates. The exact shape can follow local
+style, but it should let Swift ask whether a title changed since the last
+consume and obtain an owned or caller-provided copy of the current terminal
+title without requiring a render snapshot. Reasonable shapes include a title
+generation accessor plus copy function, or one consume function that returns
+whether a title was copied. Keep `LabanSnapshot.title` populated for
+inspection, fixture compatibility, and fallback.
+
 Then add one reusable synchronization helper in Swift, either in `AppModel` or
 as a small private helper in each runtime if the public API would be premature.
-The helper should accept a tab ID and a snapshot, read `snapshot.title`, apply
-the title policy, and update the model only when the resulting title differs
-from the cached title. It must not select tabs, reorder tabs, recreate
-sessions, close sessions, or mark sessions rendered.
+The helper should accept a tab ID and terminal session, consume the title
+update from the C boundary, apply the title policy, and update the model only
+when the resulting title differs from the cached title. It must not select
+tabs, reorder tabs, recreate sessions, close sessions, mark sessions rendered,
+or require a render snapshot.
 
 Update AppKit behavior in `TerminalBitmapView.advanceFrame()`. The frame loop
 already polls all sessions and snapshots the active session for rendering.
-After snapshotting the active session, synchronize its title into `AppModel`
-before building sidebar commands, so the current frame's sidebar uses the new
-title. For background tabs, after polling, if a background session is dirty or
-has just produced output, snapshot it only enough to synchronize title state;
-do not call `markRendered()` on background sessions. After selecting a tab or
-updating a title, set `window?.title` to the active tab display title, falling
-back to `"Laban"`. Keep `renderInvalidated` true when a title change affects
-visible UI.
+After polling each session, consume any pending title update before building
+sidebar commands, so the current frame's sidebar uses the new title without
+making title correctness depend on snapshot creation. For the active session,
+continue snapshotting for rendering as usual. For background tabs, consume
+title updates after polling without marking the session rendered. After
+selecting a tab or updating a title, set `window?.title` to the active tab
+display title, falling back to `"Laban"`. Keep `renderInvalidated` true when a
+title change affects visible UI.
 
 Update headless debug behavior in `HeadlessDebugRuntime`. Add a private
-`syncTitlesUnlocked()` that polls or snapshots sessions consistently before
-state responses, session responses, `titleEquals` waits, and actions that may
-advance frames. This avoids the current state where `/debug/state` mutates
-titles but `titleEquals` can read stale `Tab.title`.
+`syncTitlesUnlocked()` that polls sessions and consumes title updates
+consistently before state responses, session responses, `titleEquals` waits,
+and actions that may advance frames. This avoids the current state where
+`/debug/state` mutates titles but `titleEquals` can read stale `Tab.title`.
+Only fall back to snapshot title reads if the explicit title update path is
+unavailable for an older fixture or test harness path.
 
 Add tests. In `LabanCoreTests`, cover title policy behavior: normal titles are
 preserved, control characters are removed or converted, very long titles are
@@ -218,7 +274,18 @@ Run all commands from `/Users/rrj/wrk/laban`.
    Expect tests for title bounding, cleanup, fallback, and identity
    preservation.
 
-3. Wire AppKit title synchronization and window title updates:
+3. Register the terminal title-change effect and expose the narrow C title
+   update API:
+
+   ```sh
+   swift test --filter LabanTerminalCoreTests
+   ```
+
+   If there is no matching test target yet, add focused coverage in the
+   nearest existing terminal-core test target or through debug smoke tests that
+   prove a title change is observable without creating a render snapshot.
+
+4. Wire AppKit title synchronization and window title updates:
 
    ```sh
    swift test --filter LabanAppTests
@@ -228,7 +295,7 @@ Run all commands from `/Users/rrj/wrk/laban`.
    title formatting helper tested and rely on the E2E/debug fixture for
    runtime title updates.
 
-4. Wire headless debug title synchronization and tests:
+5. Wire headless debug title synchronization and tests:
 
    ```sh
    swift test --filter LabanDebugSmokeTests
@@ -237,7 +304,7 @@ Run all commands from `/Users/rrj/wrk/laban`.
    Expect title changes to be observable by `/debug/state`, `/debug/sessions`,
    and `/debug/wait` without relying on an unrelated state read first.
 
-5. Run the full gate:
+6. Run the full gate:
 
    ```sh
    ./scripts/check
@@ -250,7 +317,7 @@ Run all commands from `/Users/rrj/wrk/laban`.
 This plan is complete when:
 
 - An OSC title sequence updates the active AppKit tab label and macOS window
-  title on the next render/poll cycle.
+  title on the next session poll/title-sync cycle.
 - A title sequence emitted by a background tab updates that tab's sidebar label
   without selecting, restarting, reordering, or destroying the tab/session.
 - Long or control-character-heavy titles are bounded and normalized before
@@ -265,12 +332,14 @@ This plan is complete when:
 ## Idempotence and Recovery
 
 The changes are source and test edits only. They are safe to retry. If title
-handling seems stale in debug, inspect whether the code path calls the shared
-title synchronization helper before reading `Tab.title`. If AppKit title
-updates do not appear, verify `TerminalBitmapView.advanceFrame()` actually
-sets `window?.title` after synchronizing the active title and that a title
-change invalidates rendering. If a long title still overlaps controls, adjust
-the shared bound or sidebar display cap and update tests accordingly.
+handling seems stale in debug, inspect whether the terminal-core title callback
+is registered, whether the dirty/generation state is consumed before reading
+`Tab.title`, and whether userdata still points at live session storage. If
+AppKit title updates do not appear, verify `TerminalBitmapView.advanceFrame()`
+consumes title updates after polling sessions, sets `window?.title` after
+synchronizing the active title, and invalidates visible UI when a title changes.
+If a long title still overlaps controls, adjust the shared bound or sidebar
+display cap and update tests accordingly.
 
 Do not implement shell integration markers, OSC 133, profile mutation,
 terminal-driven clipboard writes, or window automation in this shard.
@@ -279,7 +348,11 @@ terminal-driven clipboard writes, or window automation in this shard.
 
 Use existing repository dependencies only. The implementation should rely on:
 
-- libghostty-vt title parsing exposed through `LabanSnapshot.title`;
+- libghostty-vt title parsing exposed through
+  `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` and `GHOSTTY_TERMINAL_DATA_TITLE`;
+- a narrow `LabanTerminalCore` title dirty/generation/copy ABI that owns copied
+  title bytes across the C/Swift boundary;
+- `LabanSnapshot.title` as verification/fallback data;
 - `AppModel.updateTitle` and `Tab.title` for app-owned cached title state;
 - `SidebarProducer` for tab label rendering;
 - AppKit `NSWindow.title` for the active window title;
