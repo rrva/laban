@@ -97,7 +97,8 @@ plan as each shard lands.
 - [x] Cut idle AppKit CPU by making terminal rendering damage-driven and
   coalescing terminal frame commands. Shard:
   `execplans/active/appkit-idle-cpu-render-budget.md`.
-- [ ] Add mouse input and scrollback behavior.
+- [ ] Add mouse input and scrollback behavior. Shard:
+  `execplans/active/appkit-mouse-scrollback.md`.
 
 ## Decision Log
 
