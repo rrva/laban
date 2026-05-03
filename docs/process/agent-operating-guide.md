@@ -22,14 +22,17 @@ style, workflow, or verification rules.
 
 - Keep terminal emulation, pty/process lifecycle, input encoding, rendering,
   and application window/tab state as separate responsibilities.
-- Use a real terminal core. Do not hand-roll VT parsing, color parsing, key
-  protocol tables, or mouse protocol behavior when a proven library provides
-  it.
-- Favor a shared terminal core with narrow interfaces and platform-native app
-  shells over a least-common-denominator GUI.
-- Platform-specific code is acceptable when it improves native behavior.
+- Use libghostty as the MVP terminal core. Do not hand-roll VT parsing, color
+  parsing, key protocol tables, or mouse protocol behavior.
+- Favor a macOS-native app shell with a shared terminal/test core over a
+  least-common-denominator GUI.
+- Platform-specific code is expected when it improves macOS behavior.
   Isolate it behind a small interface instead of spreading conditional logic
   through unrelated code.
+- Keep Swift/AppKit app behavior on one side of a narrow C ABI and C terminal
+  core/libghostty ownership on the other.
+- Use a unified frame-command renderer with retained renderer-owned resources,
+  not a retained scene graph as source of truth.
 - Do not create abstractions because they look tidy. Add an abstraction only
   when it preserves ownership boundaries, removes meaningful duplication, or
   lets multiple concrete implementations share a contract.

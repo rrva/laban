@@ -6,10 +6,13 @@ Keep `Progress` and `Validation and Acceptance` current as work proceeds.
 ## Purpose / Big Picture
 
 The repository has product requirements, autonomous test-harness contracts, and
-prototype lessons, but no programming language or app stack. After this plan is
-complete, a future agent will know what stack to scaffold first, why it was
-chosen, what alternatives were rejected, and how to verify the decision without
-relying on chat history.
+prototype lessons. Several load-bearing stack decisions are already settled:
+the product shell is AppKit-first, libghostty is mandatory, the first terminal
+core is C behind a narrow C ABI, and the renderer uses unified frame commands
+with Metal plus deterministic software/offscreen backends. After this plan is
+complete, a future agent will know the remaining scaffold choices, why they
+were chosen, what alternatives were rejected, and how to verify the decision
+without relying on chat history.
 
 The user-visible outcome is not a terminal app yet. The outcome is a durable
 implementation decision and a scaffold plan that can be executed by a fresh
@@ -20,18 +23,43 @@ agent.
 - [ ] Read `AGENTS.md`, `docs/product/mvp.md`, `docs/product/spec.md`,
   `docs/process/dev-process.md`, and
   `docs/reference/prototype-implementation-notes.md`.
-- [ ] Define the decision criteria from the MVP and debug harness.
-- [ ] Compare at least three credible implementation stacks.
-- [ ] Choose one stack for the first runnable scaffold.
+- [ ] Record the settled stack constraints from the interview.
+- [ ] Define remaining decisions from the MVP and debug harness.
+- [ ] Compare credible scaffold/build/test layouts within the settled stack.
+- [ ] Choose the first runnable scaffold shape.
 - [ ] Record rejected alternatives and why they lost.
 - [ ] Update repository docs with the chosen command names and constraints.
 - [ ] Add a follow-up ExecPlan for the first runnable scaffold.
 
 ## Context and Orientation
 
-This repo is intentionally language-agnostic. The MVP is a desktop terminal app
-with one window, vertical tabs, one independent shell session per tab, correct
-terminal input/output behavior, and autonomous headless E2E testing.
+This repo is intentionally language-agnostic but not product-platform
+agnostic. The MVP is a macOS terminal app with one window, vertical tabs, one
+independent shell session per tab, correct terminal input/output behavior, and
+autonomous headless E2E testing.
+
+Cross-platform code is allowed when it helps terminal-core reuse, CI, fixtures,
+schemas, or headless rendering. It must not replace the macOS product shell or
+weaken native macOS input, window, menu, accessibility, or packaging behavior.
+
+Settled constraints:
+
+- Product shell: macOS-native, AppKit-first.
+- Terminal core: libghostty mandatory.
+- Core language: C first, exposed to Swift through a narrow C ABI.
+- Swift owns windows, tabs, menus, app lifecycle, and app-level debug protocol.
+- C core owns PTY lifecycle, libghostty terminal state, encoders, render
+  snapshots, title, scrollback, resize, and exit state.
+- C core does not own HTTP, JSON, artifacts, or debug-server concerns.
+- Renderer: unified frame-command system, Metal preferred for the real macOS
+  backend, deterministic software/offscreen backend required for tests.
+- Renderer commands include support for textured quads/resource IDs even though
+  Kitty graphics display is deferred.
+- Headless mode supports fixture sessions and controlled real-shell smoke
+  sessions; fixtures are the primary CI gate.
+- UI: custom explicit vertical sidebar model/layout/hit testing; no native tab
+  control owns tab state.
+- MVP font/theme: JetBrains Mono, fixed Selenized Light.
 
 Important files:
 
@@ -56,70 +84,73 @@ Key terms:
 
 ## Decision Criteria
 
-The chosen stack must be judged against these criteria:
+The remaining scaffold choices must be judged against these criteria:
 
-1. Terminal correctness: can use a proven terminal core rather than hand-rolled
-   VT parsing.
-2. Native text input: can correctly handle platform text input and
-   layout-specific characters.
-3. Headless graphics: can render into an offscreen surface and produce PNG
+1. Terminal correctness: uses libghostty rather than hand-rolled VT parsing.
+2. Native macOS text input: can correctly handle macOS text input and
+   layout-specific Option characters.
+3. Native macOS app behavior: supports expected macOS window, menu, focus,
+   accessibility, and packaging paths.
+4. Headless graphics: can render into an offscreen surface and produce PNG
    screenshots in CI.
-4. Agent legibility: code, tests, schemas, and debug state are easy for agents
+5. Agent legibility: code, tests, schemas, and debug state are easy for agents
    to inspect and modify.
-5. Small first scaffold: can produce a runnable demo quickly without hiding
+6. Small first scaffold: can produce a runnable demo quickly without hiding
    ownership boundaries.
-6. Failure-path testability: can test partial initialization failure and cleanup.
-7. Future production path: can grow toward multi-window, panes, persistence,
+7. Failure-path testability: can test partial initialization failure and cleanup.
+8. Future production path: can grow toward multi-window, panes, persistence,
    accessibility, and packaging.
 
-## Candidate Stacks To Compare
+## Candidate Scaffold Shapes To Compare
 
 The executing agent may add more, but must compare at least these:
 
-### Native app shell with shared terminal core
+### Swift package plus C target
 
-Example shape: platform-native UI shell, a small terminal core behind a C ABI
-or equivalent FFI boundary, and a renderer boundary that can be backed by a
-native renderer or offscreen test renderer.
+Example shape: SwiftPM package with AppKit executable target, C terminal-core
+target, test targets, and scripts wrapping build/run commands.
 
-Why it is credible: aligns with native input requirements and keeps terminal
-session ownership explicit.
+Why it is credible: simple for agents, easy Swift/C interop, fast scaffold.
 
-Risk: FFI and renderer boundaries can slow the first scaffold if overbuilt.
+Risk: `.app` bundling, resources, and Metal integration may need custom build
+steps.
 
-### Single-language systems app
+### Xcode project with Swift and C targets
 
-Example shape: one systems language owns pty, terminal core integration,
-windowing, rendering, debug server, and tests.
+Example shape: native Xcode project owns the app bundle, Swift/AppKit target,
+C terminal-core target, resources, and test schemes.
 
-Why it is credible: simple ownership and fewer language boundaries.
+Why it is credible: most native path for macOS app bundle, resources, menus,
+Metal, and signing later.
 
-Risk: native text input and production UI integration may be weaker depending
-on toolkit.
+Risk: project-file churn can be harder for agents than package manifests.
 
-### Webview or browser-hosted shell with native helper
+### Hybrid: SwiftPM libraries generated into thin Xcode app
 
-Example shape: native or local helper owns pty and terminal core, browser UI
-owns tabs and rendering/debug interaction.
+Example shape: SwiftPM packages own core app modules and tests; a thin Xcode
+app target owns bundling and native app integration.
 
-Why it is credible: headless screenshots and agent-driven UI tests are easier.
+Why it is credible: keeps most logic agent-friendly while preserving a native
+macOS app bundle path.
 
-Risk: terminal rendering/input behavior may drift from native terminal
-expectations, and webview constraints may become product constraints.
+Risk: two build entrypoints can drift unless scripts/checks keep them aligned.
 
 ## Plan of Work
 
 1. Read the repository docs listed in Context and Orientation.
-2. Turn the Decision Criteria into a small comparison table.
-3. For each candidate, explain how it satisfies or fails:
+2. Turn the settled constraints and remaining criteria into a small comparison
+   table.
+3. For each candidate scaffold shape, explain how it satisfies or fails:
    - pty/session ownership
    - terminal core integration
-   - native text input
+   - macOS-native app behavior
+   - macOS text input
    - headless rendering
    - debug server
    - fixture mode
    - CI viability
-4. Choose the first stack.
+   - agent-editable project files
+4. Choose the first scaffold shape.
 5. Record the decision in the Decision Log with a clear rationale.
 6. Update `README.md` intended commands if the choice makes command names more
    concrete.
@@ -131,7 +162,7 @@ expectations, and webview constraints may become product constraints.
 This plan is complete when:
 
 - `Progress` is fully checked.
-- The Decision Log names one chosen stack and at least two rejected
+- The Decision Log names one chosen scaffold shape and at least two rejected
   alternatives.
 - `README.md` and `AGENTS.md` still point to correct docs.
 - A follow-up scaffold ExecPlan exists in `execplans/active/`.

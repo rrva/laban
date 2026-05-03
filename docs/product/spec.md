@@ -1,6 +1,6 @@
 # Multi-Pane, Multi-Session, Vertical-Tabs Terminal — Techniques
 
-General know-how for the moving parts of a multi-window, multi-tab, multi-pane, multi-session terminal application on a desktop OS.
+General know-how for the moving parts of a macOS-first, multi-window, multi-tab, multi-pane, multi-session terminal application. Portable components are welcome where they support the terminal core, test harness, fixtures, and headless automation, but the product shell is macOS-native.
 
 ---
 

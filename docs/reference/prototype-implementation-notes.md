@@ -2,11 +2,16 @@
 
 These notes capture lessons from a working terminal prototype. They are not a
 required architecture. The coding agent may choose a different language,
-framework, renderer, or project layout as long as `docs/product/mvp.md`
-behavior is met and the choices remain compatible with `docs/product/spec.md`.
+macOS UI framework, renderer, or project layout as long as
+`docs/product/mvp.md` behavior is met and the choices remain compatible with
+`docs/product/spec.md`.
 
 Use this file as a source of known pitfalls and proven behavior, not as a
 license to copy prototype constraints into a product implementation.
+
+Current settled direction: macOS AppKit-first shell, libghostty mandatory,
+first terminal core in C behind a narrow C ABI, renderer abstraction with Metal
+and deterministic software/offscreen backends.
 
 ## What The Prototype Proved
 

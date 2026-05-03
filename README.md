@@ -1,12 +1,23 @@
 # Laban
 
-Laban is a terminal-application project designed for agent-driven development.
-The first milestone is a minimal desktop terminal with vertical tabs, one
-independent shell session per tab, correct terminal behavior, and autonomous
-headless end-to-end testing.
+Laban is a macOS terminal-application project designed for agent-driven
+development. The first milestone is a minimal macOS terminal app with vertical
+tabs, one independent shell session per tab, correct terminal behavior, and
+autonomous headless end-to-end testing.
 
-No implementation language, GUI framework, renderer, build system, or terminal
-core has been selected yet.
+No implementation language, macOS UI framework, renderer, build system, or
+terminal core has been selected yet. Cross-platform code is welcome when it
+supports terminal core reuse, fixtures, schemas, CI, or headless rendering, but
+it must not redefine the product as a non-macOS app.
+
+Settled direction:
+
+- macOS-native AppKit-first product shell.
+- libghostty is mandatory for the MVP terminal core.
+- first terminal core implementation is C behind a narrow C ABI.
+- renderer uses unified frame commands with Metal and software/offscreen
+  backends.
+- JetBrains Mono and fixed Selenized Light are the MVP font/theme defaults.
 
 ## Repository Map
 
@@ -76,9 +87,12 @@ language is chosen.
 Use `execplans/active/choose-implementation.md` to select the first stack. The
 selection should optimize for:
 
+- native macOS app behavior over cross-platform UI convenience
+- AppKit-first shell over webview or generic cross-platform UI
+- libghostty-backed terminal behavior through a C ABI
 - real terminal behavior over UI mockups
-- native text input correctness
-- a renderer that can be captured headlessly
+- macOS text input correctness, including layout-specific Option characters
+- a frame-command renderer that can be captured headlessly
 - agent-legible tests and debug state
 - narrow boundaries around terminal session ownership
 
