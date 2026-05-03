@@ -1,10 +1,18 @@
 #include "LabanTerminalCore.h"
 #include <ghostty/vt/terminal.h>
 #include <ghostty/vt/render.h>
+#include <util.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <pwd.h>
+#include <time.h>
 
 struct LabanSession {
     GhosttyTerminal terminal;
@@ -13,7 +21,7 @@ struct LabanSession {
     GhosttyRenderStateRowCells row_cells;     /* pre-allocated; reused each snapshot */
     int pty_fd;          /* master side; -1 in fixture mode */
     pid_t child_pid;     /* -1 in fixture mode */
-    int status;          /* 0=running, 1=exited, 2=signaled */
+    int status;          /* 0=running, 1=exited normally, 2=signaled */
     int exit_status;
     int fixture_mode;
 };
@@ -42,22 +50,44 @@ static int encode_utf8(uint32_t cp, uint8_t *out) {
     return 4;
 }
 
+static void free_ghostty_resources(LabanSession *s) {
+    ghostty_render_state_row_cells_free(s->row_cells);
+    ghostty_render_state_row_iterator_free(s->row_iter);
+    ghostty_render_state_free(s->render_state);
+    ghostty_terminal_free(s->terminal);
+}
+
 int laban_session_create(
     const LabanLaunchConfig *config,
     LabanTerminalSize initial_size,
     LabanSession **out_session
 ) {
     if (!config || !out_session) return -1;
-    if (!config->fixture_mode) return -1; /* PTY lifecycle not implemented in this shard */
+
+    uint16_t cols = (uint16_t)(initial_size.cols > 0 ? initial_size.cols : 80);
+    uint16_t rows = (uint16_t)(initial_size.rows > 0 ? initial_size.rows : 24);
+
+    /* PTY mode: resolve and pre-flight the executable before allocating anything. */
+    const char *exe = NULL;
+    if (!config->fixture_mode) {
+        if (config->executable && config->executable[0])
+            exe = config->executable;
+        else
+            exe = getenv("SHELL");
+        if (!exe || !exe[0]) {
+            struct passwd *pw = getpwuid(getuid());
+            if (pw && pw->pw_shell && pw->pw_shell[0]) exe = pw->pw_shell;
+        }
+        if (!exe || !exe[0]) exe = "/bin/sh";
+        if (access(exe, X_OK) != 0) return -1;
+    }
 
     LabanSession *s = calloc(1, sizeof(struct LabanSession));
     if (!s) return -1;
     s->pty_fd = -1;
     s->child_pid = -1;
-    s->fixture_mode = 1;
+    s->fixture_mode = config->fixture_mode;
 
-    uint16_t cols = (uint16_t)(initial_size.cols > 0 ? initial_size.cols : 80);
-    uint16_t rows = (uint16_t)(initial_size.rows > 0 ? initial_size.rows : 24);
     GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 1000 };
 
     GhosttyResult r = ghostty_terminal_new(NULL, &s->terminal, opts);
@@ -87,24 +117,126 @@ int laban_session_create(
         return -1;
     }
 
+    if (config->fixture_mode) {
+        *out_session = s;
+        return 0;
+    }
+
+    /* Fork a child process with a new PTY. */
+    int pty_fd = -1;
+    pid_t child = forkpty(&pty_fd, NULL, NULL, NULL);
+    if (child < 0) {
+        free_ghostty_resources(s);
+        free(s);
+        return -1;
+    }
+
+    if (child == 0) {
+        /* Child: reset inherited signal dispositions, set env, exec. */
+        signal(SIGPIPE, SIG_DFL);
+        signal(SIGINT, SIG_DFL);
+
+        setenv("TERM", "xterm-256color", 1);
+        setenv("COLORTERM", "truecolor", 1);
+        unsetenv("NO_COLOR");
+
+        if (config->envp) {
+            for (int i = 0; config->envp[i]; i++)
+                putenv((char *)config->envp[i]);
+        }
+
+        if (config->cwd && config->cwd[0]) chdir(config->cwd);
+
+        if (config->argv) {
+            execv(exe, (char *const *)config->argv);
+        } else {
+            char *const dargv[] = { (char *)exe, NULL };
+            execv(exe, dargv);
+        }
+        _exit(127);
+    }
+
+    /* Parent: set nonblocking, apply initial window size. */
+    s->pty_fd = pty_fd;
+    s->child_pid = child;
+
+    int flags = fcntl(pty_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
+
+    struct winsize ws = {
+        .ws_row    = (unsigned short)rows,
+        .ws_col    = (unsigned short)cols,
+        .ws_xpixel = (unsigned short)initial_size.pixel_width,
+        .ws_ypixel = (unsigned short)initial_size.pixel_height,
+    };
+    ioctl(pty_fd, TIOCSWINSZ, &ws);
+
     *out_session = s;
     return 0;
 }
 
 void laban_session_destroy(LabanSession *s) {
     if (!s) return;
-    if (s->pty_fd >= 0) close(s->pty_fd);
-    ghostty_render_state_row_cells_free(s->row_cells);
-    ghostty_render_state_row_iterator_free(s->row_iter);
-    ghostty_render_state_free(s->render_state);
-    ghostty_terminal_free(s->terminal);
+
+    /* Close PTY first — sends SIGHUP to the child's session. */
+    if (s->pty_fd >= 0) {
+        close(s->pty_fd);
+        s->pty_fd = -1;
+    }
+
+    /* Reap the child without blocking indefinitely. */
+    if (s->child_pid > 0 && s->status == 0) {
+        int ws = 0;
+        int reaped = (waitpid(s->child_pid, &ws, WNOHANG) == s->child_pid);
+        if (!reaped) {
+            kill(s->child_pid, SIGTERM);
+            for (int i = 0; i < 5 && !reaped; i++) {
+                struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000 }; /* 10 ms */
+                nanosleep(&ts, NULL);
+                reaped = (waitpid(s->child_pid, &ws, WNOHANG) == s->child_pid);
+            }
+            if (!reaped) {
+                kill(s->child_pid, SIGKILL);
+                waitpid(s->child_pid, &ws, 0);
+            }
+        }
+    }
+
+    free_ghostty_resources(s);
     free(s);
 }
 
 int laban_session_poll(LabanSession *s) {
     if (!s) return -1;
     if (s->fixture_mode) return 0; /* no PTY to drain */
-    return -1; /* PTY poll not implemented in this shard */
+    if (s->status != 0) return 0;  /* already exited */
+
+    uint8_t buf[4096];
+    for (;;) {
+        ssize_t n = read(s->pty_fd, buf, sizeof(buf));
+        if (n > 0) {
+            ghostty_terminal_vt_write(s->terminal, buf, (size_t)n);
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;
+
+        /* n == 0 or permanent error (EIO on macOS = PTY slave closed). */
+        {
+            int ws = 0;
+            pid_t ret = waitpid(s->child_pid, &ws, WNOHANG);
+            if (ret == s->child_pid) {
+                if (WIFEXITED(ws)) {
+                    s->status = 1;
+                    s->exit_status = WEXITSTATUS(ws);
+                } else if (WIFSIGNALED(ws)) {
+                    s->status = 2;
+                    s->exit_status = WTERMSIG(ws);
+                }
+            }
+        }
+        break;
+    }
+    return 0;
 }
 
 int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
@@ -117,8 +249,8 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
     if (r != GHOSTTY_SUCCESS) return -1;
     if (s->pty_fd >= 0) {
         struct winsize ws = {
-            .ws_row  = (unsigned short)rows,
-            .ws_col  = (unsigned short)cols,
+            .ws_row    = (unsigned short)rows,
+            .ws_col    = (unsigned short)cols,
             .ws_xpixel = (unsigned short)size.pixel_width,
             .ws_ypixel = (unsigned short)size.pixel_height,
         };
@@ -296,21 +428,21 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         }
     }
 
-    snap->rows           = rows;
-    snap->cols           = cols;
-    snap->cursor_row     = cursor_row;
-    snap->cursor_col     = cursor_col;
-    snap->cursor_visible = cursor_visible;
-    snap->status         = s->status;
-    snap->exit_status    = s->exit_status;
-    snap->mouse_tracking = mouse_tracking;
+    snap->rows            = rows;
+    snap->cols            = cols;
+    snap->cursor_row      = cursor_row;
+    snap->cursor_col      = cursor_col;
+    snap->cursor_visible  = cursor_visible;
+    snap->status          = s->status;
+    snap->exit_status     = s->exit_status;
+    snap->mouse_tracking  = mouse_tracking;
     snap->focus_reporting = 0;
-    snap->dirty          = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
-    snap->title          = title_copy;
-    snap->utf8_storage   = utf8_storage;
+    snap->dirty           = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
+    snap->title           = title_copy;
+    snap->utf8_storage    = utf8_storage;
     snap->utf8_storage_len = utf8_used;
-    snap->cells          = cells;
-    snap->cell_count     = cell_count;
+    snap->cells           = cells;
+    snap->cell_count      = cell_count;
 
     *out_snapshot = snap;
     return 0;

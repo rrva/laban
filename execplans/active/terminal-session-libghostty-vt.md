@@ -61,16 +61,20 @@ The change is visible in two ways:
 - [x] Update `scripts/check` to call `./scripts/fetch-libghostty-vt` before
   `swift build` so missing artifacts produce a clear failure, not a cryptic one.
 - [x] Run `./scripts/check` and confirm it passes end to end.
-- [ ] Implement PTY byte feed in `laban_session_poll`: nonblocking `read` +
-  `ghostty_terminal_vt_write`. (deferred to PTY shard)
-- [ ] Implement `laban_session_write` PTY path: write bytes to PTY master fd.
-  (deferred to PTY shard)
-- [ ] Implement `laban_session_create` PTY path: `forkpty`, child exec, nonblocking
-  fd, ghostty_terminal_new. (deferred to PTY shard)
-- [ ] Add real-shell smoke test: run `/bin/sh -lc "printf 'ok\n'"`, poll until
-  exit, verify `ok` cell and exited status. (deferred to PTY shard)
-- [ ] Add forced-spawn-failure test: ensure partial init is cleaned up correctly.
-  (deferred to PTY shard)
+- [x] Implement PTY byte feed in `laban_session_poll`: nonblocking `read` +
+  `ghostty_terminal_vt_write`; treat EIO as PTY-closed; reap child with `waitpid(WNOHANG)`.
+- [x] Implement `laban_session_write` PTY path: write bytes to PTY master fd
+  (was already wired; verified in PTY shard).
+- [x] Implement `laban_session_create` PTY path: executable pre-flight via
+  `access(exe, X_OK)`, shared terminal/render-state allocation, `forkpty`,
+  child env setup + exec, parent sets `O_NONBLOCK` + initial `TIOCSWINSZ`.
+- [x] Add real-shell smoke test: run `/bin/sh -lc "printf 'ok\n'"`, poll until
+  exit, verify `ok` cell and exited status. (`testRealShellSmokeOkOutput` passes in 0.064s)
+- [x] Add forced-spawn-failure test: ensure partial init is cleaned up correctly.
+  (`testForcedSpawnFailureDoesNotLeak` passes; `access()` pre-flight returns -1
+  before any allocation.)
+- [x] Add PTY resize test: create PTY session, resize to 10×30, verify snapshot
+  reports rows=10, cols=30, cell_count=300. (`testPTYResizeSetsSize` passes)
 
 ## Decision Log
 
@@ -190,6 +194,28 @@ The change is visible in two ways:
   pass: create/poll/write/snapshot/destroy, resize, destroy-is-safe. `./scripts/check`
   exits 0. PTY lifecycle (`forkpty`, real shell, forced-spawn-failure) is deferred
   to the next shard.
+
+- Observation: macOS PTY EOF is `read() == -1 && errno == EIO`, not `n == 0`.
+  The slave side closing (child exits) sends EIO to the master reader. Treating
+  EIO as normal end-of-life and reaping via `waitpid(WNOHANG)` is the correct
+  macOS pattern. `n == 0` is also handled defensively.
+
+- Observation: `access(exe, X_OK)` pre-flight before `forkpty` is sufficient for
+  the forced-spawn-failure test. It returns -1 before any resources are allocated,
+  so there is nothing to leak. Post-fork exec-failure detection (self-pipe trick)
+  is out of scope.
+
+- Observation: Terminal and render-state objects are created in the parent BEFORE
+  `forkpty`, so they are never duplicated into the child and resource cleanup on
+  fork failure is straightforward.
+
+- Observation: `laban_session_destroy` must not block. Strategy: close PTY fd
+  (sends SIGHUP), `waitpid(WNOHANG)`, if alive send `SIGTERM` + loop 5×10ms
+  `WNOHANG`, then `SIGKILL` + blocking `waitpid`. Validated: shell sessions
+  started by tests exit before the SIGTERM loop fires.
+
+- Observation: Milestone 2 (PTY shard) fully validated. Six session tests pass
+  (3 fixture + 3 PTY). `./scripts/check` exits 0 with 11 total tests.
 
 ## Context and Orientation
 
@@ -752,15 +778,27 @@ Exits 0. The following named tests pass (✅ = validated 2026-05-03):
 ```
 ✅ Exits 0 with `check passed` (validated 2026-05-03).
 
-### Milestone 2 (PTY shard — deferred)
+### Milestone 2 (PTY shard — DONE)
 
-Tests deferred to the PTY shard:
+From the repo root (worktree):
 
-- `testRealShellSmokeOkOutput` — create session with `/bin/sh -lc "printf 'ok\n'"`,
-  poll in a loop (up to 2s wall clock), snapshot, verify the string `ok`
-  appears somewhere in the cell grid, verify `status == 1` (exited).
-- `testForcedSpawnFailureDoesNotLeak` — pass an invalid executable path to
-  `laban_session_create`, verify it returns -1 and does not leak.
+```sh
+swift test --filter LabanSessionTests
+```
+Exits 0. The following named tests pass (✅ = validated 2026-05-03):
+
+- ✅ `testFixtureCreatePollSnapshotDestroy` — fixture mode.
+- ✅ `testFixtureResizeChangesSize` — fixture mode.
+- ✅ `testFixtureSnapshotDestroyIsSafe` — fixture mode.
+- ✅ `testRealShellSmokeOkOutput` — PTY: `/bin/sh -lc "printf 'ok\n'"` exits with
+  status 1 and `ok` appears in the cell grid (0.064s).
+- ✅ `testForcedSpawnFailureDoesNotLeak` — invalid exe returns -1, nil session.
+- ✅ `testPTYResizeSetsSize` — PTY resize to 10×30, snapshot confirms rows/cols/cell_count.
+
+```sh
+./scripts/check
+```
+✅ Exits 0 with `check passed`, 11 tests total (validated 2026-05-03).
 
 ## Idempotence and Recovery
 
