@@ -138,6 +138,29 @@ plan as each shard lands.
   app/sidebar/terminal code may draw outside frame commands.
   Date/Author: 2026-05-03 / Codex.
 
+- Decision: Treat terminal output as hostile input and debug artifacts as
+  sensitive local data.
+  Rationale: Mature terminals gate or forbid terminal-initiated side effects
+  because bytes printed by a remote program may be attacker-controlled. The MVP
+  may accept bounded title updates, cell snapshots, cursor state, exit state,
+  and terminal mode state from libghostty-vt, but it must not let terminal
+  output trigger clipboard writes, file transfer, profile changes, app
+  commands, debug-server access, window automation, or network sharing. Debug
+  screenshots, logs, and state dumps may contain secrets, so they must remain
+  local, opt-in, bounded, and written only under the requested artifact
+  directory.
+  Date/Author: 2026-05-03 / Codex.
+
+- Decision: Preserve future structured-work and agent workflow hooks without
+  adding shell integration or AI UI to the MVP.
+  Rationale: Agent-oriented terminals benefit from stable work units, action
+  logs, and shareable context, but the MVP explicitly defers shell integration
+  markers and collaboration features. Stable tab/session IDs, bounded
+  snapshots, debug actions, input logs, frame commands, and artifact manifests
+  keep the path open for later command blocks or agent handoff without
+  compromising the first terminal app.
+  Date/Author: 2026-05-03 / Codex.
+
 ## Context and Orientation
 
 The repository currently contains product and process contracts but no runnable
@@ -170,6 +193,32 @@ Important source documents:
   native macOS text input must beat raw modifier interpretation; inherited
   `NO_COLOR` should not suppress interactive color; and stale C callback
   userdata must be avoided.
+- `docs/adr/0001-libghostty-vt-owns-vt-parsing.md` records the terminal-core
+  architecture: libghostty-vt owns VT parsing, `LabanTerminalCore` owns PTY and
+  child process lifecycle, Swift sees owned snapshots only, and the
+  libghostty-vt static archive is linked by full path.
+
+Research-informed guardrails for the MVP:
+
+- Terminal bytes are untrusted. Only bounded, explicitly modeled effects may
+  cross from terminal output into app state: title, cells, cursor, modes,
+  scrollback, exit status, and debug summaries. Clipboard writes, file transfer,
+  profile mutation, app commands, debug-server access, network sharing, and
+  terminal-driven window automation are out of scope.
+- Accessibility polish is deferred, but the custom terminal viewport must not
+  be an opaque bitmap forever. The first AppKit app milestone should leave an
+  explicit path for visible text, selection, cursor position, tab labels, and
+  exited state to be exposed through AppKit accessibility.
+- Debug artifacts are sensitive. Headless screenshots, terminal logs, input
+  logs, render traces, and state dumps stay local, opt-in, bounded, and under
+  isolated artifact directories. Any future sharing or collaboration feature
+  needs its own plan and privacy review.
+- Shell integration and command blocks are deferred. Do not inject OSC 133 or
+  shell wrappers in the MVP. Keep stable session IDs, action logs, frame
+  commands, and bounded snapshots so later structured work units can be added
+  without replacing the terminal core.
+- Keep terminfo conservative. Use `TERM=xterm-256color` unless the app installs
+  and manages a Laban-specific terminfo entry. Advertise truecolor separately.
 
 Definitions used in this plan:
 
@@ -511,6 +560,10 @@ Acceptance for this milestone:
 
 - Renderer unit tests draw colored rectangles and glyph runs into a bitmap and
   assert non-background pixels.
+- Renderer tests include a large-output or large-grid smoke case that records
+  command count and render timing as diagnostic output. This is not a benchmark
+  gate, but it prevents declaring the renderer viable from tiny screenshots
+  alone.
 - Metal skeleton tests clear a surface, consume a `rect` command, count/hash
   the command stream, and report unsupported `glyphRun`, `cursor`,
   `selection`, and `texturedQuad` commands as skipped.
@@ -549,14 +602,20 @@ Required UI behavior:
   text input receiver so layout-specific characters produced by Option chords
   are delivered as text rather than accidental Alt-modified key chords.
 - Paste reads text from the macOS clipboard and writes it to the active
-  terminal. If the active snapshot exposes bracketed paste mode later, wrap
-  paste then; otherwise write plain text.
+  terminal. Paste is text-only. If the active snapshot exposes bracketed paste
+  mode later, wrap paste then; otherwise write plain text. Do not implement
+  terminal-initiated clipboard read/write behavior, including OSC 52, in this
+  plan.
 - Basic visible-text selection and copy are implemented using visible terminal
   snapshot cells. It may be linear. It does not need semantic word expansion,
   search, or alternate-screen special behavior.
 - Wheel input scrolls scrollback when terminal mouse tracking is inactive and
   is sent to the terminal core when mouse tracking is active. No native
   draggable scrollbar is required in this plan.
+- The custom terminal view keeps enough model information to expose visible
+  text, selected text, cursor position, tab labels, and process-exited state to
+  AppKit accessibility in a follow-up without reverse-reading pixels. The full
+  accessibility pass remains outside this milestone.
 
 Acceptance for this milestone:
 
@@ -564,9 +623,14 @@ Acceptance for this milestone:
   window.
 - The window visibly displays shell output.
 - Typing into the window reaches the PTY exactly once.
+- An AppKit input test or debug trace proves an Option-produced character is
+  delivered as text and a handled Command shortcut is not delivered to the PTY.
 - Creating, selecting, and closing sidebar tabs does not restart hidden
   sessions.
 - Copy/paste work for visible selected text and text clipboard contents.
+- Mouse-routing checks prove sidebar clicks do not reach the PTY, local
+  selection is suppressed when terminal mouse tracking is active, and wheel
+  input scrolls scrollback when mouse tracking is inactive.
 
 ### Milestone 6: Add the headless harness and debug server
 
@@ -596,6 +660,9 @@ machine-readable readiness line:
 
 Bind the server only to loopback. Use port `0` by default in scripts and tests.
 Keep generated files under the requested artifact and temp directories.
+Debug output may include secrets from the terminal. Do not write artifacts
+outside the requested artifact directory, do not upload or share artifacts, and
+bound terminal buffers, input logs, render traces, errors, and screenshots.
 
 Phase 1 endpoints:
 
@@ -642,6 +709,9 @@ Acceptance for this milestone:
   bounded diagnostic state matching the checked-in schemas.
 - `POST /debug/render-trace` returns a bounded schema-compatible trace summary,
   even if deep per-pixel contributor provenance is still sparse.
+- Artifact output is local-only, opt-in through the run command, bounded, and
+  isolated under the run-specific artifact directory. A failed run records
+  enough state for diagnosis without writing outside that directory.
 
 ### Milestone 7: Add tests, scripts, and the local CI gate
 
@@ -682,6 +752,13 @@ The first E2E gate must:
    session, typed text appears exactly once, and frame commands contain
    terminal glyph output.
 10. Stop the launched process. Preserve artifacts on failure.
+11. Verify terminal-output safety fixtures: terminal output can update a
+    bounded title, but cannot trigger clipboard writes, file transfer, app
+    commands, debug-server requests, or artifact writes outside the run
+    directory.
+12. Verify input and mouse fixtures: Option-produced text reaches the PTY as
+    text, handled Command shortcuts do not leak to the PTY, sidebar clicks are
+    consumed by the sidebar, and mouse tracking changes wheel routing.
 
 Acceptance for this milestone:
 
@@ -692,6 +769,9 @@ Acceptance for this milestone:
   state, sessions, render state, frame commands, events/errors when available,
   screenshot metadata, stdout, stderr, and a manifest matching
   `schemas/artifact-manifest.schema.json`.
+- Fixture coverage includes colors, box drawing, resize, title bounding, exit
+  state, text-only paste, terminal mouse tracking, scrollback, app shortcut
+  consumption, and terminal-output side-effect denial.
 
 ## Concrete Steps
 
@@ -776,6 +856,20 @@ This ExecPlan is complete only when all of these are true:
   and box-drawing glyphs without replacement glyphs.
 - A controlled real-shell smoke test runs without user dotfiles or prompt
   assumptions.
+- Terminal-output safety is enforced: hostile terminal bytes cannot trigger
+  clipboard writes, file transfer, profile changes, app commands, debug-server
+  requests, network sharing, or writes outside the run artifact directory.
+- Native macOS input behavior is verified: application shortcuts are consumed
+  before terminal input, Option-produced text is delivered as text, and no
+  hand-written terminal key escape table bypasses libghostty-vt state.
+- Mouse routing is verified: sidebar pointer input is consumed by the sidebar,
+  terminal mouse tracking routes events to the terminal app, and normal-mode
+  wheel input scrolls scrollback.
+- The first AppKit terminal view keeps model access for visible text,
+  selection, cursor position, tab labels, and process-exited state so platform
+  accessibility can be added without reverse-engineering rendered pixels.
+- Debug and headless artifacts are local-only, opt-in, bounded, isolated per
+  run, and treated as sensitive.
 - `./scripts/test-e2e` launches headless, creates a tab, types text, renders a
   screenshot, and inspects state.
 - `./scripts/check` exits 0.
@@ -815,6 +909,11 @@ for the first pass:
   signal/reap behavior.
 - libghostty: terminal parsing/state, render state, terminal key encoder, and
   terminal mouse encoder.
+
+The MVP environment defaults are conservative. The child shell should receive
+`TERM=xterm-256color` and `COLORTERM=truecolor`; do not advertise a
+Laban-specific terminal name unless the app also installs and manages matching
+terminfo.
 
 The C ABI must keep all libghostty and PTY ownership behind
 `LabanTerminalCore.h`. Swift may hold opaque `LabanSession` pointers only
@@ -857,6 +956,18 @@ be run from a clean working tree and produce the expected result.
   has source `terminal`.
 - [ ] Post a minimal render-trace request to `/debug/render-trace`; validate
   the response against `schemas/debug/render-trace.schema.json`.
+- [ ] Run the terminal-output safety fixture; expect bounded title updates to
+  work and expect terminal output not to trigger clipboard writes, app
+  commands, debug-server requests, file transfer, or artifact writes outside
+  the run directory.
+- [ ] Run the AppKit input fixture or debug trace; expect an Option-produced
+  character to reach the PTY as text and a handled Command shortcut to produce
+  no PTY input.
+- [ ] Run the mouse-routing fixture; expect sidebar clicks to be consumed,
+  terminal mouse tracking to route wheel events to the terminal app, and
+  normal-mode wheel input to scroll scrollback.
+- [ ] Inspect the run artifact manifest; expect every generated file path to be
+  under the run-specific artifact directory.
 
 ## Surprises & Discoveries
 
