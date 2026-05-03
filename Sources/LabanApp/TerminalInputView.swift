@@ -1,6 +1,63 @@
 import AppKit
 
 struct TerminalKeyEncoder {
+  static let tabBytes: [UInt8] = [0x09]
+  static let backtabBytes: [UInt8] = [0x1B, 0x5B, 0x5A]
+
+  static func bytes(
+    forControlModifiedCharacters characters: String?,
+    charactersIgnoringModifiers: String?,
+    modifierFlags: NSEvent.ModifierFlags
+  ) -> [UInt8]? {
+    let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.contains(.control),
+      !flags.contains(.command),
+      !flags.contains(.option)
+    else { return nil }
+
+    if let scalar = singleScalar(in: characters) {
+      let v = scalar.value
+      if (v > 0 && v < 0x20) || v == 0x7F {
+        return [UInt8(v)]
+      }
+    }
+
+    guard let scalar = singleScalar(in: charactersIgnoringModifiers) else { return nil }
+    let v = scalar.value
+    switch v {
+    case 0x41...0x5A: return [UInt8(v - 0x40)]  // Ctrl-A through Ctrl-Z.
+    case 0x61...0x7A: return [UInt8(v - 0x60)]
+    case 0x20, 0x40: return [0x00]  // Ctrl-Space / Ctrl-@.
+    case 0x5B: return [0x1B]  // Ctrl-[.
+    case 0x5C: return [0x1C]  // Ctrl-\.
+    case 0x5D: return [0x1D]  // Ctrl-].
+    case 0x5E: return [0x1E]  // Ctrl-^.
+    case 0x5F: return [0x1F]  // Ctrl-_.
+    case 0x3F: return [0x7F]  // Ctrl-?.
+    default: return nil
+    }
+  }
+
+  static func bytes(
+    forOptionMetaCharactersIgnoringModifiers charactersIgnoringModifiers: String?,
+    modifierFlags: NSEvent.ModifierFlags
+  ) -> [UInt8]? {
+    let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.contains(.option),
+      !flags.contains(.command),
+      !flags.contains(.control),
+      let scalar = singleScalar(in: charactersIgnoringModifiers)
+    else { return nil }
+
+    let v = scalar.value
+    switch v {
+    case 0x41...0x5A, 0x61...0x7A:
+      return [0x1B, UInt8(v)]
+    default:
+      return nil
+    }
+  }
+
   static func bytes(forFunctionKeyScalar scalar: Int) -> [UInt8]? {
     switch scalar {
     case NSUpArrowFunctionKey: return [0x1B, 0x5B, 0x41]
@@ -26,5 +83,10 @@ struct TerminalKeyEncoder {
     case NSF12FunctionKey: return [0x1B, 0x5B, 0x32, 0x34, 0x7E]
     default: return nil
     }
+  }
+
+  private static func singleScalar(in text: String?) -> UnicodeScalar? {
+    guard let text, text.unicodeScalars.count == 1 else { return nil }
+    return text.unicodeScalars.first
   }
 }

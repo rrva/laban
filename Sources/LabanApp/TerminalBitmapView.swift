@@ -171,6 +171,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         }
       }
     }
+    if let bytes = TerminalKeyEncoder.bytes(
+      forControlModifiedCharacters: event.characters,
+      charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+      modifierFlags: event.modifierFlags)
+    {
+      sendBytes(bytes)
+      return
+    }
+    if let bytes = TerminalKeyEncoder.bytes(
+      forOptionMetaCharactersIgnoringModifiers: event.charactersIgnoringModifiers,
+      modifierFlags: event.modifierFlags)
+    {
+      sendBytes(bytes)
+      return
+    }
     interpretKeyEvents([event])
   }
 
@@ -216,7 +231,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     case #selector(insertNewline(_:)): sendBytes([0x0D])
     case #selector(deleteBackward(_:)): sendBytes([0x7F])
     case #selector(cancelOperation(_:)): sendBytes([0x1B])
-    case #selector(insertTab(_:)): sendBytes([0x09])
+    case #selector(insertTab(_:)): sendBytes(TerminalKeyEncoder.tabBytes)
+    case #selector(insertBacktab(_:)): sendBytes(TerminalKeyEncoder.backtabBytes)
     default: break
     }
   }

@@ -64,5 +64,9 @@ let package = Package(
       name: "LabanDebugTests",
       dependencies: ["LabanDebug"]
     ),
+    .testTarget(
+      name: "LabanAppTests",
+      dependencies: ["LabanApp"]
+    ),
   ]
 )
