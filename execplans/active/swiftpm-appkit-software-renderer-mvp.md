@@ -81,6 +81,9 @@ plan as each shard lands.
   - SidebarProducer has 10 unit tests; all 47 suite tests pass.
 - [x] Add the `laban-agent` headless executable using the same app state and
   renderer.
+- [ ] Sharpen AppKit bitmap presentation by making renderer surfaces
+  backing-scale aware before debug-server screenshots become a baseline.
+  Shard: `execplans/active/appkit-backing-scale-text-crispness.md`.
 - [ ] Add the debug server phase 1 endpoints:
   `/debug/health`, `/debug/state`, `/debug/screenshot`, and `/debug/actions`.
 - [ ] Add debug server phase 2 endpoints:
