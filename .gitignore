@@ -2,6 +2,7 @@
 .external/
 .artifacts/
 .tmp/
+.env
 .claude/worktrees/
 compile_commands.json
 *.o
