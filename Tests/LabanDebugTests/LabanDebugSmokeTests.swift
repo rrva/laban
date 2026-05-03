@@ -118,6 +118,35 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(tabs.count, 2)
   }
 
+  func testRuntimeAdvanceFramesRendersEachRequestedFrame() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-advance-frames"
+    )
+
+    let initialHealth = runtime.health()
+    let initialObj = try JSONSerialization.jsonObject(with: initialHealth.body) as! [String: Any]
+    let initialFrame = initialObj["frame"] as! Int
+
+    let body = #"{"action":"advanceFrames","count":3}"#.data(using: .utf8)!
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+    XCTAssertEqual(obj["frame"] as? Int, initialFrame + 3)
+
+    let finalHealth = runtime.health()
+    let finalObj = try JSONSerialization.jsonObject(with: finalHealth.body) as! [String: Any]
+    XCTAssertEqual(finalObj["frame"] as? Int, initialFrame + 3)
+  }
+
   func testRuntimeFrameCommandsHasCommands() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
