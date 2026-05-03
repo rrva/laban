@@ -29,14 +29,20 @@ native pixel density. This should happen before the debug server work so future
 - [x] (2026-05-03) Chose to do backing-scale correctness before debug-server
   screenshot endpoints, so screenshots and render probes do not bake in the
   wrong raster model.
-- [ ] Add scale-aware bitmap surface allocation and renderer transforms.
-- [ ] Update AppKit surface ownership so resize and backing-scale changes
-  recreate the surface at physical pixel dimensions.
-- [ ] Keep headless fixture rendering deterministic at scale 1 unless an
-  explicit scale is requested later by the debug-server plan.
-- [ ] Add renderer tests that prove scaled drawing affects the expected
-  physical pixels and still produces glyph pixels.
-- [ ] Run the full local verification commands and record results here.
+- [x] (2026-05-03) Add scale-aware bitmap surface allocation and renderer
+  transforms (`BitmapSurface.scale`, `logicalWidth/Height/Size` helpers;
+  `SoftwareRenderer.render` applies `ctx.scaleBy` around command loop).
+- [x] (2026-05-03) Update AppKit surface ownership so resize and
+  backing-scale changes recreate the surface at physical pixel dimensions
+  (`TerminalBitmapView.recreateSurface()` called from `viewDidMoveToWindow`,
+  `setFrameSize`, `viewDidChangeBackingProperties`; `MainWindowController`
+  no longer creates a surface).
+- [x] (2026-05-03) Headless fixture rendering stays at scale 1 — all
+  existing callers use `BitmapSurface(width:height:)` with the default.
+- [x] (2026-05-03) Renderer tests added: `testBitmapSurfaceLogicalSizeHelpers`,
+  `testScaledRectPaintsCorrectPhysicalPixels`, `testScaledGlyphProducesNonBackgroundPixels`.
+- [x] (2026-05-03) Full verification passed: `swift test --filter LabanRendererSmokeTests`
+  (13/13), `./scripts/check` → `check passed`.
 
 ## Decision Log
 
@@ -222,6 +228,8 @@ The exact antialiasing style may still be improved later, but the bitmap
 dimensions should now match the screen's native pixel density.
 
 ## Validation and Acceptance
+
+**Status: complete as of 2026-05-03.** All criteria verified.
 
 This ExecPlan is complete when all of the following are true:
 

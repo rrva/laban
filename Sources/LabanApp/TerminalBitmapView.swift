@@ -27,20 +27,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
 
+  // Tracks last surface dimensions to avoid redundant reallocations
+  private var lastPixelWidth: Int = 0
+  private var lastPixelHeight: Int = 0
+  private var lastSurfaceScale: CGFloat = 0
+
   init(
     model: AppModel,
     fontAtlas: FontAtlas,
-    surface: BitmapSurface,
-    renderer: SoftwareRenderer,
     cellWidth: Int,
     cellHeight: Int
   ) {
     self.model = model
     self.fontAtlas = fontAtlas
-    self.surface = surface
-    self.renderer = renderer
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
+    let placeholder = BitmapSurface(width: 1, height: 1)
+    self.surface = placeholder
+    self.renderer = SoftwareRenderer(surface: placeholder, fontAtlas: fontAtlas)
     super.init(frame: .zero)
   }
 
@@ -53,6 +57,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       frameTimer = nil
       return
     }
+    recreateSurface()
     let timer = Timer(
       timeInterval: 1.0 / 30.0,
       target: self,
@@ -63,6 +68,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     RunLoop.current.add(timer, forMode: .common)
     frameTimer = timer
     window?.makeFirstResponder(self)
+  }
+
+  override func viewDidChangeBackingProperties() {
+    super.viewDidChangeBackingProperties()
+    recreateSurface()
+  }
+
+  private func recreateSurface() {
+    let scale = window?.backingScaleFactor ?? 1.0
+    let pixW = max(1, Int(ceil(bounds.width * scale)))
+    let pixH = max(1, Int(ceil(bounds.height * scale)))
+    guard pixW != lastPixelWidth || pixH != lastPixelHeight || scale != lastSurfaceScale else {
+      return
+    }
+    lastPixelWidth = pixW
+    lastPixelHeight = pixH
+    lastSurfaceScale = scale
+    surface = BitmapSurface(width: pixW, height: pixH, scale: scale)
+    renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
   }
 
   // MARK: - Frame loop
@@ -125,8 +149,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let w = Int(newSize.width)
     let h = Int(newSize.height)
     guard w > 0, h > 0 else { return }
-    surface = BitmapSurface(width: w, height: h)
-    renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+    recreateSurface()
     let termW = max(1, w - Int(sidebarWidth))
     model.resize(
       viewportWidth: termW, viewportHeight: h, cellWidth: cellWidth, cellHeight: cellHeight)
