@@ -42,7 +42,7 @@ let package = Package(
     ),
     .executableTarget(
       name: "LabanApp",
-      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug"]
+      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore"]
     ),
     .executableTarget(
       name: "LabanAgent",

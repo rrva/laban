@@ -1,15 +1,15 @@
 import Foundation
 import LabanTerminalCore
 
-final class AppModel {
-  static let maxTabs = 9
+public final class AppModel {
+  public static let maxTabs = 9
 
-  private(set) var tabs: [Tab] = []
+  public private(set) var tabs: [Tab] = []
   private var sessions: [Session.ID: Session] = [:]
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
 
-  init(
+  public init(
     initialSize: LabanTerminalSize = defaultSize(),
     sessionFactory: @escaping (LabanTerminalSize) throws -> Session = { size in
       try Session.fixture(size: size)
@@ -29,15 +29,15 @@ final class AppModel {
     tabs.append(tab)
   }
 
-  var activeTab: Tab? { tabs.first(where: { $0.isActive }) }
+  public var activeTab: Tab? { tabs.first(where: { $0.isActive }) }
 
-  func session(forTab tabId: Tab.ID) -> Session? {
+  public func session(forTab tabId: Tab.ID) -> Session? {
     guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
     return sessions[tab.sessionId]
   }
 
   @discardableResult
-  func createTab() throws -> Tab {
+  public func createTab() throws -> Tab {
     guard tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
     let session = try sessionFactory(currentSize)
     let position = tabs.count + 1
@@ -55,13 +55,13 @@ final class AppModel {
     return tabs.last!
   }
 
-  func selectTab(_ tabId: Tab.ID) {
+  public func selectTab(_ tabId: Tab.ID) {
     for i in tabs.indices {
       tabs[i].isActive = (tabs[i].id == tabId)
     }
   }
 
-  func closeTab(_ tabId: Tab.ID) throws {
+  public func closeTab(_ tabId: Tab.ID) throws {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
       throw AppError.tabNotFound
     }
@@ -101,14 +101,14 @@ final class AppModel {
     }
   }
 
-  func updateTitle(_ title: String, forTab tabId: Tab.ID) throws {
+  public func updateTitle(_ title: String, forTab tabId: Tab.ID) throws {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
       throw AppError.tabNotFound
     }
     tabs[idx].title = title
   }
 
-  func resize(viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int) {
+  public func resize(viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int) {
     let rows = Int32(max(1, viewportHeight / cellHeight))
     let cols = Int32(max(1, viewportWidth / cellWidth))
     var size = LabanTerminalSize()
@@ -121,7 +121,8 @@ final class AppModel {
   }
 }
 
-private func defaultSize() -> LabanTerminalSize {
+@usableFromInline
+func defaultSize() -> LabanTerminalSize {
   var s = LabanTerminalSize()
   s.rows = 24
   s.cols = 80

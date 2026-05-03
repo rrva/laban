@@ -1,0 +1,66 @@
+import AppKit
+
+enum MenuCommands {
+  static func setupMenuBar() {
+    let mainMenu = NSMenu()
+
+    // App menu (first slot, shown as app name)
+    let appItem = NSMenuItem()
+    mainMenu.addItem(appItem)
+    let appMenu = NSMenu()
+    appItem.submenu = appMenu
+    appMenu.addItem(
+      withTitle: "Quit Laban",
+      action: #selector(NSApplication.terminate(_:)),
+      keyEquivalent: "q"
+    )
+
+    // File menu — tab lifecycle
+    let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+    mainMenu.addItem(fileItem)
+    let fileMenu = NSMenu(title: "File")
+    fileItem.submenu = fileMenu
+
+    fileMenu.addItem(
+      NSMenuItem(
+        title: "New Tab",
+        action: #selector(TerminalBitmapView.newTab(_:)),
+        keyEquivalent: "t"
+      ))
+    fileMenu.addItem(
+      NSMenuItem(
+        title: "Close Tab",
+        action: #selector(TerminalBitmapView.closeTab(_:)),
+        keyEquivalent: "w"
+      ))
+
+    // Edit menu — clipboard
+    let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+    mainMenu.addItem(editItem)
+    let editMenu = NSMenu(title: "Edit")
+    editItem.submenu = editMenu
+
+    editMenu.addItem(
+      NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+    editMenu.addItem(
+      NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+
+    // Tab-select menu — Cmd+1…9
+    let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")
+    mainMenu.addItem(tabItem)
+    let tabMenu = NSMenu(title: "Tab")
+    tabItem.submenu = tabMenu
+
+    for i in 1...9 {
+      let item = NSMenuItem(
+        title: "Select Tab \(i)",
+        action: #selector(TerminalBitmapView.selectTabByIndex(_:)),
+        keyEquivalent: "\(i)"
+      )
+      item.tag = i
+      tabMenu.addItem(item)
+    }
+
+    NSApp.mainMenu = mainMenu
+  }
+}

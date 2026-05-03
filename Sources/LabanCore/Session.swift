@@ -1,18 +1,18 @@
 import Foundation
 import LabanTerminalCore
 
-enum SessionError: Error {
+public enum SessionError: Error {
   case createFailed
 }
 
-final class Session {
-  typealias ID = String
+public final class Session {
+  public typealias ID = String
 
-  let id: ID
+  public let id: ID
   private var handle: OpaquePointer?
-  private(set) var isClosed = false
+  public private(set) var isClosed = false
 
-  init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
+  public init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
     self.id = UUID().uuidString
     var h: OpaquePointer?
     guard laban_session_create(&config, size, &h) == 0, let h else {
@@ -21,13 +21,19 @@ final class Session {
     self.handle = h
   }
 
-  static func fixture(size: LabanTerminalSize) throws -> Session {
+  public static func fixture(size: LabanTerminalSize) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 1
     return try Session(config: &config, size: size)
   }
 
-  func close() {
+  public static func realShell(size: LabanTerminalSize) throws -> Session {
+    var config = LabanLaunchConfig()
+    config.fixture_mode = 0
+    return try Session(config: &config, size: size)
+  }
+
+  public func close() {
     guard !isClosed else { return }
     isClosed = true
     if let h = handle {
@@ -39,19 +45,19 @@ final class Session {
   deinit { close() }
 
   @discardableResult
-  func poll() -> Int32 {
+  public func poll() -> Int32 {
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_poll(h)
   }
 
   @discardableResult
-  func resize(_ size: LabanTerminalSize) -> Int32 {
+  public func resize(_ size: LabanTerminalSize) -> Int32 {
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_resize(h, size)
   }
 
   @discardableResult
-  func write(_ bytes: [UInt8]) -> Int32 {
+  public func write(_ bytes: [UInt8]) -> Int32 {
     guard !isClosed, let h = handle else { return -1 }
     if bytes.isEmpty { return 0 }
     return bytes.withUnsafeBytes { buf in
@@ -59,7 +65,7 @@ final class Session {
     }
   }
 
-  func snapshot() -> UnsafeMutablePointer<LabanSnapshot>? {
+  public func snapshot() -> UnsafeMutablePointer<LabanSnapshot>? {
     guard !isClosed, let h = handle else { return nil }
     var snap: UnsafeMutablePointer<LabanSnapshot>?
     guard laban_session_snapshot(h, &snap) == 0 else { return nil }

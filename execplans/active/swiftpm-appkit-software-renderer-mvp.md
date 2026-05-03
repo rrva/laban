@@ -71,9 +71,14 @@ plan as each shard lands.
 - [x] Add Swift app state for one window, max nine tabs, stable tab/session IDs,
   session lifecycle, selection fallback, and final-tab replacement.
 - [x] Add the frame-command model and deterministic software bitmap renderer.
-- [ ] Add the AppKit executable with one window, custom left sidebar, bitmap
+- [x] Add the AppKit executable with one window, custom left sidebar, bitmap
   terminal view, fixed JetBrains Mono, fixed Selenized Light, keyboard input,
   and basic copy/paste.
+  - Added `Session.realShell()`, made AppModel/Session/Tab/AppError public.
+  - New files: SidebarProducer (LabanCore), TerminalBitmapView, MainWindowController,
+    AppDelegate, MenuCommands, TerminalInputView, SidebarView (LabanApp).
+  - LABAN_SMOKE=1 exits 0 before session creation.
+  - SidebarProducer has 10 unit tests; all 47 suite tests pass.
 - [ ] Add the `laban-agent` headless executable using the same app state and
   renderer.
 - [ ] Add the debug server phase 1 endpoints:
