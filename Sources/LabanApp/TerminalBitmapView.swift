@@ -435,8 +435,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     {
       let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
+      guard let button = TerminalMouseInput.trackedTerminalButton(
+        trackedMouseButton,
+        matching: .left
+      ) else {
+        return
+      }
       let geom = terminalMouseGeometry(at: pt)
-      let button = trackedMouseButton == .none ? MouseButton.left : trackedMouseButton
       let motionEvent = MouseEvent(
         action: .motion,
         button: button,
@@ -462,11 +467,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
+      guard let button = TerminalMouseInput.trackedTerminalButton(
+        trackedMouseButton,
+        matching: .left
+      ) else {
+        return
+      }
       let pt = convert(event.locationInWindow, from: nil)
       let geom = terminalMouseGeometry(at: pt)
       let releaseEvent = MouseEvent(
         action: .release,
-        button: .left,
+        button: button,
         x: geom.x, y: geom.y,
         screenWidth: geom.screenWidth,
         screenHeight: geom.screenHeight,
@@ -522,10 +533,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     {
       let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
+      guard let button = TerminalMouseInput.trackedTerminalButton(
+        trackedMouseButton,
+        matching: .right
+      ) else {
+        return
+      }
       let geom = terminalMouseGeometry(at: pt)
       let motionEvent = MouseEvent(
         action: .motion,
-        button: .right,
+        button: button,
         x: geom.x, y: geom.y,
         screenWidth: geom.screenWidth,
         screenHeight: geom.screenHeight,
@@ -544,11 +561,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
+      guard let button = TerminalMouseInput.trackedTerminalButton(
+        trackedMouseButton,
+        matching: .right
+      ) else {
+        return
+      }
       let pt = convert(event.locationInWindow, from: nil)
       let geom = terminalMouseGeometry(at: pt)
       let releaseEvent = MouseEvent(
         action: .release,
-        button: .right,
+        button: button,
         x: geom.x, y: geom.y,
         screenWidth: geom.screenWidth,
         screenHeight: geom.screenHeight,
@@ -652,5 +675,12 @@ enum TerminalMouseInput {
     if modifierFlags.contains(.option) { m |= 4 }
     if modifierFlags.contains(.command) { m |= 8 }
     return m
+  }
+
+  static func trackedTerminalButton(
+    _ trackedButton: MouseButton,
+    matching expectedButton: MouseButton
+  ) -> MouseButton? {
+    trackedButton == expectedButton ? trackedButton : nil
   }
 }
