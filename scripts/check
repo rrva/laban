@@ -35,6 +35,7 @@ if [ -f Package.swift ]; then
   swift build
   swift test
   ./scripts/build-app
+  ./scripts/smoke-runtime
 fi
 
 printf 'check passed\n'

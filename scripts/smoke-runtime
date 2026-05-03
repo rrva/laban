@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# Runtime smoke checks: agent output, plist validity, binary permissions, AppKit startup.
+# Assumes swift build and ./scripts/build-app have already run.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+fail() {
+  printf 'smoke-runtime failed: %s\n' "$1" >&2
+  exit 1
+}
+
+AGENT_BIN=".build/debug/laban-agent"
+APP_BIN=".build/laban/Laban.app/Contents/MacOS/LabanApp"
+PLIST=".build/laban/Laban.app/Contents/Info.plist"
+EXPECTED_AGENT="laban-agent: placeholder, headless mode not yet implemented"
+
+[ -x "$AGENT_BIN" ] || fail "$AGENT_BIN not found; run swift build first"
+[ -x "$APP_BIN" ]   || fail "$APP_BIN not executable; run ./scripts/build-app first"
+
+# 1. Exact agent output
+actual=$("$AGENT_BIN")
+[ "$actual" = "$EXPECTED_AGENT" ] || fail "laban-agent output mismatch
+  expected: ${EXPECTED_AGENT}
+  got:      ${actual}"
+
+# 2. Info.plist validity
+plutil -lint "$PLIST" || fail "Info.plist lint failed"
+
+# 3. Binary executable bit (belt-and-suspenders)
+[ -x "$APP_BIN" ] || fail "$APP_BIN is not executable"
+
+# 4. AppKit smoke startup: create window, exit 0
+LABAN_SMOKE=1 "$APP_BIN" || fail "LabanApp smoke startup exited non-zero"
+
+printf 'smoke-runtime passed\n'

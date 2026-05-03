@@ -1,5 +1,9 @@
 import AppKit
 
+private let smokeMode =
+    ProcessInfo.processInfo.environment["LABAN_SMOKE"] == "1" ||
+    CommandLine.arguments.contains("--smoke")
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
 
@@ -11,15 +15,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.center()
         win.makeKeyAndOrderFront(nil)
         window = win
+
+        if smokeMode {
+            DispatchQueue.main.async { NSApplication.shared.terminate(nil) }
+        }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
-    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.regular)
+app.setActivationPolicy(smokeMode ? .prohibited : .regular)
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
