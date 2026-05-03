@@ -42,6 +42,13 @@ prove the build shape before deeper terminal behavior is written.
 - [x] Add or update stable scripts needed for this shard, including
   `scripts/test` and `scripts/check`.
 - [x] Run validation commands and update this plan with any discoveries.
+- [x] Add `scripts/smoke-runtime` with checks for agent placeholder output, plist
+  validity, app executable bit, and AppKit smoke startup via `LABAN_SMOKE=1`.
+- [x] Add `--smoke`/`LABAN_SMOKE=1` exit path to `Sources/LabanApp/main.swift`
+  so the app initializes AppKit, prints nothing to stdout, and exits 0.
+- [x] Wire `scripts/check` to call `scripts/smoke-runtime` after
+  `scripts/build-app`.
+- [x] Run `./scripts/smoke-runtime` and `./scripts/check`; both exit 0.
 
 ## Decision Log
 
@@ -222,6 +229,7 @@ SwiftPM checks for this shard once `Package.swift` exists:
 swift build
 swift test
 ./scripts/build-app
+./scripts/smoke-runtime
 ```
 
 Keep JSON validation, `AGENTS.md` size enforcement, active ExecPlan section
@@ -277,6 +285,11 @@ This shard is complete when:
 - The generated app executable is executable.
 - `./scripts/test` exits 0.
 - `./scripts/check` exits 0.
+- `./scripts/smoke-runtime` exits 0 with message `smoke-runtime passed`.
+- `LABAN_SMOKE=1 .build/laban/Laban.app/Contents/MacOS/LabanApp` exits 0
+  without opening a persistent window.
+- `.build/debug/laban-agent` prints exactly
+  `laban-agent: placeholder, headless mode not yet implemented`.
 - No Metal, renderer, debug server, PTY lifecycle, or fake terminal behavior is
   introduced in this shard.
 
@@ -403,6 +416,7 @@ These are mechanical checks for a fresh agent or automation runner:
   libghostty.
 - [x] Confirm this plan has a `libghostty Probe Results` section with source
   URL, pin, local path, headers, discovered symbols, and link/build status.
+- [x] Run `./scripts/smoke-runtime`; expect exit 0 and `smoke-runtime passed`.
 
 ## Surprises & Discoveries
 
@@ -427,3 +441,15 @@ These are mechanical checks for a fresh agent or automation runner:
   v1.3.1 it takes `(uintptr_t argc, char** argv)` rather than `void`. The
   runtime callbacks struct also changed: `ghostty_runtime_read_clipboard_cb`
   now returns `bool` instead of `void`.
+
+- Discovery: The `.app` bundle must carry an ad-hoc `codesign` signature before
+  `LABAN_SMOKE=1` can execute it on Apple Silicon. `cp` into the bundle strips
+  the code signature from the SwiftPM-built binary; running an unsigned bundle
+  from the command line fails with a `Killed: 9` on Apple Silicon with SIP
+  active. Fix: `codesign --force --sign - .build/laban/Laban.app` added to the
+  end of `scripts/build-app`.
+
+- Discovery: `NSApplication.shared.setActivationPolicy(.prohibited)` must be
+  called before `app.run()` in smoke mode. Without it, the smoke startup causes
+  a Dock icon to appear and the app enters the app-switcher, which is unexpected
+  during automated checks. `.prohibited` prevents both.
