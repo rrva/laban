@@ -117,6 +117,81 @@ final class FrameProducerTests: XCTestCase {
     }
   }
 
+  // MARK: - Block-element procedural rendering
+
+  func testBlockElementsAreEmittedAsRectsNotGlyphs() throws {
+    // Block elements (U+2580–U+259F) must be emitted as procedural .rect
+    // commands so they tile gap-free regardless of font glyph metrics. This
+    // keeps the renderer abstraction backend-agnostic.
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("████ ▘▝▖▗".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
+
+    let glyphTexts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, let src) = cmd, src == .terminal { return text }
+      return nil
+    }
+    let allGlyphText = glyphTexts.joined()
+    for scalar in "████▘▝▖▗".unicodeScalars {
+      XCTAssertFalse(
+        allGlyphText.unicodeScalars.contains(scalar),
+        "block element U+\(String(scalar.value, radix: 16, uppercase: true)) "
+          + "must be emitted as .rect, not glyph text")
+    }
+  }
+
+  func testFullBlockRunRendersGapFreeEndToEnd() throws {
+    // End-to-end: a row of █ characters rendered through producer + software
+    // renderer must completely cover its row of cells with no background
+    // pixel surviving. This is the precise predicate behind the visible
+    // hairline-gap bug.
+    var size = LabanTerminalSize()
+    size.rows = 1
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    let cols = 6
+    session.write(Array(String(repeating: "█", count: cols).utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cellW = 8
+    let cellH = 16
+    let surface = BitmapSurface(width: cellW * Int(size.cols), height: cellH)
+    let bg = snap.pointee.default_background_rgba
+    let renderer = SoftwareRenderer(surface: surface, fontAtlas: FontAtlas())
+    let producer = FrameProducer(cellWidth: cellW, cellHeight: cellH)
+    renderer.render(producer.commands(from: UnsafePointer(snap)))
+
+    for y in 0..<cellH {
+      for x in 0..<(cellW * cols) {
+        if let p = surface.pixel(x: x, y: y), p == bg {
+          XCTFail("background pixel survived at (\(x),\(y)) — full blocks must tile gap-free")
+          return
+        }
+      }
+    }
+  }
+
   // MARK: - Command structure
 
   func testFrameProducerIncludesBackgroundRectAndCursor() throws {
