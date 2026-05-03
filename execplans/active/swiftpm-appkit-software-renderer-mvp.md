@@ -18,16 +18,22 @@ The first milestone is intentionally not a polished terminal. It is the
 smallest credible implementation shape: SwiftPM, AppKit, a C terminal core
 wrapping libghostty and PTY ownership, Swift app state, software bitmap
 rendering, local debug endpoints, fixture-driven headless verification, and a
-developer-only `.app` bundle. Metal, Xcode project polish, preferences, tab
-drag/drop, real scrollbars, accessibility polish, signing, notarization, and
-packaging are deferred.
+developer-only `.app` bundle. Production Metal rendering, Xcode project polish,
+preferences, tab drag/drop, real scrollbars, accessibility polish, signing,
+notarization, and packaging are deferred.
+
+This is the umbrella plan for the full first runnable terminal milestone. Do
+not hand the whole document to an execution agent as one coding task. Start
+with the smaller first shard in
+`execplans/active/swiftpm-libghostty-skeleton.md`, then update this umbrella
+plan as each shard lands.
 
 ## Progress
 
 - [x] Read repository guide documents: `AGENTS.md`, `README.md`, `PLANS.md`,
   `docs/README.md`, `execplans/README.md`, `execplans/active/README.md`,
   `execplans/completed/README.md`, and
-  `execplans/active/choose-implementation.md`.
+  `execplans/completed/choose-implementation.md`.
 - [x] Read product documents: `docs/product/mvp.md` and
   `docs/product/spec.md`.
 - [x] Read process and reference documents:
@@ -44,6 +50,8 @@ packaging are deferred.
 - [x] Record the user-selected stack: SwiftPM, AppKit, C libghostty terminal
   core, software renderer first, local `.app` only.
 - [x] Create this active ExecPlan.
+- [x] Add the first execution shard at
+  `execplans/active/swiftpm-libghostty-skeleton.md`.
 - [ ] Pin and prove the libghostty dependency and update this plan with the
   exact source location, version, headers, and build/link command discovered.
 - [ ] Add the SwiftPM package skeleton and target boundaries.
@@ -79,11 +87,14 @@ packaging are deferred.
   a local developer `.app` until production packaging matters.
   Date/Author: 2026-05-03 / Codex.
 
-- Decision: Implement the software renderer before Metal.
-  Rationale: The user explicitly selected this strategic compromise. A CPU
-  bitmap renderer gives visible AppKit output, headless screenshots, and CI
-  verification earlier. The frame-command language remains the backend
-  contract so Metal can replace or sit beside the software backend later.
+- Decision: Make the software renderer the first complete backend, and allow a
+  constrained Metal skeleton when `LabanRenderer` is introduced.
+  Rationale: The user explicitly selected software rendering as the strategic
+  compromise for visible AppKit output, headless screenshots, and CI
+  verification. A Metal skeleton still helps keep the backend seam honest if it
+  is limited to clearing, consuming `rect` commands, counting/hashing command
+  streams, and reporting skipped unsupported commands. CI gates the software
+  backend; local smoke may exercise Metal.
   Date/Author: 2026-05-03 / Codex.
 
 - Decision: Keep terminal emulation, PTY ownership, terminal state, title,
@@ -96,12 +107,14 @@ packaging are deferred.
   UI refresh.
   Date/Author: 2026-05-03 / Codex.
 
-- Decision: Do not implement Metal, preferences, tab drag/drop, native
-  scrollbars, accessibility polish, signing, notarization, or release
-  packaging in this plan.
+- Decision: Do not implement a complete Metal backend, preferences, tab
+  drag/drop, native scrollbars, accessibility polish, signing, notarization, or
+  release packaging in this plan.
   Rationale: These are valid later features, but the MVP source of truth
   prioritizes a real terminal session, visible rendering, stable tabs,
-  headless screenshots, and debug-state verification.
+  headless screenshots, and debug-state verification. The only Metal work
+  allowed here is the limited skeleton owned by `LabanRenderer`; no
+  app/sidebar/terminal code may draw outside frame commands.
   Date/Author: 2026-05-03 / Codex.
 
 ## Context and Orientation
@@ -319,6 +332,8 @@ typedef struct {
 
 typedef struct {
   uint32_t codepoint;
+  uint32_t utf8_offset;
+  uint32_t utf8_length;
   uint32_t foreground_rgba;
   uint32_t background_rgba;
   uint16_t flags;
@@ -336,6 +351,8 @@ typedef struct {
   int focus_reporting;
   int dirty;
   const char *title;
+  const char *utf8_storage;
+  size_t utf8_storage_len;
   const LabanCell *cells;
   size_t cell_count;
 } LabanSnapshot;
@@ -360,6 +377,12 @@ void laban_snapshot_destroy(LabanSnapshot *snapshot);
 
 Behavior requirements:
 
+- `codepoint` is only a single-codepoint fast path for simple cells.
+  `utf8_offset` and `utf8_length` point into `utf8_storage` for the full
+  UTF-8 grapheme cluster to draw in that cell. The first skeleton may smoke
+  test ASCII or box-drawing with the fast path, but this milestone is not
+  complete until snapshots can carry a UTF-8 cluster without changing cell
+  metrics.
 - Session creation is all-or-nothing. If PTY creation, child spawn, libghostty
   initialization, encoder setup, or snapshot state creation fails, free partial
   resources and leave Swift app state unchanged.
@@ -418,7 +441,7 @@ Acceptance for this milestone:
   change, and resize for background sessions.
 - Tests prove stale session handles are not used after tab close.
 
-### Milestone 4: Add frame commands and the software renderer
+### Milestone 4: Add frame commands, the software backend, and the Metal skeleton
 
 Implement `LabanRenderer` around a backend-neutral command stream. The command
 language must support at least these command kinds from day one:
@@ -430,11 +453,27 @@ language must support at least these command kinds from day one:
 - `clip`
 - `texturedQuad`
 
-The first backend is a CPU software renderer. It draws into an RGBA bitmap
-surface and can return a `CGImage` for AppKit and PNG bytes for headless mode.
-Use fixed Selenized Light colors and bundled JetBrains Mono. If the font file
-is not yet bundled, add it before marking this milestone complete; do not
-silently rely on a developer's installed font.
+The software backend is the first complete backend. It draws into an RGBA
+bitmap surface and can return a `CGImage` for AppKit and PNG bytes for
+headless mode. Use fixed Selenized Light colors and bundled JetBrains Mono. If
+the font file is not yet bundled, add it before marking this milestone
+complete; do not silently rely on a developer's installed font.
+
+Add a Metal skeleton when `LabanRenderer` is introduced. The skeleton may only:
+
+- clear a render surface
+- consume `rect` frame commands
+- count and hash the command stream it received
+- report skipped unsupported commands without pretending they were drawn
+
+The Metal skeleton is not a complete backend, is not the CI gate, and must not
+be used as an excuse to bypass software-renderer screenshots. CI gates the
+software backend. Local smoke tests may exercise the Metal skeleton.
+
+No app, sidebar, terminal, selection, or cursor code may draw directly through
+AppKit, CoreGraphics, CoreText, Metal, or any other backend-specific API
+outside the frame-command renderer path. Those producers create frame commands;
+backends consume frame commands.
 
 Frame-command producers:
 
@@ -451,6 +490,9 @@ Acceptance for this milestone:
 
 - Renderer unit tests draw colored rectangles and glyph runs into a bitmap and
   assert non-background pixels.
+- Metal skeleton tests clear a surface, consume a `rect` command, count/hash
+  the command stream, and report unsupported `glyphRun`, `cursor`,
+  `selection`, and `texturedQuad` commands as skipped.
 - A fixture using `fixtures/colored-boxes.fixture.json` produces frame commands
   containing `hello mvp`, box-drawing glyphs, and non-monochrome colors.
 - PNG encoding writes a valid PNG from the software surface.
@@ -461,8 +503,10 @@ Acceptance for this milestone:
 
 Implement `LabanApp` as one AppKit window with a custom left sidebar and a
 bitmap terminal viewport. The view presents the exact bitmap produced by the
-software renderer. Do not build Metal, preferences, native tab controls, tab
-drag/drop, real scrollbars, signing, or packaging.
+software renderer. Do not build a complete Metal backend, preferences, native
+tab controls, tab drag/drop, real scrollbars, signing, or packaging. Any Metal
+skeleton code must remain inside `LabanRenderer`; AppKit/sidebar/terminal code
+must still draw only by producing frame commands.
 
 Required UI behavior:
 
@@ -550,11 +594,18 @@ Phase 2 endpoints:
 - `GET /debug/render` returns `schemas/debug/render.schema.json`.
 - `GET /debug/frame-commands` returns
   `schemas/debug/frame-commands.schema.json`.
+- `POST /debug/render-trace` returns
+  `schemas/debug/render-trace.schema.json`. The first implementation may be a
+  minimal trace summary that records the current frame, surface, layout,
+  command ranges, commands, render pass, resources known to the software
+  renderer, requested pixel probes, and invariant results. Deep pixel
+  provenance can come later, but the endpoint must exist unless
+  `docs/process/dev-process.md` and the schemas are explicitly amended.
 
 Add `/debug/wait` before relying on E2E tests so tests do not sleep
 arbitrarily. Add `/debug/events`, `/debug/input-log`, `/debug/terminal-log`,
 `/debug/errors`, `/debug/fixture`, and `/debug/snapshot` as soon as the
-corresponding state exists. Add `/debug/render-trace` later, when rendering
+corresponding state exists. Enrich `/debug/render-trace` later, when rendering
 bugs need pixel provenance beyond frame-command dumps.
 
 Acceptance for this milestone:
@@ -568,6 +619,8 @@ Acceptance for this milestone:
   renderer.
 - `GET /debug/sessions`, `/debug/render`, and `/debug/frame-commands` expose
   bounded diagnostic state matching the checked-in schemas.
+- `POST /debug/render-trace` returns a bounded schema-compatible trace summary,
+  even if deep per-pixel contributor provenance is still sparse.
 
 ### Milestone 7: Add tests, scripts, and the local CI gate
 
@@ -694,9 +747,9 @@ This ExecPlan is complete only when all of these are true:
   bitmap shown by AppKit.
 - `laban-agent` can run headlessly with the same app state and renderer.
 - `/debug/health`, `/debug/state`, `/debug/screenshot`, `/debug/actions`,
-  `/debug/sessions`, `/debug/render`, and `/debug/frame-commands` work on
-  loopback and return bounded responses matching the checked-in schemas where
-  schemas exist.
+  `/debug/sessions`, `/debug/render`, `/debug/frame-commands`, and
+  `/debug/render-trace` work on loopback and return bounded responses matching
+  the checked-in schemas where schemas exist.
 - The headless fixture gate using `fixtures/colored-boxes.fixture.json`
   produces a non-empty screenshot, visible `hello mvp`, non-monochrome color,
   and box-drawing glyphs without replacement glyphs.
@@ -712,11 +765,11 @@ All generated build, artifact, and temp output must stay under `.build/`,
 `.artifacts/runs/<run-id>/`, and `.tmp/<run-id>/`. It is safe to delete those
 directories and rerun scripts.
 
-If libghostty cannot be fetched or built, stop after Milestone 1, record the
-exact failure in `Surprises & Discoveries`, and do not replace libghostty with
-a hand-rolled parser. A temporary fixture-only app state may exist only to
-verify SwiftPM, AppKit, renderer, or debug plumbing, and it must be clearly
-marked as scaffolding that cannot satisfy terminal-core acceptance.
+If libghostty cannot be fetched or built, stop after Milestone 1, add a
+`Surprises & Discoveries` entry with the exact failure, and do not replace
+libghostty with a hand-rolled parser. A temporary fixture-only app state may
+exist only to verify SwiftPM, AppKit, renderer, or debug plumbing, and it must
+be clearly marked as scaffolding that cannot satisfy terminal-core acceptance.
 
 If an AppKit interactive run fails but headless mode works, preserve the
 headless artifacts and add a focused AppKit reproduction before changing the
@@ -748,14 +801,16 @@ through a Swift wrapper that guarantees destroy-on-close and prevents use after
 tab teardown.
 
 Frame commands must remain renderer-backend neutral. Do not make AppKit views
-or debug endpoints depend on private software-renderer internals. The future
-Metal backend should be able to consume the same command list.
+or debug endpoints depend on private software-renderer or Metal internals. The
+software backend is the first complete backend. The Metal skeleton consumes the
+same command list, reports unsupported commands as skipped, and may be covered
+by local smoke tests, but CI acceptance comes from the software backend.
 
-## Review Gate
+## Automated Acceptance Gate
 
-A separate fresh-state reviewer must verify the following before this ExecPlan
-is considered complete. The executing agent must not mark the plan done until
-this gate passes.
+These are mechanical checks for a fresh agent or automation runner. They are
+not a human review loop. The umbrella plan is complete only when each check can
+be run from a clean working tree and produce the expected result.
 
 - [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0.
 - [ ] Run `swift test` from `/Users/rrj/wrk/laban`; expect exit 0.
@@ -763,8 +818,6 @@ this gate passes.
   `.build/laban/Laban.app/Contents/MacOS/LabanApp` to exist and be executable.
 - [ ] Run `./scripts/test-e2e`; expect exit 0 and a preserved or reported run
   artifact directory.
-- [ ] Grep `Sources/LabanApp` and `Sources/LabanRenderer` for `MetalKit` and
-  `MTL`; expect zero matches.
 - [ ] Grep Swift files outside `Sources/LabanTerminalCore` for `ghostty`;
   expect zero direct libghostty imports or symbol references outside the C
   boundary.
@@ -781,8 +834,15 @@ this gate passes.
 - [ ] Query `/debug/frame-commands`; validate it against
   `schemas/debug/frame-commands.schema.json` and verify at least one command
   has source `terminal`.
+- [ ] Post a minimal render-trace request to `/debug/render-trace`; validate
+  the response against `schemas/debug/render-trace.schema.json`.
 
-Review status: NOT REVIEWED
+## Surprises & Discoveries
+
+- Observation: This file is an umbrella plan, not the first execution shard.
+  Evidence: The first shard is `execplans/active/swiftpm-libghostty-skeleton.md`
+  and intentionally covers only SwiftPM scaffolding, the C smoke target,
+  libghostty pin/probe, local `.app` bundling, and check-script integration.
 
 ## Artifacts and Notes
 

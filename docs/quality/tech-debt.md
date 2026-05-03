@@ -21,17 +21,7 @@ make the repo less legible to agents.
 Desired outcome: a stable `check-docs` or equivalent command fails on broken
 repository-local Markdown links.
 
-Blocked by: command runner has not been selected.
-
-### Add implementation-selection decision record
-
-Problem: the repo intentionally has no language/runtime choice yet. Once chosen,
-that decision should be durable and discoverable.
-
-Desired outcome: the implementation-selection ExecPlan records the decision and
-adds an ADR or equivalent decision note.
-
-Blocked by: `execplans/active/choose-implementation.md` has not been executed.
+Blocked by: link-check tooling has not been added to `./scripts/check`.
 
 ### Implement observability contract
 
@@ -41,8 +31,14 @@ traces, but no app or local query command exists yet.
 Desired outcome: a stable local command or debug endpoint lets agents query the
 observability signals for an isolated run.
 
-Blocked by: implementation stack and runtime model are not selected.
+Blocked by: implementation has not started.
 
 ## Closed
 
-(none yet)
+### Add implementation-selection decision record
+
+Closed: 2026-05-03.
+
+Outcome: `execplans/completed/choose-implementation.md` records the selected
+SwiftPM/AppKit/C/libghostty/software-renderer-first stack, rejected
+alternatives, and follow-up execution plans.

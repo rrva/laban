@@ -5,18 +5,19 @@ development. The first milestone is a minimal macOS terminal app with vertical
 tabs, one independent shell session per tab, correct terminal behavior, and
 autonomous headless end-to-end testing.
 
-No implementation language, macOS UI framework, renderer, build system, or
-terminal core has been selected yet. Cross-platform code is welcome when it
-supports terminal core reuse, fixtures, schemas, CI, or headless rendering, but
-it must not redefine the product as a non-macOS app.
+The first implementation stack is selected. Cross-platform code is welcome
+when it supports terminal core reuse, fixtures, schemas, CI, or headless
+rendering, but it must not redefine the product as a non-macOS app.
 
 Settled direction:
 
 - macOS-native AppKit-first product shell.
+- SwiftPM build with a local developer `.app` bundle script first.
 - libghostty is mandatory for the MVP terminal core.
 - first terminal core implementation is C behind a narrow C ABI.
-- renderer uses unified frame commands with Metal and software/offscreen
-  backends.
+- renderer uses unified frame commands; the software/offscreen backend is the
+  first complete backend, and a constrained Metal skeleton may appear once
+  `LabanRenderer` exists.
 - JetBrains Mono and fixed Selenized Light are the MVP font/theme defaults.
 
 ## Repository Map
@@ -38,9 +39,9 @@ Settled direction:
 
 ## Current State
 
-This repo is currently a planning and harness-contract repository. The next
-step is to choose the implementation stack through an ExecPlan, then add a
-runnable scaffold.
+This repo is currently a planning and harness-contract repository with the
+initial implementation stack selected. The next step is the focused scaffold
+shard in `execplans/active/swiftpm-libghostty-skeleton.md`.
 
 ## Current Commands
 
@@ -56,8 +57,7 @@ map-sized, verifies active ExecPlans have required sections, and runs
 
 ## Intended Implementation Commands
 
-The implementation should eventually provide stable commands with these
-meanings, regardless of the underlying toolchain:
+The implementation should provide stable scripts with these meanings:
 
 ```sh
 # Start the app for local interactive development.
@@ -79,13 +79,17 @@ test-e2e
 check
 ```
 
-The exact command runner is intentionally undecided until the implementation
-language is chosen.
+The first command runner is shell scripts around SwiftPM. Keep these script
+names stable even if their internals change.
 
 ## Implementation Selection
 
-Use `execplans/active/choose-implementation.md` to select the first stack. The
-selection should optimize for:
+The stack selection is recorded in
+`execplans/completed/choose-implementation.md`. The active umbrella plan is
+`execplans/active/swiftpm-appkit-software-renderer-mvp.md`; start execution
+with `execplans/active/swiftpm-libghostty-skeleton.md`.
+
+The selected implementation optimizes for:
 
 - native macOS app behavior over cross-platform UI convenience
 - AppKit-first shell over webview or generic cross-platform UI

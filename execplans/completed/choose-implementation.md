@@ -8,28 +8,63 @@ Keep `Progress` and `Validation and Acceptance` current as work proceeds.
 The repository has product requirements, autonomous test-harness contracts, and
 prototype lessons. Several load-bearing stack decisions are already settled:
 the product shell is AppKit-first, libghostty is mandatory, the first terminal
-core is C behind a narrow C ABI, and the renderer uses unified frame commands
-with Metal plus deterministic software/offscreen backends. After this plan is
-complete, a future agent will know the remaining scaffold choices, why they
-were chosen, what alternatives were rejected, and how to verify the decision
-without relying on chat history.
+core is C behind a narrow C ABI, and the renderer uses unified frame commands.
+This plan is complete: a future agent can see the first scaffold choice, why it
+was chosen, what alternatives were rejected, and where execution continues.
 
 The user-visible outcome is not a terminal app yet. The outcome is a durable
-implementation decision and a scaffold plan that can be executed by a fresh
-agent.
+implementation decision and follow-up scaffold plans that can be executed by a
+fresh agent.
 
 ## Progress
 
-- [ ] Read `AGENTS.md`, `docs/product/mvp.md`, `docs/product/spec.md`,
+- [x] Read `AGENTS.md`, `docs/product/mvp.md`, `docs/product/spec.md`,
   `docs/process/dev-process.md`, and
   `docs/reference/prototype-implementation-notes.md`.
-- [ ] Record the settled stack constraints from the interview.
-- [ ] Define remaining decisions from the MVP and debug harness.
-- [ ] Compare credible scaffold/build/test layouts within the settled stack.
-- [ ] Choose the first runnable scaffold shape.
-- [ ] Record rejected alternatives and why they lost.
-- [ ] Update repository docs with the chosen command names and constraints.
-- [ ] Add a follow-up ExecPlan for the first runnable scaffold.
+- [x] Record the settled stack constraints from the interview.
+- [x] Define remaining decisions from the MVP and debug harness.
+- [x] Compare credible scaffold/build/test layouts within the settled stack.
+- [x] Choose the first runnable scaffold shape.
+- [x] Record rejected alternatives and why they lost.
+- [x] Update repository docs with the chosen command names and constraints.
+- [x] Add follow-up ExecPlans for the first runnable scaffold and the first
+  execution shard.
+
+## Decision Log
+
+- Decision: Use a SwiftPM package with a C target as the first runnable
+  scaffold shape. The target graph is `LabanTerminalCore` for C/libghostty,
+  `LabanCore` for app state, `LabanRenderer` for frame commands and the
+  software renderer, `LabanDebug` for the local debug server, `LabanApp` for
+  the AppKit executable, and `LabanAgent` for the headless harness executable
+  product named `laban-agent`.
+  Rationale: SwiftPM is agent-legible, keeps project-file churn low, supports
+  Swift/C interop directly, and can build tests and executables before a native
+  Xcode project is worth its maintenance cost. A small script can create the
+  local developer `.app` required by the MVP.
+  Date/Author: 2026-05-03 / Codex.
+
+- Decision: Use AppKit for the product shell and make the software renderer
+  the first complete renderer backend. Add only a constrained Metal skeleton
+  when `LabanRenderer` is introduced.
+  Rationale: AppKit is the macOS-native path for windowing, menus, clipboard,
+  and text input. A CPU bitmap renderer gets visible UI, headless screenshots,
+  and deterministic CI feedback sooner while preserving the frame-command
+  backend boundary. A Metal skeleton may clear a surface, consume `rect`
+  commands, count/hash command streams, and report skipped unsupported
+  commands, but CI gates the software backend until Metal becomes complete.
+  Date/Author: 2026-05-03 / Codex.
+
+- Rejected: Start with an Xcode project containing Swift and C targets.
+  Rationale: Xcode is the most native long-term packaging path, but project-file
+  churn is harder for agents and unnecessary before the local `.app`, C bridge,
+  and headless harness shape are proven.
+  Date/Author: 2026-05-03 / Codex.
+
+- Rejected: Start with a hybrid SwiftPM library plus thin Xcode app target.
+  Rationale: The hybrid path may become useful later, but two build entrypoints
+  would add drift before the first runnable app exists.
+  Date/Author: 2026-05-03 / Codex.
 
 ## Context and Orientation
 
@@ -51,8 +86,12 @@ Settled constraints:
 - C core owns PTY lifecycle, libghostty terminal state, encoders, render
   snapshots, title, scrollback, resize, and exit state.
 - C core does not own HTTP, JSON, artifacts, or debug-server concerns.
-- Renderer: unified frame-command system, Metal preferred for the real macOS
-  backend, deterministic software/offscreen backend required for tests.
+- Renderer: unified frame-command system with the deterministic
+  software/offscreen backend as the first complete backend. A Metal skeleton
+  may appear when `LabanRenderer` is introduced, limited to clearing,
+  consuming `rect` commands, counting/hashing command streams, and reporting
+  skipped unsupported commands. CI gates software; local smoke may exercise
+  Metal.
 - Renderer commands include support for textured quads/resource IDs even though
   Kitty graphics display is deferred.
 - Headless mode supports fixture sessions and controlled real-shell smoke
@@ -157,15 +196,27 @@ Risk: two build entrypoints can drift unless scripts/checks keep them aligned.
 7. Add a new follow-up ExecPlan under `execplans/active/` for scaffolding the
    first runnable app.
 
+## Outcomes & Retrospective
+
+The implementation stack is now selected. Execution continues in
+`execplans/active/swiftpm-appkit-software-renderer-mvp.md` as the umbrella plan
+and `execplans/active/swiftpm-libghostty-skeleton.md` as the first focused
+execution shard.
+
+The main correction from this plan's original shape is that software rendering
+is the first complete backend, while a minimal Metal skeleton is allowed once
+`LabanRenderer` exists. This preserves the long-term renderer seam while
+reducing the time to visible pixels, PNG screenshots, and headless CI.
+
 ## Validation and Acceptance
 
-This plan is complete when:
+This plan is complete because:
 
 - `Progress` is fully checked.
 - The Decision Log names one chosen scaffold shape and at least two rejected
   alternatives.
 - `README.md` and `AGENTS.md` still point to correct docs.
-- A follow-up scaffold ExecPlan exists in `execplans/active/`.
+- Follow-up scaffold ExecPlans exist in `execplans/active/`.
 - `git diff --check` exits 0.
 
 No app build is expected from this plan.

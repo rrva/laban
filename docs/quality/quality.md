@@ -16,13 +16,13 @@ Quality is therefore judged by agent readiness rather than app behavior.
 | --- | --- | --- | --- |
 | Product scope | Good | `docs/product/mvp.md`, `docs/product/spec.md` | Needs acceptance tests once implementation starts. |
 | Agent map | Good | `AGENTS.md` is a small map. | Keep it short as docs grow. |
-| ExecPlans | Partial | `PLANS.md`, `execplans/README.md` | Needs first completed plan and active/completed workflow. |
+| ExecPlans | Partial | `PLANS.md`, `execplans/completed/choose-implementation.md`, `execplans/active/swiftpm-libghostty-skeleton.md` | Needs first implementation plan completed against code. |
 | Debug harness contract | Good | `docs/process/dev-process.md`, `schemas/debug/` | Needs implementation and contract tests. |
-| Headless graphics contract | Good | `docs/process/dev-process.md` | Needs renderer choice and offscreen proof. |
+| Headless graphics contract | Good | `docs/process/dev-process.md`, `execplans/active/swiftpm-appkit-software-renderer-mvp.md` | Needs software renderer and offscreen proof. |
 | Fixture format | Partial | `schemas/fixture.schema.json`, `fixtures/` | Needs fixture runner after stack selection. |
 | Observability | Partial | `docs/process/observability.md` and debug events schema exist. | Needs implementation and query command. |
 | Mechanical enforcement | Partial | `./scripts/check` validates JSON, AGENTS size, ExecPlan sections, and whitespace. | Needs CI and deeper link/schema semantic checks. |
-| Architecture boundaries | Not started | Product docs define boundaries. | Needs language-specific structural checks after stack selection. |
+| Architecture boundaries | Planned | Product docs and active SwiftPM ExecPlans define boundaries. | Needs language-specific structural checks after scaffold lands. |
 | Drift control | Partial | This document and `tech-debt.md`. | Needs recurring check command. |
 
 ## Quality Gates To Add Before Major Implementation
