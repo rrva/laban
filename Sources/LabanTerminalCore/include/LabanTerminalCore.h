@@ -82,6 +82,15 @@ int laban_session_resize(LabanSession *session, LabanTerminalSize size);
  *   pty mode: writes bytes to the PTY master fd (keyboard input to shell).
  */
 int laban_session_write(LabanSession *session, const uint8_t *bytes, size_t len);
+
+/*
+ * laban_session_feed_output:
+ *   Feeds bytes directly into the VT parser (ghostty_terminal_vt_write) in
+ *   both fixture and PTY modes.  Used to inject OSC palette sequences before
+ *   the first render so the terminal adopts the application theme regardless
+ *   of what the child process does.
+ */
+int laban_session_feed_output(LabanSession *session, const uint8_t *bytes, size_t len);
 int laban_session_snapshot(LabanSession *session, LabanSnapshot **out_snapshot);
 void laban_snapshot_destroy(LabanSnapshot *snapshot);
 

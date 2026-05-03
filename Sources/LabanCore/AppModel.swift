@@ -1,4 +1,5 @@
 import Foundation
+import LabanRenderer
 import LabanTerminalCore
 
 public final class AppModel {
@@ -18,6 +19,7 @@ public final class AppModel {
     self.currentSize = initialSize
     self.sessionFactory = sessionFactory
     let session = try sessionFactory(initialSize)
+    AppModel.applyThemePalette(to: session)
     let tab = Tab(
       id: UUID().uuidString,
       position: 1,
@@ -40,6 +42,7 @@ public final class AppModel {
   public func createTab() throws -> Tab {
     guard tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
     let session = try sessionFactory(currentSize)
+    AppModel.applyThemePalette(to: session)
     let position = tabs.count + 1
     var tab = Tab(
       id: UUID().uuidString,
@@ -70,6 +73,7 @@ public final class AppModel {
     if tabs.count == 1 {
       // Replace final tab: close current, open fresh
       let newSession = try sessionFactory(currentSize)
+      AppModel.applyThemePalette(to: newSession)
       let newTab = Tab(
         id: UUID().uuidString,
         position: 1,
@@ -106,6 +110,27 @@ public final class AppModel {
       throw AppError.tabNotFound
     }
     tabs[idx].title = title
+  }
+
+  private static func applyThemePalette(to session: Session) {
+    var bytes: [UInt8] = []
+    for (i, color) in Theme.CurrentTheme.ansi16.enumerated() {
+      bytes += oscSeq(4, index: i, rgba: color)
+    }
+    bytes += oscSeq(10, rgba: Theme.CurrentTheme.fg0)
+    bytes += oscSeq(11, rgba: Theme.CurrentTheme.bg0)
+    bytes += oscSeq(12, rgba: Theme.CurrentTheme.cursor)
+    session.feedOutput(bytes)
+  }
+
+  private static func oscSeq(_ n: Int, index: Int? = nil, rgba: UInt32) -> [UInt8] {
+    let r = (rgba >> 24) & 0xFF
+    let g = (rgba >> 16) & 0xFF
+    let b = (rgba >> 8) & 0xFF
+    let hex = String(format: "%02x%02x%02x", r, g, b)
+    let s = index.map { "\u{1B}]\(n);\($0);#\(hex)\u{07}" }
+           ?? "\u{1B}]\(n);#\(hex)\u{07}"
+    return Array(s.utf8)
   }
 
   public func resize(viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int) {

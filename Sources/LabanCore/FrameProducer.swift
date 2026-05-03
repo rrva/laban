@@ -100,7 +100,7 @@ public struct FrameProducer {
         cellWidth: cw, cellHeight: ch,
         originX: originX, originY: originY
       ) {
-        cmds.append(.selection(rect, color: Theme.SelenizedLight.selectionBg))
+        cmds.append(.selection(rect, color: Theme.CurrentTheme.selectionBg))
       }
     }
 
@@ -202,7 +202,7 @@ public struct FrameProducer {
       cmds.append(
         .cursor(
           CGRect(x: cx, y: cy, width: cw, height: ch),
-          color: Theme.SelenizedLight.cursor
+          color: Theme.CurrentTheme.cursor
         ))
     }
 
