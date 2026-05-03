@@ -12,11 +12,12 @@ final class MainWindowController: NSWindowController {
     let cellH = Int(cellSize.height)
 
     let sidebarWidth = SidebarLayout.defaultWidth
+    let insets = TerminalBitmapView.contentInsets
     let viewW: CGFloat = 1200
     let viewH: CGFloat = 760
 
-    let termW = max(1, Int(viewW - sidebarWidth))
-    let termH = max(1, Int(viewH))
+    let termW = max(1, Int(viewW - sidebarWidth - insets.left - insets.right))
+    let termH = max(1, Int(viewH - insets.top - insets.bottom))
     var size = LabanTerminalSize()
     size.rows = Int32(termH / cellH)
     size.cols = Int32(termW / cellW)

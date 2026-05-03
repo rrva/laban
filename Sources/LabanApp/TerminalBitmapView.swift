@@ -6,6 +6,8 @@ import LabanTerminalCore
 
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
+  static let contentInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 8)
+
   private let model: AppModel
   private let fontAtlas: FontAtlas
   private var surface: BitmapSurface
@@ -141,11 +143,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     )
     cmds += sidebarProducer.commands(tabs: model.tabs, activeTabId: activeTab.id, height: h)
 
+    // Fill the entire terminal area (including the inset padding) with the
+    // session's default background so the gap between the sidebar and the
+    // first cell doesn't expose the underlying cleared surface.
+    let insets = Self.contentInsets
+    let termAreaWidth = max(0, bounds.width - sidebarWidth)
+    cmds.append(
+      .rect(
+        CGRect(x: sidebarWidth, y: 0, width: termAreaWidth, height: h),
+        color: snap.pointee.default_background_rgba,
+        source: .terminal
+      ))
+
     let termProducer = FrameProducer(
       cellWidth: cellWidth,
       cellHeight: cellHeight,
-      originX: sidebarWidth,
-      originY: 0
+      originX: sidebarWidth + insets.left,
+      originY: insets.bottom
     )
     var selection: TerminalSelection?
     if let anchor = selectionAnchor, let focus = selectionFocus {
@@ -191,9 +205,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if recreateSurface() {
       renderInvalidated = true
     }
-    let termW = max(1, w - Int(sidebarWidth))
+    let insets = Self.contentInsets
+    let termW = max(1, w - Int(sidebarWidth) - Int(insets.left) - Int(insets.right))
+    let termH = max(1, h - Int(insets.top) - Int(insets.bottom))
     model.resize(
-      viewportWidth: termW, viewportHeight: h, cellWidth: cellWidth, cellHeight: cellHeight)
+      viewportWidth: termW, viewportHeight: termH, cellWidth: cellWidth, cellHeight: cellHeight)
   }
 
   // MARK: - Responder
@@ -596,11 +612,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
   private func termCell(at pt: NSPoint) -> (row: Int, col: Int)? {
-    let x = pt.x - sidebarWidth
-    guard x >= 0 else { return nil }
+    let insets = Self.contentInsets
+    let x = pt.x - sidebarWidth - insets.left
+    let yLocal = pt.y - insets.bottom
+    guard x >= 0, yLocal >= 0 else { return nil }
     let col = Int(x / CGFloat(cellWidth))
-    // CG y=0 at bottom; terminal row 0 is at y = (rows-1)*cellHeight
-    let row = lastRows - 1 - Int(pt.y / CGFloat(cellHeight))
+    // CG y=0 at bottom; terminal row 0 is at the top of the cell grid.
+    let row = lastRows - 1 - Int(yLocal / CGFloat(cellHeight))
     guard row >= 0, row < lastRows, col >= 0 else { return nil }
     return (row, col)
   }
@@ -608,15 +626,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func terminalMouseGeometry(at pt: NSPoint) -> (
     x: Float, y: Float, screenWidth: Int, screenHeight: Int
   ) {
+    let insets = Self.contentInsets
     let pos = TerminalMouseInput.surfacePosition(
       viewPoint: pt,
-      boundsHeight: bounds.height,
-      sidebarWidth: sidebarWidth
+      boundsHeight: bounds.height - insets.top,
+      sidebarWidth: sidebarWidth + insets.left
     )
     let size = TerminalMouseInput.surfaceSize(
-      boundsWidth: bounds.width,
-      boundsHeight: bounds.height,
-      sidebarWidth: sidebarWidth
+      boundsWidth: bounds.width - insets.right,
+      boundsHeight: bounds.height - insets.top - insets.bottom,
+      sidebarWidth: sidebarWidth + insets.left
     )
     return (pos.x, pos.y, size.width, size.height)
   }
