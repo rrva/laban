@@ -1,3 +1,1 @@
-public struct LabanRenderer {
-  public static let version = "0.0.0"
-}
+// LabanRenderer: frame-command model and software bitmap renderer.
