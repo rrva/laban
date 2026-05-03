@@ -197,6 +197,47 @@ final class LabanRendererSmokeTests: XCTestCase {
       foundNonBg, "scaled glyph must produce at least one non-background physical pixel")
   }
 
+  // MARK: - Block-element geometry (BoxDrawing)
+
+  func testBoxDrawingFullBlockEmitsCellSizedRect() {
+    // █ U+2588 must produce one rect that exactly covers the cell. Adjacent
+    // full blocks then tile gap-free because consecutive cells' rects share
+    // an integer pixel boundary.
+    let rects = BoxDrawing.blockElementRects(
+      Unicode.Scalar(0x2588)!,
+      at: CGPoint(x: 0, y: 0),
+      cellWidth: 8, cellHeight: 18,
+      foreground: 0xFF00_00FF
+    )
+    XCTAssertEqual(rects.count, 1)
+    XCTAssertEqual(rects[0].rect, CGRect(x: 0, y: 0, width: 8, height: 18))
+    XCTAssertEqual(rects[0].color, 0xFF00_00FF)
+  }
+
+  func testBoxDrawingFullBlockCoversOddCellHeightExactly() {
+    // The full block must paint every pixel of the cell even when the cell
+    // height is odd — that's the gap-tiling guarantee.
+    let rects = BoxDrawing.blockElementRects(
+      Unicode.Scalar(0x2588)!,
+      at: .zero, cellWidth: 8, cellHeight: 17,
+      foreground: 0xFF
+    )
+    XCTAssertEqual(rects.count, 1)
+    XCTAssertEqual(rects[0].rect, CGRect(x: 0, y: 0, width: 8, height: 17))
+  }
+
+  func testBoxDrawingQuadrantUpperLeftEmitsTopLeftRect() {
+    let rects = BoxDrawing.blockElementRects(
+      Unicode.Scalar(0x2598)!,  // ▘
+      at: CGPoint(x: 0, y: 0),
+      cellWidth: 8, cellHeight: 18,
+      foreground: 0xFF00_00FF
+    )
+    XCTAssertEqual(rects.count, 1)
+    // CG y=0 is bottom; top-left quadrant is at y >= bottomH (= 9).
+    XCTAssertEqual(rects[0].rect, CGRect(x: 0, y: 9, width: 4, height: 9))
+  }
+
   // MARK: - Cursor and selection
 
   func testCursorCommandFillsCell() {

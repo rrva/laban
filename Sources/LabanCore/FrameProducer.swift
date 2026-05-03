@@ -104,7 +104,7 @@ public struct FrameProducer {
       }
     }
 
-    // ---- Pass 3: Glyph runs for all rows ----
+    // ---- Pass 3: Glyph runs and block-element rects for all rows ----
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch
       let rowStart = row * cols
@@ -129,6 +129,40 @@ public struct FrameProducer {
             count: length
           )
           if let text = String(bytes: buf, encoding: .utf8), !text.isEmpty {
+            // Block elements are emitted as procedural .rect commands so they
+            // tile gap-free regardless of the font's glyph metrics. Keeps the
+            // renderer backend-agnostic — software, Metal, or any future
+            // backend just sees colored rects.
+            if text.unicodeScalars.count == 1,
+              let scalar = text.unicodeScalars.first,
+              BoxDrawing.isBlockElement(scalar)
+            {
+              if let start = runStart, !runText.isEmpty {
+                let cellX = originX + CGFloat(start) * cw
+                cmds.append(
+                  .glyphRun(
+                    origin: CGPoint(x: cellX, y: cellY),
+                    text: runText,
+                    foreground: runFg,
+                    background: runBg,
+                    source: .terminal
+                  ))
+              }
+              runStart = nil
+              runText = ""
+              let cellX = originX + CGFloat(col) * cw
+              for filled in BoxDrawing.blockElementRects(
+                scalar,
+                at: CGPoint(x: cellX, y: cellY),
+                cellWidth: cw,
+                cellHeight: ch,
+                foreground: cellFg
+              ) {
+                cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
+              }
+              continue
+            }
+
             if runStart != nil, runFg == cellFg && runBg == cellBg {
               runText += text
             } else {
