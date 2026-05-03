@@ -82,6 +82,24 @@ private struct PixelProbeReq: Decodable {
   var y: Int
 }
 
+enum DebugMouseInput {
+  static func terminalSurfacePosition(
+    windowX: Int,
+    windowY: Int,
+    windowHeight: Int,
+    sidebarWidth: Int
+  ) -> (x: Float, y: Float) {
+    (
+      Float(windowX - sidebarWidth),
+      Float(windowHeight - windowY)
+    )
+  }
+
+  static func terminalSurfaceWidth(windowWidth: Int, sidebarWidth: Int) -> Int {
+    max(windowWidth - sidebarWidth, 1)
+  }
+}
+
 // MARK: - Runtime
 
 public final class HeadlessDebugRuntime {
@@ -303,6 +321,19 @@ public final class HeadlessDebugRuntime {
     )
   }
 
+  private func terminalMousePosition(x: Int, y: Int) -> (x: Float, y: Float) {
+    DebugMouseInput.terminalSurfacePosition(
+      windowX: x,
+      windowY: y,
+      windowHeight: windowHeight,
+      sidebarWidth: sidebarWidth
+    )
+  }
+
+  private var terminalSurfaceWidth: Int {
+    DebugMouseInput.terminalSurfaceWidth(windowWidth: windowWidth, sidebarWidth: sidebarWidth)
+  }
+
   // MARK: - Endpoints
 
   public func health() -> DebugResponse {
@@ -497,8 +528,7 @@ public final class HeadlessDebugRuntime {
       guard let tab = model.activeTab, let session = model.session(forTab: tab.id) else {
         return jsonError("no active session for mouseWheel")
       }
-      let tx = Float(x - sidebarWidth)
-      let ty = Float(y)
+      let terminalPoint = terminalMousePosition(x: x, y: y)
       // Determine wheel direction: deltaY > 0 means scroll up (older history).
       let isUp = deltaY > 0
 
@@ -508,9 +538,9 @@ public final class HeadlessDebugRuntime {
         let me = MouseEvent(
           action: .press,
           button: button,
-          x: tx,
-          y: ty,
-          screenWidth: windowWidth,
+          x: terminalPoint.x,
+          y: terminalPoint.y,
+          screenWidth: terminalSurfaceWidth,
           screenHeight: windowHeight,
           cellWidth: cellWidth,
           cellHeight: cellHeight
@@ -574,8 +604,7 @@ public final class HeadlessDebugRuntime {
       guard let tab = model.activeTab, let session = model.session(forTab: tab.id) else {
         return jsonError("no active session for click")
       }
-      let tx2 = Float(x - sidebarWidth)
-      let ty2 = Float(y)
+      let terminalPoint = terminalMousePosition(x: x, y: y)
 
       if let vs = session.viewportState(), vs.mouseTracking {
         // Mouse tracking active: send press/release events.
@@ -587,14 +616,14 @@ public final class HeadlessDebugRuntime {
         }
         let pressEvent = MouseEvent(
           action: .press, button: btn,
-          x: tx2, y: ty2,
-          screenWidth: windowWidth, screenHeight: windowHeight,
+          x: terminalPoint.x, y: terminalPoint.y,
+          screenWidth: terminalSurfaceWidth, screenHeight: windowHeight,
           cellWidth: cellWidth, cellHeight: cellHeight
         )
         let releaseEvent = MouseEvent(
           action: .release, button: btn,
-          x: tx2, y: ty2,
-          screenWidth: windowWidth, screenHeight: windowHeight,
+          x: terminalPoint.x, y: terminalPoint.y,
+          screenWidth: terminalSurfaceWidth, screenHeight: windowHeight,
           cellWidth: cellWidth, cellHeight: cellHeight
         )
         session.sendMouse(pressEvent)

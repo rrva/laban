@@ -41,6 +41,14 @@ can verify both paths through `/debug/actions`, `/debug/sessions`,
 - [x] Add tests and E2E coverage for normal scrollback and mouse-tracking
   routing.
 - [x] Update the umbrella plan and record validation evidence.
+- [x] Fix review regressions found after the first mouse-routing patch:
+  AppKit/debug mouse positions must be terminal-surface pixels, modifier bits
+  must match Ghostty's `shift, ctrl, alt, super` order, and drag motion must
+  preserve the held button for DECSET 1002 button-event tracking.
+- [x] Add focused tests that fail against the reviewed regression cases and
+  pass after the fixes.
+- [x] Run focused AppKit, terminal-core, and debug tests plus `./scripts/check`;
+  all pass after the review fixes.
 
 ## Decision Log
 
@@ -98,6 +106,15 @@ done until this gate has passed.
   verify the wheel reveals older lines when `mouseTracking` is false.
 - [ ] In a terminal app that enables SGR mouse mode, verify mouse wheel or
   click input affects the app rather than local text selection.
+- [ ] Run `swift test --filter LabanAppTests`; expect tests proving AppKit
+  mouse position helpers return terminal-surface pixels and Ghostty modifier
+  bit order.
+- [ ] Run `swift test --filter LabanTerminalCoreTests`; expect tests proving
+  SGR positions are derived from pixel positions, modifier bits are preserved
+  in Ghostty order, and DECSET 1002 drag motion reports the active button.
+- [ ] Run `swift test --filter LabanDebugSmokeTests`; expect tests proving
+  `/debug/actions` mouse coordinates convert from CG bottom-left `y` to
+  top-left terminal-surface `y`.
 
 Review status: NOT REVIEWED
 
@@ -551,6 +568,22 @@ Sources/LabanDebug/HeadlessDebugRuntime.swift
 Sources/LabanApp/TerminalBitmapView.swift
   mouseDown/mouseDragged/mouseUp currently always start or extend local selection in terminal content.
   There is no scrollWheel override.
+```
+
+Review-fix validation evidence from 2026-05-03:
+
+```text
+swift test --filter LabanAppTests
+  Executed 14 tests, with 0 failures.
+
+swift test --filter LabanTerminalCoreTests
+  Executed 18 tests, with 0 failures.
+
+swift test --filter LabanDebugSmokeTests
+  Executed 22 tests, with 0 failures.
+
+./scripts/check
+  check passed
 ```
 
 ## Interfaces and Dependencies

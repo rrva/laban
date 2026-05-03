@@ -23,6 +23,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // Selection anchor/focus in terminal grid coordinates (row, col); row 0 = top
   private var selectionAnchor: (row: Int, col: Int)?
   private var selectionFocus: (row: Int, col: Int)?
+  private var trackedMouseButton: MouseButton = .none
 
   // Damage-driven render budget state
   private var renderInvalidated = true
@@ -348,13 +349,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if vs.mouseTracking {
       // Mouse tracking active: encode wheel as press+release.
       let button: MouseButton = isUp ? .wheelUp : .wheelDown
-      let (cx, cy) = termCellFloat(at: pt)
+      let geom = terminalMouseGeometry(at: pt)
       let me = MouseEvent(
         action: .press,
         button: button,
-        x: cx, y: cy,
-        screenWidth: Int(bounds.width),
-        screenHeight: Int(bounds.height),
+        x: geom.x, y: geom.y,
+        screenWidth: geom.screenWidth,
+        screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
@@ -402,13 +403,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
-      let (cx, cy) = termCellFloat(at: pt)
+      trackedMouseButton = .left
+      let geom = terminalMouseGeometry(at: pt)
       let pressEvent = MouseEvent(
         action: .press,
         button: .left,
-        x: cx, y: cy,
-        screenWidth: Int(bounds.width),
-        screenHeight: Int(bounds.height),
+        x: geom.x, y: geom.y,
+        screenWidth: geom.screenWidth,
+        screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
@@ -433,13 +435,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     {
       let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
-      let (cx, cy) = termCellFloat(at: pt)
+      let geom = terminalMouseGeometry(at: pt)
+      let button = trackedMouseButton == .none ? MouseButton.left : trackedMouseButton
       let motionEvent = MouseEvent(
         action: .motion,
-        button: .none,
-        x: cx, y: cy,
-        screenWidth: Int(bounds.width),
-        screenHeight: Int(bounds.height),
+        button: button,
+        x: geom.x, y: geom.y,
+        screenWidth: geom.screenWidth,
+        screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
@@ -460,21 +463,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       vs.mouseTracking
     {
       let pt = convert(event.locationInWindow, from: nil)
-      let (cx, cy) = termCellFloat(at: pt)
+      let geom = terminalMouseGeometry(at: pt)
       let releaseEvent = MouseEvent(
         action: .release,
         button: .left,
-        x: cx, y: cy,
-        screenWidth: Int(bounds.width),
-        screenHeight: Int(bounds.height),
+        x: geom.x, y: geom.y,
+        screenWidth: geom.screenWidth,
+        screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
       session.sendMouse(releaseEvent)
+      if trackedMouseButton == .left { trackedMouseButton = .none }
       renderInvalidated = true
       return
     }
+    if trackedMouseButton == .left { trackedMouseButton = .none }
     selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
     renderInvalidated = true
   }
@@ -492,18 +497,43 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
-      let (cx, cy) = termCellFloat(at: pt)
+      trackedMouseButton = .right
+      let geom = terminalMouseGeometry(at: pt)
       let pressEvent = MouseEvent(
         action: .press,
         button: .right,
-        x: cx, y: cy,
-        screenWidth: Int(bounds.width),
-        screenHeight: Int(bounds.height),
+        x: geom.x, y: geom.y,
+        screenWidth: geom.screenWidth,
+        screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
       session.sendMouse(pressEvent)
+      renderInvalidated = true
+    }
+  }
+
+  override func rightMouseDragged(with event: NSEvent) {
+    if let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let vs = session.viewportState(),
+      vs.mouseTracking
+    {
+      let pt = convert(event.locationInWindow, from: nil)
+      guard pt.x >= sidebarWidth else { return }
+      let geom = terminalMouseGeometry(at: pt)
+      let motionEvent = MouseEvent(
+        action: .motion,
+        button: .right,
+        x: geom.x, y: geom.y,
+        screenWidth: geom.screenWidth,
+        screenHeight: geom.screenHeight,
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        modifiers: event.labanModifiers
+      )
+      session.sendMouse(motionEvent)
       renderInvalidated = true
     }
   }
@@ -515,20 +545,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       vs.mouseTracking
     {
       let pt = convert(event.locationInWindow, from: nil)
-      let (cx, cy) = termCellFloat(at: pt)
+      let geom = terminalMouseGeometry(at: pt)
       let releaseEvent = MouseEvent(
         action: .release,
         button: .right,
-        x: cx, y: cy,
-        screenWidth: Int(bounds.width),
-        screenHeight: Int(bounds.height),
+        x: geom.x, y: geom.y,
+        screenWidth: geom.screenWidth,
+        screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
       session.sendMouse(releaseEvent)
+      if trackedMouseButton == .right { trackedMouseButton = .none }
       renderInvalidated = true
     }
+    if trackedMouseButton == .right { trackedMouseButton = .none }
   }
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
@@ -542,13 +574,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     return (row, col)
   }
 
-  // Convert a CG-coordinate view point to terminal grid float coordinates
-  // (x, y) in cell units where (0, 0) is the top-left visible cell.
-  private func termCellFloat(at pt: NSPoint) -> (Float, Float) {
-    let fx = (pt.x - sidebarWidth) / CGFloat(cellWidth)
-    // CG y=0 at bottom; terminal row 0 is at top
-    let fy = (bounds.height - pt.y) / CGFloat(cellHeight)
-    return (Float(max(0, fx)), Float(max(0, fy)))
+  private func terminalMouseGeometry(at pt: NSPoint) -> (
+    x: Float, y: Float, screenWidth: Int, screenHeight: Int
+  ) {
+    let pos = TerminalMouseInput.surfacePosition(
+      viewPoint: pt,
+      boundsHeight: bounds.height,
+      sidebarWidth: sidebarWidth
+    )
+    let size = TerminalMouseInput.surfaceSize(
+      boundsWidth: bounds.width,
+      boundsHeight: bounds.height,
+      sidebarWidth: sidebarWidth
+    )
+    return (pos.x, pos.y, size.width, size.height)
   }
 
   // MARK: - Menu actions
@@ -576,13 +615,41 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 // MARK: - NSEvent modifier conversion for mouse events
 
 extension NSEvent {
-  /// Convert AppKit modifier flags to the terminal-expected bit mask.
-  /// Bit 0 = Shift, Bit 1 = Meta (Option), Bit 2 = Ctrl, Bit 3 = Command (Super).
+  /// Convert AppKit modifier flags to Ghostty's modifier bit mask.
+  /// Bit 0 = Shift, Bit 1 = Ctrl, Bit 2 = Alt/Option, Bit 3 = Super/Command.
   fileprivate var labanModifiers: Int {
+    TerminalMouseInput.ghosttyModifierMask(from: modifierFlags)
+  }
+}
+
+enum TerminalMouseInput {
+  static func surfacePosition(
+    viewPoint: NSPoint,
+    boundsHeight: CGFloat,
+    sidebarWidth: CGFloat
+  ) -> (x: Float, y: Float) {
+    (
+      Float(viewPoint.x - sidebarWidth),
+      Float(boundsHeight - viewPoint.y)
+    )
+  }
+
+  static func surfaceSize(
+    boundsWidth: CGFloat,
+    boundsHeight: CGFloat,
+    sidebarWidth: CGFloat
+  ) -> (width: Int, height: Int) {
+    (
+      max(1, Int(boundsWidth - sidebarWidth)),
+      max(1, Int(boundsHeight))
+    )
+  }
+
+  static func ghosttyModifierMask(from modifierFlags: NSEvent.ModifierFlags) -> Int {
     var m = 0
     if modifierFlags.contains(.shift) { m |= 1 }
-    if modifierFlags.contains(.option) { m |= 2 }
-    if modifierFlags.contains(.control) { m |= 4 }
+    if modifierFlags.contains(.control) { m |= 2 }
+    if modifierFlags.contains(.option) { m |= 4 }
     if modifierFlags.contains(.command) { m |= 8 }
     return m
   }

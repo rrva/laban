@@ -27,6 +27,7 @@ struct LabanSession {
     int fixture_mode;
     GhosttyMouseEncoder mouse_encoder;
     int mouse_button_pressed;  /* boolean: is any mouse button currently down */
+    LabanMouseButton mouse_pressed_button;
 };
 
 /* Encode one Unicode codepoint to UTF-8. Returns bytes written (1-4). */
@@ -579,6 +580,12 @@ static GhosttyMouseButton map_laban_button(LabanMouseButton btn) {
     }
 }
 
+static int laban_mouse_button_can_be_held(LabanMouseButton btn) {
+    return btn == LABAN_MOUSE_BUTTON_LEFT ||
+           btn == LABAN_MOUSE_BUTTON_MIDDLE ||
+           btn == LABAN_MOUSE_BUTTON_RIGHT;
+}
+
 int laban_session_encode_mouse(
     LabanSession *s,
     const LabanMouseEvent *event,
@@ -607,6 +614,24 @@ int laban_session_encode_mouse(
     ghostty_mouse_encoder_setopt(s->mouse_encoder,
         GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &enc_size);
 
+    LabanMouseButton effective_button = event->button;
+    if ((event->action == LABAN_MOUSE_ACTION_MOTION ||
+         event->action == LABAN_MOUSE_ACTION_RELEASE) &&
+        effective_button == LABAN_MOUSE_BUTTON_NONE &&
+        laban_mouse_button_can_be_held(s->mouse_pressed_button)) {
+        effective_button = s->mouse_pressed_button;
+    }
+
+    if (event->action == LABAN_MOUSE_ACTION_PRESS &&
+        laban_mouse_button_can_be_held(event->button)) {
+        s->mouse_button_pressed = 1;
+        s->mouse_pressed_button = event->button;
+    } else if (event->action == LABAN_MOUSE_ACTION_RELEASE &&
+               laban_mouse_button_can_be_held(effective_button)) {
+        s->mouse_button_pressed = 0;
+        s->mouse_pressed_button = LABAN_MOUSE_BUTTON_NONE;
+    }
+
     /* Set any-button-pressed state. */
     bool pressed = (s->mouse_button_pressed != 0);
     ghostty_mouse_encoder_setopt(s->mouse_encoder,
@@ -626,8 +651,8 @@ int laban_session_encode_mouse(
     ghostty_mouse_event_set_action(gev, ga);
 
     /* Button. */
-    GhosttyMouseButton gb = map_laban_button(event->button);
-    if (gb == GHOSTTY_MOUSE_BUTTON_UNKNOWN || event->action == LABAN_MOUSE_ACTION_MOTION) {
+    GhosttyMouseButton gb = map_laban_button(effective_button);
+    if (gb == GHOSTTY_MOUSE_BUTTON_UNKNOWN) {
         ghostty_mouse_event_clear_button(gev);
     } else {
         ghostty_mouse_event_set_button(gev, gb);
