@@ -53,7 +53,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LabanCoreTests",
-            dependencies: ["LabanCore"]
+            dependencies: ["LabanCore", "LabanTerminalCore"]
         ),
         .testTarget(
             name: "LabanRendererTests",

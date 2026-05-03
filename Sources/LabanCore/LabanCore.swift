@@ -1,3 +1,1 @@
-public struct LabanCore {
-    public static let version = "0.0.0"
-}
+// LabanCore: app-state model for one window, tabs, and terminal sessions.

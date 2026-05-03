@@ -61,14 +61,14 @@ plan as each shard lands.
 - [x] Add the SwiftPM package skeleton and target boundaries. Package.swift,
   all target stubs, `scripts/build-app`, and `./scripts/check` exit 0.
   Documented in `execplans/active/swiftpm-libghostty-skeleton.md`.
-- [ ] Link libghostty-vt into LabanTerminalCore and prove
+- [x] Link libghostty-vt into LabanTerminalCore and prove
   `ghostty_terminal_new` from a Swift test. Shard:
   `execplans/active/terminal-session-libghostty-vt.md`, Milestone 1.
-- [ ] Add the C terminal core ABI, PTY lifecycle, libghostty-vt session
+- [x] Add the C terminal core ABI, PTY lifecycle, libghostty-vt session
   creation, nonblocking polling, resize, input write, render-state snapshots
   with true colors and grapheme clusters, title, and exit state. Shard:
   `execplans/active/terminal-session-libghostty-vt.md`, Milestone 2.
-- [ ] Add Swift app state for one window, max nine tabs, stable tab/session IDs,
+- [x] Add Swift app state for one window, max nine tabs, stable tab/session IDs,
   session lifecycle, selection fallback, and final-tab replacement.
 - [ ] Add the frame-command model and deterministic software bitmap renderer.
 - [ ] Add the AppKit executable with one window, custom left sidebar, bitmap
