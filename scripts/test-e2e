@@ -163,7 +163,123 @@ STATE2=$(get_json /debug/state)
 TAB_COUNT2=$(printf '%s' "$STATE2" | jq '.tabs | length')
 [ "$TAB_COUNT2" -eq 2 ] || fail "expected 2 tabs after newTab, got $TAB_COUNT2"
 
-# 15. selectTab first tab — session ID unchanged
+# 15. Coalesced long-line rendering must still land on fixed terminal cells.
+LONG_LINE_PAYLOAD=$(python3 - <<'PY'
+import json
+print(json.dumps({"action": "typeText", "text": "\x1b[?25l" + "M" * 70}))
+PY
+)
+LONG_LINE_RESULT=$(post_json /debug/actions "$LONG_LINE_PAYLOAD")
+[ "$(printf '%s' "$LONG_LINE_RESULT" | jq -r '.ok')" = "true" ] \
+  || fail "long-line typeText failed: $LONG_LINE_RESULT"
+LONG_LINE_RENDER="$RUN_ARTIFACTS/long-line-render.json"
+LONG_LINE_SCREENSHOT="$RUN_ARTIFACTS/long-line.png"
+get_json /debug/render >"$LONG_LINE_RENDER"
+curl -sf "$SERVER_URL/debug/screenshot" >"$LONG_LINE_SCREENSHOT"
+if ! python3 - "$LONG_LINE_RENDER" "$LONG_LINE_SCREENSHOT" <<'PY'
+import json
+import struct
+import sys
+import zlib
+
+render_path, screenshot_path = sys.argv[1], sys.argv[2]
+with open(render_path, "r", encoding="utf-8") as f:
+    render = json.load(f)
+
+
+def read_png(path):
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw[:8] != b"\x89PNG\r\n\x1a\n":
+        raise SystemExit("screenshot is not a PNG")
+    pos = 8
+    width = height = color_type = None
+    idat = []
+    while pos < len(raw):
+        size = struct.unpack(">I", raw[pos : pos + 4])[0]
+        pos += 4
+        kind = raw[pos : pos + 4]
+        pos += 4
+        data = raw[pos : pos + size]
+        pos += size + 4
+        if kind == b"IHDR":
+            width, height, bit_depth, color_type, comp, filt, interlace = struct.unpack(
+                ">IIBBBBB", data
+            )
+            if bit_depth != 8 or comp != 0 or filt != 0 or interlace != 0:
+                raise SystemExit("unsupported PNG format")
+        elif kind == b"IDAT":
+            idat.append(data)
+        elif kind == b"IEND":
+            break
+
+    channels = {2: 3, 6: 4}.get(color_type)
+    if channels is None:
+        raise SystemExit("unsupported PNG color type")
+    stride = width * channels
+    bpp = channels
+    inflated = zlib.decompress(b"".join(idat))
+    rows = []
+    prev = [0] * stride
+    pos = 0
+    for _ in range(height):
+        filter_type = inflated[pos]
+        pos += 1
+        cur = list(inflated[pos : pos + stride])
+        pos += stride
+        if filter_type == 1:
+            for i in range(stride):
+                cur[i] = (cur[i] + (cur[i - bpp] if i >= bpp else 0)) & 255
+        elif filter_type == 2:
+            for i in range(stride):
+                cur[i] = (cur[i] + prev[i]) & 255
+        elif filter_type == 3:
+            for i in range(stride):
+                left = cur[i - bpp] if i >= bpp else 0
+                cur[i] = (cur[i] + ((left + prev[i]) // 2)) & 255
+        elif filter_type == 4:
+            def paeth(a, b, c):
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                if pa <= pb and pa <= pc:
+                    return a
+                return b if pb <= pc else c
+
+            for i in range(stride):
+                left = cur[i - bpp] if i >= bpp else 0
+                up = prev[i]
+                up_left = prev[i - bpp] if i >= bpp else 0
+                cur[i] = (cur[i] + paeth(left, up, up_left)) & 255
+        elif filter_type != 0:
+            raise SystemExit("unsupported PNG row filter")
+        prev = cur
+        rows.append(cur)
+    return width, height, channels, rows
+
+
+width, height, channels, rows = read_png(screenshot_path)
+viewport = render["terminalViewport"]
+cell_width = int(render["cell"]["width"])
+target_start = int(viewport["x"]) + 69 * cell_width
+target_end = min(target_start + cell_width, width)
+if target_start >= target_end:
+    raise SystemExit("long-line target cell falls outside screenshot")
+
+sample_x = min(width - 1, int(viewport["x"]) + int(viewport["width"]) - 2)
+background = tuple(rows[height - 2][sample_x * channels : sample_x * channels + channels])
+for row in rows:
+    for x in range(target_start, target_end):
+        pixel = tuple(row[x * channels : x * channels + channels])
+        if pixel != background:
+            raise SystemExit(0)
+
+raise SystemExit("long-line final cell has no drawn glyph pixels")
+PY
+then
+  fail "long-line rendering did not reach the final fixed-width terminal cell"
+fi
+
+# 16. selectTab first tab — session ID unchanged
 SEL_RESULT=$(post_json /debug/actions "{\"action\":\"selectTab\",\"tabId\":\"$FIRST_TAB_ID\"}")
 [ "$(printf '%s' "$SEL_RESULT" | jq -r '.ok')" = "true" ] \
   || fail "selectTab failed: $SEL_RESULT"
@@ -171,7 +287,7 @@ STATE3=$(get_json /debug/state)
 ACTIVE_NOW=$(printf '%s' "$STATE3" | jq -r '.activeTabId')
 [ "$ACTIVE_NOW" = "$FIRST_TAB_ID" ] || fail "expected active tab $FIRST_TAB_ID, got $ACTIVE_NOW"
 
-# 16. resizeWindow — sessions rows/cols still >= 1
+# 17. resizeWindow — sessions rows/cols still >= 1
 RESIZE_RESULT=$(post_json /debug/actions '{"action":"resizeWindow","width":1000,"height":600}')
 [ "$(printf '%s' "$RESIZE_RESULT" | jq -r '.ok')" = "true" ] \
   || fail "resizeWindow failed: $RESIZE_RESULT"
@@ -179,7 +295,7 @@ SESSIONS2=$(get_json /debug/sessions)
 ROWS_AFTER=$(printf '%s' "$SESSIONS2" | jq '.sessions[0].rows')
 [ "$ROWS_AFTER" -ge 1 ] || fail "rows after resize < 1"
 
-# 17. setClipboardText + paste
+# 18. setClipboardText + paste
 SET_CLIP=$(post_json /debug/actions '{"action":"setClipboardText","text":"agent text\n"}')
 [ "$(printf '%s' "$SET_CLIP" | jq -r '.ok')" = "true" ] \
   || fail "setClipboardText failed: $SET_CLIP"
@@ -187,7 +303,7 @@ PASTE_RESULT=$(post_json /debug/actions '{"action":"paste"}')
 [ "$(printf '%s' "$PASTE_RESULT" | jq -r '.ok')" = "true" ] \
   || fail "paste failed: $PASTE_RESULT"
 
-# 18. advanceFrames count:3 — frame advances by exactly 3
+# 19. advanceFrames count:3 — frame advances by exactly 3
 FRAME_BEFORE=$(get_json /debug/health | jq '.frame')
 ADV_RESULT=$(post_json /debug/actions '{"action":"advanceFrames","count":3}')
 [ "$(printf '%s' "$ADV_RESULT" | jq -r '.ok')" = "true" ] \
@@ -197,14 +313,14 @@ FRAME_EXPECTED=$((FRAME_BEFORE + 3))
 [ "$FRAME_AFTER" -eq "$FRAME_EXPECTED" ] \
   || fail "advanceFrames: expected frame $FRAME_EXPECTED, got $FRAME_AFTER"
 
-# 19. Unsupported schema action — HTTP 200, ok:false, bounded error
+# 20. Unsupported schema action — HTTP 200, ok:false, bounded error
 UNSUP=$(post_json /debug/actions '{"action":"mouseWheel","x":100,"y":100,"deltaY":-3}')
 [ "$(printf '%s' "$UNSUP" | jq -r '.ok')" = "false" ] \
   || fail "unsupported action: expected ok:false, got: $UNSUP"
 UNSUP_ERR=$(printf '%s' "$UNSUP" | jq -r '.error // empty')
 [ -n "$UNSUP_ERR" ] || fail "unsupported action: missing error field in: $UNSUP"
 
-# 20. /debug/events — includes server.ready and frame.rendered
+# 21. /debug/events — includes server.ready and frame.rendered
 # (events check already confirmed; events emitted includes server.ready from emitServerReady()
 # and frame.rendered from each renderFrameUnlocked() call)
 EVENTS=$(get_json /debug/events)
@@ -212,12 +328,12 @@ KINDS=$(printf '%s' "$EVENTS" | jq -r '[.events[].kind] | join(",")')
 printf '%s' "$KINDS" | grep -q "server.ready" || fail "server.ready not in events: $KINDS"
 printf '%s' "$KINDS" | grep -q "frame.rendered" || fail "frame.rendered not in events: $KINDS"
 
-# 21. Terminate server
+# 22. Terminate server
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 
-# 22. Bare --debug-server shorthand — launches and answers health
+# 23. Bare --debug-server shorthand — launches and answers health
 _bare_stdout=$(mktemp)
 "$AGENT_BIN" --headless --debug-server --deterministic >"$_bare_stdout" &
 BARE_PID=$!
