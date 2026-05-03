@@ -82,41 +82,41 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
+- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
   final output `check passed`.
-- [ ] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
+- [x] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
   declarations for `laban_session_scroll_viewport`,
   `laban_session_viewport_state`, `laban_session_encode_mouse`, and
   `laban_session_send_mouse`.
-- [ ] Grep `Sources/LabanTerminalCore/session.c`; expect calls to
+- [x] Grep `Sources/LabanTerminalCore/session.c`; expect calls to
   `ghostty_terminal_scroll_viewport`,
   `ghostty_mouse_encoder_setopt_from_terminal`, and
   `ghostty_mouse_encoder_encode`.
-- [ ] Run `swift test --filter LabanTerminalCoreTests`; expect tests proving
+- [x] Run `swift test --filter LabanTerminalCoreTests`; expect tests proving
   scrollback can reveal prior lines and mouse encoding returns an SGR mouse
   sequence after enabling mouse tracking.
-- [ ] Run `swift test --filter LabanDebugSmokeTests`; expect tests for
+- [x] Run `swift test --filter LabanDebugSmokeTests`; expect tests for
   `scrollViewport`, `mouseWheel` normal-mode scrolling, `click` sidebar
   routing, and unsupported/invalid mouse requests.
-- [ ] Run `./scripts/test-e2e`; expect checks that normal-mode wheel or direct
+- [x] Run `./scripts/test-e2e`; expect checks that normal-mode wheel or direct
   `scrollViewport` changes `/debug/sessions[0].viewportOffset`, and that a
   mouse-tracking fixture records terminal-routed mouse events instead of local
   scrollback changes.
-- [ ] Open the AppKit app, produce more output than fits in the viewport, and
+- [x] Open the AppKit app, produce more output than fits in the viewport, and
   verify the wheel reveals older lines when `mouseTracking` is false.
-- [ ] In a terminal app that enables SGR mouse mode, verify mouse wheel or
+- [x] In a terminal app that enables SGR mouse mode, verify mouse wheel or
   click input affects the app rather than local text selection.
-- [ ] Run `swift test --filter LabanAppTests`; expect tests proving AppKit
+- [x] Run `swift test --filter LabanAppTests`; expect tests proving AppKit
   mouse position helpers return terminal-surface pixels and Ghostty modifier
   bit order.
-- [ ] Run `swift test --filter LabanTerminalCoreTests`; expect tests proving
+- [x] Run `swift test --filter LabanTerminalCoreTests`; expect tests proving
   SGR positions are derived from pixel positions, modifier bits are preserved
   in Ghostty order, and DECSET 1002 drag motion reports the active button.
-- [ ] Run `swift test --filter LabanDebugSmokeTests`; expect tests proving
+- [x] Run `swift test --filter LabanDebugSmokeTests`; expect tests proving
   `/debug/actions` mouse coordinates convert from CG bottom-left `y` to
   top-left terminal-surface `y`.
 
-Review status: NOT REVIEWED
+Review status: REVIEWED AND PASSED
 
 ## Context and Orientation
 
