@@ -337,7 +337,7 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(tabs.count, 2)
   }
 
-  func testRuntimeClickWithoutMouseTrackingReturnsOkFalse() throws {
+  func testRuntimeClickWithoutMouseTrackingSetsLocalSelection() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: artifacts) }
@@ -350,13 +350,21 @@ final class LabanDebugSmokeTests: XCTestCase {
       runId: "smoke-click-notrack"
     )
 
-    // Click in terminal area (past sidebar) — should return ok:false with local selection msg.
+    // Click in terminal area (past sidebar) — should return ok:true and set a one-cell selection.
     let body = #"{"action":"click","x":300,"y":200,"button":"left"}"#.data(using: .utf8)!
     let result = runtime.applyAction(body)
     XCTAssertEqual(result.status, 200)
     let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
-    XCTAssertEqual(obj["ok"] as? Bool, false)
-    XCTAssertTrue((obj["error"] as? String ?? "").contains("selection"))
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+    XCTAssertNil(obj["error"])
+
+    // Verify selection is now active.
+    let selResp = runtime.selection()
+    XCTAssertEqual(selResp.status, 200)
+    let selObj = try JSONSerialization.jsonObject(with: selResp.body) as! [String: Any]
+    XCTAssertEqual(selObj["active"] as? Bool, true)
+    XCTAssertNotNil(selObj["anchor"])
+    XCTAssertNotNil(selObj["focus"])
   }
 
   func testRuntimeSessionsReportsRealViewportState() throws {
@@ -426,5 +434,157 @@ final class LabanDebugSmokeTests: XCTestCase {
     let result = runtime.wait(body)
     let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
     XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
+  // MARK: - Selection and clipboard tests
+
+  func testSetSelectionActionSetsActiveSelection() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-sel-set"
+    )
+
+    let body = #"{"action":"setSelection","anchor":{"row":0,"col":2},"focus":{"row":0,"col":5}}"#
+      .data(using: .utf8)!
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
+  func testDebugSelectionEndpointReflectsSetSelection() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-sel-debug"
+    )
+
+    // Initially no selection.
+    let initResp = runtime.selection()
+    XCTAssertEqual(initResp.status, 200)
+    let initObj = try JSONSerialization.jsonObject(with: initResp.body) as! [String: Any]
+    XCTAssertEqual(initObj["active"] as? Bool, false)
+
+    // Set selection.
+    let setBody = #"{"action":"setSelection","anchor":{"row":0,"col":2},"focus":{"row":0,"col":5}}"#
+      .data(using: .utf8)!
+    _ = runtime.applyAction(setBody)
+
+    let selResp = runtime.selection()
+    XCTAssertEqual(selResp.status, 200)
+    let selObj = try JSONSerialization.jsonObject(with: selResp.body) as! [String: Any]
+    XCTAssertEqual(selObj["active"] as? Bool, true)
+    XCTAssertNotNil(selObj["anchor"])
+    XCTAssertNotNil(selObj["focus"])
+    XCTAssertNotNil(selObj["rects"])
+    XCTAssertNotNil(selObj["text"])
+    XCTAssertNotNil(selObj["sessionId"])
+  }
+
+  func testCopyActionPopulatesDebugClipboard() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-copy"
+    )
+
+    // Set selection first.
+    let setBody = #"{"action":"setSelection","anchor":{"row":0,"col":0},"focus":{"row":0,"col":3}}"#
+      .data(using: .utf8)!
+    _ = runtime.applyAction(setBody)
+
+    // Copy.
+    let copyBody = #"{"action":"copy"}"#.data(using: .utf8)!
+    let result = runtime.applyAction(copyBody)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+
+    // Clipboard should reflect the copy.
+    let clipResp = runtime.clipboard()
+    XCTAssertEqual(clipResp.status, 200)
+    let clipObj = try JSONSerialization.jsonObject(with: clipResp.body) as! [String: Any]
+    XCTAssertNotNil(clipObj["lastCopyText"])
+    XCTAssertTrue(clipObj.keys.contains("lastPasteText"))
+    XCTAssertTrue(clipObj.keys.contains("lastPasteUsedBracketedPaste"))
+    XCTAssertTrue(clipObj.keys.contains("lastPasteIgnoredNonText"))
+  }
+
+  func testPasteActionRecordsDebugClipboardState() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-paste"
+    )
+
+    // Pre-load clipboard.
+    let setClipBody = #"{"action":"setClipboardText","text":"hello paste"}"#.data(using: .utf8)!
+    _ = runtime.applyAction(setClipBody)
+
+    // Paste.
+    let pasteBody = #"{"action":"paste"}"#.data(using: .utf8)!
+    let result = runtime.applyAction(pasteBody)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+
+    // Debug clipboard should record paste state.
+    let clipResp = runtime.clipboard()
+    let clipObj = try JSONSerialization.jsonObject(with: clipResp.body) as! [String: Any]
+    XCTAssertEqual(clipObj["lastPasteText"] as? String, "hello paste")
+    XCTAssertNotNil(clipObj["lastPasteUsedBracketedPaste"])
+    XCTAssertEqual(clipObj["lastPasteIgnoredNonText"] as? Bool, false)
+  }
+
+  func testSelectionFrameCommandsAppearsWithSourceFilter() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-sel-cmds"
+    )
+
+    // Set a multi-cell selection.
+    let setBody = #"{"action":"setSelection","anchor":{"row":0,"col":0},"focus":{"row":0,"col":5}}"#
+      .data(using: .utf8)!
+    _ = runtime.applyAction(setBody)
+
+    // Check frame commands for selection kind.
+    let cmdsResp = runtime.frameCommands(query: ["source": "all", "limit": "500"])
+    let cmdsObj = try JSONSerialization.jsonObject(with: cmdsResp.body) as! [String: Any]
+    let cmds = cmdsObj["commands"] as! [[String: Any]]
+    let selectionCmds = cmds.filter { ($0["kind"] as? String) == "selection" }
+    XCTAssertGreaterThan(
+      selectionCmds.count, 0, "expected selection frame commands after setSelection")
   }
 }

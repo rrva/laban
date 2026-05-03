@@ -133,6 +133,40 @@ public final class Session {
     var raw = event.toLabanMouseEvent()
     return laban_session_send_mouse(h, &raw)
   }
+
+  // MARK: - Paste
+
+  public func bracketedPasteEnabled() -> Bool {
+    guard !isClosed, let h = handle else { return false }
+    var enabled: Int32 = 0
+    guard laban_session_bracketed_paste_enabled(h, &enabled) == 0 else { return false }
+    return enabled != 0
+  }
+
+  public struct PasteWriteResult: Equatable, Sendable {
+    public var bracketed: Bool
+    public var bytesWritten: Int
+  }
+
+  @discardableResult
+  public func writePaste(_ text: String) -> PasteWriteResult? {
+    guard !isClosed, let h = handle else { return nil }
+    let bytes = Array(text.utf8)
+    if bytes.isEmpty {
+      return PasteWriteResult(bracketed: bracketedPasteEnabled(), bytesWritten: 0)
+    }
+    var raw = LabanPasteResult()
+    let r = bytes.withUnsafeBytes { buf in
+      laban_session_write_paste(
+        h,
+        buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+        bytes.count,
+        &raw
+      )
+    }
+    guard r == 0 else { return nil }
+    return PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written)
+  }
 }
 
 // MARK: - Viewport state

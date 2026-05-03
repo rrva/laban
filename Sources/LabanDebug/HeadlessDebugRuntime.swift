@@ -30,6 +30,11 @@ private struct EventEntry {
   var error: String?
 }
 
+private struct CellCoordinateReq: Decodable {
+  var row: Int
+  var col: Int
+}
+
 private struct ActionRequest: Decodable {
   var action: String
   var tabId: String?
@@ -45,6 +50,8 @@ private struct ActionRequest: Decodable {
   var button: String?
   var sessionId: String?
   var deltaRows: Int?
+  var anchor: CellCoordinateReq?
+  var focus: CellCoordinateReq?
 }
 
 private struct WaitRequest: Decodable {
@@ -126,6 +133,11 @@ public final class HeadlessDebugRuntime {
   private var lastFrameCommands: [FrameCommand] = []
   private var lastDrawStats = DrawStats()
   private var debugClipboard: String = ""
+  private var selectionBySession: [Session.ID: TerminalSelection] = [:]
+  private var lastCopyText: String?
+  private var lastPasteText: String?
+  private var lastPasteUsedBracketedPaste: Bool?
+  private var lastPasteIgnoredNonText: Bool?
   private var eventLog: [EventEntry] = []
   private var eventSeq: Int = 0
 
@@ -224,7 +236,8 @@ public final class HeadlessDebugRuntime {
       session.poll()
       if let snap = session.snapshot() {
         defer { laban_snapshot_destroy(snap) }
-        cmds += frameProducer.commands(from: UnsafePointer(snap))
+        let sel = selectionBySession[session.id]
+        cmds += frameProducer.commands(from: UnsafePointer(snap), selection: sel)
       }
     }
 
@@ -493,9 +506,56 @@ public final class HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "clipboard.set", text: text))
       return actionResult(ok: true)
 
+    case "setSelection":
+      guard let anchorReq = req.anchor, let focusReq = req.focus else {
+        return jsonError("setSelection requires anchor and focus")
+      }
+      let targetTab =
+        req.sessionId.flatMap { sid in model.tabs.first(where: { $0.sessionId == sid }) }
+        ?? model.activeTab
+      guard let tab = targetTab, let session = model.session(forTab: tab.id) else {
+        return jsonError("no session for setSelection")
+      }
+      let sel = TerminalSelection(
+        sessionId: session.id,
+        anchor: TerminalCellCoordinate(row: anchorReq.row, col: anchorReq.col),
+        focus: TerminalCellCoordinate(row: focusReq.row, col: focusReq.col)
+      )
+      selectionBySession[session.id] = sel
+      renderFrameUnlocked()
+      appendEvent(EventEntry(kind: "selection.set", sessionId: tab.sessionId))
+      return actionResult(ok: true)
+
+    case "copy":
+      let targetTab =
+        req.sessionId.flatMap { sid in model.tabs.first(where: { $0.sessionId == sid }) }
+        ?? model.activeTab
+      guard let tab = targetTab, let session = model.session(forTab: tab.id) else {
+        return jsonError("no session for copy")
+      }
+      guard let sel = selectionBySession[session.id] else {
+        lastCopyText = ""
+        appendEvent(EventEntry(kind: "clipboard.copied", text: ""))
+        return actionResult(ok: true)
+      }
+      let text: String
+      if let snap = session.snapshot() {
+        defer { laban_snapshot_destroy(snap) }
+        text = sel.selectedText(from: snap.pointee)
+      } else {
+        text = ""
+      }
+      lastCopyText = text
+      debugClipboard = text
+      appendEvent(EventEntry(kind: "clipboard.copied", text: text))
+      return actionResult(ok: true)
+
     case "paste":
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
-        session.write(Array(debugClipboard.utf8))
+        let result = session.writePaste(debugClipboard)
+        lastPasteText = debugClipboard
+        lastPasteUsedBracketedPaste = result?.bracketed
+        lastPasteIgnoredNonText = false
       }
       renderFrameUnlocked()
       appendEvent(EventEntry(kind: "clipboard.pasted", text: debugClipboard))
@@ -637,14 +697,21 @@ public final class HeadlessDebugRuntime {
             mouseTracking: true, sent: true
           ))
       } else {
-        // No mouse tracking; debug-local selection not implemented.
-        appendEvent(EventEntry(kind: "mouse.sidebar", action: "click"))
+        // No mouse tracking: set a one-cell local selection at the clicked cell.
+        let termX = Int(terminalPoint.x)
+        let termY = Int(terminalPoint.y)
+        let clickedRow = max(0, windowHeight - termY - 1) / max(cellHeight, 1)
+        let clickedCol = max(0, termX) / max(cellWidth, 1)
+        let coord = TerminalCellCoordinate(row: clickedRow, col: clickedCol)
+        let sel = TerminalSelection(sessionId: session.id, anchor: coord, focus: coord)
+        selectionBySession[session.id] = sel
+        renderFrameUnlocked()
+        appendEvent(EventEntry(kind: "selection.set", sessionId: tab.sessionId, action: "click"))
         return jsonEncode(
           MouseActionResult(
-            ok: false, frame: currentFrame,
+            ok: true, frame: currentFrame,
             activeTabId: tab.id, activeSessionId: tab.sessionId,
-            mouseTracking: false, sent: false,
-            error: "local selection not implemented through debug"
+            mouseTracking: false, sent: false
           ))
       }
 
@@ -1105,6 +1172,64 @@ public final class HeadlessDebugRuntime {
   }
 
   // MARK: - Events endpoint
+
+  // MARK: - Selection and clipboard endpoints
+
+  public func selection() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+
+    guard let tab = model.activeTab, let session = model.session(forTab: tab.id) else {
+      return jsonEncode(
+        SelectionResponse(
+          active: false, sessionId: nil, anchor: nil, focus: nil, rects: [], text: ""))
+    }
+
+    guard let sel = selectionBySession[session.id] else {
+      return jsonEncode(
+        SelectionResponse(
+          active: false, sessionId: tab.sessionId, anchor: nil, focus: nil, rects: [], text: ""))
+    }
+
+    var rects: [RectResponse] = []
+    var text = ""
+
+    if let snap = session.snapshot() {
+      defer { laban_snapshot_destroy(snap) }
+      let rows = Int(snap.pointee.rows)
+      let cols = Int(snap.pointee.cols)
+      for r in sel.cgRects(
+        rows: rows, cols: cols,
+        cellWidth: CGFloat(cellWidth), cellHeight: CGFloat(cellHeight),
+        originX: CGFloat(sidebarWidth), originY: 0
+      ) {
+        rects.append(rectResponse(r))
+      }
+      text = sel.selectedText(from: snap.pointee)
+    }
+
+    return jsonEncode(
+      SelectionResponse(
+        active: true,
+        sessionId: tab.sessionId,
+        anchor: CellCoordResponse(row: sel.anchor.row, col: sel.anchor.col),
+        focus: CellCoordResponse(row: sel.focus.row, col: sel.focus.col),
+        rects: rects,
+        text: text
+      ))
+  }
+
+  public func clipboard() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    return jsonEncode(
+      ClipboardResponse(
+        lastCopyText: lastCopyText,
+        lastPasteText: lastPasteText,
+        lastPasteUsedBracketedPaste: lastPasteUsedBracketedPaste,
+        lastPasteIgnoredNonText: lastPasteIgnoredNonText
+      ))
+  }
 
   public func events(since: Int) -> DebugResponse {
     lock.lock()
