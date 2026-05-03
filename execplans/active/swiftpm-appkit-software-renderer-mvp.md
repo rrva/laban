@@ -70,7 +70,7 @@ plan as each shard lands.
   `execplans/active/terminal-session-libghostty-vt.md`, Milestone 2.
 - [x] Add Swift app state for one window, max nine tabs, stable tab/session IDs,
   session lifecycle, selection fallback, and final-tab replacement.
-- [ ] Add the frame-command model and deterministic software bitmap renderer.
+- [x] Add the frame-command model and deterministic software bitmap renderer.
 - [ ] Add the AppKit executable with one window, custom left sidebar, bitmap
   terminal view, fixed JetBrains Mono, fixed Selenized Light, keyboard input,
   and basic copy/paste.
@@ -975,6 +975,14 @@ be run from a clean working tree and produce the expected result.
   Evidence: The first shard is `execplans/active/swiftpm-libghostty-skeleton.md`
   and intentionally covers only SwiftPM scaffolding, the C smoke target,
   libghostty pin/probe, local `.app` bundling, and check-script integration.
+
+- Observation: `CGBitmapContext` stores buffer row 0 at the TOP scanline, but
+  CoreGraphics coordinates have y=0 at the BOTTOM (standard CG bottom-left origin).
+  `BitmapSurface.pixel(x:y:)` must map CG y to buffer row using `(height - 1 - y)`,
+  not `y` directly. The wrong formula caused spatial pixel-read tests to return stale
+  zero values even after drawing; the whole-surface fill test passed by accident.
+  `FrameProducer`'s row-to-y conversion `cellY = (rows-1-row)*ch` is correct because
+  it produces high CG y values for top terminal rows, matching how CoreGraphics draws.
 
 ## Artifacts and Notes
 
