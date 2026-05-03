@@ -55,6 +55,54 @@ final class LabanSessionTests: XCTestCase {
     laban_session_destroy(session)
   }
 
+  func testDirtyLifecycle() {
+    guard let session = makeFixtureSession(rows: 5, cols: 10) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Initial dirty state: may be dirty or clean depending on Ghostty init.
+    // We snapshot once to allow a baseline, then mark rendered.
+    var dirty: Int32 = 0
+    XCTAssertEqual(laban_session_render_dirty(session, &dirty), 0)
+    _ = dirty  // capture initial state for reference
+
+    // After marking rendered, dirty must be 0.
+    XCTAssertEqual(laban_session_mark_rendered(session), 0)
+    dirty = 99
+    XCTAssertEqual(laban_session_render_dirty(session, &dirty), 0)
+    XCTAssertEqual(dirty, 0, "after mark_rendered, dirty must be 0")
+
+    // Write bytes; dirty query must report dirty.
+    let bytes = Array("hello\r\n".utf8)
+    bytes.withUnsafeBytes { buf in
+      laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        bytes.count)
+    }
+
+    dirty = 0
+    XCTAssertEqual(laban_session_render_dirty(session, &dirty), 0)
+    // After writing, some rows are dirty
+    XCTAssertEqual(dirty, 1, "after writing bytes, dirty must be 1")
+
+    // Snapshot + build commands as stand-in for rendering.
+    var snap: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snap), 0)
+    XCTAssertNotNil(snap)
+    laban_snapshot_destroy(snap)
+
+    // Mark rendered.
+    XCTAssertEqual(laban_session_mark_rendered(session), 0)
+
+    // Dirty query must return false without additional writes.
+    dirty = 99
+    XCTAssertEqual(laban_session_render_dirty(session, &dirty), 0)
+    XCTAssertEqual(dirty, 0, "after mark_rendered with no new writes, dirty must be 0")
+  }
+
   func testFixtureResizeChangesSize() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

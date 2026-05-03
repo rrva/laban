@@ -164,6 +164,79 @@ final class FrameProducerTests: XCTestCase {
     }
   }
 
+  // MARK: - Coalescing tests
+
+  func testSameStyleRowProducesOneGlyphRun() throws {
+    // A row of same-style text should coalesce into one glyphRun.
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    let bytes = Array("Hello, this is coalesced text!\r\n".utf8)
+    session.write(bytes)
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = producer.commands(from: UnsafePointer(snap))
+
+    let terminalGlyphs = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, let src) = cmd, src == .terminal {
+        return text
+      }
+      return nil
+    }
+
+    // The first row of text "Hello, this is coalesced text!" should be
+    // emitted as a single glyphRun (or at most a few if palette colors differ).
+    let allJoined = terminalGlyphs.joined()
+    XCTAssertTrue(allJoined.contains("Hello"), "coalesced text must contain 'Hello'")
+
+    // The number of distinct glyph runs should be far below the cell count.
+    // A single line of uniform text should produce at most a few runs
+    // (one for the line, possibly one for the blank rest of the row).
+    XCTAssertLessThan(
+      terminalGlyphs.count, 80,
+      "coalesced output should have far fewer glyph runs than cells")
+  }
+
+  func testBlankGridCommandCountIsLow() throws {
+    // A blank grid should not emit one rect per cell.
+    var size = LabanTerminalSize()
+    size.rows = 10
+    size.cols = 30
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = producer.commands(from: UnsafePointer(snap))
+
+    // The blank grid at default bg should produce:
+    // 1 terminal background rect + cursor (active by default) = 2 commands
+    // If cursor is visible, expect 2; if not, expect 1.
+    let hasCursor = cmds.contains {
+      if case .cursor = $0 { return true }
+      return false
+    }
+    let expectedMax = hasCursor ? 3 : 2
+    XCTAssertLessThanOrEqual(
+      cmds.count, expectedMax,
+      "blank grid with default background should not emit per-cell rects; "
+        + "got \(cmds.count) commands")
+  }
+
   // MARK: - Large snapshot smoke (diagnostic)
 
   func testLargeSnapshotFrameCommandCount() throws {

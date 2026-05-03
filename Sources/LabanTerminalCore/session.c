@@ -428,17 +428,19 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         }
     }
 
-    snap->rows            = rows;
-    snap->cols            = cols;
-    snap->cursor_row      = cursor_row;
-    snap->cursor_col      = cursor_col;
-    snap->cursor_visible  = cursor_visible;
-    snap->status          = s->status;
-    snap->exit_status     = s->exit_status;
-    snap->mouse_tracking  = mouse_tracking;
-    snap->focus_reporting = 0;
-    snap->dirty           = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
-    snap->title           = title_copy;
+    snap->rows                   = rows;
+    snap->cols                   = cols;
+    snap->cursor_row             = cursor_row;
+    snap->cursor_col             = cursor_col;
+    snap->cursor_visible         = cursor_visible;
+    snap->status                 = s->status;
+    snap->exit_status            = s->exit_status;
+    snap->mouse_tracking         = mouse_tracking;
+    snap->focus_reporting        = 0;
+    snap->dirty                  = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
+    snap->default_foreground_rgba = default_fg;
+    snap->default_background_rgba = default_bg;
+    snap->title                  = title_copy;
     snap->utf8_storage    = utf8_storage;
     snap->utf8_storage_len = utf8_used;
     snap->cells           = cells;
@@ -454,4 +456,35 @@ void laban_snapshot_destroy(LabanSnapshot *snap) {
     free((void *)snap->utf8_storage);
     free((void *)snap->cells);
     free(snap);
+}
+
+int laban_session_render_dirty(LabanSession *session, int *out_dirty) {
+    if (!session || !out_dirty) return -1;
+    ghostty_render_state_update(session->render_state, session->terminal);
+    GhosttyRenderStateDirty dirty_state = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+    ghostty_render_state_get(session->render_state,
+        GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty_state);
+    *out_dirty = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
+    return 0;
+}
+
+int laban_session_mark_rendered(LabanSession *session) {
+    if (!session) return -1;
+
+    /* Clear global dirty state. */
+    GhosttyRenderStateDirty clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+    ghostty_render_state_set(session->render_state,
+        GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean);
+
+    /* Clear row-level dirty flags by iterating all rows. */
+    ghostty_render_state_get(session->render_state,
+        GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &session->row_iter);
+
+    bool row_clean = false;
+    while (ghostty_render_state_row_iterator_next(session->row_iter)) {
+        ghostty_render_state_row_set(session->row_iter,
+            GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &row_clean);
+    }
+
+    return 0;
 }

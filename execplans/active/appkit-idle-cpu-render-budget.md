@@ -34,14 +34,21 @@ should no longer be `TerminalBitmapView.advanceFrame()` calling
   render-state dirty flag; callers must clear global and row dirty state after
   rendering.
 - [x] (2026-05-03) Add LabanTerminalCore dirty-query and rendered-marking ABI.
-- [x] (2026-05-03) Gate AppKit rendering so idle timer ticks poll lightly but skip
-  snapshot, command production, CoreText layout, `CGImage` creation, and
+- [x] (2026-05-03) Gate AppKit rendering so idle timer ticks poll lightly but
+  skip snapshot, command production, CoreText layout, `CGImage` creation, and
   `needsDisplay` when nothing changed.
-- [x] (2026-05-03) Prevent duplicate AppKit frame timers after view/window transitions.
-- [x] (2026-05-03) Coalesce terminal frame commands so a row of same-style text becomes one
-  glyph command instead of one command per cell.
+- [x] (2026-05-03) Prevent duplicate AppKit frame timers after view/window
+  transitions.
+- [x] (2026-05-03) Coalesce terminal frame commands so a row of same-style
+  text becomes one glyph command instead of one command per cell.
 - [x] (2026-05-03) Reduce repeated color allocation in the software renderer.
-- [x] (2026-05-03) Add tests and local sample evidence showing idle redraws stopped.
+- [x] (2026-05-03) Add tests and local sample evidence showing idle redraws
+  stopped.
+- [x] (2026-05-03) Fixed coalesced glyph runs so rendered text still lands on
+  fixed terminal cell positions.
+- [x] (2026-05-03) Added a debug-server end-to-end regression that types a
+  long coalesced line, captures `/debug/screenshot`, and asserts pixels reach
+  the final fixed-width terminal cell.
 
 ## Decision Log
 
@@ -120,6 +127,15 @@ Review status: PASSED (2026-05-03 by executing agent)
   Evidence: `Sources/LabanTerminalCore/session.c` reads
   `GHOSTTY_RENDER_STATE_DATA_DIRTY` into `snap->dirty`; no matching
   `GHOSTTY_RENDER_STATE_OPTION_DIRTY` reset exists in the current source.
+
+- Observation: Coalescing adjacent text cells into one `.glyphRun` exposed a
+  renderer bug: drawing the whole run with one normal CoreText line used the
+  font's natural advance rather than Laban's fixed terminal cell width.
+  Evidence: a debug-server comparison of `main` and this branch typed 70 `M`
+  characters into a blank tab. The frame command rect described a 630 pixel
+  terminal span, but the branch screenshot only contained terminal glyph pixels
+  across 587 pixels; `main`, which drew one glyph command per cell, covered
+  629 pixels.
 
 ## Context and Orientation
 
