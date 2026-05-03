@@ -1,3 +1,235 @@
+import CoreGraphics
 import Foundation
+import LabanCore
+import LabanRenderer
+import LabanTerminalCore
 
-print("laban-agent: placeholder, headless mode not yet implemented")
+// MARK: - Arg parsing
+
+struct AgentArgs {
+  var headless = false
+  var debugServer = false
+  var fixture: String? = nil
+  var artifacts: String? = nil
+  var tempDir: String? = nil
+  var deterministic = false
+}
+
+func parseArgs() -> AgentArgs {
+  var a = AgentArgs()
+  for arg in CommandLine.arguments.dropFirst() {
+    switch arg {
+    case "--headless": a.headless = true
+    case "--debug-server": a.debugServer = true
+    case "--deterministic": a.deterministic = true
+    default:
+      if arg.hasPrefix("--fixture=") {
+        a.fixture = String(arg.dropFirst("--fixture=".count))
+      } else if arg.hasPrefix("--artifacts=") {
+        a.artifacts = String(arg.dropFirst("--artifacts=".count))
+      } else if arg.hasPrefix("--temp-dir=") {
+        a.tempDir = String(arg.dropFirst("--temp-dir=".count))
+      } else if arg.hasPrefix("--debug-server=") {
+        a.debugServer = true
+      }
+    }
+  }
+  return a
+}
+
+// MARK: - Result
+
+struct HeadlessResult: Encodable {
+  let mode: String
+  let frameCount: Int
+  let activeTabId: String
+  let activeSessionId: String
+  let terminalRows: Int
+  let terminalCols: Int
+  let screenshotPath: String
+  let foundExpectedText: Bool?
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(mode, forKey: .mode)
+    try c.encode(frameCount, forKey: .frameCount)
+    try c.encode(activeTabId, forKey: .activeTabId)
+    try c.encode(activeSessionId, forKey: .activeSessionId)
+    try c.encode(terminalRows, forKey: .terminalRows)
+    try c.encode(terminalCols, forKey: .terminalCols)
+    try c.encode(screenshotPath, forKey: .screenshotPath)
+    try c.encodeIfPresent(foundExpectedText, forKey: .foundExpectedText)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case mode, frameCount, activeTabId, activeSessionId
+    case terminalRows, terminalCols, screenshotPath, foundExpectedText
+  }
+}
+
+// MARK: - Helpers
+
+func fail(_ message: String) -> Never {
+  fputs("laban-agent: error: \(message)\n", stderr)
+  exit(1)
+}
+
+func resolveURL(_ path: String) -> URL {
+  if (path as NSString).isAbsolutePath {
+    return URL(fileURLWithPath: path)
+  }
+  let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+  return cwd.appendingPathComponent(path)
+}
+
+// MARK: - Entry point
+
+let args = parseArgs()
+
+if args.debugServer {
+  fail("debug server not implemented in this shard")
+}
+
+guard args.headless else { fail("--headless is required") }
+guard let fixturePath = args.fixture else { fail("--fixture is required") }
+guard let artifactsPath = args.artifacts else { fail("--artifacts is required") }
+
+let fixtureURL = resolveURL(fixturePath)
+let artifactsURL = resolveURL(artifactsPath)
+
+let runner: FixtureRunner
+do {
+  runner = try FixtureRunner.load(from: fixtureURL)
+} catch {
+  fail("failed to load fixture \(fixturePath): \(error)")
+}
+
+do {
+  try FileManager.default.createDirectory(at: artifactsURL, withIntermediateDirectories: true)
+} catch {
+  fail("failed to create artifacts directory \(artifactsURL.path): \(error)")
+}
+
+if let tempPath = args.tempDir {
+  let tempURL = resolveURL(tempPath)
+  do {
+    try FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
+  } catch {
+    fail("failed to create temp directory \(tempURL.path): \(error)")
+  }
+}
+
+// Build AppModel from fixture initial size with fixture-backed sessions.
+var initialSize = LabanTerminalSize()
+initialSize.rows = Int32(runner.fixture.initialSize.rows)
+initialSize.cols = Int32(runner.fixture.initialSize.cols)
+
+let model: AppModel
+do {
+  model = try AppModel(initialSize: initialSize)
+} catch {
+  fail("failed to create AppModel: \(error)")
+}
+
+// Apply fixture steps; result is the sum of all waitFrames counts.
+let stepsFrameCount: Int
+do {
+  stepsFrameCount = try runner.apply(to: model)
+} catch {
+  fail("failed to apply fixture steps: \(error)")
+}
+
+// Snapshot active session.
+guard let activeTab = model.activeTab,
+  let session = model.session(forTab: activeTab.id),
+  let snap = session.snapshot()
+else {
+  fail("failed to get snapshot")
+}
+defer { laban_snapshot_destroy(snap) }
+
+let rows = Int(snap.pointee.rows)
+let cols = Int(snap.pointee.cols)
+
+// Render with the same path as LabanApp: sidebar + terminal frame commands.
+let fontAtlas = FontAtlas(pointSize: 14)
+let cellSize = fontAtlas.cellSize
+let cellW = Int(cellSize.width)
+let cellH = Int(cellSize.height)
+let sidebarWidth: CGFloat = 200
+let bitmapW = max(Int(sidebarWidth) + cols * cellW, 1)
+let bitmapH = max(rows * cellH, 1)
+
+let surface = BitmapSurface(width: bitmapW, height: bitmapH)
+let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+
+let sidebarProducer = SidebarProducer(
+  sidebarWidth: sidebarWidth,
+  cellWidth: CGFloat(cellW),
+  cellHeight: CGFloat(cellH)
+)
+let frameProducer = FrameProducer(
+  cellWidth: cellW,
+  cellHeight: cellH,
+  originX: sidebarWidth,
+  originY: 0
+)
+
+var cmds: [FrameCommand] = []
+cmds += sidebarProducer.commands(
+  tabs: model.tabs, activeTabId: activeTab.id, height: CGFloat(bitmapH))
+cmds += frameProducer.commands(from: UnsafePointer(snap))
+renderer.render(cmds)
+
+// Write PNG.
+guard let pngData = surface.pngData else { fail("failed to encode PNG") }
+let screenshotURL = artifactsURL.appendingPathComponent("screenshot.png")
+do {
+  try pngData.write(to: screenshotURL)
+} catch {
+  fail("failed to write screenshot: \(error)")
+}
+
+// Check expected text (omit from result if no containsText spec).
+let foundExpectedText: Bool?
+if let containsText = runner.fixture.expect?.containsText, !containsText.isEmpty {
+  let text = runner.visibleText(from: UnsafePointer(snap))
+  foundExpectedText = containsText.allSatisfy { text.contains($0) }
+} else {
+  foundExpectedText = nil
+}
+
+// Write result JSON. frameCount = steps frame count + 1 for the final render.
+let result = HeadlessResult(
+  mode: "headless",
+  frameCount: stepsFrameCount + 1,
+  activeTabId: activeTab.id,
+  activeSessionId: activeTab.sessionId,
+  terminalRows: rows,
+  terminalCols: cols,
+  screenshotPath: screenshotURL.path,
+  foundExpectedText: foundExpectedText
+)
+
+let enc = JSONEncoder()
+enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+let resultData: Data
+do {
+  resultData = try enc.encode(result)
+} catch {
+  fail("failed to encode result JSON: \(error)")
+}
+
+let resultURL = artifactsURL.appendingPathComponent("result.json")
+do {
+  try resultData.write(to: resultURL)
+} catch {
+  fail("failed to write result JSON: \(error)")
+}
+
+print("laban-agent: headless run complete")
+print("  screenshot: \(screenshotURL.path)")
+print("  result: \(resultURL.path)")
+if let found = foundExpectedText {
+  print("  foundExpectedText: \(found)")
+}

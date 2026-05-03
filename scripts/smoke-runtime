@@ -17,14 +17,22 @@ swift build --product LabanApp --product laban-agent
 AGENT_BIN=".build/debug/laban-agent"
 APP_BIN=".build/laban/Laban.app/Contents/MacOS/LabanApp"
 PLIST=".build/laban/Laban.app/Contents/Info.plist"
-EXPECTED_AGENT="laban-agent: placeholder, headless mode not yet implemented"
 EXPECTED_APP="laban-app: smoke ok"
+AGENT_ARTIFACTS=".artifacts/runs/smoke-runtime"
+AGENT_TMP=".tmp/smoke-runtime"
 
-# 1. Exact agent output
-actual=$("$AGENT_BIN")
-[ "$actual" = "$EXPECTED_AGENT" ] || fail "laban-agent output mismatch
-  expected: ${EXPECTED_AGENT}
-  got:      ${actual}"
+# 1. Headless fixture run: exits 0, produces screenshot, finds expected text.
+rm -rf "$AGENT_ARTIFACTS" "$AGENT_TMP"
+"$AGENT_BIN" --headless \
+  --fixture=fixtures/colored-boxes.fixture.json \
+  --artifacts="$AGENT_ARTIFACTS" \
+  --temp-dir="$AGENT_TMP" \
+  --deterministic || fail "laban-agent exited non-zero"
+[ -f "$AGENT_ARTIFACTS/screenshot.png" ] || fail "laban-agent did not produce screenshot.png"
+[ -s "$AGENT_ARTIFACTS/screenshot.png" ] || fail "laban-agent screenshot.png is empty"
+found=$(jq -r '.foundExpectedText // "missing"' "$AGENT_ARTIFACTS/result.json" 2>/dev/null)
+[ "$found" = "true" ] || fail "laban-agent foundExpectedText is not true (got: $found)"
+rm -rf "$AGENT_ARTIFACTS" "$AGENT_TMP"
 
 # 2. Info.plist validity
 plutil -lint "$PLIST" || fail "Info.plist lint failed"
