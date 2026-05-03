@@ -15,6 +15,7 @@ AGENT_BIN=".build/debug/laban-agent"
 APP_BIN=".build/laban/Laban.app/Contents/MacOS/LabanApp"
 PLIST=".build/laban/Laban.app/Contents/Info.plist"
 EXPECTED_AGENT="laban-agent: placeholder, headless mode not yet implemented"
+EXPECTED_APP="laban-app: smoke ok"
 
 [ -x "$AGENT_BIN" ] || fail "$AGENT_BIN not found; run swift build first"
 [ -x "$APP_BIN" ]   || fail "$APP_BIN not executable; run ./scripts/build-app first"
@@ -31,7 +32,21 @@ plutil -lint "$PLIST" || fail "Info.plist lint failed"
 # 3. Binary executable bit (belt-and-suspenders)
 [ -x "$APP_BIN" ] || fail "$APP_BIN is not executable"
 
-# 4. AppKit smoke startup: create window, exit 0
-LABAN_SMOKE=1 "$APP_BIN" || fail "LabanApp smoke startup exited non-zero"
+# 4. AppKit smoke startup: print stable line and exit 0 without entering run loop.
+# Background watchdog kills the process after 10s to guard against hang regression.
+_tmp=$(mktemp)
+LABAN_SMOKE=1 "$APP_BIN" >"$_tmp" &
+_pid=$!
+( sleep 10 && kill "$_pid" 2>/dev/null ) &
+_watchdog=$!
+wait "$_pid" && _status=0 || _status=$?
+kill "$_watchdog" 2>/dev/null || true
+wait "$_watchdog" 2>/dev/null || true
+actual_app=$(cat "$_tmp")
+rm -f "$_tmp"
+[ "$_status" -eq 0 ] || fail "LabanApp smoke startup failed (exit $_status)"
+[ "$actual_app" = "$EXPECTED_APP" ] || fail "LabanApp smoke output mismatch
+  expected: ${EXPECTED_APP}
+  got:      ${actual_app}"
 
 printf 'smoke-runtime passed\n'
