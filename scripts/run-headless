@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FIXTURE="${1:-fixtures/colored-boxes.fixture.json}"
+ARTIFACTS=".artifacts/runs/manual"
+TMP=".tmp/manual"
+
+swift run laban-agent -- \
+  --headless \
+  --fixture="$FIXTURE" \
+  --artifacts="$ARTIFACTS" \
+  --temp-dir="$TMP" \
+  --deterministic
+
+echo ""
+echo "Artifacts: $ARTIFACTS"
+echo "Screenshot: $ARTIFACTS/screenshot.png"
+echo "Result:    $ARTIFACTS/result.json"

@@ -79,7 +79,7 @@ plan as each shard lands.
     AppDelegate, MenuCommands, TerminalInputView, SidebarView (LabanApp).
   - LABAN_SMOKE=1 exits 0 before session creation.
   - SidebarProducer has 10 unit tests; all 47 suite tests pass.
-- [ ] Add the `laban-agent` headless executable using the same app state and
+- [x] Add the `laban-agent` headless executable using the same app state and
   renderer.
 - [ ] Add the debug server phase 1 endpoints:
   `/debug/health`, `/debug/state`, `/debug/screenshot`, and `/debug/actions`.
