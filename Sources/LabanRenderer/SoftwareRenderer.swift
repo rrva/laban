@@ -5,10 +5,18 @@ import Foundation
 public final class SoftwareRenderer {
   public let surface: BitmapSurface
   public let fontAtlas: FontAtlas
+  private var colorCache: [UInt32: CGColor] = [:]
 
   public init(surface: BitmapSurface, fontAtlas: FontAtlas) {
     self.surface = surface
     self.fontAtlas = fontAtlas
+  }
+
+  private func color(_ rgba: UInt32) -> CGColor {
+    if let cached = colorCache[rgba] { return cached }
+    let c = cgColorFrom(rgba)
+    colorCache[rgba] = c
+    return c
   }
 
   public func render(_ commands: [FrameCommand]) {
@@ -17,19 +25,19 @@ public final class SoftwareRenderer {
     ctx.scaleBy(x: surface.scale, y: surface.scale)
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, _):
-        ctx.setFillColor(cgColorFrom(color))
+      case .rect(let rect, let colorValue, _):
+        ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
       case .glyphRun(let origin, let text, let fg, _, _):
         drawText(text, at: origin, foreground: fg, in: ctx)
 
-      case .cursor(let rect, let color):
-        ctx.setFillColor(cgColorFrom(color))
+      case .cursor(let rect, let colorValue):
+        ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
-      case .selection(let rect, let color):
-        ctx.setFillColor(cgColorFrom(color))
+      case .selection(let rect, let colorValue):
+        ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
       case .clip(let rect):
@@ -47,7 +55,7 @@ public final class SoftwareRenderer {
   private func drawText(
     _ text: String, at origin: CGPoint, foreground fg: UInt32, in ctx: CGContext
   ) {
-    let fgColor = cgColorFrom(fg)
+    let fgColor = color(fg)
     let attrStr = NSMutableAttributedString(string: text)
     let range = NSRange(location: 0, length: attrStr.length)
     attrStr.addAttribute(

@@ -24,6 +24,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var selectionAnchor: (row: Int, col: Int)?
   private var selectionFocus: (row: Int, col: Int)?
 
+  // Damage-driven render budget state
+  private var renderInvalidated = true
+  private var lastRenderedActiveTabId: Tab.ID?
+
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
 
@@ -57,36 +61,51 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       frameTimer = nil
       return
     }
-    recreateSurface()
-    let timer = Timer(
-      timeInterval: 1.0 / 30.0,
-      target: self,
-      selector: #selector(advanceFrame),
-      userInfo: nil,
-      repeats: true
-    )
-    RunLoop.current.add(timer, forMode: .common)
-    frameTimer = timer
+    // Prevent duplicate timers when view transitions between windows
+    if frameTimer == nil {
+      recreateSurface()
+      let timer = Timer(
+        timeInterval: 1.0 / 30.0,
+        target: self,
+        selector: #selector(advanceFrame),
+        userInfo: nil,
+        repeats: true
+      )
+      RunLoop.current.add(timer, forMode: .common)
+      frameTimer = timer
+    } else {
+      recreateSurface()
+    }
+    renderInvalidated = true
     window?.makeFirstResponder(self)
   }
 
   override func viewDidChangeBackingProperties() {
     super.viewDidChangeBackingProperties()
-    recreateSurface()
+    if recreateSurface() {
+      renderInvalidated = true
+    }
   }
 
-  private func recreateSurface() {
+  /// Returns true if the surface was actually recreated.
+  @discardableResult
+  private func recreateSurface() -> Bool {
     let scale = window?.backingScaleFactor ?? 1.0
     let pixW = max(1, Int(ceil(bounds.width * scale)))
     let pixH = max(1, Int(ceil(bounds.height * scale)))
     guard pixW != lastPixelWidth || pixH != lastPixelHeight || scale != lastSurfaceScale else {
-      return
+      return false
     }
     lastPixelWidth = pixW
     lastPixelHeight = pixH
     lastSurfaceScale = scale
     surface = BitmapSurface(width: pixW, height: pixH, scale: scale)
     renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+    return true
+  }
+
+  private func invalidateFrame() {
+    renderInvalidated = true
   }
 
   // MARK: - Frame loop
@@ -97,9 +116,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
 
     guard let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id),
-      let snap = session.snapshot()
+      let session = model.session(forTab: activeTab.id)
     else { return }
+
+    let terminalDirty = session.renderDirty()
+    let tabChanged = lastRenderedActiveTabId != activeTab.id
+
+    // Return early when nothing changed
+    guard terminalDirty || renderInvalidated || tabChanged else { return }
+
+    guard let snap = session.snapshot() else { return }
     defer { laban_snapshot_destroy(snap) }
 
     lastRows = Int(snap.pointee.rows)
@@ -125,6 +151,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderer.render(cmds)
     cachedCGImage = surface.cgImage
     needsDisplay = true
+
+    session.markRendered()
+    renderInvalidated = false
+    lastRenderedActiveTabId = activeTab.id
   }
 
   // MARK: - Drawing
@@ -149,7 +179,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let w = Int(newSize.width)
     let h = Int(newSize.height)
     guard w > 0, h > 0 else { return }
-    recreateSurface()
+    if recreateSurface() {
+      renderInvalidated = true
+    }
     let termW = max(1, w - Int(sidebarWidth))
     model.resize(
       viewportWidth: termW, viewportHeight: h, cellWidth: cellWidth, cellHeight: cellHeight)
@@ -305,9 +337,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: CGFloat(cellHeight)
       )
       switch sp.hitTest(at: pt, tabs: model.tabs, height: bounds.height) {
-      case .newTab: _ = try? model.createTab()
-      case .selectTab(let id): model.selectTab(id)
-      case .closeTab(let id): _ = try? model.closeTab(id)
+      case .newTab:
+        _ = try? model.createTab()
+        renderInvalidated = true
+      case .selectTab(let id):
+        model.selectTab(id)
+        renderInvalidated = true
+      case .closeTab(let id):
+        _ = try? model.closeTab(id)
+        renderInvalidated = true
       case .none: break
       }
       return
@@ -316,14 +354,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     window?.makeFirstResponder(self)
     selectionAnchor = termCell(at: pt)
     selectionFocus = selectionAnchor
+    renderInvalidated = true
   }
 
   override func mouseDragged(with event: NSEvent) {
     selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+    renderInvalidated = true
   }
 
   override func mouseUp(with event: NSEvent) {
     selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+    renderInvalidated = true
   }
 
   // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
@@ -341,11 +382,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   @objc func newTab(_ sender: Any?) {
     _ = try? model.createTab()
+    renderInvalidated = true
   }
 
   @objc func closeTab(_ sender: Any?) {
     guard let tabId = model.activeTab?.id else { return }
     _ = try? model.closeTab(tabId)
+    renderInvalidated = true
   }
 
   @objc func selectTabByIndex(_ sender: Any?) {
@@ -353,5 +396,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let idx = item.tag - 1
     guard idx >= 0, idx < model.tabs.count else { return }
     model.selectTab(model.tabs[idx].id)
+    renderInvalidated = true
   }
 }

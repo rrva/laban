@@ -58,6 +58,8 @@ typedef struct {
     int mouse_tracking;
     int focus_reporting;
     int dirty;
+    uint32_t default_foreground_rgba;
+    uint32_t default_background_rgba;
     const char *title;
     const char *utf8_storage;
     size_t utf8_storage_len;
@@ -82,5 +84,9 @@ int laban_session_resize(LabanSession *session, LabanTerminalSize size);
 int laban_session_write(LabanSession *session, const uint8_t *bytes, size_t len);
 int laban_session_snapshot(LabanSession *session, LabanSnapshot **out_snapshot);
 void laban_snapshot_destroy(LabanSnapshot *snapshot);
+
+/* Dirty lifecycle: lightweight query and render-marking without snapshot allocation. */
+int laban_session_render_dirty(LabanSession *session, int *out_dirty);
+int laban_session_mark_rendered(LabanSession *session);
 
 #endif /* LABAN_TERMINAL_CORE_H */

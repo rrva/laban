@@ -71,4 +71,22 @@ public final class Session {
     guard laban_session_snapshot(h, &snap) == 0 else { return nil }
     return snap
   }
+
+  /// Returns true if the session has unrendered terminal changes.
+  /// Returns false on C failure or closed session; the frame loop
+  /// should treat C failure as non-fatal and retry on the next tick.
+  public func renderDirty() -> Bool {
+    guard !isClosed, let h = handle else { return false }
+    var dirty: Int32 = 0
+    guard laban_session_render_dirty(h, &dirty) == 0 else { return false }
+    return dirty != 0
+  }
+
+  /// Mark the session as fully rendered (clears global and row dirty flags).
+  /// Returns -1 on C failure, 0 on success.
+  @discardableResult
+  public func markRendered() -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    return laban_session_mark_rendered(h)
+  }
 }
