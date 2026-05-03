@@ -68,5 +68,7 @@ execplans/                             Active and completed ExecPlans.
   and UI refresh.
 - Native text input wins over raw modifier interpretation.
 - Keep changesets focused on one behavioral reason.
-- Git commits are atomic. Commit messages are single-line and describe why the
-  change exists, not what files changed.
+- Git commits are atomic. Commit messages must be single-line reason statements:
+  describe why the change exists, not what changed, not which files changed,
+  and not the task performed. Bad: `Update plans`. Good: `Because agents need
+  bounded execution shards`.
