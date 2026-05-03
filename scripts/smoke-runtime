@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Runtime smoke checks: agent output, plist validity, binary permissions, AppKit startup.
-# Assumes swift build and ./scripts/build-app have already run.
+# Builds its own artifacts so it is safe to run standalone from a clean state.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -11,14 +11,14 @@ fail() {
   exit 1
 }
 
+swift build --product LabanApp --product laban-agent
+./scripts/build-app
+
 AGENT_BIN=".build/debug/laban-agent"
 APP_BIN=".build/laban/Laban.app/Contents/MacOS/LabanApp"
 PLIST=".build/laban/Laban.app/Contents/Info.plist"
 EXPECTED_AGENT="laban-agent: placeholder, headless mode not yet implemented"
 EXPECTED_APP="laban-app: smoke ok"
-
-[ -x "$AGENT_BIN" ] || fail "$AGENT_BIN not found; run swift build first"
-[ -x "$APP_BIN" ]   || fail "$APP_BIN not executable; run ./scripts/build-app first"
 
 # 1. Exact agent output
 actual=$("$AGENT_BIN")
