@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+swift build --product LabanApp
+
+bundle_dir=".build/laban/Laban.app/Contents"
+mkdir -p "${bundle_dir}/MacOS"
+
+exe=$(swift build --product LabanApp --show-bin-path)/LabanApp
+cp -f "$exe" "${bundle_dir}/MacOS/LabanApp"
+
+cat > "${bundle_dir}/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.laban.LabanApp</string>
+    <key>CFBundleExecutable</key>
+    <string>LabanApp</string>
+    <key>CFBundleName</key>
+    <string>Laban</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+</dict>
+</plist>
+EOF
+
+printf 'build-app: %s\n' "${bundle_dir}/MacOS/LabanApp"

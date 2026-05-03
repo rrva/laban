@@ -31,4 +31,10 @@ fi
 
 git diff --check
 
+if [ -f Package.swift ]; then
+  swift build
+  swift test
+  ./scripts/build-app
+fi
+
 printf 'check passed\n'
