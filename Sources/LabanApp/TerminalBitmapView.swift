@@ -444,9 +444,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
 
-    // Fall back to selection.
+    // Fall back to selection. Focus stays nil until a drag actually happens,
+    // so a click without drag clears any prior selection instead of leaving a
+    // one-cell highlight behind.
     selectionAnchor = termCell(at: pt)
-    selectionFocus = selectionAnchor
+    selectionFocus = nil
     renderInvalidated = true
   }
 
@@ -515,7 +517,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
     if trackedMouseButton == .left { trackedMouseButton = .none }
-    selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+    // Only finalize focus if a drag established one. A bare click leaves
+    // selectionFocus nil, which clears the rendered selection.
+    if selectionFocus != nil {
+      selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+    } else {
+      selectionAnchor = nil
+    }
     renderInvalidated = true
   }
 
