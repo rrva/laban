@@ -1,5 +1,6 @@
 .build/
 .external/
 .claude/worktrees/
+compile_commands.json
 *.o
 *.d

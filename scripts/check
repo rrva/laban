@@ -32,6 +32,7 @@ fi
 git diff --check
 
 if [ -f Package.swift ]; then
+  ./scripts/lint
   ./scripts/fetch-libghostty-vt
   swift build
   swift test
