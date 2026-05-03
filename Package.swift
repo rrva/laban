@@ -38,7 +38,7 @@ let package = Package(
     ),
     .target(
       name: "LabanDebug",
-      dependencies: ["LabanCore", "LabanRenderer"]
+      dependencies: ["LabanCore", "LabanRenderer", "LabanTerminalCore"]
     ),
     .executableTarget(
       name: "LabanApp",

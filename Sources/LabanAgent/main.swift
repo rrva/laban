@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import LabanCore
+import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
 
@@ -8,7 +9,7 @@ import LabanTerminalCore
 
 struct AgentArgs {
   var headless = false
-  var debugServer = false
+  var debugServerAddress: String? = nil
   var fixture: String? = nil
   var artifacts: String? = nil
   var tempDir: String? = nil
@@ -20,7 +21,6 @@ func parseArgs() -> AgentArgs {
   for arg in CommandLine.arguments.dropFirst() {
     switch arg {
     case "--headless": a.headless = true
-    case "--debug-server": a.debugServer = true
     case "--deterministic": a.deterministic = true
     default:
       if arg.hasPrefix("--fixture=") {
@@ -30,7 +30,7 @@ func parseArgs() -> AgentArgs {
       } else if arg.hasPrefix("--temp-dir=") {
         a.tempDir = String(arg.dropFirst("--temp-dir=".count))
       } else if arg.hasPrefix("--debug-server=") {
-        a.debugServer = true
+        a.debugServerAddress = String(arg.dropFirst("--debug-server=".count))
       }
     }
   }
@@ -86,9 +86,67 @@ func resolveURL(_ path: String) -> URL {
 
 let args = parseArgs()
 
-if args.debugServer {
-  fail("debug server not implemented in this shard")
+if let debugAddr = args.debugServerAddress {
+  // Debug server mode — requires --headless
+  guard args.headless else { fail("--headless is required for debug server mode") }
+
+  let artifactsPath =
+    args.artifacts
+    ?? ".artifacts/runs/debug-server-\(ProcessInfo.processInfo.processIdentifier)"
+  let artifactsURL = resolveURL(artifactsPath)
+  let tempURL = args.tempDir.map(resolveURL)
+  let fixtureURL = args.fixture.map(resolveURL)
+  let runId = artifactsURL.lastPathComponent
+
+  let serverAddress: DebugServerAddress
+  do {
+    serverAddress = try DebugServerAddress.parse(debugAddr)
+  } catch {
+    fail("invalid --debug-server address '\(debugAddr)': \(error)")
+  }
+
+  let runtime: HeadlessDebugRuntime
+  do {
+    runtime = try HeadlessDebugRuntime(
+      fixtureURL: fixtureURL,
+      artifactsURL: artifactsURL,
+      tempURL: tempURL,
+      deterministic: args.deterministic,
+      runId: runId
+    )
+  } catch {
+    fail("failed to initialise debug runtime: \(error)")
+  }
+
+  let server = DebugHTTPServer(runtime: runtime)
+  let readiness: DebugReadiness
+  do {
+    readiness = try server.start(host: serverAddress.host, port: serverAddress.port)
+  } catch {
+    fail("failed to start debug server: \(error)")
+  }
+
+  runtime.emitServerReady()
+
+  // Print exactly one readiness JSON line to stdout; everything else goes to stderr.
+  let enc = JSONEncoder()
+  enc.outputFormatting = .sortedKeys
+  if let data = try? enc.encode(readiness), let line = String(data: data, encoding: .utf8) {
+    print(line)
+    // Flush stdout immediately: when redirected to a file, C stdio fully buffers output
+    // and the readiness line would be invisible until the buffer fills or the process exits.
+    fflush(stdout)
+  } else {
+    fail("failed to encode readiness JSON")
+  }
+
+  // Block until the process is terminated; OS releases the socket on exit.
+  signal(SIGTERM) { _ in exit(0) }
+  signal(SIGINT) { _ in exit(0) }
+  dispatchMain()
 }
+
+// MARK: - One-shot headless path (unchanged)
 
 guard args.headless else { fail("--headless is required") }
 guard let fixturePath = args.fixture else { fail("--fixture is required") }
@@ -119,7 +177,6 @@ if let tempPath = args.tempDir {
   }
 }
 
-// Build AppModel from fixture initial size with fixture-backed sessions.
 var initialSize = LabanTerminalSize()
 initialSize.rows = Int32(runner.fixture.initialSize.rows)
 initialSize.cols = Int32(runner.fixture.initialSize.cols)
@@ -131,7 +188,6 @@ do {
   fail("failed to create AppModel: \(error)")
 }
 
-// Apply fixture steps; result is the sum of all waitFrames counts.
 let stepsFrameCount: Int
 do {
   stepsFrameCount = try runner.apply(to: model)
@@ -139,7 +195,6 @@ do {
   fail("failed to apply fixture steps: \(error)")
 }
 
-// Snapshot active session.
 guard let activeTab = model.activeTab,
   let session = model.session(forTab: activeTab.id),
   let snap = session.snapshot()
@@ -151,7 +206,6 @@ defer { laban_snapshot_destroy(snap) }
 let rows = Int(snap.pointee.rows)
 let cols = Int(snap.pointee.cols)
 
-// Render with the same path as LabanApp: sidebar + terminal frame commands.
 let fontAtlas = FontAtlas(pointSize: 14)
 let cellSize = fontAtlas.cellSize
 let cellW = Int(cellSize.width)
@@ -181,7 +235,6 @@ cmds += sidebarProducer.commands(
 cmds += frameProducer.commands(from: UnsafePointer(snap))
 renderer.render(cmds)
 
-// Write PNG.
 guard let pngData = surface.pngData else { fail("failed to encode PNG") }
 let screenshotURL = artifactsURL.appendingPathComponent("screenshot.png")
 do {
@@ -190,7 +243,6 @@ do {
   fail("failed to write screenshot: \(error)")
 }
 
-// Check expected text (omit from result if no containsText spec).
 let foundExpectedText: Bool?
 if let containsText = runner.fixture.expect?.containsText, !containsText.isEmpty {
   let text = runner.visibleText(from: UnsafePointer(snap))
@@ -199,7 +251,6 @@ if let containsText = runner.fixture.expect?.containsText, !containsText.isEmpty
   foundExpectedText = nil
 }
 
-// Write result JSON. frameCount = steps frame count + 1 for the final render.
 let result = HeadlessResult(
   mode: "headless",
   frameCount: stepsFrameCount + 1,
