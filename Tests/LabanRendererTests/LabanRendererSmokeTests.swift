@@ -1,8 +1,8 @@
-import XCTest
 import LabanRenderer
+import XCTest
 
 final class LabanRendererSmokeTests: XCTestCase {
-    func testPlaceholder() {
-        XCTAssertTrue(true)
-    }
+  func testPlaceholder() {
+    XCTAssertTrue(true)
+  }
 }
