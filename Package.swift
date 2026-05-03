@@ -42,7 +42,8 @@ let package = Package(
     ),
     .executableTarget(
       name: "LabanApp",
-      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore"]
+      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore"],
+      resources: [.copy("Resources/AppIcon.icns")]
     ),
     .executableTarget(
       name: "LabanAgent",
