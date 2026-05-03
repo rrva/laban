@@ -33,14 +33,14 @@ should no longer be `TerminalBitmapView.advanceFrame()` calling
   `ghostty_render_state_update` updates dirty state but does not clear the
   render-state dirty flag; callers must clear global and row dirty state after
   rendering.
-- [ ] Add LabanTerminalCore dirty-query and rendered-marking ABI.
-- [ ] Gate AppKit rendering so idle timer ticks poll lightly but skip
+- [x] (2026-05-03) Add LabanTerminalCore dirty-query and rendered-marking ABI.
+- [x] (2026-05-03) Gate AppKit rendering so idle timer ticks poll lightly but skip
   snapshot, command production, CoreText layout, `CGImage` creation, and
   `needsDisplay` when nothing changed.
-- [ ] Prevent duplicate AppKit frame timers after view/window transitions.
-- [ ] Coalesce terminal frame commands so a row of same-style text becomes one
+- [x] (2026-05-03) Prevent duplicate AppKit frame timers after view/window transitions.
+- [x] (2026-05-03) Coalesce terminal frame commands so a row of same-style text becomes one
   glyph command instead of one command per cell.
-- [ ] Reduce repeated color allocation in the software renderer.
+- [x] (2026-05-03) Reduce repeated color allocation in the software renderer.
 - [ ] Add tests and local sample evidence showing idle redraws stopped.
 
 ## Decision Log
