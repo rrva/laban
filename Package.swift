@@ -29,7 +29,8 @@ let package = Package(
         ),
         .target(
             name: "LabanRenderer",
-            dependencies: []
+            dependencies: [],
+            resources: [.copy("Resources/JetBrainsMono-Regular.ttf")]
         ),
         .target(
             name: "LabanCore",
@@ -53,7 +54,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LabanCoreTests",
-            dependencies: ["LabanCore", "LabanTerminalCore"]
+            dependencies: ["LabanCore", "LabanTerminalCore", "LabanRenderer"]
         ),
         .testTarget(
             name: "LabanRendererTests",
