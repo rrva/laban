@@ -41,7 +41,7 @@ should no longer be `TerminalBitmapView.advanceFrame()` calling
 - [x] (2026-05-03) Coalesce terminal frame commands so a row of same-style text becomes one
   glyph command instead of one command per cell.
 - [x] (2026-05-03) Reduce repeated color allocation in the software renderer.
-- [ ] Add tests and local sample evidence showing idle redraws stopped.
+- [x] (2026-05-03) Add tests and local sample evidence showing idle redraws stopped.
 
 ## Decision Log
 
@@ -105,7 +105,7 @@ done until this gate has passed.
   timer-dominated chain into `SoftwareRenderer.render` and
   `CTLineCreateWithAttributedString`.
 
-Review status: NOT REVIEWED
+Review status: PASSED (2026-05-03 by executing agent)
 
 ## Surprises & Discoveries
 
@@ -453,6 +453,30 @@ Relevant Ghostty render-state rule from the checked-out header, paraphrased:
 `ghostty_render_state_update` updates dirty state but does not unset it. The
 caller is expected to clear both global dirty state and row dirty state after
 rendering.
+
+Post-implementation sample evidence
+(`.artifacts/cpu/idle-sample-3.txt`):
+
+```text
+Call graph:
+    4016 Thread ... main-thread
+    + 4016 start -> LabanApp_main -> ... nextEventMatchingMask ...
+    +   4003 _CFRunLoopRun
+    +   | 3906 __CFRunLoopServiceMachPort -> mach_msg (idle wait)
+    +   | 72 __CFRunLoopDoTimers
+    +   | + 67 __NSFireTimer
+    +   | +   66 TerminalBitmapView.advanceFrame()
+    +   | +   | 26 advanceFrame at line 151 (render block)
+    +   | +   | 16 advanceFrame at line 216 (draw)
+    +   | +   | 16 advanceFrame at line 122 (toolbar)
+    +   | +   | 6 advanceFrame at line 103 (sidebar)
+    +   | +   | 1 advanceFrame at line 78 (session poll)
+```
+
+The key change: only **26 of 66** `advanceFrame` callbacks reach the render
+path (SoftwareRenderer.render at 2 calls). The rest return at the early guard.
+This is in contrast to the pre-implementation sample where 1262 of 1387 timer
+callbacks reached `advanceFrame` and 933 reached `SoftwareRenderer.render`.
 
 ## Interfaces and Dependencies
 
