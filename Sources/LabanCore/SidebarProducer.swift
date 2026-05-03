@@ -38,7 +38,7 @@ public struct SidebarProducer {
     cmds.append(
       .rect(
         CGRect(x: 0, y: 0, width: sidebarWidth, height: height),
-        color: Theme.SelenizedLight.bg1,
+        color: Theme.CurrentTheme.bg1,
         source: .sidebar
       ))
 
@@ -49,8 +49,8 @@ public struct SidebarProducer {
       .glyphRun(
         origin: CGPoint(x: 10, y: newTabY + textBaseY),
         text: "+",
-        foreground: Theme.SelenizedLight.fg0,
-        background: Theme.SelenizedLight.bg1,
+        foreground: Theme.CurrentTheme.fg0,
+        background: Theme.CurrentTheme.bg1,
         source: .sidebar
       ))
 
@@ -58,8 +58,8 @@ public struct SidebarProducer {
     for (i, tab) in tabs.enumerated() {
       let tabY = height - CGFloat(i + 2) * rowHeight
       let isActive = tab.id == activeTabId
-      let bg = isActive ? Theme.SelenizedLight.bg2 : Theme.SelenizedLight.bg1
-      let fg = isActive ? Theme.SelenizedLight.fg1 : Theme.SelenizedLight.fg0
+      let bg = isActive ? Theme.CurrentTheme.bg2 : Theme.CurrentTheme.bg1
+      let fg = isActive ? Theme.CurrentTheme.fg1 : Theme.CurrentTheme.fg0
 
       cmds.append(
         .rect(
@@ -72,7 +72,7 @@ public struct SidebarProducer {
         cmds.append(
           .rect(
             CGRect(x: 0, y: tabY, width: 3, height: rowHeight),
-            color: Theme.SelenizedLight.blue,
+            color: Theme.CurrentTheme.blue,
             source: .sidebar
           ))
       }
@@ -92,7 +92,7 @@ public struct SidebarProducer {
         .glyphRun(
           origin: CGPoint(x: sidebarWidth - 22, y: tabY + textBaseY),
           text: "×",
-          foreground: Theme.SelenizedLight.dim0,
+          foreground: Theme.CurrentTheme.dim0,
           background: bg,
           source: .sidebar
         ))

@@ -171,7 +171,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   override func draw(_ dirtyRect: NSRect) {
     guard let ctx = NSGraphicsContext.current?.cgContext else { return }
     guard let cgImg = cachedCGImage else {
-      ctx.setFillColor(cgColorFrom(Theme.SelenizedLight.bg0))
+      ctx.setFillColor(cgColorFrom(Theme.CurrentTheme.bg0))
       ctx.fill(bounds)
       return
     }

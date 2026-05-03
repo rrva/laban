@@ -86,13 +86,13 @@ final class LabanRendererSmokeTests: XCTestCase {
     let fontAtlas = FontAtlas()
     let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
 
-    let bg: UInt32 = Theme.SelenizedLight.bg0
+    let bg: UInt32 = Theme.CurrentTheme.bg0
     renderer.render([
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(cellW), height: CGFloat(cellH)), color: bg,
         source: .terminal),
       .glyphRun(
-        origin: .zero, text: "A", foreground: Theme.SelenizedLight.fg1, background: bg,
+        origin: .zero, text: "A", foreground: Theme.CurrentTheme.fg1, background: bg,
         source: .terminal),
     ])
 
@@ -133,7 +133,7 @@ final class LabanRendererSmokeTests: XCTestCase {
     let surface = BitmapSurface(width: 80, height: 24)
     SoftwareRenderer(surface: surface, fontAtlas: FontAtlas()).render([
       .rect(
-        CGRect(x: 0, y: 0, width: 80, height: 24), color: Theme.SelenizedLight.bg0,
+        CGRect(x: 0, y: 0, width: 80, height: 24), color: Theme.CurrentTheme.bg0,
         source: .terminal)
     ])
     guard let data = surface.pngData else {
@@ -176,11 +176,11 @@ final class LabanRendererSmokeTests: XCTestCase {
     let surface = BitmapSurface(width: 20, height: 36, scale: 2)
     let fontAtlas = FontAtlas()
     let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
-    let bg: UInt32 = Theme.SelenizedLight.bg0
+    let bg: UInt32 = Theme.CurrentTheme.bg0
     renderer.render([
       .rect(CGRect(x: 0, y: 0, width: 10, height: 18), color: bg, source: .terminal),
       .glyphRun(
-        origin: .zero, text: "A", foreground: Theme.SelenizedLight.fg1, background: bg,
+        origin: .zero, text: "A", foreground: Theme.CurrentTheme.fg1, background: bg,
         source: .terminal),
     ])
     var foundNonBg = false
@@ -204,12 +204,12 @@ final class LabanRendererSmokeTests: XCTestCase {
     let renderer = SoftwareRenderer(surface: surface, fontAtlas: FontAtlas())
     renderer.render([
       .rect(
-        CGRect(x: 0, y: 0, width: 10, height: 18), color: Theme.SelenizedLight.bg0,
+        CGRect(x: 0, y: 0, width: 10, height: 18), color: Theme.CurrentTheme.bg0,
         source: .terminal),
-      .cursor(CGRect(x: 0, y: 0, width: 10, height: 18), color: Theme.SelenizedLight.cursor),
+      .cursor(CGRect(x: 0, y: 0, width: 10, height: 18), color: Theme.CurrentTheme.cursor),
     ])
     let p = surface.pixel(x: 5, y: 9)!
-    XCTAssertNotEqual(p, Theme.SelenizedLight.bg0, "cursor must overdraw background")
+    XCTAssertNotEqual(p, Theme.CurrentTheme.bg0, "cursor must overdraw background")
   }
 
   // MARK: - Smoke: large grid (diagnostic, not a gate)
@@ -230,7 +230,7 @@ final class LabanRendererSmokeTests: XCTestCase {
     cmds.append(
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
-        color: Theme.SelenizedLight.bg0, source: .terminal))
+        color: Theme.CurrentTheme.bg0, source: .terminal))
     let glyphs = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()")
     for row in 0..<rows {
       for col in 0..<cols {
@@ -241,8 +241,8 @@ final class LabanRendererSmokeTests: XCTestCase {
           .glyphRun(
             origin: CGPoint(x: x, y: y),
             text: ch,
-            foreground: Theme.SelenizedLight.fg1,
-            background: Theme.SelenizedLight.bg0,
+            foreground: Theme.CurrentTheme.fg1,
+            background: Theme.CurrentTheme.bg0,
             source: .terminal
           ))
       }

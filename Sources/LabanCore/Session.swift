@@ -65,6 +65,17 @@ public final class Session {
     }
   }
 
+  /// Feed bytes directly into the VT parser, bypassing the PTY.
+  /// Used to inject OSC palette sequences at session startup.
+  @discardableResult
+  public func feedOutput(_ bytes: [UInt8]) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    if bytes.isEmpty { return 0 }
+    return bytes.withUnsafeBytes { buf in
+      laban_session_feed_output(h, buf.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count)
+    }
+  }
+
   public func snapshot() -> UnsafeMutablePointer<LabanSnapshot>? {
     guard !isClosed, let h = handle else { return nil }
     var snap: UnsafeMutablePointer<LabanSnapshot>?

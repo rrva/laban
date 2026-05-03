@@ -296,6 +296,12 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
     return 0;
 }
 
+int laban_session_feed_output(LabanSession *s, const uint8_t *bytes, size_t len) {
+    if (!s || !bytes) return -1;
+    ghostty_terminal_vt_write(s->terminal, bytes, len);
+    return 0;
+}
+
 int laban_session_write(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s || !bytes) return -1;
     if (s->fixture_mode) {
