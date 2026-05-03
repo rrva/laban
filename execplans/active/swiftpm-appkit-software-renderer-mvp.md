@@ -81,19 +81,23 @@ plan as each shard lands.
   - SidebarProducer has 10 unit tests; all 47 suite tests pass.
 - [x] Add the `laban-agent` headless executable using the same app state and
   renderer.
-- [ ] Sharpen AppKit bitmap presentation by making renderer surfaces
+- [x] Sharpen AppKit bitmap presentation by making renderer surfaces
   backing-scale aware before debug-server screenshots become a baseline.
   Shard: `execplans/active/appkit-backing-scale-text-crispness.md`.
-- [ ] Add the debug server phase 1 endpoints:
+- [x] Add the debug server phase 1 endpoints:
   `/debug/health`, `/debug/state`, `/debug/screenshot`, and `/debug/actions`.
-- [ ] Add debug server phase 2 endpoints:
+- [x] Add debug server phase 2 endpoints:
   `/debug/sessions`, `/debug/render`, and `/debug/frame-commands`.
   Shard for both debug-server phases:
   `execplans/active/headless-debug-server.md`.
-- [ ] Add fixture sessions first, then controlled real-shell smoke tests.
-- [ ] Add stable run/check/test scripts and make `./scripts/check` include the
+- [x] Add fixture sessions first, then controlled real-shell smoke tests.
+- [x] Add stable run/check/test scripts and make `./scripts/check` include the
   new SwiftPM, schema, and E2E gates.
-- [ ] Produce and verify the local `.app` bundle.
+- [x] Produce and verify the local `.app` bundle.
+- [x] Cut idle AppKit CPU by making terminal rendering damage-driven and
+  coalescing terminal frame commands. Shard:
+  `execplans/active/appkit-idle-cpu-render-budget.md`.
+- [ ] Add mouse input and scrollback behavior.
 
 ## Decision Log
 
