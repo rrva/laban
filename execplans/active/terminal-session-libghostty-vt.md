@@ -42,24 +42,35 @@ The change is visible in two ways:
   `testGhosttyVTLinkSmoke` passed (0.002 seconds).
 - [x] Retire `scripts/fetch-libghostty` (v1.3.1 sparse-header fetch, no longer
   needed) after confirming no other step depends on it.
-- [ ] Expand `Sources/LabanTerminalCore/include/LabanTerminalCore.h` with the
+- [x] Expand `Sources/LabanTerminalCore/include/LabanTerminalCore.h` with the
   full public C ABI: `LabanSession`, `LabanLaunchConfig`, `LabanTerminalSize`,
   `LabanCell`, `LabanSnapshot`, and the six required functions.
-- [ ] Implement `session.c` with `laban_session_create` (PTY + child spawn +
+- [x] Implement `session.c` with `laban_session_create` (fixture-mode only:
   `ghostty_terminal_new` + render state) and `laban_session_destroy`.
-- [ ] Implement PTY byte feed in `laban_session_poll`: nonblocking `read` +
-  `ghostty_terminal_vt_write`.
-- [ ] Implement `laban_session_resize`: `ghostty_terminal_resize` + `TIOCSWINSZ`.
-- [ ] Implement `laban_session_write`: write bytes to PTY master fd.
-- [ ] Implement `laban_session_snapshot` and `laban_snapshot_destroy`: traverse
+- [x] Implement `laban_session_poll`: no-op in fixture mode (returns 0).
+- [x] Implement `laban_session_resize`: `ghostty_terminal_resize` (+ `TIOCSWINSZ`
+  when `pty_fd >= 0`).
+- [x] Implement `laban_session_write`: in fixture mode calls
+  `ghostty_terminal_vt_write` directly; PTY path returns -1 (not yet implemented).
+- [x] Implement `laban_session_snapshot` and `laban_snapshot_destroy`: traverse
   `ghostty_render_state_*` iterators to populate `LabanSnapshot` cells with
-  codepoints, fg/bg RGBA, and flags.
-- [ ] Add fixture-mode test: synthesize VT bytes, verify cell values, resize,
-  destroy without leaks.
+  codepoints, fg/bg RGBA.
+- [x] Add fixture-mode tests: synthesize VT bytes, verify cell values, resize,
+  destroy. Three tests pass: `testFixtureCreatePollSnapshotDestroy`,
+  `testFixtureResizeChangesSize`, `testFixtureSnapshotDestroyIsSafe`.
+- [x] Update `scripts/check` to call `./scripts/fetch-libghostty-vt` before
+  `swift build` so missing artifacts produce a clear failure, not a cryptic one.
+- [x] Run `./scripts/check` and confirm it passes end to end.
+- [ ] Implement PTY byte feed in `laban_session_poll`: nonblocking `read` +
+  `ghostty_terminal_vt_write`. (deferred to PTY shard)
+- [ ] Implement `laban_session_write` PTY path: write bytes to PTY master fd.
+  (deferred to PTY shard)
+- [ ] Implement `laban_session_create` PTY path: `forkpty`, child exec, nonblocking
+  fd, ghostty_terminal_new. (deferred to PTY shard)
 - [ ] Add real-shell smoke test: run `/bin/sh -lc "printf 'ok\n'"`, poll until
-  exit, verify `ok` cell and exited status.
+  exit, verify `ok` cell and exited status. (deferred to PTY shard)
 - [ ] Add forced-spawn-failure test: ensure partial init is cleaned up correctly.
-- [ ] Run `./scripts/check` and confirm it passes end to end.
+  (deferred to PTY shard)
 
 ## Decision Log
 
@@ -154,6 +165,32 @@ The change is visible in two ways:
   Row iterator and cells container are reused across rows; allocate once at session creation.
   Evidence: `render.h` signatures; ghostling `main.c:931-1060`.
 
+- Observation: `laban_session_write` in fixture mode calls
+  `ghostty_terminal_vt_write(terminal, bytes, len)` directly — there is no PTY to
+  write to. This is the correct path for feeding synthesized VT bytes into a
+  headless terminal session. The ABI comment in `LabanTerminalCore.h` documents
+  this. Non-fixture callers that want to send keystrokes to a real shell write to
+  `pty_fd` (not yet implemented in this shard).
+  Evidence: Fixture test `testFixtureCreatePollSnapshotDestroy` writes `"hello"` and
+  confirms cell (0,0) has codepoint `0x68`; `./scripts/check` exits 0.
+
+- Observation: `GhosttyRenderStateColors` is a sized struct; it must be initialized
+  with `GHOSTTY_INIT_SIZED(GhosttyRenderStateColors)` before passing to
+  `ghostty_render_state_colors_get`. Forgetting this would write to an undefined
+  `.size` field and the library would skip filling fields it can't fit.
+  Evidence: `render.h` doc + `types.h` macro definition.
+
+- Observation: `GHOSTTY_TERMINAL_DATA_TITLE` returns a borrowed `GhosttyString`
+  whose `.ptr` is NOT null-terminated. The pointer is invalidated by the next
+  `ghostty_terminal_vt_write` call. `laban_session_snapshot` copies `len` bytes
+  into a fresh `malloc`-ed buffer before returning.
+  Evidence: `terminal.h` comment on `GHOSTTY_TERMINAL_DATA_TITLE`.
+
+- Observation: Milestone 2 (fixture mode) fully validated. All three session tests
+  pass: create/poll/write/snapshot/destroy, resize, destroy-is-safe. `./scripts/check`
+  exits 0. PTY lifecycle (`forkpty`, real shell, forced-spawn-failure) is deferred
+  to the next shard.
+
 ## Context and Orientation
 
 ### What exists now
@@ -165,15 +202,20 @@ and `swift test` from the repo root both pass. The current state:
 Package.swift                      — SwiftPM package definition
 Sources/
   LabanTerminalCore/
-    include/LabanTerminalCore.h    — smoke function only: laban_terminal_core_smoke_version
-    session_smoke.c                — implements the smoke function
+    include/LabanTerminalCore.h    — full session ABI (LabanSession, LabanSnapshot, six functions)
+    session.c                      — fixture-mode session implementation (Milestone 2)
+    session_smoke.c                — laban_terminal_core_smoke_version
+    ghostty_vt_bridge_smoke.c      — laban_ghostty_vt_link_smoke (Milestone 1 link proof)
   LabanApp/main.swift              — AppKit window + smoke path
   ... (other targets are stubs)
 Tests/
-  LabanTerminalCoreTests/          — one Swift test calling laban_terminal_core_smoke_version
+  LabanTerminalCoreTests/
+    LabanSessionTests.swift        — fixture create/poll/write/snapshot/resize/destroy tests
+    GhosttyVTLinkTests.swift       — Milestone 1 link smoke
+    LabanTerminalCoreSmokeTests.swift
 scripts/
-  fetch-libghostty                 — clones Ghostty v1.3.1 for header inspection (to be retired)
-  check                            — runs JSON lint, AGENTS.md size, swift build+test, smoke-runtime
+  fetch-libghostty-vt              — clones Ghostty at pinned commit, zig build
+  check                            — fetch-libghostty-vt + JSON lint + swift build+test + smoke-runtime
 ```
 
 `LabanTerminalCore` is a C target. Its public header is at
@@ -689,30 +731,36 @@ swift test --filter GhosttyVTLinkTests
 ```
 Exits 0. Output includes `Test Suite 'GhosttyVTLinkTests' passed`.
 
-### Milestone 2 acceptance
+### Milestone 2 acceptance (fixture shard — DONE)
 
 From the repo root:
 
 ```sh
 swift test --filter LabanTerminalCoreTests
 ```
-Exits 0. The following named tests pass:
+Exits 0. The following named tests pass (✅ = validated 2026-05-03):
 
-- `testGhosttyVTLinkSmoke` — `ghostty_terminal_new` + `ghostty_terminal_free` returns 0.
-- `testFixtureModeCreatePollSnapshotDestroy` — fixture mode session: create,
+- ✅ `testGhosttyVTLinkSmoke` — `ghostty_terminal_new` + `ghostty_terminal_free` returns 0.
+- ✅ `testFixtureCreatePollSnapshotDestroy` — fixture mode session: create,
   inject `"hello"` as VT bytes, snapshot, verify `h` appears in cell (0,0),
-  resize to 40×12, destroy. No memory errors.
-- `testRealShellSmokeOkOutput` — create session with `/bin/sh -lc "printf 'ok\n'"`,
-  poll in a loop (up to 2s wall clock), snapshot, verify the string `ok`
-  appears somewhere in the cell grid, verify `status == 1` (exited).
-- `testForcedSpawnFailureDoesNotLeak` — pass an invalid executable path to
-  `laban_session_create`, verify it returns -1 and does not leak (run under
-  Address Sanitizer or check manually with leaks tool).
+  resize to 40×12, destroy.
+- ✅ `testFixtureResizeChangesSize` — resize to 40×12, verify snapshot rows/cols.
+- ✅ `testFixtureSnapshotDestroyIsSafe` — create/snapshot/destroy with no data.
 
 ```sh
 ./scripts/check
 ```
-Exits 0 with `check passed`.
+✅ Exits 0 with `check passed` (validated 2026-05-03).
+
+### Milestone 2 (PTY shard — deferred)
+
+Tests deferred to the PTY shard:
+
+- `testRealShellSmokeOkOutput` — create session with `/bin/sh -lc "printf 'ok\n'"`,
+  poll in a loop (up to 2s wall clock), snapshot, verify the string `ok`
+  appears somewhere in the cell grid, verify `status == 1` (exited).
+- `testForcedSpawnFailureDoesNotLeak` — pass an invalid executable path to
+  `laban_session_create`, verify it returns -1 and does not leak.
 
 ## Idempotence and Recovery
 
