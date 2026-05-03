@@ -1,14 +1,14 @@
-enum AppError: Error {
+public enum AppError: Error, Equatable {
   case tabLimitReached
   case tabNotFound
 }
 
-struct Tab {
-  typealias ID = String
+public struct Tab {
+  public typealias ID = String
 
-  let id: ID
-  var position: Int
-  var title: String
-  var isActive: Bool
-  let sessionId: Session.ID
+  public let id: ID
+  public var position: Int
+  public var title: String
+  public var isActive: Bool
+  public let sessionId: Session.ID
 }
