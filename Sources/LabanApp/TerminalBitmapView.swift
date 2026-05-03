@@ -112,11 +112,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       ctx.fill(bounds)
       return
     }
-    // CGImage has row 0 at top of buffer (CG y = height-1).
-    // Non-flipped NSView has y=0 at bottom.  Flip the CTM so the image draws right-side-up.
     ctx.saveGState()
-    ctx.translateBy(x: 0, y: bounds.height)
-    ctx.scaleBy(x: 1, y: -1)
+    ctx.interpolationQuality = .none
     ctx.draw(cgImg, in: bounds)
     ctx.restoreGState()
   }
