@@ -52,12 +52,22 @@ plan as each shard lands.
 - [x] Create this active ExecPlan.
 - [x] Add the first execution shard at
   `execplans/active/swiftpm-libghostty-skeleton.md`.
-- [ ] Pin and prove the libghostty dependency and update this plan with the
-  exact source location, version, headers, and build/link command discovered.
-- [ ] Add the SwiftPM package skeleton and target boundaries.
-- [ ] Add the C terminal core ABI, PTY lifecycle, libghostty session creation,
-  nonblocking polling, resize, input write, title, exit state, and bounded
-  snapshots.
+- [x] Pin and prove the libghostty dependency. Outcome: GhosttyKit v1.3.1
+  requires a live NSView* and has no headless constructor; libghostty-vt at
+  commit `fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b` is a standalone VT
+  library with no GUI dependency. Link spike confirmed SwiftPM can link
+  `libghostty-vt.a` via unsafeFlags. See
+  `execplans/active/terminal-session-libghostty-vt.md` for build details.
+- [x] Add the SwiftPM package skeleton and target boundaries. Package.swift,
+  all target stubs, `scripts/build-app`, and `./scripts/check` exit 0.
+  Documented in `execplans/active/swiftpm-libghostty-skeleton.md`.
+- [ ] Link libghostty-vt into LabanTerminalCore and prove
+  `ghostty_terminal_new` from a Swift test. Shard:
+  `execplans/active/terminal-session-libghostty-vt.md`, Milestone 1.
+- [ ] Add the C terminal core ABI, PTY lifecycle, libghostty-vt session
+  creation, nonblocking polling, resize, input write, render-state snapshots
+  with true colors and grapheme clusters, title, and exit state. Shard:
+  `execplans/active/terminal-session-libghostty-vt.md`, Milestone 2.
 - [ ] Add Swift app state for one window, max nine tabs, stable tab/session IDs,
   session lifecycle, selection fallback, and final-tab replacement.
 - [ ] Add the frame-command model and deterministic software bitmap renderer.
@@ -95,6 +105,17 @@ plan as each shard lands.
   is limited to clearing, consuming `rect` commands, counting/hashing command
   streams, and reporting skipped unsupported commands. CI gates the software
   backend; local smoke may exercise Metal.
+  Date/Author: 2026-05-03 / Codex.
+
+- Decision: Use libghostty-vt (Ghostty commit
+  `fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b`) instead of GhosttyKit v1.3.1
+  for the terminal core.
+  Rationale: GhosttyKit v1.3.1 requires a live NSView* in
+  `ghostty_surface_config_s`; there is no headless constructor, making it
+  unusable for a C terminal core that must run without a window. libghostty-vt
+  at the specified commit is a standalone VT library—no GUI dependency—that
+  parses VT sequences, maintains a terminal grid, and exposes cell colors,
+  cursor, and title through a C render-state API.
   Date/Author: 2026-05-03 / Codex.
 
 - Decision: Keep terminal emulation, PTY ownership, terminal state, title,

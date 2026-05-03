@@ -1,0 +1,70 @@
+#!/usr/bin/env sh
+# Fetch and build libghostty-vt from source.
+# Pin: Ghostty commit fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b (1.3.2-dev)
+# Artifacts written to .external/libghostty-vt/zig-out/ (git-ignored).
+# Requires: git, zig >= 0.15.2
+set -eu
+
+GHOSTTY_COMMIT="fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b"
+GHOSTTY_URL="https://github.com/ghostty-org/ghostty"
+DEST=".external/libghostty-vt"
+LIB_OUT="$DEST/zig-out/lib/libghostty-vt.a"
+HDR_OUT="$DEST/zig-out/include/ghostty/vt.h"
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+fail() {
+    printf 'fetch-libghostty-vt: error: %s\n' "$1" >&2
+    exit 1
+}
+
+command -v git >/dev/null 2>&1 || fail "git is required"
+command -v zig >/dev/null 2>&1 || fail "zig is required (>= 0.15.2). Install via https://ziglang.org/download/"
+
+# If artifacts are already present from the correct commit, skip everything.
+if [ -f "$LIB_OUT" ] && [ -f "$HDR_OUT" ] && [ -d "$DEST/.git" ]; then
+    stored=$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo "unknown")
+    if [ "$stored" = "$GHOSTTY_COMMIT" ]; then
+        printf 'fetch-libghostty-vt: already at %s, artifacts present\n' "$GHOSTTY_COMMIT"
+        exit 0
+    fi
+    printf 'fetch-libghostty-vt: stale commit %s, rebuilding\n' "$stored"
+fi
+
+# Clone or reset to the pinned commit.
+if [ -d "$DEST/.git" ]; then
+    stored=$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo "unknown")
+    if [ "$stored" != "$GHOSTTY_COMMIT" ]; then
+        printf 'fetch-libghostty-vt: removing stale clone at %s\n' "$DEST"
+        rm -rf "$DEST"
+    fi
+fi
+
+if [ ! -d "$DEST/.git" ]; then
+    printf 'fetch-libghostty-vt: cloning Ghostty at %s\n' "$GHOSTTY_COMMIT"
+    mkdir -p "$DEST"
+    git init "$DEST"
+    git -C "$DEST" remote add origin "$GHOSTTY_URL"
+    # Fetch only the specific commit (GitHub supports this via partial clone).
+    git -C "$DEST" fetch --depth=1 origin "$GHOSTTY_COMMIT"
+    git -C "$DEST" checkout FETCH_HEAD
+    printf 'fetch-libghostty-vt: clone done\n'
+fi
+
+actual=$(git -C "$DEST" rev-parse HEAD)
+if [ "$actual" != "$GHOSTTY_COMMIT" ]; then
+    fail "expected commit $GHOSTTY_COMMIT, got $actual"
+fi
+
+# Build libghostty-vt. Zig fetches its own dependencies on first build
+# (~3-10 min). Subsequent builds use ~/.cache/zig and are fast.
+printf 'fetch-libghostty-vt: running zig build -Demit-lib-vt (this may take a few minutes)\n'
+cd "$repo_root/$DEST"
+zig build -Demit-lib-vt
+
+cd "$repo_root"
+[ -f "$LIB_OUT" ] || fail "zig build did not produce $LIB_OUT"
+[ -f "$HDR_OUT" ] || fail "zig build did not produce $HDR_OUT"
+
+printf 'fetch-libghostty-vt: done. artifacts at %s/zig-out/\n' "$DEST"

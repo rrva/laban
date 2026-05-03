@@ -1,5 +1,10 @@
 // swift-tools-version: 5.9
 import PackageDescription
+import Foundation
+
+let _pkgDir = URL(fileURLWithPath: #file).deletingLastPathComponent().path
+let _vtInclude = "\(_pkgDir)/.external/libghostty-vt/zig-out/include"
+let _vtLib     = "\(_pkgDir)/.external/libghostty-vt/zig-out/lib"
 
 let package = Package(
     name: "Laban",
@@ -14,7 +19,13 @@ let package = Package(
     targets: [
         .target(
             name: "LabanTerminalCore",
-            publicHeadersPath: "include"
+            publicHeadersPath: "include",
+            cSettings: [
+                .unsafeFlags(["-I\(_vtInclude)"]),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["\(_vtLib)/libghostty-vt.a", "-lc++"]),
+            ]
         ),
         .target(
             name: "LabanRenderer",
