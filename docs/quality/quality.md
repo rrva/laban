@@ -21,7 +21,7 @@ Quality is therefore judged by agent readiness rather than app behavior.
 | Headless graphics contract | Good | `docs/process/dev-process.md`, `execplans/active/swiftpm-appkit-software-renderer-mvp.md` | Needs software renderer and offscreen proof. |
 | Fixture format | Partial | `schemas/fixture.schema.json`, `fixtures/` | Needs fixture runner after stack selection. |
 | Observability | Partial | `docs/process/observability.md` and debug events schema exist. | Needs implementation and query command. |
-| Mechanical enforcement | Partial | `./scripts/check` validates JSON, AGENTS size, ExecPlan sections, and whitespace. | Needs CI and deeper link/schema semantic checks. |
+| Mechanical enforcement | Partial | `./scripts/check` runs `./scripts/lint` (swift format), validates JSON, AGENTS size, ExecPlan sections, and whitespace. `./scripts/check-sanitize` runs `LabanTerminalCoreTests` under Address Sanitizer. `./scripts/dev-index` generates `compile_commands.json` for clangd C diagnostics. | Needs CI and deeper link/schema semantic checks. |
 | Architecture boundaries | Planned | Product docs and active SwiftPM ExecPlans define boundaries. | Needs language-specific structural checks after scaffold lands. |
 | Drift control | Partial | This document and `tech-debt.md`. | Needs recurring check command. |
 
@@ -36,8 +36,8 @@ Quality is therefore judged by agent readiness rather than app behavior.
 
 ## Quality Gates To Add After Language Selection
 
-- Formatter and linter.
-- Unit test command.
+- ~~Formatter and linter.~~ Done: `./scripts/lint` (swift format), `./scripts/format`.
+- Unit test command. (`swift test` runs in `./scripts/check`.)
 - Headless E2E command.
 - Architecture boundary checks.
 - Dependency policy checks.

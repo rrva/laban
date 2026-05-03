@@ -25,12 +25,12 @@ not block the renderer milestone on heavyweight optional tools.
 
 - [x] (2026-05-03) Draft this ExecPlan after checking the current SwiftPM
   package, scripts, quality docs, and local toolchain.
-- [ ] Add Swift formatting and lint scripts that are deterministic and low
+- [x] (2026-05-03) Add Swift formatting and lint scripts that are deterministic and low
   noise for agents.
-- [ ] Add clangd/editor indexing support for the C terminal core.
-- [ ] Add a sanitizer script for deep local checks of `LabanTerminalCore`.
-- [ ] Update `docs/quality/quality.md` with the new gates after they exist.
-- [ ] Run all validation commands and record any surprises in this plan.
+- [x] (2026-05-03) Add clangd/editor indexing support for the C terminal core.
+- [x] (2026-05-03) Add a sanitizer script for deep local checks of `LabanTerminalCore`.
+- [x] (2026-05-03) Update `docs/quality/quality.md` with the new gates after they exist.
+- [x] (2026-05-03) Run all validation commands and record any surprises in this plan.
 
 ## Decision Log
 
@@ -130,8 +130,13 @@ Add `scripts/format`:
 set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
-swift format format --in-place --recursive Package.swift Sources Tests
+swift format format --in-place --recursive Sources Tests
 ```
+
+Note: `Package.swift` is excluded from both `format` and `lint` because the
+`OrderedImports` rule moves `import Foundation` before the
+`// swift-tools-version:` comment, which must appear on the first line of the
+manifest. See Surprises & Discoveries.
 
 Add `scripts/lint`:
 
@@ -140,7 +145,7 @@ Add `scripts/lint`:
 set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
-swift format lint --strict --recursive --parallel Package.swift Sources Tests
+swift format lint --strict --recursive --parallel Sources Tests
 ```
 
 Update `scripts/check` to run `./scripts/lint` after the existing repo metadata
@@ -239,7 +244,7 @@ Run these commands from the repository root, `/Users/rrj/wrk/laban`:
 ./scripts/format
 ./scripts/lint
 ./scripts/dev-index
-clangd --check=Sources/LabanTerminalCore/session.c
+clangd --check=Sources/LabanTerminalCore/session.c --tweaks=
 ./scripts/check-sanitize
 ./scripts/check
 ```
@@ -249,7 +254,7 @@ Expected success shape:
 ```text
 ./scripts/lint exits 0
 compile_commands.json exists and contains Sources/LabanTerminalCore/session.c
-clangd --check=Sources/LabanTerminalCore/session.c exits 0
+clangd --check=Sources/LabanTerminalCore/session.c --tweaks= exits 0
 ./scripts/check-sanitize exits 0 with LabanTerminalCoreTests passing
 ./scripts/check exits 0 and prints check passed
 ```
@@ -262,8 +267,8 @@ This plan is complete when all of the following are true:
   the second run.
 - `./scripts/lint` exits 0.
 - `./scripts/dev-index` creates an ignored root `compile_commands.json`.
-- `clangd --check=Sources/LabanTerminalCore/session.c` exits 0 using the
-  generated compile database.
+- `clangd --check=Sources/LabanTerminalCore/session.c --tweaks=` exits 0 using
+  the generated compile database.
 - `./scripts/check-sanitize` exits 0 under Address Sanitizer.
 - `./scripts/check` exits 0 and still prints `check passed`.
 - `docs/quality/quality.md` names the new scripts as evidence.
@@ -281,6 +286,22 @@ If `clangd --check` fails because `compile_commands.json` is stale, rerun
 passes, treat the sanitizer failure as a real C memory-safety investigation
 unless the failure clearly comes from a known SwiftPM/XCTest runtime issue and
 is documented in `Surprises & Discoveries`.
+
+## Surprises & Discoveries
+
+- **`clangd --check` requires `--tweaks=` to exit 0.**
+  Without it, clangd's per-token code-action loop emits 4 `SwapBinaryOperands`
+  errors on POSIX wait macros (`WIFEXITED`, `WEXITSTATUS`, etc.) and exits with
+  code 3. These are internal refactoring-action failures, not C compiler
+  diagnostics. Adding `--tweaks=` (empty: disable all tweaks) suppresses the loop
+  and gives exit 0. The C code has no actual warnings or errors.
+
+- **`swift format` must not be run on `Package.swift`.**
+  The `OrderedImports` rule moves `import Foundation` before the
+  `// swift-tools-version:` comment, which breaks the SwiftPM manifest invariant
+  that the tools-version comment must appear on the first line. `scripts/format`
+  and `scripts/lint` are scoped to `Sources Tests` only. This is not a formatter
+  bug to fix — it is a Package.swift structural constraint.
 
 ## Interfaces and Dependencies
 

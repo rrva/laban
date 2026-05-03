@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -eu
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+./scripts/fetch-libghostty-vt
+swift test --sanitize address --filter LabanTerminalCoreTests

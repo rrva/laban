@@ -1,0 +1,19 @@
+Index:
+  Background: Build
+CompileFlags:
+  Add:
+    - -std=c11
+    - -Wall
+    - -Wextra
+    - -Wpedantic
+    - -Wstrict-prototypes
+    - -Werror=implicit-function-declaration
+Diagnostics:
+  ClangTidy:
+    Add:
+      - clang-analyzer-*
+      - bugprone-*
+      - portability-*
+    Remove:
+      - bugprone-easily-swappable-parameters
+      - readability-magic-numbers
