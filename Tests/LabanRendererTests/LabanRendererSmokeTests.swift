@@ -143,6 +143,60 @@ final class LabanRendererSmokeTests: XCTestCase {
     XCTAssertGreaterThan(data.count, 100, "PNG must contain image data beyond the header")
   }
 
+  // MARK: - Backing-scale surface and renderer
+
+  func testBitmapSurfaceLogicalSizeHelpers() {
+    let surface = BitmapSurface(width: 40, height: 20, scale: 2)
+    XCTAssertEqual(surface.scale, 2)
+    XCTAssertEqual(surface.logicalWidth, 20)
+    XCTAssertEqual(surface.logicalHeight, 10)
+    XCTAssertEqual(surface.logicalSize, CGSize(width: 20, height: 10))
+  }
+
+  func testScaledRectPaintsCorrectPhysicalPixels() {
+    // 20x20 physical pixels at scale 2 = 10x10 logical area
+    let surface = BitmapSurface(width: 20, height: 20, scale: 2)
+    let renderer = SoftwareRenderer(surface: surface, fontAtlas: FontAtlas())
+    // Draw a 4x4 logical rect starting at (2, 2) → physical pixels 4..11 in both axes
+    renderer.render([
+      .rect(CGRect(x: 2, y: 2, width: 4, height: 4), color: 0xFF00_00FF, source: .terminal)
+    ])
+    // Physical pixel inside the rect must be painted
+    let inside = surface.pixel(x: 6, y: 6)!
+    XCTAssertNotEqual(inside, 0, "physical pixel inside scaled rect must be painted")
+    let r = (inside >> 24) & 0xFF
+    XCTAssertGreaterThan(r, 0, "red channel must be set for the red fill")
+    // Physical pixel outside the painted region must remain zero
+    let outside = surface.pixel(x: 1, y: 1)!
+    XCTAssertEqual(outside, 0, "physical pixel outside scaled rect must stay zero")
+  }
+
+  func testScaledGlyphProducesNonBackgroundPixels() {
+    // 20x36 physical pixels at scale 2 = 10x18 logical area
+    let surface = BitmapSurface(width: 20, height: 36, scale: 2)
+    let fontAtlas = FontAtlas()
+    let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+    let bg: UInt32 = Theme.SelenizedLight.bg0
+    renderer.render([
+      .rect(CGRect(x: 0, y: 0, width: 10, height: 18), color: bg, source: .terminal),
+      .glyphRun(
+        origin: .zero, text: "A", foreground: Theme.SelenizedLight.fg1, background: bg,
+        source: .terminal),
+    ])
+    var foundNonBg = false
+    for y in 0..<36 {
+      for x in 0..<20 {
+        if let p = surface.pixel(x: x, y: y), p != bg {
+          foundNonBg = true
+          break
+        }
+      }
+      if foundNonBg { break }
+    }
+    XCTAssertTrue(
+      foundNonBg, "scaled glyph must produce at least one non-background physical pixel")
+  }
+
   // MARK: - Cursor and selection
 
   func testCursorCommandFillsCell() {

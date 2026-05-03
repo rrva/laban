@@ -26,14 +26,9 @@ final class MainWindowController: NSWindowController {
       sessionFactory: Session.realShell
     )
 
-    let surface = BitmapSurface(width: Int(viewW), height: Int(viewH))
-    let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
-
     let termView = TerminalBitmapView(
       model: model,
       fontAtlas: fontAtlas,
-      surface: surface,
-      renderer: renderer,
       cellWidth: cellW,
       cellHeight: cellH
     )

@@ -13,6 +13,8 @@ public final class SoftwareRenderer {
 
   public func render(_ commands: [FrameCommand]) {
     let ctx = surface.context
+    ctx.saveGState()
+    ctx.scaleBy(x: surface.scale, y: surface.scale)
     for cmd in commands {
       switch cmd {
       case .rect(let rect, let color, _):
@@ -39,6 +41,7 @@ public final class SoftwareRenderer {
         break
       }
     }
+    ctx.restoreGState()
   }
 
   private func drawText(

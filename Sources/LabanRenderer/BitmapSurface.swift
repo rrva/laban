@@ -9,14 +9,21 @@ import Foundation
 public final class BitmapSurface {
   public let width: Int
   public let height: Int
+  public let scale: CGFloat
   public let bytesPerRow: Int
   private let pixelData: UnsafeMutableRawPointer
   public let context: CGContext
 
-  public init(width: Int, height: Int) {
+  public var logicalWidth: CGFloat { CGFloat(width) / scale }
+  public var logicalHeight: CGFloat { CGFloat(height) / scale }
+  public var logicalSize: CGSize { CGSize(width: logicalWidth, height: logicalHeight) }
+
+  public init(width: Int, height: Int, scale: CGFloat = 1) {
     precondition(width > 0 && height > 0)
+    precondition(scale.isFinite && scale > 0)
     self.width = width
     self.height = height
+    self.scale = scale
     self.bytesPerRow = width * 4
     let byteCount = height * width * 4
     pixelData = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 64)
