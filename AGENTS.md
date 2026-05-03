@@ -70,5 +70,5 @@ execplans/                             Active and completed ExecPlans.
 - Keep changesets focused on one behavioral reason.
 - Git commits are atomic. Commit messages must be single-line reason statements:
   describe why the change exists, not what changed, not which files changed,
-  and not the task performed. Bad: `Update plans`. Good: `Because agents need
-  bounded execution shards`.
+  and not the task performed. Bad: `Update plans`. Good:
+  `Agents need bounded execution shards`.
