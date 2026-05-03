@@ -143,4 +143,43 @@ int laban_session_encode_mouse(
 
 int laban_session_send_mouse(LabanSession *session, const LabanMouseEvent *event);
 
+/* --- Paste ABI --- */
+
+typedef struct {
+    int bracketed;       /* non-zero if bracketed paste sequences were added */
+    size_t bytes_written; /* number of bytes written to the PTY / VT parser */
+} LabanPasteResult;
+
+/* Returns 1 in *out_enabled if bracketed paste mode is active, 0 otherwise. */
+int laban_session_bracketed_paste_enabled(LabanSession *session, int *out_enabled);
+
+/*
+ * Encode paste bytes for terminal input.
+ * - Strips unsafe control bytes.
+ * - Replaces newlines with CR if not bracketed.
+ * - Wraps in ESC[200~ / ESC[201~ if bracketed is true.
+ * out_capacity must be >= len + 12 to accommodate bracketed sequences.
+ * Returns 0 on success, -1 on error.
+ */
+int laban_session_encode_paste(
+    LabanSession *session,
+    const uint8_t *bytes,
+    size_t len,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len,
+    int *out_bracketed
+);
+
+/*
+ * Encode and write paste bytes to the PTY (or VT parser in fixture mode).
+ * Returns 0 on success, -1 on error.
+ */
+int laban_session_write_paste(
+    LabanSession *session,
+    const uint8_t *bytes,
+    size_t len,
+    LabanPasteResult *out_result
+);
+
 #endif /* LABAN_TERMINAL_CORE_H */

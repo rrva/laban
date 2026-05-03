@@ -331,17 +331,46 @@ MWHEEL_SIDE=$(post_json /debug/actions '{"action":"mouseWheel","x":10,"y":100,"d
 [ "$(printf '%s' "$MWHEEL_SIDE" | jq -r '.ok')" = "true" ] \
   || fail "mouseWheel in sidebar failed: $MWHEEL_SIDE"
 
-# 23. click without mouse tracking — ok:false, local selection message
+# 23. click without mouse tracking — sets local selection (ok:true)
 CLICK_NO=$(post_json /debug/actions '{"action":"click","x":300,"y":200,"button":"left"}')
-[ "$(printf '%s' "$CLICK_NO" | jq -r '.ok')" = "false" ] \
-  || fail "click without mouse tracking: expected ok:false, got: $CLICK_NO"
-CLICK_ERR=$(printf '%s' "$CLICK_NO" | jq -r '.error // empty')
-[ -n "$CLICK_ERR" ] || fail "click without mouse tracking: missing error"
+[ "$(printf '%s' "$CLICK_NO" | jq -r '.ok')" = "true" ] \
+  || fail "click without mouse tracking: expected ok:true, got: $CLICK_NO"
+SEL_AFTER=$(get_json /debug/selection)
+[ "$(printf '%s' "$SEL_AFTER" | jq -r '.active')" = "true" ] \
+  || fail "click without mouse tracking: expected selection active:true, got: $SEL_AFTER"
 
 # 24. sidebar click — create tab then select existing
 CLICK_SIDE=$(post_json /debug/actions '{"action":"click","x":10,"y":390,"button":"left"}')
 [ "$(printf '%s' "$CLICK_SIDE" | jq -r '.ok')" = "true" ] \
   || fail "sidebar click failed: $CLICK_SIDE"
+
+# 24b. setSelection + /debug/selection + copy + /debug/clipboard
+# The colored-boxes fixture has "hello mvp" at row=1, col=2..col=10.
+# Select first tab which has the fixture content.
+SEL_TAB=$(post_json /debug/actions "{\"action\":\"selectTab\",\"tabId\":\"$FIRST_TAB_ID\"}")
+[ "$(printf '%s' "$SEL_TAB" | jq -r '.ok')" = "true" ] \
+  || fail "selectTab for selection test failed: $SEL_TAB"
+
+SET_SEL=$(post_json /debug/actions \
+  '{"action":"setSelection","anchor":{"row":1,"col":2},"focus":{"row":1,"col":10}}')
+[ "$(printf '%s' "$SET_SEL" | jq -r '.ok')" = "true" ] \
+  || fail "setSelection failed: $SET_SEL"
+
+SEL_STATE=$(get_json /debug/selection)
+[ "$(printf '%s' "$SEL_STATE" | jq -r '.active')" = "true" ] \
+  || fail "selection should be active after setSelection: $SEL_STATE"
+SEL_TEXT=$(printf '%s' "$SEL_STATE" | jq -r '.text')
+[ "$SEL_TEXT" = "hello mvp" ] \
+  || fail "selection text: expected 'hello mvp', got '$SEL_TEXT'"
+
+COPY_RESULT=$(post_json /debug/actions '{"action":"copy"}')
+[ "$(printf '%s' "$COPY_RESULT" | jq -r '.ok')" = "true" ] \
+  || fail "copy action failed: $COPY_RESULT"
+
+CLIP=$(get_json /debug/clipboard)
+CLIP_TEXT=$(printf '%s' "$CLIP" | jq -r '.lastCopyText')
+[ "$CLIP_TEXT" = "hello mvp" ] \
+  || fail "clipboard after copy: expected 'hello mvp', got '$CLIP_TEXT'"
 
 # 25. /debug/events — includes server.ready and frame.rendered
 # (events check already confirmed; events emitted includes server.ready from emitServerReady()

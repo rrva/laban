@@ -330,3 +330,39 @@ struct RenderTraceResponse: Encodable {
   var invariants: [TraceInvariant]
   var truncated: Bool
 }
+
+// MARK: - Selection and clipboard response types
+
+struct CellCoordResponse: Encodable {
+  var row: Int
+  var col: Int
+}
+
+struct SelectionResponse: Encodable {
+  var active: Bool
+  var sessionId: String?
+  var anchor: CellCoordResponse?
+  var focus: CellCoordResponse?
+  var rects: [RectResponse]
+  var text: String
+}
+
+struct ClipboardResponse: Encodable {
+  var lastCopyText: String?
+  var lastPasteText: String?
+  var lastPasteUsedBracketedPaste: Bool?
+  var lastPasteIgnoredNonText: Bool?
+
+  // Encode nil optional fields as JSON null (schema requires all keys present).
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(lastCopyText, forKey: .lastCopyText)
+    try c.encode(lastPasteText, forKey: .lastPasteText)
+    try c.encode(lastPasteUsedBracketedPaste, forKey: .lastPasteUsedBracketedPaste)
+    try c.encode(lastPasteIgnoredNonText, forKey: .lastPasteIgnoredNonText)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case lastCopyText, lastPasteText, lastPasteUsedBracketedPaste, lastPasteIgnoredNonText
+  }
+}

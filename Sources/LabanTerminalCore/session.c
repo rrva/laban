@@ -2,6 +2,8 @@
 #include <ghostty/vt/terminal.h>
 #include <ghostty/vt/render.h>
 #include <ghostty/vt/mouse.h>
+#include <ghostty/vt/paste.h>
+#include <ghostty/vt/modes.h>
 #include <util.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -674,6 +676,91 @@ int laban_session_encode_mouse(
     ghostty_mouse_event_free(gev);
 
     return (r == GHOSTTY_SUCCESS) ? 0 : -1;
+}
+
+/* --- Paste --- */
+
+int laban_session_bracketed_paste_enabled(LabanSession *s, int *out_enabled) {
+    if (!s || !out_enabled) return -1;
+    bool enabled = false;
+    GhosttyResult r = ghostty_terminal_mode_get(
+        s->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &enabled);
+    if (r != GHOSTTY_SUCCESS) return -1;
+    *out_enabled = enabled ? 1 : 0;
+    return 0;
+}
+
+int laban_session_encode_paste(
+    LabanSession *s,
+    const uint8_t *bytes,
+    size_t len,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len,
+    int *out_bracketed
+) {
+    if (!s || !out_len || !out_bracketed) return -1;
+    *out_len = 0;
+    *out_bracketed = 0;
+
+    bool bracketed = false;
+    ghostty_terminal_mode_get(s->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &bracketed);
+
+    /* ghostty_paste_encode mutates input in place; make a writable copy. */
+    char *mutable_input = NULL;
+    if (len > 0) {
+        mutable_input = malloc(len);
+        if (!mutable_input) return -1;
+        memcpy(mutable_input, bytes, len);
+    }
+
+    size_t written = 0;
+    GhosttyResult r = ghostty_paste_encode(
+        mutable_input, len, bracketed,
+        (char *)out_bytes, out_capacity, &written);
+
+    free(mutable_input);
+
+    if (r != GHOSTTY_SUCCESS) return -1;
+    *out_len = written;
+    *out_bracketed = bracketed ? 1 : 0;
+    return 0;
+}
+
+int laban_session_write_paste(
+    LabanSession *s,
+    const uint8_t *bytes,
+    size_t len,
+    LabanPasteResult *out_result
+) {
+    if (!s) return -1;
+
+    /* +12 for ESC[200~ (7 bytes) + ESC[201~ (7 bytes) = 14 bytes worst case.
+       Using 16 for alignment. */
+    size_t cap = len + 16;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return -1;
+
+    size_t enc_len = 0;
+    int bracketed = 0;
+    int r = laban_session_encode_paste(s, bytes, len, buf, cap, &enc_len, &bracketed);
+    if (r != 0) { free(buf); return -1; }
+
+    if (s->fixture_mode) {
+        ghostty_terminal_vt_write(s->terminal, buf, enc_len);
+    } else {
+        if (s->pty_fd < 0) { free(buf); return -1; }
+        ssize_t n = write(s->pty_fd, buf, enc_len);
+        if (n < 0) { free(buf); return -1; }
+    }
+
+    if (out_result) {
+        out_result->bracketed = bracketed;
+        out_result->bytes_written = enc_len;
+    }
+
+    free(buf);
+    return 0;
 }
 
 int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {

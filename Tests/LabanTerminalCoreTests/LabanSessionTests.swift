@@ -660,6 +660,131 @@ final class LabanSessionTests: XCTestCase {
     // send_mouse should return 0 (no-op) in fixture mode.
     XCTAssertEqual(laban_session_send_mouse(session, &event), 0)
   }
+
+  // MARK: - Paste encoding tests
+
+  func testBracketedPasteDisabledByDefault() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var enabled: Int32 = 1
+    XCTAssertEqual(laban_session_bracketed_paste_enabled(session, &enabled), 0)
+    XCTAssertEqual(enabled, 0, "bracketed paste must be disabled by default")
+  }
+
+  func testBracketedPasteEnabledAfterEscapeSequence() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Enable bracketed paste mode: ESC[?2004h
+    let enableSeq = Array("\u{1b}[?2004h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    var enabled: Int32 = 0
+    XCTAssertEqual(laban_session_bracketed_paste_enabled(session, &enabled), 0)
+    XCTAssertEqual(enabled, 1, "bracketed paste must be enabled after ESC[?2004h")
+  }
+
+  func testEncodePastePlainModeConvertsNewlinesToCR() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Plain mode (no bracketed paste): newlines become CRs.
+    let input = Array("hello\nworld".utf8)
+    var outBuf = [UInt8](repeating: 0, count: 64)
+    var outLen: size_t = 0
+    var bracketed: Int32 = 1
+
+    let r = input.withUnsafeBytes { buf in
+      laban_session_encode_paste(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        input.count,
+        &outBuf, outBuf.count,
+        &outLen, &bracketed)
+    }
+
+    XCTAssertEqual(r, 0)
+    XCTAssertEqual(bracketed, 0, "bracketed must be 0 in plain mode")
+    let result = String(bytes: outBuf.prefix(Int(outLen)), encoding: .utf8)
+    // In plain mode, \n is replaced with \r.
+    XCTAssertEqual(result, "hello\rworld", "newlines must become CRs in plain paste mode")
+  }
+
+  func testEncodePasteBracketedModeAddsWrappingSequences() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Enable bracketed paste mode.
+    let enableSeq = Array("\u{1b}[?2004h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    let input = Array("hello mvp".utf8)
+    var outBuf = [UInt8](repeating: 0, count: 128)
+    var outLen: size_t = 0
+    var bracketed: Int32 = 0
+
+    let r = input.withUnsafeBytes { buf in
+      laban_session_encode_paste(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        input.count,
+        &outBuf, outBuf.count,
+        &outLen, &bracketed)
+    }
+
+    XCTAssertEqual(r, 0)
+    XCTAssertEqual(bracketed, 1, "bracketed must be 1 when bracketed paste mode is active")
+
+    let result = String(bytes: outBuf.prefix(Int(outLen)), encoding: .utf8) ?? ""
+    XCTAssertTrue(result.hasPrefix("\u{1b}[200~"), "must begin with ESC[200~")
+    XCTAssertTrue(result.hasSuffix("\u{1b}[201~"), "must end with ESC[201~")
+    XCTAssertTrue(result.contains("hello mvp"), "encoded output must contain original text")
+  }
+
+  func testWritePasteInFixtureModeSucceeds() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let input = Array("paste me".utf8)
+    var result = LabanPasteResult()
+    let r = input.withUnsafeBytes { buf in
+      laban_session_write_paste(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        input.count,
+        &result)
+    }
+
+    XCTAssertEqual(r, 0, "write_paste must return 0 in fixture mode")
+    XCTAssertEqual(result.bracketed, 0, "bracketed must be 0 without bracketed paste mode")
+    XCTAssertGreaterThan(result.bytes_written, 0, "must report non-zero bytes written")
+  }
 }
 
 private func visibleText(from snap: UnsafePointer<LabanSnapshot>) -> String {

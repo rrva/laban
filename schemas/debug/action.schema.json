@@ -15,7 +15,8 @@
     {"$ref": "#/$defs/copy"},
     {"$ref": "#/$defs/paste"},
     {"$ref": "#/$defs/setClipboardText"},
-    {"$ref": "#/$defs/scrollViewport"}
+    {"$ref": "#/$defs/scrollViewport"},
+    {"$ref": "#/$defs/setSelection"}
   ],
   "$defs": {
     "newTab": {
@@ -136,6 +137,25 @@
         "deltaRows": {"type": "integer"}
       },
       "additionalProperties": false
+    },
+    "setSelection": {
+      "type": "object",
+      "required": ["action", "anchor", "focus"],
+      "properties": {
+        "action": {"const": "setSelection"},
+        "sessionId": {"type": "string"},
+        "anchor": {"$ref": "#/$defs/cell"},
+        "focus": {"$ref": "#/$defs/cell"}
+      },
+      "additionalProperties": false
+    },
+    "cell": {
+      "type": "object",
+      "required": ["row", "col"],
+      "properties": {
+        "row": {"type": "integer", "minimum": 0},
+        "col": {"type": "integer", "minimum": 0}
+      }
     }
   }
 }

@@ -45,14 +45,29 @@ reading the user's real system clipboard.
   `schemas/debug/clipboard.schema.json` already define the debug contracts, but
   `DebugHTTPServer` does not route `/debug/selection` or `/debug/clipboard`,
   and `schemas/debug/action.schema.json` does not yet define `setSelection`.
-- [ ] Add shared visible-selection geometry and text extraction helpers.
-- [ ] Render selection highlights in AppKit and headless frame commands.
-- [ ] Implement headless selection, copy, paste, `/debug/selection`, and
-  `/debug/clipboard`.
-- [ ] Add terminal-core paste encoding that honors bracketed paste mode when
-  libghostty exposes it.
-- [ ] Add unit, debug-runtime, schema, and E2E coverage.
-- [ ] Update the umbrella plan after the implementation lands.
+- [x] (2026-05-03) Add shared visible-selection geometry and text extraction
+  helpers (`TerminalSelection.swift` with `segments`, `cgRects`,
+  `selectedText`; selection dict keyed by `Session.ID` in
+  `HeadlessDebugRuntime`).
+- [x] (2026-05-03) Render selection highlights in AppKit and headless frame
+  commands (`FrameProducer.commands(from:selection:)` restructured to separate
+  BG pass → selection rects → glyph pass; `selectionBySession` threaded through
+  `renderFrameUnlocked`).
+- [x] (2026-05-03) Implement headless selection, copy, paste,
+  `/debug/selection`, and `/debug/clipboard` (`setSelection`, `copy` actions
+  added; `paste` updated to use `session.writePaste`; routes wired in
+  `DebugHTTPServer`; `ClipboardResponse` encodes nil as JSON null).
+- [x] (2026-05-03) Add terminal-core paste encoding that honors bracketed paste
+  mode (`laban_session_bracketed_paste_enabled`, `laban_session_encode_paste`,
+  `laban_session_write_paste` in `session.c`; `Session.writePaste` in Swift;
+  `ghostty_paste_encode` + `ghostty_terminal_mode_get` with
+  `GHOSTTY_MODE_BRACKETED_PASTE`).
+- [x] (2026-05-03) Add unit, debug-runtime, schema, and E2E coverage
+  (`TerminalSelectionTests.swift` 11 tests; 5 new `LabanDebugSmokeTests`; 5
+  new `LabanSessionTests` for paste encoding; `setSelection` added to
+  `action.schema.json`; E2E selection+copy+clipboard flow in `scripts/test-e2e`;
+  124 tests total, 0 failures, `check passed`).
+- [x] (2026-05-03) Update the umbrella plan after the implementation lands.
 
 ## Decision Log
 

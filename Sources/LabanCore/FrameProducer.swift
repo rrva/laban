@@ -27,7 +27,10 @@ public struct FrameProducer {
   }
 
   // Caller owns the snapshot lifetime; FrameProducer does not retain it.
-  public func commands(from snap: UnsafePointer<LabanSnapshot>) -> [FrameCommand] {
+  public func commands(
+    from snap: UnsafePointer<LabanSnapshot>,
+    selection: TerminalSelection? = nil
+  ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
     let cols = Int(snapshot.cols)
@@ -48,11 +51,11 @@ public struct FrameProducer {
 
     guard rows > 0, cols > 0, let cells = snapshot.cells else { return cmds }
 
+    // ---- Pass 1: Background rects for all rows ----
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch
       let rowStart = row * cols
 
-      // ---- Background runs: merge adjacent cells with same background color ----
       var bgStart: Int? = nil
       var bgColor: UInt32 = 0
 
@@ -61,13 +64,11 @@ public struct FrameProducer {
         let cellBg = cell.background_rgba
 
         if bgStart == nil {
-          // Start a new background run (skip default-bg cells)
           if cellBg != defaultBg {
             bgStart = col
             bgColor = cellBg
           }
         } else if cellBg != bgColor || cellBg == defaultBg {
-          // Emit the completed background run
           let runCols = col - bgStart!
           let cellX = originX + CGFloat(bgStart!) * cw
           cmds.append(
@@ -79,9 +80,7 @@ public struct FrameProducer {
           bgStart = cellBg != defaultBg ? col : nil
           bgColor = cellBg
         }
-        // else: same color continues
       }
-      // Emit final background run
       if let start = bgStart {
         let runCols = cols - start
         let cellX = originX + CGFloat(start) * cw
@@ -92,8 +91,24 @@ public struct FrameProducer {
             source: .terminal
           ))
       }
+    }
 
-      // ---- Glyph runs: merge adjacent non-empty cells with same FG+BG ----
+    // ---- Pass 2: Selection highlight rects ----
+    if let sel = selection {
+      for rect in sel.cgRects(
+        rows: rows, cols: cols,
+        cellWidth: cw, cellHeight: ch,
+        originX: originX, originY: originY
+      ) {
+        cmds.append(.selection(rect, color: Theme.SelenizedLight.selectionBg))
+      }
+    }
+
+    // ---- Pass 3: Glyph runs for all rows ----
+    for row in 0..<rows {
+      let cellY = originY + CGFloat(rows - 1 - row) * ch
+      let rowStart = row * cols
+
       var runStart: Int? = nil
       var runFg: UInt32 = 0
       var runBg: UInt32 = 0
@@ -114,11 +129,9 @@ public struct FrameProducer {
             count: length
           )
           if let text = String(bytes: buf, encoding: .utf8), !text.isEmpty {
-            if let start = runStart, runFg == cellFg && runBg == cellBg {
-              // Continue run: same FG+BG
+            if runStart != nil, runFg == cellFg && runBg == cellBg {
               runText += text
             } else {
-              // Emit previous run
               if let start = runStart, !runText.isEmpty {
                 let cellX = originX + CGFloat(start) * cw
                 cmds.append(
@@ -130,14 +143,12 @@ public struct FrameProducer {
                     source: .terminal
                   ))
               }
-              // Start new run
               runStart = col
               runFg = cellFg
               runBg = cellBg
               runText = text
             }
           } else {
-            // Failed to decode — emit any prior run and skip this cell
             if let start = runStart, !runText.isEmpty {
               let cellX = originX + CGFloat(start) * cw
               cmds.append(
@@ -153,7 +164,6 @@ public struct FrameProducer {
             runText = ""
           }
         } else {
-          // Empty cell — emit any prior run and reset
           if let start = runStart, !runText.isEmpty {
             let cellX = originX + CGFloat(start) * cw
             cmds.append(
@@ -169,7 +179,6 @@ public struct FrameProducer {
           runText = ""
         }
       }
-      // Emit final glyph run for this row
       if let start = runStart, !runText.isEmpty {
         let cellX = originX + CGFloat(start) * cw
         cmds.append(

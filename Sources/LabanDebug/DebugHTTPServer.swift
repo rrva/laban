@@ -205,6 +205,12 @@ public final class DebugHTTPServer {
       let since = query["since"].flatMap { Int($0) } ?? 0
       return json(runtime.events(since: since))
 
+    case ("GET", "/debug/selection"):
+      return json(runtime.selection())
+
+    case ("GET", "/debug/clipboard"):
+      return json(runtime.clipboard())
+
     default:
       return json(jsonError("not found", status: 404))
     }
