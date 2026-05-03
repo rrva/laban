@@ -1,8 +1,25 @@
 import Foundation
-import LabanDebug
 import XCTest
 
+@testable import LabanDebug
+
 final class LabanDebugSmokeTests: XCTestCase {
+  func testDebugMousePositionUsesTopLeftTerminalSurfaceY() {
+    let pos = DebugMouseInput.terminalSurfacePosition(
+      windowX: 360,
+      windowY: 400,
+      windowHeight: 480,
+      sidebarWidth: 200
+    )
+
+    XCTAssertEqual(pos.x, 160)
+    XCTAssertEqual(pos.y, 80)
+  }
+
+  func testDebugMouseSurfaceWidthExcludesSidebar() {
+    XCTAssertEqual(DebugMouseInput.terminalSurfaceWidth(windowWidth: 1000, sidebarWidth: 200), 800)
+    XCTAssertEqual(DebugMouseInput.terminalSurfaceWidth(windowWidth: 100, sidebarWidth: 200), 1)
+  }
 
   // MARK: - HTTP server address parsing
 

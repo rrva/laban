@@ -4,6 +4,39 @@ import XCTest
 @testable import LabanApp
 
 final class TerminalKeyEncoderTests: XCTestCase {
+  func testMousePositionUsesTerminalSurfacePixels() {
+    let pos = TerminalMouseInput.surfacePosition(
+      viewPoint: NSPoint(x: 360, y: 400),
+      boundsHeight: 480,
+      sidebarWidth: 200
+    )
+
+    XCTAssertEqual(pos.x, 160)
+    XCTAssertEqual(pos.y, 80)
+  }
+
+  func testMouseSurfaceSizeExcludesSidebar() {
+    let size = TerminalMouseInput.surfaceSize(
+      boundsWidth: 1000,
+      boundsHeight: 480,
+      sidebarWidth: 200
+    )
+
+    XCTAssertEqual(size.width, 800)
+    XCTAssertEqual(size.height, 480)
+  }
+
+  func testMouseModifiersUseGhosttyBitOrder() {
+    XCTAssertEqual(TerminalMouseInput.ghosttyModifierMask(from: .shift), 1)
+    XCTAssertEqual(TerminalMouseInput.ghosttyModifierMask(from: .control), 2)
+    XCTAssertEqual(TerminalMouseInput.ghosttyModifierMask(from: .option), 4)
+    XCTAssertEqual(TerminalMouseInput.ghosttyModifierMask(from: .command), 8)
+    XCTAssertEqual(
+      TerminalMouseInput.ghosttyModifierMask(from: [.shift, .control, .option, .command]),
+      15
+    )
+  }
+
   func testControlCProducedCharacterSendsETX() {
     XCTAssertEqual(
       TerminalKeyEncoder.bytes(

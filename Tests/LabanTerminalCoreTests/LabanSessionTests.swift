@@ -444,6 +444,126 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  func testMouseEncodingUsesSurfacePixelPositions() {
+    guard let session = makeFixtureSession(rows: 5, cols: 30) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let enableSeq = Array("\u{1b}[?1000h\u{1b}[?1006h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    var event = LabanMouseEvent()
+    event.action = LABAN_MOUSE_ACTION_PRESS
+    event.button = LABAN_MOUSE_BUTTON_LEFT
+    event.x = 160
+    event.y = 32
+    event.screen_width = 240
+    event.screen_height = 80
+    event.cell_width = 8
+    event.cell_height = 16
+
+    var buf = [UInt8](repeating: 0, count: 64)
+    var outLen: size_t = 0
+    XCTAssertEqual(laban_session_encode_mouse(session, &event, &buf, buf.count, &outLen), 0)
+
+    let seq = String(bytes: buf.prefix(Int(outLen)), encoding: .utf8)
+    XCTAssertEqual(seq, "\u{1b}[<0;21;3M")
+  }
+
+  func testMouseEncodingUsesGhosttyModifierBitOrder() {
+    guard let session = makeFixtureSession(rows: 5, cols: 30) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let enableSeq = Array("\u{1b}[?1000h\u{1b}[?1006h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    var event = LabanMouseEvent()
+    event.action = LABAN_MOUSE_ACTION_PRESS
+    event.button = LABAN_MOUSE_BUTTON_LEFT
+    event.x = 0
+    event.y = 0
+    event.screen_width = 240
+    event.screen_height = 80
+    event.cell_width = 8
+    event.cell_height = 16
+    event.modifiers = 4
+
+    var altBuf = [UInt8](repeating: 0, count: 64)
+    var altLen: size_t = 0
+    XCTAssertEqual(laban_session_encode_mouse(session, &event, &altBuf, altBuf.count, &altLen), 0)
+    XCTAssertEqual(String(bytes: altBuf.prefix(Int(altLen)), encoding: .utf8), "\u{1b}[<8;1;1M")
+
+    event.modifiers = 2
+    var ctrlBuf = [UInt8](repeating: 0, count: 64)
+    var ctrlLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_encode_mouse(session, &event, &ctrlBuf, ctrlBuf.count, &ctrlLen), 0)
+    XCTAssertEqual(
+      String(bytes: ctrlBuf.prefix(Int(ctrlLen)), encoding: .utf8),
+      "\u{1b}[<16;1;1M")
+  }
+
+  func testButtonModeDragMotionPreservesPressedButton() {
+    guard let session = makeFixtureSession(rows: 5, cols: 30) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let enableSeq = Array("\u{1b}[?1002h\u{1b}[?1006h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    var press = LabanMouseEvent()
+    press.action = LABAN_MOUSE_ACTION_PRESS
+    press.button = LABAN_MOUSE_BUTTON_LEFT
+    press.x = 8
+    press.y = 16
+    press.screen_width = 240
+    press.screen_height = 80
+    press.cell_width = 8
+    press.cell_height = 16
+
+    var pressBuf = [UInt8](repeating: 0, count: 64)
+    var pressLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_encode_mouse(session, &press, &pressBuf, pressBuf.count, &pressLen), 0)
+    XCTAssertGreaterThan(pressLen, 0)
+
+    var motion = press
+    motion.action = LABAN_MOUSE_ACTION_MOTION
+    motion.button = LABAN_MOUSE_BUTTON_NONE
+    motion.x = 16
+    motion.y = 32
+
+    var motionBuf = [UInt8](repeating: 0, count: 64)
+    var motionLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_encode_mouse(session, &motion, &motionBuf, motionBuf.count, &motionLen), 0)
+
+    let seq = String(bytes: motionBuf.prefix(Int(motionLen)), encoding: .utf8)
+    XCTAssertEqual(seq, "\u{1b}[<32;3;3M")
+  }
+
   func testMouseEncodingWheelUpAndDownAreDistinct() {
     guard let session = makeFixtureSession(rows: 5, cols: 30) else {
       XCTFail("laban_session_create returned non-zero")

@@ -122,12 +122,14 @@ typedef enum {
 typedef struct {
     LabanMouseAction action;
     LabanMouseButton button;
+    /* Terminal-surface pixel position with (0,0) at the top-left. */
     float x;
     float y;
     int screen_width;
     int screen_height;
     int cell_width;
     int cell_height;
+    /* GhosttyMods bit order: shift=1, ctrl=2, alt=4, super=8. */
     int modifiers;
 } LabanMouseEvent;
 
