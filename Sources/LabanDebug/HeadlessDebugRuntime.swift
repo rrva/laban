@@ -450,10 +450,7 @@ public final class HeadlessDebugRuntime {
 
     case "advanceFrames":
       let count = max(req.count ?? 1, 1)
-      if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
-        for _ in 0..<count { session.poll() }
-      }
-      renderFrameUnlocked()
+      for _ in 0..<count { renderFrameUnlocked() }
       return actionResult(ok: true)
 
     case "setClipboardText":
