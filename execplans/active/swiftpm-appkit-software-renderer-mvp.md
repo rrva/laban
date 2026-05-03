@@ -88,6 +88,8 @@ plan as each shard lands.
   `/debug/health`, `/debug/state`, `/debug/screenshot`, and `/debug/actions`.
 - [ ] Add debug server phase 2 endpoints:
   `/debug/sessions`, `/debug/render`, and `/debug/frame-commands`.
+  Shard for both debug-server phases:
+  `execplans/active/headless-debug-server.md`.
 - [ ] Add fixture sessions first, then controlled real-shell smoke tests.
 - [ ] Add stable run/check/test scripts and make `./scripts/check` include the
   new SwiftPM, schema, and E2E gates.
