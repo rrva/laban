@@ -35,20 +35,28 @@ headless renderer at scale 1 and report that scale in debug responses.
 - [x] (2026-05-03) Read the required debug contracts in
   `docs/process/dev-process.md`, `docs/process/worktree-isolation.md`,
   `docs/process/observability.md`, and `schemas/debug/*.schema.json`.
-- [ ] Add a small loopback-only HTTP server in `LabanDebug`.
-- [ ] Add a long-running headless runtime that owns `AppModel`, fixture state,
-  frame advancement, frame commands, software rendering, screenshots, and
-  bounded debug state.
-- [ ] Wire `laban-agent --headless --debug-server=127.0.0.1:0` to start the
-  runtime, print one readiness line, and keep serving until terminated.
-- [ ] Implement phase 1 endpoints: `/debug/health`, `/debug/state`,
-  `/debug/screenshot`, and `/debug/actions`.
-- [ ] Implement the low-cost phase 2 diagnostics: `/debug/sessions`,
+- [x] (2026-05-03) Add a small loopback-only HTTP server in `LabanDebug`
+  (`Sources/LabanDebug/DebugHTTPServer.swift`).
+- [x] (2026-05-03) Add a long-running headless runtime that owns `AppModel`,
+  fixture state, frame advancement, frame commands, software rendering,
+  screenshots, and bounded debug state
+  (`Sources/LabanDebug/HeadlessDebugRuntime.swift`).
+- [x] (2026-05-03) Wire `laban-agent --headless --debug-server=127.0.0.1:0` to
+  start the runtime, print one readiness line, and keep serving until
+  terminated (`Sources/LabanAgent/main.swift`).
+- [x] (2026-05-03) Implement phase 1 endpoints: `/debug/health`,
+  `/debug/state`, `/debug/screenshot`, and `/debug/actions` (including
+  `newTab`, `closeTab`, `selectTab`, `resizeWindow`, `typeText`,
+  `advanceFrames`, `setClipboardText`, `paste`; unsupported actions return
+  bounded `ok:false`).
+- [x] (2026-05-03) Implement low-cost phase 2 diagnostics: `/debug/sessions`,
   `/debug/render`, `/debug/frame-commands`, `/debug/render-trace`,
   `/debug/wait`, and `/debug/events`.
-- [ ] Add a headless debug-server smoke script and include it in
-  `./scripts/check`.
-- [ ] Run local verification and update this plan with evidence.
+- [x] (2026-05-03) Add `scripts/test-e2e` (18-step E2E script) and include it
+  in `./scripts/check`. Added `.artifacts/` and `.tmp/` to `.gitignore`.
+- [x] (2026-05-03) Local verification passed: `./scripts/check` passes,
+  `./scripts/test-e2e` passes, 78 unit tests pass (13 new in
+  `LabanDebugTests`), `smoke-runtime` still passes.
 
 ## Decision Log
 
@@ -796,6 +804,26 @@ strings.
 
 ## Outcomes & Retrospective
 
-Fill this section in after implementation. Include the commit SHA, the endpoint
-set that landed, the E2E command output, and any endpoints intentionally
-deferred to a follow-up plan.
+All four milestones completed in one session (2026-05-03).
+
+**Endpoints landed:** `/debug/health`, `/debug/state`, `GET /debug/screenshot`,
+`POST /debug/screenshot`, `/debug/actions` (8 actions implemented, 5 return
+bounded `ok:false`), `/debug/sessions`, `/debug/render`, `/debug/frame-commands`,
+`POST /debug/render-trace`, `POST /debug/wait` (8 condition kinds), `/debug/events`.
+
+**E2E output:**
+```
+debug server: http://127.0.0.1:<dynamic>
+test-e2e passed
+```
+
+**check output:** `check passed` (78 tests, 0 failures).
+
+**Deferred to follow-up:** Interactive (AppKit) debug server support; scrollback
+endpoints; `/debug/pixel-probe`, `/debug/atlas`, `/debug/selection`,
+`/debug/clipboard`, `/debug/input-log`, `/debug/terminal-log`, `/debug/timing`,
+`/debug/errors`, `POST /debug/fixture`, `POST /debug/snapshot`.
+
+**Discovery:** stdout must be flushed with `fflush(stdout)` after printing the
+readiness line — Swift's `print()` is fully buffered when stdout is redirected
+to a file, causing the parent process to wait indefinitely.

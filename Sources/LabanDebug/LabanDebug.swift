@@ -1,3 +1,1 @@
-public struct LabanDebug {
-  public static let version = "0.0.0"
-}
+// LabanDebug: headless debug server and HTTP endpoint library.

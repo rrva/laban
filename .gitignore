@@ -1,5 +1,7 @@
 .build/
 .external/
+.artifacts/
+.tmp/
 .claude/worktrees/
 compile_commands.json
 *.o
