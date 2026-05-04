@@ -23,6 +23,21 @@ private func canonicalPath(_ path: String) -> String {
   }
 }
 
+private func processMetadata(
+  pid: Int,
+  process: String,
+  command: String,
+  cwd: String? = nil
+) -> Session.ProcessMetadata {
+  Session.ProcessMetadata(
+    childPid: pid,
+    foregroundPid: pid,
+    foregroundProcess: process,
+    foregroundCommand: command,
+    cwd: cwd
+  )
+}
+
 final class AppModelTests: XCTestCase {
 
   func testInitialModelHasOneActiveTabAndSession() throws {
@@ -186,6 +201,127 @@ final class AppModelTests: XCTestCase {
     let changed = model.syncExitState(forTab: tabId, from: session)
     XCTAssertFalse(changed, "syncExitState must be no-op once tab is already exited")
     XCTAssertEqual(model.tabs[0].status, .exited(code: 0))
+  }
+
+  func testTerminalTitleOwnedByForegroundProcessBeatsVersionedProcessName() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+
+    _ = model.applyProcessMetadata(
+      processMetadata(
+        pid: 1001,
+        process: "2.1.126",
+        command: "/opt/homebrew/bin/2.1.126",
+        cwd: NSHomeDirectory()
+      ),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("* Claude Code", forTab: tabId)
+
+    XCTAssertEqual(model.tabs[0].title, "* Claude Code")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .terminal)
+    XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "* Claude Code")
+  }
+
+  func testProcessIdentityChangeClearsOwnedTerminalTitle() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+
+    _ = model.applyProcessMetadata(
+      processMetadata(
+        pid: 1001,
+        process: "2.1.126",
+        command: "/opt/homebrew/bin/2.1.126",
+        cwd: NSHomeDirectory()
+      ),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("* Claude Code", forTab: tabId)
+
+    XCTAssertTrue(
+      model.applyProcessMetadata(
+        processMetadata(
+          pid: 1002,
+          process: "top",
+          command: "/usr/bin/top",
+          cwd: NSHomeDirectory()
+        ),
+        forTab: tabId
+      ))
+
+    XCTAssertNil(model.tabs[0].titleMetadata.terminalTitle)
+    XCTAssertEqual(model.tabs[0].title, "top")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .process)
+  }
+
+  func testShellProcessIdentityChangeFallsBackToHomeCwd() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+
+    _ = model.applyProcessMetadata(
+      processMetadata(
+        pid: 1001,
+        process: "2.1.126",
+        command: "/opt/homebrew/bin/2.1.126",
+        cwd: NSHomeDirectory()
+      ),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("* Claude Code", forTab: tabId)
+
+    _ = model.applyProcessMetadata(
+      processMetadata(
+        pid: 1002,
+        process: "zsh",
+        command: "/bin/zsh",
+        cwd: NSHomeDirectory()
+      ),
+      forTab: tabId
+    )
+
+    XCTAssertNil(model.tabs[0].titleMetadata.terminalTitle)
+    XCTAssertEqual(model.tabs[0].title, "~")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .cwd)
+  }
+
+  func testManualTitleSurvivesProcessAndTerminalChanges() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+
+    _ = model.applyProcessMetadata(
+      processMetadata(pid: 1001, process: "2.1.126", command: "/opt/homebrew/bin/2.1.126"),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("* Claude Code", forTab: tabId)
+    try model.renameTab(tabId, title: "manual")
+    _ = model.applyProcessMetadata(
+      processMetadata(pid: 1002, process: "top", command: "/usr/bin/top"),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("top", forTab: tabId)
+
+    XCTAssertEqual(model.tabs[0].title, "manual")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .user)
+  }
+
+  func testFrozenTitleSurvivesProcessAndTerminalChanges() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+
+    _ = model.applyProcessMetadata(
+      processMetadata(pid: 1001, process: "zsh", command: "/bin/zsh", cwd: NSHomeDirectory()),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("zsh", forTab: tabId)
+    try model.freezeTitle(forTab: tabId)
+    _ = model.applyProcessMetadata(
+      processMetadata(pid: 1002, process: "2.1.126", command: "/opt/homebrew/bin/2.1.126"),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("* Claude Code", forTab: tabId)
+
+    XCTAssertEqual(model.tabs[0].title, "~")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .user)
   }
 
   func testSyncProcessMetadataUsesForegroundProcessForTitle() throws {

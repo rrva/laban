@@ -129,10 +129,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       if let session = model.session(forTab: tab.id) {
         session.setCaptureFrame(captureFrame)
         session.poll()
-        if model.syncTitle(forTab: tab.id, from: session) {
+        if model.syncProcessMetadata(forTab: tab.id, from: session) {
           renderInvalidated = true
         }
-        if model.syncProcessMetadata(forTab: tab.id, from: session) {
+        if model.syncTitle(forTab: tab.id, from: session) {
           renderInvalidated = true
         }
         if model.syncExitState(forTab: tab.id, from: session) {

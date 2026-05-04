@@ -8,6 +8,8 @@ public final class AppModel {
   public private(set) var tabs: [Tab] = []
   private var sessions: [Session.ID: Session] = [:]
   private var lastProcessMetadataSyncAtByTab: [Tab.ID: Date] = [:]
+  private var processIdentityByTab: [Tab.ID: ProcessIdentity] = [:]
+  private var terminalTitleOwnerByTab: [Tab.ID: ProcessIdentity] = [:]
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
   private let processMetadataSyncInterval: TimeInterval = 0.25
@@ -16,6 +18,22 @@ public final class AppModel {
       for session in sessions.values {
         session.captureSink = captureSink
       }
+    }
+  }
+
+  private struct ProcessIdentity: Equatable {
+    var pid: Int?
+    var process: String?
+    var command: String?
+
+    init?(_ metadata: Session.ProcessMetadata) {
+      let pid = metadata.foregroundPid ?? metadata.childPid
+      let process = TerminalTitle.sanitize(metadata.foregroundProcess)
+      let command = TerminalTitle.sanitize(metadata.foregroundCommand)
+      guard pid != nil || process != nil || command != nil else { return nil }
+      self.pid = pid
+      self.process = process
+      self.command = command
     }
   }
 
@@ -103,6 +121,8 @@ public final class AppModel {
       sessions[tab.sessionId]?.close()
       sessions.removeValue(forKey: tab.sessionId)
       lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
+      processIdentityByTab.removeValue(forKey: tab.id)
+      terminalTitleOwnerByTab.removeValue(forKey: tab.id)
       tabs = []
       recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
       throw AppError.lastTabClosed
@@ -113,6 +133,8 @@ public final class AppModel {
     sessions[tab.sessionId]?.close()
     sessions.removeValue(forKey: tab.sessionId)
     lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
+    processIdentityByTab.removeValue(forKey: tab.id)
+    terminalTitleOwnerByTab.removeValue(forKey: tab.id)
     tabs.remove(at: idx)
     recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
 
@@ -141,7 +163,7 @@ public final class AppModel {
       throw AppError.tabNotFound
     }
     guard let sanitized = TerminalTitle.sanitize(title) else { return }
-    tabs[idx].titleMetadata.terminalTitle = sanitized
+    setTerminalTitle(sanitized, forTab: tabId, at: idx)
     resolveTitle(at: idx)
   }
 
@@ -214,8 +236,7 @@ public final class AppModel {
     guard dirty else { return false }
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
     let before = tabs[idx].titleMetadata
-    guard let sanitized = TerminalTitle.sanitize(raw) else { return false }
-    tabs[idx].titleMetadata.terminalTitle = sanitized
+    setTerminalTitle(TerminalTitle.sanitize(raw), forTab: tabId, at: idx)
     resolveTitle(at: idx)
     return tabs[idx].titleMetadata != before
   }
@@ -226,7 +247,7 @@ public final class AppModel {
     from session: Session,
     now: Date = Date()
   ) -> Bool {
-    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    guard tabs.contains(where: { $0.id == tabId }) else { return false }
     if let last = lastProcessMetadataSyncAtByTab[tabId],
       now.timeIntervalSince(last) < processMetadataSyncInterval
     {
@@ -235,7 +256,40 @@ public final class AppModel {
     lastProcessMetadataSyncAtByTab[tabId] = now
 
     guard let metadata = session.processMetadata() else { return false }
+    return applyProcessMetadata(metadata, forTab: tabId, now: now)
+  }
+
+  @discardableResult
+  func applyProcessMetadata(
+    _ metadata: Session.ProcessMetadata,
+    forTab tabId: Tab.ID,
+    now: Date = Date()
+  ) -> Bool {
+    _ = now
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
     let before = tabs[idx].titleMetadata
+    let newIdentity = ProcessIdentity(metadata)
+    let oldIdentity = processIdentityByTab[tabId]
+    let processChanged = oldIdentity != nil && oldIdentity != newIdentity
+
+    if processChanged {
+      tabs[idx].titleMetadata.terminalTitle = nil
+      terminalTitleOwnerByTab.removeValue(forKey: tabId)
+    } else if let owner = terminalTitleOwnerByTab[tabId], owner != newIdentity {
+      tabs[idx].titleMetadata.terminalTitle = nil
+      terminalTitleOwnerByTab.removeValue(forKey: tabId)
+    } else if terminalTitleOwnerByTab[tabId] == nil,
+      tabs[idx].titleMetadata.terminalTitle != nil,
+      let newIdentity
+    {
+      terminalTitleOwnerByTab[tabId] = newIdentity
+    }
+
+    if let newIdentity {
+      processIdentityByTab[tabId] = newIdentity
+    } else {
+      processIdentityByTab.removeValue(forKey: tabId)
+    }
 
     var workspace = tabs[idx].titleMetadata.workspace
     if let cwd = metadata.cwd {
@@ -406,6 +460,15 @@ public final class AppModel {
 
   private func recordTab(_ kind: CaptureEventKind, tabId: Tab.ID, sessionId: Session.ID) {
     captureSink?.record(CaptureTimelineEvent(kind: kind, tabId: tabId, sessionId: sessionId))
+  }
+
+  private func setTerminalTitle(_ title: String?, forTab tabId: Tab.ID, at idx: Int) {
+    tabs[idx].titleMetadata.terminalTitle = title
+    if title != nil, let owner = processIdentityByTab[tabId] {
+      terminalTitleOwnerByTab[tabId] = owner
+    } else {
+      terminalTitleOwnerByTab.removeValue(forKey: tabId)
+    }
   }
 }
 

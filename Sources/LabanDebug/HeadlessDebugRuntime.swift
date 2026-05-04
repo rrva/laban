@@ -622,6 +622,7 @@ public final class HeadlessDebugRuntime {
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id) {
         session.poll()
+        model.syncProcessMetadata(forTab: tab.id, from: session)
         if model.syncTitle(forTab: tab.id, from: session),
           let updated = model.tabs.first(where: { $0.id == tab.id })
         {
@@ -633,7 +634,6 @@ public final class HeadlessDebugRuntime {
           event.title = updated.title
           captureRecorder?.record(event)
         }
-        model.syncProcessMetadata(forTab: tab.id, from: session)
         model.syncExitState(forTab: tab.id, from: session)
       }
     }
