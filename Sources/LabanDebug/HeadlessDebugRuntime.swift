@@ -1,5 +1,6 @@
 import CoreGraphics
 import Darwin
+import Dispatch
 import Foundation
 import LabanCore
 import LabanRenderer
@@ -28,6 +29,32 @@ private struct EventEntry {
   var action: String?
   var deltaRows: Int?
   var error: String?
+}
+
+private struct TerminalLogEntry {
+  var seq: Int = 0
+  var sessionId: String?
+  var direction: String
+  var escaped: String
+  var frame: Int?
+}
+
+private struct DebugErrorEntry {
+  var seq: Int = 0
+  var level: String
+  var kind: String
+  var message: String
+  var sessionId: String?
+  var tabId: String?
+}
+
+private struct RuntimeTiming {
+  var lastFrameMs: Double = 0
+  var terminalPollMs: Double = 0
+  var snapshotMs: Double = 0
+  var commandExtractionMs: Double = 0
+  var renderMs: Double = 0
+  var screenshotMs: Double = 0
 }
 
 private struct CellCoordinateReq: Decodable {
@@ -165,7 +192,7 @@ public final class HeadlessDebugRuntime {
   private let lock = NSLock()
 
   public let runId: String
-  private let mode: String
+  private var mode: String
   private let artifactsURL: URL
   private let deterministic: Bool
 
@@ -194,6 +221,14 @@ public final class HeadlessDebugRuntime {
   private var eventSeq: Int = 0
   private var inputLog: [InputEventEnvelope] = []
   private var inputLogSeq: Int = 0
+  private var terminalLog: [TerminalLogEntry] = []
+  private var terminalLogSeq: Int = 0
+  private var errorLog: [DebugErrorEntry] = []
+  private var errorSeq: Int = 0
+  private var timing = RuntimeTiming()
+  private var fixtureURL: URL?
+  private var fixtureRunner: FixtureRunner?
+  private var fixtureStepIndex: Int = 0
   private var captureRecorder: CaptureRecorder?
   private var lastCaptureManifestPath: String?
   private var lastCaptureRunId: String?
@@ -288,6 +323,9 @@ public final class HeadlessDebugRuntime {
 
     if let r = runner {
       try r.apply(to: model)
+      self.fixtureURL = fixtureURL
+      self.fixtureRunner = r
+      self.fixtureStepIndex = r.fixture.steps.count
     }
 
     if initialRecorder != nil {
@@ -308,25 +346,46 @@ public final class HeadlessDebugRuntime {
   // MARK: - Render (always call under lock or from init)
 
   private func renderFrameUnlocked() {
+    let frameStart = monotonicNow()
+    var terminalPollMs = 0.0
+    var snapshotMs = 0.0
+    var commandExtractionMs = 0.0
+
+    var timer = monotonicNow()
     syncSessionMetadataUnlocked()
+    terminalPollMs += elapsedMs(since: timer)
+
     let frame = currentFrame + 1
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: frame))
 
     guard let activeTab = model.activeTab else {
-      renderCommandsUnlocked([], captureFrame: frame)
+      renderCommandsUnlocked(
+        [],
+        captureFrame: frame,
+        frameStart: frameStart,
+        terminalPollMs: terminalPollMs,
+        snapshotMs: snapshotMs,
+        commandExtractionMs: commandExtractionMs
+      )
       return
     }
 
+    timer = monotonicNow()
     var cmds = sidebarProducer.commands(
       tabs: model.tabs,
       activeTabId: activeTab.id,
       height: CGFloat(windowHeight)
     )
+    commandExtractionMs += elapsedMs(since: timer)
 
     if let session = model.session(forTab: activeTab.id) {
       session.setCaptureFrame(frame)
+      timer = monotonicNow()
       session.poll()
+      terminalPollMs += elapsedMs(since: timer)
+      timer = monotonicNow()
       if let snap = session.snapshot() {
+        snapshotMs += elapsedMs(since: timer)
         defer { laban_snapshot_destroy(snap) }
         captureRecorder?.recordTerminalSnapshot(
           frame: frame,
@@ -334,8 +393,12 @@ public final class HeadlessDebugRuntime {
           sessionId: session.id,
           snapshot: UnsafePointer(snap)
         )
+        timer = monotonicNow()
         let sel = selectionBySession[session.id]
         cmds += frameProducer.commands(from: UnsafePointer(snap), selection: sel)
+        commandExtractionMs += elapsedMs(since: timer)
+      } else {
+        snapshotMs += elapsedMs(since: timer)
       }
     }
 
@@ -346,15 +409,40 @@ public final class HeadlessDebugRuntime {
       surfaceHeight: surface.height,
       scale: Double(surface.scale)
     )
-    renderCommandsUnlocked(cmds, captureFrame: frame)
+    renderCommandsUnlocked(
+      cmds,
+      captureFrame: frame,
+      frameStart: frameStart,
+      terminalPollMs: terminalPollMs,
+      snapshotMs: snapshotMs,
+      commandExtractionMs: commandExtractionMs
+    )
   }
 
-  private func renderCommandsUnlocked(_ cmds: [FrameCommand], captureFrame: Int? = nil) {
+  private func renderCommandsUnlocked(
+    _ cmds: [FrameCommand],
+    captureFrame: Int? = nil,
+    frameStart: DispatchTime? = nil,
+    terminalPollMs: Double = 0,
+    snapshotMs: Double = 0,
+    commandExtractionMs: Double = 0
+  ) {
+    let renderStart = monotonicNow()
     renderer.render(cmds)
+    let renderMs = elapsedMs(since: renderStart)
     lastFrameCommands = cmds
     lastDrawStats = countStats(cmds)
     currentFrame += 1
     let frame = captureFrame ?? currentFrame
+    let totalMs = frameStart.map { elapsedMs(since: $0) } ?? renderMs
+    timing = RuntimeTiming(
+      lastFrameMs: totalMs,
+      terminalPollMs: terminalPollMs,
+      snapshotMs: snapshotMs,
+      commandExtractionMs: commandExtractionMs,
+      renderMs: renderMs,
+      screenshotMs: timing.screenshotMs
+    )
     captureRecorder?.recordRenderedFrame(frame: frame, surface: surface)
     appendEvent(EventEntry(kind: "frame.rendered", frame: currentFrame))
   }
@@ -381,6 +469,14 @@ public final class HeadlessDebugRuntime {
 
   // MARK: - Events
 
+  private func monotonicNow() -> DispatchTime {
+    DispatchTime.now()
+  }
+
+  private func elapsedMs(since start: DispatchTime) -> Double {
+    Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
+  }
+
   private func appendEvent(_ e: EventEntry) {
     var e = e
     e.seq = eventSeq
@@ -389,6 +485,72 @@ public final class HeadlessDebugRuntime {
     if eventLog.count > 2000 {
       eventLog.removeFirst(eventLog.count - 2000)
     }
+  }
+
+  private func appendTerminalLog(sessionId: String?, direction: String, bytes: [UInt8]) {
+    guard !bytes.isEmpty else { return }
+    appendTerminalLog(
+      TerminalLogEntry(
+        sessionId: sessionId,
+        direction: direction,
+        escaped: escapedPreview(bytes),
+        frame: currentFrame
+      ))
+  }
+
+  private func appendTerminalLog(_ e: TerminalLogEntry) {
+    var e = e
+    e.seq = terminalLogSeq
+    terminalLogSeq += 1
+    terminalLog.append(e)
+    if terminalLog.count > 1024 {
+      terminalLog.removeFirst(terminalLog.count - 1024)
+    }
+  }
+
+  private func appendError(
+    level: String = "error",
+    kind: String,
+    message: String,
+    sessionId: String? = nil,
+    tabId: String? = nil
+  ) {
+    var e = DebugErrorEntry(
+      level: level,
+      kind: kind,
+      message: message,
+      sessionId: sessionId,
+      tabId: tabId
+    )
+    e.seq = errorSeq
+    errorSeq += 1
+    errorLog.append(e)
+    if errorLog.count > 512 {
+      errorLog.removeFirst(errorLog.count - 512)
+    }
+  }
+
+  private func escapedPreview(_ bytes: [UInt8], limit: Int = 512) -> String {
+    var out = ""
+    var count = 0
+    for b in bytes {
+      if count >= limit {
+        out += "..."
+        break
+      }
+      count += 1
+      switch b {
+      case 0x09: out += "\\t"
+      case 0x0A: out += "\\n"
+      case 0x0D: out += "\\r"
+      case 0x1B: out += "\\e"
+      case 0x20...0x7E:
+        out.append(Character(UnicodeScalar(b)))
+      default:
+        out += String(format: "\\x%02x", b)
+      }
+    }
+    return out
   }
 
   private func appendInputEnvelope(_ e: InputEventEnvelope) {
@@ -868,20 +1030,29 @@ public final class HeadlessDebugRuntime {
   public func screenshotBytes() throws -> (data: Data, frame: Int, width: Int, height: Int) {
     lock.lock()
     defer { lock.unlock() }
+    let start = monotonicNow()
     guard let pngData = surface.pngData else { throw DebugServerError.encodingFailed }
+    timing.screenshotMs = elapsedMs(since: start)
     return (pngData, currentFrame, surface.width, surface.height)
   }
 
   public func writeScreenshotArtifact() -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
+    let start = monotonicNow()
     guard let pngData = surface.pngData else {
+      appendError(kind: "screenshot.encoding", message: "PNG encoding failed")
       return jsonError("PNG encoding failed", status: 500)
     }
+    timing.screenshotMs = elapsedMs(since: start)
     let ssDir = artifactsURL.appendingPathComponent("screenshots")
     do {
       try FileManager.default.createDirectory(at: ssDir, withIntermediateDirectories: true)
     } catch {
+      appendError(
+        kind: "screenshot.artifact",
+        message: "failed to create screenshots dir: \(error)"
+      )
       return jsonError("failed to create screenshots dir: \(error)", status: 500)
     }
     let fname = String(format: "frame-%06d.png", currentFrame)
@@ -889,6 +1060,7 @@ public final class HeadlessDebugRuntime {
     do {
       try pngData.write(to: fileURL)
     } catch {
+      appendError(kind: "screenshot.artifact", message: "failed to write screenshot: \(error)")
       return jsonError("failed to write screenshot: \(error)", status: 500)
     }
     appendEvent(EventEntry(kind: "screenshot.captured", frame: currentFrame, path: fileURL.path))
@@ -905,6 +1077,7 @@ public final class HeadlessDebugRuntime {
     lock.lock()
     defer { lock.unlock() }
     guard let req = try? JSONDecoder().decode(ActionRequest.self, from: data) else {
+      appendError(kind: "action.invalid", message: "invalid action request")
       return jsonError("invalid action request")
     }
     return applyActionUnlocked(req)
@@ -1056,6 +1229,7 @@ public final class HeadlessDebugRuntime {
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
         session.write(bytes)
         model.noteOutput(forTab: tab.id)
+        appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
       }
       renderFrameUnlocked()
       appendInputEnvelope(
@@ -1077,8 +1251,10 @@ public final class HeadlessDebugRuntime {
     case "feedOutput":
       guard let text = req.text else { return jsonError("feedOutput requires text") }
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
-        session.feedOutput(Array(text.utf8))
+        let bytes = Array(text.utf8)
+        session.feedOutput(bytes)
         model.noteOutput(forTab: tab.id)
+        appendTerminalLog(sessionId: session.id, direction: "output", bytes: bytes)
       }
       renderFrameUnlocked()
       appendEvent(EventEntry(kind: "output.fed", text: text))
@@ -1177,6 +1353,11 @@ public final class HeadlessDebugRuntime {
         lastPasteText = debugClipboard
         lastPasteUsedBracketedPaste = result?.bracketed
         lastPasteIgnoredNonText = false
+        appendTerminalLog(
+          sessionId: session.id,
+          direction: "input",
+          bytes: Array(debugClipboard.utf8)
+        )
       }
       renderFrameUnlocked()
       appendInputEnvelope(
@@ -1438,6 +1619,7 @@ public final class HeadlessDebugRuntime {
         if let bytes = session.encodeKey(keyEvent), !bytes.isEmpty {
           encodedHex = bytes.map { String(format: "%02x", $0) }.joined()
           encodedLength = bytes.count
+          appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
         }
         session.sendKey(keyEvent)
       }
@@ -1457,6 +1639,10 @@ public final class HeadlessDebugRuntime {
 
     default:
       appendEvent(EventEntry(kind: "action.unsupported", action: req.action))
+      appendError(
+        kind: "action.unsupported",
+        message: "debug action \(req.action) is not implemented yet"
+      )
       let active = model.activeTab
       return jsonEncode(
         ActionResult(
@@ -1921,6 +2107,392 @@ public final class HeadlessDebugRuntime {
     case .clip: return "clip"
     case .texturedQuad: return "texturedQuad"
     }
+  }
+
+  // MARK: - Exploratory diagnostics
+
+  public func pixelProbe(_ data: Data) -> DebugResponse {
+    let body = data.isEmpty ? Data("{}".utf8) : data
+    guard let req = try? JSONDecoder().decode(PixelProbeRequest.self, from: body) else {
+      lock.lock()
+      appendError(kind: "pixel-probe.invalid", message: "invalid pixel probe request")
+      lock.unlock()
+      return jsonError("invalid pixel probe request")
+    }
+
+    lock.lock()
+    defer { lock.unlock() }
+
+    let points = (req.points ?? []).map { p -> PixelProbePointResult in
+      let rgba = surface.pixel(x: p.x, y: p.y).map(rgbaArray) ?? [0, 0, 0, 0]
+      return PixelProbePointResult(x: p.x, y: p.y, rgba: rgba)
+    }
+
+    let regions = (req.regions ?? []).map { r -> PixelProbeRegionResult in
+      var sampled = 0
+      var nonBackground = 0
+      var sums = [0, 0, 0, 0]
+      let background = surface.pixel(x: r.x, y: r.y)
+
+      let maxX = min(surface.width, r.x + r.width)
+      let maxY = min(surface.height, r.y + r.height)
+      if r.x < maxX && r.y < maxY {
+        for y in r.y..<maxY {
+          for x in r.x..<maxX {
+            guard let px = surface.pixel(x: x, y: y) else { continue }
+            let rgba = rgbaArray(px)
+            for i in 0..<4 { sums[i] += rgba[i] }
+            sampled += 1
+            if px != background { nonBackground += 1 }
+          }
+        }
+      }
+
+      let average = sampled > 0 ? sums.map { $0 / sampled } : [0, 0, 0, 0]
+      return PixelProbeRegionResult(
+        name: r.name,
+        averageRgba: average,
+        nonBackgroundPixels: nonBackground,
+        sampledPixels: sampled
+      )
+    }
+
+    return jsonEncode(PixelProbeResponse(frame: currentFrame, points: points, regions: regions))
+  }
+
+  public func timingResponse() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    return jsonEncode(
+      TimingResponse(
+        frame: currentFrame,
+        lastFrameMs: timing.lastFrameMs,
+        terminalPollMs: timing.terminalPollMs,
+        snapshotMs: timing.snapshotMs,
+        commandExtractionMs: timing.commandExtractionMs,
+        renderMs: timing.renderMs,
+        screenshotMs: timing.screenshotMs
+      ))
+  }
+
+  public func errors(since: Int) -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    let filtered = errorLog.filter { $0.seq >= since }.map { e in
+      DebugErrorEntryResponse(
+        seq: e.seq,
+        level: e.level,
+        kind: e.kind,
+        message: e.message,
+        sessionId: e.sessionId,
+        tabId: e.tabId
+      )
+    }
+    return jsonEncode(DebugErrorsResponse(errors: filtered, next: errorSeq))
+  }
+
+  public func terminalLogResponse(query: [String: String]) -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+
+    let since = query["since"].flatMap { Int($0) } ?? 0
+    let limit = min(query["limit"].flatMap { Int($0) } ?? 200, 1000)
+    let requestedSessionId = query["sessionId"] ?? model.activeTab?.sessionId ?? ""
+    var entries: [TerminalLogEntryResponse] = []
+    var truncated = false
+
+    for entry in terminalLog where entry.seq >= since {
+      if let sid = entry.sessionId, !requestedSessionId.isEmpty, sid != requestedSessionId {
+        continue
+      }
+      if entries.count >= limit {
+        truncated = true
+        break
+      }
+      entries.append(
+        TerminalLogEntryResponse(
+          seq: entry.seq,
+          direction: entry.direction,
+          escaped: entry.escaped,
+          sessionId: entry.sessionId,
+          frame: entry.frame
+        ))
+    }
+
+    return jsonEncode(
+      TerminalLogResponse(
+        sessionId: requestedSessionId,
+        events: entries,
+        next: terminalLogSeq,
+        truncated: truncated
+      ))
+  }
+
+  public func artifactSnapshot() -> DebugResponse {
+    let frame: Int
+    let pngData: Data?
+    let pngWidth: Int
+    let pngHeight: Int
+    lock.lock()
+    frame = currentFrame
+    let start = monotonicNow()
+    pngData = surface.pngData
+    timing.screenshotMs = elapsedMs(since: start)
+    pngWidth = surface.width
+    pngHeight = surface.height
+    lock.unlock()
+
+    let snapshotsRoot = artifactsURL.appendingPathComponent("snapshots", isDirectory: true)
+    let snapshotDir = snapshotsRoot.appendingPathComponent(
+      String(format: "snapshot-%06d", frame),
+      isDirectory: true
+    )
+
+    do {
+      try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+    } catch {
+      lock.lock()
+      appendError(kind: "snapshot.artifact", message: "failed to create snapshot dir: \(error)")
+      lock.unlock()
+      return jsonError("failed to create snapshot dir: \(error)", status: 500)
+    }
+
+    var files: [String: Data] = [
+      "state.json": state().body,
+      "sessions.json": sessions().body,
+      "render.json": renderState().body,
+      "frame-commands.json": frameCommands(query: ["source": "all", "limit": "2000"]).body,
+      "render-trace.json": renderTrace(Data("{}".utf8)).body,
+      "events.json": events(since: 0).body,
+      "input-log.json": inputLogResponse(since: 0).body,
+      "terminal-log.json": terminalLogResponse(query: [:]).body,
+      "errors.json": errors(since: 0).body,
+      "timing.json": timingResponse().body,
+    ]
+
+    if let pngData {
+      files["screenshot.png"] = pngData
+      files["screenshot.json"] =
+        jsonEncode(
+          ScreenshotResult(
+            path: snapshotDir.appendingPathComponent("screenshot.png").path,
+            width: pngWidth,
+            height: pngHeight,
+            frame: frame,
+            target: "window"
+          )
+        ).body
+    }
+
+    var manifestFiles: [ArtifactSnapshotFile] = []
+    do {
+      for (name, data) in files.sorted(by: { $0.key < $1.key }) {
+        let url = snapshotDir.appendingPathComponent(name)
+        try data.write(to: url)
+        manifestFiles.append(ArtifactSnapshotFile(name: name, path: url.path))
+      }
+      let manifestURL = snapshotDir.appendingPathComponent("manifest.json")
+      let manifest = ArtifactSnapshotManifest(
+        kind: "laban-debug-snapshot",
+        runId: runId,
+        frame: frame,
+        createdAt: Date(),
+        files: manifestFiles
+      )
+      let enc = JSONEncoder()
+      enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+      enc.dateEncodingStrategy = .iso8601
+      try enc.encode(manifest).write(to: manifestURL)
+      lock.lock()
+      appendEvent(EventEntry(kind: "snapshot.written", frame: frame, path: manifestURL.path))
+      lock.unlock()
+      return jsonEncode(SnapshotResultResponse(path: manifestURL.path, frame: frame))
+    } catch {
+      lock.lock()
+      appendError(kind: "snapshot.artifact", message: "failed to write snapshot: \(error)")
+      lock.unlock()
+      return jsonError("failed to write snapshot: \(error)", status: 500)
+    }
+  }
+
+  // MARK: - Fixture control
+
+  public func fixtureControl(_ data: Data) -> DebugResponse {
+    guard let req = try? JSONDecoder().decode(FixtureControlRequest.self, from: data) else {
+      lock.lock()
+      appendError(kind: "fixture.invalid", message: "invalid fixture control request")
+      lock.unlock()
+      return jsonError("invalid fixture control request")
+    }
+
+    lock.lock()
+    defer { lock.unlock() }
+
+    switch req.action {
+    case "load":
+      guard let rawPath = req.path else {
+        appendError(kind: "fixture.load", message: "fixture load requires path")
+        return fixtureResult(ok: false, action: req.action, error: "fixture load requires path")
+      }
+      let url = resolveFixtureURL(rawPath)
+      do {
+        let runner = try FixtureRunner.load(from: url)
+        try resetFixtureModelUnlocked(runner: runner)
+        fixtureURL = url
+        fixtureRunner = runner
+        fixtureStepIndex = 0
+        mode = "fixture"
+        renderFrameUnlocked()
+        appendEvent(EventEntry(kind: "fixture.loaded", path: url.path))
+        return fixtureResult(ok: true, action: req.action)
+      } catch {
+        appendError(kind: "fixture.load", message: "failed to load fixture: \(error)")
+        return fixtureResult(
+          ok: false,
+          action: req.action,
+          error: "failed to load fixture: \(error)"
+        )
+      }
+
+    case "restart":
+      guard let runner = fixtureRunner else {
+        appendError(kind: "fixture.restart", message: "no fixture is loaded")
+        return fixtureResult(ok: false, action: req.action, error: "no fixture is loaded")
+      }
+      do {
+        try resetFixtureModelUnlocked(runner: runner)
+        fixtureStepIndex = 0
+        mode = "fixture"
+        renderFrameUnlocked()
+        appendEvent(EventEntry(kind: "fixture.restarted", path: fixtureURL?.path))
+        return fixtureResult(ok: true, action: req.action)
+      } catch {
+        appendError(kind: "fixture.restart", message: "failed to restart fixture: \(error)")
+        return fixtureResult(
+          ok: false, action: req.action, error: "failed to restart fixture: \(error)")
+      }
+
+    case "step":
+      guard fixtureRunner != nil else {
+        appendError(kind: "fixture.step", message: "no fixture is loaded")
+        return fixtureResult(ok: false, action: req.action, error: "no fixture is loaded")
+      }
+      let count = max(req.count ?? 1, 1)
+      do {
+        try applyFixtureStepsUnlocked(count: count)
+        appendEvent(EventEntry(kind: "fixture.stepped", action: "step"))
+        return fixtureResult(ok: true, action: req.action)
+      } catch {
+        appendError(kind: "fixture.step", message: "failed to step fixture: \(error)")
+        return fixtureResult(
+          ok: false,
+          action: req.action,
+          error: "failed to step fixture: \(error)"
+        )
+      }
+
+    default:
+      appendError(kind: "fixture.unsupported", message: "unsupported fixture action \(req.action)")
+      return fixtureResult(
+        ok: false, action: req.action, error: "unsupported fixture action \(req.action)")
+    }
+  }
+
+  private func resolveFixtureURL(_ path: String) -> URL {
+    if (path as NSString).isAbsolutePath {
+      return URL(fileURLWithPath: path)
+    }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent(path)
+  }
+
+  private func resetFixtureModelUnlocked(runner: FixtureRunner) throws {
+    for tab in model.tabs {
+      model.session(forTab: tab.id)?.close()
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = Int32(runner.fixture.initialSize.rows)
+    size.cols = Int32(runner.fixture.initialSize.cols)
+
+    model = try AppModel(
+      initialSize: size,
+      sessionFactory: { [weak self] size in
+        let session = try Session.fixture(size: size)
+        session.captureSink = self?.captureRecorder
+        return session
+      })
+    model.captureSink = captureRecorder
+    selectionBySession.removeAll()
+    debugClipboard = ""
+    lastCopyText = nil
+    lastPasteText = nil
+    lastPasteUsedBracketedPaste = nil
+    lastPasteIgnoredNonText = nil
+
+    windowWidth = sidebarWidth + runner.fixture.initialSize.cols * cellWidth
+    windowHeight = runner.fixture.initialSize.rows * cellHeight
+    surface = BitmapSurface(width: max(windowWidth, 1), height: max(windowHeight, 1))
+    renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+  }
+
+  private func applyFixtureStepsUnlocked(count: Int) throws {
+    guard let runner = fixtureRunner, let tab = model.activeTab,
+      let session = model.session(forTab: tab.id)
+    else { return }
+
+    let steps = runner.fixture.steps
+    guard fixtureStepIndex < steps.count else {
+      renderFrameUnlocked()
+      return
+    }
+
+    let end = min(fixtureStepIndex + count, steps.count)
+    while fixtureStepIndex < end {
+      let step = steps[fixtureStepIndex]
+      fixtureStepIndex += 1
+      switch step {
+      case .setTitle(let title):
+        let bytes = Array("\u{1B}]0;\(title)\u{07}".utf8)
+        _ = session.write(bytes)
+        _ = session.poll()
+        appendTerminalLog(sessionId: session.id, direction: "output", bytes: bytes)
+        renderFrameUnlocked()
+
+      case .writeBytes(let encoding, let data):
+        guard encoding == "utf8" else { throw FixtureError.unsupportedEncoding(encoding) }
+        let bytes = Array(data.utf8)
+        _ = session.write(bytes)
+        _ = session.poll()
+        appendTerminalLog(sessionId: session.id, direction: "output", bytes: bytes)
+        renderFrameUnlocked()
+
+      case .waitFrames(let frameCount):
+        for _ in 0..<frameCount {
+          _ = session.poll()
+          renderFrameUnlocked()
+        }
+      }
+    }
+  }
+
+  private func fixtureResult(ok: Bool, action: String, error: String? = nil) -> DebugResponse {
+    let active = model.activeTab
+    return jsonEncode(
+      FixtureControlResponse(
+        ok: ok,
+        action: action,
+        frame: currentFrame,
+        fixtureName: fixtureRunner?.fixture.name,
+        fixturePath: fixtureURL?.path,
+        stepIndex: fixtureStepIndex,
+        stepCount: fixtureRunner?.fixture.steps.count ?? 0,
+        activeTabId: active?.id,
+        activeSessionId: active?.sessionId,
+        error: error
+      ),
+      status: ok ? 200 : 400
+    )
   }
 
   // MARK: - Events endpoint

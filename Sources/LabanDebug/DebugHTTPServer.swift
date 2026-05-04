@@ -198,8 +198,17 @@ public final class DebugHTTPServer {
     case ("POST", "/debug/render-trace"):
       return json(runtime.renderTrace(body))
 
+    case ("POST", "/debug/pixel-probe"):
+      return json(runtime.pixelProbe(body))
+
     case ("POST", "/debug/wait"):
       return json(runtime.wait(body))
+
+    case ("POST", "/debug/fixture"):
+      return json(runtime.fixtureControl(body))
+
+    case ("POST", "/debug/snapshot"):
+      return json(runtime.artifactSnapshot())
 
     case ("GET", "/debug/events"):
       let since = query["since"].flatMap { Int($0) } ?? 0
@@ -208,6 +217,16 @@ public final class DebugHTTPServer {
     case ("GET", "/debug/input-log"):
       let since = query["since"].flatMap { Int($0) } ?? 0
       return json(runtime.inputLogResponse(since: since))
+
+    case ("GET", "/debug/terminal-log"):
+      return json(runtime.terminalLogResponse(query: query))
+
+    case ("GET", "/debug/timing"):
+      return json(runtime.timingResponse())
+
+    case ("GET", "/debug/errors"):
+      let since = query["since"].flatMap { Int($0) } ?? 0
+      return json(runtime.errors(since: since))
 
     case ("GET", "/debug/capture/status"):
       return json(runtime.captureStatus())

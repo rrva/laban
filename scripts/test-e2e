@@ -456,7 +456,47 @@ CMD_TO_TERMINAL=$(printf '%s' "$INPUT_LOG" \
 [ "$CMD_TO_TERMINAL" -eq 0 ] \
   || fail "input-log: Command key routed to terminal: $INPUT_LOG"
 
-# 27. Stop capture, validate artifact shape, and replay it
+# 27. Exploratory diagnostics: pixel probe, terminal log, timing, errors, snapshot
+PIXEL_PROBE=$(post_json /debug/pixel-probe \
+  '{"points":[{"x":1,"y":1}],"regions":[{"name":"window","x":0,"y":0,"width":32,"height":32}]}')
+printf '%s' "$PIXEL_PROBE" | jq -e \
+  '(.points | length) == 1 and (.regions | length) == 1 and (.regions[0].sampledPixels > 0)' >/dev/null 2>&1 \
+  || fail "pixel-probe response invalid: $PIXEL_PROBE"
+
+TERMINAL_LOG=$(get_json '/debug/terminal-log?sessionId=&since=0&limit=200')
+printf '%s' "$TERMINAL_LOG" | jq -e 'has("events") and has("next") and has("truncated")' >/dev/null 2>&1 \
+  || fail "terminal-log missing fields: $TERMINAL_LOG"
+TERMINAL_LOG_INPUT=$(printf '%s' "$TERMINAL_LOG" \
+  | jq -r '[.events[] | select(.direction=="input")] | length')
+[ "$TERMINAL_LOG_INPUT" -ge 1 ] \
+  || fail "terminal-log: expected at least one input event: $TERMINAL_LOG"
+
+TIMING=$(get_json /debug/timing)
+printf '%s' "$TIMING" | jq -e \
+  '.frame >= 1 and .lastFrameMs >= 0 and .renderMs >= 0 and .screenshotMs >= 0' >/dev/null 2>&1 \
+  || fail "timing response invalid: $TIMING"
+
+UNSUPPORTED=$(post_json /debug/actions '{"action":"definitelyUnsupported"}')
+[ "$(printf '%s' "$UNSUPPORTED" | jq -r '.ok')" = "false" ] \
+  || fail "unsupported action should return ok:false: $UNSUPPORTED"
+ERRORS=$(get_json /debug/errors?since=0)
+printf '%s' "$ERRORS" | jq -e \
+  '[.errors[] | select(.kind=="action.unsupported")] | length >= 1' >/dev/null 2>&1 \
+  || fail "errors response missing unsupported action: $ERRORS"
+
+SNAPSHOT=$(post_json /debug/snapshot '{}')
+SNAPSHOT_MANIFEST=$(printf '%s' "$SNAPSHOT" | jq -r '.path // empty')
+[ -n "$SNAPSHOT_MANIFEST" ] || fail "snapshot missing manifest path: $SNAPSHOT"
+[ -f "$SNAPSHOT_MANIFEST" ] || fail "snapshot manifest not found: $SNAPSHOT_MANIFEST"
+SNAPSHOT_DIR=$(dirname "$SNAPSHOT_MANIFEST")
+for _snapshot_file in state.json sessions.json render.json frame-commands.json \
+                      render-trace.json events.json input-log.json terminal-log.json \
+                      errors.json timing.json screenshot.png; do
+  [ -f "$SNAPSHOT_DIR/$_snapshot_file" ] \
+    || fail "snapshot missing $_snapshot_file in $SNAPSHOT_DIR"
+done
+
+# 28. Stop capture, validate artifact shape, and replay it
 CAP_STATUS=$(get_json /debug/capture/status)
 [ "$(printf '%s' "$CAP_STATUS" | jq -r '.active')" = "true" ] \
   || fail "capture should be active before stop: $CAP_STATUS"
@@ -476,12 +516,27 @@ printf '%s' "$REPLAY_OUTPUT" | jq -e \
   '.terminalReplay == "passed" and .rendererReplay == "passed"' >/dev/null 2>&1 \
   || fail "capture replay failed: $REPLAY_OUTPUT"
 
-# 28. Terminate server
+# 29. Fixture control: restart and step the current fixture without relaunching
+FIXTURE_RESTART=$(post_json /debug/fixture '{"action":"restart"}')
+[ "$(printf '%s' "$FIXTURE_RESTART" | jq -r '.ok')" = "true" ] \
+  || fail "fixture restart failed: $FIXTURE_RESTART"
+[ "$(printf '%s' "$FIXTURE_RESTART" | jq -r '.stepIndex')" -eq 0 ] \
+  || fail "fixture restart did not reset step index: $FIXTURE_RESTART"
+FIXTURE_STEP=$(post_json /debug/fixture '{"action":"step","count":2}')
+[ "$(printf '%s' "$FIXTURE_STEP" | jq -r '.ok')" = "true" ] \
+  || fail "fixture step failed: $FIXTURE_STEP"
+[ "$(printf '%s' "$FIXTURE_STEP" | jq -r '.stepIndex')" -eq 2 ] \
+  || fail "fixture step did not advance to index 2: $FIXTURE_STEP"
+FIXTURE_WAIT=$(post_json /debug/wait '{"timeoutMs":2000,"condition":{"kind":"textVisible","text":"hello mvp"}}')
+[ "$(printf '%s' "$FIXTURE_WAIT" | jq -r '.ok')" = "true" ] \
+  || fail "fixture stepped text was not visible: $FIXTURE_WAIT"
+
+# 30. Terminate server
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 
-# 29. Bare --debug-server shorthand — launches and answers health
+# 31. Bare --debug-server shorthand — launches and answers health
 _bare_stdout=$(mktemp)
 "$AGENT_BIN" --headless --debug-server --deterministic >"$_bare_stdout" &
 BARE_PID=$!

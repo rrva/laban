@@ -400,3 +400,118 @@ struct InputLogResponse: Encodable {
   var events: [InputEventEnvelope]
   var next: Int
 }
+
+// MARK: - Exploratory diagnostics
+
+struct PixelProbePointRequest: Decodable {
+  var x: Int
+  var y: Int
+}
+
+struct PixelProbeRegionRequest: Decodable {
+  var name: String
+  var x: Int
+  var y: Int
+  var width: Int
+  var height: Int
+}
+
+struct PixelProbeRequest: Decodable {
+  var points: [PixelProbePointRequest]?
+  var regions: [PixelProbeRegionRequest]?
+}
+
+struct PixelProbePointResult: Encodable {
+  var x: Int
+  var y: Int
+  var rgba: [Int]
+}
+
+struct PixelProbeRegionResult: Encodable {
+  var name: String
+  var averageRgba: [Int]
+  var nonBackgroundPixels: Int
+  var sampledPixels: Int
+}
+
+struct PixelProbeResponse: Encodable {
+  var frame: Int
+  var points: [PixelProbePointResult]
+  var regions: [PixelProbeRegionResult]
+}
+
+struct TerminalLogEntryResponse: Encodable {
+  var seq: Int
+  var direction: String
+  var escaped: String
+  var sessionId: String?
+  var frame: Int?
+}
+
+struct TerminalLogResponse: Encodable {
+  var sessionId: String
+  var events: [TerminalLogEntryResponse]
+  var next: Int
+  var truncated: Bool
+}
+
+struct TimingResponse: Encodable {
+  var frame: Int
+  var lastFrameMs: Double
+  var terminalPollMs: Double
+  var snapshotMs: Double
+  var commandExtractionMs: Double
+  var renderMs: Double
+  var screenshotMs: Double
+}
+
+struct DebugErrorEntryResponse: Encodable {
+  var seq: Int
+  var level: String
+  var kind: String
+  var message: String
+  var sessionId: String?
+  var tabId: String?
+}
+
+struct DebugErrorsResponse: Encodable {
+  var errors: [DebugErrorEntryResponse]
+  var next: Int
+}
+
+struct FixtureControlRequest: Decodable {
+  var action: String
+  var path: String?
+  var count: Int?
+}
+
+struct FixtureControlResponse: Encodable {
+  var ok: Bool
+  var action: String
+  var frame: Int
+  var fixtureName: String?
+  var fixturePath: String?
+  var stepIndex: Int
+  var stepCount: Int
+  var activeTabId: String?
+  var activeSessionId: String?
+  var error: String?
+}
+
+struct ArtifactSnapshotFile: Encodable {
+  var name: String
+  var path: String
+}
+
+struct ArtifactSnapshotManifest: Encodable {
+  var kind: String
+  var runId: String
+  var frame: Int
+  var createdAt: Date
+  var files: [ArtifactSnapshotFile]
+}
+
+struct SnapshotResultResponse: Encodable {
+  var path: String
+  var frame: Int
+}
