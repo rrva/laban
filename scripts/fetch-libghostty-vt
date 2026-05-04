@@ -57,6 +57,18 @@ if [ "$actual" != "$GHOSTTY_COMMIT" ]; then
     fail "expected commit $GHOSTTY_COMMIT, got $actual"
 fi
 
+# Apply local patches.
+# stream: rename log scope to libghostty_vt_stream so log lines are clearly
+# attributed to this library; downgrade unimplemented-mode warnings to debug
+# so benign mode requests from programs like tmux don't surface as noise.
+stream_zig="$repo_root/$DEST/src/terminal/stream.zig"
+sed -i '' \
+    's/const log = std\.log\.scoped(\.stream)/const log = std.log.scoped(.libghostty_vt_stream)/' \
+    "$stream_zig"
+sed -i '' \
+    's/log\.warn("unimplemented mode:/log.debug("unimplemented mode:/g' \
+    "$stream_zig"
+
 # Build libghostty-vt. Zig fetches its own dependencies on first build
 # (~3-10 min). Subsequent builds use ~/.cache/zig and are fast.
 printf 'fetch-libghostty-vt: running zig build -Demit-lib-vt (this may take a few minutes)\n'
