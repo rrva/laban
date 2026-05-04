@@ -41,6 +41,12 @@ cat > "${bundle_dir}/Info.plist" <<'EOF'
 EOF
 
 # Sign with personal Apple Development certificate so TCC grants survive rebuilds.
-codesign --force --sign "Apple Development: Ragnar Rova (U34QC433V8)" ".build/laban/Laban.app"
+# Smoke checks can opt out because they execute the binary directly and must not
+# hang on keychain UI in a non-interactive agent run.
+if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
+  printf 'build-app: codesign skipped\n'
+else
+  codesign --force --sign "Apple Development: Ragnar Rova (U34QC433V8)" ".build/laban/Laban.app"
+fi
 
 printf 'build-app: %s\n' "${bundle_dir}/MacOS/LabanApp"
