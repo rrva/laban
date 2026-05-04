@@ -601,8 +601,11 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     }
     utf8_storage[utf8_used] = '\0';
 
-    /* Cursor state from render state. */
-    int cursor_row = 0, cursor_col = 0, cursor_visible = 1;
+    /* Cursor state from render state. The viewport-relative position is only
+     * defined when the active screen is on screen; if the user has scrolled
+     * into history libghostty reports HAS_VALUE = false, and we must report
+     * cursor_visible = 0 so the renderer does not draw a stale (0,0) cursor. */
+    int cursor_row = 0, cursor_col = 0, cursor_visible = 0;
     {
         _Bool has_cursor = 0;
         ghostty_render_state_get(s->render_state,
@@ -615,11 +618,12 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                 GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy);
             cursor_col = (int)cx;
             cursor_row = (int)cy;
+
+            _Bool vis = 1;
+            ghostty_render_state_get(s->render_state,
+                GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &vis);
+            cursor_visible = vis ? 1 : 0;
         }
-        _Bool vis = 1;
-        ghostty_render_state_get(s->render_state,
-            GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &vis);
-        cursor_visible = vis ? 1 : 0;
     }
 
     /* Dirty state. */

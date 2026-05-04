@@ -343,6 +343,48 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertNotEqual(visible0, visible1, "visible text should change after scroll")
   }
 
+  func testCursorReportsInvisibleWhenScrolledIntoHistory() {
+    guard let session = makeFixtureSession(rows: 5, cols: 20) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var allBytes = [UInt8]()
+    for i in 0..<10 {
+      allBytes += Array("line-\(i)\r\n".utf8)
+    }
+    allBytes.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self), allBytes.count)
+    }
+
+    var snapAtBottom: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapAtBottom), 0)
+    guard let bottom = snapAtBottom else {
+      XCTFail("snapshot nil")
+      return
+    }
+    XCTAssertEqual(
+      bottom.pointee.cursor_visible, 1,
+      "cursor on the active screen must be visible while viewport is at the bottom")
+    laban_snapshot_destroy(snapAtBottom)
+
+    XCTAssertEqual(laban_session_scroll_viewport(session, -4), 0)
+
+    var snapInHistory: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapInHistory), 0)
+    defer { laban_snapshot_destroy(snapInHistory) }
+    guard let history = snapInHistory else {
+      XCTFail("snapshot nil")
+      return
+    }
+    XCTAssertEqual(
+      history.pointee.cursor_visible, 0,
+      "cursor must be reported invisible when the viewport is scrolled off the active screen")
+  }
+
   func testViewportStateReportsScrollbackMetadata() {
     guard let session = makeFixtureSession(rows: 5, cols: 20) else {
       XCTFail("laban_session_create returned non-zero")
