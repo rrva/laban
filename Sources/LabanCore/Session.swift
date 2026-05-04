@@ -102,6 +102,28 @@ public final class Session {
     return laban_session_mark_rendered(h)
   }
 
+  // MARK: - PTY-byte capture
+
+  /// Mirror every byte fed to the VT parser into `path` until `stopCapture()`
+  /// is called. Existing file contents are overwritten. Returns true on
+  /// success.
+  @discardableResult
+  public func startCapture(path: String) -> Bool {
+    guard !isClosed, let h = handle else { return false }
+    return path.withCString { laban_session_capture_start(h, $0) == 0 }
+  }
+
+  @discardableResult
+  public func stopCapture() -> Bool {
+    guard !isClosed, let h = handle else { return false }
+    return laban_session_capture_stop(h) == 0
+  }
+
+  public var isCapturing: Bool {
+    guard !isClosed, let h = handle else { return false }
+    return laban_session_capture_active(h) != 0
+  }
+
   // MARK: - Title
 
   /// Consume any pending title-changed notification from the C layer.

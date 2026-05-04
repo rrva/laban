@@ -31,7 +31,25 @@ struct LabanSession {
     int mouse_button_pressed;  /* boolean: is any mouse button currently down */
     LabanMouseButton mouse_pressed_button;
     int title_dirty;     /* set to 1 by title-changed callback; cleared by consume */
+    int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
 };
+
+/* Mirror bytes into the VT parser AND into the active capture file (if any).
+ * Capture writes are best-effort: a failed write does not abort the parse,
+ * since the user is observing the terminal regardless of capture success. */
+static void vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
+    if (s->capture_fd >= 0 && len > 0) {
+        const uint8_t *p = bytes;
+        size_t remaining = len;
+        while (remaining > 0) {
+            ssize_t w = write(s->capture_fd, p, remaining);
+            if (w > 0) { p += w; remaining -= (size_t)w; continue; }
+            if (w < 0 && errno == EINTR) continue;
+            break; /* drop on EAGAIN/permanent error rather than block */
+        }
+    }
+    ghostty_terminal_vt_write(s->terminal, bytes, len);
+}
 
 static void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata) {
     (void)terminal;
@@ -100,6 +118,7 @@ int laban_session_create(
     if (!s) return -1;
     s->pty_fd = -1;
     s->child_pid = -1;
+    s->capture_fd = -1;
     s->fixture_mode = config->fixture_mode;
 
     GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 1000 };
@@ -226,6 +245,12 @@ int laban_session_create(
 void laban_session_destroy(LabanSession *s) {
     if (!s) return;
 
+    /* Flush and close the capture file before tearing down the rest. */
+    if (s->capture_fd >= 0) {
+        close(s->capture_fd);
+        s->capture_fd = -1;
+    }
+
     /* Close PTY first — sends SIGHUP to the child's session. */
     if (s->pty_fd >= 0) {
         close(s->pty_fd);
@@ -263,7 +288,7 @@ int laban_session_poll(LabanSession *s) {
     for (;;) {
         ssize_t n = read(s->pty_fd, buf, sizeof(buf));
         if (n > 0) {
-            ghostty_terminal_vt_write(s->terminal, buf, (size_t)n);
+            vt_write_capture(s, buf, (size_t)n);
             continue;
         }
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;
@@ -309,7 +334,7 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
 
 int laban_session_feed_output(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s || !bytes) return -1;
-    ghostty_terminal_vt_write(s->terminal, bytes, len);
+    vt_write_capture(s, bytes, len);
     return 0;
 }
 
@@ -317,7 +342,7 @@ int laban_session_write(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s || !bytes) return -1;
     if (s->fixture_mode) {
         /* Fixture mode: feed bytes directly into the VT parser — no PTY involved. */
-        ghostty_terminal_vt_write(s->terminal, bytes, len);
+        vt_write_capture(s, bytes, len);
         return 0;
     }
     if (s->pty_fd < 0) return -1;
@@ -780,7 +805,7 @@ int laban_session_write_paste(
     if (r != 0) { free(buf); return -1; }
 
     if (s->fixture_mode) {
-        ghostty_terminal_vt_write(s->terminal, buf, enc_len);
+        vt_write_capture(s, buf, enc_len);
     } else {
         if (s->pty_fd < 0) { free(buf); return -1; }
         ssize_t n = write(s->pty_fd, buf, enc_len);
@@ -794,6 +819,31 @@ int laban_session_write_paste(
 
     free(buf);
     return 0;
+}
+
+/* --- Capture --- */
+
+int laban_session_capture_start(LabanSession *s, const char *path) {
+    if (!s || !path) return -1;
+    if (s->capture_fd >= 0) return -1; /* already capturing */
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    s->capture_fd = fd;
+    return 0;
+}
+
+int laban_session_capture_stop(LabanSession *s) {
+    if (!s) return -1;
+    if (s->capture_fd >= 0) {
+        close(s->capture_fd);
+        s->capture_fd = -1;
+    }
+    return 0;
+}
+
+int laban_session_capture_active(LabanSession *s) {
+    if (!s) return 0;
+    return s->capture_fd >= 0 ? 1 : 0;
 }
 
 int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {

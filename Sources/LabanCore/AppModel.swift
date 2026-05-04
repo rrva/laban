@@ -19,6 +19,7 @@ public final class AppModel {
     self.currentSize = initialSize
     self.sessionFactory = sessionFactory
     let session = try sessionFactory(initialSize)
+    AppModel.maybeAutoCapture(session)
     AppModel.applyThemePalette(to: session)
     let tab = Tab(
       id: UUID().uuidString,
@@ -42,6 +43,7 @@ public final class AppModel {
   public func createTab() throws -> Tab {
     guard tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
     let session = try sessionFactory(currentSize)
+    AppModel.maybeAutoCapture(session)
     AppModel.applyThemePalette(to: session)
     let position = tabs.count + 1
     var tab = Tab(
@@ -73,6 +75,7 @@ public final class AppModel {
     if tabs.count == 1 {
       // Replace final tab: close current, open fresh
       let newSession = try sessionFactory(currentSize)
+      AppModel.maybeAutoCapture(newSession)
       AppModel.applyThemePalette(to: newSession)
       let newTab = Tab(
         id: UUID().uuidString,
@@ -131,6 +134,24 @@ public final class AppModel {
   public var windowTitle: String {
     guard let title = activeTab?.title, !title.isEmpty else { return "Laban" }
     return title
+  }
+
+  /// If `LABAN_CAPTURE_DIR` is set, start a fresh PTY-byte capture for this
+  /// session into `<dir>/session-<id>-<timestamp>.bin`. Capture begins
+  /// before `applyThemePalette` so the OSC palette injection — which sets
+  /// the default colors that subsequent rendering depends on — is recorded
+  /// alongside the rest of the byte stream.
+  private static func maybeAutoCapture(_ session: Session) {
+    guard let dir = ProcessInfo.processInfo.environment["LABAN_CAPTURE_DIR"],
+      !dir.isEmpty
+    else { return }
+    let dirURL = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath)
+    try? FileManager.default.createDirectory(
+      at: dirURL, withIntermediateDirectories: true)
+    let stamp = ISO8601DateFormatter().string(from: Date())
+      .replacingOccurrences(of: ":", with: "-")
+    let fileURL = dirURL.appendingPathComponent("session-\(session.id)-\(stamp).bin")
+    _ = session.startCapture(path: fileURL.path)
   }
 
   private static func applyThemePalette(to session: Session) {

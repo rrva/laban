@@ -99,6 +99,21 @@ int laban_session_render_dirty(LabanSession *session, int *out_dirty);
 int laban_session_mark_rendered(LabanSession *session);
 
 /*
+ * PTY-byte capture: mirrors every byte fed into the VT parser (PTY drain,
+ * direct vt_write, paste injection, and feedOutput palette injection) to a
+ * file. The file is opened with O_WRONLY|O_CREAT|O_TRUNC; existing contents
+ * are overwritten. Replay the resulting file through a fixture session via
+ * laban_session_feed_output to reproduce the captured terminal state.
+ *
+ * Capture is per-session. Returns 0 on success, -1 on error (open failure
+ * or already capturing). Stop returns 0 if active or inactive; -1 only on
+ * a closed session.
+ */
+int laban_session_capture_start(LabanSession *session, const char *path);
+int laban_session_capture_stop(LabanSession *session);
+int laban_session_capture_active(LabanSession *session);
+
+/*
  * laban_session_consume_title:
  *   Returns 1 if the title changed since the last consume and copies the new
  *   title (null-terminated, bounded by capacity) into buf. Returns 0 if no
