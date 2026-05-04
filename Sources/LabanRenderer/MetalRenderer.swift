@@ -63,11 +63,28 @@ public final class MetalRenderer: RendererBackend {
 
   private var solidInstances: [SolidInstance] = []
   private var glyphInstances: [GlyphInstance] = []
+  // Cursor instances drawn in a separate overlay pass — they live ON TOP of
+  // the persistent target, never IN it, so cursor blinks don't dirty the
+  // terminal cells underneath.
+  private var cursorInstances: [SolidInstance] = []
   // setVertexBytes has a hard 4 KB limit, which one 80×24 frame can blow
   // past easily (one solid instance is 32 B, one glyph instance is 48 B).
   // We size MTLBuffers on demand and reuse them frame-to-frame.
   private var solidBuffer: MTLBuffer?
   private var glyphBuffer: MTLBuffer?
+  private var cursorBuffer: MTLBuffer?
+
+  /// Persistent terminal-content render target. Holds the most recent fully
+  /// rendered terminal cells (no cursor). Damage-driven updates write into
+  /// this texture; clean rows survive untouched. Reallocated on resize, on
+  /// first frame, and whenever a damage hint can't be honoured (e.g.,
+  /// caller passed `.partial(empty)` but the surface size changed).
+  private var targetTexture: MTLTexture?
+  private var targetNeedsFullRedraw: Bool = true
+  /// Last frame's command buffer. `pngData` waits on it before reading the
+  /// readback texture so capture-side callers see the actual just-rendered
+  /// pixels and not whatever the previous frame happened to leave behind.
+  private var lastCmdBuf: MTLCommandBuffer?
   // CGImage of the last rendered drawable, captured via blit-readback on
   // demand for the pngData accessor (capture/screenshot path).
   private var readbackTexture: MTLTexture?
@@ -188,53 +205,97 @@ public final class MetalRenderer: RendererBackend {
     if sizeChanged {
       layer.drawableSize = CGSize(width: pw, height: ph)
       readbackTexture = nil
+      targetTexture = nil
+      targetNeedsFullRedraw = true
     }
   }
 
   // MARK: - render
 
-  public func render(_ commands: [FrameCommand]) {
+  public func render(_ commands: [FrameCommand], damage: RenderDamage) {
     guard let drawable = layer.nextDrawable() else { return }
-    let texture = drawable.texture
+    let drawableTex = drawable.texture
+    guard let cmdBuf = queue.makeCommandBuffer() else { return }
 
-    let pass = MTLRenderPassDescriptor()
-    let colorAttachment = pass.colorAttachments[0]!
-    colorAttachment.texture = texture
-    colorAttachment.loadAction = .clear
-    colorAttachment.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-    colorAttachment.storeAction = .store
+    ensureTargetTexture(matching: drawableTex)
+    guard let target = targetTexture else { return }
 
-    guard
-      let cmdBuf = queue.makeCommandBuffer(),
-      let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: pass)
-    else { return }
-
+    let surfaceWPx = drawableTex.width
+    let surfaceHPx = drawableTex.height
     var u = Uniforms(
-      surfaceSizePixels: SIMD2<Float>(
-        Float(texture.width), Float(texture.height)),
+      surfaceSizePixels: SIMD2<Float>(Float(surfaceWPx), Float(surfaceHPx)),
       scale: Float(layer.contentsScale))
 
-    encodeFrame(commands: commands, encoder: encoder, uniforms: &u, surface: texture)
-    encoder.endEncoding()
+    // Decide which damage we'll honour. Forced full on first frame after
+    // resize/realloc; otherwise honour the caller's hint.
+    let effectiveDamage: RenderDamage = targetNeedsFullRedraw ? .full : damage
 
-    // For capture readback, blit the just-rendered drawable to a CPU-readable
-    // texture. Done unconditionally so pngData works without re-rendering.
+    // ---------- Pass 1: terminal content into the persistent target ----------
+    encodeContentPass(
+      commands: commands,
+      damage: effectiveDamage,
+      target: target,
+      surfacePxH: surfaceHPx,
+      uniforms: &u,
+      cmdBuf: cmdBuf)
+
+    // ---------- Pass 2: blit persistent target → drawable ----------
+    if let blit = cmdBuf.makeBlitCommandEncoder() {
+      blit.copy(
+        from: target, sourceSlice: 0, sourceLevel: 0,
+        sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+        sourceSize: MTLSize(width: surfaceWPx, height: surfaceHPx, depth: 1),
+        to: drawableTex, destinationSlice: 0, destinationLevel: 0,
+        destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+      blit.endEncoding()
+    }
+
+    // ---------- Pass 3: cursor overlay on the drawable ----------
+    if !cursorInstances.isEmpty {
+      let cursorPass = MTLRenderPassDescriptor()
+      let attach = cursorPass.colorAttachments[0]!
+      attach.texture = drawableTex
+      attach.loadAction = .load
+      attach.storeAction = .store
+      if let enc = cmdBuf.makeRenderCommandEncoder(descriptor: cursorPass) {
+        enc.label = "cursor-overlay"
+        enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+        enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+        let buf = ensureBuffer(
+          &cursorBuffer,
+          elementCount: cursorInstances.count,
+          elementStride: MemoryLayout<SolidInstance>.stride)
+        cursorInstances.withUnsafeBufferPointer { src in
+          if let base = src.baseAddress {
+            memcpy(buf.contents(), base, src.count * MemoryLayout<SolidInstance>.stride)
+          }
+        }
+        enc.setRenderPipelineState(solidPipeline)
+        enc.setVertexBuffer(buf, offset: 0, index: 0)
+        enc.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: cursorInstances.count)
+        enc.endEncoding()
+      }
+    }
+
+    // ---------- Pass 4: capture readback (blit drawable → CPU-readable) -----
     if readbackTexture == nil
-      || readbackTexture?.width != texture.width
-      || readbackTexture?.height != texture.height
+      || readbackTexture?.width != drawableTex.width
+      || readbackTexture?.height != drawableTex.height
     {
       let desc = MTLTextureDescriptor.texture2DDescriptor(
         pixelFormat: layer.pixelFormat,
-        width: texture.width, height: texture.height, mipmapped: false)
+        width: drawableTex.width, height: drawableTex.height, mipmapped: false)
       desc.usage = [.shaderRead]
       desc.storageMode = .shared
       readbackTexture = device.makeTexture(descriptor: desc)
     }
     if let dst = readbackTexture, let blit = cmdBuf.makeBlitCommandEncoder() {
       blit.copy(
-        from: texture, sourceSlice: 0, sourceLevel: 0,
+        from: drawableTex, sourceSlice: 0, sourceLevel: 0,
         sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-        sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
+        sourceSize: MTLSize(width: drawableTex.width, height: drawableTex.height, depth: 1),
         to: dst, destinationSlice: 0, destinationLevel: 0,
         destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
       blit.endEncoding()
@@ -242,28 +303,156 @@ public final class MetalRenderer: RendererBackend {
 
     cmdBuf.present(drawable)
     cmdBuf.commit()
+    lastCmdBuf = cmdBuf
+
+    targetNeedsFullRedraw = false
+  }
+
+  /// Allocate (or reallocate) the persistent render target to match the
+  /// drawable. The target shares pixel format with the drawable so the
+  /// blit at the end of the frame is a memcpy on the GPU.
+  private func ensureTargetTexture(matching drawableTex: MTLTexture) {
+    if let t = targetTexture,
+      t.width == drawableTex.width,
+      t.height == drawableTex.height,
+      t.pixelFormat == layer.pixelFormat
+    {
+      return
+    }
+    let desc = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: layer.pixelFormat,
+      width: drawableTex.width,
+      height: drawableTex.height,
+      mipmapped: false)
+    desc.usage = [.renderTarget, .shaderRead]
+    desc.storageMode = .private
+    targetTexture = device.makeTexture(descriptor: desc)
+    targetNeedsFullRedraw = true
+  }
+
+  /// Pass 1: render terminal cells (everything but the cursor) into the
+  /// persistent target. Honours `damage`:
+  /// - `.full`: clear + draw all instances.
+  /// - `.partial([])`: skip the pass entirely (target unchanged).
+  /// - `.partial(ranges)`: load + scissor to the union bounding box +
+  ///   draw all instances. The scissor culls clean rows; all instances are
+  ///   submitted because tracking which instance touches which row would
+  ///   be more expensive than the GPU early-rejecting them via scissor.
+  private func encodeContentPass(
+    commands: [FrameCommand],
+    damage: RenderDamage,
+    target: MTLTexture,
+    surfacePxH: Int,
+    uniforms u: inout Uniforms,
+    cmdBuf: MTLCommandBuffer
+  ) {
+    // Build instance lists once for both the content pass and the cursor pass.
+    buildInstanceLists(commands: commands, surfacePxH: surfacePxH)
+
+    // Skip the content pass entirely if the caller said nothing changed.
+    if case .partial(let yRanges) = damage, yRanges.isEmpty {
+      return
+    }
+
+    let pass = MTLRenderPassDescriptor()
+    let attach = pass.colorAttachments[0]!
+    attach.texture = target
+    attach.storeAction = .store
+
+    var scissor: MTLScissorRect?
+    switch damage {
+    case .full:
+      attach.loadAction = .clear
+      attach.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+    case .partial(let yRanges):
+      attach.loadAction = .load  // preserve clean rows from previous frame
+      scissor = scissorRectFromYRanges(
+        yRanges, surfacePxH: surfacePxH, scale: layer.contentsScale)
+    }
+
+    guard let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: pass) else {
+      return
+    }
+    encoder.label = "terminal-content"
+    encoder.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+    encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+    if let s = scissor {
+      encoder.setScissorRect(s)
+    }
+
+    if !solidInstances.isEmpty {
+      let buf = ensureBuffer(
+        &solidBuffer,
+        elementCount: solidInstances.count,
+        elementStride: MemoryLayout<SolidInstance>.stride)
+      solidInstances.withUnsafeBufferPointer { src in
+        if let base = src.baseAddress {
+          memcpy(buf.contents(), base, src.count * MemoryLayout<SolidInstance>.stride)
+        }
+      }
+      encoder.setRenderPipelineState(solidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: solidInstances.count)
+    }
+    if !glyphInstances.isEmpty {
+      let buf = ensureBuffer(
+        &glyphBuffer,
+        elementCount: glyphInstances.count,
+        elementStride: MemoryLayout<GlyphInstance>.stride)
+      glyphInstances.withUnsafeBufferPointer { src in
+        if let base = src.baseAddress {
+          memcpy(buf.contents(), base, src.count * MemoryLayout<GlyphInstance>.stride)
+        }
+      }
+      encoder.setRenderPipelineState(glyphPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.setFragmentTexture(glyphAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: glyphInstances.count)
+    }
+    encoder.endEncoding()
+  }
+
+  /// Compute the union bounding-box scissor rect (in device pixels) covering
+  /// all dirty Y ranges. Returns nil for an empty list. CG has y-up; Metal
+  /// scissor rects use y-down (origin top-left), so we flip here.
+  private func scissorRectFromYRanges(
+    _ ranges: [DirtyYRange], surfacePxH: Int, scale: CGFloat
+  ) -> MTLScissorRect? {
+    guard !ranges.isEmpty else { return nil }
+    var minY = CGFloat.greatestFiniteMagnitude
+    var maxY = -CGFloat.greatestFiniteMagnitude
+    for r in ranges {
+      minY = min(minY, r.y)
+      maxY = max(maxY, r.y + r.height)
+    }
+    let topPx = max(0, Int(((CGFloat(surfacePxH) / scale - maxY) * scale).rounded(.down)))
+    let bottomPx = min(
+      surfacePxH, Int(((CGFloat(surfacePxH) / scale - minY) * scale).rounded(.up)))
+    let height = max(0, bottomPx - topPx)
+    guard height > 0 else { return nil }
+    return MTLScissorRect(x: 0, y: topPx, width: surfaceWidth, height: height)
   }
 
   // MARK: - Frame encoding
 
-  /// Walks the FrameCommand list and submits draws. Solid rects, cursor and
-  /// selection are batched into one solid draw per scissor span; glyph runs
-  /// are unfolded into per-cell instances and submitted as one glyph draw.
-  /// Decorations (under/strike/over) are emitted as solid quads here so the
-  /// FrameCommand format stays renderer-agnostic.
-  private func encodeFrame(
+  /// Walks the FrameCommand list once, packing solid/glyph/cursor instances
+  /// into separate buffers. Cursor commands are split out so the cursor pass
+  /// (which lives on the drawable, above the persistent target) doesn't
+  /// pollute the persistent terminal target with a blink-rate redraw.
+  private func buildInstanceLists(
     commands: [FrameCommand],
-    encoder: MTLRenderCommandEncoder,
-    uniforms u: inout Uniforms,
-    surface: MTLTexture
+    surfacePxH: Int
   ) {
-    encoder.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
-    encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
-
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
+    cursorInstances.removeAll(keepingCapacity: true)
 
-    let surfaceH = Float(surface.height)
+    let surfaceH = Float(surfacePxH)
     // FrameProducer issues commands in (cgX, cgY = up-from-bottom) coords
     // measured in *points*. Multiply by scale to get device pixels for the
     // GPU, but keep y-up — Metal NDC matches.
@@ -310,7 +499,17 @@ public final class MetalRenderer: RendererBackend {
         appendSolid(rect: rect, color: color)
 
       case .cursor(let rect, let color):
-        appendSolid(rect: rect, color: color)
+        // Cursor lives in its own overlay pass on the drawable, not in the
+        // persistent target. Blinks therefore don't dirty the terminal cells
+        // beneath the cursor and don't require a content-pass redraw.
+        guard rect.width > 0, rect.height > 0 else { break }
+        cursorInstances.append(
+          SolidInstance(
+            origin: SIMD2<Float>(
+              Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+            size: SIMD2<Float>(
+              Float(rect.width) * scale, Float(rect.height) * scale),
+            color: rgbaToFloat4(color)))
 
       case .selection(let rect, let color):
         appendSolid(rect: rect, color: color)
@@ -361,42 +560,6 @@ public final class MetalRenderer: RendererBackend {
       case .texturedQuad:
         break
       }
-    }
-
-    // Submit batched draws.
-    if !solidInstances.isEmpty {
-      let buf = ensureBuffer(
-        &solidBuffer,
-        elementCount: solidInstances.count,
-        elementStride: MemoryLayout<SolidInstance>.stride)
-      solidInstances.withUnsafeBufferPointer { src in
-        if let base = src.baseAddress {
-          memcpy(buf.contents(), base, src.count * MemoryLayout<SolidInstance>.stride)
-        }
-      }
-      encoder.setRenderPipelineState(solidPipeline)
-      encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: solidInstances.count)
-    }
-    if !glyphInstances.isEmpty {
-      let buf = ensureBuffer(
-        &glyphBuffer,
-        elementCount: glyphInstances.count,
-        elementStride: MemoryLayout<GlyphInstance>.stride)
-      glyphInstances.withUnsafeBufferPointer { src in
-        if let base = src.baseAddress {
-          memcpy(buf.contents(), base, src.count * MemoryLayout<GlyphInstance>.stride)
-        }
-      }
-      encoder.setRenderPipelineState(glyphPipeline)
-      encoder.setVertexBuffer(buf, offset: 0, index: 0)
-      encoder.setFragmentTexture(glyphAtlas.texture, index: 0)
-      encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: glyphInstances.count)
     }
   }
 
@@ -541,6 +704,10 @@ public final class MetalRenderer: RendererBackend {
 
   private func encodeLastFrameAsPNG() -> Data? {
     guard let tex = readbackTexture else { return nil }
+    // Capture / screenshot callers can read pngData any time; the GPU might
+    // not have finished the most recent render yet. Block until it has so
+    // we never serialise a stale frame.
+    lastCmdBuf?.waitUntilCompleted()
     let w = tex.width
     let h = tex.height
     let bytesPerRow = w * 4

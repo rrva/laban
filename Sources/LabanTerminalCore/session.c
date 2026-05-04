@@ -666,6 +666,11 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     size_t hyperlink_count = 0;
     size_t hyperlink_cap = 0;
 
+    /* Per-row dirty bytes — one byte per terminal row, 0 = clean, 1 = dirty.
+     * Read from libghostty's GHOSTTY_ROW_DATA_DIRTY at the same point we
+     * already pull GHOSTTY_ROW_DATA_RAW for the hyperlink check. */
+    uint8_t *dirty_rows = calloc((size_t)rows, sizeof(uint8_t));
+
     /* Populate the pre-allocated row iterator from the render state. */
     ghostty_render_state_get(s->render_state,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &s->row_iter);
@@ -678,13 +683,22 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
 
         /* Row has any hyperlink? Skip per-cell grid-ref lookups when not.
          * The render-state row iterator doesn't expose this directly; pull
-         * the raw GhosttyRow and ask via ghostty_row_get(). */
+         * the raw GhosttyRow and ask via ghostty_row_get(). The same raw
+         * row gives us the per-row dirty bit for the renderer's damage
+         * tracking. */
         bool row_has_hyperlink = false;
         {
             GhosttyRow raw_row = 0;
             if (ghostty_render_state_row_get(s->row_iter,
                     GHOSTTY_RENDER_STATE_ROW_DATA_RAW, &raw_row) == GHOSTTY_SUCCESS) {
                 ghostty_row_get(raw_row, GHOSTTY_ROW_DATA_HYPERLINK, &row_has_hyperlink);
+                if (dirty_rows) {
+                    bool row_dirty = false;
+                    if (ghostty_row_get(raw_row, GHOSTTY_ROW_DATA_DIRTY, &row_dirty)
+                            == GHOSTTY_SUCCESS) {
+                        dirty_rows[row_idx] = row_dirty ? 1 : 0;
+                    }
+                }
             }
         }
 
@@ -903,6 +917,8 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->cell_count      = cell_count;
     snap->hyperlink_uris  = (const char *const *)hyperlink_uris;
     snap->hyperlink_count = hyperlink_count;
+    snap->dirty_rows      = dirty_rows;
+    snap->dirty_row_count = dirty_rows ? (size_t)rows : 0;
 
     *out_snapshot = snap;
     return 0;
@@ -919,6 +935,7 @@ void laban_snapshot_destroy(LabanSnapshot *snap) {
         }
         free((void *)snap->hyperlink_uris);
     }
+    free((void *)snap->dirty_rows);
     free(snap);
 }
 

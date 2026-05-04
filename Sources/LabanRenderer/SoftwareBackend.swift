@@ -34,7 +34,8 @@ public final class SoftwareBackend: RendererBackend {
     return true
   }
 
-  public func render(_ commands: [FrameCommand]) {
+  public func render(_ commands: [FrameCommand], damage: RenderDamage) {
+    // Software backend has no persistent target; damage is ignored.
     renderer.render(commands)
     lastImage = surface.cgImage
   }

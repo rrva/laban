@@ -170,6 +170,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
+  /// Translate libghostty's per-row dirty bits into the CG-point Y bands the
+  /// renderer's damage hint expects. Returns `.full` whenever the snapshot
+  /// can't supply per-row info or when the caller needs a full redraw for
+  /// reasons unrelated to terminal content (tab change, invalidation,
+  /// resize). Returns `.partial([])` when nothing changed (renderer skips
+  /// the persistent-target update entirely and just re-presents).
+  private func computeDamage(
+    snapshot snap: UnsafePointer<LabanSnapshot>,
+    forceFull: Bool,
+    cellHeight: CGFloat,
+    originY: CGFloat
+  ) -> RenderDamage {
+    if forceFull { return .full }
+    let s = snap.pointee
+    let rows = Int(s.rows)
+    guard
+      rows > 0,
+      s.dirty_row_count == rows,
+      let dirty = s.dirty_rows
+    else {
+      return .full
+    }
+    var ranges: [DirtyYRange] = []
+    var i = 0
+    while i < rows {
+      if dirty[i] != 0 {
+        var j = i
+        while j < rows, dirty[j] != 0 { j += 1 }
+        // Rows count top-down; FrameProducer maps row r → y = originY +
+        // (rows - 1 - r) * cellHeight. A contiguous dirty span [i, j) maps
+        // to y-bottom = originY + (rows - 1 - (j-1)) * cellHeight = originY
+        // + (rows - j) * cellHeight, height = (j - i) * cellHeight.
+        let yBottom = originY + CGFloat(rows - j) * cellHeight
+        let height = CGFloat(j - i) * cellHeight
+        ranges.append(DirtyYRange(y: yBottom, height: height))
+        i = j
+      } else {
+        i += 1
+      }
+    }
+    return .partial(yRanges: ranges)
+  }
+
   // MARK: - Frame loop
 
   @objc func advanceFrame() {
@@ -275,7 +318,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       surfaceHeight: backend.surfaceHeight,
       scale: Double(backend.surfaceScale)
     )
-    backend.render(cmds)
+    // Compute damage hint from libghostty's per-row dirty bits. Tab changes
+    // and renderInvalidated force .full because we may be drawing different
+    // content into the persistent target. Otherwise translate dirty rows
+    // into CG-point Y bands matching the FrameProducer's row→y mapping
+    // (originY + (rows-1-row) * cellHeight, height = cellHeight).
+    let damage = computeDamage(
+      snapshot: snap,
+      forceFull: renderInvalidated || tabChanged,
+      cellHeight: CGFloat(cellHeight),
+      originY: insets.bottom)
+    backend.render(cmds, damage: damage)
     renderedFrameCount = captureFrame
     if let recorder = captureRecorder {
       // Both software and Metal flow through the same recorder entry now.

@@ -2,6 +2,29 @@ import CoreGraphics
 import Foundation
 import QuartzCore
 
+/// What changed since the last frame, in surface (CG-points, y-up) coordinates.
+///
+/// `.full` forces a complete redraw — the safe default and the only behaviour
+/// the software backend supports today. `.partial` lets the Metal backend
+/// constrain its persistent target update to a set of dirty Y bands instead
+/// of re-rasterizing every cell.
+public enum RenderDamage: Equatable, Sendable {
+  case full
+  /// Each entry is `(y, height)` in CG-points, y measured up from the bottom
+  /// of the surface. Empty list means "nothing changed" — the backend may
+  /// skip the persistent-target update entirely and just re-present.
+  case partial(yRanges: [DirtyYRange])
+}
+
+public struct DirtyYRange: Equatable, Sendable {
+  public var y: CGFloat
+  public var height: CGFloat
+  public init(y: CGFloat, height: CGFloat) {
+    self.y = y
+    self.height = height
+  }
+}
+
 /// Common surface contract for swappable rendering backends.
 ///
 /// Two backends ship today:
@@ -14,8 +37,10 @@ import QuartzCore
 public protocol RendererBackend: AnyObject {
   /// Render one frame from the given command list. The backend either
   /// snapshots the result for later blit (software) or presents it directly
-  /// to its layer (Metal).
-  func render(_ commands: [FrameCommand])
+  /// to its layer (Metal). The `damage` hint lets backends with a persistent
+  /// target avoid re-rasterizing clean rows; backends without one ignore it
+  /// and always do a full redraw.
+  func render(_ commands: [FrameCommand], damage: RenderDamage)
 
   /// Surface metrics in device pixels and the backing scale factor.
   var surfaceWidth: Int { get }
@@ -34,4 +59,12 @@ public protocol RendererBackend: AnyObject {
 
   /// PNG bytes of the most recent rendered frame for screenshots / capture.
   var pngData: Data? { get }
+}
+
+extension RendererBackend {
+  /// Convenience for callers that have no damage info — equivalent to a full
+  /// redraw.
+  public func render(_ commands: [FrameCommand]) {
+    render(commands, damage: .full)
+  }
 }

@@ -104,6 +104,13 @@ typedef struct {
      * hyperlink_uris[id-1] is a NUL-terminated UTF-8 URI owned by the snapshot. */
     const char *const *hyperlink_uris;
     size_t hyperlink_count;
+    /* Per-row dirty flags read from libghostty (one byte per terminal row,
+     * 0 = clean, 1 = dirty since the last laban_session_mark_rendered).
+     * NULL when the snapshot couldn't query row state (ABI fallback).
+     * Renderers use these to constrain damage and avoid re-rasterizing
+     * clean rows. dirty_row_count == rows on success. */
+    const uint8_t *dirty_rows;
+    size_t dirty_row_count;
 } LabanSnapshot;
 
 int laban_session_create(
