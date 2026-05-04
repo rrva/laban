@@ -159,6 +159,9 @@ public final class DebugHTTPServer {
     -> HTTPResponse
   {
     switch (method, path) {
+    case ("GET", "/debug"), ("GET", "/debug/capabilities"):
+      return json(runtime.discovery())
+
     case ("GET", "/debug/health"):
       return json(runtime.health())
 

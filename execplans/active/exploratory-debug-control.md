@@ -17,7 +17,9 @@ fixture reload/restart/step control.
 The behavior is visible by starting `laban-agent --headless
 --debug-server=127.0.0.1:0`, parsing the readiness URL, then calling endpoints
 such as `/debug/pixel-probe`, `/debug/terminal-log`, `/debug/snapshot`, and
-`/debug/fixture`.
+`/debug/fixture`. The live server advertises this surface from `/debug` and
+`/debug/capabilities`, and the CLI advertises the same entry points from
+`--help`.
 
 ## Progress
 
@@ -42,6 +44,9 @@ such as `/debug/pixel-probe`, `/debug/terminal-log`, `/debug/snapshot`, and
   process restart.
 - [x] Add tests and E2E script coverage proving the exploratory loop works.
 - [x] Run validation commands and record results.
+- [x] Add runtime, CLI, script, docs, and schema discoverability for the debug
+  control surface.
+- [x] Run discovery validation commands and record results.
 
 ## Decision Log
 
@@ -130,6 +135,8 @@ or `waitFrames`.
 4. Update `scripts/test-e2e` to call the new endpoints against a live server.
 5. Add focused `LabanDebugTests` for runtime methods that are easier to test
    without opening a socket.
+6. Add discoverability through `/debug`, `/debug/capabilities`, `--help`,
+   `./scripts/run-debug`, README, and e2e checks.
 
 ## Validation and Acceptance
 
@@ -157,6 +164,19 @@ swift test --filter LabanDebugExploratoryControlTests
 # check passed
 ```
 
+Discovery validation completed on 2026-05-04:
+
+```sh
+swift test --filter LabanDebugExploratoryControlTests
+# Executed 6 tests, with 0 failures.
+
+./scripts/test-e2e
+# test-e2e passed
+
+./scripts/check
+# check passed
+```
+
 Acceptance:
 
 - `/debug/pixel-probe` returns point RGBA values and region summaries.
@@ -168,6 +188,10 @@ Acceptance:
   a screenshot under the requested artifact directory.
 - `/debug/fixture` can load, step, and restart a fixture while the server keeps
   running.
+- `/debug` and `/debug/capabilities` list the live endpoints, common actions,
+  wait conditions, fixture controls, schema references, and examples.
+- `laban-agent --help` and `./scripts/run-debug` make the debug-control entry
+  points discoverable before a server is running.
 
 ## Idempotence and Recovery
 

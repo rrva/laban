@@ -4,6 +4,54 @@ import XCTest
 @testable import LabanDebug
 
 final class LabanDebugExploratoryControlTests: XCTestCase {
+  func testDiscoveryListsExploratoryControls() throws {
+    let (runtime, artifacts) = try makeRuntime("discovery")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let response = runtime.discovery()
+    XCTAssertEqual(response.status, 200)
+
+    let obj = try json(response)
+    XCTAssertEqual(obj["name"] as? String, "laban-debug")
+    XCTAssertEqual(obj["schema"] as? String, "schemas/debug/discovery.schema.json")
+    XCTAssertEqual(obj["runId"] as? String, "discovery")
+    XCTAssertEqual(obj["mode"] as? String, "headless")
+    XCTAssertGreaterThanOrEqual(obj["frame"] as? Int ?? -1, 1)
+    XCTAssertEqual(obj["artifactRoot"] as? String, artifacts.path)
+
+    let entrypoints = obj["entrypoints"] as! [String]
+    XCTAssertTrue(entrypoints.contains("/debug"))
+    XCTAssertTrue(entrypoints.contains("/debug/capabilities"))
+
+    let endpoints = obj["endpoints"] as! [[String: Any]]
+    XCTAssertTrue(
+      endpoints.contains {
+        $0["method"] as? String == "POST" && $0["path"] as? String == "/debug/actions"
+      })
+    XCTAssertTrue(
+      endpoints.contains {
+        $0["method"] as? String == "POST" && $0["path"] as? String == "/debug/snapshot"
+      })
+    XCTAssertTrue(
+      endpoints.contains {
+        $0["method"] as? String == "POST" && $0["path"] as? String == "/debug/fixture"
+      })
+    XCTAssertTrue(
+      endpoints.contains {
+        $0["method"] as? String == "POST" && $0["path"] as? String == "/debug/pixel-probe"
+      })
+
+    let actions = obj["actions"] as! [[String: Any]]
+    XCTAssertTrue(actions.contains { $0["name"] as? String == "typeText" })
+    XCTAssertTrue(actions.contains { $0["name"] as? String == "key" })
+
+    let waits = obj["waitConditions"] as! [[String: Any]]
+    XCTAssertTrue(waits.contains { $0["name"] as? String == "textVisible" })
+
+    let fixtureActions = obj["fixtureActions"] as! [[String: Any]]
+    XCTAssertTrue(fixtureActions.contains { $0["name"] as? String == "restart" })
+  }
+
   func testPixelProbeReturnsPointAndRegionData() throws {
     let (runtime, artifacts) = try makeRuntime("pixel-probe")
     defer { try? FileManager.default.removeItem(at: artifacts) }

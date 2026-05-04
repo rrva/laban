@@ -39,48 +39,69 @@ Settled direction:
 
 ## Current State
 
-This repo is currently a planning and harness-contract repository with the
-initial implementation stack selected. The next step is the focused scaffold
-shard in `execplans/active/swiftpm-libghostty-skeleton.md`.
+This repo has a runnable SwiftPM terminal scaffold, a deterministic headless
+agent, and a loopback debug server for autonomous exploratory testing. The
+current product boundary remains the MVP in `docs/product/mvp.md`; active
+implementation work is tracked under `execplans/active/`.
 
 ## Current Commands
 
-The repository has one language-agnostic check command:
+The stable local commands are shell scripts around SwiftPM:
 
 ```sh
+./scripts/run-headless
+./scripts/run-debug
+./scripts/test
+./scripts/test-e2e
 ./scripts/check
 ```
 
-It validates JSON files under `schemas/` and `fixtures/`, keeps `AGENTS.md`
-map-sized, verifies active ExecPlans have required sections, and runs
-`git diff --check`.
+`./scripts/check` validates JSON files under `schemas/` and `fixtures/`, keeps
+`AGENTS.md` map-sized, verifies active ExecPlans have required sections, runs
+Swift lint/build/test gates, runs the runtime smoke test, and runs the headless
+debug-server E2E gate.
 
-## Intended Implementation Commands
+## Debug Control Quickstart
 
-The implementation should provide stable scripts with these meanings:
+Start the headless debug server:
 
 ```sh
-# Start the app for local interactive development.
-run
-
-# Start the app with local debug endpoints enabled.
-run-debug
-
-# Start the app headlessly with an offscreen render target.
-run-headless
-
-# Run fast unit and core integration tests.
-test
-
-# Run autonomous debug-server end-to-end tests.
-test-e2e
-
-# Run formatting, linting, schemas, docs, and architecture checks.
-check
+./scripts/run-debug
 ```
 
-The first command runner is shell scripts around SwiftPM. Keep these script
-names stable even if their internals change.
+The first stdout line is readiness JSON:
+
+```json
+{"debugServer":"http://127.0.0.1:49321","pid":12345,"runId":"manual-debug"}
+```
+
+Export that URL and ask the running server what it supports:
+
+```sh
+export DEBUG_URL=http://127.0.0.1:49321
+curl "$DEBUG_URL/debug" | jq
+curl "$DEBUG_URL/debug/capabilities" | jq
+```
+
+Useful starting points:
+
+```sh
+curl "$DEBUG_URL/debug/state" | jq
+curl "$DEBUG_URL/debug/render" | jq
+curl -X POST "$DEBUG_URL/debug/actions" \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"typeText","text":"printf \"ok\\n\"\n"}'
+curl -X POST "$DEBUG_URL/debug/wait" \
+  -H 'Content-Type: application/json' \
+  -d '{"timeoutMs":5000,"condition":{"kind":"textVisible","text":"ok"}}'
+curl -X POST "$DEBUG_URL/debug/snapshot" -d '{}'
+```
+
+The agent binary also advertises the debug-control entry points:
+
+```sh
+swift run laban-agent -- --help
+```
 
 ## Implementation Selection
 

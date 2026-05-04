@@ -255,6 +255,43 @@ struct WaitResult: Encodable {
   var error: String?
 }
 
+// MARK: - Discovery response
+
+struct DebugDiscoveryEndpoint: Encodable {
+  var method: String
+  var path: String
+  var category: String
+  var summary: String
+  var queryParameters: [String]
+  var requestSchema: String?
+  var responseSchema: String?
+}
+
+struct DebugDiscoveryControl: Encodable {
+  var name: String
+  var summary: String
+}
+
+struct DebugDiscoveryExample: Encodable {
+  var title: String
+  var command: String
+}
+
+struct DebugDiscoveryResponse: Encodable {
+  var name: String
+  var schema: String
+  var runId: String
+  var mode: String
+  var frame: Int
+  var artifactRoot: String
+  var entrypoints: [String]
+  var endpoints: [DebugDiscoveryEndpoint]
+  var actions: [DebugDiscoveryControl]
+  var waitConditions: [DebugDiscoveryControl]
+  var fixtureActions: [DebugDiscoveryControl]
+  var examples: [DebugDiscoveryExample]
+}
+
 // MARK: - Render trace response types
 
 struct TraceSourceResponse: Encodable {

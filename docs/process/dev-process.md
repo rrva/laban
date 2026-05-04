@@ -97,6 +97,23 @@ The server must be disabled by default. It must not listen on public interfaces.
 It must not be enabled in release builds unless an explicit developer flag is
 present.
 
+### Discovery
+
+`GET /debug`
+
+Returns a live capability index for agents. This is the first endpoint to call
+after parsing the readiness URL. It lists supported endpoints, schema paths
+where they exist, action names, wait conditions, fixture controls, artifact
+root, and short curl examples.
+
+`GET /debug/capabilities`
+
+Alias for `/debug` for tools that look for an explicit capabilities document.
+
+The agent executable should also expose these entry points from `--help`, and
+`./scripts/run-debug` should remain a stable way to start a discoverable local
+debug server.
+
 ### Health
 
 `GET /debug/health`

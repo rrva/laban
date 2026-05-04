@@ -32,6 +32,16 @@ swift build --product laban-agent 2>&1 | tail -5
 AGENT_BIN=".build/debug/laban-agent"
 [ -x "$AGENT_BIN" ] || fail "laban-agent binary not found"
 
+HELP_OUTPUT=$("$AGENT_BIN" --help)
+printf '%s' "$HELP_OUTPUT" | grep -q -- '--debug-server' \
+  || fail "help output does not mention --debug-server"
+printf '%s' "$HELP_OUTPUT" | grep -q 'GET  /debug/state' \
+  || fail "help output does not mention GET /debug/state"
+printf '%s' "$HELP_OUTPUT" | grep -q 'POST /debug/actions' \
+  || fail "help output does not mention POST /debug/actions"
+printf '%s' "$HELP_OUTPUT" | grep -q 'curl "$DEBUG_URL/debug"' \
+  || fail "help output does not mention discovery curl"
+
 # 2. Unique run ID and directories
 RUN_ID="e2e-$(date +%s)-$$"
 RUN_ARTIFACTS=".artifacts/runs/$RUN_ID"
@@ -106,6 +116,38 @@ post_json() {
 # 5. /debug/health
 HEALTH=$(get_json /debug/health)
 [ "$(printf '%s' "$HEALTH" | jq -r '.ok')" = "true" ] || fail "health ok is not true: $HEALTH"
+
+# 5b. /debug discovery index
+DISCOVERY=$(get_json /debug)
+[ "$(printf '%s' "$DISCOVERY" | jq -r '.name')" = "laban-debug" ] \
+  || fail "discovery name mismatch: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e '.entrypoints | index("/debug/capabilities")' >/dev/null 2>&1 \
+  || fail "discovery missing /debug/capabilities entrypoint: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.endpoints[] | select(.method=="POST" and .path=="/debug/actions")' >/dev/null 2>&1 \
+  || fail "discovery missing POST /debug/actions: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.endpoints[] | select(.method=="POST" and .path=="/debug/snapshot")' >/dev/null 2>&1 \
+  || fail "discovery missing POST /debug/snapshot: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.endpoints[] | select(.method=="POST" and .path=="/debug/fixture")' >/dev/null 2>&1 \
+  || fail "discovery missing POST /debug/fixture: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.actions[] | select(.name=="typeText")' >/dev/null 2>&1 \
+  || fail "discovery missing typeText action: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.waitConditions[] | select(.name=="textVisible")' >/dev/null 2>&1 \
+  || fail "discovery missing textVisible wait condition: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.fixtureActions[] | select(.name=="restart")' >/dev/null 2>&1 \
+  || fail "discovery missing restart fixture action: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.examples[] | select(.command | contains("/debug/snapshot"))' >/dev/null 2>&1 \
+  || fail "discovery missing snapshot example: $DISCOVERY"
+
+CAPABILITIES=$(get_json /debug/capabilities)
+[ "$(printf '%s' "$CAPABILITIES" | jq -r '.name')" = "laban-debug" ] \
+  || fail "capabilities alias mismatch: $CAPABILITIES"
 
 # 6. /debug/state — assert one active tab
 STATE=$(get_json /debug/state)

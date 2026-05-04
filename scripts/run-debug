@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FIXTURE="${1:-fixtures/colored-boxes.fixture.json}"
+ARTIFACTS="${LABAN_ARTIFACTS:-.artifacts/runs/manual-debug}"
+TMP="${LABAN_TMP:-.tmp/manual-debug}"
+ADDRESS="${LABAN_DEBUG_ADDRESS:-127.0.0.1:0}"
+
+swift run laban-agent -- \
+  --headless \
+  --fixture="$FIXTURE" \
+  --debug-server="$ADDRESS" \
+  --artifacts="$ARTIFACTS" \
+  --temp-dir="$TMP" \
+  --deterministic

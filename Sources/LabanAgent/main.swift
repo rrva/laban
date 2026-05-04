@@ -8,6 +8,7 @@ import LabanTerminalCore
 // MARK: - Arg parsing
 
 struct AgentArgs {
+  var help = false
   var headless = false
   var debugServerAddress: String? = nil
   var fixture: String? = nil
@@ -24,6 +25,7 @@ func parseArgs() -> AgentArgs {
   var a = AgentArgs()
   for arg in CommandLine.arguments.dropFirst() {
     switch arg {
+    case "--help", "-h": a.help = true
     case "--headless": a.headless = true
     case "--deterministic": a.deterministic = true
     case "--debug-server": a.debugServerAddress = "127.0.0.1:0"
@@ -55,6 +57,38 @@ func parseArgs() -> AgentArgs {
     }
   }
   return a
+}
+
+func usage() -> String {
+  """
+  Usage:
+    laban-agent --headless --fixture=PATH --artifacts=PATH [--deterministic]
+    laban-agent --headless --debug-server[=127.0.0.1:0] [options]
+    laban-agent --replay-capture=PATH [--replay-mode=both|terminal|renderer]
+
+  Debug server options:
+    --fixture=PATH                  Load a deterministic fixture session.
+    --artifacts=PATH                Write screenshots, snapshots, and captures here.
+    --temp-dir=PATH                 Use an isolated temp directory.
+    --capture=NAME                  Start full capture recording immediately.
+    --capture-screenshots=POLICY    final, all, none, or marked.
+
+  Discoverability:
+    The debug server prints one readiness JSON line:
+      {"debugServer":"http://127.0.0.1:<port>","pid":12345,"runId":"..."}
+
+    Export that URL as DEBUG_URL, then ask the live server what it supports:
+      curl "$DEBUG_URL/debug" | jq
+      curl "$DEBUG_URL/debug/capabilities" | jq
+
+    Useful starting points:
+      GET  /debug/health
+      GET  /debug/state
+      POST /debug/actions
+      POST /debug/wait
+      POST /debug/snapshot
+      POST /debug/fixture
+  """
 }
 
 // MARK: - Result
@@ -105,6 +139,11 @@ func resolveURL(_ path: String) -> URL {
 // MARK: - Entry point
 
 let args = parseArgs()
+
+if args.help {
+  print(usage())
+  exit(0)
+}
 
 if let replayPath = args.replayCapture {
   do {

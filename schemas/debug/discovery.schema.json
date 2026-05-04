@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/discovery.schema.json",
+  "title": "Debug Discovery",
+  "type": "object",
+  "required": [
+    "name",
+    "schema",
+    "runId",
+    "mode",
+    "frame",
+    "artifactRoot",
+    "entrypoints",
+    "endpoints",
+    "actions",
+    "waitConditions",
+    "fixtureActions",
+    "examples"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "name": {"const": "laban-debug"},
+    "schema": {"type": "string"},
+    "runId": {"type": "string"},
+    "mode": {"type": "string", "enum": ["interactive", "headless", "fixture"]},
+    "frame": {"type": "integer", "minimum": 0},
+    "artifactRoot": {"type": "string"},
+    "entrypoints": {
+      "type": "array",
+      "items": {"type": "string"},
+      "contains": {"const": "/debug"}
+    },
+    "endpoints": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/endpoint"},
+      "minItems": 1
+    },
+    "actions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/control"}
+    },
+    "waitConditions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/control"}
+    },
+    "fixtureActions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/control"}
+    },
+    "examples": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/example"}
+    }
+  },
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "required": ["method", "path", "category", "summary", "queryParameters"],
+      "additionalProperties": true,
+      "properties": {
+        "method": {"enum": ["GET", "POST"]},
+        "path": {"type": "string"},
+        "category": {"type": "string"},
+        "summary": {"type": "string"},
+        "queryParameters": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "requestSchema": {"type": ["string", "null"]},
+        "responseSchema": {"type": ["string", "null"]}
+      }
+    },
+    "control": {
+      "type": "object",
+      "required": ["name", "summary"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string"},
+        "summary": {"type": "string"}
+      }
+    },
+    "example": {
+      "type": "object",
+      "required": ["title", "command"],
+      "additionalProperties": true,
+      "properties": {
+        "title": {"type": "string"},
+        "command": {"type": "string"}
+      }
+    }
+  }
+}
