@@ -134,6 +134,7 @@ public struct FrameProducer {
     }
 
     // ---- Pass 3: Glyph runs and block-element rects for all rows ----
+    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch
       let rowStart = row * cols
@@ -143,6 +144,13 @@ public struct FrameProducer {
       var runBg: UInt32 = 0
       var runAttrs: TextAttributes = []
       var runText = ""
+      var runUnderlineStyle: UnderlineStyle = .none
+      var runUnderlineColor: UInt32? = nil
+      var runHyperlink: String? = nil
+      // Set when we encounter a SPACER_TAIL while a run is open. The spacer
+      // is provisionally swallowed; we only flush it if the next visible
+      // cell does not extend the cluster.
+      var pendingSpacer = false
 
       func flushRun() {
         guard let start = runStart, !runText.isEmpty else {
@@ -158,15 +166,32 @@ public struct FrameProducer {
             foreground: runFg,
             background: runBg,
             attributes: runAttrs,
-            source: .terminal
+            source: .terminal,
+            underlineStyle: runUnderlineStyle,
+            underlineColor: runUnderlineColor,
+            hyperlink: runHyperlink
           ))
         runStart = nil
         runText = ""
+        runUnderlineStyle = .none
+        runUnderlineColor = nil
+        runHyperlink = nil
       }
 
       for col in 0..<cols {
         let cell = cells[rowStart + col]
+        let isSpacerTail = (cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL))
         let hasContent = cell.utf8_length > 0 && snapshot.utf8_storage != nil
+
+        // SPACER_TAIL belongs to the wide cell that precedes it. Hold off on
+        // flushing the run; if the next visible cell extends the current
+        // grapheme cluster (ZWJ chain, RI pair, skin-tone modifier), we'll
+        // append into the same run — otherwise we'll flush below.
+        if isSpacerTail {
+          if runStart != nil { pendingSpacer = true }
+          continue
+        }
+
         // The C bridge already swaps fg/bg for inverse video, so .inverse is
         // dropped here to keep downstream consumers from double-inverting.
         let attrs = TextAttributes(rawValue: cell.flags)
@@ -177,6 +202,27 @@ public struct FrameProducer {
           attrs.contains(.faint)
           ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
           : cell.foreground_rgba
+        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
+        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
+        let cellHyperlink: String? = {
+          let id = Int(cell.hyperlink_id)
+          guard id > 0, id <= hyperlinkURIs.count else { return nil }
+          return hyperlinkURIs[id - 1]
+        }()
+        // Default link styling: a single underline in the accent color when
+        // the cell carries a hyperlink and the SGR didn't already set one.
+        // Lets users see and click on links without making the renderer
+        // theme-aware everywhere.
+        var cellAttrs = attrs
+        if cellHyperlink != nil {
+          if cellUnderlineStyle == .none && !cellAttrs.contains(.underline) {
+            cellUnderlineStyle = .single
+          }
+          if cellUnderlineColor == nil {
+            cellUnderlineColor = Theme.CurrentTheme.blue
+          }
+          cellAttrs.insert(.underline)
+        }
 
         if hasContent, !attrs.contains(.invisible), let storage = snapshot.utf8_storage {
           let offset = Int(cell.utf8_offset)
@@ -195,6 +241,7 @@ public struct FrameProducer {
               BoxDrawing.isProceduralCellElement(scalar)
             {
               flushRun()
+              pendingSpacer = false
               let cellX = originX + CGFloat(col) * cw
               for filled in BoxDrawing.proceduralCellElementRects(
                 scalar,
@@ -208,24 +255,60 @@ public struct FrameProducer {
               continue
             }
 
-            if runStart != nil, runFg == cellFg && runBg == cellBg && runAttrs == attrs {
-              runText += text
+            let sameStyle =
+              runFg == cellFg && runBg == cellBg && runAttrs == cellAttrs
+              && runUnderlineStyle == cellUnderlineStyle
+              && runUnderlineColor == cellUnderlineColor
+              && runHyperlink == cellHyperlink
+
+            if runStart != nil, sameStyle {
+              if pendingSpacer {
+                // Resolve the held SPACER_TAIL: if appending shrinks the
+                // grapheme-cluster count (Swift Character collapses), the
+                // wide cell and this one belong to the same cluster — keep
+                // them in the same run. Otherwise flush before the new cell.
+                let mergedCount = (runText + text).count
+                if mergedCount < runText.count + text.count {
+                  runText += text
+                  pendingSpacer = false
+                } else {
+                  flushRun()
+                  pendingSpacer = false
+                  runStart = col
+                  runFg = cellFg
+                  runBg = cellBg
+                  runAttrs = cellAttrs
+                  runUnderlineStyle = cellUnderlineStyle
+                  runUnderlineColor = cellUnderlineColor
+                  runHyperlink = cellHyperlink
+                  runText = text
+                }
+              } else {
+                runText += text
+              }
             } else {
               flushRun()
+              pendingSpacer = false
               runStart = col
               runFg = cellFg
               runBg = cellBg
-              runAttrs = attrs
+              runAttrs = cellAttrs
+              runUnderlineStyle = cellUnderlineStyle
+              runUnderlineColor = cellUnderlineColor
+              runHyperlink = cellHyperlink
               runText = text
             }
           } else {
             flushRun()
+            pendingSpacer = false
           }
         } else {
           flushRun()
+          pendingSpacer = false
         }
       }
       flushRun()
+      pendingSpacer = false
     }
 
     // Cursor
@@ -243,6 +326,21 @@ public struct FrameProducer {
     }
 
     return cmds
+  }
+
+  private static func hyperlinkURIs(from snapshot: LabanSnapshot) -> [String] {
+    let count = Int(snapshot.hyperlink_count)
+    guard count > 0, let table = snapshot.hyperlink_uris else { return [] }
+    var result: [String] = []
+    result.reserveCapacity(count)
+    for i in 0..<count {
+      if let cstr = table[i] {
+        result.append(String(cString: cstr))
+      } else {
+        result.append("")
+      }
+    }
+    return result
   }
 
   private static func blend(

@@ -9,6 +9,37 @@ public enum FrameSource: String, Sendable {
   case image
 }
 
+public enum UnderlineStyle: UInt8, Sendable, Codable, Equatable {
+  case none = 0
+  case single = 1
+  case double = 2
+  case curly = 3
+  case dotted = 4
+  case dashed = 5
+
+  public var name: String? {
+    switch self {
+    case .none: return nil
+    case .single: return "single"
+    case .double: return "double"
+    case .curly: return "curly"
+    case .dotted: return "dotted"
+    case .dashed: return "dashed"
+    }
+  }
+
+  public init(name: String) {
+    switch name {
+    case "single": self = .single
+    case "double": self = .double
+    case "curly": self = .curly
+    case "dotted": self = .dotted
+    case "dashed": self = .dashed
+    default: self = .none
+    }
+  }
+}
+
 public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
   public let rawValue: UInt16
 
@@ -24,9 +55,10 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
   public static let underline = TextAttributes(rawValue: 1 << 5)
   public static let strikethrough = TextAttributes(rawValue: 1 << 6)
   public static let overline = TextAttributes(rawValue: 1 << 7)
+  public static let blink = TextAttributes(rawValue: 1 << 8)
 
   public static let renderableMask: TextAttributes = [
-    .bold, .italic, .faint, .inverse, .invisible, .underline, .strikethrough, .overline,
+    .bold, .italic, .faint, .inverse, .invisible, .underline, .strikethrough, .overline, .blink,
   ]
 
   public var names: [String] {
@@ -39,6 +71,7 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
     if contains(.underline) { result.append("underline") }
     if contains(.strikethrough) { result.append("strikethrough") }
     if contains(.overline) { result.append("overline") }
+    if contains(.blink) { result.append("blink") }
     return result
   }
 
@@ -54,6 +87,7 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
       case "underline": attrs.insert(.underline)
       case "strikethrough": attrs.insert(.strikethrough)
       case "overline": attrs.insert(.overline)
+      case "blink": attrs.insert(.blink)
       default: break
       }
     }
@@ -69,7 +103,10 @@ public enum FrameCommand: Sendable {
     foreground: UInt32,
     background: UInt32,
     attributes: TextAttributes,
-    source: FrameSource
+    source: FrameSource,
+    underlineStyle: UnderlineStyle = .none,
+    underlineColor: UInt32? = nil,
+    hyperlink: String? = nil
   )
   case cursor(CGRect, color: UInt32)
   case selection(CGRect, color: UInt32)

@@ -6,6 +6,9 @@
 #include <ghostty/vt/paste.h>
 #include <ghostty/vt/modes.h>
 #include <ghostty/vt/device.h>
+#include <ghostty/vt/grid_ref.h>
+#include <ghostty/vt/screen.h>
+#include <ghostty/vt/point.h>
 #include <ghostty/vt/size_report.h>
 #include <ghostty/vt/key/encoder.h>
 #include <ghostty/vt/key/event.h>
@@ -148,7 +151,35 @@ static uint16_t laban_cell_flags_from_style(const GhosttyStyle *style) {
     if (style->underline != 0) flags |= LABAN_CELL_FLAG_UNDERLINE;
     if (style->strikethrough) flags |= LABAN_CELL_FLAG_STRIKETHROUGH;
     if (style->overline) flags |= LABAN_CELL_FLAG_OVERLINE;
+    if (style->blink) flags |= LABAN_CELL_FLAG_BLINK;
     return flags;
+}
+
+/* Resolve a GhosttyStyleColor (RGB or palette) into a 0xRRGGBBAA value
+ * using the render state's palette. Returns 0 (alpha=0 = unset) when the
+ * color tag is GHOSTTY_STYLE_COLOR_NONE. */
+static uint32_t resolve_style_color_rgba(
+    GhosttyRenderState render_state, GhosttyStyleColor color
+) {
+    switch (color.tag) {
+        case GHOSTTY_STYLE_COLOR_RGB: {
+            return ((uint32_t)color.value.rgb.r << 24) |
+                   ((uint32_t)color.value.rgb.g << 16) |
+                   ((uint32_t)color.value.rgb.b << 8) | 0xFF;
+        }
+        case GHOSTTY_STYLE_COLOR_PALETTE: {
+            GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+            ghostty_render_state_colors_get(render_state, &colors);
+            uint8_t idx = color.value.palette;
+            GhosttyColorRgb rgb = colors.palette[idx];
+            return ((uint32_t)rgb.r << 24) |
+                   ((uint32_t)rgb.g << 16) |
+                   ((uint32_t)rgb.b << 8) | 0xFF;
+        }
+        case GHOSTTY_STYLE_COLOR_NONE:
+        default:
+            return 0;
+    }
 }
 
 static void free_ghostty_resources(LabanSession *s) {
@@ -629,6 +660,12 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     if (!utf8_storage) { free(cells); free(snap); return -1; }
     size_t utf8_used = 0;
 
+    /* Hyperlink table: deduped URI strings indexed 1..N by cell.hyperlink_id.
+     * Cells whose row reports HYPERLINK=true are checked via grid_ref. */
+    char **hyperlink_uris = NULL;
+    size_t hyperlink_count = 0;
+    size_t hyperlink_cap = 0;
+
     /* Populate the pre-allocated row iterator from the render state. */
     ghostty_render_state_get(s->render_state,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &s->row_iter);
@@ -639,6 +676,18 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         ghostty_render_state_row_get(s->row_iter,
             GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &s->row_cells);
 
+        /* Row has any hyperlink? Skip per-cell grid-ref lookups when not.
+         * The render-state row iterator doesn't expose this directly; pull
+         * the raw GhosttyRow and ask via ghostty_row_get(). */
+        bool row_has_hyperlink = false;
+        {
+            GhosttyRow raw_row = 0;
+            if (ghostty_render_state_row_get(s->row_iter,
+                    GHOSTTY_RENDER_STATE_ROW_DATA_RAW, &raw_row) == GHOSTTY_SUCCESS) {
+                ghostty_row_get(raw_row, GHOSTTY_ROW_DATA_HYPERLINK, &row_has_hyperlink);
+            }
+        }
+
         int col_idx = 0;
         while (ghostty_render_state_row_cells_next(s->row_cells) && col_idx < cols) {
             LabanCell *cell = &cells[row_idx * cols + col_idx];
@@ -647,6 +696,19 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
             if (ghostty_render_state_row_cells_get(s->row_cells,
                     GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) == GHOSTTY_SUCCESS) {
                 cell->flags = laban_cell_flags_from_style(&style);
+                cell->underline_style = (uint8_t)style.underline;
+                cell->underline_color_rgba =
+                    resolve_style_color_rgba(s->render_state, style.underline_color);
+            }
+
+            /* Width category (narrow / wide / spacer-tail / spacer-head). */
+            GhosttyCell raw_cell = 0;
+            if (ghostty_render_state_row_cells_get(s->row_cells,
+                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw_cell) == GHOSTTY_SUCCESS) {
+                GhosttyCellWide w = GHOSTTY_CELL_WIDE_NARROW;
+                if (ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_WIDE, &w) == GHOSTTY_SUCCESS) {
+                    cell->wide = (uint8_t)w;
+                }
             }
 
             /* Grapheme codepoints (0 = empty cell). */
@@ -698,6 +760,67 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                 uint32_t swapped = cell->foreground_rgba;
                 cell->foreground_rgba = cell->background_rgba;
                 cell->background_rgba = swapped;
+            }
+
+            /* Hyperlink URI lookup via grid ref. Only consult when the row is
+             * marked as containing hyperlinks (avoid a per-cell grid_ref walk
+             * on the common no-hyperlink path). */
+            if (row_has_hyperlink) {
+                bool cell_has_link = false;
+                if (ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_HAS_HYPERLINK, &cell_has_link)
+                        == GHOSTTY_SUCCESS && cell_has_link) {
+                    GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+                    GhosttyPoint pt = {
+                        .tag = GHOSTTY_POINT_TAG_VIEWPORT,
+                        .value.coordinate = {
+                            .x = (uint16_t)col_idx,
+                            .y = (uint32_t)row_idx,
+                        },
+                    };
+                    if (ghostty_terminal_grid_ref(s->terminal, pt, &ref) == GHOSTTY_SUCCESS) {
+                        size_t uri_len = 0;
+                        ghostty_grid_ref_hyperlink_uri(&ref, NULL, 0, &uri_len);
+                        if (uri_len > 0 && uri_len < 4096) {
+                            char *uri_buf = malloc(uri_len + 1);
+                            if (uri_buf) {
+                                size_t got = 0;
+                                if (ghostty_grid_ref_hyperlink_uri(
+                                        &ref, (uint8_t *)uri_buf, uri_len, &got) == GHOSTTY_SUCCESS
+                                    && got > 0) {
+                                    uri_buf[got] = '\0';
+                                    /* Dedupe against existing URIs. */
+                                    uint32_t found_id = 0;
+                                    for (size_t i = 0; i < hyperlink_count; i++) {
+                                        if (strcmp(hyperlink_uris[i], uri_buf) == 0) {
+                                            found_id = (uint32_t)(i + 1);
+                                            break;
+                                        }
+                                    }
+                                    if (found_id == 0) {
+                                        if (hyperlink_count == hyperlink_cap) {
+                                            size_t new_cap = hyperlink_cap == 0 ? 4 : hyperlink_cap * 2;
+                                            char **new_arr = realloc(hyperlink_uris,
+                                                new_cap * sizeof(char *));
+                                            if (new_arr) {
+                                                hyperlink_uris = new_arr;
+                                                hyperlink_cap = new_cap;
+                                            }
+                                        }
+                                        if (hyperlink_count < hyperlink_cap) {
+                                            hyperlink_uris[hyperlink_count] = uri_buf;
+                                            hyperlink_count++;
+                                            cell->hyperlink_id = (uint32_t)hyperlink_count;
+                                            uri_buf = NULL; /* table owns it */
+                                        }
+                                    } else {
+                                        cell->hyperlink_id = found_id;
+                                    }
+                                }
+                                free(uri_buf);
+                            }
+                        }
+                    }
+                }
             }
 
             col_idx++;
@@ -778,6 +901,8 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->utf8_storage_len = utf8_used;
     snap->cells           = cells;
     snap->cell_count      = cell_count;
+    snap->hyperlink_uris  = (const char *const *)hyperlink_uris;
+    snap->hyperlink_count = hyperlink_count;
 
     *out_snapshot = snap;
     return 0;
@@ -788,6 +913,12 @@ void laban_snapshot_destroy(LabanSnapshot *snap) {
     free((void *)snap->title);
     free((void *)snap->utf8_storage);
     free((void *)snap->cells);
+    if (snap->hyperlink_uris) {
+        for (size_t i = 0; i < snap->hyperlink_count; i++) {
+            free((void *)snap->hyperlink_uris[i]);
+        }
+        free((void *)snap->hyperlink_uris);
+    }
     free(snap);
 }
 

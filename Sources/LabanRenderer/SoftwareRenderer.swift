@@ -32,8 +32,13 @@ public final class SoftwareRenderer {
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
-      case .glyphRun(let origin, let text, let fg, let bg, let attrs, _):
-        drawText(text, at: origin, foreground: fg, background: bg, attributes: attrs, in: ctx)
+      case .glyphRun(
+        let origin, let text, let fg, let bg, let attrs, _,
+        let underlineStyle, let underlineColor, _
+      ):
+        drawText(
+          text, at: origin, foreground: fg, background: bg, attributes: attrs,
+          underlineStyle: underlineStyle, underlineColor: underlineColor, in: ctx)
 
       case .cursor(let rect, let colorValue):
         ctx.setFillColor(color(colorValue))
@@ -61,6 +66,8 @@ public final class SoftwareRenderer {
     foreground fg: UInt32,
     background _: UInt32,
     attributes: TextAttributes,
+    underlineStyle: UnderlineStyle = .none,
+    underlineColor: UInt32? = nil,
     in ctx: CGContext
   ) {
     let fgColor = color(fg)
@@ -99,7 +106,12 @@ public final class SoftwareRenderer {
     }
     ctx.restoreGState()
 
-    drawDecorations(for: text, at: origin, attributes: attributes, foreground: fgColor, in: ctx)
+    let underlineColorCG = underlineColor.map { color($0) } ?? fgColor
+    drawDecorations(
+      for: text, at: origin, attributes: attributes,
+      foreground: fgColor,
+      underlineStyle: underlineStyle, underlineColor: underlineColorCG,
+      in: ctx)
   }
 
   private func drawGlyphPass(
@@ -212,9 +224,13 @@ public final class SoftwareRenderer {
     at origin: CGPoint,
     attributes: TextAttributes,
     foreground fgColor: CGColor,
+    underlineStyle: UnderlineStyle,
+    underlineColor: CGColor,
     in ctx: CGContext
   ) {
-    guard !attributes.intersection([.underline, .strikethrough, .overline]).isEmpty,
+    let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
+    guard
+      drawsUnderline || attributes.contains(.strikethrough) || attributes.contains(.overline),
       !text.isEmpty
     else {
       return
@@ -225,16 +241,21 @@ public final class SoftwareRenderer {
     let thickness = max(1.0 / surface.scale, 1)
 
     ctx.saveGState()
-    ctx.setFillColor(fgColor)
-    if attributes.contains(.underline) {
-      ctx.fill(
-        CGRect(
-          x: origin.x,
-          y: origin.y + max(1, floor(fontAtlas.descent * 0.45)),
-          width: width,
-          height: thickness
-        ))
+    if drawsUnderline {
+      // The cell's underline_style takes precedence; .underline alone is
+      // single. .none here means the attribute flag is set without a sub-style.
+      let style: UnderlineStyle = underlineStyle == .none ? .single : underlineStyle
+      let underlineY = origin.y + max(1, floor(fontAtlas.descent * 0.45))
+      drawUnderline(
+        style: style,
+        x: origin.x,
+        y: underlineY,
+        width: width,
+        thickness: thickness,
+        color: underlineColor,
+        in: ctx)
     }
+    ctx.setFillColor(fgColor)
     if attributes.contains(.strikethrough) {
       ctx.fill(
         CGRect(
@@ -254,5 +275,62 @@ public final class SoftwareRenderer {
         ))
     }
     ctx.restoreGState()
+  }
+
+  private func drawUnderline(
+    style: UnderlineStyle,
+    x: CGFloat,
+    y: CGFloat,
+    width: CGFloat,
+    thickness: CGFloat,
+    color: CGColor,
+    in ctx: CGContext
+  ) {
+    ctx.setFillColor(color)
+    ctx.setStrokeColor(color)
+    switch style {
+    case .none:
+      return
+    case .single:
+      ctx.fill(CGRect(x: x, y: y, width: width, height: thickness))
+    case .double:
+      // Two thin lines, one at the underline position and one slightly above.
+      ctx.fill(CGRect(x: x, y: y, width: width, height: thickness))
+      let gap = max(thickness, 1)
+      ctx.fill(CGRect(x: x, y: y + thickness + gap, width: width, height: thickness))
+    case .curly:
+      // Sine wave approximated with line segments at one cell-width period.
+      let amplitude = max(thickness * 1.2, 1.0)
+      let period = max(glyphCellAdvance, 6)
+      let baseY = y + thickness * 0.5
+      ctx.setLineWidth(thickness)
+      ctx.setLineJoin(.round)
+      ctx.beginPath()
+      let steps = max(Int(width / 1.5), 8)
+      for i in 0...steps {
+        let t = CGFloat(i) / CGFloat(steps)
+        let cx = x + width * t
+        let cy = baseY + amplitude * CGFloat(sin((Double(t) * Double(width) / Double(period)) * 2 * .pi))
+        if i == 0 { ctx.move(to: CGPoint(x: cx, y: cy)) }
+        else { ctx.addLine(to: CGPoint(x: cx, y: cy)) }
+      }
+      ctx.strokePath()
+    case .dotted:
+      let dot = max(thickness, 1)
+      var cx = x
+      while cx < x + width {
+        ctx.fill(CGRect(x: cx, y: y, width: dot, height: thickness))
+        cx += dot * 2
+      }
+    case .dashed:
+      let dash = max(glyphCellAdvance * 0.5, 3)
+      let gap = max(glyphCellAdvance * 0.25, 2)
+      var cx = x
+      while cx < x + width {
+        let segW = min(dash, x + width - cx)
+        ctx.fill(CGRect(x: cx, y: y, width: segW, height: thickness))
+        cx += dash + gap
+      }
+    }
   }
 }

@@ -37,7 +37,26 @@ enum {
     LABAN_CELL_FLAG_INVISIBLE = 1u << 4,
     LABAN_CELL_FLAG_UNDERLINE = 1u << 5,
     LABAN_CELL_FLAG_STRIKETHROUGH = 1u << 6,
-    LABAN_CELL_FLAG_OVERLINE = 1u << 7
+    LABAN_CELL_FLAG_OVERLINE = 1u << 7,
+    LABAN_CELL_FLAG_BLINK = 1u << 8
+};
+
+/* Underline style values (matches GhosttySgrUnderline). */
+enum {
+    LABAN_UNDERLINE_NONE = 0,
+    LABAN_UNDERLINE_SINGLE = 1,
+    LABAN_UNDERLINE_DOUBLE = 2,
+    LABAN_UNDERLINE_CURLY = 3,
+    LABAN_UNDERLINE_DOTTED = 4,
+    LABAN_UNDERLINE_DASHED = 5
+};
+
+/* Width category for a cell (matches GhosttyCellWide). */
+enum {
+    LABAN_CELL_WIDE_NARROW = 0,
+    LABAN_CELL_WIDE_WIDE = 1,
+    LABAN_CELL_WIDE_SPACER_TAIL = 2,
+    LABAN_CELL_WIDE_SPACER_HEAD = 3
 };
 
 typedef struct {
@@ -46,7 +65,11 @@ typedef struct {
     uint32_t utf8_length;    /* Byte length in utf8_storage; 0 if empty */
     uint32_t foreground_rgba;
     uint32_t background_rgba;
+    uint32_t underline_color_rgba; /* 0 = unset; alpha byte is the lsb when set */
+    uint32_t hyperlink_id;   /* 1-indexed into LabanSnapshot.hyperlink_uris; 0 = none */
     uint16_t flags;
+    uint8_t  underline_style;     /* LABAN_UNDERLINE_* */
+    uint8_t  wide;                /* LABAN_CELL_WIDE_* */
 } LabanCell;
 
 /*
@@ -76,6 +99,11 @@ typedef struct {
     size_t utf8_storage_len;
     const LabanCell *cells;
     size_t cell_count;
+    /* Hyperlink URIs referenced by cell.hyperlink_id (1-indexed).
+     * The pointer is NULL when no cell has a hyperlink; otherwise
+     * hyperlink_uris[id-1] is a NUL-terminated UTF-8 URI owned by the snapshot. */
+    const char *const *hyperlink_uris;
+    size_t hyperlink_count;
 } LabanSnapshot;
 
 int laban_session_create(

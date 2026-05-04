@@ -248,7 +248,7 @@ final class TerminalSelectionTests: XCTestCase {
       case .selection:
         firstSelIndex = min(firstSelIndex, i)
         lastSelIndex = max(lastSelIndex, i)
-      case .glyphRun(_, _, _, _, _, let src) where src == .terminal:
+      case .glyphRun(_, _, _, _, _, let src, _, _, _) where src == .terminal:
         firstGlyphIndex = min(firstGlyphIndex, i)
       default:
         break

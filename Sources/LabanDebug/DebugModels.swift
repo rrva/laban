@@ -220,6 +220,9 @@ struct FrameCommandResponse: Encodable {
   var text: String?
   var resourceId: String?
   var attributes: [String]?
+  var underlineStyle: String?
+  var underlineColor: [Int]?
+  var hyperlink: String?
 }
 
 struct FrameCommandsResponse: Encodable {

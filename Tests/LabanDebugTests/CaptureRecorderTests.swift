@@ -152,13 +152,13 @@ final class CaptureRecorderTests: XCTestCase {
     let decoded = try JSONDecoder().decode([CapturedFrameCommand].self, from: json)
     let restored = FrameCommandCaptureCodec.commands(from: decoded)
     XCTAssertEqual(restored.count, 2)
-    if case .glyphRun(_, let text, _, _, let attrs, _) = restored[0] {
+    if case .glyphRun(_, let text, _, _, let attrs, _, _, _, _) = restored[0] {
       XCTAssertEqual(text, "X")
       XCTAssertEqual(attrs, [.bold, .italic, .underline])
     } else {
       XCTFail("expected glyphRun with attributes")
     }
-    if case .glyphRun(_, _, _, _, let attrs, _) = restored[1] {
+    if case .glyphRun(_, _, _, _, let attrs, _, _, _, _) = restored[1] {
       XCTAssertEqual(attrs, [])
     } else {
       XCTFail("expected glyphRun")

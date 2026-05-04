@@ -599,6 +599,9 @@ public struct CapturedFrameCommand: Codable, Equatable, Sendable {
   public var text: String?
   public var resourceId: UInt64?
   public var attributes: [String]?
+  public var underlineStyle: String?
+  public var underlineColor: UInt32?
+  public var hyperlink: String?
 }
 
 public struct CapturedRect: Codable, Equatable, Sendable {
@@ -634,14 +637,18 @@ public enum FrameCommandCaptureCodec {
           index: index, kind: "rect", source: source.rawValue,
           rect: CapturedRect(rect), color: color)
       case .glyphRun(
-        let origin, let text, let foreground, let background, let attributes, let source
+        let origin, let text, let foreground, let background, let attributes, let source,
+        let underlineStyle, let underlineColor, let hyperlink
       ):
         let attrNames = attributes.names
         return CapturedFrameCommand(
           index: index, kind: "glyphRun", source: source.rawValue,
           rect: CapturedRect(CGRect(x: origin.x, y: origin.y, width: 0, height: 0)),
           foreground: foreground, background: background, text: text,
-          attributes: attrNames.isEmpty ? nil : attrNames)
+          attributes: attrNames.isEmpty ? nil : attrNames,
+          underlineStyle: underlineStyle.name,
+          underlineColor: underlineColor,
+          hyperlink: hyperlink)
       case .cursor(let rect, let color):
         return CapturedFrameCommand(
           index: index, kind: "cursor", source: FrameSource.cursor.rawValue,
@@ -673,13 +680,17 @@ public enum FrameCommandCaptureCodec {
           let foreground = item.foreground, let background = item.background
         else { return nil }
         let attributes = TextAttributes(names: item.attributes ?? [])
+        let underlineStyle = item.underlineStyle.map { UnderlineStyle(name: $0) } ?? .none
         return .glyphRun(
           origin: CGPoint(x: rect.x, y: rect.y),
           text: text,
           foreground: foreground,
           background: background,
           attributes: attributes,
-          source: source)
+          source: source,
+          underlineStyle: underlineStyle,
+          underlineColor: item.underlineColor,
+          hyperlink: item.hyperlink)
       case "cursor":
         guard let rect = item.rect, let color = item.color else { return nil }
         return .cursor(rect.cgRect, color: color)
