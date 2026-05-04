@@ -85,7 +85,8 @@ final class TerminalScrollInputTests: XCTestCase {
       )
       residual = d.newResidualPx
 
-      let pixelsUp = e.hasPrecise
+      let pixelsUp =
+        e.hasPrecise
         ? CGFloat(e.scrollingDeltaY)
         : CGFloat(e.deltaY) * cellHeight
 

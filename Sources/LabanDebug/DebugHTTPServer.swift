@@ -205,6 +205,10 @@ public final class DebugHTTPServer {
       let since = query["since"].flatMap { Int($0) } ?? 0
       return json(runtime.events(since: since))
 
+    case ("GET", "/debug/input-log"):
+      let since = query["since"].flatMap { Int($0) } ?? 0
+      return json(runtime.inputLogResponse(since: since))
+
     case ("GET", "/debug/selection"):
       return json(runtime.selection())
 

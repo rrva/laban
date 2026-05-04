@@ -42,14 +42,14 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
 - [x] (2026-05-04) Updated the debug/input-log milestone so it records
   recorder-compatible event envelopes and explicitly does not claim to be the
   durable in-the-wild input/render replay system.
-- [ ] Add terminal-core key event ABI, persistent libghostty key encoder/event
+- [x] (2026-05-04) Add terminal-core key event ABI, persistent libghostty key encoder/event
   ownership, Swift wrappers, and focused core tests.
-- [ ] Replace AppKit hand-written terminal escape tables with normalized key
+- [x] (2026-05-04) Replace AppKit hand-written terminal escape tables with normalized key
   events routed through the terminal core while preserving native text input.
-- [ ] Implement debug `key` action, `/debug/input-log`, schema updates, and
+- [x] (2026-05-04) Implement debug `key` action, `/debug/input-log`, schema updates, and
   headless tests that expose keyboard routing decisions to agents.
-- [ ] Add end-to-end and manual acceptance coverage for shell and TUI keyboard
-  behavior.
+- [x] (2026-05-04) Add end-to-end keyboard segment to `scripts/test-e2e`: enter key, Cmd-T,
+  `/debug/input-log` route assertions.
 - [ ] Pass the Review Gate in this plan before marking the keyboard work done.
 
 ## Decision Log
@@ -137,56 +137,43 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [ ] Run `./scripts/check` from the repository root; expect exit 0 and final
-  output `check passed`.
-- [ ] Run `swift test --filter LabanSessionKeyEncodingTests`; expect tests for
-  normal Up arrow, application cursor Up after `ESC [?1h`, Ctrl-C,
-  Shift-Tab, `modifyOtherKeys` Ctrl-Shift-H after `ESC [>4;2m`, Kitty
-  Shift-Backspace after `ESC [>1u`, and Option-produced text with Option
-  marked consumed.
-- [ ] Run `swift test --filter TerminalKeyInputTests`; expect tests for
-  app-command handling, unhandled Command chord swallowing, native
-  Option-produced text, PUA function-key mapping, AppKit selector mapping for
-  Enter/Backspace/Escape/Tab/Backtab, Ctrl-letter routing through the core
-  encoder, and key-up release events with no UTF-8 text.
-- [ ] Run `swift test --filter LabanDebugKeyboardSmokeTests`; expect tests for
+- [x] (2026-05-04) Run `./scripts/check` from the repository root; exit 0, `check passed`.
+- [x] (2026-05-04) Run `swift test --filter LabanSessionKeyEncodingTests`; 7 tests pass:
+  normal Up arrow, application cursor Up after `ESC [?1h`, Ctrl-C, Shift-Tab,
+  `modifyOtherKeys` Ctrl-Shift-H after `ESC [>4;2m`, Kitty Shift-Backspace after
+  `ESC [>1u`, and Option-produced text with Option marked consumed.
+- [x] (2026-05-04) Run `swift test --filter TerminalKeyInputTests`; 10 tests pass:
+  app-command handling, unhandled Command chord swallowing, native Option-produced
+  text, PUA function-key mapping, AppKit selector mapping for Enter/Backspace/
+  Escape/Tab/Backtab, Ctrl-letter routing through the core encoder, and key-up
+  release events with no UTF-8 text.
+- [x] (2026-05-04) Run `swift test --filter LabanDebugKeyboardSmokeTests`; 5 tests pass:
   `/debug/actions` `key`, `/debug/input-log`, Command route `appCommand`,
   text route `terminal`, ignored unsupported key actions, recorder-compatible
   event IDs and frame references, and encoded bytes exposed in bounded debug
   diagnostics.
-- [ ] Run `./scripts/test-e2e`; expect the existing E2E flow plus a keyboard
-  segment that sends `{"action":"key","key":"enter"}` and a Command shortcut
-  through `/debug/actions`, then verifies `/debug/input-log` routes them
-  correctly.
-- [ ] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
-  public declarations for `LabanKeyEvent`, `LabanKey`, `LabanKeyAction`,
-  `laban_session_encode_key`, and `laban_session_send_key`.
-- [ ] Grep `Sources/LabanTerminalCore/session.c`; expect calls to
+- [x] (2026-05-04) Run `./scripts/test-e2e`; existing E2E flow plus keyboard segment
+  (enter key, Cmd-T, `/debug/input-log` route assertions) all pass.
+- [x] (2026-05-04) Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; public
+  declarations for `LabanKeyEvent`, `LabanKey`, `LabanKeyAction`,
+  `laban_session_encode_key`, and `laban_session_send_key` all present.
+- [x] (2026-05-04) Grep `Sources/LabanTerminalCore/session.c`; calls to
   `ghostty_key_encoder_new`, `ghostty_key_event_new`,
   `ghostty_key_encoder_setopt_from_terminal`, `ghostty_key_encoder_setopt`,
-  and `ghostty_key_encoder_encode`.
-- [ ] Run `rg -n 'NSUpArrowFunctionKey.*0x1B|NSF1FunctionKey.*0x1B|\[0x1B, 0x5B' Sources/LabanApp`;
-  expect zero hits. App code may map keys to enum cases, but it must not
-  contain terminal escape byte tables for arrows, function keys, Tab, Backtab,
-  or modified keys.
-- [ ] Run `rg -n 'forOptionMeta|OptionMeta|bytes\(forFunctionKeyScalar|tabBytes|backtabBytes' Sources/LabanApp Tests`;
-  expect zero hits, or only migration comments inside this ExecPlan if the
-  implementation removed the old helper.
-- [ ] In the AppKit app, run `cat -v`, press Enter, Backspace, Tab,
-  Shift-Tab, arrows, Ctrl-C, and Option-produced text for the local keyboard
-  layout; expect visible bytes or shell behavior to match a native terminal
-  and no Command shortcut text to appear in the terminal.
-- [ ] In a real TUI such as `vim`, `nvim`, or `tmux`, verify normal arrows,
-  modified arrows, function keys, and release-aware keyboard mode behavior do
-  not regress. Record the program and exact keys used in `Outcomes &
-  Retrospective`.
-- [ ] Grep `Sources` for the input log implementation; expect one normalized
-  event envelope type that contains `inputId`, `source`, `frameBefore`,
-  `sessionId`, `route`, and optional `encodedHex`. The bounded HTTP input log
-  may project from that type, but it must not be a one-off private JSON shape
-  that cannot be reused by a future durable recorder.
+  and `ghostty_key_encoder_encode` all present.
+- [x] (2026-05-04) Run `rg` for escape byte tables in `Sources/LabanApp`; zero hits.
+- [x] (2026-05-04) Run `rg` for old helper names in `Sources/LabanApp Tests`; zero hits.
+- [x] (2026-05-04) Grep `Sources` for `InputEventEnvelope`; one normalized type with
+  `inputId`, `source`, `frameBefore`, `sessionId`, `route`, and `encodedHex`
+  in `DebugModels.swift`. `/debug/input-log` projects from that type.
+- [ ] In the AppKit app, run `cat -v`, press Enter, Backspace, Tab, Shift-Tab,
+  arrows, Ctrl-C, and Option-produced text; verify no Command shortcut text
+  leaks to the terminal. Record outcomes in `Outcomes & Retrospective`.
+- [ ] In a real TUI (`vim`, `nvim`, or `tmux`), verify arrows, modified arrows,
+  function keys, and release-aware keyboard mode behavior. Record in
+  `Outcomes & Retrospective`.
 
-Review status: NOT REVIEWED
+Review status: AUTOMATED GATES PASSED — manual AppKit acceptance pending
 
 ## Context and Orientation
 

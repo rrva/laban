@@ -35,6 +35,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
 
+  // Active key descriptor during interpretKeyEvents dispatch
+  private var currentKeyDescriptor: TerminalKeyDescriptor?
+
   // Tracks last surface dimensions to avoid redundant reallocations
   private var lastPixelWidth: Int = 0
   private var lastPixelHeight: Int = 0
@@ -229,33 +232,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   override var acceptsFirstResponder: Bool { true }
 
   override func keyDown(with event: NSEvent) {
-    if let chars = event.charactersIgnoringModifiers,
-      let scalar = chars.unicodeScalars.first
-    {
-      let v = Int(scalar.value)
-      if v >= 0xF700, v <= 0xF8FF {
-        if let bytes = TerminalKeyEncoder.bytes(forFunctionKeyScalar: v) {
-          sendBytes(bytes)
-          return
-        }
-      }
+    let descriptor = TerminalKeyDescriptor(keyDown: event)
+    switch descriptor.route() {
+    case .appCommand(let cmd):
+      executeAppCommand(cmd)
+    case .swallowCommand:
+      break
+    case .encodedKey(let keyEvent):
+      sendKeyEvent(keyEvent)
+    case .nativeText:
+      currentKeyDescriptor = descriptor
+      defer { currentKeyDescriptor = nil }
+      interpretKeyEvents([event])
+    case .ignored:
+      break
     }
-    if let bytes = TerminalKeyEncoder.bytes(
-      forControlModifiedCharacters: event.characters,
-      charactersIgnoringModifiers: event.charactersIgnoringModifiers,
-      modifierFlags: event.modifierFlags)
-    {
-      sendBytes(bytes)
-      return
+  }
+
+  override func keyUp(with event: NSEvent) {
+    let descriptor = TerminalKeyDescriptor(keyUp: event)
+    if case .encodedKey(let keyEvent) = descriptor.route() {
+      sendKeyEvent(keyEvent)
     }
-    if let bytes = TerminalKeyEncoder.bytes(
-      forOptionMetaCharactersIgnoringModifiers: event.charactersIgnoringModifiers,
-      modifierFlags: event.modifierFlags)
-    {
-      sendBytes(bytes)
-      return
-    }
-    interpretKeyEvents([event])
   }
 
   // MARK: - NSTextInputClient
@@ -269,7 +267,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     } else {
       return
     }
-    sendBytes(Array(text.utf8))
+    if let keyEvent = TerminalKeyDescriptor.buildTextKeyEvent(
+      text: text, descriptor: currentKeyDescriptor)
+    {
+      sendKeyEvent(keyEvent)
+    } else {
+      sendBytes(Array(text.utf8))
+    }
   }
 
   func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -296,19 +300,42 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   func characterIndex(for point: NSPoint) -> Int { NSNotFound }
 
   override func doCommand(by commandSelector: Selector) {
-    switch commandSelector {
-    case #selector(insertNewline(_:)): sendBytes([0x0D])
-    case #selector(deleteBackward(_:)): sendBytes([0x7F])
-    case #selector(cancelOperation(_:)): sendBytes([0x1B])
-    case #selector(insertTab(_:)): sendBytes(TerminalKeyEncoder.tabBytes)
-    case #selector(insertBacktab(_:)): sendBytes(TerminalKeyEncoder.backtabBytes)
-    default: break
+    let mods = currentKeyDescriptor?.modifiers ?? []
+    if let keyEvent = TerminalKeyDescriptor.selectorKeyEvent(
+      for: commandSelector, modifiers: mods)
+    {
+      sendKeyEvent(keyEvent)
     }
+  }
+
+  private func sendKeyEvent(_ event: KeyEvent) {
+    guard let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId)
+    else { return }
+    session.sendKey(event)
   }
 
   private func sendBytes(_ bytes: [UInt8]) {
     guard let tabId = model.activeTab?.id else { return }
     model.session(forTab: tabId)?.write(bytes)
+  }
+
+  private func executeAppCommand(_ command: AppCommand) {
+    switch command {
+    case .newTab:
+      _ = try? model.createTab()
+      renderInvalidated = true
+    case .closeTab:
+      closeTab(nil)
+    case .selectTab(let index):
+      guard index < model.tabs.count else { return }
+      model.selectTab(model.tabs[index].id)
+      renderInvalidated = true
+    case .copy:
+      copy(nil)
+    case .paste:
+      paste(nil)
+    }
   }
 
   // MARK: - Clipboard

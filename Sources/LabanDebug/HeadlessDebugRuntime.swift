@@ -43,7 +43,10 @@ private struct ActionRequest: Decodable {
   var text: String?
   var count: Int?
   var key: String?
+  var type: String?
   var modifiers: [String]?
+  var consumedModifiers: [String]?
+  var unshifted: String?
   var x: Int?
   var y: Int?
   var deltaY: Double?
@@ -140,6 +143,8 @@ public final class HeadlessDebugRuntime {
   private var lastPasteIgnoredNonText: Bool?
   private var eventLog: [EventEntry] = []
   private var eventSeq: Int = 0
+  private var inputLog: [InputEventEnvelope] = []
+  private var inputLogSeq: Int = 0
 
   // MARK: - Init
 
@@ -281,6 +286,167 @@ public final class HeadlessDebugRuntime {
     eventLog.append(e)
     if eventLog.count > 2000 {
       eventLog.removeFirst(eventLog.count - 2000)
+    }
+  }
+
+  private func appendInputEnvelope(_ e: InputEventEnvelope) {
+    var e = e
+    e.seq = inputLogSeq
+    inputLogSeq += 1
+    inputLog.append(e)
+    if inputLog.count > 512 {
+      inputLog.removeFirst(inputLog.count - 512)
+    }
+  }
+
+  // MARK: - Key action helpers
+
+  private static func keyFromName(_ name: String) -> Key? {
+    switch name.lowercased() {
+    case "a": return .a
+    case "b": return .b
+    case "c": return .c
+    case "d": return .d
+    case "e": return .e
+    case "f": return .f
+    case "g": return .g
+    case "h": return .h
+    case "i": return .i
+    case "j": return .j
+    case "k": return .k
+    case "l": return .l
+    case "m": return .m
+    case "n": return .n
+    case "o": return .o
+    case "p": return .p
+    case "q": return .q
+    case "r": return .r
+    case "s": return .s
+    case "t": return .t
+    case "u": return .u
+    case "v": return .v
+    case "w": return .w
+    case "x": return .x
+    case "y": return .y
+    case "z": return .z
+    case "0": return .digit0
+    case "1": return .digit1
+    case "2": return .digit2
+    case "3": return .digit3
+    case "4": return .digit4
+    case "5": return .digit5
+    case "6": return .digit6
+    case "7": return .digit7
+    case "8": return .digit8
+    case "9": return .digit9
+    case "enter": return .enter
+    case "backspace": return .backspace
+    case "escape": return .escape
+    case "tab": return .tab
+    case "space": return .space
+    case "delete": return .delete
+    case "home": return .home
+    case "end": return .end
+    case "pageup": return .pageUp
+    case "pagedown": return .pageDown
+    case "insert": return .insert
+    case "arrowup": return .arrowUp
+    case "arrowdown": return .arrowDown
+    case "arrowleft": return .arrowLeft
+    case "arrowright": return .arrowRight
+    case "f1": return .f1
+    case "f2": return .f2
+    case "f3": return .f3
+    case "f4": return .f4
+    case "f5": return .f5
+    case "f6": return .f6
+    case "f7": return .f7
+    case "f8": return .f8
+    case "f9": return .f9
+    case "f10": return .f10
+    case "f11": return .f11
+    case "f12": return .f12
+    case "f13": return .f13
+    case "f14": return .f14
+    case "f15": return .f15
+    case "f16": return .f16
+    case "f17": return .f17
+    case "f18": return .f18
+    case "f19": return .f19
+    case "f20": return .f20
+    case "f21": return .f21
+    case "f22": return .f22
+    case "f23": return .f23
+    case "f24": return .f24
+    default: return nil
+    }
+  }
+
+  private static func modifiersFromStrings(_ strs: [String]?) -> KeyModifiers {
+    var mods: KeyModifiers = []
+    for s in strs ?? [] {
+      switch s.lowercased() {
+      case "shift": mods.insert(.shift)
+      case "control": mods.insert(.control)
+      case "alt", "option": mods.insert(.alt)
+      case "command", "super": mods.insert(.command)
+      default: break
+      }
+    }
+    return mods
+  }
+
+  private static func keyActionFromType(_ type: String?) -> KeyAction {
+    switch type?.lowercased() {
+    case "release": return .release
+    case "repeat": return .held
+    default: return .press
+    }
+  }
+
+  private func commandRouteForKey(_ key: Key) -> (route: String, command: String?) {
+    switch key {
+    case .t: return ("appCommand", "newTab")
+    case .w: return ("appCommand", "closeTab")
+    case .c: return ("appCommand", "copy")
+    case .v: return ("appCommand", "paste")
+    case .digit1, .digit2, .digit3, .digit4, .digit5,
+      .digit6, .digit7, .digit8, .digit9:
+      return ("appCommand", "selectTab")
+    default: return ("ignored", nil)
+    }
+  }
+
+  private func executeCommandKey(_ key: Key) {
+    switch key {
+    case .t:
+      try? model.createTab()
+      renderFrameUnlocked()
+    case .w:
+      if let tabId = model.activeTab?.id {
+        try? model.closeTab(tabId)
+        renderFrameUnlocked()
+      }
+    case .digit1, .digit2, .digit3, .digit4, .digit5,
+      .digit6, .digit7, .digit8, .digit9:
+      let idx: Int
+      switch key {
+      case .digit1: idx = 0
+      case .digit2: idx = 1
+      case .digit3: idx = 2
+      case .digit4: idx = 3
+      case .digit5: idx = 4
+      case .digit6: idx = 5
+      case .digit7: idx = 6
+      case .digit8: idx = 7
+      case .digit9: idx = 8
+      default: return
+      }
+      guard idx < model.tabs.count else { return }
+      model.selectTab(model.tabs[idx].id)
+      renderFrameUnlocked()
+    default:
+      break
     }
   }
 
@@ -719,6 +885,71 @@ public final class HeadlessDebugRuntime {
             mouseTracking: false, sent: false
           ))
       }
+
+    case "key":
+      guard let keyName = req.key,
+        let key = HeadlessDebugRuntime.keyFromName(keyName)
+      else {
+        return jsonError("key action requires a valid key name")
+      }
+      let action = HeadlessDebugRuntime.keyActionFromType(req.type)
+      let mods = HeadlessDebugRuntime.modifiersFromStrings(req.modifiers)
+      let consumed = HeadlessDebugRuntime.modifiersFromStrings(req.consumedModifiers)
+      let frameBefore = currentFrame
+      let activeTab = model.activeTab
+      let inputId = UUID().uuidString
+
+      if mods.contains(.command) {
+        let (route, commandStr) = commandRouteForKey(key)
+        appendInputEnvelope(
+          InputEventEnvelope(
+            inputId: inputId, seq: 0,
+            source: "debug", kind: "key", route: route,
+            frameBefore: frameBefore,
+            tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+            key: keyName, modifiers: req.modifiers, command: commandStr
+          ))
+        appendEvent(EventEntry(kind: "input.key", text: keyName, action: req.action))
+        if route == "appCommand" {
+          executeCommandKey(key)
+        }
+        return actionResult(ok: true)
+      }
+
+      var unshiftedCodepoint: UInt32 = 0
+      if let u = req.unshifted, let scalar = u.unicodeScalars.first {
+        unshiftedCodepoint = scalar.value
+      }
+      let keyEvent = KeyEvent(
+        action: action,
+        key: key,
+        modifiers: mods,
+        consumedModifiers: consumed,
+        unshiftedCodepoint: unshiftedCodepoint,
+        text: req.text
+      )
+      var encodedHex: String? = nil
+      var encodedLength: Int? = nil
+      if let tab = activeTab, let session = model.session(forTab: tab.id) {
+        if let bytes = session.encodeKey(keyEvent), !bytes.isEmpty {
+          encodedHex = bytes.map { String(format: "%02x", $0) }.joined()
+          encodedLength = bytes.count
+        }
+        session.sendKey(keyEvent)
+      }
+      renderFrameUnlocked()
+      appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: inputId, seq: 0,
+          source: "debug", kind: "key", route: "terminal",
+          frameBefore: frameBefore,
+          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          key: keyName, text: req.text,
+          modifiers: req.modifiers, consumedModifiers: req.consumedModifiers,
+          encodedHex: encodedHex, encodedLength: encodedLength
+        ))
+      appendEvent(EventEntry(kind: "input.key", text: keyName, action: req.action))
+      return actionResult(ok: true)
 
     default:
       appendEvent(EventEntry(kind: "action.unsupported", action: req.action))
@@ -1231,6 +1462,13 @@ public final class HeadlessDebugRuntime {
         lastPasteUsedBracketedPaste: lastPasteUsedBracketedPaste,
         lastPasteIgnoredNonText: lastPasteIgnoredNonText
       ))
+  }
+
+  public func inputLogResponse(since: Int) -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    let filtered = inputLog.filter { $0.seq >= since }
+    return jsonEncode(InputLogResponse(events: filtered, next: inputLogSeq))
   }
 
   public func events(since: Int) -> DebugResponse {

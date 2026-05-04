@@ -380,12 +380,43 @@ KINDS=$(printf '%s' "$EVENTS" | jq -r '[.events[].kind] | join(",")')
 printf '%s' "$KINDS" | grep -q "server.ready" || fail "server.ready not in events: $KINDS"
 printf '%s' "$KINDS" | grep -q "frame.rendered" || fail "frame.rendered not in events: $KINDS"
 
-# 22. Terminate server
+# 26. Keyboard input log — route assertions
+KEY_ENTER=$(post_json /debug/actions '{"action":"key","key":"enter"}')
+[ "$(printf '%s' "$KEY_ENTER" | jq -r '.ok')" = "true" ] \
+  || fail "key enter action failed: $KEY_ENTER"
+
+KEY_CMD_T=$(post_json /debug/actions '{"action":"key","key":"t","modifiers":["command"]}')
+[ "$(printf '%s' "$KEY_CMD_T" | jq -r '.ok')" = "true" ] \
+  || fail "key cmd-t action failed: $KEY_CMD_T"
+
+INPUT_LOG=$(get_json /debug/input-log?since=0)
+printf '%s' "$INPUT_LOG" | jq -e 'has("events") and has("next")' >/dev/null 2>&1 \
+  || fail "input-log missing events or next: $INPUT_LOG"
+
+# At least one key event must route to terminal
+TERMINAL_KEY=$(printf '%s' "$INPUT_LOG" \
+  | jq -r '[.events[] | select(.kind=="key" and .route=="terminal")] | length')
+[ "$TERMINAL_KEY" -ge 1 ] \
+  || fail "input-log: no key event with route=terminal: $INPUT_LOG"
+
+# Cmd-T must log appCommand/newTab
+APP_CMD_NEW_TAB=$(printf '%s' "$INPUT_LOG" \
+  | jq -r '[.events[] | select(.route=="appCommand" and .command=="newTab")] | length')
+[ "$APP_CMD_NEW_TAB" -ge 1 ] \
+  || fail "input-log: no appCommand/newTab event: $INPUT_LOG"
+
+# No Command key must route to terminal
+CMD_TO_TERMINAL=$(printf '%s' "$INPUT_LOG" \
+  | jq -r '[.events[] | select(.modifiers != null and (.modifiers | index("command") != null) and .route=="terminal")] | length')
+[ "$CMD_TO_TERMINAL" -eq 0 ] \
+  || fail "input-log: Command key routed to terminal: $INPUT_LOG"
+
+# 27. Terminate server
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 
-# 23. Bare --debug-server shorthand — launches and answers health
+# 28. Bare --debug-server shorthand — launches and answers health
 _bare_stdout=$(mktemp)
 "$AGENT_BIN" --headless --debug-server --deterministic >"$_bare_stdout" &
 BARE_PID=$!

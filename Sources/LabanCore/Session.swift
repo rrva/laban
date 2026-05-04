@@ -174,6 +174,40 @@ public final class Session {
     return ViewportState(from: vs)
   }
 
+  // MARK: - Key encoding
+
+  /// Encode a key event into terminal input bytes using libghostty-vt's key encoder.
+  /// Returns nil if the session is closed, if encoding fails, or if the key produces no bytes
+  /// (e.g. an unmodified modifier key). Handles UTF-8 text lifetime internally.
+  public func encodeKey(_ event: KeyEvent) -> [UInt8]? {
+    guard !isClosed, let h = handle else { return nil }
+    var buf = [UInt8](repeating: 0, count: 128)
+    var len = 0
+    let rc = event.withLabanKeyEvent { raw in
+      var rawCopy = raw
+      return buf.withUnsafeMutableBytes { outBuf in
+        laban_session_encode_key(
+          h, &rawCopy,
+          outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          outBuf.count, &len)
+      }
+    }
+    guard rc == 0, len > 0 else { return nil }
+    return Array(buf.prefix(len))
+  }
+
+  /// Encode and send a key event to the terminal session.
+  /// Returns 0 on success or when the key produces no bytes; -1 on error.
+  /// In fixture mode, encoding succeeds but no PTY write occurs.
+  @discardableResult
+  public func sendKey(_ event: KeyEvent) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    return event.withLabanKeyEvent { raw in
+      var rawCopy = raw
+      return laban_session_send_key(h, &rawCopy)
+    }
+  }
+
   // MARK: - Mouse encoding
 
   /// Encode a mouse event into terminal escape bytes using libghostty's mouse encoder.
@@ -248,6 +282,185 @@ public struct ViewportState {
     viewportOffset = Int(raw.viewport_offset)
     viewportRows = Int(raw.viewport_rows)
     mouseTracking = raw.mouse_tracking != 0
+  }
+}
+
+// MARK: - Key types
+
+public enum KeyAction: Equatable, Sendable {
+  case release, press, held
+}
+
+public enum Key: Equatable, Sendable {
+  case backquote, backslash, bracketLeft, bracketRight, comma
+  case digit0, digit1, digit2, digit3, digit4, digit5, digit6, digit7, digit8, digit9
+  case equal
+  case a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z
+  case minus, period, quote, semicolon, slash
+  case backspace, enter, space, tab
+  case delete, end, home, insert, pageDown, pageUp
+  case arrowDown, arrowLeft, arrowRight, arrowUp
+  case escape
+  case f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12
+  case f13, f14, f15, f16, f17, f18, f19, f20, f21, f22, f23, f24
+}
+
+public struct KeyModifiers: OptionSet, Sendable {
+  public let rawValue: Int32
+  public init(rawValue: Int32) { self.rawValue = rawValue }
+
+  public static let shift = KeyModifiers(rawValue: 1 << 0)
+  public static let control = KeyModifiers(rawValue: 1 << 1)
+  public static let alt = KeyModifiers(rawValue: 1 << 2)
+  public static let command = KeyModifiers(rawValue: 1 << 3)
+  public static let capsLock = KeyModifiers(rawValue: 1 << 4)
+  public static let numLock = KeyModifiers(rawValue: 1 << 5)
+  public static let shiftSide = KeyModifiers(rawValue: 1 << 6)
+  public static let controlSide = KeyModifiers(rawValue: 1 << 7)
+  public static let altSide = KeyModifiers(rawValue: 1 << 8)
+  public static let superSide = KeyModifiers(rawValue: 1 << 9)
+}
+
+public struct KeyEvent: Equatable, Sendable {
+  public var action: KeyAction
+  public var key: Key
+  public var modifiers: KeyModifiers
+  public var consumedModifiers: KeyModifiers
+  public var composing: Bool
+  public var unshiftedCodepoint: UInt32
+  public var text: String?
+
+  public init(
+    action: KeyAction = .press,
+    key: Key,
+    modifiers: KeyModifiers = [],
+    consumedModifiers: KeyModifiers = [],
+    composing: Bool = false,
+    unshiftedCodepoint: UInt32 = 0,
+    text: String? = nil
+  ) {
+    self.action = action
+    self.key = key
+    self.modifiers = modifiers
+    self.consumedModifiers = consumedModifiers
+    self.composing = composing
+    self.unshiftedCodepoint = unshiftedCodepoint
+    self.text = text
+  }
+
+  func withLabanKeyEvent<T>(_ body: (LabanKeyEvent) -> T) -> T {
+    var raw = LabanKeyEvent()
+    switch action {
+    case .release: raw.action = LABAN_KEY_ACTION_RELEASE
+    case .press: raw.action = LABAN_KEY_ACTION_PRESS
+    case .held: raw.action = LABAN_KEY_ACTION_REPEAT
+    }
+    raw.key = {
+      switch key {
+      case .backquote: return LABAN_KEY_BACKQUOTE
+      case .backslash: return LABAN_KEY_BACKSLASH
+      case .bracketLeft: return LABAN_KEY_BRACKET_LEFT
+      case .bracketRight: return LABAN_KEY_BRACKET_RIGHT
+      case .comma: return LABAN_KEY_COMMA
+      case .digit0: return LABAN_KEY_DIGIT_0
+      case .digit1: return LABAN_KEY_DIGIT_1
+      case .digit2: return LABAN_KEY_DIGIT_2
+      case .digit3: return LABAN_KEY_DIGIT_3
+      case .digit4: return LABAN_KEY_DIGIT_4
+      case .digit5: return LABAN_KEY_DIGIT_5
+      case .digit6: return LABAN_KEY_DIGIT_6
+      case .digit7: return LABAN_KEY_DIGIT_7
+      case .digit8: return LABAN_KEY_DIGIT_8
+      case .digit9: return LABAN_KEY_DIGIT_9
+      case .equal: return LABAN_KEY_EQUAL
+      case .a: return LABAN_KEY_A
+      case .b: return LABAN_KEY_B
+      case .c: return LABAN_KEY_C
+      case .d: return LABAN_KEY_D
+      case .e: return LABAN_KEY_E
+      case .f: return LABAN_KEY_F
+      case .g: return LABAN_KEY_G
+      case .h: return LABAN_KEY_H
+      case .i: return LABAN_KEY_I
+      case .j: return LABAN_KEY_J
+      case .k: return LABAN_KEY_K
+      case .l: return LABAN_KEY_L
+      case .m: return LABAN_KEY_M
+      case .n: return LABAN_KEY_N
+      case .o: return LABAN_KEY_O
+      case .p: return LABAN_KEY_P
+      case .q: return LABAN_KEY_Q
+      case .r: return LABAN_KEY_R
+      case .s: return LABAN_KEY_S
+      case .t: return LABAN_KEY_T
+      case .u: return LABAN_KEY_U
+      case .v: return LABAN_KEY_V
+      case .w: return LABAN_KEY_W
+      case .x: return LABAN_KEY_X
+      case .y: return LABAN_KEY_Y
+      case .z: return LABAN_KEY_Z
+      case .minus: return LABAN_KEY_MINUS
+      case .period: return LABAN_KEY_PERIOD
+      case .quote: return LABAN_KEY_QUOTE
+      case .semicolon: return LABAN_KEY_SEMICOLON
+      case .slash: return LABAN_KEY_SLASH
+      case .backspace: return LABAN_KEY_BACKSPACE
+      case .enter: return LABAN_KEY_ENTER
+      case .space: return LABAN_KEY_SPACE
+      case .tab: return LABAN_KEY_TAB
+      case .delete: return LABAN_KEY_DELETE
+      case .end: return LABAN_KEY_END
+      case .home: return LABAN_KEY_HOME
+      case .insert: return LABAN_KEY_INSERT
+      case .pageDown: return LABAN_KEY_PAGE_DOWN
+      case .pageUp: return LABAN_KEY_PAGE_UP
+      case .arrowDown: return LABAN_KEY_ARROW_DOWN
+      case .arrowLeft: return LABAN_KEY_ARROW_LEFT
+      case .arrowRight: return LABAN_KEY_ARROW_RIGHT
+      case .arrowUp: return LABAN_KEY_ARROW_UP
+      case .escape: return LABAN_KEY_ESCAPE
+      case .f1: return LABAN_KEY_F1
+      case .f2: return LABAN_KEY_F2
+      case .f3: return LABAN_KEY_F3
+      case .f4: return LABAN_KEY_F4
+      case .f5: return LABAN_KEY_F5
+      case .f6: return LABAN_KEY_F6
+      case .f7: return LABAN_KEY_F7
+      case .f8: return LABAN_KEY_F8
+      case .f9: return LABAN_KEY_F9
+      case .f10: return LABAN_KEY_F10
+      case .f11: return LABAN_KEY_F11
+      case .f12: return LABAN_KEY_F12
+      case .f13: return LABAN_KEY_F13
+      case .f14: return LABAN_KEY_F14
+      case .f15: return LABAN_KEY_F15
+      case .f16: return LABAN_KEY_F16
+      case .f17: return LABAN_KEY_F17
+      case .f18: return LABAN_KEY_F18
+      case .f19: return LABAN_KEY_F19
+      case .f20: return LABAN_KEY_F20
+      case .f21: return LABAN_KEY_F21
+      case .f22: return LABAN_KEY_F22
+      case .f23: return LABAN_KEY_F23
+      case .f24: return LABAN_KEY_F24
+      }
+    }()
+    raw.modifiers = modifiers.rawValue
+    raw.consumed_modifiers = consumedModifiers.rawValue
+    raw.composing = composing ? 1 : 0
+    raw.unshifted_codepoint = unshiftedCodepoint
+    raw.utf8 = nil
+    raw.utf8_len = 0
+
+    if let text, !text.isEmpty {
+      return text.withCString { cStr in
+        raw.utf8 = cStr
+        raw.utf8_len = text.utf8.count
+        return body(raw)
+      }
+    } else {
+      return body(raw)
+    }
   }
 }
 
