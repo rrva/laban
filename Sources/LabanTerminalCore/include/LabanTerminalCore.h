@@ -121,6 +121,30 @@ int laban_session_capture_active(LabanSession *session);
  */
 int laban_session_consume_title(LabanSession *session, char *buf, size_t capacity);
 
+/*
+ * Best-effort local process metadata for tab titles.
+ * - child_pid is the original PTY child.
+ * - foreground_pid is the foreground process-group leader reported by the PTY.
+ * - process_buf receives a short executable name such as "zsh" or "top".
+ * - command_buf receives a best-effort executable path when available.
+ * - cwd_buf receives the current working directory of foreground_pid, falling
+ *   back to the launch cwd when the OS query cannot provide it.
+ *
+ * All output strings are null-terminated when their capacities are non-zero.
+ * Returns 0 on success, -1 on invalid input or a closed session.
+ */
+int laban_session_process_metadata(
+    LabanSession *session,
+    int *out_child_pid,
+    int *out_foreground_pid,
+    char *process_buf,
+    size_t process_capacity,
+    char *command_buf,
+    size_t command_capacity,
+    char *cwd_buf,
+    size_t cwd_capacity
+);
+
 /* --- Viewport scrolling and state --- */
 
 typedef struct {

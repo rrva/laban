@@ -8,6 +8,14 @@ public enum SessionError: Error {
 public final class Session {
   public typealias ID = String
 
+  public struct ProcessMetadata: Equatable, Sendable {
+    public var childPid: Int?
+    public var foregroundPid: Int?
+    public var foregroundProcess: String?
+    public var foregroundCommand: String?
+    public var cwd: String?
+  }
+
   public let id: ID
   private var handle: OpaquePointer?
   public private(set) var isClosed = false
@@ -152,6 +160,44 @@ public final class Session {
     guard r > 0 else { return (false, nil) }
     let raw = String(cString: buf)
     return (true, raw.isEmpty ? nil : raw)
+  }
+
+  // MARK: - Process metadata
+
+  public func processMetadata() -> ProcessMetadata? {
+    guard !isClosed, let h = handle else { return nil }
+    var childPid: Int32 = -1
+    var foregroundPid: Int32 = -1
+    var processBuf = [CChar](repeating: 0, count: 256)
+    var commandBuf = [CChar](repeating: 0, count: 1024)
+    var cwdBuf = [CChar](repeating: 0, count: 1024)
+
+    let result = processBuf.withUnsafeMutableBufferPointer { processPtr in
+      commandBuf.withUnsafeMutableBufferPointer { commandPtr in
+        cwdBuf.withUnsafeMutableBufferPointer { cwdPtr in
+          laban_session_process_metadata(
+            h,
+            &childPid,
+            &foregroundPid,
+            processPtr.baseAddress,
+            processPtr.count,
+            commandPtr.baseAddress,
+            commandPtr.count,
+            cwdPtr.baseAddress,
+            cwdPtr.count
+          )
+        }
+      }
+    }
+    guard result == 0 else { return nil }
+
+    return ProcessMetadata(
+      childPid: childPid > 0 ? Int(childPid) : nil,
+      foregroundPid: foregroundPid > 0 ? Int(foregroundPid) : nil,
+      foregroundProcess: TerminalTitle.sanitize(String(cString: processBuf)),
+      foregroundCommand: TerminalTitle.sanitize(String(cString: commandBuf)),
+      cwd: TerminalTitle.sanitize(String(cString: cwdBuf))
+    )
   }
 
   // MARK: - Viewport scrolling

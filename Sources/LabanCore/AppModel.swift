@@ -7,8 +7,10 @@ public final class AppModel {
 
   public private(set) var tabs: [Tab] = []
   private var sessions: [Session.ID: Session] = [:]
+  private var lastProcessMetadataSyncAtByTab: [Tab.ID: Date] = [:]
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
+  private let processMetadataSyncInterval: TimeInterval = 0.25
 
   public init(
     initialSize: LabanTerminalSize = defaultSize(),
@@ -84,6 +86,7 @@ public final class AppModel {
     if tabs.count == 1 {
       sessions[tab.sessionId]?.close()
       sessions.removeValue(forKey: tab.sessionId)
+      lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
       tabs = []
       throw AppError.lastTabClosed
     }
@@ -92,6 +95,7 @@ public final class AppModel {
     let wasActive = tab.isActive
     sessions[tab.sessionId]?.close()
     sessions.removeValue(forKey: tab.sessionId)
+    lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
     tabs.remove(at: idx)
 
     // Recompute one-based positions
@@ -194,6 +198,39 @@ public final class AppModel {
     let before = tabs[idx].titleMetadata
     guard let sanitized = TerminalTitle.sanitize(raw) else { return false }
     tabs[idx].titleMetadata.terminalTitle = sanitized
+    resolveTitle(at: idx)
+    return tabs[idx].titleMetadata != before
+  }
+
+  @discardableResult
+  public func syncProcessMetadata(
+    forTab tabId: Tab.ID,
+    from session: Session,
+    now: Date = Date()
+  ) -> Bool {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    if let last = lastProcessMetadataSyncAtByTab[tabId],
+      now.timeIntervalSince(last) < processMetadataSyncInterval
+    {
+      return false
+    }
+    lastProcessMetadataSyncAtByTab[tabId] = now
+
+    guard let metadata = session.processMetadata() else { return false }
+    let before = tabs[idx].titleMetadata
+
+    var workspace = tabs[idx].titleMetadata.workspace
+    if let cwd = metadata.cwd {
+      workspace.cwd = cwd
+    }
+
+    var process = tabs[idx].titleMetadata.process
+    process.foregroundProcess = metadata.foregroundProcess
+    process.foregroundCommand = metadata.foregroundCommand
+    process.pid = metadata.foregroundPid
+
+    tabs[idx].titleMetadata.workspace = workspace
+    tabs[idx].titleMetadata.process = process
     resolveTitle(at: idx)
     return tabs[idx].titleMetadata != before
   }

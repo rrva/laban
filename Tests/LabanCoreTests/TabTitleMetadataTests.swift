@@ -103,6 +103,44 @@ final class TabTitleMetadataTests: XCTestCase {
     XCTAssertEqual(fallback.titleSource, .fallback)
   }
 
+  func testShellForegroundUsesCwdInsteadOfStaleTerminalTitle() {
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        terminalTitle: "Claude Code",
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        workspace: TabWorkspaceMetadata(cwd: "/Users/rrj/wrk/laban"),
+        process: TabProcessMetadata(
+          foregroundProcess: "zsh",
+          foregroundCommand: "/bin/zsh"
+        )
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "laban")
+    XCTAssertEqual(resolved.titleSource, .cwd)
+  }
+
+  func testNonShellForegroundProcessBeatsCwdAndStaleTerminalTitle() {
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        terminalTitle: "Claude Code",
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        workspace: TabWorkspaceMetadata(cwd: "/Users/rrj/wrk/laban"),
+        process: TabProcessMetadata(
+          foregroundProcess: "top",
+          foregroundCommand: "/usr/bin/top"
+        )
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "top")
+    XCTAssertEqual(resolved.titleSource, .process)
+  }
+
   func testHostileTerminalTitleIsSanitizedAndBounded() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id

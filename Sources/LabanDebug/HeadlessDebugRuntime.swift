@@ -543,6 +543,7 @@ public final class HeadlessDebugRuntime {
       if let session = model.session(forTab: tab.id) {
         session.poll()
         model.syncTitle(forTab: tab.id, from: session)
+        model.syncProcessMetadata(forTab: tab.id, from: session)
         model.syncExitState(forTab: tab.id, from: session)
       }
     }

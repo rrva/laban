@@ -14,7 +14,10 @@
 #include <sys/wait.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <libproc.h>
+#include <limits.h>
 #include <signal.h>
+#include <sys/proc_info.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,7 @@ struct LabanSession {
     GhosttyRenderStateRowCells row_cells;     /* pre-allocated; reused each snapshot */
     int pty_fd;          /* master side; -1 in fixture mode */
     pid_t child_pid;     /* -1 in fixture mode */
+    char launch_cwd[PATH_MAX];
     int status;          /* 0=running, 1=exited normally, 2=signaled */
     int exit_status;
     int fixture_mode;
@@ -245,6 +249,7 @@ int laban_session_create(
     if (!s) return -1;
     s->pty_fd = -1;
     s->child_pid = -1;
+    s->launch_cwd[0] = '\0';
     s->capture_fd = -1;
     s->fixture_mode = config->fixture_mode;
 
@@ -341,6 +346,20 @@ int laban_session_create(
         return 0;
     }
 
+    const char *launch_cwd = NULL;
+    if (config->cwd && config->cwd[0]) {
+        launch_cwd = config->cwd;
+    } else {
+        launch_cwd = getenv("HOME");
+        if (!launch_cwd || !launch_cwd[0]) {
+            struct passwd *pw = getpwuid(getuid());
+            if (pw && pw->pw_dir) launch_cwd = pw->pw_dir;
+        }
+    }
+    if (launch_cwd && launch_cwd[0]) {
+        snprintf(s->launch_cwd, sizeof(s->launch_cwd), "%s", launch_cwd);
+    }
+
     /* Fork a child process with a new PTY. */
     int pty_fd = -1;
     pid_t child = forkpty(&pty_fd, NULL, NULL, NULL);
@@ -364,17 +383,7 @@ int laban_session_create(
                 putenv((char *)config->envp[i]);
         }
 
-        /* Change to home directory if no explicit cwd is provided. */
-        if (config->cwd && config->cwd[0]) {
-            chdir(config->cwd);
-        } else {
-            const char *home = getenv("HOME");
-            if (!home || !home[0]) {
-                struct passwd *pw = getpwuid(getuid());
-                if (pw && pw->pw_dir) home = pw->pw_dir;
-            }
-            if (home && home[0]) chdir(home);
-        }
+        if (launch_cwd && launch_cwd[0]) chdir(launch_cwd);
 
         if (config->argv) {
             execv(exe, (char *const *)config->argv);
@@ -765,6 +774,100 @@ int laban_session_consume_title(LabanSession *s, char *buf, size_t capacity) {
     memcpy(buf, title_str.ptr, copy_len);
     buf[copy_len] = '\0';
     return 1;
+}
+
+static void copy_cstr(char *dst, size_t dst_cap, const char *src) {
+    if (!dst || dst_cap == 0) return;
+    if (!src) src = "";
+    snprintf(dst, dst_cap, "%s", src);
+}
+
+static int pid_parent(pid_t pid, pid_t *out_parent) {
+    if (pid <= 0 || !out_parent) return 0;
+    struct proc_bsdinfo info;
+    memset(&info, 0, sizeof(info));
+    int rc = proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info));
+    if (rc != (int)sizeof(info)) return 0;
+    *out_parent = (pid_t)info.pbi_ppid;
+    return 1;
+}
+
+static int pid_is_descendant_or_self(pid_t pid, pid_t ancestor) {
+    if (pid <= 0 || ancestor <= 0) return 0;
+    for (int depth = 0; depth < 64 && pid > 1; depth++) {
+        if (pid == ancestor) return 1;
+        pid_t parent = -1;
+        if (!pid_parent(pid, &parent)) return 0;
+        if (parent <= 0 || parent == pid) return 0;
+        pid = parent;
+    }
+    return 0;
+}
+
+int laban_session_process_metadata(
+    LabanSession *s,
+    int *out_child_pid,
+    int *out_foreground_pid,
+    char *process_buf,
+    size_t process_capacity,
+    char *command_buf,
+    size_t command_capacity,
+    char *cwd_buf,
+    size_t cwd_capacity
+) {
+    if (!s) return -1;
+
+    copy_cstr(process_buf, process_capacity, "");
+    copy_cstr(command_buf, command_capacity, "");
+    copy_cstr(cwd_buf, cwd_capacity, "");
+
+    if (out_child_pid) *out_child_pid = s->child_pid;
+
+    pid_t foreground_pid = -1;
+    if (!s->fixture_mode && s->pty_fd >= 0) {
+        pid_t pgrp = tcgetpgrp(s->pty_fd);
+        if (pid_is_descendant_or_self(pgrp, s->child_pid)) foreground_pid = pgrp;
+    }
+    if (foreground_pid <= 0 && s->child_pid > 0) foreground_pid = s->child_pid;
+    if (out_foreground_pid) *out_foreground_pid = foreground_pid;
+
+    if (foreground_pid <= 0) {
+        copy_cstr(cwd_buf, cwd_capacity, s->launch_cwd);
+        return 0;
+    }
+
+    if (process_buf && process_capacity > 0) {
+        char name[256] = {0};
+        if (proc_name((int)foreground_pid, name, sizeof(name)) > 0) {
+            copy_cstr(process_buf, process_capacity, name);
+        }
+    }
+
+    if (command_buf && command_capacity > 0) {
+        char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+        if (proc_pidpath((int)foreground_pid, path, sizeof(path)) > 0) {
+            copy_cstr(command_buf, command_capacity, path);
+        }
+    }
+
+    if (cwd_buf && cwd_capacity > 0) {
+        struct proc_vnodepathinfo info;
+        memset(&info, 0, sizeof(info));
+        int rc = proc_pidinfo(
+            (int)foreground_pid,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            &info,
+            sizeof(info)
+        );
+        if (rc == (int)sizeof(info) && info.pvi_cdir.vip_path[0]) {
+            copy_cstr(cwd_buf, cwd_capacity, info.pvi_cdir.vip_path);
+        } else {
+            copy_cstr(cwd_buf, cwd_capacity, s->launch_cwd);
+        }
+    }
+
+    return 0;
 }
 
 int laban_session_scroll_viewport(LabanSession *s, int delta_rows) {

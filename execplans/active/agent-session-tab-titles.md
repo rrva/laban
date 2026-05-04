@@ -50,9 +50,12 @@ metadata for Claude Code and Cursor-style sessions.
 - [x] (2026-05-04) Add debug-only `setTabTitle`, `freezeTabTitle`,
   `clearTabTitle`, and `setTabMetadata` actions so headless tests can drive
   title precedence and injected workspace/process metadata without adding UI.
-- [ ] Add cwd/repo/process metadata discovery without shell-integration
-  injection. The model, resolver, debug response fields, and debug injection
-  path exist; real non-invasive discovery probes remain deferred.
+- [x] (2026-05-04) Add cwd/process metadata discovery without shell-integration
+  injection. The model now syncs macOS PTY foreground process, command path,
+  and cwd metadata from the live session; repo/branch/worktree/dirty discovery
+  remains deferred.
+- [ ] Add repo/branch/worktree/dirty metadata discovery on a throttled
+  background path.
 - [ ] Add manual rename/freeze/color and search/filter after the core metadata
   model is stable. Model/debug rename and freeze exist; color, AppKit UI, and
   search/filter remain deferred.
@@ -103,6 +106,16 @@ metadata for Claude Code and Cursor-style sessions.
   title model.
   Date/Author: 2026-05-04 / Codex.
 
+- Decision: Prefer live non-shell foreground process, then shell cwd, before
+  stale OSC terminal titles.
+  Rationale: DeepWiki research on iTerm2, kitty, and Ghostty showed that OSC
+  titles are only one input. Each terminal keeps separate sources such as
+  configured titles, shell/current-directory state, and process or command
+  metadata. Laban should not keep showing "Claude Code" after Claude exits
+  back to zsh; a foreground shell should show the cwd tail, while a foreground
+  non-shell program such as `top` should show that program name.
+  Date/Author: 2026-05-04 / Codex.
+
 ## Research Notes
 
 The research behind this plan supports three broad conclusions:
@@ -117,6 +130,17 @@ The research behind this plan supports three broad conclusions:
   cwd/process/user-var metadata, and tmux distinguishes window names from pane
   titles while also tracking current, last, activity, bell, silence, and zoom
   flags.
+- DeepWiki comparison against `gnachman/iTerm2`, `kovidgoyal/kitty`, and
+  `ghostty-org/ghostty` confirmed the same shape in implementation. iTerm2
+  separates OSC icon/window titles from profile/session title components,
+  shell/current-directory variables, job name, process title, and command line.
+  Kitty uses explicit override titles first, child OSC titles next, and a
+  default title derived from the child argv/process when no child title exists;
+  tab title templates can include active working directory and executable.
+  Ghostty gives a configured `title` highest precedence, tracks OSC title in
+  terminal state, uses shell integration OSC 7 cwd as a fallback when no title
+  has been seen or when a title is reset, and may initialize a surface title
+  from a direct command argv[0].
 - Claude Code and Cursor-style agent workflows make task label, repo,
   worktree, branch, attention state, and last activity more valuable than raw
   shell title. Claude Code can expose status-line metadata and supports
@@ -154,6 +178,8 @@ Sources used while shaping this plan:
   `https://code.claude.com/docs/en/cli-reference`
 - Cursor agent tabs:
   `https://docs.cursor.com/agent/chat/tabs`
+- DeepWiki repository research:
+  `gnachman/iTerm2`, `kovidgoyal/kitty`, and `ghostty-org/ghostty`
 
 ## Review Gate
 
@@ -206,25 +232,40 @@ passed. Per this plan, the Review Gate still needs a fresh-state reviewer.
   title-copy test with a nil snapshot title for the 5000-byte case; changing
   the fixture to 600 bytes made the bounded owned-copy test pass.
 
+- Observation: On macOS, `tcgetpgrp` on the PTY master can temporarily report
+  the parent test runner's process group, and immediately after `forkpty` the
+  child may still appear as the parent executable before `execv` completes.
+  Evidence: the first live process metadata AppModel test sampled `xctest`
+  instead of `/bin/sleep`. The implementation now trusts the foreground
+  process group only when it belongs to the PTY child tree, falls back to the
+  PTY child otherwise, and tests wait briefly for the child to complete `execv`.
+
 ## Context and Orientation
 
 The relevant current implementation is small:
 
 - `Sources/LabanCore/Tab.swift` defines `Tab` with stable `id`, `position`,
-  `title`, `isActive`, and stable `sessionId`.
-- `Sources/LabanCore/AppModel.swift` creates, selects, closes, repositions, and
-  retitles tabs. `updateTitle(_:forTab:)` currently writes directly into
-  `tab.title`.
-- `Sources/LabanCore/SidebarProducer.swift` draws the vertical sidebar. It
-  currently renders `"\(tab.position) \(tab.title.prefix(10))"` and a close
-  glyph. It does not render status, metadata, or two-line rows.
+  `isActive`, stable `sessionId`, and `titleMetadata`. Its `title` property is
+  compatibility access to the resolved display title.
+- `Sources/LabanCore/TabTitleMetadata.swift` defines the metadata fields and
+  `TabTitleResolver`, which chooses the visible title from user, agent, repo,
+  non-shell process, cwd, shell process fallback, terminal title, and `Tab N`.
+- `Sources/LabanCore/AppModel.swift` creates, selects, closes, repositions,
+  retitles, and syncs tabs. `syncTitle` consumes raw terminal title changes,
+  `syncProcessMetadata` throttles live process/cwd probes, and
+  `syncExitState` records exited state.
+- `Sources/LabanCore/SidebarProducer.swift` draws the vertical sidebar with
+  bounded title text, close affordance, compact secondary metadata, and status
+  markers.
 - `Sources/LabanTerminalCore/session.c` copies
-  `GHOSTTY_TERMINAL_DATA_TITLE` into `LabanSnapshot.title` during snapshot.
-- `Sources/LabanApp/TerminalBitmapView.swift` snapshots the active session and
-  uses `FrameProducer` and `SidebarProducer` to render the visible frame.
+  `GHOSTTY_TERMINAL_DATA_TITLE` into `LabanSnapshot.title` during snapshot and
+  exposes live process/cwd metadata through `laban_session_process_metadata`.
+- `Sources/LabanApp/TerminalBitmapView.swift` polls sessions, syncs title,
+  process/cwd, and exit metadata, then uses `FrameProducer` and
+  `SidebarProducer` to render the visible frame.
 - `Sources/LabanDebug/HeadlessDebugRuntime.swift` builds debug state and
-  session responses. In session responses it may prefer snapshot title over
-  tab title.
+  session responses from the model's metadata instead of replacing tab titles
+  directly from snapshots.
 - `docs/product/mvp.md` requires terminal title changes to update tab label
   and window UI, title bytes to be bounded/owned safely, and process-exited
   state to be visible.
@@ -339,11 +380,14 @@ Source precedence:
 2. Else if agent `taskLabel` or `sessionName` is present, use that.
 3. Else if repo/worktree metadata is present, use `repoName@worktreeName` or
    `repoName`.
-4. Else if cwd is present, use the final path component or a middle-truncated
+4. Else if foreground process is present and it is not a shell such as `zsh`,
+   `bash`, or `fish`, use process name or command.
+5. Else if cwd is present, use the final path component or a middle-truncated
    path tail.
-5. Else if foreground process is present, use process name or command.
-6. Else if bounded terminal title is present and useful, use it.
-7. Else use `Tab N`.
+6. Else if foreground process is present, use process name or command as a
+   last process fallback.
+7. Else if bounded terminal title is present and useful, use it.
+8. Else use `Tab N`.
 
 "Useful terminal title" means:
 
@@ -535,10 +579,13 @@ Implementation requirements:
 - Parse OSC 7 cwd if libghostty exposes it directly; otherwise add a small
   terminal-core or Swift-side parser only if bytes are already available in a
   safe place. Do not inject shell hooks for OSC 7 in this milestone.
-- For local processes, discover cwd and foreground process with macOS APIs
-  only if the lookup is reliable and cheap enough. Cache and throttle. If
-  reliable foreground process discovery is not ready, use the session launch
-  cwd and process fallback.
+- For local processes, discover cwd and foreground process with macOS APIs.
+  The current implementation exposes `laban_session_process_metadata`, which
+  records the launch cwd, reads the PTY foreground process group when it
+  belongs to the PTY child tree, falls back to the original PTY child, and uses
+  `proc_name`, `proc_pidpath`, and `PROC_PIDVNODEPATHINFO` to report process,
+  command path, and cwd. If macOS cannot report cwd, use the launch cwd
+  fallback.
 - Detect git repo root and branch from cwd using non-blocking or background
   work:
   - resolve repo root with `git rev-parse --show-toplevel`;
@@ -553,6 +600,13 @@ Implementation requirements:
 
 Acceptance for this milestone:
 
+- `swift test --filter AppModelTests` passes and includes a real PTY case
+  proving foreground process metadata can make the tab title `sleep`.
+- `swift test --filter LabanSessionTests` passes and includes a real PTY case
+  proving foreground process and cwd are reported.
+- When raw terminal title is stale, a shell foreground process with cwd shows
+  the cwd tail, while a non-shell foreground process such as `top` shows the
+  process name.
 - Tests use temp git repos/worktrees to verify repo name, branch, dirty marker,
   and worktree-derived subtitle.
 - A non-git cwd falls back cleanly to cwd tail.
@@ -715,6 +769,25 @@ swift test --filter LabanDebugSmokeTests
 # check passed
 ```
 
+Additional validation run, 2026-05-04, for live process/cwd title metadata:
+
+```text
+swift test --filter AppModelTests
+# passed: 15 tests
+
+swift test --filter TabTitleMetadataTests
+# passed: 9 tests
+
+swift test --filter LabanSessionTests
+# passed: 30 tests
+
+swift test --filter LabanDebugTitleTests
+# passed: 5 tests
+
+./scripts/check
+# check passed; Swift test phase executed 219 tests with 2 skipped
+```
+
 ## Idempotence and Recovery
 
 The metadata model is additive. If a milestone is interrupted, existing tabs
@@ -760,8 +833,9 @@ New or updated interfaces at completion:
 - `AppModel.renameTab`
 - `AppModel.freezeTitle`
 - Debug fields for title metadata in state/session responses
-- Optional later metadata probes for cwd, repo, branch, process, and agent
-  fields
+- Live local metadata probe for cwd and process
+- Optional later metadata probes for repo, branch, worktree, dirty state, and
+  agent fields
 
 ## Outcomes & Retrospective
 
@@ -772,6 +846,6 @@ identity, the sidebar renders width-bounded two-line rows with status markers,
 and debug state/session responses expose title metadata while preserving the
 legacy `title` field as `displayTitle`.
 
-Deferred work remains for real cwd/repo/branch/process discovery, AppKit rename
+Deferred work remains for repo/branch/worktree/dirty discovery, AppKit rename
 UI, color/search controls, agent-aware metadata, capture/replay integration,
 and fresh-state Review Gate signoff.

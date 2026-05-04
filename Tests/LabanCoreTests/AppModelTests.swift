@@ -1,3 +1,4 @@
+import Darwin
 import LabanTerminalCore
 import XCTest
 
@@ -12,6 +13,14 @@ private func makeModel(rows: Int32 = 24, cols: Int32 = 80) throws -> AppModel {
   size.rows = rows
   size.cols = cols
   return try AppModel(initialSize: size, sessionFactory: fixtureFactory)
+}
+
+private func canonicalPath(_ path: String) -> String {
+  path.withCString { cPath in
+    guard let resolved = realpath(cPath, nil) else { return path }
+    defer { free(resolved) }
+    return String(cString: resolved)
+  }
 }
 
 final class AppModelTests: XCTestCase {
@@ -179,19 +188,72 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].status, .exited(code: 0))
   }
 
+  func testSyncProcessMetadataUsesForegroundProcessForTitle() throws {
+    let tempURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-app-process-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+    let tempPath = canonicalPath(tempURL.path)
+
+    let exe = "/bin/sleep"
+    let argStrings = ["/bin/sleep", "2"]
+    try exe.withCString { exeCStr in
+      try tempPath.withCString { cwdCStr in
+        try withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.cwd = cwdCStr
+          config.fixture_mode = 0
+
+          var size = LabanTerminalSize()
+          size.rows = 24
+          size.cols = 80
+
+          let model = try AppModel(
+            initialSize: size,
+            sessionFactory: { sz in try Session(config: &config, size: sz) }
+          )
+          let tabId = model.tabs[0].id
+          guard let session = model.session(forTab: tabId) else {
+            XCTFail("session not found")
+            return
+          }
+
+          let deadline = Date().addingTimeInterval(2.0)
+          var changed = false
+          while Date() < deadline {
+            session.poll()
+            changed = model.syncProcessMetadata(forTab: tabId, from: session) || changed
+            if model.tabs[0].titleMetadata.process.foregroundProcess == "sleep" {
+              break
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+          }
+
+          XCTAssertTrue(changed)
+          XCTAssertEqual(model.tabs[0].titleMetadata.process.foregroundProcess, "sleep")
+          XCTAssertEqual(model.tabs[0].titleMetadata.workspace.cwd, tempPath)
+          XCTAssertEqual(model.tabs[0].title, "sleep")
+          XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .process)
+        }
+      }
+    }
+  }
+
   private func withCArgv(
     _ strings: [String],
-    body: (UnsafePointer<UnsafePointer<CChar>?>) -> Void
-  ) {
+    body: (UnsafePointer<UnsafePointer<CChar>?>) throws -> Void
+  ) rethrows {
     var mptrs: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
     mptrs.append(nil)
     defer { for p in mptrs { if let p { free(p) } } }
     let count = mptrs.count
-    mptrs.withUnsafeMutableBufferPointer { mbuf in
-      mbuf.baseAddress!.withMemoryRebound(
+    try mptrs.withUnsafeMutableBufferPointer { mbuf in
+      try mbuf.baseAddress!.withMemoryRebound(
         to: UnsafePointer<CChar>?.self, capacity: count
       ) { rebound in
-        body(UnsafePointer(rebound))
+        try body(UnsafePointer(rebound))
       }
     }
   }

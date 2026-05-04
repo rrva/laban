@@ -1,5 +1,14 @@
+import Darwin
 import LabanTerminalCore
 import XCTest
+
+private func canonicalPath(_ path: String) -> String {
+  path.withCString { cPath in
+    guard let resolved = realpath(cPath, nil) else { return path }
+    defer { free(resolved) }
+    return String(cString: resolved)
+  }
+}
 
 final class LabanSessionTests: XCTestCase {
 
@@ -167,6 +176,88 @@ final class LabanSessionTests: XCTestCase {
     }
     XCTAssertLessThanOrEqual(strlen(title), 1024)
     XCTAssertEqual(String(cString: title), String(repeating: "a", count: Int(strlen(title))))
+  }
+
+  func testProcessMetadataReportsForegroundProcessAndCwd() {
+    let tempURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-process-metadata-\(UUID().uuidString)")
+    do {
+      try FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
+    } catch {
+      XCTFail("failed to create temp directory: \(error)")
+      return
+    }
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+    let tempPath = canonicalPath(tempURL.path)
+
+    let exe = "/bin/sleep"
+    let argStrings = ["/bin/sleep", "2"]
+    exe.withCString { exeCStr in
+      tempPath.withCString { cwdCStr in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.cwd = cwdCStr
+          config.fixture_mode = 0
+
+          var size = LabanTerminalSize()
+          size.rows = 24
+          size.cols = 80
+
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for process metadata test")
+            return
+          }
+          defer { laban_session_destroy(session) }
+
+          var childPid: Int32 = -1
+          var foregroundPid: Int32 = -1
+          var process = [CChar](repeating: 0, count: 256)
+          var command = [CChar](repeating: 0, count: 1024)
+          var cwd = [CChar](repeating: 0, count: 1024)
+
+          let deadline = Date().addingTimeInterval(2.0)
+          var rc: Int32 = -1
+          while Date() < deadline {
+            _ = laban_session_poll(session)
+            process = [CChar](repeating: 0, count: 256)
+            command = [CChar](repeating: 0, count: 1024)
+            cwd = [CChar](repeating: 0, count: 1024)
+            rc = process.withUnsafeMutableBufferPointer { processPtr in
+              command.withUnsafeMutableBufferPointer { commandPtr in
+                cwd.withUnsafeMutableBufferPointer { cwdPtr in
+                  laban_session_process_metadata(
+                    session,
+                    &childPid,
+                    &foregroundPid,
+                    processPtr.baseAddress,
+                    processPtr.count,
+                    commandPtr.baseAddress,
+                    commandPtr.count,
+                    cwdPtr.baseAddress,
+                    cwdPtr.count
+                  )
+                }
+              }
+            }
+            if String(cString: process) == "sleep" {
+              break
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+          }
+
+          XCTAssertEqual(rc, 0)
+          XCTAssertGreaterThan(childPid, 0)
+          XCTAssertGreaterThan(foregroundPid, 0)
+          XCTAssertEqual(String(cString: process), "sleep")
+          let commandPath = String(cString: command)
+          XCTAssertTrue(commandPath.isEmpty || commandPath.hasSuffix("/sleep"))
+          XCTAssertEqual(String(cString: cwd), tempPath)
+        }
+      }
+    }
   }
 
   // MARK: - PTY mode tests

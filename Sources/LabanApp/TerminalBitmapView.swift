@@ -127,6 +127,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         if model.syncTitle(forTab: tab.id, from: session) {
           renderInvalidated = true
         }
+        if model.syncProcessMetadata(forTab: tab.id, from: session) {
+          renderInvalidated = true
+        }
         if model.syncExitState(forTab: tab.id, from: session) {
           renderInvalidated = true
         }

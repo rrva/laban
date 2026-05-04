@@ -242,6 +242,12 @@ public enum TabTitleResolver {
       }
       return (repo, .repo)
     }
+    if let process = useful(metadata.process.foregroundProcess)
+      ?? commandName(metadata.process.foregroundCommand),
+      !isShellProcess(process)
+    {
+      return (process, .process)
+    }
     if let cwd = useful(metadata.workspace.cwd) {
       return (pathTail(cwd), .cwd)
     }
@@ -324,6 +330,11 @@ public enum TabTitleResolver {
     guard let command = useful(command) else { return nil }
     let first = command.split(separator: " ").first.map(String.init) ?? command
     return pathTail(first)
+  }
+
+  private static func isShellProcess(_ process: String) -> Bool {
+    let name = pathTail(process).lowercased()
+    return ["sh", "bash", "dash", "fish", "ksh", "tcsh", "csh", "zsh"].contains(name)
   }
 
   private static func compactAge(from date: Date?, now: Date) -> String? {
