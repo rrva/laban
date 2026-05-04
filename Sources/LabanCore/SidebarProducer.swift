@@ -78,12 +78,15 @@ public struct SidebarProducer {
       }
 
       let labelX: CGFloat = isActive ? 12 : 10
-      let label = "\(tab.position) \(tab.title.prefix(10))"
+      let exited = tab.status != .running
+      let labelFg = exited ? Theme.CurrentTheme.dim0 : fg
+      let prefix = exited ? "⏹ " : ""
+      let label = "\(tab.position) \(prefix)\(tab.title.prefix(10))"
       cmds.append(
         .glyphRun(
           origin: CGPoint(x: labelX, y: tabY + textBaseY),
           text: label,
-          foreground: fg,
+          foreground: labelFg,
           background: bg,
           source: .sidebar
         ))

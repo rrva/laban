@@ -1022,3 +1022,8 @@ int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {
     ssize_t n = write(s->pty_fd, buf, len);
     return (n < 0) ? -1 : 0;
 }
+
+LabanExitState laban_session_exit_state(LabanSession *session) {
+    LabanExitState r = { session->status, session->exit_status };
+    return r;
+}

@@ -49,6 +49,34 @@ public struct FrameProducer {
         source: .terminal
       ))
 
+    // Exit banner — overlays the bottom terminal row when the process has exited.
+    // Placed before the cells guard so it renders even when cells is nil.
+    if snapshot.status != 0 {
+      let bannerY = originY
+      let bannerW = CGFloat(cols) * cw
+      let bannerH = ch
+      cmds.append(
+        .rect(
+          CGRect(x: originX, y: bannerY, width: bannerW, height: bannerH),
+          color: Theme.CurrentTheme.bg1,
+          source: .terminal
+        ))
+      let exitText: String
+      switch snapshot.status {
+      case 1: exitText = "Process exited \(snapshot.exit_status)"
+      case 2: exitText = "Process signaled \(snapshot.exit_status)"
+      default: exitText = "Process exited"
+      }
+      cmds.append(
+        .glyphRun(
+          origin: CGPoint(x: originX + 4, y: bannerY + 2),
+          text: exitText,
+          foreground: Theme.CurrentTheme.dim0,
+          background: Theme.CurrentTheme.bg1,
+          source: .terminal
+        ))
+    }
+
     guard rows > 0, cols > 0, let cells = snapshot.cells else { return cmds }
 
     // ---- Pass 1: Background rects for all rows ----

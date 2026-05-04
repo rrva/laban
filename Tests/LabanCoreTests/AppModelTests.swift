@@ -157,4 +157,88 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].position, 1)
     XCTAssertEqual(model.tabs[1].position, 2)
   }
+
+  func testTabStatusDefaultsToRunning() throws {
+    let model = try makeModel()
+    XCTAssertEqual(model.tabs[0].status, .running)
+  }
+
+  func testSyncExitStateIsMonotonic() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("session not found")
+      return
+    }
+    model.forceExitState(forTab: tabId, status: .exited(code: 0))
+    XCTAssertEqual(model.tabs[0].status, .exited(code: 0))
+    let changed = model.syncExitState(forTab: tabId, from: session)
+    XCTAssertFalse(changed, "syncExitState must be no-op once tab is already exited")
+    XCTAssertEqual(model.tabs[0].status, .exited(code: 0))
+  }
+
+  private func withCArgv(
+    _ strings: [String],
+    body: (UnsafePointer<UnsafePointer<CChar>?>) -> Void
+  ) {
+    var mptrs: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
+    mptrs.append(nil)
+    defer { for p in mptrs { if let p { free(p) } } }
+    let count = mptrs.count
+    mptrs.withUnsafeMutableBufferPointer { mbuf in
+      mbuf.baseAddress!.withMemoryRebound(
+        to: UnsafePointer<CChar>?.self, capacity: count
+      ) { rebound in
+        body(UnsafePointer(rebound))
+      }
+    }
+  }
+
+  func testAppModelRecordsExitStateFromRealPTY() {
+    let exe = "/bin/sh"
+    let argStrings = ["/bin/sh", "-c", "exit 7"]
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 24
+        size.cols = 80
+
+        let model: AppModel
+        do {
+          model = try AppModel(
+            initialSize: size,
+            sessionFactory: { sz in try Session(config: &config, size: sz) }
+          )
+        } catch {
+          XCTFail("AppModel init failed: \(error)")
+          return
+        }
+
+        let tabId = model.tabs[0].id
+        guard let session = model.session(forTab: tabId) else {
+          XCTFail("session not found")
+          return
+        }
+
+        let deadline = Date().addingTimeInterval(5.0)
+        while Date() < deadline {
+          session.poll()
+          if model.syncExitState(forTab: tabId, from: session) { break }
+          Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        XCTAssertNotEqual(model.tabs[0].status, .running)
+        if case .exited(let code) = model.tabs[0].status {
+          XCTAssertEqual(code, 7)
+        } else {
+          XCTFail("expected .exited(code:) but got \(model.tabs[0].status)")
+        }
+      }
+    }
+  }
 }

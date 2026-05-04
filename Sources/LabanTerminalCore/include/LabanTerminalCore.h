@@ -230,4 +230,18 @@ int laban_session_write_paste(
     LabanPasteResult *out_result
 );
 
+/*
+ * laban_session_exit_state:
+ *   Lightweight query for the session's exit state. Reads status and
+ *   exit_status directly from session storage without rendering or allocating.
+ *   status values match LabanSnapshot.status (0=running, 1=exited normally,
+ *   2=exited by signal). Safe to call on any live session handle.
+ */
+typedef struct {
+    int status;      /* 0=running, 1=exited normally, 2=exited by signal */
+    int exit_status; /* exit code or signal number when status != 0 */
+} LabanExitState;
+
+LabanExitState laban_session_exit_state(LabanSession *session);
+
 #endif /* LABAN_TERMINAL_CORE_H */

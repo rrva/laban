@@ -130,6 +130,25 @@ public final class AppModel {
     return true
   }
 
+  /// Read exit state from the session and record it in the tab.
+  /// Exit state is monotonic: once a tab is non-running, this is a no-op.
+  /// Returns true if the tab status changed.
+  @discardableResult
+  public func syncExitState(forTab tabId: Tab.ID, from session: Session) -> Bool {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    guard tabs[idx].status == .running else { return false }
+    let s = session.exitState()
+    guard s != .running else { return false }
+    tabs[idx].status = s
+    return true
+  }
+
+  /// Force-sets a tab's status directly. Internal; exposed for unit tests only.
+  func forceExitState(forTab tabId: Tab.ID, status: TabStatus) {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    tabs[idx].status = status
+  }
+
   /// The display title for the AppKit window: active tab title, or "Laban" as fallback.
   public var windowTitle: String {
     guard let title = activeTab?.title, !title.isEmpty else { return "Laban" }

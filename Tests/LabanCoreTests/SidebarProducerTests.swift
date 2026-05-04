@@ -130,4 +130,54 @@ final class SidebarProducerTests: XCTestCase {
     let result = p.hitTest(at: CGPoint(x: 50, y: 2), tabs: tabs, height: 600)
     XCTAssertEqual(result, .none)
   }
+
+  // MARK: - Exit indicator tests
+
+  func testExitedTabLabelHasStopPrefix() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
+    tab.status = .exited(code: 0)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
+    let labelTexts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _) = cmd { return text }
+      return nil
+    }
+    XCTAssertTrue(
+      labelTexts.contains(where: { $0.contains("⏹") }),
+      "exited tab label must contain stop marker; got \(labelTexts)")
+  }
+
+  func testExitedTabUsesdimForeground() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: true, sessionId: "s")
+    tab.status = .exited(code: 0)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
+    let labelRuns = cmds.compactMap { cmd -> (String, UInt32)? in
+      if case .glyphRun(_, let text, let fg, _, _) = cmd, text.contains("⏹") { return (text, fg) }
+      return nil
+    }
+    XCTAssertFalse(labelRuns.isEmpty, "expected a label glyph run with stop marker")
+    for (_, fg) in labelRuns {
+      XCTAssertEqual(
+        fg, Theme.CurrentTheme.dim0,
+        "exited active tab must use dim0 foreground, got \(String(format: "%08X", fg))")
+    }
+  }
+
+  func testRunningActiveTabUsesNormalForeground() {
+    let tabs = makeTabs(count: 1)
+    XCTAssertEqual(tabs[0].status, .running)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
+    let labelRuns = cmds.compactMap { cmd -> (String, UInt32)? in
+      if case .glyphRun(_, let text, let fg, _, _) = cmd, text.contains("Tab") { return (text, fg) }
+      return nil
+    }
+    XCTAssertFalse(labelRuns.isEmpty, "expected tab label glyph run")
+    for (_, fg) in labelRuns {
+      XCTAssertNotEqual(
+        fg, Theme.CurrentTheme.dim0,
+        "running active tab must not use dim0 foreground")
+    }
+  }
 }
