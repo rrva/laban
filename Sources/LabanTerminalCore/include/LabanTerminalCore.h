@@ -163,6 +163,22 @@ typedef struct {
 int laban_session_bracketed_paste_enabled(LabanSession *session, int *out_enabled);
 
 /*
+ * Drain bytes that the terminal has produced as responses to capability
+ * queries (DA1/DA2/DA3, XTWINOPS, DSR cursor position, etc.).  In PTY mode
+ * these bytes are also delivered directly to the PTY master fd so the child
+ * process sees them; the captured copy here is for tests, fixtures, and
+ * debug observability.  Removes drained bytes from the internal buffer.
+ *
+ * Returns 0 on success, -1 on error.  On success *out_len holds the number
+ * of bytes copied into out_bytes (0 if no responses pending).
+ */
+int laban_session_drain_response(
+    LabanSession *session,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len);
+
+/*
  * Encode paste bytes for terminal input.
  * - Strips unsafe control bytes.
  * - Replaces newlines with CR if not bracketed.

@@ -764,6 +764,137 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertTrue(result.contains("hello mvp"), "encoded output must contain original text")
   }
 
+  // MARK: - Capability response tests
+  //
+  // These verify that programs like tmux and vim, which probe terminal
+  // capabilities at startup, get a reply written back to the PTY instead of
+  // hanging. In fixture mode the bytes the terminal would write to the PTY
+  // are captured and exposed via laban_session_drain_response.
+
+  private func drainResponse(_ session: OpaquePointer) -> [UInt8] {
+    var buf = [UInt8](repeating: 0, count: 256)
+    var len: size_t = 0
+    let r = laban_session_drain_response(session, &buf, buf.count, &len)
+    XCTAssertEqual(r, 0, "drain_response must succeed")
+    return Array(buf.prefix(Int(len)))
+  }
+
+  private func writeBytes(_ session: OpaquePointer, _ bytes: [UInt8]) {
+    bytes.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        bytes.count)
+    }
+  }
+
+  func testNoQueryProducesNoResponse() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("hello".utf8))
+    let response = drainResponse(session)
+    XCTAssertEqual(response.count, 0, "plain text must not produce a capability response")
+  }
+
+  func testDA1QueryProducesPrimaryDeviceAttributesResponse() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // CSI c — primary device attributes query
+    writeBytes(session, [0x1b, 0x5b, 0x63])
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    // VT220 conformance (62) with features 1 (132 cols), 6 (selective erase),
+    // 22 (ANSI color). Order in the response is implementation-defined, so
+    // assert prefix and that all features appear.
+    XCTAssertTrue(
+      asString.hasPrefix("\u{1b}[?62;"),
+      "DA1 reply must begin with ESC[?62;… got \(asString.debugDescription)")
+    XCTAssertTrue(asString.hasSuffix("c"), "DA1 reply must terminate with c")
+    for f in ["1", "6", "22"] {
+      XCTAssertTrue(
+        asString.contains(";\(f);") || asString.contains(";\(f)c"),
+        "DA1 reply should include feature \(f); got \(asString.debugDescription)")
+    }
+  }
+
+  func testDA2QueryProducesSecondaryDeviceAttributesResponse() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // CSI > c — secondary device attributes query
+    writeBytes(session, [0x1b, 0x5b, 0x3e, 0x63])
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    // DA2 format: ESC[>Pp;Pv;Pc c. We report Pp=1 (VT220), Pv=1, Pc=0.
+    XCTAssertEqual(
+      asString, "\u{1b}[>1;1;0c",
+      "DA2 reply mismatch; got \(asString.debugDescription)")
+  }
+
+  func testXTVersionQueryReportsLaban() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // CSI > q — XTVERSION query
+    writeBytes(session, [0x1b, 0x5b, 0x3e, 0x71])
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    // Response is a DCS string: ESC P > | laban ESC \
+    XCTAssertTrue(
+      asString.contains("laban"),
+      "XTVERSION reply must contain \"laban\"; got \(asString.debugDescription)")
+  }
+
+  func testXTWINOPSCharacterSizeQueryReturnsConfiguredGeometry() {
+    guard let session = makeFixtureSession(rows: 24, cols: 80) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // CSI 18 t — XTWINOPS request for text-area size in characters.
+    // Reply format: CSI 8 ; rows ; cols t.
+    writeBytes(session, Array("\u{1b}[18t".utf8))
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      asString, "\u{1b}[8;24;80t",
+      "XTWINOPS 18t reply mismatch; got \(asString.debugDescription)")
+  }
+
+  func testDrainReturnsBytesOnceAndClearsBuffer() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, [0x1b, 0x5b, 0x63])  // CSI c
+    let first = drainResponse(session)
+    XCTAssertGreaterThan(first.count, 0, "first drain should return the DA1 reply")
+
+    let second = drainResponse(session)
+    XCTAssertEqual(second.count, 0, "second drain should be empty — buffer cleared")
+  }
+
   func testWritePasteInFixtureModeSucceeds() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

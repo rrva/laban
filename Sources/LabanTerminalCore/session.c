@@ -4,6 +4,9 @@
 #include <ghostty/vt/mouse.h>
 #include <ghostty/vt/paste.h>
 #include <ghostty/vt/modes.h>
+#include <ghostty/vt/device.h>
+#include <ghostty/vt/size_report.h>
+#include <stdbool.h>
 #include <util.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -30,6 +33,21 @@ struct LabanSession {
     GhosttyMouseEncoder mouse_encoder;
     int mouse_button_pressed;  /* boolean: is any mouse button currently down */
     LabanMouseButton mouse_pressed_button;
+
+    /* Cached geometry for the SIZE effect (XTWINOPS replies). */
+    uint16_t cols;
+    uint16_t rows;
+    uint32_t cell_width;
+    uint32_t cell_height;
+
+    /* Capture of bytes the terminal wants written back to the pty
+       (capability replies: DA1/DA2/DA3, XTWINOPS, DSR, XTVERSION, ...).
+       In pty mode these are also forwarded to pty_fd; in fixture mode
+       this is the only place they live. Drained via
+       laban_session_drain_response. */
+    uint8_t *response_buf;
+    size_t   response_len;
+    size_t   response_cap;
 };
 
 /* Encode one Unicode codepoint to UTF-8. Returns bytes written (1-4). */
@@ -62,6 +80,105 @@ static void free_ghostty_resources(LabanSession *s) {
     ghostty_render_state_free(s->render_state);
     if (s->mouse_encoder) ghostty_mouse_encoder_free(s->mouse_encoder);
     ghostty_terminal_free(s->terminal);
+    free(s->response_buf);
+    s->response_buf = NULL;
+    s->response_len = 0;
+    s->response_cap = 0;
+}
+
+/* --- Terminal effect callbacks ---
+ *
+ * Without these, programs that probe terminal capabilities (tmux, vim,
+ * starship, ...) will issue queries (DA1/DA2/DSR/XTWINOPS/XTVERSION)
+ * and never receive a reply, causing them to hang or fall back to a
+ * degraded capability set.
+ */
+
+#define LABAN_RESPONSE_CAP_MAX (1u << 16)  /* 64 KiB hard ceiling */
+
+static void laban_session_capture_response(
+    LabanSession *s, const uint8_t *data, size_t len) {
+    if (!s || !data || len == 0) return;
+    size_t needed = s->response_len + len;
+    if (needed > LABAN_RESPONSE_CAP_MAX) return;  /* drop on runaway */
+    if (needed > s->response_cap) {
+        size_t new_cap = s->response_cap ? s->response_cap : 256;
+        while (new_cap < needed) new_cap *= 2;
+        if (new_cap > LABAN_RESPONSE_CAP_MAX) new_cap = LABAN_RESPONSE_CAP_MAX;
+        uint8_t *nb = realloc(s->response_buf, new_cap);
+        if (!nb) return;
+        s->response_buf = nb;
+        s->response_cap = new_cap;
+    }
+    memcpy(s->response_buf + s->response_len, data, len);
+    s->response_len += len;
+}
+
+static void effect_write_pty(GhosttyTerminal terminal, void *userdata,
+                             const uint8_t *data, size_t len) {
+    (void)terminal;
+    LabanSession *s = (LabanSession *)userdata;
+    if (!s) return;
+    laban_session_capture_response(s, data, len);
+    if (s->pty_fd >= 0 && len > 0) {
+        /* Best-effort: capability responses are tiny (<32 bytes typical).
+           Partial writes / EAGAIN on a freshly-empty PTY master are rare. */
+        ssize_t n = write(s->pty_fd, data, len);
+        (void)n;
+    }
+}
+
+static bool effect_size(GhosttyTerminal terminal, void *userdata,
+                        GhosttySizeReportSize *out_size) {
+    (void)terminal;
+    LabanSession *s = (LabanSession *)userdata;
+    if (!s || !out_size) return false;
+    out_size->rows        = s->rows;
+    out_size->columns     = s->cols;
+    out_size->cell_width  = s->cell_width;
+    out_size->cell_height = s->cell_height;
+    return true;
+}
+
+static bool effect_device_attributes(GhosttyTerminal terminal, void *userdata,
+                                     GhosttyDeviceAttributes *out_attrs) {
+    (void)terminal;
+    (void)userdata;
+    if (!out_attrs) return false;
+
+    /* DA1: VT220 conformance with 132-column support, selective erase,
+       and ANSI color. Matches what most modern emulators report. */
+    out_attrs->primary.conformance_level = GHOSTTY_DA_CONFORMANCE_VT220;
+    out_attrs->primary.features[0] = GHOSTTY_DA_FEATURE_COLUMNS_132;
+    out_attrs->primary.features[1] = GHOSTTY_DA_FEATURE_SELECTIVE_ERASE;
+    out_attrs->primary.features[2] = GHOSTTY_DA_FEATURE_ANSI_COLOR;
+    out_attrs->primary.num_features = 3;
+
+    /* DA2: VT220-type, version 1, no ROM cartridge. */
+    out_attrs->secondary.device_type = GHOSTTY_DA_DEVICE_TYPE_VT220;
+    out_attrs->secondary.firmware_version = 1;
+    out_attrs->secondary.rom_cartridge = 0;
+
+    /* DA3: arbitrary unit id. */
+    out_attrs->tertiary.unit_id = 0;
+
+    return true;
+}
+
+static GhosttyString effect_xtversion(GhosttyTerminal terminal, void *userdata) {
+    (void)terminal;
+    (void)userdata;
+    static const uint8_t kVersion[] = "laban";
+    return (GhosttyString){ .ptr = kVersion, .len = sizeof(kVersion) - 1 };
+}
+
+static bool effect_color_scheme(GhosttyTerminal terminal, void *userdata,
+                                GhosttyColorScheme *out_scheme) {
+    (void)terminal;
+    (void)userdata;
+    (void)out_scheme;
+    /* MVP is fixed Selenized Light; we don't yet adapt to system dark mode. */
+    return false;
 }
 
 int laban_session_create(
@@ -99,6 +216,28 @@ int laban_session_create(
 
     GhosttyResult r = ghostty_terminal_new(NULL, &s->terminal, opts);
     if (r != GHOSTTY_SUCCESS) { free(s); return -1; }
+
+    /* Cache geometry for the SIZE effect; also picks up cell pixel sizes
+       if the caller supplied them at create time (otherwise updated on
+       the first laban_session_resize). */
+    s->cols        = cols;
+    s->rows        = rows;
+    s->cell_width  = (uint32_t)(initial_size.cell_width  > 0 ? initial_size.cell_width  : 0);
+    s->cell_height = (uint32_t)(initial_size.cell_height > 0 ? initial_size.cell_height : 0);
+
+    /* Register effects so capability probes (DA1/DA2/DSR/XTWINOPS/XTVERSION)
+       reach the child process — without these, tmux and vim hang on startup. */
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, (const void *)s);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+                         (const void *)effect_write_pty);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_SIZE,
+                         (const void *)effect_size);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
+                         (const void *)effect_device_attributes);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_XTVERSION,
+                         (const void *)effect_xtversion);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
+                         (const void *)effect_color_scheme);
 
     r = ghostty_render_state_new(NULL, &s->render_state);
     if (r != GHOSTTY_SUCCESS) {
@@ -284,6 +423,10 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
         s->terminal, cols, rows,
         (uint32_t)size.cell_width, (uint32_t)size.cell_height);
     if (r != GHOSTTY_SUCCESS) return -1;
+    s->cols        = cols;
+    s->rows        = rows;
+    s->cell_width  = (uint32_t)size.cell_width;
+    s->cell_height = (uint32_t)size.cell_height;
     if (s->pty_fd >= 0) {
         struct winsize ws = {
             .ws_row    = (unsigned short)rows,
@@ -685,6 +828,22 @@ int laban_session_encode_mouse(
 }
 
 /* --- Paste --- */
+
+int laban_session_drain_response(
+    LabanSession *s, uint8_t *out_bytes, size_t out_capacity, size_t *out_len) {
+    if (!s || !out_len) return -1;
+    *out_len = 0;
+    if (s->response_len == 0) return 0;
+    size_t take = s->response_len < out_capacity ? s->response_len : out_capacity;
+    if (take > 0 && out_bytes) memcpy(out_bytes, s->response_buf, take);
+    size_t remaining = s->response_len - take;
+    if (remaining > 0) {
+        memmove(s->response_buf, s->response_buf + take, remaining);
+    }
+    s->response_len = remaining;
+    *out_len = take;
+    return 0;
+}
 
 int laban_session_bracketed_paste_enabled(LabanSession *s, int *out_enabled) {
     if (!s || !out_enabled) return -1;
