@@ -69,6 +69,13 @@ public final class SoftwareRenderer {
 
     func flushGlyphs() {
       guard !glyphs.isEmpty else { return }
+      // CTLineDraw on a fallback line — used for symbols like U+23F5 that
+      // JetBrains Mono lacks — leaves the context's text matrix non-identity.
+      // CTFontDrawGlyphs transforms the positions array by that matrix, so
+      // the absolute pen position drifts unless we reset before each batch.
+      // saveGState does not save text matrix per Apple's docs, so the reset
+      // has to be explicit here.
+      ctx.textMatrix = .identity
       glyphs.withUnsafeBufferPointer { glyphBuffer in
         positions.withUnsafeBufferPointer { positionBuffer in
           guard let glyphBase = glyphBuffer.baseAddress,

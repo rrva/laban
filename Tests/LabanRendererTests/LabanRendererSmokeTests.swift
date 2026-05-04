@@ -109,6 +109,71 @@ final class LabanRendererSmokeTests: XCTestCase {
     XCTAssertTrue(foundNonBg, "glyph draw must produce at least one non-background pixel")
   }
 
+  /// A glyph run that mixes a fallback-rendered glyph (one JetBrains Mono
+  /// lacks, here U+23F5) with ASCII characters must place the ASCII pixels
+  /// at the same y as the run's origin — even though the fallback path
+  /// (CTLineDraw) leaves the context's text matrix non-identity. Without
+  /// the textMatrix reset before CTFontDrawGlyphs, the ASCII glyphs land
+  /// at a y unrelated to origin.y, which produced the visible overlap of
+  /// Claude Code's footer onto streaming prose.
+  func testFallbackGlyphDoesNotShiftSubsequentASCII() {
+    let fontAtlas = FontAtlas()
+    let cellW = Int(fontAtlas.cellSize.width)
+    let cellH = Int(fontAtlas.cellSize.height)
+    let bitmapW = cellW * 30  // wide enough for the full footer text
+    let bitmapH = cellH * 12  // tall enough that any vertical drift lands away
+    let surface = BitmapSurface(width: bitmapW, height: bitmapH)
+    let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+
+    let bg: UInt32 = 0xFFFF_FFFF  // white
+    let fg: UInt32 = 0xE0_3845_FF  // red — matches the in-the-wild scenario where the bug surfaced
+    let originY: CGFloat = 0  // bottom row
+
+    // Match the captured-run shape exactly: same character count and same
+    // text content as Claude Code's "⏵⏵ bypass permissions on" footer.
+    // A shorter synthetic ("⏵⏵ ABCDE") does not trigger the matrix
+    // perturbation that bigger runs expose.
+    renderer.render([
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(bitmapW), height: CGFloat(bitmapH)),
+        color: bg, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 0, y: originY),
+        text: "\u{23F5}\u{23F5} bypass permissions on",
+        foreground: fg, background: bg, source: .terminal),
+    ])
+
+    // The ASCII glyphs sit in the BOTTOM row. Probe a band inside that row
+    // for non-background pixels and confirm rows ABOVE the bottom row are
+    // pure background — which would be violated if the text matrix shift
+    // pushed ASCII glyphs to a different row.
+    let bottomY = cellH / 2  // middle of bottom row
+    var bottomHasInk = false
+    for x in (3 * cellW)..<(7 * cellW) {
+      if let p = surface.pixel(x: x, y: bottomY), p != bg {
+        bottomHasInk = true
+        break
+      }
+    }
+    XCTAssertTrue(bottomHasInk, "ASCII glyphs must render in the bottom row")
+
+    // Rows 1..11 (everything above the bottom row) must be background-only
+    // inside the ASCII column band — a vertical drift from text-matrix
+    // perturbation moves the ASCII glyphs out of the bottom row entirely.
+    for row in 1..<12 {
+      for x in (3 * cellW)..<(25 * cellW) {
+        for y in (row * cellH)..<((row + 1) * cellH) {
+          if let p = surface.pixel(x: x, y: y), p != bg {
+            XCTFail(
+              "stray ink at (\(x),\(y)) in row \(row); ASCII glyphs must not "
+                + "leak into other rows after a fallback glyph in the run")
+            return
+          }
+        }
+      }
+    }
+  }
+
   // MARK: - PNG encoding
 
   func testPNGBytesHaveValidSignature() {
