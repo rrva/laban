@@ -145,6 +145,76 @@ Same capture, but writes into the artifact directory and returns metadata:
 The screenshot hook must capture the app-rendered surface, not the OS desktop.
 This is what makes it usable in headless cloud environments.
 
+### Full Capture Replay
+
+Screenshots, bounded debug logs, and `/debug/state` are fast diagnostics. Use a
+full capture when a bug depends on real input ordering, PTY bytes, terminal
+parser state, resize timing, scrollback position, or rendered frame commands.
+The capture artifact is the durable repro contract for in-the-wild terminal
+failures.
+
+Full captures are explicit and local-only. They can contain typed input,
+clipboard text, terminal output, screenshots, paths, and secrets. Do not upload
+them or paste their contents into responses. Store them under `.artifacts/` or
+an explicitly requested local artifact root.
+
+Artifact shape:
+
+- `manifest.json` describes the run, privacy flags, streams, and frame count.
+- `timeline.ndjson` is the ordered sequence of input, PTY, session, snapshot,
+  frame-command, render, screenshot, and capture lifecycle events.
+- `streams/*.bin` stores PTY input, PTY output, and terminal response bytes.
+- `frames/*.snapshot.json` stores visible terminal snapshots and hashes.
+- `frames/*.commands.json` stores the frame-command stream for renderer replay.
+- `frames/*.png` is present when screenshots are captured.
+- `replay/report.json` is written by replay and records pass/fail details.
+
+Headless/debug-server capture:
+
+```sh
+.build/debug/laban-agent \
+  --headless \
+  --debug-server=127.0.0.1:0 \
+  --artifacts=.artifacts/run-001 \
+  --capture=capture-001 \
+  --capture-screenshots=final
+```
+
+The debug server also exposes capture controls:
+
+- `GET /debug/capture/status`
+- `POST /debug/capture/start`
+- `POST /debug/capture/stop`
+- `POST /debug/capture/snapshot`
+
+AppKit capture:
+
+```sh
+mkdir -p .artifacts/appkit-manual
+LABAN_CAPTURE_DIR="$PWD/.artifacts/appkit-manual" \
+  .build/laban/Laban.app/Contents/MacOS/LabanApp 2>&1 \
+  | tee .artifacts/appkit-manual/laban-app.log
+```
+
+Start and stop recording with `Cmd+Shift+R` or
+`Debug > Toggle PTY Capture`. The app prints the capture directory on start and
+the manifest path on stop. A useful manual repro should include typed input,
+resize, scrollback movement, and a TUI when relevant.
+
+Replay:
+
+```sh
+./scripts/replay-capture <capture-dir>
+./scripts/replay-capture --mode=terminal <capture-dir>
+./scripts/replay-capture --mode=renderer <capture-dir>
+```
+
+`terminalReplay: passed` means captured PTY output reconstructs the terminal
+snapshots and frame commands. `rendererReplay: passed` means captured frame
+commands render to the same screenshot hashes where screenshots are present.
+When replay fails, use frame IDs, sidecar paths, and expected/actual hashes in
+`replay/report.json` as the starting point for diagnosis.
+
 ### State Introspection
 
 `GET /debug/state`

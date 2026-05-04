@@ -11,6 +11,13 @@ public final class AppModel {
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
   private let processMetadataSyncInterval: TimeInterval = 0.25
+  public weak var captureSink: CaptureSink? {
+    didSet {
+      for session in sessions.values {
+        session.captureSink = captureSink
+      }
+    }
+  }
 
   public init(
     initialSize: LabanTerminalSize = defaultSize(),
@@ -31,6 +38,9 @@ public final class AppModel {
       sessionId: session.id
     )
     sessions[session.id] = session
+    if let captureSink {
+      session.captureSink = captureSink
+    }
     tabs.append(tab)
   }
 
@@ -45,6 +55,7 @@ public final class AppModel {
   public func createTab() throws -> Tab {
     guard tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
     let session = try sessionFactory(currentSize)
+    session.captureSink = captureSink
     AppModel.maybeAutoCapture(session)
     AppModel.applyThemePalette(to: session)
     let position = tabs.count + 1
@@ -57,6 +68,8 @@ public final class AppModel {
     )
     sessions[session.id] = session
     tabs.append(tab)
+    recordSessionCreated(sessionId: session.id, tabId: tab.id)
+    recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
     selectTab(tab.id)
     return tabs.last!
   }
@@ -75,6 +88,9 @@ public final class AppModel {
           : (tabs[i].titleMetadata.unseenOutput ? .unseenOutput : .background)
       }
     }
+    if let tab = tabs.first(where: { $0.id == tabId }) {
+      recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
+    }
   }
 
   public func closeTab(_ tabId: Tab.ID) throws {
@@ -88,6 +104,7 @@ public final class AppModel {
       sessions.removeValue(forKey: tab.sessionId)
       lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
       tabs = []
+      recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
       throw AppError.lastTabClosed
     }
 
@@ -97,6 +114,7 @@ public final class AppModel {
     sessions.removeValue(forKey: tab.sessionId)
     lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
     tabs.remove(at: idx)
+    recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
 
     // Recompute one-based positions
     for i in tabs.indices {
@@ -343,7 +361,16 @@ public final class AppModel {
     size.cols = cols
     currentSize = size
     for session in sessions.values {
-      session.resize(size)
+      if session.resize(size) == 0 {
+        var event = CaptureTimelineEvent(kind: .sessionResized, sessionId: session.id)
+        event.rows = Int(rows)
+        event.cols = Int(cols)
+        event.pixelWidth = viewportWidth
+        event.pixelHeight = viewportHeight
+        event.cellWidth = cellWidth
+        event.cellHeight = cellHeight
+        captureSink?.record(event)
+      }
     }
   }
 
@@ -352,6 +379,33 @@ public final class AppModel {
       tabs[idx].titleMetadata,
       fallbackPosition: tabs[idx].position
     )
+  }
+
+  public func allSessions() -> [(tab: Tab, session: Session)] {
+    tabs.compactMap { tab in
+      guard let session = sessions[tab.sessionId] else { return nil }
+      return (tab, session)
+    }
+  }
+
+  public func recordExistingStateForCapture() {
+    captureSink?.record(CaptureTimelineEvent(kind: .appState))
+    for tab in tabs {
+      recordSessionCreated(sessionId: tab.sessionId, tabId: tab.id)
+      recordTab(.tabCreated, tabId: tab.id, sessionId: tab.sessionId)
+      if tab.isActive {
+        recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
+      }
+    }
+  }
+
+  private func recordSessionCreated(sessionId: Session.ID, tabId: Tab.ID) {
+    captureSink?.record(
+      CaptureTimelineEvent(kind: .sessionCreated, tabId: tabId, sessionId: sessionId))
+  }
+
+  private func recordTab(_ kind: CaptureEventKind, tabId: Tab.ID, sessionId: Session.ID) {
+    captureSink?.record(CaptureTimelineEvent(kind: kind, tabId: tabId, sessionId: sessionId))
   }
 }
 

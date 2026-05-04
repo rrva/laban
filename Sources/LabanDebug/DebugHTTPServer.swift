@@ -209,6 +209,18 @@ public final class DebugHTTPServer {
       let since = query["since"].flatMap { Int($0) } ?? 0
       return json(runtime.inputLogResponse(since: since))
 
+    case ("GET", "/debug/capture/status"):
+      return json(runtime.captureStatus())
+
+    case ("POST", "/debug/capture/start"):
+      return json(runtime.startCapture(body))
+
+    case ("POST", "/debug/capture/stop"):
+      return json(runtime.stopCapture())
+
+    case ("POST", "/debug/capture/snapshot"):
+      return json(runtime.captureSnapshot())
+
     case ("GET", "/debug/selection"):
       return json(runtime.selection())
 
@@ -256,6 +268,7 @@ public final class DebugHTTPServer {
     switch code {
     case 200: return "OK"
     case 400: return "Bad Request"
+    case 409: return "Conflict"
     case 404: return "Not Found"
     case 500: return "Internal Server Error"
     default: return "Unknown"

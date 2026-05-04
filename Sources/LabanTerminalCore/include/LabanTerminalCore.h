@@ -113,6 +113,33 @@ int laban_session_capture_start(LabanSession *session, const char *path);
 int laban_session_capture_stop(LabanSession *session);
 int laban_session_capture_active(LabanSession *session);
 
+typedef enum {
+    LABAN_CAPTURE_BYTES_PTY_INPUT = 0,
+    LABAN_CAPTURE_BYTES_PTY_OUTPUT = 1,
+    LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE = 2
+} LabanCaptureBytesDirection;
+
+typedef void (*LabanCaptureBytesCallback)(
+    void *userdata,
+    LabanSession *session,
+    LabanCaptureBytesDirection direction,
+    const uint8_t *bytes,
+    size_t len
+);
+
+int laban_session_set_capture_callback(
+    LabanSession *session,
+    LabanCaptureBytesCallback callback,
+    void *userdata
+);
+
+/*
+ * Feed captured PTY output bytes directly into the VT parser during replay.
+ * This is intentionally named for replay so callers do not confuse terminal
+ * byte replay with user input written to a live child process.
+ */
+int laban_session_replay_pty_output(LabanSession *session, const uint8_t *bytes, size_t len);
+
 /*
  * laban_session_consume_title:
  *   Returns 1 if the title changed since the last consume and copies the new

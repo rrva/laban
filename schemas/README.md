@@ -34,6 +34,9 @@ any programming language is chosen.
 
 - `fixture.schema.json` - deterministic terminal fixture definition.
 - `artifact-manifest.schema.json` - failed-run artifact manifest.
+- `capture/manifest.schema.json` - durable capture artifact manifest.
+- `capture/event.schema.json` - ordered capture timeline event envelope.
+- `capture/replay-report.schema.json` - deterministic replay result report.
 
 These schemas are contracts. Implementations may add fields, but must preserve
 the required fields and meanings unless the schema version changes.

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/capture/event.schema.json",
+  "title": "Laban capture timeline event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["seq", "timeNs", "kind"],
+  "properties": {
+    "seq": {"type": "integer", "minimum": 0},
+    "timeNs": {"type": "integer", "minimum": 0},
+    "kind": {
+      "type": "string",
+      "enum": [
+        "capture.started",
+        "capture.finished",
+        "app.state",
+        "tab.created",
+        "tab.selected",
+        "tab.closed",
+        "session.created",
+        "session.resized",
+        "session.exited",
+        "input.event",
+        "pty.input",
+        "pty.output",
+        "terminal.response",
+        "frame.begin",
+        "terminal.snapshot",
+        "frame.commands",
+        "frame.rendered",
+        "screenshot.captured",
+        "capture.snapshot",
+        "capture.error"
+      ]
+    },
+    "frame": {"type": ["integer", "null"], "minimum": 0},
+    "tabId": {"type": ["string", "null"]},
+    "sessionId": {"type": ["string", "null"]},
+    "stream": {"type": ["string", "null"]},
+    "offset": {"type": ["integer", "null"], "minimum": 0},
+    "length": {"type": ["integer", "null"], "minimum": 0},
+    "sha256": {"type": ["string", "null"]},
+    "path": {"type": ["string", "null"]},
+    "inputId": {"type": ["string", "null"]},
+    "route": {"type": ["string", "null"]},
+    "encodedHex": {"type": ["string", "null"]},
+    "commandCount": {"type": ["integer", "null"], "minimum": 0}
+  }
+}

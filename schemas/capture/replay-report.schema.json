@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/capture/replay-report.schema.json",
+  "title": "Laban capture replay report",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "captureRunId",
+    "terminalReplay",
+    "rendererReplay",
+    "framesCompared",
+    "mismatches"
+  ],
+  "properties": {
+    "schemaVersion": {"type": "integer", "minimum": 1},
+    "captureRunId": {"type": "string"},
+    "terminalReplay": {"enum": ["passed", "failed", "skipped"]},
+    "rendererReplay": {"enum": ["passed", "failed", "skipped"]},
+    "framesCompared": {"type": "integer", "minimum": 0},
+    "mismatches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["kind"],
+        "properties": {
+          "kind": {"type": "string"},
+          "frame": {"type": ["integer", "null"]},
+          "expected": {"type": ["string", "null"]},
+          "actual": {"type": ["string", "null"]},
+          "path": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

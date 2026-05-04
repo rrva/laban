@@ -47,6 +47,8 @@ struct LabanSession {
     int title_dirty;     /* set to 1 by title-changed callback; cleared by consume */
 
     int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
+    LabanCaptureBytesCallback capture_callback;
+    void *capture_userdata;
 
     /* Cached geometry for the SIZE effect (XTWINOPS replies). */
     uint16_t cols;
@@ -64,10 +66,21 @@ struct LabanSession {
     size_t   response_cap;
 };
 
-/* Mirror bytes into the VT parser AND into the active capture file (if any).
+static void emit_capture_bytes(
+    LabanSession *s,
+    LabanCaptureBytesDirection direction,
+    const uint8_t *bytes,
+    size_t len
+) {
+    if (!s || !s->capture_callback || !bytes || len == 0) return;
+    s->capture_callback(s->capture_userdata, s, direction, bytes, len);
+}
+
+/* Mirror bytes into the VT parser AND into the active legacy capture file (if any).
  * Capture writes are best-effort: a failed write does not abort the parse,
  * since the user is observing the terminal regardless of capture success. */
 static void vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
+    emit_capture_bytes(s, LABAN_CAPTURE_BYTES_PTY_OUTPUT, bytes, len);
     if (s->capture_fd >= 0 && len > 0) {
         const uint8_t *p = bytes;
         size_t remaining = len;
@@ -79,6 +92,18 @@ static void vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) 
         }
     }
     ghostty_terminal_vt_write(s->terminal, bytes, len);
+}
+
+static int write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
+    if (!s || !bytes) return -1;
+    if (len == 0) return 0;
+    if (s->pty_fd < 0) return -1;
+    ssize_t n = write(s->pty_fd, bytes, len);
+    if (n < 0) return -1;
+    if (n > 0) {
+        emit_capture_bytes(s, LABAN_CAPTURE_BYTES_PTY_INPUT, bytes, (size_t)n);
+    }
+    return 0;
 }
 
 static void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata) {
@@ -163,7 +188,12 @@ static void effect_write_pty(GhosttyTerminal terminal, void *userdata,
         /* Best-effort: capability responses are tiny (<32 bytes typical).
            Partial writes / EAGAIN on a freshly-empty PTY master are rare. */
         ssize_t n = write(s->pty_fd, data, len);
+        if (n > 0) {
+            emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, data, (size_t)n);
+        }
         (void)n;
+    } else if (len > 0) {
+        emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, data, len);
     }
 }
 
@@ -251,6 +281,8 @@ int laban_session_create(
     s->child_pid = -1;
     s->launch_cwd[0] = '\0';
     s->capture_fd = -1;
+    s->capture_callback = NULL;
+    s->capture_userdata = NULL;
     s->fixture_mode = config->fixture_mode;
 
     GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 1000 };
@@ -530,8 +562,13 @@ int laban_session_write(LabanSession *s, const uint8_t *bytes, size_t len) {
         return 0;
     }
     if (s->pty_fd < 0) return -1;
-    ssize_t n = write(s->pty_fd, bytes, len);
-    return (n < 0) ? -1 : 0;
+    return write_pty_input(s, bytes, len);
+}
+
+int laban_session_replay_pty_output(LabanSession *s, const uint8_t *bytes, size_t len) {
+    if (!s || !bytes) return -1;
+    ghostty_terminal_vt_write(s->terminal, bytes, len);
+    return 0;
 }
 
 int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
@@ -1107,9 +1144,7 @@ int laban_session_write_paste(
     if (s->fixture_mode) {
         vt_write_capture(s, buf, enc_len);
     } else {
-        if (s->pty_fd < 0) { free(buf); return -1; }
-        ssize_t n = write(s->pty_fd, buf, enc_len);
-        if (n < 0) { free(buf); return -1; }
+        if (write_pty_input(s, buf, enc_len) != 0) { free(buf); return -1; }
     }
 
     if (out_result) {
@@ -1146,6 +1181,17 @@ int laban_session_capture_active(LabanSession *s) {
     return s->capture_fd >= 0 ? 1 : 0;
 }
 
+int laban_session_set_capture_callback(
+    LabanSession *s,
+    LabanCaptureBytesCallback callback,
+    void *userdata
+) {
+    if (!s) return -1;
+    s->capture_callback = callback;
+    s->capture_userdata = userdata;
+    return 0;
+}
+
 int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {
     if (!s) return -1;
     if (s->fixture_mode) {
@@ -1160,8 +1206,7 @@ int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {
     if (r != 0) return r;
     if (len == 0) return 0;  /* terminal says nothing to report */
 
-    ssize_t n = write(s->pty_fd, buf, len);
-    return (n < 0) ? -1 : 0;
+    return write_pty_input(s, buf, len);
 }
 
 LabanExitState laban_session_exit_state(LabanSession *session) {
@@ -1353,8 +1398,10 @@ int laban_session_send_key(LabanSession *s, const LabanKeyEvent *event) {
         size_t heap_len = 0;
         rc = laban_session_encode_key(s, event, heap_buf, len, &heap_len);
         if (rc == 0 && heap_len > 0 && !s->fixture_mode && s->pty_fd >= 0) {
-            ssize_t n = write(s->pty_fd, heap_buf, heap_len);
-            if (n < 0) { free(heap_buf); return -1; }
+            if (write_pty_input(s, heap_buf, heap_len) != 0) {
+                free(heap_buf);
+                return -1;
+            }
         }
         free(heap_buf);
         return rc;
@@ -1365,6 +1412,5 @@ int laban_session_send_key(LabanSession *s, const LabanKeyEvent *event) {
     if (s->fixture_mode) return 0;
     if (s->pty_fd < 0) return -1;
 
-    ssize_t n = write(s->pty_fd, stack_buf, len);
-    return (n < 0) ? -1 : 0;
+    return write_pty_input(s, stack_buf, len);
 }

@@ -29,7 +29,7 @@ task matches them.
 | --- | --- |
 | `docs/product/mvp.md` | You are deciding what belongs in the first usable terminal app. |
 | `docs/product/spec.md` | You need long-term product behavior or a question goes beyond MVP scope. |
-| `docs/process/dev-process.md` | You are implementing or changing debug hooks, headless mode, screenshots, fixtures, CI E2E tests, or autonomous verification. |
+| `docs/process/dev-process.md` | You are implementing or changing debug hooks, headless mode, screenshots, capture/replay artifacts, fixtures, CI E2E tests, or autonomous verification. |
 | `docs/process/worktree-isolation.md` | You are adding run commands, artifact directories, temp dirs, debug ports, or multi-worktree execution support. |
 | `docs/process/observability.md` | You are adding logs, debug events, metrics, traces, or failure artifacts. |
 | `docs/reference/prototype-implementation-notes.md` | You need prototype lessons, known pitfalls, or reusable terminal-core behavior. |
@@ -48,7 +48,7 @@ PLANS.md                               ExecPlan rules for long-running work.
 README.md                              Human and agent project entrypoint.
 docs/product/mvp.md                    Current MVP behavior and non-goals.
 docs/product/spec.md                   Long-term product behavior.
-docs/process/dev-process.md            Agent-driven debug and headless test harness.
+docs/process/dev-process.md            Agent-driven debug, capture/replay, and headless test harness.
 docs/process/agent-operating-guide.md  Detailed working rules for agents.
 docs/process/worktree-isolation.md     Isolated run contract for agent worktrees.
 docs/process/observability.md          Logs, events, metrics, and trace contract.
@@ -81,7 +81,8 @@ symlink.
 ## Hard Rules
 
 - The project must be autonomously verifiable. User-visible terminal behavior
-  needs tests, debug-state checks, or screenshot artifacts.
+  needs tests, debug-state checks, screenshot artifacts, or capture/replay
+  artifacts.
 - The debug/headless harness in `docs/process/dev-process.md` is product
   infrastructure, not optional polish.
 - Terminal session identity must survive tab selection, view rebuilds, resize,
