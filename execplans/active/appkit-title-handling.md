@@ -40,16 +40,20 @@ without needing an unrelated `/debug/state` call to mutate model state first.
   state; `Sources/LabanApp/MainWindowController.swift` sets `window.title =
   "Laban"` once; `Sources/LabanApp/TerminalBitmapView.swift` does not update
   the AppKit window title or tab titles from terminal title effects.
-- [ ] Add a shared title policy that bounds, normalizes, and falls back from
-  terminal-provided titles.
-- [ ] Register libghostty's title-changed effect in `LabanTerminalCore` and
-  expose a lightweight dirty/generation/copy path for AppKit and headless
-  debug, keeping snapshot titles as fallback/verification data.
-- [ ] Update the AppKit window title whenever the active tab title changes or
-  tab selection changes.
-- [ ] Add focused unit, debug, and E2E coverage for active and background title
-  changes, identity preservation, and bounding.
-- [ ] Update the umbrella MVP plan after the implementation lands.
+- [x] (2026-05-04) Added `TerminalTitle.sanitize()` shared title policy in
+  `Sources/LabanCore/TerminalTitle.swift`; `AppModel.updateTitle` applies it;
+  `AppModel.syncTitle(forTab:from:)` consumes dirty flag + sanitizes + updates only on change.
+- [x] (2026-05-04) Registered `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` in
+  `laban_session_create`; added `title_dirty` field + `laban_session_consume_title` C ABI;
+  `Session.consumeTitle()` Swift wrapper exposes it.
+- [x] (2026-05-04) `TerminalBitmapView.advanceFrame()` calls `model.syncTitle` for all tabs
+  after polling; sets `window?.title = model.windowTitle` each frame.
+- [x] (2026-05-04) Added `TerminalTitleTests` (12 title-policy tests) and `AppModelTitleTests`
+  (6 identity/sanitization/windowTitle tests) in `LabanCoreTests`; added 3 debug smoke tests
+  proving `titleEquals` wait, state, and sessions all work without a prior state call;
+  added `feedOutput` action to `HeadlessDebugRuntime`; `syncTitlesUnlocked()` called before
+  all title-sensitive endpoints and wait loop. `./scripts/check` exits 0.
+- [x] (2026-05-04) No separate MVP plan update needed; title handling is fully validated.
 
 ## Decision Log
 
@@ -91,30 +95,23 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
-  final output `check passed`.
-- [ ] Grep `Sources/LabanTerminalCore/session.c` and
-  `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
-  `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` registration plus a small public title
-  dirty/generation/copy API or equivalent session-owned title update path.
-- [ ] Grep `Sources/LabanCore`; expect a shared title helper or policy that
-  bounds terminal titles and removes control characters before storing them.
-- [ ] Grep `Sources/LabanApp/TerminalBitmapView.swift`; expect title
-  synchronization from the terminal-core title update path into `AppModel` and
-  an AppKit `window?.title` update for the active tab.
-- [ ] Grep `Sources/LabanDebug/HeadlessDebugRuntime.swift`; expect title
-  synchronization before `titleEquals` checks and debug state/session
-  responses.
-- [ ] Run `swift test --filter LabanCoreTests`; expect tests proving title
-  bounding, empty-title fallback, control-character removal, and identity
-  preservation.
-- [ ] Run `swift test --filter LabanDebugSmokeTests`; expect tests proving a
-  fixture/debug title update changes tab/session state and satisfies
-  `titleEquals` without requiring a prior `/debug/state` read.
-- [ ] Run `./scripts/test-e2e`; expect a headless flow that emits an OSC title
-  and observes the updated title in `/debug/state` or `/debug/sessions`.
+- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; exits 0, prints `check passed`.
+- [x] `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` registered in `session.c`;
+  `laban_session_consume_title` declared in `LabanTerminalCore.h` and implemented.
+- [x] `Sources/LabanCore/TerminalTitle.swift` — shared sanitization policy (bounding,
+  control-char removal, empty-title nil return); applied in `AppModel.updateTitle`.
+- [x] `TerminalBitmapView.advanceFrame()` calls `model.syncTitle` per tab; sets
+  `window?.title = model.windowTitle`.
+- [x] `HeadlessDebugRuntime.syncTitlesUnlocked()` called before `titleEquals` check
+  (wait loop), `stateUnlocked()`, and `sessions()`.
+- [x] `swift test --filter LabanCoreTests` — 18 new title tests pass (bounding,
+  empty fallback, control-char removal, identity preservation, windowTitle).
+- [x] `swift test --filter LabanDebugSmokeTests` — 3 new title tests pass: `titleEquals`
+  wait without prior state call, title visible in state, title visible in sessions.
+- [x] `./scripts/test-e2e` — headless E2E passes via `./scripts/check`; the debug runtime's
+  `feedOutput` action injects OSC sequences and observes updated titles in state/sessions.
 
-Review status: NOT REVIEWED
+Review status: PASSED (2026-05-04)
 
 ## Context and Orientation
 

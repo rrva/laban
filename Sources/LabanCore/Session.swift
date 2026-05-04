@@ -102,6 +102,22 @@ public final class Session {
     return laban_session_mark_rendered(h)
   }
 
+  // MARK: - Title
+
+  /// Consume any pending title-changed notification from the C layer.
+  /// Returns (dirty: true, raw: String?) when a title change was pending and
+  /// its raw bytes were copied; returns (false, nil) when nothing changed.
+  public func consumeTitle() -> (dirty: Bool, raw: String?) {
+    guard !isClosed, let h = handle else { return (false, nil) }
+    var buf = [CChar](repeating: 0, count: 1024)
+    let r = buf.withUnsafeMutableBufferPointer { ptr in
+      laban_session_consume_title(h, ptr.baseAddress, ptr.count)
+    }
+    guard r > 0 else { return (false, nil) }
+    let raw = String(cString: buf)
+    return (true, raw.isEmpty ? nil : raw)
+  }
+
   // MARK: - Viewport scrolling
 
   /// Scroll the terminal viewport by deltaRows relative to the current offset.

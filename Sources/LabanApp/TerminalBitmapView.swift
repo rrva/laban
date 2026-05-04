@@ -115,12 +115,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   @objc func advanceFrame() {
     for tab in model.tabs {
-      model.session(forTab: tab.id)?.poll()
+      if let session = model.session(forTab: tab.id) {
+        session.poll()
+        if model.syncTitle(forTab: tab.id, from: session) {
+          renderInvalidated = true
+        }
+      }
     }
 
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)
     else { return }
+
+    window?.title = model.windowTitle
 
     let terminalDirty = session.renderDirty()
     let tabChanged = lastRenderedActiveTabId != activeTab.id

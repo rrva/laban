@@ -347,6 +347,16 @@ public final class HeadlessDebugRuntime {
     DebugMouseInput.terminalSurfaceWidth(windowWidth: windowWidth, sidebarWidth: sidebarWidth)
   }
 
+  // MARK: - Title synchronization
+
+  private func syncTitlesUnlocked() {
+    for tab in model.tabs {
+      if let session = model.session(forTab: tab.id) {
+        model.syncTitle(forTab: tab.id, from: session)
+      }
+    }
+  }
+
   // MARK: - Endpoints
 
   public func health() -> DebugResponse {
@@ -362,25 +372,19 @@ public final class HeadlessDebugRuntime {
   }
 
   private func stateUnlocked() -> DebugResponse {
+    syncTitlesUnlocked()
     let tabs = model.tabs.enumerated().map { i, tab -> TabResponse in
       var statusStr = "running"
-      var title = tab.title
       if let session = model.session(forTab: tab.id),
         let snap = session.snapshot()
       {
         defer { laban_snapshot_destroy(snap) }
         statusStr = snapshotStatus(UnsafePointer(snap))
-        if let ptr = snap.pointee.title,
-          let t = String(cString: ptr, encoding: .utf8), !t.isEmpty
-        {
-          title = t
-          try? model.updateTitle(t, forTab: tab.id)
-        }
       } else {
         statusStr = "failed"
       }
       return TabResponse(
-        id: tab.id, index: i, title: title,
+        id: tab.id, index: i, title: tab.title,
         active: tab.isActive, status: statusStr, sessionId: tab.sessionId
       )
     }
@@ -491,6 +495,15 @@ public final class HeadlessDebugRuntime {
       }
       renderFrameUnlocked()
       appendEvent(EventEntry(kind: "input.typed", text: text))
+      return actionResult(ok: true)
+
+    case "feedOutput":
+      guard let text = req.text else { return jsonError("feedOutput requires text") }
+      if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
+        session.feedOutput(Array(text.utf8))
+      }
+      renderFrameUnlocked()
+      appendEvent(EventEntry(kind: "output.fed", text: text))
       return actionResult(ok: true)
 
     case "advanceFrames":
@@ -741,10 +754,11 @@ public final class HeadlessDebugRuntime {
     lock.lock()
     defer { lock.unlock() }
 
+    syncTitlesUnlocked()
+
     let list = model.tabs.map { tab -> SessionResponse in
       var rows = 1
       var cols = 1
-      var title = tab.title
       var statusStr = "running"
       var exitStatus: Int? = nil
       var mouseTracking = false
@@ -762,11 +776,6 @@ public final class HeadlessDebugRuntime {
         mouseTracking = snap.pointee.mouse_tracking != 0
         focusReporting = snap.pointee.focus_reporting != 0
         dirty = snap.pointee.dirty != 0
-        if let ptr = snap.pointee.title,
-          let t = String(cString: ptr, encoding: .utf8), !t.isEmpty
-        {
-          title = t
-        }
       }
 
       // Fetch real viewport state if available.
@@ -785,7 +794,7 @@ public final class HeadlessDebugRuntime {
         rows: rows, cols: cols,
         cellWidth: cellWidth, cellHeight: cellHeight,
         scrollbackLines: scrollbackLines, viewportOffset: viewportOffset,
-        title: title, mouseTracking: mouseTracking,
+        title: tab.title, mouseTracking: mouseTracking,
         focusReporting: focusReporting, dirty: dirty
       )
     }
@@ -1087,6 +1096,7 @@ public final class HeadlessDebugRuntime {
 
     while true {
       lock.lock()
+      syncTitlesUnlocked()
       let satisfied = checkConditionUnlocked(req.condition)
       let frame = currentFrame
       if satisfied {
@@ -1095,8 +1105,8 @@ public final class HeadlessDebugRuntime {
         return jsonEncode(WaitResult(ok: true, frame: frame, elapsedMs: elapsed))
       }
       if deterministic {
-        if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
-          session.poll()
+        for tab in model.tabs {
+          model.session(forTab: tab.id)?.poll()
         }
         renderFrameUnlocked()
       }

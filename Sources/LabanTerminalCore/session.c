@@ -30,7 +30,14 @@ struct LabanSession {
     GhosttyMouseEncoder mouse_encoder;
     int mouse_button_pressed;  /* boolean: is any mouse button currently down */
     LabanMouseButton mouse_pressed_button;
+    int title_dirty;     /* set to 1 by title-changed callback; cleared by consume */
 };
+
+static void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata) {
+    (void)terminal;
+    LabanSession *s = (LabanSession *)userdata;
+    s->title_dirty = 1;
+}
 
 /* Encode one Unicode codepoint to UTF-8. Returns bytes written (1-4). */
 static int encode_utf8(uint32_t cp, uint8_t *out) {
@@ -99,6 +106,10 @@ int laban_session_create(
 
     GhosttyResult r = ghostty_terminal_new(NULL, &s->terminal, opts);
     if (r != GHOSTTY_SUCCESS) { free(s); return -1; }
+
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, s);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
+        (const void *)laban_title_changed_cb);
 
     r = ghostty_render_state_new(NULL, &s->render_state);
     if (r != GHOSTTY_SUCCESS) {
@@ -533,6 +544,22 @@ int laban_session_mark_rendered(LabanSession *session) {
 }
 
 /* --- Viewport scrolling --- */
+
+int laban_session_consume_title(LabanSession *s, char *buf, size_t capacity) {
+    if (!s || !buf || capacity == 0) return -1;
+    if (!s->title_dirty) return 0;
+    s->title_dirty = 0;
+    GhosttyString title_str = {0};
+    if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_TITLE, &title_str)
+            != GHOSTTY_SUCCESS || title_str.len == 0) {
+        buf[0] = '\0';
+        return 1;
+    }
+    size_t copy_len = title_str.len < capacity - 1 ? title_str.len : capacity - 1;
+    memcpy(buf, title_str.ptr, copy_len);
+    buf[copy_len] = '\0';
+    return 1;
+}
 
 int laban_session_scroll_viewport(LabanSession *s, int delta_rows) {
     if (!s) return -1;
