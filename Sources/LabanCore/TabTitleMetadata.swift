@@ -246,10 +246,13 @@ public enum TabTitleResolver {
       ?? commandName(metadata.process.foregroundCommand),
       !isShellProcess(process)
     {
+      if let terminal = useful(metadata.terminalTitle) {
+        return (terminal, .terminal)
+      }
       return (process, .process)
     }
     if let cwd = useful(metadata.workspace.cwd) {
-      return (pathTail(cwd), .cwd)
+      return (cwdDisplayName(cwd), .cwd)
     }
     if let process = useful(metadata.process.foregroundProcess)
       ?? commandName(metadata.process.foregroundCommand)
@@ -275,7 +278,7 @@ public enum TabTitleResolver {
         parts.append(repo)
       }
     } else if let cwd = useful(metadata.workspace.cwd) {
-      parts.append(truncateMiddle(pathTail(cwd), maxScalars: 32))
+      parts.append(truncateMiddle(cwdDisplayName(cwd), maxScalars: 32))
     }
 
     if let branch = useful(metadata.workspace.branch) {
@@ -324,6 +327,17 @@ public enum TabTitleResolver {
     let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     if trimmed.isEmpty { return "/" }
     return String(trimmed.split(separator: "/").last ?? Substring(trimmed))
+  }
+
+  private static func cwdDisplayName(_ path: String) -> String {
+    let standardized = (path as NSString).standardizingPath
+    let home = (NSHomeDirectory() as NSString).standardizingPath
+    if standardized == home { return "~" }
+    let prefix = home.hasSuffix("/") ? home : home + "/"
+    if standardized.hasPrefix(prefix) {
+      return "~/" + String(standardized.dropFirst(prefix.count))
+    }
+    return pathTail(standardized)
   }
 
   private static func commandName(_ command: String?) -> String? {

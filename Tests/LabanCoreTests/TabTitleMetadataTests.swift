@@ -1,3 +1,4 @@
+import Foundation
 import LabanTerminalCore
 import XCTest
 
@@ -66,11 +67,12 @@ final class TabTitleMetadataTests: XCTestCase {
       TabTitleMetadata(
         displayTitle: "Tab 3",
         titleSource: .fallback,
-        workspace: TabWorkspaceMetadata(cwd: "/Users/rrj/wrk/laban")
+        workspace: TabWorkspaceMetadata(
+          cwd: (NSHomeDirectory() as NSString).appendingPathComponent("wrk/laban"))
       ),
       fallbackPosition: 3
     )
-    XCTAssertEqual(cwd.displayTitle, "laban")
+    XCTAssertEqual(cwd.displayTitle, "~/wrk/laban")
     XCTAssertEqual(cwd.titleSource, .cwd)
 
     let process = TabTitleResolver.resolve(
@@ -109,7 +111,7 @@ final class TabTitleMetadataTests: XCTestCase {
         terminalTitle: "Claude Code",
         displayTitle: "Tab 1",
         titleSource: .fallback,
-        workspace: TabWorkspaceMetadata(cwd: "/Users/rrj/wrk/laban"),
+        workspace: TabWorkspaceMetadata(cwd: NSHomeDirectory()),
         process: TabProcessMetadata(
           foregroundProcess: "zsh",
           foregroundCommand: "/bin/zsh"
@@ -118,17 +120,35 @@ final class TabTitleMetadataTests: XCTestCase {
       fallbackPosition: 1
     )
 
-    XCTAssertEqual(resolved.displayTitle, "laban")
+    XCTAssertEqual(resolved.displayTitle, "~")
     XCTAssertEqual(resolved.titleSource, .cwd)
   }
 
-  func testNonShellForegroundProcessBeatsCwdAndStaleTerminalTitle() {
+  func testCurrentTerminalTitleBeatsNonShellForegroundProcess() {
     let resolved = TabTitleResolver.resolve(
       TabTitleMetadata(
-        terminalTitle: "Claude Code",
+        terminalTitle: "* Claude Code",
         displayTitle: "Tab 1",
         titleSource: .fallback,
-        workspace: TabWorkspaceMetadata(cwd: "/Users/rrj/wrk/laban"),
+        workspace: TabWorkspaceMetadata(cwd: NSHomeDirectory()),
+        process: TabProcessMetadata(
+          foregroundProcess: "2.1.126",
+          foregroundCommand: "/opt/homebrew/bin/2.1.126"
+        )
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "* Claude Code")
+    XCTAssertEqual(resolved.titleSource, .terminal)
+  }
+
+  func testNonShellForegroundProcessBeatsCwdWhenNoTerminalTitle() {
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        workspace: TabWorkspaceMetadata(cwd: NSHomeDirectory()),
         process: TabProcessMetadata(
           foregroundProcess: "top",
           foregroundCommand: "/usr/bin/top"
@@ -139,6 +159,22 @@ final class TabTitleMetadataTests: XCTestCase {
 
     XCTAssertEqual(resolved.displayTitle, "top")
     XCTAssertEqual(resolved.titleSource, .process)
+  }
+
+  func testHomeRelativeCwdUsesTildePath() {
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        workspace: TabWorkspaceMetadata(
+          cwd: (NSHomeDirectory() as NSString).appendingPathComponent("src/laban"))
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "~/src/laban")
+    XCTAssertEqual(resolved.titleSource, .cwd)
+    XCTAssertEqual(resolved.subtitle, "~/src/laban")
   }
 
   func testHostileTerminalTitleIsSanitizedAndBounded() throws {

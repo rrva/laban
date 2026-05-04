@@ -54,6 +54,10 @@ metadata for Claude Code and Cursor-style sessions.
   injection. The model now syncs macOS PTY foreground process, command path,
   and cwd metadata from the live session; repo/branch/worktree/dirty discovery
   remains deferred.
+- [x] (2026-05-04) Fix title lifecycle so a current process-owned OSC title,
+  such as `* Claude Code`, beats a non-shell process executable name, but is
+  cleared when foreground process identity changes. Home cwd titles now render
+  as `~` or `~/relative/path`.
 - [ ] Add repo/branch/worktree/dirty metadata discovery on a throttled
   background path.
 - [ ] Add manual rename/freeze/color and search/filter after the core metadata
@@ -106,14 +110,16 @@ metadata for Claude Code and Cursor-style sessions.
   title model.
   Date/Author: 2026-05-04 / Codex.
 
-- Decision: Prefer live non-shell foreground process, then shell cwd, before
-  stale OSC terminal titles.
+- Decision: Prefer a current process-owned OSC title before a non-shell
+  foreground process, and clear that title on process identity change.
   Rationale: DeepWiki research on iTerm2, kitty, and Ghostty showed that OSC
   titles are only one input. Each terminal keeps separate sources such as
   configured titles, shell/current-directory state, and process or command
-  metadata. Laban should not keep showing "Claude Code" after Claude exits
-  back to zsh; a foreground shell should show the cwd tail, while a foreground
-  non-shell program such as `top` should show that program name.
+  metadata. Laban should show a current title such as `* Claude Code` instead
+  of a version-like executable name such as `2.1.126`, but it should not keep
+  showing that title after Claude exits back to zsh or another foreground
+  process starts. A foreground shell should show cwd, while a foreground
+  non-shell program with no current OSC title should show the program name.
   Date/Author: 2026-05-04 / Codex.
 
 ## Research Notes
@@ -240,6 +246,14 @@ passed. Per this plan, the Review Gate still needs a fresh-state reviewer.
   process group only when it belongs to the PTY child tree, falls back to the
   PTY child otherwise, and tests wait briefly for the child to complete `execv`.
 
+- Observation: Claude Code's foreground process can appear as a version-like
+  executable name such as `2.1.126`, while the useful user-facing title is the
+  OSC title `* Claude Code`. That OSC title is still process-scoped and becomes
+  stale when the foreground process changes.
+  Evidence: manual app use showed `2.1.126` replacing the previous
+  `* Claude Code` tab title. AppModel now stores the process identity that owns
+  the current terminal title and clears the title when that identity changes.
+
 ## Context and Orientation
 
 The relevant current implementation is small:
@@ -249,11 +263,13 @@ The relevant current implementation is small:
   compatibility access to the resolved display title.
 - `Sources/LabanCore/TabTitleMetadata.swift` defines the metadata fields and
   `TabTitleResolver`, which chooses the visible title from user, agent, repo,
-  non-shell process, cwd, shell process fallback, terminal title, and `Tab N`.
+  current process-owned terminal title, non-shell process, cwd, shell process
+  fallback, stale-terminal fallback, and `Tab N`.
 - `Sources/LabanCore/AppModel.swift` creates, selects, closes, repositions,
   retitles, and syncs tabs. `syncTitle` consumes raw terminal title changes,
-  `syncProcessMetadata` throttles live process/cwd probes, and
-  `syncExitState` records exited state.
+  `syncProcessMetadata` throttles live process/cwd probes, and the model tracks
+  which process identity owns the current terminal title. `syncExitState`
+  records exited state.
 - `Sources/LabanCore/SidebarProducer.swift` draws the vertical sidebar with
   bounded title text, close affordance, compact secondary metadata, and status
   markers.
@@ -381,9 +397,11 @@ Source precedence:
 3. Else if repo/worktree metadata is present, use `repoName@worktreeName` or
    `repoName`.
 4. Else if foreground process is present and it is not a shell such as `zsh`,
-   `bash`, or `fish`, use process name or command.
-5. Else if cwd is present, use the final path component or a middle-truncated
-   path tail.
+   `bash`, or `fish`, use the current process-owned terminal title if one
+   exists; otherwise use process name or command.
+5. Else if cwd is present, use `~` for the home directory,
+   `~/relative/path` for paths under home, `/` for root, or the final path
+   component for other paths.
 6. Else if foreground process is present, use process name or command as a
    last process fallback.
 7. Else if bounded terminal title is present and useful, use it.
@@ -786,6 +804,23 @@ swift test --filter LabanDebugTitleTests
 
 ./scripts/check
 # check passed; Swift test phase executed 219 tests with 2 skipped
+```
+
+Additional validation run, 2026-05-04, for process-owned OSC titles and home
+cwd labels:
+
+```text
+swift test --filter TabTitleMetadataTests
+# passed: 11 tests
+
+swift test --filter AppModelTests
+# passed: 20 tests
+
+swift test --filter LabanDebugTitleTests
+# passed: 5 tests
+
+./scripts/check
+# check passed; Swift test phase executed 226 tests with 2 skipped
 ```
 
 ## Idempotence and Recovery
