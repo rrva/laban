@@ -313,6 +313,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let session = model.session(forTab: tabId)
     else { return }
     session.sendKey(event)
+    renderInvalidated = true
   }
 
   private func sendBytes(_ bytes: [UInt8]) {
