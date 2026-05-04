@@ -127,7 +127,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let session = model.session(forTab: activeTab.id)
     else { return }
 
-    window?.title = model.windowTitle
+    let suffix = session.isCapturing ? " — capturing" : ""
+    window?.title = model.windowTitle + suffix
 
     let terminalDirty = session.renderDirty()
     let tabChanged = lastRenderedActiveTabId != activeTab.id
@@ -663,6 +664,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard idx >= 0, idx < model.tabs.count else { return }
     model.selectTab(model.tabs[idx].id)
     renderInvalidated = true
+  }
+
+  // MARK: - PTY-byte capture (debug)
+
+  /// Toggle a per-session capture file that mirrors every byte fed to the VT
+  /// parser. The file path is printed to stderr so a user reproducing a bug
+  /// can locate the capture without opening a save panel mid-flow.
+  @objc func toggleCapture(_ sender: Any?) {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else { return }
+
+    if session.isCapturing {
+      _ = session.stopCapture()
+      fputs("laban: capture stopped\n", stderr)
+      renderInvalidated = true
+      return
+    }
+
+    let dir = TerminalBitmapView.captureDirectory()
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let stamp = ISO8601DateFormatter().string(from: Date())
+      .replacingOccurrences(of: ":", with: "-")
+    let path = dir.appendingPathComponent("session-\(session.id)-\(stamp).bin").path
+    if session.startCapture(path: path) {
+      fputs("laban: capture started → \(path)\n", stderr)
+      renderInvalidated = true
+    } else {
+      fputs("laban: capture failed to start at \(path)\n", stderr)
+    }
+  }
+
+  /// `~/Library/Logs/Laban/captures` by default; overridable via
+  /// `LABAN_CAPTURE_DIR` for cases where the user wants captures somewhere
+  /// auto-cleaned (e.g., a tmpfs).
+  private static func captureDirectory() -> URL {
+    if let env = ProcessInfo.processInfo.environment["LABAN_CAPTURE_DIR"], !env.isEmpty {
+      return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+    }
+    let logs = FileManager.default
+      .urls(for: .libraryDirectory, in: .userDomainMask).first!
+      .appendingPathComponent("Logs/Laban/captures", isDirectory: true)
+    return logs
   }
 }
 

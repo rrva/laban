@@ -61,6 +61,20 @@ enum MenuCommands {
       tabMenu.addItem(item)
     }
 
+    // Debug menu — capture mode for reproducing rendering bugs
+    let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
+    mainMenu.addItem(debugItem)
+    let debugMenu = NSMenu(title: "Debug")
+    debugItem.submenu = debugMenu
+
+    let captureItem = NSMenuItem(
+      title: "Toggle PTY Capture",
+      action: #selector(TerminalBitmapView.toggleCapture(_:)),
+      keyEquivalent: "r"
+    )
+    captureItem.keyEquivalentModifierMask = [.command, .shift]
+    debugMenu.addItem(captureItem)
+
     NSApp.mainMenu = mainMenu
   }
 }
