@@ -152,11 +152,19 @@ section in `PLANS.md` for the full process.
   `testRealShellSmokeOkOutput` in `LabanTerminalCoreTests`) runs a shell that
   exits and verifies that `AppModel.tabs[0].status != .running` after polling.
 
-Review status: NOT REVIEWED
+Review status: PASSED
 
 Review findings (filled in by the review agent):
 
-(none yet)
+1. PASS — `./scripts/check` exits 0, final line is "check passed".
+2. PASS — `LabanTerminalCore.h` declares `LabanExitState` struct (`int status`, `int exit_status`) and `laban_session_exit_state(LabanSession *)`. `session.c` implements it at line 817 reading `session->status` and `session->exit_status` directly into a struct return.
+3. PASS — `Tab.swift` defines `TabStatus` with `.running`, `.exited(code: Int)`, `.exitedSignal(signal: Int)`; `Tab.status` defaults to `.running`. `Session.exitState()` returns `TabStatus` directly — no translation enum.
+4. PASS — `AppModel.syncExitState(forTab:from:)` at line 134 short-circuits via `guard tabs[idx].status == .running else { return false }`.
+5. PASS — `SidebarProducer.swift` uses `dim0` foreground for exited tabs (`let labelFg = exited ? Theme.CurrentTheme.dim0 : fg`) and prepends `"⏹ "` to label text.
+6. PASS — Banner block at line 52–78 appears before the `guard ... let cells = snapshot.cells else { return cmds }` guard at line 80. Fires for nil-cells snapshots.
+7. PASS — `stateUnlocked()` (line 377) and `sessions()` (line 771) both use `tab.status.debugString` for `TabResponse.status`. No per-tab snapshot for status.
+8. PASS — `swift test --filter LabanCoreTests` passes. AppModelTests: 14 tests including `testSyncExitStateIsMonotonic`, `testTabStatusDefaultsToRunning`, `testAppModelRecordsExitStateFromRealPTY`. FrameProducerTests: 13 tests (3 new banner tests). SidebarProducerTests: 13 tests (3 new exit indicator tests).
+9. PASS — `testAppModelRecordsExitStateFromRealPTY` runs `/bin/sh -c "exit 7"`, polls until `syncExitState` returns true, then asserts `model.tabs[0].status == .exited(code: 7)`.
 
 ## Context and Orientation
 
