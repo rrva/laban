@@ -30,6 +30,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // Damage-driven render budget state
   private var renderInvalidated = true
   private var lastRenderedActiveTabId: Tab.ID?
+  private var scrollResidualPx: CGFloat = 0
 
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
@@ -356,12 +357,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     guard let vs = session.viewportState() else { return }
 
-    // deltaY > 0 means scroll up (toward older history) in AppKit.
-    let isUp = event.deltaY > 0
-
     if vs.mouseTracking {
-      // Mouse tracking active: encode wheel as press+release.
-      let button: MouseButton = isUp ? .wheelUp : .wheelDown
+      // Mouse tracking active: encode wheel as press+release. Use legacy
+      // deltaY sign so a single physical notch maps to a single button press.
+      guard event.deltaY != 0 else { return }
+      let button: MouseButton = event.deltaY > 0 ? .wheelUp : .wheelDown
       let geom = terminalMouseGeometry(at: pt)
       let me = MouseEvent(
         action: .press,
@@ -375,10 +375,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       )
       session.sendMouse(me)
       renderInvalidated = true
-    } else {
-      // Normal mode: scroll viewport.
-      let direction: Int = isUp ? -1 : 1
-      session.scrollViewport(deltaRows: direction)
+      return
+    }
+
+    let decision = TerminalScrollInput.decide(
+      event: TerminalScrollInput.Event(
+        deltaY: event.deltaY,
+        scrollingDeltaY: event.scrollingDeltaY,
+        hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
+      ),
+      residualPx: scrollResidualPx,
+      cellHeightPx: CGFloat(cellHeight)
+    )
+    scrollResidualPx = decision.newResidualPx
+    if decision.rowsDelta != 0 {
+      session.scrollViewport(deltaRows: decision.rowsDelta)
       renderInvalidated = true
     }
   }
