@@ -587,4 +587,72 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertGreaterThan(
       selectionCmds.count, 0, "expected selection frame commands after setSelection")
   }
+
+  // MARK: - Title synchronization tests
+
+  private func makeRuntime(runId: String) throws -> (HeadlessDebugRuntime, URL) {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: runId
+    )
+    return (runtime, artifacts)
+  }
+
+  private func feedOSCTitle(_ title: String, to runtime: HeadlessDebugRuntime) {
+    let seq = "\u{1B}]0;\(title)\u{07}"
+    let body = try! JSONSerialization.data(
+      withJSONObject: ["action": "feedOutput", "text": seq])
+    _ = runtime.applyAction(body)
+  }
+
+  func testTitleEqualsWaitWithoutPriorStateCall() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-title-wait")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    feedOSCTitle("MyTitle", to: runtime)
+
+    // Wait for titleEquals without calling state() first.
+    let waitBody = #"{"timeoutMs":500,"condition":{"kind":"titleEquals","title":"MyTitle"}}"#
+      .data(using: .utf8)!
+    let waitResult = runtime.wait(waitBody)
+    let waitObj = try JSONSerialization.jsonObject(with: waitResult.body) as! [String: Any]
+    XCTAssertEqual(
+      waitObj["ok"] as? Bool, true,
+      "titleEquals wait must succeed without prior state() call")
+  }
+
+  func testTitleSyncVisibleInStateAfterFeedOutput() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-title-state")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    feedOSCTitle("ShellTitle", to: runtime)
+
+    let state = runtime.state()
+    XCTAssertEqual(state.status, 200)
+    let stateObj = try JSONSerialization.jsonObject(with: state.body) as! [String: Any]
+    let tabs = stateObj["tabs"] as! [[String: Any]]
+    let activeTabResp = tabs.first(where: { $0["active"] as? Bool == true })
+    XCTAssertEqual(activeTabResp?["title"] as? String, "ShellTitle")
+  }
+
+  func testTitleSyncVisibleInSessionsAfterFeedOutput() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-title-sessions")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let seq = "\u{1B}]2;SessionTitle\u{07}"
+    let body = try! JSONSerialization.data(
+      withJSONObject: ["action": "feedOutput", "text": seq])
+    _ = runtime.applyAction(body)
+
+    let resp = runtime.sessions()
+    XCTAssertEqual(resp.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: resp.body) as! [String: Any]
+    let sessions = obj["sessions"] as! [[String: Any]]
+    XCTAssertEqual(sessions.first?["title"] as? String, "SessionTitle")
+  }
 }

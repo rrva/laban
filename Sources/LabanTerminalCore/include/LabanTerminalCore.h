@@ -98,6 +98,14 @@ void laban_snapshot_destroy(LabanSnapshot *snapshot);
 int laban_session_render_dirty(LabanSession *session, int *out_dirty);
 int laban_session_mark_rendered(LabanSession *session);
 
+/*
+ * laban_session_consume_title:
+ *   Returns 1 if the title changed since the last consume and copies the new
+ *   title (null-terminated, bounded by capacity) into buf. Returns 0 if no
+ *   title change is pending. Returns -1 on error.
+ */
+int laban_session_consume_title(LabanSession *session, char *buf, size_t capacity);
+
 /* --- Viewport scrolling and state --- */
 
 typedef struct {

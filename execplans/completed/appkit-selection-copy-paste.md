@@ -112,33 +112,64 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
-  final output `check passed`.
-- [ ] Grep `Sources/LabanCore`; expect a shared selection helper type that can
+- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
+  final output `check passed`. Verified 2026-05-04: exit 0, final line
+  `check passed`, 129 tests with 0 failures across the suite.
+- [x] Grep `Sources/LabanCore`; expect a shared selection helper type that can
   compute selected visible text and selection rectangles from a
-  `LabanSnapshot`.
-- [ ] Grep `Sources/LabanCore/FrameProducer.swift`; expect selection input to
+  `LabanSnapshot`. Verified at `Sources/LabanCore/TerminalSelection.swift`
+  exposing `TerminalCellCoordinate`, `TerminalSelection`, `segments`,
+  `cgRects`, and `selectedText(from:)`.
+- [x] Grep `Sources/LabanCore/FrameProducer.swift`; expect selection input to
   be accepted by the terminal frame producer and emitted as
-  `FrameCommand.selection` before terminal glyph commands.
-- [ ] Grep `Sources/LabanDebug/DebugHTTPServer.swift`; expect routes for
-  `GET /debug/selection` and `GET /debug/clipboard`.
-- [ ] Grep `schemas/debug/action.schema.json`; expect a `setSelection` action
-  with `anchor` and `focus` cell coordinates.
-- [ ] Grep `Sources/LabanTerminalCore/session.c`; expect calls to
+  `FrameCommand.selection` before terminal glyph commands. Verified:
+  `commands(from:selection:)` runs Pass 1 backgrounds, Pass 2 selection
+  rects via `Theme.CurrentTheme.selectionBg`, then Pass 3 glyph runs.
+- [x] Grep `Sources/LabanDebug/DebugHTTPServer.swift`; expect routes for
+  `GET /debug/selection` and `GET /debug/clipboard`. Verified at lines 208
+  and 211, dispatching to `runtime.selection()` / `runtime.clipboard()`.
+- [x] Grep `schemas/debug/action.schema.json`; expect a `setSelection` action
+  with `anchor` and `focus` cell coordinates. Verified `$defs/setSelection`
+  requires `["action", "anchor", "focus"]` with `anchor`/`focus` referencing
+  the `cell` def.
+- [x] Grep `Sources/LabanTerminalCore/session.c`; expect calls to
   `ghostty_terminal_mode_get` with `GHOSTTY_MODE_BRACKETED_PASTE` and
-  `ghostty_paste_encode`.
-- [ ] Run `swift test --filter LabanCoreTests`; expect tests proving selected
-  text and selection rectangles for the colored-boxes fixture.
-- [ ] Run `swift test --filter LabanDebugSmokeTests`; expect tests for
+  `ghostty_paste_encode`. Verified at session.c:692, 713 (mode query) and
+  724 (`ghostty_paste_encode`).
+- [x] Run `swift test --filter LabanCoreTests`; expect tests proving selected
+  text and selection rectangles for the colored-boxes fixture. Verified
+  via `./scripts/check`; `TerminalSelectionTests` ships 11 tests including
+  `testSelectedTextHelloMvpFromFixture`, `testSelectionFrameCommandsAppearsInProducerOutput`,
+  and `testSelectionCommandsAppearBetweenBgAndGlyphs`.
+- [x] Run `swift test --filter LabanDebugSmokeTests`; expect tests for
   `setSelection`, `/debug/selection`, `copy`, `/debug/clipboard`, and
-  selection frame commands.
-- [ ] Run `swift test --filter LabanTerminalCoreTests`; expect tests for plain
+  selection frame commands. Verified via `./scripts/check`; smoke tests
+  cover `testSetSelectionActionSetsActiveSelection`,
+  `testDebugSelectionEndpointReflectsSetSelection`,
+  `testCopyActionPopulatesDebugClipboard`,
+  `testPasteActionRecordsDebugClipboardState`,
+  `testSelectionFrameCommandsAppearsWithSourceFilter`, plus
+  `testRuntimeClickWithoutMouseTrackingSetsLocalSelection`.
+- [x] Run `swift test --filter LabanTerminalCoreTests`; expect tests for plain
   paste encoding and bracketed paste encoding after enabling mode `2004`.
-- [ ] Run `./scripts/test-e2e`; expect a headless fixture flow that selects
+  Verified via `./scripts/check`; `LabanSessionTests` cover
+  `testBracketedPasteDisabledByDefault`,
+  `testBracketedPasteEnabledAfterEscapeSequence`,
+  `testEncodePastePlainModeConvertsNewlinesToCR`,
+  `testEncodePasteBracketedModeAddsWrappingSequences`, and
+  `testWritePasteInFixtureModeSucceeds`.
+- [x] Run `./scripts/test-e2e`; expect a headless fixture flow that selects
   `hello mvp`, observes a non-empty selection highlight command, copies
   `hello mvp`, and sees `/debug/clipboard.lastCopyText == "hello mvp"`.
+  Verified via `./scripts/check` (`test-e2e passed`); script lines 348–373
+  drive `setSelection` with anchor `{1,2}`/focus `{1,10}`, assert
+  `selection.text == "hello mvp"`, then `copy` and assert
+  `/debug/clipboard.lastCopyText == "hello mvp"`.
 
-Review status: NOT REVIEWED
+Review status: REVIEWED — PASSED 2026-05-04 by review agent. All ten gate
+items verified against worktree head `ddfd631 AppKit copy and paste must use
+the same selection and paste helpers as the headless path`. Plan ready to be
+moved to `execplans/completed/`.
 
 ## Context and Orientation
 

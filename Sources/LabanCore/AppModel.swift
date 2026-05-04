@@ -109,7 +109,28 @@ public final class AppModel {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
       throw AppError.tabNotFound
     }
-    tabs[idx].title = title
+    guard let sanitized = TerminalTitle.sanitize(title) else { return }
+    tabs[idx].title = sanitized
+  }
+
+  /// Consume any pending title update from the session, apply the title policy,
+  /// and update the stored tab title only when the result differs.
+  /// Returns true if the tab title was changed.
+  @discardableResult
+  public func syncTitle(forTab tabId: Tab.ID, from session: Session) -> Bool {
+    let (dirty, raw) = session.consumeTitle()
+    guard dirty else { return false }
+    guard let sanitized = TerminalTitle.sanitize(raw) else { return false }
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    guard tabs[idx].title != sanitized else { return false }
+    tabs[idx].title = sanitized
+    return true
+  }
+
+  /// The display title for the AppKit window: active tab title, or "Laban" as fallback.
+  public var windowTitle: String {
+    guard let title = activeTab?.title, !title.isEmpty else { return "Laban" }
+    return title
   }
 
   private static func applyThemePalette(to session: Session) {
@@ -128,8 +149,9 @@ public final class AppModel {
     let g = (rgba >> 16) & 0xFF
     let b = (rgba >> 8) & 0xFF
     let hex = String(format: "%02x%02x%02x", r, g, b)
-    let s = index.map { "\u{1B}]\(n);\($0);#\(hex)\u{07}" }
-           ?? "\u{1B}]\(n);#\(hex)\u{07}"
+    let s =
+      index.map { "\u{1B}]\(n);\($0);#\(hex)\u{07}" }
+      ?? "\u{1B}]\(n);#\(hex)\u{07}"
     return Array(s.utf8)
   }
 
