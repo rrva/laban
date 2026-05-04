@@ -600,6 +600,27 @@ kill "$BARE_PID" 2>/dev/null || true
 wait "$BARE_PID" 2>/dev/null || true
 BARE_PID=""
 
+# 32. Debug script runner — runs a repeatable exploratory scenario.
+SCRIPT_ARTIFACTS="$RUN_ARTIFACTS/debug-script"
+SCRIPT_TMP="$RUN_TMP/debug-script"
+if ! SCRIPT_OUTPUT=$(LABAN_AGENT_BIN="$AGENT_BIN" ./scripts/run-debug-script \
+  --no-build \
+  --artifacts "$SCRIPT_ARTIFACTS" \
+  --temp-dir "$SCRIPT_TMP" \
+  fixtures/debug-script-basic.scenario.json 2>&1); then
+  fail "debug script runner failed: $SCRIPT_OUTPUT"
+fi
+printf '%s' "$SCRIPT_OUTPUT" | grep -q "debug script passed" \
+  || fail "debug script runner did not report success: $SCRIPT_OUTPUT"
+SCRIPT_REPORT="$SCRIPT_ARTIFACTS/debug-script-report.json"
+[ -f "$SCRIPT_REPORT" ] || fail "debug script report missing: $SCRIPT_REPORT"
+jq -e '.ok == true and (.steps | length) == 6' "$SCRIPT_REPORT" >/dev/null 2>&1 \
+  || fail "debug script report invalid: $(cat "$SCRIPT_REPORT")"
+SCRIPT_SNAPSHOT=$(jq -r '.steps[] | select(.op=="snapshot") | .path // empty' "$SCRIPT_REPORT")
+SCRIPT_SCREENSHOT=$(jq -r '.steps[] | select(.op=="screenshot") | .path // empty' "$SCRIPT_REPORT")
+[ -f "$SCRIPT_SNAPSHOT" ] || fail "debug script snapshot missing: $SCRIPT_SNAPSHOT"
+[ -f "$SCRIPT_SCREENSHOT" ] || fail "debug script screenshot missing: $SCRIPT_SCREENSHOT"
+
 # Success — clean up and remove trap
 trap - EXIT
 cleanup_success

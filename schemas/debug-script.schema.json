@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug-script.schema.json",
+  "title": "Debug Script Scenario",
+  "type": "object",
+  "required": ["name", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "fixture": {"type": "string"},
+    "artifacts": {"type": "string"},
+    "tempDir": {"type": "string"},
+    "deterministic": {"type": "boolean"},
+    "capture": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "screenshots": {"enum": ["final", "all", "none", "marked"]}
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/step"}
+    }
+  },
+  "$defs": {
+    "step": {
+      "oneOf": [
+        {"$ref": "#/$defs/discover"},
+        {"$ref": "#/$defs/get"},
+        {"$ref": "#/$defs/post"},
+        {"$ref": "#/$defs/action"},
+        {"$ref": "#/$defs/wait"},
+        {"$ref": "#/$defs/snapshot"},
+        {"$ref": "#/$defs/screenshot"},
+        {"$ref": "#/$defs/fixture"},
+        {"$ref": "#/$defs/sleep"}
+      ]
+    },
+    "base": {
+      "type": "object",
+      "properties": {
+        "label": {"type": "string"}
+      }
+    },
+    "discover": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "required": ["op"],
+          "additionalProperties": false,
+          "properties": {
+            "op": {"const": "discover"},
+            "label": {"type": "string"},
+            "expectEndpoints": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "expectActions": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "expectWaitConditions": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "expectFixtureActions": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        }
+      ]
+    },
+    "get": {
+      "type": "object",
+      "required": ["op", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "get"},
+        "label": {"type": "string"},
+        "path": {"type": "string", "pattern": "^/debug"},
+        "saveAs": {"type": "string"}
+      }
+    },
+    "post": {
+      "type": "object",
+      "required": ["op", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "post"},
+        "label": {"type": "string"},
+        "path": {"type": "string", "pattern": "^/debug"},
+        "body": {"type": "object"},
+        "expectOk": {"type": "boolean"},
+        "saveAs": {"type": "string"}
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": ["op", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "action"},
+        "label": {"type": "string"},
+        "body": {"type": "object"},
+        "expectOk": {"type": "boolean"}
+      }
+    },
+    "wait": {
+      "type": "object",
+      "required": ["op", "condition"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "wait"},
+        "label": {"type": "string"},
+        "timeoutMs": {"type": "integer", "minimum": 1},
+        "condition": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["op"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "snapshot"},
+        "label": {"type": "string"}
+      }
+    },
+    "screenshot": {
+      "type": "object",
+      "required": ["op"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "screenshot"},
+        "label": {"type": "string"},
+        "path": {"type": "string"}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "required": ["op", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "fixture"},
+        "label": {"type": "string"},
+        "body": {"type": "object"}
+      }
+    },
+    "sleep": {
+      "type": "object",
+      "required": ["op", "ms"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {"const": "sleep"},
+        "label": {"type": "string"},
+        "ms": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

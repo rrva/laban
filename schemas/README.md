@@ -29,6 +29,7 @@ any programming language is chosen.
 - `debug/wait-result.schema.json` - wait condition response.
 - `debug/fixture-control.schema.json` - fixture control request.
 - `debug/snapshot-result.schema.json` - artifact snapshot response.
+- `debug-script.schema.json` - debug script scenario runner input.
 
 ## Fixture And Artifact Schemas
 

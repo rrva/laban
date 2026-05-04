@@ -12,6 +12,7 @@
     {"$ref": "#/$defs/setTabMetadata"},
     {"$ref": "#/$defs/resizeWindow"},
     {"$ref": "#/$defs/typeText"},
+    {"$ref": "#/$defs/feedOutput"},
     {"$ref": "#/$defs/key"},
     {"$ref": "#/$defs/mouseWheel"},
     {"$ref": "#/$defs/click"},
@@ -121,6 +122,15 @@
       "required": ["action", "text"],
       "properties": {
         "action": {"const": "typeText"},
+        "text": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "feedOutput": {
+      "type": "object",
+      "required": ["action", "text"],
+      "properties": {
+        "action": {"const": "feedOutput"},
         "text": {"type": "string"}
       },
       "additionalProperties": false

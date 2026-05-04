@@ -114,6 +114,21 @@ The agent executable should also expose these entry points from `--help`, and
 `./scripts/run-debug` should remain a stable way to start a discoverable local
 debug server.
 
+### Debug Scripts
+
+`./scripts/run-debug-script <scenario.json>`
+
+Runs a local JSON scenario against the debug server. By default the runner
+builds `laban-agent`, starts a headless loopback debug server, executes each
+step, writes `debug-script-report.json` under `.artifacts/runs/<run-id>/`, and
+shuts down the server it started. Use `--server <url>` to run a scenario
+against an already-running debug server.
+
+The scenario schema is `schemas/debug-script.schema.json`. A scenario step maps
+to one existing endpoint: `discover` calls `GET /debug`, `action` posts to
+`/debug/actions`, `wait` posts to `/debug/wait`, `snapshot` posts to
+`/debug/snapshot`, and `screenshot` captures `GET /debug/screenshot`.
+
 ### Health
 
 `GET /debug/health`

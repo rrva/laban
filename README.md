@@ -51,6 +51,7 @@ The stable local commands are shell scripts around SwiftPM:
 ```sh
 ./scripts/run-headless
 ./scripts/run-debug
+./scripts/run-debug-script
 ./scripts/test
 ./scripts/test-e2e
 ./scripts/check
@@ -101,6 +102,14 @@ The agent binary also advertises the debug-control entry points:
 
 ```sh
 swift run laban-agent -- --help
+```
+
+For repeatable exploratory flows, run a debug script scenario. The runner
+starts a headless debug server, executes each step, writes a report, and shuts
+the server down:
+
+```sh
+./scripts/run-debug-script fixtures/debug-script-basic.scenario.json
 ```
 
 ## Implementation Selection

@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import select
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+class ScriptError(Exception):
+    pass
+
+
+def slugify(value):
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-")
+    return slug or "debug-script"
+
+
+def resolve_path(repo_root, value):
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return repo_root / path
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def load_scenario(path):
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            scenario = json.load(handle)
+    except OSError as exc:
+        raise ScriptError(f"failed to read scenario {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ScriptError(f"scenario is not valid JSON: {exc}") from exc
+
+    if not isinstance(scenario, dict):
+        raise ScriptError("scenario root must be a JSON object")
+    if not scenario.get("name"):
+        raise ScriptError("scenario requires a non-empty name")
+    if not isinstance(scenario.get("steps"), list) or not scenario["steps"]:
+        raise ScriptError("scenario requires at least one step")
+    return scenario
+
+
+def run_command(cmd, cwd):
+    result = subprocess.run(cmd, cwd=cwd, text=True)
+    if result.returncode != 0:
+        raise ScriptError(f"command failed with exit {result.returncode}: {' '.join(cmd)}")
+
+
+def http_json(server_url, method, path, body=None):
+    if not path.startswith("/debug"):
+        raise ScriptError(f"refusing non-debug path: {path}")
+    data = None
+    headers = {}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        server_url.rstrip("/") + path, data=data, headers=headers, method=method
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise ScriptError(f"{method} {path} returned HTTP {exc.code}: {raw}") from exc
+    except urllib.error.URLError as exc:
+        raise ScriptError(f"{method} {path} failed: {exc}") from exc
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ScriptError(f"{method} {path} did not return JSON: {exc}") from exc
+
+
+def http_bytes(server_url, method, path):
+    if not path.startswith("/debug"):
+        raise ScriptError(f"refusing non-debug path: {path}")
+    request = urllib.request.Request(server_url.rstrip("/") + path, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise ScriptError(f"{method} {path} returned HTTP {exc.code}: {raw}") from exc
+    except urllib.error.URLError as exc:
+        raise ScriptError(f"{method} {path} failed: {exc}") from exc
+
+
+def read_readiness(process, timeout_seconds, stderr_path):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise ScriptError(
+                f"debug server exited before readiness; see stderr at {stderr_path}"
+            )
+        readable, _, _ = select.select([process.stdout], [], [], 0.1)
+        if not readable:
+            continue
+        line = process.stdout.readline()
+        if not line:
+            continue
+        try:
+            readiness = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ScriptError(f"readiness line was not JSON: {line.strip()}") from exc
+        server = readiness.get("debugServer")
+        if not server:
+            raise ScriptError(f"readiness JSON missing debugServer: {line.strip()}")
+        return readiness
+    raise ScriptError(f"timed out waiting for debug readiness; see stderr at {stderr_path}")
+
+
+def start_server(repo_root, scenario, artifacts_dir, temp_dir, agent_bin):
+    stderr_path = artifacts_dir / "debug-server.stderr.log"
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(agent_bin),
+        "--headless",
+        "--debug-server=127.0.0.1:0",
+        f"--artifacts={artifacts_dir}",
+        f"--temp-dir={temp_dir}",
+    ]
+    if scenario.get("deterministic", True):
+        cmd.append("--deterministic")
+    if scenario.get("fixture"):
+        cmd.append(f"--fixture={resolve_path(repo_root, scenario['fixture'])}")
+    capture = scenario.get("capture")
+    if capture:
+        cmd.append(f"--capture={capture['name']}")
+        cmd.append(f"--capture-screenshots={capture.get('screenshots', 'marked')}")
+
+    stderr_file = stderr_path.open("w", encoding="utf-8")
+    process = subprocess.Popen(
+        cmd,
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=stderr_file,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        readiness = read_readiness(process, 10, stderr_path)
+    except Exception:
+        process.kill()
+        process.wait(timeout=5)
+        stderr_file.close()
+        raise
+    return process, stderr_file, readiness
+
+
+def endpoint_set(discovery):
+    return {
+        f"{endpoint.get('method')} {endpoint.get('path')}"
+        for endpoint in discovery.get("endpoints", [])
+    }
+
+
+def control_set(discovery, key):
+    return {control.get("name") for control in discovery.get(key, [])}
+
+
+def expect_members(kind, actual, expected):
+    missing = sorted(set(expected) - set(actual))
+    if missing:
+        raise ScriptError(f"discovery missing {kind}: {', '.join(missing)}")
+
+
+def save_response(artifacts_dir, relative_path, response):
+    target = resolve_path(artifacts_dir, relative_path)
+    write_json(target, response)
+    return str(target)
+
+
+def execute_step(server_url, artifacts_dir, index, step):
+    op = step.get("op")
+    label = step.get("label") or op or f"step-{index}"
+    started = time.monotonic()
+    result = {
+        "index": index,
+        "op": op,
+        "label": label,
+        "ok": False,
+    }
+
+    if op == "discover":
+        response = http_json(server_url, "GET", "/debug")
+        expect_members("endpoints", endpoint_set(response), step.get("expectEndpoints", []))
+        expect_members("actions", control_set(response, "actions"), step.get("expectActions", []))
+        expect_members(
+            "wait conditions",
+            control_set(response, "waitConditions"),
+            step.get("expectWaitConditions", []),
+        )
+        expect_members(
+            "fixture actions",
+            control_set(response, "fixtureActions"),
+            step.get("expectFixtureActions", []),
+        )
+        result["response"] = {
+            "name": response.get("name"),
+            "endpointCount": len(response.get("endpoints", [])),
+        }
+
+    elif op == "get":
+        response = http_json(server_url, "GET", step["path"])
+        if step.get("saveAs"):
+            result["path"] = save_response(artifacts_dir, step["saveAs"], response)
+        result["response"] = response
+
+    elif op == "post":
+        response = http_json(server_url, "POST", step["path"], step.get("body", {}))
+        if step.get("expectOk") is not None and bool(response.get("ok")) != step["expectOk"]:
+            raise ScriptError(f"expected ok={step['expectOk']} from {step['path']}: {response}")
+        if step.get("saveAs"):
+            result["path"] = save_response(artifacts_dir, step["saveAs"], response)
+        result["response"] = response
+
+    elif op == "action":
+        response = http_json(server_url, "POST", "/debug/actions", step["body"])
+        expect_ok = step.get("expectOk", True)
+        if bool(response.get("ok")) != expect_ok:
+            raise ScriptError(f"expected action ok={expect_ok}: {response}")
+        result["response"] = response
+
+    elif op == "wait":
+        body = {
+            "timeoutMs": step.get("timeoutMs", 5000),
+            "condition": step["condition"],
+        }
+        response = http_json(server_url, "POST", "/debug/wait", body)
+        if response.get("ok") is not True:
+            raise ScriptError(f"wait failed: {response}")
+        result["response"] = response
+
+    elif op == "snapshot":
+        response = http_json(server_url, "POST", "/debug/snapshot", {})
+        manifest = response.get("path")
+        if not manifest or not Path(manifest).exists():
+            raise ScriptError(f"snapshot did not write a manifest: {response}")
+        result["path"] = manifest
+        result["response"] = response
+
+    elif op == "screenshot":
+        png = http_bytes(server_url, "GET", "/debug/screenshot")
+        if len(png) <= 100:
+            raise ScriptError(f"screenshot is too small: {len(png)} bytes")
+        if step.get("path"):
+            target = resolve_path(artifacts_dir, step["path"])
+        else:
+            safe_label = slugify(label)
+            target = artifacts_dir / "screenshots" / f"{index:02d}-{safe_label}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(png)
+        result["path"] = str(target)
+        result["bytes"] = len(png)
+
+    elif op == "fixture":
+        response = http_json(server_url, "POST", "/debug/fixture", step["body"])
+        if response.get("ok") is not True:
+            raise ScriptError(f"fixture control failed: {response}")
+        result["response"] = response
+
+    elif op == "sleep":
+        time.sleep(step["ms"] / 1000.0)
+
+    else:
+        raise ScriptError(f"unsupported step op: {op}")
+
+    result["ok"] = True
+    result["elapsedMs"] = round((time.monotonic() - started) * 1000, 3)
+    return result
+
+
+def terminate_started_server(process, stderr_file):
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    if stderr_file is not None:
+        stderr_file.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run a Laban debug JSON scenario.")
+    parser.add_argument("scenario", help="Path to a debug script scenario JSON file.")
+    parser.add_argument("--server", help="Use an existing debug server URL.")
+    parser.add_argument("--no-build", action="store_true", help="Skip swift build.")
+    parser.add_argument("--artifacts", help="Override the scenario artifact directory.")
+    parser.add_argument("--temp-dir", help="Override the scenario temp directory.")
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    scenario_path = resolve_path(repo_root, args.scenario)
+    scenario = load_scenario(scenario_path)
+    run_id = f"{slugify(scenario['name'])}-{int(time.time())}-{os.getpid()}"
+    artifacts_value = args.artifacts or scenario.get("artifacts", f".artifacts/runs/{run_id}")
+    temp_value = args.temp_dir or scenario.get("tempDir", f".tmp/{run_id}")
+    artifacts_dir = resolve_path(repo_root, artifacts_value)
+    temp_dir = resolve_path(repo_root, temp_value)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    report_path = artifacts_dir / "debug-script-report.json"
+
+    report = {
+        "name": scenario["name"],
+        "ok": False,
+        "scenario": str(scenario_path),
+        "artifacts": str(artifacts_dir),
+        "steps": [],
+    }
+
+    process = None
+    stderr_file = None
+    exit_code = 1
+    try:
+        agent_bin = Path(os.environ.get("LABAN_AGENT_BIN", repo_root / ".build/debug/laban-agent"))
+        if not args.server and not args.no_build:
+            run_command(["swift", "build", "--product", "laban-agent"], cwd=repo_root)
+        if args.server:
+            server_url = args.server
+            report["server"] = server_url
+            report["startedServer"] = False
+        else:
+            process, stderr_file, readiness = start_server(
+                repo_root, scenario, artifacts_dir, temp_dir, agent_bin
+            )
+            server_url = readiness["debugServer"]
+            report["server"] = server_url
+            report["readiness"] = readiness
+            report["startedServer"] = True
+
+        print(f"debug script: {scenario['name']}")
+        print(f"debug server: {server_url}")
+
+        for index, step in enumerate(scenario["steps"], start=1):
+            step_result = execute_step(server_url, artifacts_dir, index, step)
+            report["steps"].append(step_result)
+            print(f"step {index}: {step_result['op']} ok")
+
+        report["ok"] = True
+        exit_code = 0
+    except ScriptError as exc:
+        report["error"] = str(exc)
+        print(f"debug script failed: {exc}", file=sys.stderr)
+    finally:
+        terminate_started_server(process, stderr_file)
+        write_json(report_path, report)
+        print(f"report: {report_path}")
+
+    if exit_code == 0:
+        print("debug script passed")
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

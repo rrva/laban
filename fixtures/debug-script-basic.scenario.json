@@ -1,0 +1,44 @@
+{
+  "name": "debug-script-basic",
+  "description": "Drive the headless debug server through discovery, waits, fixture output, and artifacts.",
+  "fixture": "fixtures/colored-boxes.fixture.json",
+  "deterministic": true,
+  "steps": [
+    {
+      "op": "discover",
+      "expectEndpoints": [
+        "POST /debug/actions",
+        "POST /debug/wait",
+        "POST /debug/snapshot",
+        "GET /debug/screenshot"
+      ],
+      "expectActions": ["feedOutput", "typeText"],
+      "expectWaitConditions": ["textVisible"]
+    },
+    {
+      "op": "wait",
+      "label": "initial fixture text",
+      "timeoutMs": 5000,
+      "condition": {"kind": "textVisible", "text": "hello mvp"}
+    },
+    {
+      "op": "action",
+      "label": "inject visible output",
+      "body": {"action": "feedOutput", "text": "\nscript runner output\n"}
+    },
+    {
+      "op": "wait",
+      "label": "injected output visible",
+      "timeoutMs": 5000,
+      "condition": {"kind": "textVisible", "text": "script runner output"}
+    },
+    {
+      "op": "snapshot",
+      "label": "after-output"
+    },
+    {
+      "op": "screenshot",
+      "label": "after-output"
+    }
+  ]
+}
