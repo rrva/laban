@@ -73,6 +73,8 @@ _tmp_stdout=$(mktemp)
   --debug-server=127.0.0.1:0 \
   --artifacts="$RUN_ARTIFACTS" \
   --temp-dir="$RUN_TMP" \
+  --capture=e2e-capture \
+  --capture-screenshots=final \
   --deterministic \
   >"$_tmp_stdout" &
 SERVER_PID=$!
@@ -411,12 +413,32 @@ CMD_TO_TERMINAL=$(printf '%s' "$INPUT_LOG" \
 [ "$CMD_TO_TERMINAL" -eq 0 ] \
   || fail "input-log: Command key routed to terminal: $INPUT_LOG"
 
-# 27. Terminate server
+# 27. Stop capture, validate artifact shape, and replay it
+CAP_STATUS=$(get_json /debug/capture/status)
+[ "$(printf '%s' "$CAP_STATUS" | jq -r '.active')" = "true" ] \
+  || fail "capture should be active before stop: $CAP_STATUS"
+CAP_STOP=$(post_json /debug/capture/stop '{}')
+CAP_DIR=$(printf '%s' "$CAP_STOP" | jq -r '.directory // empty')
+CAP_MANIFEST=$(printf '%s' "$CAP_STOP" | jq -r '.manifestPath // empty')
+[ -n "$CAP_DIR" ] || fail "capture stop missing directory: $CAP_STOP"
+[ -f "$CAP_MANIFEST" ] || fail "capture manifest not found: $CAP_MANIFEST"
+[ -f "$CAP_DIR/timeline.ndjson" ] || fail "capture timeline missing at $CAP_DIR"
+[ -f "$CAP_DIR/streams/pty-output.bin" ] || fail "capture pty output stream missing"
+find "$CAP_DIR/frames" -name 'frame-*.commands.json' | grep -q . \
+  || fail "capture frame command sidecars missing"
+if ! REPLAY_OUTPUT=$(./scripts/replay-capture "$CAP_DIR" 2>&1); then
+  fail "capture replay failed: $REPLAY_OUTPUT"
+fi
+printf '%s' "$REPLAY_OUTPUT" | jq -e \
+  '.terminalReplay == "passed" and .rendererReplay == "passed"' >/dev/null 2>&1 \
+  || fail "capture replay failed: $REPLAY_OUTPUT"
+
+# 28. Terminate server
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 
-# 28. Bare --debug-server shorthand — launches and answers health
+# 29. Bare --debug-server shorthand — launches and answers health
 _bare_stdout=$(mktemp)
 "$AGENT_BIN" --headless --debug-server --deterministic >"$_bare_stdout" &
 BARE_PID=$!

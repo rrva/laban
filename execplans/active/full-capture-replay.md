@@ -41,21 +41,27 @@ or TUI still running.
   `Sources/LabanDebug/HeadlessDebugRuntime.swift`,
   `Sources/LabanDebug/DebugHTTPServer.swift`, and
   `Sources/LabanAgent/main.swift`.
-- [ ] Add capture artifact schemas, event models, byte-stream storage, and
-  schema validation tests.
-- [ ] Add terminal-core byte taps for PTY input, PTY output, terminal
-  responses, resize, and lifecycle events.
-- [ ] Connect AppKit and headless input routes to shared input event envelopes.
-- [ ] Capture frame boundaries, terminal snapshots, frame commands, render
-  traces, screenshot hashes, and optional screenshots in lockstep with input
-  and PTY events.
-- [ ] Add capture start/stop/status/snapshot controls in debug mode and CLI
-  flags for interactive/headless capture.
-- [ ] Add replay mode that can recreate terminal sessions from captured PTY
-  output bytes and compare frame-command/render outputs.
-- [ ] Add renderer-only replay from captured frame commands to isolate renderer
-  regressions from terminal parser regressions.
-- [ ] Add unit, integration, and E2E tests plus manual in-the-wild acceptance.
+- [x] (2026-05-04) Add capture artifact schemas, event models,
+  byte-stream storage, and schema validation tests.
+- [x] (2026-05-04) Add terminal-core byte taps for PTY input, PTY output,
+  terminal responses, resize, and lifecycle events.
+- [x] (2026-05-04) Connect AppKit and headless input routes to shared input
+  event envelopes.
+- [x] (2026-05-04) Capture frame boundaries, terminal snapshots, frame
+  commands, render traces, screenshot hashes, and optional screenshots in
+  lockstep with input and PTY events.
+- [x] (2026-05-04) Add capture start/stop/status/snapshot controls in debug
+  mode and CLI flags for interactive/headless capture.
+- [x] (2026-05-04) Add replay mode that can recreate terminal sessions from
+  captured PTY output bytes and compare frame-command/render outputs.
+- [x] (2026-05-04) Add renderer-only replay from captured frame commands to
+  isolate renderer regressions from terminal parser regressions.
+- [x] (2026-05-04) Add unit, integration, and E2E tests. Manual in-the-wild
+  AppKit capture remains a Review Gate/manual acceptance item.
+- [x] (2026-05-04) Fixed AppKit replay gaps found by a manual capture:
+  terminal replay now hydrates captures started after an existing prompt,
+  recomputes commands with captured AppKit layout, records AppKit scroll/mouse/
+  selection input envelopes, and can infer missing scrolls in legacy artifacts.
 - [ ] Pass the Review Gate before marking this plan complete.
 
 ## Decision Log
@@ -139,45 +145,85 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [ ] Run `./scripts/check` from the repository root; expect exit 0 and final
+- [x] Run `./scripts/check` from the repository root; expect exit 0 and final
   output `check passed`.
-- [ ] Run `find schemas -name '*.json' -print0 | xargs -0 -n1 jq empty`;
+- [x] Run `find schemas -name '*.json' -print0 | xargs -0 -n1 jq empty`;
   expect exit 0.
-- [ ] Validate at least one generated capture manifest against
+- [x] Validate at least one generated capture manifest against
   `schemas/capture/manifest.schema.json` and one timeline event against
   `schemas/capture/event.schema.json` using the repository's schema validation
   method or `jq` plus targeted tests.
-- [ ] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect a
+- [x] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect a
   capture callback ABI with direction values for PTY input, PTY output, and
   terminal response or effect bytes.
-- [ ] Grep `Sources/LabanTerminalCore/session.c`; expect capture callback calls
+- [x] Grep `Sources/LabanTerminalCore/session.c`; expect capture callback calls
   before `ghostty_terminal_vt_write` consumes PTY output bytes and after every
   successful PTY input write path.
-- [ ] Run `swift test --filter CaptureRecorderTests`; expect tests for
+- [x] Run `swift test --filter CaptureRecorderTests`; expect tests for
   monotonic sequence numbers, sidecar byte offsets, SHA-256 hashes, atomic
   finalize, partial-capture recovery, and private-file permissions where the
   platform supports them.
-- [ ] Run `swift test --filter CaptureReplayTests`; expect a deterministic
+- [x] Run `swift test --filter CaptureReplayTests`; expect a deterministic
   fixture capture to replay and match terminal text, terminal dimensions,
   frame-command hash, and screenshot hash for at least one frame.
-- [ ] Run `swift test --filter LabanDebugCaptureTests`; expect debug capture
+- [x] Run `swift test --filter LabanDebugCaptureTests`; expect debug capture
   start/status/stop/snapshot endpoints, capture disabled by default, and
   rejection of capture paths outside the requested artifact directory.
-- [ ] Run `./scripts/test-e2e`; expect it to create a capture artifact during a
+- [x] Run `./scripts/test-e2e`; expect it to create a capture artifact during a
   deterministic headless run, replay that artifact, and compare the replay
   report as passing.
-- [ ] Run `./scripts/replay-capture <artifact>` on the E2E-generated artifact;
+- [x] Run `./scripts/replay-capture <artifact>` on the E2E-generated artifact;
   expect exit 0 and a report containing `terminalReplay: passed` and
   `rendererReplay: passed`.
-- [ ] Launch the AppKit app with capture enabled, run a small interactive
+- [x] Launch the AppKit app with capture enabled, run a small interactive
   sequence including typing, resize, scroll, and a TUI, stop capture, then
   replay the artifact. Record the command and replay result in `Outcomes &
   Retrospective`.
-- [ ] Inspect the generated capture directory. Expect a manifest, timeline
+- [x] Inspect the generated capture directory. Expect a manifest, timeline
   NDJSON, PTY byte sidecars, frame-command sidecars, replay report, and no
   files outside the requested artifact directory.
 
-Review status: NOT REVIEWED
+Review status: LOCAL CHECKS PASSED AFTER APPKIT FIX; FRESH-STATE REVIEW NEEDS
+RERUN BEFORE PLAN COMPLETION
+
+Review findings (2026-05-04T19:15:33Z, fresh-state review against HEAD
+`dd82e254d2893bb126ab964f90c99954dae5f2af`):
+
+- `./scripts/check` passed and ended with `check passed`.
+- `find schemas -name '*.json' -print0 | xargs -0 -n1 jq empty` passed.
+- Generated capture
+  `.artifacts/runs/e2e-1777921319-15259/captures/e2e-capture/manifest.json`
+  and its first `timeline.ndjson` event passed `jq` validation against the
+  required fields and enum values from `schemas/capture/manifest.schema.json`
+  and `schemas/capture/event.schema.json`.
+- Header grep found `LABAN_CAPTURE_BYTES_PTY_INPUT`,
+  `LABAN_CAPTURE_BYTES_PTY_OUTPUT`,
+  `LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE`, and
+  `laban_session_set_capture_callback` in
+  `Sources/LabanTerminalCore/include/LabanTerminalCore.h`.
+- Source grep found `emit_capture_bytes` before
+  `ghostty_terminal_vt_write` in `vt_write_capture`, after successful
+  `write_pty_input` writes, and after successful terminal response writes in
+  `Sources/LabanTerminalCore/session.c`.
+- `swift test --filter CaptureRecorderTests` passed 6 tests.
+- `swift test --filter CaptureReplayTests` passed 5 tests.
+- `swift test --filter LabanDebugCaptureTests` passed 4 tests.
+- `./scripts/test-e2e` passed.
+- `./scripts/replay-capture .artifacts/runs/e2e-1777921319-15259/captures/e2e-capture`
+  passed with `terminalReplay: passed`, `rendererReplay: passed`, and
+  `framesCompared: 17`.
+- Capture directory inspection found `manifest.json`, `timeline.ndjson`,
+  `streams/pty-input.bin`, `streams/pty-output.bin`,
+  `streams/terminal-response.bin`, frame command/render/snapshot sidecars,
+  screenshots, `snapshots/`, and `replay/report.json` under the capture
+  directory. The parent E2E run also contains expected non-capture E2E
+  artifacts (`long-line-render.json`, `long-line.png`, and
+  `screenshots/frame-000001.png`).
+- Manual AppKit launch was later performed by the user. Initial replay exposed
+  AppKit replay gaps; after fixes, replay of
+  `.artifacts/appkit-manual/appkit-2026-05-04T19-19-03Z` passed with
+  `terminalReplay: passed`, `rendererReplay: passed`, and
+  `framesCompared: 76`.
 
 ## Context and Orientation
 
@@ -879,8 +925,71 @@ Required interfaces at completion:
 
 ## Outcomes & Retrospective
 
-Fill this section after implementation or major milestones. Include the final
-commit SHA, capture artifact path from E2E, replay report path, tests run,
-manual AppKit workflow used, frames compared, whether terminal-byte and
-renderer-only replay passed, and any known nondeterminism left for a future
-plan.
+Implemented a full local capture artifact path with `manifest.json`,
+`timeline.ndjson`, PTY byte sidecars, frame-command sidecars, terminal snapshot
+sidecars, render sidecars, optional screenshots, debug capture controls,
+headless CLI capture flags, AppKit menu capture, terminal-byte replay, and
+renderer-only replay.
+
+Validation run on 2026-05-04:
+
+```text
+find schemas -name '*.json' -print0 | xargs -0 -n1 jq empty
+swift test --filter CaptureRecorderTests
+swift test --filter CaptureReplayTests
+swift test --filter LabanDebugCaptureTests
+swift test --filter CaptureSessionBridgeTests
+swift test --filter TerminalKeyInputTests
+swift test --filter LabanDebugKeyboardSmokeTests
+./scripts/test-e2e
+./scripts/replay-capture .artifacts/runs/e2e-1777921319-15259/captures/e2e-capture
+./scripts/check
+```
+
+Observed results: all commands above passed. The replay command reported
+`terminalReplay: passed`, `rendererReplay: passed`, and `framesCompared: 17`.
+`./scripts/check` ended with `check passed`.
+
+Additional local Review Gate evidence from continuing execution on 2026-05-04:
+
+```text
+find schemas -name '*.json' -print0 | xargs -0 -n1 jq empty
+swift test --filter CaptureRecorderTests
+swift test --filter CaptureReplayTests
+swift test --filter LabanDebugCaptureTests
+./scripts/test-e2e
+./scripts/replay-capture .artifacts/runs/e2e-1777921319-15259/captures/e2e-capture
+```
+
+Observed results: all commands above passed. Header grep confirmed
+`LABAN_CAPTURE_BYTES_PTY_INPUT`, `LABAN_CAPTURE_BYTES_PTY_OUTPUT`,
+`LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE`, and
+`laban_session_set_capture_callback` in
+`Sources/LabanTerminalCore/include/LabanTerminalCore.h`. Source grep confirmed
+capture emission before VT parser writes and after PTY input/terminal response
+write paths in `Sources/LabanTerminalCore/session.c`. The inspected capture
+directory contained `manifest.json`, `timeline.ndjson`, stream sidecars, frame
+command sidecars, and `replay/report.json`; replay reported
+`terminalReplay: passed`, `rendererReplay: passed`, and `framesCompared: 17`.
+
+Manual AppKit evidence from 2026-05-04:
+
+```text
+./scripts/replay-capture .artifacts/appkit-manual/appkit-2026-05-04T19-19-03Z
+swift test --filter CaptureReplayTests
+./scripts/test-e2e
+./scripts/check
+git diff --check
+```
+
+Observed results: the manual AppKit artifact replay passed with
+`terminalReplay: passed`, `rendererReplay: passed`, and `framesCompared: 76`.
+The regression test `testReplayHandlesAppKitMidSessionCaptureAndLegacyScroll`
+now covers AppKit-style layout, a capture started after an existing prompt, and
+a legacy local scroll segment without recorded scroll input. `./scripts/check`
+ended with `check passed`; `git diff --check` produced no output.
+
+Known remaining gate: the fresh-state Review Gate was run before the AppKit
+follow-up fixes. The implementation is locally validated, but this ExecPlan
+should not be considered complete until the independent Review Gate is rerun
+against the current changes.

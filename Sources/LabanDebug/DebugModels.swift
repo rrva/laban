@@ -1,4 +1,5 @@
 import Foundation
+import LabanCore
 
 // MARK: - Core types
 
@@ -367,26 +368,7 @@ struct ClipboardResponse: Encodable {
   }
 }
 
-// MARK: - Input event envelope (reusable; projected into /debug/input-log)
-
-struct InputEventEnvelope: Encodable {
-  var inputId: String
-  var seq: Int
-  var source: String
-  var kind: String
-  var route: String
-  var frameBefore: Int
-  var tabId: String?
-  var sessionId: String?
-  var key: String?
-  var text: String?
-  var modifiers: [String]?
-  var consumedModifiers: [String]?
-  var command: String?
-  var encodedHex: String?
-  var encodedLength: Int?
-  var error: String?
-}
+// MARK: - Input log projection
 
 struct InputLogResponse: Encodable {
   var events: [InputEventEnvelope]

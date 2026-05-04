@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/capture/manifest.schema.json",
+  "title": "Laban capture manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "runId",
+    "createdAt",
+    "app",
+    "privacy",
+    "timeline",
+    "streams",
+    "frames"
+  ],
+  "properties": {
+    "schemaVersion": {"type": "integer", "minimum": 1},
+    "kind": {"const": "laban-capture"},
+    "runId": {"type": "string", "minLength": 1},
+    "createdAt": {"type": "string", "minLength": 1},
+    "finishedAt": {"type": ["string", "null"]},
+    "interrupted": {"type": "boolean"},
+    "app": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["gitSha", "buildConfiguration", "executable"],
+      "properties": {
+        "gitSha": {"type": "string"},
+        "buildConfiguration": {"type": "string"},
+        "executable": {"type": "string"}
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["containsTerminalBytes", "containsScreenshots", "redaction"],
+      "properties": {
+        "containsTerminalBytes": {"type": "boolean"},
+        "containsScreenshots": {"type": "boolean"},
+        "redaction": {"type": "string"}
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "events"],
+      "properties": {
+        "path": {"type": "string"},
+        "events": {"type": "integer", "minimum": 0}
+      }
+    },
+    "streams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ptyInput": {"$ref": "#/$defs/stream"},
+        "ptyOutput": {"$ref": "#/$defs/stream"},
+        "terminalResponse": {"$ref": "#/$defs/stream"}
+      }
+    },
+    "frames": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["count"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "first": {"type": ["integer", "null"], "minimum": 0},
+        "last": {"type": ["integer", "null"], "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "stream": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"type": "string"},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

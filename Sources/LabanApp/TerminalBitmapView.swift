@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import LabanCore
+import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
 
@@ -42,6 +43,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastPixelWidth: Int = 0
   private var lastPixelHeight: Int = 0
   private var lastSurfaceScale: CGFloat = 0
+  private var captureRecorder: CaptureRecorder?
+  private var renderedFrameCount: Int = 0
 
   init(
     model: AppModel,
@@ -118,8 +121,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - Frame loop
 
   @objc func advanceFrame() {
+    let captureFrame = renderedFrameCount + 1
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id) {
+        session.setCaptureFrame(captureFrame)
         session.poll()
         if model.syncTitle(forTab: tab.id, from: session) {
           renderInvalidated = true
@@ -134,7 +139,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let session = model.session(forTab: activeTab.id)
     else { return }
 
-    let suffix = session.isCapturing ? " — capturing" : ""
+    let suffix = captureRecorder == nil ? "" : " — capturing"
     window?.title = model.windowTitle + suffix
 
     let terminalDirty = session.renderDirty()
@@ -145,6 +150,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     guard let snap = session.snapshot() else { return }
     defer { laban_snapshot_destroy(snap) }
+
+    captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: captureFrame))
+    captureRecorder?.recordTerminalSnapshot(
+      frame: captureFrame,
+      tabId: activeTab.id,
+      sessionId: session.id,
+      snapshot: UnsafePointer(snap)
+    )
 
     lastRows = Int(snap.pointee.rows)
     let h = bounds.height
@@ -186,7 +199,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     cmds += termProducer.commands(from: UnsafePointer(snap), selection: selection)
 
+    captureRecorder?.recordFrameCommands(
+      frame: captureFrame,
+      commands: cmds,
+      surfaceWidth: surface.width,
+      surfaceHeight: surface.height,
+      scale: Double(surface.scale)
+    )
     renderer.render(cmds)
+    renderedFrameCount = captureFrame
+    captureRecorder?.recordRenderedFrame(frame: captureFrame, surface: surface)
     cachedCGImage = surface.cgImage
     needsDisplay = true
 
@@ -237,6 +259,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     case .appCommand(let cmd):
       executeAppCommand(cmd)
     case .swallowCommand:
+      recordInput(kind: "key", route: "ignored", key: descriptor.key.map(String.init(describing:)))
       break
     case .encodedKey(let keyEvent):
       sendKeyEvent(keyEvent)
@@ -245,6 +268,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       defer { currentKeyDescriptor = nil }
       interpretKeyEvents([event])
     case .ignored:
+      recordInput(kind: "key", route: "ignored", key: descriptor.key.map(String.init(describing:)))
       break
     }
   }
@@ -312,16 +336,34 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId)
     else { return }
+    let bytes = session.encodeKey(event)
     session.sendKey(event)
+    recordInput(
+      kind: "key",
+      route: "terminal",
+      key: String(describing: event.key),
+      text: event.text,
+      modifiers: modifierNames(event.modifiers),
+      consumedModifiers: modifierNames(event.consumedModifiers),
+      encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
+      encodedLength: bytes?.count
+    )
     renderInvalidated = true
   }
 
   private func sendBytes(_ bytes: [UInt8]) {
     guard let tabId = model.activeTab?.id else { return }
     model.session(forTab: tabId)?.write(bytes)
+    recordInput(
+      kind: "text",
+      route: "terminal",
+      encodedHex: bytes.map { String(format: "%02x", $0) }.joined(),
+      encodedLength: bytes.count
+    )
   }
 
   private func executeAppCommand(_ command: AppCommand) {
+    recordInput(kind: "key", route: "appCommand", command: command.captureName)
     switch command {
     case .newTab:
       _ = try? model.createTab()
@@ -337,6 +379,56 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     case .paste:
       paste(nil)
     }
+  }
+
+  private func recordInput(
+    kind: String,
+    route: String,
+    key: String? = nil,
+    text: String? = nil,
+    modifiers: [String]? = nil,
+    consumedModifiers: [String]? = nil,
+    command: String? = nil,
+    encodedHex: String? = nil,
+    encodedLength: Int? = nil,
+    deltaRows: Int? = nil,
+    anchor: (row: Int, col: Int)? = nil,
+    focus: (row: Int, col: Int)? = nil
+  ) {
+    guard captureRecorder != nil else { return }
+    let active = model.activeTab
+    captureRecorder?.recordInput(
+      InputEventEnvelope(
+        inputId: UUID().uuidString,
+        source: "appkit",
+        kind: kind,
+        route: route,
+        frameBefore: renderedFrameCount,
+        tabId: active?.id,
+        sessionId: active?.sessionId,
+        key: key,
+        text: text,
+        modifiers: modifiers,
+        consumedModifiers: consumedModifiers,
+        command: command,
+        encodedHex: encodedHex,
+        encodedLength: encodedLength,
+        deltaRows: deltaRows,
+        anchorRow: anchor?.row,
+        anchorCol: anchor?.col,
+        focusRow: focus?.row,
+        focusCol: focus?.col
+      ))
+  }
+
+  private func modifierNames(_ modifiers: KeyModifiers) -> [String]? {
+    var names: [String] = []
+    if modifiers.contains(.shift) { names.append("shift") }
+    if modifiers.contains(.control) { names.append("control") }
+    if modifiers.contains(.alt) { names.append("option") }
+    if modifiers.contains(.command) { names.append("command") }
+    if modifiers.contains(.capsLock) { names.append("capsLock") }
+    return names.isEmpty ? nil : names
   }
 
   // MARK: - Clipboard
@@ -360,6 +452,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
+    recordInput(kind: "copy", route: "appCommand", text: text, command: "copy")
   }
 
   @objc func paste(_ sender: Any?) {
@@ -369,6 +462,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let session = model.session(forTab: tabId)
     else { return }
     _ = session.writePaste(str)
+    recordInput(kind: "paste", route: "terminal", text: str, command: "paste")
   }
 
   // MARK: - Mouse (selection + sidebar hits + mouse tracking)
@@ -404,7 +498,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
+      let bytes = session.encodeMouse(me)
       session.sendMouse(me)
+      recordInput(
+        kind: "mouse",
+        route: "terminal",
+        command: "mouseWheel",
+        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
+        encodedLength: bytes?.count
+      )
       renderInvalidated = true
       return
     }
@@ -421,6 +523,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     scrollResidualPx = decision.newResidualPx
     if decision.rowsDelta != 0 {
       session.scrollViewport(deltaRows: decision.rowsDelta)
+      recordInput(
+        kind: "scroll",
+        route: "terminal",
+        command: "scrollViewport",
+        deltaRows: decision.rowsDelta
+      )
       renderInvalidated = true
     }
   }
@@ -470,7 +578,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
+      let bytes = session.encodeMouse(pressEvent)
       session.sendMouse(pressEvent)
+      recordInput(
+        kind: "mouse",
+        route: "terminal",
+        command: "mouseDown",
+        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
+        encodedLength: bytes?.count
+      )
       renderInvalidated = true
       return
     }
@@ -478,8 +594,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // Fall back to selection. Focus stays nil until a drag actually happens,
     // so a click without drag clears any prior selection instead of leaving a
     // one-cell highlight behind.
+    let hadSelection = selectionAnchor != nil && selectionFocus != nil
     selectionAnchor = termCell(at: pt)
     selectionFocus = nil
+    if hadSelection {
+      recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+    }
     renderInvalidated = true
   }
 
@@ -511,11 +631,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
+      let bytes = session.encodeMouse(motionEvent)
       session.sendMouse(motionEvent)
+      recordInput(
+        kind: "mouse",
+        route: "terminal",
+        command: "mouseDragged",
+        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
+        encodedLength: bytes?.count
+      )
       renderInvalidated = true
       return
     }
     selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+    if let anchor = selectionAnchor, let focus = selectionFocus {
+      recordInput(
+        kind: "selection",
+        route: "terminal",
+        command: "updateSelection",
+        anchor: anchor,
+        focus: focus
+      )
+    }
     renderInvalidated = true
   }
 
@@ -546,7 +683,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
+      let bytes = session.encodeMouse(releaseEvent)
       session.sendMouse(releaseEvent)
+      recordInput(
+        kind: "mouse",
+        route: "terminal",
+        command: "mouseUp",
+        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
+        encodedLength: bytes?.count
+      )
       if trackedMouseButton == .left { trackedMouseButton = .none }
       renderInvalidated = true
       return
@@ -556,8 +701,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // selectionFocus nil, which clears the rendered selection.
     if selectionFocus != nil {
       selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+      if let anchor = selectionAnchor, let focus = selectionFocus {
+        recordInput(
+          kind: "selection",
+          route: "terminal",
+          command: "updateSelection",
+          anchor: anchor,
+          focus: focus
+        )
+      }
     } else {
       selectionAnchor = nil
+      recordInput(kind: "selection", route: "terminal", command: "clearSelection")
     }
     renderInvalidated = true
   }
@@ -715,31 +870,44 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   // MARK: - PTY-byte capture (debug)
 
-  /// Toggle a per-session capture file that mirrors every byte fed to the VT
-  /// parser. The file path is printed to stderr so a user reproducing a bug
-  /// can locate the capture without opening a save panel mid-flow.
+  /// Toggle a full capture artifact. The directory path is printed to stderr so
+  /// a user reproducing a bug can locate the capture without opening a save panel.
   @objc func toggleCapture(_ sender: Any?) {
-    guard let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id)
-    else { return }
-
-    if session.isCapturing {
-      _ = session.stopCapture()
-      fputs("laban: capture stopped\n", stderr)
+    if let recorder = captureRecorder {
+      let png = surface.pngData
+      do {
+        let manifest = try recorder.finish(
+          interrupted: false,
+          finalScreenshot: png,
+          frame: renderedFrameCount
+        )
+        fputs("laban: capture stopped \(manifest.path)\n", stderr)
+      } catch {
+        fputs("laban: capture stop failed \(error)\n", stderr)
+      }
+      captureRecorder = nil
+      model.captureSink = nil
       renderInvalidated = true
       return
     }
 
     let dir = TerminalBitmapView.captureDirectory()
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let stamp = ISO8601DateFormatter().string(from: Date())
       .replacingOccurrences(of: ":", with: "-")
-    let path = dir.appendingPathComponent("session-\(session.id)-\(stamp).bin").path
-    if session.startCapture(path: path) {
-      fputs("laban: capture started → \(path)\n", stderr)
+    do {
+      let recorder = try CaptureRecorder(
+        artifactRoot: dir,
+        name: "appkit-\(stamp)",
+        screenshots: .final,
+        executable: "LabanApp"
+      )
+      captureRecorder = recorder
+      model.captureSink = recorder
+      model.recordExistingStateForCapture()
+      fputs("laban: capture started \(recorder.directoryURL.path)\n", stderr)
       renderInvalidated = true
-    } else {
-      fputs("laban: capture failed to start at \(path)\n", stderr)
+    } catch {
+      fputs("laban: capture failed to start \(error)\n", stderr)
     }
   }
 
@@ -764,6 +932,18 @@ extension NSEvent {
   /// Bit 0 = Shift, Bit 1 = Ctrl, Bit 2 = Alt/Option, Bit 3 = Super/Command.
   fileprivate var labanModifiers: Int {
     TerminalMouseInput.ghosttyModifierMask(from: modifierFlags)
+  }
+}
+
+extension AppCommand {
+  fileprivate var captureName: String {
+    switch self {
+    case .newTab: return "newTab"
+    case .closeTab: return "closeTab"
+    case .selectTab: return "selectTab"
+    case .copy: return "copy"
+    case .paste: return "paste"
+    }
   }
 }
 

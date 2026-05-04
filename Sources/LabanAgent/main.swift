@@ -14,6 +14,10 @@ struct AgentArgs {
   var artifacts: String? = nil
   var tempDir: String? = nil
   var deterministic = false
+  var capture: String? = nil
+  var captureScreenshots: CaptureScreenshotPolicy = .marked
+  var replayCapture: String? = nil
+  var replayMode: CaptureReplayMode = .both
 }
 
 func parseArgs() -> AgentArgs {
@@ -32,6 +36,21 @@ func parseArgs() -> AgentArgs {
         a.tempDir = String(arg.dropFirst("--temp-dir=".count))
       } else if arg.hasPrefix("--debug-server=") {
         a.debugServerAddress = String(arg.dropFirst("--debug-server=".count))
+      } else if arg.hasPrefix("--capture=") {
+        a.capture = String(arg.dropFirst("--capture=".count))
+      } else if arg.hasPrefix("--capture-screenshots=") {
+        let raw = String(arg.dropFirst("--capture-screenshots=".count)).lowercased()
+        switch raw {
+        case "final": a.captureScreenshots = .final
+        case "all": a.captureScreenshots = .all
+        case "none": a.captureScreenshots = .none
+        default: a.captureScreenshots = .marked
+        }
+      } else if arg.hasPrefix("--replay-capture=") {
+        a.replayCapture = String(arg.dropFirst("--replay-capture=".count))
+      } else if arg.hasPrefix("--replay-mode=") {
+        let raw = String(arg.dropFirst("--replay-mode=".count)).lowercased()
+        a.replayMode = CaptureReplayMode(rawValue: raw) ?? .both
       }
     }
   }
@@ -87,6 +106,25 @@ func resolveURL(_ path: String) -> URL {
 
 let args = parseArgs()
 
+if let replayPath = args.replayCapture {
+  do {
+    let runner = CaptureReplayRunner(captureURL: resolveURL(replayPath), mode: args.replayMode)
+    let report = try runner.run()
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try enc.encode(report)
+    if let text = String(data: data, encoding: .utf8) {
+      print(text)
+    }
+    if !report.mismatches.isEmpty {
+      exit(1)
+    }
+    exit(0)
+  } catch {
+    fail("capture replay failed: \(error)")
+  }
+}
+
 if let debugAddr = args.debugServerAddress {
   // Debug server mode — requires --headless
   guard args.headless else { fail("--headless is required for debug server mode") }
@@ -113,7 +151,9 @@ if let debugAddr = args.debugServerAddress {
       artifactsURL: artifactsURL,
       tempURL: tempURL,
       deterministic: args.deterministic,
-      runId: runId
+      runId: runId,
+      captureName: args.capture,
+      captureScreenshots: args.captureScreenshots
     )
   } catch {
     fail("failed to initialise debug runtime: \(error)")

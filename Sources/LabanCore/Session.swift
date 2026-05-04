@@ -11,6 +11,10 @@ public final class Session {
   public let id: ID
   private var handle: OpaquePointer?
   public private(set) var isClosed = false
+  fileprivate var captureFrame = 0
+  public weak var captureSink: CaptureSink? {
+    didSet { updateCaptureCallback() }
+  }
 
   public init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
     self.id = UUID().uuidString
@@ -37,6 +41,7 @@ public final class Session {
     guard !isClosed else { return }
     isClosed = true
     if let h = handle {
+      laban_session_set_capture_callback(h, nil, nil)
       laban_session_destroy(h)
       handle = nil
     }
@@ -75,6 +80,22 @@ public final class Session {
       laban_session_feed_output(
         h, buf.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count)
     }
+  }
+
+  /// Feed captured PTY output into the terminal parser during deterministic replay.
+  /// This bypasses PTY input semantics and does not emit capture callbacks.
+  @discardableResult
+  public func replayPtyOutput(_ bytes: [UInt8]) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    if bytes.isEmpty { return 0 }
+    return bytes.withUnsafeBytes { buf in
+      laban_session_replay_pty_output(
+        h, buf.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count)
+    }
+  }
+
+  public func setCaptureFrame(_ frame: Int) {
+    captureFrame = frame
   }
 
   public func snapshot() -> UnsafeMutablePointer<LabanSnapshot>? {
@@ -265,7 +286,50 @@ public final class Session {
     guard r == 0 else { return nil }
     return PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written)
   }
+
+  private func updateCaptureCallback() {
+    guard !isClosed, let h = handle else { return }
+    if captureSink == nil {
+      laban_session_set_capture_callback(h, nil, nil)
+    } else {
+      laban_session_set_capture_callback(
+        h,
+        sessionCaptureCallback,
+        Unmanaged.passUnretained(self).toOpaque()
+      )
+    }
+  }
 }
+
+private let sessionCaptureCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?,
+    OpaquePointer?,
+    LabanCaptureBytesDirection,
+    UnsafePointer<UInt8>?,
+    Int
+  ) -> Void = { userdata, _, direction, bytes, length in
+    guard let userdata, let bytes, length > 0 else { return }
+    let session = Unmanaged<Session>.fromOpaque(userdata).takeUnretainedValue()
+    guard let sink = session.captureSink else { return }
+    let mapped: CaptureByteDirection
+    switch direction {
+    case LABAN_CAPTURE_BYTES_PTY_INPUT:
+      mapped = .ptyInput
+    case LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE:
+      mapped = .terminalResponse
+    default:
+      mapped = .ptyOutput
+    }
+    let raw = UnsafeRawBufferPointer(start: bytes, count: length)
+    _ = sink.recordBytes(
+      direction: mapped,
+      sessionId: session.id,
+      frame: session.captureFrame,
+      bytes: raw,
+      preview: nil
+    )
+  }
 
 // MARK: - Viewport state
 

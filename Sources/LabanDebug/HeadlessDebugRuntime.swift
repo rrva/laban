@@ -57,6 +57,34 @@ private struct ActionRequest: Decodable {
   var focus: CellCoordinateReq?
 }
 
+private struct CaptureStartRequest: Decodable {
+  var name: String? = nil
+  var screenshots: String? = nil
+}
+
+private struct CaptureStatusResponse: Encodable {
+  var active: Bool
+  var runId: String?
+  var directory: String?
+  var manifestPath: String?
+  var screenshots: String?
+}
+
+private struct CaptureStartResponse: Encodable {
+  var active: Bool
+  var alreadyActive: Bool
+  var runId: String
+  var directory: String
+  var screenshots: String
+}
+
+private struct CaptureStopResponse: Encodable {
+  var active: Bool
+  var runId: String?
+  var directory: String?
+  var manifestPath: String
+}
+
 private struct WaitRequest: Decodable {
   var timeoutMs: Int
   var condition: WaitCondition
@@ -145,6 +173,10 @@ public final class HeadlessDebugRuntime {
   private var eventSeq: Int = 0
   private var inputLog: [InputEventEnvelope] = []
   private var inputLogSeq: Int = 0
+  private var captureRecorder: CaptureRecorder?
+  private var lastCaptureManifestPath: String?
+  private var lastCaptureRunId: String?
+  private var lastCaptureDirectory: String?
 
   // MARK: - Init
 
@@ -153,7 +185,9 @@ public final class HeadlessDebugRuntime {
     artifactsURL: URL,
     tempURL: URL?,
     deterministic: Bool,
-    runId: String
+    runId: String,
+    captureName: String? = nil,
+    captureScreenshots: CaptureScreenshotPolicy = .marked
   ) throws {
     self.runId = runId
     self.artifactsURL = artifactsURL
@@ -186,7 +220,30 @@ public final class HeadlessDebugRuntime {
     initSize.rows = Int32(initialRows)
     initSize.cols = Int32(initialCols)
 
-    self.model = try AppModel(initialSize: initSize)
+    let initialRecorder: CaptureRecorder?
+    if let captureName {
+      try CaptureRecorder.validateCaptureName(captureName)
+      initialRecorder = try CaptureRecorder(
+        artifactRoot: artifactsURL.appendingPathComponent("captures", isDirectory: true),
+        name: captureName,
+        screenshots: captureScreenshots,
+        executable: "laban-agent"
+      )
+    } else {
+      initialRecorder = nil
+    }
+
+    self.model = try AppModel(
+      initialSize: initSize,
+      sessionFactory: { size in
+        let session = try Session.fixture(size: size)
+        session.captureSink = initialRecorder
+        return session
+      })
+    self.captureRecorder = initialRecorder
+    self.model.captureSink = initialRecorder
+    self.lastCaptureRunId = initialRecorder?.runId
+    self.lastCaptureDirectory = initialRecorder?.directoryURL.path
 
     self.windowWidth = 200 + initialCols * Int(cs.width)
     self.windowHeight = initialRows * Int(cs.height)
@@ -212,6 +269,10 @@ public final class HeadlessDebugRuntime {
       try r.apply(to: model)
     }
 
+    if initialRecorder != nil {
+      model.recordExistingStateForCapture()
+    }
+
     renderFrameUnlocked()
   }
 
@@ -226,8 +287,11 @@ public final class HeadlessDebugRuntime {
   // MARK: - Render (always call under lock or from init)
 
   private func renderFrameUnlocked() {
+    let frame = currentFrame + 1
+    captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: frame))
+
     guard let activeTab = model.activeTab else {
-      renderCommandsUnlocked([])
+      renderCommandsUnlocked([], captureFrame: frame)
       return
     }
 
@@ -238,22 +302,38 @@ public final class HeadlessDebugRuntime {
     )
 
     if let session = model.session(forTab: activeTab.id) {
+      session.setCaptureFrame(frame)
       session.poll()
       if let snap = session.snapshot() {
         defer { laban_snapshot_destroy(snap) }
+        captureRecorder?.recordTerminalSnapshot(
+          frame: frame,
+          tabId: activeTab.id,
+          sessionId: session.id,
+          snapshot: UnsafePointer(snap)
+        )
         let sel = selectionBySession[session.id]
         cmds += frameProducer.commands(from: UnsafePointer(snap), selection: sel)
       }
     }
 
-    renderCommandsUnlocked(cmds)
+    captureRecorder?.recordFrameCommands(
+      frame: frame,
+      commands: cmds,
+      surfaceWidth: surface.width,
+      surfaceHeight: surface.height,
+      scale: Double(surface.scale)
+    )
+    renderCommandsUnlocked(cmds, captureFrame: frame)
   }
 
-  private func renderCommandsUnlocked(_ cmds: [FrameCommand]) {
+  private func renderCommandsUnlocked(_ cmds: [FrameCommand], captureFrame: Int? = nil) {
     renderer.render(cmds)
     lastFrameCommands = cmds
     lastDrawStats = countStats(cmds)
     currentFrame += 1
+    let frame = captureFrame ?? currentFrame
+    captureRecorder?.recordRenderedFrame(frame: frame, surface: surface)
     appendEvent(EventEntry(kind: "frame.rendered", frame: currentFrame))
   }
 
@@ -294,6 +374,7 @@ public final class HeadlessDebugRuntime {
     e.seq = inputLogSeq
     inputLogSeq += 1
     inputLog.append(e)
+    captureRecorder?.recordInput(e)
     if inputLog.count > 512 {
       inputLog.removeFirst(inputLog.count - 512)
     }
@@ -518,17 +599,196 @@ public final class HeadlessDebugRuntime {
   private func syncTitlesUnlocked() {
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id) {
-        model.syncTitle(forTab: tab.id, from: session)
+        if model.syncTitle(forTab: tab.id, from: session),
+          let updated = model.tabs.first(where: { $0.id == tab.id })
+        {
+          var event = CaptureTimelineEvent(
+            kind: .appState,
+            tabId: updated.id,
+            sessionId: updated.sessionId
+          )
+          event.title = updated.title
+          captureRecorder?.record(event)
+        }
       }
     }
   }
 
   // MARK: - Endpoints
 
+  public func captureStatus() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    if let recorder = captureRecorder {
+      return jsonEncode(
+        CaptureStatusResponse(
+          active: true,
+          runId: recorder.runId,
+          directory: recorder.directoryURL.path,
+          manifestPath: nil,
+          screenshots: recorder.screenshots.rawValue
+        ))
+    }
+    return jsonEncode(
+      CaptureStatusResponse(
+        active: false,
+        runId: lastCaptureRunId,
+        directory: lastCaptureDirectory,
+        manifestPath: lastCaptureManifestPath,
+        screenshots: nil
+      ))
+  }
+
+  public func startCapture(_ data: Data) -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    if let recorder = captureRecorder {
+      return jsonEncode(
+        CaptureStartResponse(
+          active: true,
+          alreadyActive: true,
+          runId: recorder.runId,
+          directory: recorder.directoryURL.path,
+          screenshots: recorder.screenshots.rawValue
+        ),
+        status: 409
+      )
+    }
+
+    let body = data.isEmpty ? Data("{}".utf8) : data
+    let req =
+      (try? JSONDecoder().decode(CaptureStartRequest.self, from: body))
+      ?? CaptureStartRequest()
+    let policy = HeadlessDebugRuntime.capturePolicy(from: req.screenshots)
+    let name = req.name ?? CaptureRecorder.makeRunId(name: nil)
+    do {
+      try CaptureRecorder.validateCaptureName(name)
+      let recorder = try CaptureRecorder(
+        artifactRoot: artifactsURL.appendingPathComponent("captures", isDirectory: true),
+        name: name,
+        screenshots: policy,
+        executable: "laban-agent"
+      )
+      captureRecorder = recorder
+      model.captureSink = recorder
+      lastCaptureRunId = recorder.runId
+      lastCaptureDirectory = recorder.directoryURL.path
+      lastCaptureManifestPath = nil
+      model.recordExistingStateForCapture()
+      return jsonEncode(
+        CaptureStartResponse(
+          active: true,
+          alreadyActive: false,
+          runId: recorder.runId,
+          directory: recorder.directoryURL.path,
+          screenshots: recorder.screenshots.rawValue
+        ))
+    } catch {
+      return jsonError("capture start failed: \(error)", status: 400)
+    }
+  }
+
+  public func stopCapture() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let recorder = captureRecorder else {
+      if let manifest = lastCaptureManifestPath {
+        return jsonEncode(
+          CaptureStopResponse(
+            active: false,
+            runId: lastCaptureRunId,
+            directory: lastCaptureDirectory,
+            manifestPath: manifest
+          ))
+      }
+      return jsonError("capture is not active", status: 400)
+    }
+
+    let finalPNG: Data?
+    if recorder.screenshots == .none {
+      finalPNG = nil
+    } else {
+      finalPNG = surface.pngData
+    }
+    do {
+      let manifest = try recorder.finish(
+        interrupted: false,
+        finalScreenshot: finalPNG,
+        frame: currentFrame
+      )
+      captureRecorder = nil
+      model.captureSink = nil
+      lastCaptureManifestPath = manifest.path
+      lastCaptureRunId = recorder.runId
+      lastCaptureDirectory = recorder.directoryURL.path
+      return jsonEncode(
+        CaptureStopResponse(
+          active: false,
+          runId: recorder.runId,
+          directory: recorder.directoryURL.path,
+          manifestPath: manifest.path
+        ))
+    } catch {
+      return jsonError("capture stop failed: \(error)", status: 500)
+    }
+  }
+
+  public func captureSnapshot() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let recorder = captureRecorder else {
+      return jsonError("capture is not active", status: 400)
+    }
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let events = eventLog.map { e in
+      EventResponse(
+        seq: e.seq, kind: e.kind,
+        tabId: e.tabId, sessionId: e.sessionId, frame: e.frame,
+        width: e.width, height: e.height, text: e.text,
+        path: e.path, action: e.action, deltaRows: e.deltaRows, error: e.error
+      )
+    }
+    let frameCommandBody =
+      FrameCommandsResponse(
+        frame: currentFrame,
+        backend: "software",
+        commands: lastFrameCommands.enumerated().map {
+          serializeCommandForList($0.element, index: $0.offset, includeText: true)
+        },
+        truncated: false
+      )
+    var files: [String: Data] = [
+      "state.json": stateUnlocked().body,
+      "events.json": (try? enc.encode(EventsResponse(events: events, next: eventSeq))) ?? Data(),
+      "input-log.json": (try? enc.encode(InputLogResponse(events: inputLog, next: inputLogSeq)))
+        ?? Data(),
+      "frame-commands.json": (try? enc.encode(frameCommandBody)) ?? Data(),
+    ]
+    if let png = surface.pngData {
+      files["screenshot.png"] = png
+    }
+    do {
+      let rel = try recorder.writeSnapshotBundle(frame: currentFrame, files: files)
+      return jsonEncode(["path": recorder.directoryURL.appendingPathComponent(rel).path])
+    } catch {
+      return jsonError("capture snapshot failed: \(error)", status: 500)
+    }
+  }
+
   public func health() -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
     return jsonEncode(HealthResponse(ok: true, mode: mode, frame: currentFrame, focused: true))
+  }
+
+  private static func capturePolicy(from raw: String?) -> CaptureScreenshotPolicy {
+    switch raw?.lowercased() {
+    case "final": return .final
+    case "all": return .all
+    case "none": return .none
+    default: return .marked
+    }
   }
 
   public func state() -> DebugResponse {
@@ -585,6 +845,7 @@ public final class HeadlessDebugRuntime {
       return jsonError("failed to write screenshot: \(error)", status: 500)
     }
     appendEvent(EventEntry(kind: "screenshot.captured", frame: currentFrame, path: fileURL.path))
+    captureRecorder?.recordScreenshot(frame: currentFrame, data: pngData)
     return jsonEncode(
       ScreenshotResult(
         path: fileURL.path,
@@ -648,10 +909,26 @@ public final class HeadlessDebugRuntime {
 
     case "typeText":
       guard let text = req.text else { return jsonError("typeText requires text") }
+      let frameBefore = currentFrame
+      let activeTab = model.activeTab
+      let bytes = Array(text.utf8)
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
-        session.write(Array(text.utf8))
+        session.write(bytes)
       }
       renderFrameUnlocked()
+      appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: UUID().uuidString,
+          source: "debug",
+          kind: "text",
+          route: "terminal",
+          frameBefore: frameBefore,
+          tabId: activeTab?.id,
+          sessionId: activeTab?.sessionId,
+          text: text,
+          encodedHex: bytes.map { String(format: "%02x", $0) }.joined(),
+          encodedLength: bytes.count
+        ))
       appendEvent(EventEntry(kind: "input.typed", text: text))
       return actionResult(ok: true)
 
@@ -678,6 +955,7 @@ public final class HeadlessDebugRuntime {
       return actionResult(ok: true)
 
     case "setSelection":
+      let frameBefore = currentFrame
       guard let anchorReq = req.anchor, let focusReq = req.focus else {
         return jsonError("setSelection requires anchor and focus")
       }
@@ -693,11 +971,27 @@ public final class HeadlessDebugRuntime {
         focus: TerminalCellCoordinate(row: focusReq.row, col: focusReq.col)
       )
       selectionBySession[session.id] = sel
+      appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: UUID().uuidString,
+          source: "debug",
+          kind: "selection",
+          route: "selection",
+          frameBefore: frameBefore,
+          tabId: tab.id,
+          sessionId: session.id,
+          command: "setSelection",
+          anchorRow: anchorReq.row,
+          anchorCol: anchorReq.col,
+          focusRow: focusReq.row,
+          focusCol: focusReq.col
+        ))
       renderFrameUnlocked()
       appendEvent(EventEntry(kind: "selection.set", sessionId: tab.sessionId))
       return actionResult(ok: true)
 
     case "copy":
+      let frameBefore = currentFrame
       let targetTab =
         req.sessionId.flatMap { sid in model.tabs.first(where: { $0.sessionId == sid }) }
         ?? model.activeTab
@@ -718,10 +1012,23 @@ public final class HeadlessDebugRuntime {
       }
       lastCopyText = text
       debugClipboard = text
+      appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: UUID().uuidString,
+          source: "debug",
+          kind: "copy",
+          route: "appCommand",
+          frameBefore: frameBefore,
+          tabId: tab.id,
+          sessionId: session.id,
+          command: "copy"
+        ))
       appendEvent(EventEntry(kind: "clipboard.copied", text: text))
       return actionResult(ok: true)
 
     case "paste":
+      let frameBefore = currentFrame
+      let activeTab = model.activeTab
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
         let result = session.writePaste(debugClipboard)
         lastPasteText = debugClipboard
@@ -729,10 +1036,23 @@ public final class HeadlessDebugRuntime {
         lastPasteIgnoredNonText = false
       }
       renderFrameUnlocked()
+      appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: UUID().uuidString,
+          source: "debug",
+          kind: "paste",
+          route: "terminal",
+          frameBefore: frameBefore,
+          tabId: activeTab?.id,
+          sessionId: activeTab?.sessionId,
+          text: debugClipboard,
+          command: "paste"
+        ))
       appendEvent(EventEntry(kind: "clipboard.pasted", text: debugClipboard))
       return actionResult(ok: true)
 
     case "scrollViewport":
+      let frameBefore = currentFrame
       let targetTab =
         req.sessionId.flatMap { sid in
           model.tabs.first(where: { $0.sessionId == sid })
@@ -741,12 +1061,25 @@ public final class HeadlessDebugRuntime {
         return jsonError("no session for scrollViewport")
       }
       session.scrollViewport(deltaRows: req.deltaRows ?? 0)
+      appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: UUID().uuidString,
+          source: "debug",
+          kind: "scroll",
+          route: "terminal",
+          frameBefore: frameBefore,
+          tabId: t.id,
+          sessionId: session.id,
+          command: "scrollViewport",
+          deltaRows: req.deltaRows ?? 0
+        ))
       renderFrameUnlocked()
       appendEvent(
         EventEntry(kind: "viewport.scrolled", sessionId: t.sessionId, deltaRows: req.deltaRows))
       return actionResult(ok: true)
 
     case "mouseWheel":
+      let frameBefore = currentFrame
       guard let x = req.x, let y = req.y, let deltaY = req.deltaY else {
         return jsonError("mouseWheel requires x, y, and deltaY")
       }
@@ -789,6 +1122,18 @@ public final class HeadlessDebugRuntime {
         // Normal mode: scroll viewport.
         let rows = isUp ? -1 : 1
         session.scrollViewport(deltaRows: rows)
+        appendInputEnvelope(
+          InputEventEnvelope(
+            inputId: UUID().uuidString,
+            source: "debug",
+            kind: "mouse",
+            route: "terminal",
+            frameBefore: frameBefore,
+            tabId: tab.id,
+            sessionId: session.id,
+            command: "mouseWheel",
+            deltaRows: rows
+          ))
         renderFrameUnlocked()
         appendEvent(
           EventEntry(
@@ -798,6 +1143,7 @@ public final class HeadlessDebugRuntime {
       }
 
     case "click":
+      let frameBefore = currentFrame
       guard let x = req.x, let y = req.y, let button = req.button else {
         return jsonError("click requires x, y, and button")
       }
@@ -876,6 +1222,21 @@ public final class HeadlessDebugRuntime {
         let coord = TerminalCellCoordinate(row: clickedRow, col: clickedCol)
         let sel = TerminalSelection(sessionId: session.id, anchor: coord, focus: coord)
         selectionBySession[session.id] = sel
+        appendInputEnvelope(
+          InputEventEnvelope(
+            inputId: UUID().uuidString,
+            source: "debug",
+            kind: "selection",
+            route: "selection",
+            frameBefore: frameBefore,
+            tabId: tab.id,
+            sessionId: session.id,
+            command: "click",
+            anchorRow: coord.row,
+            anchorCol: coord.col,
+            focusRow: coord.row,
+            focusCol: coord.col
+          ))
         renderFrameUnlocked()
         appendEvent(EventEntry(kind: "selection.set", sessionId: tab.sessionId, action: "click"))
         return jsonEncode(
