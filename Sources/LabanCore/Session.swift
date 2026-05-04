@@ -72,7 +72,8 @@ public final class Session {
     guard !isClosed, let h = handle else { return -1 }
     if bytes.isEmpty { return 0 }
     return bytes.withUnsafeBytes { buf in
-      laban_session_feed_output(h, buf.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count)
+      laban_session_feed_output(
+        h, buf.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count)
     }
   }
 

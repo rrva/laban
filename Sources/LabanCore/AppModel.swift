@@ -128,8 +128,9 @@ public final class AppModel {
     let g = (rgba >> 16) & 0xFF
     let b = (rgba >> 8) & 0xFF
     let hex = String(format: "%02x%02x%02x", r, g, b)
-    let s = index.map { "\u{1B}]\(n);\($0);#\(hex)\u{07}" }
-           ?? "\u{1B}]\(n);#\(hex)\u{07}"
+    let s =
+      index.map { "\u{1B}]\(n);\($0);#\(hex)\u{07}" }
+      ?? "\u{1B}]\(n);#\(hex)\u{07}"
     return Array(s.utf8)
   }
 

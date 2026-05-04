@@ -34,22 +34,22 @@ public enum Theme {
 
     // ANSI 16-color palette for OSC injection (indices 0–15).
     public static let ansi16: [UInt32] = [
-      bg1,           // 0  black
-      red,           // 1  red
-      green,         // 2  green
-      yellow,        // 3  yellow
-      blue,          // 4  blue
-      magenta,       // 5  magenta
-      cyan,          // 6  cyan
-      dim0,          // 7  white
-      0x325B_66FF,   // 8  bright black
-      brRed,         // 9  bright red
-      brGreen,       // 10 bright green
-      brYellow,      // 11 bright yellow
-      brBlue,        // 12 bright blue
-      brMagenta,     // 13 bright magenta
-      brCyan,        // 14 bright cyan
-      fg1,           // 15 bright white
+      bg1,  // 0  black
+      red,  // 1  red
+      green,  // 2  green
+      yellow,  // 3  yellow
+      blue,  // 4  blue
+      magenta,  // 5  magenta
+      cyan,  // 6  cyan
+      dim0,  // 7  white
+      0x325B_66FF,  // 8  bright black
+      brRed,  // 9  bright red
+      brGreen,  // 10 bright green
+      brYellow,  // 11 bright yellow
+      brBlue,  // 12 bright blue
+      brMagenta,  // 13 bright magenta
+      brCyan,  // 14 bright cyan
+      fg1,  // 15 bright white
     ]
   }
 }
