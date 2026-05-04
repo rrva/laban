@@ -74,16 +74,14 @@ final class AppModelTests: XCTestCase {
     _ = secondSessionId  // used above
   }
 
-  func testFinalTabReplacement() throws {
+  func testFinalTabClosedThrows() throws {
     let model = try makeModel()
     let originalTabId = model.tabs[0].id
-    let originalSessionId = model.tabs[0].sessionId
     let originalSessionRef = model.session(forTab: originalTabId)!
-    try model.closeTab(originalTabId)
-    XCTAssertEqual(model.tabs.count, 1, "still one tab after closing last")
-    XCTAssertTrue(model.tabs[0].isActive)
-    XCTAssertNotEqual(model.tabs[0].id, originalTabId, "new tab must have new id")
-    XCTAssertNotEqual(model.tabs[0].sessionId, originalSessionId, "new session id")
+    XCTAssertThrowsError(try model.closeTab(originalTabId)) { error in
+      XCTAssertEqual(error as? AppError, AppError.lastTabClosed)
+    }
+    XCTAssertTrue(model.tabs.isEmpty, "tabs cleared after last close")
     XCTAssertTrue(originalSessionRef.isClosed, "original session must be destroyed")
   }
 

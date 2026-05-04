@@ -656,7 +656,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   @objc func closeTab(_ sender: Any?) {
     guard let tabId = model.activeTab?.id else { return }
-    _ = try? model.closeTab(tabId)
+    do {
+      try model.closeTab(tabId)
+    } catch AppError.lastTabClosed {
+      window?.close()
+      return
+    } catch {}
     renderInvalidated = true
   }
 
