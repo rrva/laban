@@ -374,15 +374,7 @@ public final class HeadlessDebugRuntime {
   private func stateUnlocked() -> DebugResponse {
     syncTitlesUnlocked()
     let tabs = model.tabs.enumerated().map { i, tab -> TabResponse in
-      var statusStr = "running"
-      if let session = model.session(forTab: tab.id),
-        let snap = session.snapshot()
-      {
-        defer { laban_snapshot_destroy(snap) }
-        statusStr = snapshotStatus(UnsafePointer(snap))
-      } else {
-        statusStr = "failed"
-      }
+      let statusStr = model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
       return TabResponse(
         id: tab.id, index: i, title: tab.title,
         active: tab.isActive, status: statusStr, sessionId: tab.sessionId
@@ -759,7 +751,6 @@ public final class HeadlessDebugRuntime {
     let list = model.tabs.map { tab -> SessionResponse in
       var rows = 1
       var cols = 1
-      var statusStr = "running"
       var exitStatus: Int? = nil
       var mouseTracking = false
       var focusReporting = false
@@ -771,12 +762,13 @@ public final class HeadlessDebugRuntime {
         defer { laban_snapshot_destroy(snap) }
         rows = max(Int(snap.pointee.rows), 1)
         cols = max(Int(snap.pointee.cols), 1)
-        statusStr = snapshotStatus(UnsafePointer(snap))
         if snap.pointee.status != 0 { exitStatus = Int(snap.pointee.exit_status) }
         mouseTracking = snap.pointee.mouse_tracking != 0
         focusReporting = snap.pointee.focus_reporting != 0
         dirty = snap.pointee.dirty != 0
       }
+
+      let statusStr = model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
 
       // Fetch real viewport state if available.
       var scrollbackLines = 0

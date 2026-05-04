@@ -102,6 +102,20 @@ public final class Session {
     return laban_session_mark_rendered(h)
   }
 
+  // MARK: - Exit state
+
+  /// Returns the current exit state of the child process.
+  /// Returns `.running` when closed so callers need not special-case isClosed.
+  public func exitState() -> TabStatus {
+    guard !isClosed, let h = handle else { return .running }
+    let raw = laban_session_exit_state(h)
+    switch raw.status {
+    case 1: return .exited(code: Int(raw.exit_status))
+    case 2: return .exitedSignal(signal: Int(raw.exit_status))
+    default: return .running
+    }
+  }
+
   // MARK: - Title
 
   /// Consume any pending title-changed notification from the C layer.

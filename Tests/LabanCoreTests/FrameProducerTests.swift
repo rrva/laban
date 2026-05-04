@@ -348,4 +348,69 @@ final class FrameProducerTests: XCTestCase {
     // Not a benchmark gate; just verify it completes and produces a plausible count
     XCTAssertGreaterThan(cmds.count, 0)
   }
+
+  // MARK: - Exit banner tests
+
+  private func makeExitSnapshot(status: Int32, exitStatus: Int32) -> LabanSnapshot {
+    var snap = LabanSnapshot()
+    snap.rows = 24
+    snap.cols = 80
+    snap.status = status
+    snap.exit_status = exitStatus
+    snap.cells = nil
+    return snap
+  }
+
+  func testNoBannerWhenRunning() {
+    var snap = makeExitSnapshot(status: 0, exitStatus: 0)
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
+    let exitLabels = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _) = cmd,
+        text.localizedCaseInsensitiveContains("exited")
+          || text.localizedCaseInsensitiveContains("signaled")
+      {
+        return text
+      }
+      return nil
+    }
+    XCTAssertTrue(
+      exitLabels.isEmpty,
+      "running snapshot must not produce exit banner; got \(exitLabels)")
+  }
+
+  func testBannerWhenExitedNormal() {
+    var snap = makeExitSnapshot(status: 1, exitStatus: 0)
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16, originX: 0, originY: 10)
+    let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
+    let bannerRects = cmds.compactMap { cmd -> CGRect? in
+      if case .rect(let r, _, _) = cmd, abs(r.origin.y - 10) < 1 { return r }
+      return nil
+    }
+    XCTAssertFalse(bannerRects.isEmpty, "exited snapshot must produce a banner rect at originY")
+    let bannerLabels = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _) = cmd, text.contains("exited") { return text }
+      return nil
+    }
+    XCTAssertFalse(
+      bannerLabels.isEmpty,
+      "exited snapshot must produce a glyph run containing 'exited'")
+    XCTAssertTrue(
+      bannerLabels.contains(where: { $0.contains("0") }),
+      "exit code 0 must appear in banner text; got \(bannerLabels)")
+  }
+
+  func testBannerWhenExitedSignal() {
+    var snap = makeExitSnapshot(status: 2, exitStatus: 15)
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
+    let bannerLabels = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _) = cmd, text.contains("signaled") { return text }
+      return nil
+    }
+    XCTAssertFalse(bannerLabels.isEmpty, "signal exit must produce glyph run containing 'signaled'")
+    XCTAssertTrue(
+      bannerLabels.contains(where: { $0.contains("15") }),
+      "signal number 15 must appear in banner text; got \(bannerLabels)")
+  }
 }
