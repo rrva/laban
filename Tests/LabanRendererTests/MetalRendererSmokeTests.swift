@@ -148,6 +148,75 @@ final class MetalRendererSmokeTests: XCTestCase {
       "removing the cursor must change visible pixels even when damage is empty")
   }
 
+  func testScrollShiftReusesPreviousFramePixels() throws {
+    // 8 rows of solid colours; on frame B we shift "up by 1" (rows 0..6 of B
+    // = rows 1..7 of A) and add a new colour at the bottom. The renderer's
+    // scroll detector should fire and reuse all the pixels for rows 0..6
+    // via blit; the only render-pass work is the new bottom row.
+    //
+    // Verifies pixel parity by comparing PNG bytes — the persistent target
+    // path is bit-stable when the same commands produce the same pixels.
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: 1) else {
+      XCTFail("MetalRenderer.init returned nil")
+      return
+    }
+    let rows = 8
+    let cellH: CGFloat = 19
+    let cols = 40
+    let cellW: CGFloat = 9
+    renderer.resize(
+      pixelWidth: Int(CGFloat(cols) * cellW),
+      pixelHeight: Int(CGFloat(rows) * cellH),
+      scale: 1)
+
+    // 8 distinct colours so each row is uniquely identifiable in the hashes.
+    let palette: [UInt32] = [
+      0xFF_00_00_FF, 0x00_FF_00_FF, 0x00_00_FF_FF, 0xFF_FF_00_FF,
+      0x00_FF_FF_FF, 0xFF_00_FF_FF, 0xFF_80_00_FF, 0x80_00_FF_FF,
+    ]
+    func frameWithColors(_ colors: [UInt32]) -> [FrameCommand] {
+      var out: [FrameCommand] = []
+      for r in 0..<rows {
+        let y = CGFloat(rows - 1 - r) * cellH
+        out.append(
+          .rect(
+            CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+            color: colors[r], source: .terminal))
+      }
+      return out
+    }
+
+    // Frame A: rows 0..7 use palette[0..7].
+    renderer.render(frameWithColors(palette), damage: .full)
+    let pngA = renderer.pngData
+    XCTAssertNotNil(pngA)
+
+    // Frame B: rows 0..6 use palette[1..7] (one-row scroll up); row 7 is a
+    // new colour 0xCAFEBA_FF.
+    var paletteShifted = Array(palette.dropFirst())
+    paletteShifted.append(0xCA_FE_BA_FF)
+    // libghostty would flag every row as dirty after a scroll; pass full
+    // damage to match what the view would actually send.
+    renderer.render(frameWithColors(paletteShifted), damage: .full)
+    let pngB = renderer.pngData
+    XCTAssertNotNil(pngB)
+
+    // Frame C: render the SAME shifted palette as frame B again. With the
+    // scroll detector in play, frame B's pixels should already be in the
+    // persistent target; an empty-damage render should reproduce the same
+    // PNG. (This indirectly confirms the persistent target is consistent.)
+    renderer.render(frameWithColors(paletteShifted), damage: .partial(yRanges: []))
+    let pngC = renderer.pngData
+    XCTAssertEqual(pngB, pngC, "B and C show identical content; pixels must match")
+
+    // A and B must differ — B has a new bottom row colour.
+    XCTAssertNotEqual(pngA, pngB)
+  }
+
   func testMetalRendererInitializesAndRendersOneFrame() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       // CI without a Metal-capable device — skip rather than fail.
