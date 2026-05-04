@@ -73,22 +73,10 @@ public final class AppModel {
     let tab = tabs[idx]
 
     if tabs.count == 1 {
-      // Replace final tab: close current, open fresh
-      let newSession = try sessionFactory(currentSize)
-      AppModel.maybeAutoCapture(newSession)
-      AppModel.applyThemePalette(to: newSession)
-      let newTab = Tab(
-        id: UUID().uuidString,
-        position: 1,
-        title: "Tab 1",
-        isActive: true,
-        sessionId: newSession.id
-      )
       sessions[tab.sessionId]?.close()
       sessions.removeValue(forKey: tab.sessionId)
-      sessions[newSession.id] = newSession
-      tabs = [newTab]
-      return
+      tabs = []
+      throw AppError.lastTabClosed
     }
 
     // Determine next active tab before removing

@@ -1,6 +1,7 @@
 public enum AppError: Error, Equatable {
   case tabLimitReached
   case tabNotFound
+  case lastTabClosed
 }
 
 public enum TabStatus: Equatable {
