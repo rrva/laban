@@ -40,7 +40,7 @@ cat > "${bundle_dir}/Info.plist" <<'EOF'
 </plist>
 EOF
 
-# Re-sign with adhoc identity so the binary is valid when executed directly.
-codesign --force --sign - ".build/laban/Laban.app"
+# Sign with personal Apple Development certificate so TCC grants survive rebuilds.
+codesign --force --sign "Apple Development: Ragnar Rova (U34QC433V8)" ".build/laban/Laban.app"
 
 printf 'build-app: %s\n' "${bundle_dir}/MacOS/LabanApp"
