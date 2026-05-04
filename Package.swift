@@ -67,7 +67,8 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanAppTests",
-      dependencies: ["LabanApp"]
+      dependencies: ["LabanApp"],
+      exclude: ["Fixtures"]
     ),
   ]
 )
