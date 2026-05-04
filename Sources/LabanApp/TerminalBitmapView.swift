@@ -461,10 +461,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     {
       let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
-      guard let button = TerminalMouseInput.trackedTerminalButton(
-        trackedMouseButton,
-        matching: .left
-      ) else {
+      guard
+        let button = TerminalMouseInput.trackedTerminalButton(
+          trackedMouseButton,
+          matching: .left
+        )
+      else {
         return
       }
       let geom = terminalMouseGeometry(at: pt)
@@ -493,10 +495,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
-      guard let button = TerminalMouseInput.trackedTerminalButton(
-        trackedMouseButton,
-        matching: .left
-      ) else {
+      guard
+        let button = TerminalMouseInput.trackedTerminalButton(
+          trackedMouseButton,
+          matching: .left
+        )
+      else {
         return
       }
       let pt = convert(event.locationInWindow, from: nil)
@@ -565,10 +569,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     {
       let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
-      guard let button = TerminalMouseInput.trackedTerminalButton(
-        trackedMouseButton,
-        matching: .right
-      ) else {
+      guard
+        let button = TerminalMouseInput.trackedTerminalButton(
+          trackedMouseButton,
+          matching: .right
+        )
+      else {
         return
       }
       let geom = terminalMouseGeometry(at: pt)
@@ -593,10 +599,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
-      guard let button = TerminalMouseInput.trackedTerminalButton(
-        trackedMouseButton,
-        matching: .right
-      ) else {
+      guard
+        let button = TerminalMouseInput.trackedTerminalButton(
+          trackedMouseButton,
+          matching: .right
+        )
+      else {
         return
       }
       let pt = convert(event.locationInWindow, from: nil)
