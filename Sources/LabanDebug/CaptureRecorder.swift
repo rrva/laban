@@ -273,18 +273,22 @@ public final class CaptureRecorder: CaptureSink {
     return visibleHash
   }
 
+  /// Backend-neutral rendered-frame recorder: anything that can produce
+  /// PNG bytes + surface metrics can call this. Software callers pipe the
+  /// `BitmapSurface.pngData` accessor; Metal callers pipe a blit-readback PNG.
   public func recordRenderedFrame(
     frame: Int,
-    surface: BitmapSurface,
-    backend: String = "software"
+    pngData: Data?,
+    width: Int,
+    height: Int,
+    scale: Double,
+    backend: String
   ) {
-    let png = surface.pngData
-    let pixelHash = png.map(CaptureHash.sha256)
+    let pixelHash = pngData.map(CaptureHash.sha256)
     let payload = CapturedRenderFrame(
       frame: frame,
       backend: backend,
-      surface: CapturedSurface(
-        width: surface.width, height: surface.height, scale: Double(surface.scale)),
+      surface: CapturedSurface(width: width, height: height, scale: scale),
       pixelHash: pixelHash
     )
     let enc = JSONEncoder()
@@ -295,17 +299,32 @@ public final class CaptureRecorder: CaptureSink {
     }
     lock.lock()
     var event = CaptureTimelineEvent(kind: .frameRendered, frame: frame)
-    event.width = surface.width
-    event.height = surface.height
-    event.scale = Double(surface.scale)
+    event.width = width
+    event.height = height
+    event.scale = scale
     event.backend = backend
     event.pixelHash = pixelHash
     writeEventLocked(event)
     lock.unlock()
 
-    if screenshots == .all, let png {
+    if screenshots == .all, let png = pngData {
       _ = recordScreenshot(frame: frame, data: png)
     }
+  }
+
+  /// Convenience for software callers that already have a `BitmapSurface`.
+  public func recordRenderedFrame(
+    frame: Int,
+    surface: BitmapSurface,
+    backend: String = "software"
+  ) {
+    recordRenderedFrame(
+      frame: frame,
+      pngData: surface.pngData,
+      width: surface.width,
+      height: surface.height,
+      scale: Double(surface.scale),
+      backend: backend)
   }
 
   @discardableResult

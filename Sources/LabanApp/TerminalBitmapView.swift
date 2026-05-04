@@ -277,10 +277,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     )
     backend.render(cmds)
     renderedFrameCount = captureFrame
-    if let software = backend as? SoftwareBackend {
-      // Software backend's recorder helper still wants a BitmapSurface to
-      // hash; Metal capture goes through the pngData path on the recorder.
-      captureRecorder?.recordRenderedFrame(frame: captureFrame, surface: software.surface)
+    if let recorder = captureRecorder {
+      // Both software and Metal flow through the same recorder entry now.
+      // Pulling pngData triggers a CGImage realisation on software and a
+      // blit-readback on Metal — equivalent capture sidecars either way.
+      recorder.recordRenderedFrame(
+        frame: captureFrame,
+        pngData: backend.pngData,
+        width: backend.surfaceWidth,
+        height: backend.surfaceHeight,
+        scale: Double(backend.surfaceScale),
+        backend: backend is MetalRenderer ? "metal" : "software")
     }
     if !backendSelfPresents {
       needsDisplay = true
