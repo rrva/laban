@@ -39,6 +39,9 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
 - [x] (2026-05-04) Inspected `/Users/rrj/wrk/ghostling/main.c` and
   `/Users/rrj/wrk/ghostling/README.md` for its keyboard encoder path and
   known input limitations.
+- [x] (2026-05-04) Updated the debug/input-log milestone so it records
+  recorder-compatible event envelopes and explicitly does not claim to be the
+  durable in-the-wild input/render replay system.
 - [ ] Add terminal-core key event ABI, persistent libghostty key encoder/event
   ownership, Swift wrappers, and focused core tests.
 - [ ] Replace AppKit hand-written terminal escape tables with normalized key
@@ -85,6 +88,18 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
   associated text correctly. AppKit sometimes commits text without a single
   physical key event, especially through IME; direct text write remains the
   conservative fallback for those cases.
+  Date/Author: 2026-05-04 / Codex.
+
+- Decision: Treat `/debug/input-log` as a bounded diagnostic projection over a
+  recorder-compatible input event envelope, not as the durable recording or
+  replay system.
+  Rationale: A separate in-the-wild reproducibility plan needs one lockstep
+  timeline that can connect platform input, normalized key events, encoded PTY
+  bytes, terminal output, frame-command extraction, render traces, and
+  screenshots. This keyboard plan must not bake in a private keyboard-only log
+  shape that future recording work has to replace. It should emit structured
+  events with stable IDs and frame/session references so a later recorder can
+  persist and replay the same facts.
   Date/Author: 2026-05-04 / Codex.
 
 ## Surprises & Discoveries
@@ -136,8 +151,9 @@ done until this gate has passed.
   encoder, and key-up release events with no UTF-8 text.
 - [ ] Run `swift test --filter LabanDebugKeyboardSmokeTests`; expect tests for
   `/debug/actions` `key`, `/debug/input-log`, Command route `appCommand`,
-  text route `terminal`, ignored unsupported key actions, and encoded bytes
-  exposed in bounded debug diagnostics.
+  text route `terminal`, ignored unsupported key actions, recorder-compatible
+  event IDs and frame references, and encoded bytes exposed in bounded debug
+  diagnostics.
 - [ ] Run `./scripts/test-e2e`; expect the existing E2E flow plus a keyboard
   segment that sends `{"action":"key","key":"enter"}` and a Command shortcut
   through `/debug/actions`, then verifies `/debug/input-log` routes them
@@ -164,6 +180,11 @@ done until this gate has passed.
   modified arrows, function keys, and release-aware keyboard mode behavior do
   not regress. Record the program and exact keys used in `Outcomes &
   Retrospective`.
+- [ ] Grep `Sources` for the input log implementation; expect one normalized
+  event envelope type that contains `inputId`, `source`, `frameBefore`,
+  `sessionId`, `route`, and optional `encodedHex`. The bounded HTTP input log
+  may project from that type, but it must not be a one-off private JSON shape
+  that cannot be reused by a future durable recorder.
 
 Review status: NOT REVIEWED
 
@@ -210,6 +231,16 @@ Definitions used in this plan:
   (`press`, `repeat`, or `release`), physical key identity, active modifiers,
   modifiers consumed by native text input, optional UTF-8 text, optional
   unshifted Unicode codepoint, and whether the event is part of composition.
+- Input event envelope means the outer record around a normalized input event.
+  It adds replay-oriented context such as a stable `inputId`, source
+  (`appkit`, `debug`, `paste`, `mouse`, or `command`), active tab/session IDs,
+  routing decision, frame number before the event was applied, encoded bytes,
+  and errors. This keyboard plan only keeps a bounded diagnostic log of these
+  envelopes. A later recording plan owns durable artifacts and replay.
+- Lockstep recording means durable capture where input events, PTY bytes,
+  terminal state changes, frame commands, render traces, and screenshots can
+  be ordered on one timeline. This plan must preserve enough correlation data
+  for that future work but must not implement the full recorder.
 - Consumed modifier means a modifier already used by the platform text system
   to produce text. For example, on a macOS layout where Option-4 produces a
   currency symbol, Option is consumed and should not become terminal Alt.
@@ -644,14 +675,25 @@ field is absent. `key` names should include letters `a` through `z`, digits
 `modifiers` aliases where both `alt` and `option` map to `LABAN_KEY_MOD_ALT`,
 and both `command` and `super` map to `LABAN_KEY_MOD_SUPER`.
 
-In `Sources/LabanDebug/HeadlessDebugRuntime.swift`:
+In `Sources/LabanDebug/HeadlessDebugRuntime.swift` and the shared input helper
+files:
 
-- Add an input-log ring buffer with a bounded maximum, for example 512 events.
-- Add `InputLogEntry` with fields that match
-  `schemas/debug/input-log.schema.json`: `seq`, `kind`, `route`, `key`,
-  `text`, `modifiers`, `consumedModifiers`, and `command`.
+- Add a reusable input event envelope type rather than a private
+  `HeadlessDebugRuntime` JSON struct. A good shape is `InputEventEnvelope`
+  with at least `inputId`, `seq`, `source`, `kind`, `route`, `frameBefore`,
+  `tabId`, `sessionId`, `key`, `text`, `modifiers`, `consumedModifiers`,
+  `command`, `encodedHex`, and `error`. The name can differ, but the type must
+  be reusable by a future capture writer and by `/debug/input-log`.
+- Add an input-log ring buffer with a bounded maximum, for example 512
+  envelopes. The ring is a diagnostic projection only; it is not the durable
+  capture artifact.
+- Ensure every envelope has a stable `inputId` string, a monotonically
+  increasing `seq`, and the frame number before the event was applied. If the
+  event routes to a terminal session, include that session ID. If it produces
+  terminal input bytes, include `encodedHex` and byte length. Do not store only
+  human-readable text because a later replay plan must compare exact bytes.
 - Log existing `typeText`, `paste`, `copy`, mouse, and command routes as input
-  log events while preserving the current `/debug/events` endpoint.
+  envelopes while preserving the current `/debug/events` endpoint.
 - Implement `case "key"`:
   - parse the key action into a `KeyEvent`;
   - if Command is present, use the same app-command policy as AppKit:
@@ -663,23 +705,28 @@ In `Sources/LabanDebug/HeadlessDebugRuntime.swift`:
     parser. Return ok if encoding succeeds and log the encoded bytes.
 - Add `GET /debug/input-log?since=<sequence>` in
   `Sources/LabanDebug/DebugHTTPServer.swift`.
-- Include bounded encoded byte diagnostics in `/debug/input-log` entries as an
-  additional property, for example `encodedHex: "1b5b41"`. The schema permits
-  additional properties and agents need this when diagnosing wrong sequences.
+- Serve `/debug/input-log` by projecting the stored envelopes into
+  `schemas/debug/input-log.schema.json`. The schema permits additional
+  properties; include `inputId`, `source`, `frameBefore`, `tabId`,
+  `sessionId`, `encodedHex`, and `encodedLength` whenever present.
+- Do not add a replay format, capture manifest, screenshot capture, or byte
+  stream archive in this keyboard plan. Those belong to the full capture/replay
+  ExecPlan. This plan only ensures keyboard/input data is structured enough for
+  that future recorder to subscribe to the same event stream.
 
 Add `Tests/LabanDebugTests/LabanDebugKeyboardSmokeTests.swift`.
 
 Required debug tests:
 
 - `{"action":"key","key":"enter"}` returns ok and logs kind `key`, route
-  `terminal`.
+  `terminal`, an `inputId`, `frameBefore`, and a session ID.
 - `{"action":"key","key":"t","modifiers":["command"]}` creates a new tab and
   logs route `appCommand`, command `newTab`.
 - `{"action":"key","key":"x","modifiers":["command"]}` logs route `ignored`
   and does not write terminal bytes.
 - `{"action":"key","key":"4","modifiers":["option"],"consumedModifiers":["option"],"text":"$","unshifted":"4"}`
   logs text route `terminal`, consumed modifier `option`, and encoded text
-  bytes for `$`.
+  bytes for `$` in `encodedHex`.
 - `GET /debug/input-log?since=0` returns `events` and `next`.
 
 ### Milestone 5: End-To-End And Manual Acceptance
