@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreVideo
 import LabanCore
 import LabanDebug
 import LabanRenderer
@@ -18,7 +19,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
 
   private var cachedCGImage: CGImage?
-  private var frameTimer: Timer?
+  // Vsync-aligned tick. CVDisplayLink fires once per actual display refresh
+  // (60Hz / 120Hz ProMotion / whatever the panel is running), giving smoother
+  // motion than a wall-clock Timer while keeping the same dirty-frame
+  // early-return — idle frames stay free.
+  private var displayLink: CVDisplayLink?
 
   // Last known terminal grid size (updated each frame)
   private var lastRows: Int = 24
@@ -67,27 +72,53 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     guard window != nil else {
-      frameTimer?.invalidate()
-      frameTimer = nil
+      stopDisplayLink()
       return
     }
-    // Prevent duplicate timers when view transitions between windows
-    if frameTimer == nil {
+    // Prevent duplicate links when view transitions between windows.
+    if displayLink == nil {
       recreateSurface()
-      let timer = Timer(
-        timeInterval: 1.0 / 30.0,
-        target: self,
-        selector: #selector(advanceFrame),
-        userInfo: nil,
-        repeats: true
-      )
-      RunLoop.current.add(timer, forMode: .common)
-      frameTimer = timer
+      startDisplayLink()
     } else {
       recreateSurface()
     }
     renderInvalidated = true
     window?.makeFirstResponder(self)
+  }
+
+  private func startDisplayLink() {
+    var link: CVDisplayLink?
+    let createResult = CVDisplayLinkCreateWithActiveCGDisplays(&link)
+    guard createResult == kCVReturnSuccess, let link else { return }
+
+    let opaqueSelf = Unmanaged.passUnretained(self).toOpaque()
+    let setCallbackResult = CVDisplayLinkSetOutputCallback(
+      link,
+      { (_, _, _, _, _, userInfo) -> CVReturn in
+        guard let userInfo else { return kCVReturnSuccess }
+        let view = Unmanaged<TerminalBitmapView>.fromOpaque(userInfo).takeUnretainedValue()
+        // Vsync callback runs on a dedicated high-priority thread; bounce to
+        // main where AppKit, the model, and the renderer must be touched.
+        DispatchQueue.main.async { view.advanceFrame() }
+        return kCVReturnSuccess
+      },
+      opaqueSelf
+    )
+    guard setCallbackResult == kCVReturnSuccess else { return }
+
+    displayLink = link
+    CVDisplayLinkStart(link)
+  }
+
+  private func stopDisplayLink() {
+    if let link = displayLink {
+      CVDisplayLinkStop(link)
+    }
+    displayLink = nil
+  }
+
+  deinit {
+    stopDisplayLink()
   }
 
   override func viewDidChangeBackingProperties() {
