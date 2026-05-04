@@ -38,12 +38,43 @@
   "$defs": {
     "tab": {
       "type": "object",
-      "required": ["id", "index", "title", "active", "status", "sessionId"],
+      "required": [
+        "id",
+        "index",
+        "title",
+        "displayTitle",
+        "titleSource",
+        "titleFrozen",
+        "activityState",
+        "unseenOutput",
+        "active",
+        "status",
+        "sessionId"
+      ],
       "additionalProperties": true,
       "properties": {
         "id": {"type": "string"},
         "index": {"type": "integer", "minimum": 0},
         "title": {"type": "string"},
+        "displayTitle": {"type": "string"},
+        "titleSource": {
+          "type": "string",
+          "enum": ["user", "agent", "repo", "cwd", "process", "terminal", "fallback"]
+        },
+        "terminalTitle": {"type": ["string", "null"]},
+        "userTitle": {"type": ["string", "null"]},
+        "titleFrozen": {"type": "boolean"},
+        "activityState": {
+          "type": "string",
+          "enum": ["active", "background", "running", "idle", "unseenOutput", "waiting", "exited"]
+        },
+        "lastActivityAt": {"type": ["string", "null"], "format": "date-time"},
+        "lastOutputAt": {"type": ["string", "null"], "format": "date-time"},
+        "unseenOutput": {"type": "boolean"},
+        "exitStatus": {"type": ["integer", "null"]},
+        "workspace": {"type": "object", "additionalProperties": true},
+        "process": {"type": "object", "additionalProperties": true},
+        "agent": {"type": "object", "additionalProperties": true},
         "active": {"type": "boolean"},
         "status": {
           "type": "string",

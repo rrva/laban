@@ -102,6 +102,8 @@ final class AppModelTests: XCTestCase {
     let sessionId = model.tabs[0].sessionId
     try model.updateTitle("zsh", forTab: tabId)
     XCTAssertEqual(model.tabs[0].title, "zsh")
+    XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "zsh")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .terminal)
     XCTAssertEqual(model.tabs[0].id, tabId, "tab id unchanged after title update")
     XCTAssertEqual(model.tabs[0].sessionId, sessionId, "session id unchanged after title update")
   }
@@ -170,6 +172,8 @@ final class AppModelTests: XCTestCase {
     }
     model.forceExitState(forTab: tabId, status: .exited(code: 0))
     XCTAssertEqual(model.tabs[0].status, .exited(code: 0))
+    XCTAssertEqual(model.tabs[0].titleMetadata.activityState, .exited)
+    XCTAssertEqual(model.tabs[0].titleMetadata.exitStatus, 0)
     let changed = model.syncExitState(forTab: tabId, from: session)
     XCTAssertFalse(changed, "syncExitState must be no-op once tab is already exited")
     XCTAssertEqual(model.tabs[0].status, .exited(code: 0))

@@ -118,6 +118,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - Frame loop
 
   @objc func advanceFrame() {
+    let activeTabId = model.activeTab?.id
+    var activeTerminalDirty = false
+
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id) {
         session.poll()
@@ -126,6 +129,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         }
         if model.syncExitState(forTab: tab.id, from: session) {
           renderInvalidated = true
+        }
+        let dirty = session.renderDirty()
+        if dirty {
+          if model.noteOutput(forTab: tab.id) {
+            renderInvalidated = true
+          }
+          if tab.id == activeTabId {
+            activeTerminalDirty = true
+          } else {
+            session.markRendered()
+          }
         }
       }
     }
@@ -137,7 +151,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let suffix = session.isCapturing ? " — capturing" : ""
     window?.title = model.windowTitle + suffix
 
-    let terminalDirty = session.renderDirty()
+    let terminalDirty = activeTerminalDirty || session.renderDirty()
     let tabChanged = lastRenderedActiveTabId != activeTab.id
 
     // Return early when nothing changed

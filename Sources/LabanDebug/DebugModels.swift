@@ -1,4 +1,5 @@
 import Foundation
+import LabanCore
 
 // MARK: - Core types
 
@@ -47,6 +48,7 @@ public struct DebugReadiness: Encodable {
 
 func jsonEncode<T: Encodable>(_ value: T, status: Int = 200) -> DebugResponse {
   let enc = JSONEncoder()
+  enc.dateEncodingStrategy = .iso8601
   enc.outputFormatting = .sortedKeys
   guard let data = try? enc.encode(value) else {
     return DebugResponse(
@@ -96,6 +98,19 @@ struct TabResponse: Encodable {
   var id: String
   var index: Int
   var title: String
+  var displayTitle: String
+  var titleSource: String
+  var terminalTitle: String?
+  var userTitle: String?
+  var titleFrozen: Bool
+  var activityState: String
+  var lastActivityAt: Date?
+  var lastOutputAt: Date?
+  var unseenOutput: Bool
+  var exitStatus: Int?
+  var workspace: TabWorkspaceMetadata
+  var process: TabProcessMetadata
+  var agent: TabAgentMetadata
   var active: Bool
   var status: String
   var sessionId: String
@@ -149,6 +164,18 @@ struct SessionResponse: Encodable {
   var scrollbackLines: Int
   var viewportOffset: Int
   var title: String
+  var displayTitle: String
+  var titleSource: String
+  var terminalTitle: String?
+  var userTitle: String?
+  var titleFrozen: Bool
+  var activityState: String
+  var lastActivityAt: Date?
+  var lastOutputAt: Date?
+  var unseenOutput: Bool
+  var workspace: TabWorkspaceMetadata
+  var process: TabProcessMetadata
+  var agent: TabAgentMetadata
   var mouseTracking: Bool
   var focusReporting: Bool
   var dirty: Bool

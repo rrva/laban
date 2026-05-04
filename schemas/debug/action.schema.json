@@ -6,6 +6,10 @@
     {"$ref": "#/$defs/newTab"},
     {"$ref": "#/$defs/closeTab"},
     {"$ref": "#/$defs/selectTab"},
+    {"$ref": "#/$defs/setTabTitle"},
+    {"$ref": "#/$defs/freezeTabTitle"},
+    {"$ref": "#/$defs/clearTabTitle"},
+    {"$ref": "#/$defs/setTabMetadata"},
     {"$ref": "#/$defs/resizeWindow"},
     {"$ref": "#/$defs/typeText"},
     {"$ref": "#/$defs/key"},
@@ -40,6 +44,65 @@
       "properties": {
         "action": {"const": "selectTab"},
         "tabId": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "setTabTitle": {
+      "type": "object",
+      "required": ["action", "title"],
+      "properties": {
+        "action": {"const": "setTabTitle"},
+        "tabId": {"type": "string"},
+        "title": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "freezeTabTitle": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "freezeTabTitle"},
+        "tabId": {"type": "string"},
+        "frozen": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "clearTabTitle": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "clearTabTitle"},
+        "tabId": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "setTabMetadata": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "setTabMetadata"},
+        "tabId": {"type": "string"},
+        "cwd": {"type": "string"},
+        "repoName": {"type": "string"},
+        "repoRoot": {"type": "string"},
+        "worktreeName": {"type": "string"},
+        "branch": {"type": "string"},
+        "isDirty": {"type": "boolean"},
+        "foregroundProcess": {"type": "string"},
+        "foregroundCommand": {"type": "string"},
+        "pid": {"type": "integer"},
+        "agentName": {"type": "string"},
+        "sessionName": {"type": "string"},
+        "agentSessionId": {"type": "string"},
+        "taskLabel": {"type": "string"},
+        "model": {"type": "string"},
+        "contextPercent": {"type": "integer", "minimum": 0, "maximum": 100},
+        "awaitingInput": {"type": "boolean"},
+        "activityState": {
+          "enum": ["active", "background", "running", "idle", "unseenOutput", "waiting", "exited"]
+        },
+        "unseenOutput": {"type": "boolean"},
+        "exitStatus": {"type": "integer"}
       },
       "additionalProperties": false
     },

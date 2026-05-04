@@ -41,6 +41,8 @@ private struct ActionRequest: Decodable {
   var width: Int?
   var height: Int?
   var text: String?
+  var title: String?
+  var frozen: Bool?
   var count: Int?
   var key: String?
   var type: String?
@@ -55,6 +57,25 @@ private struct ActionRequest: Decodable {
   var deltaRows: Int?
   var anchor: CellCoordinateReq?
   var focus: CellCoordinateReq?
+  var cwd: String?
+  var repoName: String?
+  var repoRoot: String?
+  var worktreeName: String?
+  var branch: String?
+  var isDirty: Bool?
+  var foregroundProcess: String?
+  var foregroundCommand: String?
+  var pid: Int?
+  var agentName: String?
+  var sessionName: String?
+  var agentSessionId: String?
+  var taskLabel: String?
+  var model: String?
+  var contextPercent: Int?
+  var awaitingInput: Bool?
+  var activityState: String?
+  var unseenOutput: Bool?
+  var exitStatus: Int?
 }
 
 private struct WaitRequest: Decodable {
@@ -226,6 +247,8 @@ public final class HeadlessDebugRuntime {
   // MARK: - Render (always call under lock or from init)
 
   private func renderFrameUnlocked() {
+    syncSessionMetadataUnlocked()
+
     guard let activeTab = model.activeTab else {
       renderCommandsUnlocked([])
       return
@@ -513,14 +536,42 @@ public final class HeadlessDebugRuntime {
     DebugMouseInput.terminalSurfaceWidth(windowWidth: windowWidth, sidebarWidth: sidebarWidth)
   }
 
-  // MARK: - Title synchronization
+  // MARK: - Session metadata synchronization
 
-  private func syncTitlesUnlocked() {
+  private func syncSessionMetadataUnlocked() {
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id) {
+        session.poll()
         model.syncTitle(forTab: tab.id, from: session)
+        model.syncExitState(forTab: tab.id, from: session)
       }
     }
+  }
+
+  private func tabResponse(for tab: Tab, index: Int) -> TabResponse {
+    let metadata = tab.titleMetadata
+    let statusStr = model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
+    return TabResponse(
+      id: tab.id,
+      index: index,
+      title: metadata.displayTitle,
+      displayTitle: metadata.displayTitle,
+      titleSource: metadata.titleSource.rawValue,
+      terminalTitle: metadata.terminalTitle,
+      userTitle: metadata.userTitle,
+      titleFrozen: metadata.titleFrozen,
+      activityState: metadata.activityState.rawValue,
+      lastActivityAt: metadata.lastActivityAt,
+      lastOutputAt: metadata.lastOutputAt,
+      unseenOutput: metadata.unseenOutput,
+      exitStatus: metadata.exitStatus,
+      workspace: metadata.workspace,
+      process: metadata.process,
+      agent: metadata.agent,
+      active: tab.isActive,
+      status: statusStr,
+      sessionId: tab.sessionId
+    )
   }
 
   // MARK: - Endpoints
@@ -538,13 +589,9 @@ public final class HeadlessDebugRuntime {
   }
 
   private func stateUnlocked() -> DebugResponse {
-    syncTitlesUnlocked()
+    syncSessionMetadataUnlocked()
     let tabs = model.tabs.enumerated().map { i, tab -> TabResponse in
-      let statusStr = model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
-      return TabResponse(
-        id: tab.id, index: i, title: tab.title,
-        active: tab.isActive, status: statusStr, sessionId: tab.sessionId
-      )
+      tabResponse(for: tab, index: i)
     }
     let activeTab = model.activeTab
     return jsonEncode(
@@ -629,6 +676,100 @@ public final class HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "tab.selected", tabId: tabId))
       return actionResult(ok: true)
 
+    case "setTabTitle":
+      let targetTabId = req.tabId ?? model.activeTab?.id
+      guard let tabId = targetTabId else { return jsonError("setTabTitle requires an active tab") }
+      guard let title = req.title ?? req.text else {
+        return jsonError("setTabTitle requires title")
+      }
+      do { try model.renameTab(tabId, title: title) } catch {
+        return jsonError("setTabTitle failed: \(error)")
+      }
+      renderFrameUnlocked()
+      appendEvent(EventEntry(kind: "tab.title.set", tabId: tabId, text: title))
+      return actionResult(ok: true)
+
+    case "freezeTabTitle":
+      let targetTabId = req.tabId ?? model.activeTab?.id
+      guard let tabId = targetTabId else {
+        return jsonError("freezeTabTitle requires an active tab")
+      }
+      do { try model.freezeTitle(forTab: tabId, frozen: req.frozen ?? true) } catch {
+        return jsonError("freezeTabTitle failed: \(error)")
+      }
+      renderFrameUnlocked()
+      appendEvent(EventEntry(kind: "tab.title.frozen", tabId: tabId))
+      return actionResult(ok: true)
+
+    case "clearTabTitle":
+      let targetTabId = req.tabId ?? model.activeTab?.id
+      guard let tabId = targetTabId else {
+        return jsonError("clearTabTitle requires an active tab")
+      }
+      do { try model.clearUserTitle(forTab: tabId) } catch {
+        return jsonError("clearTabTitle failed: \(error)")
+      }
+      renderFrameUnlocked()
+      appendEvent(EventEntry(kind: "tab.title.cleared", tabId: tabId))
+      return actionResult(ok: true)
+
+    case "setTabMetadata":
+      let targetTabId = req.tabId ?? model.activeTab?.id
+      guard let tabId = targetTabId else {
+        return jsonError("setTabMetadata requires an active tab")
+      }
+      let workspace =
+        req.cwd != nil || req.repoName != nil || req.repoRoot != nil || req.worktreeName != nil
+          || req.branch != nil || req.isDirty != nil
+        ? TabWorkspaceMetadata(
+          cwd: req.cwd,
+          repoName: req.repoName,
+          repoRoot: req.repoRoot,
+          worktreeName: req.worktreeName,
+          branch: req.branch,
+          isDirty: req.isDirty ?? false
+        )
+        : nil
+      let process =
+        req.foregroundProcess != nil || req.foregroundCommand != nil || req.pid != nil
+        ? TabProcessMetadata(
+          foregroundProcess: req.foregroundProcess,
+          foregroundCommand: req.foregroundCommand,
+          pid: req.pid
+        )
+        : nil
+      let agent =
+        req.agentName != nil || req.sessionName != nil || req.agentSessionId != nil
+          || req.taskLabel != nil || req.model != nil || req.contextPercent != nil
+          || req.awaitingInput != nil
+        ? TabAgentMetadata(
+          agentName: req.agentName,
+          sessionName: req.sessionName,
+          sessionId: req.agentSessionId,
+          taskLabel: req.taskLabel,
+          model: req.model,
+          contextPercent: req.contextPercent,
+          awaitingInput: req.awaitingInput ?? false
+        )
+        : nil
+      let activityState = req.activityState.flatMap(TabActivityState.init(rawValue:))
+      do {
+        try model.updateTitleMetadata(
+          forTab: tabId,
+          workspace: workspace,
+          process: process,
+          agent: agent,
+          activityState: activityState,
+          unseenOutput: req.unseenOutput,
+          exitStatus: req.exitStatus
+        )
+      } catch {
+        return jsonError("setTabMetadata failed: \(error)")
+      }
+      renderFrameUnlocked()
+      appendEvent(EventEntry(kind: "tab.metadata.set", tabId: tabId))
+      return actionResult(ok: true)
+
     case "resizeWindow":
       guard let w = req.width, let h = req.height else {
         return jsonError("resizeWindow requires width and height")
@@ -650,6 +791,7 @@ public final class HeadlessDebugRuntime {
       guard let text = req.text else { return jsonError("typeText requires text") }
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
         session.write(Array(text.utf8))
+        model.noteOutput(forTab: tab.id)
       }
       renderFrameUnlocked()
       appendEvent(EventEntry(kind: "input.typed", text: text))
@@ -659,6 +801,7 @@ public final class HeadlessDebugRuntime {
       guard let text = req.text else { return jsonError("feedOutput requires text") }
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
         session.feedOutput(Array(text.utf8))
+        model.noteOutput(forTab: tab.id)
       }
       renderFrameUnlocked()
       appendEvent(EventEntry(kind: "output.fed", text: text))
@@ -977,9 +1120,10 @@ public final class HeadlessDebugRuntime {
     lock.lock()
     defer { lock.unlock() }
 
-    syncTitlesUnlocked()
+    syncSessionMetadataUnlocked()
 
     let list = model.tabs.map { tab -> SessionResponse in
+      let metadata = tab.titleMetadata
       var rows = 1
       var cols = 1
       var exitStatus: Int? = nil
@@ -998,6 +1142,7 @@ public final class HeadlessDebugRuntime {
         focusReporting = snap.pointee.focus_reporting != 0
         dirty = snap.pointee.dirty != 0
       }
+      if exitStatus == nil { exitStatus = metadata.exitStatus }
 
       let statusStr = model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
 
@@ -1017,7 +1162,20 @@ public final class HeadlessDebugRuntime {
         rows: rows, cols: cols,
         cellWidth: cellWidth, cellHeight: cellHeight,
         scrollbackLines: scrollbackLines, viewportOffset: viewportOffset,
-        title: tab.title, mouseTracking: mouseTracking,
+        title: metadata.displayTitle,
+        displayTitle: metadata.displayTitle,
+        titleSource: metadata.titleSource.rawValue,
+        terminalTitle: metadata.terminalTitle,
+        userTitle: metadata.userTitle,
+        titleFrozen: metadata.titleFrozen,
+        activityState: metadata.activityState.rawValue,
+        lastActivityAt: metadata.lastActivityAt,
+        lastOutputAt: metadata.lastOutputAt,
+        unseenOutput: metadata.unseenOutput,
+        workspace: metadata.workspace,
+        process: metadata.process,
+        agent: metadata.agent,
+        mouseTracking: mouseTracking,
         focusReporting: focusReporting, dirty: dirty
       )
     }
@@ -1319,7 +1477,7 @@ public final class HeadlessDebugRuntime {
 
     while true {
       lock.lock()
-      syncTitlesUnlocked()
+      syncSessionMetadataUnlocked()
       let satisfied = checkConditionUnlocked(req.condition)
       let frame = currentFrame
       if satisfied {

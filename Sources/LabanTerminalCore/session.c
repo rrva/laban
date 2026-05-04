@@ -22,6 +22,8 @@
 #include <pwd.h>
 #include <time.h>
 
+#define LABAN_TITLE_MAX_BYTES 1024
+
 struct LabanSession {
     GhosttyTerminal terminal;
     GhosttyRenderState render_state;
@@ -666,10 +668,12 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         GhosttyString title_str = {0};
         if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_TITLE, &title_str)
                 == GHOSTTY_SUCCESS && title_str.len > 0) {
-            title_copy = malloc(title_str.len + 1);
+            size_t title_len =
+                title_str.len < LABAN_TITLE_MAX_BYTES ? title_str.len : LABAN_TITLE_MAX_BYTES;
+            title_copy = malloc(title_len + 1);
             if (title_copy) {
-                memcpy(title_copy, title_str.ptr, title_str.len);
-                title_copy[title_str.len] = '\0';
+                memcpy(title_copy, title_str.ptr, title_len);
+                title_copy[title_len] = '\0';
             }
         }
     }

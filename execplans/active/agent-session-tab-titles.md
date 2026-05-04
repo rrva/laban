@@ -39,18 +39,23 @@ metadata for Claude Code and Cursor-style sessions.
 - [x] (2026-05-04) Incorporated web-backed research on Apple Terminal, VS
   Code, iTerm2, Kitty, WezTerm, tmux, Warp, Claude Code, and Cursor tab/session
   conventions.
-- [ ] Add a title metadata model with separate raw terminal title, user title,
+- [x] (2026-05-04) Add a title metadata model with separate raw terminal title, user title,
   display title, title source, activity state, and exit state.
-- [ ] Update title extraction and AppModel updates so terminal title changes
+- [x] (2026-05-04) Update title extraction and AppModel updates so terminal title changes
   update metadata without changing tab/session identity.
-- [ ] Render bounded, non-overlapping sidebar rows with index, primary title,
+- [x] (2026-05-04) Render bounded, non-overlapping sidebar rows with index, primary title,
   status/attention indicator, and a compact secondary metadata line when
   available.
-- [ ] Expose title metadata through debug state/session endpoints and tests.
+- [x] (2026-05-04) Expose title metadata through debug state/session endpoints and tests.
+- [x] (2026-05-04) Add debug-only `setTabTitle`, `freezeTabTitle`,
+  `clearTabTitle`, and `setTabMetadata` actions so headless tests can drive
+  title precedence and injected workspace/process metadata without adding UI.
 - [ ] Add cwd/repo/process metadata discovery without shell-integration
-  injection.
+  injection. The model, resolver, debug response fields, and debug injection
+  path exist; real non-invasive discovery probes remain deferred.
 - [ ] Add manual rename/freeze/color and search/filter after the core metadata
-  model is stable.
+  model is stable. Model/debug rename and freeze exist; color, AppKit UI, and
+  search/filter remain deferred.
 - [ ] Add optional agent-aware metadata hooks for Claude Code and Cursor-style
   sessions.
 - [ ] Feed title/metadata changes into the capture/replay plan so UI state is
@@ -187,6 +192,19 @@ done until this gate has passed.
   sidebar still makes the active task, title source, and exited state legible.
 
 Review status: NOT REVIEWED
+
+Local execution note: the executing agent ran the Review Gate commands that are
+available locally, including `./scripts/check`, but did not mark the gate as
+passed. Per this plan, the Review Gate still needs a fresh-state reviewer.
+
+## Surprises & Discoveries
+
+- Observation: Ghostty does not reliably surface an extremely large 5000-byte
+  OSC title in a fixture snapshot, while a 600-byte title is accepted and is
+  enough to prove Laban's hostile-title bounding behavior.
+  Evidence: `swift test --filter LabanSessionTests` initially failed the new
+  title-copy test with a nil snapshot title for the 5000-byte case; changing
+  the fixture to 600 bytes made the bounded owned-copy test pass.
 
 ## Context and Orientation
 
@@ -666,6 +684,37 @@ This plan is complete only when:
 - Tests cover title precedence, bounding, sidebar layout, and debug state.
 - `./scripts/check` passes.
 
+Validation run, 2026-05-04:
+
+```text
+swift test --filter TabTitleMetadataTests
+# passed: 7 tests
+
+swift test --filter SidebarProducerTests
+# passed: 16 tests
+
+swift test --filter LabanDebugTitleTests
+# passed: 5 tests
+
+swift test --filter LabanSessionTests
+# passed: 29 tests
+
+swift test --filter AppModelTests
+# passed: 14 tests
+
+swift test --filter TerminalTitleTests
+# passed: 13 tests
+
+swift test --filter LabanDebugSmokeTests
+# passed: 30 tests
+
+./scripts/test-e2e
+# test-e2e passed
+
+./scripts/check
+# check passed
+```
+
 ## Idempotence and Recovery
 
 The metadata model is additive. If a milestone is interrupted, existing tabs
@@ -716,6 +765,13 @@ New or updated interfaces at completion:
 
 ## Outcomes & Retrospective
 
-Fill this section after implementation or major milestones. Include final
-commit SHA, tests run, AppKit manual workflow, any metadata sources that proved
-too unreliable, and any deferred Claude Code or Cursor integration details.
+Milestones 1 through 4 now have a working MVP slice. `Tab` stores
+`TabTitleMetadata` separately from stable IDs and session ID, `AppModel`
+updates terminal title/user title/activity/exit metadata without replacing
+identity, the sidebar renders width-bounded two-line rows with status markers,
+and debug state/session responses expose title metadata while preserving the
+legacy `title` field as `displayTitle`.
+
+Deferred work remains for real cwd/repo/branch/process discovery, AppKit rename
+UI, color/search controls, agent-aware metadata, capture/replay integration,
+and fresh-state Review Gate signoff.

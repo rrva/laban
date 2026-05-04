@@ -140,6 +140,35 @@ final class LabanSessionTests: XCTestCase {
     laban_session_destroy(session)
   }
 
+  func testSnapshotTitleCopyIsBoundedAndOwned() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let longTitle = String(repeating: "a", count: 600)
+    let osc = "\u{1B}]0;\(longTitle)\u{07}"
+    let bytes = Array(osc.utf8)
+    bytes.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        bytes.count)
+    }
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+
+    guard let title = snapshot?.pointee.title else {
+      XCTFail("snapshot title is nil")
+      return
+    }
+    XCTAssertLessThanOrEqual(strlen(title), 1024)
+    XCTAssertEqual(String(cString: title), String(repeating: "a", count: Int(strlen(title))))
+  }
+
   // MARK: - PTY mode tests
 
   private func withCArgv(_ strings: [String], body: (UnsafePointer<UnsafePointer<CChar>?>) -> Void)

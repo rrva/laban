@@ -20,7 +20,7 @@ public struct SidebarProducer {
     self.sidebarWidth = sidebarWidth
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
-    self.rowHeight = ceil(cellHeight) + 8
+    self.rowHeight = ceil(cellHeight * 2) + 10
   }
 
   public enum HitResult: Equatable {
@@ -32,7 +32,7 @@ public struct SidebarProducer {
 
   public func commands(tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat) -> [FrameCommand] {
     var cmds: [FrameCommand] = []
-    cmds.reserveCapacity(tabs.count * 5 + 6)
+    cmds.reserveCapacity(tabs.count * 7 + 6)
 
     // Sidebar background
     cmds.append(
@@ -80,16 +80,62 @@ public struct SidebarProducer {
       let labelX: CGFloat = isActive ? 12 : 10
       let exited = tab.status != .running
       let labelFg = exited ? Theme.CurrentTheme.dim0 : fg
-      let prefix = exited ? "⏹ " : ""
-      let label = "\(tab.position) \(prefix)\(tab.title.prefix(10))"
+      let closeX = sidebarWidth - 22
+      let markerX = closeX - 16
+      let indexText = "\(tab.position)"
+      let titleX = labelX + CGFloat(indexText.count + 1) * cellWidth
+      let titleMaxScalars = max(1, Int(floor((markerX - titleX - 4) / cellWidth)))
+      let subtitleMaxScalars = max(1, Int(floor((closeX - titleX - 4) / cellWidth)))
+      let resolved = TabTitleResolver.resolve(
+        tab.titleMetadata,
+        fallbackPosition: tab.position,
+        maxTitleScalars: titleMaxScalars,
+        maxSubtitleScalars: subtitleMaxScalars
+      )
+      let primaryY =
+        rowHeight >= cellHeight * 2 + 8
+        ? tabY + rowHeight - cellHeight - 5
+        : tabY + textBaseY
+      let secondaryY = tabY + 5
+
       cmds.append(
         .glyphRun(
-          origin: CGPoint(x: labelX, y: tabY + textBaseY),
-          text: label,
+          origin: CGPoint(x: labelX, y: primaryY),
+          text: indexText,
           foreground: labelFg,
           background: bg,
           source: .sidebar
         ))
+      cmds.append(
+        .glyphRun(
+          origin: CGPoint(x: titleX, y: primaryY),
+          text: resolved.displayTitle,
+          foreground: labelFg,
+          background: bg,
+          source: .sidebar
+        ))
+
+      if let badge = resolved.statusBadge {
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: markerX, y: primaryY),
+            text: badge,
+            foreground: Theme.CurrentTheme.red,
+            background: bg,
+            source: .sidebar
+          ))
+      }
+
+      if rowHeight >= cellHeight * 2 + 8, let subtitle = resolved.subtitle {
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: titleX, y: secondaryY),
+            text: subtitle,
+            foreground: Theme.CurrentTheme.dim0,
+            background: bg,
+            source: .sidebar
+          ))
+      }
 
       cmds.append(
         .glyphRun(

@@ -20,14 +20,14 @@ final class SidebarProducerTests: XCTestCase {
 
   func testCommandsAreNonEmpty() {
     let tabs = makeTabs(count: 2)
-    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
     XCTAssertFalse(cmds.isEmpty)
   }
 
   func testAllCommandsHaveSidebarSource() {
     let tabs = makeTabs(count: 3)
-    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[1].id, height: 600)
     for cmd in cmds {
       switch cmd {
@@ -42,7 +42,7 @@ final class SidebarProducerTests: XCTestCase {
   }
 
   func testBackgroundRectCoversFullHeight() {
-    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [], activeTabId: nil, height: 800)
     let bgRect = cmds.compactMap { cmd -> CGRect? in
       if case .rect(let r, _, _) = cmd { return r }
@@ -50,7 +50,7 @@ final class SidebarProducerTests: XCTestCase {
     }.first
     XCTAssertNotNil(bgRect)
     XCTAssertEqual(bgRect!.height, 800, accuracy: 0.5)
-    XCTAssertEqual(bgRect!.width, 200, accuracy: 0.5)
+    XCTAssertEqual(bgRect!.width, p.sidebarWidth, accuracy: 0.5)
   }
 
   func testActiveTabProducesMoreRectsThanInactive() {
@@ -135,7 +135,9 @@ final class SidebarProducerTests: XCTestCase {
 
   func testExitedTabLabelHasStopPrefix() {
     var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
-    tab.status = .exited(code: 0)
+    tab.status = .exited(code: 1)
+    tab.titleMetadata.activityState = .exited
+    tab.titleMetadata.exitStatus = 1
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
     let labelTexts = cmds.compactMap { cmd -> String? in
@@ -143,20 +145,25 @@ final class SidebarProducerTests: XCTestCase {
       return nil
     }
     XCTAssertTrue(
-      labelTexts.contains(where: { $0.contains("⏹") }),
-      "exited tab label must contain stop marker; got \(labelTexts)")
+      labelTexts.contains(where: { $0 == "!" }),
+      "exited nonzero tab label must contain attention marker; got \(labelTexts)")
+    XCTAssertTrue(
+      labelTexts.contains(where: { $0.contains("exited 1") }),
+      "exited tab secondary text must contain exit status; got \(labelTexts)")
   }
 
   func testExitedTabUsesdimForeground() {
     var tab = Tab(id: "t", position: 1, title: "zsh", isActive: true, sessionId: "s")
     tab.status = .exited(code: 0)
+    tab.titleMetadata.activityState = .exited
+    tab.titleMetadata.exitStatus = 0
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
     let labelRuns = cmds.compactMap { cmd -> (String, UInt32)? in
-      if case .glyphRun(_, let text, let fg, _, _) = cmd, text.contains("⏹") { return (text, fg) }
+      if case .glyphRun(_, let text, let fg, _, _) = cmd, text == "zsh" { return (text, fg) }
       return nil
     }
-    XCTAssertFalse(labelRuns.isEmpty, "expected a label glyph run with stop marker")
+    XCTAssertFalse(labelRuns.isEmpty, "expected a title glyph run")
     for (_, fg) in labelRuns {
       XCTAssertEqual(
         fg, Theme.CurrentTheme.dim0,
@@ -179,5 +186,75 @@ final class SidebarProducerTests: XCTestCase {
         fg, Theme.CurrentTheme.dim0,
         "running active tab must not use dim0 foreground")
     }
+  }
+
+  func testLongTitleDoesNotOverlapCloseAffordanceAtNarrowWidth() {
+    var tab = Tab(
+      id: "t",
+      position: 1,
+      title: String(repeating: "long-title-", count: 20),
+      isActive: true,
+      sessionId: "s"
+    )
+    tab.titleMetadata.workspace = TabWorkspaceMetadata(
+      repoName: "laban",
+      worktreeName: "very-long-worktree-name",
+      branch: "main",
+      isDirty: true
+    )
+    tab.titleMetadata.process = TabProcessMetadata(foregroundProcess: "claude")
+
+    let p = SidebarProducer(sidebarWidth: 140, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
+    let textRuns = cmds.compactMap { cmd -> (CGPoint, String)? in
+      if case .glyphRun(let origin, let text, _, _, _) = cmd {
+        return (origin, text)
+      }
+      return nil
+    }
+
+    for (origin, text) in textRuns where text != "+" && text != "x" && text != "×" {
+      let right = origin.x + CGFloat(text.count) * p.cellWidth
+      XCTAssertLessThanOrEqual(
+        right,
+        140 - 20,
+        "text \(text) should reserve close-control space")
+    }
+  }
+
+  func testSecondaryMetadataLineIsRenderedWhenAvailable() {
+    var tab = Tab(id: "t", position: 3, title: "auth retry cleanup", isActive: true, sessionId: "s")
+    tab.titleMetadata.workspace = TabWorkspaceMetadata(
+      repoName: "laban",
+      worktreeName: "cobra",
+      branch: "main",
+      isDirty: true
+    )
+    tab.titleMetadata.process = TabProcessMetadata(foregroundProcess: "claude")
+
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _) = cmd { return text }
+      return nil
+    }
+
+    XCTAssertTrue(texts.contains("auth retry cleanup"))
+    XCTAssertTrue(texts.contains { $0.contains("laban@cobra | main* | claude") })
+  }
+
+  func testUnseenOutputRendersAttentionMarker() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
+    tab.titleMetadata.unseenOutput = true
+    tab.titleMetadata.activityState = .unseenOutput
+
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _) = cmd { return text }
+      return nil
+    }
+
+    XCTAssertTrue(texts.contains("*"))
   }
 }

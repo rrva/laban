@@ -163,7 +163,50 @@ STATE2=$(get_json /debug/state)
 TAB_COUNT2=$(printf '%s' "$STATE2" | jq '.tabs | length')
 [ "$TAB_COUNT2" -eq 2 ] || fail "expected 2 tabs after newTab, got $TAB_COUNT2"
 
-# 15. Coalesced long-line rendering must still land on fixed terminal cells.
+# 15. Title metadata must bound hostile OSC titles and preserve manual titles.
+LONG_TITLE_PAYLOAD=$(python3 - <<'PY'
+import json
+title = "A" * 600
+print(json.dumps({"action": "feedOutput", "text": "\x1b]0;" + title + "\x07"}))
+PY
+)
+LONG_TITLE_RESULT=$(post_json /debug/actions "$LONG_TITLE_PAYLOAD")
+[ "$(printf '%s' "$LONG_TITLE_RESULT" | jq -r '.ok')" = "true" ] \
+  || fail "long title feedOutput failed: $LONG_TITLE_RESULT"
+STATE_TITLE=$(get_json /debug/state)
+ACTIVE_DISPLAY_LEN=$(printf '%s' "$STATE_TITLE" | jq '.tabs[] | select(.active == true).displayTitle | length')
+ACTIVE_TERMINAL_LEN=$(printf '%s' "$STATE_TITLE" | jq '.tabs[] | select(.active == true).terminalTitle | length')
+ACTIVE_TITLE_SOURCE=$(printf '%s' "$STATE_TITLE" | jq -r '.tabs[] | select(.active == true).titleSource')
+[ "$ACTIVE_DISPLAY_LEN" -eq 256 ] \
+  || fail "expected bounded displayTitle length 256, got $ACTIVE_DISPLAY_LEN: $STATE_TITLE"
+[ "$ACTIVE_TERMINAL_LEN" -eq 256 ] \
+  || fail "expected bounded terminalTitle length 256, got $ACTIVE_TERMINAL_LEN: $STATE_TITLE"
+[ "$ACTIVE_TITLE_SOURCE" = "terminal" ] \
+  || fail "expected terminal title source after OSC title, got $ACTIVE_TITLE_SOURCE"
+
+MANUAL_TITLE_RESULT=$(post_json /debug/actions '{"action":"setTabTitle","title":"manual e2e task"}')
+[ "$(printf '%s' "$MANUAL_TITLE_RESULT" | jq -r '.ok')" = "true" ] \
+  || fail "setTabTitle action failed: $MANUAL_TITLE_RESULT"
+AFTER_MANUAL_PAYLOAD=$(python3 - <<'PY'
+import json
+print(json.dumps({"action": "feedOutput", "text": "\x1b]0;TerminalAfterManual\x07"}))
+PY
+)
+AFTER_MANUAL_RESULT=$(post_json /debug/actions "$AFTER_MANUAL_PAYLOAD")
+[ "$(printf '%s' "$AFTER_MANUAL_RESULT" | jq -r '.ok')" = "true" ] \
+  || fail "terminal title after manual failed: $AFTER_MANUAL_RESULT"
+STATE_MANUAL=$(get_json /debug/state)
+ACTIVE_DISPLAY=$(printf '%s' "$STATE_MANUAL" | jq -r '.tabs[] | select(.active == true).displayTitle')
+ACTIVE_TERMINAL=$(printf '%s' "$STATE_MANUAL" | jq -r '.tabs[] | select(.active == true).terminalTitle')
+ACTIVE_SOURCE=$(printf '%s' "$STATE_MANUAL" | jq -r '.tabs[] | select(.active == true).titleSource')
+[ "$ACTIVE_DISPLAY" = "manual e2e task" ] \
+  || fail "manual title was not preserved: $STATE_MANUAL"
+[ "$ACTIVE_TERMINAL" = "TerminalAfterManual" ] \
+  || fail "terminalTitle did not retain latest raw title: $STATE_MANUAL"
+[ "$ACTIVE_SOURCE" = "user" ] \
+  || fail "expected user title source after manual title, got $ACTIVE_SOURCE"
+
+# 16. Coalesced long-line rendering must still land on fixed terminal cells.
 LONG_LINE_PAYLOAD=$(python3 - <<'PY'
 import json
 print(json.dumps({"action": "typeText", "text": "\x1b[?25l" + "M" * 70}))

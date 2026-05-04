@@ -46,7 +46,7 @@ public final class AppModel {
     AppModel.maybeAutoCapture(session)
     AppModel.applyThemePalette(to: session)
     let position = tabs.count + 1
-    var tab = Tab(
+    let tab = Tab(
       id: UUID().uuidString,
       position: position,
       title: "Tab \(position)",
@@ -56,13 +56,22 @@ public final class AppModel {
     sessions[session.id] = session
     tabs.append(tab)
     selectTab(tab.id)
-    tab.isActive = true
     return tabs.last!
   }
 
   public func selectTab(_ tabId: Tab.ID) {
     for i in tabs.indices {
-      tabs[i].isActive = (tabs[i].id == tabId)
+      let selected = tabs[i].id == tabId
+      tabs[i].isActive = selected
+      if selected {
+        tabs[i].titleMetadata.unseenOutput = false
+      }
+      if tabs[i].status == .running {
+        tabs[i].titleMetadata.activityState =
+          selected
+          ? .active
+          : (tabs[i].titleMetadata.unseenOutput ? .unseenOutput : .background)
+      }
     }
   }
 
@@ -88,34 +97,105 @@ public final class AppModel {
     // Recompute one-based positions
     for i in tabs.indices {
       tabs[i].position = i + 1
+      resolveTitle(at: i)
     }
 
     if wasActive {
       let newActiveIdx = min(idx, tabs.count - 1)
       tabs[newActiveIdx].isActive = true
+      tabs[newActiveIdx].titleMetadata.unseenOutput = false
+      if tabs[newActiveIdx].status == .running {
+        tabs[newActiveIdx].titleMetadata.activityState = .active
+      }
     }
   }
 
   public func updateTitle(_ title: String, forTab tabId: Tab.ID) throws {
+    try updateTerminalTitle(title, forTab: tabId)
+  }
+
+  public func updateTerminalTitle(_ title: String?, forTab tabId: Tab.ID) throws {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
       throw AppError.tabNotFound
     }
     guard let sanitized = TerminalTitle.sanitize(title) else { return }
-    tabs[idx].title = sanitized
+    tabs[idx].titleMetadata.terminalTitle = sanitized
+    resolveTitle(at: idx)
+  }
+
+  public func renameTab(_ tabId: Tab.ID, title: String) throws {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
+      throw AppError.tabNotFound
+    }
+    guard let sanitized = TerminalTitle.sanitize(title) else {
+      try clearUserTitle(forTab: tabId)
+      return
+    }
+    tabs[idx].titleMetadata.userTitle = sanitized
+    tabs[idx].titleMetadata.displayTitle = sanitized
+    tabs[idx].titleMetadata.titleSource = .user
+    tabs[idx].titleMetadata.lastActivityAt = Date()
+  }
+
+  public func freezeTitle(forTab tabId: Tab.ID, frozen: Bool = true) throws {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
+      throw AppError.tabNotFound
+    }
+    if frozen, tabs[idx].titleMetadata.userTitle == nil {
+      tabs[idx].titleMetadata.userTitle = tabs[idx].titleMetadata.displayTitle
+      tabs[idx].titleMetadata.titleSource = .user
+    }
+    tabs[idx].titleMetadata.titleFrozen = frozen
+    resolveTitle(at: idx)
+  }
+
+  public func clearUserTitle(forTab tabId: Tab.ID) throws {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
+      throw AppError.tabNotFound
+    }
+    tabs[idx].titleMetadata.userTitle = nil
+    tabs[idx].titleMetadata.titleFrozen = false
+    resolveTitle(at: idx)
+  }
+
+  public func updateTitleMetadata(
+    forTab tabId: Tab.ID,
+    workspace: TabWorkspaceMetadata? = nil,
+    process: TabProcessMetadata? = nil,
+    agent: TabAgentMetadata? = nil,
+    activityState: TabActivityState? = nil,
+    lastActivityAt: Date? = nil,
+    lastOutputAt: Date? = nil,
+    unseenOutput: Bool? = nil,
+    exitStatus: Int? = nil
+  ) throws {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else {
+      throw AppError.tabNotFound
+    }
+    if let workspace { tabs[idx].titleMetadata.workspace = workspace }
+    if let process { tabs[idx].titleMetadata.process = process }
+    if let agent { tabs[idx].titleMetadata.agent = agent }
+    if let activityState { tabs[idx].titleMetadata.activityState = activityState }
+    if let lastActivityAt { tabs[idx].titleMetadata.lastActivityAt = lastActivityAt }
+    if let lastOutputAt { tabs[idx].titleMetadata.lastOutputAt = lastOutputAt }
+    if let unseenOutput { tabs[idx].titleMetadata.unseenOutput = unseenOutput }
+    if let exitStatus { tabs[idx].titleMetadata.exitStatus = exitStatus }
+    resolveTitle(at: idx)
   }
 
   /// Consume any pending title update from the session, apply the title policy,
-  /// and update the stored tab title only when the result differs.
-  /// Returns true if the tab title was changed.
+  /// and update the stored title metadata only when the result differs.
+  /// Returns true if title metadata was changed.
   @discardableResult
   public func syncTitle(forTab tabId: Tab.ID, from session: Session) -> Bool {
     let (dirty, raw) = session.consumeTitle()
     guard dirty else { return false }
-    guard let sanitized = TerminalTitle.sanitize(raw) else { return false }
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-    guard tabs[idx].title != sanitized else { return false }
-    tabs[idx].title = sanitized
-    return true
+    let before = tabs[idx].titleMetadata
+    guard let sanitized = TerminalTitle.sanitize(raw) else { return false }
+    tabs[idx].titleMetadata.terminalTitle = sanitized
+    resolveTitle(at: idx)
+    return tabs[idx].titleMetadata != before
   }
 
   /// Read exit state from the session and record it in the tab.
@@ -128,6 +208,13 @@ public final class AppModel {
     let s = session.exitState()
     guard s != .running else { return false }
     tabs[idx].status = s
+    tabs[idx].titleMetadata.activityState = .exited
+    switch s {
+    case .exited(let code), .exitedSignal(let code):
+      tabs[idx].titleMetadata.exitStatus = code
+    case .running:
+      break
+    }
     return true
   }
 
@@ -135,6 +222,34 @@ public final class AppModel {
   func forceExitState(forTab tabId: Tab.ID, status: TabStatus) {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
     tabs[idx].status = status
+    if status != .running {
+      tabs[idx].titleMetadata.activityState = .exited
+      switch status {
+      case .exited(let code), .exitedSignal(let code):
+        tabs[idx].titleMetadata.exitStatus = code
+      case .running:
+        break
+      }
+    }
+  }
+
+  @discardableResult
+  public func noteOutput(forTab tabId: Tab.ID, at date: Date = Date()) -> Bool {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    let before = tabs[idx].titleMetadata
+    tabs[idx].titleMetadata.lastOutputAt = date
+    tabs[idx].titleMetadata.lastActivityAt = date
+    if tabs[idx].status == .running {
+      if tabs[idx].isActive {
+        tabs[idx].titleMetadata.unseenOutput = false
+        tabs[idx].titleMetadata.activityState = .active
+      } else {
+        tabs[idx].titleMetadata.unseenOutput = true
+        tabs[idx].titleMetadata.activityState = .unseenOutput
+      }
+    }
+    resolveTitle(at: idx)
+    return tabs[idx].titleMetadata != before
   }
 
   /// The display title for the AppKit window: active tab title, or "Laban" as fallback.
@@ -193,6 +308,13 @@ public final class AppModel {
     for session in sessions.values {
       session.resize(size)
     }
+  }
+
+  private func resolveTitle(at idx: Int) {
+    tabs[idx].titleMetadata = TabTitleResolver.resolvedMetadata(
+      tabs[idx].titleMetadata,
+      fallbackPosition: tabs[idx].position
+    )
   }
 }
 

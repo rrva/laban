@@ -15,6 +15,11 @@
     "scrollbackLines",
     "viewportOffset",
     "title",
+    "displayTitle",
+    "titleSource",
+    "titleFrozen",
+    "activityState",
+    "unseenOutput",
     "mouseTracking",
     "focusReporting",
     "dirty"
@@ -36,6 +41,24 @@
     "scrollbackLines": {"type": "integer", "minimum": 0},
     "viewportOffset": {"type": "integer", "minimum": 0},
     "title": {"type": "string"},
+    "displayTitle": {"type": "string"},
+    "titleSource": {
+      "type": "string",
+      "enum": ["user", "agent", "repo", "cwd", "process", "terminal", "fallback"]
+    },
+    "terminalTitle": {"type": ["string", "null"]},
+    "userTitle": {"type": ["string", "null"]},
+    "titleFrozen": {"type": "boolean"},
+    "activityState": {
+      "type": "string",
+      "enum": ["active", "background", "running", "idle", "unseenOutput", "waiting", "exited"]
+    },
+    "lastActivityAt": {"type": ["string", "null"], "format": "date-time"},
+    "lastOutputAt": {"type": ["string", "null"], "format": "date-time"},
+    "unseenOutput": {"type": "boolean"},
+    "workspace": {"type": "object", "additionalProperties": true},
+    "process": {"type": "object", "additionalProperties": true},
+    "agent": {"type": "object", "additionalProperties": true},
     "mouseTracking": {"type": "boolean"},
     "focusReporting": {"type": "boolean"},
     "dirty": {"type": "boolean"}

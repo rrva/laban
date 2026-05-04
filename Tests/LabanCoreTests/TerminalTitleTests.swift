@@ -26,6 +26,10 @@ final class TerminalTitleTests: XCTestCase {
     XCTAssertEqual(TerminalTitle.sanitize("a\u{7F}b"), "ab")
   }
 
+  func testC1ControlsRemoved() {
+    XCTAssertEqual(TerminalTitle.sanitize("a\u{85}b"), "ab")
+  }
+
   func testTabCollapsedToSpace() {
     XCTAssertEqual(TerminalTitle.sanitize("a\tb"), "a b")
   }
@@ -46,7 +50,7 @@ final class TerminalTitleTests: XCTestCase {
   }
 
   func testLongTitleCapped() {
-    let long = String(repeating: "a", count: 200)
+    let long = String(repeating: "a", count: TerminalTitle.maxLength + 50)
     let result = TerminalTitle.sanitize(long)
     XCTAssertNotNil(result)
     XCTAssertEqual(result?.count, TerminalTitle.maxLength)
