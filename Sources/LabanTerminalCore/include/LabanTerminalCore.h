@@ -244,4 +244,149 @@ typedef struct {
 
 LabanExitState laban_session_exit_state(LabanSession *session);
 
+/* --- Key event ABI --- */
+
+typedef enum {
+    LABAN_KEY_ACTION_RELEASE = 0,
+    LABAN_KEY_ACTION_PRESS   = 1,
+    LABAN_KEY_ACTION_REPEAT  = 2
+} LabanKeyAction;
+
+typedef enum {
+    LABAN_KEY_UNIDENTIFIED = 0,
+    LABAN_KEY_BACKQUOTE,
+    LABAN_KEY_BACKSLASH,
+    LABAN_KEY_BRACKET_LEFT,
+    LABAN_KEY_BRACKET_RIGHT,
+    LABAN_KEY_COMMA,
+    LABAN_KEY_DIGIT_0,
+    LABAN_KEY_DIGIT_1,
+    LABAN_KEY_DIGIT_2,
+    LABAN_KEY_DIGIT_3,
+    LABAN_KEY_DIGIT_4,
+    LABAN_KEY_DIGIT_5,
+    LABAN_KEY_DIGIT_6,
+    LABAN_KEY_DIGIT_7,
+    LABAN_KEY_DIGIT_8,
+    LABAN_KEY_DIGIT_9,
+    LABAN_KEY_EQUAL,
+    LABAN_KEY_A,
+    LABAN_KEY_B,
+    LABAN_KEY_C,
+    LABAN_KEY_D,
+    LABAN_KEY_E,
+    LABAN_KEY_F,
+    LABAN_KEY_G,
+    LABAN_KEY_H,
+    LABAN_KEY_I,
+    LABAN_KEY_J,
+    LABAN_KEY_K,
+    LABAN_KEY_L,
+    LABAN_KEY_M,
+    LABAN_KEY_N,
+    LABAN_KEY_O,
+    LABAN_KEY_P,
+    LABAN_KEY_Q,
+    LABAN_KEY_R,
+    LABAN_KEY_S,
+    LABAN_KEY_T,
+    LABAN_KEY_U,
+    LABAN_KEY_V,
+    LABAN_KEY_W,
+    LABAN_KEY_X,
+    LABAN_KEY_Y,
+    LABAN_KEY_Z,
+    LABAN_KEY_MINUS,
+    LABAN_KEY_PERIOD,
+    LABAN_KEY_QUOTE,
+    LABAN_KEY_SEMICOLON,
+    LABAN_KEY_SLASH,
+    LABAN_KEY_BACKSPACE,
+    LABAN_KEY_ENTER,
+    LABAN_KEY_SPACE,
+    LABAN_KEY_TAB,
+    LABAN_KEY_DELETE,
+    LABAN_KEY_END,
+    LABAN_KEY_HOME,
+    LABAN_KEY_INSERT,
+    LABAN_KEY_PAGE_DOWN,
+    LABAN_KEY_PAGE_UP,
+    LABAN_KEY_ARROW_DOWN,
+    LABAN_KEY_ARROW_LEFT,
+    LABAN_KEY_ARROW_RIGHT,
+    LABAN_KEY_ARROW_UP,
+    LABAN_KEY_ESCAPE,
+    LABAN_KEY_F1,
+    LABAN_KEY_F2,
+    LABAN_KEY_F3,
+    LABAN_KEY_F4,
+    LABAN_KEY_F5,
+    LABAN_KEY_F6,
+    LABAN_KEY_F7,
+    LABAN_KEY_F8,
+    LABAN_KEY_F9,
+    LABAN_KEY_F10,
+    LABAN_KEY_F11,
+    LABAN_KEY_F12,
+    LABAN_KEY_F13,
+    LABAN_KEY_F14,
+    LABAN_KEY_F15,
+    LABAN_KEY_F16,
+    LABAN_KEY_F17,
+    LABAN_KEY_F18,
+    LABAN_KEY_F19,
+    LABAN_KEY_F20,
+    LABAN_KEY_F21,
+    LABAN_KEY_F22,
+    LABAN_KEY_F23,
+    LABAN_KEY_F24
+} LabanKey;
+
+enum {
+    LABAN_KEY_MOD_SHIFT        = 1 << 0,
+    LABAN_KEY_MOD_CONTROL      = 1 << 1,
+    LABAN_KEY_MOD_ALT          = 1 << 2,
+    LABAN_KEY_MOD_SUPER        = 1 << 3,
+    LABAN_KEY_MOD_CAPS_LOCK    = 1 << 4,
+    LABAN_KEY_MOD_NUM_LOCK     = 1 << 5,
+    LABAN_KEY_MOD_SHIFT_SIDE   = 1 << 6,
+    LABAN_KEY_MOD_CONTROL_SIDE = 1 << 7,
+    LABAN_KEY_MOD_ALT_SIDE     = 1 << 8,
+    LABAN_KEY_MOD_SUPER_SIDE   = 1 << 9
+};
+
+typedef struct {
+    LabanKeyAction  action;
+    LabanKey        key;
+    int             modifiers;
+    int             consumed_modifiers;
+    int             composing;
+    uint32_t        unshifted_codepoint;
+    const char     *utf8;
+    size_t          utf8_len;
+} LabanKeyEvent;
+
+/*
+ * laban_session_encode_key:
+ *   Encode a key event into terminal input bytes using libghostty-vt.
+ *   Terminal modes (application cursor, modifyOtherKeys, Kitty protocol)
+ *   are read from the session's terminal state on each call.
+ *   Returns 0 on success, 1 if out_capacity is too small (*out_len holds
+ *   the required size), or -1 on error.
+ */
+int laban_session_encode_key(
+    LabanSession *session,
+    const LabanKeyEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+);
+
+/*
+ * laban_session_send_key:
+ *   Encode and write key input to the PTY (PTY mode). In fixture mode,
+ *   returns 0 after encoding so tests can call laban_session_encode_key.
+ */
+int laban_session_send_key(LabanSession *session, const LabanKeyEvent *event);
+
 #endif /* LABAN_TERMINAL_CORE_H */

@@ -366,3 +366,29 @@ struct ClipboardResponse: Encodable {
     case lastCopyText, lastPasteText, lastPasteUsedBracketedPaste, lastPasteIgnoredNonText
   }
 }
+
+// MARK: - Input event envelope (reusable; projected into /debug/input-log)
+
+struct InputEventEnvelope: Encodable {
+  var inputId: String
+  var seq: Int
+  var source: String
+  var kind: String
+  var route: String
+  var frameBefore: Int
+  var tabId: String?
+  var sessionId: String?
+  var key: String?
+  var text: String?
+  var modifiers: [String]?
+  var consumedModifiers: [String]?
+  var command: String?
+  var encodedHex: String?
+  var encodedLength: Int?
+  var error: String?
+}
+
+struct InputLogResponse: Encodable {
+  var events: [InputEventEnvelope]
+  var next: Int
+}

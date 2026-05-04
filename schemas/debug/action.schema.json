@@ -68,11 +68,19 @@
       "properties": {
         "action": {"const": "key"},
         "key": {"type": "string"},
+        "type": {"enum": ["press", "repeat", "release"]},
         "modifiers": {
           "type": "array",
           "items": {"enum": ["shift", "control", "alt", "option", "command", "super"]},
           "uniqueItems": true
-        }
+        },
+        "consumedModifiers": {
+          "type": "array",
+          "items": {"enum": ["shift", "alt", "option"]},
+          "uniqueItems": true
+        },
+        "text": {"type": "string"},
+        "unshifted": {"type": "string"}
       },
       "additionalProperties": false
     },

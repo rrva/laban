@@ -31,7 +31,8 @@ enum TerminalScrollInput {
       return Decision(rowsDelta: 0, newResidualPx: residualPx)
     }
 
-    let pixelsUp: CGFloat = event.hasPreciseScrollingDeltas
+    let pixelsUp: CGFloat =
+      event.hasPreciseScrollingDeltas
       ? event.scrollingDeltaY
       : event.deltaY * cellHeightPx
 
