@@ -51,6 +51,7 @@ public struct SidebarProducer {
         text: "+",
         foreground: Theme.CurrentTheme.fg0,
         background: Theme.CurrentTheme.bg1,
+        attributes: [],
         source: .sidebar
       ))
 
@@ -104,6 +105,7 @@ public struct SidebarProducer {
           text: indexText,
           foreground: labelFg,
           background: bg,
+          attributes: [],
           source: .sidebar
         ))
       cmds.append(
@@ -112,6 +114,7 @@ public struct SidebarProducer {
           text: resolved.displayTitle,
           foreground: labelFg,
           background: bg,
+          attributes: [],
           source: .sidebar
         ))
 
@@ -122,6 +125,7 @@ public struct SidebarProducer {
             text: badge,
             foreground: Theme.CurrentTheme.red,
             background: bg,
+            attributes: [],
             source: .sidebar
           ))
       }
@@ -133,6 +137,7 @@ public struct SidebarProducer {
             text: subtitle,
             foreground: Theme.CurrentTheme.dim0,
             background: bg,
+            attributes: [],
             source: .sidebar
           ))
       }
@@ -143,6 +148,7 @@ public struct SidebarProducer {
           text: "×",
           foreground: Theme.CurrentTheme.dim0,
           background: bg,
+          attributes: [],
           source: .sidebar
         ))
     }

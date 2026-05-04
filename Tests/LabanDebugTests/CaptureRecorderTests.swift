@@ -1,6 +1,8 @@
+import CoreGraphics
 import Darwin
 import Foundation
 import LabanCore
+import LabanRenderer
 import XCTest
 
 @testable import LabanDebug
@@ -128,5 +130,43 @@ final class CaptureRecorderTests: XCTestCase {
     return try String(contentsOf: url, encoding: .utf8)
       .split(separator: "\n")
       .map { try decoder.decode(CaptureTimelineEvent.self, from: Data(String($0).utf8)) }
+  }
+
+  // Capture replay must round-trip text attributes so SGR styling shows
+  // up identically when the recorded session is replayed offline.
+  func testFrameCommandCodecRoundTripsTextAttributes() throws {
+    let original: [FrameCommand] = [
+      .glyphRun(
+        origin: CGPoint(x: 4, y: 8), text: "X",
+        foreground: 0xAABB_CCFF, background: 0x1122_33FF,
+        attributes: [.bold, .underline, .italic],
+        source: .terminal),
+      .glyphRun(
+        origin: .zero, text: "Y",
+        foreground: 0xFFFF_FFFF, background: 0x0000_0000,
+        attributes: [],
+        source: .terminal),
+    ]
+    let captured = FrameCommandCaptureCodec.serialized(original)
+    let json = try FrameCommandCaptureCodec.encoder.encode(captured)
+    let decoded = try JSONDecoder().decode([CapturedFrameCommand].self, from: json)
+    let restored = FrameCommandCaptureCodec.commands(from: decoded)
+    XCTAssertEqual(restored.count, 2)
+    if case .glyphRun(_, let text, _, _, let attrs, _) = restored[0] {
+      XCTAssertEqual(text, "X")
+      XCTAssertEqual(attrs, [.bold, .italic, .underline])
+    } else {
+      XCTFail("expected glyphRun with attributes")
+    }
+    if case .glyphRun(_, _, _, _, let attrs, _) = restored[1] {
+      XCTAssertEqual(attrs, [])
+    } else {
+      XCTFail("expected glyphRun")
+    }
+    let jsonText = String(decoding: json, as: UTF8.self)
+    let expectedAttrs = "\"attributes\":[\"bold\",\"italic\",\"underline\"]"
+    XCTAssertTrue(
+      jsonText.contains(expectedAttrs),
+      "captured JSON should serialize attributes by name for diffability")
   }
 }

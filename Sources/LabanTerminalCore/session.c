@@ -1,6 +1,7 @@
 #include "LabanTerminalCore.h"
 #include <ghostty/vt/terminal.h>
 #include <ghostty/vt/render.h>
+#include <ghostty/vt/style.h>
 #include <ghostty/vt/mouse.h>
 #include <ghostty/vt/paste.h>
 #include <ghostty/vt/modes.h>
@@ -134,6 +135,20 @@ static int encode_utf8(uint32_t cp, uint8_t *out) {
     out[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
     out[3] = (uint8_t)(0x80 | (cp & 0x3F));
     return 4;
+}
+
+static uint16_t laban_cell_flags_from_style(const GhosttyStyle *style) {
+    uint16_t flags = 0;
+    if (!style) return flags;
+    if (style->bold) flags |= LABAN_CELL_FLAG_BOLD;
+    if (style->italic) flags |= LABAN_CELL_FLAG_ITALIC;
+    if (style->faint) flags |= LABAN_CELL_FLAG_FAINT;
+    if (style->inverse) flags |= LABAN_CELL_FLAG_INVERSE;
+    if (style->invisible) flags |= LABAN_CELL_FLAG_INVISIBLE;
+    if (style->underline != 0) flags |= LABAN_CELL_FLAG_UNDERLINE;
+    if (style->strikethrough) flags |= LABAN_CELL_FLAG_STRIKETHROUGH;
+    if (style->overline) flags |= LABAN_CELL_FLAG_OVERLINE;
+    return flags;
 }
 
 static void free_ghostty_resources(LabanSession *s) {
@@ -628,6 +643,12 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         while (ghostty_render_state_row_cells_next(s->row_cells) && col_idx < cols) {
             LabanCell *cell = &cells[row_idx * cols + col_idx];
 
+            GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+            if (ghostty_render_state_row_cells_get(s->row_cells,
+                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) == GHOSTTY_SUCCESS) {
+                cell->flags = laban_cell_flags_from_style(&style);
+            }
+
             /* Grapheme codepoints (0 = empty cell). */
             uint32_t grapheme_len = 0;
             ghostty_render_state_row_cells_get(s->row_cells,
@@ -671,6 +692,12 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                 cell->background_rgba = ((uint32_t)bg.r << 24) |
                                         ((uint32_t)bg.g << 16) |
                                         ((uint32_t)bg.b << 8) | 0xFF;
+            }
+
+            if ((cell->flags & LABAN_CELL_FLAG_INVERSE) != 0) {
+                uint32_t swapped = cell->foreground_rgba;
+                cell->foreground_rgba = cell->background_rgba;
+                cell->background_rgba = swapped;
             }
 
             col_idx++;

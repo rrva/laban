@@ -219,6 +219,7 @@ struct FrameCommandResponse: Encodable {
   var background: [Int]?
   var text: String?
   var resourceId: String?
+  var attributes: [String]?
 }
 
 struct FrameCommandsResponse: Encodable {
@@ -334,6 +335,7 @@ struct TraceCommand: Encodable {
   var rect: RectResponse?
   var text: String?
   var sourceRefs: [String]?
+  var attributes: [String]?
 }
 
 struct TraceResource: Encodable {

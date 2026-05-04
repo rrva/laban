@@ -23,6 +23,31 @@ public enum BoxDrawing {
     return (0x2580...0x259F).contains(scalar.value)
   }
 
+  public static func isGeometricTriangle(_ scalar: Unicode.Scalar) -> Bool {
+    return (0x25E2...0x25E5).contains(scalar.value)
+  }
+
+  public static func isProceduralCellElement(_ scalar: Unicode.Scalar) -> Bool {
+    isBlockElement(scalar) || isGeometricTriangle(scalar)
+  }
+
+  public static func proceduralCellElementRects(
+    _ scalar: Unicode.Scalar,
+    at origin: CGPoint,
+    cellWidth w: CGFloat,
+    cellHeight h: CGFloat,
+    foreground: UInt32
+  ) -> [FilledRect] {
+    if isBlockElement(scalar) {
+      return blockElementRects(
+        scalar, at: origin, cellWidth: w, cellHeight: h, foreground: foreground)
+    }
+    if isGeometricTriangle(scalar) {
+      return triangleRects(scalar, at: origin, cellWidth: w, cellHeight: h, foreground: foreground)
+    }
+    return []
+  }
+
   // Returns the filled-rectangle decomposition of `scalar` placed at the
   // given cell origin. Returns an empty array if the scalar is not a Block
   // Element (caller should gate on isBlockElement first).
@@ -151,5 +176,55 @@ public enum BoxDrawing {
     default:
       return []
     }
+  }
+
+  private static func triangleRects(
+    _ scalar: Unicode.Scalar,
+    at origin: CGPoint,
+    cellWidth w: CGFloat,
+    cellHeight h: CGFloat,
+    foreground: UInt32
+  ) -> [FilledRect] {
+    let stripCount = max(1, Int(ceil(h)))
+    var rects: [FilledRect] = []
+    rects.reserveCapacity(stripCount)
+
+    for strip in 0..<stripCount {
+      let y = origin.y + CGFloat(strip)
+      let height = min(1, origin.y + h - y)
+      guard height > 0 else { continue }
+
+      let bottomToTop = CGFloat(strip + 1) / CGFloat(stripCount)
+      let topToBottom = CGFloat(stripCount - strip) / CGFloat(stripCount)
+      let fraction: CGFloat
+      let alignRight: Bool
+
+      switch scalar.value {
+      case 0x25E2:  // ◢ BLACK LOWER RIGHT TRIANGLE
+        fraction = topToBottom
+        alignRight = true
+      case 0x25E3:  // ◣ BLACK LOWER LEFT TRIANGLE
+        fraction = topToBottom
+        alignRight = false
+      case 0x25E4:  // ◤ BLACK UPPER LEFT TRIANGLE
+        fraction = bottomToTop
+        alignRight = false
+      case 0x25E5:  // ◥ BLACK UPPER RIGHT TRIANGLE
+        fraction = bottomToTop
+        alignRight = true
+      default:
+        return []
+      }
+
+      let width = max(1, min(w, (w * fraction).rounded(.up)))
+      let x = alignRight ? origin.x + w - width : origin.x
+      rects.append(
+        FilledRect(
+          rect: CGRect(x: x, y: y, width: width, height: height),
+          color: foreground
+        ))
+    }
+
+    return rects
   }
 }

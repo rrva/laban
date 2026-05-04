@@ -29,6 +29,17 @@ typedef struct {
     int cell_height;
 } LabanTerminalSize;
 
+enum {
+    LABAN_CELL_FLAG_BOLD = 1u << 0,
+    LABAN_CELL_FLAG_ITALIC = 1u << 1,
+    LABAN_CELL_FLAG_FAINT = 1u << 2,
+    LABAN_CELL_FLAG_INVERSE = 1u << 3,
+    LABAN_CELL_FLAG_INVISIBLE = 1u << 4,
+    LABAN_CELL_FLAG_UNDERLINE = 1u << 5,
+    LABAN_CELL_FLAG_STRIKETHROUGH = 1u << 6,
+    LABAN_CELL_FLAG_OVERLINE = 1u << 7
+};
+
 typedef struct {
     uint32_t codepoint;      /* First codepoint; 0 if empty or multi-codepoint */
     uint32_t utf8_offset;    /* Byte offset into LabanSnapshot.utf8_storage */

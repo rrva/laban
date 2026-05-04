@@ -2079,16 +2079,18 @@ public final class HeadlessDebugRuntime {
       return FrameCommandResponse(
         id: id, index: index, kind: "rect", source: src.rawValue,
         rect: rectResponse(rect), color: rgbaArray(color))
-    case .glyphRun(let origin, let text, let fg, let bg, let src):
+    case .glyphRun(let origin, let text, let fg, let bg, let attrs, let src):
       let approxRect = CGRect(
         x: origin.x, y: origin.y,
         width: CGFloat(text.count * cellWidth), height: CGFloat(cellHeight)
       )
+      let attrNames = attrs.names
       return FrameCommandResponse(
         id: id, index: index, kind: "glyphRun", source: src.rawValue,
         rect: rectResponse(approxRect),
         foreground: rgbaArray(fg), background: rgbaArray(bg),
-        text: includeText ? text : nil
+        text: includeText ? text : nil,
+        attributes: attrNames.isEmpty ? nil : attrNames
       )
     case .cursor(let rect, let color):
       return FrameCommandResponse(
@@ -2172,10 +2174,10 @@ public final class HeadlessDebugRuntime {
         termBgRects += 1
         termFirst = termFirst ?? i
         termLast = i
-      case .glyphRun(_, _, _, _, let src) where src == .sidebar:
+      case .glyphRun(_, _, _, _, _, let src) where src == .sidebar:
         sidebarFirst = sidebarFirst ?? i
         sidebarLast = i
-      case .glyphRun(_, _, _, _, let src) where src == .terminal:
+      case .glyphRun(_, _, _, _, _, let src) where src == .terminal:
         termGlyphs += 1
         termFirst = termFirst ?? i
         termLast = i
@@ -2280,14 +2282,16 @@ public final class HeadlessDebugRuntime {
     case .rect(let rect, _, let src):
       return TraceCommand(
         id: id, index: index, kind: "rect", source: src.rawValue, rect: rectResponse(rect))
-    case .glyphRun(let origin, let text, _, _, let src):
+    case .glyphRun(let origin, let text, _, _, let attrs, let src):
       let approxRect = CGRect(
         x: origin.x, y: origin.y,
         width: CGFloat(text.count * cellWidth), height: CGFloat(cellHeight)
       )
+      let attrNames = attrs.names
       return TraceCommand(
         id: id, index: index, kind: "glyphRun", source: src.rawValue,
-        rect: rectResponse(approxRect), text: text)
+        rect: rectResponse(approxRect), text: text,
+        attributes: attrNames.isEmpty ? nil : attrNames)
     case .cursor(let rect, _):
       return TraceCommand(
         id: id, index: index, kind: "cursor", source: "cursor", rect: rectResponse(rect))

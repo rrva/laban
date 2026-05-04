@@ -40,7 +40,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = producer.commands(from: UnsafePointer(snap))
 
     let glyphCmds = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, let src) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src) = cmd, src == .terminal {
         return text
       }
       return nil
@@ -73,7 +73,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = FrameProducer().commands(from: UnsafePointer(snap))
     let terminalCmds = cmds.filter {
       if case .rect(_, _, let src) = $0 { return src == .terminal }
-      if case .glyphRun(_, _, _, _, let src) = $0 { return src == .terminal }
+      if case .glyphRun(_, _, _, _, _, let src) = $0 { return src == .terminal }
       return false
     }
     XCTAssertFalse(terminalCmds.isEmpty, "commands must include terminal-sourced commands")
@@ -99,7 +99,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = FrameProducer().commands(from: UnsafePointer(snap))
 
     let glyphTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, let src) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src) = cmd, src == .terminal {
         return text
       }
       return nil
@@ -141,7 +141,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
 
     let glyphTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, let src) = cmd, src == .terminal { return text }
+      if case .glyphRun(_, let text, _, _, _, let src) = cmd, src == .terminal { return text }
       return nil
     }
     let allGlyphText = glyphTexts.joined()
@@ -262,7 +262,7 @@ final class FrameProducerTests: XCTestCase {
     let cmds = producer.commands(from: UnsafePointer(snap))
 
     let terminalGlyphs = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, let src) = cmd, src == .terminal {
+      if case .glyphRun(_, let text, _, _, _, let src) = cmd, src == .terminal {
         return text
       }
       return nil
@@ -366,7 +366,7 @@ final class FrameProducerTests: XCTestCase {
     let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
     let exitLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _) = cmd,
+      if case .glyphRun(_, let text, _, _, _, _) = cmd,
         text.localizedCaseInsensitiveContains("exited")
           || text.localizedCaseInsensitiveContains("signaled")
       {
@@ -389,7 +389,7 @@ final class FrameProducerTests: XCTestCase {
     }
     XCTAssertFalse(bannerRects.isEmpty, "exited snapshot must produce a banner rect at originY")
     let bannerLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _) = cmd, text.contains("exited") { return text }
+      if case .glyphRun(_, let text, _, _, _, _) = cmd, text.contains("exited") { return text }
       return nil
     }
     XCTAssertFalse(
@@ -405,12 +405,188 @@ final class FrameProducerTests: XCTestCase {
     let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
     let bannerLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _) = cmd, text.contains("signaled") { return text }
+      if case .glyphRun(_, let text, _, _, _, _) = cmd, text.contains("signaled") { return text }
       return nil
     }
     XCTAssertFalse(bannerLabels.isEmpty, "signal exit must produce glyph run containing 'signaled'")
     XCTAssertTrue(
       bannerLabels.contains(where: { $0.contains("15") }),
       "signal number 15 must appear in banner text; got \(bannerLabels)")
+  }
+
+  // MARK: - SGR attributes
+
+  // Bold/italic/underline/strikethrough/overline must propagate from the
+  // Ghostty render state through LabanCell.flags to FrameCommand.glyphRun
+  // attributes. The fixture writes overlapping SGR ranges so a single line
+  // covers multiple attribute combinations.
+  func testSgrAttributesAppearOnGlyphRuns() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    let line =
+      "\u{1B}[1mBOLD\u{1B}[0m "
+      + "\u{1B}[3mIT\u{1B}[0m "
+      + "\u{1B}[4mUL\u{1B}[0m "
+      + "\u{1B}[9mSTRK\u{1B}[0m "
+      + "\u{1B}[53mOVR\u{1B}[0m\r\n"
+    session.write(Array(line.utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = producer.commands(from: UnsafePointer(snap))
+
+    func attrs(matching needle: String) -> TextAttributes? {
+      for cmd in cmds {
+        if case .glyphRun(_, let text, _, _, let attributes, let src) = cmd,
+          src == .terminal, text.contains(needle)
+        {
+          return attributes
+        }
+      }
+      return nil
+    }
+
+    XCTAssertEqual(attrs(matching: "BOLD"), .bold)
+    XCTAssertEqual(attrs(matching: "IT"), .italic)
+    XCTAssertEqual(attrs(matching: "UL"), .underline)
+    XCTAssertEqual(attrs(matching: "STRK"), .strikethrough)
+    XCTAssertEqual(attrs(matching: "OVR"), .overline)
+  }
+
+  // SGR 7 (inverse) must swap foreground and background at the snapshot
+  // layer so the renderer never has to know about inverse video. The
+  // FrameCommand for an inverse-styled cell carries the swapped colors.
+  func testInverseVideoSwapsForegroundAndBackground() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    // SGR 38;2 sets truecolor fg; SGR 48;2 sets truecolor bg; SGR 7 inverts.
+    let line =
+      "\u{1B}[38;2;255;0;0m\u{1B}[48;2;0;0;255mFG\u{1B}[0m"
+      + "\u{1B}[38;2;255;0;0m\u{1B}[48;2;0;0;255m\u{1B}[7mIN\u{1B}[0m\r\n"
+    session.write(Array(line.utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = producer.commands(from: UnsafePointer(snap))
+
+    var normalFg: UInt32 = 0
+    var normalBg: UInt32 = 0
+    var inverseFg: UInt32 = 0
+    var inverseBg: UInt32 = 0
+    for cmd in cmds {
+      if case .glyphRun(_, let text, let fg, let bg, _, let src) = cmd,
+        src == .terminal
+      {
+        if text.contains("FG") {
+          normalFg = fg
+          normalBg = bg
+        }
+        if text.contains("IN") {
+          inverseFg = fg
+          inverseBg = bg
+        }
+      }
+    }
+
+    XCTAssertEqual((normalFg >> 24) & 0xFF, 255, "non-inverse fg should be red")
+    XCTAssertEqual((normalBg >> 8) & 0xFF, 255, "non-inverse bg should be blue")
+    XCTAssertEqual(inverseFg, normalBg, "inverse fg must equal non-inverse bg")
+    XCTAssertEqual(inverseBg, normalFg, "inverse bg must equal non-inverse fg")
+  }
+
+  // A run that changes attributes mid-row must split into separate glyph
+  // runs even when fg and bg do not change. Without this split, the
+  // software renderer would apply one set of attributes (e.g. bold) to
+  // both halves.
+  func testGlyphRunSplitsWhenAttributesChange() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    let line = "AB\u{1B}[1mCD\u{1B}[0mEF\r\n"
+    session.write(Array(line.utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = producer.commands(from: UnsafePointer(snap))
+
+    var runs: [(text: String, attrs: TextAttributes)] = []
+    for cmd in cmds {
+      if case .glyphRun(_, let text, _, _, let attributes, let src) = cmd,
+        src == .terminal,
+        text.contains("A") || text.contains("C") || text.contains("E")
+      {
+        runs.append((text, attributes))
+      }
+    }
+    let nonBold = runs.filter { !$0.attrs.contains(.bold) }
+    let bold = runs.filter { $0.attrs.contains(.bold) }
+    XCTAssertFalse(bold.isEmpty, "expected a bold glyph run for CD")
+    XCTAssertFalse(nonBold.isEmpty, "expected non-bold glyph runs for AB and EF")
+    XCTAssertTrue(
+      bold.contains { $0.text.contains("CD") },
+      "bold glyph run must contain 'CD'; got \(bold)")
+  }
+
+  // Triangle glyphs must render as procedural rects so they tile inside
+  // the cell instead of leaking into adjacent cells via fallback fonts.
+  func testTriangleGlyphsRenderAsProceduralRects() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("\u{25E2}\u{25E3}\u{25E4}\u{25E5}\r\n".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = producer.commands(from: UnsafePointer(snap))
+
+    let triangleGlyphs = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _) = cmd,
+        text.unicodeScalars.contains(where: { (0x25E2...0x25E5).contains($0.value) })
+      {
+        return text
+      }
+      return nil
+    }
+    XCTAssertTrue(
+      triangleGlyphs.isEmpty,
+      "triangle glyphs must not be emitted as glyph runs; got \(triangleGlyphs)")
   }
 }

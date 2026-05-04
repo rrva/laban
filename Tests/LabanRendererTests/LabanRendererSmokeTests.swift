@@ -13,7 +13,7 @@ final class LabanRendererSmokeTests: XCTestCase {
       .rect(rect, color: 0xFF00_00FF, source: .terminal),
       .glyphRun(
         origin: .zero, text: "A", foreground: 0x0000_00FF, background: 0xFFFF_FFFF,
-        source: .terminal),
+        attributes: [], source: .terminal),
       .cursor(rect, color: 0x3A4D_53FF),
       .selection(rect, color: 0xECE3_CC80),
       .clip(rect),
@@ -93,7 +93,7 @@ final class LabanRendererSmokeTests: XCTestCase {
         source: .terminal),
       .glyphRun(
         origin: .zero, text: "A", foreground: Theme.CurrentTheme.fg1, background: bg,
-        source: .terminal),
+        attributes: [], source: .terminal),
     ])
 
     var foundNonBg = false
@@ -140,7 +140,7 @@ final class LabanRendererSmokeTests: XCTestCase {
       .glyphRun(
         origin: CGPoint(x: 0, y: originY),
         text: "\u{23F5}\u{23F5} bypass permissions on",
-        foreground: fg, background: bg, source: .terminal),
+        foreground: fg, background: bg, attributes: [], source: .terminal),
     ])
 
     // The ASCII glyphs sit in the BOTTOM row. Probe a band inside that row
@@ -246,7 +246,7 @@ final class LabanRendererSmokeTests: XCTestCase {
       .rect(CGRect(x: 0, y: 0, width: 10, height: 18), color: bg, source: .terminal),
       .glyphRun(
         origin: .zero, text: "A", foreground: Theme.CurrentTheme.fg1, background: bg,
-        source: .terminal),
+        attributes: [], source: .terminal),
     ])
     var foundNonBg = false
     for y in 0..<36 {
@@ -303,6 +303,67 @@ final class LabanRendererSmokeTests: XCTestCase {
     XCTAssertEqual(rects[0].rect, CGRect(x: 0, y: 9, width: 4, height: 9))
   }
 
+  // Geometric triangle glyphs ◢◣◤◥ (U+25E2..U+25E5) are emitted as
+  // procedural per-row strips. Every strip must stay inside the cell
+  // bounds so adjacent cells never overlap.
+  func testGeometricTrianglesStayWithinCellBounds() {
+    let origin = CGPoint(x: 5, y: 7)
+    let w: CGFloat = 8
+    let h: CGFloat = 16
+    let cellRect = CGRect(x: origin.x, y: origin.y, width: w, height: h)
+    for codepoint: UInt32 in 0x25E2...0x25E5 {
+      let rects = BoxDrawing.proceduralCellElementRects(
+        Unicode.Scalar(codepoint)!,
+        at: origin, cellWidth: w, cellHeight: h, foreground: 0xFF00_00FF)
+      XCTAssertFalse(rects.isEmpty, "U+\(String(codepoint, radix: 16)) must produce strips")
+      for r in rects {
+        XCTAssertTrue(
+          cellRect.contains(r.rect),
+          "rect \(r.rect) must fit within cell \(cellRect) for U+\(String(codepoint, radix: 16))")
+      }
+    }
+  }
+
+  // The renderer must paint underline pixels below the baseline. We assert
+  // that a single underlined cell contains at least one foreground-colored
+  // pixel in the bottom band that no plain glyph 'A' would put there.
+  func testUnderlineAttributeProducesPixelsBelowBaseline() {
+    let fontAtlas = FontAtlas()
+    let cellW = Int(fontAtlas.cellSize.width)
+    let cellH = Int(fontAtlas.cellSize.height)
+    let surface = BitmapSurface(width: cellW, height: cellH)
+    let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+    let bg: UInt32 = 0xFFFF_FFFF
+    let fg: UInt32 = 0xFF00_00FF
+
+    renderer.render([
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cellW), height: CGFloat(cellH)), color: bg,
+        source: .terminal),
+      .glyphRun(
+        origin: .zero, text: "A", foreground: fg, background: bg,
+        attributes: .underline, source: .terminal),
+    ])
+
+    // The underline lives just above the baseline (CG y is small near
+    // origin.y=0); scan the bottom band and require a horizontal run of
+    // foreground pixels at a single y wider than any plain-glyph stroke.
+    var bestRun = 0
+    let band = min(cellH, max(4, Int(ceil(fontAtlas.descent))))
+    for y in 0..<band {
+      var run = 0
+      for x in 0..<cellW {
+        if let p = surface.pixel(x: x, y: y), p != bg {
+          run += 1
+        }
+      }
+      bestRun = max(bestRun, run)
+    }
+    XCTAssertGreaterThanOrEqual(
+      bestRun, cellW - 1,
+      "underline must paint a near-full-cell horizontal stroke; got run=\(bestRun) bandH=\(band)")
+  }
+
   // MARK: - Cursor and selection
 
   func testCursorCommandFillsCell() {
@@ -349,6 +410,7 @@ final class LabanRendererSmokeTests: XCTestCase {
             text: ch,
             foreground: Theme.CurrentTheme.fg1,
             background: Theme.CurrentTheme.bg0,
+            attributes: [],
             source: .terminal
           ))
       }

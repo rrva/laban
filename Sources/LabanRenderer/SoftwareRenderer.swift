@@ -7,6 +7,7 @@ public final class SoftwareRenderer {
   public let fontAtlas: FontAtlas
   private let glyphCellAdvance: CGFloat
   private var colorCache: [UInt32: CGColor] = [:]
+  private var fontCache: [UInt16: CTFont] = [:]
 
   public init(surface: BitmapSurface, fontAtlas: FontAtlas) {
     self.surface = surface
@@ -31,8 +32,8 @@ public final class SoftwareRenderer {
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
-      case .glyphRun(let origin, let text, let fg, _, _):
-        drawText(text, at: origin, foreground: fg, in: ctx)
+      case .glyphRun(let origin, let text, let fg, let bg, let attrs, _):
+        drawText(text, at: origin, foreground: fg, background: bg, attributes: attrs, in: ctx)
 
       case .cursor(let rect, let colorValue):
         ctx.setFillColor(color(colorValue))
@@ -55,33 +56,79 @@ public final class SoftwareRenderer {
   }
 
   private func drawText(
-    _ text: String, at origin: CGPoint, foreground fg: UInt32, in ctx: CGContext
+    _ text: String,
+    at origin: CGPoint,
+    foreground fg: UInt32,
+    background _: UInt32,
+    attributes: TextAttributes,
+    in ctx: CGContext
   ) {
     let fgColor = color(fg)
+    let font = styledFont(for: attributes)
+    let traits = CTFontGetSymbolicTraits(font)
+    let needsBoldFallback = attributes.contains(.bold) && !traits.contains(.traitBold)
+    let needsItalicFallback = attributes.contains(.italic) && !traits.contains(.traitItalic)
     let baseline = origin.y + fontAtlas.descent
 
+    ctx.saveGState()
+    if needsItalicFallback {
+      ctx.translateBy(x: origin.x, y: origin.y)
+      ctx.concatenate(CGAffineTransform(a: 1, b: 0, c: -0.18, d: 1, tx: 0, ty: 0))
+      ctx.translateBy(x: -origin.x, y: -origin.y)
+    }
+
+    drawGlyphPass(
+      text,
+      origin: origin,
+      baseline: baseline,
+      xOffset: 0,
+      font: font,
+      foreground: fgColor,
+      in: ctx
+    )
+    if needsBoldFallback {
+      drawGlyphPass(
+        text,
+        origin: origin,
+        baseline: baseline,
+        xOffset: max(1.0 / surface.scale, 0.5),
+        font: font,
+        foreground: fgColor,
+        in: ctx
+      )
+    }
+    ctx.restoreGState()
+
+    drawDecorations(for: text, at: origin, attributes: attributes, foreground: fgColor, in: ctx)
+  }
+
+  private func drawGlyphPass(
+    _ text: String,
+    origin: CGPoint,
+    baseline: CGFloat,
+    xOffset: CGFloat,
+    font: CTFont,
+    foreground fgColor: CGColor,
+    in ctx: CGContext
+  ) {
     var glyphs: [CGGlyph] = []
     var positions: [CGPoint] = []
 
-    ctx.saveGState()
     ctx.textMatrix = .identity
     ctx.setFillColor(fgColor)
 
     func flushGlyphs() {
       guard !glyphs.isEmpty else { return }
-      // CTLineDraw on a fallback line — used for symbols like U+23F5 that
-      // JetBrains Mono lacks — leaves the context's text matrix non-identity.
-      // CTFontDrawGlyphs transforms the positions array by that matrix, so
-      // the absolute pen position drifts unless we reset before each batch.
-      // saveGState does not save text matrix per Apple's docs, so the reset
-      // has to be explicit here.
+      // CTLineDraw on a fallback line can leave the context's text matrix
+      // non-identity. Reset before every CTFontDrawGlyphs batch so absolute
+      // terminal-cell positions do not drift.
       ctx.textMatrix = .identity
       glyphs.withUnsafeBufferPointer { glyphBuffer in
         positions.withUnsafeBufferPointer { positionBuffer in
           guard let glyphBase = glyphBuffer.baseAddress,
             let positionBase = positionBuffer.baseAddress
           else { return }
-          CTFontDrawGlyphs(fontAtlas.font, glyphBase, positionBase, glyphs.count, ctx)
+          CTFontDrawGlyphs(font, glyphBase, positionBase, glyphs.count, ctx)
         }
       }
       glyphs.removeAll(keepingCapacity: true)
@@ -90,23 +137,21 @@ public final class SoftwareRenderer {
 
     for (cellIndex, cluster) in text.enumerated() {
       let cellOrigin = CGPoint(
-        x: origin.x + CGFloat(cellIndex) * glyphCellAdvance,
+        x: origin.x + CGFloat(cellIndex) * glyphCellAdvance + xOffset,
         y: baseline
       )
-      if let glyph = simpleGlyph(for: cluster) {
+      if let glyph = simpleGlyph(for: cluster, font: font) {
         glyphs.append(glyph)
         positions.append(cellOrigin)
       } else {
         flushGlyphs()
-        drawFallbackText(String(cluster), at: cellOrigin, foreground: fgColor, in: ctx)
+        drawFallbackText(String(cluster), at: cellOrigin, foreground: fgColor, font: font, in: ctx)
       }
     }
-
     flushGlyphs()
-    ctx.restoreGState()
   }
 
-  private func simpleGlyph(for character: Character) -> CGGlyph? {
+  private func simpleGlyph(for character: Character, font: CTFont) -> CGGlyph? {
     guard character.unicodeScalars.count == 1,
       let scalar = character.unicodeScalars.first,
       scalar.value <= UInt32(UInt16.max)
@@ -114,20 +159,24 @@ public final class SoftwareRenderer {
 
     var codeUnit = UniChar(scalar.value)
     var glyph = CGGlyph()
-    guard CTFontGetGlyphsForCharacters(fontAtlas.font, &codeUnit, &glyph, 1), glyph != 0 else {
+    guard CTFontGetGlyphsForCharacters(font, &codeUnit, &glyph, 1), glyph != 0 else {
       return nil
     }
     return glyph
   }
 
   private func drawFallbackText(
-    _ text: String, at position: CGPoint, foreground fgColor: CGColor, in ctx: CGContext
+    _ text: String,
+    at position: CGPoint,
+    foreground fgColor: CGColor,
+    font: CTFont,
+    in ctx: CGContext
   ) {
     let attrStr = NSMutableAttributedString(string: text)
     let range = NSRange(location: 0, length: attrStr.length)
     attrStr.addAttribute(
       kCTFontAttributeName as NSAttributedString.Key,
-      value: fontAtlas.font,
+      value: font,
       range: range
     )
     attrStr.addAttribute(
@@ -136,7 +185,74 @@ public final class SoftwareRenderer {
       range: range
     )
     let line = CTLineCreateWithAttributedString(attrStr)
+    ctx.textMatrix = .identity
     ctx.textPosition = position
     CTLineDraw(line, ctx)
+  }
+
+  private func styledFont(for attributes: TextAttributes) -> CTFont {
+    let key = attributes.intersection([.bold, .italic]).rawValue
+    if let cached = fontCache[key] { return cached }
+
+    var desired: CTFontSymbolicTraits = []
+    if attributes.contains(.bold) { desired.insert(.traitBold) }
+    if attributes.contains(.italic) { desired.insert(.traitItalic) }
+
+    let font =
+      desired.isEmpty
+      ? fontAtlas.font
+      : CTFontCreateCopyWithSymbolicTraits(
+        fontAtlas.font, fontAtlas.pointSize, nil, desired, desired) ?? fontAtlas.font
+    fontCache[key] = font
+    return font
+  }
+
+  private func drawDecorations(
+    for text: String,
+    at origin: CGPoint,
+    attributes: TextAttributes,
+    foreground fgColor: CGColor,
+    in ctx: CGContext
+  ) {
+    guard !attributes.intersection([.underline, .strikethrough, .overline]).isEmpty,
+      !text.isEmpty
+    else {
+      return
+    }
+
+    let width = CGFloat(text.count) * glyphCellAdvance
+    let cellHeight = fontAtlas.cellSize.height
+    let thickness = max(1.0 / surface.scale, 1)
+
+    ctx.saveGState()
+    ctx.setFillColor(fgColor)
+    if attributes.contains(.underline) {
+      ctx.fill(
+        CGRect(
+          x: origin.x,
+          y: origin.y + max(1, floor(fontAtlas.descent * 0.45)),
+          width: width,
+          height: thickness
+        ))
+    }
+    if attributes.contains(.strikethrough) {
+      ctx.fill(
+        CGRect(
+          x: origin.x,
+          y: origin.y + floor(cellHeight * 0.52),
+          width: width,
+          height: thickness
+        ))
+    }
+    if attributes.contains(.overline) {
+      ctx.fill(
+        CGRect(
+          x: origin.x,
+          y: origin.y + cellHeight - thickness - 1,
+          width: width,
+          height: thickness
+        ))
+    }
+    ctx.restoreGState()
   }
 }

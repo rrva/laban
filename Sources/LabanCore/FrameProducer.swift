@@ -73,6 +73,7 @@ public struct FrameProducer {
           text: exitText,
           foreground: Theme.CurrentTheme.dim0,
           background: Theme.CurrentTheme.bg1,
+          attributes: [],
           source: .terminal
         ))
     }
@@ -140,15 +141,44 @@ public struct FrameProducer {
       var runStart: Int? = nil
       var runFg: UInt32 = 0
       var runBg: UInt32 = 0
+      var runAttrs: TextAttributes = []
       var runText = ""
+
+      func flushRun() {
+        guard let start = runStart, !runText.isEmpty else {
+          runStart = nil
+          runText = ""
+          return
+        }
+        let cellX = originX + CGFloat(start) * cw
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: cellX, y: cellY),
+            text: runText,
+            foreground: runFg,
+            background: runBg,
+            attributes: runAttrs,
+            source: .terminal
+          ))
+        runStart = nil
+        runText = ""
+      }
 
       for col in 0..<cols {
         let cell = cells[rowStart + col]
         let hasContent = cell.utf8_length > 0 && snapshot.utf8_storage != nil
-        let cellFg = cell.foreground_rgba
+        // The C bridge already swaps fg/bg for inverse video, so .inverse is
+        // dropped here to keep downstream consumers from double-inverting.
+        let attrs = TextAttributes(rawValue: cell.flags)
+          .intersection(.renderableMask)
+          .subtracting(.inverse)
         let cellBg = cell.background_rgba
+        let cellFg =
+          attrs.contains(.faint)
+          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
+          : cell.foreground_rgba
 
-        if hasContent, let storage = snapshot.utf8_storage {
+        if hasContent, !attrs.contains(.invisible), let storage = snapshot.utf8_storage {
           let offset = Int(cell.utf8_offset)
           let length = Int(cell.utf8_length)
           let ptr = UnsafeRawPointer(storage).advanced(by: offset)
@@ -157,29 +187,16 @@ public struct FrameProducer {
             count: length
           )
           if let text = String(bytes: buf, encoding: .utf8), !text.isEmpty {
-            // Block elements are emitted as procedural .rect commands so they
-            // tile gap-free regardless of the font's glyph metrics. Keeps the
-            // renderer backend-agnostic — software, Metal, or any future
-            // backend just sees colored rects.
+            // Block and fixed-format geometric elements are emitted as
+            // procedural .rect commands so they tile gap-free and stay inside
+            // terminal cell bounds regardless of fallback font metrics.
             if text.unicodeScalars.count == 1,
               let scalar = text.unicodeScalars.first,
-              BoxDrawing.isBlockElement(scalar)
+              BoxDrawing.isProceduralCellElement(scalar)
             {
-              if let start = runStart, !runText.isEmpty {
-                let cellX = originX + CGFloat(start) * cw
-                cmds.append(
-                  .glyphRun(
-                    origin: CGPoint(x: cellX, y: cellY),
-                    text: runText,
-                    foreground: runFg,
-                    background: runBg,
-                    source: .terminal
-                  ))
-              }
-              runStart = nil
-              runText = ""
+              flushRun()
               let cellX = originX + CGFloat(col) * cw
-              for filled in BoxDrawing.blockElementRects(
+              for filled in BoxDrawing.proceduralCellElementRects(
                 scalar,
                 at: CGPoint(x: cellX, y: cellY),
                 cellWidth: cw,
@@ -191,67 +208,24 @@ public struct FrameProducer {
               continue
             }
 
-            if runStart != nil, runFg == cellFg && runBg == cellBg {
+            if runStart != nil, runFg == cellFg && runBg == cellBg && runAttrs == attrs {
               runText += text
             } else {
-              if let start = runStart, !runText.isEmpty {
-                let cellX = originX + CGFloat(start) * cw
-                cmds.append(
-                  .glyphRun(
-                    origin: CGPoint(x: cellX, y: cellY),
-                    text: runText,
-                    foreground: runFg,
-                    background: runBg,
-                    source: .terminal
-                  ))
-              }
+              flushRun()
               runStart = col
               runFg = cellFg
               runBg = cellBg
+              runAttrs = attrs
               runText = text
             }
           } else {
-            if let start = runStart, !runText.isEmpty {
-              let cellX = originX + CGFloat(start) * cw
-              cmds.append(
-                .glyphRun(
-                  origin: CGPoint(x: cellX, y: cellY),
-                  text: runText,
-                  foreground: runFg,
-                  background: runBg,
-                  source: .terminal
-                ))
-            }
-            runStart = nil
-            runText = ""
+            flushRun()
           }
         } else {
-          if let start = runStart, !runText.isEmpty {
-            let cellX = originX + CGFloat(start) * cw
-            cmds.append(
-              .glyphRun(
-                origin: CGPoint(x: cellX, y: cellY),
-                text: runText,
-                foreground: runFg,
-                background: runBg,
-                source: .terminal
-              ))
-          }
-          runStart = nil
-          runText = ""
+          flushRun()
         }
       }
-      if let start = runStart, !runText.isEmpty {
-        let cellX = originX + CGFloat(start) * cw
-        cmds.append(
-          .glyphRun(
-            origin: CGPoint(x: cellX, y: cellY),
-            text: runText,
-            foreground: runFg,
-            background: runBg,
-            source: .terminal
-          ))
-      }
+      flushRun()
     }
 
     // Cursor
@@ -269,5 +243,24 @@ public struct FrameProducer {
     }
 
     return cmds
+  }
+
+  private static func blend(
+    _ foreground: UInt32, toward background: UInt32, foregroundWeight: Double
+  ) -> UInt32 {
+    let fgWeight = min(max(foregroundWeight, 0), 1)
+    let bgWeight = 1 - fgWeight
+
+    func channel(_ shift: UInt32) -> UInt32 {
+      let fg = Double((foreground >> shift) & 0xFF)
+      let bg = Double((background >> shift) & 0xFF)
+      return UInt32((fg * fgWeight + bg * bgWeight).rounded())
+    }
+
+    let r = channel(24)
+    let g = channel(16)
+    let b = channel(8)
+    let a = (foreground & 0xFF)
+    return (r << 24) | (g << 16) | (b << 8) | a
   }
 }

@@ -9,10 +9,68 @@ public enum FrameSource: String, Sendable {
   case image
 }
 
+public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
+  public let rawValue: UInt16
+
+  public init(rawValue: UInt16) {
+    self.rawValue = rawValue
+  }
+
+  public static let bold = TextAttributes(rawValue: 1 << 0)
+  public static let italic = TextAttributes(rawValue: 1 << 1)
+  public static let faint = TextAttributes(rawValue: 1 << 2)
+  public static let inverse = TextAttributes(rawValue: 1 << 3)
+  public static let invisible = TextAttributes(rawValue: 1 << 4)
+  public static let underline = TextAttributes(rawValue: 1 << 5)
+  public static let strikethrough = TextAttributes(rawValue: 1 << 6)
+  public static let overline = TextAttributes(rawValue: 1 << 7)
+
+  public static let renderableMask: TextAttributes = [
+    .bold, .italic, .faint, .inverse, .invisible, .underline, .strikethrough, .overline,
+  ]
+
+  public var names: [String] {
+    var result: [String] = []
+    if contains(.bold) { result.append("bold") }
+    if contains(.italic) { result.append("italic") }
+    if contains(.faint) { result.append("faint") }
+    if contains(.inverse) { result.append("inverse") }
+    if contains(.invisible) { result.append("invisible") }
+    if contains(.underline) { result.append("underline") }
+    if contains(.strikethrough) { result.append("strikethrough") }
+    if contains(.overline) { result.append("overline") }
+    return result
+  }
+
+  public init(names: [String]) {
+    var attrs: TextAttributes = []
+    for name in names {
+      switch name {
+      case "bold": attrs.insert(.bold)
+      case "italic": attrs.insert(.italic)
+      case "faint", "dim": attrs.insert(.faint)
+      case "inverse": attrs.insert(.inverse)
+      case "invisible": attrs.insert(.invisible)
+      case "underline": attrs.insert(.underline)
+      case "strikethrough": attrs.insert(.strikethrough)
+      case "overline": attrs.insert(.overline)
+      default: break
+      }
+    }
+    self = attrs
+  }
+}
+
 public enum FrameCommand: Sendable {
   case rect(CGRect, color: UInt32, source: FrameSource)
   case glyphRun(
-    origin: CGPoint, text: String, foreground: UInt32, background: UInt32, source: FrameSource)
+    origin: CGPoint,
+    text: String,
+    foreground: UInt32,
+    background: UInt32,
+    attributes: TextAttributes,
+    source: FrameSource
+  )
   case cursor(CGRect, color: UInt32)
   case selection(CGRect, color: UInt32)
   case clip(CGRect)
