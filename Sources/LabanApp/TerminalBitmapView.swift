@@ -304,50 +304,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   @objc func copy(_ sender: Any?) {
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id),
-      let snap = session.snapshot(),
       let anchor = selectionAnchor,
-      let focus = selectionFocus
+      let focus = selectionFocus,
+      let snap = session.snapshot()
     else { return }
     defer { laban_snapshot_destroy(snap) }
 
-    let snapshot = snap.pointee
-    let rows = Int(snapshot.rows)
-    let cols = Int(snapshot.cols)
-    guard rows > 0, cols > 0, let cells = snapshot.cells else { return }
-
-    let minRow = max(0, min(anchor.row, focus.row))
-    let maxRow = min(rows - 1, max(anchor.row, focus.row))
-    let minCol = max(0, min(anchor.col, focus.col))
-    let maxCol = min(cols - 1, max(anchor.col, focus.col))
-    guard minRow <= maxRow else { return }
-
-    var text = ""
-    for row in minRow...maxRow {
-      let colStart = row == minRow ? minCol : 0
-      let colEnd = row == maxRow ? maxCol : cols - 1
-      for col in colStart...colEnd {
-        let cell = cells[row * cols + col]
-        if cell.utf8_length > 0, let storage = snapshot.utf8_storage {
-          let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
-          let buf = UnsafeBufferPointer<UInt8>(
-            start: ptr.assumingMemoryBound(to: UInt8.self),
-            count: Int(cell.utf8_length)
-          )
-          text += String(bytes: buf, encoding: .utf8) ?? " "
-        } else {
-          text += " "
-        }
-      }
-      if row < maxRow { text += "\n" }
-    }
+    let selection = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: anchor.row, col: anchor.col),
+      focus: TerminalCellCoordinate(row: focus.row, col: focus.col)
+    )
+    let text = selection.selectedText(from: snap.pointee)
+    guard !text.isEmpty else { return }
 
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
   }
 
   @objc func paste(_ sender: Any?) {
-    guard let str = NSPasteboard.general.string(forType: .string) else { return }
-    sendBytes(Array(str.utf8))
+    guard let str = NSPasteboard.general.string(forType: .string),
+      !str.isEmpty,
+      let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId)
+    else { return }
+    _ = session.writePaste(str)
   }
 
   // MARK: - Mouse (selection + sidebar hits + mouse tracking)
