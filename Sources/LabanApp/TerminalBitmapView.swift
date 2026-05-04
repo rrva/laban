@@ -12,13 +12,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private let model: AppModel
   private let fontAtlas: FontAtlas
-  private var surface: BitmapSurface
-  private var renderer: SoftwareRenderer
+  /// Either a SoftwareBackend (legacy path: blits a CGImage in `draw(_:)`)
+  /// or a MetalRenderer (self-presents into its own CAMetalLayer). Picked at
+  /// init time; toggle with the LABAN_RENDERER env var (`metal` is default,
+  /// `software` falls back to the CG path used through 2026-05).
+  private var backend: RendererBackend
+  /// True when `backend` self-presents — TerminalBitmapView skips its own
+  /// draw() blit and lets the layer composite directly.
+  private let backendSelfPresents: Bool
   private let cellWidth: Int
   private let cellHeight: Int
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
-
-  private var cachedCGImage: CGImage?
   // Vsync-aligned tick. CVDisplayLink fires once per actual display refresh
   // (60Hz / 120Hz ProMotion / whatever the panel is running), giving smoother
   // motion than a wall-clock Timer while keeping the same dirty-frame
@@ -61,10 +65,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     self.fontAtlas = fontAtlas
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
-    let placeholder = BitmapSurface(width: 1, height: 1)
-    self.surface = placeholder
-    self.renderer = SoftwareRenderer(surface: placeholder, fontAtlas: fontAtlas)
+
+    let preference = ProcessInfo.processInfo.environment["LABAN_RENDERER"]?.lowercased()
+    let wantSoftware = preference == "software" || preference == "cpu"
+    if !wantSoftware, let metal = MetalRenderer(fontAtlas: fontAtlas) {
+      self.backend = metal
+      self.backendSelfPresents = true
+    } else {
+      self.backend = SoftwareBackend(fontAtlas: fontAtlas)
+      self.backendSelfPresents = false
+    }
     super.init(frame: .zero)
+
+    if backendSelfPresents, let layer = backend.presentationLayer {
+      wantsLayer = true
+      self.layer = layer
+      // Metal layers must opt in to backing scale changes via the view.
+      layerContentsRedrawPolicy = .duringViewResize
+    }
   }
 
   required init?(coder: NSCoder) { nil }
@@ -140,8 +158,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     lastPixelWidth = pixW
     lastPixelHeight = pixH
     lastSurfaceScale = scale
-    surface = BitmapSurface(width: pixW, height: pixH, scale: scale)
-    renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+    if let metal = backend as? MetalRenderer {
+      metal.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
+    } else if let software = backend as? SoftwareBackend {
+      software.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
+    }
     return true
   }
 
@@ -250,15 +271,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     captureRecorder?.recordFrameCommands(
       frame: captureFrame,
       commands: cmds,
-      surfaceWidth: surface.width,
-      surfaceHeight: surface.height,
-      scale: Double(surface.scale)
+      surfaceWidth: backend.surfaceWidth,
+      surfaceHeight: backend.surfaceHeight,
+      scale: Double(backend.surfaceScale)
     )
-    renderer.render(cmds)
+    backend.render(cmds)
     renderedFrameCount = captureFrame
-    captureRecorder?.recordRenderedFrame(frame: captureFrame, surface: surface)
-    cachedCGImage = surface.cgImage
-    needsDisplay = true
+    if let software = backend as? SoftwareBackend {
+      // Software backend's recorder helper still wants a BitmapSurface to
+      // hash; Metal capture goes through the pngData path on the recorder.
+      captureRecorder?.recordRenderedFrame(frame: captureFrame, surface: software.surface)
+    }
+    if !backendSelfPresents {
+      needsDisplay = true
+    }
 
     session.markRendered()
     renderInvalidated = false
@@ -268,8 +294,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - Drawing
 
   override func draw(_ dirtyRect: NSRect) {
+    // Metal path self-presents through CAMetalLayer; nothing to do here.
+    if backendSelfPresents { return }
     guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-    guard let cgImg = cachedCGImage else {
+    guard let cgImg = backend.presentationImage else {
       ctx.setFillColor(cgColorFrom(Theme.CurrentTheme.bg0))
       ctx.fill(bounds)
       return
@@ -922,7 +950,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// a user reproducing a bug can locate the capture without opening a save panel.
   @objc func toggleCapture(_ sender: Any?) {
     if let recorder = captureRecorder {
-      let png = surface.pngData
+      let png = backend.pngData
       do {
         let manifest = try recorder.finish(
           interrupted: false,

@@ -30,7 +30,10 @@ let package = Package(
     .target(
       name: "LabanRenderer",
       dependencies: [],
-      resources: [.copy("Resources/JetBrainsMono-Regular.ttf")]
+      resources: [
+        .copy("Resources/JetBrainsMono-Regular.ttf"),
+        .process("Shaders.metal"),
+      ]
     ),
     .target(
       name: "LabanCore",
