@@ -65,6 +65,19 @@ execplans/                             Active and completed ExecPlans.
 
 Write a new ADR when a change establishes durable architectural policy, reverses a previously settled decision, or sets an adapter boundary. Number it sequentially in `docs/adr/`, follow the existing file's structure (Status, Context, Decision, Consequences, Applies To New Code), and add a one-line entry here with the path and summary.
 
+## Worktree Setup
+
+Git worktrees do not clone `.external/`. If `.external/` is missing and the
+build fails, symlink it from the main repo rather than re-fetching:
+
+```sh
+ln -s /Users/rrj/wrk/laban/.external .external
+```
+
+`.external/` contains vendored native libraries (currently `libghostty-vt`)
+that are checked out once in the main repo and shared across worktrees via
+symlink.
+
 ## Hard Rules
 
 - The project must be autonomously verifiable. User-visible terminal behavior
