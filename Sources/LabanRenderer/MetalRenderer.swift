@@ -891,12 +891,9 @@ public final class MetalRenderer: RendererBackend {
         let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
 
         for (cellIndex, cluster) in text.enumerated() {
-          guard cluster.unicodeScalars.count == 1,
-            let scalar = cluster.unicodeScalars.first
-          else { continue }
           guard
             let entry = activeAtlas.entry(
-              scalar: scalar, font: font,
+              character: cluster, font: font,
               boldFallback: needsBoldFallback,
               italicFallback: needsItalicFallback)
           else { continue }

@@ -5,9 +5,9 @@ import Metal
 import MetalKit
 
 /// GPU glyph atlas: a single R8 MTLTexture holding antialiased alpha masks
-/// for every (scalar, font, bold-fallback, italic-fallback) tuple seen so
-/// far. Glyphs are packed with a simple shelf algorithm; the texture grows
-/// only via fresh allocation on full (rare).
+/// for every (character cluster, font, bold-fallback, italic-fallback)
+/// tuple seen so far. Glyphs are packed with a simple shelf algorithm; the
+/// texture grows only via fresh allocation on full (rare).
 ///
 /// Color is *not* in the cache key — it's a tint applied per-instance in the
 /// glyph fragment shader. That keeps the cache small and dense even when a
@@ -28,10 +28,22 @@ public final class MetalGlyphAtlas {
   }
 
   private struct Key: Hashable {
-    let scalar: UInt32
+    let text: String
     let font: ObjectIdentifier
     let boldFallback: Bool
     let italicFallback: Bool
+  }
+
+  private enum RasterPlan {
+    case glyph(CGGlyph, advance: CGFloat)
+    case line(CTLine, width: CGFloat)
+
+    var width: CGFloat {
+      switch self {
+      case .glyph(_, let advance): return advance
+      case .line(_, let width): return width
+      }
+    }
   }
 
   // Italic shear matches SoftwareRenderer's fake-italic transform.
@@ -47,7 +59,7 @@ public final class MetalGlyphAtlas {
   private let descent: CGFloat
   private let colorSpace = CGColorSpaceCreateDeviceGray()
 
-  private var entries: [Key: Entry?] = [:]
+  private var entries: [Key: Entry] = [:]
   private var glyphForScalar: [ObjectIdentifier: [UInt32: CGGlyph]] = [:]
   private var advanceForGlyph: [ObjectIdentifier: [CGGlyph: CGFloat]] = [:]
 
@@ -95,31 +107,48 @@ public final class MetalGlyphAtlas {
     boldFallback: Bool,
     italicFallback: Bool
   ) -> Entry? {
+    entry(
+      character: Character(scalar),
+      font: font,
+      boldFallback: boldFallback,
+      italicFallback: italicFallback)
+  }
+
+  public func entry(
+    character: Character,
+    font: CTFont,
+    boldFallback: Bool,
+    italicFallback: Bool
+  ) -> Entry? {
+    let text = String(character)
     let key = Key(
-      scalar: scalar.value,
+      text: text,
       font: ObjectIdentifier(font),
       boldFallback: boldFallback,
       italicFallback: italicFallback)
     if let cached = entries[key] { return cached }
     let made = rasterizeAndPack(
-      scalar: scalar, font: font,
+      text: text, font: font,
       boldFallback: boldFallback, italicFallback: italicFallback)
-    entries[key] = made
+    if let made {
+      entries[key] = made
+    }
     return made
   }
 
   // MARK: - Internal
 
   private func rasterizeAndPack(
-    scalar: Unicode.Scalar,
+    text: String,
     font: CTFont,
     boldFallback: Bool,
     italicFallback: Bool
   ) -> Entry? {
-    guard let glyph = lookupGlyph(scalar: scalar, font: font) else { return nil }
-    let advance = lookupAdvance(glyph: glyph, font: font)
-    let isWide = advance > cellWidth * 1.5
-    let baseTileCellWidth = isWide ? cellWidth * 2 : cellWidth
+    guard !text.isEmpty else { return nil }
+    let plan = rasterPlan(text: text, font: font)
+    let intrinsicWidth = max(plan.width, cellWidth)
+    let isWide = intrinsicWidth > cellWidth * 1.5
+    let baseTileCellWidth = max(isWide ? cellWidth * 2 : cellWidth, intrinsicWidth)
 
     let italicSlop: CGFloat = italicFallback ? ceil(cellHeight * abs(Self.italicShear)) : 0
     let boldSlop: CGFloat = boldFallback ? max(1.0 / scale, 0.5) : 0
@@ -167,24 +196,29 @@ public final class MetalGlyphAtlas {
       }
       ctx.setFillColor(CGColor(gray: 1, alpha: 1))
       ctx.textMatrix = .identity
-      var glyphCopy = glyph
-      var positions = [CGPoint(x: 0, y: descent)]
-      glyphCopy.withUnsafePointer { gPtr in
-        positions.withUnsafeBufferPointer { pPtr in
-          if let pBase = pPtr.baseAddress {
-            CTFontDrawGlyphs(font, gPtr, pBase, 1, ctx)
-          }
-        }
-      }
-      if boldFallback {
-        var shifted = [CGPoint(x: max(1.0 / scale, 0.5), y: descent)]
-        glyphCopy.withUnsafePointer { gPtr in
-          shifted.withUnsafeBufferPointer { pPtr in
-            if let pBase = pPtr.baseAddress {
-              CTFontDrawGlyphs(font, gPtr, pBase, 1, ctx)
+
+      func drawPlan(xOffset: CGFloat) {
+        switch plan {
+        case .glyph(let glyph, _):
+          let positions = [CGPoint(x: xOffset, y: descent)]
+          glyph.withUnsafePointer { gPtr in
+            positions.withUnsafeBufferPointer { pPtr in
+              if let pBase = pPtr.baseAddress {
+                CTFontDrawGlyphs(font, gPtr, pBase, 1, ctx)
+              }
             }
           }
+
+        case .line(let line, _):
+          ctx.textMatrix = .identity
+          ctx.textPosition = CGPoint(x: xOffset, y: descent)
+          CTLineDraw(line, ctx)
         }
+      }
+
+      drawPlan(xOffset: 0)
+      if boldFallback {
+        drawPlan(xOffset: max(1.0 / scale, 0.5))
       }
     }
 
@@ -202,6 +236,44 @@ public final class MetalGlyphAtlas {
       pixelWidth: pixelW, pixelHeight: pixelH,
       originX: originX, originY: originY,
       logicalWidth: logicalTileWidth)
+  }
+
+  private func rasterPlan(text: String, font: CTFont) -> RasterPlan {
+    if let glyphPlan = simpleGlyphPlan(text: text, font: font) {
+      return glyphPlan
+    }
+    let line = fallbackLine(text: text, font: font)
+    var ascent: CGFloat = 0
+    var descent: CGFloat = 0
+    var leading: CGFloat = 0
+    let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+    return .line(line, width: max(width, 0))
+  }
+
+  private func simpleGlyphPlan(text: String, font: CTFont) -> RasterPlan? {
+    guard text.unicodeScalars.count == 1,
+      let scalar = text.unicodeScalars.first,
+      scalar.value <= UInt32(UInt16.max),
+      let glyph = lookupGlyph(scalar: scalar, font: font)
+    else { return nil }
+    let advance = lookupAdvance(glyph: glyph, font: font)
+    return .glyph(glyph, advance: advance)
+  }
+
+  private func fallbackLine(text: String, font: CTFont) -> CTLine {
+    let attrStr = NSMutableAttributedString(string: text)
+    let range = NSRange(location: 0, length: attrStr.length)
+    attrStr.addAttribute(
+      kCTFontAttributeName as NSAttributedString.Key,
+      value: font,
+      range: range
+    )
+    attrStr.addAttribute(
+      kCTForegroundColorAttributeName as NSAttributedString.Key,
+      value: CGColor(gray: 1, alpha: 1),
+      range: range
+    )
+    return CTLineCreateWithAttributedString(attrStr)
   }
 
   private func lookupGlyph(scalar: Unicode.Scalar, font: CTFont) -> CGGlyph? {

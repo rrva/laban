@@ -184,4 +184,51 @@ final class MetalRendererSmokeTests: XCTestCase {
     // pngData rides on the readback texture filled during render.
     XCTAssertNotNil(renderer.pngData, "pngData should produce a PNG after the first render")
   }
+
+  func testMetalRendererDrawsFallbackArabicAndHangulGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: 1) else {
+      XCTFail("MetalRenderer.init returned nil")
+      return
+    }
+    renderer.captureMode = true
+    let cellW = Int(fontAtlas.cellSize.width)
+    let cellH = Int(fontAtlas.cellSize.height)
+    renderer.resize(pixelWidth: cellW * 8, pixelHeight: cellH * 2, scale: 1)
+
+    let bg: UInt32 = 0xFFFF_FFFF
+    let fg: UInt32 = 0x0000_00FF
+    let background: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cellW * 8), height: CGFloat(cellH * 2)),
+        color: bg,
+        source: .terminal)
+    ]
+
+    renderer.render(background, damage: .full)
+    let blank = renderer.pngData
+
+    renderer.render(
+      background + [
+        .glyphRun(
+          origin: CGPoint(x: CGFloat(cellW), y: 0),
+          text: "\u{FEB1}니은",
+          foreground: fg,
+          background: bg,
+          attributes: [],
+          source: .terminal)
+      ],
+      damage: .full)
+    let withText = renderer.pngData
+
+    XCTAssertNotNil(blank)
+    XCTAssertNotNil(withText)
+    XCTAssertNotEqual(
+      blank,
+      withText,
+      "Arabic presentation forms and Hangul syllables must produce visible Metal glyph pixels")
+  }
 }
