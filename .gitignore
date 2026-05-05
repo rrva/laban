@@ -7,5 +7,7 @@
 .env
 .claude/worktrees/
 compile_commands.json
+Sources/LabanApp/BuildInfo.generated.swift
+__pycache__/
 *.o
 *.d
