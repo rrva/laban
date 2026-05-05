@@ -41,10 +41,45 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // Last known terminal grid size (updated each frame)
   private var lastRows: Int = 24
 
-  // Selection anchor/focus in terminal grid coordinates (row, col); row 0 = top
-  private var selectionAnchor: (row: Int, col: Int)?
-  private var selectionFocus: (row: Int, col: Int)?
+  /// One end of a selection. Stores the cell coordinate the user clicked
+  /// AND libghostty's authoritative viewport offset at that moment so the
+  /// selection tracks the actual content even after the user scrolls.
+  ///
+  /// `viewportOffsetAtCapture` is `scrollbar.offset` from libghostty:
+  /// "offset into the total scrollable area that the viewport's top is
+  /// at". 0 = scrolled all the way back; `total - len` = at-bottom.
+  /// Decreases as the user scrolls back, increases as they scroll
+  /// forward toward the latest output. Clamped by libghostty at the
+  /// edges, which is *why* we use it instead of our own Swift counter
+  /// — the Swift counter can drift past the edge (logging requested
+  /// scrolls libghostty refuses to honor) and the rect drifts with it.
+  private struct SelectionPoint: Equatable {
+    var row: Int
+    var col: Int
+    var viewportOffsetAtCapture: Int
+
+    func visibleRow(currentViewportOffset: Int) -> Int {
+      row + (viewportOffsetAtCapture - currentViewportOffset)
+    }
+  }
+
+  private var selectionAnchor: SelectionPoint?
+  private var selectionFocus: SelectionPoint?
+  /// Per-tab saved selection state. Without this, switching tabs leaves
+  /// the previous tab's selection rectangle painted across the new tab's
+  /// grid (the renderer reads view-level state, not session-level). On
+  /// tab switch we save the outgoing tab's pair into this dict and
+  /// restore the incoming tab's pair from it.
+  private var selectionsByTab: [Tab.ID: (anchor: SelectionPoint, focus: SelectionPoint?)] = [:]
   private var trackedMouseButton: MouseButton = .none
+
+  /// Active drag-edge auto-scroll. `direction` is +1 to scroll back (drag
+  /// past the top edge) or -1 to scroll forward (drag past the bottom);
+  /// the timer fires every ~50 ms and scrolls one row in that direction
+  /// until the drag returns to inside the viewport or mouseUp fires.
+  private var dragAutoscrollDirection: Int = 0
+  private var dragAutoscrollTimer: Timer?
+  private var lastDragPoint: NSPoint?
 
   /// Tab currently under the mouse cursor in the sidebar. Drives hover-
   /// only affordances (close glyph). Updated from mouseMoved /
@@ -432,6 +467,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       scrollVelocityRowsPerSec = 0
       appliedScrollRows = 0
       lastScrollTickAt = nil
+      // Save the outgoing tab's selection and restore the incoming tab's,
+      // so the rectangle stays in the tab where it was made instead of
+      // bleeding through to whatever's next.
+      if let outgoing = lastRenderedActiveTabId {
+        if let anchor = selectionAnchor {
+          selectionsByTab[outgoing] = (anchor, selectionFocus)
+        } else {
+          selectionsByTab.removeValue(forKey: outgoing)
+        }
+      }
+      if let restored = selectionsByTab[activeTab.id] {
+        selectionAnchor = restored.anchor
+        selectionFocus = restored.focus
+      } else {
+        selectionAnchor = nil
+        selectionFocus = nil
+      }
+      stopDragAutoscroll()
+      lastDragPoint = nil
     }
 
     // Critically-damped PD controller. Drives `displayedScrollRows` toward
@@ -539,14 +593,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       originY: insets.bottom,
       contentYOffset: scrollContentYOffset
     )
-    var selection: TerminalSelection?
-    if let anchor = selectionAnchor, let focus = selectionFocus {
-      selection = TerminalSelection(
-        sessionId: session.id,
-        anchor: TerminalCellCoordinate(row: anchor.row, col: anchor.col),
-        focus: TerminalCellCoordinate(row: focus.row, col: focus.col)
-      )
-    }
+    let selection = currentTerminalSelection(sessionId: session.id)
     cmds += termProducer.commands(from: UnsafePointer(snap), selection: selection)
 
     captureRecorder?.recordFrameCommands(
@@ -892,17 +939,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   @objc func copy(_ sender: Any?) {
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id),
-      let anchor = selectionAnchor,
-      let focus = selectionFocus,
+      let selection = currentTerminalSelection(sessionId: session.id),
       let snap = session.snapshot()
     else { return }
     defer { laban_snapshot_destroy(snap) }
 
-    let selection = TerminalSelection(
-      sessionId: session.id,
-      anchor: TerminalCellCoordinate(row: anchor.row, col: anchor.col),
-      focus: TerminalCellCoordinate(row: focus.row, col: focus.col)
-    )
     let text = selection.selectedText(from: snap.pointee)
     guard !text.isEmpty else { return }
 
@@ -912,13 +953,39 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   @objc func paste(_ sender: Any?) {
-    guard let str = NSPasteboard.general.string(forType: .string),
-      !str.isEmpty,
+    guard let raw = NSPasteboard.general.string(forType: .string),
+      !raw.isEmpty,
       let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId)
     else { return }
-    _ = session.writePaste(str)
-    recordInput(kind: "paste", route: "terminal", text: str, command: "paste")
+    // Sanitize control characters out of the paste before handing it to
+    // libghostty's bracketed-paste encoder. Strips ESC and the rest of the
+    // C0 range (plus DEL) — keeps tab / newline / CR. This is the post-
+    // CVE-2026-26982 baseline; without it a malicious clipboard payload
+    // could smuggle arbitrary escape sequences (CSI / OSC) past bracketed
+    // paste's framing and re-color the terminal, set the title, or set
+    // the cursor as if the user had typed them.
+    let sanitized = Self.sanitizePaste(raw)
+    guard !sanitized.isEmpty else { return }
+    _ = session.writePaste(sanitized)
+    recordInput(kind: "paste", route: "terminal", text: sanitized, command: "paste")
+  }
+
+  static func sanitizePaste(_ text: String) -> String {
+    var out = String.UnicodeScalarView()
+    out.reserveCapacity(text.unicodeScalars.count)
+    for scalar in text.unicodeScalars {
+      let v = scalar.value
+      // Whitelist: HT, LF, CR — every other C0 control and DEL is dropped.
+      if v == 0x09 || v == 0x0A || v == 0x0D {
+        out.append(scalar)
+      } else if v < 0x20 || v == 0x7F {
+        continue
+      } else {
+        out.append(scalar)
+      }
+    }
+    return String(out)
   }
 
   // MARK: - Mouse (selection + sidebar hits + mouse tracking)
@@ -1068,11 +1135,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     // Fall back to selection. Focus stays nil until a drag actually happens,
     // so a click without drag clears any prior selection instead of leaving a
-    // one-cell highlight behind.
+    // one-cell highlight behind. Double-click selects the word under the
+    // cursor; triple-click selects the entire row.
     let hadSelection = selectionAnchor != nil && selectionFocus != nil
-    selectionAnchor = termCell(at: pt)
-    selectionFocus = nil
-    if hadSelection {
+    switch event.clickCount {
+    case 2:
+      selectWordAt(pt)
+    case 3...:
+      selectLineAt(pt)
+    default:
+      selectionAnchor = clampedSelectionPoint(at: pt)
+      selectionFocus = nil
+    }
+    if hadSelection, selectionAnchor == nil, selectionFocus == nil {
       recordInput(kind: "selection", route: "terminal", command: "clearSelection")
     }
     renderInvalidated = true
@@ -1118,14 +1193,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       renderInvalidated = true
       return
     }
-    selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+    let pt = convert(event.locationInWindow, from: nil)
+    lastDragPoint = pt
+    selectionFocus = clampedSelectionPoint(at: pt)
+    updateDragAutoscroll(at: pt)
     if let anchor = selectionAnchor, let focus = selectionFocus {
       recordInput(
         kind: "selection",
         route: "terminal",
         command: "updateSelection",
-        anchor: anchor,
-        focus: focus
+        anchor: (row: anchor.row, col: anchor.col),
+        focus: (row: focus.row, col: focus.col)
       )
     }
     renderInvalidated = true
@@ -1172,17 +1250,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
     if trackedMouseButton == .left { trackedMouseButton = .none }
+    stopDragAutoscroll()
+    lastDragPoint = nil
     // Only finalize focus if a drag established one. A bare click leaves
     // selectionFocus nil, which clears the rendered selection.
     if selectionFocus != nil {
-      selectionFocus = termCell(at: convert(event.locationInWindow, from: nil))
+      selectionFocus = clampedSelectionPoint(at: convert(event.locationInWindow, from: nil))
       if let anchor = selectionAnchor, let focus = selectionFocus {
         recordInput(
           kind: "selection",
           route: "terminal",
           command: "updateSelection",
-          anchor: anchor,
-          focus: focus
+          anchor: (row: anchor.row, col: anchor.col),
+          focus: (row: focus.row, col: focus.col)
         )
       }
     } else {
@@ -1298,6 +1378,180 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let row = lastRows - 1 - Int(yLocal / CGFloat(cellHeight))
     guard row >= 0, row < lastRows, col >= 0 else { return nil }
     return (row, col)
+  }
+
+  /// Like `termCell(at:)` but always returns a valid cell, clamped to the
+  /// viewport edges. Used when extending a selection by drag — without
+  /// clamping, dragging past the bottom would yield nil and clear the
+  /// in-progress selection. Captures libghostty's viewport offset so the
+  /// point tracks the actual content as the viewport scrolls.
+  private func clampedSelectionPoint(at pt: NSPoint) -> SelectionPoint {
+    let insets = Self.contentInsets
+    let x = max(0, pt.x - sidebarWidth - insets.left)
+    let yLocal = pt.y - insets.bottom
+    let cols = max(
+      1,
+      Int((bounds.width - sidebarWidth - insets.left - insets.right) / CGFloat(cellWidth)))
+    let col = min(cols - 1, max(0, Int(x / CGFloat(cellWidth))))
+    let unclampedRow = lastRows - 1 - Int(yLocal / CGFloat(cellHeight))
+    let row = min(max(0, unclampedRow), max(0, lastRows - 1))
+    return SelectionPoint(
+      row: row, col: col, viewportOffsetAtCapture: currentViewportOffset())
+  }
+
+  /// Word-grain selection. Walks left and right from the click cell along
+  /// the row, stopping at non-word characters. Word chars include
+  /// alphanumerics plus the path / URL / identifier glue chars
+  /// `-_./:` so common things like file paths and URLs select cleanly.
+  private func selectWordAt(_ pt: NSPoint) {
+    let p = clampedSelectionPoint(at: pt)
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snap = session.snapshot()
+    else {
+      selectionAnchor = p
+      selectionFocus = p
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+    let snapPtr = snap.pointee
+    let cols = Int(snapPtr.cols)
+    guard p.row < Int(snapPtr.rows), p.col < cols,
+      let cells = snapPtr.cells, let storage = snapPtr.utf8_storage
+    else {
+      selectionAnchor = p
+      selectionFocus = p
+      return
+    }
+    func cellChar(at col: Int) -> Unicode.Scalar? {
+      let c = cells[p.row * cols + col]
+      guard c.utf8_length > 0 else { return nil }
+      let buf = UnsafeBufferPointer<UInt8>(
+        start: UnsafeRawPointer(storage)
+          .advanced(by: Int(c.utf8_offset))
+          .assumingMemoryBound(to: UInt8.self),
+        count: Int(c.utf8_length))
+      let s = String(bytes: buf, encoding: .utf8) ?? ""
+      return s.unicodeScalars.first
+    }
+    func isWord(_ scalar: Unicode.Scalar?) -> Bool {
+      guard let scalar else { return false }
+      if CharacterSet.alphanumerics.contains(scalar) { return true }
+      return "-_./:~@".unicodeScalars.contains(scalar)
+    }
+    var startCol = p.col
+    var endCol = p.col
+    while startCol > 0, isWord(cellChar(at: startCol - 1)) { startCol -= 1 }
+    while endCol < cols - 1, isWord(cellChar(at: endCol + 1)) { endCol += 1 }
+    selectionAnchor = SelectionPoint(
+      row: p.row, col: startCol, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+    selectionFocus = SelectionPoint(
+      row: p.row, col: endCol, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+  }
+
+  /// Line-grain selection. Spans the entire row.
+  private func selectLineAt(_ pt: NSPoint) {
+    let p = clampedSelectionPoint(at: pt)
+    let insets = Self.contentInsets
+    let cols = max(
+      1,
+      Int((bounds.width - sidebarWidth - insets.left - insets.right) / CGFloat(cellWidth)))
+    selectionAnchor = SelectionPoint(
+      row: p.row, col: 0, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+    selectionFocus = SelectionPoint(
+      row: p.row, col: cols - 1, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+  }
+
+  /// libghostty's authoritative viewport offset for the active session,
+  /// or 0 when unavailable. Used by selection translation so the rect
+  /// follows the actual scroll position rather than a Swift accumulator
+  /// that can drift past the scroll edges.
+  private func currentViewportOffset() -> Int {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let vs = session.viewportState()
+    else { return 0 }
+    return vs.viewportOffset
+  }
+
+  /// Build the renderer-facing selection from view-state, translating each
+  /// stored row by the actual viewport-offset delta since capture so the
+  /// selection rect follows the underlying content as the viewport scrolls.
+  private func currentTerminalSelection(sessionId: Session.ID) -> TerminalSelection? {
+    guard let anchor = selectionAnchor, let focus = selectionFocus else { return nil }
+    let offset = currentViewportOffset()
+    let aRow = anchor.visibleRow(currentViewportOffset: offset)
+    let fRow = focus.visibleRow(currentViewportOffset: offset)
+    return TerminalSelection(
+      sessionId: sessionId,
+      anchor: TerminalCellCoordinate(row: aRow, col: anchor.col),
+      focus: TerminalCellCoordinate(row: fRow, col: focus.col)
+    )
+  }
+
+  // MARK: - Drag-edge auto-scroll
+
+  /// Decide whether the active drag is pulling past the top or bottom edge
+  /// of the terminal area and (re)arm or stop the auto-scroll timer to
+  /// match. The terminal area is `[insets.bottom, bounds.height -
+  /// insets.top]`; anything outside that band is considered an edge pull.
+  private func updateDragAutoscroll(at pt: NSPoint) {
+    let insets = Self.contentInsets
+    let contentBottom = insets.bottom
+    let contentTop = bounds.height - insets.top
+    let direction: Int
+    if pt.y >= contentTop {
+      // Above the top edge — user wants older content; scroll back.
+      direction = +1
+    } else if pt.y < contentBottom {
+      // Below the bottom edge — user wants newer content; scroll forward.
+      direction = -1
+    } else {
+      direction = 0
+    }
+    if direction == 0 {
+      stopDragAutoscroll()
+    } else if dragAutoscrollDirection != direction {
+      stopDragAutoscroll()
+      dragAutoscrollDirection = direction
+      let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) {
+        [weak self] _ in self?.dragAutoscrollTick()
+      }
+      // Keep the timer firing during AppKit event-tracking modes (drag).
+      RunLoop.current.add(timer, forMode: .eventTracking)
+      dragAutoscrollTimer = timer
+    }
+  }
+
+  private func stopDragAutoscroll() {
+    dragAutoscrollTimer?.invalidate()
+    dragAutoscrollTimer = nil
+    dragAutoscrollDirection = 0
+  }
+
+  /// Step the viewport one row in `dragAutoscrollDirection` and re-clamp
+  /// the focus to the (new) edge cell. The selection tail is anchored to
+  /// scroll position, so it grows naturally as we scroll.
+  private func dragAutoscrollTick() {
+    guard dragAutoscrollDirection != 0,
+      let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else {
+      stopDragAutoscroll()
+      return
+    }
+    // Don't scroll forward past the bottom of scrollback.
+    if dragAutoscrollDirection < 0, appliedScrollRows == 0 { return }
+    session.scrollViewport(deltaRows: dragAutoscrollDirection)
+    appliedScrollRows = max(0, appliedScrollRows + dragAutoscrollDirection)
+    // Keep the smooth-scroll PD controller in sync so a wheel input after
+    // an auto-scroll doesn't snap us back to a stale target.
+    displayedScrollRows = Double(appliedScrollRows)
+    targetScrollRows = displayedScrollRows
+    if let pt = lastDragPoint {
+      selectionFocus = clampedSelectionPoint(at: pt)
+    }
+    renderInvalidated = true
   }
 
   private func terminalMouseGeometry(at pt: NSPoint) -> (
