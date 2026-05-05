@@ -23,6 +23,7 @@
 #include <libproc.h>
 #include <limits.h>
 #include <signal.h>
+#include <spawn.h>
 #include <sys/proc_info.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -58,6 +59,103 @@ typedef struct {
     char payload[TAB_STATUS_PAYLOAD_MAX];
     size_t payload_len;
 } LabanTabStatusScanner;
+
+extern char **environ;
+
+static bool env_entry_has_name(const char *entry, const char *name) {
+    if (!entry || !name) return false;
+    const char *eq = strchr(entry, '=');
+    if (!eq) return false;
+    size_t len = (size_t)(eq - entry);
+    return strlen(name) == len && strncmp(entry, name, len) == 0;
+}
+
+static bool envp_has_name(const char *const *envp, const char *name) {
+    if (!envp) return false;
+    for (int i = 0; envp[i]; i++) {
+        if (env_entry_has_name(envp[i], name)) return true;
+    }
+    return false;
+}
+
+static bool envp_overrides_entry(const char *const *envp, const char *entry) {
+    if (!envp || !entry) return false;
+    const char *eq = strchr(entry, '=');
+    if (!eq) return false;
+    size_t len = (size_t)(eq - entry);
+    for (int i = 0; envp[i]; i++) {
+        const char *override_eq = strchr(envp[i], '=');
+        if (!override_eq) continue;
+        size_t override_len = (size_t)(override_eq - envp[i]);
+        if (override_len == len && strncmp(envp[i], entry, len) == 0) return true;
+    }
+    return false;
+}
+
+static char **build_spawn_env(const char *const *overrides) {
+    size_t inherited_count = 0;
+    while (environ && environ[inherited_count]) inherited_count++;
+
+    size_t override_count = 0;
+    while (overrides && overrides[override_count]) override_count++;
+
+    char **env = calloc(inherited_count + override_count + 3, sizeof(char *));
+    if (!env) return NULL;
+
+    size_t out = 0;
+    for (size_t i = 0; i < inherited_count; i++) {
+        const char *entry = environ[i];
+        if (env_entry_has_name(entry, "TERM")) continue;
+        if (env_entry_has_name(entry, "COLORTERM")) continue;
+        if (env_entry_has_name(entry, "NO_COLOR")) continue;
+        if (envp_overrides_entry(overrides, entry)) continue;
+        env[out++] = (char *)entry;
+    }
+
+    if (!envp_has_name(overrides, "TERM")) {
+        env[out++] = (char *)"TERM=xterm-256color";
+    }
+    if (!envp_has_name(overrides, "COLORTERM")) {
+        env[out++] = (char *)"COLORTERM=truecolor";
+    }
+
+    for (size_t i = 0; i < override_count; i++) {
+        env[out++] = (char *)overrides[i];
+    }
+    env[out] = NULL;
+    return env;
+}
+
+static int set_cloexec(int fd) {
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static pid_t waitpid_retry(pid_t pid, int *status, int options) {
+    pid_t ret;
+    do {
+        ret = waitpid(pid, status, options);
+    } while (ret < 0 && errno == EINTR);
+    return ret;
+}
+
+static int spawn_actions_addchdir_compat(
+    posix_spawn_file_actions_t *actions,
+    const char *path
+) {
+#if defined(__APPLE__)
+    if (__builtin_available(macOS 26.0, *)) {
+        return posix_spawn_file_actions_addchdir(actions, path);
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return posix_spawn_file_actions_addchdir_np(actions, path);
+#pragma clang diagnostic pop
+#else
+    return posix_spawn_file_actions_addchdir(actions, path);
+#endif
+}
 
 struct LabanSession {
     GhosttyTerminal terminal;
@@ -656,55 +754,28 @@ int laban_session_create(
         snprintf(s->launch_cwd, sizeof(s->launch_cwd), "%s", launch_cwd);
     }
 
-    /* Fork a child process with a new PTY. */
-    int pty_fd = -1;
-    pid_t child = forkpty(&pty_fd, NULL, NULL, NULL);
-    if (child < 0) {
+    char login_arg[256];
+    char *default_argv[] = { login_arg, NULL };
+    char *const *spawn_argv = NULL;
+    if (config->argv) {
+        spawn_argv = (char *const *)config->argv;
+    } else {
+        /* Invoke as login shell by prefixing argv[0] with '-'.
+           This causes shells to source login profiles and start in $HOME.
+           This is the standard approach used by Ghostty, iTerm2, Warp, and
+           other modern terminal emulators. */
+        const char *base = strrchr(exe, '/');
+        base = base ? base + 1 : exe;
+        snprintf(login_arg, sizeof(login_arg), "-%s", base);
+        spawn_argv = default_argv;
+    }
+
+    char **spawn_env = build_spawn_env(config->envp);
+    if (!spawn_env) {
         free_ghostty_resources(s);
         free(s);
         return -1;
     }
-
-    if (child == 0) {
-        /* Child: reset inherited signal dispositions, set env, exec. */
-        signal(SIGPIPE, SIG_DFL);
-        signal(SIGINT, SIG_DFL);
-
-        setenv("TERM", "xterm-256color", 1);
-        setenv("COLORTERM", "truecolor", 1);
-        unsetenv("NO_COLOR");
-
-        if (config->envp) {
-            for (int i = 0; config->envp[i]; i++)
-                putenv((char *)config->envp[i]);
-        }
-
-        if (launch_cwd && launch_cwd[0]) chdir(launch_cwd);
-
-        if (config->argv) {
-            execv(exe, (char *const *)config->argv);
-        } else {
-            /* Invoke as login shell by prefixing argv[0] with '-'.
-               This causes shells to source login profiles and
-               start in $HOME. This is the standard approach used
-               by Ghostty, iTerm2, Warp, and other modern terminal
-               emulators. */
-            const char *base = strrchr(exe, '/');
-            base = base ? base + 1 : exe;
-            char login_arg[256];
-            snprintf(login_arg, sizeof(login_arg), "-%s", base);
-            char *dargv[] = { login_arg, NULL };
-            execv(exe, dargv);
-        }
-        _exit(127);
-    }
-
-    /* Parent: set nonblocking, apply initial window size. */
-    s->pty_fd = pty_fd;
-    s->child_pid = child;
-
-    int flags = fcntl(pty_fd, F_GETFL, 0);
-    if (flags >= 0) fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
 
     struct winsize ws = {
         .ws_row    = (unsigned short)rows,
@@ -712,7 +783,84 @@ int laban_session_create(
         .ws_xpixel = (unsigned short)initial_size.pixel_width,
         .ws_ypixel = (unsigned short)initial_size.pixel_height,
     };
-    ioctl(pty_fd, TIOCSWINSZ, &ws);
+
+    /* Create a PTY with the initial size before the child process starts. */
+    int pty_fd = -1;
+    int slave_fd = -1;
+    if (openpty(&pty_fd, &slave_fd, NULL, NULL, &ws) < 0) {
+        free(spawn_env);
+        free_ghostty_resources(s);
+        free(s);
+        return -1;
+    }
+
+    char slave_name[PATH_MAX];
+    if (set_cloexec(pty_fd) < 0 || set_cloexec(slave_fd) < 0
+        || ttyname_r(slave_fd, slave_name, sizeof(slave_name)) != 0) {
+        free(spawn_env);
+        close(slave_fd);
+        close(pty_fd);
+        free_ghostty_resources(s);
+        free(s);
+        return -1;
+    }
+
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    bool actions_ready = false;
+    bool attr_ready = false;
+    int spawn_rc = posix_spawn_file_actions_init(&actions);
+    if (spawn_rc == 0) actions_ready = true;
+    if (spawn_rc == 0 && launch_cwd && launch_cwd[0])
+        spawn_rc = spawn_actions_addchdir_compat(&actions, launch_cwd);
+    if (spawn_rc == 0)
+        spawn_rc = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, slave_name, O_RDWR, 0);
+    if (spawn_rc == 0)
+        spawn_rc = posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDOUT_FILENO);
+    if (spawn_rc == 0)
+        spawn_rc = posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDERR_FILENO);
+    if (spawn_rc == 0 && pty_fd > STDERR_FILENO)
+        spawn_rc = posix_spawn_file_actions_addclose(&actions, pty_fd);
+    if (spawn_rc == 0 && slave_fd > STDERR_FILENO)
+        spawn_rc = posix_spawn_file_actions_addclose(&actions, slave_fd);
+
+    if (spawn_rc == 0) {
+        spawn_rc = posix_spawnattr_init(&attr);
+        if (spawn_rc == 0) attr_ready = true;
+    }
+    if (spawn_rc == 0) {
+        sigset_t defaults;
+        sigemptyset(&defaults);
+        sigaddset(&defaults, SIGPIPE);
+        sigaddset(&defaults, SIGINT);
+        spawn_rc = posix_spawnattr_setsigdefault(&attr, &defaults);
+    }
+    if (spawn_rc == 0) {
+        short flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSID;
+        spawn_rc = posix_spawnattr_setflags(&attr, flags);
+    }
+
+    pid_t child = -1;
+    if (spawn_rc == 0) {
+        spawn_rc = posix_spawn(&child, exe, &actions, &attr, spawn_argv, spawn_env);
+    }
+    if (attr_ready) posix_spawnattr_destroy(&attr);
+    if (actions_ready) posix_spawn_file_actions_destroy(&actions);
+    free(spawn_env);
+    close(slave_fd);
+
+    if (spawn_rc != 0) {
+        close(pty_fd);
+        free_ghostty_resources(s);
+        free(s);
+        return -1;
+    }
+
+    int flags = fcntl(pty_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
+
+    s->pty_fd = pty_fd;
+    s->child_pid = child;
 
     *out_session = s;
     return 0;
@@ -736,17 +884,17 @@ void laban_session_destroy(LabanSession *s) {
     /* Reap the child without blocking indefinitely. */
     if (s->child_pid > 0 && s->status == 0) {
         int ws = 0;
-        int reaped = (waitpid(s->child_pid, &ws, WNOHANG) == s->child_pid);
+        int reaped = (waitpid_retry(s->child_pid, &ws, WNOHANG) == s->child_pid);
         if (!reaped) {
             kill(s->child_pid, SIGTERM);
             for (int i = 0; i < 5 && !reaped; i++) {
                 struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000 }; /* 10 ms */
                 nanosleep(&ts, NULL);
-                reaped = (waitpid(s->child_pid, &ws, WNOHANG) == s->child_pid);
+                reaped = (waitpid_retry(s->child_pid, &ws, WNOHANG) == s->child_pid);
             }
             if (!reaped) {
                 kill(s->child_pid, SIGKILL);
-                waitpid(s->child_pid, &ws, 0);
+                waitpid_retry(s->child_pid, &ws, 0);
             }
         }
     }
@@ -784,7 +932,7 @@ int laban_session_poll(LabanSession *s) {
         /* n == 0 or permanent error (EIO on macOS = PTY slave closed). */
         {
             int ws = 0;
-            pid_t ret = waitpid(s->child_pid, &ws, WNOHANG);
+            pid_t ret = waitpid_retry(s->child_pid, &ws, WNOHANG);
             if (ret == s->child_pid) {
                 if (WIFEXITED(ws)) {
                     s->status = 1;

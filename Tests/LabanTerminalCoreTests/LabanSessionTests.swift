@@ -376,6 +376,119 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  func testPTYInitialSizeIsVisibleAtShellStartup() {
+    let exe = "/bin/sh"
+    let argStrings = ["/bin/sh", "-lc", "stty size"]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 13
+        size.cols = 42
+        size.pixel_width = 420
+        size.pixel_height = 260
+        size.cell_width = 10
+        size.cell_height = 20
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed for initial PTY size test")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        var snap: UnsafeMutablePointer<LabanSnapshot>?
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          if let current = snap {
+            laban_snapshot_destroy(current)
+            snap = nil
+          }
+          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          if s.pointee.status != 0 { break }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+        defer { laban_snapshot_destroy(snap) }
+
+        guard let s = snap else {
+          XCTFail("no snapshot obtained after polling for stty output")
+          return
+        }
+
+        let text = visibleText(from: UnsafePointer(s))
+        XCTAssertTrue(
+          text.contains("13 42"),
+          "shell must see initial PTY size before startup command runs; got \(text.debugDescription)"
+        )
+      }
+    }
+  }
+
+  func testPTYSpawnEnvironmentAppliesDefaultsAndOverrides() {
+    let exe = "/bin/sh"
+    let command =
+      "printf '%s|%s|%s|%s\\n' \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-unset}\" \"$LABAN_SPAWN_ENV_TEST\""
+    let argStrings = ["/bin/sh", "-lc", command]
+    let envStrings = [
+      "TERM=laban-term",
+      "NO_COLOR=explicit",
+      "LABAN_SPAWN_ENV_TEST=ok",
+    ]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        withCArgv(envStrings) { envPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.envp = envPtr
+          config.fixture_mode = 0
+
+          var size = LabanTerminalSize()
+          size.rows = 8
+          size.cols = 80
+
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for spawn environment test")
+            return
+          }
+          defer { laban_session_destroy(session) }
+
+          var snap: UnsafeMutablePointer<LabanSnapshot>?
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            if let current = snap {
+              laban_snapshot_destroy(current)
+              snap = nil
+            }
+            guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+            if s.pointee.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+          defer { laban_snapshot_destroy(snap) }
+
+          guard let s = snap else {
+            XCTFail("no snapshot obtained after polling for environment output")
+            return
+          }
+
+          let text = visibleText(from: UnsafePointer(s))
+          XCTAssertTrue(
+            text.contains("laban-term|truecolor|explicit|ok"),
+            "spawn env should preserve overrides and Laban defaults; got \(text.debugDescription)")
+        }
+      }
+    }
+  }
+
   func testForcedSpawnFailureDoesNotLeak() {
     let exe = "/nonexistent/executable"
     exe.withCString { exeCStr in
