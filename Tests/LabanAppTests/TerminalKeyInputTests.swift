@@ -72,6 +72,17 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertNil(ev.text)
   }
 
+  func testControlZRoutesToEncodedKeyWithNoText() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .z, modifiers: .control)
+    guard case .encodedKey(let ev) = desc.route() else {
+      XCTFail("expected .encodedKey")
+      return
+    }
+    XCTAssertEqual(ev.key, .z)
+    XCTAssertEqual(ev.modifiers, .control)
+    XCTAssertNil(ev.text)
+  }
+
   func testShiftTabRoutesToEncodedTabWithShift() {
     let desc = TerminalKeyDescriptor(action: .press, key: .tab, modifiers: .shift)
     XCTAssertEqual(

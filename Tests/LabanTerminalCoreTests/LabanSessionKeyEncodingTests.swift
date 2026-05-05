@@ -82,6 +82,21 @@ final class LabanSessionKeyEncodingTests: XCTestCase {
     XCTAssertEqual(encodeKey(session, &event), [0x03])  // ETX (^C)
   }
 
+  func testCtrlZEncodesSUB() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("session creation failed")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var event = LabanKeyEvent()
+    event.action = LABAN_KEY_ACTION_PRESS
+    event.key = LABAN_KEY_Z
+    event.modifiers = 2  // LABAN_KEY_MOD_CONTROL
+
+    XCTAssertEqual(encodeKey(session, &event), [0x1A])  // SUB (^Z)
+  }
+
   func testShiftTabEncodesBacktab() {
     guard let session = makeFixtureSession() else {
       XCTFail("session creation failed")

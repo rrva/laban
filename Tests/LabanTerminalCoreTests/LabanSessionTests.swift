@@ -10,6 +10,44 @@ private func canonicalPath(_ path: String) -> String {
   }
 }
 
+private func waitForForegroundProcess(
+  _ session: OpaquePointer,
+  named expected: String,
+  timeout: TimeInterval = 2.0
+) -> Bool {
+  let deadline = Date().addingTimeInterval(timeout)
+  while Date() < deadline {
+    _ = laban_session_poll(session)
+    var childPid: Int32 = -1
+    var foregroundPid: Int32 = -1
+    var process = [CChar](repeating: 0, count: 256)
+    var command = [CChar](repeating: 0, count: 1024)
+    var cwd = [CChar](repeating: 0, count: 1024)
+    let metadataRC = process.withUnsafeMutableBufferPointer { processPtr in
+      command.withUnsafeMutableBufferPointer { commandPtr in
+        cwd.withUnsafeMutableBufferPointer { cwdPtr in
+          laban_session_process_metadata(
+            session,
+            &childPid,
+            &foregroundPid,
+            processPtr.baseAddress,
+            processPtr.count,
+            commandPtr.baseAddress,
+            commandPtr.count,
+            cwdPtr.baseAddress,
+            cwdPtr.count
+          )
+        }
+      }
+    }
+    if metadataRC == 0, foregroundPid > 0, String(cString: process).contains(expected) {
+      return true
+    }
+    Thread.sleep(forTimeInterval: 0.02)
+  }
+  return false
+}
+
 private final class TabStatusProbe {
   var calls = 0
   var status: String?
@@ -476,6 +514,125 @@ final class LabanSessionTests: XCTestCase {
           }
         }
         XCTAssertTrue(foundOK, "expected 'ok' in cell grid after shell exits")
+      }
+    }
+  }
+
+  func testControlCInterruptsForegroundPTYProcess() {
+    let exe = "/bin/cat"
+    let argStrings = ["/bin/cat"]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 24
+        size.cols = 80
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed for Ctrl-C PTY test")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        XCTAssertTrue(
+          waitForForegroundProcess(session, named: "cat"),
+          "test process must own the foreground PTY before Ctrl-C")
+
+        var event = LabanKeyEvent()
+        event.action = LABAN_KEY_ACTION_PRESS
+        event.key = LABAN_KEY_C
+        event.modifiers = 2  // control
+        let encodedCapacity = 16
+        var encoded = [UInt8](repeating: 0, count: encodedCapacity)
+        var encodedLen = 0
+        XCTAssertEqual(
+          encoded.withUnsafeMutableBytes { buf in
+            laban_session_encode_key(
+              session,
+              &event,
+              buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+              encodedCapacity,
+              &encodedLen
+            )
+          },
+          0
+        )
+        XCTAssertEqual(Array(encoded.prefix(encodedLen)), [0x03])
+        XCTAssertEqual(laban_session_send_key(session, &event), 0)
+
+        var exit = LabanExitState()
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          exit = laban_session_exit_state(session)
+          if exit.status != 0 { break }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        XCTAssertEqual(exit.status, 2, "Ctrl-C must deliver SIGINT to the foreground PTY process")
+        XCTAssertEqual(exit.exit_status, SIGINT)
+      }
+    }
+  }
+
+  func testControlZSendsSuspendCharacterThroughForegroundPTY() {
+    let exe = "/bin/sh"
+    let command = "trap 'printf TSTP-TRAP\\\\n; exit 42' TSTP; printf READY\\\\n; read line"
+    let argStrings = ["/bin/sh", "-lc", command]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 24
+        size.cols = 80
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed for Ctrl-Z PTY test")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        XCTAssertTrue(
+          waitForForegroundProcess(session, named: "sh"),
+          "shell must own the foreground PTY before Ctrl-Z")
+
+        var event = LabanKeyEvent()
+        event.action = LABAN_KEY_ACTION_PRESS
+        event.key = LABAN_KEY_Z
+        event.modifiers = 2  // control
+        XCTAssertEqual(laban_session_send_key(session, &event), 0)
+
+        var snap: UnsafeMutablePointer<LabanSnapshot>?
+        let deadline = Date().addingTimeInterval(2.0)
+        var visible = ""
+        while Date() < deadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          if let current = snap {
+            laban_snapshot_destroy(current)
+            snap = nil
+          }
+          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          visible = visibleText(from: UnsafePointer(s))
+          if visible.contains("TSTP-TRAP") { break }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+        defer { laban_snapshot_destroy(snap) }
+
+        XCTAssertTrue(
+          visible.contains("TSTP-TRAP"),
+          "Ctrl-Z must reach the foreground shell as VSUSP/SIGTSTP; visible text: \(visible)")
       }
     }
   }

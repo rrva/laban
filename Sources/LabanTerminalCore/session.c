@@ -16,6 +16,7 @@
 #include <util.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <termios.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <poll.h>
@@ -23,7 +24,6 @@
 #include <libproc.h>
 #include <limits.h>
 #include <signal.h>
-#include <spawn.h>
 #include <sys/proc_info.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -141,27 +141,63 @@ static pid_t waitpid_retry(pid_t pid, int *status, int options) {
     return ret;
 }
 
+static void init_sane_termios(struct termios *tio) {
+    memset(tio, 0, sizeof(*tio));
+    tio->c_iflag = BRKINT | ICRNL | IXON;
+#ifdef IXANY
+    tio->c_iflag |= IXANY;
+#endif
+#ifdef IMAXBEL
+    tio->c_iflag |= IMAXBEL;
+#endif
+    tio->c_oflag = OPOST | ONLCR;
+    tio->c_cflag = CREAD | CS8 | HUPCL;
+    tio->c_lflag = ECHO | ECHOE | ECHOK | ICANON | ISIG | IEXTEN;
+#ifdef ECHOCTL
+    tio->c_lflag |= ECHOCTL;
+#endif
+#ifdef ECHOKE
+    tio->c_lflag |= ECHOKE;
+#endif
+    for (int i = 0; i < NCCS; i++) tio->c_cc[i] = _POSIX_VDISABLE;
+    tio->c_cc[VEOF] = 4;      /* ^D */
+    tio->c_cc[VEOL] = _POSIX_VDISABLE;
+#ifdef VEOL2
+    tio->c_cc[VEOL2] = _POSIX_VDISABLE;
+#endif
+    tio->c_cc[VERASE] = 0x7f; /* DEL */
+    tio->c_cc[VINTR] = 3;     /* ^C */
+    tio->c_cc[VKILL] = 21;    /* ^U */
+    tio->c_cc[VQUIT] = 28;    /* ^\ */
+    tio->c_cc[VSTART] = 17;   /* ^Q */
+    tio->c_cc[VSTOP] = 19;    /* ^S */
+    tio->c_cc[VSUSP] = 26;    /* ^Z */
+#ifdef VDSUSP
+    tio->c_cc[VDSUSP] = 25;   /* ^Y */
+#endif
+#ifdef VREPRINT
+    tio->c_cc[VREPRINT] = 18; /* ^R */
+#endif
+#ifdef VWERASE
+    tio->c_cc[VWERASE] = 23;  /* ^W */
+#endif
+#ifdef VLNEXT
+    tio->c_cc[VLNEXT] = 22;   /* ^V */
+#endif
+#ifdef VDISCARD
+    tio->c_cc[VDISCARD] = 15; /* ^O */
+#endif
+#ifdef VSTATUS
+    tio->c_cc[VSTATUS] = 20;  /* ^T */
+#endif
+    tio->c_cc[VMIN] = 1;
+    tio->c_cc[VTIME] = 0;
+}
+
 static uint64_t monotonic_us(void) {
     struct timespec ts = {0};
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
     return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
-}
-
-static int spawn_actions_addchdir_compat(
-    posix_spawn_file_actions_t *actions,
-    const char *path
-) {
-#if defined(__APPLE__)
-    if (__builtin_available(macOS 26.0, *)) {
-        return posix_spawn_file_actions_addchdir(actions, path);
-    }
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    return posix_spawn_file_actions_addchdir_np(actions, path);
-#pragma clang diagnostic pop
-#else
-    return posix_spawn_file_actions_addchdir(actions, path);
-#endif
 }
 
 struct LabanSession {
@@ -861,73 +897,42 @@ int laban_session_create(
         .ws_ypixel = (unsigned short)initial_size.pixel_height,
     };
 
-    /* Create a PTY with the initial size before the child process starts. */
+    struct termios term;
+    init_sane_termios(&term);
+
+    /* forkpty makes the child a session leader with the slave PTY as its
+     * controlling terminal. Prepare argv/env/cwd before forking; the child
+     * path below only restores signal defaults, chdirs, and execs. */
     int pty_fd = -1;
-    int slave_fd = -1;
-    if (openpty(&pty_fd, &slave_fd, NULL, NULL, &ws) < 0) {
+    pid_t child = forkpty(&pty_fd, NULL, &term, &ws);
+    if (child < 0) {
         free(spawn_env);
         free_ghostty_resources(s);
         free(s);
         return -1;
     }
-
-    char slave_name[PATH_MAX];
-    if (set_cloexec(pty_fd) < 0 || set_cloexec(slave_fd) < 0
-        || ttyname_r(slave_fd, slave_name, sizeof(slave_name)) != 0) {
-        free(spawn_env);
-        close(slave_fd);
-        close(pty_fd);
-        free_ghostty_resources(s);
-        free(s);
-        return -1;
+    if (child == 0) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = SIG_DFL;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPIPE, &sa, NULL);
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGQUIT, &sa, NULL);
+        sigaction(SIGTSTP, &sa, NULL);
+        if (launch_cwd && launch_cwd[0] && chdir(launch_cwd) != 0) {
+            _exit(127);
+        }
+        execve(exe, spawn_argv, spawn_env);
+        _exit(127);
     }
-
-    posix_spawn_file_actions_t actions;
-    posix_spawnattr_t attr;
-    bool actions_ready = false;
-    bool attr_ready = false;
-    int spawn_rc = posix_spawn_file_actions_init(&actions);
-    if (spawn_rc == 0) actions_ready = true;
-    if (spawn_rc == 0 && launch_cwd && launch_cwd[0])
-        spawn_rc = spawn_actions_addchdir_compat(&actions, launch_cwd);
-    if (spawn_rc == 0)
-        spawn_rc = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, slave_name, O_RDWR, 0);
-    if (spawn_rc == 0)
-        spawn_rc = posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDOUT_FILENO);
-    if (spawn_rc == 0)
-        spawn_rc = posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDERR_FILENO);
-    if (spawn_rc == 0 && pty_fd > STDERR_FILENO)
-        spawn_rc = posix_spawn_file_actions_addclose(&actions, pty_fd);
-    if (spawn_rc == 0 && slave_fd > STDERR_FILENO)
-        spawn_rc = posix_spawn_file_actions_addclose(&actions, slave_fd);
-
-    if (spawn_rc == 0) {
-        spawn_rc = posix_spawnattr_init(&attr);
-        if (spawn_rc == 0) attr_ready = true;
-    }
-    if (spawn_rc == 0) {
-        sigset_t defaults;
-        sigemptyset(&defaults);
-        sigaddset(&defaults, SIGPIPE);
-        sigaddset(&defaults, SIGINT);
-        spawn_rc = posix_spawnattr_setsigdefault(&attr, &defaults);
-    }
-    if (spawn_rc == 0) {
-        short flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSID;
-        spawn_rc = posix_spawnattr_setflags(&attr, flags);
-    }
-
-    pid_t child = -1;
-    if (spawn_rc == 0) {
-        spawn_rc = posix_spawn(&child, exe, &actions, &attr, spawn_argv, spawn_env);
-    }
-    if (attr_ready) posix_spawnattr_destroy(&attr);
-    if (actions_ready) posix_spawn_file_actions_destroy(&actions);
     free(spawn_env);
-    close(slave_fd);
 
-    if (spawn_rc != 0) {
+    if (set_cloexec(pty_fd) < 0) {
         close(pty_fd);
+        kill(child, SIGHUP);
+        int ws_child = 0;
+        waitpid_retry(child, &ws_child, 0);
         free_ghostty_resources(s);
         free(s);
         return -1;
