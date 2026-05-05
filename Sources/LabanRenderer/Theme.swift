@@ -159,7 +159,94 @@ public enum Theme {
     ]
   )
 
-  public static let allDarkThemes: [ThemeData] = [selenizedDark, catppuccinMocha]
+  /// Gruvbox Dark — Pavel Pertsev's retro warm palette.
+  /// https://github.com/morhetz/gruvbox
+  public static let gruvboxDark = ThemeData(
+    name: "Gruvbox Dark",
+    isDark: true,
+    bg0: 0x2828_28FF, bg1: 0x3C38_36FF, bg2: 0x5049_45FF,
+    fg0: 0xEBDB_B2FF, fg1: 0xFBF1_C7FF, dim0: 0x9283_74FF,
+    red: 0xCC24_1DFF, blue: 0x4585_88FF,
+    cursor: 0xEBDB_B2FF, selectionBg: 0x5049_4580,
+    ansi16: [
+      0x2828_28FF,  // 0  black     (bg)
+      0xCC24_1DFF,  // 1  red
+      0x9897_1AFF,  // 2  green
+      0xD799_21FF,  // 3  yellow
+      0x4585_88FF,  // 4  blue
+      0xB162_86FF,  // 5  magenta   (purple)
+      0x689D_6AFF,  // 6  cyan      (aqua)
+      0xA899_84FF,  // 7  white     (fg dim)
+      0x9283_74FF,  // 8  br black  (gray)
+      0xFB49_34FF,  // 9  br red
+      0xB8BB_26FF,  // 10 br green
+      0xFABD_2FFF,  // 11 br yellow
+      0x83A5_98FF,  // 12 br blue
+      0xD386_9BFF,  // 13 br magenta
+      0x8EC0_7CFF,  // 14 br cyan
+      0xEBDB_B2FF,  // 15 br white  (fg)
+    ]
+  )
+
+  /// Dracula — https://draculatheme.com (the canonical purple-on-charcoal).
+  public static let dracula = ThemeData(
+    name: "Dracula",
+    isDark: true,
+    bg0: 0x282A_36FF, bg1: 0x2122_2CFF, bg2: 0x4447_5AFF,
+    fg0: 0xF8F8_F2FF, fg1: 0xFFFF_FFFF, dim0: 0x6272_A4FF,
+    red: 0xFF55_55FF, blue: 0xBD93_F9FF,
+    cursor: 0xF8F8_F2FF, selectionBg: 0x4447_5A80,
+    ansi16: [
+      0x2122_2CFF,  // 0  black
+      0xFF55_55FF,  // 1  red
+      0x50FA_7BFF,  // 2  green
+      0xF1FA_8CFF,  // 3  yellow
+      0xBD93_F9FF,  // 4  blue      (Dracula maps "blue" to purple)
+      0xFF79_C6FF,  // 5  magenta   (pink)
+      0x8BE9_FDFF,  // 6  cyan
+      0xF8F8_F2FF,  // 7  white     (fg)
+      0x6272_A4FF,  // 8  br black  (comment)
+      0xFF6E_6EFF,  // 9  br red
+      0x69FF_94FF,  // 10 br green
+      0xFFFF_A5FF,  // 11 br yellow
+      0xD6AC_FFFF,  // 12 br blue
+      0xFF92_DFFF,  // 13 br magenta
+      0xA4FF_FFFF,  // 14 br cyan
+      0xFFFF_FFFF,  // 15 br white
+    ]
+  )
+
+  /// Nord — https://www.nordtheme.com (Arctic, north-bluish).
+  public static let nord = ThemeData(
+    name: "Nord",
+    isDark: true,
+    bg0: 0x2E34_40FF, bg1: 0x3B42_52FF, bg2: 0x434C_5EFF,
+    fg0: 0xD8DE_E9FF, fg1: 0xECEF_F4FF, dim0: 0x4C56_6AFF,
+    red: 0xBF61_6AFF, blue: 0x81A1_C1FF,
+    cursor: 0xD8DE_E9FF, selectionBg: 0x434C_5E80,
+    ansi16: [
+      0x3B42_52FF,  // 0  black     (nord1)
+      0xBF61_6AFF,  // 1  red       (nord11)
+      0xA3BE_8CFF,  // 2  green     (nord14)
+      0xEBCB_8BFF,  // 3  yellow    (nord13)
+      0x81A1_C1FF,  // 4  blue      (nord9)
+      0xB48E_ADFF,  // 5  magenta   (nord15)
+      0x88C0_D0FF,  // 6  cyan      (nord8)
+      0xE5E9_F0FF,  // 7  white     (nord5)
+      0x4C56_6AFF,  // 8  br black  (nord3)
+      0xBF61_6AFF,  // 9  br red
+      0xA3BE_8CFF,  // 10 br green
+      0xEBCB_8BFF,  // 11 br yellow
+      0x81A1_C1FF,  // 12 br blue
+      0xB48E_ADFF,  // 13 br magenta
+      0x8FBC_BBFF,  // 14 br cyan   (nord7)
+      0xECEF_F4FF,  // 15 br white  (nord6)
+    ]
+  )
+
+  public static let allDarkThemes: [ThemeData] = [
+    selenizedDark, catppuccinMocha, gruvboxDark, dracula, nord,
+  ]
   public static let allLightThemes: [ThemeData] = [selenizedLight, catppuccinLatte]
 
   // MARK: Runtime state
