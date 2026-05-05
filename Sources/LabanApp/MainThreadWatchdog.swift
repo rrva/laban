@@ -34,6 +34,7 @@ final class MainThreadWatchdog {
 
   private let queue = DispatchQueue(label: "laban.watchdog", qos: .utility)
   private var timer: DispatchSourceTimer?
+  private var sampleTasks: [Process] = []
 
   private init() {
     let env = ProcessInfo.processInfo.environment
@@ -94,8 +95,14 @@ final class MainThreadWatchdog {
     task.arguments = [String(pid), "2", "-mayDie", "-file", outURL.path]
     task.standardOutput = nil
     task.standardError = nil
+    task.terminationHandler = { [weak self] process in
+      self?.queue.async { [weak self] in
+        self?.sampleTasks.removeAll { $0 === process }
+      }
+    }
     do {
       try task.run()
+      sampleTasks.append(task)
       AppLog.watchdog.notice("captured stall \(stalledForMs)ms → \(outURL.path)")
       EventLog.shared.log(
         "watchdog.stall",
