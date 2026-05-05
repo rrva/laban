@@ -1265,6 +1265,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
+      cancelSelectionDragForMouseTracking()
       trackedMouseButton = .left
       let geom = terminalMouseGeometry(at: pt)
       let pressEvent = MouseEvent(
@@ -1327,6 +1328,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
+      cancelSelectionDragForMouseTracking()
       let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
       guard
@@ -1383,6 +1385,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState(),
       vs.mouseTracking
     {
+      cancelSelectionDragForMouseTracking()
       guard
         let button = TerminalMouseInput.trackedTerminalButton(
           trackedMouseButton,
@@ -1811,13 +1814,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     dragAutoscrollDirection = 0
   }
 
+  private func cancelSelectionDragForMouseTracking() {
+    stopDragAutoscroll()
+    lastDragPoint = nil
+    selectionOriginCell = nil
+  }
+
   /// Step the viewport one row in `dragAutoscrollDirection` and re-clamp
   /// the focus to the (new) edge cell. The selection tail is anchored to
   /// scroll position, so it grows naturally as we scroll.
   private func dragAutoscrollTick() {
     guard dragAutoscrollDirection != 0,
       let activeTab = model.activeTab,
-      let session = model.session(forTab: activeTab.id)
+      let session = model.session(forTab: activeTab.id),
+      let vs = session.viewportState(),
+      !vs.mouseTracking
     else {
       stopDragAutoscroll()
       return
