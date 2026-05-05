@@ -4,9 +4,13 @@ import LabanRenderer
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private var windowController: MainWindowController?
   private var appearanceObservation: NSKeyValueObservation?
+  private let themeMenuController = ThemeMenuController()
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    MenuCommands.setupMenuBar()
+    // Restore the user's last theme picks BEFORE the appearance KVO fires
+    // its initial callback so the first frame already uses them.
+    themeMenuController.loadPersistedChoices()
+    MenuCommands.setupMenuBar(themeMenu: themeMenuController)
     do {
       windowController = try MainWindowController.makeAndShow()
     } catch {

@@ -1,7 +1,7 @@
 import AppKit
 
 enum MenuCommands {
-  static func setupMenuBar() {
+  static func setupMenuBar(themeMenu: ThemeMenuController) {
     let mainMenu = NSMenu()
 
     // App menu (first slot, shown as app name)
@@ -44,6 +44,20 @@ enum MenuCommands {
       NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
     editMenu.addItem(
       NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+
+    // View menu — chrome + theme picker
+    let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+    mainMenu.addItem(viewItem)
+    let viewMenu = NSMenu(title: "View")
+    viewItem.submenu = viewMenu
+
+    let themeItem = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
+    viewMenu.addItem(themeItem)
+    let themeSubmenu = NSMenu(title: "Theme")
+    themeItem.submenu = themeSubmenu
+    for entry in themeMenu.makeMenuItems() {
+      themeSubmenu.addItem(entry)
+    }
 
     // Tab-select menu — Cmd+1…9
     let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")
