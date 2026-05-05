@@ -1005,10 +1005,14 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
     if (!s) return -1;
     uint16_t cols = (uint16_t)size.cols;
     uint16_t rows = (uint16_t)size.rows;
-    GhosttyResult r = ghostty_terminal_resize(
-        s->terminal, cols, rows,
-        (uint32_t)size.cell_width, (uint32_t)size.cell_height);
-    if (r != GHOSTTY_SUCCESS) return -1;
+    /* libghostty rejects empty grids; keep the visible size in Laban and
+     * apply the next non-empty resize to the terminal core. */
+    if (cols > 0 && rows > 0) {
+        GhosttyResult r = ghostty_terminal_resize(
+            s->terminal, cols, rows,
+            (uint32_t)size.cell_width, (uint32_t)size.cell_height);
+        if (r != GHOSTTY_SUCCESS) return -1;
+    }
     s->cols        = cols;
     s->rows        = rows;
     s->cell_width  = (uint32_t)size.cell_width;
@@ -1061,6 +1065,10 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     ghostty_render_state_get(s->render_state, GHOSTTY_RENDER_STATE_DATA_ROWS, &rs_rows);
     int rows = (int)rs_rows;
     int cols = (int)rs_cols;
+    if (s->rows == 0 || s->cols == 0) {
+        rows = (int)s->rows;
+        cols = (int)s->cols;
+    }
     size_t cell_count = (size_t)(rows * cols);
 
     /* Default colors from render state. */
@@ -1076,8 +1084,11 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     LabanSnapshot *snap = calloc(1, sizeof(LabanSnapshot));
     if (!snap) return -1;
 
-    LabanCell *cells = calloc(cell_count, sizeof(LabanCell));
-    if (!cells) { free(snap); return -1; }
+    LabanCell *cells = NULL;
+    if (cell_count > 0) {
+        cells = calloc(cell_count, sizeof(LabanCell));
+        if (!cells) { free(snap); return -1; }
+    }
 
     /* Pre-fill default colors for every cell. */
     for (size_t i = 0; i < cell_count; i++) {
@@ -1085,7 +1096,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         cells[i].background_rgba = default_bg;
     }
 
-    /* UTF-8 storage: worst case 4 bytes per cell plus null terminator. */
+    /* UTF-8 storage starts with the common one-scalar-per-cell case and grows for long graphemes. */
     size_t utf8_cap = cell_count * 4 + 1;
     char *utf8_storage = malloc(utf8_cap);
     if (!utf8_storage) { free(cells); free(snap); return -1; }
@@ -1108,8 +1119,8 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
 
     int snapshot_error = 0;
     int row_idx = 0;
-    while (!snapshot_error &&
-           ghostty_render_state_row_iterator_next(s->row_iter) && row_idx < rows) {
+    while (!snapshot_error && row_idx < rows &&
+           ghostty_render_state_row_iterator_next(s->row_iter)) {
         /* Populate the pre-allocated cells container for this row. */
         ghostty_render_state_row_get(s->row_iter,
             GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &s->row_cells);
@@ -1136,7 +1147,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         }
 
         int col_idx = 0;
-        while (ghostty_render_state_row_cells_next(s->row_cells) && col_idx < cols) {
+        while (col_idx < cols && ghostty_render_state_row_cells_next(s->row_cells)) {
             LabanCell *cell = &cells[row_idx * cols + col_idx];
 
             GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);

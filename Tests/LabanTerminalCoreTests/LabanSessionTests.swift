@@ -149,6 +149,32 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(snap.pointee.cell_count, 12 * 40)
   }
 
+  func testSnapshotAllowsZeroSizedGrid() {
+    guard let session = makeFixtureSession(rows: 2, cols: 2) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var zeroSize = LabanTerminalSize()
+    zeroSize.rows = 0
+    zeroSize.cols = 0
+    XCTAssertEqual(laban_session_resize(session, zeroSize), 0)
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+
+    guard let snap = snapshot else {
+      XCTFail("snapshot is nil")
+      return
+    }
+    XCTAssertEqual(snap.pointee.rows, 0)
+    XCTAssertEqual(snap.pointee.cols, 0)
+    XCTAssertEqual(snap.pointee.cell_count, 0)
+    XCTAssertEqual(snap.pointee.utf8_storage_len, 0)
+  }
+
   func testFixtureSnapshotDestroyIsSafe() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")
