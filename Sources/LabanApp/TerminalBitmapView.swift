@@ -130,9 +130,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let metalTimings: String
       if let metal = backend as? MetalRenderer {
         let t = metal.recentFrameTimings()
-        metalTimings = String(
+        var line = String(
           format: "  frame cpu p50/p99=%.2f/%.2f ms  gpu p50/p99=%.2f/%.2f ms",
           t.cpuP50Ms, t.cpuP99Ms, t.gpuP50Ms, t.gpuP99Ms)
+        if t.perPassAvailable {
+          line += String(
+            format: "  [content=%.2f present=%.2f cursor=%.2f readback=%.2f ms mean]",
+            t.contentMeanMs, t.presentBlitMeanMs,
+            t.cursorOverlayMeanMs, t.readbackBlitMeanMs)
+        }
+        metalTimings = line
       } else {
         metalTimings = ""
       }

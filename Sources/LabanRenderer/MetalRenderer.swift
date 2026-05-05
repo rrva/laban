@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreText
+import Darwin.Mach
 import Foundation
 import Metal
 import QuartzCore
@@ -56,7 +57,11 @@ public final class MetalRenderer: RendererBackend {
 
   /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time
   /// inside `render()`. GPU = `cmdBuf.gpuEndTime - gpuStartTime` from the
-  /// completion handler.
+  /// completion handler. Per-pass timings (content / presentBlit /
+  /// cursorOverlay / readbackBlit) come from `MTLCounterSampleBuffer`
+  /// timestamp samples — they are 0 when the device doesn't support
+  /// timestamp counters or when the corresponding pass didn't execute
+  /// this frame (e.g., readback skipped because captureMode is off).
   public struct FrameTimings: Equatable, Sendable {
     public var sampleCount: Int
     public var cpuMeanMs: Double
@@ -65,6 +70,13 @@ public final class MetalRenderer: RendererBackend {
     public var gpuMeanMs: Double
     public var gpuP50Ms: Double
     public var gpuP99Ms: Double
+    public var contentMeanMs: Double
+    public var presentBlitMeanMs: Double
+    public var cursorOverlayMeanMs: Double
+    public var readbackBlitMeanMs: Double
+    /// True when the underlying device exposes timestamp counters, so the
+    /// per-pass means are real numbers. False ⇒ they are all 0.
+    public var perPassAvailable: Bool
   }
 
   public func recentFrameTimings() -> FrameTimings {
@@ -72,10 +84,53 @@ public final class MetalRenderer: RendererBackend {
     defer { frameSampleLock.unlock() }
     let cpu = frameSamples.map { $0.cpuMs }
     let gpu = frameSamples.map { $0.gpuMs }
+    let content = frameSamples.compactMap { $0.contentMs > 0 ? $0.contentMs : nil }
+    let present = frameSamples.compactMap { $0.presentBlitMs > 0 ? $0.presentBlitMs : nil }
+    let cursor = frameSamples.compactMap { $0.cursorOverlayMs > 0 ? $0.cursorOverlayMs : nil }
+    let readback = frameSamples.compactMap { $0.readbackBlitMs > 0 ? $0.readbackBlitMs : nil }
     return FrameTimings(
       sampleCount: frameSamples.count,
       cpuMeanMs: mean(cpu), cpuP50Ms: percentile(cpu, 0.50), cpuP99Ms: percentile(cpu, 0.99),
-      gpuMeanMs: mean(gpu), gpuP50Ms: percentile(gpu, 0.50), gpuP99Ms: percentile(gpu, 0.99))
+      gpuMeanMs: mean(gpu), gpuP50Ms: percentile(gpu, 0.50), gpuP99Ms: percentile(gpu, 0.99),
+      contentMeanMs: mean(content),
+      presentBlitMeanMs: mean(present),
+      cursorOverlayMeanMs: mean(cursor),
+      readbackBlitMeanMs: mean(readback),
+      perPassAvailable: counterSampleBuffer != nil)
+  }
+
+  /// Resolve the most recent frame's sample-buffer slots into per-pass
+  /// milliseconds. Slots not used by this frame (e.g., readback when
+  /// captureMode is off) are returned as 0.
+  private struct PerPass { var content, present, cursor, readback: Double }
+  private func resolvePerPassTimingsForFrame() -> PerPass {
+    guard let cb = counterSampleBuffer else { return PerPass(content: 0, present: 0, cursor: 0, readback: 0) }
+    let slots = lastFramePassSlots
+    let data: Data
+    do {
+      data = try cb.resolveCounterRange(0..<8) ?? Data()
+    } catch {
+      return PerPass(content: 0, present: 0, cursor: 0, readback: 0)
+    }
+    guard data.count >= MemoryLayout<UInt64>.stride * 8 else {
+      return PerPass(content: 0, present: 0, cursor: 0, readback: 0)
+    }
+    let ts: [UInt64] = data.withUnsafeBytes { raw in
+      let p = raw.bindMemory(to: UInt64.self)
+      return Array(p)
+    }
+    @inline(__always)
+    func ms(_ start: UInt64, _ end: UInt64) -> Double {
+      // Counters can momentarily be 0 (slot wasn't written) — treat as no
+      // sample. Subtraction is unsigned-safe via &-.
+      guard start != 0, end != 0, end > start else { return 0 }
+      return Double(end &- start) * gpuNsPerTick / 1_000_000.0
+    }
+    return PerPass(
+      content: slots.contentActive ? ms(ts[0], ts[1]) : 0,
+      present: slots.presentActive ? ms(ts[2], ts[3]) : 0,
+      cursor: slots.cursorActive ? ms(ts[4], ts[5]) : 0,
+      readback: slots.readbackActive ? ms(ts[6], ts[7]) : 0)
   }
 
   /// Optional callback fired on the GPU completion handler each frame. The
@@ -132,14 +187,46 @@ public final class MetalRenderer: RendererBackend {
 
   /// Rolling per-frame timing samples. CPU = wall time spent in render()
   /// itself (encoding work). GPU = cmdBuf.gpuEndTime - gpuStartTime, set in
-  /// the completion handler. Bounded ring; latencyStats() reads p50/p99.
+  /// the completion handler. Per-pass GPU times come from
+  /// MTLCounterSampleBuffer (when the device supports timestamp counters).
+  /// Bounded ring; recentFrameTimings() reads p50/p99.
   private struct FrameSample {
     var cpuMs: Double
     var gpuMs: Double
+    var contentMs: Double
+    var presentBlitMs: Double
+    var cursorOverlayMs: Double
+    var readbackBlitMs: Double
   }
   private var frameSamples: [FrameSample] = []
   private static let frameSampleCap = 240
   private let frameSampleLock = NSLock()
+
+  // MARK: - GPU timestamp counters
+  //
+  // Per-pass timing is sampled via MTLCounterSampleBuffer at the start and
+  // end of each pass. Tick → wall-time conversion uses a CPU/GPU anchor
+  // captured at init (and refreshed periodically since the GPU clock can
+  // drift on long-running processes).
+  //
+  // Sample-buffer slot map (8 slots total; unused slots leave previous
+  // values which we ignore via the wasActive flags carried in PassSlots):
+  //   0/1  content pass  start/end of vertex/end of fragment
+  //   2/3  present blit  start/end of encoder
+  //   4/5  cursor overlay
+  //   6/7  readback blit
+  private struct PassSlots {
+    var contentActive = false
+    var presentActive = false
+    var cursorActive = false
+    var readbackActive = false
+  }
+  private var counterSampleBuffer: MTLCounterSampleBuffer?
+  private var counterRenderSupported = false
+  private var counterBlitSupported = false
+  /// Nanoseconds per GPU timestamp tick, computed from a CPU/GPU anchor
+  /// pair. ~1 on Apple silicon but read instead of assumed.
+  private var gpuNsPerTick: Double = 1.0
   // CGImage of the last rendered drawable, captured via blit-readback on
   // demand for the pngData accessor (capture/screenshot path).
   private var readbackTexture: MTLTexture?
@@ -235,6 +322,37 @@ public final class MetalRenderer: RendererBackend {
     self.glyphAtlas = atlas
     self.glyphCellAdvance = cell.width
     self.glyphCellHeight = cell.height
+
+    setupCounterSampling()
+  }
+
+  /// Discover the device's timestamp counter set and allocate a sample
+  /// buffer big enough for the four passes per frame. Capability gates are
+  /// checked separately for render and blit so we don't try to attach a
+  /// sample buffer to a pass kind the device can't sample.
+  private func setupCounterSampling() {
+    let timestampName = MTLCommonCounterSet.timestamp.rawValue
+    guard
+      let counterSets = device.counterSets,
+      let timestampSet = counterSets.first(where: { $0.name == timestampName })
+    else { return }
+    counterRenderSupported = device.supportsCounterSampling(.atStageBoundary)
+    counterBlitSupported = device.supportsCounterSampling(.atBlitBoundary)
+    guard counterRenderSupported || counterBlitSupported else { return }
+
+    let desc = MTLCounterSampleBufferDescriptor()
+    desc.counterSet = timestampSet
+    desc.storageMode = .shared
+    desc.sampleCount = 8
+    desc.label = "laban.frame-timing"
+    counterSampleBuffer = try? device.makeCounterSampleBuffer(descriptor: desc)
+
+    // Apple silicon timestamp counters tick at 1 ns (per the
+    // "Optimize Metal apps and games with GPU counters" WWDC session).
+    // We could calibrate dynamically with `device.sampleTimestamps`, but
+    // the Swift overload resolution there is flaky across SDK versions
+    // and the constant is the right answer on every Mac we ship to.
+    gpuNsPerTick = 1.0
   }
 
   /// Update the layer's drawable size in pixels (call from view layout).
@@ -292,16 +410,25 @@ public final class MetalRenderer: RendererBackend {
     // committed. The same handler also closes out per-frame timing once
     // the GPU has reported gpuStartTime/gpuEndTime.
     cmdBuf.addCompletedHandler { [self] buffer in
-      self.frameInFlight.signal()
       let cpuMs = msSince(cpuStart)
       let gpuMs = max(0.0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
+      // Resolve per-pass GPU times BEFORE signalling the next frame in
+      // (otherwise frame N+1 could overwrite the sample buffer slots).
+      let perPass = self.resolvePerPassTimingsForFrame()
       self.frameSampleLock.lock()
-      self.frameSamples.append(FrameSample(cpuMs: cpuMs, gpuMs: gpuMs))
+      self.frameSamples.append(
+        FrameSample(
+          cpuMs: cpuMs, gpuMs: gpuMs,
+          contentMs: perPass.content,
+          presentBlitMs: perPass.present,
+          cursorOverlayMs: perPass.cursor,
+          readbackBlitMs: perPass.readback))
       if self.frameSamples.count > Self.frameSampleCap {
         self.frameSamples.removeFirst(self.frameSamples.count - Self.frameSampleCap)
       }
       self.frameSampleLock.unlock()
       self.onFrameCompleted?()
+      self.frameInFlight.signal()
     }
 
     ensureTargetTexture(matching: drawableTex)
@@ -317,17 +444,28 @@ public final class MetalRenderer: RendererBackend {
     // Otherwise honour the caller's damage hint directly.
     let effectiveDamage: RenderDamage = targetNeedsFullRedraw ? .full : damage
 
+    var passSlots = PassSlots()
+
     // ---------- Pass 1: terminal content into the persistent target ----------
-    encodeContentPass(
+    let didContent = encodeContentPass(
       commands: commands,
       damage: effectiveDamage,
       target: target,
       surfacePxH: surfaceHPx,
       uniforms: &u,
       cmdBuf: cmdBuf)
+    passSlots.contentActive = didContent
 
     // ---------- Pass 2: blit persistent target → drawable ----------
-    if let blit = cmdBuf.makeBlitCommandEncoder() {
+    let presentBlitDesc = MTLBlitPassDescriptor()
+    if counterBlitSupported, let cb = counterSampleBuffer,
+      let attach = presentBlitDesc.sampleBufferAttachments[0]
+    {
+      attach.sampleBuffer = cb
+      attach.startOfEncoderSampleIndex = 2
+      attach.endOfEncoderSampleIndex = 3
+    }
+    if let blit = cmdBuf.makeBlitCommandEncoder(descriptor: presentBlitDesc) {
       blit.label = "present-blit"
       blit.copy(
         from: target, sourceSlice: 0, sourceLevel: 0,
@@ -336,6 +474,7 @@ public final class MetalRenderer: RendererBackend {
         to: drawableTex, destinationSlice: 0, destinationLevel: 0,
         destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
       blit.endEncoding()
+      passSlots.presentActive = true
     }
 
     // ---------- Pass 3: cursor overlay on the drawable ----------
@@ -345,6 +484,13 @@ public final class MetalRenderer: RendererBackend {
       attach.texture = drawableTex
       attach.loadAction = .load
       attach.storeAction = .store
+      if counterRenderSupported, let cb = counterSampleBuffer,
+        let sa = cursorPass.sampleBufferAttachments[0]
+      {
+        sa.sampleBuffer = cb
+        sa.startOfVertexSampleIndex = 4
+        sa.endOfFragmentSampleIndex = 5
+      }
       if let enc = cmdBuf.makeRenderCommandEncoder(descriptor: cursorPass) {
         enc.label = "cursor-overlay"
         enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -364,6 +510,7 @@ public final class MetalRenderer: RendererBackend {
           type: .triangle, vertexStart: 0,
           vertexCount: 6, instanceCount: cursorInstances.count)
         enc.endEncoding()
+        passSlots.cursorActive = true
       }
     }
 
@@ -385,7 +532,17 @@ public final class MetalRenderer: RendererBackend {
         readbackTexture = device.makeTexture(descriptor: desc)
         readbackTexture?.label = "readback"
       }
-      if let dst = readbackTexture, let blit = cmdBuf.makeBlitCommandEncoder() {
+      let readbackBlitDesc = MTLBlitPassDescriptor()
+      if counterBlitSupported, let cb = counterSampleBuffer,
+        let attach = readbackBlitDesc.sampleBufferAttachments[0]
+      {
+        attach.sampleBuffer = cb
+        attach.startOfEncoderSampleIndex = 6
+        attach.endOfEncoderSampleIndex = 7
+      }
+      if let dst = readbackTexture,
+        let blit = cmdBuf.makeBlitCommandEncoder(descriptor: readbackBlitDesc)
+      {
         blit.label = "readback-blit"
         blit.copy(
           from: drawableTex, sourceSlice: 0, sourceLevel: 0,
@@ -394,14 +551,20 @@ public final class MetalRenderer: RendererBackend {
           to: dst, destinationSlice: 0, destinationLevel: 0,
           destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
         blit.endEncoding()
+        passSlots.readbackActive = true
       }
     }
 
+    self.lastFramePassSlots = passSlots
     cmdBuf.present(drawable)
     cmdBuf.commit()
     lastCmdBuf = cmdBuf
     targetNeedsFullRedraw = false
   }
+
+  /// Slots in flight for the most recent frame. Read by the completion
+  /// handler so we know which sample-buffer ranges contain valid data.
+  private var lastFramePassSlots = PassSlots()
 
   /// Allocate (or reallocate) the persistent render target to match the
   /// drawable. Same pixel format so the end-of-frame blit is a GPU memcpy.
@@ -432,6 +595,10 @@ public final class MetalRenderer: RendererBackend {
   ///   draw all instances. The scissor culls clean rows; all instances are
   ///   submitted because tracking which instance touches which row would
   ///   be more expensive than the GPU early-rejecting them via scissor.
+  /// Returns true if the content render pass actually executed (false when
+  /// `damage == .partial([])` or encoder construction failed). The caller
+  /// uses this to mark sample-buffer slot 0/1 as valid.
+  @discardableResult
   private func encodeContentPass(
     commands: [FrameCommand],
     damage: RenderDamage,
@@ -439,13 +606,13 @@ public final class MetalRenderer: RendererBackend {
     surfacePxH: Int,
     uniforms u: inout Uniforms,
     cmdBuf: MTLCommandBuffer
-  ) {
+  ) -> Bool {
     // Build instance lists once for both the content pass and the cursor pass.
     buildInstanceLists(commands: commands, surfacePxH: surfacePxH)
 
     // Skip the content pass entirely if the caller said nothing changed.
     if case .partial(let yRanges) = damage, yRanges.isEmpty {
-      return
+      return false
     }
 
     let pass = MTLRenderPassDescriptor()
@@ -464,8 +631,16 @@ public final class MetalRenderer: RendererBackend {
         yRanges, surfacePxH: surfacePxH, scale: layer.contentsScale)
     }
 
+    if counterRenderSupported, let cb = counterSampleBuffer,
+      let sa = pass.sampleBufferAttachments[0]
+    {
+      sa.sampleBuffer = cb
+      sa.startOfVertexSampleIndex = 0
+      sa.endOfFragmentSampleIndex = 1
+    }
+
     guard let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: pass) else {
-      return
+      return false
     }
     encoder.label = "terminal-content"
     encoder.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -509,6 +684,7 @@ public final class MetalRenderer: RendererBackend {
         vertexCount: 6, instanceCount: glyphInstances.count)
     }
     encoder.endEncoding()
+    return true
   }
 
   /// Compute the union bounding-box scissor rect (in device pixels) covering
