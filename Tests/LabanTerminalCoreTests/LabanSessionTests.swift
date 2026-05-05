@@ -10,6 +10,18 @@ private func canonicalPath(_ path: String) -> String {
   }
 }
 
+private final class TabStatusProbe {
+  var calls = 0
+  var status: String?
+}
+
+private let tabStatusProbeCallback: LabanTabStatusCallback = { userdata, _, status, _ in
+  guard let userdata else { return }
+  let probe = Unmanaged<TabStatusProbe>.fromOpaque(userdata).takeUnretainedValue()
+  probe.calls += 1
+  probe.status = status.map { String(cString: $0) }
+}
+
 final class LabanSessionTests: XCTestCase {
 
   private func makeFixtureSession(rows: Int32 = 24, cols: Int32 = 80) -> OpaquePointer? {
@@ -178,6 +190,50 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(String(cString: title), String(repeating: "a", count: Int(strlen(title))))
   }
 
+  func testSnapshotAndConsumeTitleDoNotSplitUTF8AtCapacity() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let prefix = String(repeating: "a", count: 1023)
+    let title = prefix + "\u{20AC}"
+    let osc = "\u{1B}]0;\(title)\u{07}"
+    let bytes = Array(osc.utf8)
+    bytes.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        bytes.count)
+    }
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+
+    guard let titlePtr = snapshot?.pointee.title else {
+      XCTFail("snapshot title is nil")
+      return
+    }
+    XCTAssertEqual(strlen(titlePtr), 1023)
+    XCTAssertEqual(String(cString: titlePtr), prefix)
+
+    var consumed = [CChar](repeating: 0, count: 1025)
+    let dirty = consumed.withUnsafeMutableBufferPointer { buf in
+      laban_session_consume_title(session, buf.baseAddress, buf.count)
+    }
+    XCTAssertEqual(dirty, 1)
+    consumed.withUnsafeBufferPointer { buf in
+      guard let baseAddress = buf.baseAddress else {
+        XCTFail("consume title buffer is nil")
+        return
+      }
+      XCTAssertEqual(strlen(baseAddress), 1023)
+      XCTAssertEqual(String(cString: baseAddress), prefix)
+    }
+  }
+
   func testSnapshotPreservesLongSingleCellGraphemeCluster() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")
@@ -214,6 +270,28 @@ final class LabanSessionTests: XCTestCase {
       count: Int(first.utf8_length)
     )
     XCTAssertEqual(String(bytes: buf, encoding: .utf8), cluster)
+  }
+
+  func testOversizedTabStatusPayloadIsDroppedAndScannerRecovers() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let probe = TabStatusProbe()
+    let userdata = Unmanaged.passUnretained(probe).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_tab_status_callback(session, tabStatusProbeCallback, userdata), 0)
+
+    let oversized = "\u{1B}]21337;status=\(String(repeating: "x", count: 1_100))\u{07}"
+    writeBytes(session, Array(oversized.utf8))
+    XCTAssertEqual(probe.calls, 0, "oversized OSC 21337 payload must not fire truncated")
+
+    let valid = "\u{1B}]21337;status=ok\u{07}"
+    writeBytes(session, Array(valid.utf8))
+    XCTAssertEqual(probe.calls, 1)
+    XCTAssertEqual(probe.status, "ok")
   }
 
   func testProcessMetadataReportsForegroundProcessAndCwd() {

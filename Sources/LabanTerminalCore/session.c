@@ -58,6 +58,7 @@ typedef struct {
     size_t num_len;
     char payload[TAB_STATUS_PAYLOAD_MAX];
     size_t payload_len;
+    int payload_overflow;
 } LabanTabStatusScanner;
 
 extern char **environ;
@@ -300,6 +301,7 @@ static void scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len) {
                 if (strcmp(sc->num, "21337") == 0) {
                     sc->state = TS_BODY_21337;
                     sc->payload_len = 0;
+                    sc->payload_overflow = 0;
                 } else {
                     sc->state = TS_BODY_OTHER;
                 }
@@ -315,17 +317,23 @@ static void scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len) {
             break;
         case TS_BODY_21337:
             if (b == 0x07) {
-                parse_tab_status_payload(s, sc->payload, sc->payload_len);
+                if (!sc->payload_overflow) {
+                    parse_tab_status_payload(s, sc->payload, sc->payload_len);
+                }
                 sc->state = TS_NORMAL;
             } else if (b == 0x1B) {
                 sc->state = TS_BODY_21337_AFTER_ESC;
             } else if (sc->payload_len + 1 < TAB_STATUS_PAYLOAD_MAX) {
                 sc->payload[sc->payload_len++] = (char)b;
+            } else {
+                sc->payload_overflow = 1;
             }
             break;
         case TS_BODY_21337_AFTER_ESC:
             if (b == '\\') {
-                parse_tab_status_payload(s, sc->payload, sc->payload_len);
+                if (!sc->payload_overflow) {
+                    parse_tab_status_payload(s, sc->payload, sc->payload_len);
+                }
             }
             sc->state = TS_NORMAL;
             break;
@@ -362,11 +370,15 @@ static void vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) 
 /* Drain `bytes` to the PTY master, retrying on partial writes (PTY
  * master accepts ~1 KB–4 KB per write depending on kernel) and on
  * EAGAIN (the fd is O_NONBLOCK; a slow child process fills the kernel
- * buffer and blocks back-pressure on us). Without this loop a 2 KB
- * bracketed paste would lose its trailing `ESC[201~` end marker,
- * leaving the receiver in "still receiving paste" mode forever and
- * silently swallowing every subsequent keystroke as paste content. */
-static int write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
+ * buffer and blocks back-pressure on us). Inputs, bracketed paste, and
+ * terminal-generated replies all need this path so escape sequences are
+ * not silently truncated mid-stream. */
+static int write_pty_bytes(
+    LabanSession *s,
+    const uint8_t *bytes,
+    size_t len,
+    LabanCaptureBytesDirection direction
+) {
     if (!s || !bytes) return -1;
     if (len == 0) return 0;
     if (s->pty_fd < 0) return -1;
@@ -374,8 +386,7 @@ static int write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
     while (written < len) {
         ssize_t n = write(s->pty_fd, bytes + written, len - written);
         if (n > 0) {
-            emit_capture_bytes(
-                s, LABAN_CAPTURE_BYTES_PTY_INPUT, bytes + written, (size_t)n);
+            emit_capture_bytes(s, direction, bytes + written, (size_t)n);
             written += (size_t)n;
             continue;
         }
@@ -402,6 +413,10 @@ static int write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
         return -1;
     }
     return 0;
+}
+
+static int write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
+    return write_pty_bytes(s, bytes, len, LABAN_CAPTURE_BYTES_PTY_INPUT);
 }
 
 static void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata) {
@@ -454,6 +469,50 @@ static int ensure_utf8_capacity(char **storage, size_t *cap, size_t used, size_t
     *storage = new_storage;
     *cap = new_cap;
     return 0;
+}
+
+static size_t utf8_valid_prefix_len(const uint8_t *bytes, size_t len) {
+    if (!bytes) return 0;
+    size_t i = 0;
+    size_t valid = 0;
+    while (i < len) {
+        uint8_t b = (uint8_t)bytes[i];
+        size_t need = 0;
+        if (b < 0x80) {
+            need = 1;
+        } else if (b >= 0xC2 && b <= 0xDF) {
+            need = 2;
+        } else if (b >= 0xE0 && b <= 0xEF) {
+            need = 3;
+        } else if (b >= 0xF0 && b <= 0xF4) {
+            need = 4;
+        } else {
+            break;
+        }
+        if (need > len - i) break;
+        int ok = 1;
+        for (size_t j = 1; j < need; j++) {
+            uint8_t c = (uint8_t)bytes[i + j];
+            if ((c & 0xC0) != 0x80) {
+                ok = 0;
+                break;
+            }
+        }
+        if (!ok) break;
+
+        /* Reject overlongs, surrogates, and values above U+10FFFF. */
+        if (need == 3) {
+            uint8_t c1 = (uint8_t)bytes[i + 1];
+            if ((b == 0xE0 && c1 < 0xA0) || (b == 0xED && c1 >= 0xA0)) break;
+        } else if (need == 4) {
+            uint8_t c1 = (uint8_t)bytes[i + 1];
+            if ((b == 0xF0 && c1 < 0x90) || (b == 0xF4 && c1 >= 0x90)) break;
+        }
+
+        i += need;
+        valid = i;
+    }
+    return valid;
 }
 
 static uint16_t laban_cell_flags_from_style(const GhosttyStyle *style) {
@@ -547,13 +606,7 @@ static void effect_write_pty(GhosttyTerminal terminal, void *userdata,
     if (!s) return;
     laban_session_capture_response(s, data, len);
     if (s->pty_fd >= 0 && len > 0) {
-        /* Best-effort: capability responses are tiny (<32 bytes typical).
-           Partial writes / EAGAIN on a freshly-empty PTY master are rare. */
-        ssize_t n = write(s->pty_fd, data, len);
-        if (n > 0) {
-            emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, data, (size_t)n);
-        }
-        (void)n;
+        (void)write_pty_bytes(s, data, len, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE);
     } else if (len > 0) {
         emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, data, len);
     }
@@ -1289,6 +1342,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                 == GHOSTTY_SUCCESS && title_str.len > 0) {
             size_t title_len =
                 title_str.len < LABAN_TITLE_MAX_BYTES ? title_str.len : LABAN_TITLE_MAX_BYTES;
+            title_len = utf8_valid_prefix_len(title_str.ptr, title_len);
             title_copy = malloc(title_len + 1);
             if (title_copy) {
                 memcpy(title_copy, title_str.ptr, title_len);
@@ -1392,6 +1446,7 @@ int laban_session_consume_title(LabanSession *s, char *buf, size_t capacity) {
         return 1;
     }
     size_t copy_len = title_str.len < capacity - 1 ? title_str.len : capacity - 1;
+    copy_len = utf8_valid_prefix_len(title_str.ptr, copy_len);
     memcpy(buf, title_str.ptr, copy_len);
     buf[copy_len] = '\0';
     return 1;
