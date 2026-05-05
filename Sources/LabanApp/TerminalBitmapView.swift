@@ -65,6 +65,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private var selectionAnchor: SelectionPoint?
   private var selectionFocus: SelectionPoint?
+
+  /// Grain of the active selection. Set on mouseDown by the click count;
+  /// drives whether mouseDragged extends by character (`.char`), by word
+  /// boundary (`.word`), or by full line (`.line`). Without this, even
+  /// 1-pixel jitter during a double-click would fire mouseDragged and
+  /// collapse the just-selected word back to a single character.
+  private enum SelectionMode { case char, word, line }
+  private var selectionMode: SelectionMode = .char
+  /// The cell the user originally clicked when starting a word- or
+  /// line-grain selection. Drag extension recomputes the selection union
+  /// from this origin to the current drag cell, in the chosen grain —
+  /// without remembering the origin we'd lose it the moment a drag fires.
+  private var selectionOriginCell: SelectionPoint?
   /// Per-tab saved selection state. Without this, switching tabs leaves
   /// the previous tab's selection rectangle painted across the new tab's
   /// grid (the renderer reads view-level state, not session-level). On
@@ -1068,6 +1081,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         command: "scrollViewport",
         deltaRows: decision.rowsDelta
       )
+      // Drag-extend through scroll: if the user is mid-drag and scrolls
+      // (e.g. with the trackpad in their other hand), re-evaluate the
+      // selection at the same screen point so it follows the content
+      // they're now looking at instead of staying anchored to the cell
+      // they happened to last touch with the cursor.
+      if selectionFocus != nil, let pt = lastDragPoint {
+        extendSelection(to: pt)
+      }
       renderInvalidated = true
     }
   }
@@ -1138,13 +1159,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // one-cell highlight behind. Double-click selects the word under the
     // cursor; triple-click selects the entire row.
     let hadSelection = selectionAnchor != nil && selectionFocus != nil
+    let originCell = clampedSelectionPoint(at: pt)
+    // Track the click point so a scroll while the button is held can
+    // re-evaluate the selection at the same screen point.
+    lastDragPoint = pt
     switch event.clickCount {
     case 2:
+      selectionMode = .word
+      selectionOriginCell = originCell
       selectWordAt(pt)
     case 3...:
+      selectionMode = .line
+      selectionOriginCell = originCell
       selectLineAt(pt)
     default:
-      selectionAnchor = clampedSelectionPoint(at: pt)
+      selectionMode = .char
+      selectionOriginCell = originCell
+      selectionAnchor = originCell
       selectionFocus = nil
     }
     if hadSelection, selectionAnchor == nil, selectionFocus == nil {
@@ -1195,7 +1226,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     let pt = convert(event.locationInWindow, from: nil)
     lastDragPoint = pt
-    selectionFocus = clampedSelectionPoint(at: pt)
+    extendSelection(to: pt)
     updateDragAutoscroll(at: pt)
     if let anchor = selectionAnchor, let focus = selectionFocus {
       recordInput(
@@ -1255,7 +1286,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // Only finalize focus if a drag established one. A bare click leaves
     // selectionFocus nil, which clears the rendered selection.
     if selectionFocus != nil {
-      selectionFocus = clampedSelectionPoint(at: convert(event.locationInWindow, from: nil))
+      extendSelection(to: convert(event.locationInWindow, from: nil))
       if let anchor = selectionAnchor, let focus = selectionFocus {
         recordInput(
           kind: "selection",
@@ -1399,38 +1430,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       row: row, col: col, viewportOffsetAtCapture: currentViewportOffset())
   }
 
-  /// Word-grain selection. Walks left and right from the click cell along
-  /// the row, stopping at non-word characters. Word chars include
-  /// alphanumerics plus the path / URL / identifier glue chars
-  /// `-_./:` so common things like file paths and URLs select cleanly.
+  /// Word-grain selection at the click cell.
   private func selectWordAt(_ pt: NSPoint) {
     let p = clampedSelectionPoint(at: pt)
+    let bounds = wordBoundsAt(row: p.row, col: p.col)
+    selectionAnchor = SelectionPoint(
+      row: p.row, col: bounds.start, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+    selectionFocus = SelectionPoint(
+      row: p.row, col: bounds.end, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+  }
+
+  /// Line-grain selection at the click cell.
+  private func selectLineAt(_ pt: NSPoint) {
+    let p = clampedSelectionPoint(at: pt)
+    let cols = currentCols()
+    selectionAnchor = SelectionPoint(
+      row: p.row, col: 0, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+    selectionFocus = SelectionPoint(
+      row: p.row, col: cols - 1, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+  }
+
+  /// Find the word boundary cells at (row, col). Walks left and right
+  /// along the row stopping at non-word characters. "Word chars" are
+  /// alphanumerics plus the path / URL / identifier glue chars
+  /// `-_./:~@` so file paths and URLs select cleanly.
+  private func wordBoundsAt(row: Int, col: Int) -> (start: Int, end: Int) {
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id),
       let snap = session.snapshot()
-    else {
-      selectionAnchor = p
-      selectionFocus = p
-      return
-    }
+    else { return (col, col) }
     defer { laban_snapshot_destroy(snap) }
     let snapPtr = snap.pointee
     let cols = Int(snapPtr.cols)
-    guard p.row < Int(snapPtr.rows), p.col < cols,
+    guard row >= 0, row < Int(snapPtr.rows), col >= 0, col < cols,
       let cells = snapPtr.cells, let storage = snapPtr.utf8_storage
-    else {
-      selectionAnchor = p
-      selectionFocus = p
-      return
-    }
-    func cellChar(at col: Int) -> Unicode.Scalar? {
-      let c = cells[p.row * cols + col]
-      guard c.utf8_length > 0 else { return nil }
+    else { return (col, col) }
+    func cellChar(at c: Int) -> Unicode.Scalar? {
+      let cell = cells[row * cols + c]
+      guard cell.utf8_length > 0 else { return nil }
       let buf = UnsafeBufferPointer<UInt8>(
         start: UnsafeRawPointer(storage)
-          .advanced(by: Int(c.utf8_offset))
+          .advanced(by: Int(cell.utf8_offset))
           .assumingMemoryBound(to: UInt8.self),
-        count: Int(c.utf8_length))
+        count: Int(cell.utf8_length))
       let s = String(bytes: buf, encoding: .utf8) ?? ""
       return s.unicodeScalars.first
     }
@@ -1439,27 +1481,73 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       if CharacterSet.alphanumerics.contains(scalar) { return true }
       return "-_./:~@".unicodeScalars.contains(scalar)
     }
-    var startCol = p.col
-    var endCol = p.col
+    var startCol = col
+    var endCol = col
     while startCol > 0, isWord(cellChar(at: startCol - 1)) { startCol -= 1 }
     while endCol < cols - 1, isWord(cellChar(at: endCol + 1)) { endCol += 1 }
-    selectionAnchor = SelectionPoint(
-      row: p.row, col: startCol, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
-    selectionFocus = SelectionPoint(
-      row: p.row, col: endCol, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+    return (startCol, endCol)
   }
 
-  /// Line-grain selection. Spans the entire row.
-  private func selectLineAt(_ pt: NSPoint) {
-    let p = clampedSelectionPoint(at: pt)
+  private func currentCols() -> Int {
     let insets = Self.contentInsets
-    let cols = max(
+    return max(
       1,
       Int((bounds.width - sidebarWidth - insets.left - insets.right) / CGFloat(cellWidth)))
+  }
+
+  /// Update the selection from the current drag point, respecting the
+  /// active selection grain. For char mode this is the existing behavior
+  /// (focus = clamped cell at point). For word/line mode the selection
+  /// spans the union of the original click word/line and the word/line
+  /// at the drag point — without this, even tiny mouse jitter during a
+  /// double-click collapses the just-selected word back to a single cell.
+  private func extendSelection(to pt: NSPoint) {
+    let p = clampedSelectionPoint(at: pt)
+    switch selectionMode {
+    case .char:
+      selectionFocus = p
+    case .word:
+      extendWordSelection(to: p)
+    case .line:
+      extendLineSelection(to: p)
+    }
+  }
+
+  private func extendWordSelection(to drag: SelectionPoint) {
+    guard let orig = selectionOriginCell else {
+      selectionFocus = drag
+      return
+    }
+    let cols = currentCols()
+    let origBounds = wordBoundsAt(row: orig.row, col: orig.col)
+    let dragBounds = wordBoundsAt(row: drag.row, col: drag.col)
+    let origStartLin = orig.row * cols + origBounds.start
+    let origEndLin = orig.row * cols + origBounds.end
+    let dragStartLin = drag.row * cols + dragBounds.start
+    let dragEndLin = drag.row * cols + dragBounds.end
+    let startLin = min(origStartLin, dragStartLin)
+    let endLin = max(origEndLin, dragEndLin)
     selectionAnchor = SelectionPoint(
-      row: p.row, col: 0, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+      row: startLin / cols, col: startLin % cols,
+      viewportOffsetAtCapture: orig.viewportOffsetAtCapture)
     selectionFocus = SelectionPoint(
-      row: p.row, col: cols - 1, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
+      row: endLin / cols, col: endLin % cols,
+      viewportOffsetAtCapture: drag.viewportOffsetAtCapture)
+  }
+
+  private func extendLineSelection(to drag: SelectionPoint) {
+    guard let orig = selectionOriginCell else {
+      selectionFocus = drag
+      return
+    }
+    let cols = currentCols()
+    let topRow = min(orig.row, drag.row)
+    let bottomRow = max(orig.row, drag.row)
+    selectionAnchor = SelectionPoint(
+      row: topRow, col: 0, viewportOffsetAtCapture: orig.viewportOffsetAtCapture)
+    selectionFocus = SelectionPoint(
+      row: bottomRow, col: cols - 1,
+      viewportOffsetAtCapture: drag.viewportOffsetAtCapture)
   }
 
   /// libghostty's authoritative viewport offset for the active session,
