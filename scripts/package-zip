@@ -1,0 +1,55 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/package-zip <version>
+
+Environment:
+  LABAN_BUILD_NUMBER          Build number stamped into Info.plist. Defaults to 1.
+  LABAN_UPDATE_MANIFEST_URL   Public update JSON URL stamped into Info.plist.
+  LABAN_RELEASE_DIR           Zip output directory. Defaults to .artifacts/release.
+  LABAN_SKIP_CODESIGN         Defaults to 1 for unsigned release zips.
+EOF
+  exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+
+app_version=$1
+[ -n "$app_version" ] || usage
+
+export LABAN_APP_VERSION=$app_version
+export LABAN_BUILD_NUMBER=${LABAN_BUILD_NUMBER:-1}
+
+release_dir=${LABAN_RELEASE_DIR:-.artifacts/release}
+app_bundle=".build/laban/Laban.app"
+plist="${app_bundle}/Contents/Info.plist"
+zip_path="${release_dir}/Laban-${app_version}.zip"
+tmp_zip="${zip_path}.tmp"
+
+mkdir -p "$release_dir"
+
+rm -rf "$app_bundle"
+LABAN_SKIP_CODESIGN=${LABAN_SKIP_CODESIGN:-1} ./scripts/build-app
+
+[ -d "$app_bundle" ] || {
+  printf 'package-zip failed: missing %s\n' "$app_bundle" >&2
+  exit 1
+}
+
+plutil -lint "$plist" >/dev/null
+stamped_version=$(plutil -extract CFBundleShortVersionString raw -o - "$plist")
+if [ "$stamped_version" != "$app_version" ]; then
+  printf 'package-zip failed: expected version %s, got %s\n' "$app_version" "$stamped_version" >&2
+  exit 1
+fi
+
+rm -f "$tmp_zip" "$zip_path"
+ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$tmp_zip"
+mv "$tmp_zip" "$zip_path"
+
+printf 'package-zip: %s\n' "$zip_path"

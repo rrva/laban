@@ -38,14 +38,18 @@ predictable for release zips.
 
 ## Build Configuration
 
-Stamp release builds with the app version and manifest URL:
+Build an unsigned release zip with the app version and manifest URL:
 
 ```sh
-LABAN_APP_VERSION=0.1.0 \
-LABAN_BUILD_NUMBER=1 \
-LABAN_UPDATE_MANIFEST_URL='https://drive.google.com/uc?export=download&id=<FILE_ID>' \
-./scripts/build-app
+LABAN_UPDATE_MANIFEST_URL='https://drive.google.com/uc?export=download&id=<JSON_FILE_ID>' \
+./scripts/package-zip 0.1.0
 ```
+
+It writes `.artifacts/release/Laban-0.1.0.zip`. Upload that zip and put its
+public URL in the manifest's `link` field.
+
+The script uses macOS `ditto -c -k --sequesterRsrc --keepParent` so the app
+bundle's macOS metadata is preserved in the zip.
 
 For local testing without rebuilding the app bundle, set a user default:
 
