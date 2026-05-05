@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import LabanCore
 import LabanDebug
@@ -137,6 +138,28 @@ func resolveURL(_ path: String) -> URL {
   return cwd.appendingPathComponent(path)
 }
 
+func defaultDebugArtifactsPath() -> String {
+  let pid = ProcessInfo.processInfo.processIdentifier
+  let suffix = UUID().uuidString.prefix(8)
+  return ".artifacts/runs/debug-server-\(pid)-\(suffix)"
+}
+
+func installTerminationSource(
+  signal signalNumber: Int32,
+  runtime: HeadlessDebugRuntime,
+  server: DebugHTTPServer
+) -> DispatchSourceSignal {
+  Darwin.signal(signalNumber, SIG_IGN)
+  let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+  source.setEventHandler {
+    runtime.shutdown(interrupted: true)
+    server.stop()
+    exit(0)
+  }
+  source.resume()
+  return source
+}
+
 // MARK: - Entry point
 
 let args = parseArgs()
@@ -170,8 +193,7 @@ if let debugAddr = args.debugServerAddress {
   guard args.headless else { fail("--headless is required for debug server mode") }
 
   let artifactsPath =
-    args.artifacts
-    ?? ".artifacts/runs/debug-server-\(ProcessInfo.processInfo.processIdentifier)"
+    args.artifacts ?? defaultDebugArtifactsPath()
   let artifactsURL = resolveURL(artifactsPath)
   let tempURL = args.tempDir.map(resolveURL)
   let fixtureURL = args.fixture.map(resolveURL)
@@ -222,9 +244,11 @@ if let debugAddr = args.debugServerAddress {
     fail("failed to encode readiness JSON")
   }
 
-  // Block until the process is terminated; OS releases the socket on exit.
-  signal(SIGTERM) { _ in exit(0) }
-  signal(SIGINT) { _ in exit(0) }
+  // Block until the process is terminated; the dispatch sources run normal Swift
+  // cleanup so active captures are finalized as interrupted before exit.
+  let termSource = installTerminationSource(signal: SIGTERM, runtime: runtime, server: server)
+  let intSource = installTerminationSource(signal: SIGINT, runtime: runtime, server: server)
+  _ = (termSource, intSource)
   dispatchMain()
 }
 

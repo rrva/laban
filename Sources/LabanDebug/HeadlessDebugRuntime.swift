@@ -1228,17 +1228,45 @@ public final class HeadlessDebugRuntime {
   public func stopCapture() -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
-    guard let recorder = captureRecorder else {
-      if let manifest = lastCaptureManifestPath {
-        return jsonEncode(
-          CaptureStopResponse(
-            active: false,
-            runId: lastCaptureRunId,
-            directory: lastCaptureDirectory,
-            manifestPath: manifest
-          ))
+    do {
+      guard let result = try finishCaptureUnlocked(interrupted: false) else {
+        if let manifest = lastCaptureManifestPath {
+          return jsonEncode(
+            CaptureStopResponse(
+              active: false,
+              runId: lastCaptureRunId,
+              directory: lastCaptureDirectory,
+              manifestPath: manifest
+            ))
+        }
+        return jsonError("capture is not active", status: 400)
       }
-      return jsonError("capture is not active", status: 400)
+      return jsonEncode(
+        CaptureStopResponse(
+          active: false,
+          runId: result.runId,
+          directory: result.directory,
+          manifestPath: result.manifestPath
+        ))
+    } catch {
+      return jsonError("capture stop failed: \(error)", status: 500)
+    }
+  }
+
+  public func shutdown(interrupted: Bool = true) {
+    lock.lock()
+    defer { lock.unlock() }
+    _ = try? finishCaptureUnlocked(interrupted: interrupted)
+    for tab in model.tabs {
+      model.session(forTab: tab.id)?.close()
+    }
+  }
+
+  private func finishCaptureUnlocked(
+    interrupted: Bool
+  ) throws -> (runId: String, directory: String, manifestPath: String)? {
+    guard let recorder = captureRecorder else {
+      return nil
     }
 
     let finalPNG: Data?
@@ -1247,27 +1275,17 @@ public final class HeadlessDebugRuntime {
     } else {
       finalPNG = surface.pngData
     }
-    do {
-      let manifest = try recorder.finish(
-        interrupted: false,
-        finalScreenshot: finalPNG,
-        frame: currentFrame
-      )
-      captureRecorder = nil
-      model.captureSink = nil
-      lastCaptureManifestPath = manifest.path
-      lastCaptureRunId = recorder.runId
-      lastCaptureDirectory = recorder.directoryURL.path
-      return jsonEncode(
-        CaptureStopResponse(
-          active: false,
-          runId: recorder.runId,
-          directory: recorder.directoryURL.path,
-          manifestPath: manifest.path
-        ))
-    } catch {
-      return jsonError("capture stop failed: \(error)", status: 500)
-    }
+    let manifest = try recorder.finish(
+      interrupted: interrupted,
+      finalScreenshot: finalPNG,
+      frame: currentFrame
+    )
+    captureRecorder = nil
+    model.captureSink = nil
+    lastCaptureManifestPath = manifest.path
+    lastCaptureRunId = recorder.runId
+    lastCaptureDirectory = recorder.directoryURL.path
+    return (recorder.runId, recorder.directoryURL.path, manifest.path)
   }
 
   public func captureSnapshot() -> DebugResponse {

@@ -49,6 +49,22 @@ final class LabanDebugCaptureTests: XCTestCase {
     XCTAssertEqual(result.status, 400)
   }
 
+  func testShutdownMarksActiveCaptureInterrupted() throws {
+    let runtime = try runtime("shutdown")
+    let start = runtime.startCapture(
+      #"{"name":"signal-capture","screenshots":"none"}"#.data(using: .utf8)!)
+    XCTAssertEqual(start.status, 200)
+    let startObj = try json(start)
+    let dir = startObj["directory"] as! String
+
+    runtime.shutdown(interrupted: true)
+
+    let manifest = URL(fileURLWithPath: dir).appendingPathComponent("manifest.json")
+    let obj = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as! [String: Any]
+    XCTAssertEqual(obj["interrupted"] as? Bool, true)
+    XCTAssertEqual((try json(runtime.captureStatus()))["active"] as? Bool, false)
+  }
+
   private func runtime(_ name: String) throws -> HeadlessDebugRuntime {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-capture-\(name)-\(UUID().uuidString)")
