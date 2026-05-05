@@ -1,0 +1,80 @@
+#!/bin/sh
+# laban-watchdog — rolling external sampler for Laban + its tab descendants.
+#
+# Run as a LaunchAgent or in any persistent shell. Every INTERVAL seconds it
+# samples Laban and every direct child PID (your in-tab shells / agents),
+# writing the result to OUT_DIR. Keeps only the most recent KEEP files per
+# pid so disk usage stays bounded.
+#
+# Use this when the system itself becomes too unresponsive to launch
+# `sample` interactively — by the time you can type a command, the evidence
+# is already on disk under ~/laban-watchdog/.
+#
+# Env knobs (all optional):
+#   LABAN_WATCHDOG_INTERVAL  seconds between sample sweeps   (default 5)
+#   LABAN_WATCHDOG_DURATION  seconds per sample              (default 1)
+#   LABAN_WATCHDOG_KEEP      max samples to retain per pid   (default 30)
+#   LABAN_WATCHDOG_OUT       output directory                (default ~/laban-watchdog)
+
+set -u
+
+INTERVAL=${LABAN_WATCHDOG_INTERVAL:-5}
+DURATION=${LABAN_WATCHDOG_DURATION:-1}
+KEEP=${LABAN_WATCHDOG_KEEP:-30}
+OUT_DIR=${LABAN_WATCHDOG_OUT:-"$HOME/laban-watchdog"}
+
+mkdir -p "$OUT_DIR"
+
+# Sample a single pid in the background. -mayDie lets sample tolerate the
+# target exiting mid-sample; -file writes directly without buffering on
+# stderr where launchd would intercept it.
+sample_one() {
+    pid=$1
+    name=$2
+    ts=$3
+    out="$OUT_DIR/${pid}-${name}-${ts}.txt"
+    /usr/bin/sample "$pid" "$DURATION" -mayDie -file "$out" >/dev/null 2>&1
+}
+
+# Trim oldest samples for a single pid prefix.
+trim_pid() {
+    prefix=$1
+    # sort newest first, skip the first $KEEP, delete the rest
+    /bin/ls -t "$OUT_DIR"/"${prefix}"-*.txt 2>/dev/null \
+        | /usr/bin/awk -v keep="$KEEP" 'NR > keep { print }' \
+        | /usr/bin/xargs -r rm -f 2>/dev/null
+}
+
+while :; do
+    ts=$(/bin/date +%Y%m%d-%H%M%S)
+
+    # Find the Laban app process. Empty if Laban isn't running — quiet skip.
+    laban_pids=$(/usr/bin/pgrep -f "Laban.app/Contents/MacOS/Laban" 2>/dev/null || true)
+    if [ -z "$laban_pids" ]; then
+        sleep "$INTERVAL"
+        continue
+    fi
+
+    # Sample Laban + every immediate child (PTY shells, agents, …).
+    pids=""
+    for parent in $laban_pids; do
+        pids="$pids $parent $(/usr/bin/pgrep -P "$parent" 2>/dev/null || true)"
+    done
+
+    for pid in $pids; do
+        [ -n "$pid" ] || continue
+        name=$(/bin/ps -p "$pid" -o comm= 2>/dev/null | /usr/bin/sed 's|.*/||' | /usr/bin/tr -c 'A-Za-z0-9_-' '_')
+        [ -n "$name" ] || continue
+        sample_one "$pid" "$name" "$ts" &
+    done
+    wait
+
+    # Trim per pid. A pid's prefix never collides with another's because
+    # the leading number is unique per process for the OS lifetime of that
+    # process; once a pid is reused later the new run gets its own samples.
+    for prefix in $(/bin/ls "$OUT_DIR" 2>/dev/null | /usr/bin/awk -F- '{print $1}' | /usr/bin/sort -u); do
+        trim_pid "$prefix"
+    done
+
+    sleep "$INTERVAL"
+done

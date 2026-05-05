@@ -378,6 +378,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - Frame loop
 
   @objc func advanceFrame() {
+    // Heartbeat the stall watchdog at the top of every tick. If
+    // advanceFrame stops returning (or takes very long), the background
+    // watchdog will spot the gap and snapshot our threads via sample(1).
+    MainThreadWatchdog.shared.heartbeat()
+
     let captureFrame = renderedFrameCount + 1
     let activeTabId = model.activeTab?.id
     var activeTerminalDirty = false

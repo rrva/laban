@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent template for the external sampler watchdog.
+
+  Install:
+    cp scripts/com.rrva.laban-watchdog.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.rrva.laban-watchdog.plist
+
+  Stop:
+    launchctl unload -w ~/Library/LaunchAgents/com.rrva.laban-watchdog.plist
+
+  Logs land at /tmp/laban-watchdog.{out,err}; samples at ~/laban-watchdog/.
+  When Laban isn't running, the script idles cheaply (one pgrep per interval).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rrva.laban-watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/rrj/wrk/laban/scripts/laban-watchdog</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/laban-watchdog.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/laban-watchdog.err</string>
+</dict>
+</plist>
