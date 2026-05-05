@@ -13,7 +13,13 @@ private struct HTTPResponse {
 // MARK: - Server
 
 public final class DebugHTTPServer {
+  private static let maxHeaderBytes = 64 * 1024
+  private static let maxBodyBytes = 4 * 1024 * 1024
+  private static let requestReadTimeout: TimeInterval = 2.0
+
   private let runtime: HeadlessDebugRuntime
+  private let connectionQueue = DispatchQueue(
+    label: "debug-http-connections", attributes: .concurrent)
   private var serverFD: Int32 = -1
   private var bearerToken: String = ""
 
@@ -86,13 +92,32 @@ public final class DebugHTTPServer {
 
   private func acceptLoop() {
     while true {
+      let listenFD = serverFD
+      guard listenFD >= 0 else { break }
       var clientAddr = sockaddr_in()
       var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
       let clientFD = withUnsafeMutableBytes(of: &clientAddr) { ptr in
-        accept(serverFD, ptr.baseAddress!.assumingMemoryBound(to: sockaddr.self), &clientLen)
+        accept(listenFD, ptr.baseAddress!.assumingMemoryBound(to: sockaddr.self), &clientLen)
       }
-      guard clientFD >= 0 else { break }
-      handleConnection(clientFD)
+      if clientFD >= 0 {
+        connectionQueue.async { [self] in
+          handleConnection(clientFD)
+        }
+        continue
+      }
+
+      let err = errno
+      if serverFD < 0 || err == EBADF || err == EINVAL {
+        break
+      }
+      if err == EINTR || err == ECONNABORTED {
+        continue
+      }
+      if err == EMFILE || err == ENFILE {
+        usleep(100_000)
+        continue
+      }
+      break
     }
   }
 
@@ -100,14 +125,18 @@ public final class DebugHTTPServer {
 
   private func handleConnection(_ fd: Int32) {
     defer { Darwin.close(fd) }
+    setReceiveTimeout(fd)
 
     // Read until \r\n\r\n to find end of headers.
     var raw = Data()
     var buf = [UInt8](repeating: 0, count: 4096)
     var headerEnd = -1
 
-    while raw.count < 65536 {
+    let headerDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
+    while raw.count < Self.maxHeaderBytes {
+      if Date() > headerDeadline { return }
       let n = recv(fd, &buf, buf.count, 0)
+      if n < 0 && errno == EINTR { continue }
       guard n > 0 else { return }
       raw.append(contentsOf: buf[0..<n])
       if let range = raw.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) {
@@ -145,11 +174,10 @@ public final class DebugHTTPServer {
     // block the single-threaded server in the read loop. The cap is
     // generous enough for any legitimate debug request and small
     // enough to refuse hostile bodies cheaply.
-    let maxBody = 4 * 1024 * 1024  // 4 MB
     let parsed = headers["content-length"].flatMap { Int($0) } ?? 0
-    let contentLength = max(0, min(parsed, maxBody))
+    let contentLength = max(0, min(parsed, Self.maxBodyBytes))
     var body = Data(raw[headerEnd...].prefix(contentLength))
-    let readDeadline = Date().addingTimeInterval(2.0)
+    let readDeadline = Date().addingTimeInterval(Self.requestReadTimeout)
     while body.count < contentLength {
       // Bound the read loop in wall time too — a peer that stops
       // sending mid-body must not pin our handler forever.
@@ -157,6 +185,7 @@ public final class DebugHTTPServer {
       let need = min(contentLength - body.count, 4096)
       var bodyBuf = [UInt8](repeating: 0, count: need)
       let n = recv(fd, &bodyBuf, need, 0)
+      if n < 0 && errno == EINTR { continue }
       guard n > 0 else { break }
       body.append(contentsOf: bodyBuf[0..<n])
     }
@@ -321,6 +350,11 @@ public final class DebugHTTPServer {
     case 500: return "Internal Server Error"
     default: return "Unknown"
     }
+  }
+
+  private func setReceiveTimeout(_ fd: Int32) {
+    var timeout = timeval(tv_sec: Int(Self.requestReadTimeout), tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
   }
 
   private func isAuthorized(headers: [String: String]) -> Bool {

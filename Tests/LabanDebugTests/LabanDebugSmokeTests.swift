@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 
@@ -66,6 +67,64 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(ok.status, 200)
     let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
     XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
+  func testDebugHTTPServerWaitDoesNotBlockHealthRequest() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-wait-concurrent")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let server = DebugHTTPServer(runtime: runtime)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let baseURL = URL(string: readiness.debugServer)!
+    let waitFD = try openDebugSocket(port: UInt16(baseURL.port!))
+    defer { Darwin.close(waitFD) }
+
+    let body = #"{"timeoutMs":900,"condition":{"kind":"textVisible","text":"never-visible"}}"#
+      .data(using: .utf8)!
+    try sendRawHTTP(
+      fd: waitFD,
+      method: "POST",
+      path: "/debug/wait",
+      token: readiness.debugToken,
+      body: body
+    )
+    usleep(100_000)
+
+    let healthURL = URL(string: readiness.debugServer + "/debug/health")!
+    let start = Date()
+    let ok = try httpGet(healthURL, token: readiness.debugToken, timeout: 1.0)
+    let elapsed = Date().timeIntervalSince(start)
+    XCTAssertEqual(ok.status, 200)
+    XCTAssertLessThan(elapsed, 0.5)
+
+    XCTAssertEqual(try readHTTPStatus(fd: waitFD, timeout: 2), 200)
+  }
+
+  func testDebugHTTPServerSlowHeaderDoesNotBlockHealthRequest() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-slow-header")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let server = DebugHTTPServer(runtime: runtime)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let baseURL = URL(string: readiness.debugServer)!
+    let slowFD = try openDebugSocket(port: UInt16(baseURL.port!))
+    defer { Darwin.close(slowFD) }
+
+    let partial = "GET /debug/health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+      .data(using: .utf8)!
+    try sendAll(fd: slowFD, data: partial)
+    usleep(100_000)
+
+    let healthURL = URL(string: readiness.debugServer + "/debug/health")!
+    let start = Date()
+    let ok = try httpGet(healthURL, token: readiness.debugToken, timeout: 1.0)
+    let elapsed = Date().timeIntervalSince(start)
+    XCTAssertEqual(ok.status, 200)
+    XCTAssertLessThan(elapsed, 0.5)
   }
 
   // MARK: - HeadlessDebugRuntime smoke (no fixture, no HTTP)
@@ -626,8 +685,11 @@ final class LabanDebugSmokeTests: XCTestCase {
     return (runtime, artifacts)
   }
 
-  private func httpGet(_ url: URL, token: String? = nil) throws -> (status: Int, body: Data) {
+  private func httpGet(
+    _ url: URL, token: String? = nil, timeout: TimeInterval = 5.0
+  ) throws -> (status: Int, body: Data) {
     var request = URLRequest(url: url)
+    request.timeoutInterval = timeout
     if let token {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
@@ -635,15 +697,104 @@ final class LabanDebugSmokeTests: XCTestCase {
     let sem = DispatchSemaphore(value: 0)
     var result: (status: Int, body: Data)?
     var requestError: Error?
-    URLSession.shared.dataTask(with: request) { data, response, error in
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
       requestError = error
       let status = (response as? HTTPURLResponse)?.statusCode ?? -1
       result = (status, data ?? Data())
       sem.signal()
-    }.resume()
-    sem.wait()
+    }
+    task.resume()
+    if sem.wait(timeout: .now() + timeout + 0.5) == .timedOut {
+      task.cancel()
+      throw NSError(
+        domain: NSURLErrorDomain,
+        code: NSURLErrorTimedOut,
+        userInfo: [NSLocalizedDescriptionKey: "HTTP request timed out"])
+    }
     if let requestError { throw requestError }
     return result ?? (-1, Data())
+  }
+
+  private func openDebugSocket(port: UInt16) throws -> Int32 {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw posixError("socket") }
+
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = CFSwapInt16HostToBig(port)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+    let result = withUnsafePointer(to: &addr) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+        connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+      }
+    }
+    guard result == 0 else {
+      let error = posixError("connect")
+      Darwin.close(fd)
+      throw error
+    }
+    return fd
+  }
+
+  private func sendRawHTTP(
+    fd: Int32, method: String, path: String, token: String, body: Data
+  ) throws {
+    var request = "\(method) \(path) HTTP/1.1\r\n"
+    request += "Host: 127.0.0.1\r\n"
+    request += "Authorization: Bearer \(token)\r\n"
+    request += "Content-Length: \(body.count)\r\n"
+    request += "Connection: close\r\n"
+    request += "\r\n"
+    var data = request.data(using: .utf8)!
+    data.append(body)
+    try sendAll(fd: fd, data: data)
+  }
+
+  private func sendAll(fd: Int32, data: Data) throws {
+    try data.withUnsafeBytes { rawBuffer in
+      guard let base = rawBuffer.baseAddress else { return }
+      var sent = 0
+      while sent < rawBuffer.count {
+        let n = send(fd, base.advanced(by: sent), rawBuffer.count - sent, 0)
+        if n < 0 && errno == EINTR { continue }
+        guard n > 0 else { throw posixError("send") }
+        sent += n
+      }
+    }
+  }
+
+  private func readHTTPStatus(fd: Int32, timeout: Int) throws -> Int {
+    var recvTimeout = timeval(tv_sec: timeout, tv_usec: 0)
+    setsockopt(
+      fd, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+    var data = Data()
+    var buf = [UInt8](repeating: 0, count: 1024)
+    while data.range(of: Data([0x0D, 0x0A])) == nil && data.count < 8192 {
+      let n = recv(fd, &buf, buf.count, 0)
+      if n < 0 && errno == EINTR { continue }
+      guard n > 0 else { throw posixError("recv") }
+      data.append(contentsOf: buf[0..<n])
+    }
+
+    guard let header = String(data: data, encoding: .utf8),
+      let line = header.components(separatedBy: "\r\n").first
+    else { return -1 }
+    let parts = line.split(separator: " ")
+    guard parts.count >= 2 else { return -1 }
+    return Int(parts[1]) ?? -1
+  }
+
+  private func posixError(_ operation: String) -> NSError {
+    let code = errno
+    return NSError(
+      domain: NSPOSIXErrorDomain,
+      code: Int(code),
+      userInfo: [
+        NSLocalizedDescriptionKey:
+          "\(operation) failed: \(String(cString: strerror(code)))"
+      ])
   }
 
   private func feedOSCTitle(_ title: String, to runtime: HeadlessDebugRuntime) {
