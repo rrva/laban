@@ -1,5 +1,6 @@
 import CoreGraphics
 import Metal
+import QuartzCore
 import XCTest
 
 @testable import LabanRenderer
@@ -183,6 +184,24 @@ final class MetalRendererSmokeTests: XCTestCase {
       "Metal renderer self-presents; presentationImage must be nil")
     // pngData rides on the readback texture filled during render.
     XCTAssertNotNil(renderer.pngData, "pngData should produce a PNG after the first render")
+  }
+
+  func testMetalRendererConfiguresDrawablePoolForStarvationTolerance() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: 1) else {
+      XCTFail("MetalRenderer.init returned nil")
+      return
+    }
+
+    guard let layer = renderer.presentationLayer as? CAMetalLayer else {
+      XCTFail("Metal renderer should expose a CAMetalLayer")
+      return
+    }
+    XCTAssertEqual(layer.maximumDrawableCount, 3)
+    XCTAssertTrue(layer.allowsNextDrawableTimeout)
   }
 
   func testMetalRendererDrawsFallbackArabicAndHangulGlyphs() throws {

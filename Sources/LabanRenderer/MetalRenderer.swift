@@ -186,6 +186,40 @@ public final class MetalRenderer: RendererBackend {
   /// pixels and not whatever the previous frame happened to leave behind.
   private var lastCmdBuf: MTLCommandBuffer?
 
+  private let drawableQueue = DispatchQueue(label: "laban.metal-drawable", qos: .userInteractive)
+  private let drawableRequestLock = NSLock()
+  private var drawableRequestActive = false
+  private static let drawableAcquireTimeout: DispatchTimeInterval = .milliseconds(8)
+
+  private final class DrawableAcquisitionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callerWaiting = true
+    private var drawable: (any CAMetalDrawable)?
+
+    func fulfill(_ acquired: (any CAMetalDrawable)?) -> Bool {
+      lock.lock()
+      defer { lock.unlock() }
+      guard callerWaiting else { return false }
+      drawable = acquired
+      return true
+    }
+
+    func take() -> (any CAMetalDrawable)? {
+      lock.lock()
+      defer { lock.unlock() }
+      callerWaiting = false
+      let result = drawable
+      drawable = nil
+      return result
+    }
+
+    func cancel() {
+      lock.lock()
+      callerWaiting = false
+      lock.unlock()
+    }
+  }
+
   /// Limits frames in flight to 1. CAMetalLayer hands out up to 3 drawables
   /// in parallel, but our persistent target + scratch are SINGLE shared
   /// MTLTextures — without serialization, frame N's blit can read the
@@ -286,6 +320,8 @@ public final class MetalRenderer: RendererBackend {
     layer.framebufferOnly = false  // need readable color for capture readback
     layer.contentsScale = scale
     layer.isOpaque = true
+    layer.maximumDrawableCount = 3
+    layer.allowsNextDrawableTimeout = true
     // Anchor the drawable to the bottom-left of the layer's frame. Without
     // this, CAMetalLayer's default `.resize` gravity stretches the old
     // drawable to the new layer frame between a window-resize event and
@@ -477,7 +513,7 @@ public final class MetalRenderer: RendererBackend {
     guard frameInFlight.wait(timeout: .now()) == .success else {
       return
     }
-    guard let drawable = layer.nextDrawable() else {
+    guard let drawable = acquireDrawableWithinBudget() else {
       frameInFlight.signal()
       return
     }
@@ -643,6 +679,37 @@ public final class MetalRenderer: RendererBackend {
     cmdBuf.commit()
     lastCmdBuf = cmdBuf
     targetNeedsFullRedraw = false
+  }
+
+  private func acquireDrawableWithinBudget() -> (any CAMetalDrawable)? {
+    drawableRequestLock.lock()
+    if drawableRequestActive {
+      drawableRequestLock.unlock()
+      return nil
+    }
+    drawableRequestActive = true
+    drawableRequestLock.unlock()
+
+    let completed = DispatchSemaphore(value: 0)
+    let state = DrawableAcquisitionState()
+
+    drawableQueue.async { [self] in
+      let drawable = layer.nextDrawable()
+      if state.fulfill(drawable) {
+        completed.signal()
+      }
+
+      drawableRequestLock.lock()
+      drawableRequestActive = false
+      drawableRequestLock.unlock()
+    }
+
+    if completed.wait(timeout: .now() + Self.drawableAcquireTimeout) == .success {
+      return state.take()
+    }
+
+    state.cancel()
+    return nil
   }
 
   /// Slots in flight for the most recent frame. Read by the completion
