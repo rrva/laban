@@ -94,6 +94,9 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
       var line = ""
       for col in seg.startCol..<seg.endCol {
         let cell = cells[seg.row * cols + col]
+        if cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL) {
+          continue
+        }
         guard cell.utf8_length > 0 else {
           line += " "
           continue

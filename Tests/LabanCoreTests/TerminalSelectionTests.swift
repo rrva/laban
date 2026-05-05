@@ -177,6 +177,31 @@ final class TerminalSelectionTests: XCTestCase {
     XCTAssertEqual(text, "hello mvp", "trailing spaces must be right-trimmed; got '\(text)'")
   }
 
+  func testSelectedTextSkipsWideGlyphSpacerTail() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("中A\r\n".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: 0, col: 0),
+      focus: TerminalCellCoordinate(row: 0, col: 2)
+    )
+    let text = sel.selectedText(from: snap.pointee)
+    XCTAssertEqual(text, "中A", "wide spacer tail must not copy as a blank; got '\(text)'")
+  }
+
   func testSelectionFrameCommandsAppearsInProducerOutput() throws {
     var size = LabanTerminalSize()
     size.rows = 24
