@@ -13,17 +13,26 @@ public struct FrameProducer {
   public let cellHeight: Int
   public let originX: CGFloat
   public let originY: CGFloat
+  /// Sub-cell vertical pixel shift applied to per-row backgrounds, selection
+  /// rects, glyph runs, and the cursor. Used by smooth scroll to slide
+  /// content between integer cell positions during an animation. Sign:
+  /// positive shifts content UP visually (CG y increases), negative shifts
+  /// DOWN. The terminal-area background rect is NOT shifted — it acts as
+  /// the canvas under the sliding cells.
+  public let contentYOffset: CGFloat
 
   public init(
     cellWidth: Int = 8,
     cellHeight: Int = 16,
     originX: CGFloat = 0,
-    originY: CGFloat = 0
+    originY: CGFloat = 0,
+    contentYOffset: CGFloat = 0
   ) {
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
     self.originX = originX
     self.originY = originY
+    self.contentYOffset = contentYOffset
   }
 
   // Caller owns the snapshot lifetime; FrameProducer does not retain it.
@@ -82,7 +91,7 @@ public struct FrameProducer {
 
     // ---- Pass 1: Background rects for all rows ----
     for row in 0..<rows {
-      let cellY = originY + CGFloat(rows - 1 - row) * ch
+      let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       let rowStart = row * cols
 
       var bgStart: Int? = nil
@@ -129,14 +138,17 @@ public struct FrameProducer {
         cellWidth: cw, cellHeight: ch,
         originX: originX, originY: originY
       ) {
-        cmds.append(.selection(rect, color: Theme.CurrentTheme.selectionBg))
+        let shifted = CGRect(
+          x: rect.origin.x, y: rect.origin.y + contentYOffset,
+          width: rect.width, height: rect.height)
+        cmds.append(.selection(shifted, color: Theme.CurrentTheme.selectionBg))
       }
     }
 
     // ---- Pass 3: Glyph runs and block-element rects for all rows ----
     let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
     for row in 0..<rows {
-      let cellY = originY + CGFloat(rows - 1 - row) * ch
+      let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       let rowStart = row * cols
 
       var runStart: Int? = nil
@@ -317,7 +329,7 @@ public struct FrameProducer {
       Int(snapshot.cursor_col) < cols
     {
       let cx = originX + CGFloat(snapshot.cursor_col) * cw
-      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch
+      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       cmds.append(
         .cursor(
           CGRect(x: cx, y: cy, width: cw, height: ch),

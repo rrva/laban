@@ -46,6 +46,29 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastRenderedActiveTabId: Tab.ID?
   private var scrollResidualPx: CGFloat = 0
 
+  // Smooth-scroll animation state. Wheel input adds to `targetScrollRows`
+  // (cumulative target). A critically-damped PD controller advances
+  // `displayedScrollRows` toward the target each frame, applying the
+  // integer delta to libghostty's viewport and the sub-cell remainder as
+  // a vertical pixel shift in the renderer. Trackpad (precise) input
+  // bypasses smoothing — macOS already smoothed it. Reset on tab switch.
+  //
+  // Algorithm matches Neovide's PD scroll controller (proven well-tuned
+  // for text-grid UIs). omega = 25 rad/s gives a critically-damped
+  // settling time of ~160 ms for a one-row spin.
+  private var targetScrollRows: Double = 0
+  private var displayedScrollRows: Double = 0
+  private var scrollVelocityRowsPerSec: Double = 0
+  private var appliedScrollRows: Int = 0
+  private var lastScrollTickAt: ContinuousClock.Instant?
+  private static let scrollOmega: Double = 25.0  // rad/s
+  /// Set true by the per-frame PD controller while it's still moving
+  /// `displayedScrollRows` toward `targetScrollRows`. The render path
+  /// reads it to (1) compute the sub-cell `contentYOffset` and (2) force
+  /// damage = .full so the persistent target is fully repainted at the
+  /// new fractional position.
+  private var scrollAnimating: Bool = false
+
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
 
@@ -344,8 +367,68 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let suffix = captureRecorder == nil ? "" : " — capturing"
     window?.title = model.windowTitle + suffix
 
-    let terminalDirty = activeTerminalDirty || session.renderDirty()
     let tabChanged = lastRenderedActiveTabId != activeTab.id
+
+    // Tab change interrupts any in-flight scroll animation: snap the
+    // displayed position to whatever the new session is showing so the PD
+    // controller doesn't keep ticking against the wrong viewport.
+    if tabChanged {
+      targetScrollRows = 0
+      displayedScrollRows = 0
+      scrollVelocityRowsPerSec = 0
+      appliedScrollRows = 0
+      lastScrollTickAt = nil
+    }
+
+    // Critically-damped PD controller. Drives `displayedScrollRows` toward
+    // `targetScrollRows`. Each frame we:
+    //   - integrate the controller with the real wall-clock dt (so the
+    //     animation lands at the same wall-clock duration whether the
+    //     display ticks at 60 or 120 Hz)
+    //   - apply the integer change to libghostty's viewport
+    //   - leave the fractional remainder for the renderer's contentYOffset
+    var scrollAnimating = false
+    let scrollError = targetScrollRows - displayedScrollRows
+    if abs(scrollError) > 0.001 || abs(scrollVelocityRowsPerSec) > 0.001 {
+      let now = ContinuousClock.now
+      let dt: Double
+      if let last = lastScrollTickAt {
+        let dur = now - last
+        dt = max(1.0 / 240.0, min(1.0 / 30.0, Double(dur.components.attoseconds) / 1e18))
+      } else {
+        dt = 1.0 / 120.0
+      }
+      lastScrollTickAt = now
+
+      let omega = Self.scrollOmega
+      let accel = omega * omega * scrollError - 2 * omega * scrollVelocityRowsPerSec
+      scrollVelocityRowsPerSec += accel * dt
+      displayedScrollRows += scrollVelocityRowsPerSec * dt
+
+      // Snap once we're close enough that further integration is noise.
+      if abs(targetScrollRows - displayedScrollRows) < 0.01,
+        abs(scrollVelocityRowsPerSec) < 0.1
+      {
+        displayedScrollRows = targetScrollRows
+        scrollVelocityRowsPerSec = 0
+      }
+
+      let desiredApplied = Int(displayedScrollRows.rounded(.toNearestOrAwayFromZero))
+      let delta = desiredApplied - appliedScrollRows
+      if delta != 0 {
+        session.scrollViewport(deltaRows: delta)
+        appliedScrollRows = desiredApplied
+      }
+
+      renderInvalidated = true
+      activeTerminalDirty = true
+      scrollAnimating = true
+    } else {
+      lastScrollTickAt = nil
+    }
+    self.scrollAnimating = scrollAnimating
+
+    let terminalDirty = activeTerminalDirty || session.renderDirty()
 
     // Return early when nothing changed
     guard terminalDirty || renderInvalidated || tabChanged else { return }
@@ -385,11 +468,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         source: .terminal
       ))
 
+    // Sub-cell pixel offset for smooth scroll. Fractional remainder of the
+    // PD-controlled displayed position is rendered as a vertical pixel
+    // shift on the terminal cells; sign matches the existing scrollViewport
+    // direction so positive = same direction as a positive scrollViewport
+    // delta. Zero when no scroll is in flight.
+    let subCellRows = displayedScrollRows - Double(appliedScrollRows)
+    let scrollContentYOffset = -CGFloat(subCellRows) * CGFloat(cellHeight)
     let termProducer = FrameProducer(
       cellWidth: cellWidth,
       cellHeight: cellHeight,
       originX: sidebarWidth + insets.left,
-      originY: insets.bottom
+      originY: insets.bottom,
+      contentYOffset: scrollContentYOffset
     )
     var selection: TerminalSelection?
     if let anchor = selectionAnchor, let focus = selectionFocus {
@@ -413,9 +504,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // content into the persistent target. Otherwise translate dirty rows
     // into CG-point Y bands matching the FrameProducer's row→y mapping
     // (originY + (rows-1-row) * cellHeight, height = cellHeight).
+    //
+    // Smooth-scroll forces .full while animating: the persistent target
+    // holds last frame's pixels at the previous fractional position, so
+    // partial damage would leave stale pixels at the new sub-cell offset.
     let damage = computeDamage(
       snapshot: snap,
-      forceFull: renderInvalidated || tabChanged,
+      forceFull: renderInvalidated || tabChanged || scrollAnimating,
       cellHeight: CGFloat(cellHeight),
       originY: insets.bottom)
     backend.render(cmds, damage: damage)
@@ -753,7 +848,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     )
     scrollResidualPx = decision.newResidualPx
     if decision.rowsDelta != 0 {
-      session.scrollViewport(deltaRows: decision.rowsDelta)
+      targetScrollRows += Double(decision.rowsDelta)
+      if event.hasPreciseScrollingDeltas {
+        // Trackpad: macOS already smoothed this, so don't double-smooth.
+        // Snap displayed/applied to the new target and skip the PD pass.
+        let delta = Int(targetScrollRows.rounded(.toNearestOrAwayFromZero)) - appliedScrollRows
+        if delta != 0 {
+          session.scrollViewport(deltaRows: delta)
+          appliedScrollRows += delta
+        }
+        displayedScrollRows = Double(appliedScrollRows)
+        scrollVelocityRowsPerSec = 0
+      }
       recordInput(
         kind: "scroll",
         route: "terminal",
