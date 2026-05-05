@@ -1009,7 +1009,7 @@ public final class HeadlessDebugRuntime {
   private func executeCommandKey(_ key: Key) {
     switch key {
     case .t:
-      try? model.createTab()
+      _ = try? model.createTab()
       renderFrameUnlocked()
     case .w:
       if let tabId = model.activeTab?.id {

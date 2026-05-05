@@ -60,7 +60,6 @@ public struct SidebarProducer {
     // The "+" new-tab button no longer lives in the sidebar — the AppKit
     // shell renders it as a titlebar accessory next to the traffic
     // lights so the sidebar is purely tab rows. Tabs start at the top.
-    let textBaseY = (rowHeight - cellHeight) / 2
 
     // Tab rows
     for (i, tab) in tabs.enumerated() {
