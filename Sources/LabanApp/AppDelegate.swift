@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var windowController: MainWindowController?
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
+  private var updateCheckInFlight = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     AppLog.app.notice("launch \(BuildInfo.summary)")
@@ -54,6 +55,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc func sendDiagnostics(_ sender: Any?) {
     SendDiagnostics.run()
+  }
+
+  @objc func checkForUpdates(_ sender: Any?) {
+    guard !updateCheckInFlight else { return }
+    guard let manifestURL = UpdateChecker.configuredManifestURL() else {
+      showUpdateAlert(
+        title: "Update checks are not configured",
+        message:
+          "Set \(UpdateChecker.manifestURLBundleKey) in the app bundle or \(UpdateChecker.manifestURLDefaultsKey) in user defaults."
+      )
+      return
+    }
+
+    updateCheckInFlight = true
+    AppLog.app.info("update check started: \(manifestURL.absoluteString)")
+    EventLog.shared.log("update.check.start", ["url": manifestURL.absoluteString])
+    UpdateChecker.check(manifestURL: manifestURL, currentVersion: BuildInfo.version) {
+      [weak self] result in
+      DispatchQueue.main.async {
+        self?.updateCheckInFlight = false
+        self?.handleUpdateCheck(result)
+      }
+    }
   }
 
   /// Open NSFontPanel, primed with the current pick. The panel is
@@ -115,16 +139,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
+  private func handleUpdateCheck(_ result: Result<UpdateCheckResult, Error>) {
+    switch result {
+    case .success(.available(let manifest)):
+      AppLog.app.info("update available: \(manifest.latest)")
+      EventLog.shared.log(
+        "update.check.available",
+        ["latest": manifest.latest, "current": BuildInfo.version])
+      showAvailableUpdate(manifest)
+    case .success(.upToDate(let manifest)):
+      AppLog.app.info("no update available: latest \(manifest.latest)")
+      EventLog.shared.log(
+        "update.check.current",
+        ["latest": manifest.latest, "current": BuildInfo.version])
+      showUpdateAlert(
+        title: "Laban is up to date",
+        message: "You are running \(BuildInfo.version)."
+      )
+    case .failure(let error):
+      AppLog.app.error("update check failed: \(error.localizedDescription)")
+      EventLog.shared.log("update.check.failed", ["error": error.localizedDescription])
+      showUpdateAlert(
+        title: "Update check failed",
+        message: error.localizedDescription
+      )
+    }
+  }
+
+  private func showAvailableUpdate(_ manifest: UpdateManifest) {
+    let alert = NSAlert()
+    alert.messageText = "Laban \(manifest.latest) is available"
+    var message = "You are running \(BuildInfo.version)."
+    if let notes = manifest.notes, !notes.isEmpty {
+      message += "\n\n\(notes)"
+    }
+    alert.informativeText = message
+    alert.addButton(withTitle: "Open Download")
+    alert.addButton(withTitle: "Not Now")
+    if alert.runModal() == .alertFirstButtonReturn {
+      NSWorkspace.shared.open(manifest.downloadURL)
+      EventLog.shared.log(
+        "update.download.open",
+        ["latest": manifest.latest, "url": manifest.downloadURL.absoluteString])
+    }
+  }
+
+  private func showUpdateAlert(title: String, message: String) {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
+  }
+
   /// About panel populated from BuildInfo so the version is always live
   /// against what was actually built. Shown via the standard macOS
   /// "About Laban" item in the app menu.
   @objc func showAbout(_ sender: Any?) {
     let credits = NSAttributedString(
-      string: "Built \(BuildInfo.date)\n\nA terminal that aims to be quiet, fast, and honest.",
+      string:
+        "Build \(BuildInfo.commit)\nBuilt \(BuildInfo.date)\n\nA terminal that aims to be quiet, fast, and honest.",
       attributes: [.foregroundColor: NSColor.labelColor])
     NSApp.orderFrontStandardAboutPanel(options: [
       .applicationName: "Laban",
-      .applicationVersion: BuildInfo.commit,
+      .applicationVersion: BuildInfo.version,
       .credits: credits,
     ])
   }

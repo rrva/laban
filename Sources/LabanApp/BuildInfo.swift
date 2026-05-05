@@ -1,6 +1,10 @@
 import Foundation
 
 enum BuildInfo {
+  static var version: String {
+    value(for: "CFBundleShortVersionString", fallback: "0.0.0")
+  }
+
   static var commit: String {
     value(for: "LABANBuildCommit", fallback: "dev")
   }
@@ -10,7 +14,7 @@ enum BuildInfo {
   }
 
   static var summary: String {
-    "laban \(commit) (\(date))"
+    "laban \(version) \(commit) (\(date))"
   }
 
   private static func value(for key: String, fallback: String) -> String {

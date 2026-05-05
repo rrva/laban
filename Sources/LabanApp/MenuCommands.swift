@@ -14,6 +14,11 @@ enum MenuCommands {
       action: #selector(AppDelegate.showAbout(_:)),
       keyEquivalent: ""
     )
+    appMenu.addItem(
+      withTitle: "Check for Updates…",
+      action: #selector(AppDelegate.checkForUpdates(_:)),
+      keyEquivalent: ""
+    )
     appMenu.addItem(NSMenuItem.separator())
     appMenu.addItem(
       withTitle: "Quit Laban",

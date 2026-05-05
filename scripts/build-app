@@ -11,6 +11,25 @@ dirty=$(
   git diff --quiet 2>/dev/null && echo "" || echo "+dirty"
 )
 date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+app_version=${LABAN_APP_VERSION:-0.0.0}
+build_number=${LABAN_BUILD_NUMBER:-0}
+update_manifest_url=${LABAN_UPDATE_MANIFEST_URL:-}
+
+xml_escape() {
+  printf '%s' "$1" |
+    sed \
+      -e 's/&/\&amp;/g' \
+      -e 's/</\&lt;/g' \
+      -e 's/>/\&gt;/g' \
+      -e 's/"/\&quot;/g' \
+      -e "s/'/\\&apos;/g"
+}
+
+update_manifest_plist=""
+if [ -n "$update_manifest_url" ]; then
+  update_manifest_plist="    <key>LABANUpdateManifestURL</key>
+    <string>$(xml_escape "$update_manifest_url")</string>"
+fi
 
 swift build --product LabanApp
 
@@ -54,6 +73,10 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <string>Laban</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(xml_escape "$app_version")</string>
+    <key>CFBundleVersion</key>
+    <string>$(xml_escape "$build_number")</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
@@ -62,6 +85,7 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <string>${sha}${dirty}</string>
     <key>LABANBuildDate</key>
     <string>${date}</string>
+${update_manifest_plist}
 </dict>
 </plist>
 EOF
