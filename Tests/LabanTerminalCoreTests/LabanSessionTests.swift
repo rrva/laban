@@ -534,6 +534,47 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  func testPTYWriteToNonReadingChildIsBounded() {
+    let exe = "/bin/sleep"
+    let argStrings = ["/bin/sleep", "2"]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 24
+        size.cols = 80
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed for non-reading PTY write test")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        let input = [UInt8](repeating: UInt8(ascii: "x"), count: 16 * 1024 * 1024)
+        let start = Date()
+        let result = input.withUnsafeBytes { buf in
+          laban_session_write(
+            session,
+            buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            input.count)
+        }
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(
+          result, -1, "write should report incomplete delivery under PTY back-pressure")
+        XCTAssertLessThan(
+          elapsed, 0.25,
+          "writing to a child that is not reading must not block the UI path for one second")
+      }
+    }
+  }
+
   func testPTYSpawnEnvironmentAppliesDefaultsAndOverrides() {
     let exe = "/bin/sh"
     let command =

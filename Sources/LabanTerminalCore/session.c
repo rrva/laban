@@ -141,6 +141,12 @@ static pid_t waitpid_retry(pid_t pid, int *status, int options) {
     return ret;
 }
 
+static uint64_t monotonic_us(void) {
+    struct timespec ts = {0};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 static int spawn_actions_addchdir_compat(
     posix_spawn_file_actions_t *actions,
     const char *path
@@ -379,12 +385,24 @@ static int write_pty_bytes(
     size_t len,
     LabanCaptureBytesDirection direction
 ) {
+    enum {
+        WRITE_PTY_BUDGET_US = 20000,
+        WRITE_PTY_CHUNK_MAX = 16384,
+    };
     if (!s || !bytes) return -1;
     if (len == 0) return 0;
     if (s->pty_fd < 0) return -1;
+    uint64_t started_us = monotonic_us();
     size_t written = 0;
     while (written < len) {
-        ssize_t n = write(s->pty_fd, bytes + written, len - written);
+        uint64_t now_us = monotonic_us();
+        if (started_us > 0 && now_us > started_us &&
+            now_us - started_us >= WRITE_PTY_BUDGET_US) {
+            return -1;
+        }
+        size_t chunk_len = len - written;
+        if (chunk_len > WRITE_PTY_CHUNK_MAX) chunk_len = WRITE_PTY_CHUNK_MAX;
+        ssize_t n = write(s->pty_fd, bytes + written, chunk_len);
         if (n > 0) {
             emit_capture_bytes(s, direction, bytes + written, (size_t)n);
             written += (size_t)n;
@@ -393,14 +411,20 @@ static int write_pty_bytes(
         if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /* Wait for the child to drain. select() blocks until the
-                 * fd is writable again or 1 s elapses (defensive cap so a
-                 * dead/stopped child can't permanently freeze the
-                 * caller's main thread). */
+                /* Wait only within the total write budget. This path runs
+                 * from UI input and terminal-response effects, so repeated
+                 * back-pressure must not accumulate into a visible stall. */
+                uint64_t elapsed_us =
+                    (started_us > 0 && now_us > started_us) ? now_us - started_us : 0;
+                suseconds_t remaining_us =
+                    elapsed_us < WRITE_PTY_BUDGET_US
+                        ? (suseconds_t)(WRITE_PTY_BUDGET_US - elapsed_us)
+                        : 0;
+                if (remaining_us <= 0) return -1;
                 fd_set wfds;
                 FD_ZERO(&wfds);
                 FD_SET(s->pty_fd, &wfds);
-                struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+                struct timeval tv = { .tv_sec = 0, .tv_usec = remaining_us };
                 int sr = select(s->pty_fd + 1, NULL, &wfds, NULL, &tv);
                 if (sr < 0 && errno == EINTR) continue;
                 if (sr <= 0) return -1; /* timeout or error */
