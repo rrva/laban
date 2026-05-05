@@ -55,6 +55,37 @@ final class FrameProducerTests: XCTestCase {
       "glyph commands must contain characters from 'hello mvp'; got: \(allText.prefix(80))")
   }
 
+  func testFixtureSessionPreservesArabicPresentationAndHangulGlyphs() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    let text = "\u{FEB1}\u{B2C8}\u{C740}"
+    session.write(Array(text.utf8))
+    session.poll()
+
+    let snap = session.snapshot()
+    defer { laban_snapshot_destroy(snap) }
+    guard let snap else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+
+    let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
+    let allText = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _) = cmd, src == .terminal {
+        return text
+      }
+      return nil
+    }.joined()
+
+    XCTAssertTrue(
+      allText.contains(text),
+      "terminal snapshot text must survive frame production; got \(allText.debugDescription)")
+  }
+
   func testFixtureSessionProducesTerminalSourceCommands() throws {
     var size = LabanTerminalSize()
     size.rows = 24
