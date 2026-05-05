@@ -196,8 +196,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     super.init(frame: .zero)
 
     if backendSelfPresents, let layer = backend.presentationLayer {
-      wantsLayer = true
       self.layer = layer
+      wantsLayer = true
       // Metal layers must opt in to backing scale changes via the view.
       layerContentsRedrawPolicy = .duringViewResize
     }
@@ -765,7 +765,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // visible frame to the latest one (closer to user-perceived latency).
     pendingInputAt = ContinuousClock.now
     let descriptor = TerminalKeyDescriptor(keyDown: event)
-    switch descriptor.route() {
+    switch descriptor.route(hasMarkedText: hasMarkedText()) {
     case .appCommand(let cmd):
       executeAppCommand(cmd)
     case .swallowCommand:
@@ -793,6 +793,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - NSTextInputClient
 
   func insertText(_ string: Any, replacementRange: NSRange) {
+    unmarkText()
     let text: String
     if let s = string as? String {
       text = s
@@ -830,7 +831,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     -> NSAttributedString?
   { nil }
   func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
-  func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { .zero }
+  func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+    actualRange?.pointee = NSRange(location: 0, length: markedText.length)
+    guard let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let snap = session.snapshot()
+    else { return .zero }
+    defer { laban_snapshot_destroy(snap) }
+
+    let rect = Self.cursorRectForTextInput(
+      rows: Int(snap.pointee.rows),
+      cursorRow: Int(snap.pointee.cursor_row),
+      cursorCol: Int(snap.pointee.cursor_col),
+      sidebarWidth: sidebarWidth,
+      cellWidth: CGFloat(cellWidth),
+      cellHeight: CGFloat(cellHeight),
+      insets: Self.contentInsets
+    )
+    let windowRect = convert(rect, to: nil)
+    return window?.convertToScreen(windowRect) ?? windowRect
+  }
   func characterIndex(for point: NSPoint) -> Int { NSNotFound }
 
   override func doCommand(by commandSelector: Selector) {
@@ -1635,6 +1655,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState()
     else { return 0 }
     return vs.viewportOffset
+  }
+
+  static func cursorRectForTextInput(
+    rows: Int,
+    cursorRow: Int,
+    cursorCol: Int,
+    sidebarWidth: CGFloat,
+    cellWidth: CGFloat,
+    cellHeight: CGFloat,
+    insets: NSEdgeInsets
+  ) -> NSRect {
+    let clampedRows = max(rows, 1)
+    let row = min(max(cursorRow, 0), clampedRows - 1)
+    let col = max(cursorCol, 0)
+    return NSRect(
+      x: sidebarWidth + insets.left + CGFloat(col) * cellWidth,
+      y: insets.bottom + CGFloat(clampedRows - 1 - row) * cellHeight,
+      width: cellWidth,
+      height: cellHeight
+    )
   }
 
   private func authoritativeAppliedRows(for session: Session) -> Int? {

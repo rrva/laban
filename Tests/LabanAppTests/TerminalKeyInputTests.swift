@@ -11,6 +11,11 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(desc.route(), .appCommand(.newTab))
   }
 
+  func testCommandKeyRoutesToNativeTextWhenMarkedTextExists() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .t, modifiers: .command)
+    XCTAssertEqual(desc.route(hasMarkedText: true), .nativeText)
+  }
+
   func testCommandWRoutesToCloseTab() {
     let desc = TerminalKeyDescriptor(action: .press, key: .w, modifiers: .command)
     XCTAssertEqual(desc.route(), .appCommand(.closeTab))
@@ -124,5 +129,39 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(ev.action, .release)
     XCTAssertEqual(ev.key, .a)
     XCTAssertNil(ev.text)
+  }
+
+  func testTextInputCursorRectUsesTopDownTerminalGrid() {
+    let rect = TerminalBitmapView.cursorRectForTextInput(
+      rows: 24,
+      cursorRow: 2,
+      cursorCol: 3,
+      sidebarWidth: 200,
+      cellWidth: 9,
+      cellHeight: 18,
+      insets: NSEdgeInsets(top: 36, left: 14, bottom: 8, right: 8)
+    )
+
+    XCTAssertEqual(rect.origin.x, 241)
+    XCTAssertEqual(rect.origin.y, 386)
+    XCTAssertEqual(rect.size.width, 9)
+    XCTAssertEqual(rect.size.height, 18)
+  }
+
+  func testTextInputCursorRectClampsRowsAndCursor() {
+    let rect = TerminalBitmapView.cursorRectForTextInput(
+      rows: 0,
+      cursorRow: 8,
+      cursorCol: -2,
+      sidebarWidth: 12,
+      cellWidth: 10,
+      cellHeight: 20,
+      insets: NSEdgeInsets(top: 0, left: 3, bottom: 4, right: 0)
+    )
+
+    XCTAssertEqual(rect.origin.x, 15)
+    XCTAssertEqual(rect.origin.y, 4)
+    XCTAssertEqual(rect.size.width, 10)
+    XCTAssertEqual(rect.size.height, 20)
   }
 }

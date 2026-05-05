@@ -55,10 +55,14 @@ enum TerminalInputRoute: Equatable {
 // MARK: - Routing logic
 
 extension TerminalKeyDescriptor {
-  func route() -> TerminalInputRoute {
+  func route(hasMarkedText: Bool = false) -> TerminalInputRoute {
     if action == .release {
       guard let key else { return .ignored }
       return .encodedKey(KeyEvent(action: .release, key: key, modifiers: modifiers))
+    }
+
+    if hasMarkedText {
+      return .nativeText
     }
 
     if modifiers.contains(.command) {
