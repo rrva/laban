@@ -98,7 +98,7 @@ final class LabanSessionTests: XCTestCase {
     // Write bytes; dirty query must report dirty.
     let bytes = Array("hello\r\n".utf8)
     bytes.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         bytes.count)
@@ -718,7 +718,7 @@ final class LabanSessionTests: XCTestCase {
     }
 
     allBytes.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self), allBytes.count)
     }
@@ -821,7 +821,7 @@ final class LabanSessionTests: XCTestCase {
       allBytes += Array("line \(i)\r\n".utf8)
     }
     allBytes.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self), allBytes.count)
     }
@@ -856,7 +856,7 @@ final class LabanSessionTests: XCTestCase {
     // Enable normal SGR mouse tracking (DECSET 1000 + DECSET 1006).
     let enableSeq = Array("\u{1b}[?1000h\u{1b}[?1006h".utf8)
     enableSeq.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         enableSeq.count)
@@ -911,7 +911,7 @@ final class LabanSessionTests: XCTestCase {
 
     let enableSeq = Array("\u{1b}[?1000h\u{1b}[?1006h".utf8)
     enableSeq.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         enableSeq.count)
@@ -944,7 +944,7 @@ final class LabanSessionTests: XCTestCase {
 
     let enableSeq = Array("\u{1b}[?1000h\u{1b}[?1006h".utf8)
     enableSeq.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         enableSeq.count)
@@ -985,7 +985,7 @@ final class LabanSessionTests: XCTestCase {
 
     let enableSeq = Array("\u{1b}[?1002h\u{1b}[?1006h".utf8)
     enableSeq.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         enableSeq.count)
@@ -1032,7 +1032,7 @@ final class LabanSessionTests: XCTestCase {
     // Enable SGR mouse.
     let enableSeq = Array("\u{1b}[?1000h\u{1b}[?1006h".utf8)
     enableSeq.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         enableSeq.count)
@@ -1143,7 +1143,7 @@ final class LabanSessionTests: XCTestCase {
     // Enable bracketed paste mode: ESC[?2004h
     let enableSeq = Array("\u{1b}[?2004h".utf8)
     enableSeq.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         enableSeq.count)
@@ -1193,7 +1193,7 @@ final class LabanSessionTests: XCTestCase {
     // Enable bracketed paste mode.
     let enableSeq = Array("\u{1b}[?2004h".utf8)
     enableSeq.withUnsafeBytes { buf in
-      laban_session_write(
+      _ = laban_session_write(
         session,
         buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
         enableSeq.count)
