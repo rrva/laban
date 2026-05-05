@@ -134,4 +134,4 @@ The selected implementation optimizes for:
 
 MVP behavior is not done until an agent can launch the app in headless mode,
 drive it through debug actions, query internal state, capture screenshots, and
-run the same flow in CI.
+run the same flow in CI..
