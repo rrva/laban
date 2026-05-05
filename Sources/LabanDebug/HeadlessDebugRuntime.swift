@@ -1639,6 +1639,14 @@ public final class HeadlessDebugRuntime {
     case "paste":
       let frameBefore = currentFrame
       let activeTab = model.activeTab
+      // Apply the same hard-size cap that the AppKit paste path uses.
+      // Without this a malicious automation client could feed an
+      // arbitrarily large clipboard via setClipboardText then trigger
+      // paste, freezing the debug-runtime thread and bloating memory.
+      let pasteHardLimit = 10 * 1024 * 1024  // 10 MB
+      if debugClipboard.utf8.count > pasteHardLimit {
+        return jsonError("clipboard exceeds paste limit (\(pasteHardLimit) bytes)")
+      }
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
         let result = session.writePaste(debugClipboard)
         lastPasteText = debugClipboard

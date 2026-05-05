@@ -970,6 +970,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId)
     else { return }
+
+    // Hard refuse oversize input *immediately* on the raw pasteboard
+    // value, before sanitizing or copying into a [UInt8]. Otherwise a
+    // 100 MB clipboard would still be sanitized + bytes-copied + encoded
+    // to a third buffer in C before we got around to refusing it.
+    let rawBytes = raw.utf8.count
+    if rawBytes > Self.pasteHardLimitBytes {
+      let alert = NSAlert()
+      alert.alertStyle = .warning
+      alert.messageText = "Paste too large"
+      alert.informativeText =
+        "Refusing to paste \(rawBytes) bytes (limit is \(Self.pasteHardLimitBytes))."
+      alert.addButton(withTitle: "OK")
+      alert.runModal()
+      EventLog.shared.log("paste.refused.size", ["bytes": rawBytes])
+      return
+    }
+
     // Sanitize control characters out of the paste before handing it to
     // libghostty's bracketed-paste encoder. Strips ESC and the rest of the
     // C0 range (plus DEL) — keeps tab / newline / CR. This is the post-
@@ -980,21 +998,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let sanitized = Self.sanitizePaste(raw)
     guard !sanitized.isEmpty else { return }
     let bytes = Array(sanitized.utf8)
-
-    // Hard refuse anything over the limit. Pasting megabytes through a
-    // synchronous PTY write loop locks the main thread and balloons RAM
-    // (Swift array + C malloc + libghostty's mutating encode buffer).
-    if bytes.count > Self.pasteHardLimitBytes {
-      let alert = NSAlert()
-      alert.alertStyle = .warning
-      alert.messageText = "Paste too large"
-      alert.informativeText =
-        "Refusing to paste \(bytes.count) bytes (limit is \(Self.pasteHardLimitBytes))."
-      alert.addButton(withTitle: "OK")
-      alert.runModal()
-      EventLog.shared.log("paste.refused.size", ["bytes": bytes.count])
-      return
-    }
 
     // Soft cap with a confirmation. Anything over a few KB is unusual
     // for terminal input; ChatGPT-style "I copied a giant blob"

@@ -136,9 +136,20 @@ public final class DebugHTTPServer {
       }
     }
 
-    let contentLength = headers["content-length"].flatMap { Int($0) } ?? 0
+    // Clamp Content-Length: signed parse + cap. A negative value would
+    // crash `prefix(contentLength)`; an unbounded huge value would
+    // block the single-threaded server in the read loop. The cap is
+    // generous enough for any legitimate debug request and small
+    // enough to refuse hostile bodies cheaply.
+    let maxBody = 4 * 1024 * 1024  // 4 MB
+    let parsed = headers["content-length"].flatMap { Int($0) } ?? 0
+    let contentLength = max(0, min(parsed, maxBody))
     var body = Data(raw[headerEnd...].prefix(contentLength))
+    let readDeadline = Date().addingTimeInterval(2.0)
     while body.count < contentLength {
+      // Bound the read loop in wall time too — a peer that stops
+      // sending mid-body must not pin our handler forever.
+      if Date() > readDeadline { break }
       let need = min(contentLength - body.count, 4096)
       var bodyBuf = [UInt8](repeating: 0, count: need)
       let n = recv(fd, &bodyBuf, need, 0)

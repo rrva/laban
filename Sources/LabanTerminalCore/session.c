@@ -738,11 +738,23 @@ int laban_session_poll(LabanSession *s) {
     if (s->fixture_mode) return 0; /* no PTY to drain */
     if (s->status != 0) return 0;  /* already exited */
 
+    /* Cap how much we drain in a single tick. Without this, a runaway
+     * child (`yes`, an infinite log loop, a confused REPL) keeps the
+     * read loop spinning until EAGAIN — which it never reaches because
+     * the child outpaces us — and the entire main thread is monopolized
+     * parsing megabytes of output before a single frame renders. With
+     * the cap, the rest of the buffer drains on subsequent ticks and
+     * the UI stays responsive at vsync rate. */
+    enum { MAX_BYTES_PER_POLL = 256 * 1024 };
+    size_t drained = 0;
+
     uint8_t buf[4096];
     for (;;) {
+        if (drained >= MAX_BYTES_PER_POLL) break;
         ssize_t n = read(s->pty_fd, buf, sizeof(buf));
         if (n > 0) {
             vt_write_capture(s, buf, (size_t)n);
+            drained += (size_t)n;
             continue;
         }
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;

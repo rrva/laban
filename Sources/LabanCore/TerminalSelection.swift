@@ -37,21 +37,34 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
   public func segments(rows: Int, cols: Int) -> [(row: Int, startCol: Int, endCol: Int)] {
     guard rows > 0, cols > 0 else { return [] }
     let (start, end) = startEnd(cols: cols)
-    guard start.row < rows, end.row < rows else { return [] }
+    // Clamp both endpoints to the viewport. Either may be off the
+    // viewport (negative or >= rows) when the caller is rendering a
+    // scroll-anchored selection whose original cell has scrolled out
+    // of view. We render only the visible portion. Without this guard
+    // a negative `row` becomes a negative index into `cells` in
+    // `selectedText` and crashes the app.
+    let startRow = max(0, start.row)
+    let endRow = min(rows - 1, end.row)
+    guard startRow <= endRow else { return [] }
 
-    if start.row == end.row {
-      let s = min(start.col, cols - 1)
-      let e = min(end.col + 1, cols)
-      guard e > s else { return [] }
-      return [(row: start.row, startCol: s, endCol: e)]
+    if startRow == endRow {
+      // Single visible row. If the original (unclamped) start/end were
+      // both on this row, use their cols; otherwise use full-row span
+      // because we're rendering a clipped slice of a multi-row select.
+      let sCol = (start.row == startRow) ? min(start.col, cols - 1) : 0
+      let eCol = (end.row == endRow) ? min(end.col + 1, cols) : cols
+      guard eCol > sCol else { return [] }
+      return [(row: startRow, startCol: sCol, endCol: eCol)]
     }
 
     var segs: [(row: Int, startCol: Int, endCol: Int)] = []
-    segs.append((row: start.row, startCol: start.col, endCol: cols))
-    for r in (start.row + 1)..<end.row {
+    let firstStartCol = (start.row == startRow) ? start.col : 0
+    segs.append((row: startRow, startCol: firstStartCol, endCol: cols))
+    for r in (startRow + 1)..<endRow {
       segs.append((row: r, startCol: 0, endCol: cols))
     }
-    segs.append((row: end.row, startCol: 0, endCol: end.col + 1))
+    let lastEndCol = (end.row == endRow) ? end.col + 1 : cols
+    segs.append((row: endRow, startCol: 0, endCol: lastEndCol))
     return segs
   }
 
