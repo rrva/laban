@@ -89,9 +89,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     EventLog.shared.log("font.set", ["name": new.fontName])
     let alert = NSAlert()
     alert.messageText = "Font set to \(new.displayName ?? new.fontName)"
-    alert.informativeText = "Quit and relaunch Laban to apply."
-    alert.addButton(withTitle: "OK")
-    alert.runModal()
+    alert.informativeText = "Restart Laban to apply."
+    alert.addButton(withTitle: "Restart Now")  // .firstButtonReturn
+    alert.addButton(withTitle: "Later")        // .secondButtonReturn
+    if alert.runModal() == .alertFirstButtonReturn {
+      Self.restartApp()
+    }
+  }
+
+  /// Spawn a fresh instance of our own .app via `open -n` and quit the
+  /// current one. `-n` forces a new instance because macOS otherwise
+  /// just activates the existing one. There's a brief gap where the
+  /// window isn't visible — acceptable for an explicit user action.
+  static func restartApp() {
+    let bundleURL = Bundle.main.bundleURL
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    task.arguments = ["-n", bundleURL.path]
+    do {
+      try task.run()
+      NSApp.terminate(nil)
+    } catch {
+      AppLog.app.error("restart failed: \(error)")
+    }
   }
 
   /// About panel populated from BuildInfo so the version is always live
