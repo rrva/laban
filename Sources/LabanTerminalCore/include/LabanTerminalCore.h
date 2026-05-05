@@ -180,6 +180,34 @@ int laban_session_set_capture_callback(
 );
 
 /*
+ * iTerm2-compatible OSC 21337 ("tab status") observer. The PTY byte
+ * stream is scanned alongside the VT parser; on every successfully
+ * parsed `ESC ] 21337 ; key=value;... BEL/ST` sequence, this callback
+ * is invoked with the three known fields.
+ *
+ * For each field:
+ *   NULL  → key was absent from the payload; preserve the prior value
+ *   ""    → key was present with empty value; clear the field
+ *   other → set the field to the given UTF-8 string
+ *
+ * The pointers are valid only for the duration of the call. The
+ * callback fires on whichever thread drove `laban_session_poll` /
+ * `laban_session_feed_output`. Pass NULL for `callback` to disable.
+ */
+typedef void (*LabanTabStatusCallback)(
+    void *userdata,
+    const char *indicator,
+    const char *status,
+    const char *status_color
+);
+
+int laban_session_set_tab_status_callback(
+    LabanSession *session,
+    LabanTabStatusCallback callback,
+    void *userdata
+);
+
+/*
  * Feed captured PTY output bytes directly into the VT parser during replay.
  * This is intentionally named for replay so callers do not confuse terminal
  * byte replay with user input written to a live child process.

@@ -143,7 +143,23 @@ public struct SidebarProducer {
           source: .sidebar
         ))
 
-      if let badge = resolved.statusBadge {
+      // Top-right indicator. The OSC 21337 dot wins over the legacy red
+      // attention badge — when an agent has reported a status, that's
+      // more specific than "something happened in this tab".
+      let agentStatus = tab.titleMetadata.agentStatus
+      if let hex = agentStatus.indicatorColor,
+        let color = Self.parseHexColor(hex)
+      {
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: badgeX, y: titleY),
+            text: "●",
+            foreground: color,
+            background: bg,
+            attributes: [],
+            source: .sidebar
+          ))
+      } else if let badge = resolved.statusBadge {
         cmds.append(
           .glyphRun(
             origin: CGPoint(x: badgeX, y: titleY),
@@ -155,14 +171,28 @@ public struct SidebarProducer {
           ))
       }
 
-      // Render up to three info lines under the title. Empty entries are
-      // already filtered upstream so what we get is what we draw.
-      for (offset, line) in resolved.infoLines.prefix(3).enumerated() {
+      // Build the info-line stack. When an agent has pushed a status
+      // text, it owns the first info slot — that's the most actionable
+      // signal on the tab right now, more than which folder or which
+      // binary is running. We keep a max of three info lines under the
+      // title; folder and branch follow, and the command line drops out
+      // when status takes its slot.
+      var displayLines: [(String, UInt32)] = []
+      if let st = agentStatus.statusText {
+        let color =
+          agentStatus.statusTextColor.flatMap(Self.parseHexColor)
+          ?? Theme.CurrentTheme.fg0
+        displayLines.append((st, color))
+      }
+      for line in resolved.infoLines.prefix(3 - displayLines.count) {
+        displayLines.append((line, Theme.CurrentTheme.dim0))
+      }
+      for (offset, entry) in displayLines.enumerated() {
         cmds.append(
           .glyphRun(
             origin: CGPoint(x: labelX, y: lineY(offset + 1)),
-            text: line,
-            foreground: Theme.CurrentTheme.dim0,
+            text: entry.0,
+            foreground: entry.1,
             background: bg,
             attributes: [],
             source: .sidebar
@@ -207,5 +237,38 @@ public struct SidebarProducer {
     }
 
     return .none
+  }
+
+  /// Parse OSC 21337 color values into the 0xRRGGBBAA format the renderer
+  /// expects. Accepts the iTerm-observed `#rrggbb` form and the X11/CSS
+  /// `rgb:R/G/B` form (each channel 1–4 hex chars). Alpha is forced to
+  /// fully opaque since the OSC spec doesn't carry alpha.
+  static func parseHexColor(_ raw: String) -> UInt32? {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    if trimmed.lowercased().hasPrefix("rgb:") {
+      let body = trimmed.dropFirst(4)
+      let parts = body.split(separator: "/")
+      guard parts.count == 3 else { return nil }
+      func channel(_ s: Substring) -> UInt32? {
+        guard !s.isEmpty, s.count <= 4,
+          let v = UInt32(s, radix: 16)
+        else { return nil }
+        // Scale to 0..255 based on the number of nibbles (e.g. "ff"→255,
+        // "ffff"→255, "f"→255).
+        let max = (UInt32(1) << (UInt32(s.count) * 4)) - 1
+        return UInt32((v * 255 + max / 2) / max)
+      }
+      guard let r = channel(parts[0]), let g = channel(parts[1]),
+        let b = channel(parts[2])
+      else { return nil }
+      return (r << 24) | (g << 16) | (b << 8) | 0xFF
+    }
+
+    var hex = Substring(trimmed)
+    if hex.hasPrefix("#") { hex = hex.dropFirst() }
+    guard hex.count == 6, let val = UInt32(hex, radix: 16) else { return nil }
+    return (val << 8) | 0xFF
   }
 }

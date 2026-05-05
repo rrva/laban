@@ -61,6 +61,34 @@ public struct TabProcessMetadata: Codable, Equatable {
   }
 }
 
+/// State pushed by an in-tab process via iTerm2's OSC 21337 sequence.
+/// Two coupled signals: a small colored indicator dot for at-a-glance
+/// recognition, and a short text label (Idle / Working… / Waiting) with
+/// its own color.
+public struct TabAgentStatus: Codable, Equatable, Sendable {
+  /// Hex `#rrggbb` for the indicator dot, or nil when no agent has
+  /// reported one yet (or the field has been cleared).
+  public var indicatorColor: String?
+  /// Short status label rendered as one of the sidebar info lines.
+  public var statusText: String?
+  /// Hex `#rrggbb` for the status text color. nil falls back to dim0.
+  public var statusTextColor: String?
+
+  public init(
+    indicatorColor: String? = nil,
+    statusText: String? = nil,
+    statusTextColor: String? = nil
+  ) {
+    self.indicatorColor = indicatorColor
+    self.statusText = statusText
+    self.statusTextColor = statusTextColor
+  }
+
+  public var isEmpty: Bool {
+    indicatorColor == nil && statusText == nil && statusTextColor == nil
+  }
+}
+
 public struct TabAgentMetadata: Codable, Equatable {
   public var agentName: String?
   public var sessionName: String?
@@ -98,6 +126,7 @@ public struct TabTitleMetadata: Codable, Equatable {
   public var workspace: TabWorkspaceMetadata
   public var process: TabProcessMetadata
   public var agent: TabAgentMetadata
+  public var agentStatus: TabAgentStatus
   public var activityState: TabActivityState
   public var lastActivityAt: Date?
   public var lastOutputAt: Date?
@@ -113,6 +142,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     workspace: TabWorkspaceMetadata = TabWorkspaceMetadata(),
     process: TabProcessMetadata = TabProcessMetadata(),
     agent: TabAgentMetadata = TabAgentMetadata(),
+    agentStatus: TabAgentStatus = TabAgentStatus(),
     activityState: TabActivityState = .running,
     lastActivityAt: Date? = nil,
     lastOutputAt: Date? = nil,
@@ -128,6 +158,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.workspace = workspace
     self.process = process
     self.agent = agent
+    self.agentStatus = agentStatus
     self.activityState = activityState
     self.lastActivityAt = lastActivityAt
     self.lastOutputAt = lastOutputAt
@@ -228,25 +259,32 @@ public enum TabTitleResolver {
 
     var lines: [String] = []
 
-    // Line: workspace path (repo@worktree wins, then home-shortened cwd).
+    // Line 1: folder. Repo@worktree wins (only set by the headless debug
+    // runtime today); otherwise the basename of cwd.
     if let repo = useful(metadata.workspace.repoName) {
-      var line = repo
+      var folder = repo
       if let worktree = useful(metadata.workspace.worktreeName), worktree != repo {
-        line = "\(repo)@\(worktree)"
+        folder = "\(repo)@\(worktree)"
       }
-      if let branch = useful(metadata.workspace.branch) {
-        line += "  " + branch + (metadata.workspace.isDirty ? "*" : "")
-      }
-      if line != title { lines.append(truncateMid(line)) }
+      if folder != title { lines.append(truncateMid(folder)) }
     } else if let cwd = useful(metadata.workspace.cwd) {
-      let display = cwdDisplayName(cwd)
-      if display != title { lines.append(truncatePath(display)) }
+      let folder = cwdDisplayName(cwd)
+      if folder != title { lines.append(truncatePath(folder)) }
     }
 
-    // Line: full foreground command — only when it's something more useful
-    // than "the user's shell idling at a prompt" or "the binary that already
-    // named the tab via OSC". A bare shell adds no signal; an OSC-set title
-    // means the running process self-identified, so its argv is redundant.
+    // Line 2: git branch (with dirty marker when known). Independent line —
+    // branch is more identifying than which binary is running, especially
+    // when juggling multiple worktrees of the same repo.
+    if let branch = useful(metadata.workspace.branch) {
+      lines.append(truncateMid(branch + (metadata.workspace.isDirty ? "*" : "")))
+    }
+
+    // Line 3: foreground command — only when it's something more useful
+    // than "the user's shell idling at a prompt" or "the binary that
+    // already named the tab via OSC". A bare shell adds no signal; an
+    // OSC-set title means the running process self-identified, so its
+    // argv is redundant. Skipped to keep room for status when the branch
+    // line already takes a slot.
     let processSelfNamed = titleSource == .terminal || titleSource == .agent
     if !processSelfNamed {
       if let cmd = useful(metadata.process.foregroundCommand),
@@ -435,14 +473,14 @@ public enum TabTitleResolver {
     return String(trimmed.split(separator: "/").last ?? Substring(trimmed))
   }
 
+  /// Compact label for a working directory: basename only. Worktree paths
+  /// like `~/wrk/laban/.claude/worktrees/foo` collapse to `foo`, which is
+  /// the identifying part — exactly what fits in a 200 px sidebar column.
+  /// `~` for the home directory itself.
   private static func cwdDisplayName(_ path: String) -> String {
     let standardized = (path as NSString).standardizingPath
     let home = (NSHomeDirectory() as NSString).standardizingPath
     if standardized == home { return "~" }
-    let prefix = home.hasSuffix("/") ? home : home + "/"
-    if standardized.hasPrefix(prefix) {
-      return "~/" + String(standardized.dropFirst(prefix.count))
-    }
     return pathTail(standardized)
   }
 

@@ -24,6 +24,22 @@ public final class Session {
     didSet { updateCaptureCallback() }
   }
 
+  /// One snapshot of the iTerm2 OSC 21337 tab-status fields. Per the spec,
+  /// `nil` means "key was absent in this update — preserve the prior
+  /// value", `""` means "clear the field", anything else is a new value.
+  public struct TabStatusUpdate: Sendable {
+    public var indicator: String?
+    public var status: String?
+    public var statusColor: String?
+  }
+
+  /// Set once per Session at the call site (AppModel) to receive parsed
+  /// OSC 21337 updates. Fires on the same thread that drove `poll()` —
+  /// main, in our app — so handlers may touch model state directly.
+  public var onTabStatus: ((TabStatusUpdate) -> Void)? {
+    didSet { updateTabStatusCallback() }
+  }
+
   public init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
     self.id = UUID().uuidString
     var h: OpaquePointer?
@@ -50,6 +66,7 @@ public final class Session {
     isClosed = true
     if let h = handle {
       laban_session_set_capture_callback(h, nil, nil)
+      laban_session_set_tab_status_callback(h, nil, nil)
       laban_session_destroy(h)
       handle = nil
     }
@@ -345,7 +362,41 @@ public final class Session {
       )
     }
   }
+
+  private func updateTabStatusCallback() {
+    guard !isClosed, let h = handle else { return }
+    if onTabStatus == nil {
+      laban_session_set_tab_status_callback(h, nil, nil)
+    } else {
+      laban_session_set_tab_status_callback(
+        h,
+        sessionTabStatusCallback,
+        Unmanaged.passUnretained(self).toOpaque()
+      )
+    }
+  }
+
+  fileprivate func deliverTabStatus(_ update: TabStatusUpdate) {
+    onTabStatus?(update)
+  }
 }
+
+private let sessionTabStatusCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?,
+    UnsafePointer<CChar>?,
+    UnsafePointer<CChar>?,
+    UnsafePointer<CChar>?
+  ) -> Void = { userdata, indicator, status, statusColor in
+    guard let userdata else { return }
+    let session = Unmanaged<Session>.fromOpaque(userdata).takeUnretainedValue()
+    let update = Session.TabStatusUpdate(
+      indicator: indicator.map { String(cString: $0) },
+      status: status.map { String(cString: $0) },
+      statusColor: statusColor.map { String(cString: $0) }
+    )
+    session.deliverTabStatus(update)
+  }
 
 private let sessionCaptureCallback:
   @convention(c) (

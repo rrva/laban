@@ -31,6 +31,32 @@
 
 #define LABAN_TITLE_MAX_BYTES 1024
 
+/* OSC 21337 scanner state. Sniffs `ESC ] 21337 ; key=value;... ST/BEL`
+ * out of the PTY byte stream in parallel with libghostty's own parser
+ * (libghostty has no generic "unknown OSC" callback and silently drops
+ * everything outside its known set). The scanner observes only — every
+ * byte still flows unchanged to libghostty. iTerm2-compatible. */
+typedef enum {
+    TS_NORMAL = 0,
+    TS_AFTER_ESC,
+    TS_OSC_NUM,
+    TS_BODY_21337,
+    TS_BODY_21337_AFTER_ESC,
+    TS_BODY_OTHER,
+    TS_BODY_OTHER_AFTER_ESC,
+} TabStatusState;
+
+#define TAB_STATUS_NUM_MAX 8       /* "21337" + room */
+#define TAB_STATUS_PAYLOAD_MAX 1024 /* observed payloads &lt; 100 bytes */
+
+typedef struct {
+    TabStatusState state;
+    char num[TAB_STATUS_NUM_MAX];
+    size_t num_len;
+    char payload[TAB_STATUS_PAYLOAD_MAX];
+    size_t payload_len;
+} LabanTabStatusScanner;
+
 struct LabanSession {
     GhosttyTerminal terminal;
     GhosttyRenderState render_state;
@@ -53,6 +79,10 @@ struct LabanSession {
     int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
     LabanCaptureBytesCallback capture_callback;
     void *capture_userdata;
+
+    LabanTabStatusScanner tab_status_scanner;
+    LabanTabStatusCallback tab_status_callback;
+    void *tab_status_userdata;
 
     /* Cached geometry for the SIZE effect (XTWINOPS replies). */
     uint16_t cols;
@@ -80,6 +110,136 @@ static void emit_capture_bytes(
     s->capture_callback(s->capture_userdata, s, direction, bytes, len);
 }
 
+/* Parse a complete OSC 21337 payload (`key=value;key=value;...`) and
+ * dispatch to the registered Swift callback. Backslash-escaped semicolons
+ * inside values are unescaped per iTerm2's spec. Unknown keys are
+ * silently ignored. NULL is reported for keys absent from this payload
+ * so the receiver knows to leave them unchanged. */
+static void parse_tab_status_payload(LabanSession *s, const char *payload, size_t len) {
+    if (!s->tab_status_callback) return;
+    char indicator[64] = {0};
+    char status_text[256] = {0};
+    char status_color[64] = {0};
+    int has_indicator = 0, has_status = 0, has_status_color = 0;
+
+    size_t i = 0;
+    while (i < len) {
+        char key[32];
+        size_t klen = 0;
+        while (i < len && payload[i] != '=' && payload[i] != ';') {
+            if (klen + 1 < sizeof(key)) key[klen++] = payload[i];
+            i++;
+        }
+        key[klen] = '\0';
+
+        char *target = NULL;
+        size_t cap = 0;
+        int *flag = NULL;
+        if (strcmp(key, "indicator") == 0) {
+            target = indicator; cap = sizeof(indicator); flag = &has_indicator;
+        } else if (strcmp(key, "status") == 0) {
+            target = status_text; cap = sizeof(status_text); flag = &has_status;
+        } else if (strcmp(key, "status-color") == 0) {
+            target = status_color; cap = sizeof(status_color); flag = &has_status_color;
+        }
+
+        if (i < len && payload[i] == '=') {
+            i++; /* '=' */
+            size_t vlen = 0;
+            while (i < len && payload[i] != ';') {
+                char c = payload[i];
+                if (c == '\\' && i + 1 < len) {
+                    i++;
+                    c = payload[i];
+                }
+                if (target && vlen + 1 < cap) target[vlen++] = c;
+                i++;
+            }
+            if (target) {
+                target[vlen] = '\0';
+                *flag = 1;
+            }
+        }
+        if (i < len && payload[i] == ';') i++;
+    }
+
+    s->tab_status_callback(
+        s->tab_status_userdata,
+        has_indicator ? indicator : NULL,
+        has_status ? status_text : NULL,
+        has_status_color ? status_color : NULL
+    );
+}
+
+/* Pure observer — every byte still flows to libghostty unchanged. The
+ * scanner only fires the tab-status callback on a successfully parsed
+ * `OSC 21337 ; ... BEL/ST` sequence; non-21337 OSCs and any malformed
+ * fragments are silently consumed without affecting the VT path. */
+static void scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len) {
+    if (!s->tab_status_callback) return;
+    LabanTabStatusScanner *sc = &s->tab_status_scanner;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t b = bytes[i];
+        switch (sc->state) {
+        case TS_NORMAL:
+            if (b == 0x1B) sc->state = TS_AFTER_ESC;
+            break;
+        case TS_AFTER_ESC:
+            if (b == ']') {
+                sc->state = TS_OSC_NUM;
+                sc->num_len = 0;
+            } else if (b == 0x1B) {
+                /* stay; double-ESC */
+            } else {
+                sc->state = TS_NORMAL;
+            }
+            break;
+        case TS_OSC_NUM:
+            if (b == ';') {
+                sc->num[sc->num_len] = '\0';
+                if (strcmp(sc->num, "21337") == 0) {
+                    sc->state = TS_BODY_21337;
+                    sc->payload_len = 0;
+                } else {
+                    sc->state = TS_BODY_OTHER;
+                }
+            } else if (b == 0x07) {
+                sc->state = TS_NORMAL;
+            } else if (b == 0x1B) {
+                sc->state = TS_AFTER_ESC;
+            } else if (sc->num_len + 1 < TAB_STATUS_NUM_MAX) {
+                sc->num[sc->num_len++] = (char)b;
+            } else {
+                sc->state = TS_BODY_OTHER;
+            }
+            break;
+        case TS_BODY_21337:
+            if (b == 0x07) {
+                parse_tab_status_payload(s, sc->payload, sc->payload_len);
+                sc->state = TS_NORMAL;
+            } else if (b == 0x1B) {
+                sc->state = TS_BODY_21337_AFTER_ESC;
+            } else if (sc->payload_len + 1 < TAB_STATUS_PAYLOAD_MAX) {
+                sc->payload[sc->payload_len++] = (char)b;
+            }
+            break;
+        case TS_BODY_21337_AFTER_ESC:
+            if (b == '\\') {
+                parse_tab_status_payload(s, sc->payload, sc->payload_len);
+            }
+            sc->state = TS_NORMAL;
+            break;
+        case TS_BODY_OTHER:
+            if (b == 0x07) sc->state = TS_NORMAL;
+            else if (b == 0x1B) sc->state = TS_BODY_OTHER_AFTER_ESC;
+            break;
+        case TS_BODY_OTHER_AFTER_ESC:
+            sc->state = TS_NORMAL;
+            break;
+        }
+    }
+}
+
 /* Mirror bytes into the VT parser AND into the active legacy capture file (if any).
  * Capture writes are best-effort: a failed write does not abort the parse,
  * since the user is observing the terminal regardless of capture success. */
@@ -95,6 +255,7 @@ static void vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) 
             break; /* drop on EAGAIN/permanent error rather than block */
         }
     }
+    scan_tab_status(s, bytes, len);
     ghostty_terminal_vt_write(s->terminal, bytes, len);
 }
 
@@ -1364,6 +1525,22 @@ int laban_session_set_capture_callback(
     if (!s) return -1;
     s->capture_callback = callback;
     s->capture_userdata = userdata;
+    return 0;
+}
+
+int laban_session_set_tab_status_callback(
+    LabanSession *s,
+    LabanTabStatusCallback callback,
+    void *userdata
+) {
+    if (!s) return -1;
+    s->tab_status_callback = callback;
+    s->tab_status_userdata = userdata;
+    /* Reset scanner state so a stale partial sequence (from before the
+     * callback was attached) doesn't fire on the new observer. */
+    s->tab_status_scanner.state = TS_NORMAL;
+    s->tab_status_scanner.payload_len = 0;
+    s->tab_status_scanner.num_len = 0;
     return 0;
 }
 

@@ -14,6 +14,7 @@ public final class AppModel {
   private let sessionFactory: (LabanTerminalSize) throws -> Session
   private let processMetadataSyncInterval: TimeInterval = 0.25
   private var themeChangeObserver: NSObjectProtocol?
+  private let gitInfo = GitInfoTracker()
   public weak var captureSink: CaptureSink? {
     didSet {
       for session in sessions.values {
@@ -61,6 +62,7 @@ public final class AppModel {
       session.captureSink = captureSink
     }
     tabs.append(tab)
+    attachTabStatus(session: session, tabId: tab.id)
     themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
@@ -105,6 +107,7 @@ public final class AppModel {
     )
     sessions[session.id] = session
     tabs.append(tab)
+    attachTabStatus(session: session, tabId: tab.id)
     recordSessionCreated(sessionId: session.id, tabId: tab.id)
     recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
     selectTab(tab.id)
@@ -313,6 +316,12 @@ public final class AppModel {
     var workspace = tabs[idx].titleMetadata.workspace
     if let cwd = metadata.cwd {
       workspace.cwd = cwd
+      // Kick off git branch resolution off-main; the completion writes
+      // the branch back into the tab if the cwd hasn't changed in the
+      // meantime. Cheap when cached + HEAD mtime stable.
+      gitInfo.refresh(cwd: cwd) { [weak self] resolvedCwd, branch in
+        self?.applyResolvedBranch(branch, forTab: tabId, cwd: resolvedCwd)
+      }
     }
 
     var process = tabs[idx].titleMetadata.process
@@ -445,6 +454,47 @@ public final class AppModel {
         captureSink?.record(event)
       }
     }
+  }
+
+  /// Subscribe to OSC 21337 tab-status pushes from the session and fold
+  /// them into the matching tab's metadata. Per the iTerm2 spec, each
+  /// field is preserved when the update doesn't mention it (nil), cleared
+  /// when an empty value comes through, or set otherwise.
+  private func attachTabStatus(session: Session, tabId: Tab.ID) {
+    session.onTabStatus = { [weak self] update in
+      self?.applyTabStatusUpdate(update, forTab: tabId)
+    }
+  }
+
+  private func applyTabStatusUpdate(_ update: Session.TabStatusUpdate, forTab tabId: Tab.ID) {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    var status = tabs[idx].titleMetadata.agentStatus
+    let before = status
+
+    if let v = update.indicator {
+      status.indicatorColor = v.isEmpty ? nil : v
+    }
+    if let v = update.status {
+      status.statusText = v.isEmpty ? nil : v
+    }
+    if let v = update.statusColor {
+      status.statusTextColor = v.isEmpty ? nil : v
+    }
+
+    guard status != before else { return }
+    tabs[idx].titleMetadata.agentStatus = status
+  }
+
+  /// Completion target for `gitInfo.refresh`. Writes the resolved branch into
+  /// the tab's workspace metadata only when the tab's cwd still matches the
+  /// cwd that was queried — avoids a stale background result clobbering a
+  /// fresh `cd` that happened mid-flight.
+  private func applyResolvedBranch(_ branch: String?, forTab tabId: Tab.ID, cwd: String) {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    guard tabs[idx].titleMetadata.workspace.cwd == cwd else { return }
+    guard tabs[idx].titleMetadata.workspace.branch != branch else { return }
+    tabs[idx].titleMetadata.workspace.branch = branch
+    resolveTitle(at: idx)
   }
 
   private func resolveTitle(at idx: Int) {

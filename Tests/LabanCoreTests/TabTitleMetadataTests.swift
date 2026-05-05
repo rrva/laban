@@ -72,7 +72,9 @@ final class TabTitleMetadataTests: XCTestCase {
       ),
       fallbackPosition: 3
     )
-    XCTAssertEqual(cwd.displayTitle, "~/wrk/laban")
+    // Basename — sidebar columns are narrow; the parent path adds noise
+    // without disambiguating in the common case.
+    XCTAssertEqual(cwd.displayTitle, "laban")
     XCTAssertEqual(cwd.titleSource, .cwd)
 
     let process = TabTitleResolver.resolve(
@@ -161,7 +163,7 @@ final class TabTitleMetadataTests: XCTestCase {
     XCTAssertEqual(resolved.titleSource, .process)
   }
 
-  func testHomeRelativeCwdUsesTildePath() {
+  func testHomeRelativeCwdUsesBasename() {
     let resolved = TabTitleResolver.resolve(
       TabTitleMetadata(
         displayTitle: "Tab 1",
@@ -172,9 +174,11 @@ final class TabTitleMetadataTests: XCTestCase {
       fallbackPosition: 1
     )
 
-    XCTAssertEqual(resolved.displayTitle, "~/src/laban")
+    // Title and subtitle both collapse to the cwd basename — sidebar
+    // columns are narrow and the parent dirs rarely disambiguate.
+    XCTAssertEqual(resolved.displayTitle, "laban")
     XCTAssertEqual(resolved.titleSource, .cwd)
-    XCTAssertEqual(resolved.subtitle, "~/src/laban")
+    XCTAssertEqual(resolved.subtitle, "laban")
   }
 
   func testHostileTerminalTitleIsSanitizedAndBounded() throws {

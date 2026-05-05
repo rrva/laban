@@ -257,13 +257,16 @@ final class SidebarProducerTests: XCTestCase {
     }
 
     XCTAssertTrue(texts.contains("auth retry cleanup"))
-    // Quad-height tab rows split the old joined subtitle into discrete info
-    // lines: workspace+branch on one line, foreground process on another.
+    // Each meaningful field gets its own line: folder (repo@worktree),
+    // branch with dirty marker, foreground process.
     XCTAssertTrue(
-      texts.contains { $0.contains("laban@cobra") && $0.contains("main*") },
-      "expected workspace+branch line; got \(texts)")
+      texts.contains("laban@cobra"),
+      "expected workspace folder line; got \(texts)")
     XCTAssertTrue(
-      texts.contains { $0.contains("claude") },
+      texts.contains("main*"),
+      "expected branch line with dirty marker; got \(texts)")
+    XCTAssertTrue(
+      texts.contains("claude"),
       "expected foreground process line; got \(texts)")
   }
 
