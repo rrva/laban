@@ -62,6 +62,7 @@ public final class MetalGlyphAtlas {
   private var entries: [Key: Entry] = [:]
   private var glyphForScalar: [ObjectIdentifier: [UInt32: CGGlyph]] = [:]
   private var advanceForGlyph: [ObjectIdentifier: [CGGlyph: CGFloat]] = [:]
+  private(set) var didOverflow = false
 
   // Shelf packer state.
   private var shelfX: Int = 0
@@ -136,6 +137,10 @@ public final class MetalGlyphAtlas {
     return made
   }
 
+  func clearOverflowFlag() {
+    didOverflow = false
+  }
+
   // MARK: - Internal
 
   private func rasterizeAndPack(
@@ -156,6 +161,11 @@ public final class MetalGlyphAtlas {
     let pixelW = max(1, Int((logicalTileWidth * scale).rounded(.up)))
     let pixelH = max(1, Int((cellHeight * scale).rounded(.up)))
 
+    guard pixelW <= textureSize, pixelH <= textureSize else {
+      didOverflow = true
+      return nil
+    }
+
     // Allocate from the shelf packer.
     if shelfX + pixelW > textureSize {
       // New shelf row.
@@ -164,7 +174,7 @@ public final class MetalGlyphAtlas {
       shelfHeight = 0
     }
     if shelfY + pixelH > textureSize {
-      // Out of room. Could grow the texture; for now drop the glyph.
+      didOverflow = true
       return nil
     }
     let originX = shelfX

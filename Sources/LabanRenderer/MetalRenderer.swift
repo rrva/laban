@@ -36,6 +36,7 @@ private struct Uniforms {
 /// Two pipelines (solid quad + textured glyph quad). Two draw calls per
 /// "scissor span" — clip changes flush, everything else batches.
 public final class MetalRenderer: RendererBackend {
+  private static let maxGlyphAtlasTextureSize = 16_384
 
   // MARK: - Public surface
 
@@ -249,15 +250,21 @@ public final class MetalRenderer: RendererBackend {
   private let sidebarCellAdvance: CGFloat
   private let sidebarCellHeight: CGFloat
 
+  var terminalGlyphAtlasTextureSizeForTesting: Int { glyphAtlas.textureSize }
+
   /// Initializes the renderer. Returns nil when Metal is unavailable (no
   /// device, missing default library, or pipeline compile failure).
   public init?(
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas? = nil,
-    scale: CGFloat = 1
+    scale: CGFloat = 1,
+    glyphAtlasTextureSize: Int = 2048
   ) {
     guard let device = MTLCreateSystemDefaultDevice() else { return nil }
     guard let queue = device.makeCommandQueue() else { return nil }
+    let initialAtlasTextureSize = min(
+      max(1, glyphAtlasTextureSize),
+      Self.maxGlyphAtlasTextureSize)
     // SwiftPM's .process(metal) just copies the source as a bundle resource;
     // it does not pre-compile to .metallib. We compile from source on startup
     // (~1 ms one-time cost) so the renderer ships with no extra build step.
@@ -336,7 +343,8 @@ public final class MetalRenderer: RendererBackend {
         cellWidth: cell.width,
         cellHeight: cell.height,
         descent: fontAtlas.descent,
-        scale: scale)
+        scale: scale,
+        textureSize: initialAtlasTextureSize)
     else { return nil }
 
     let sidebarAtlas = sidebarFontAtlas ?? fontAtlas
@@ -351,7 +359,8 @@ public final class MetalRenderer: RendererBackend {
           cellWidth: sidebarCell.width,
           cellHeight: sidebarCell.height,
           descent: sidebarAtlas.descent,
-          scale: scale)
+          scale: scale,
+          textureSize: initialAtlasTextureSize)
       else { return nil }
       sidebarGlyphAtlasInstance = alt
     }
@@ -431,7 +440,8 @@ public final class MetalRenderer: RendererBackend {
         cellWidth: glyphCellAdvance,
         cellHeight: glyphCellHeight,
         descent: fontAtlas.descent,
-        scale: newScale)
+        scale: newScale,
+        textureSize: glyphAtlas.textureSize)
       {
         glyphAtlas = fresh
       }
@@ -442,7 +452,8 @@ public final class MetalRenderer: RendererBackend {
         cellWidth: sidebarCellAdvance,
         cellHeight: sidebarCellHeight,
         descent: sidebarFontAtlas.descent,
-        scale: newScale)
+        scale: newScale,
+        textureSize: sidebarGlyphAtlas.textureSize)
       {
         sidebarGlyphAtlas = fresh
       }
@@ -659,6 +670,37 @@ public final class MetalRenderer: RendererBackend {
     targetNeedsFullRedraw = true
   }
 
+  private func growGlyphAtlas(forSidebar: Bool) -> Bool {
+    let shared = sidebarGlyphAtlas === glyphAtlas
+    let current = forSidebar && !shared ? sidebarGlyphAtlas : glyphAtlas
+    let nextSize = min(current.textureSize * 2, Self.maxGlyphAtlasTextureSize)
+    guard nextSize > current.textureSize else { return false }
+
+    let activeFontAtlas = forSidebar && !shared ? sidebarFontAtlas : fontAtlas
+    let cellAdvance = forSidebar && !shared ? sidebarCellAdvance : glyphCellAdvance
+    let cellHeight = forSidebar && !shared ? sidebarCellHeight : glyphCellHeight
+    guard
+      let fresh = MetalGlyphAtlas(
+        device: device,
+        cellWidth: cellAdvance,
+        cellHeight: cellHeight,
+        descent: activeFontAtlas.descent,
+        scale: layer.contentsScale,
+        textureSize: nextSize)
+    else { return false }
+
+    if forSidebar && !shared {
+      sidebarGlyphAtlas = fresh
+    } else {
+      glyphAtlas = fresh
+      if shared {
+        sidebarGlyphAtlas = fresh
+      }
+    }
+    targetNeedsFullRedraw = true
+    return true
+  }
+
   /// Pass 1: render terminal cells (everything but the cursor) into the
   /// persistent target. Honours `damage`:
   /// - `.full`: clear + draw all instances.
@@ -813,6 +855,36 @@ public final class MetalRenderer: RendererBackend {
   /// (which lives on the drawable, above the persistent target) doesn't
   /// pollute the persistent terminal target with a blink-rate redraw.
   private func buildInstanceLists(
+    commands: [FrameCommand],
+    surfacePxH: Int
+  ) {
+    var attempts = 0
+    while true {
+      glyphAtlas.clearOverflowFlag()
+      if sidebarGlyphAtlas !== glyphAtlas {
+        sidebarGlyphAtlas.clearOverflowFlag()
+      }
+      buildInstanceListsOnce(commands: commands, surfacePxH: surfacePxH)
+
+      let terminalOverflow = glyphAtlas.didOverflow
+      let sidebarOverflow = sidebarGlyphAtlas.didOverflow
+      guard terminalOverflow || sidebarOverflow else { return }
+
+      attempts += 1
+      guard attempts < 4 else { return }
+
+      var grew = false
+      if terminalOverflow {
+        grew = growGlyphAtlas(forSidebar: false) || grew
+      }
+      if sidebarOverflow && !(terminalOverflow && sidebarGlyphAtlas === glyphAtlas) {
+        grew = growGlyphAtlas(forSidebar: true) || grew
+      }
+      guard grew else { return }
+    }
+  }
+
+  private func buildInstanceListsOnce(
     commands: [FrameCommand],
     surfacePxH: Int
   ) {

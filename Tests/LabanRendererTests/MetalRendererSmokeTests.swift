@@ -231,4 +231,54 @@ final class MetalRendererSmokeTests: XCTestCase {
       withText,
       "Arabic presentation forms and Hangul syllables must produce visible Metal glyph pixels")
   }
+
+  func testMetalGlyphAtlasGrowsAfterOverflow() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard
+      let renderer = MetalRenderer(
+        fontAtlas: fontAtlas,
+        scale: 1,
+        glyphAtlasTextureSize: 64)
+    else {
+      XCTFail("MetalRenderer.init returned nil")
+      return
+    }
+    renderer.captureMode = true
+    let cellW = Int(fontAtlas.cellSize.width)
+    let cellH = Int(fontAtlas.cellSize.height)
+    renderer.resize(pixelWidth: cellW * 100, pixelHeight: cellH * 2, scale: 1)
+
+    let bg: UInt32 = 0xFFFF_FFFF
+    let fg: UInt32 = 0x0000_00FF
+    let background: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cellW * 100), height: CGFloat(cellH * 2)),
+        color: bg,
+        source: .terminal)
+    ]
+    renderer.render(background, damage: .full)
+    let blank = renderer.pngData
+
+    let characters = (0x21...0x7E).compactMap { UnicodeScalar($0).map(Character.init) }
+    renderer.render(
+      background + [
+        .glyphRun(
+          origin: CGPoint(x: 0, y: 0),
+          text: String(characters),
+          foreground: fg,
+          background: bg,
+          attributes: [],
+          source: .terminal)
+      ],
+      damage: .full)
+    let withText = renderer.pngData
+
+    XCTAssertGreaterThan(renderer.terminalGlyphAtlasTextureSizeForTesting, 64)
+    XCTAssertNotNil(blank)
+    XCTAssertNotNil(withText)
+    XCTAssertNotEqual(blank, withText)
+  }
 }
