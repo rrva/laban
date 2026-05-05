@@ -111,10 +111,25 @@ final class SidebarProducerTests: XCTestCase {
     let tabs = makeTabs(count: 1)
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let h: CGFloat = 600
-    let tabY = h - 2 * p.rowHeight + p.rowHeight / 2
-    // Close button is at x >= sidebarWidth - 28
-    let result = p.hitTest(at: CGPoint(x: 190, y: tabY), tabs: tabs, height: h)
+    // Close glyph sits in the top band of the (now quad-height) tab row,
+    // aligned with the title line. Click within that band on the right edge.
+    let tabBottomY = h - 2 * p.rowHeight
+    let titleBandY = tabBottomY + p.rowHeight - 8  // a few pt below row top
+    let result = p.hitTest(at: CGPoint(x: 190, y: titleBandY), tabs: tabs, height: h)
     XCTAssertEqual(result, .closeTab(tabs[0].id))
+  }
+
+  func testHitTestRightEdgeBelowCloseSelectsTab() {
+    // With quad-height tabs, the close X only covers the title band. A click
+    // on the right edge in the lower three lines should select the tab, not
+    // close it.
+    let tabs = makeTabs(count: 1)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let tabBottomY = h - 2 * p.rowHeight
+    let lowerBandY = tabBottomY + 8  // bottom of the row, well below the X
+    let result = p.hitTest(at: CGPoint(x: 190, y: lowerBandY), tabs: tabs, height: h)
+    XCTAssertEqual(result, .selectTab(tabs[0].id))
   }
 
   func testHitTestOutsideSidebar() {
@@ -242,7 +257,14 @@ final class SidebarProducerTests: XCTestCase {
     }
 
     XCTAssertTrue(texts.contains("auth retry cleanup"))
-    XCTAssertTrue(texts.contains { $0.contains("laban@cobra | main* | claude") })
+    // Quad-height tab rows split the old joined subtitle into discrete info
+    // lines: workspace+branch on one line, foreground process on another.
+    XCTAssertTrue(
+      texts.contains { $0.contains("laban@cobra") && $0.contains("main*") },
+      "expected workspace+branch line; got \(texts)")
+    XCTAssertTrue(
+      texts.contains { $0.contains("claude") },
+      "expected foreground process line; got \(texts)")
   }
 
   func testUnseenOutputRendersAttentionMarker() {

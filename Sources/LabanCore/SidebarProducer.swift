@@ -20,7 +20,9 @@ public struct SidebarProducer {
     self.sidebarWidth = sidebarWidth
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
-    self.rowHeight = ceil(cellHeight * 2) + 10
+    // Four lines per tab: title + workspace + command + status. Padding kept
+    // tight so 9 tabs still fit in a typical window without a scrollbar.
+    self.rowHeight = ceil(cellHeight * 4) + 10
   }
 
   public enum HitResult: Equatable {
@@ -88,27 +90,43 @@ public struct SidebarProducer {
       let labelX: CGFloat = isActive ? 12 : 10
       let exited = tab.status != .running
       let labelFg = exited ? Theme.CurrentTheme.dim0 : fg
-      let closeX = sidebarWidth - 22
-      let markerX = closeX - 16
+      // Close button lives in the top-right of the row, aligned with the
+      // title baseline. Hit area is restricted to the actual glyph extent
+      // so clicks elsewhere on the right edge still select the tab.
+      let closeGlyphX = sidebarWidth - 18
+      let badgeX = closeGlyphX - 16
       let indexText = "\(tab.position)"
       let titleX = labelX + CGFloat(indexText.count + 1) * cellWidth
-      let titleMaxScalars = max(1, Int(floor((markerX - titleX - 4) / cellWidth)))
-      let subtitleMaxScalars = max(1, Int(floor((closeX - titleX - 4) / cellWidth)))
+      let titleMaxScalars = max(1, Int(floor((badgeX - titleX - 4) / cellWidth)))
+      // Info lines start at labelX (no index prefix indent) so they get the
+      // full row width; subtract the right-edge padding for the close X.
+      let infoMaxScalars = max(1, Int(floor((closeGlyphX - labelX - 4) / cellWidth)))
       let resolved = TabTitleResolver.resolve(
         tab.titleMetadata,
         fallbackPosition: tab.position,
         maxTitleScalars: titleMaxScalars,
-        maxSubtitleScalars: subtitleMaxScalars
+        maxSubtitleScalars: infoMaxScalars
       )
-      let primaryY =
-        rowHeight >= cellHeight * 2 + 8
-        ? tabY + rowHeight - cellHeight - 5
-        : tabY + textBaseY
-      let secondaryY = tabY + 5
+      // Vertical layout: title + up to three info lines, centered inside
+      // the fixed quad-height row. Centering keeps geometry stable across
+      // status changes (a normally-running tab stays the same row height as
+      // an exited one) while removing the empty bottom strip on tabs that
+      // only render two lines.
+      let infoCount = min(3, resolved.infoLines.count)
+      let drawnLines = 1 + infoCount
+      let edgePad: CGFloat = 4
+      let stackHeight = CGFloat(drawnLines) * cellHeight
+      let availableHeight = rowHeight - 2 * edgePad
+      let yOffset = max(0, (availableHeight - stackHeight) / 2)
+      let lineY: (Int) -> CGFloat = { idx in
+        // idx 0 is the topmost (title); larger idx is lower on screen.
+        tabY + edgePad + yOffset + CGFloat(drawnLines - 1 - idx) * cellHeight
+      }
+      let titleY = lineY(0)
 
       cmds.append(
         .glyphRun(
-          origin: CGPoint(x: labelX, y: primaryY),
+          origin: CGPoint(x: labelX, y: titleY),
           text: indexText,
           foreground: labelFg,
           background: bg,
@@ -117,7 +135,7 @@ public struct SidebarProducer {
         ))
       cmds.append(
         .glyphRun(
-          origin: CGPoint(x: titleX, y: primaryY),
+          origin: CGPoint(x: titleX, y: titleY),
           text: resolved.displayTitle,
           foreground: labelFg,
           background: bg,
@@ -128,7 +146,7 @@ public struct SidebarProducer {
       if let badge = resolved.statusBadge {
         cmds.append(
           .glyphRun(
-            origin: CGPoint(x: markerX, y: primaryY),
+            origin: CGPoint(x: badgeX, y: titleY),
             text: badge,
             foreground: Theme.CurrentTheme.red,
             background: bg,
@@ -137,11 +155,13 @@ public struct SidebarProducer {
           ))
       }
 
-      if rowHeight >= cellHeight * 2 + 8, let subtitle = resolved.subtitle {
+      // Render up to three info lines under the title. Empty entries are
+      // already filtered upstream so what we get is what we draw.
+      for (offset, line) in resolved.infoLines.prefix(3).enumerated() {
         cmds.append(
           .glyphRun(
-            origin: CGPoint(x: titleX, y: secondaryY),
-            text: subtitle,
+            origin: CGPoint(x: labelX, y: lineY(offset + 1)),
+            text: line,
             foreground: Theme.CurrentTheme.dim0,
             background: bg,
             attributes: [],
@@ -151,7 +171,7 @@ public struct SidebarProducer {
 
       cmds.append(
         .glyphRun(
-          origin: CGPoint(x: sidebarWidth - 22, y: tabY + textBaseY),
+          origin: CGPoint(x: closeGlyphX, y: titleY),
           text: "×",
           foreground: Theme.CurrentTheme.dim0,
           background: bg,
@@ -175,7 +195,14 @@ public struct SidebarProducer {
     for (i, tab) in tabs.enumerated() {
       let tabY = height - CGFloat(i + 2) * rowHeight - topInset
       guard point.y >= tabY, point.y < tabY + rowHeight else { continue }
-      if point.x >= sidebarWidth - 28 { return .closeTab(tab.id) }
+      // Close-X box: upper half of the row on the right edge. Centering
+      // moves the title vertically depending on how many info lines are
+      // drawn, but the title (and the X glyph) always sits in the upper
+      // half — this matches without recomputing per-tab line layout.
+      let closeBoxBottom = tabY + rowHeight / 2
+      if point.x >= sidebarWidth - 28, point.y >= closeBoxBottom {
+        return .closeTab(tab.id)
+      }
       return .selectTab(tab.id)
     }
 

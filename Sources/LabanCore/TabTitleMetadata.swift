@@ -147,18 +147,25 @@ public struct TabTitleMetadata: Codable, Equatable {
 public struct ResolvedTabTitle: Equatable {
   public var displayTitle: String
   public var titleSource: TabTitleSource
+  /// Compact one-line summary used by single-row sidebar layouts.
   public var subtitle: String?
+  /// Per-line breakdown for tall sidebar rows. Each entry is one rendered
+  /// line below the title; consumer renders as many as fit. Order is
+  /// stable: [cwd-or-repo, foreground command, status].
+  public var infoLines: [String]
   public var statusBadge: String?
 
   public init(
     displayTitle: String,
     titleSource: TabTitleSource,
     subtitle: String? = nil,
+    infoLines: [String] = [],
     statusBadge: String? = nil
   ) {
     self.displayTitle = displayTitle
     self.titleSource = titleSource
     self.subtitle = subtitle
+    self.infoLines = infoLines
     self.statusBadge = statusBadge
   }
 }
@@ -180,12 +187,96 @@ public enum TabTitleResolver {
           truncateMiddle(subtitleText, maxScalars: limit)
         } ?? subtitleText
       }
+    let infoLines = breakdownLines(
+      for: metadata,
+      now: now,
+      maxScalars: maxSubtitleScalars,
+      skipMatching: title,
+      titleSource: choice.source
+    )
     return ResolvedTabTitle(
       displayTitle: title,
       titleSource: choice.source,
       subtitle: subtitle,
+      infoLines: infoLines,
       statusBadge: statusBadge(for: metadata)
     )
+  }
+
+  /// Per-line breakdown shown under the title in tall sidebar layouts.
+  /// Order, top-to-bottom: workspace path, full foreground command, status.
+  /// Each line independently truncated; entries that duplicate the title or
+  /// add no signal (idle shell, repeated cwd) are dropped so the rendered
+  /// tab stays information-dense rather than visually padded.
+  private static func breakdownLines(
+    for metadata: TabTitleMetadata,
+    now: Date,
+    maxScalars: Int?,
+    skipMatching title: String,
+    titleSource: TabTitleSource
+  ) -> [String] {
+    func truncateMid(_ s: String) -> String {
+      guard let max = maxScalars else { return s }
+      return truncateMiddle(s, maxScalars: max)
+    }
+    // Paths: keep the tail. The meaningful identifier is usually the last
+    // segment (worktree/repo/folder name) — middle-truncating loses it.
+    func truncatePath(_ s: String) -> String {
+      guard let max = maxScalars else { return s }
+      return truncateLeft(s, maxScalars: max)
+    }
+
+    var lines: [String] = []
+
+    // Line: workspace path (repo@worktree wins, then home-shortened cwd).
+    if let repo = useful(metadata.workspace.repoName) {
+      var line = repo
+      if let worktree = useful(metadata.workspace.worktreeName), worktree != repo {
+        line = "\(repo)@\(worktree)"
+      }
+      if let branch = useful(metadata.workspace.branch) {
+        line += "  " + branch + (metadata.workspace.isDirty ? "*" : "")
+      }
+      if line != title { lines.append(truncateMid(line)) }
+    } else if let cwd = useful(metadata.workspace.cwd) {
+      let display = cwdDisplayName(cwd)
+      if display != title { lines.append(truncatePath(display)) }
+    }
+
+    // Line: full foreground command — only when it's something more useful
+    // than "the user's shell idling at a prompt" or "the binary that already
+    // named the tab via OSC". A bare shell adds no signal; an OSC-set title
+    // means the running process self-identified, so its argv is redundant.
+    let processSelfNamed = titleSource == .terminal || titleSource == .agent
+    if !processSelfNamed {
+      if let cmd = useful(metadata.process.foregroundCommand),
+        let runnable = commandName(cmd),
+        !isShellProcess(runnable)
+      {
+        lines.append(truncateMid(cmd))
+      } else if let proc = useful(metadata.process.foregroundProcess),
+        !isShellProcess(proc)
+      {
+        lines.append(truncateMid(proc))
+      }
+    }
+
+    // Line: status — only when the tab is in a state that warrants
+    // attention (process exited, prompt waiting on input). Normally-running
+    // tabs render no status line so the abnormal ones stand out by simply
+    // having more text.
+    _ = now
+    switch metadata.activityState {
+    case .exited:
+      let status = metadata.exitStatus.map { "exited \($0)" } ?? "exited"
+      lines.append(truncateMid(status))
+    case .waiting:
+      lines.append(truncateMid("waiting"))
+    default:
+      break
+    }
+
+    return lines
   }
 
   public static func resolvedMetadata(
@@ -205,6 +296,21 @@ public enum TabTitleResolver {
     guard TerminalTitle.scalarCount(value) > maxScalars else { return value }
     if maxScalars <= 3 { return TerminalTitle.prefixScalars(value, maxScalars: maxScalars) }
     return TerminalTitle.prefixScalars(value, maxScalars: maxScalars - 3) + "..."
+  }
+
+  /// Drop scalars from the front and prepend "...". Right for paths and
+  /// other strings whose tail carries the identifying information.
+  public static func truncateLeft(_ value: String, maxScalars: Int) -> String {
+    guard maxScalars > 0 else { return "" }
+    guard TerminalTitle.scalarCount(value) > maxScalars else { return value }
+    if maxScalars <= 3 { return TerminalTitle.prefixScalars(value, maxScalars: maxScalars) }
+    let keep = maxScalars - 3
+    var suffix = ""
+    suffix.reserveCapacity(keep)
+    for scalar in value.unicodeScalars.suffix(keep) {
+      suffix.unicodeScalars.append(scalar)
+    }
+    return "..." + suffix
   }
 
   public static func truncateMiddle(_ value: String, maxScalars: Int) -> String {
