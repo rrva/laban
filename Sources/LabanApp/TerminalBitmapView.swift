@@ -61,7 +61,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var scrollVelocityRowsPerSec: Double = 0
   private var appliedScrollRows: Int = 0
   private var lastScrollTickAt: ContinuousClock.Instant?
-  private static let scrollOmega: Double = 25.0  // rad/s
+  // Snappier settle: ~80 ms instead of ~160 ms. In a terminal you scroll
+  // back to *read* the content as it passes; less time at peak velocity =
+  // less unreadable middle of the animation.
+  private static let scrollOmega: Double = 50.0  // rad/s
+  // Wheel deltas at or below this magnitude snap directly when nothing's
+  // already animating. Single click-and-read scrollback navigation feels
+  // crisp; only fast continuous spins go through the controller.
+  private static let scrollSmoothingThreshold: Int = 3
   /// Set true by the per-frame PD controller while it's still moving
   /// `displayedScrollRows` toward `targetScrollRows`. The render path
   /// reads it to (1) compute the sub-cell `contentYOffset` and (2) force
@@ -849,9 +856,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     scrollResidualPx = decision.newResidualPx
     if decision.rowsDelta != 0 {
       targetScrollRows += Double(decision.rowsDelta)
-      if event.hasPreciseScrollingDeltas {
-        // Trackpad: macOS already smoothed this, so don't double-smooth.
-        // Snap displayed/applied to the new target and skip the PD pass.
+      // Snap directly when:
+      // - macOS reports precise (trackpad) deltas — already smoothed by the OS
+      // - the input is small enough to be skim-reading clicks AND nothing is
+      //   already animating (so continuous fast spins still get the glide)
+      let isPrecise = event.hasPreciseScrollingDeltas
+      let isSmallClick =
+        abs(decision.rowsDelta) <= Self.scrollSmoothingThreshold && !scrollAnimating
+      if isPrecise || isSmallClick {
         let delta = Int(targetScrollRows.rounded(.toNearestOrAwayFromZero)) - appliedScrollRows
         if delta != 0 {
           session.scrollViewport(deltaRows: delta)
