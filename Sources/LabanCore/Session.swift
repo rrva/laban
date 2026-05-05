@@ -19,9 +19,14 @@ public final class Session {
   public let id: ID
   private var handle: OpaquePointer?
   public private(set) var isClosed = false
-  fileprivate var captureFrame = 0
+  private let callbackState: SessionCallbackState
+  private var captureCallbackUserdata: UnsafeMutableRawPointer?
+  private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
   public weak var captureSink: CaptureSink? {
-    didSet { updateCaptureCallback() }
+    didSet {
+      callbackState.setCaptureSink(captureSink)
+      updateCaptureCallback()
+    }
   }
 
   /// One snapshot of the iTerm2 OSC 21337 tab-status fields. Per the spec,
@@ -34,14 +39,18 @@ public final class Session {
   }
 
   /// Set once per Session at the call site (AppModel) to receive parsed
-  /// OSC 21337 updates. Fires on the same thread that drove `poll()` —
-  /// main, in our app — so handlers may touch model state directly.
+  /// OSC 21337 updates. Fires on the same thread that drove `poll()`.
   public var onTabStatus: ((TabStatusUpdate) -> Void)? {
-    didSet { updateTabStatusCallback() }
+    didSet {
+      callbackState.setTabStatusHandler(onTabStatus)
+      updateTabStatusCallback()
+    }
   }
 
   public init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
-    self.id = UUID().uuidString
+    let id = UUID().uuidString
+    self.id = id
+    self.callbackState = SessionCallbackState(sessionId: id)
     var h: OpaquePointer?
     guard laban_session_create(&config, size, &h) == 0, let h else {
       throw SessionError.createFailed
@@ -108,8 +117,8 @@ public final class Session {
     guard !isClosed else { return }
     isClosed = true
     if let h = handle {
-      laban_session_set_capture_callback(h, nil, nil)
-      laban_session_set_tab_status_callback(h, nil, nil)
+      clearCaptureCallback(handle: h)
+      clearTabStatusCallback(handle: h)
       laban_session_destroy(h)
       handle = nil
     }
@@ -163,7 +172,7 @@ public final class Session {
   }
 
   public func setCaptureFrame(_ frame: Int) {
-    captureFrame = frame
+    callbackState.setCaptureFrame(frame)
   }
 
   public func snapshot() -> UnsafeMutablePointer<LabanSnapshot>? {
@@ -405,32 +414,105 @@ public final class Session {
 
   private func updateCaptureCallback() {
     guard !isClosed, let h = handle else { return }
-    if captureSink == nil {
-      laban_session_set_capture_callback(h, nil, nil)
-    } else {
+    if callbackState.hasCaptureSink {
+      if captureCallbackUserdata == nil {
+        captureCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
       laban_session_set_capture_callback(
         h,
         sessionCaptureCallback,
-        Unmanaged.passUnretained(self).toOpaque()
+        captureCallbackUserdata
       )
+    } else {
+      clearCaptureCallback(handle: h)
     }
   }
 
   private func updateTabStatusCallback() {
     guard !isClosed, let h = handle else { return }
-    if onTabStatus == nil {
-      laban_session_set_tab_status_callback(h, nil, nil)
-    } else {
+    if callbackState.hasTabStatusHandler {
+      if tabStatusCallbackUserdata == nil {
+        tabStatusCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
       laban_session_set_tab_status_callback(
         h,
         sessionTabStatusCallback,
-        Unmanaged.passUnretained(self).toOpaque()
+        tabStatusCallbackUserdata
       )
+    } else {
+      clearTabStatusCallback(handle: h)
     }
   }
 
-  fileprivate func deliverTabStatus(_ update: TabStatusUpdate) {
-    onTabStatus?(update)
+  private func clearCaptureCallback(handle h: OpaquePointer) {
+    laban_session_set_capture_callback(h, nil, nil)
+    if let userdata = captureCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      captureCallbackUserdata = nil
+    }
+  }
+
+  private func clearTabStatusCallback(handle h: OpaquePointer) {
+    laban_session_set_tab_status_callback(h, nil, nil)
+    if let userdata = tabStatusCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      tabStatusCallbackUserdata = nil
+    }
+  }
+}
+
+private final class SessionCallbackState {
+  let sessionId: Session.ID
+  private let lock = NSLock()
+  private weak var captureSink: CaptureSink?
+  private var captureFrame = 0
+  private var tabStatusHandler: ((Session.TabStatusUpdate) -> Void)?
+
+  init(sessionId: Session.ID) {
+    self.sessionId = sessionId
+  }
+
+  var hasCaptureSink: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return captureSink != nil
+  }
+
+  var hasTabStatusHandler: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return tabStatusHandler != nil
+  }
+
+  func setCaptureSink(_ sink: CaptureSink?) {
+    lock.lock()
+    captureSink = sink
+    lock.unlock()
+  }
+
+  func setCaptureFrame(_ frame: Int) {
+    lock.lock()
+    captureFrame = frame
+    lock.unlock()
+  }
+
+  func setTabStatusHandler(_ handler: ((Session.TabStatusUpdate) -> Void)?) {
+    lock.lock()
+    tabStatusHandler = handler
+    lock.unlock()
+  }
+
+  func captureTarget() -> (sink: CaptureSink, frame: Int)? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let captureSink else { return nil }
+    return (captureSink, captureFrame)
+  }
+
+  func tabStatusTarget() -> ((Session.TabStatusUpdate) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return tabStatusHandler
   }
 }
 
@@ -442,13 +524,13 @@ private let sessionTabStatusCallback:
     UnsafePointer<CChar>?
   ) -> Void = { userdata, indicator, status, statusColor in
     guard let userdata else { return }
-    let session = Unmanaged<Session>.fromOpaque(userdata).takeUnretainedValue()
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
     let update = Session.TabStatusUpdate(
       indicator: indicator.map { String(cString: $0) },
       status: status.map { String(cString: $0) },
       statusColor: statusColor.map { String(cString: $0) }
     )
-    session.deliverTabStatus(update)
+    state.tabStatusTarget()?(update)
   }
 
 private let sessionCaptureCallback:
@@ -460,8 +542,8 @@ private let sessionCaptureCallback:
     Int
   ) -> Void = { userdata, _, direction, bytes, length in
     guard let userdata, let bytes, length > 0 else { return }
-    let session = Unmanaged<Session>.fromOpaque(userdata).takeUnretainedValue()
-    guard let sink = session.captureSink else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    guard let target = state.captureTarget() else { return }
     let mapped: CaptureByteDirection
     switch direction {
     case LABAN_CAPTURE_BYTES_PTY_INPUT:
@@ -472,10 +554,10 @@ private let sessionCaptureCallback:
       mapped = .ptyOutput
     }
     let raw = UnsafeRawBufferPointer(start: bytes, count: length)
-    _ = sink.recordBytes(
+    _ = target.sink.recordBytes(
       direction: mapped,
-      sessionId: session.id,
-      frame: session.captureFrame,
+      sessionId: state.sessionId,
+      frame: target.frame,
       bytes: raw,
       preview: nil
     )

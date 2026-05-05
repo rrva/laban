@@ -24,6 +24,40 @@ final class CaptureSessionBridgeTests: XCTestCase {
     XCTAssertEqual(sink.byteEvents[0].bytes, Array("abc".utf8))
   }
 
+  func testCaptureCallbackStopsAfterSinkIsCleared() throws {
+    let sink = TestCaptureSink()
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.captureSink = sink
+    XCTAssertEqual(session.feedOutput(Array("a".utf8)), 0)
+    XCTAssertEqual(sink.byteEvents.count, 1)
+
+    session.captureSink = nil
+    XCTAssertEqual(session.feedOutput(Array("b".utf8)), 0)
+    XCTAssertEqual(sink.byteEvents.count, 1)
+  }
+
+  func testTabStatusCallbackStopsAfterHandlerIsCleared() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    var updates: [Session.TabStatusUpdate] = []
+    session.onTabStatus = { updates.append($0) }
+    XCTAssertEqual(session.feedOutput(Array("\u{1B}]21337;status=ok\u{07}".utf8)), 0)
+    XCTAssertEqual(updates.map(\.status), ["ok"])
+
+    session.onTabStatus = nil
+    XCTAssertEqual(session.feedOutput(Array("\u{1B}]21337;status=stale\u{07}".utf8)), 0)
+    XCTAssertEqual(updates.map(\.status), ["ok"])
+  }
+
   func testRealPtyInputBytesReachCaptureSinkAfterWrite() throws {
     let sink = TestCaptureSink()
     var size = LabanTerminalSize()
