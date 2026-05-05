@@ -30,14 +30,28 @@ swift build --product LabanApp
 bundle_dir=".build/laban/Laban.app/Contents"
 mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 
-exe=$(swift build --product LabanApp --show-bin-path)/LabanApp
-cp -f "$exe" "${bundle_dir}/MacOS/LabanApp"
+bin=$(swift build --product LabanApp --show-bin-path)
+cp -f "$bin/LabanApp" "${bundle_dir}/MacOS/LabanApp"
 
 # Copy app icon into bundle
 icon="Sources/LabanApp/Resources/AppIcon.icns"
 if [ -f "$icon" ]; then
   cp -f "$icon" "${bundle_dir}/Resources/AppIcon.icns"
 fi
+
+# Copy SwiftPM-emitted resource bundles next to the binary into the
+# .app's Resources/. Without this, `Bundle.module` (used by FontAtlas
+# for JetBrainsMono and by MetalRenderer for Shaders.metal) calls
+# `_assertionFailure` at first reference because Bundle.main can't find
+# the .bundle resource directory at the .app's resource path. On the dev
+# machine it happens to work because Bundle's fallback search rooted at
+# the build directory still hits the bundles; copy them properly so the
+# .app stands on its own when distributed.
+for b in "$bin"/*.bundle; do
+  [ -d "$b" ] || continue
+  rm -rf "${bundle_dir}/Resources/$(basename "$b")"
+  cp -R "$b" "${bundle_dir}/Resources/"
+done
 
 cat > "${bundle_dir}/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
