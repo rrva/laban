@@ -48,6 +48,19 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(keyEvent!.text, "$")
   }
 
+  func testPasteboardReadPreflightsDataSizeBeforeStringDecode() {
+    let pasteboard = NSPasteboard.withUniqueName()
+    pasteboard.declareTypes([.string], owner: nil)
+    let oversized = Data(
+      repeating: UInt8(ascii: "a"), count: TerminalBitmapView.pasteHardLimitBytes + 1)
+    XCTAssertTrue(pasteboard.setData(oversized, forType: .string))
+
+    XCTAssertEqual(
+      TerminalBitmapView.readPasteboardString(pasteboard),
+      .tooLarge(TerminalBitmapView.pasteHardLimitBytes + 1)
+    )
+  }
+
   func testControlCRoutesToEncodedKeyWithNoText() {
     let desc = TerminalKeyDescriptor(action: .press, key: .c, modifiers: .control)
     guard case .encodedKey(let ev) = desc.route() else {

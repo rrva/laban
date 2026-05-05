@@ -138,10 +138,12 @@ public final class AppModel {
       throw AppError.tabNotFound
     }
     let tab = tabs[idx]
+    let closedCwd = tab.titleMetadata.workspace.cwd
 
     if tabs.count == 1 {
       sessions[tab.sessionId]?.close()
       sessions.removeValue(forKey: tab.sessionId)
+      if let closedCwd { gitInfo.forget(cwd: closedCwd) }
       lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
       processIdentityByTab.removeValue(forKey: tab.id)
       terminalTitleOwnerByTab.removeValue(forKey: tab.id)
@@ -154,6 +156,7 @@ public final class AppModel {
     let wasActive = tab.isActive
     sessions[tab.sessionId]?.close()
     sessions.removeValue(forKey: tab.sessionId)
+    if let closedCwd { gitInfo.forget(cwd: closedCwd) }
     lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
     processIdentityByTab.removeValue(forKey: tab.id)
     terminalTitleOwnerByTab.removeValue(forKey: tab.id)

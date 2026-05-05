@@ -86,6 +86,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var selectionsByTab: [Tab.ID: (anchor: SelectionPoint, focus: SelectionPoint?)] = [:]
   private var trackedMouseButton: MouseButton = .none
 
+  enum PasteboardStringRead: Equatable {
+    case empty
+    case tooLarge(Int)
+    case value(String, bytes: Int)
+  }
+
   /// Active drag-edge auto-scroll. `direction` is +1 to scroll back (drag
   /// past the top edge) or -1 to scroll forward (drag past the bottom);
   /// the timer fires every ~50 ms and scrolls one row in that direction
@@ -716,6 +722,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
+  private func pruneClosedTabState(_ tabId: Tab.ID) {
+    selectionsByTab.removeValue(forKey: tabId)
+    if hoveredSidebarTabId == tabId {
+      hoveredSidebarTabId = nil
+    }
+    if lastRenderedActiveTabId == tabId {
+      selectionAnchor = nil
+      selectionFocus = nil
+      selectionOriginCell = nil
+      stopDragAutoscroll()
+      lastDragPoint = nil
+    }
+  }
+
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
     let w = Int(newSize.width)
@@ -981,28 +1001,29 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   @objc func paste(_ sender: Any?) {
-    guard let raw = NSPasteboard.general.string(forType: .string),
-      !raw.isEmpty,
-      let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId)
-    else { return }
-
-    // Hard refuse oversize input *immediately* on the raw pasteboard
-    // value, before sanitizing or copying into a [UInt8]. Otherwise a
-    // 100 MB clipboard would still be sanitized + bytes-copied + encoded
-    // to a third buffer in C before we got around to refusing it.
-    let rawBytes = raw.utf8.count
-    if rawBytes > Self.pasteHardLimitBytes {
+    let raw: String
+    let rawBytes: Int
+    switch Self.readPasteboardString(NSPasteboard.general) {
+    case .empty:
+      return
+    case .tooLarge(let bytes):
       let alert = NSAlert()
       alert.alertStyle = .warning
       alert.messageText = "Paste too large"
       alert.informativeText =
-        "Refusing to paste \(rawBytes) bytes (limit is \(Self.pasteHardLimitBytes))."
+        "Refusing to paste \(bytes) bytes (limit is \(Self.pasteHardLimitBytes))."
       alert.addButton(withTitle: "OK")
       alert.runModal()
-      EventLog.shared.log("paste.refused.size", ["bytes": rawBytes])
+      EventLog.shared.log("paste.refused.size", ["bytes": bytes])
       return
+    case .value(let value, let bytes):
+      raw = value
+      rawBytes = bytes
     }
+
+    guard let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId)
+    else { return }
 
     // Sanitize control characters out of the paste before handing it to
     // libghostty's bracketed-paste encoder. Strips ESC and the rest of the
@@ -1056,9 +1077,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     EventLog.shared.log(
       "paste",
       [
-        "rawBytes": raw.utf8.count,
+        "rawBytes": rawBytes,
         "sanitizedBytes": sanitized.utf8.count,
-        "stripped": raw.utf8.count - sanitized.utf8.count,
+        "stripped": rawBytes - sanitized.utf8.count,
       ])
     recordInput(kind: "paste", route: "terminal", text: sanitized, command: "paste")
   }
@@ -1068,6 +1089,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   static let pasteHardLimitBytes = 10 * 1024 * 1024  // 10 MB
   /// Warn-and-confirm above this size. Below it, no prompt.
   static let pasteWarnLimitBytes = 64 * 1024  // 64 KB
+
+  static func readPasteboardString(_ pasteboard: NSPasteboard) -> PasteboardStringRead {
+    if let data = pasteboard.data(forType: .string), data.count > pasteHardLimitBytes {
+      return .tooLarge(data.count)
+    }
+    guard let raw = pasteboard.string(forType: .string), !raw.isEmpty else {
+      return .empty
+    }
+    let bytes = raw.utf8.count
+    if bytes > pasteHardLimitBytes {
+      return .tooLarge(bytes)
+    }
+    return .value(raw, bytes: bytes)
+  }
 
   static func sanitizePaste(_ text: String) -> String {
     var out = String.UnicodeScalarView()
@@ -1209,7 +1244,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         model.selectTab(id)
         renderInvalidated = true
       case .closeTab(let id):
-        _ = try? model.closeTab(id)
+        do {
+          try model.closeTab(id)
+          pruneClosedTabState(id)
+        } catch AppError.lastTabClosed {
+          pruneClosedTabState(id)
+          window?.close()
+        } catch {}
         renderInvalidated = true
       case .none: break
       }
@@ -1827,7 +1868,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let tabId = model.activeTab?.id else { return }
     do {
       try model.closeTab(tabId)
+      pruneClosedTabState(tabId)
     } catch AppError.lastTabClosed {
+      pruneClosedTabState(tabId)
       window?.close()
       return
     } catch {}
