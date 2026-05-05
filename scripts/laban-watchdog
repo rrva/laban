@@ -55,10 +55,20 @@ while :; do
         continue
     fi
 
-    # Sample Laban + every immediate child (PTY shells, agents, …).
+    # Sample Laban + every descendant. We have to walk the process tree
+    # transitively because the actual interesting process (Claude Code,
+    # Codex, etc.) is usually a grandchild: Laban → zsh → agent. A direct
+    # `pgrep -P` only catches the shell, which is itself idle in waitjobs
+    # and tells you nothing about the hang.
+    walk_descendants() {
+        for pid in $(/usr/bin/pgrep -P "$1" 2>/dev/null || true); do
+            echo "$pid"
+            walk_descendants "$pid"
+        done
+    }
     pids=""
     for parent in $laban_pids; do
-        pids="$pids $parent $(/usr/bin/pgrep -P "$parent" 2>/dev/null || true)"
+        pids="$pids $parent $(walk_descendants "$parent")"
     done
 
     for pid in $pids; do
