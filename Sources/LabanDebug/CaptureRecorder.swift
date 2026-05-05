@@ -43,6 +43,7 @@ public final class CaptureRecorder: CaptureSink {
   private var timelineHandle: FileHandle
   private var streamHandles: [CaptureByteDirection: FileHandle] = [:]
   private var streamOffsets: [CaptureByteDirection: Int] = [:]
+  private var streamHashers: [CaptureByteDirection: SHA256] = [:]
 
   public init(
     artifactRoot: URL,
@@ -81,6 +82,7 @@ public final class CaptureRecorder: CaptureSink {
       CaptureRecorder.createPrivateFile(url)
       streamHandles[direction] = try FileHandle(forWritingTo: url)
       streamOffsets[direction] = 0
+      streamHashers[direction] = SHA256()
     }
 
     try writeManifestLocked(finishedAt: nil, interrupted: false, final: false)
@@ -89,7 +91,7 @@ public final class CaptureRecorder: CaptureSink {
 
   deinit {
     if !finished {
-      try? finish(interrupted: true)
+      _ = try? finish(interrupted: true)
     }
   }
 
@@ -154,6 +156,10 @@ public final class CaptureRecorder: CaptureSink {
     do {
       try handle.write(contentsOf: data)
       streamOffsets[direction] = offset + data.count
+      if var hasher = streamHashers[direction] {
+        hasher.update(data: data)
+        streamHashers[direction] = hasher
+      }
     } catch {
       var event = CaptureTimelineEvent(kind: .captureError, frame: frame, sessionId: sessionId)
       event.error = "byte stream write failed: \(error)"
@@ -457,9 +463,11 @@ public final class CaptureRecorder: CaptureSink {
 
   private func streamManifest(_ direction: CaptureByteDirection) -> CaptureManifest.Stream {
     let rel = "streams/\(direction.streamFileName)"
-    let url = directoryURL.appendingPathComponent(rel)
-    let data = (try? Data(contentsOf: url)) ?? Data()
-    return CaptureManifest.Stream(path: rel, sha256: CaptureHash.sha256(data), bytes: data.count)
+    let digest = streamHashers[direction]?.finalize() ?? SHA256.hash(data: Data())
+    return CaptureManifest.Stream(
+      path: rel,
+      sha256: CaptureHash.hex(digest),
+      bytes: streamOffsets[direction] ?? 0)
   }
 
   private static func createPrivateDirectory(_ url: URL) throws {
@@ -540,7 +548,11 @@ public final class CaptureRecorder: CaptureSink {
 
 enum CaptureHash {
   static func sha256(_ data: Data) -> String {
-    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    hex(SHA256.hash(data: data))
+  }
+
+  static func hex<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
+    bytes.map { String(format: "%02x", $0) }.joined()
   }
 }
 

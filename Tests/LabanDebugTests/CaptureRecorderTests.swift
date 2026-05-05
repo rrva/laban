@@ -56,6 +56,27 @@ final class CaptureRecorderTests: XCTestCase {
     XCTAssertEqual(input?.sha256, CaptureHash.sha256(bytes))
   }
 
+  func testManifestStreamMetadataDoesNotRequireRereadingSidecar() throws {
+    let root = tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "stream-manifest")
+    let bytes = Data("large stream metadata source".utf8)
+    _ = bytes.withUnsafeBytes {
+      recorder.recordBytes(
+        direction: .ptyOutput, sessionId: "session-1", frame: 4, bytes: $0, preview: nil)
+    }
+
+    let streamURL = root.appendingPathComponent("stream-manifest/streams/pty-output.bin")
+    chmod(streamURL.path, S_IWUSR)
+    let manifest = try recorder.finish()
+
+    let obj = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as! [String: Any]
+    let streams = obj["streams"] as! [String: Any]
+    let ptyOutput = streams["ptyOutput"] as! [String: Any]
+    XCTAssertEqual(ptyOutput["bytes"] as? Int, bytes.count)
+    XCTAssertEqual(ptyOutput["sha256"] as? String, CaptureHash.sha256(bytes))
+  }
+
   func testFinalizeIsAtomicAndWritesManifest() throws {
     let root = tempRoot()
     defer { try? FileManager.default.removeItem(at: root) }
