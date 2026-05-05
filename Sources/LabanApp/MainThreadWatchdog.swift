@@ -56,9 +56,9 @@ final class MainThreadWatchdog {
     self.timer = t
     heartbeat()  // prime so the first comparison is meaningful
     t.resume()
-    fputs(
-      "laban: watchdog active (threshold=\(stallThresholdMs)ms cooldown=\(captureCooldownMs)ms dir=\(outputDir.path))\n",
-      stderr)
+    AppLog.watchdog.info(
+      "active threshold=\(stallThresholdMs)ms cooldown=\(captureCooldownMs)ms dir=\(outputDir.path)"
+    )
   }
 
   /// Call from the main thread once per displayLink tick.
@@ -96,9 +96,10 @@ final class MainThreadWatchdog {
     task.standardError = nil
     do {
       try task.run()
-      fputs(
-        "laban: watchdog captured stall (\(stalledForMs)ms) → \(outURL.path)\n",
-        stderr)
+      AppLog.watchdog.notice("captured stall \(stalledForMs)ms → \(outURL.path)")
+      EventLog.shared.log(
+        "watchdog.stall",
+        ["ms": stalledForMs, "path": outURL.path])
     } catch {
       // sample missing or sandboxed — silent. This is a debug aid.
     }

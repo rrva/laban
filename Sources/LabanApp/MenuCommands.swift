@@ -10,6 +10,12 @@ enum MenuCommands {
     let appMenu = NSMenu()
     appItem.submenu = appMenu
     appMenu.addItem(
+      withTitle: "About Laban",
+      action: #selector(AppDelegate.showAbout(_:)),
+      keyEquivalent: ""
+    )
+    appMenu.addItem(NSMenuItem.separator())
+    appMenu.addItem(
       withTitle: "Quit Laban",
       action: #selector(NSApplication.terminate(_:)),
       keyEquivalent: "q"
@@ -88,6 +94,14 @@ enum MenuCommands {
     )
     captureItem.keyEquivalentModifierMask = [.command, .shift]
     debugMenu.addItem(captureItem)
+
+    debugMenu.addItem(NSMenuItem.separator())
+    debugMenu.addItem(
+      NSMenuItem(
+        title: "Send Diagnostics…",
+        action: #selector(AppDelegate.sendDiagnostics(_:)),
+        keyEquivalent: ""
+      ))
 
     NSApp.mainMenu = mainMenu
   }

@@ -260,11 +260,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       } else {
         metalTimings = ""
       }
-      fputs(
-        String(
-          format: "laban: input→commit n=%d  mean=%.2f ms  p50=%.2f ms  p99=%.2f ms%@\n",
-          inputLatencyMs.count, mean, p50, p99, metalTimings),
-        stderr)
+      AppLog.render.info(
+        "input→commit n=\(inputLatencyMs.count) mean=\(String(format: "%.2f", mean))ms p50=\(String(format: "%.2f", p50))ms p99=\(String(format: "%.2f", p99))ms\(metalTimings)"
+      )
     }
   }
 
@@ -962,6 +960,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
+    EventLog.shared.log("copy", ["bytes": text.utf8.count])
     recordInput(kind: "copy", route: "appCommand", text: text, command: "copy")
   }
 
@@ -981,6 +980,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let sanitized = Self.sanitizePaste(raw)
     guard !sanitized.isEmpty else { return }
     _ = session.writePaste(sanitized)
+    EventLog.shared.log(
+      "paste",
+      [
+        "rawBytes": raw.utf8.count,
+        "sanitizedBytes": sanitized.utf8.count,
+        "stripped": raw.utf8.count - sanitized.utf8.count,
+      ])
     recordInput(kind: "paste", route: "terminal", text: sanitized, command: "paste")
   }
 
@@ -1698,9 +1704,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
           finalScreenshot: png,
           frame: renderedFrameCount
         )
-        fputs("laban: capture stopped \(manifest.path)\n", stderr)
+        AppLog.capture.info("stopped \(manifest.path)")
+        EventLog.shared.log("capture.stop", ["path": manifest.path])
       } catch {
-        fputs("laban: capture stop failed \(error)\n", stderr)
+        AppLog.capture.error("stop failed: \(error)")
       }
       captureRecorder = nil
       // Capture stopped: drop the per-frame readback blit again.
@@ -1726,10 +1733,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       (backend as? MetalRenderer)?.captureMode = true
       model.captureSink = recorder
       model.recordExistingStateForCapture()
-      fputs("laban: capture started \(recorder.directoryURL.path)\n", stderr)
+      AppLog.capture.info("started \(recorder.directoryURL.path)")
+      EventLog.shared.log("capture.start", ["path": recorder.directoryURL.path])
       renderInvalidated = true
     } catch {
-      fputs("laban: capture failed to start \(error)\n", stderr)
+      AppLog.capture.error("failed to start: \(error)")
     }
   }
 

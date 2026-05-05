@@ -7,6 +7,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let themeMenuController = ThemeMenuController()
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    AppLog.app.notice("launch \(BuildInfo.summary)")
+    LogFile.shared.pruneOldFiles()
+    EventLog.shared.pruneOldFiles()
+    EventLog.shared.log(
+      "app.start",
+      ["build": BuildInfo.commit, "buildDate": BuildInfo.date])
+
     // Stall watchdog: detects main-thread freezes ≥200 ms and writes a
     // sample(1) capture to ~/laban-watchdog/. Cheap; safe to leave on.
     MainThreadWatchdog.shared.start()
@@ -40,4 +47,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    EventLog.shared.log("app.quit")
+  }
+
+  @objc func sendDiagnostics(_ sender: Any?) {
+    SendDiagnostics.run()
+  }
+
+  /// About panel populated from BuildInfo so the version is always live
+  /// against what was actually built. Shown via the standard macOS
+  /// "About Laban" item in the app menu.
+  @objc func showAbout(_ sender: Any?) {
+    let credits = NSAttributedString(
+      string: "Built \(BuildInfo.date)\n\nA terminal that aims to be quiet, fast, and honest.",
+      attributes: [.foregroundColor: NSColor.labelColor])
+    NSApp.orderFrontStandardAboutPanel(options: [
+      .applicationName: "Laban",
+      .applicationVersion: BuildInfo.commit,
+      .credits: credits,
+    ])
+  }
 }
