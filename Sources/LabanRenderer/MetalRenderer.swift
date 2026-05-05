@@ -259,6 +259,13 @@ public final class MetalRenderer: RendererBackend {
     layer.framebufferOnly = false  // need readable color for capture readback
     layer.contentsScale = scale
     layer.isOpaque = true
+    // Anchor the drawable to the bottom-left of the layer's frame. Without
+    // this, CAMetalLayer's default `.resize` gravity stretches the old
+    // drawable to the new layer frame between a window-resize event and
+    // the next render — which visibly drifts content (most noticeably the
+    // cursor at row 0). With bottomLeft, the existing pixels stay at their
+    // native size and any newly-uncovered area shows the layer background.
+    layer.contentsGravity = .bottomLeft
 
     let solidDesc = MTLRenderPipelineDescriptor()
     solidDesc.label = "laban.solid-quad"

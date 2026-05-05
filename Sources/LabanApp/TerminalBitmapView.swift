@@ -52,6 +52,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastRenderedActiveTabId: Tab.ID?
   private var scrollResidualPx: CGFloat = 0
 
+  /// Last cols value applied to libghostty. Used to detect when a reflow
+  /// invalidates the selection's grid coordinates so we can drop it.
+  private var lastAppliedCols: Int = 0
+
   // Smooth-scroll animation state. Wheel input adds to `targetScrollRows`
   // (cumulative target). A critically-damped PD controller advances
   // `displayedScrollRows` toward the target each frame, applying the
@@ -594,8 +598,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let insets = Self.contentInsets
     let termW = max(1, w - Int(sidebarWidth) - Int(insets.left) - Int(insets.right))
     let termH = max(1, h - Int(insets.top) - Int(insets.bottom))
+    // Apply per-nudge so the rendered grid stays in lockstep with the Metal
+    // target. Throttling here causes the cursor to jump as libghostty's row
+    // count lags the surface dimensions during live drag. SIGWINCH per
+    // nudge is fine for modern shells (the prompt redraw is one line);
+    // libghostty's reflow is a no-op when dims are unchanged.
+    let cols = max(1, termW / cellWidth)
+    if cols != lastAppliedCols, lastAppliedCols != 0 {
+      // Reflow invalidates grid-anchored selection coordinates.
+      selectionAnchor = nil
+      selectionFocus = nil
+    }
+    lastAppliedCols = cols
     model.resize(
-      viewportWidth: termW, viewportHeight: termH, cellWidth: cellWidth, cellHeight: cellHeight)
+      viewportWidth: termW, viewportHeight: termH,
+      cellWidth: cellWidth, cellHeight: cellHeight)
+
+    // Render synchronously inside the resize event during live drag so the
+    // new drawable commits with the new grid dimensions in the same event
+    // loop turn. Otherwise AppKit composites the previous drawable over the
+    // resized layer until the next displayLink tick (~16 ms) and content
+    // anchored to the top of the grid (e.g. cursor at row 0) appears to
+    // jump as the gap closes.
+    if inLiveResize {
+      advanceFrame()
+    }
   }
 
   // MARK: - Responder
