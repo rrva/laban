@@ -80,18 +80,7 @@ public final class MetalRenderer: RendererBackend {
   /// first frame, and whenever a damage hint can't be honoured (e.g.,
   /// caller passed `.partial(empty)` but the surface size changed).
   private var targetTexture: MTLTexture?
-  /// Scratch buffer used solely for scroll-shift self-copies — Metal
-  /// disallows overlapping copies on a single texture, so we copy
-  /// target → scratch (full) then scratch → target (offset). Same size as
-  /// targetTexture; reallocated together.
-  private var scratchTexture: MTLTexture?
   private var targetNeedsFullRedraw: Bool = true
-  /// Per-terminal-row content hashes from the previous frame, keyed by the
-  /// row's quantized CG-y position. Used by the scroll detector to spot a
-  /// shift between adjacent frames so we can blit the shifted texture
-  /// instead of re-rasterizing every cell. Cleared whenever the persistent
-  /// target loses validity (resize, full redraw).
-  private var lastTerminalRowHashes: [Int: UInt64] = [:]
   /// Last frame's command buffer. `pngData` waits on it before reading the
   /// readback texture so capture-side callers see the actual just-rendered
   /// pixels and not whatever the previous frame happened to leave behind.
@@ -226,8 +215,6 @@ public final class MetalRenderer: RendererBackend {
       layer.drawableSize = CGSize(width: pw, height: ph)
       readbackTexture = nil
       targetTexture = nil
-      scratchTexture = nil
-      lastTerminalRowHashes.removeAll(keepingCapacity: true)
       targetNeedsFullRedraw = true
     }
   }
@@ -265,30 +252,9 @@ public final class MetalRenderer: RendererBackend {
       surfaceSizePixels: SIMD2<Float>(Float(surfaceWPx), Float(surfaceHPx)),
       scale: Float(layer.contentsScale))
 
-    // Compute per-row hashes for scroll detection. Cheap (one walk over
-    // commands; UInt64 mix per cell). Skipped on first frame because
-    // lastTerminalRowHashes is empty.
-    let currentRowHashes = computeTerminalRowHashes(commands)
-
-    // Decide which damage we'll honour. Forced full on first frame after
-    // resize/realloc; otherwise look for a scroll shift first, then fall
-    // back to the caller's hint.
-    var effectiveDamage: RenderDamage = targetNeedsFullRedraw ? .full : damage
-    if !targetNeedsFullRedraw,
-      let shift = detectScrollShift(
-        current: currentRowHashes, previous: lastTerminalRowHashes)
-    {
-      // Scroll wins over the caller's per-row damage: blit-shift the
-      // existing target and rebuild the damage hint to cover only rows the
-      // shift didn't supply pixels for.
-      applyScrollShift(
-        deltaRows: shift.deltaRows,
-        cellHeightPx: glyphCellHeight * layer.contentsScale,
-        target: target,
-        scratch: scratchTexture!,
-        cmdBuf: cmdBuf)
-      effectiveDamage = .partial(yRanges: shift.unmatchedYRanges)
-    }
+    // First frame after a target realloc must clear+repaint the full surface.
+    // Otherwise honour the caller's damage hint directly.
+    let effectiveDamage: RenderDamage = targetNeedsFullRedraw ? .full : damage
 
     // ---------- Pass 1: terminal content into the persistent target ----------
     encodeContentPass(
@@ -364,20 +330,16 @@ public final class MetalRenderer: RendererBackend {
     cmdBuf.present(drawable)
     cmdBuf.commit()
     lastCmdBuf = cmdBuf
-
-    lastTerminalRowHashes = currentRowHashes
     targetNeedsFullRedraw = false
   }
 
-  /// Allocate (or reallocate) the persistent render target and matching
-  /// scroll scratch texture to match the drawable. Same pixel format so
-  /// blits between them are GPU memcpys.
+  /// Allocate (or reallocate) the persistent render target to match the
+  /// drawable. Same pixel format so the end-of-frame blit is a GPU memcpy.
   private func ensureTargetTexture(matching drawableTex: MTLTexture) {
     if let t = targetTexture,
       t.width == drawableTex.width,
       t.height == drawableTex.height,
-      t.pixelFormat == layer.pixelFormat,
-      scratchTexture != nil
+      t.pixelFormat == layer.pixelFormat
     {
       return
     }
@@ -389,8 +351,6 @@ public final class MetalRenderer: RendererBackend {
     desc.usage = [.renderTarget, .shaderRead]
     desc.storageMode = .private
     targetTexture = device.makeTexture(descriptor: desc)
-    scratchTexture = device.makeTexture(descriptor: desc)
-    lastTerminalRowHashes.removeAll(keepingCapacity: true)
     targetNeedsFullRedraw = true
   }
 
@@ -798,205 +758,6 @@ public final class MetalRenderer: RendererBackend {
         intent: .defaultIntent)
     else { return nil }
     return PNGEncoder.encode(image)
-  }
-}
-
-// MARK: - Scroll detection
-
-extension MetalRenderer {
-  /// Result of a successful scroll detection. `deltaRows > 0` means the
-  /// terminal scrolled UP visually (content moved toward larger CG-y; the
-  /// new top row's content used to be in the previous frame's row below
-  /// it). `deltaRows < 0` means visual scroll-down. `unmatchedYRanges` is
-  /// the set of CG-y bands the renderer still needs to repaint.
-  struct ScrollShift {
-    var deltaRows: Int
-    var unmatchedYRanges: [DirtyYRange]
-  }
-
-  /// Per-row content hash. Bucket FrameCommands by terminal-row index using
-  /// `floor(origin.y / cellHeight)` — keys increase from screen-bottom (row
-  /// N-1, smallest CG-y) to screen-top (row 0, largest CG-y). FNV-1a mixes
-  /// each command's distinguishing fields into a single UInt64. Two adjacent
-  /// frames produce identical hashes for rows whose visible contents didn't
-  /// change. Non-terminal commands (sidebar, chrome, cursor, selection) are
-  /// skipped so they don't pollute the signal.
-  fileprivate func computeTerminalRowHashes(_ commands: [FrameCommand]) -> [Int: UInt64] {
-    let cellH = glyphCellHeight
-    var buckets: [Int: UInt64] = [:]
-    buckets.reserveCapacity(64)
-    for cmd in commands {
-      switch cmd {
-      case .rect(let rect, let color, let src):
-        guard src == .terminal else { continue }
-        // Use the rect's bottom edge so cells sitting at exact cell
-        // boundaries (the common case) bucket deterministically. floor on a
-        // half-cell would otherwise jitter into the row above or below.
-        let key = Int((rect.origin.y / cellH).rounded(.down))
-        var h = buckets[key] ?? Self.fnvOffset
-        Self.fnvMix(&h, 1)
-        Self.fnvMix(&h, UInt64(bitPattern: Int64(rect.origin.x.rounded() * 100)))
-        Self.fnvMix(&h, UInt64(bitPattern: Int64(rect.origin.y.rounded() * 100)))
-        Self.fnvMix(&h, UInt64(bitPattern: Int64(rect.width.rounded() * 100)))
-        Self.fnvMix(&h, UInt64(bitPattern: Int64(rect.height.rounded() * 100)))
-        Self.fnvMix(&h, UInt64(color))
-        buckets[key] = h
-
-      case .glyphRun(
-        let origin, let text, let fg, let bg, let attrs, let src,
-        let underlineStyle, let underlineColor, let hyperlink
-      ):
-        guard src == .terminal else { continue }
-        let key = Int((origin.y / cellH).rounded(.down))
-        var h = buckets[key] ?? Self.fnvOffset
-        Self.fnvMix(&h, 2)
-        Self.fnvMix(&h, UInt64(bitPattern: Int64(origin.x.rounded() * 100)))
-        Self.fnvMix(&h, UInt64(bitPattern: Int64(origin.y.rounded() * 100)))
-        Self.fnvMix(&h, UInt64(fg))
-        Self.fnvMix(&h, UInt64(bg))
-        Self.fnvMix(&h, UInt64(attrs.rawValue))
-        Self.fnvMix(&h, UInt64(underlineStyle.rawValue))
-        Self.fnvMix(&h, UInt64(underlineColor ?? 0))
-        text.utf8.forEach { Self.fnvMix(&h, UInt64($0)) }
-        if let hl = hyperlink {
-          hl.utf8.forEach { Self.fnvMix(&h, UInt64($0)) }
-        }
-        buckets[key] = h
-
-      case .selection, .cursor, .clip, .texturedQuad:
-        // Selection / cursor / clip live above or outside the persistent
-        // terminal pixels; deliberately not part of the row signature.
-        continue
-      }
-    }
-    return buckets
-  }
-
-  /// Search a small Δ window for the row-shift that maximises matching
-  /// hashes. Returns the corresponding `ScrollShift` when at least 50% of
-  /// rows match a non-zero shift; nil otherwise.
-  ///
-  /// Conventions:
-  /// - row keys come from `floor(CG_y / cellHeight)`, so larger key = higher
-  ///   on screen (because CG-y is up).
-  /// - For a visual scroll-UP (content moves up the screen, new content
-  ///   appears at the bottom), surviving rows move to a *larger* key:
-  ///   new[k] == previous[k - 1]. The matching internal Δ is `-1`.
-  /// - We invert that sign at the API boundary so callers get the more
-  ///   intuitive "deltaRows > 0 = visual scroll-up".
-  fileprivate func detectScrollShift(
-    current: [Int: UInt64], previous: [Int: UInt64]
-  ) -> ScrollShift? {
-    guard !previous.isEmpty, current.count >= 4 else { return nil }
-    let keys = Array(current.keys).sorted()
-    let rowCount = keys.count
-    var bestRawDelta = 0  // internal: new[k] == previous[k + bestRawDelta]
-    var bestMatches = 0
-    // ±10 rows covers the common scroll-output case (one-line scroll, plus
-    // a few-line burst from a process printing several lines per tick).
-    // Bigger jumps would benefit from a true substring-search, but the
-    // common cases don't need it.
-    for delta in -10...10 where delta != 0 {
-      var matches = 0
-      for k in keys {
-        if let prevHash = previous[k + delta], prevHash == current[k] {
-          matches += 1
-        }
-      }
-      if matches > bestMatches {
-        bestMatches = matches
-        bestRawDelta = delta
-      }
-    }
-    guard bestRawDelta != 0, bestMatches * 2 >= rowCount else { return nil }
-
-    // Compute the unmatched rows so the caller knows what still needs paint.
-    // Each key K corresponds to a CG band [K * cellH, (K+1) * cellH] (cells
-    // sit on cell-height boundaries, so this is exact).
-    let cellH = glyphCellHeight
-    var ranges: [DirtyYRange] = []
-    var pendingStart: Int?
-    var pendingEnd: Int?  // exclusive
-    for k in keys {
-      let matched = previous[k + bestRawDelta] == current[k]
-      if matched {
-        if let s = pendingStart, let e = pendingEnd {
-          ranges.append(
-            DirtyYRange(y: CGFloat(s) * cellH, height: CGFloat(e - s) * cellH))
-          pendingStart = nil
-          pendingEnd = nil
-        }
-      } else {
-        if pendingStart == nil { pendingStart = k }
-        pendingEnd = k + 1
-      }
-    }
-    if let s = pendingStart, let e = pendingEnd {
-      ranges.append(
-        DirtyYRange(y: CGFloat(s) * cellH, height: CGFloat(e - s) * cellH))
-    }
-    return ScrollShift(deltaRows: -bestRawDelta, unmatchedYRanges: ranges)
-  }
-
-  /// Execute the shift: blit `target → scratch` (full identity copy), then
-  /// `scratch → target` with a vertical pixel offset matching `deltaRows`.
-  /// Result: `target` pixels are shifted in-place; the rows the shift
-  /// didn't supply pixels for are stale and the subsequent content pass
-  /// will overwrite them.
-  fileprivate func applyScrollShift(
-    deltaRows: Int,
-    cellHeightPx: CGFloat,
-    target: MTLTexture,
-    scratch: MTLTexture,
-    cmdBuf: MTLCommandBuffer
-  ) {
-    let texW = target.width
-    let texH = target.height
-    let shiftPx = Int((CGFloat(abs(deltaRows)) * cellHeightPx).rounded())
-    guard shiftPx > 0, shiftPx < texH else { return }
-    let copyHeight = texH - shiftPx
-
-    guard let blit = cmdBuf.makeBlitCommandEncoder() else { return }
-    blit.label = "scroll-shift"
-
-    // Identity copy target → scratch first; we can't self-copy with overlap.
-    blit.copy(
-      from: target, sourceSlice: 0, sourceLevel: 0,
-      sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-      sourceSize: MTLSize(width: texW, height: texH, depth: 1),
-      to: scratch, destinationSlice: 0, destinationLevel: 0,
-      destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-
-    // Texture y is top-down. deltaRows > 0 = visual scroll up = texture
-    // shift up (toward smaller texture y). Source skips the top `shiftPx`
-    // rows; dest origin starts at y=0. Bottom `shiftPx` rows of `target`
-    // become stale and get repainted by the content pass below.
-    if deltaRows > 0 {
-      blit.copy(
-        from: scratch, sourceSlice: 0, sourceLevel: 0,
-        sourceOrigin: MTLOrigin(x: 0, y: shiftPx, z: 0),
-        sourceSize: MTLSize(width: texW, height: copyHeight, depth: 1),
-        to: target, destinationSlice: 0, destinationLevel: 0,
-        destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-    } else {
-      // deltaRows < 0 → visual scroll down → shift content down in texture.
-      blit.copy(
-        from: scratch, sourceSlice: 0, sourceLevel: 0,
-        sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-        sourceSize: MTLSize(width: texW, height: copyHeight, depth: 1),
-        to: target, destinationSlice: 0, destinationLevel: 0,
-        destinationOrigin: MTLOrigin(x: 0, y: shiftPx, z: 0))
-    }
-    blit.endEncoding()
-  }
-
-  // FNV-1a 64-bit. Cheap and good enough for a same-frame-or-not signal.
-  private static let fnvOffset: UInt64 = 0xCBF2_9CE4_8422_2325
-  private static let fnvPrime: UInt64 = 0x100_0000_01B3
-  @inline(__always)
-  fileprivate static func fnvMix(_ acc: inout UInt64, _ value: UInt64) {
-    acc ^= value
-    acc &*= fnvPrime
   }
 }
 

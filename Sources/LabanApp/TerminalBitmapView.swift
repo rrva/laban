@@ -5,6 +5,7 @@ import LabanCore
 import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
+import QuartzCore
 
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
@@ -23,11 +24,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private let cellWidth: Int
   private let cellHeight: Int
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
-  // Vsync-aligned tick. CVDisplayLink fires once per actual display refresh
-  // (60Hz / 120Hz ProMotion / whatever the panel is running), giving smoother
-  // motion than a wall-clock Timer while keeping the same dirty-frame
-  // early-return — idle frames stay free.
-  private var displayLink: CVDisplayLink?
+  // Vsync-aligned tick.
+  // - macOS 14+: CADisplayLink with a `preferredFrameRateRange` so a
+  //   ProMotion panel can drop to a low rate when the terminal is idle and
+  //   ramp up under load. Real VRR.
+  // - macOS 13: CVDisplayLink as fallback. Vsync-aligned, no VRR throttle —
+  //   always fires at the panel's max refresh.
+  private var caDisplayLink: AnyObject?
+  private var cvDisplayLink: CVDisplayLink?
 
   // Last known terminal grid size (updated each frame)
   private var lastRows: Int = 24
@@ -94,7 +98,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
     // Prevent duplicate links when view transitions between windows.
-    if displayLink == nil {
+    if caDisplayLink == nil && cvDisplayLink == nil {
       recreateSurface()
       startDisplayLink()
     } else {
@@ -105,6 +109,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func startDisplayLink() {
+    if #available(macOS 14.0, *) {
+      // CADisplayLink + preferredFrameRateRange unlocks VRR throttling on
+      // ProMotion: when nothing's changing the OS will fire us at the
+      // minimum rate (~24 Hz here), and ramp up to the maximum (panel max,
+      // typically 120 Hz) when the terminal becomes busy. Idle terminals
+      // use less battery; scrolling stays smooth.
+      let link = displayLink(target: self, selector: #selector(displayLinkTick))
+      link.preferredFrameRateRange = CAFrameRateRange(
+        minimum: 24, maximum: 120, preferred: 120)
+      link.add(to: .main, forMode: .common)
+      caDisplayLink = link
+      return
+    }
     var link: CVDisplayLink?
     let createResult = CVDisplayLinkCreateWithActiveCGDisplays(&link)
     guard createResult == kCVReturnSuccess, let link else { return }
@@ -124,15 +141,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     )
     guard setCallbackResult == kCVReturnSuccess else { return }
 
-    displayLink = link
+    cvDisplayLink = link
     CVDisplayLinkStart(link)
   }
 
+  /// CADisplayLink target/selector. Already on main, so no dispatch hop.
+  @objc private func displayLinkTick(_ link: AnyObject) {
+    advanceFrame()
+  }
+
   private func stopDisplayLink() {
-    if let link = displayLink {
+    if #available(macOS 14.0, *) {
+      if let link = caDisplayLink as? CADisplayLink {
+        link.invalidate()
+      }
+      caDisplayLink = nil
+    }
+    if let link = cvDisplayLink {
       CVDisplayLinkStop(link)
     }
-    displayLink = nil
+    cvDisplayLink = nil
   }
 
   deinit {
