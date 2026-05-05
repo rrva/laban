@@ -463,12 +463,12 @@ public final class AppModel {
 
   private static func applyThemePalette(to session: Session) {
     var bytes: [UInt8] = []
-    for (i, color) in Theme.CurrentTheme.ansi16.enumerated() {
+    for (i, color) in Theme.current.ansi16.enumerated() {
       bytes += oscSeq(4, index: i, rgba: color)
     }
-    bytes += oscSeq(10, rgba: Theme.CurrentTheme.fg0)
-    bytes += oscSeq(11, rgba: Theme.CurrentTheme.bg0)
-    bytes += oscSeq(12, rgba: Theme.CurrentTheme.cursor)
+    bytes += oscSeq(10, rgba: Theme.current.fg0)
+    bytes += oscSeq(11, rgba: Theme.current.bg0)
+    bytes += oscSeq(12, rgba: Theme.current.cursor)
     session.feedOutput(bytes)
   }
 

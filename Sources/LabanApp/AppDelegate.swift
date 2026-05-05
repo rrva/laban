@@ -66,7 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @objc func showFontPicker(_ sender: Any?) {
     let panel = NSFontPanel.shared
     let currentName = UserDefaults.standard.string(forKey: "LabanFontName") ?? "JetBrains Mono"
-    let initialFont = NSFont(name: currentName, size: 14)
+    let initialFont =
+      NSFont(name: currentName, size: 14)
       ?? NSFont(name: "Menlo", size: 14)
       ?? NSFont.systemFont(ofSize: 14)
     panel.setPanelFont(initialFont, isMultiple: false)
@@ -91,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     alert.messageText = "Font set to \(new.displayName ?? new.fontName)"
     alert.informativeText = "Restart Laban to apply."
     alert.addButton(withTitle: "Restart Now")  // .firstButtonReturn
-    alert.addButton(withTitle: "Later")        // .secondButtonReturn
+    alert.addButton(withTitle: "Later")  // .secondButtonReturn
     if alert.runModal() == .alertFirstButtonReturn {
       Self.restartApp()
     }

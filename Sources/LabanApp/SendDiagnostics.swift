@@ -100,10 +100,12 @@ enum SendDiagnostics {
       includingPropertiesForKeys: [.contentModificationDateKey]
     ) {
       let sorted = entries.sorted {
-        let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
-          .contentModificationDate) ?? Date.distantPast
-        let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
-          .contentModificationDate) ?? Date.distantPast
+        let a =
+          (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate) ?? Date.distantPast
+        let b =
+          (try? $1.resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate) ?? Date.distantPast
         return a > b
       }
       let copyDir = stagingURL.appendingPathComponent("watchdog")

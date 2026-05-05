@@ -660,7 +660,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if backendSelfPresents { return }
     guard let ctx = NSGraphicsContext.current?.cgContext else { return }
     guard let cgImg = backend.presentationImage else {
-      ctx.setFillColor(cgColorFrom(Theme.CurrentTheme.bg0))
+      ctx.setFillColor(cgColorFrom(Theme.current.bg0))
       ctx.fill(bounds)
       return
     }

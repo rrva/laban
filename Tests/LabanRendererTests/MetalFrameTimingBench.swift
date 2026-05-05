@@ -30,9 +30,9 @@ final class MetalFrameTimingBench: XCTestCase {
       "\n=== MetalRenderer per-pass timings (mean over 200 frames) ==="
         + "\n  device.supportsCounterSampling(.atStageBoundary) = \(renderSupp)"
         + "\n  device.supportsCounterSampling(.atBlitBoundary)  = \(blitSupp)")
-    try benchAt(label: "small  80x24",   cols: 80,  rows: 24,  fontAtlas: fontAtlas)
-    try benchAt(label: "medium 160x48",  cols: 160, rows: 48,  fontAtlas: fontAtlas)
-    try benchAt(label: "large  240x72",  cols: 240, rows: 72,  fontAtlas: fontAtlas)
+    try benchAt(label: "small  80x24", cols: 80, rows: 24, fontAtlas: fontAtlas)
+    try benchAt(label: "medium 160x48", cols: 160, rows: 48, fontAtlas: fontAtlas)
+    try benchAt(label: "large  240x72", cols: 240, rows: 72, fontAtlas: fontAtlas)
     try benchAt(label: "xl     400x120", cols: 400, rows: 120, fontAtlas: fontAtlas)
   }
 

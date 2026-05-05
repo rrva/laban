@@ -67,10 +67,12 @@ final class LogFile: @unchecked Sendable {
   private static let retainDays = 7
 
   private init() {
-    let appSupport = FileManager.default.urls(
-      for: .applicationSupportDirectory, in: .userDomainMask
-    ).first ?? URL(fileURLWithPath: NSHomeDirectory())
-    self.dirURL = appSupport
+    let appSupport =
+      FileManager.default.urls(
+        for: .applicationSupportDirectory, in: .userDomainMask
+      ).first ?? URL(fileURLWithPath: NSHomeDirectory())
+    self.dirURL =
+      appSupport
       .appendingPathComponent("Laban")
       .appendingPathComponent("log")
     try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
@@ -89,12 +91,14 @@ final class LogFile: @unchecked Sendable {
       guard let self else { return }
       let fm = FileManager.default
       let cutoff = Date().addingTimeInterval(-Double(Self.retainDays * 86400))
-      guard let entries = try? fm.contentsOfDirectory(
-        at: self.dirURL, includingPropertiesForKeys: [.contentModificationDateKey])
+      guard
+        let entries = try? fm.contentsOfDirectory(
+          at: self.dirURL, includingPropertiesForKeys: [.contentModificationDateKey])
       else { return }
       for url in entries {
-        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
-          .contentModificationDate) ?? Date()
+        let mtime =
+          (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate) ?? Date()
         if mtime < cutoff { try? fm.removeItem(at: url) }
       }
     }
@@ -112,7 +116,7 @@ final class LogFile: @unchecked Sendable {
         FileManager.default.createFile(atPath: url.path, contents: nil)
       }
       currentHandle = try? FileHandle(forWritingTo: url)
-      try? currentHandle?.seekToEnd()
+      _ = try? currentHandle?.seekToEnd()
     }
     let line = "\(Self.tsString(now)) \(level) [\(category)] \(message)\n"
     if let data = line.data(using: .utf8) {

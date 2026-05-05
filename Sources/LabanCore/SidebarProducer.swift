@@ -53,7 +53,7 @@ public struct SidebarProducer {
     cmds.append(
       .rect(
         CGRect(x: 0, y: 0, width: sidebarWidth, height: height),
-        color: Theme.CurrentTheme.bg1,
+        color: Theme.current.bg1,
         source: .sidebar
       ))
 
@@ -65,8 +65,8 @@ public struct SidebarProducer {
     for (i, tab) in tabs.enumerated() {
       let tabY = height - CGFloat(i + 1) * rowHeight - topInset
       let isActive = tab.id == activeTabId
-      let bg = isActive ? Theme.CurrentTheme.bg2 : Theme.CurrentTheme.bg1
-      let fg = isActive ? Theme.CurrentTheme.fg1 : Theme.CurrentTheme.fg0
+      let bg = isActive ? Theme.current.bg2 : Theme.current.bg1
+      let fg = isActive ? Theme.current.fg1 : Theme.current.fg0
 
       cmds.append(
         .rect(
@@ -79,14 +79,14 @@ public struct SidebarProducer {
         cmds.append(
           .rect(
             CGRect(x: 0, y: tabY, width: 3, height: rowHeight),
-            color: Theme.CurrentTheme.blue,
+            color: Theme.current.blue,
             source: .sidebar
           ))
       }
 
       let labelX: CGFloat = isActive ? 12 : 10
       let exited = tab.status != .running
-      let labelFg = exited ? Theme.CurrentTheme.dim0 : fg
+      let labelFg = exited ? Theme.current.dim0 : fg
       // Close button lives in the top-right of the row, aligned with the
       // title baseline. Hit area is restricted to the actual glyph extent
       // so clicks elsewhere on the right edge still select the tab.
@@ -161,7 +161,7 @@ public struct SidebarProducer {
           .glyphRun(
             origin: CGPoint(x: badgeX, y: titleY),
             text: badge,
-            foreground: Theme.CurrentTheme.red,
+            foreground: Theme.current.red,
             background: bg,
             attributes: [],
             source: .sidebar
@@ -178,11 +178,11 @@ public struct SidebarProducer {
       if let st = agentStatus.statusText {
         let color =
           agentStatus.statusTextColor.flatMap(Self.parseHexColor)
-          ?? Theme.CurrentTheme.fg0
+          ?? Theme.current.fg0
         displayLines.append((st, color))
       }
       for line in resolved.infoLines.prefix(3 - displayLines.count) {
-        displayLines.append((line, Theme.CurrentTheme.dim0))
+        displayLines.append((line, Theme.current.dim0))
       }
       for (offset, entry) in displayLines.enumerated() {
         cmds.append(
@@ -205,7 +205,7 @@ public struct SidebarProducer {
           .glyphRun(
             origin: CGPoint(x: closeGlyphX, y: titleY),
             text: "✕",
-            foreground: Theme.CurrentTheme.dim0,
+            foreground: Theme.current.dim0,
             background: bg,
             attributes: [],
             source: .sidebar

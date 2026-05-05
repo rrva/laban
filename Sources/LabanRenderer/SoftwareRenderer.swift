@@ -333,9 +333,13 @@ public final class SoftwareRenderer {
       for i in 0...steps {
         let t = CGFloat(i) / CGFloat(steps)
         let cx = x + width * t
-        let cy = baseY + amplitude * CGFloat(sin((Double(t) * Double(width) / Double(period)) * 2 * .pi))
-        if i == 0 { ctx.move(to: CGPoint(x: cx, y: cy)) }
-        else { ctx.addLine(to: CGPoint(x: cx, y: cy)) }
+        let cy =
+          baseY + amplitude * CGFloat(sin((Double(t) * Double(width) / Double(period)) * 2 * .pi))
+        if i == 0 {
+          ctx.move(to: CGPoint(x: cx, y: cy))
+        } else {
+          ctx.addLine(to: CGPoint(x: cx, y: cy))
+        }
       }
       ctx.strokePath()
     case .dotted:

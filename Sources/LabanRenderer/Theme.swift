@@ -269,10 +269,6 @@ public enum Theme {
   /// so chrome reads the new colors.
   public static let didChangeNotification = Notification.Name("LabanThemeDidChange")
 
-  /// Backward-compatible accessor — existing code reads `Theme.CurrentTheme.bg0`.
-  /// Returns the live `current` theme so any property access picks up swaps.
-  public static var CurrentTheme: ThemeData { current }
-
   // MARK: Mutation
 
   /// Swap to `theme` and notify observers. No-op if already current.

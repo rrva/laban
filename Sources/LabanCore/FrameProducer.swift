@@ -66,7 +66,7 @@ public struct FrameProducer {
       cmds.append(
         .rect(
           CGRect(x: originX, y: bannerY, width: bannerW, height: bannerH),
-          color: Theme.CurrentTheme.bg1,
+          color: Theme.current.bg1,
           source: .terminal
         ))
       let exitText: String
@@ -79,8 +79,8 @@ public struct FrameProducer {
         .glyphRun(
           origin: CGPoint(x: originX + 4, y: bannerY + 2),
           text: exitText,
-          foreground: Theme.CurrentTheme.dim0,
-          background: Theme.CurrentTheme.bg1,
+          foreground: Theme.current.dim0,
+          background: Theme.current.bg1,
           attributes: [],
           source: .terminal
         ))
@@ -143,7 +143,7 @@ public struct FrameProducer {
         let shifted = CGRect(
           x: rect.origin.x, y: rect.origin.y + contentYOffset,
           width: rect.width, height: rect.height)
-        cmds.append(.selection(shifted, color: Theme.CurrentTheme.selectionBg))
+        cmds.append(.selection(shifted, color: Theme.current.selectionBg))
       }
     }
 
@@ -233,7 +233,7 @@ public struct FrameProducer {
             cellUnderlineStyle = .single
           }
           if cellUnderlineColor == nil {
-            cellUnderlineColor = Theme.CurrentTheme.blue
+            cellUnderlineColor = Theme.current.blue
           }
           cellAttrs.insert(.underline)
         }
@@ -335,7 +335,7 @@ public struct FrameProducer {
       cmds.append(
         .cursor(
           CGRect(x: cx, y: cy, width: cw, height: ch),
-          color: Theme.CurrentTheme.cursor
+          color: Theme.current.cursor
         ))
     }
 

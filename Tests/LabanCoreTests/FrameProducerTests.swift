@@ -463,7 +463,7 @@ final class FrameProducerTests: XCTestCase {
     }
     let bannerRectIndex = cmds.firstIndex { cmd in
       if case .rect(let rect, let color, _) = cmd {
-        return rect.origin.y == 0 && color == Theme.CurrentTheme.bg1
+        return rect.origin.y == 0 && color == Theme.current.bg1
       }
       return false
     }

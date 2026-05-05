@@ -86,11 +86,11 @@ final class RenderPerfBench: XCTestCase {
     var out = ["\u{1b}[H"]
     for r in 0..<rows {
       for c in 0..<cols {
-        let R = (r * 7 + c) & 0xFF
-        let G = (c * 5 + r * 3) & 0xFF
-        let B = (r * c) & 0xFF
+        let red = (r * 7 + c) & 0xFF
+        let green = (c * 5 + r * 3) & 0xFF
+        let blue = (r * c) & 0xFF
         let scalar = UnicodeScalar(0x21 + ((r * 31 + c) % 94))!
-        out.append("\u{1b}[48;2;\(R);\(G);\(B)m\(scalar)")
+        out.append("\u{1b}[48;2;\(red);\(green);\(blue)m\(scalar)")
       }
       out.append("\r\n")
     }
@@ -161,10 +161,10 @@ final class RenderPerfBench: XCTestCase {
         "  [\(label)]  rects=\(rectCount)  glyphRuns=\(glyphCount)"
           + "  uniqueColors=\(rectColors.count)  rectColorRuns=\(rectRunBoundaries)")
     }
-    try dump("colored 80x24",  cols: 80,  rows: 24, payload: coloredPayload(cols: 80, rows: 24))
+    try dump("colored 80x24", cols: 80, rows: 24, payload: coloredPayload(cols: 80, rows: 24))
     try dump("colored 160x48", cols: 160, rows: 48, payload: coloredPayload(cols: 160, rows: 48))
-    try dump("text 160x48",    cols: 160, rows: 48, payload: textPayload(cols: 160, rows: 48))
-    try dump("tui 160x48",     cols: 160, rows: 48, payload: tuiPayload(cols: 160, rows: 48))
+    try dump("text 160x48", cols: 160, rows: 48, payload: textPayload(cols: 160, rows: 48))
+    try dump("tui 160x48", cols: 160, rows: 48, payload: tuiPayload(cols: 160, rows: 48))
   }
 
   // MARK: - SoftwareRenderer

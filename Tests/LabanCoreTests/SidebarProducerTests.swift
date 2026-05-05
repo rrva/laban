@@ -201,13 +201,15 @@ final class SidebarProducerTests: XCTestCase {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
     let labelRuns = cmds.compactMap { cmd -> (String, UInt32)? in
-      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "zsh" { return (text, fg) }
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "zsh" {
+        return (text, fg)
+      }
       return nil
     }
     XCTAssertFalse(labelRuns.isEmpty, "expected a title glyph run")
     for (_, fg) in labelRuns {
       XCTAssertEqual(
-        fg, Theme.CurrentTheme.dim0,
+        fg, Theme.current.dim0,
         "exited active tab must use dim0 foreground, got \(String(format: "%08X", fg))")
     }
   }
@@ -226,7 +228,7 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertFalse(labelRuns.isEmpty, "expected tab label glyph run")
     for (_, fg) in labelRuns {
       XCTAssertNotEqual(
-        fg, Theme.CurrentTheme.dim0,
+        fg, Theme.current.dim0,
         "running active tab must not use dim0 foreground")
     }
   }

@@ -37,7 +37,8 @@ final class HyperlinkPlumbingTests: XCTestCase {
 
     let cmds = try runWithText(bytes)
 
-    var linkRun: (text: String, attrs: TextAttributes, style: UnderlineStyle, color: UInt32?, hl: String?)?
+    var linkRun:
+      (text: String, attrs: TextAttributes, style: UnderlineStyle, color: UInt32?, hl: String?)?
     var nonLinkRuns: [(text: String, hl: String?)] = []
     for cmd in cmds {
       if case .glyphRun(_, let text, _, _, let attrs, let src, let style, let color, let hl) = cmd,
@@ -58,7 +59,8 @@ final class HyperlinkPlumbingTests: XCTestCase {
     XCTAssertEqual(link.text, "example.com", "link cells should coalesce into one run")
     XCTAssertEqual(link.hl, "https://example.com")
     XCTAssertTrue(
-      link.attrs.contains(.underline), "default link styling should set underline; got \(link.attrs.names)")
+      link.attrs.contains(.underline),
+      "default link styling should set underline; got \(link.attrs.names)")
     XCTAssertEqual(link.style, .single, "default link styling should be single underline")
     XCTAssertNotNil(link.color, "default link styling should set an underline color")
 
