@@ -141,7 +141,9 @@ final class FrameProducerTests: XCTestCase {
     let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
 
     let glyphTexts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, let src, _, _, _) = cmd, src == .terminal { return text }
+      if case .glyphRun(_, let text, _, _, _, let src, _, _, _) = cmd, src == .terminal {
+        return text
+      }
       return nil
     }
     let allGlyphText = glyphTexts.joined()
@@ -389,7 +391,9 @@ final class FrameProducerTests: XCTestCase {
     }
     XCTAssertFalse(bannerRects.isEmpty, "exited snapshot must produce a banner rect at originY")
     let bannerLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd, text.contains("exited") { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd, text.contains("exited") {
+        return text
+      }
       return nil
     }
     XCTAssertFalse(
@@ -400,12 +404,61 @@ final class FrameProducerTests: XCTestCase {
       "exit code 0 must appear in banner text; got \(bannerLabels)")
   }
 
+  func testExitBannerCommandsOverlayTerminalGlyphs() throws {
+    var size = LabanTerminalSize()
+    size.rows = 3
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("visible before exit".utf8))
+
+    guard let ownedSnapshot = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(ownedSnapshot) }
+
+    var snap = ownedSnapshot.pointee
+    snap.status = 1
+    snap.exit_status = 7
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
+    let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
+
+    let contentIndex = cmds.firstIndex { cmd in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd {
+        return text.contains("visible before exit")
+      }
+      return false
+    }
+    let bannerRectIndex = cmds.firstIndex { cmd in
+      if case .rect(let rect, let color, _) = cmd {
+        return rect.origin.y == 0 && color == Theme.CurrentTheme.bg1
+      }
+      return false
+    }
+    let bannerGlyphIndex = cmds.firstIndex { cmd in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd {
+        return text.contains("Process exited 7")
+      }
+      return false
+    }
+
+    guard let contentIndex, let bannerRectIndex, let bannerGlyphIndex else {
+      XCTFail("expected content and exit banner commands; got \(cmds)")
+      return
+    }
+    XCTAssertGreaterThan(bannerRectIndex, contentIndex)
+    XCTAssertGreaterThan(bannerGlyphIndex, contentIndex)
+  }
+
   func testBannerWhenExitedSignal() {
     var snap = makeExitSnapshot(status: 2, exitStatus: 15)
     let producer = FrameProducer(cellWidth: 8, cellHeight: 16)
     let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
     let bannerLabels = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd, text.contains("signaled") { return text }
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd, text.contains("signaled") {
+        return text
+      }
       return nil
     }
     XCTAssertFalse(bannerLabels.isEmpty, "signal exit must produce glyph run containing 'signaled'")

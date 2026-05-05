@@ -58,9 +58,8 @@ public struct FrameProducer {
         source: .terminal
       ))
 
-    // Exit banner — overlays the bottom terminal row when the process has exited.
-    // Placed before the cells guard so it renders even when cells is nil.
-    if snapshot.status != 0 {
+    func appendExitBanner() {
+      guard snapshot.status != 0 else { return }
       let bannerY = originY
       let bannerW = CGFloat(cols) * cw
       let bannerH = ch
@@ -87,7 +86,10 @@ public struct FrameProducer {
         ))
     }
 
-    guard rows > 0, cols > 0, let cells = snapshot.cells else { return cmds }
+    guard rows > 0, cols > 0, let cells = snapshot.cells else {
+      appendExitBanner()
+      return cmds
+    }
 
     // ---- Pass 1: Background rects for all rows ----
     for row in 0..<rows {
@@ -336,6 +338,10 @@ public struct FrameProducer {
           color: Theme.CurrentTheme.cursor
         ))
     }
+
+    // Exit banner overlays the bottom terminal row after all terminal cells
+    // have been emitted so stale bottom-row content cannot cover it.
+    appendExitBanner()
 
     return cmds
   }
