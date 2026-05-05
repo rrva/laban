@@ -6,6 +6,29 @@ import LabanCore
 import LabanRenderer
 import LabanTerminalCore
 
+private enum FixturePathError: Error, CustomStringConvertible {
+  case empty
+  case absolute
+  case traversal
+  case escapedRoot
+  case symlink(String)
+
+  var description: String {
+    switch self {
+    case .empty:
+      return "fixture path must not be empty"
+    case .absolute:
+      return "fixture path must be relative to the fixture root"
+    case .traversal:
+      return "fixture path must not contain '..'"
+    case .escapedRoot:
+      return "fixture path must remain inside the fixture root"
+    case .symlink(let component):
+      return "fixture path must not contain symlink component '\(component)'"
+    }
+  }
+}
+
 // MARK: - Internal helpers
 
 private struct DrawStats {
@@ -439,7 +462,8 @@ public final class HeadlessDebugRuntime {
   ]
 
   private static let discoveryFixtureActions: [DebugDiscoveryControl] = [
-    DebugDiscoveryControl(name: "load", summary: "Load a fixture JSON file by path."),
+    DebugDiscoveryControl(
+      name: "load", summary: "Load a fixture JSON file by relative path under fixtureRoot."),
     DebugDiscoveryControl(name: "restart", summary: "Restart the current fixture from step zero."),
     DebugDiscoveryControl(name: "step", summary: "Apply one or more fixture steps."),
   ]
@@ -447,16 +471,22 @@ public final class HeadlessDebugRuntime {
   private static let discoveryExamples: [DebugDiscoveryExample] = [
     DebugDiscoveryExample(
       title: "List capabilities",
-      command: #"curl "$DEBUG_URL/debug" | jq"#),
+      command: #"curl -H "Authorization: Bearer $DEBUG_TOKEN" "$DEBUG_URL/debug" | jq"#),
     DebugDiscoveryExample(
       title: "Type text",
-      command: #"curl -X POST "$DEBUG_URL/debug/actions" -d @action.json"#),
+      command:
+        #"curl -H "Authorization: Bearer $DEBUG_TOKEN" -X POST "$DEBUG_URL/debug/actions" -d @action.json"#
+    ),
     DebugDiscoveryExample(
       title: "Wait for visible text",
-      command: #"curl -X POST "$DEBUG_URL/debug/wait" -d @wait.json"#),
+      command:
+        #"curl -H "Authorization: Bearer $DEBUG_TOKEN" -X POST "$DEBUG_URL/debug/wait" -d @wait.json"#
+    ),
     DebugDiscoveryExample(
       title: "Write a diagnostic bundle",
-      command: #"curl -X POST "$DEBUG_URL/debug/snapshot" -d '{}'"#),
+      command:
+        #"curl -H "Authorization: Bearer $DEBUG_TOKEN" -X POST "$DEBUG_URL/debug/snapshot" -d '{}'"#
+    ),
   ]
 
   private let lock = NSLock()
@@ -464,6 +494,7 @@ public final class HeadlessDebugRuntime {
   public let runId: String
   private var mode: String
   private let artifactsURL: URL
+  private let fixtureRootURL: URL
   private let deterministic: Bool
 
   private var model: AppModel
@@ -512,11 +543,18 @@ public final class HeadlessDebugRuntime {
     tempURL: URL?,
     deterministic: Bool,
     runId: String,
+    fixtureRootURL: URL? = nil,
     captureName: String? = nil,
     captureScreenshots: CaptureScreenshotPolicy = .marked
   ) throws {
     self.runId = runId
     self.artifactsURL = artifactsURL
+    self.fixtureRootURL =
+      (fixtureRootURL
+      ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent("fixtures", isDirectory: true))
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
     self.deterministic = deterministic
     self.mode = fixtureURL != nil ? "fixture" : "headless"
 
@@ -1277,6 +1315,7 @@ public final class HeadlessDebugRuntime {
         mode: mode,
         frame: currentFrame,
         artifactRoot: artifactsURL.path,
+        fixtureRoot: fixtureRootURL.path,
         entrypoints: ["/debug", "/debug/capabilities"],
         endpoints: Self.discoveryEndpoints,
         actions: Self.discoveryActions,
@@ -2643,7 +2682,17 @@ public final class HeadlessDebugRuntime {
         appendError(kind: "fixture.load", message: "fixture load requires path")
         return fixtureResult(ok: false, action: req.action, error: "fixture load requires path")
       }
-      let url = resolveFixtureURL(rawPath)
+      let url: URL
+      do {
+        url = try resolveFixtureURL(rawPath)
+      } catch {
+        appendError(kind: "fixture.load", message: "rejected fixture path: \(error)")
+        return fixtureResult(
+          ok: false,
+          action: req.action,
+          error: "rejected fixture path: \(error)"
+        )
+      }
       do {
         let runner = try FixtureRunner.load(from: url)
         try resetFixtureModelUnlocked(runner: runner)
@@ -2707,12 +2756,39 @@ public final class HeadlessDebugRuntime {
     }
   }
 
-  private func resolveFixtureURL(_ path: String) -> URL {
-    if (path as NSString).isAbsolutePath {
-      return URL(fileURLWithPath: path)
+  private func resolveFixtureURL(_ path: String) throws -> URL {
+    let nsPath = path as NSString
+    guard !path.isEmpty else { throw FixturePathError.empty }
+    guard !nsPath.isAbsolutePath else { throw FixturePathError.absolute }
+
+    let components = nsPath.pathComponents.filter { $0 != "." }
+    guard !components.isEmpty else { throw FixturePathError.empty }
+    guard !components.contains("..") else { throw FixturePathError.traversal }
+
+    let root = fixtureRootURL.standardizedFileURL.resolvingSymlinksInPath()
+    var candidate = root
+    for component in components {
+      candidate.appendPathComponent(component)
+      if isSymlink(candidate) {
+        throw FixturePathError.symlink(component)
+      }
     }
-    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-      .appendingPathComponent(path)
+
+    let canonical = candidate.standardizedFileURL.resolvingSymlinksInPath()
+    guard canonical.path == root.path || canonical.path.hasPrefix(root.path + "/") else {
+      throw FixturePathError.escapedRoot
+    }
+    return candidate
+  }
+
+  private func isSymlink(_ url: URL) -> Bool {
+    guard
+      let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+      let type = attrs[.type] as? FileAttributeType
+    else {
+      return false
+    }
+    return type == .typeSymbolicLink
   }
 
   private func resetFixtureModelUnlocked(runner: FixtureRunner) throws {

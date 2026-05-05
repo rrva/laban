@@ -75,11 +75,11 @@ func usage() -> String {
 
   Discoverability:
     The debug server prints one readiness JSON line:
-      {"debugServer":"http://127.0.0.1:<port>","pid":12345,"runId":"..."}
+      {"debugServer":"http://127.0.0.1:<port>","debugToken":"...","pid":12345,"runId":"..."}
 
-    Export that URL as DEBUG_URL, then ask the live server what it supports:
-      curl "$DEBUG_URL/debug" | jq
-      curl "$DEBUG_URL/debug/capabilities" | jq
+    Export that URL as DEBUG_URL and the token as DEBUG_TOKEN, then ask the live server what it supports:
+      curl -H "Authorization: Bearer $DEBUG_TOKEN" "$DEBUG_URL/debug" | jq
+      curl -H "Authorization: Bearer $DEBUG_TOKEN" "$DEBUG_URL/debug/capabilities" | jq
 
     Useful starting points:
       GET  /debug/health

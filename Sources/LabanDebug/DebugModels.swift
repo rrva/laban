@@ -40,6 +40,7 @@ public struct DebugServerAddress: Equatable {
 
 public struct DebugReadiness: Encodable {
   public var debugServer: String
+  public var debugToken: String
   public var pid: Int32
   public var runId: String
 }
@@ -288,6 +289,7 @@ struct DebugDiscoveryResponse: Encodable {
   var mode: String
   var frame: Int
   var artifactRoot: String
+  var fixtureRoot: String
   var entrypoints: [String]
   var endpoints: [DebugDiscoveryEndpoint]
   var actions: [DebugDiscoveryControl]

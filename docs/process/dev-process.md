@@ -90,8 +90,11 @@ Expose a small HTTP server bound to loopback only. If port `0` is requested,
 the app chooses a free port and prints a single machine-readable line to stdout:
 
 ```json
-{"debugServer":"http://127.0.0.1:49321","pid":12345}
+{"debugServer":"http://127.0.0.1:49321","debugToken":"<bearer-token>","pid":12345,"runId":"abc123"}
 ```
+
+Every `/debug` request must include `Authorization: Bearer <bearer-token>`.
+The token is only emitted in the readiness JSON.
 
 The server must be disabled by default. It must not listen on public interfaces.
 It must not be enabled in release builds unless an explicit developer flag is
@@ -798,12 +801,14 @@ Loads, restarts, or steps a fixture session.
 Example requests:
 
 ```json
-{"action":"load","path":"fixtures/colored-boxes.fixture.json"}
+{"action":"load","path":"colored-boxes.fixture.json"}
 {"action":"restart"}
 {"action":"step","count":1}
 ```
 
-Fixture control is only available in fixture/headless-capable modes.
+Fixture control is only available in fixture/headless-capable modes. `load.path`
+must be relative to the debug runtime's fixture root. Absolute paths, `..`, and
+symlink components are rejected.
 
 ### Artifact Snapshot
 

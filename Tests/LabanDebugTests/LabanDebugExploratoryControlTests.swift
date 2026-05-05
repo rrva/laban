@@ -18,6 +18,7 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
     XCTAssertEqual(obj["mode"] as? String, "headless")
     XCTAssertGreaterThanOrEqual(obj["frame"] as? Int ?? -1, 1)
     XCTAssertEqual(obj["artifactRoot"] as? String, artifacts.path)
+    XCTAssertNotNil(obj["fixtureRoot"] as? String)
 
     let entrypoints = obj["entrypoints"] as! [String]
     XCTAssertTrue(entrypoints.contains("/debug"))
@@ -127,16 +128,19 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
   }
 
   func testFixtureControlLoadStepAndRestart() throws {
-    let (runtime, artifacts) = try makeRuntime("fixture-control")
+    let artifacts = tempArtifacts("fixture-control")
+    let fixtureRoot = artifacts.appendingPathComponent("fixtures", isDirectory: true)
+    let (runtime, _) = try makeRuntime(
+      "fixture-control", artifactsURL: artifacts, fixtureRootURL: fixtureRoot)
     defer { try? FileManager.default.removeItem(at: artifacts) }
 
-    let fixtureURL = artifacts.appendingPathComponent("fixture-control.fixture.json")
-    try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
+    let fixtureURL = fixtureRoot.appendingPathComponent("fixture-control.fixture.json")
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
     try fixtureJSON(name: "fixture-control", text: "fixture hello").write(to: fixtureURL)
 
     let loadBody = try JSONSerialization.data(withJSONObject: [
       "action": "load",
-      "path": fixtureURL.path,
+      "path": "fixture-control.fixture.json",
     ])
     let load = try json(runtime.fixtureControl(loadBody))
     XCTAssertEqual(load["ok"] as? Bool, true)
@@ -157,15 +161,50 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
     XCTAssertEqual(restart["stepIndex"] as? Int, 0)
   }
 
-  private func makeRuntime(_ name: String) throws -> (HeadlessDebugRuntime, URL) {
-    let artifacts = FileManager.default.temporaryDirectory
+  func testFixtureControlRejectsAbsoluteTraversalAndSymlinkPaths() throws {
+    let artifacts = tempArtifacts("fixture-paths")
+    let fixtureRoot = artifacts.appendingPathComponent("fixtures", isDirectory: true)
+    let (runtime, _) = try makeRuntime(
+      "fixture-paths", artifactsURL: artifacts, fixtureRootURL: fixtureRoot)
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    let outside = artifacts.appendingPathComponent("outside.fixture.json")
+    try fixtureJSON(name: "outside", text: "outside").write(to: outside)
+
+    let absolute = try fixtureLoad(runtime, path: outside.path)
+    XCTAssertEqual(absolute.status, 400)
+    XCTAssertEqual(absolute.body["ok"] as? Bool, false)
+
+    let traversal = try fixtureLoad(runtime, path: "../outside.fixture.json")
+    XCTAssertEqual(traversal.status, 400)
+    XCTAssertEqual(traversal.body["ok"] as? Bool, false)
+
+    let link = fixtureRoot.appendingPathComponent("link.fixture.json")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+    let symlink = try fixtureLoad(runtime, path: "link.fixture.json")
+    XCTAssertEqual(symlink.status, 400)
+    XCTAssertEqual(symlink.body["ok"] as? Bool, false)
+  }
+
+  private func tempArtifacts(_ name: String) -> URL {
+    FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-explore-\(name)-\(UUID().uuidString)")
+  }
+
+  private func makeRuntime(
+    _ name: String,
+    artifactsURL: URL? = nil,
+    fixtureRootURL: URL? = nil
+  ) throws -> (HeadlessDebugRuntime, URL) {
+    let artifacts = artifactsURL ?? tempArtifacts(name)
     let runtime = try HeadlessDebugRuntime(
       fixtureURL: nil,
       artifactsURL: artifacts,
       tempURL: nil,
       deterministic: true,
-      runId: name
+      runId: name,
+      fixtureRootURL: fixtureRootURL
     )
     return (runtime, artifacts)
   }
@@ -188,5 +227,13 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
 
   private func json(_ response: DebugResponse) throws -> [String: Any] {
     try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
+  }
+
+  private func fixtureLoad(_ runtime: HeadlessDebugRuntime, path: String) throws
+    -> (status: Int, body: [String: Any])
+  {
+    let body = try JSONSerialization.data(withJSONObject: ["action": "load", "path": path])
+    let response = runtime.fixtureControl(body)
+    return (response.status, try json(response))
   }
 }

@@ -10,6 +10,7 @@
     "mode",
     "frame",
     "artifactRoot",
+    "fixtureRoot",
     "entrypoints",
     "endpoints",
     "actions",
@@ -25,6 +26,7 @@
     "mode": {"type": "string", "enum": ["interactive", "headless", "fixture"]},
     "frame": {"type": "integer", "minimum": 0},
     "artifactRoot": {"type": "string"},
+    "fixtureRoot": {"type": "string"},
     "entrypoints": {
       "type": "array",
       "items": {"type": "string"},

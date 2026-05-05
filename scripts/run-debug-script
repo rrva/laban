@@ -57,11 +57,11 @@ def run_command(cmd, cwd):
         raise ScriptError(f"command failed with exit {result.returncode}: {' '.join(cmd)}")
 
 
-def http_json(server_url, method, path, body=None):
+def http_json(server_url, token, method, path, body=None):
     if not path.startswith("/debug"):
         raise ScriptError(f"refusing non-debug path: {path}")
     data = None
-    headers = {}
+    headers = {"Authorization": f"Bearer {token}"}
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -82,10 +82,14 @@ def http_json(server_url, method, path, body=None):
         raise ScriptError(f"{method} {path} did not return JSON: {exc}") from exc
 
 
-def http_bytes(server_url, method, path):
+def http_bytes(server_url, token, method, path):
     if not path.startswith("/debug"):
         raise ScriptError(f"refusing non-debug path: {path}")
-    request = urllib.request.Request(server_url.rstrip("/") + path, method=method)
+    request = urllib.request.Request(
+        server_url.rstrip("/") + path,
+        headers={"Authorization": f"Bearer {token}"},
+        method=method,
+    )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             return response.read()
@@ -116,6 +120,8 @@ def read_readiness(process, timeout_seconds, stderr_path):
         server = readiness.get("debugServer")
         if not server:
             raise ScriptError(f"readiness JSON missing debugServer: {line.strip()}")
+        if not readiness.get("debugToken"):
+            raise ScriptError(f"readiness JSON missing debugToken: {line.strip()}")
         return readiness
     raise ScriptError(f"timed out waiting for debug readiness; see stderr at {stderr_path}")
 
@@ -182,7 +188,7 @@ def save_response(artifacts_dir, relative_path, response):
     return str(target)
 
 
-def execute_step(server_url, artifacts_dir, index, step):
+def execute_step(server_url, token, artifacts_dir, index, step):
     op = step.get("op")
     label = step.get("label") or op or f"step-{index}"
     started = time.monotonic()
@@ -194,7 +200,7 @@ def execute_step(server_url, artifacts_dir, index, step):
     }
 
     if op == "discover":
-        response = http_json(server_url, "GET", "/debug")
+        response = http_json(server_url, token, "GET", "/debug")
         expect_members("endpoints", endpoint_set(response), step.get("expectEndpoints", []))
         expect_members("actions", control_set(response, "actions"), step.get("expectActions", []))
         expect_members(
@@ -213,13 +219,13 @@ def execute_step(server_url, artifacts_dir, index, step):
         }
 
     elif op == "get":
-        response = http_json(server_url, "GET", step["path"])
+        response = http_json(server_url, token, "GET", step["path"])
         if step.get("saveAs"):
             result["path"] = save_response(artifacts_dir, step["saveAs"], response)
         result["response"] = response
 
     elif op == "post":
-        response = http_json(server_url, "POST", step["path"], step.get("body", {}))
+        response = http_json(server_url, token, "POST", step["path"], step.get("body", {}))
         if step.get("expectOk") is not None and bool(response.get("ok")) != step["expectOk"]:
             raise ScriptError(f"expected ok={step['expectOk']} from {step['path']}: {response}")
         if step.get("saveAs"):
@@ -227,7 +233,7 @@ def execute_step(server_url, artifacts_dir, index, step):
         result["response"] = response
 
     elif op == "action":
-        response = http_json(server_url, "POST", "/debug/actions", step["body"])
+        response = http_json(server_url, token, "POST", "/debug/actions", step["body"])
         expect_ok = step.get("expectOk", True)
         if bool(response.get("ok")) != expect_ok:
             raise ScriptError(f"expected action ok={expect_ok}: {response}")
@@ -238,13 +244,13 @@ def execute_step(server_url, artifacts_dir, index, step):
             "timeoutMs": step.get("timeoutMs", 5000),
             "condition": step["condition"],
         }
-        response = http_json(server_url, "POST", "/debug/wait", body)
+        response = http_json(server_url, token, "POST", "/debug/wait", body)
         if response.get("ok") is not True:
             raise ScriptError(f"wait failed: {response}")
         result["response"] = response
 
     elif op == "snapshot":
-        response = http_json(server_url, "POST", "/debug/snapshot", {})
+        response = http_json(server_url, token, "POST", "/debug/snapshot", {})
         manifest = response.get("path")
         if not manifest or not Path(manifest).exists():
             raise ScriptError(f"snapshot did not write a manifest: {response}")
@@ -252,7 +258,7 @@ def execute_step(server_url, artifacts_dir, index, step):
         result["response"] = response
 
     elif op == "screenshot":
-        png = http_bytes(server_url, "GET", "/debug/screenshot")
+        png = http_bytes(server_url, token, "GET", "/debug/screenshot")
         if len(png) <= 100:
             raise ScriptError(f"screenshot is too small: {len(png)} bytes")
         if step.get("path"):
@@ -266,7 +272,7 @@ def execute_step(server_url, artifacts_dir, index, step):
         result["bytes"] = len(png)
 
     elif op == "fixture":
-        response = http_json(server_url, "POST", "/debug/fixture", step["body"])
+        response = http_json(server_url, token, "POST", "/debug/fixture", step["body"])
         if response.get("ok") is not True:
             raise ScriptError(f"fixture control failed: {response}")
         result["response"] = response
@@ -332,6 +338,9 @@ def main():
             run_command(["swift", "build", "--product", "laban-agent"], cwd=repo_root)
         if args.server:
             server_url = args.server
+            server_token = os.environ.get("DEBUG_TOKEN")
+            if not server_token:
+                raise ScriptError("--server requires DEBUG_TOKEN for bearer auth")
             report["server"] = server_url
             report["startedServer"] = False
         else:
@@ -339,15 +348,18 @@ def main():
                 repo_root, scenario, artifacts_dir, temp_dir, agent_bin
             )
             server_url = readiness["debugServer"]
+            server_token = readiness.get("debugToken")
+            if not server_token:
+                raise ScriptError("readiness JSON missing debugToken")
             report["server"] = server_url
-            report["readiness"] = readiness
+            report["readiness"] = {**readiness, "debugToken": "<redacted>"}
             report["startedServer"] = True
 
         print(f"debug script: {scenario['name']}")
         print(f"debug server: {server_url}")
 
         for index, step in enumerate(scenario["steps"], start=1):
-            step_result = execute_step(server_url, artifacts_dir, index, step)
+            step_result = execute_step(server_url, server_token, artifacts_dir, index, step)
             report["steps"].append(step_result)
             print(f"step {index}: {step_result['op']} ok")
 

@@ -15,6 +15,7 @@ private struct HTTPResponse {
 public final class DebugHTTPServer {
   private let runtime: HeadlessDebugRuntime
   private var serverFD: Int32 = -1
+  private var bearerToken: String = ""
 
   public init(runtime: HeadlessDebugRuntime) {
     self.runtime = runtime
@@ -59,6 +60,8 @@ public final class DebugHTTPServer {
     }
     let actualPort = CFSwapInt16BigToHost(bound.sin_port)
 
+    let token = Self.makeBearerToken()
+    bearerToken = token
     serverFD = fd
 
     let thread = Thread { self.acceptLoop() }
@@ -67,6 +70,7 @@ public final class DebugHTTPServer {
 
     return DebugReadiness(
       debugServer: "http://127.0.0.1:\(actualPort)",
+      debugToken: token,
       pid: ProcessInfo.processInfo.processIdentifier,
       runId: runtime.runId
     )
@@ -157,7 +161,8 @@ public final class DebugHTTPServer {
       body.append(contentsOf: bodyBuf[0..<n])
     }
 
-    let resp = route(method: method, path: path, query: parseQuery(queryString), body: body)
+    let resp = route(
+      method: method, path: path, query: parseQuery(queryString), headers: headers, body: body)
     let bytes = buildHTTPResponse(resp)
     bytes.withUnsafeBytes { ptr in
       _ = send(fd, ptr.baseAddress!, ptr.count, 0)
@@ -166,9 +171,18 @@ public final class DebugHTTPServer {
 
   // MARK: - Routing
 
-  private func route(method: String, path: String, query: [String: String], body: Data)
+  private func route(
+    method: String, path: String, query: [String: String], headers: [String: String], body: Data
+  )
     -> HTTPResponse
   {
+    guard isAuthorized(headers: headers) else {
+      return HTTPResponse(
+        status: 401, contentType: "application/json",
+        extraHeaders: ["WWW-Authenticate: Bearer"],
+        body: #"{"error":"missing or invalid bearer token"}"#.data(using: .utf8)!)
+    }
+
     switch (method, path) {
     case ("GET", "/debug"), ("GET", "/debug/capabilities"):
       return json(runtime.discovery())
@@ -300,11 +314,37 @@ public final class DebugHTTPServer {
   private func statusText(_ code: Int) -> String {
     switch code {
     case 200: return "OK"
+    case 401: return "Unauthorized"
     case 400: return "Bad Request"
     case 409: return "Conflict"
     case 404: return "Not Found"
     case 500: return "Internal Server Error"
     default: return "Unknown"
     }
+  }
+
+  private func isAuthorized(headers: [String: String]) -> Bool {
+    guard let value = headers["authorization"] else { return false }
+    guard value.count > 7, value.lowercased().hasPrefix("bearer ") else { return false }
+    let token = String(value.dropFirst(7))
+    return Self.constantTimeEquals(token, bearerToken)
+  }
+
+  private static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+    let a = Array(lhs.utf8)
+    let b = Array(rhs.utf8)
+    var diff = UInt8(truncatingIfNeeded: a.count ^ b.count)
+    let count = max(a.count, b.count)
+    for i in 0..<count {
+      diff |= (i < a.count ? a[i] : 0) ^ (i < b.count ? b[i] : 0)
+    }
+    return diff == 0
+  }
+
+  private static func makeBearerToken() -> String {
+    var rng = SystemRandomNumberGenerator()
+    return (0..<32)
+      .map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &rng)) }
+      .joined()
   }
 }

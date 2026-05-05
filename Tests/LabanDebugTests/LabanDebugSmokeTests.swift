@@ -45,6 +45,29 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertThrowsError(try DebugServerAddress.parse("127.0.0.1:notanumber"))
   }
 
+  func testDebugHTTPServerRequiresBearerToken() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-auth")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let server = DebugHTTPServer(runtime: runtime)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    XCTAssertFalse(readiness.debugToken.isEmpty)
+    let healthURL = URL(string: readiness.debugServer + "/debug/health")!
+
+    let noAuth = try httpGet(healthURL)
+    XCTAssertEqual(noAuth.status, 401)
+
+    let badAuth = try httpGet(healthURL, token: "wrong")
+    XCTAssertEqual(badAuth.status, 401)
+
+    let ok = try httpGet(healthURL, token: readiness.debugToken)
+    XCTAssertEqual(ok.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
   // MARK: - HeadlessDebugRuntime smoke (no fixture, no HTTP)
 
   func testRuntimeHealthNoFixture() throws {
@@ -601,6 +624,26 @@ final class LabanDebugSmokeTests: XCTestCase {
       runId: runId
     )
     return (runtime, artifacts)
+  }
+
+  private func httpGet(_ url: URL, token: String? = nil) throws -> (status: Int, body: Data) {
+    var request = URLRequest(url: url)
+    if let token {
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    }
+
+    let sem = DispatchSemaphore(value: 0)
+    var result: (status: Int, body: Data)?
+    var requestError: Error?
+    URLSession.shared.dataTask(with: request) { data, response, error in
+      requestError = error
+      let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+      result = (status, data ?? Data())
+      sem.signal()
+    }.resume()
+    sem.wait()
+    if let requestError { throw requestError }
+    return result ?? (-1, Data())
   }
 
   private func feedOSCTitle(_ title: String, to runtime: HeadlessDebugRuntime) {
