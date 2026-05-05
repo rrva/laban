@@ -61,6 +61,49 @@ public final class Session {
     return try Session(config: &config, size: size)
   }
 
+  public static func debugShell(size: LabanTerminalSize) throws -> Session {
+    var config = LabanLaunchConfig()
+    config.fixture_mode = 0
+    let executable = "/bin/sh"
+    let argv = ["/bin/sh"]
+    let envp = [
+      "TERM=xterm-256color",
+      "COLORTERM=truecolor",
+      "PS1=$ ",
+    ]
+
+    return try executable.withCString { exePtr in
+      try withCStringArray(argv) { argvPtr in
+        try withCStringArray(envp) { envPtr in
+          config.executable = exePtr
+          config.argv = argvPtr
+          config.envp = envPtr
+          return try Session(config: &config, size: size)
+        }
+      }
+    }
+  }
+
+  private static func withCStringArray<R>(
+    _ strings: [String],
+    _ body: (UnsafePointer<UnsafePointer<CChar>?>) throws -> R
+  ) rethrows -> R {
+    let cStrings = strings.map { strdup($0) }
+    defer {
+      for cString in cStrings {
+        if let cString { free(cString) }
+      }
+    }
+    var pointers = cStrings.map { cString -> UnsafePointer<CChar>? in
+      guard let cString else { return nil }
+      return UnsafePointer(cString)
+    }
+    pointers.append(nil)
+    return try pointers.withUnsafeBufferPointer { buffer in
+      try body(buffer.baseAddress!)
+    }
+  }
+
   public func close() {
     guard !isClosed else { return }
     isClosed = true

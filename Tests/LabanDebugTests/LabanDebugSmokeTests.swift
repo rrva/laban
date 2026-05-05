@@ -150,6 +150,42 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertNotNil(obj["frame"])
   }
 
+  func testRuntimeRealShellModeRoutesTypedTextThroughPTY() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-real-pty",
+      sessionMode: .realShell
+    )
+
+    let marker = "REAL_PTY_OK"
+    let octalMarker = marker.utf8.map { String(format: "\\%03o", Int($0)) }.joined()
+    let command = "printf '\(octalMarker)\\012'\n"
+    XCTAssertFalse(command.contains(marker), "typed command must not contain expected output")
+
+    let actionBody = try JSONSerialization.data(
+      withJSONObject: ["action": "typeText", "text": command])
+    XCTAssertEqual(runtime.applyAction(actionBody).status, 200)
+
+    let waitBody = try JSONSerialization.data(
+      withJSONObject: [
+        "timeoutMs": 2_000,
+        "condition": [
+          "kind": "textVisible",
+          "text": marker,
+        ],
+      ])
+    let wait = runtime.wait(waitBody)
+    let obj = try JSONSerialization.jsonObject(with: wait.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
   func testRuntimeStateHasOneTab() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")

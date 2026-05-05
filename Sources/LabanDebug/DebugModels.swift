@@ -21,6 +21,11 @@ public enum DebugServerError: Error {
   case encodingFailed
 }
 
+public enum HeadlessSessionMode: String, Sendable {
+  case fixture
+  case realShell
+}
+
 public struct DebugServerAddress: Equatable {
   public var host: String
   public var port: UInt16

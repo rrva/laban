@@ -493,6 +493,7 @@ public final class HeadlessDebugRuntime {
 
   public let runId: String
   private var mode: String
+  private var sessionMode: HeadlessSessionMode
   private let artifactsURL: URL
   private let fixtureRootURL: URL
   private let deterministic: Bool
@@ -544,6 +545,7 @@ public final class HeadlessDebugRuntime {
     deterministic: Bool,
     runId: String,
     fixtureRootURL: URL? = nil,
+    sessionMode: HeadlessSessionMode = .fixture,
     captureName: String? = nil,
     captureScreenshots: CaptureScreenshotPolicy = .marked
   ) throws {
@@ -557,6 +559,8 @@ public final class HeadlessDebugRuntime {
       .resolvingSymlinksInPath()
     self.deterministic = deterministic
     self.mode = fixtureURL != nil ? "fixture" : "headless"
+    let initialSessionMode: HeadlessSessionMode = fixtureURL != nil ? .fixture : sessionMode
+    self.sessionMode = initialSessionMode
 
     let fa = FontAtlas(pointSize: 14)
     let cs = fa.cellSize
@@ -600,7 +604,7 @@ public final class HeadlessDebugRuntime {
     self.model = try AppModel(
       initialSize: initSize,
       sessionFactory: { size in
-        let session = try Session.fixture(size: size)
+        let session = try Self.makeSession(size: size, mode: initialSessionMode)
         session.captureSink = initialRecorder
         return session
       })
@@ -641,6 +645,18 @@ public final class HeadlessDebugRuntime {
     }
 
     renderFrameUnlocked()
+  }
+
+  private static func makeSession(
+    size: LabanTerminalSize,
+    mode: HeadlessSessionMode
+  ) throws -> Session {
+    switch mode {
+    case .fixture:
+      return try Session.fixture(size: size)
+    case .realShell:
+      return try Session.debugShell(size: size)
+    }
   }
 
   // MARK: - Server ready notification
@@ -2805,6 +2821,7 @@ public final class HeadlessDebugRuntime {
     for tab in model.tabs {
       model.session(forTab: tab.id)?.close()
     }
+    sessionMode = .fixture
 
     var size = LabanTerminalSize()
     size.rows = Int32(runner.fixture.initialSize.rows)

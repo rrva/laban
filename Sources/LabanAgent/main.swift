@@ -68,6 +68,7 @@ func usage() -> String {
 
   Debug server options:
     --fixture=PATH                  Load a deterministic fixture session.
+                                    Without --fixture, the debug server starts a real /bin/sh PTY.
     --artifacts=PATH                Write screenshots, snapshots, and captures here.
     --temp-dir=PATH                 Use an isolated temp directory.
     --capture=NAME                  Start full capture recording immediately.
@@ -191,6 +192,7 @@ if let debugAddr = args.debugServerAddress {
       tempURL: tempURL,
       deterministic: args.deterministic,
       runId: runId,
+      sessionMode: fixtureURL == nil ? .realShell : .fixture,
       captureName: args.capture,
       captureScreenshots: args.captureScreenshots
     )
