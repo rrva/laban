@@ -41,12 +41,17 @@ predictable for release zips.
 Build an unsigned release zip with the app version and manifest URL:
 
 ```sh
-LABAN_UPDATE_MANIFEST_URL='https://drive.google.com/uc?export=download&id=<JSON_FILE_ID>' \
 ./scripts/package-zip 0.1.0
 ```
 
 It writes `.artifacts/release/Laban-0.1.0.zip`. Upload that zip and put its
 public URL in the manifest's `link` field.
+
+The package script stamps the public Laban manifest URL by default:
+
+```text
+https://drive.google.com/uc?export=download&id=1021htaI6ngLEoF1ItVLvFJHzP-TczOeG
+```
 
 The script uses macOS `ditto -c -k --sequesterRsrc --keepParent` so the app
 bundle's macOS metadata is preserved in the zip.

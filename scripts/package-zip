@@ -11,6 +11,7 @@ usage: scripts/package-zip <version>
 Environment:
   LABAN_BUILD_NUMBER          Build number stamped into Info.plist. Defaults to 1.
   LABAN_UPDATE_MANIFEST_URL   Public update JSON URL stamped into Info.plist.
+                              Defaults to the public Laban manifest on Google Drive.
   LABAN_RELEASE_DIR           Zip output directory. Defaults to .artifacts/release.
   LABAN_SKIP_CODESIGN         Defaults to 1 for unsigned release zips.
 EOF
@@ -24,6 +25,8 @@ app_version=$1
 
 export LABAN_APP_VERSION=$app_version
 export LABAN_BUILD_NUMBER=${LABAN_BUILD_NUMBER:-1}
+default_update_manifest_url="https://drive.google.com/uc?export=download&id=1021htaI6ngLEoF1ItVLvFJHzP-TczOeG"
+export LABAN_UPDATE_MANIFEST_URL=${LABAN_UPDATE_MANIFEST_URL:-$default_update_manifest_url}
 
 release_dir=${LABAN_RELEASE_DIR:-.artifacts/release}
 app_bundle=".build/laban/Laban.app"
