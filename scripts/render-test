@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Minimal terminal rendering test.
+
+Prints a battery of escape sequences that exercise the most common
+rendering features. Run it and look at the output, or pipe it into a
+capture tool. Exits 0 unconditionally.
+"""
+
+import sys
+
+CSI = "\x1b["
+RESET = CSI + "0m"
+
+
+def section(title: str) -> None:
+    sys.stdout.write(f"\n{CSI}1;4m{title}{RESET}\n")
+
+
+def line(label: str, body: str) -> None:
+    sys.stdout.write(f"{label:<22} {body}{RESET}\n")
+
+
+def main() -> int:
+    section("SGR attributes")
+    for code, name in [
+        (1, "bold"),
+        (2, "dim"),
+        (3, "italic"),
+        (4, "underline"),
+        (7, "reverse"),
+        (9, "strikethrough"),
+        (53, "overline"),
+    ]:
+        line(name, f"{CSI}{code}mthe quick brown fox")
+
+    section("16 colors (foreground / background)")
+    fg = "".join(f"{CSI}3{c}m█" for c in range(8)) + "".join(f"{CSI}9{c}m█" for c in range(8))
+    bg = "".join(f"{CSI}4{c}m " for c in range(8)) + "".join(f"{CSI}10{c}m " for c in range(8))
+    line("fg", fg)
+    line("bg", bg)
+
+    section("256 colors")
+    ramp = "".join(f"{CSI}48;5;{16 + i}m " for i in range(216))
+    sys.stdout.write(ramp + RESET + "\n")
+    grays = "".join(f"{CSI}48;5;{232 + i}m " for i in range(24))
+    sys.stdout.write(grays + RESET + "\n")
+
+    section("24-bit truecolor gradient")
+    width = 64
+    for r in (0, 128, 255):
+        row = ""
+        for i in range(width):
+            g = int(i * 255 / (width - 1))
+            row += f"{CSI}48;2;{r};{g};{255 - g}m "
+        sys.stdout.write(row + RESET + "\n")
+
+    section("Box drawing & block elements")
+    sys.stdout.write("┌─┬─┐  ╔═╦═╗  ▁▂▃▄▅▆▇█  ░▒▓█  ◢◣◤◥\n")
+    sys.stdout.write("│ │ │  ║ ║ ║\n")
+    sys.stdout.write("├─┼─┤  ╠═╬═╣\n")
+    sys.stdout.write("└─┴─┘  ╚═╩═╝\n")
+
+    section("Wide characters & combining marks")
+    line("CJK", "你好世界  日本語  한국어")
+    line("emoji", "😀 🌍 🚀 👨‍👩‍👧‍👦 🇸🇪")
+    line("combining", "á ë ñ  (a-acute, e-umlaut, n-tilde)")
+
+    section("Cursor positioning")
+    sys.stdout.write("anchor>" + CSI + "10C<10 cols right\n")
+    sys.stdout.write("save" + CSI + "s" + CSI + "20Cjumped" + CSI + "u<- back at save\n")
+
+    section("Erase in line")
+    sys.stdout.write("XXXXXXXXXXXXXXXX\r" + CSI + "Kerased then rewritten\n")
+
+    section("Hyperlink (OSC 8)")
+    sys.stdout.write("\x1b]8;;https://example.com\x1b\\example.com\x1b]8;;\x1b\\\n")
+
+    sys.stdout.write(RESET + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

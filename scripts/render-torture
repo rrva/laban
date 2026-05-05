@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""Terminal rendering torture test.
+
+Pushes a terminal harder than `render-test`: many SGR styles in one
+sequence, underline variants, indexed + truecolor mixed, double-width /
+double-height lines, scroll regions, alt screen, insert mode, origin
+mode, wide chars at column boundaries, combining-mark stacks, RTL,
+zero-width, C1 controls, OSC titles / working-dir / palette /
+hyperlinks, mode toggles, and a high-volume throughput burst.
+
+Usage:
+  render-torture                run all sections
+  render-torture --pause        wait for Enter between sections
+  render-torture --list         list section names
+  render-torture --only NAME    run a single section
+  render-torture --skip NAME    skip a section (repeatable)
+  render-torture --no-altscreen disable sections that swap to the alt screen
+
+Exits 0. Sends ESC c (RIS) on exit unless --no-reset.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import sys
+import time
+from typing import Callable
+
+ESC = "\x1b"
+CSI = ESC + "["
+OSC = ESC + "]"
+ST = ESC + "\\"
+BEL = "\x07"
+RESET = CSI + "0m"
+
+out = sys.stdout
+W = lambda s: out.write(s)
+
+
+def title(name: str) -> None:
+    W(f"\n{CSI}1;7m  {name}  {RESET}\n\n")
+
+
+def hr() -> None:
+    cols = max(20, shutil.get_terminal_size((80, 24)).columns)
+    W("─" * cols + "\n")
+
+
+# ----- sections -----
+
+def sgr_combos() -> None:
+    title("SGR — every attribute, alone and combined")
+    attrs = [
+        ("bold", "1"),
+        ("dim", "2"),
+        ("italic", "3"),
+        ("underline", "4"),
+        ("slow blink", "5"),
+        ("rapid blink", "6"),
+        ("reverse", "7"),
+        ("conceal", "8"),
+        ("strike", "9"),
+        ("double-underline", "21"),
+        ("overline", "53"),
+    ]
+    for name, code in attrs:
+        W(f"{CSI}{code}m{name:<22}{RESET}  ")
+        W(f"{CSI}{code};31mred-{name:<18}{RESET}  ")
+        W(f"{CSI}{code};44mon-blue-{name}{RESET}\n")
+
+    W("\n")
+    W(f"{CSI}1;3;4;9;38;5;208;48;5;17mbold+italic+underline+strike+orange-on-navy{RESET}\n")
+    W(f"{CSI}1;3;4;5;7;9;53;38;2;255;200;50;48;2;30;30;60mEverything at once, truecolor{RESET}\n")
+    # colon-form SGR (ECMA-48 sub-parameters); some terms accept this
+    W(f"{CSI}38:2::255:120:60mcolon-form 38:2 truecolor{RESET}\n")
+    W(f"{CSI}38:5:202mcolon-form 38:5 indexed{RESET}\n")
+
+
+def underlines() -> None:
+    title("Underline styles (CSI 4:N m + colored underline)")
+    for style, label in [(0, "off"), (1, "single"), (2, "double"),
+                         (3, "curly"), (4, "dotted"), (5, "dashed")]:
+        W(f"{CSI}4:{style}m{label:<8}{RESET}  ")
+    W("\n")
+    W(f"{CSI}4:3m{CSI}58:2::255:80:80mcurly red underline on default text{RESET}\n")
+    W(f"{CSI}4:1m{CSI}58:5:46msingle green-256 underline{RESET}\n")
+
+
+def palette_ramps() -> None:
+    title("Color ramps")
+    # 16 ANSI
+    W("ANSI 16: ")
+    for c in list(range(8)) + list(range(8)):
+        W(f"{CSI}48;5;{c}m  ")
+    W(RESET + "\n")
+    # 256 cube, two rows
+    W("256 cube:\n")
+    for row in range(2):
+        for i in range(108):
+            W(f"{CSI}48;5;{16 + row * 108 + i}m ")
+        W(RESET + "\n")
+    # grayscale
+    W("grays:    ")
+    for i in range(24):
+        W(f"{CSI}48;5;{232 + i}m  ")
+    W(RESET + "\n")
+    # truecolor HSV-ish
+    W("truecolor HSV row:\n")
+    cols = max(40, shutil.get_terminal_size((80, 24)).columns)
+    for x in range(cols):
+        h = x / cols
+        r, g, b = _hsv(h, 1, 1)
+        W(f"{CSI}48;2;{r};{g};{b}m ")
+    W(RESET + "\n")
+
+
+def _hsv(h: float, s: float, v: float) -> tuple[int, int, int]:
+    i = int(h * 6) % 6
+    f = h * 6 - int(h * 6)
+    p, q, t = v * (1 - s), v * (1 - f * s), v * (1 - (1 - f) * s)
+    r, g, b = [(v, t, p), (q, v, p), (p, v, t),
+               (p, q, v), (t, p, v), (v, p, q)][i]
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def wide_and_combining() -> None:
+    title("Unicode width, combining, RTL, zero-width")
+    W("CJK halfwidth boundary:\n")
+    cols = shutil.get_terminal_size((80, 24)).columns
+    pad = "·" * (cols - 2)
+    W(pad + "中\n")             # wide char at right edge
+    W(pad[:-1] + "中\n")        # wide char straddling edge
+    W("Combining stack:   a" + "́" * 1 + "  a" + "́" * 5 + "  a" + "̧́̂̃̄" + "\n")
+    W("Hangul jamo joining: 한 vs 한ᆫ\n")
+    W("Family ZWJ:        👨‍👩‍👧‍👦  flag: 🇸🇪🇯🇵🇺🇸\n")
+    W("Skin-tone+ZWJ:     👋🏽 🧑🏿‍💻 🧑🏻‍🚀\n")
+    W("Variation select:  ❤  vs  ❤️  (text vs emoji presentation)\n")
+    W("Zero-width:        a​b​c (ZWSP),  a‍b (ZWJ)\n")
+    W("RTL Hebrew:        שלום עולם — mixed עם English\n")
+    W("RTL Arabic:        مرحبا بالعالم — مع English\n")
+    W("Bidi numerals:     order: 1 2 3 — שלום 1 2 3 עולם\n")
+
+
+def control_chars() -> None:
+    title("Control characters (BS, CR, LF, VT, FF, HT)")
+    W("backspace:  ABCDE\b\b\bX\n")          # expect ABXDE? actually ABCXE depending; just visualize
+    W("carriage:   1234567890\rabc\n")        # overwrite first 3 cols
+    W("vtab:       before\vafter\n")
+    W("formfeed:   before\fafter\n")
+    W("tabs:       a\tb\tc\td\te\tend\n")
+    # custom tab stops via HTS
+    W("custom HTS: ")
+    W(CSI + "3g")                              # clear all tab stops
+    for col in (10, 25, 40, 55):
+        W(CSI + f"{col}G" + ESC + "H")        # cursor to col, set tab
+    W(CSI + "1G")                              # back to col 1
+    W("a\tb\tc\td\te\n")
+    W(CSI + "3g")                              # cleanup
+
+
+def cursor_motion() -> None:
+    title("Cursor motion (CUU/CUD/CUF/CUB, CHA, HVP, save/restore)")
+    W("anchor>" + CSI + "10C<10 cols right" + CSI + "5D<5 back\n")
+    W("save" + ESC + "7" + CSI + "20Cjumped" + ESC + "8<- DECRC\n")
+    W("CSI s" + CSI + "s" + CSI + "20Cjumped" + CSI + "u<- CSI u\n")
+    W("HVP:" + CSI + ";40H" + "(col 40 via HVP)\n")
+    W("CHA:" + CSI + "60G" + "(col 60 via CHA)\n")
+
+
+def erase_ops() -> None:
+    title("Erase in line / display (EL, ED)")
+    W("BEFORE-LEFT-of-cursor   X   AFTER-RIGHT-of-cursor")
+    # move back into the X and run all three EL modes
+    W(CSI + "26D")               # back into mid
+    W(CSI + "0K")                # erase to end
+    W("\n")
+    W("XXXXXXXXXXXXXXXXXXXX" + "\r" + CSI + "1K" + "(EL 1 cleared left)\n")
+    W("XXXXXXXXXXXXXXXXXXXX" + "\r" + CSI + "2K" + "(EL 2 cleared all)\n")
+
+
+def insert_delete() -> None:
+    title("Insert/delete chars and lines (ICH, DCH, IL, DL, IRM)")
+    W("ICH 5:    [12345]" + "\b\b\b\b\b\b" + CSI + "5@" + "(inserted) — line\n")
+    W("DCH 3:    [abcdefg]" + "\b\b\b\b\b\b\b" + CSI + "3P" + "— line\n")
+    W("IRM on:   prefix>" + CSI + "4h" + "INSERTED" + CSI + "4l" + "<suffix\n")
+    # IL/DL only meaningful inside a scroll region; skip
+
+
+def scroll_region() -> None:
+    title("Scroll region (DECSTBM) + IND/RI")
+    rows = shutil.get_terminal_size((80, 24)).lines
+    top, bot = 2, min(8, rows - 2)
+    W(CSI + f"{top};{bot}r")     # set region
+    W(CSI + f"{top};1H")         # to top of region
+    for i in range(12):
+        W(f"line {i:02d} inside region\n")
+        time.sleep(0.02)
+    W(CSI + f"{bot};1H")
+    for _ in range(3):
+        W(ESC + "M")              # RI — reverse scroll
+    W(CSI + "r")                  # reset region
+    W(CSI + f"{bot + 2};1H")
+    W("(scroll region reset)\n")
+
+
+def double_width_height() -> None:
+    title("DECDWL / DECDHL — double-width and double-height lines")
+    W(ESC + "#6" + "DOUBLE-WIDTH LINE (DECDWL)\n")
+    W(ESC + "#3" + "DOUBLE-HEIGHT TOP HALF\n")
+    W(ESC + "#4" + "DOUBLE-HEIGHT BOTTOM HALF\n")
+    W(ESC + "#5" + "single-width restored\n")
+
+
+def origin_wrap() -> None:
+    title("Origin mode (DECOM) and autowrap (DECAWM)")
+    W(CSI + "?7l")                # autowrap off
+    W("autowrap OFF: " + "X" * 200 + "\n")
+    W(CSI + "?7h")                # autowrap on
+    W("autowrap ON:  " + "X" * 200 + "\n")
+
+
+def cursor_styles() -> None:
+    title("Cursor styles (DECSCUSR) — visible only briefly")
+    for n, name in [(1, "blink block"), (2, "steady block"),
+                    (3, "blink underline"), (4, "steady underline"),
+                    (5, "blink bar"), (6, "steady bar")]:
+        W(CSI + f"{n} q")
+        W(f"  style {n}: {name}  ")
+        out.flush()
+        time.sleep(0.4)
+    W(CSI + "0 q\n")              # reset
+
+
+def osc_title_cwd() -> None:
+    title("OSC — window title, icon, working dir")
+    W(OSC + "0;render-torture: window+icon" + ST)
+    W("set window+icon title (OSC 0)\n")
+    W(OSC + "2;render-torture: window only" + ST)
+    W("set window title (OSC 2)\n")
+    W(OSC + f"7;file://{os.uname().nodename}{os.getcwd()}" + ST)
+    W("set working dir (OSC 7)\n")
+
+
+def osc_hyperlinks() -> None:
+    title("OSC 8 hyperlinks")
+    link = lambda url, txt, params="": f"{ESC}]8;{params};{url}{ST}{txt}{ESC}]8;;{ST}"
+    W("plain:   " + link("https://example.com", "example.com") + "\n")
+    W("with id: " + link("https://example.com/a", "with-id", "id=abc") + "\n")
+    W("nested:  before " + link("https://example.com/x", f"start {CSI}1mBOLD{CSI}22m end") + " after\n")
+
+
+def osc_palette() -> None:
+    title("OSC 4/10/11 — palette query (response, if any, lands on stdin)")
+    # Just send the queries; we don't read the reply here.
+    W(OSC + "4;1;?" + ST)         # query color 1
+    W(OSC + "10;?" + ST)          # query default fg
+    W(OSC + "11;?" + ST)          # query default bg
+    W("(palette queries dispatched)\n")
+
+
+def mode_toggles() -> None:
+    title("Mode toggles (bracketed paste, mouse, focus) — set then reset")
+    for code, name in [(2004, "bracketed paste"),
+                       (1004, "focus events"),
+                       (1000, "X10 mouse"),
+                       (1002, "button-event mouse"),
+                       (1003, "any-event mouse"),
+                       (1006, "SGR mouse")]:
+        W(CSI + f"?{code}h")
+        W(f"  enabled {name} ({code})\n")
+        W(CSI + f"?{code}l")
+
+
+def alt_screen() -> None:
+    title("Alternate screen buffer (ENTER → wait → EXIT)")
+    W(CSI + "?1049h")             # alt screen
+    W(CSI + "2J" + CSI + "H")
+    W(f"{CSI}1;33mYou are on the ALTERNATE screen.{RESET}\n")
+    W("Returning in 1 second...\n")
+    out.flush()
+    time.sleep(1.0)
+    W(CSI + "?1049l")             # back to main
+    W("(returned to main screen)\n")
+
+
+def c1_controls() -> None:
+    title("ESC-form C1 controls (NEL, IND, RI, HTS, RIS-equivalent skipped)")
+    W("NEL (ESC E):  before" + ESC + "Eafter (acts like CR+LF)\n")
+    W("IND (ESC D):  before" + ESC + "Dafter (line feed)\n")
+    W("Charset G0/G1: " + ESC + "(0" + "lqwqk x x x mqvqj" + ESC + "(B" + "  (DEC graphics)\n")
+
+
+def malformed() -> None:
+    title("Malformed / edge sequences (parser stress)")
+    # Lone ESC followed by printable -> abandoned, char prints
+    W("lone ESC + 'A':         [" + ESC + "A]\n")
+    # CSI with too many params
+    W("CSI with 20 params:     " + CSI + ";".join(["0"] * 20) + "m" + "rendered\n")
+    # CSI with a private final byte
+    W("CSI private final '~':  " + CSI + "5~" + "(VT key seq, usually no-op out)\n")
+    # OSC with no terminator until later
+    W("OSC missing ST (BEL ok):" + OSC + "0;tmp" + BEL + "(BEL terminates OSC)\n")
+    # Very long parameter string
+    W("CSI long arg:           " + CSI + "1" * 200 + "m" + "(impl-defined)" + RESET + "\n")
+    # Unknown CSI final byte
+    W("CSI unknown final 'Z':  " + CSI + "Z" + "(after CBT)\n")
+
+
+def throughput() -> None:
+    title("Throughput burst (~1 MB)")
+    cols = max(40, shutil.get_terminal_size((80, 24)).columns)
+    payload_lines = 200
+    chunk = []
+    for r in range(payload_lines):
+        for x in range(cols):
+            red = (r * 7) % 256
+            grn = (x * 3) % 256
+            blu = (r * x) % 256
+            chunk.append(f"{CSI}48;2;{red};{grn};{blu}m ")
+        chunk.append(RESET + "\n")
+    blob = "".join(chunk)
+    t0 = time.time()
+    W(blob)
+    out.flush()
+    dt = time.time() - t0
+    W(f"\nWrote {len(blob):,} bytes in {dt:.2f}s ({len(blob) / max(dt, 1e-6) / 1e6:.1f} MB/s on the writer side)\n")
+
+
+SECTIONS: list[tuple[str, Callable[[], None], bool]] = [
+    ("sgr",          sgr_combos,           False),
+    ("underlines",   underlines,           False),
+    ("palettes",     palette_ramps,        False),
+    ("unicode",      wide_and_combining,   False),
+    ("controls",     control_chars,        False),
+    ("cursor",       cursor_motion,        False),
+    ("erase",        erase_ops,            False),
+    ("insert",       insert_delete,        False),
+    ("scroll",       scroll_region,        False),
+    ("dwl-dhl",      double_width_height,  False),
+    ("origin-wrap",  origin_wrap,          False),
+    ("cursor-style", cursor_styles,        False),
+    ("title-cwd",    osc_title_cwd,        False),
+    ("hyperlinks",   osc_hyperlinks,       False),
+    ("palette-osc",  osc_palette,          False),
+    ("modes",        mode_toggles,         False),
+    ("altscreen",    alt_screen,           True),
+    ("c1",           c1_controls,          False),
+    ("malformed",    malformed,            False),
+    ("throughput",   throughput,           False),
+]
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--pause", action="store_true", help="wait for Enter between sections")
+    p.add_argument("--list", action="store_true", help="list section names and exit")
+    p.add_argument("--only", action="append", default=[], help="run only this section (repeatable)")
+    p.add_argument("--skip", action="append", default=[], help="skip this section (repeatable)")
+    p.add_argument("--no-altscreen", action="store_true", help="skip altscreen-toggling sections")
+    p.add_argument("--no-reset", action="store_true", help="do not send RIS on exit")
+    args = p.parse_args()
+
+    if args.list:
+        for name, _, alt in SECTIONS:
+            tag = " (altscreen)" if alt else ""
+            print(name + tag)
+        return 0
+
+    only = set(args.only)
+    skip = set(args.skip)
+
+    try:
+        for name, fn, alt in SECTIONS:
+            if only and name not in only:
+                continue
+            if name in skip:
+                continue
+            if alt and args.no_altscreen:
+                continue
+            try:
+                fn()
+                hr()
+                out.flush()
+            except Exception as e:                # don't let one section abort the rest
+                W(f"\n[!] {name} raised {type(e).__name__}: {e}\n")
+            if args.pause:
+                W("[paused — press Enter]")
+                out.flush()
+                try:
+                    input()
+                except EOFError:
+                    pass
+    finally:
+        W(RESET)
+        # clear lingering modes that we may have set
+        for code in (2004, 1004, 1000, 1002, 1003, 1006, 7):
+            W(CSI + f"?{code}l")
+        W(CSI + "0 q")            # reset cursor style
+        W(CSI + "r")              # reset scroll region
+        if not args.no_reset:
+            # soft reset rather than full RIS — keeps screen contents
+            W(CSI + "!p")
+        out.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
