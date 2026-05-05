@@ -13,6 +13,7 @@ public final class AppModel {
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
   private let processMetadataSyncInterval: TimeInterval = 0.25
+  private var themeChangeObserver: NSObjectProtocol?
   public weak var captureSink: CaptureSink? {
     didSet {
       for session in sessions.values {
@@ -60,6 +61,24 @@ public final class AppModel {
       session.captureSink = captureSink
     }
     tabs.append(tab)
+    themeChangeObserver = NotificationCenter.default.addObserver(
+      forName: Theme.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      // Re-inject the new palette into every running session so SGR colors
+      // and the default fg/bg/cursor that libghostty has cached for new
+      // output match the swapped theme. Cells already in scrollback keep
+      // their resolved RGB — that's standard terminal behavior.
+      for session in self.sessions.values {
+        AppModel.applyThemePalette(to: session)
+      }
+    }
+  }
+
+  deinit {
+    if let themeChangeObserver {
+      NotificationCenter.default.removeObserver(themeChangeObserver)
+    }
   }
 
   public var activeTab: Tab? { tabs.first(where: { $0.isActive }) }

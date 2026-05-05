@@ -48,6 +48,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   // Damage-driven render budget state
   private var renderInvalidated = true
+  private var themeChangeObserver: NSObjectProtocol?
   private var lastRenderedActiveTabId: Tab.ID?
   private var scrollResidualPx: CGFloat = 0
 
@@ -138,6 +139,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       metal.onFrameCompleted = { [weak self] in
         DispatchQueue.main.async { self?.recordInputLatencyIfPending() }
       }
+    }
+
+    // Force a full redraw on every theme swap so chrome (sidebar bg, cursor,
+    // selection) re-reads `Theme.current`. AppModel re-injects the OSC
+    // palette into running sessions in its own observer; this one is just
+    // about getting the next frame onto screen with the new chrome colors.
+    themeChangeObserver = NotificationCenter.default.addObserver(
+      forName: Theme.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.renderInvalidated = true
     }
   }
 
@@ -262,6 +273,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   deinit {
     stopDisplayLink()
+    if let themeChangeObserver {
+      NotificationCenter.default.removeObserver(themeChangeObserver)
+    }
   }
 
   override func viewDidChangeBackingProperties() {
