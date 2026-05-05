@@ -15,6 +15,8 @@
 #include <stdbool.h>
 #include <util.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -259,14 +261,47 @@ static void vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) 
     ghostty_terminal_vt_write(s->terminal, bytes, len);
 }
 
+/* Drain `bytes` to the PTY master, retrying on partial writes (PTY
+ * master accepts ~1 KB–4 KB per write depending on kernel) and on
+ * EAGAIN (the fd is O_NONBLOCK; a slow child process fills the kernel
+ * buffer and blocks back-pressure on us). Without this loop a 2 KB
+ * bracketed paste would lose its trailing `ESC[201~` end marker,
+ * leaving the receiver in "still receiving paste" mode forever and
+ * silently swallowing every subsequent keystroke as paste content. */
 static int write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s || !bytes) return -1;
     if (len == 0) return 0;
     if (s->pty_fd < 0) return -1;
-    ssize_t n = write(s->pty_fd, bytes, len);
-    if (n < 0) return -1;
-    if (n > 0) {
-        emit_capture_bytes(s, LABAN_CAPTURE_BYTES_PTY_INPUT, bytes, (size_t)n);
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(s->pty_fd, bytes + written, len - written);
+        if (n > 0) {
+            emit_capture_bytes(
+                s, LABAN_CAPTURE_BYTES_PTY_INPUT, bytes + written, (size_t)n);
+            written += (size_t)n;
+            continue;
+        }
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Wait for the child to drain. select() blocks until the
+                 * fd is writable again or 1 s elapses (defensive cap so a
+                 * dead/stopped child can't permanently freeze the
+                 * caller's main thread). */
+                fd_set wfds;
+                FD_ZERO(&wfds);
+                FD_SET(s->pty_fd, &wfds);
+                struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+                int sr = select(s->pty_fd + 1, NULL, &wfds, NULL, &tv);
+                if (sr < 0 && errno == EINTR) continue;
+                if (sr <= 0) return -1; /* timeout or error */
+                continue;
+            }
+            return -1;
+        }
+        /* n == 0 : the master returned no bytes without an error. Treat
+         * as a transient and retry once via the same select path. */
+        return -1;
     }
     return 0;
 }
