@@ -641,6 +641,39 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertNotNil(selObj["sessionId"])
   }
 
+  func testDebugSelectionProjectionClampsOutOfRangeColumns() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-sel-clamp"
+    )
+
+    let setBody =
+      #"{"action":"setSelection","anchor":{"row":0,"col":-50},"focus":{"row":0,"col":500}}"#
+      .data(using: .utf8)!
+    let setResp = runtime.applyAction(setBody)
+    XCTAssertEqual(setResp.status, 200)
+
+    let selResp = runtime.selection()
+    XCTAssertEqual(selResp.status, 200)
+    let selObj = try JSONSerialization.jsonObject(with: selResp.body) as! [String: Any]
+    XCTAssertEqual(selObj["active"] as? Bool, true)
+    let rects = selObj["rects"] as? [[String: Any]]
+    XCTAssertEqual(rects?.count, 1)
+    let rect = try XCTUnwrap(rects?.first)
+    XCTAssertGreaterThanOrEqual(rect["x"] as? Double ?? -1, 0)
+    XCTAssertGreaterThan(rect["width"] as? Double ?? 0, 0)
+
+    let copyResp = runtime.applyAction(#"{"action":"copy"}"#.data(using: .utf8)!)
+    XCTAssertEqual(copyResp.status, 200)
+  }
+
   func testCopyActionPopulatesDebugClipboard() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")

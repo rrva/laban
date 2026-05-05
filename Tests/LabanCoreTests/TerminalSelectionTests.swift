@@ -54,6 +54,19 @@ final class TerminalSelectionTests: XCTestCase {
     XCTAssertEqual(segs[0].endCol - segs[0].startCol, 1)
   }
 
+  func testSingleRowSegmentClampsOutOfRangeColumns() {
+    let sel = TerminalSelection(
+      sessionId: "s",
+      anchor: TerminalCellCoordinate(row: 0, col: -20),
+      focus: TerminalCellCoordinate(row: 0, col: 200)
+    )
+    let segs = sel.segments(rows: 5, cols: 20)
+    XCTAssertEqual(segs.count, 1)
+    XCTAssertEqual(segs[0].row, 0)
+    XCTAssertEqual(segs[0].startCol, 0)
+    XCTAssertEqual(segs[0].endCol, 20)
+  }
+
   // MARK: - Segments: multi-row
 
   func testMultiRowSegmentsProduceCorrectBoundaries() {
@@ -88,6 +101,22 @@ final class TerminalSelectionTests: XCTestCase {
     XCTAssertEqual(segs.count, 3)
     XCTAssertEqual(segs[0].row, 1)
     XCTAssertEqual(segs[2].row, 3)
+  }
+
+  func testMultiRowSegmentsClampEdgeColumnsBeforeNormalizing() {
+    let sel = TerminalSelection(
+      sessionId: "s",
+      anchor: TerminalCellCoordinate(row: 0, col: 200),
+      focus: TerminalCellCoordinate(row: 1, col: -20)
+    )
+    let segs = sel.segments(rows: 5, cols: 20)
+    XCTAssertEqual(segs.count, 2)
+    XCTAssertEqual(segs[0].row, 0)
+    XCTAssertEqual(segs[0].startCol, 19)
+    XCTAssertEqual(segs[0].endCol, 20)
+    XCTAssertEqual(segs[1].row, 1)
+    XCTAssertEqual(segs[1].startCol, 0)
+    XCTAssertEqual(segs[1].endCol, 1)
   }
 
   // MARK: - cgRects
@@ -175,6 +204,31 @@ final class TerminalSelectionTests: XCTestCase {
     )
     let text = sel.selectedText(from: snap.pointee)
     XCTAssertEqual(text, "hello mvp", "trailing spaces must be right-trimmed; got '\(text)'")
+  }
+
+  func testSelectedTextClampsOutOfRangeColumnsBeforeIndexingCells() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(selectionFixtureBytes)
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: 1, col: -100),
+      focus: TerminalCellCoordinate(row: 1, col: 1_000)
+    )
+
+    XCTAssertEqual(sel.selectedText(from: snap.pointee), "│ hello mvp  │")
   }
 
   func testSelectedTextSkipsWideGlyphSpacerTail() throws {

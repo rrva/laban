@@ -26,11 +26,17 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
 
   // Normalized start/end (start <= end in row-major order).
   private func startEnd(cols: Int) -> (start: TerminalCellCoordinate, end: TerminalCellCoordinate) {
-    let anchorLinear = anchor.row * cols + anchor.col
-    let focusLinear = focus.row * cols + focus.col
+    func clampCol(_ point: TerminalCellCoordinate) -> TerminalCellCoordinate {
+      TerminalCellCoordinate(row: point.row, col: min(max(point.col, 0), cols - 1))
+    }
+
+    let clampedAnchor = clampCol(anchor)
+    let clampedFocus = clampCol(focus)
+    let anchorLinear = clampedAnchor.row * cols + clampedAnchor.col
+    let focusLinear = clampedFocus.row * cols + clampedFocus.col
     return anchorLinear <= focusLinear
-      ? (anchor, focus)
-      : (focus, anchor)
+      ? (clampedAnchor, clampedFocus)
+      : (clampedFocus, clampedAnchor)
   }
 
   // Returns (row, startCol, endColExclusive) tuples.
