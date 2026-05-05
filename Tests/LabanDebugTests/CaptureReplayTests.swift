@@ -42,6 +42,68 @@ final class CaptureReplayTests: XCTestCase {
     XCTAssertTrue(report.mismatches.contains { $0.kind == "frameCommandsHash" })
   }
 
+  func testReplayRejectsMalformedTimelineLine() throws {
+    let capture = try makeCapture(name: "replay-malformed")
+    let timelineURL = capture.appendingPathComponent("timeline.ndjson")
+    let text = try String(contentsOf: timelineURL, encoding: .utf8)
+      .appending("{not-json}\n")
+    try text.write(to: timelineURL, atomically: true, encoding: .utf8)
+
+    XCTAssertThrowsError(try CaptureReplayRunner(captureURL: capture, mode: .terminal).run()) {
+      error in
+      guard case CaptureReplayError.malformedTimelineLine = error else {
+        XCTFail("expected malformedTimelineLine, got \(error)")
+        return
+      }
+    }
+  }
+
+  func testReplayAppliesTabClosedBeforeLaterSelectionEvents() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-replay-tab-closed-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    var size = LabanTerminalSize()
+    size.rows = 6
+    size.cols = 30
+    let model = try AppModel(initialSize: size)
+    let recorder = try CaptureRecorder(artifactRoot: root, name: "tab-closed")
+    model.captureSink = recorder
+    model.recordExistingStateForCapture()
+
+    guard let firstTab = model.activeTab,
+      let firstSession = model.session(forTab: firstTab.id)
+    else {
+      XCTFail("missing first session")
+      return
+    }
+    _ = firstSession.replayPtyOutput(Array("first tab survives\r\n".utf8))
+
+    let secondTab = try model.createTab()
+    guard let secondSession = model.session(forTab: secondTab.id) else {
+      XCTFail("missing second session")
+      return
+    }
+    _ = secondSession.replayPtyOutput(Array("closed tab\r\n".utf8))
+
+    try model.closeTab(secondTab.id)
+    recorder.record(
+      CaptureTimelineEvent(
+        kind: .tabSelected,
+        tabId: secondTab.id,
+        sessionId: secondTab.sessionId
+      ))
+    try recordAppKitFrame(frame: 1, model: model, recorder: recorder)
+
+    _ = try recorder.finish()
+    let report = try CaptureReplayRunner(
+      captureURL: root.appendingPathComponent("tab-closed"),
+      mode: .terminal
+    ).run()
+    XCTAssertEqual(report.terminalReplay, "passed")
+    XCTAssertTrue(report.mismatches.isEmpty)
+  }
+
   func testReplayHandlesAppKitMidSessionCaptureAndLegacyScroll() throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-replay-appkit-\(UUID().uuidString)")

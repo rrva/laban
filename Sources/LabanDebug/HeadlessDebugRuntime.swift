@@ -2427,7 +2427,7 @@ public final class HeadlessDebugRuntime {
         ?? model.activeTab
       return tab?.title == cond.title
     case "textVisible":
-      guard let tab = model.activeTab,
+      guard let tab = waitTargetTabUnlocked(cond),
         let session = model.session(forTab: tab.id),
         let snap = session.snapshot()
       else { return false }
@@ -2444,6 +2444,16 @@ public final class HeadlessDebugRuntime {
     default:
       return false
     }
+  }
+
+  private func waitTargetTabUnlocked(_ cond: WaitCondition) -> Tab? {
+    if let sessionId = cond.sessionId {
+      return model.tabs.first { $0.sessionId == sessionId }
+    }
+    if let tabId = cond.tabId {
+      return model.tabs.first { $0.id == tabId }
+    }
+    return model.activeTab
   }
 
   private func cmdKindString(_ cmd: FrameCommand) -> String {

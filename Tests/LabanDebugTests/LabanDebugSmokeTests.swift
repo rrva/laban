@@ -518,6 +518,35 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(obj["ok"] as? Bool, true)
   }
 
+  func testRuntimeWaitTextVisibleCanTargetBackgroundSession() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-wait-session-text")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    _ = runtime.applyAction(
+      #"{"action":"feedOutput","text":"background-only"}"#.data(using: .utf8)!)
+    let firstState = try JSONSerialization.jsonObject(with: runtime.state().body) as! [String: Any]
+    let firstSessionId = firstState["activeSessionId"] as! String
+
+    _ = runtime.applyAction(#"{"action":"newTab"}"#.data(using: .utf8)!)
+    _ = runtime.applyAction(
+      #"{"action":"feedOutput","text":"foreground-only"}"#.data(using: .utf8)!)
+    let secondState = try JSONSerialization.jsonObject(with: runtime.state().body) as! [String: Any]
+    XCTAssertNotEqual(secondState["activeSessionId"] as? String, firstSessionId)
+
+    let waitBody = try JSONSerialization.data(
+      withJSONObject: [
+        "timeoutMs": 200,
+        "condition": [
+          "kind": "textVisible",
+          "sessionId": firstSessionId,
+          "text": "background-only",
+        ],
+      ])
+    let result = runtime.wait(waitBody)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+  }
+
   // MARK: - Selection and clipboard tests
 
   func testSetSelectionActionSetsActiveSelection() throws {

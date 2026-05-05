@@ -28,6 +28,17 @@ public struct CaptureReplayReport: Codable, Equatable, Sendable {
   public var mismatches: [CaptureReplayMismatch]
 }
 
+public enum CaptureReplayError: Error, Equatable, CustomStringConvertible, Sendable {
+  case malformedTimelineLine(line: Int, message: String)
+
+  public var description: String {
+    switch self {
+    case .malformedTimelineLine(let line, let message):
+      return "malformed timeline line \(line): \(message)"
+    }
+  }
+}
+
 public final class CaptureReplayRunner {
   private let captureURL: URL
   private let mode: CaptureReplayMode
@@ -138,6 +149,29 @@ public final class CaptureReplayRunner {
       case CaptureEventKind.tabSelected.rawValue:
         if let capturedTab = event.tabId, let replayTab = tabMap[capturedTab] {
           model.selectTab(replayTab)
+        }
+
+      case CaptureEventKind.tabClosed.rawValue:
+        let replaySessionId = event.sessionId.flatMap { sessionMap[$0] }
+        if let capturedTab = event.tabId, let replayTab = tabMap[capturedTab] {
+          do {
+            try model.closeTab(replayTab)
+          } catch AppError.lastTabClosed {
+            // A capture can end by closing the last tab. AppModel records that
+            // as a sentinel error after applying the close, so replay treats it
+            // as a successful state transition.
+          } catch AppError.tabNotFound {
+            // Duplicate or stale close events should not resurrect a mapping.
+          } catch {
+            throw error
+          }
+          tabMap.removeValue(forKey: capturedTab)
+        }
+        if let capturedSession = event.sessionId {
+          sessionMap.removeValue(forKey: capturedSession)
+        }
+        if let replaySessionId {
+          selectionBySession.removeValue(forKey: replaySessionId)
         }
 
       case CaptureEventKind.appState.rawValue:
@@ -504,16 +538,44 @@ public final class CaptureReplayRunner {
 
   private func loadTimeline() throws -> [CaptureTimelineEvent] {
     let url = captureURL.appendingPathComponent("timeline.ndjson")
-    let text = try String(contentsOf: url, encoding: .utf8)
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
     let decoder = JSONDecoder()
     var events: [CaptureTimelineEvent] = []
-    for line in text.split(separator: "\n") {
-      if let data = String(line).data(using: .utf8),
-        let event = try? decoder.decode(CaptureTimelineEvent.self, from: data)
-      {
-        events.append(event)
+    var buffer = Data()
+    var lineNumber = 0
+    let newline = Data([0x0A])
+
+    func decodeLine(_ data: Data, line: Int) throws {
+      var lineData = data
+      if lineData.last == 0x0D {
+        lineData.removeLast()
+      }
+      guard !lineData.isEmpty else { return }
+      do {
+        events.append(try decoder.decode(CaptureTimelineEvent.self, from: lineData))
+      } catch {
+        throw CaptureReplayError.malformedTimelineLine(
+          line: line, message: String(describing: error))
       }
     }
+
+    while true {
+      let chunk = handle.readData(ofLength: 64 * 1024)
+      if chunk.isEmpty { break }
+      buffer.append(chunk)
+      while let range = buffer.range(of: newline) {
+        lineNumber += 1
+        try decodeLine(Data(buffer[..<range.lowerBound]), line: lineNumber)
+        buffer.removeSubrange(buffer.startIndex..<range.upperBound)
+      }
+    }
+
+    if !buffer.isEmpty {
+      lineNumber += 1
+      try decodeLine(buffer, line: lineNumber)
+    }
+
     return events
   }
 
