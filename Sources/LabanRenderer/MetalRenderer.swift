@@ -11,25 +11,25 @@ import QuartzCore
 // are commented; tweak with care if either side changes.
 
 private struct SolidInstance {
-  var origin: SIMD2<Float>      //  8
-  var size:   SIMD2<Float>      //  8
-  var color:  SIMD4<Float>      // 16  (rgba 0..1, straight alpha)
+  var origin: SIMD2<Float>  //  8
+  var size: SIMD2<Float>  //  8
+  var color: SIMD4<Float>  // 16  (rgba 0..1, straight alpha)
 }
 
 private struct GlyphInstance {
-  var origin:    SIMD2<Float>   //  8
-  var size:      SIMD2<Float>   //  8
-  var uvOrigin:  SIMD2<Float>   //  8
-  var uvSize:    SIMD2<Float>   //  8
-  var color:     SIMD4<Float>   // 16
+  var origin: SIMD2<Float>  //  8
+  var size: SIMD2<Float>  //  8
+  var uvOrigin: SIMD2<Float>  //  8
+  var uvSize: SIMD2<Float>  //  8
+  var color: SIMD4<Float>  // 16
 }
 
 private struct Uniforms {
   var surfaceSizePixels: SIMD2<Float>
-  var scale:             Float
+  var scale: Float
   // Trailing pad to round to 16 bytes — Metal expects naturally aligned
   // constant buffers and the simd2/float here would otherwise leave a hole.
-  var _pad:              Float = 0
+  var _pad: Float = 0
 }
 
 /// GPU renderer backed by `CAMetalLayer`. One device, one queue, one library.
@@ -107,7 +107,9 @@ public final class MetalRenderer: RendererBackend {
   /// captureMode is off) are returned as 0.
   private struct PerPass { var content, present, cursor, readback: Double }
   private func resolvePerPassTimingsForFrame() -> PerPass {
-    guard let cb = counterSampleBuffer else { return PerPass(content: 0, present: 0, cursor: 0, readback: 0) }
+    guard let cb = counterSampleBuffer else {
+      return PerPass(content: 0, present: 0, cursor: 0, readback: 0)
+    }
     let slots = lastFramePassSlots
     let data: Data
     do {
@@ -393,12 +395,23 @@ public final class MetalRenderer: RendererBackend {
     desc.label = "laban.frame-timing"
     counterSampleBuffer = try? device.makeCounterSampleBuffer(descriptor: desc)
 
-    // Apple silicon timestamp counters tick at 1 ns (per the
-    // "Optimize Metal apps and games with GPU counters" WWDC session).
-    // We could calibrate dynamically with `device.sampleTimestamps`, but
-    // the Swift overload resolution there is flaky across SDK versions
-    // and the constant is the right answer on every Mac we ship to.
-    gpuNsPerTick = 1.0
+    gpuNsPerTick = calibrateGpuNanosecondsPerTick()
+  }
+
+  private func calibrateGpuNanosecondsPerTick() -> Double {
+    var timebase = mach_timebase_info_data_t()
+    guard mach_timebase_info(&timebase) == KERN_SUCCESS, timebase.denom != 0 else {
+      return 1.0
+    }
+    let first = device.sampleTimestamps()
+    usleep(1_000)
+    let second = device.sampleTimestamps()
+    let cpuDelta = second.cpu &- first.cpu
+    let gpuDelta = second.gpu &- first.gpu
+    guard cpuDelta > 0, gpuDelta > 0 else { return 1.0 }
+    let cpuNs =
+      Double(cpuDelta) * Double(timebase.numer) / Double(timebase.denom)
+    return cpuNs / Double(gpuDelta)
   }
 
   /// Update the layer's drawable size in pixels (call from view layout).
@@ -447,10 +460,12 @@ public final class MetalRenderer: RendererBackend {
   public func render(_ commands: [FrameCommand], damage: RenderDamage) {
     let cpuStart = ContinuousClock.now
 
-    // Block until the previous frame's GPU work has retired. Without this,
-    // multiple in-flight frames stomp on the shared persistent target and
-    // scratch textures and the user sees ghost pixels.
-    frameInFlight.wait()
+    // Drop this frame if the previous GPU frame has not retired. Without a
+    // gate, multiple in-flight frames stomp on the shared persistent target
+    // and scratch textures; blocking here would put that wait on the caller.
+    guard frameInFlight.wait(timeout: .now()) == .success else {
+      return
+    }
     guard let drawable = layer.nextDrawable() else {
       frameInFlight.signal()
       return
@@ -514,6 +529,10 @@ public final class MetalRenderer: RendererBackend {
       surfacePxH: surfaceHPx,
       uniforms: &u,
       cmdBuf: cmdBuf)
+    if targetNeedsFullRedraw && !didContent {
+      frameInFlight.signal()
+      return
+    }
     passSlots.contentActive = didContent
 
     // ---------- Pass 2: blit persistent target → drawable ----------
@@ -538,7 +557,9 @@ public final class MetalRenderer: RendererBackend {
     }
 
     // ---------- Pass 3: cursor overlay on the drawable ----------
-    if !cursorInstances.isEmpty {
+    if !cursorInstances.isEmpty,
+      let buf = prepareInstanceBuffer(&cursorBuffer, for: cursorInstances)
+    {
       let cursorPass = MTLRenderPassDescriptor()
       let attach = cursorPass.colorAttachments[0]!
       attach.texture = drawableTex
@@ -555,15 +576,6 @@ public final class MetalRenderer: RendererBackend {
         enc.label = "cursor-overlay"
         enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
         enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
-        let buf = ensureBuffer(
-          &cursorBuffer,
-          elementCount: cursorInstances.count,
-          elementStride: MemoryLayout<SolidInstance>.stride)
-        cursorInstances.withUnsafeBufferPointer { src in
-          if let base = src.baseAddress {
-            memcpy(buf.contents(), base, src.count * MemoryLayout<SolidInstance>.stride)
-          }
-        }
         enc.setRenderPipelineState(solidPipeline)
         enc.setVertexBuffer(buf, offset: 0, index: 0)
         enc.drawPrimitives(
@@ -688,7 +700,10 @@ public final class MetalRenderer: RendererBackend {
     case .partial(let yRanges):
       attach.loadAction = .load  // preserve clean rows from previous frame
       scissor = scissorRectFromYRanges(
-        yRanges, surfacePxH: surfacePxH, scale: layer.contentsScale)
+        yRanges,
+        surfacePxW: target.width,
+        surfacePxH: surfacePxH,
+        scale: layer.contentsScale)
     }
 
     if counterRenderSupported, let cb = counterSampleBuffer,
@@ -697,6 +712,38 @@ public final class MetalRenderer: RendererBackend {
       sa.sampleBuffer = cb
       sa.startOfVertexSampleIndex = 0
       sa.endOfFragmentSampleIndex = 1
+    }
+
+    let solidFrameBuffer: MTLBuffer?
+    if solidInstances.isEmpty {
+      solidFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&solidBuffer, for: solidInstances) else {
+        return false
+      }
+      solidFrameBuffer = buffer
+    }
+
+    let glyphFrameBuffer: MTLBuffer?
+    if glyphInstances.isEmpty {
+      glyphFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&glyphBuffer, for: glyphInstances) else {
+        return false
+      }
+      glyphFrameBuffer = buffer
+    }
+
+    let sidebarGlyphFrameBuffer: MTLBuffer?
+    if sidebarGlyphInstances.isEmpty {
+      sidebarGlyphFrameBuffer = nil
+    } else {
+      guard
+        let buffer = prepareInstanceBuffer(&sidebarGlyphBuffer, for: sidebarGlyphInstances)
+      else {
+        return false
+      }
+      sidebarGlyphFrameBuffer = buffer
     }
 
     guard let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: pass) else {
@@ -709,32 +756,14 @@ public final class MetalRenderer: RendererBackend {
       encoder.setScissorRect(s)
     }
 
-    if !solidInstances.isEmpty {
-      let buf = ensureBuffer(
-        &solidBuffer,
-        elementCount: solidInstances.count,
-        elementStride: MemoryLayout<SolidInstance>.stride)
-      solidInstances.withUnsafeBufferPointer { src in
-        if let base = src.baseAddress {
-          memcpy(buf.contents(), base, src.count * MemoryLayout<SolidInstance>.stride)
-        }
-      }
+    if let buf = solidFrameBuffer {
       encoder.setRenderPipelineState(solidPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.drawPrimitives(
         type: .triangle, vertexStart: 0,
         vertexCount: 6, instanceCount: solidInstances.count)
     }
-    if !glyphInstances.isEmpty {
-      let buf = ensureBuffer(
-        &glyphBuffer,
-        elementCount: glyphInstances.count,
-        elementStride: MemoryLayout<GlyphInstance>.stride)
-      glyphInstances.withUnsafeBufferPointer { src in
-        if let base = src.baseAddress {
-          memcpy(buf.contents(), base, src.count * MemoryLayout<GlyphInstance>.stride)
-        }
-      }
+    if let buf = glyphFrameBuffer {
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(glyphAtlas.texture, index: 0)
@@ -743,16 +772,7 @@ public final class MetalRenderer: RendererBackend {
         type: .triangle, vertexStart: 0,
         vertexCount: 6, instanceCount: glyphInstances.count)
     }
-    if !sidebarGlyphInstances.isEmpty {
-      let buf = ensureBuffer(
-        &sidebarGlyphBuffer,
-        elementCount: sidebarGlyphInstances.count,
-        elementStride: MemoryLayout<GlyphInstance>.stride)
-      sidebarGlyphInstances.withUnsafeBufferPointer { src in
-        if let base = src.baseAddress {
-          memcpy(buf.contents(), base, src.count * MemoryLayout<GlyphInstance>.stride)
-        }
-      }
+    if let buf = sidebarGlyphFrameBuffer {
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(sidebarGlyphAtlas.texture, index: 0)
@@ -769,7 +789,7 @@ public final class MetalRenderer: RendererBackend {
   /// all dirty Y ranges. Returns nil for an empty list. CG has y-up; Metal
   /// scissor rects use y-down (origin top-left), so we flip here.
   private func scissorRectFromYRanges(
-    _ ranges: [DirtyYRange], surfacePxH: Int, scale: CGFloat
+    _ ranges: [DirtyYRange], surfacePxW: Int, surfacePxH: Int, scale: CGFloat
   ) -> MTLScissorRect? {
     guard !ranges.isEmpty else { return nil }
     var minY = CGFloat.greatestFiniteMagnitude
@@ -783,7 +803,7 @@ public final class MetalRenderer: RendererBackend {
       surfacePxH, Int(((CGFloat(surfacePxH) / scale - minY) * scale).rounded(.up)))
     let height = max(0, bottomPx - topPx)
     guard height > 0 else { return nil }
-    return MTLScissorRect(x: 0, y: topPx, width: surfaceWidth, height: height)
+    return MTLScissorRect(x: 0, y: topPx, width: surfacePxW, height: height)
   }
 
   // MARK: - Frame encoding
@@ -920,19 +940,43 @@ public final class MetalRenderer: RendererBackend {
     }
   }
 
-  /// Grow `buffer` if the current capacity can't fit `elementCount` × `elementStride` bytes.
+  private func prepareInstanceBuffer<Element>(
+    _ buffer: inout MTLBuffer?,
+    for instances: [Element]
+  ) -> MTLBuffer? {
+    let stride = MemoryLayout<Element>.stride
+    guard
+      let target = ensureBuffer(
+        &buffer,
+        elementCount: instances.count,
+        elementStride: stride)
+    else { return nil }
+    instances.withUnsafeBufferPointer { src in
+      if let base = src.baseAddress {
+        memcpy(target.contents(), base, src.count * stride)
+      }
+    }
+    return target
+  }
+
+  /// Grow `buffer` if the current capacity can't fit `elementCount` x `elementStride` bytes.
   /// Adds 25% headroom to amortise growth in long sessions.
   private func ensureBuffer(
     _ buffer: inout MTLBuffer?,
     elementCount: Int,
     elementStride: Int
-  ) -> MTLBuffer {
-    let needed = elementCount * elementStride
+  ) -> MTLBuffer? {
+    let required = elementCount.multipliedReportingOverflow(by: elementStride)
+    guard !required.overflow, required.partialValue > 0 else { return nil }
+    let needed = required.partialValue
     if let existing = buffer, existing.length >= needed {
       return existing
     }
-    let withHeadroom = max(needed + needed / 4, 4096)
-    let fresh = device.makeBuffer(length: withHeadroom, options: [.storageModeShared])!
+    let headroom = needed / 4
+    guard needed <= Int.max - headroom else { return nil }
+    let withHeadroom = max(needed + headroom, 4096)
+    guard let fresh = device.makeBuffer(length: withHeadroom, options: [.storageModeShared])
+    else { return nil }
     buffer = fresh
     return fresh
   }
@@ -1086,10 +1130,9 @@ public final class MetalRenderer: RendererBackend {
       CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
     guard
       let provider = CGDataProvider(data: Data(bytes) as CFData),
-      let cs = CGColorSpace(name: CGColorSpace.sRGB),
       let image = CGImage(
         width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
-        bytesPerRow: bytesPerRow, space: cs,
+        bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
         provider: provider, decode: nil, shouldInterpolate: false,
         intent: .defaultIntent)
