@@ -56,6 +56,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     SendDiagnostics.run()
   }
 
+  /// Open NSFontPanel, primed with the current pick. The panel is
+  /// non-modal — the user picks a font, AppKit fires `changeFont(_:)`
+  /// on the responder chain (us, since we're the menu target). We
+  /// persist the choice and ask the user to relaunch; live re-skinning
+  /// the renderer would require recreating the Metal glyph atlases and
+  /// resizing every session's grid, which isn't worth the complexity
+  /// for a setting most users change once.
+  @objc func showFontPicker(_ sender: Any?) {
+    let panel = NSFontPanel.shared
+    let currentName = UserDefaults.standard.string(forKey: "LabanFontName") ?? "JetBrains Mono"
+    let initialFont = NSFont(name: currentName, size: 14)
+      ?? NSFont(name: "Menlo", size: 14)
+      ?? NSFont.systemFont(ofSize: 14)
+    panel.setPanelFont(initialFont, isMultiple: false)
+    NSFontManager.shared.target = self
+    NSFontManager.shared.action = #selector(changeFont(_:))
+    panel.makeKeyAndOrderFront(self)
+  }
+
+  /// AppKit calls this on the font-manager target whenever the user
+  /// picks a face in NSFontPanel. We save the face name only — the
+  /// pt-size is kept fixed (14 terminal / 11 sidebar) so the quad-
+  /// height tab layout stays balanced regardless of font choice.
+  @objc func changeFont(_ sender: Any?) {
+    let fm = NSFontManager.shared
+    let currentName = UserDefaults.standard.string(forKey: "LabanFontName") ?? "Menlo"
+    let current = NSFont(name: currentName, size: 14) ?? NSFont.systemFont(ofSize: 14)
+    let new = fm.convert(current)
+    UserDefaults.standard.set(new.fontName, forKey: "LabanFontName")
+    AppLog.app.info("font picked: \(new.fontName)")
+    EventLog.shared.log("font.set", ["name": new.fontName])
+    let alert = NSAlert()
+    alert.messageText = "Font set to \(new.displayName ?? new.fontName)"
+    alert.informativeText = "Quit and relaunch Laban to apply."
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
+  }
+
   /// About panel populated from BuildInfo so the version is always live
   /// against what was actually built. Shown via the standard macOS
   /// "About Laban" item in the app menu.

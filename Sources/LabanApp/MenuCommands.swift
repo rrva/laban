@@ -64,6 +64,12 @@ enum MenuCommands {
     for entry in themeMenu.makeMenuItems() {
       themeSubmenu.addItem(entry)
     }
+    viewMenu.addItem(
+      NSMenuItem(
+        title: "Font…",
+        action: #selector(AppDelegate.showFontPicker(_:)),
+        keyEquivalent: ""
+      ))
 
     // Tab-select menu — Cmd+1…9
     let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")

@@ -9,15 +9,28 @@ public final class FontAtlas {
   public let descent: CGFloat
   public let leading: CGFloat
 
+  /// UserDefaults key holding the user's chosen font face name. The size
+  /// is whatever the caller passed in (14 for terminal, 11 for sidebar)
+  /// — picking a font only changes the face, not the metrics, so the
+  /// quad-height tab layout stays balanced regardless of choice.
+  public static let userFontKey = "LabanFontName"
+
   public init(pointSize: CGFloat = 14.0) {
     self.pointSize = pointSize
 
-    // Primary: the JetBrainsMono TTF we bundle as a Package resource.
-    // Fallback: Menlo, shipped with macOS since 10.6 — guaranteed to be
-    // present on every Mac. We fall back rather than crashing because a
-    // missing bundled font (corrupted .app, sandbox quirk) shouldn't
-    // brick the whole terminal; Menlo isn't pretty but it works.
-    if let url = Bundle.module.url(forResource: "JetBrainsMono-Regular", withExtension: "ttf"),
+    // Resolution order:
+    //   1. The user's NSFontPanel pick, if any (UserDefaults).
+    //   2. The bundled JetBrainsMono TTF (Package resource).
+    //   3. Menlo — shipped with macOS since 10.6, guaranteed present.
+    //
+    // Falling back rather than crashing means a missing bundled font
+    // or a since-uninstalled user pick can't brick the terminal.
+    if let userName = UserDefaults.standard.string(forKey: Self.userFontKey),
+      !userName.isEmpty
+    {
+      self.font = CTFontCreateWithName(userName as CFString, pointSize, nil)
+    } else if let url = Bundle.module.url(
+      forResource: "JetBrainsMono-Regular", withExtension: "ttf"),
       let provider = CGDataProvider(url: url as CFURL),
       let cgFont = CGFont(provider)
     {
