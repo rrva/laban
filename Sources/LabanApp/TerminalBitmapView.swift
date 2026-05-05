@@ -9,7 +9,12 @@ import QuartzCore
 
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
-  static let contentInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 8)
+  /// Reserved strip at the top of the contentView that sits behind the
+  /// transparent full-size titlebar. Picked to clear the standard window
+  /// traffic-light cluster (~22 pt visually + breathing room).
+  static let titlebarReservedHeight: CGFloat = 28
+  static let contentInsets = NSEdgeInsets(
+    top: 8 + titlebarReservedHeight, left: 14, bottom: 8, right: 8)
 
   private let model: AppModel
   private let fontAtlas: FontAtlas
@@ -461,7 +466,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight)
     )
-    cmds += sidebarProducer.commands(tabs: model.tabs, activeTabId: activeTab.id, height: h)
+    cmds += sidebarProducer.commands(
+      tabs: model.tabs, activeTabId: activeTab.id, height: h,
+      topInset: Self.titlebarReservedHeight)
 
     // Fill the entire terminal area (including the inset padding) with the
     // session's default background so the gap between the sidebar and the
@@ -892,7 +899,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellWidth: CGFloat(cellWidth),
         cellHeight: CGFloat(cellHeight)
       )
-      switch sp.hitTest(at: pt, tabs: model.tabs, height: bounds.height) {
+      switch sp.hitTest(
+        at: pt, tabs: model.tabs, height: bounds.height,
+        topInset: Self.titlebarReservedHeight)
+      {
       case .newTab:
         _ = try? model.createTab()
         renderInvalidated = true

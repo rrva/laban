@@ -30,7 +30,14 @@ public struct SidebarProducer {
     case none
   }
 
-  public func commands(tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat) -> [FrameCommand] {
+  /// `topInset` reserves vertical space at the top of the sidebar column —
+  /// used by the AppKit shell to keep the first tab clear of the window
+  /// traffic lights when running with a transparent full-size titlebar. The
+  /// background rect still fills the full column so the reserved strip
+  /// inherits the sidebar color rather than exposing the window beneath.
+  public func commands(
+    tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0
+  ) -> [FrameCommand] {
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(tabs.count * 7 + 6)
 
@@ -43,7 +50,7 @@ public struct SidebarProducer {
       ))
 
     // New-tab "+" row (topmost row)
-    let newTabY = height - rowHeight
+    let newTabY = height - rowHeight - topInset
     let textBaseY = (rowHeight - cellHeight) / 2
     cmds.append(
       .glyphRun(
@@ -57,7 +64,7 @@ public struct SidebarProducer {
 
     // Tab rows
     for (i, tab) in tabs.enumerated() {
-      let tabY = height - CGFloat(i + 2) * rowHeight
+      let tabY = height - CGFloat(i + 2) * rowHeight - topInset
       let isActive = tab.id == activeTabId
       let bg = isActive ? Theme.CurrentTheme.bg2 : Theme.CurrentTheme.bg1
       let fg = isActive ? Theme.CurrentTheme.fg1 : Theme.CurrentTheme.fg0
@@ -157,14 +164,16 @@ public struct SidebarProducer {
   }
 
   // CG coordinates (y=0 at bottom).
-  public func hitTest(at point: CGPoint, tabs: [Tab], height: CGFloat) -> HitResult {
+  public func hitTest(
+    at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0
+  ) -> HitResult {
     guard point.x >= 0, point.x < sidebarWidth else { return .none }
 
-    let newTabY = height - rowHeight
+    let newTabY = height - rowHeight - topInset
     if point.y >= newTabY, point.y < newTabY + rowHeight { return .newTab }
 
     for (i, tab) in tabs.enumerated() {
-      let tabY = height - CGFloat(i + 2) * rowHeight
+      let tabY = height - CGFloat(i + 2) * rowHeight - topInset
       guard point.y >= tabY, point.y < tabY + rowHeight else { continue }
       if point.x >= sidebarWidth - 28 { return .closeTab(tab.id) }
       return .selectTab(tab.id)
