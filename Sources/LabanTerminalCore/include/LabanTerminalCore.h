@@ -311,6 +311,14 @@ typedef struct {
 int laban_session_bracketed_paste_enabled(LabanSession *session, int *out_enabled);
 
 /*
+ * Wraps ghostty_paste_is_safe(): returns 1 when the bytes contain only
+ * "safe" characters (the libghostty definition flags newlines and other
+ * control bytes that could constitute command injection in a raw shell).
+ * Returns 0 otherwise. Pure function; no session needed.
+ */
+int laban_paste_is_safe(const uint8_t *bytes, size_t len);
+
+/*
  * Drain bytes that the terminal has produced as responses to capability
  * queries (DA1/DA2/DA3, XTWINOPS, DSR cursor position, etc.).  In PTY mode
  * these bytes are also delivered directly to the PTY master fd so the child

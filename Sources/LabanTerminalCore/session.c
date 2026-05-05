@@ -1446,6 +1446,11 @@ int laban_session_drain_response(
     return 0;
 }
 
+int laban_paste_is_safe(const uint8_t *bytes, size_t len) {
+    if (!bytes && len > 0) return 0;
+    return ghostty_paste_is_safe((const char *)bytes, len) ? 1 : 0;
+}
+
 int laban_session_bracketed_paste_enabled(LabanSession *s, int *out_enabled) {
     if (!s || !out_enabled) return -1;
     bool enabled = false;

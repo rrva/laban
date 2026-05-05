@@ -318,6 +318,16 @@ public final class Session {
 
   // MARK: - Paste
 
+  /// Pure libghostty check: returns true when the bytes contain no
+  /// characters that look like command injection in a raw shell
+  /// (newlines, escape sequences, etc.). Wrapper around
+  /// `ghostty_paste_is_safe`. No session required.
+  public static func pasteIsSafe(_ bytes: [UInt8]) -> Bool {
+    bytes.withUnsafeBufferPointer { buf in
+      laban_paste_is_safe(buf.baseAddress, bytes.count) != 0
+    }
+  }
+
   public func bracketedPasteEnabled() -> Bool {
     guard !isClosed, let h = handle else { return false }
     var enabled: Int32 = 0

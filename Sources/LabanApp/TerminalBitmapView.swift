@@ -979,6 +979,60 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // the cursor as if the user had typed them.
     let sanitized = Self.sanitizePaste(raw)
     guard !sanitized.isEmpty else { return }
+    let bytes = Array(sanitized.utf8)
+
+    // Hard refuse anything over the limit. Pasting megabytes through a
+    // synchronous PTY write loop locks the main thread and balloons RAM
+    // (Swift array + C malloc + libghostty's mutating encode buffer).
+    if bytes.count > Self.pasteHardLimitBytes {
+      let alert = NSAlert()
+      alert.alertStyle = .warning
+      alert.messageText = "Paste too large"
+      alert.informativeText =
+        "Refusing to paste \(bytes.count) bytes (limit is \(Self.pasteHardLimitBytes))."
+      alert.addButton(withTitle: "OK")
+      alert.runModal()
+      EventLog.shared.log("paste.refused.size", ["bytes": bytes.count])
+      return
+    }
+
+    // Soft cap with a confirmation. Anything over a few KB is unusual
+    // for terminal input; ChatGPT-style "I copied a giant blob"
+    // accidents are common.
+    if bytes.count > Self.pasteWarnLimitBytes {
+      let alert = NSAlert()
+      alert.alertStyle = .warning
+      alert.messageText = "Large paste"
+      alert.informativeText = "About to paste \(bytes.count) bytes. Continue?"
+      alert.addButton(withTitle: "Paste")
+      alert.addButton(withTitle: "Cancel")
+      if alert.runModal() != .alertFirstButtonReturn {
+        EventLog.shared.log("paste.cancelled.size", ["bytes": bytes.count])
+        return
+      }
+    }
+
+    // Safety check: libghostty flags newlines / control bytes as
+    // unsafe. When the receiving app has bracketed paste enabled it
+    // can recognise paste boundaries explicitly, so we trust it and
+    // skip the prompt. Raw shells (no bracketed paste) get the
+    // prompt because a multi-line paste runs each line as a command.
+    if !session.bracketedPasteEnabled(),
+      !Session.pasteIsSafe(bytes)
+    {
+      let alert = NSAlert()
+      alert.alertStyle = .warning
+      alert.messageText = "Paste contains control characters or newlines"
+      alert.informativeText =
+        "The active program isn't using bracketed paste. Pasting may run each line as a command. Continue?"
+      alert.addButton(withTitle: "Paste")
+      alert.addButton(withTitle: "Cancel")
+      if alert.runModal() != .alertFirstButtonReturn {
+        EventLog.shared.log("paste.cancelled.unsafe", ["bytes": bytes.count])
+        return
+      }
+    }
+
     _ = session.writePaste(sanitized)
     EventLog.shared.log(
       "paste",
@@ -989,6 +1043,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       ])
     recordInput(kind: "paste", route: "terminal", text: sanitized, command: "paste")
   }
+
+  /// Refuse pastes above this size. Bigger than this is almost
+  /// certainly a clipboard mishap or hostile content.
+  static let pasteHardLimitBytes = 10 * 1024 * 1024  // 10 MB
+  /// Warn-and-confirm above this size. Below it, no prompt.
+  static let pasteWarnLimitBytes = 64 * 1024  // 64 KB
 
   static func sanitizePaste(_ text: String) -> String {
     var out = String.UnicodeScalarView()
