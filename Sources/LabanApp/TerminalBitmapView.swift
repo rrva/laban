@@ -473,11 +473,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // displayed position to whatever the new session is showing so the PD
     // controller doesn't keep ticking against the wrong viewport.
     if tabChanged {
-      targetScrollRows = 0
-      displayedScrollRows = 0
-      scrollVelocityRowsPerSec = 0
-      appliedScrollRows = 0
-      lastScrollTickAt = nil
+      resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
       // Save the outgoing tab's selection and restore the incoming tab's,
       // so the rectangle stays in the tab where it was made instead of
       // bleeding through to whatever's next.
@@ -536,7 +532,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let delta = desiredApplied - appliedScrollRows
       if delta != 0 {
         session.scrollViewport(deltaRows: delta)
-        appliedScrollRows = desiredApplied
+        syncSmoothScrollState(session: session, desiredAppliedRows: desiredApplied)
       }
 
       renderInvalidated = true
@@ -1089,9 +1085,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     if vs.mouseTracking {
       // Mouse tracking active: encode wheel as press+release. Use legacy
-      // deltaY sign so a single physical notch maps to a single button press.
-      guard event.deltaY != 0 else { return }
-      let button: MouseButton = event.deltaY > 0 ? .wheelUp : .wheelDown
+      // deltaY for notched wheels and precise scrollingDeltaY for trackpads.
+      let direction = TerminalScrollInput.mouseTrackingWheelDirection(
+        event: TerminalScrollInput.Event(
+          deltaY: event.deltaY,
+          scrollingDeltaY: event.scrollingDeltaY,
+          hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
+        ))
+      guard let direction else { return }
+      let button: MouseButton = direction == .up ? .wheelUp : .wheelDown
       let geom = terminalMouseGeometry(at: pt)
       let me = MouseEvent(
         action: .press,
@@ -1139,7 +1141,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         let delta = Int(targetScrollRows.rounded(.toNearestOrAwayFromZero)) - appliedScrollRows
         if delta != 0 {
           session.scrollViewport(deltaRows: delta)
-          appliedScrollRows += delta
+          syncSmoothScrollState(
+            session: session,
+            desiredAppliedRows: appliedScrollRows + delta,
+            resetOnClamp: true
+          )
         }
         displayedScrollRows = Double(appliedScrollRows)
         scrollVelocityRowsPerSec = 0
@@ -1631,6 +1637,44 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     return vs.viewportOffset
   }
 
+  private func authoritativeAppliedRows(for session: Session) -> Int? {
+    guard let vs = session.viewportState() else { return nil }
+    return TerminalScrollInput.appliedRowsFromViewport(
+      viewportOffset: vs.viewportOffset,
+      totalRows: vs.totalRows,
+      viewportRows: vs.viewportRows
+    )
+  }
+
+  private func resetSmoothScrollState(to appliedRows: Int) {
+    appliedScrollRows = appliedRows
+    displayedScrollRows = Double(appliedRows)
+    targetScrollRows = Double(appliedRows)
+    scrollVelocityRowsPerSec = 0
+    lastScrollTickAt = nil
+  }
+
+  private func syncSmoothScrollState(
+    session: Session,
+    desiredAppliedRows: Int,
+    resetOnClamp: Bool = true
+  ) {
+    guard let vs = session.viewportState() else {
+      appliedScrollRows = desiredAppliedRows
+      return
+    }
+    let reconciled = TerminalScrollInput.reconcileAppliedRows(
+      desiredAppliedRows: desiredAppliedRows,
+      viewportOffset: vs.viewportOffset,
+      totalRows: vs.totalRows,
+      viewportRows: vs.viewportRows
+    )
+    appliedScrollRows = reconciled.actualAppliedRows
+    if resetOnClamp && reconciled.clamped {
+      resetSmoothScrollState(to: reconciled.actualAppliedRows)
+    }
+  }
+
   /// Build the renderer-facing selection from view-state, translating each
   /// stored row by the actual viewport-offset delta since capture so the
   /// selection rect follows the underlying content as the viewport scrolls.
@@ -1700,7 +1744,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // Don't scroll forward past the bottom of scrollback.
     if dragAutoscrollDirection < 0, appliedScrollRows == 0 { return }
     session.scrollViewport(deltaRows: dragAutoscrollDirection)
-    appliedScrollRows = max(0, appliedScrollRows + dragAutoscrollDirection)
+    syncSmoothScrollState(
+      session: session,
+      desiredAppliedRows: appliedScrollRows + dragAutoscrollDirection,
+      resetOnClamp: true
+    )
     // Keep the smooth-scroll PD controller in sync so a wheel input after
     // an auto-scroll doesn't snap us back to a stale target.
     displayedScrollRows = Double(appliedScrollRows)

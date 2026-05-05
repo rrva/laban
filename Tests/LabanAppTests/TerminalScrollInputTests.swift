@@ -58,6 +58,57 @@ final class TerminalScrollInputTests: XCTestCase {
     XCTAssertEqual(d.newResidualPx, 0)
   }
 
+  func testMouseTrackingWheelDirectionUsesPreciseScrollingDeltaWhenLegacyDeltaIsZero() {
+    let up = TerminalScrollInput.mouseTrackingWheelDirection(
+      event: .init(deltaY: 0, scrollingDeltaY: 3.5, hasPreciseScrollingDeltas: true)
+    )
+    let down = TerminalScrollInput.mouseTrackingWheelDirection(
+      event: .init(deltaY: 0, scrollingDeltaY: -2.0, hasPreciseScrollingDeltas: true)
+    )
+
+    XCTAssertEqual(up, .up)
+    XCTAssertEqual(down, .down)
+  }
+
+  func testMouseTrackingWheelDirectionUsesLegacyDeltaForNotchedWheel() {
+    let direction = TerminalScrollInput.mouseTrackingWheelDirection(
+      event: .init(deltaY: -1, scrollingDeltaY: 0, hasPreciseScrollingDeltas: false)
+    )
+
+    XCTAssertEqual(direction, .down)
+  }
+
+  func testAppliedRowsFromViewportUsesBottomAsZeroAndOlderHistoryAsNegative() {
+    XCTAssertEqual(
+      TerminalScrollInput.appliedRowsFromViewport(
+        viewportOffset: 100,
+        totalRows: 105,
+        viewportRows: 5
+      ),
+      0
+    )
+    XCTAssertEqual(
+      TerminalScrollInput.appliedRowsFromViewport(
+        viewportOffset: 0,
+        totalRows: 105,
+        viewportRows: 5
+      ),
+      -100
+    )
+  }
+
+  func testReconcileAppliedRowsReportsClampedOverscroll() {
+    let reconciled = TerminalScrollInput.reconcileAppliedRows(
+      desiredAppliedRows: -140,
+      viewportOffset: 0,
+      totalRows: 105,
+      viewportRows: 5
+    )
+
+    XCTAssertEqual(reconciled.actualAppliedRows, -100)
+    XCTAssertTrue(reconciled.clamped)
+  }
+
   // MARK: - Captured-gesture replay
 
   /// Replays a real two-gesture trackpad capture (saved as JSONL alongside this

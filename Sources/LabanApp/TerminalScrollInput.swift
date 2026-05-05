@@ -1,6 +1,11 @@
 import CoreGraphics
 
 enum TerminalScrollInput {
+  enum WheelDirection {
+    case up
+    case down
+  }
+
   struct Event {
     let deltaY: CGFloat
     let scrollingDeltaY: CGFloat
@@ -43,5 +48,38 @@ enum TerminalScrollInput {
       rowsDelta: -Int(rows),
       newResidualPx: totalPx - consumedPx
     )
+  }
+
+  static func mouseTrackingWheelDirection(event: Event) -> WheelDirection? {
+    let signedDelta =
+      event.hasPreciseScrollingDeltas
+      ? event.scrollingDeltaY
+      : event.deltaY
+    if signedDelta > 0 { return .up }
+    if signedDelta < 0 { return .down }
+    return nil
+  }
+
+  static func appliedRowsFromViewport(
+    viewportOffset: Int,
+    totalRows: Int,
+    viewportRows: Int
+  ) -> Int {
+    let bottomOffset = max(0, totalRows - viewportRows)
+    return viewportOffset - bottomOffset
+  }
+
+  static func reconcileAppliedRows(
+    desiredAppliedRows: Int,
+    viewportOffset: Int,
+    totalRows: Int,
+    viewportRows: Int
+  ) -> (actualAppliedRows: Int, clamped: Bool) {
+    let actual = appliedRowsFromViewport(
+      viewportOffset: viewportOffset,
+      totalRows: totalRows,
+      viewportRows: viewportRows
+    )
+    return (actual, actual != desiredAppliedRows)
   }
 }
