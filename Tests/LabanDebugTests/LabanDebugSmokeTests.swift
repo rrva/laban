@@ -317,10 +317,11 @@ final class LabanDebugSmokeTests: XCTestCase {
     _ = runtime.applyAction(newTabBody)
 
     // Now there are 2 tabs. Click in the sidebar area to select the first tab.
-    // The sidebar shows tab rows at y = height - (i+2) * rowHeight.
+    // The "+" button moved to a titlebar accessory, so tabs now start at the
+    // top of the sidebar: tab rows at y = height - (i+1) * rowHeight.
     // Quad-height rows: rowHeight ≈ 4*cellHeight + 10 ≈ 82, height ≈ 432.
-    // Tab 0 spans roughly y = 268..350. Click near its center.
-    let clickBody = #"{"action":"click","x":10,"y":300,"button":"left"}"#.data(using: .utf8)!
+    // Tab 0 spans roughly y = 350..432. Click near its center.
+    let clickBody = #"{"action":"click","x":10,"y":390,"button":"left"}"#.data(using: .utf8)!
     let result = runtime.applyAction(clickBody)
     XCTAssertEqual(result.status, 200)
 

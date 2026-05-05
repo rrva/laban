@@ -42,6 +42,9 @@ public final class MetalRenderer: RendererBackend {
   public let device: MTLDevice
   public let layer: CAMetalLayer
   public let fontAtlas: FontAtlas
+  /// Optional smaller font for sidebar chrome. When the caller provides
+  /// nil at init time, sidebar text uses the same atlas as the terminal.
+  public let sidebarFontAtlas: FontAtlas
 
   public var surfaceWidth: Int { Int(layer.drawableSize.width.rounded()) }
   public var surfaceHeight: Int { Int(layer.drawableSize.height.rounded()) }
@@ -145,9 +148,17 @@ public final class MetalRenderer: RendererBackend {
   private let glyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
   private var glyphAtlas: MetalGlyphAtlas
+  /// Distinct atlas for sidebar text — same when sidebarFontAtlas ===
+  /// fontAtlas, otherwise a separately-rasterized R8 texture sized to
+  /// the smaller font's cell metrics.
+  private var sidebarGlyphAtlas: MetalGlyphAtlas
 
   private var solidInstances: [SolidInstance] = []
   private var glyphInstances: [GlyphInstance] = []
+  /// Glyphs that draw against the sidebar atlas. Kept separate so we can
+  /// issue one draw call per atlas — the sidebar's R8 texture holds glyphs
+  /// rasterized at a smaller pt size and isn't substitutable for the main.
+  private var sidebarGlyphInstances: [GlyphInstance] = []
   // Cursor instances drawn in a separate overlay pass — they live ON TOP of
   // the persistent target, never IN it, so cursor blinks don't dirty the
   // terminal cells underneath.
@@ -157,6 +168,7 @@ public final class MetalRenderer: RendererBackend {
   // We size MTLBuffers on demand and reuse them frame-to-frame.
   private var solidBuffer: MTLBuffer?
   private var glyphBuffer: MTLBuffer?
+  private var sidebarGlyphBuffer: MTLBuffer?
   private var cursorBuffer: MTLBuffer?
 
   /// Persistent terminal-content render target. Holds the most recent fully
@@ -232,10 +244,16 @@ public final class MetalRenderer: RendererBackend {
   private var readbackTexture: MTLTexture?
   private let glyphCellAdvance: CGFloat
   private let glyphCellHeight: CGFloat
+  private let sidebarCellAdvance: CGFloat
+  private let sidebarCellHeight: CGFloat
 
   /// Initializes the renderer. Returns nil when Metal is unavailable (no
   /// device, missing default library, or pipeline compile failure).
-  public init?(fontAtlas: FontAtlas, scale: CGFloat = 1) {
+  public init?(
+    fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas? = nil,
+    scale: CGFloat = 1
+  ) {
     guard let device = MTLCreateSystemDefaultDevice() else { return nil }
     guard let queue = device.makeCommandQueue() else { return nil }
     // SwiftPM's .process(metal) just copies the source as a bundle resource;
@@ -319,16 +337,37 @@ public final class MetalRenderer: RendererBackend {
         scale: scale)
     else { return nil }
 
+    let sidebarAtlas = sidebarFontAtlas ?? fontAtlas
+    let sidebarCell = sidebarAtlas.cellSize
+    let sidebarGlyphAtlasInstance: MetalGlyphAtlas
+    if sidebarAtlas === fontAtlas {
+      sidebarGlyphAtlasInstance = atlas
+    } else {
+      guard
+        let alt = MetalGlyphAtlas(
+          device: device,
+          cellWidth: sidebarCell.width,
+          cellHeight: sidebarCell.height,
+          descent: sidebarAtlas.descent,
+          scale: scale)
+      else { return nil }
+      sidebarGlyphAtlasInstance = alt
+    }
+
     self.device = device
     self.queue = queue
     self.layer = layer
     self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarAtlas
     self.solidPipeline = solidPipeline
     self.glyphPipeline = glyphPipeline
     self.sampler = sampler
     self.glyphAtlas = atlas
+    self.sidebarGlyphAtlas = sidebarGlyphAtlasInstance
     self.glyphCellAdvance = cell.width
     self.glyphCellHeight = cell.height
+    self.sidebarCellAdvance = sidebarCell.width
+    self.sidebarCellHeight = sidebarCell.height
 
     setupCounterSampling()
   }
@@ -382,6 +421,17 @@ public final class MetalRenderer: RendererBackend {
         scale: newScale)
       {
         glyphAtlas = fresh
+      }
+      if sidebarFontAtlas === fontAtlas {
+        sidebarGlyphAtlas = glyphAtlas
+      } else if let fresh = MetalGlyphAtlas(
+        device: device,
+        cellWidth: sidebarCellAdvance,
+        cellHeight: sidebarCellHeight,
+        descent: sidebarFontAtlas.descent,
+        scale: newScale)
+      {
+        sidebarGlyphAtlas = fresh
       }
     }
     if sizeChanged {
@@ -690,6 +740,24 @@ public final class MetalRenderer: RendererBackend {
         type: .triangle, vertexStart: 0,
         vertexCount: 6, instanceCount: glyphInstances.count)
     }
+    if !sidebarGlyphInstances.isEmpty {
+      let buf = ensureBuffer(
+        &sidebarGlyphBuffer,
+        elementCount: sidebarGlyphInstances.count,
+        elementStride: MemoryLayout<GlyphInstance>.stride)
+      sidebarGlyphInstances.withUnsafeBufferPointer { src in
+        if let base = src.baseAddress {
+          memcpy(buf.contents(), base, src.count * MemoryLayout<GlyphInstance>.stride)
+        }
+      }
+      encoder.setRenderPipelineState(glyphPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.setFragmentTexture(sidebarGlyphAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: sidebarGlyphInstances.count)
+    }
     encoder.endEncoding()
     return true
   }
@@ -727,6 +795,7 @@ public final class MetalRenderer: RendererBackend {
   ) {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
+    sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
 
     let surfaceH = Float(surfacePxH)
@@ -754,19 +823,25 @@ public final class MetalRenderer: RendererBackend {
       tilePixelW: Int, tilePixelH: Int,
       logicalWidth: CGFloat,
       atlasX: Int, atlasY: Int,
-      color: UInt32
+      color: UInt32,
+      toSidebar: Bool
     ) {
       let originPx = SIMD2<Float>(Float(cellX) * scale, Float(cellY) * scale)
       let sizePx = SIMD2<Float>(Float(tilePixelW), Float(tilePixelH))
-      let atlasW = Float(glyphAtlas.textureSize)
-      let atlasH = Float(glyphAtlas.textureSize)
+      let atlas = toSidebar ? sidebarGlyphAtlas : glyphAtlas
+      let atlasW = Float(atlas.textureSize)
+      let atlasH = Float(atlas.textureSize)
       let uvOrigin = SIMD2<Float>(Float(atlasX) / atlasW, Float(atlasY) / atlasH)
       let uvSize = SIMD2<Float>(Float(tilePixelW) / atlasW, Float(tilePixelH) / atlasH)
-      glyphInstances.append(
-        GlyphInstance(
-          origin: originPx, size: sizePx,
-          uvOrigin: uvOrigin, uvSize: uvSize,
-          color: rgbaToFloat4(color)))
+      let inst = GlyphInstance(
+        origin: originPx, size: sizePx,
+        uvOrigin: uvOrigin, uvSize: uvSize,
+        color: rgbaToFloat4(color))
+      if toSidebar {
+        sidebarGlyphInstances.append(inst)
+      } else {
+        glyphInstances.append(inst)
+      }
       _ = logicalWidth  // reserved for future per-cell width reconciliation
     }
 
@@ -800,10 +875,14 @@ public final class MetalRenderer: RendererBackend {
         break
 
       case .glyphRun(
-        let origin, let text, let fg, _, let attrs, _,
+        let origin, let text, let fg, _, let attrs, let runSource,
         let underlineStyle, let underlineColor, _
       ):
-        let font = styledFont(for: attrs)
+        let isSidebar = runSource == .sidebar
+        let activeAtlas = isSidebar ? sidebarGlyphAtlas : glyphAtlas
+        let activeAdvance = isSidebar ? sidebarCellAdvance : glyphCellAdvance
+        let activeFontAtlas = isSidebar ? sidebarFontAtlas : fontAtlas
+        let font = styledFont(for: attrs, in: activeFontAtlas)
         let traits = CTFontGetSymbolicTraits(font)
         let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
         let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
@@ -813,18 +892,19 @@ public final class MetalRenderer: RendererBackend {
             let scalar = cluster.unicodeScalars.first
           else { continue }
           guard
-            let entry = glyphAtlas.entry(
+            let entry = activeAtlas.entry(
               scalar: scalar, font: font,
               boldFallback: needsBoldFallback,
               italicFallback: needsItalicFallback)
           else { continue }
-          let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
+          let cellX = origin.x + CGFloat(cellIndex) * activeAdvance
           appendGlyph(
             cellX: cellX, cellY: origin.y,
             tilePixelW: entry.pixelWidth, tilePixelH: entry.pixelHeight,
             logicalWidth: entry.logicalWidth,
             atlasX: entry.originX, atlasY: entry.originY,
-            color: fg)
+            color: fg,
+            toSidebar: isSidebar)
         }
 
         // Decorations
@@ -957,21 +1037,25 @@ public final class MetalRenderer: RendererBackend {
 
   // MARK: - Font cache (mirrors SoftwareRenderer.styledFont)
 
-  private var fontCache: [UInt16: CTFont] = [:]
-  private func styledFont(for attributes: TextAttributes) -> CTFont {
-    let key = attributes.intersection([.bold, .italic]).rawValue
+  private var fontCache: [UInt32: CTFont] = [:]
+  private func styledFont(for attributes: TextAttributes, in atlas: FontAtlas) -> CTFont {
+    // Cache key combines attribute bits with the atlas identity so the
+    // sidebar's smaller-pt copies don't collide with the terminal's.
+    let attrKey = UInt32(attributes.intersection([.bold, .italic]).rawValue)
+    let atlasBit: UInt32 = (atlas === fontAtlas) ? 0 : 0x1_0000
+    let key = attrKey | atlasBit
     if let cached = fontCache[key] { return cached }
     var desired: CTFontSymbolicTraits = []
     if attributes.contains(.bold) { desired.insert(.traitBold) }
     if attributes.contains(.italic) { desired.insert(.traitItalic) }
     let font: CTFont
     if desired.isEmpty {
-      font = fontAtlas.font
+      font = atlas.font
     } else {
       font =
         CTFontCreateCopyWithSymbolicTraits(
-          fontAtlas.font, fontAtlas.pointSize, nil, desired, desired)
-        ?? fontAtlas.font
+          atlas.font, atlas.pointSize, nil, desired, desired)
+        ?? atlas.font
     }
     fontCache[key] = font
     return font

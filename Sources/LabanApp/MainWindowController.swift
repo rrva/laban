@@ -7,6 +7,7 @@ final class MainWindowController: NSWindowController {
 
   static func makeAndShow() throws -> MainWindowController {
     let fontAtlas = FontAtlas(pointSize: 14)
+    let sidebarFontAtlas = FontAtlas(pointSize: 11)
     let cellSize = fontAtlas.cellSize
     let cellW = Int(cellSize.width)
     let cellH = Int(cellSize.height)
@@ -33,6 +34,7 @@ final class MainWindowController: NSWindowController {
     let termView = TerminalBitmapView(
       model: model,
       fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
       cellWidth: cellW,
       cellHeight: cellH
     )
@@ -57,6 +59,33 @@ final class MainWindowController: NSWindowController {
     window.contentView = termView
     window.center()
     window.makeKeyAndOrderFront(nil)
+
+    // "+" new-tab button as a titlebar accessory next to the traffic
+    // lights. Frees a full row from the sidebar without sacrificing
+    // discoverability — the button is always visible at a fixed screen
+    // position regardless of how many tabs are open.
+    let plusButton = NSButton(
+      title: "+",
+      target: nil,
+      action: #selector(TerminalBitmapView.newTab(_:))
+    )
+    plusButton.bezelStyle = .smallSquare
+    plusButton.isBordered = false
+    plusButton.font = NSFont.systemFont(ofSize: 16, weight: .light)
+    plusButton.contentTintColor = .secondaryLabelColor
+    plusButton.translatesAutoresizingMaskIntoConstraints = false
+    let accessoryHost = NSView(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+    accessoryHost.addSubview(plusButton)
+    NSLayoutConstraint.activate([
+      plusButton.centerXAnchor.constraint(equalTo: accessoryHost.centerXAnchor),
+      plusButton.centerYAnchor.constraint(equalTo: accessoryHost.centerYAnchor),
+      plusButton.widthAnchor.constraint(equalToConstant: 24),
+      plusButton.heightAnchor.constraint(equalToConstant: 24),
+    ])
+    let accessory = NSTitlebarAccessoryViewController()
+    accessory.view = accessoryHost
+    accessory.layoutAttribute = .leading
+    window.addTitlebarAccessoryViewController(accessory)
 
     let controller = MainWindowController(window: window)
     return controller

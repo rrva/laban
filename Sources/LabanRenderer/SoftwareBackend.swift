@@ -10,13 +10,20 @@ public final class SoftwareBackend: RendererBackend {
   public private(set) var surface: BitmapSurface
   public private(set) var renderer: SoftwareRenderer
   public let fontAtlas: FontAtlas
+  public let sidebarFontAtlas: FontAtlas
   private var lastImage: CGImage?
 
-  public init(fontAtlas: FontAtlas, pixelWidth: Int = 1, pixelHeight: Int = 1, scale: CGFloat = 1) {
+  public init(
+    fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas? = nil,
+    pixelWidth: Int = 1, pixelHeight: Int = 1, scale: CGFloat = 1
+  ) {
     self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
     let s = BitmapSurface(width: max(1, pixelWidth), height: max(1, pixelHeight), scale: scale)
     self.surface = s
-    self.renderer = SoftwareRenderer(surface: s, fontAtlas: fontAtlas)
+    self.renderer = SoftwareRenderer(
+      surface: s, fontAtlas: fontAtlas, sidebarFontAtlas: self.sidebarFontAtlas)
   }
 
   /// Reallocate the surface if the requested dimensions or scale differ.
@@ -29,7 +36,8 @@ public final class SoftwareBackend: RendererBackend {
       return false
     }
     surface = BitmapSurface(width: pw, height: ph, scale: scale)
-    renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+    renderer = SoftwareRenderer(
+      surface: surface, fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
     lastImage = nil
     return true
   }

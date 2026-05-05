@@ -37,8 +37,14 @@ public struct SidebarProducer {
   /// traffic lights when running with a transparent full-size titlebar. The
   /// background rect still fills the full column so the reserved strip
   /// inherits the sidebar color rather than exposing the window beneath.
+  ///
+  /// `hoveredTabId` controls visibility of the per-tab close glyph: it
+  /// renders only when the cursor is over the tab. The click region for
+  /// closing is region-based (always live in `hitTest`), so the affordance
+  /// is just visually quieter — discoverable but unobtrusive.
   public func commands(
-    tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0
+    tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
+    hoveredTabId: Tab.ID? = nil
   ) -> [FrameCommand] {
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(tabs.count * 7 + 6)
@@ -51,22 +57,14 @@ public struct SidebarProducer {
         source: .sidebar
       ))
 
-    // New-tab "+" row (topmost row)
-    let newTabY = height - rowHeight - topInset
+    // The "+" new-tab button no longer lives in the sidebar — the AppKit
+    // shell renders it as a titlebar accessory next to the traffic
+    // lights so the sidebar is purely tab rows. Tabs start at the top.
     let textBaseY = (rowHeight - cellHeight) / 2
-    cmds.append(
-      .glyphRun(
-        origin: CGPoint(x: 10, y: newTabY + textBaseY),
-        text: "+",
-        foreground: Theme.CurrentTheme.fg0,
-        background: Theme.CurrentTheme.bg1,
-        attributes: [],
-        source: .sidebar
-      ))
 
     // Tab rows
     for (i, tab) in tabs.enumerated() {
-      let tabY = height - CGFloat(i + 2) * rowHeight - topInset
+      let tabY = height - CGFloat(i + 1) * rowHeight - topInset
       let isActive = tab.id == activeTabId
       let bg = isActive ? Theme.CurrentTheme.bg2 : Theme.CurrentTheme.bg1
       let fg = isActive ? Theme.CurrentTheme.fg1 : Theme.CurrentTheme.fg0
@@ -199,31 +197,35 @@ public struct SidebarProducer {
           ))
       }
 
-      cmds.append(
-        .glyphRun(
-          origin: CGPoint(x: closeGlyphX, y: titleY),
-          text: "×",
-          foreground: Theme.CurrentTheme.dim0,
-          background: bg,
-          attributes: [],
-          source: .sidebar
-        ))
+      // Close glyph: rendered only when this tab is hovered. Heavy `✕`
+      // gives a beefier hit target than the previous `×` without needing
+      // a separate font size. Click region is region-based (see hitTest)
+      // so the affordance still works even when the glyph isn't shown.
+      if hoveredTabId == tab.id {
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: closeGlyphX, y: titleY),
+            text: "✕",
+            foreground: Theme.CurrentTheme.dim0,
+            background: bg,
+            attributes: [],
+            source: .sidebar
+          ))
+      }
     }
 
     return cmds
   }
 
-  // CG coordinates (y=0 at bottom).
+  // CG coordinates (y=0 at bottom). The "+" button is a titlebar
+  // accessory now — sidebar hits are exclusively tab select / close.
   public func hitTest(
     at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0
   ) -> HitResult {
     guard point.x >= 0, point.x < sidebarWidth else { return .none }
 
-    let newTabY = height - rowHeight - topInset
-    if point.y >= newTabY, point.y < newTabY + rowHeight { return .newTab }
-
     for (i, tab) in tabs.enumerated() {
-      let tabY = height - CGFloat(i + 2) * rowHeight - topInset
+      let tabY = height - CGFloat(i + 1) * rowHeight - topInset
       guard point.y >= tabY, point.y < tabY + rowHeight else { continue }
       // Close-X box: upper half of the row on the right edge. Centering
       // moves the title vertically depending on how many info lines are

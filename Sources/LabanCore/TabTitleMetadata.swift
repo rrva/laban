@@ -272,11 +272,22 @@ public enum TabTitleResolver {
       if folder != title { lines.append(truncatePath(folder)) }
     }
 
-    // Line 2: git branch (with dirty marker when known). Independent line —
-    // branch is more identifying than which binary is running, especially
-    // when juggling multiple worktrees of the same repo.
-    if let branch = useful(metadata.workspace.branch) {
-      lines.append(truncateMid(branch + (metadata.workspace.isDirty ? "*" : "")))
+    // Line 2: git branch (with dirty marker when known). Strip the
+    // `worktrees/` prefix Claude Code's worktree script uses — when
+    // working in `.claude/worktrees/foo`, the namespace is implicit. If
+    // the cleaned branch name matches the folder line we already
+    // rendered, drop it entirely; rendering "foo" twice on top of each
+    // other isn't useful.
+    if let raw = useful(metadata.workspace.branch) {
+      var branch = raw
+      for prefix in ["worktrees/", "worktree/"] where branch.hasPrefix(prefix) {
+        branch = String(branch.dropFirst(prefix.count))
+      }
+      let dirty = metadata.workspace.isDirty ? "*" : ""
+      let alreadyShown = lines.contains(branch) || lines.contains(branch + dirty)
+      if !alreadyShown {
+        lines.append(truncateMid(branch + dirty))
+      }
     }
 
     // Line 3: foreground command — only when it's something more useful

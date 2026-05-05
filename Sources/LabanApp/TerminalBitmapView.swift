@@ -46,6 +46,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var selectionFocus: (row: Int, col: Int)?
   private var trackedMouseButton: MouseButton = .none
 
+  /// Tab currently under the mouse cursor in the sidebar. Drives hover-
+  /// only affordances (close glyph). Updated from mouseMoved /
+  /// mouseExited; nil when the cursor isn't inside any sidebar tab row.
+  private var hoveredSidebarTabId: Tab.ID?
+
   // Damage-driven render budget state
   private var renderInvalidated = true
   private var themeChangeObserver: NSObjectProtocol?
@@ -106,24 +111,38 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private static let inputLatencyCap = 240
   private var lastLatencyLogAt: Date = Date.distantPast
 
+  /// Smaller font for sidebar chrome — different visual weight from the
+  /// terminal content (matches what every modern editor + terminal does)
+  /// and fits ~25 % more chars per line so worktree paths stop truncating.
+  private let sidebarFontAtlas: FontAtlas
+  private let sidebarCellWidth: Int
+  private let sidebarCellHeight: Int
+
   init(
     model: AppModel,
     fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas,
     cellWidth: Int,
     cellHeight: Int
   ) {
     self.model = model
     self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarFontAtlas
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
+    self.sidebarCellWidth = Int(sidebarFontAtlas.cellSize.width)
+    self.sidebarCellHeight = Int(sidebarFontAtlas.cellSize.height)
 
     let preference = ProcessInfo.processInfo.environment["LABAN_RENDERER"]?.lowercased()
     let wantSoftware = preference == "software" || preference == "cpu"
-    if !wantSoftware, let metal = MetalRenderer(fontAtlas: fontAtlas) {
+    if !wantSoftware,
+      let metal = MetalRenderer(fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
+    {
       self.backend = metal
       self.backendSelfPresents = true
     } else {
-      self.backend = SoftwareBackend(fontAtlas: fontAtlas)
+      self.backend = SoftwareBackend(
+        fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
       self.backendSelfPresents = false
     }
     super.init(frame: .zero)
@@ -481,12 +500,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     let sidebarProducer = SidebarProducer(
       sidebarWidth: sidebarWidth,
-      cellWidth: CGFloat(cellWidth),
-      cellHeight: CGFloat(cellHeight)
+      cellWidth: CGFloat(sidebarCellWidth),
+      cellHeight: CGFloat(sidebarCellHeight)
     )
     cmds += sidebarProducer.commands(
       tabs: model.tabs, activeTabId: activeTab.id, height: h,
-      topInset: Self.titlebarReservedHeight)
+      topInset: Self.titlebarReservedHeight,
+      hoveredTabId: hoveredSidebarTabId)
 
     // Fill the entire terminal area (including the inset padding) with the
     // session's default background so the gap between the sidebar and the
@@ -586,6 +606,56 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   // MARK: - Resize
+
+  /// Install/refresh the tracking area on every layout change so
+  /// mouseMoved / mouseExited deliveries cover the full visible bounds.
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    for area in trackingAreas { removeTrackingArea(area) }
+    let area = NSTrackingArea(
+      rect: bounds,
+      options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+      owner: self,
+      userInfo: nil
+    )
+    addTrackingArea(area)
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    let pt = convert(event.locationInWindow, from: nil)
+    updateHoveredSidebarTab(at: pt)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    setHoveredSidebarTab(nil)
+  }
+
+  private func updateHoveredSidebarTab(at pt: NSPoint) {
+    guard pt.x < sidebarWidth else {
+      setHoveredSidebarTab(nil)
+      return
+    }
+    let sp = SidebarProducer(
+      sidebarWidth: sidebarWidth,
+      cellWidth: CGFloat(sidebarCellWidth),
+      cellHeight: CGFloat(sidebarCellHeight)
+    )
+    switch sp.hitTest(
+      at: pt, tabs: model.tabs, height: bounds.height,
+      topInset: Self.titlebarReservedHeight)
+    {
+    case .selectTab(let id), .closeTab(let id):
+      setHoveredSidebarTab(id)
+    case .newTab, .none:
+      setHoveredSidebarTab(nil)
+    }
+  }
+
+  private func setHoveredSidebarTab(_ id: Tab.ID?) {
+    guard hoveredSidebarTabId != id else { return }
+    hoveredSidebarTabId = id
+    renderInvalidated = true
+  }
 
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
@@ -937,8 +1007,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if pt.x < sidebarWidth {
       let sp = SidebarProducer(
         sidebarWidth: sidebarWidth,
-        cellWidth: CGFloat(cellWidth),
-        cellHeight: CGFloat(cellHeight)
+        cellWidth: CGFloat(sidebarCellWidth),
+        cellHeight: CGFloat(sidebarCellHeight)
       )
       switch sp.hitTest(
         at: pt, tabs: model.tabs, height: bounds.height,

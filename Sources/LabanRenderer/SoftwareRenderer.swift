@@ -5,14 +5,22 @@ import Foundation
 public final class SoftwareRenderer {
   public let surface: BitmapSurface
   public let fontAtlas: FontAtlas
+  public let sidebarFontAtlas: FontAtlas
   private let glyphCellAdvance: CGFloat
+  private let sidebarCellAdvance: CGFloat
   private var colorCache: [UInt32: CGColor] = [:]
-  private var fontCache: [UInt16: CTFont] = [:]
+  private var fontCache: [UInt32: CTFont] = [:]
 
-  public init(surface: BitmapSurface, fontAtlas: FontAtlas) {
+  public init(
+    surface: BitmapSurface,
+    fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas? = nil
+  ) {
     self.surface = surface
     self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
     self.glyphCellAdvance = fontAtlas.cellSize.width
+    self.sidebarCellAdvance = (sidebarFontAtlas ?? fontAtlas).cellSize.width
   }
 
   private func color(_ rgba: UInt32) -> CGColor {
@@ -33,12 +41,15 @@ public final class SoftwareRenderer {
         ctx.fill(rect)
 
       case .glyphRun(
-        let origin, let text, let fg, let bg, let attrs, _,
+        let origin, let text, let fg, let bg, let attrs, let runSource,
         let underlineStyle, let underlineColor, _
       ):
+        let atlas = runSource == .sidebar ? sidebarFontAtlas : fontAtlas
+        let advance = runSource == .sidebar ? sidebarCellAdvance : glyphCellAdvance
         drawText(
           text, at: origin, foreground: fg, background: bg, attributes: attrs,
-          underlineStyle: underlineStyle, underlineColor: underlineColor, in: ctx)
+          underlineStyle: underlineStyle, underlineColor: underlineColor,
+          atlas: atlas, cellAdvance: advance, in: ctx)
 
       case .cursor(let rect, let colorValue):
         ctx.setFillColor(color(colorValue))
@@ -68,14 +79,16 @@ public final class SoftwareRenderer {
     attributes: TextAttributes,
     underlineStyle: UnderlineStyle = .none,
     underlineColor: UInt32? = nil,
+    atlas: FontAtlas,
+    cellAdvance: CGFloat,
     in ctx: CGContext
   ) {
     let fgColor = color(fg)
-    let font = styledFont(for: attributes)
+    let font = styledFont(for: attributes, in: atlas)
     let traits = CTFontGetSymbolicTraits(font)
     let needsBoldFallback = attributes.contains(.bold) && !traits.contains(.traitBold)
     let needsItalicFallback = attributes.contains(.italic) && !traits.contains(.traitItalic)
-    let baseline = origin.y + fontAtlas.descent
+    let baseline = origin.y + atlas.descent
 
     ctx.saveGState()
     if needsItalicFallback {
@@ -91,6 +104,7 @@ public final class SoftwareRenderer {
       xOffset: 0,
       font: font,
       foreground: fgColor,
+      cellAdvance: cellAdvance,
       in: ctx
     )
     if needsBoldFallback {
@@ -101,6 +115,7 @@ public final class SoftwareRenderer {
         xOffset: max(1.0 / surface.scale, 0.5),
         font: font,
         foreground: fgColor,
+        cellAdvance: cellAdvance,
         in: ctx
       )
     }
@@ -111,6 +126,7 @@ public final class SoftwareRenderer {
       for: text, at: origin, attributes: attributes,
       foreground: fgColor,
       underlineStyle: underlineStyle, underlineColor: underlineColorCG,
+      atlas: atlas, cellAdvance: cellAdvance,
       in: ctx)
   }
 
@@ -121,6 +137,7 @@ public final class SoftwareRenderer {
     xOffset: CGFloat,
     font: CTFont,
     foreground fgColor: CGColor,
+    cellAdvance: CGFloat,
     in ctx: CGContext
   ) {
     var glyphs: [CGGlyph] = []
@@ -149,7 +166,7 @@ public final class SoftwareRenderer {
 
     for (cellIndex, cluster) in text.enumerated() {
       let cellOrigin = CGPoint(
-        x: origin.x + CGFloat(cellIndex) * glyphCellAdvance + xOffset,
+        x: origin.x + CGFloat(cellIndex) * cellAdvance + xOffset,
         y: baseline
       )
       if let glyph = simpleGlyph(for: cluster, font: font) {
@@ -202,8 +219,10 @@ public final class SoftwareRenderer {
     CTLineDraw(line, ctx)
   }
 
-  private func styledFont(for attributes: TextAttributes) -> CTFont {
-    let key = attributes.intersection([.bold, .italic]).rawValue
+  private func styledFont(for attributes: TextAttributes, in atlas: FontAtlas) -> CTFont {
+    let attrKey = UInt32(attributes.intersection([.bold, .italic]).rawValue)
+    let atlasBit: UInt32 = (atlas === fontAtlas) ? 0 : 0x1_0000
+    let key = attrKey | atlasBit
     if let cached = fontCache[key] { return cached }
 
     var desired: CTFontSymbolicTraits = []
@@ -212,9 +231,9 @@ public final class SoftwareRenderer {
 
     let font =
       desired.isEmpty
-      ? fontAtlas.font
+      ? atlas.font
       : CTFontCreateCopyWithSymbolicTraits(
-        fontAtlas.font, fontAtlas.pointSize, nil, desired, desired) ?? fontAtlas.font
+        atlas.font, atlas.pointSize, nil, desired, desired) ?? atlas.font
     fontCache[key] = font
     return font
   }
@@ -226,6 +245,8 @@ public final class SoftwareRenderer {
     foreground fgColor: CGColor,
     underlineStyle: UnderlineStyle,
     underlineColor: CGColor,
+    atlas: FontAtlas,
+    cellAdvance: CGFloat,
     in ctx: CGContext
   ) {
     let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
@@ -236,8 +257,8 @@ public final class SoftwareRenderer {
       return
     }
 
-    let width = CGFloat(text.count) * glyphCellAdvance
-    let cellHeight = fontAtlas.cellSize.height
+    let width = CGFloat(text.count) * cellAdvance
+    let cellHeight = atlas.cellSize.height
     let thickness = max(1.0 / surface.scale, 1)
 
     ctx.saveGState()
@@ -245,13 +266,14 @@ public final class SoftwareRenderer {
       // The cell's underline_style takes precedence; .underline alone is
       // single. .none here means the attribute flag is set without a sub-style.
       let style: UnderlineStyle = underlineStyle == .none ? .single : underlineStyle
-      let underlineY = origin.y + max(1, floor(fontAtlas.descent * 0.45))
+      let underlineY = origin.y + max(1, floor(atlas.descent * 0.45))
       drawUnderline(
         style: style,
         x: origin.x,
         y: underlineY,
         width: width,
         thickness: thickness,
+        cellAdvance: cellAdvance,
         color: underlineColor,
         in: ctx)
     }
@@ -283,6 +305,7 @@ public final class SoftwareRenderer {
     y: CGFloat,
     width: CGFloat,
     thickness: CGFloat,
+    cellAdvance: CGFloat,
     color: CGColor,
     in ctx: CGContext
   ) {
@@ -301,7 +324,7 @@ public final class SoftwareRenderer {
     case .curly:
       // Sine wave approximated with line segments at one cell-width period.
       let amplitude = max(thickness * 1.2, 1.0)
-      let period = max(glyphCellAdvance, 6)
+      let period = max(cellAdvance, 6)
       let baseY = y + thickness * 0.5
       ctx.setLineWidth(thickness)
       ctx.setLineJoin(.round)
@@ -323,8 +346,8 @@ public final class SoftwareRenderer {
         cx += dot * 2
       }
     case .dashed:
-      let dash = max(glyphCellAdvance * 0.5, 3)
-      let gap = max(glyphCellAdvance * 0.25, 2)
+      let dash = max(cellAdvance * 0.5, 3)
+      let gap = max(cellAdvance * 0.25, 2)
       var cx = x
       while cx < x + width {
         let segW = min(dash, x + width - cx)

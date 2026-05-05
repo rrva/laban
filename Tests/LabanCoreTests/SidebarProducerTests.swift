@@ -88,21 +88,23 @@ final class SidebarProducerTests: XCTestCase {
 
   // MARK: - hitTest
 
-  func testHitTestNewTabButton() {
+  func testHitTestEmptySidebarTopReturnsNone() {
+    // The "+" button moved to a titlebar accessory — clicking the top of
+    // an empty sidebar no longer creates a tab. With no tabs present the
+    // entire sidebar should hit nothing.
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let h: CGFloat = 600
-    // "+ " button is at y = h - rowHeight..h
-    let buttonY = h - p.rowHeight / 2
-    let result = p.hitTest(at: CGPoint(x: 50, y: buttonY), tabs: [], height: h)
-    XCTAssertEqual(result, .newTab)
+    let topY = h - p.rowHeight / 2
+    let result = p.hitTest(at: CGPoint(x: 50, y: topY), tabs: [], height: h)
+    XCTAssertEqual(result, .none)
   }
 
   func testHitTestSelectTab() {
     let tabs = makeTabs(count: 2)
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let h: CGFloat = 600
-    // Tab 0 row is at y = h - 2*rowHeight
-    let tabY = h - 2 * p.rowHeight + p.rowHeight / 2
+    // Tab 0 is now the topmost row (no "+" slot above it).
+    let tabY = h - p.rowHeight + p.rowHeight / 2
     let result = p.hitTest(at: CGPoint(x: 50, y: tabY), tabs: tabs, height: h)
     XCTAssertEqual(result, .selectTab(tabs[0].id))
   }
@@ -111,9 +113,9 @@ final class SidebarProducerTests: XCTestCase {
     let tabs = makeTabs(count: 1)
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let h: CGFloat = 600
-    // Close glyph sits in the top band of the (now quad-height) tab row,
-    // aligned with the title line. Click within that band on the right edge.
-    let tabBottomY = h - 2 * p.rowHeight
+    // Close glyph zone sits in the top band of the (quad-height) tab row.
+    // Click within that band on the right edge.
+    let tabBottomY = h - p.rowHeight
     let titleBandY = tabBottomY + p.rowHeight - 8  // a few pt below row top
     let result = p.hitTest(at: CGPoint(x: 190, y: titleBandY), tabs: tabs, height: h)
     XCTAssertEqual(result, .closeTab(tabs[0].id))
@@ -126,10 +128,34 @@ final class SidebarProducerTests: XCTestCase {
     let tabs = makeTabs(count: 1)
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let h: CGFloat = 600
-    let tabBottomY = h - 2 * p.rowHeight
+    let tabBottomY = h - p.rowHeight
     let lowerBandY = tabBottomY + 8  // bottom of the row, well below the X
     let result = p.hitTest(at: CGPoint(x: 190, y: lowerBandY), tabs: tabs, height: h)
     XCTAssertEqual(result, .selectTab(tabs[0].id))
+  }
+
+  func testCloseGlyphHiddenWhenTabNotHovered() {
+    let tabs = makeTabs(count: 1)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+    XCTAssertFalse(texts.contains("✕"), "close glyph must be hidden until hover")
+  }
+
+  func testCloseGlyphShownWhenTabHovered() {
+    let tabs = makeTabs(count: 1)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(
+      tabs: tabs, activeTabId: tabs[0].id, height: 600,
+      hoveredTabId: tabs[0].id)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+    XCTAssertTrue(texts.contains("✕"), "close glyph must appear on hover")
   }
 
   func testHitTestOutsideSidebar() {
