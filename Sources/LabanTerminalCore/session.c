@@ -336,6 +336,28 @@ static int encode_utf8(uint32_t cp, uint8_t *out) {
     return 4;
 }
 
+static int ensure_utf8_capacity(char **storage, size_t *cap, size_t used, size_t extra) {
+    if (used > SIZE_MAX - 1) return -1;
+    if (extra > SIZE_MAX - used - 1) return -1;
+    size_t required = used + extra + 1;
+    if (required <= *cap) return 0;
+
+    size_t new_cap = *cap ? *cap : 1;
+    while (new_cap < required) {
+        if (new_cap > SIZE_MAX / 2) {
+            new_cap = required;
+            break;
+        }
+        new_cap *= 2;
+    }
+
+    char *new_storage = realloc(*storage, new_cap);
+    if (!new_storage) return -1;
+    *storage = new_storage;
+    *cap = new_cap;
+    return 0;
+}
+
 static uint16_t laban_cell_flags_from_style(const GhosttyStyle *style) {
     uint16_t flags = 0;
     if (!style) return flags;
@@ -883,8 +905,10 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     ghostty_render_state_get(s->render_state,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &s->row_iter);
 
+    int snapshot_error = 0;
     int row_idx = 0;
-    while (ghostty_render_state_row_iterator_next(s->row_iter) && row_idx < rows) {
+    while (!snapshot_error &&
+           ghostty_render_state_row_iterator_next(s->row_iter) && row_idx < rows) {
         /* Populate the pre-allocated cells container for this row. */
         ghostty_render_state_row_get(s->row_iter,
             GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &s->row_cells);
@@ -939,25 +963,45 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
 
             if (grapheme_len > 0) {
-                uint32_t codepoints[16];
-                uint32_t buf_len = grapheme_len < 16 ? grapheme_len : 16;
-                ghostty_render_state_row_cells_get(s->row_cells,
-                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, codepoints);
-
-                /* Fast-path: single ASCII printable → store as codepoint. */
-                if (grapheme_len == 1 && codepoints[0] >= 0x20 && codepoints[0] <= 0x7E) {
-                    cell->codepoint = codepoints[0];
+                uint32_t stack_codepoints[64];
+                uint32_t *codepoints = stack_codepoints;
+                if ((size_t)grapheme_len > sizeof(stack_codepoints) / sizeof(stack_codepoints[0])) {
+                    codepoints = malloc((size_t)grapheme_len * sizeof(uint32_t));
+                    if (!codepoints) {
+                        snapshot_error = 1;
+                        break;
+                    }
                 }
 
-                /* Encode all codepoints to UTF-8. */
-                cell->utf8_offset = (uint32_t)utf8_used;
-                for (uint32_t i = 0; i < buf_len && utf8_used + 4 < utf8_cap; i++) {
-                    uint8_t tmp[4];
-                    int nb = encode_utf8(codepoints[i], tmp);
-                    memcpy(utf8_storage + utf8_used, tmp, (size_t)nb);
-                    utf8_used += (size_t)nb;
+                if (ghostty_render_state_row_cells_get(s->row_cells,
+                        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, codepoints)
+                        == GHOSTTY_SUCCESS) {
+                    if ((size_t)grapheme_len > SIZE_MAX / 4) {
+                        snapshot_error = 1;
+                    } else if (ensure_utf8_capacity(
+                                   &utf8_storage, &utf8_cap, utf8_used,
+                                   (size_t)grapheme_len * 4) != 0) {
+                        snapshot_error = 1;
+                    } else {
+                        /* Fast-path: single ASCII printable → store as codepoint. */
+                        if (grapheme_len == 1 && codepoints[0] >= 0x20 && codepoints[0] <= 0x7E) {
+                            cell->codepoint = codepoints[0];
+                        }
+
+                        /* Encode all codepoints to UTF-8. */
+                        cell->utf8_offset = (uint32_t)utf8_used;
+                        for (uint32_t i = 0; i < grapheme_len; i++) {
+                            uint8_t tmp[4];
+                            int nb = encode_utf8(codepoints[i], tmp);
+                            memcpy(utf8_storage + utf8_used, tmp, (size_t)nb);
+                            utf8_used += (size_t)nb;
+                        }
+                        cell->utf8_length = (uint32_t)(utf8_used - cell->utf8_offset);
+                    }
                 }
-                cell->utf8_length = (uint32_t)(utf8_used - cell->utf8_offset);
+
+                if (codepoints != stack_codepoints) free(codepoints);
+                if (snapshot_error) break;
             }
 
             /* Foreground color (GHOSTTY_INVALID_VALUE if unset → keep default). */
@@ -1048,6 +1092,15 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
             col_idx++;
         }
         row_idx++;
+    }
+    if (snapshot_error) {
+        snap->utf8_storage = utf8_storage;
+        snap->cells = cells;
+        snap->hyperlink_uris = (const char *const *)hyperlink_uris;
+        snap->hyperlink_count = hyperlink_count;
+        snap->dirty_rows = dirty_rows;
+        laban_snapshot_destroy(snap);
+        return -1;
     }
     utf8_storage[utf8_used] = '\0';
 

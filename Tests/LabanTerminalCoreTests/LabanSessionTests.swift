@@ -178,6 +178,44 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(String(cString: title), String(repeating: "a", count: Int(strlen(title))))
   }
 
+  func testSnapshotPreservesLongSingleCellGraphemeCluster() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let cluster = "a" + String(repeating: "\u{0301}", count: 20)
+    let bytes = Array(cluster.utf8)
+    bytes.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        bytes.count)
+    }
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+
+    guard let snap = snapshot?.pointee,
+      let cells = snap.cells,
+      let storage = snap.utf8_storage
+    else {
+      XCTFail("snapshot storage is nil")
+      return
+    }
+
+    let first = cells[0]
+    XCTAssertEqual(Int(first.utf8_length), bytes.count)
+    let ptr = UnsafeRawPointer(storage).advanced(by: Int(first.utf8_offset))
+    let buf = UnsafeBufferPointer<UInt8>(
+      start: ptr.assumingMemoryBound(to: UInt8.self),
+      count: Int(first.utf8_length)
+    )
+    XCTAssertEqual(String(bytes: buf, encoding: .utf8), cluster)
+  }
+
   func testProcessMetadataReportsForegroundProcessAndCwd() {
     let tempURL = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-process-metadata-\(UUID().uuidString)")

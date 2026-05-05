@@ -489,7 +489,10 @@ public final class MetalRenderer: RendererBackend {
     }
 
     ensureTargetTexture(matching: drawableTex)
-    guard let target = targetTexture else { return }
+    guard let target = targetTexture else {
+      frameInFlight.signal()
+      return
+    }
 
     let surfaceWPx = drawableTex.width
     let surfaceHPx = drawableTex.height
