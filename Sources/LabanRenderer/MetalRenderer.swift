@@ -49,9 +49,39 @@ public final class MetalRenderer: RendererBackend {
   public var presentationLayer: CALayer? { layer }
   public var presentationImage: CGImage? { nil }
 
-  /// Last-frame readback for screenshots / capture. Filled on demand from
-  /// the most recently rendered offscreen color attachment.
+  /// Last-frame readback for screenshots / capture. Returns nil when
+  /// `captureMode` is off (the drawable→CPU blit is skipped to keep
+  /// cursor-blink frames cheap).
   public var pngData: Data? { encodeLastFrameAsPNG() }
+
+  /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time
+  /// inside `render()`. GPU = `cmdBuf.gpuEndTime - gpuStartTime` from the
+  /// completion handler.
+  public struct FrameTimings: Equatable, Sendable {
+    public var sampleCount: Int
+    public var cpuMeanMs: Double
+    public var cpuP50Ms: Double
+    public var cpuP99Ms: Double
+    public var gpuMeanMs: Double
+    public var gpuP50Ms: Double
+    public var gpuP99Ms: Double
+  }
+
+  public func recentFrameTimings() -> FrameTimings {
+    frameSampleLock.lock()
+    defer { frameSampleLock.unlock() }
+    let cpu = frameSamples.map { $0.cpuMs }
+    let gpu = frameSamples.map { $0.gpuMs }
+    return FrameTimings(
+      sampleCount: frameSamples.count,
+      cpuMeanMs: mean(cpu), cpuP50Ms: percentile(cpu, 0.50), cpuP99Ms: percentile(cpu, 0.99),
+      gpuMeanMs: mean(gpu), gpuP50Ms: percentile(gpu, 0.50), gpuP99Ms: percentile(gpu, 0.99))
+  }
+
+  /// Optional callback fired on the GPU completion handler each frame. The
+  /// view installs one to drive end-to-end input-to-photon latency
+  /// measurement (timestamp paired with a recent keystroke).
+  public var onFrameCompleted: (() -> Void)?
 
   // MARK: - Internals
 
@@ -94,6 +124,22 @@ public final class MetalRenderer: RendererBackend {
   /// terminal at vsync still leaves several ms of headroom; the safety
   /// outweighs the lost pipeline depth.
   private let frameInFlight = DispatchSemaphore(value: 1)
+
+  /// Set true while a capture session needs the per-frame readback blit;
+  /// false otherwise so cursor-blink frames don't pay the drawable→CPU copy
+  /// (~50–100 µs of pure overhead with no consumer).
+  public var captureMode: Bool = false
+
+  /// Rolling per-frame timing samples. CPU = wall time spent in render()
+  /// itself (encoding work). GPU = cmdBuf.gpuEndTime - gpuStartTime, set in
+  /// the completion handler. Bounded ring; latencyStats() reads p50/p99.
+  private struct FrameSample {
+    var cpuMs: Double
+    var gpuMs: Double
+  }
+  private var frameSamples: [FrameSample] = []
+  private static let frameSampleCap = 240
+  private let frameSampleLock = NSLock()
   // CGImage of the last rendered drawable, captured via blit-readback on
   // demand for the pngData accessor (capture/screenshot path).
   private var readbackTexture: MTLTexture?
@@ -128,6 +174,7 @@ public final class MetalRenderer: RendererBackend {
     layer.isOpaque = true
 
     let solidDesc = MTLRenderPipelineDescriptor()
+    solidDesc.label = "laban.solid-quad"
     solidDesc.vertexFunction = solidVS
     solidDesc.fragmentFunction = solidFS
     let solidAttachment = solidDesc.colorAttachments[0]!
@@ -141,6 +188,7 @@ public final class MetalRenderer: RendererBackend {
     solidAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 
     let glyphDesc = MTLRenderPipelineDescriptor()
+    glyphDesc.label = "laban.glyph-quad"
     glyphDesc.vertexFunction = glyphVS
     glyphDesc.fragmentFunction = glyphFS
     let glyphAttachment = glyphDesc.colorAttachments[0]!
@@ -222,6 +270,8 @@ public final class MetalRenderer: RendererBackend {
   // MARK: - render
 
   public func render(_ commands: [FrameCommand], damage: RenderDamage) {
+    let cpuStart = ContinuousClock.now
+
     // Block until the previous frame's GPU work has retired. Without this,
     // multiple in-flight frames stomp on the shared persistent target and
     // scratch textures and the user sees ghost pixels.
@@ -235,12 +285,23 @@ public final class MetalRenderer: RendererBackend {
       frameInFlight.signal()
       return
     }
+    cmdBuf.label = "laban.frame"
     // Strong-self capture keeps the renderer alive until the GPU work
     // completes — DispatchSemaphore traps on deinit if a wait() outstrips
     // the matching signal(), so the renderer must outlive any frame it
-    // committed.
-    cmdBuf.addCompletedHandler { [self] _ in
+    // committed. The same handler also closes out per-frame timing once
+    // the GPU has reported gpuStartTime/gpuEndTime.
+    cmdBuf.addCompletedHandler { [self] buffer in
       self.frameInFlight.signal()
+      let cpuMs = msSince(cpuStart)
+      let gpuMs = max(0.0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
+      self.frameSampleLock.lock()
+      self.frameSamples.append(FrameSample(cpuMs: cpuMs, gpuMs: gpuMs))
+      if self.frameSamples.count > Self.frameSampleCap {
+        self.frameSamples.removeFirst(self.frameSamples.count - Self.frameSampleCap)
+      }
+      self.frameSampleLock.unlock()
+      self.onFrameCompleted?()
     }
 
     ensureTargetTexture(matching: drawableTex)
@@ -267,6 +328,7 @@ public final class MetalRenderer: RendererBackend {
 
     // ---------- Pass 2: blit persistent target → drawable ----------
     if let blit = cmdBuf.makeBlitCommandEncoder() {
+      blit.label = "present-blit"
       blit.copy(
         from: target, sourceSlice: 0, sourceLevel: 0,
         sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
@@ -305,26 +367,34 @@ public final class MetalRenderer: RendererBackend {
       }
     }
 
-    // ---------- Pass 4: capture readback (blit drawable → CPU-readable) -----
-    if readbackTexture == nil
-      || readbackTexture?.width != drawableTex.width
-      || readbackTexture?.height != drawableTex.height
-    {
-      let desc = MTLTextureDescriptor.texture2DDescriptor(
-        pixelFormat: layer.pixelFormat,
-        width: drawableTex.width, height: drawableTex.height, mipmapped: false)
-      desc.usage = [.shaderRead]
-      desc.storageMode = .shared
-      readbackTexture = device.makeTexture(descriptor: desc)
-    }
-    if let dst = readbackTexture, let blit = cmdBuf.makeBlitCommandEncoder() {
-      blit.copy(
-        from: drawableTex, sourceSlice: 0, sourceLevel: 0,
-        sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-        sourceSize: MTLSize(width: drawableTex.width, height: drawableTex.height, depth: 1),
-        to: dst, destinationSlice: 0, destinationLevel: 0,
-        destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-      blit.endEncoding()
+    // ---------- Pass 4: optional capture readback (drawable → CPU-readable) --
+    // Only run this when something is actually consuming pngData. With a
+    // ProMotion display ticking at 120 Hz, dropping the no-op blit on
+    // cursor-blink frames saves measurable wall time and a memory copy
+    // of the whole drawable.
+    if captureMode {
+      if readbackTexture == nil
+        || readbackTexture?.width != drawableTex.width
+        || readbackTexture?.height != drawableTex.height
+      {
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+          pixelFormat: layer.pixelFormat,
+          width: drawableTex.width, height: drawableTex.height, mipmapped: false)
+        desc.usage = [.shaderRead]
+        desc.storageMode = .shared
+        readbackTexture = device.makeTexture(descriptor: desc)
+        readbackTexture?.label = "readback"
+      }
+      if let dst = readbackTexture, let blit = cmdBuf.makeBlitCommandEncoder() {
+        blit.label = "readback-blit"
+        blit.copy(
+          from: drawableTex, sourceSlice: 0, sourceLevel: 0,
+          sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+          sourceSize: MTLSize(width: drawableTex.width, height: drawableTex.height, depth: 1),
+          to: dst, destinationSlice: 0, destinationLevel: 0,
+          destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+      }
     }
 
     cmdBuf.present(drawable)
@@ -769,4 +839,23 @@ private func rgbaToFloat4(_ rgba: UInt32) -> SIMD4<Float> {
   let b = Float((rgba >> 8) & 0xFF) / 255.0
   let a = Float(rgba & 0xFF) / 255.0
   return SIMD4<Float>(r, g, b, a)
+}
+
+@inline(__always)
+private func msSince(_ start: ContinuousClock.Instant) -> Double {
+  let dt = ContinuousClock.now - start
+  return Double(dt.components.attoseconds) / 1e15
+}
+
+@inline(__always)
+private func mean(_ xs: [Double]) -> Double {
+  guard !xs.isEmpty else { return 0 }
+  return xs.reduce(0, +) / Double(xs.count)
+}
+
+private func percentile(_ xs: [Double], _ p: Double) -> Double {
+  guard !xs.isEmpty else { return 0 }
+  let sorted = xs.sorted()
+  let idx = Int((Double(sorted.count - 1) * p).rounded())
+  return sorted[max(0, min(sorted.count - 1, idx))]
 }

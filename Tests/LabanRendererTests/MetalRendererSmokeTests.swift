@@ -18,6 +18,7 @@ final class MetalRendererSmokeTests: XCTestCase {
       XCTFail("MetalRenderer.init returned nil")
       return
     }
+    renderer.captureMode = true
     renderer.resize(pixelWidth: 1640, pixelHeight: 912, scale: 2)
 
     var cmds: [FrameCommand] = []
@@ -70,6 +71,7 @@ final class MetalRendererSmokeTests: XCTestCase {
       XCTFail("MetalRenderer.init returned nil")
       return
     }
+    renderer.captureMode = true
     // Use 1x scale to keep pngData diffs predictable.
     let rows = 8
     let cellH: CGFloat = 19
@@ -131,6 +133,7 @@ final class MetalRendererSmokeTests: XCTestCase {
       XCTFail("MetalRenderer.init returned nil")
       return
     }
+    renderer.captureMode = true
     renderer.resize(pixelWidth: 360, pixelHeight: 152, scale: 1)
     let bg: [FrameCommand] = [
       .rect(CGRect(x: 0, y: 0, width: 360, height: 152), color: 0x10_3C_48_FF, source: .terminal)
@@ -158,6 +161,7 @@ final class MetalRendererSmokeTests: XCTestCase {
       XCTFail("MetalRenderer.init returned nil — shaders or pipelines failed to build")
       return
     }
+    renderer.captureMode = true
     renderer.resize(pixelWidth: 320, pixelHeight: 192, scale: 2)
 
     // A minimal frame: one fg-coloured rect plus a glyph run.

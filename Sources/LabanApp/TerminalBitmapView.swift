@@ -59,6 +59,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var captureRecorder: CaptureRecorder?
   private var renderedFrameCount: Int = 0
 
+  // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
+  // renderer's onFrameCompleted callback. Bounded ring buffer.
+  private var pendingInputAt: ContinuousClock.Instant?
+  private var inputLatencyMs: [Double] = []
+  private static let inputLatencyCap = 240
+  private var lastLatencyLogAt: Date = Date.distantPast
+
   init(
     model: AppModel,
     fontAtlas: FontAtlas,
@@ -86,6 +93,54 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       self.layer = layer
       // Metal layers must opt in to backing scale changes via the view.
       layerContentsRedrawPolicy = .duringViewResize
+    }
+
+    // Install the per-frame completion hook so we can close out
+    // input-to-photon latency samples on the GPU completion handler. The
+    // callback fires on a Metal-internal queue; bounce to main before
+    // touching shared state.
+    if let metal = backend as? MetalRenderer {
+      metal.onFrameCompleted = { [weak self] in
+        DispatchQueue.main.async { self?.recordInputLatencyIfPending() }
+      }
+    }
+  }
+
+  /// Pop the pending input timestamp (if any) and record the elapsed time.
+  /// Called from the renderer's GPU completion handler each frame.
+  private func recordInputLatencyIfPending() {
+    guard let stamp = pendingInputAt else { return }
+    pendingInputAt = nil
+    let dt = ContinuousClock.now - stamp
+    let ms = Double(dt.components.attoseconds) / 1e15
+    inputLatencyMs.append(ms)
+    if inputLatencyMs.count > Self.inputLatencyCap {
+      inputLatencyMs.removeFirst(inputLatencyMs.count - Self.inputLatencyCap)
+    }
+    // Log a summary every ~5 s so you see numbers without an HTTP server.
+    let now = Date()
+    if now.timeIntervalSince(lastLatencyLogAt) >= 5,
+      inputLatencyMs.count >= 4
+    {
+      lastLatencyLogAt = now
+      let sorted = inputLatencyMs.sorted()
+      let p50 = sorted[sorted.count / 2]
+      let p99 = sorted[Int(Double(sorted.count - 1) * 0.99)]
+      let mean = inputLatencyMs.reduce(0, +) / Double(inputLatencyMs.count)
+      let metalTimings: String
+      if let metal = backend as? MetalRenderer {
+        let t = metal.recentFrameTimings()
+        metalTimings = String(
+          format: "  frame cpu p50/p99=%.2f/%.2f ms  gpu p50/p99=%.2f/%.2f ms",
+          t.cpuP50Ms, t.cpuP99Ms, t.gpuP50Ms, t.gpuP99Ms)
+      } else {
+        metalTimings = ""
+      }
+      fputs(
+        String(
+          format: "laban: input→commit n=%d  mean=%.2f ms  p50=%.2f ms  p99=%.2f ms%@\n",
+          inputLatencyMs.count, mean, p50, p99, metalTimings),
+        stderr)
     }
   }
 
@@ -418,6 +473,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   override var acceptsFirstResponder: Bool { true }
 
   override func keyDown(with event: NSEvent) {
+    // Stamp the keystroke so the next render's GPU completion handler can
+    // close out an input-to-photon latency sample. Only the most recent
+    // keystroke is tracked; if you mash keys we attribute the eventual
+    // visible frame to the latest one (closer to user-perceived latency).
+    pendingInputAt = ContinuousClock.now
     let descriptor = TerminalKeyDescriptor(keyDown: event)
     switch descriptor.route() {
     case .appCommand(let cmd):
@@ -1050,6 +1110,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         fputs("laban: capture stop failed \(error)\n", stderr)
       }
       captureRecorder = nil
+      // Capture stopped: drop the per-frame readback blit again.
+      (backend as? MetalRenderer)?.captureMode = false
       model.captureSink = nil
       renderInvalidated = true
       return
@@ -1066,6 +1128,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         executable: "LabanApp"
       )
       captureRecorder = recorder
+      // Capture started: turn on the per-frame drawable→CPU readback so
+      // pngData has bytes to serve. Off-state was the default since boot.
+      (backend as? MetalRenderer)?.captureMode = true
       model.captureSink = recorder
       model.recordExistingStateForCapture()
       fputs("laban: capture started \(recorder.directoryURL.path)\n", stderr)
