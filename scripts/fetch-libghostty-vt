@@ -71,9 +71,28 @@ sed -i '' \
 
 # Build libghostty-vt. Zig fetches its own dependencies on first build
 # (~3-10 min). Subsequent builds use ~/.cache/zig and are fast.
-printf 'fetch-libghostty-vt: running zig build -Demit-lib-vt (this may take a few minutes)\n'
+#
+# `-Doptimize=ReleaseFast` is critical: zig's default Debug build leaves
+# `runtime_safety` on, which means `Page.verifyIntegrity` runs an O(N)
+# hash-map walk on every `clearCells` operation. A workload that emits
+# many EL/clear sequences (e.g. an interactive AI agent redrawing its
+# UI) then takes O(N²) per screen and pegs the main thread to a halt.
+# We're consuming libghostty as a vendored production artifact, not
+# debugging into it — the swift side stays at -Onone for breakpoints
+# regardless of how we built this static lib.
+#
+# If you ever DO need to step into libghostty under a debugger, the
+# minimal-impact workaround is to stub out `verifyIntegrity` so the
+# rest of runtime_safety stays live. Uncomment the sed below and drop
+# the -Doptimize flag:
+#
+#   sed -i '' \
+#     's/pub fn verifyIntegrity(self: \*const Page) void {/&\n    return;/' \
+#     "$DEST/src/terminal/page.zig"
+#
+printf 'fetch-libghostty-vt: running zig build -Demit-lib-vt -Doptimize=ReleaseFast (this may take a few minutes)\n'
 cd "$repo_root/$DEST"
-zig build -Demit-lib-vt
+zig build -Demit-lib-vt -Doptimize=ReleaseFast
 
 cd "$repo_root"
 [ -f "$LIB_OUT" ] || fail "zig build did not produce $LIB_OUT"
