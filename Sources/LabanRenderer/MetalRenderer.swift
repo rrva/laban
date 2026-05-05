@@ -96,6 +96,15 @@ public final class MetalRenderer: RendererBackend {
   /// readback texture so capture-side callers see the actual just-rendered
   /// pixels and not whatever the previous frame happened to leave behind.
   private var lastCmdBuf: MTLCommandBuffer?
+
+  /// Limits frames in flight to 1. CAMetalLayer hands out up to 3 drawables
+  /// in parallel, but our persistent target + scratch are SINGLE shared
+  /// MTLTextures — without serialization, frame N's blit can read the
+  /// target while frame N+1's content pass writes it. The visible artefact
+  /// is a "ghost" (mixed pixels from two frames). One frame in flight on a
+  /// terminal at vsync still leaves several ms of headroom; the safety
+  /// outweighs the lost pipeline depth.
+  private let frameInFlight = DispatchSemaphore(value: 1)
   // CGImage of the last rendered drawable, captured via blit-readback on
   // demand for the pngData accessor (capture/screenshot path).
   private var readbackTexture: MTLTexture?
@@ -226,9 +235,26 @@ public final class MetalRenderer: RendererBackend {
   // MARK: - render
 
   public func render(_ commands: [FrameCommand], damage: RenderDamage) {
-    guard let drawable = layer.nextDrawable() else { return }
+    // Block until the previous frame's GPU work has retired. Without this,
+    // multiple in-flight frames stomp on the shared persistent target and
+    // scratch textures and the user sees ghost pixels.
+    frameInFlight.wait()
+    guard let drawable = layer.nextDrawable() else {
+      frameInFlight.signal()
+      return
+    }
     let drawableTex = drawable.texture
-    guard let cmdBuf = queue.makeCommandBuffer() else { return }
+    guard let cmdBuf = queue.makeCommandBuffer() else {
+      frameInFlight.signal()
+      return
+    }
+    // Strong-self capture keeps the renderer alive until the GPU work
+    // completes — DispatchSemaphore traps on deinit if a wait() outstrips
+    // the matching signal(), so the renderer must outlive any frame it
+    // committed.
+    cmdBuf.addCompletedHandler { [self] _ in
+      self.frameInFlight.signal()
+    }
 
     ensureTargetTexture(matching: drawableTex)
     guard let target = targetTexture else { return }
@@ -780,19 +806,21 @@ public final class MetalRenderer: RendererBackend {
 extension MetalRenderer {
   /// Result of a successful scroll detection. `deltaRows > 0` means the
   /// terminal scrolled UP visually (content moved toward larger CG-y; the
-  /// new top row's content used to be the row below it). `unmatchedYRanges`
-  /// is the set of CG-y bands the renderer still needs to repaint.
+  /// new top row's content used to be in the previous frame's row below
+  /// it). `deltaRows < 0` means visual scroll-down. `unmatchedYRanges` is
+  /// the set of CG-y bands the renderer still needs to repaint.
   struct ScrollShift {
     var deltaRows: Int
     var unmatchedYRanges: [DirtyYRange]
   }
 
-  /// Per-row content hash. We bucket FrameCommands by quantized CG-y (one
-  /// bucket per terminal row) and mix each command's distinguishing fields
-  /// into a single UInt64 via FNV-1a. Two adjacent frames produce identical
-  /// hashes for rows whose visible contents didn't change. Non-terminal
-  /// commands (sidebar, chrome, cursor, selection) are skipped so they don't
-  /// pollute the signal.
+  /// Per-row content hash. Bucket FrameCommands by terminal-row index using
+  /// `floor(origin.y / cellHeight)` — keys increase from screen-bottom (row
+  /// N-1, smallest CG-y) to screen-top (row 0, largest CG-y). FNV-1a mixes
+  /// each command's distinguishing fields into a single UInt64. Two adjacent
+  /// frames produce identical hashes for rows whose visible contents didn't
+  /// change. Non-terminal commands (sidebar, chrome, cursor, selection) are
+  /// skipped so they don't pollute the signal.
   fileprivate func computeTerminalRowHashes(_ commands: [FrameCommand]) -> [Int: UInt64] {
     let cellH = glyphCellHeight
     var buckets: [Int: UInt64] = [:]
@@ -801,7 +829,10 @@ extension MetalRenderer {
       switch cmd {
       case .rect(let rect, let color, let src):
         guard src == .terminal else { continue }
-        let key = Int((rect.midY / cellH).rounded())
+        // Use the rect's bottom edge so cells sitting at exact cell
+        // boundaries (the common case) bucket deterministically. floor on a
+        // half-cell would otherwise jitter into the row above or below.
+        let key = Int((rect.origin.y / cellH).rounded(.down))
         var h = buckets[key] ?? Self.fnvOffset
         Self.fnvMix(&h, 1)
         Self.fnvMix(&h, UInt64(bitPattern: Int64(rect.origin.x.rounded() * 100)))
@@ -816,7 +847,7 @@ extension MetalRenderer {
         let underlineStyle, let underlineColor, let hyperlink
       ):
         guard src == .terminal else { continue }
-        let key = Int(((origin.y + cellH * 0.5) / cellH).rounded())
+        let key = Int((origin.y / cellH).rounded(.down))
         var h = buckets[key] ?? Self.fnvOffset
         Self.fnvMix(&h, 2)
         Self.fnvMix(&h, UInt64(bitPattern: Int64(origin.x.rounded() * 100)))
@@ -844,13 +875,22 @@ extension MetalRenderer {
   /// Search a small Δ window for the row-shift that maximises matching
   /// hashes. Returns the corresponding `ScrollShift` when at least 50% of
   /// rows match a non-zero shift; nil otherwise.
+  ///
+  /// Conventions:
+  /// - row keys come from `floor(CG_y / cellHeight)`, so larger key = higher
+  ///   on screen (because CG-y is up).
+  /// - For a visual scroll-UP (content moves up the screen, new content
+  ///   appears at the bottom), surviving rows move to a *larger* key:
+  ///   new[k] == previous[k - 1]. The matching internal Δ is `-1`.
+  /// - We invert that sign at the API boundary so callers get the more
+  ///   intuitive "deltaRows > 0 = visual scroll-up".
   fileprivate func detectScrollShift(
     current: [Int: UInt64], previous: [Int: UInt64]
   ) -> ScrollShift? {
     guard !previous.isEmpty, current.count >= 4 else { return nil }
     let keys = Array(current.keys).sorted()
     let rowCount = keys.count
-    var bestDelta = 0
+    var bestRawDelta = 0  // internal: new[k] == previous[k + bestRawDelta]
     var bestMatches = 0
     // ±10 rows covers the common scroll-output case (one-line scroll, plus
     // a few-line burst from a process printing several lines per tick).
@@ -865,34 +905,37 @@ extension MetalRenderer {
       }
       if matches > bestMatches {
         bestMatches = matches
-        bestDelta = delta
+        bestRawDelta = delta
       }
     }
-    guard bestDelta != 0, bestMatches * 2 >= rowCount else { return nil }
+    guard bestRawDelta != 0, bestMatches * 2 >= rowCount else { return nil }
 
     // Compute the unmatched rows so the caller knows what still needs paint.
+    // Each key K corresponds to a CG band [K * cellH, (K+1) * cellH] (cells
+    // sit on cell-height boundaries, so this is exact).
     let cellH = glyphCellHeight
     var ranges: [DirtyYRange] = []
     var pendingStart: Int?
+    var pendingEnd: Int?  // exclusive
     for k in keys {
-      let matched = previous[k + bestDelta] == current[k]
+      let matched = previous[k + bestRawDelta] == current[k]
       if matched {
-        if let s = pendingStart {
-          let height = CGFloat(k - s) * cellH
+        if let s = pendingStart, let e = pendingEnd {
           ranges.append(
-            DirtyYRange(y: CGFloat(s) * cellH - cellH * 0.5, height: height))
+            DirtyYRange(y: CGFloat(s) * cellH, height: CGFloat(e - s) * cellH))
           pendingStart = nil
+          pendingEnd = nil
         }
-      } else if pendingStart == nil {
-        pendingStart = k
+      } else {
+        if pendingStart == nil { pendingStart = k }
+        pendingEnd = k + 1
       }
     }
-    if let s = pendingStart, let last = keys.last {
-      let height = CGFloat(last - s + 1) * cellH
+    if let s = pendingStart, let e = pendingEnd {
       ranges.append(
-        DirtyYRange(y: CGFloat(s) * cellH - cellH * 0.5, height: height))
+        DirtyYRange(y: CGFloat(s) * cellH, height: CGFloat(e - s) * cellH))
     }
-    return ScrollShift(deltaRows: bestDelta, unmatchedYRanges: ranges)
+    return ScrollShift(deltaRows: -bestRawDelta, unmatchedYRanges: ranges)
   }
 
   /// Execute the shift: blit `target → scratch` (full identity copy), then
