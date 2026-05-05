@@ -230,6 +230,24 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].status, .running)
   }
 
+  func testTabStatusCallbackCanArriveFromBackgroundQueue() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("session not found")
+      return
+    }
+
+    let delivered = expectation(description: "background tab status delivered")
+    DispatchQueue.global(qos: .userInitiated).async {
+      _ = session.feedOutput(Array("\u{1B}]21337;status=background\u{07}".utf8))
+      delivered.fulfill()
+    }
+    wait(for: [delivered], timeout: 1)
+
+    XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusText, "background")
+  }
+
   func testSyncExitStateIsMonotonic() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
