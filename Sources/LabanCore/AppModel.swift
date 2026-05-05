@@ -115,8 +115,9 @@ public final class AppModel {
   }
 
   public func selectTab(_ tabId: Tab.ID) {
+    guard let selectedIdx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
     for i in tabs.indices {
-      let selected = tabs[i].id == tabId
+      let selected = i == selectedIdx
       tabs[i].isActive = selected
       if selected {
         tabs[i].titleMetadata.unseenOutput = false
@@ -128,9 +129,8 @@ public final class AppModel {
           : (tabs[i].titleMetadata.unseenOutput ? .unseenOutput : .background)
       }
     }
-    if let tab = tabs.first(where: { $0.id == tabId }) {
-      recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
-    }
+    let tab = tabs[selectedIdx]
+    recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
   }
 
   public func closeTab(_ tabId: Tab.ID) throws {
@@ -436,24 +436,36 @@ public final class AppModel {
   }
 
   public func resize(viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int) {
-    let rows = Int32(max(1, viewportHeight / cellHeight))
-    let cols = Int32(max(1, viewportWidth / cellWidth))
+    let safeCellWidth = max(1, cellWidth)
+    let safeCellHeight = max(1, cellHeight)
+    let safeViewportWidth = max(0, viewportWidth)
+    let safeViewportHeight = max(0, viewportHeight)
+    let rows = max(1, safeViewportHeight / safeCellHeight)
+    let cols = max(1, safeViewportWidth / safeCellWidth)
     var size = LabanTerminalSize()
-    size.rows = rows
-    size.cols = cols
+    size.rows = Self.clampedTerminalMetric(rows, minimum: 1)
+    size.cols = Self.clampedTerminalMetric(cols, minimum: 1)
+    size.pixel_width = Self.clampedTerminalMetric(safeViewportWidth)
+    size.pixel_height = Self.clampedTerminalMetric(safeViewportHeight)
+    size.cell_width = Self.clampedTerminalMetric(safeCellWidth, minimum: 1)
+    size.cell_height = Self.clampedTerminalMetric(safeCellHeight, minimum: 1)
     currentSize = size
     for session in sessions.values {
       if session.resize(size) == 0 {
         var event = CaptureTimelineEvent(kind: .sessionResized, sessionId: session.id)
-        event.rows = Int(rows)
-        event.cols = Int(cols)
-        event.pixelWidth = viewportWidth
-        event.pixelHeight = viewportHeight
-        event.cellWidth = cellWidth
-        event.cellHeight = cellHeight
+        event.rows = Int(size.rows)
+        event.cols = Int(size.cols)
+        event.pixelWidth = safeViewportWidth
+        event.pixelHeight = safeViewportHeight
+        event.cellWidth = safeCellWidth
+        event.cellHeight = safeCellHeight
         captureSink?.record(event)
       }
     }
+  }
+
+  private static func clampedTerminalMetric(_ value: Int, minimum: Int = 0) -> Int32 {
+    Int32(max(minimum, min(value, Int(Int32.max))))
   }
 
   /// Subscribe to OSC 21337 tab-status pushes from the session and fold

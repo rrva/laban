@@ -69,6 +69,19 @@ final class AppModelTests: XCTestCase {
     XCTAssertFalse(model.tabs[1].isActive)
   }
 
+  func testSelectTabWithStaleIdKeepsExistingActiveTab() throws {
+    let model = try makeModel()
+    let firstId = model.tabs[0].id
+    let second = try model.createTab()
+
+    XCTAssertEqual(model.activeTab?.id, second.id)
+    model.selectTab("missing-\(UUID().uuidString)")
+
+    XCTAssertEqual(model.activeTab?.id, second.id)
+    XCTAssertFalse(model.tabs.first { $0.id == firstId }?.isActive ?? true)
+    XCTAssertEqual(model.tabs.filter { $0.isActive }.count, 1)
+  }
+
   func testHiddenSessionIdentitySurvivesSelection() throws {
     let model = try makeModel()
     let firstTabId = model.tabs[0].id
@@ -151,6 +164,36 @@ final class AppModelTests: XCTestCase {
       XCTAssertEqual(snap!.pointee.rows, 30, "rows = 600/20")
       XCTAssertEqual(snap!.pointee.cols, 80, "cols = 800/10")
     }
+  }
+
+  func testResizePropagatesPixelAndCellMetricsToTerminalSizeReports() throws {
+    let sink = AppModelCaptureSink()
+    let model = try makeModel(rows: 24, cols: 80)
+    model.captureSink = sink
+
+    model.resize(viewportWidth: 900, viewportHeight: 540, cellWidth: 9, cellHeight: 18)
+
+    guard let session = model.session(forTab: model.tabs[0].id) else {
+      XCTFail("session missing for active tab")
+      return
+    }
+    sink.byteEvents.removeAll()
+    XCTAssertEqual(session.write(Array("\u{1B}[14t\u{1B}[16t\u{1B}[18t".utf8)), 0)
+
+    let responseBytes = sink.byteEvents
+      .filter { $0.direction == .terminalResponse }
+      .flatMap { $0.bytes }
+    let response = String(bytes: responseBytes, encoding: .utf8) ?? ""
+
+    XCTAssertTrue(
+      response.contains("\u{1B}[4;540;900t"),
+      "text-area pixel size reply missing from \(response.debugDescription)")
+    XCTAssertTrue(
+      response.contains("\u{1B}[6;18;9t"),
+      "cell pixel size reply missing from \(response.debugDescription)")
+    XCTAssertTrue(
+      response.contains("\u{1B}[8;30;100t"),
+      "character size reply missing from \(response.debugDescription)")
   }
 
   func testStaleSessionHandlesNotUsedAfterClose() throws {
@@ -440,5 +483,46 @@ final class AppModelTests: XCTestCase {
         }
       }
     }
+  }
+}
+
+private final class AppModelCaptureSink: CaptureSink {
+  struct ByteEvent {
+    var direction: CaptureByteDirection
+    var sessionId: Session.ID?
+    var frame: Int
+    var bytes: [UInt8]
+  }
+
+  var sequence = 0
+  var events: [CaptureTimelineEvent] = []
+  var byteEvents: [ByteEvent] = []
+
+  func nextSequence() -> Int {
+    defer { sequence += 1 }
+    return sequence
+  }
+
+  func record(_ event: CaptureTimelineEvent) {
+    events.append(event)
+  }
+
+  func recordBytes(
+    direction: CaptureByteDirection,
+    sessionId: Session.ID?,
+    frame: Int,
+    bytes: UnsafeRawBufferPointer,
+    preview: String?
+  ) -> CaptureByteRef? {
+    let array = bytes.bindMemory(to: UInt8.self).map { $0 }
+    byteEvents.append(
+      ByteEvent(direction: direction, sessionId: sessionId, frame: frame, bytes: array))
+    return CaptureByteRef(
+      stream: direction.rawValue,
+      path: "streams/\(direction.streamFileName)",
+      offset: 0,
+      length: array.count,
+      sha256: ""
+    )
   }
 }
