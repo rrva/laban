@@ -29,7 +29,7 @@ public final class FontAtlas {
       !userName.isEmpty
     {
       self.font = CTFontCreateWithName(userName as CFString, pointSize, nil)
-    } else if let url = Bundle.module.url(
+    } else if let url = LabanRendererResources.bundle?.url(
       forResource: "JetBrainsMono-Regular", withExtension: "ttf"),
       let provider = CGDataProvider(url: url as CFURL),
       let cgFont = CGFont(provider)

@@ -39,6 +39,14 @@ rm -rf "$AGENT_ARTIFACTS" "$AGENT_TMP"
 # 2. Info.plist validity
 plutil -lint "$PLIST" || fail "Info.plist lint failed"
 
+# 2b. Renderer resource bundle is reachable via Bundle.main.resourceURL.
+# Catches the regression where the .app launches but FontAtlas crashes
+# because the LabanRenderer resource bundle was not copied in.
+RES_BUNDLE=".build/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle"
+[ -d "$RES_BUNDLE" ] || fail "$RES_BUNDLE missing from .app"
+[ -f "$RES_BUNDLE/JetBrainsMono-Regular.ttf" ] || fail "JetBrainsMono-Regular.ttf missing from $RES_BUNDLE"
+[ -f "$RES_BUNDLE/Shaders.metal" ] || fail "Shaders.metal missing from $RES_BUNDLE"
+
 # 3. Binary executable bit (belt-and-suspenders)
 [ -x "$APP_BIN" ] || fail "$APP_BIN is not executable"
 
