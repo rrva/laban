@@ -303,7 +303,8 @@ public final class MetalRenderer: RendererBackend {
     // it does not pre-compile to .metallib. We compile from source on startup
     // (~1 ms one-time cost) so the renderer ships with no extra build step.
     guard
-      let url = Bundle.module.url(forResource: "Shaders", withExtension: "metal"),
+      let url = LabanRendererResources.bundle?.url(
+        forResource: "Shaders", withExtension: "metal"),
       let source = try? String(contentsOf: url, encoding: .utf8),
       let library = try? device.makeLibrary(source: source, options: nil)
     else { return nil }

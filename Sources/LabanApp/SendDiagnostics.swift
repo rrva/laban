@@ -256,8 +256,7 @@ enum SendDiagnostics {
   /// back to "unknown" if the script isn't where we expect.
   private static func libghosttyCommit() -> String {
     let candidates = [
-      Bundle.main.bundlePath + "/Contents/Resources/fetch-libghostty-vt",
-      "/Users/rrj/wrk/laban/scripts/fetch-libghostty-vt",
+      Bundle.main.bundlePath + "/Contents/Resources/fetch-libghostty-vt"
     ]
     for path in candidates {
       guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
