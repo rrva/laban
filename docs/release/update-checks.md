@@ -7,6 +7,52 @@ browser when an update is available.
 
 It does not download, install, replace, or execute anything.
 
+## Release Fast Path
+
+1. Build the release zip:
+
+   ```sh
+   ./scripts/package-zip 0.4.0
+   ```
+
+   Replace `0.4.0` with the release version. The zip is written to
+   `.artifacts/release/Laban-<version>.zip`.
+
+2. Upload the zip as a new file in the Laban Drive release folder:
+
+   ```text
+   https://drive.google.com/drive/folders/0AOJsI5dKCixPUk9PVA
+   ```
+
+   Do not upload a new version/revision of an existing zip. The zip file URL
+   should change for every release upload so clients cannot receive a cached
+   copy. After upload, share the zip as "anyone with the link can view" and use
+   its new file ID in the manifest `link` field.
+
+3. Update the existing manifest file as a new Drive version/revision:
+
+   ```text
+   https://drive.google.com/file/d/1021htaI6ngLEoF1ItVLvFJHzP-TczOeG/view
+   ```
+
+   Do not delete and recreate `laban-latest.json`. The app is stamped with this
+   manifest file ID, so the manifest URL must stay stable.
+
+4. Verify the public manifest URL still returns the new JSON:
+
+   ```sh
+   curl -L --fail \
+     'https://drive.google.com/uc?export=download&id=1021htaI6ngLEoF1ItVLvFJHzP-TczOeG'
+   ```
+
+5. Verify the manifest `link` downloads the same bytes as the local zip:
+
+   ```sh
+   shasum -a 256 .artifacts/release/Laban-<version>.zip
+   curl -L --fail -o /tmp/Laban-<version>.zip '<manifest link>'
+   shasum -a 256 /tmp/Laban-<version>.zip
+   ```
+
 ## Manifest
 
 ```json
@@ -32,7 +78,9 @@ view" and configure Laban with the direct download form:
 https://drive.google.com/uc?export=download&id=<FILE_ID>
 ```
 
-Keep the zip itself on a normal public URL when possible. Google Drive is
+Keep the manifest file ID stable by uploading a new version/revision of
+`laban-latest.json` instead of creating a replacement file. The zip should use a
+new file ID on every release upload to avoid cached downloads. Google Drive is
 acceptable for the small manifest, but GitHub Releases is simpler and more
 predictable for release zips.
 
