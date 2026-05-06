@@ -47,7 +47,8 @@ prefix_map_flags=" \
 # shellcheck disable=SC2086
 swift build -c "$build_config" --product LabanApp $prefix_map_flags
 
-bundle_dir=".build/laban/Laban.app/Contents"
+app_bundle=".build/laban/Laban.app"
+bundle_dir="${app_bundle}/Contents"
 mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 
 # shellcheck disable=SC2086
@@ -107,21 +108,22 @@ EOF
 # symbols stay so crash reports still symbolicate.
 strip -S "${bundle_dir}/MacOS/LabanApp"
 
-# SwiftPM's auto-generated `Bundle.module` accessors compile a hard-coded
-# absolute build path as a Swift string literal in __cstring. Prefix-map
-# flags do not rewrite Swift string literals, so we replace the bytes
-# in-place with NULs. The literal lives in dead code (we use
-# LabanRendererResources, never Bundle.module) so blanking it has no
-# runtime effect.
+# SwiftPM's auto-generated `Bundle.module` accessors and native dependencies can
+# compile absolute build-host paths as string literals. Prefix-map flags do not
+# rewrite string literals, so replace forbidden local path bytes in-place with
+# NULs before signing.
 python3 - "${bundle_dir}/MacOS/LabanApp" <<'PY'
 import re, sys
 path = sys.argv[1]
 with open(path, "rb") as f:
     data = f.read()
-pattern = re.compile(rb"/Users/[^\x00]*?\.build/[^\x00]*?\.bundle")
-def replace(m):
-    return b"\x00" * len(m.group(0))
-new = pattern.sub(replace, data)
+patterns = [
+    re.compile(rb"/Users/[^\x00]*"),
+    re.compile(rb"/private/var/folders/[^\x00]*"),
+]
+new = data
+for pattern in patterns:
+    new = pattern.sub(lambda m: b"\x00" * len(m.group(0)), new)
 if new != data:
     with open(path, "wb") as f:
         f.write(new)
@@ -142,15 +144,27 @@ verify_clean() {
 }
 verify_clean
 
-# Sign with the developer identity from $LABAN_CODESIGN_IDENTITY when
-# present; otherwise leave the bundle unsigned. LABAN_SKIP_CODESIGN=1
-# forces skipping for non-interactive smoke runs (no keychain prompts).
+verify_signature() {
+  if ! codesign --verify --verbose=4 "$app_bundle" >/dev/null 2>&1; then
+    printf 'build-app failed: codesign verification failed for %s\n' "$app_bundle" >&2
+    exit 1
+  fi
+}
+
+# Sign after every post-link binary mutation. SwiftPM emits an ad-hoc signed
+# executable on Apple Silicon; strip and the absolute-path scrubber change the
+# bytes covered by that signature, so the bundle must be signed again before
+# dyld can load it.
 if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
-  printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1)\n'
+  printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1; output may not launch)\n'
 elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
-  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" ".build/laban/Laban.app"
+  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "$app_bundle"
+  verify_signature
+  printf 'build-app: codesigned with %s\n' "$LABAN_CODESIGN_IDENTITY"
 else
-  printf 'build-app: codesign skipped (LABAN_CODESIGN_IDENTITY unset)\n'
+  codesign --force --sign - "$app_bundle"
+  verify_signature
+  printf 'build-app: codesigned ad-hoc\n'
 fi
 
 printf 'build-app: %s\n' "${bundle_dir}/MacOS/LabanApp"

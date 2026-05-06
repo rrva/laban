@@ -86,14 +86,16 @@ predictable for release zips.
 
 ## Build Configuration
 
-Build an unsigned release zip with the app version and manifest URL:
+Build a release zip with the app version and manifest URL:
 
 ```sh
 ./scripts/package-zip 0.1.0
 ```
 
-It writes `.artifacts/release/Laban-0.1.0.zip`. Upload that zip and put its
-public URL in the manifest's `link` field.
+It writes `.artifacts/release/Laban-0.1.0.zip`. The app bundle is ad-hoc signed
+by default so local launch checks and downloaded zips do not carry a stale
+post-build signature. Set `LABAN_CODESIGN_IDENTITY` to use a developer identity
+instead. Upload that zip and put its public URL in the manifest's `link` field.
 
 The package script stamps the public Laban manifest URL by default:
 

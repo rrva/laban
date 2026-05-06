@@ -12,9 +12,10 @@ fail() {
 }
 
 swift build --product LabanApp --product laban-agent
-# Smoke checks execute the binary directly, so codesigning is not required.
-# Opt out so autonomous runs cannot hang on Apple keychain UI prompts.
-LABAN_SKIP_CODESIGN=1 ./scripts/build-app
+# build-app mutates the SwiftPM-built executable after linking, so ad-hoc
+# signing is required for launch on Apple Silicon. Ad-hoc signing does not
+# prompt for keychain access.
+./scripts/build-app
 
 AGENT_BIN=".build/debug/laban-agent"
 APP_BIN=".build/laban/Laban.app/Contents/MacOS/LabanApp"
@@ -49,6 +50,8 @@ RES_BUNDLE=".build/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle
 
 # 3. Binary executable bit (belt-and-suspenders)
 [ -x "$APP_BIN" ] || fail "$APP_BIN is not executable"
+codesign --verify --verbose=4 ".build/laban/Laban.app" >/dev/null 2>&1 \
+  || fail ".build/laban/Laban.app code signature is invalid"
 
 # 4. AppKit smoke startup: print stable line and exit 0 without entering run loop.
 # Background watchdog kills the process after 10s to guard against hang regression.

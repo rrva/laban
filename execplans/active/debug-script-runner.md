@@ -36,9 +36,10 @@ write `.artifacts/runs/<run-id>/debug-script-report.json`, and exit 0.
     `screenshot`); report written to
     `.artifacts/runs/debug-script-basic-<run-id>/debug-script-report.json`.
   - `./scripts/test-e2e` — passed, including the new debug-script step.
-  - `./scripts/check` — passed end to end after `scripts/smoke-runtime` was
-    updated to set `LABAN_SKIP_CODESIGN=1`. Without that, the check gate
-    previously hung in `codesign` when no interactive keychain was available.
+  - `./scripts/check` — passed end to end. Historical note: this initially used
+    `LABAN_SKIP_CODESIGN=1` to avoid keychain prompts; `scripts/build-app` now
+    defaults to ad-hoc signing, which avoids prompts while keeping the
+    post-processed app bundle launchable.
 
 ## Decision Log
 

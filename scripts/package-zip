@@ -13,7 +13,8 @@ Environment:
   LABAN_UPDATE_MANIFEST_URL   Public update JSON URL stamped into Info.plist.
                               Defaults to the public Laban manifest on Google Drive.
   LABAN_RELEASE_DIR           Zip output directory. Defaults to .artifacts/release.
-  LABAN_SKIP_CODESIGN         Defaults to 1 for unsigned release zips.
+  LABAN_CODESIGN_IDENTITY     Optional signing identity. Defaults to ad-hoc signing.
+  LABAN_SKIP_CODESIGN         Defaults to 0. Skipped bundles may not launch.
   LABAN_BUILD_CONFIG          Swift build config (debug|release). Defaults to release
                               for distribution; release builds emit no in-binary DWARF.
 EOF
@@ -43,7 +44,7 @@ tmp_zip="${zip_path}.tmp"
 mkdir -p "$release_dir"
 
 rm -rf "$app_bundle"
-LABAN_SKIP_CODESIGN=${LABAN_SKIP_CODESIGN:-1} ./scripts/build-app
+LABAN_SKIP_CODESIGN=${LABAN_SKIP_CODESIGN:-0} ./scripts/build-app
 
 [ -d "$app_bundle" ] || {
   printf 'package-zip failed: missing %s\n' "$app_bundle" >&2
@@ -51,6 +52,10 @@ LABAN_SKIP_CODESIGN=${LABAN_SKIP_CODESIGN:-1} ./scripts/build-app
 }
 
 plutil -lint "$plist" >/dev/null
+if ! codesign --verify --verbose=4 "$app_bundle" >/dev/null 2>&1; then
+  printf 'package-zip failed: invalid code signature in %s\n' "$app_bundle" >&2
+  exit 1
+fi
 stamped_version=$(plutil -extract CFBundleShortVersionString raw -o - "$plist")
 if [ "$stamped_version" != "$app_version" ]; then
   printf 'package-zip failed: expected version %s, got %s\n' "$app_version" "$stamped_version" >&2
