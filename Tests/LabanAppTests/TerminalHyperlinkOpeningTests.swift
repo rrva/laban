@@ -38,4 +38,13 @@ final class TerminalHyperlinkOpeningTests: XCTestCase {
       TerminalBitmapView.openExternalHyperlink("file:///tmp/example", using: opener))
     XCTAssertEqual(opener.opened.map(\.absoluteString), ["https://example.com/docs"])
   }
+
+  func testHoverCursorStyleUsesPointingHandForExternalHyperlinks() {
+    XCTAssertEqual(
+      TerminalBitmapView.hoverCursorStyle(externalHyperlinkURI: "https://example.com"),
+      .pointingHand)
+    XCTAssertEqual(
+      TerminalBitmapView.hoverCursorStyle(externalHyperlinkURI: nil),
+      .arrow)
+  }
 }
