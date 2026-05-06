@@ -1769,6 +1769,23 @@ int laban_session_bracketed_paste_enabled(LabanSession *s, int *out_enabled) {
     return 0;
 }
 
+int laban_session_synchronized_output_active(LabanSession *s, int *out_active) {
+    if (!s || !out_active) return -1;
+    bool active = false;
+    GhosttyResult r = ghostty_terminal_mode_get(
+        s->terminal, GHOSTTY_MODE_SYNC_OUTPUT, &active);
+    if (r != GHOSTTY_SUCCESS) return -1;
+    *out_active = active ? 1 : 0;
+    return 0;
+}
+
+int laban_session_reset_synchronized_output(LabanSession *s) {
+    if (!s) return -1;
+    GhosttyResult r = ghostty_terminal_mode_set(
+        s->terminal, GHOSTTY_MODE_SYNC_OUTPUT, false);
+    return r == GHOSTTY_SUCCESS ? 0 : -1;
+}
+
 int laban_session_encode_paste(
     LabanSession *s,
     const uint8_t *bytes,

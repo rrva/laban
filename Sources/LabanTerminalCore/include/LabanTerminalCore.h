@@ -310,6 +310,12 @@ typedef struct {
 /* Returns 1 in *out_enabled if bracketed paste mode is active, 0 otherwise. */
 int laban_session_bracketed_paste_enabled(LabanSession *session, int *out_enabled);
 
+/* Returns 1 in *out_active if synchronized output mode (DEC private 2026) is active. */
+int laban_session_synchronized_output_active(LabanSession *session, int *out_active);
+
+/* Resets synchronized output mode (DEC private 2026), matching the renderer watchdog. */
+int laban_session_reset_synchronized_output(LabanSession *session);
+
 /*
  * Wraps ghostty_paste_is_safe(): returns 1 when the bytes contain only
  * "safe" characters (the libghostty definition flags newlines and other

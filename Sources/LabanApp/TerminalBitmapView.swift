@@ -157,6 +157,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastSurfaceScale: CGFloat = 0
   private var captureRecorder: CaptureRecorder?
   private var renderedFrameCount: Int = 0
+  var renderedFrameCountForTests: Int { renderedFrameCount }
+
+  struct SynchronizedOutputHold: Equatable {
+    var sessionId: Session.ID
+    var startedAt: Date
+  }
+
+  struct SynchronizedOutputGateDecision: Equatable {
+    var shouldDefer: Bool
+    var shouldResetMode: Bool
+    var hold: SynchronizedOutputHold?
+  }
+
+  private static let synchronizedOutputMaxHoldSeconds: TimeInterval = 1.0
+  private var synchronizedOutputHold: SynchronizedOutputHold?
+  var synchronizedOutputHoldForTests: SynchronizedOutputHold? {
+    get { synchronizedOutputHold }
+    set { synchronizedOutputHold = newValue }
+  }
 
   // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
   // renderer's onFrameCompleted callback. Bounded ring buffer.
@@ -429,6 +448,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   // MARK: - Frame loop
 
+  static func synchronizedOutputGateDecision(
+    terminalDirty: Bool,
+    synchronizedOutputActive: Bool,
+    sessionId: Session.ID,
+    now: Date,
+    hold: SynchronizedOutputHold?,
+    timeout: TimeInterval = synchronizedOutputMaxHoldSeconds
+  ) -> SynchronizedOutputGateDecision {
+    guard terminalDirty && synchronizedOutputActive else {
+      return SynchronizedOutputGateDecision(shouldDefer: false, shouldResetMode: false, hold: nil)
+    }
+
+    let currentHold: SynchronizedOutputHold
+    if let hold, hold.sessionId == sessionId {
+      currentHold = hold
+    } else {
+      currentHold = SynchronizedOutputHold(sessionId: sessionId, startedAt: now)
+    }
+
+    if now.timeIntervalSince(currentHold.startedAt) >= timeout {
+      return SynchronizedOutputGateDecision(shouldDefer: false, shouldResetMode: true, hold: nil)
+    }
+
+    return SynchronizedOutputGateDecision(
+      shouldDefer: true, shouldResetMode: false, hold: currentHold)
+  }
+
   @objc func advanceFrame() {
     // Heartbeat the stall watchdog at the top of every tick. If
     // advanceFrame stops returning (or takes very long), the background
@@ -550,6 +596,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     self.scrollAnimating = scrollAnimating
 
     let terminalDirty = activeTerminalDirty || session.renderDirty()
+
+    let syncGate = Self.synchronizedOutputGateDecision(
+      terminalDirty: terminalDirty,
+      synchronizedOutputActive: session.synchronizedOutputActive,
+      sessionId: session.id,
+      now: Date(),
+      hold: synchronizedOutputHold)
+    synchronizedOutputHold = syncGate.hold
+    if syncGate.shouldResetMode {
+      _ = session.resetSynchronizedOutput()
+    }
+    if syncGate.shouldDefer {
+      // Hold the previous completed frame during DEC synchronized output. Laban
+      // uses libghostty-vt without Ghostty's termio timer, so this mirrors
+      // Ghostty's one-second watchdog before rendering anyway.
+      return
+    }
 
     // Return early when nothing changed
     guard terminalDirty || renderInvalidated || tabChanged else { return }

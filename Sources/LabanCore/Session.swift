@@ -310,6 +310,19 @@ public final class Session {
     return ViewportState(from: vs)
   }
 
+  public var synchronizedOutputActive: Bool {
+    guard !isClosed, let h = handle else { return false }
+    var active: Int32 = 0
+    guard laban_session_synchronized_output_active(h, &active) == 0 else { return false }
+    return active != 0
+  }
+
+  @discardableResult
+  public func resetSynchronizedOutput() -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    return laban_session_reset_synchronized_output(h)
+  }
+
   // MARK: - Key encoding
 
   /// Encode a key event into terminal input bytes using libghostty-vt's key encoder.

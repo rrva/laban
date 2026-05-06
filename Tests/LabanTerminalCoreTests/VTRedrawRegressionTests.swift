@@ -189,6 +189,31 @@ final class VTRedrawRegressionTests: XCTestCase {
       "BSU+ESU framed redraw must replace the line cleanly; got: \(row0)")
   }
 
+  func testSynchronizedOutputModeQueryTracksBSUESU() {
+    let session = makeFixtureSession(rows: 4, cols: 80)
+    defer { laban_session_destroy(session) }
+
+    var active: Int32 = -1
+    XCTAssertEqual(laban_session_synchronized_output_active(session, &active), 0)
+    XCTAssertEqual(active, 0)
+
+    feed(session, "\(esc)[?2026h")
+    XCTAssertEqual(laban_session_synchronized_output_active(session, &active), 0)
+    XCTAssertEqual(active, 1)
+
+    XCTAssertEqual(laban_session_reset_synchronized_output(session), 0)
+    XCTAssertEqual(laban_session_synchronized_output_active(session, &active), 0)
+    XCTAssertEqual(active, 0)
+
+    feed(session, "\(esc)[?2026h")
+    XCTAssertEqual(laban_session_synchronized_output_active(session, &active), 0)
+    XCTAssertEqual(active, 1)
+
+    feed(session, "\(esc)[?2026l")
+    XCTAssertEqual(laban_session_synchronized_output_active(session, &active), 0)
+    XCTAssertEqual(active, 0)
+  }
+
   // MARK: - DECSET 1049 (alternate screen)
 
   /// Common pattern: enter alt screen for a TUI, exit to restore. Verifies
