@@ -462,6 +462,7 @@ public final class AppModel {
   }
 
   private static func applyThemePalette(to session: Session) {
+    session.setColorScheme(Theme.current.isDark ? .dark : .light)
     var bytes: [UInt8] = []
     for (i, color) in Theme.current.ansi16.enumerated() {
       bytes += oscSeq(4, index: i, rgba: color)

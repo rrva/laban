@@ -6,6 +6,7 @@
 #include <ghostty/vt/paste.h>
 #include <ghostty/vt/modes.h>
 #include <ghostty/vt/device.h>
+#include <ghostty/vt/focus.h>
 #include <ghostty/vt/grid_ref.h>
 #include <ghostty/vt/screen.h>
 #include <ghostty/vt/point.h>
@@ -232,6 +233,7 @@ struct LabanSession {
     uint16_t rows;
     uint32_t cell_width;
     uint32_t cell_height;
+    int color_scheme;
 
     /* Capture of bytes the terminal wants written back to the pty
        (capability replies: DA1/DA2/DA3, XTWINOPS, DSR, XTVERSION, ...).
@@ -659,17 +661,23 @@ static void laban_session_capture_response(
     s->response_len += len;
 }
 
+static int write_terminal_response(LabanSession *s, const uint8_t *data, size_t len) {
+    if (!s || !data) return -1;
+    if (len == 0) return 0;
+    laban_session_capture_response(s, data, len);
+    if (s->pty_fd >= 0) {
+        return write_pty_bytes(s, data, len, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE);
+    }
+    emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, data, len);
+    return 0;
+}
+
 static void effect_write_pty(GhosttyTerminal terminal, void *userdata,
                              const uint8_t *data, size_t len) {
     (void)terminal;
     LabanSession *s = (LabanSession *)userdata;
     if (!s) return;
-    laban_session_capture_response(s, data, len);
-    if (s->pty_fd >= 0 && len > 0) {
-        (void)write_pty_bytes(s, data, len, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE);
-    } else if (len > 0) {
-        emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, data, len);
-    }
+    (void)write_terminal_response(s, data, len);
 }
 
 static bool effect_size(GhosttyTerminal terminal, void *userdata,
@@ -719,10 +727,32 @@ static GhosttyString effect_xtversion(GhosttyTerminal terminal, void *userdata) 
 static bool effect_color_scheme(GhosttyTerminal terminal, void *userdata,
                                 GhosttyColorScheme *out_scheme) {
     (void)terminal;
-    (void)userdata;
-    (void)out_scheme;
-    /* MVP is fixed Selenized Light; we don't yet adapt to system dark mode. */
-    return false;
+    LabanSession *s = (LabanSession *)userdata;
+    if (!s || !out_scheme) return false;
+    *out_scheme =
+        s->color_scheme == LABAN_COLOR_SCHEME_LIGHT
+            ? GHOSTTY_COLOR_SCHEME_LIGHT
+            : GHOSTTY_COLOR_SCHEME_DARK;
+    return true;
+}
+
+static int laban_session_emit_color_scheme_report(LabanSession *s) {
+    if (!s) return -1;
+    static const uint8_t dark[] = "\x1B[?997;1n";
+    static const uint8_t light[] = "\x1B[?997;2n";
+    if (s->color_scheme == LABAN_COLOR_SCHEME_LIGHT) {
+        return write_terminal_response(s, light, sizeof(light) - 1);
+    }
+    return write_terminal_response(s, dark, sizeof(dark) - 1);
+}
+
+static int laban_session_mode_active(LabanSession *s, GhosttyMode mode, int *out_active) {
+    if (!s || !out_active) return -1;
+    bool active = false;
+    GhosttyResult r = ghostty_terminal_mode_get(s->terminal, mode, &active);
+    if (r != GHOSTTY_SUCCESS) return -1;
+    *out_active = active ? 1 : 0;
+    return 0;
 }
 
 int laban_session_create(
@@ -759,6 +789,7 @@ int laban_session_create(
     s->capture_callback = NULL;
     s->capture_userdata = NULL;
     s->fixture_mode = config->fixture_mode;
+    s->color_scheme = LABAN_COLOR_SCHEME_DARK;
 
     GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 1000 };
 
@@ -1350,6 +1381,8 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
      * into history libghostty reports HAS_VALUE = false, and we must report
      * cursor_visible = 0 so the renderer does not draw a stale (0,0) cursor. */
     int cursor_row = 0, cursor_col = 0, cursor_visible = 0;
+    int cursor_blinking = 0;
+    int cursor_style = LABAN_CURSOR_STYLE_BLOCK;
     {
         _Bool has_cursor = 0;
         ghostty_render_state_get(s->render_state,
@@ -1367,6 +1400,31 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
             ghostty_render_state_get(s->render_state,
                 GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &vis);
             cursor_visible = vis ? 1 : 0;
+        }
+        _Bool blinking = 0;
+        if (ghostty_render_state_get(s->render_state,
+                GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinking) == GHOSTTY_SUCCESS) {
+            cursor_blinking = blinking ? 1 : 0;
+        }
+        GhosttyRenderStateCursorVisualStyle style =
+            GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK;
+        if (ghostty_render_state_get(s->render_state,
+                GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &style) == GHOSTTY_SUCCESS) {
+            switch (style) {
+                case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR:
+                    cursor_style = LABAN_CURSOR_STYLE_BAR;
+                    break;
+                case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
+                    cursor_style = LABAN_CURSOR_STYLE_UNDERLINE;
+                    break;
+                case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
+                    cursor_style = LABAN_CURSOR_STYLE_BLOCK_HOLLOW;
+                    break;
+                case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK:
+                default:
+                    cursor_style = LABAN_CURSOR_STYLE_BLOCK;
+                    break;
+            }
         }
     }
 
@@ -1406,10 +1464,14 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->cursor_row             = cursor_row;
     snap->cursor_col             = cursor_col;
     snap->cursor_visible         = cursor_visible;
+    snap->cursor_blinking        = cursor_blinking;
+    snap->cursor_style           = cursor_style;
     snap->status                 = s->status;
     snap->exit_status            = s->exit_status;
     snap->mouse_tracking         = mouse_tracking;
-    snap->focus_reporting        = 0;
+    int focus_reporting = 0;
+    (void)laban_session_mode_active(s, GHOSTTY_MODE_FOCUS_EVENT, &focus_reporting);
+    snap->focus_reporting        = focus_reporting;
     snap->dirty                  = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
     snap->default_foreground_rgba = default_fg;
     snap->default_background_rgba = default_bg;
@@ -1760,23 +1822,11 @@ int laban_paste_is_safe(const uint8_t *bytes, size_t len) {
 }
 
 int laban_session_bracketed_paste_enabled(LabanSession *s, int *out_enabled) {
-    if (!s || !out_enabled) return -1;
-    bool enabled = false;
-    GhosttyResult r = ghostty_terminal_mode_get(
-        s->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &enabled);
-    if (r != GHOSTTY_SUCCESS) return -1;
-    *out_enabled = enabled ? 1 : 0;
-    return 0;
+    return laban_session_mode_active(s, GHOSTTY_MODE_BRACKETED_PASTE, out_enabled);
 }
 
 int laban_session_synchronized_output_active(LabanSession *s, int *out_active) {
-    if (!s || !out_active) return -1;
-    bool active = false;
-    GhosttyResult r = ghostty_terminal_mode_get(
-        s->terminal, GHOSTTY_MODE_SYNC_OUTPUT, &active);
-    if (r != GHOSTTY_SUCCESS) return -1;
-    *out_active = active ? 1 : 0;
-    return 0;
+    return laban_session_mode_active(s, GHOSTTY_MODE_SYNC_OUTPUT, out_active);
 }
 
 int laban_session_reset_synchronized_output(LabanSession *s) {
@@ -1784,6 +1834,66 @@ int laban_session_reset_synchronized_output(LabanSession *s) {
     GhosttyResult r = ghostty_terminal_mode_set(
         s->terminal, GHOSTTY_MODE_SYNC_OUTPUT, false);
     return r == GHOSTTY_SUCCESS ? 0 : -1;
+}
+
+int laban_session_set_color_scheme(LabanSession *s, int color_scheme) {
+    if (!s) return -1;
+    if (color_scheme != LABAN_COLOR_SCHEME_LIGHT &&
+        color_scheme != LABAN_COLOR_SCHEME_DARK) {
+        return -1;
+    }
+    int changed = s->color_scheme != color_scheme;
+    s->color_scheme = color_scheme;
+    if (!changed) return 0;
+
+    int report = 0;
+    if (laban_session_mode_active(s, GHOSTTY_MODE_COLOR_SCHEME_REPORT, &report) == 0 &&
+        report) {
+        return laban_session_emit_color_scheme_report(s);
+    }
+    return 0;
+}
+
+int laban_session_focus_reporting_enabled(LabanSession *s, int *out_enabled) {
+    return laban_session_mode_active(s, GHOSTTY_MODE_FOCUS_EVENT, out_enabled);
+}
+
+int laban_session_encode_focus(
+    LabanSession *s,
+    int focused,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    if (!s || !out_len) return -1;
+    if (!out_bytes && out_capacity > 0) return -1;
+    *out_len = 0;
+    if (s->status != 0) return 0;
+
+    int enabled = 0;
+    if (laban_session_focus_reporting_enabled(s, &enabled) != 0) return -1;
+    if (!enabled) return 0;
+
+    GhosttyResult r = ghostty_focus_encode(
+        focused ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,
+        (char *)out_bytes,
+        out_capacity,
+        out_len);
+    if (r == GHOSTTY_SUCCESS) return 0;
+    if (r == GHOSTTY_OUT_OF_SPACE) return 1;
+    return -1;
+}
+
+int laban_session_send_focus(LabanSession *s, int focused) {
+    if (!s) return -1;
+    uint8_t stack_buf[16];
+    size_t len = 0;
+    int rc = laban_session_encode_focus(s, focused, stack_buf, sizeof(stack_buf), &len);
+    if (rc != 0) return rc;
+    if (len == 0) return 0;
+    if (s->fixture_mode) return 0;
+    if (s->pty_fd < 0) return -1;
+    return write_pty_input(s, stack_buf, len);
 }
 
 int laban_session_encode_paste(

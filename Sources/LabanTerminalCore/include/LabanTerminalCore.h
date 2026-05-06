@@ -51,6 +51,20 @@ enum {
     LABAN_UNDERLINE_DASHED = 5
 };
 
+/* Cursor visual style values exposed in LabanSnapshot.cursor_style. */
+enum {
+    LABAN_CURSOR_STYLE_BLOCK = 0,
+    LABAN_CURSOR_STYLE_BAR = 1,
+    LABAN_CURSOR_STYLE_UNDERLINE = 2,
+    LABAN_CURSOR_STYLE_BLOCK_HOLLOW = 3
+};
+
+/* Host color scheme reported to terminal color-scheme queries. */
+enum {
+    LABAN_COLOR_SCHEME_LIGHT = 0,
+    LABAN_COLOR_SCHEME_DARK = 1
+};
+
 /* Width category for a cell (matches GhosttyCellWide). */
 enum {
     LABAN_CELL_WIDE_NARROW = 0,
@@ -87,6 +101,8 @@ typedef struct {
     int cursor_row;
     int cursor_col;
     int cursor_visible;
+    int cursor_blinking;
+    int cursor_style;
     int status;
     int exit_status;
     int mouse_tracking;
@@ -315,6 +331,34 @@ int laban_session_synchronized_output_active(LabanSession *session, int *out_act
 
 /* Resets synchronized output mode (DEC private 2026), matching the renderer watchdog. */
 int laban_session_reset_synchronized_output(LabanSession *session);
+
+/* Store the host light/dark scheme used for color-scheme DSR replies. */
+int laban_session_set_color_scheme(LabanSession *session, int color_scheme);
+
+/* Returns 1 in *out_enabled if focus reporting mode (DEC private 1004) is active. */
+int laban_session_focus_reporting_enabled(LabanSession *session, int *out_enabled);
+
+/*
+ * Encodes focus gained/lost bytes for mode 1004. Writes zero bytes when focus
+ * reporting is disabled or the session has exited.
+ * focused: non-zero encodes focus gained (CSI I), zero encodes focus lost (CSI O).
+ * Returns 0 on success, 1 if out_capacity is too small (*out_len holds the
+ * required size), or -1 on error.
+ */
+int laban_session_encode_focus(
+    LabanSession *session,
+    int focused,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+);
+
+/*
+ * Encodes and writes a focus event to the PTY when focus reporting is active.
+ * Fixture mode returns 0 after encoding; use laban_session_encode_focus in
+ * tests that need to inspect the exact bytes.
+ */
+int laban_session_send_focus(LabanSession *session, int focused);
 
 /*
  * Wraps ghostty_paste_is_safe(): returns 1 when the bytes contain only

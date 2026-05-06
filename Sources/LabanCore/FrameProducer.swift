@@ -40,6 +40,21 @@ public struct FrameProducer {
     from snap: UnsafePointer<LabanSnapshot>,
     selection: TerminalSelection? = nil
   ) -> [FrameCommand] {
+    commands(from: snap, selection: selection, cursorBlinkVisible: true)
+  }
+
+  public func commands(
+    from snap: UnsafePointer<LabanSnapshot>,
+    cursorBlinkVisible: Bool
+  ) -> [FrameCommand] {
+    commands(from: snap, selection: nil, cursorBlinkVisible: cursorBlinkVisible)
+  }
+
+  public func commands(
+    from snap: UnsafePointer<LabanSnapshot>,
+    selection: TerminalSelection?,
+    cursorBlinkVisible: Bool
+  ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
     let cols = Int(snapshot.cols)
@@ -327,16 +342,16 @@ public struct FrameProducer {
 
     // Cursor
     if snapshot.cursor_visible != 0,
+      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
       let cx = originX + CGFloat(snapshot.cursor_col) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
-      cmds.append(
-        .cursor(
-          CGRect(x: cx, y: cy, width: cw, height: ch),
-          color: Theme.current.cursor
-        ))
+      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+        cmds.append(.cursor(rect, color: Theme.current.cursor))
+      }
     }
 
     // Exit banner overlays the bottom terminal row after all terminal cells
@@ -344,6 +359,38 @@ public struct FrameProducer {
     appendExitBanner()
 
     return cmds
+  }
+
+  public static func cursorRects(style: Int, cellRect: CGRect) -> [CGRect] {
+    let thickness = max(CGFloat(1), ceil(min(cellRect.width, cellRect.height) * 0.16))
+    switch style {
+    case Int(LABAN_CURSOR_STYLE_BAR):
+      return [
+        CGRect(
+          x: cellRect.minX,
+          y: cellRect.minY,
+          width: min(thickness, cellRect.width),
+          height: cellRect.height)
+      ]
+    case Int(LABAN_CURSOR_STYLE_UNDERLINE):
+      return [
+        CGRect(
+          x: cellRect.minX,
+          y: cellRect.minY,
+          width: cellRect.width,
+          height: min(thickness, cellRect.height))
+      ]
+    case Int(LABAN_CURSOR_STYLE_BLOCK_HOLLOW):
+      let t = min(thickness, min(cellRect.width, cellRect.height))
+      return [
+        CGRect(x: cellRect.minX, y: cellRect.minY, width: cellRect.width, height: t),
+        CGRect(x: cellRect.minX, y: cellRect.maxY - t, width: cellRect.width, height: t),
+        CGRect(x: cellRect.minX, y: cellRect.minY, width: t, height: cellRect.height),
+        CGRect(x: cellRect.maxX - t, y: cellRect.minY, width: t, height: cellRect.height),
+      ]
+    default:
+      return [cellRect]
+    }
   }
 
   private static func hyperlinkURIs(from snapshot: LabanSnapshot) -> [String] {

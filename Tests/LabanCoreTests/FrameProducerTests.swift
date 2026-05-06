@@ -257,6 +257,63 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertTrue(hasCursor, "must include cursor command for fresh session")
   }
 
+  func testFrameProducerShapesAndBlinksCursorStyles() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("\u{1B}[5 q".utf8))  // blinking bar cursor
+    guard let barSnap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(barSnap) }
+
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    let hiddenBlink = producer.commands(
+      from: UnsafePointer(barSnap),
+      cursorBlinkVisible: false)
+    XCTAssertFalse(
+      hiddenBlink.contains { if case .cursor = $0 { return true } else { return false } },
+      "blinking cursor should emit no cursor command during the off phase")
+
+    let visibleBlinkRects = producer.commands(
+      from: UnsafePointer(barSnap),
+      cursorBlinkVisible: true
+    ).compactMap { cmd -> CGRect? in
+      if case .cursor(let rect, _) = cmd { return rect }
+      return nil
+    }
+    XCTAssertEqual(visibleBlinkRects.count, 1)
+    XCTAssertEqual(visibleBlinkRects.first?.width, 2)
+    XCTAssertEqual(visibleBlinkRects.first?.height, 20)
+
+    session.write(Array("\u{1B}[4 q".utf8))  // steady underline cursor
+    guard let underlineSnap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(underlineSnap) }
+
+    let steadyUnderlineRects = producer.commands(
+      from: UnsafePointer(underlineSnap),
+      cursorBlinkVisible: false
+    ).compactMap { cmd -> CGRect? in
+      if case .cursor(let rect, _) = cmd { return rect }
+      return nil
+    }
+    XCTAssertEqual(steadyUnderlineRects.count, 1)
+    XCTAssertEqual(steadyUnderlineRects.first?.width, 10)
+    XCTAssertEqual(steadyUnderlineRects.first?.height, 2)
+
+    let hollowRects = FrameProducer.cursorRects(
+      style: Int(LABAN_CURSOR_STYLE_BLOCK_HOLLOW),
+      cellRect: CGRect(x: 0, y: 0, width: 10, height: 20))
+    XCTAssertEqual(hollowRects.count, 4)
+  }
+
   func testFrameProducerTexturedQuadTypeIsSupported() {
     // Verify the texturedQuad case compiles and can be pattern-matched.
     let cmd: FrameCommand = .texturedQuad(

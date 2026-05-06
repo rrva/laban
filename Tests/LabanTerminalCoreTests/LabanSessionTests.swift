@@ -1495,6 +1495,119 @@ final class LabanSessionTests: XCTestCase {
       "XTWINOPS 18t reply mismatch; got \(asString.debugDescription)")
   }
 
+  func testColorSchemeQueryUsesStoredSessionScheme() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_DARK)), 0)
+    writeBytes(session, Array("\u{1b}[?996n".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}[?997;1n",
+      "dark color-scheme query must return CSI ? 997 ; 1 n")
+
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_LIGHT)), 0)
+    writeBytes(session, Array("\u{1b}[?996n".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}[?997;2n",
+      "light color-scheme query must return CSI ? 997 ; 2 n")
+  }
+
+  func testColorSchemeModeReportsThemeChanges() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_DARK)), 0)
+    writeBytes(session, Array("\u{1b}[?2031h".utf8))
+    _ = drainResponse(session)
+
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_LIGHT)), 0)
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}[?997;2n",
+      "mode 2031 should report a switch to a light host scheme")
+
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_DARK)), 0)
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}[?997;1n",
+      "mode 2031 should report a switch back to a dark host scheme")
+  }
+
+  func testFocusReportingModeGatesFocusEncoding() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var enabled: Int32 = -1
+    XCTAssertEqual(laban_session_focus_reporting_enabled(session, &enabled), 0)
+    XCTAssertEqual(enabled, 0)
+
+    var buf = [UInt8](repeating: 0, count: 16)
+    var len: size_t = 99
+    XCTAssertEqual(laban_session_encode_focus(session, 1, &buf, buf.count, &len), 0)
+    XCTAssertEqual(len, 0, "focus bytes must be suppressed before mode 1004 is enabled")
+
+    writeBytes(session, Array("\u{1b}[?1004h".utf8))
+    XCTAssertEqual(laban_session_focus_reporting_enabled(session, &enabled), 0)
+    XCTAssertEqual(enabled, 1)
+
+    XCTAssertEqual(laban_session_encode_focus(session, 1, &buf, buf.count, &len), 0)
+    XCTAssertEqual(Array(buf.prefix(Int(len))), Array("\u{1b}[I".utf8))
+
+    XCTAssertEqual(laban_session_encode_focus(session, 0, &buf, buf.count, &len), 0)
+    XCTAssertEqual(Array(buf.prefix(Int(len))), Array("\u{1b}[O".utf8))
+
+    writeBytes(session, Array("\u{1b}[?1004l".utf8))
+    XCTAssertEqual(laban_session_focus_reporting_enabled(session, &enabled), 0)
+    XCTAssertEqual(enabled, 0)
+    XCTAssertEqual(laban_session_encode_focus(session, 1, &buf, buf.count, &len), 0)
+    XCTAssertEqual(len, 0, "focus bytes must be suppressed after mode 1004 is disabled")
+  }
+
+  func testSnapshotTracksCursorStyleAndBlinking() {
+    guard let session = makeFixtureSession(rows: 4, cols: 10) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    func snapshotAfter(_ sequence: String) -> LabanSnapshot? {
+      writeBytes(session, Array(sequence.utf8))
+      var snap: UnsafeMutablePointer<LabanSnapshot>?
+      guard laban_session_snapshot(session, &snap) == 0, let snap else { return nil }
+      let value = snap.pointee
+      laban_snapshot_destroy(snap)
+      return value
+    }
+
+    let blinkingBar = snapshotAfter("\u{1b}[5 q")
+    XCTAssertEqual(blinkingBar?.cursor_style, Int32(LABAN_CURSOR_STYLE_BAR))
+    XCTAssertEqual(blinkingBar?.cursor_blinking, 1)
+
+    let steadyUnderline = snapshotAfter("\u{1b}[4 q")
+    XCTAssertEqual(steadyUnderline?.cursor_style, Int32(LABAN_CURSOR_STYLE_UNDERLINE))
+    XCTAssertEqual(steadyUnderline?.cursor_blinking, 0)
+
+    let steadyBlock = snapshotAfter("\u{1b}[2 q")
+    XCTAssertEqual(steadyBlock?.cursor_style, Int32(LABAN_CURSOR_STYLE_BLOCK))
+    XCTAssertEqual(steadyBlock?.cursor_blinking, 0)
+  }
+
   func testDrainReturnsBytesOnceAndClearsBuffer() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

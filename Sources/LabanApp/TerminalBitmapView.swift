@@ -173,6 +173,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
+  private var windowFocusObservers: [NSObjectProtocol] = []
+  private var lastReportedFocusBySession: [Session.ID: Bool] = [:]
+
   struct SynchronizedOutputHold: Equatable {
     var sessionId: Session.ID
     var startedAt: Date
@@ -190,6 +193,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     get { synchronizedOutputHold }
     set { synchronizedOutputHold = newValue }
   }
+
+  private static let cursorBlinkInterval: TimeInterval = 0.5
+  private var cursorBlinkVisible = true
+  private var lastCursorBlinkToggleAt = Date()
+  private var lastRenderedCursorBlinking = false
 
   // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
   // renderer's onFrameCompleted callback. Bounded ring buffer.
@@ -311,9 +319,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    removeWindowFocusObservers()
     guard window != nil else {
+      syncActiveSessionFocus(windowFocused: false)
       stopDisplayLink()
       return
+    }
+    if let window {
+      installWindowFocusObservers(for: window)
     }
     // Prevent duplicate links when view transitions between windows.
     if caDisplayLink == nil && cvDisplayLink == nil {
@@ -324,6 +337,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     renderInvalidated = true
     window?.makeFirstResponder(self)
+    syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
+  }
+
+  private func installWindowFocusObservers(for window: NSWindow) {
+    let center = NotificationCenter.default
+    windowFocusObservers.append(
+      center.addObserver(
+        forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+      ) { [weak self] _ in
+        self?.syncActiveSessionFocus(windowFocused: true)
+      })
+    windowFocusObservers.append(
+      center.addObserver(
+        forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+      ) { [weak self] _ in
+        self?.syncActiveSessionFocus(windowFocused: false)
+      })
+  }
+
+  private func removeWindowFocusObservers() {
+    let center = NotificationCenter.default
+    for observer in windowFocusObservers {
+      center.removeObserver(observer)
+    }
+    windowFocusObservers.removeAll()
+  }
+
+  private func syncActiveSessionFocus(windowFocused: Bool) {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else { return }
+    reportFocus(to: session, focused: windowFocused)
+  }
+
+  private func reportFocus(to session: Session, focused: Bool) {
+    guard session.focusReportingEnabled else {
+      lastReportedFocusBySession.removeValue(forKey: session.id)
+      return
+    }
+    guard lastReportedFocusBySession[session.id] != focused else { return }
+    if session.sendFocus(focused: focused) == 0 {
+      lastReportedFocusBySession[session.id] = focused
+    }
   }
 
   private func startDisplayLink() {
@@ -383,6 +439,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   deinit {
     stopDisplayLink()
+    removeWindowFocusObservers()
     if let themeChangeObserver {
       NotificationCenter.default.removeObserver(themeChangeObserver)
     }
@@ -491,6 +548,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       shouldDefer: true, shouldResetMode: false, hold: currentHold)
   }
 
+  private func advanceCursorBlinkState(now: Date = Date()) -> Bool {
+    guard lastRenderedCursorBlinking else {
+      let changed = !cursorBlinkVisible
+      cursorBlinkVisible = true
+      lastCursorBlinkToggleAt = now
+      return changed
+    }
+    guard now.timeIntervalSince(lastCursorBlinkToggleAt) >= Self.cursorBlinkInterval else {
+      return false
+    }
+    cursorBlinkVisible.toggle()
+    lastCursorBlinkToggleAt = now
+    return true
+  }
+
   @objc func advanceFrame() {
     // Heartbeat the stall watchdog at the top of every tick. If
     // advanceFrame stops returning (or takes very long), the background
@@ -536,6 +608,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     window?.title = model.windowTitle + suffix
 
     let tabChanged = lastRenderedActiveTabId != activeTab.id
+    if tabChanged,
+      let outgoing = lastRenderedActiveTabId,
+      let outgoingSession = model.session(forTab: outgoing)
+    {
+      reportFocus(to: outgoingSession, focused: false)
+    }
+    syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
+
+    let cursorBlinkFrame = advanceCursorBlinkState()
 
     // Tab change interrupts any in-flight scroll animation: snap the
     // displayed position to whatever the new session is showing so the PD
@@ -631,7 +712,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
 
     // Return early when nothing changed
-    guard terminalDirty || renderInvalidated || tabChanged else { return }
+    guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame else { return }
 
     guard let snap = session.snapshot() else { return }
     defer { laban_snapshot_destroy(snap) }
@@ -645,6 +726,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     )
 
     lastRows = Int(snap.pointee.rows)
+    let snapshotCursorBlinking = snap.pointee.cursor_blinking != 0
+    lastRenderedCursorBlinking = snapshotCursorBlinking
+    if !snapshotCursorBlinking {
+      cursorBlinkVisible = true
+      lastCursorBlinkToggleAt = Date()
+    }
     let h = bounds.height
 
     var cmds: [FrameCommand] = []
@@ -686,7 +773,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       contentYOffset: scrollContentYOffset
     )
     let selection = currentTerminalSelection(sessionId: session.id)
-    cmds += termProducer.commands(from: UnsafePointer(snap), selection: selection)
+    cmds += termProducer.commands(
+      from: UnsafePointer(snap),
+      selection: selection,
+      cursorBlinkVisible: cursorBlinkVisible)
 
     captureRecorder?.recordFrameCommands(
       frame: captureFrame,

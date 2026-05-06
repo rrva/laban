@@ -5,6 +5,18 @@ public enum SessionError: Error {
   case createFailed
 }
 
+public enum TerminalColorScheme {
+  case light
+  case dark
+
+  var rawValue: Int32 {
+    switch self {
+    case .light: return Int32(LABAN_COLOR_SCHEME_LIGHT)
+    case .dark: return Int32(LABAN_COLOR_SCHEME_DARK)
+    }
+  }
+}
+
 public final class Session {
   public typealias ID = String
 
@@ -321,6 +333,36 @@ public final class Session {
   public func resetSynchronizedOutput() -> Int32 {
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_reset_synchronized_output(h)
+  }
+
+  @discardableResult
+  public func setColorScheme(_ scheme: TerminalColorScheme) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    return laban_session_set_color_scheme(h, scheme.rawValue)
+  }
+
+  public var focusReportingEnabled: Bool {
+    guard !isClosed, let h = handle else { return false }
+    var enabled: Int32 = 0
+    guard laban_session_focus_reporting_enabled(h, &enabled) == 0 else { return false }
+    return enabled != 0
+  }
+
+  public func encodeFocus(focused: Bool) -> [UInt8]? {
+    guard !isClosed, let h = handle else { return nil }
+    var buf = [UInt8](repeating: 0, count: 16)
+    var len: size_t = 0
+    guard laban_session_encode_focus(h, focused ? 1 : 0, &buf, buf.count, &len) == 0 else {
+      return nil
+    }
+    guard len > 0 else { return nil }
+    return Array(buf.prefix(Int(len)))
+  }
+
+  @discardableResult
+  public func sendFocus(focused: Bool) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    return laban_session_send_focus(h, focused ? 1 : 0)
   }
 
   // MARK: - Key encoding
