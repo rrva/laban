@@ -7,6 +7,13 @@ import LabanRenderer
 import LabanTerminalCore
 import QuartzCore
 
+protocol ExternalURLOpening {
+  @discardableResult
+  func open(_ url: URL) -> Bool
+}
+
+extension NSWorkspace: ExternalURLOpening {}
+
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
   /// Reserved strip at the top of the contentView that sits behind the
@@ -17,6 +24,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     top: 8 + titlebarReservedHeight, left: 14, bottom: 8, right: 8)
 
   private let model: AppModel
+  private let urlOpener: any ExternalURLOpening
   private let fontAtlas: FontAtlas
   /// Either a SoftwareBackend (legacy path: blits a CGImage in `draw(_:)`)
   /// or a MetalRenderer (self-presents into its own CAMetalLayer). Picked at
@@ -78,6 +86,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// from this origin to the current drag cell, in the chosen grain —
   /// without remembering the origin we'd lose it the moment a drag fires.
   private var selectionOriginCell: SelectionPoint?
+  private struct PendingHyperlinkClick {
+    var uri: String
+    var downPoint: NSPoint
+  }
+  private var pendingHyperlinkClick: PendingHyperlinkClick?
+  private static let hyperlinkClickDragTolerance: CGFloat = 3
   /// Per-tab saved selection state. Without this, switching tabs leaves
   /// the previous tab's selection rectangle painted across the new tab's
   /// grid (the renderer reads view-level state, not session-level). On
@@ -196,9 +210,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas,
     cellWidth: Int,
-    cellHeight: Int
+    cellHeight: Int,
+    urlOpener: any ExternalURLOpening = NSWorkspace.shared
   ) {
     self.model = model
+    self.urlOpener = urlOpener
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas
     self.cellWidth = cellWidth
@@ -1184,6 +1200,27 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     return String(out)
   }
 
+  static func externalBrowserURL(from uri: String) -> URL? {
+    guard let url = URL(string: uri),
+      let scheme = url.scheme?.lowercased(),
+      scheme == "http" || scheme == "https",
+      let host = url.host,
+      !host.isEmpty
+    else {
+      return nil
+    }
+    return url
+  }
+
+  @discardableResult
+  static func openExternalHyperlink(
+    _ uri: String,
+    using opener: any ExternalURLOpening
+  ) -> Bool {
+    guard let url = externalBrowserURL(from: uri) else { return false }
+    return opener.open(url)
+  }
+
   // MARK: - Mouse (selection + sidebar hits + mouse tracking)
 
   override func scrollWheel(with event: NSEvent) {
@@ -1286,8 +1323,66 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
   }
 
+  private func externalHyperlinkURI(at pt: NSPoint) -> String? {
+    guard let cell = termCell(at: pt),
+      let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snap = session.snapshot()
+    else {
+      return nil
+    }
+    defer { laban_snapshot_destroy(snap) }
+    guard let uri = TerminalHyperlink.uri(atRow: cell.row, col: cell.col, in: snap.pointee),
+      Self.externalBrowserURL(from: uri) != nil
+    else {
+      return nil
+    }
+    return uri
+  }
+
+  private func beginSelection(at pt: NSPoint, clickCount: Int) {
+    let hadSelection = selectionAnchor != nil && selectionFocus != nil
+    let originCell = clampedSelectionPoint(at: pt)
+    lastDragPoint = pt
+    switch clickCount {
+    case 2:
+      selectionMode = .word
+      selectionOriginCell = originCell
+      selectWordAt(pt)
+    case 3...:
+      selectionMode = .line
+      selectionOriginCell = originCell
+      selectLineAt(pt)
+    default:
+      selectionMode = .char
+      selectionOriginCell = originCell
+      selectionAnchor = originCell
+      selectionFocus = nil
+    }
+    if hadSelection, selectionAnchor == nil, selectionFocus == nil {
+      recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+    }
+  }
+
+  private func clearSelectionAfterHyperlinkActivation() {
+    let hadSelection = selectionAnchor != nil || selectionFocus != nil
+    selectionAnchor = nil
+    selectionFocus = nil
+    selectionOriginCell = nil
+    if hadSelection {
+      recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+    }
+  }
+
+  private static func pointDistance(_ lhs: NSPoint, _ rhs: NSPoint) -> CGFloat {
+    let dx = lhs.x - rhs.x
+    let dy = lhs.y - rhs.y
+    return (dx * dx + dy * dy).squareRoot()
+  }
+
   override func mouseDown(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
+    pendingHyperlinkClick = nil
 
     // Sidebar hit test.
     if pt.x < sidebarWidth {
@@ -1321,6 +1416,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
 
     window?.makeFirstResponder(self)
+
+    if event.clickCount == 1, let uri = externalHyperlinkURI(at: pt) {
+      pendingHyperlinkClick = PendingHyperlinkClick(uri: uri, downPoint: pt)
+      return
+    }
 
     // Check if mouse tracking is active.
     if let tabId = model.activeTab?.id,
@@ -1358,33 +1458,34 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // so a click without drag clears any prior selection instead of leaving a
     // one-cell highlight behind. Double-click selects the word under the
     // cursor; triple-click selects the entire row.
-    let hadSelection = selectionAnchor != nil && selectionFocus != nil
-    let originCell = clampedSelectionPoint(at: pt)
-    // Track the click point so a scroll while the button is held can
-    // re-evaluate the selection at the same screen point.
-    lastDragPoint = pt
-    switch event.clickCount {
-    case 2:
-      selectionMode = .word
-      selectionOriginCell = originCell
-      selectWordAt(pt)
-    case 3...:
-      selectionMode = .line
-      selectionOriginCell = originCell
-      selectLineAt(pt)
-    default:
-      selectionMode = .char
-      selectionOriginCell = originCell
-      selectionAnchor = originCell
-      selectionFocus = nil
-    }
-    if hadSelection, selectionAnchor == nil, selectionFocus == nil {
-      recordInput(kind: "selection", route: "terminal", command: "clearSelection")
-    }
+    beginSelection(at: pt, clickCount: event.clickCount)
     renderInvalidated = true
   }
 
   override func mouseDragged(with event: NSEvent) {
+    let pt = convert(event.locationInWindow, from: nil)
+    if let pending = pendingHyperlinkClick {
+      guard Self.pointDistance(pending.downPoint, pt) > Self.hyperlinkClickDragTolerance else {
+        return
+      }
+      pendingHyperlinkClick = nil
+      beginSelection(at: pending.downPoint, clickCount: 1)
+      lastDragPoint = pt
+      extendSelection(to: pt)
+      updateDragAutoscroll(at: pt)
+      if let anchor = selectionAnchor, let focus = selectionFocus {
+        recordInput(
+          kind: "selection",
+          route: "terminal",
+          command: "updateSelection",
+          anchor: (row: anchor.row, col: anchor.col),
+          focus: (row: focus.row, col: focus.col)
+        )
+      }
+      renderInvalidated = true
+      return
+    }
+
     // If mouse tracking is active, send motion events.
     if let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId),
@@ -1392,7 +1493,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       vs.mouseTracking
     {
       cancelSelectionDragForMouseTracking()
-      let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
       guard
         let button = TerminalMouseInput.trackedTerminalButton(
@@ -1425,7 +1525,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       renderInvalidated = true
       return
     }
-    let pt = convert(event.locationInWindow, from: nil)
     lastDragPoint = pt
     extendSelection(to: pt)
     updateDragAutoscroll(at: pt)
@@ -1442,6 +1541,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   override func mouseUp(with event: NSEvent) {
+    let pt = convert(event.locationInWindow, from: nil)
+    if let pending = pendingHyperlinkClick {
+      pendingHyperlinkClick = nil
+      guard Self.pointDistance(pending.downPoint, pt) <= Self.hyperlinkClickDragTolerance else {
+        return
+      }
+      clearSelectionAfterHyperlinkActivation()
+      _ = Self.openExternalHyperlink(pending.uri, using: urlOpener)
+      EventLog.shared.log("hyperlink.open", ["url": pending.uri])
+      recordInput(
+        kind: "command",
+        route: "appCommand",
+        text: pending.uri,
+        command: "openHyperlink")
+      renderInvalidated = true
+      return
+    }
+
     // If mouse tracking is active, send release event.
     if let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId),
@@ -1457,7 +1574,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       else {
         return
       }
-      let pt = convert(event.locationInWindow, from: nil)
       let geom = terminalMouseGeometry(at: pt)
       let releaseEvent = MouseEvent(
         action: .release,
@@ -1488,7 +1604,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // Only finalize focus if a drag established one. A bare click leaves
     // selectionFocus nil, which clears the rendered selection.
     if selectionFocus != nil {
-      extendSelection(to: convert(event.locationInWindow, from: nil))
+      extendSelection(to: pt)
       if let anchor = selectionAnchor, let focus = selectionFocus {
         recordInput(
           kind: "selection",

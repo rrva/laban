@@ -71,4 +71,35 @@ final class HyperlinkPlumbingTests: XCTestCase {
       XCTAssertNil(hl, "non-link run \(text.debugDescription) must not carry the URI")
     }
   }
+
+  func testHyperlinkHitTestReturnsURIForLinkedCell() throws {
+    let esc = "\u{1b}"
+    let st = "\u{1b}\\"
+    let bytes =
+      "go "
+      + "\(esc)]8;;https://example.com/docs\(st)site\(esc)]8;;\(st)"
+      + " done\r\n"
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array(bytes.utf8))
+    session.poll()
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    XCTAssertNil(TerminalHyperlink.uri(atRow: 0, col: 0, in: snap.pointee))
+    XCTAssertEqual(
+      TerminalHyperlink.uri(atRow: 0, col: 3, in: snap.pointee),
+      "https://example.com/docs")
+    XCTAssertEqual(
+      TerminalHyperlink.uri(atRow: 0, col: 6, in: snap.pointee),
+      "https://example.com/docs")
+    XCTAssertNil(TerminalHyperlink.uri(atRow: 0, col: 7, in: snap.pointee))
+  }
 }
