@@ -15,8 +15,8 @@ It does not download, install, replace, or execute anything.
    ./scripts/package-zip 0.4.0
    ```
 
-   Replace `0.4.0` with the release version. The zip is written to
-   `.artifacts/release/Laban-<version>.zip`.
+   For a normal release, it is OK to just increment the version number in this
+   command. The zip is written to `.artifacts/release/Laban-<version>.zip`.
 
 2. Upload the zip as a new file in the Laban Drive release folder:
 
