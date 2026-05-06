@@ -14,6 +14,8 @@ Environment:
                               Defaults to the public Laban manifest on Google Drive.
   LABAN_RELEASE_DIR           Zip output directory. Defaults to .artifacts/release.
   LABAN_SKIP_CODESIGN         Defaults to 1 for unsigned release zips.
+  LABAN_BUILD_CONFIG          Swift build config (debug|release). Defaults to release
+                              for distribution; release builds emit no in-binary DWARF.
 EOF
   exit 2
 }
@@ -27,6 +29,10 @@ export LABAN_APP_VERSION=$app_version
 export LABAN_BUILD_NUMBER=${LABAN_BUILD_NUMBER:-1}
 default_update_manifest_url="https://drive.google.com/uc?export=download&id=1021htaI6ngLEoF1ItVLvFJHzP-TczOeG"
 export LABAN_UPDATE_MANIFEST_URL=${LABAN_UPDATE_MANIFEST_URL:-$default_update_manifest_url}
+# Distribution builds optimize and skip emitting in-binary DWARF; combined
+# with the prefix-map flags in build-app, this is what lets a public zip
+# stay free of build-host paths.
+export LABAN_BUILD_CONFIG=${LABAN_BUILD_CONFIG:-release}
 
 release_dir=${LABAN_RELEASE_DIR:-.artifacts/release}
 app_bundle=".build/laban/Laban.app"
@@ -48,6 +54,16 @@ plutil -lint "$plist" >/dev/null
 stamped_version=$(plutil -extract CFBundleShortVersionString raw -o - "$plist")
 if [ "$stamped_version" != "$app_version" ]; then
   printf 'package-zip failed: expected version %s, got %s\n' "$app_version" "$stamped_version" >&2
+  exit 1
+fi
+
+# Final hygiene gate on the whole bundle (build-app already gates the
+# binary). Catches identifying strings that might land in xattrs, the
+# Info.plist, or the SwiftPM resource bundles that get copied in.
+forbidden=$(LC_ALL=C find "$app_bundle" -type f -print0 |
+  xargs -0 grep -aIlE '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
+if [ -n "$forbidden" ]; then
+  printf 'package-zip failed: identifying strings present in:\n%s\n' "$forbidden" >&2
   exit 1
 fi
 

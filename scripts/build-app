@@ -14,6 +14,7 @@ date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 app_version=${LABAN_APP_VERSION:-0.0.0}
 build_number=${LABAN_BUILD_NUMBER:-0}
 update_manifest_url=${LABAN_UPDATE_MANIFEST_URL:-}
+build_config=${LABAN_BUILD_CONFIG:-debug}
 
 xml_escape() {
   printf '%s' "$1" |
@@ -31,12 +32,26 @@ if [ -n "$update_manifest_url" ]; then
     <string>$(xml_escape "$update_manifest_url")</string>"
 fi
 
-swift build --product LabanApp
+# Scrub absolute build-host paths from anything compiled into the binary:
+#   - DWARF source paths and N_OSO debug-map entries get rewritten via
+#     -debug-prefix-map / -file-prefix-map so distributed builds do not
+#     embed `/Users/<name>/...` references to the build machine.
+#   - Without these, even a release .app exposes the developer's home
+#     directory layout to anyone running `strings` on the binary.
+prefix_map_flags=" \
+  -Xswiftc -debug-prefix-map -Xswiftc ${repo_root}=. \
+  -Xswiftc -file-prefix-map -Xswiftc ${repo_root}=. \
+  -Xcc -fdebug-prefix-map=${repo_root}=. \
+  -Xcc -ffile-prefix-map=${repo_root}=."
+
+# shellcheck disable=SC2086
+swift build -c "$build_config" --product LabanApp $prefix_map_flags
 
 bundle_dir=".build/laban/Laban.app/Contents"
 mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 
-bin=$(swift build --product LabanApp --show-bin-path)
+# shellcheck disable=SC2086
+bin=$(swift build -c "$build_config" --product LabanApp --show-bin-path $prefix_map_flags)
 cp -f "$bin/LabanApp" "${bundle_dir}/MacOS/LabanApp"
 
 # Copy app icon into bundle
@@ -87,13 +102,55 @@ ${update_manifest_plist}
 </plist>
 EOF
 
-# Sign with personal Apple Development certificate so TCC grants survive rebuilds.
-# Smoke checks can opt out because they execute the binary directly and must not
-# hang on keychain UI in a non-interactive agent run.
+# Strip DWARF debug sections and STAB symbols (N_OSO entries that point
+# at the per-object .o files under /Users/<name>/.../.build/...). Function
+# symbols stay so crash reports still symbolicate.
+strip -S "${bundle_dir}/MacOS/LabanApp"
+
+# SwiftPM's auto-generated `Bundle.module` accessors compile a hard-coded
+# absolute build path as a Swift string literal in __cstring. Prefix-map
+# flags do not rewrite Swift string literals, so we replace the bytes
+# in-place with NULs. The literal lives in dead code (we use
+# LabanRendererResources, never Bundle.module) so blanking it has no
+# runtime effect.
+python3 - "${bundle_dir}/MacOS/LabanApp" <<'PY'
+import re, sys
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+pattern = re.compile(rb"/Users/[^\x00]*?\.build/[^\x00]*?\.bundle")
+def replace(m):
+    return b"\x00" * len(m.group(0))
+new = pattern.sub(replace, data)
+if new != data:
+    with open(path, "wb") as f:
+        f.write(new)
+PY
+
+# Final guard: refuse to produce a .app that still mentions a home
+# directory or a hard-coded developer identity. New regressions get
+# caught here before the bundle is signed or zipped.
+verify_clean() {
+  bin_path="${bundle_dir}/MacOS/LabanApp"
+  matches=$(LC_ALL=C strings -a "$bin_path" |
+    grep -E '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
+  if [ -n "$matches" ]; then
+    printf 'build-app failed: identifying strings remain in %s:\n' "$bin_path" >&2
+    printf '%s\n' "$matches" | head -20 >&2
+    exit 1
+  fi
+}
+verify_clean
+
+# Sign with the developer identity from $LABAN_CODESIGN_IDENTITY when
+# present; otherwise leave the bundle unsigned. LABAN_SKIP_CODESIGN=1
+# forces skipping for non-interactive smoke runs (no keychain prompts).
 if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
-  printf 'build-app: codesign skipped\n'
+  printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1)\n'
+elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
+  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" ".build/laban/Laban.app"
 else
-  codesign --force --sign "Apple Development: Ragnar Rova (U34QC433V8)" ".build/laban/Laban.app"
+  printf 'build-app: codesign skipped (LABAN_CODESIGN_IDENTITY unset)\n'
 fi
 
 printf 'build-app: %s\n' "${bundle_dir}/MacOS/LabanApp"
