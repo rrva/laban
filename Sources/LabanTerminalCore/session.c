@@ -698,13 +698,12 @@ static bool effect_device_attributes(GhosttyTerminal terminal, void *userdata,
     (void)userdata;
     if (!out_attrs) return false;
 
-    /* DA1: VT220 conformance with 132-column support, selective erase,
-       and ANSI color. Matches what most modern emulators report. */
+    /* DA1: VT220 conformance with ANSI color. Keep this conservative:
+       Laban does not install a custom terminfo entry or intentionally expose
+       terminal-driven 80/132-column switching or OSC-52 clipboard writes. */
     out_attrs->primary.conformance_level = GHOSTTY_DA_CONFORMANCE_VT220;
-    out_attrs->primary.features[0] = GHOSTTY_DA_FEATURE_COLUMNS_132;
-    out_attrs->primary.features[1] = GHOSTTY_DA_FEATURE_SELECTIVE_ERASE;
-    out_attrs->primary.features[2] = GHOSTTY_DA_FEATURE_ANSI_COLOR;
-    out_attrs->primary.num_features = 3;
+    out_attrs->primary.features[0] = GHOSTTY_DA_FEATURE_ANSI_COLOR;
+    out_attrs->primary.num_features = 1;
 
     /* DA2: VT220-type, version 1, no ROM cartridge. */
     out_attrs->secondary.device_type = GHOSTTY_DA_DEVICE_TYPE_VT220;
@@ -722,6 +721,13 @@ static GhosttyString effect_xtversion(GhosttyTerminal terminal, void *userdata) 
     (void)userdata;
     static const uint8_t kVersion[] = "laban";
     return (GhosttyString){ .ptr = kVersion, .len = sizeof(kVersion) - 1 };
+}
+
+static GhosttyString effect_enquiry(GhosttyTerminal terminal, void *userdata) {
+    (void)terminal;
+    (void)userdata;
+    static const uint8_t kAnswerback[] = "laban";
+    return (GhosttyString){ .ptr = kAnswerback, .len = sizeof(kAnswerback) - 1 };
 }
 
 static bool effect_color_scheme(GhosttyTerminal terminal, void *userdata,
@@ -815,6 +821,8 @@ int laban_session_create(
                          (const void *)effect_device_attributes);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_XTVERSION,
                          (const void *)effect_xtversion);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_ENQUIRY,
+                         (const void *)effect_enquiry);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
                          (const void *)effect_color_scheme);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,

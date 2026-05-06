@@ -1427,18 +1427,11 @@ final class LabanSessionTests: XCTestCase {
 
     let response = drainResponse(session)
     let asString = String(bytes: response, encoding: .utf8) ?? ""
-    // VT220 conformance (62) with features 1 (132 cols), 6 (selective erase),
-    // 22 (ANSI color). Order in the response is implementation-defined, so
-    // assert prefix and that all features appear.
-    XCTAssertTrue(
-      asString.hasPrefix("\u{1b}[?62;"),
-      "DA1 reply must begin with ESC[?62;… got \(asString.debugDescription)")
-    XCTAssertTrue(asString.hasSuffix("c"), "DA1 reply must terminate with c")
-    for f in ["1", "6", "22"] {
-      XCTAssertTrue(
-        asString.contains(";\(f);") || asString.contains(";\(f)c"),
-        "DA1 reply should include feature \(f); got \(asString.debugDescription)")
-    }
+    // Keep DA1 conservative: VT220 conformance (62) plus ANSI color (22).
+    // Do not claim 132-column mode or OSC-52 clipboard support from the MVP bridge.
+    XCTAssertEqual(
+      asString, "\u{1b}[?62;22c",
+      "DA1 reply should be conservative; got \(asString.debugDescription)")
   }
 
   func testDA2QueryProducesSecondaryDeviceAttributesResponse() {
@@ -1457,6 +1450,81 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(
       asString, "\u{1b}[>1;1;0c",
       "DA2 reply mismatch; got \(asString.debugDescription)")
+  }
+
+  func testDA3QueryProducesTertiaryDeviceAttributesResponse() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // CSI = c — tertiary device attributes query.
+    writeBytes(session, [0x1b, 0x5b, 0x3d, 0x63])
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      asString, "\u{1b}P!|00000000\u{1b}\\",
+      "DA3 reply mismatch; got \(asString.debugDescription)")
+  }
+
+  func testEnquiryProducesAnswerbackResponse() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // ENQ (0x05) requests a terminal answerback string.
+    writeBytes(session, [0x05])
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      asString, "laban",
+      "ENQ answerback mismatch; got \(asString.debugDescription)")
+  }
+
+  func testDECRQMModeQueryUsesTerminalState() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // DECRQM for wraparound mode. libghostty reports wraparound as set by default.
+    writeBytes(session, Array("\u{1b}[?7$p".utf8))
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      asString, "\u{1b}[?7;1$y",
+      "DECRQM wraparound reply mismatch; got \(asString.debugDescription)")
+  }
+
+  func testInBandResizeReportIsEmittedWhenMode2048IsEnabled() {
+    guard let session = makeFixtureSession(rows: 24, cols: 80) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1b}[?2048h".utf8))
+    XCTAssertEqual(drainResponse(session), [], "enabling mode 2048 should not reply immediately")
+
+    var size = LabanTerminalSize()
+    size.rows = 40
+    size.cols = 100
+    size.cell_width = 9
+    size.cell_height = 18
+    XCTAssertEqual(laban_session_resize(session, size), 0)
+
+    let response = drainResponse(session)
+    let asString = String(bytes: response, encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      asString, "\u{1b}[48;40;100;720;900t",
+      "mode 2048 resize report mismatch; got \(asString.debugDescription)")
   }
 
   func testXTVersionQueryReportsLaban() {
