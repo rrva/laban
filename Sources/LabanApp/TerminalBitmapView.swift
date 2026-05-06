@@ -14,6 +14,11 @@ protocol ExternalURLOpening {
 
 extension NSWorkspace: ExternalURLOpening {}
 
+enum TerminalHoverCursorStyle: Equatable {
+  case arrow
+  case pointingHand
+}
+
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
   /// Reserved strip at the top of the contentView that sits behind the
@@ -118,6 +123,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// only affordances (close glyph). Updated from mouseMoved /
   /// mouseExited; nil when the cursor isn't inside any sidebar tab row.
   private var hoveredSidebarTabId: Tab.ID?
+  private var hoverCursorStyle: TerminalHoverCursorStyle?
 
   // Damage-driven render budget state
   private var renderInvalidated = true
@@ -768,10 +774,32 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   override func mouseMoved(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
     updateHoveredSidebarTab(at: pt)
+    updateHoverCursor(at: pt)
   }
 
   override func mouseExited(with event: NSEvent) {
     setHoveredSidebarTab(nil)
+    setHoverCursor(.arrow)
+  }
+
+  private func updateHoverCursor(at pt: NSPoint) {
+    let uri = pt.x >= sidebarWidth ? externalHyperlinkURI(at: pt) : nil
+    setHoverCursor(Self.hoverCursorStyle(externalHyperlinkURI: uri))
+  }
+
+  static func hoverCursorStyle(externalHyperlinkURI uri: String?) -> TerminalHoverCursorStyle {
+    uri == nil ? .arrow : .pointingHand
+  }
+
+  private func setHoverCursor(_ style: TerminalHoverCursorStyle) {
+    guard hoverCursorStyle != style else { return }
+    hoverCursorStyle = style
+    switch style {
+    case .arrow:
+      NSCursor.arrow.set()
+    case .pointingHand:
+      NSCursor.pointingHand.set()
+    }
   }
 
   private func updateHoveredSidebarTab(at pt: NSPoint) {
