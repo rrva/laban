@@ -118,7 +118,7 @@ public final class CaptureReplayRunner {
       {
         return model.session(forTab: tab.id)
       }
-      return activeSession()
+      return nil
     }
 
     for event in events {

@@ -12,13 +12,15 @@ Capture replay and debug waits are verification infrastructure. After this chang
 - [x] Read `Sources/LabanDebug/HeadlessDebugRuntime.swift` wait condition dispatch.
 - [x] Stream and strictly decode `timeline.ndjson`.
 - [x] Replay `tab.closed` events into `AppModel`.
+- [x] Ignore later input events for explicitly closed/unknown captured sessions
+  instead of falling back to the active replay session.
 - [x] Honor `sessionId` and `tabId` for `textVisible` waits.
 - [x] Add focused regression tests for malformed timeline lines, closed-tab replay, and session-scoped waits.
 - [x] Run focused debug tests and the full package suite.
 
 ## Outcomes & Retrospective
 
-`CaptureReplayRunner` now streams `timeline.ndjson` in chunks and throws `CaptureReplayError.malformedTimelineLine` with a line number on the first malformed event. Terminal replay applies `tab.closed`, removes the captured tab and session mappings, and tolerates AppModel's final-tab close sentinel. `HeadlessDebugRuntime` resolves `textVisible` waits by explicit `sessionId`, then `tabId`, then active tab. Regression tests cover all three contract points.
+`CaptureReplayRunner` now streams `timeline.ndjson` in chunks and throws `CaptureReplayError.malformedTimelineLine` with a line number on the first malformed event. Terminal replay applies `tab.closed`, removes the captured tab and session mappings, tolerates AppModel's final-tab close sentinel, and ignores later events that explicitly target the closed session. `HeadlessDebugRuntime` resolves `textVisible` waits by explicit `sessionId`, then `tabId`, then active tab. Regression tests cover all three contract points plus stale post-close selection input.
 
 ## Context and Orientation
 

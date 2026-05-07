@@ -93,6 +93,22 @@ final class CaptureReplayTests: XCTestCase {
         tabId: secondTab.id,
         sessionId: secondTab.sessionId
       ))
+    recorder.record(
+      CaptureTimelineEvent(
+        input: InputEventEnvelope(
+          inputId: "stale-selection-after-close",
+          source: "appkit",
+          kind: "mouse",
+          route: "local",
+          frameBefore: 1,
+          tabId: secondTab.id,
+          sessionId: secondTab.sessionId,
+          command: "setSelection",
+          anchorRow: 0,
+          anchorCol: 0,
+          focusRow: 0,
+          focusCol: 5
+        )))
     try recordAppKitFrame(frame: 1, model: model, recorder: recorder)
 
     _ = try recorder.finish()
