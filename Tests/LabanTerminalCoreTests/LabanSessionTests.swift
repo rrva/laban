@@ -729,6 +729,48 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  func testSendKeyEncodedReturnsBytesAndSupportsSmallBufferRetry() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let text = String(repeating: "a", count: 256)
+    text.withCString { cText in
+      var event = LabanKeyEvent()
+      event.action = LABAN_KEY_ACTION_PRESS
+      event.key = LABAN_KEY_A
+      event.utf8 = cText
+      event.utf8_len = text.utf8.count
+
+      var requiredLen = 0
+      XCTAssertEqual(
+        laban_session_send_key_encoded(session, &event, nil, 0, &requiredLen),
+        1
+      )
+      XCTAssertEqual(requiredLen, text.utf8.count)
+
+      var out = [UInt8](repeating: 0, count: requiredLen)
+      let outCapacity = out.count
+      var sentLen = 0
+      XCTAssertEqual(
+        out.withUnsafeMutableBytes { buf in
+          laban_session_send_key_encoded(
+            session,
+            &event,
+            buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            outCapacity,
+            &sentLen
+          )
+        },
+        0
+      )
+      XCTAssertEqual(sentLen, text.utf8.count)
+      XCTAssertEqual(Array(out.prefix(sentLen)), Array(text.utf8))
+    }
+  }
+
   func testPTYInitialSizeIsVisibleAtShellStartup() {
     let exe = "/bin/sh"
     let argStrings = ["/bin/sh", "-lc", "stty size"]
@@ -1995,6 +2037,22 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(enabled, 0)
     XCTAssertEqual(laban_session_encode_focus(session, 1, &buf, buf.count, &len), 0)
     XCTAssertEqual(len, 0, "focus bytes must be suppressed after mode 1004 is disabled")
+  }
+
+  func testKeyEncodingRejectsMissingOutputBufferWithCapacity() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var event = LabanKeyEvent()
+    event.action = LABAN_KEY_ACTION_PRESS
+    event.key = LABAN_KEY_ENTER
+
+    var len: size_t = 99
+    XCTAssertEqual(laban_session_encode_key(session, &event, nil, 16, &len), -1)
+    XCTAssertEqual(len, 0)
   }
 
   func testSnapshotTracksCursorStyleAndBlinking() {

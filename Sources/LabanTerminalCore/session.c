@@ -2310,8 +2310,9 @@ int laban_session_encode_key(
     size_t out_capacity,
     size_t *out_len
 ) {
+    if (out_len) *out_len = 0;
     if (!s || !event || !out_len) return -1;
-    *out_len = 0;
+    if (!out_bytes && out_capacity > 0) return -1;
 
     /* Sync encoder from terminal state; this resets option-as-alt to FALSE. */
     ghostty_key_encoder_setopt_from_terminal(s->key_encoder, s->terminal);
@@ -2348,33 +2349,42 @@ int laban_session_encode_key(
     return -1;
 }
 
+int laban_session_send_key_encoded(
+    LabanSession *s,
+    const LabanKeyEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    if (out_len) *out_len = 0;
+    if (!s || !event || !out_len) return -1;
+    if (!out_bytes && out_capacity > 0) return -1;
+
+    int rc = laban_session_encode_key(s, event, out_bytes, out_capacity, out_len);
+    if (rc != 0) return rc;
+    if (*out_len == 0) return 0;
+    if (s->fixture_mode) return 0;
+    if (s->pty_fd < 0) return -1;
+
+    return write_pty_input(s, out_bytes, *out_len);
+}
+
 int laban_session_send_key(LabanSession *s, const LabanKeyEvent *event) {
     if (!s) return -1;
 
     uint8_t stack_buf[128];
     size_t len = 0;
-    int rc = laban_session_encode_key(s, event, stack_buf, sizeof(stack_buf), &len);
+    int rc = laban_session_send_key_encoded(s, event, stack_buf, sizeof(stack_buf), &len);
 
     if (rc == LABAN_KEY_ENCODE_OUT_OF_SPACE) {
         /* len now holds required size; heap-allocate and re-encode. */
         uint8_t *heap_buf = malloc(len);
         if (!heap_buf) return -1;
         size_t heap_len = 0;
-        rc = laban_session_encode_key(s, event, heap_buf, len, &heap_len);
-        if (rc == 0 && heap_len > 0 && !s->fixture_mode && s->pty_fd >= 0) {
-            if (write_pty_input(s, heap_buf, heap_len) != 0) {
-                free(heap_buf);
-                return -1;
-            }
-        }
+        rc = laban_session_send_key_encoded(s, event, heap_buf, len, &heap_len);
         free(heap_buf);
         return rc;
     }
 
-    if (rc != 0) return rc;
-    if (len == 0) return 0;
-    if (s->fixture_mode) return 0;
-    if (s->pty_fd < 0) return -1;
-
-    return write_pty_input(s, stack_buf, len);
+    return rc;
 }

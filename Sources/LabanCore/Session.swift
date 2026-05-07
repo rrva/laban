@@ -383,6 +383,21 @@ public final class Session {
           outBuf.count, &len)
       }
     }
+    if rc == 1, len > 0 {
+      var heapBuf = [UInt8](repeating: 0, count: len)
+      var heapLen = 0
+      let heapRC = event.withLabanKeyEvent { raw in
+        var rawCopy = raw
+        return heapBuf.withUnsafeMutableBytes { outBuf in
+          laban_session_encode_key(
+            h, &rawCopy,
+            outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            outBuf.count, &heapLen)
+        }
+      }
+      guard heapRC == 0, heapLen > 0 else { return nil }
+      return Array(heapBuf.prefix(heapLen))
+    }
     guard rc == 0, len > 0 else { return nil }
     return Array(buf.prefix(len))
   }
@@ -397,6 +412,45 @@ public final class Session {
       var rawCopy = raw
       return laban_session_send_key(h, &rawCopy)
     }
+  }
+
+  /// Encode and send a key event, returning the exact bytes accepted by the
+  /// terminal-core send path. In fixture mode, returns encoded bytes without a
+  /// PTY write.
+  public func sendKeyCapturingBytes(_ event: KeyEvent) -> (result: Int32, bytes: [UInt8]) {
+    guard !isClosed, let h = handle else { return (-1, []) }
+    var buf = [UInt8](repeating: 0, count: 128)
+    var len = 0
+    let result = event.withLabanKeyEvent { raw in
+      var rawCopy = raw
+      return buf.withUnsafeMutableBytes { outBuf in
+        laban_session_send_key_encoded(
+          h,
+          &rawCopy,
+          outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          outBuf.count,
+          &len)
+      }
+    }
+    if result == 1, len > buf.count {
+      buf = [UInt8](repeating: 0, count: len)
+      len = 0
+      let retry = event.withLabanKeyEvent { raw in
+        var rawCopy = raw
+        return buf.withUnsafeMutableBytes { outBuf in
+          laban_session_send_key_encoded(
+            h,
+            &rawCopy,
+            outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            outBuf.count,
+            &len)
+        }
+      }
+      guard retry == 0 else { return (retry, []) }
+      return (retry, Array(buf.prefix(len)))
+    }
+    guard result == 0 else { return (result, []) }
+    return (result, Array(buf.prefix(len)))
   }
 
   // MARK: - Mouse encoding

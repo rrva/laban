@@ -50,6 +50,12 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
   headless tests that expose keyboard routing decisions to agents.
 - [x] (2026-05-04) Add end-to-end keyboard segment to `scripts/test-e2e`: enter key, Cmd-T,
   `/debug/input-log` route assertions.
+- [x] (2026-05-07) Add a real-shell headless `cat -vet` keyboard smoke test that drives
+  debug key actions for Tab, Backspace, Up Arrow, Shift-Tab, Option-produced text,
+  and Ctrl-C through the PTY.
+- [x] (2026-05-07) Add a terminal-core send-and-capture key ABI so AppKit and debug
+  input logs report bytes from the committed send path instead of a pre-send
+  preview encode.
 - [ ] Pass the Review Gate in this plan before marking the keyboard work done.
 
 ## Decision Log
@@ -152,6 +158,9 @@ done until this gate has passed.
   text route `terminal`, ignored unsupported key actions, recorder-compatible
   event IDs and frame references, and encoded bytes exposed in bounded debug
   diagnostics.
+- [x] (2026-05-07) Run `swift test --filter LabanDebugKeyboardSmokeTests`; 6 tests pass,
+  including a real-shell `cat -vet` smoke that visibly receives Tab, Backspace,
+  Up Arrow, Shift-Tab, Option-produced text, and Ctrl-C via debug key actions.
 - [x] (2026-05-04) Run `./scripts/test-e2e`; existing E2E flow plus keyboard segment
   (enter key, Cmd-T, `/debug/input-log` route assertions) all pass.
 - [x] (2026-05-04) Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; public
@@ -173,7 +182,7 @@ done until this gate has passed.
   function keys, and release-aware keyboard mode behavior. Record in
   `Outcomes & Retrospective`.
 
-Review status: AUTOMATED GATES PASSED — manual AppKit acceptance pending
+Review status: AUTOMATED GATES EXPANDED — manual visible-AppKit and full TUI acceptance pending
 
 ## Context and Orientation
 

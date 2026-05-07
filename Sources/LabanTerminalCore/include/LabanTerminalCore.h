@@ -590,4 +590,19 @@ int laban_session_encode_key(
  */
 int laban_session_send_key(LabanSession *session, const LabanKeyEvent *event);
 
+/*
+ * laban_session_send_key_encoded:
+ *   Encode and write key input to the PTY, returning the exact bytes written.
+ *   In fixture mode, encoding succeeds and returns the bytes without a PTY
+ *   write. Returns 1 without sending when out_capacity is too small; *out_len
+ *   holds the required size.
+ */
+int laban_session_send_key_encoded(
+    LabanSession *session,
+    const LabanKeyEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+);
+
 #endif /* LABAN_TERMINAL_CORE_H */
