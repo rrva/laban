@@ -5,6 +5,17 @@ import XCTest
 
 final class LabanRendererSmokeTests: XCTestCase {
 
+  func testRendererResourceBundleFindsShaderSource() {
+    guard
+      let url = LabanRendererResources.bundle?.url(
+        forResource: "Shaders", withExtension: "metal")
+    else {
+      XCTFail("renderer resource bundle must expose Shaders.metal")
+      return
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+  }
+
   // MARK: - FrameCommand types
 
   func testAllFrameCommandTypesCanBeConstructed() {

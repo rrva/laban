@@ -9,13 +9,22 @@ import Foundation
 public enum LabanRendererResources {
   public static let bundle: Bundle? = {
     let name = "Laban_LabanRenderer.bundle"
-    let containers: [URL?] = [
+    let roots: [URL?] = [
       Bundle.main.resourceURL,
       Bundle(for: BundleFinder.self).resourceURL,
       Bundle.main.bundleURL,
       Bundle(for: BundleFinder.self).bundleURL,
     ]
-    for container in containers.compactMap({ $0 }) {
+    var containers: [URL] = []
+    var seen = Set<String>()
+    for root in roots.compactMap({ $0 }) {
+      for candidate in [root, root.deletingLastPathComponent()] {
+        let path = candidate.standardizedFileURL.path
+        guard seen.insert(path).inserted else { continue }
+        containers.append(candidate)
+      }
+    }
+    for container in containers {
       if let bundle = Bundle(url: container.appendingPathComponent(name)) {
         return bundle
       }
