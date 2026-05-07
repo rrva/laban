@@ -68,6 +68,13 @@ or TUI still running.
 - [x] (2026-05-07) Added a terminal-core mouse send-and-capture ABI so
   debug/headless mouse logs use the bytes from the committed send operation
   instead of a pre-send preview.
+- [x] (2026-05-07) Centralized paste sanitization in `LabanCore` and applied it
+  to both AppKit paste and debug paste actions so captured/debug paste
+  envelopes report the exact sanitized terminal text sent through libghostty's
+  paste encoder.
+- [x] (2026-05-07) Added a terminal-core paste send-and-capture ABI so
+  AppKit/debug paste input envelopes and terminal-input logs can report the
+  exact committed plain or bracketed paste bytes.
 - [ ] Pass the Review Gate before marking this plan complete.
 
 ## Decision Log

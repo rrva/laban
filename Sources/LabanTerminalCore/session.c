@@ -2019,9 +2019,55 @@ int laban_session_write_paste(
     size_t len,
     LabanPasteResult *out_result
 ) {
-    if (!s) return -1;
+    if (!s) {
+        if (out_result) {
+            out_result->bracketed = 0;
+            out_result->bytes_written = 0;
+        }
+        return -1;
+    }
+    if (len > SIZE_MAX - 16) {
+        if (out_result) {
+            out_result->bracketed = 0;
+            out_result->bytes_written = 0;
+        }
+        return -1;
+    }
+    size_t cap = len + 16;
+    uint8_t *buf = malloc(cap);
+    if (!buf) {
+        if (out_result) {
+            out_result->bracketed = 0;
+            out_result->bytes_written = 0;
+        }
+        return -1;
+    }
+    size_t out_len = 0;
+    int rc = laban_session_write_paste_encoded(s, bytes, len, buf, cap, &out_len, out_result);
+    free(buf);
+    return rc == 1 ? -1 : rc;
+}
 
-    /* +12 for ESC[200~ (7 bytes) + ESC[201~ (7 bytes) = 14 bytes worst case.
+int laban_session_write_paste_encoded(
+    LabanSession *s,
+    const uint8_t *bytes,
+    size_t len,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len,
+    LabanPasteResult *out_result
+) {
+    if (out_result) {
+        out_result->bracketed = 0;
+        out_result->bytes_written = 0;
+    }
+    if (out_len) *out_len = 0;
+    if (!s || !out_len) return -1;
+    if (len > 0 && !bytes) return -1;
+    if (!out_bytes && out_capacity > 0) return -1;
+    if (len > SIZE_MAX - 16) return -1;
+
+    /* +14 for ESC[200~ (7 bytes) + ESC[201~ (7 bytes) = 14 bytes worst case.
        Using 16 for alignment. */
     size_t cap = len + 16;
     uint8_t *buf = malloc(cap);
@@ -2031,12 +2077,22 @@ int laban_session_write_paste(
     int bracketed = 0;
     int r = laban_session_encode_paste(s, bytes, len, buf, cap, &enc_len, &bracketed);
     if (r != 0) { free(buf); return -1; }
+    if (enc_len > out_capacity) {
+        *out_len = enc_len;
+        free(buf);
+        return 1;
+    }
 
     if (s->fixture_mode) {
         vt_write_capture(s, buf, enc_len);
     } else {
         if (write_pty_input(s, buf, enc_len) != 0) { free(buf); return -1; }
     }
+
+    if (enc_len > 0 && out_bytes) {
+        memcpy(out_bytes, buf, enc_len);
+    }
+    *out_len = enc_len;
 
     if (out_result) {
         out_result->bracketed = bracketed;

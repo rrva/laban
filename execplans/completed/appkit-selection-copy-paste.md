@@ -62,6 +62,10 @@ reading the user's real system clipboard.
   `laban_session_write_paste` in `session.c`; `Session.writePaste` in Swift;
   `ghostty_paste_encode` + `ghostty_terminal_mode_get` with
   `GHOSTTY_MODE_BRACKETED_PASTE`).
+- [x] (2026-05-07) Add terminal-core paste send-and-capture wrappers
+  (`laban_session_write_paste_encoded`, `Session.writePasteCapturingBytes`) so
+  AppKit and debug observability can record the exact encoded bytes committed
+  by libghostty's paste path, including bracketed paste framing.
 - [x] (2026-05-03) Add unit, debug-runtime, schema, and E2E coverage
   (`TerminalSelectionTests.swift` 11 tests; 5 new `LabanDebugSmokeTests`; 5
   new `LabanSessionTests` for paste encoding; `setSelection` added to

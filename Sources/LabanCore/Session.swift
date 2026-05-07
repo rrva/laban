@@ -538,6 +538,63 @@ public final class Session {
     return PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written)
   }
 
+  public func writePasteCapturingBytes(_ text: String) -> (
+    result: PasteWriteResult?, bytes: [UInt8]
+  ) {
+    guard !isClosed, let h = handle else { return (nil, []) }
+    let bytes = Array(text.utf8)
+    if bytes.isEmpty {
+      return (PasteWriteResult(bracketed: bracketedPasteEnabled(), bytesWritten: 0), [])
+    }
+
+    var out = [UInt8](repeating: 0, count: bytes.count + 16)
+    var outCapacity = out.count
+    var outLen: size_t = 0
+    var raw = LabanPasteResult()
+    let rc = bytes.withUnsafeBytes { inputBuf in
+      out.withUnsafeMutableBytes { outBuf in
+        laban_session_write_paste_encoded(
+          h,
+          inputBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+          bytes.count,
+          outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          outCapacity,
+          &outLen,
+          &raw
+        )
+      }
+    }
+    if rc == 1, outLen > out.count {
+      out = [UInt8](repeating: 0, count: Int(outLen))
+      outCapacity = out.count
+      outLen = 0
+      raw = LabanPasteResult()
+      let retry = bytes.withUnsafeBytes { inputBuf in
+        out.withUnsafeMutableBytes { outBuf in
+          laban_session_write_paste_encoded(
+            h,
+            inputBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+            bytes.count,
+            outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            outCapacity,
+            &outLen,
+            &raw
+          )
+        }
+      }
+      guard retry == 0 else { return (nil, []) }
+      return (
+        PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written),
+        Array(out.prefix(Int(outLen)))
+      )
+    }
+    guard rc == 0 else { return (nil, []) }
+    return (
+      PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written),
+      Array(out.prefix(Int(outLen)))
+    )
+  }
+
   private func updateCaptureCallback() {
     guard !isClosed, let h = handle else { return }
     if callbackState.hasCaptureSink {

@@ -432,6 +432,21 @@ int laban_session_write_paste(
 );
 
 /*
+ * Encode and write paste bytes, returning the exact encoded bytes committed
+ * by the terminal core. Returns 1 without sending if out_capacity is too
+ * small; *out_len holds the required encoded size.
+ */
+int laban_session_write_paste_encoded(
+    LabanSession *session,
+    const uint8_t *bytes,
+    size_t len,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len,
+    LabanPasteResult *out_result
+);
+
+/*
  * laban_session_exit_state:
  *   Lightweight query for the session's exit state. Reads status and
  *   exit_status directly from session storage without rendering or allocating.

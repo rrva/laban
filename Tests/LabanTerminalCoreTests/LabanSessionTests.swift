@@ -2137,6 +2137,76 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(result.bracketed, 0, "bracketed must be 0 without bracketed paste mode")
     XCTAssertGreaterThan(result.bytes_written, 0, "must report non-zero bytes written")
   }
+
+  func testWritePasteEncodedReturnsCommittedBracketedBytes() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1b}[?2004h".utf8))
+
+    let input = Array("paste me".utf8)
+    var requiredLen: size_t = 0
+    var result = LabanPasteResult(bracketed: 1, bytes_written: 99)
+    XCTAssertEqual(
+      input.withUnsafeBytes { buf in
+        laban_session_write_paste_encoded(
+          session,
+          buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          input.count,
+          nil,
+          0,
+          &requiredLen,
+          &result
+        )
+      },
+      1
+    )
+    XCTAssertGreaterThan(requiredLen, input.count)
+    XCTAssertEqual(result.bracketed, 0)
+    XCTAssertEqual(result.bytes_written, 0)
+
+    var out = [UInt8](repeating: 0, count: Int(requiredLen))
+    let outCapacity = out.count
+    var outLen: size_t = 0
+    XCTAssertEqual(
+      input.withUnsafeBytes { inputBuf in
+        out.withUnsafeMutableBytes { outBuf in
+          laban_session_write_paste_encoded(
+            session,
+            inputBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            input.count,
+            outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            outCapacity,
+            &outLen,
+            &result
+          )
+        }
+      },
+      0
+    )
+    let sent = String(bytes: out.prefix(Int(outLen)), encoding: .utf8) ?? ""
+    XCTAssertEqual(result.bracketed, 1)
+    XCTAssertEqual(result.bytes_written, outLen)
+    XCTAssertTrue(sent.hasPrefix("\u{1b}[200~"))
+    XCTAssertTrue(sent.hasSuffix("\u{1b}[201~"))
+    XCTAssertTrue(sent.contains("paste me"))
+  }
+
+  func testWritePasteRejectsNullInputWhenLenIsNonZero() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var result = LabanPasteResult(bracketed: 1, bytes_written: 99)
+    XCTAssertEqual(laban_session_write_paste(session, nil, 4, &result), -1)
+    XCTAssertEqual(result.bracketed, 0)
+    XCTAssertEqual(result.bytes_written, 0)
+  }
 }
 
 private func visibleText(from snap: UnsafePointer<LabanSnapshot>) -> String {
