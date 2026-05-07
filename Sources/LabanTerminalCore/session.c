@@ -813,7 +813,7 @@ int laban_session_create(
     s->fixture_mode = config->fixture_mode;
     s->color_scheme = LABAN_COLOR_SCHEME_DARK;
 
-    GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 1000 };
+    GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 10000000 };
 
     GhosttyResult r = ghostty_terminal_new(NULL, &s->terminal, opts);
     if (r != GHOSTTY_SUCCESS) { free(s); return -1; }
