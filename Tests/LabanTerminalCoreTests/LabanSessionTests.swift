@@ -1562,6 +1562,15 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  private func feedOutput(_ session: OpaquePointer, _ bytes: [UInt8]) {
+    bytes.withUnsafeBytes { buf in
+      _ = laban_session_feed_output(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        bytes.count)
+    }
+  }
+
   func testNoQueryProducesNoResponse() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")
@@ -1591,6 +1600,47 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(
       asString, "\u{1b}[?62;22c",
       "DA1 reply should be conservative; got \(asString.debugDescription)")
+  }
+
+  func testCapabilityResponseIsNotBufferedWhenPTYWriteFails() {
+    let exe = "/usr/bin/true"
+    let argStrings = ["/usr/bin/true"]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 24
+        size.cols = 80
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed for terminal-response failure test")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        var exit = LabanExitState()
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          exit = laban_session_exit_state(session)
+          if exit.status != 0 { break }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertNotEqual(exit.status, 0, "child must exit before the response write")
+
+        // CSI c triggers a terminal-generated DA1 reply. With the PTY slave
+        // gone, the reply cannot be delivered and should not appear in the
+        // drain buffer as if it had been committed.
+        feedOutput(session, [0x1b, 0x5b, 0x63])
+        XCTAssertEqual(drainResponse(session), [])
+      }
+    }
   }
 
   func testDA2QueryProducesSecondaryDeviceAttributesResponse() {

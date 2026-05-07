@@ -23,6 +23,9 @@ in-band resize probes through `laban_session_drain_response`.
   libghostty effect and narrow DA1 claims.
 - [x] 2026-05-06 Run focused terminal-core tests.
 - [x] 2026-05-06 Run the package test suite.
+- [x] 2026-05-07 Harden terminal-response capture so
+  `laban_session_drain_response` only reports capability replies that were
+  committed to the PTY, with fixture-mode replies still captured for tests.
 
 ## Decision Notes
 
@@ -99,6 +102,13 @@ responses most likely to affect real shells and TUIs during startup or feature
 probing. The only implementation change needed was to register ENQ and narrow
 DA1's advertised features. Broader historical DA1 features remain unadvertised
 until Laban intentionally supports their side effects and geometry semantics.
+
+On 2026-05-07, response capture was tightened to match the actual send path:
+PTY-mode capability replies are buffered for `laban_session_drain_response`
+only after `write_pty_bytes` succeeds. A regression drives a DA1 query into a
+session whose child has exited and verifies the failed PTY response is not
+reported as if it had been delivered. Fixture sessions still capture responses
+without a PTY so deterministic capability tests keep working.
 
 ## Idempotence and Recovery
 

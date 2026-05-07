@@ -674,10 +674,14 @@ static void laban_session_capture_response(
 static int write_terminal_response(LabanSession *s, const uint8_t *data, size_t len) {
     if (!s || !data) return -1;
     if (len == 0) return 0;
-    laban_session_capture_response(s, data, len);
     if (s->pty_fd >= 0) {
-        return write_pty_bytes(s, data, len, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE);
+        int rc = write_pty_bytes(s, data, len, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE);
+        if (rc == 0) {
+            laban_session_capture_response(s, data, len);
+        }
+        return rc;
     }
+    laban_session_capture_response(s, data, len);
     emit_capture_bytes(s, LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE, data, len);
     return 0;
 }
