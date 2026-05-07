@@ -1323,6 +1323,48 @@ final class LabanSessionTests: XCTestCase {
     press.cell_width = 8
     press.cell_height = 16
 
+    XCTAssertEqual(laban_session_send_mouse(session, &press), 0)
+
+    var motion = press
+    motion.action = LABAN_MOUSE_ACTION_MOTION
+    motion.button = LABAN_MOUSE_BUTTON_NONE
+    motion.x = 16
+    motion.y = 32
+
+    var motionBuf = [UInt8](repeating: 0, count: 64)
+    var motionLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_encode_mouse(session, &motion, &motionBuf, motionBuf.count, &motionLen), 0)
+
+    let seq = String(bytes: motionBuf.prefix(Int(motionLen)), encoding: .utf8)
+    XCTAssertEqual(seq, "\u{1b}[<32;3;3M")
+  }
+
+  func testMouseEncodeDoesNotCommitHeldButtonState() {
+    guard let session = makeFixtureSession(rows: 5, cols: 30) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let enableSeq = Array("\u{1b}[?1002h\u{1b}[?1006h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    var press = LabanMouseEvent()
+    press.action = LABAN_MOUSE_ACTION_PRESS
+    press.button = LABAN_MOUSE_BUTTON_LEFT
+    press.x = 8
+    press.y = 16
+    press.screen_width = 240
+    press.screen_height = 80
+    press.cell_width = 8
+    press.cell_height = 16
+
     var pressBuf = [UInt8](repeating: 0, count: 64)
     var pressLen: size_t = 0
     XCTAssertEqual(
@@ -1341,7 +1383,61 @@ final class LabanSessionTests: XCTestCase {
       laban_session_encode_mouse(session, &motion, &motionBuf, motionBuf.count, &motionLen), 0)
 
     let seq = String(bytes: motionBuf.prefix(Int(motionLen)), encoding: .utf8)
-    XCTAssertEqual(seq, "\u{1b}[<32;3;3M")
+    XCTAssertNotEqual(
+      seq,
+      "\u{1b}[<32;3;3M",
+      "preview encoding a press must not make the later motion look like a held-button drag")
+  }
+
+  func testSendMouseEncodedReturnsBytesAndCommitsHeldButtonState() {
+    guard let session = makeFixtureSession(rows: 5, cols: 30) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let enableSeq = Array("\u{1b}[?1002h\u{1b}[?1006h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    var press = LabanMouseEvent()
+    press.action = LABAN_MOUSE_ACTION_PRESS
+    press.button = LABAN_MOUSE_BUTTON_LEFT
+    press.x = 8
+    press.y = 16
+    press.screen_width = 240
+    press.screen_height = 80
+    press.cell_width = 8
+    press.cell_height = 16
+
+    var pressBuf = [UInt8](repeating: 0, count: 64)
+    var pressLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_send_mouse_encoded(session, &press, &pressBuf, pressBuf.count, &pressLen),
+      0)
+    XCTAssertEqual(
+      String(bytes: pressBuf.prefix(Int(pressLen)), encoding: .utf8),
+      "\u{1b}[<0;2;2M")
+
+    var motion = press
+    motion.action = LABAN_MOUSE_ACTION_MOTION
+    motion.button = LABAN_MOUSE_BUTTON_NONE
+    motion.x = 16
+    motion.y = 32
+
+    var motionBuf = [UInt8](repeating: 0, count: 64)
+    var motionLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_send_mouse_encoded(session, &motion, &motionBuf, motionBuf.count, &motionLen),
+      0)
+    XCTAssertEqual(
+      String(bytes: motionBuf.prefix(Int(motionLen)), encoding: .utf8),
+      "\u{1b}[<32;3;3M",
+      "send-and-capture must return the bytes for the committed held-button motion")
   }
 
   func testMouseEncodingWheelUpAndDownAreDistinct() {
@@ -1420,7 +1516,23 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(outLen, 0, "should produce zero bytes when mouse tracking is disabled")
   }
 
-  func testSendMouseNoOpInFixtureMode() {
+  func testMouseEncodingRejectsMissingOutputBufferWithCapacity() {
+    guard let session = makeFixtureSession(rows: 5, cols: 20) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var event = LabanMouseEvent()
+    event.action = LABAN_MOUSE_ACTION_PRESS
+    event.button = LABAN_MOUSE_BUTTON_LEFT
+
+    var outLen: size_t = 99
+    XCTAssertEqual(laban_session_encode_mouse(session, &event, nil, 16, &outLen), -1)
+    XCTAssertEqual(outLen, 0)
+  }
+
+  func testSendMouseSucceedsInFixtureMode() {
     guard let session = makeFixtureSession(rows: 5, cols: 20) else {
       XCTFail("laban_session_create returned non-zero")
       return
@@ -1437,7 +1549,7 @@ final class LabanSessionTests: XCTestCase {
     event.cell_width = 8
     event.cell_height = 16
 
-    // send_mouse should return 0 (no-op) in fixture mode.
+    // Fixture mode has no PTY, but send_mouse still succeeds and commits local mouse state.
     XCTAssertEqual(laban_session_send_mouse(session, &event), 0)
   }
 

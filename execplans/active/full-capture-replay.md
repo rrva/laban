@@ -62,6 +62,12 @@ or TUI still running.
   terminal replay now hydrates captures started after an existing prompt,
   recomputes commands with captured AppKit layout, records AppKit scroll/mouse/
   selection input envelopes, and can infer missing scrolls in legacy artifacts.
+- [x] (2026-05-07) Split mouse encoding preview from committed send state so
+  capture/debug logging cannot mutate held-button drag state before PTY input
+  is sent.
+- [x] (2026-05-07) Added a terminal-core mouse send-and-capture ABI so
+  debug/headless mouse logs use the bytes from the committed send operation
+  instead of a pre-send preview.
 - [ ] Pass the Review Gate before marking this plan complete.
 
 ## Decision Log

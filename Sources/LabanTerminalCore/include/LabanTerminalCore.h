@@ -317,6 +317,19 @@ int laban_session_encode_mouse(
     size_t *out_len
 );
 
+/*
+ * Encode and send a mouse event, returning the exact bytes that were written
+ * to the PTY. Returns 1 without sending when out_capacity is too small; in
+ * that case out_len is set to the required byte count.
+ */
+int laban_session_send_mouse_encoded(
+    LabanSession *session,
+    const LabanMouseEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+);
+
 int laban_session_send_mouse(LabanSession *session, const LabanMouseEvent *event);
 
 /* --- Paste ABI --- */

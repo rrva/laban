@@ -1763,15 +1763,18 @@ static int laban_mouse_button_can_be_held(LabanMouseButton btn) {
            btn == LABAN_MOUSE_BUTTON_RIGHT;
 }
 
-int laban_session_encode_mouse(
+static int laban_session_encode_mouse_internal(
     LabanSession *s,
     const LabanMouseEvent *event,
     uint8_t *out_bytes,
     size_t out_capacity,
-    size_t *out_len
+    size_t *out_len,
+    int *out_next_button_pressed,
+    LabanMouseButton *out_next_pressed_button
 ) {
+    if (out_len) *out_len = 0;
     if (!s || !event || !out_len) return -1;
-    *out_len = 0;
+    if (!out_bytes && out_capacity > 0) return -1;
 
     /* Sync encoder options from terminal state. */
     ghostty_mouse_encoder_setopt_from_terminal(s->mouse_encoder, s->terminal);
@@ -1791,26 +1794,29 @@ int laban_session_encode_mouse(
     ghostty_mouse_encoder_setopt(s->mouse_encoder,
         GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &enc_size);
 
+    int next_button_pressed = s->mouse_button_pressed;
+    LabanMouseButton next_pressed_button = s->mouse_pressed_button;
+
     LabanMouseButton effective_button = event->button;
     if ((event->action == LABAN_MOUSE_ACTION_MOTION ||
          event->action == LABAN_MOUSE_ACTION_RELEASE) &&
         effective_button == LABAN_MOUSE_BUTTON_NONE &&
-        laban_mouse_button_can_be_held(s->mouse_pressed_button)) {
-        effective_button = s->mouse_pressed_button;
+        laban_mouse_button_can_be_held(next_pressed_button)) {
+        effective_button = next_pressed_button;
     }
 
     if (event->action == LABAN_MOUSE_ACTION_PRESS &&
         laban_mouse_button_can_be_held(event->button)) {
-        s->mouse_button_pressed = 1;
-        s->mouse_pressed_button = event->button;
+        next_button_pressed = 1;
+        next_pressed_button = event->button;
     } else if (event->action == LABAN_MOUSE_ACTION_RELEASE &&
                laban_mouse_button_can_be_held(effective_button)) {
-        s->mouse_button_pressed = 0;
-        s->mouse_pressed_button = LABAN_MOUSE_BUTTON_NONE;
+        next_button_pressed = 0;
+        next_pressed_button = LABAN_MOUSE_BUTTON_NONE;
     }
 
     /* Set any-button-pressed state. */
-    bool pressed = (s->mouse_button_pressed != 0);
+    bool pressed = (next_button_pressed != 0);
     ghostty_mouse_encoder_setopt(s->mouse_encoder,
         GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
 
@@ -1850,7 +1856,23 @@ int laban_session_encode_mouse(
 
     ghostty_mouse_event_free(gev);
 
+    if (r == GHOSTTY_SUCCESS) {
+        if (out_next_button_pressed) *out_next_button_pressed = next_button_pressed;
+        if (out_next_pressed_button) *out_next_pressed_button = next_pressed_button;
+    }
+
     return (r == GHOSTTY_SUCCESS) ? 0 : -1;
+}
+
+int laban_session_encode_mouse(
+    LabanSession *s,
+    const LabanMouseEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    return laban_session_encode_mouse_internal(
+        s, event, out_bytes, out_capacity, out_len, NULL, NULL);
 }
 
 /* --- Paste --- */
@@ -2079,19 +2101,73 @@ int laban_session_set_tab_status_callback(
 
 int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {
     if (!s) return -1;
-    if (s->fixture_mode) {
-        /* Fixture mode: no PTY to write to; encoding is meaningful but sending is not. */
-        return 0;
-    }
-    if (s->pty_fd < 0) return -1;
+    if (!s->fixture_mode && s->pty_fd < 0) return -1;
 
     uint8_t buf[128];
     size_t len = 0;
-    int r = laban_session_encode_mouse(s, event, buf, sizeof(buf), &len);
+    int next_button_pressed = 0;
+    LabanMouseButton next_pressed_button = LABAN_MOUSE_BUTTON_NONE;
+    int r = laban_session_encode_mouse_internal(
+        s,
+        event,
+        buf,
+        sizeof(buf),
+        &len,
+        &next_button_pressed,
+        &next_pressed_button);
     if (r != 0) return r;
-    if (len == 0) return 0;  /* terminal says nothing to report */
+    if (len > 0 && !s->fixture_mode) {
+        r = write_pty_input(s, buf, len);
+        if (r != 0) return r;
+    }
 
-    return write_pty_input(s, buf, len);
+    s->mouse_button_pressed = next_button_pressed;
+    s->mouse_pressed_button = next_pressed_button;
+    return 0;
+}
+
+int laban_session_send_mouse_encoded(
+    LabanSession *s,
+    const LabanMouseEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    if (out_len) *out_len = 0;
+    if (!s || !event || !out_len) return -1;
+    if (!out_bytes && out_capacity > 0) return -1;
+    if (!s->fixture_mode && s->pty_fd < 0) return -1;
+
+    uint8_t buf[128];
+    size_t len = 0;
+    int next_button_pressed = 0;
+    LabanMouseButton next_pressed_button = LABAN_MOUSE_BUTTON_NONE;
+    int r = laban_session_encode_mouse_internal(
+        s,
+        event,
+        buf,
+        sizeof(buf),
+        &len,
+        &next_button_pressed,
+        &next_pressed_button);
+    if (r != 0) return r;
+
+    if (len > out_capacity) {
+        *out_len = len;
+        return 1;
+    }
+
+    if (len > 0 && !s->fixture_mode) {
+        r = write_pty_input(s, buf, len);
+        if (r != 0) return r;
+    }
+
+    if (len > 0 && out_bytes) memcpy(out_bytes, buf, len);
+    *out_len = len;
+
+    s->mouse_button_pressed = next_button_pressed;
+    s->mouse_pressed_button = next_pressed_button;
+    return 0;
 }
 
 LabanExitState laban_session_exit_state(LabanSession *session) {

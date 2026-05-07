@@ -423,6 +423,23 @@ public final class Session {
     return laban_session_send_mouse(h, &raw)
   }
 
+  public func sendMouseCapturingBytes(_ event: MouseEvent) -> (result: Int32, bytes: [UInt8]) {
+    guard !isClosed, let h = handle else { return (-1, []) }
+    var raw = event.toLabanMouseEvent()
+    var buf = [UInt8](repeating: 0, count: 128)
+    var outLen: size_t = 0
+    let result = laban_session_send_mouse_encoded(h, &raw, &buf, buf.count, &outLen)
+    if result == 1, outLen > buf.count {
+      buf = [UInt8](repeating: 0, count: outLen)
+      outLen = 0
+      let retry = laban_session_send_mouse_encoded(h, &raw, &buf, buf.count, &outLen)
+      guard retry == 0 else { return (retry, []) }
+      return (retry, Array(buf.prefix(Int(outLen))))
+    }
+    guard result == 0 else { return (result, []) }
+    return (result, Array(buf.prefix(Int(outLen))))
+  }
+
   // MARK: - Paste
 
   /// Pure libghostty check: returns true when the bytes contain no
