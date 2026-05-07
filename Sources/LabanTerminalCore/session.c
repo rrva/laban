@@ -31,9 +31,30 @@
 #include <string.h>
 #include <errno.h>
 #include <pwd.h>
+#include <pthread.h>
 #include <time.h>
 
 #define LABAN_TITLE_MAX_BYTES 1024
+
+/* Every public laban_session_* entry point holds this lock for the body
+ * of the call. Recursive so a future capture/tab-status callback that
+ * re-enters a session method does not deadlock; the AppModel layer in
+ * Swift already chose NSRecursiveLock for the same reason. The
+ * destructor (laban_session_destroy) deliberately does NOT lock — it is
+ * the caller's contract to have stopped all other access first.
+ *
+ * SESSION_LOCK(s) acquires the lock and registers an automatic release
+ * on scope exit via __attribute__((cleanup)), so every return path —
+ * including the many existing early returns scattered through this
+ * file — unlocks correctly without needing UNLOCK at each return. The
+ * cleanup helper itself is defined after struct LabanSession so the
+ * dereference of ->lock is on a complete type. */
+static void laban_session_unlock_cleanup_(LabanSession **sp);
+#define SESSION_LOCK(s)                                                 \
+    pthread_mutex_lock(&(s)->lock);                                     \
+    LabanSession *_session_lock_guard                                   \
+        __attribute__((cleanup(laban_session_unlock_cleanup_))) = (s);  \
+    (void)_session_lock_guard
 
 /* OSC 21337 scanner state. Sniffs `ESC ] 21337 ; key=value;... ST/BEL`
  * out of the PTY byte stream in parallel with libghostty's own parser
@@ -212,6 +233,10 @@ static uint64_t monotonic_us(void) {
 }
 
 struct LabanSession {
+    /* Serializes access to every field below. See LOCK/UNLOCK macros
+     * near the top of the file. Recursive (PTHREAD_MUTEX_RECURSIVE). */
+    pthread_mutex_t lock;
+
     GhosttyTerminal terminal;
     GhosttyRenderState render_state;
     GhosttyRenderStateRowIterator row_iter;   /* pre-allocated; reused each snapshot */
@@ -254,6 +279,10 @@ struct LabanSession {
     size_t   response_len;
     size_t   response_cap;
 };
+
+static void laban_session_unlock_cleanup_(LabanSession **sp) {
+    if (sp && *sp) pthread_mutex_unlock(&(*sp)->lock);
+}
 
 static void emit_capture_bytes(
     LabanSession *s,
@@ -804,6 +833,14 @@ int laban_session_create(
 
     LabanSession *s = calloc(1, sizeof(struct LabanSession));
     if (!s) return -1;
+    {
+        pthread_mutexattr_t attr;
+        if (pthread_mutexattr_init(&attr) != 0) { free(s); return -1; }
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        int mr = pthread_mutex_init(&s->lock, &attr);
+        pthread_mutexattr_destroy(&attr);
+        if (mr != 0) { free(s); return -1; }
+    }
     s->pty_fd = -1;
     s->child_pid = -1;
     s->launch_cwd[0] = '\0';
@@ -1055,11 +1092,13 @@ void laban_session_destroy(LabanSession *s) {
     }
 
     free_ghostty_resources(s);
+    pthread_mutex_destroy(&s->lock);
     free(s);
 }
 
 int laban_session_poll(LabanSession *s) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     if (s->fixture_mode) return 0; /* no PTY to drain */
     if (s->status != 0) return 0;  /* already exited */
 
@@ -1105,6 +1144,7 @@ int laban_session_poll(LabanSession *s) {
 
 int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     uint16_t cols = (uint16_t)size.cols;
     uint16_t rows = (uint16_t)size.rows;
     /* libghostty rejects empty grids; keep the visible size in Laban and
@@ -1135,6 +1175,7 @@ int laban_session_feed_output(LabanSession *s, const uint8_t *bytes, size_t len)
     if (!s) return -1;
     if (len == 0) return 0;
     if (!bytes) return -1;
+    SESSION_LOCK(s);
     vt_write_capture(s, bytes, len);
     return 0;
 }
@@ -1143,6 +1184,7 @@ int laban_session_write(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s) return -1;
     if (len == 0) return 0;
     if (!bytes) return -1;
+    SESSION_LOCK(s);
     if (s->fixture_mode) {
         /* Fixture mode: feed bytes directly into the VT parser — no PTY involved. */
         vt_write_capture(s, bytes, len);
@@ -1156,6 +1198,7 @@ int laban_session_replay_pty_output(LabanSession *s, const uint8_t *bytes, size_
     if (!s) return -1;
     if (len == 0) return 0;
     if (!bytes) return -1;
+    SESSION_LOCK(s);
     ghostty_terminal_vt_write(s->terminal, bytes, len);
     return 0;
 }
@@ -1163,6 +1206,7 @@ int laban_session_replay_pty_output(LabanSession *s, const uint8_t *bytes, size_
 int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     if (out_snapshot) *out_snapshot = NULL;
     if (!s || !out_snapshot) return -1;
+    SESSION_LOCK(s);
 
     /* Sync render state from the terminal. */
     GhosttyResult r = ghostty_render_state_update(s->render_state, s->terminal);
@@ -1556,6 +1600,7 @@ void laban_snapshot_destroy(LabanSnapshot *snap) {
 int laban_session_render_dirty(LabanSession *session, int *out_dirty) {
     if (out_dirty) *out_dirty = 0;
     if (!session || !out_dirty) return -1;
+    SESSION_LOCK(session);
     ghostty_render_state_update(session->render_state, session->terminal);
     GhosttyRenderStateDirty dirty_state = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
     ghostty_render_state_get(session->render_state,
@@ -1566,6 +1611,7 @@ int laban_session_render_dirty(LabanSession *session, int *out_dirty) {
 
 int laban_session_mark_rendered(LabanSession *session) {
     if (!session) return -1;
+    SESSION_LOCK(session);
 
     /* Clear global dirty state. */
     GhosttyRenderStateDirty clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
@@ -1592,6 +1638,7 @@ int laban_session_consume_title(LabanSession *s, char *buf, size_t capacity) {
         if (buf && capacity > 0) buf[0] = '\0';
         return -1;
     }
+    SESSION_LOCK(s);
     if (!s->title_dirty) return 0;
     s->title_dirty = 0;
     GhosttyString title_str = {0};
@@ -1653,6 +1700,7 @@ int laban_session_process_metadata(
     copy_cstr(cwd_buf, cwd_capacity, "");
 
     if (!s) return -1;
+    SESSION_LOCK(s);
 
     if (out_child_pid) *out_child_pid = s->child_pid;
 
@@ -1705,6 +1753,7 @@ int laban_session_process_metadata(
 
 int laban_session_scroll_viewport(LabanSession *s, int delta_rows) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     GhosttyTerminalScrollViewport behavior = {
         .tag = GHOSTTY_SCROLL_VIEWPORT_DELTA,
         .value.delta = (intptr_t)delta_rows,
@@ -1720,6 +1769,7 @@ int laban_session_scroll_viewport(LabanSession *s, int delta_rows) {
 int laban_session_viewport_state(LabanSession *s, LabanViewportState *out_state) {
     if (out_state) memset(out_state, 0, sizeof(*out_state));
     if (!s || !out_state) return -1;
+    SESSION_LOCK(s);
 
     GhosttyTerminalScrollbar scrollbar;
     if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
@@ -1871,6 +1921,8 @@ int laban_session_encode_mouse(
     size_t out_capacity,
     size_t *out_len
 ) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
     return laban_session_encode_mouse_internal(
         s, event, out_bytes, out_capacity, out_len, NULL, NULL);
 }
@@ -1882,6 +1934,7 @@ int laban_session_drain_response(
     if (out_len) *out_len = 0;
     if (!s || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
+    SESSION_LOCK(s);
     if (s->response_len == 0) return 0;
     size_t take = s->response_len < out_capacity ? s->response_len : out_capacity;
     if (take > 0 && out_bytes) memcpy(out_bytes, s->response_buf, take);
@@ -1900,15 +1953,20 @@ int laban_paste_is_safe(const uint8_t *bytes, size_t len) {
 }
 
 int laban_session_bracketed_paste_enabled(LabanSession *s, int *out_enabled) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
     return laban_session_mode_active(s, GHOSTTY_MODE_BRACKETED_PASTE, out_enabled);
 }
 
 int laban_session_synchronized_output_active(LabanSession *s, int *out_active) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
     return laban_session_mode_active(s, GHOSTTY_MODE_SYNC_OUTPUT, out_active);
 }
 
 int laban_session_reset_synchronized_output(LabanSession *s) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     GhosttyResult r = ghostty_terminal_mode_set(
         s->terminal, GHOSTTY_MODE_SYNC_OUTPUT, false);
     return r == GHOSTTY_SUCCESS ? 0 : -1;
@@ -1920,6 +1978,7 @@ int laban_session_set_color_scheme(LabanSession *s, int color_scheme) {
         color_scheme != LABAN_COLOR_SCHEME_DARK) {
         return -1;
     }
+    SESSION_LOCK(s);
     int changed = s->color_scheme != color_scheme;
     s->color_scheme = color_scheme;
     if (!changed) return 0;
@@ -1933,6 +1992,8 @@ int laban_session_set_color_scheme(LabanSession *s, int color_scheme) {
 }
 
 int laban_session_focus_reporting_enabled(LabanSession *s, int *out_enabled) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
     return laban_session_mode_active(s, GHOSTTY_MODE_FOCUS_EVENT, out_enabled);
 }
 
@@ -1946,6 +2007,7 @@ int laban_session_encode_focus(
     if (out_len) *out_len = 0;
     if (!s || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
+    SESSION_LOCK(s);
     if (s->status != 0) return 0;
 
     int enabled = 0;
@@ -1964,6 +2026,7 @@ int laban_session_encode_focus(
 
 int laban_session_send_focus(LabanSession *s, int focused) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     uint8_t stack_buf[16];
     size_t len = 0;
     int rc = laban_session_encode_focus(s, focused, stack_buf, sizeof(stack_buf), &len);
@@ -1988,6 +2051,7 @@ int laban_session_encode_paste(
     if (!s || !out_len || !out_bracketed) return -1;
     if (len > 0 && !bytes) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
+    SESSION_LOCK(s);
 
     bool bracketed = false;
     ghostty_terminal_mode_get(s->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &bracketed);
@@ -2033,6 +2097,7 @@ int laban_session_write_paste(
         }
         return -1;
     }
+    SESSION_LOCK(s);
     size_t cap = len + 16;
     uint8_t *buf = malloc(cap);
     if (!buf) {
@@ -2066,6 +2131,7 @@ int laban_session_write_paste_encoded(
     if (len > 0 && !bytes) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
     if (len > SIZE_MAX - 16) return -1;
+    SESSION_LOCK(s);
 
     /* +14 for ESC[200~ (7 bytes) + ESC[201~ (7 bytes) = 14 bytes worst case.
        Using 16 for alignment. */
@@ -2107,6 +2173,7 @@ int laban_session_write_paste_encoded(
 
 int laban_session_capture_start(LabanSession *s, const char *path) {
     if (!s || !path) return -1;
+    SESSION_LOCK(s);
     if (s->capture_fd >= 0) return -1; /* already capturing */
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return -1;
@@ -2116,6 +2183,7 @@ int laban_session_capture_start(LabanSession *s, const char *path) {
 
 int laban_session_capture_stop(LabanSession *s) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     if (s->capture_fd >= 0) {
         close(s->capture_fd);
         s->capture_fd = -1;
@@ -2125,6 +2193,7 @@ int laban_session_capture_stop(LabanSession *s) {
 
 int laban_session_capture_active(LabanSession *s) {
     if (!s) return 0;
+    SESSION_LOCK(s);
     return s->capture_fd >= 0 ? 1 : 0;
 }
 
@@ -2134,6 +2203,7 @@ int laban_session_set_capture_callback(
     void *userdata
 ) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     s->capture_callback = callback;
     s->capture_userdata = userdata;
     return 0;
@@ -2145,6 +2215,7 @@ int laban_session_set_tab_status_callback(
     void *userdata
 ) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     s->tab_status_callback = callback;
     s->tab_status_userdata = userdata;
     /* Reset scanner state so a stale partial sequence (from before the
@@ -2157,6 +2228,7 @@ int laban_session_set_tab_status_callback(
 
 int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {
     if (!s) return -1;
+    SESSION_LOCK(s);
     if (!s->fixture_mode && s->pty_fd < 0) return -1;
 
     uint8_t buf[128];
@@ -2192,6 +2264,7 @@ int laban_session_send_mouse_encoded(
     if (out_len) *out_len = 0;
     if (!s || !event || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
+    SESSION_LOCK(s);
     if (!s->fixture_mode && s->pty_fd < 0) return -1;
 
     uint8_t buf[128];
@@ -2229,6 +2302,7 @@ int laban_session_send_mouse_encoded(
 LabanExitState laban_session_exit_state(LabanSession *session) {
     LabanExitState r = { 0, 0 };
     if (!session) return r;
+    SESSION_LOCK(session);
     r.status      = session->status;
     r.exit_status = session->exit_status;
     return r;
@@ -2369,6 +2443,7 @@ int laban_session_encode_key(
     if (out_len) *out_len = 0;
     if (!s || !event || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
+    SESSION_LOCK(s);
 
     /* Sync encoder from terminal state; this resets option-as-alt to FALSE. */
     ghostty_key_encoder_setopt_from_terminal(s->key_encoder, s->terminal);
@@ -2415,6 +2490,7 @@ int laban_session_send_key_encoded(
     if (out_len) *out_len = 0;
     if (!s || !event || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
+    SESSION_LOCK(s);
 
     int rc = laban_session_encode_key(s, event, out_bytes, out_capacity, out_len);
     if (rc != 0) return rc;
@@ -2427,6 +2503,7 @@ int laban_session_send_key_encoded(
 
 int laban_session_send_key(LabanSession *s, const LabanKeyEvent *event) {
     if (!s) return -1;
+    SESSION_LOCK(s);
 
     uint8_t stack_buf[128];
     size_t len = 0;
