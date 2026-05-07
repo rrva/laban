@@ -154,6 +154,8 @@ int laban_session_write(LabanSession *session, const uint8_t *bytes, size_t len)
  *   of what the child process does.
  */
 int laban_session_feed_output(LabanSession *session, const uint8_t *bytes, size_t len);
+
+/* Allocates a render snapshot. On failure, *out_snapshot is set to NULL. */
 int laban_session_snapshot(LabanSession *session, LabanSnapshot **out_snapshot);
 void laban_snapshot_destroy(LabanSnapshot *snapshot);
 
@@ -374,7 +376,8 @@ int laban_paste_is_safe(const uint8_t *bytes, size_t len);
  * queries (DA1/DA2/DA3, XTWINOPS, DSR cursor position, etc.).  In PTY mode
  * these bytes are also delivered directly to the PTY master fd so the child
  * process sees them; the captured copy here is for tests, fixtures, and
- * debug observability.  Removes drained bytes from the internal buffer.
+ * debug observability.  Removes drained bytes from the internal buffer only
+ * after validating the output buffer.
  *
  * Returns 0 on success, -1 on error.  On success *out_len holds the number
  * of bytes copied into out_bytes (0 if no responses pending).
@@ -390,7 +393,8 @@ int laban_session_drain_response(
  * - Strips unsafe control bytes.
  * - Replaces newlines with CR if not bracketed.
  * - Wraps in ESC[200~ / ESC[201~ if bracketed is true.
- * out_capacity must be >= len + 12 to accommodate bracketed sequences.
+ * bytes must be non-NULL when len > 0. out_capacity must be >= len + 14
+ * to accommodate bracketed sequences.
  * Returns 0 on success, -1 on error.
  */
 int laban_session_encode_paste(

@@ -98,6 +98,12 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(exit.exit_status, 0)
   }
 
+  func testSnapshotRejectsNullSessionAndClearsOutPointer() {
+    var snapshot = UnsafeMutablePointer<LabanSnapshot>(bitPattern: 0x1)
+    XCTAssertEqual(laban_session_snapshot(nil, &snapshot), -1)
+    XCTAssertNil(snapshot)
+  }
+
   func testFixtureCreatePollSnapshotDestroy() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")
@@ -1538,6 +1544,29 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertTrue(result.contains("hello mvp"), "encoded output must contain original text")
   }
 
+  func testEncodePasteRejectsNullInputWhenLenIsNonZero() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var outBuf = [UInt8](repeating: 0xAA, count: 16)
+    var outLen: size_t = 99
+    var bracketed: Int32 = 1
+
+    XCTAssertEqual(
+      laban_session_encode_paste(
+        session,
+        nil,
+        4,
+        &outBuf, outBuf.count,
+        &outLen, &bracketed),
+      -1)
+    XCTAssertEqual(outLen, 0)
+    XCTAssertEqual(bracketed, 0)
+  }
+
   // MARK: - Capability response tests
   //
   // These verify that programs like tmux and vim, which probe terminal
@@ -1898,6 +1927,23 @@ final class LabanSessionTests: XCTestCase {
 
     let second = drainResponse(session)
     XCTAssertEqual(second.count, 0, "second drain should be empty — buffer cleared")
+  }
+
+  func testDrainRejectsNullOutputBufferWithoutConsumingResponse() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, [0x1b, 0x5b, 0x63])  // CSI c
+
+    var len: size_t = 99
+    XCTAssertEqual(laban_session_drain_response(session, nil, 8, &len), -1)
+    XCTAssertEqual(len, 0)
+
+    let response = drainResponse(session)
+    XCTAssertGreaterThan(response.count, 0, "failed drain must leave the response queued")
   }
 
   func testWritePasteInFixtureModeSucceeds() {
