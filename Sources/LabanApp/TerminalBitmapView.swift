@@ -1098,8 +1098,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId)
     else { return }
-    let bytes = session.encodeKey(event)
-    session.sendKey(event)
+    let sent = session.sendKeyCapturingBytes(event)
+    let bytes = sent.result == 0 ? sent.bytes : []
     recordInput(
       kind: "key",
       route: "terminal",
@@ -1107,8 +1107,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       text: event.text,
       modifiers: modifierNames(event.modifiers),
       consumedModifiers: modifierNames(event.consumedModifiers),
-      encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
-      encodedLength: bytes?.count
+      encodedHex: Self.encodedHex(bytes),
+      encodedLength: Self.encodedLength(bytes)
     )
     renderInvalidated = true
   }
@@ -1119,9 +1119,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     recordInput(
       kind: "text",
       route: "terminal",
-      encodedHex: bytes.map { String(format: "%02x", $0) }.joined(),
-      encodedLength: bytes.count
+      encodedHex: Self.encodedHex(bytes),
+      encodedLength: Self.encodedLength(bytes)
     )
+  }
+
+  private static func encodedHex(_ bytes: [UInt8]) -> String? {
+    guard !bytes.isEmpty else { return nil }
+    return bytes.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private static func encodedLength(_ bytes: [UInt8]) -> Int? {
+    bytes.isEmpty ? nil : bytes.count
   }
 
   private func executeAppCommand(_ command: AppCommand) {
@@ -1244,7 +1253,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // could smuggle arbitrary escape sequences (CSI / OSC) past bracketed
     // paste's framing and re-color the terminal, set the title, or set
     // the cursor as if the user had typed them.
-    let sanitized = Self.sanitizePaste(raw)
+    let sanitized = TerminalPaste.sanitize(raw)
     guard !sanitized.isEmpty else { return }
     let bytes = Array(sanitized.utf8)
 
@@ -1285,7 +1294,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       }
     }
 
-    _ = session.writePaste(sanitized)
+    let sent = session.writePasteCapturingBytes(sanitized)
     EventLog.shared.log(
       "paste",
       [
@@ -1293,14 +1302,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         "sanitizedBytes": sanitized.utf8.count,
         "stripped": rawBytes - sanitized.utf8.count,
       ])
-    recordInput(kind: "paste", route: "terminal", text: sanitized, command: "paste")
+    recordInput(
+      kind: "paste",
+      route: "terminal",
+      text: sanitized,
+      command: "paste",
+      encodedHex: Self.encodedHex(sent.bytes),
+      encodedLength: Self.encodedLength(sent.bytes)
+    )
   }
 
-  /// Refuse pastes above this size. Bigger than this is almost
-  /// certainly a clipboard mishap or hostile content.
-  static let pasteHardLimitBytes = 10 * 1024 * 1024  // 10 MB
-  /// Warn-and-confirm above this size. Below it, no prompt.
-  static let pasteWarnLimitBytes = 64 * 1024  // 64 KB
+  static let pasteHardLimitBytes = TerminalPaste.hardLimitBytes
+  static let pasteWarnLimitBytes = TerminalPaste.warnLimitBytes
 
   static func readPasteboardString(_ pasteboard: NSPasteboard) -> PasteboardStringRead {
     if let data = pasteboard.data(forType: .string), data.count > pasteHardLimitBytes {
@@ -1317,20 +1330,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   static func sanitizePaste(_ text: String) -> String {
-    var out = String.UnicodeScalarView()
-    out.reserveCapacity(text.unicodeScalars.count)
-    for scalar in text.unicodeScalars {
-      let v = scalar.value
-      // Whitelist: HT, LF, CR — every other C0 control and DEL is dropped.
-      if v == 0x09 || v == 0x0A || v == 0x0D {
-        out.append(scalar)
-      } else if v < 0x20 || v == 0x7F {
-        continue
-      } else {
-        out.append(scalar)
-      }
-    }
-    return String(out)
+    TerminalPaste.sanitize(text)
   }
 
   static func externalBrowserURL(from uri: String) -> URL? {
@@ -1393,14 +1393,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      let bytes = session.encodeMouse(me)
-      session.sendMouse(me)
+      let sent = session.sendMouseCapturingBytes(me)
+      let bytes = sent.result == 0 ? sent.bytes : []
       recordInput(
         kind: "mouse",
         route: "terminal",
         command: "mouseWheel",
-        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
-        encodedLength: bytes?.count
+        encodedHex: Self.encodedHex(bytes),
+        encodedLength: Self.encodedLength(bytes)
       )
       renderInvalidated = true
       return
@@ -1577,14 +1577,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      let bytes = session.encodeMouse(pressEvent)
-      session.sendMouse(pressEvent)
+      let sent = session.sendMouseCapturingBytes(pressEvent)
+      let bytes = sent.result == 0 ? sent.bytes : []
       recordInput(
         kind: "mouse",
         route: "terminal",
         command: "mouseDown",
-        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
-        encodedLength: bytes?.count
+        encodedHex: Self.encodedHex(bytes),
+        encodedLength: Self.encodedLength(bytes)
       )
       renderInvalidated = true
       return
@@ -1649,14 +1649,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      let bytes = session.encodeMouse(motionEvent)
-      session.sendMouse(motionEvent)
+      let sent = session.sendMouseCapturingBytes(motionEvent)
+      let bytes = sent.result == 0 ? sent.bytes : []
       recordInput(
         kind: "mouse",
         route: "terminal",
         command: "mouseDragged",
-        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
-        encodedLength: bytes?.count
+        encodedHex: Self.encodedHex(bytes),
+        encodedLength: Self.encodedLength(bytes)
       )
       renderInvalidated = true
       return
@@ -1721,14 +1721,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      let bytes = session.encodeMouse(releaseEvent)
-      session.sendMouse(releaseEvent)
+      let sent = session.sendMouseCapturingBytes(releaseEvent)
+      let bytes = sent.result == 0 ? sent.bytes : []
       recordInput(
         kind: "mouse",
         route: "terminal",
         command: "mouseUp",
-        encodedHex: bytes?.map { String(format: "%02x", $0) }.joined(),
-        encodedLength: bytes?.count
+        encodedHex: Self.encodedHex(bytes),
+        encodedLength: Self.encodedLength(bytes)
       )
       if trackedMouseButton == .left { trackedMouseButton = .none }
       renderInvalidated = true
@@ -1782,7 +1782,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      session.sendMouse(pressEvent)
+      _ = session.sendMouseCapturingBytes(pressEvent)
       renderInvalidated = true
     }
   }
@@ -1814,7 +1814,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      session.sendMouse(motionEvent)
+      _ = session.sendMouseCapturingBytes(motionEvent)
       renderInvalidated = true
     }
   }
@@ -1845,7 +1845,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      session.sendMouse(releaseEvent)
+      _ = session.sendMouseCapturingBytes(releaseEvent)
       if trackedMouseButton == .right { trackedMouseButton = .none }
       renderInvalidated = true
     }
