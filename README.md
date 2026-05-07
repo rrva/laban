@@ -59,7 +59,8 @@ The stable local commands are shell scripts around SwiftPM:
 
 `./scripts/check` validates JSON files under `schemas/` and `fixtures/`, keeps
 `AGENTS.md` map-sized, verifies active ExecPlans have required sections, runs
-Swift lint/build/test gates, runs the runtime smoke test, and runs the headless
+local documentation, debug-contract, and dependency-policy checks, runs Swift
+lint/build/test gates, runs the runtime smoke test, and runs the headless
 debug-server E2E gate.
 
 ## Debug Control Quickstart
@@ -89,6 +90,7 @@ Useful starting points:
 ```sh
 curl "$DEBUG_URL/debug/state" | jq
 curl "$DEBUG_URL/debug/render" | jq
+curl "$DEBUG_URL/debug/metrics" | jq
 curl -X POST "$DEBUG_URL/debug/actions" \
   -H 'Content-Type: application/json' \
   -d '{"action":"typeText","text":"printf \"ok\\n\"\n"}'

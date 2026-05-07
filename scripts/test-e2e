@@ -7,14 +7,15 @@ cd "$repo_root"
 
 fail() {
   printf 'test-e2e failed: %s\n' "$1" >&2
+  if command -v collect_failure_artifacts >/dev/null 2>&1; then
+    collect_failure_artifacts "$1"
+  fi
   if [ -n "${RUN_ARTIFACTS:-}" ]; then
     printf 'artifacts preserved at: %s\n' "$RUN_ARTIFACTS" >&2
   fi
-  if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null || true
-  fi
-  if [ -n "${BARE_PID:-}" ] && kill -0 "$BARE_PID" 2>/dev/null; then
-    kill "$BARE_PID" 2>/dev/null || true
+  trap - EXIT
+  if command -v stop_processes >/dev/null 2>&1; then
+    stop_processes
   fi
   exit 1
 }
@@ -48,8 +49,13 @@ RUN_ARTIFACTS=".artifacts/runs/$RUN_ID"
 RUN_TMP=".tmp/$RUN_ID"
 SERVER_PID=""
 BARE_PID=""
+SERVER_STDOUT="$RUN_ARTIFACTS/logs/server.stdout.log"
+SERVER_STDERR="$RUN_ARTIFACTS/logs/server.stderr.log"
+BARE_STDOUT="$RUN_ARTIFACTS/logs/bare.stdout.log"
+BARE_STDERR="$RUN_ARTIFACTS/logs/bare.stderr.log"
+FAILURE_COLLECTED=0
 
-cleanup_success() {
+stop_processes() {
   if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
@@ -58,26 +64,120 @@ cleanup_success() {
     kill "$BARE_PID" 2>/dev/null || true
     wait "$BARE_PID" 2>/dev/null || true
   fi
+}
+
+collect_failure_artifacts() {
+  [ "${FAILURE_COLLECTED:-0}" -eq 0 ] || return 0
+  FAILURE_COLLECTED=1
+  set +e
+
+  if [ -z "${RUN_ARTIFACTS:-}" ]; then
+    set -e
+    return 0
+  fi
+  failure_dir="$RUN_ARTIFACTS/failure"
+  mkdir -p "$failure_dir" "$RUN_ARTIFACTS/logs"
+
+  {
+    printf 'reason=%s\n' "${1:-unexpected exit}"
+    printf 'runId=%s\n' "${RUN_ID:-}"
+    printf 'artifacts=%s\n' "${RUN_ARTIFACTS:-}"
+    printf 'tempDir=%s\n' "${RUN_TMP:-}"
+    printf 'debugServer=%s\n' "${SERVER_URL:-}"
+    printf 'fixture=%s\n' 'fixtures/colored-boxes.fixture.json'
+    printf 'command=%s --headless --fixture=fixtures/colored-boxes.fixture.json --debug-server=127.0.0.1:0 --artifacts=%s --temp-dir=%s --capture=e2e-capture --capture-screenshots=final --deterministic\n' \
+      "${AGENT_BIN:-.build/debug/laban-agent}" "${RUN_ARTIFACTS:-}" "${RUN_TMP:-}"
+  } >"$failure_dir/run.txt"
+
+  env | sort | sed -E \
+    's/([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy])=.*/\1=<redacted>/' \
+      >"$failure_dir/environment.txt"
+
+  if [ -f "${SERVER_STDOUT:-}" ]; then
+    tail -200 "$SERVER_STDOUT" >"$failure_dir/server.stdout.tail.log"
+  fi
+  if [ -f "${SERVER_STDERR:-}" ]; then
+    tail -200 "$SERVER_STDERR" >"$failure_dir/server.stderr.tail.log"
+  fi
+  if [ -f "${BARE_STDOUT:-}" ]; then
+    tail -100 "$BARE_STDOUT" >"$failure_dir/bare.stdout.tail.log"
+  fi
+  if [ -f "${BARE_STDERR:-}" ]; then
+    tail -100 "$BARE_STDERR" >"$failure_dir/bare.stderr.tail.log"
+  fi
+
+  if [ -n "${SERVER_URL:-}" ] && [ -n "${SERVER_TOKEN:-}" ] \
+    && [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    save_failure_get /debug/state "$failure_dir/state.json"
+    save_failure_get /debug/sessions "$failure_dir/sessions.json"
+    save_failure_get /debug/render "$failure_dir/render.json"
+    save_failure_post /debug/render-trace '{}' "$failure_dir/render-trace.json"
+    save_failure_get /debug/events?since=0 "$failure_dir/events.json"
+    save_failure_get /debug/input-log?since=0 "$failure_dir/input-log.json"
+    save_failure_get '/debug/terminal-log?sessionId=&since=0&limit=200' \
+      "$failure_dir/terminal-log.json"
+    save_failure_get /debug/errors?since=0 "$failure_dir/errors.json"
+    save_failure_get /debug/timing "$failure_dir/timing.json"
+    save_failure_get /debug/metrics "$failure_dir/metrics.json"
+    save_failure_png /debug/screenshot "$failure_dir/screenshot.png"
+    save_failure_post /debug/snapshot '{}' "$failure_dir/snapshot-result.json"
+  fi
+
+  set -e
+}
+
+save_failure_get() {
+  path="$1"
+  output="$2"
+  tmp="$output.tmp"
+  if curl -sf -H "Authorization: Bearer $SERVER_TOKEN" "$SERVER_URL$path" >"$tmp"; then
+    mv "$tmp" "$output"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+save_failure_post() {
+  path="$1"
+  body="$2"
+  output="$3"
+  tmp="$output.tmp"
+  if curl -sf -X POST -H "Authorization: Bearer $SERVER_TOKEN" \
+    -H 'Content-Type: application/json' -d "$body" "$SERVER_URL$path" >"$tmp"; then
+    mv "$tmp" "$output"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+save_failure_png() {
+  path="$1"
+  output="$2"
+  tmp="$output.tmp"
+  if curl -sf -H "Authorization: Bearer $SERVER_TOKEN" "$SERVER_URL$path" >"$tmp"; then
+    mv "$tmp" "$output"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+cleanup_success() {
+  stop_processes
   rm -rf "$RUN_ARTIFACTS" "$RUN_TMP"
 }
 
 cleanup_fail() {
-  if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-  fi
-  if [ -n "${BARE_PID:-}" ] && kill -0 "$BARE_PID" 2>/dev/null; then
-    kill "$BARE_PID" 2>/dev/null || true
-    wait "$BARE_PID" 2>/dev/null || true
-  fi
+  collect_failure_artifacts "unexpected exit"
+  stop_processes
   printf 'test-e2e: artifacts preserved at %s\n' "$RUN_ARTIFACTS" >&2
 }
 
 # Trap for unexpected exits — preserve artifacts
 trap cleanup_fail EXIT
 
+mkdir -p "$RUN_ARTIFACTS/logs" "$RUN_TMP"
+
 # 3. Launch agent
-_tmp_stdout=$(mktemp)
 "$AGENT_BIN" --headless \
   --fixture=fixtures/colored-boxes.fixture.json \
   --debug-server=127.0.0.1:0 \
@@ -86,26 +186,29 @@ _tmp_stdout=$(mktemp)
   --capture=e2e-capture \
   --capture-screenshots=final \
   --deterministic \
-  >"$_tmp_stdout" &
+  >"$SERVER_STDOUT" 2>"$SERVER_STDERR" &
 SERVER_PID=$!
 
 # 4. Parse readiness line (wait up to 10s)
 SERVER_URL=""
 SERVER_TOKEN=""
 for _i in $(seq 1 100); do
-  if [ -s "$_tmp_stdout" ]; then
-    READINESS=$(head -1 "$_tmp_stdout")
+  if [ -s "$SERVER_STDOUT" ]; then
+    READINESS=$(head -1 "$SERVER_STDOUT")
     SERVER_URL=$(printf '%s' "$READINESS" | jq -r '.debugServer // empty' 2>/dev/null)
     SERVER_TOKEN=$(printf '%s' "$READINESS" | jq -r '.debugToken // empty' 2>/dev/null)
     [ -n "$SERVER_URL" ] && [ -n "$SERVER_TOKEN" ] && break
   fi
   sleep 0.1
 done
-rm -f "$_tmp_stdout"
 
 [ -n "$SERVER_URL" ] || fail "did not receive readiness JSON from agent"
 [ -n "$SERVER_TOKEN" ] || fail "readiness JSON missing debugToken"
 printf 'debug server: %s\n' "$SERVER_URL"
+
+if [ "${LABAN_E2E_FORCE_FAILURE_AFTER_READY:-}" = "1" ]; then
+  fail "forced failure after readiness"
+fi
 
 # Helper: curl endpoint, assert HTTP 200 and ok:true where applicable
 get_json() {
@@ -135,6 +238,15 @@ printf '%s' "$DISCOVERY" | jq -e \
 printf '%s' "$DISCOVERY" | jq -e \
   '.endpoints[] | select(.method=="POST" and .path=="/debug/snapshot")' >/dev/null 2>&1 \
   || fail "discovery missing POST /debug/snapshot: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.endpoints[] | select(.method=="GET" and .path=="/debug/metrics")' >/dev/null 2>&1 \
+  || fail "discovery missing GET /debug/metrics: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.endpoints[] | select(.method=="GET" and .path=="/debug/sessions/<id>")' >/dev/null 2>&1 \
+  || fail "discovery missing GET /debug/sessions/<id>: $DISCOVERY"
+printf '%s' "$DISCOVERY" | jq -e \
+  '.endpoints[] | select(.method=="GET" and .path=="/debug/atlas")' >/dev/null 2>&1 \
+  || fail "discovery missing GET /debug/atlas: $DISCOVERY"
 printf '%s' "$DISCOVERY" | jq -e \
   '.endpoints[] | select(.method=="POST" and .path=="/debug/fixture")' >/dev/null 2>&1 \
   || fail "discovery missing POST /debug/fixture: $DISCOVERY"
@@ -202,8 +314,22 @@ done
 SESSIONS=$(get_json /debug/sessions)
 SESSION_COUNT=$(printf '%s' "$SESSIONS" | jq '.sessions | length')
 [ "$SESSION_COUNT" -eq 1 ] || fail "expected 1 session, got $SESSION_COUNT"
+SESSION_ID=$(printf '%s' "$SESSIONS" | jq -r '.sessions[0].id')
 SESSION_ROWS=$(printf '%s' "$SESSIONS" | jq -r '.sessions[0].rows')
 [ "$SESSION_ROWS" -ge 1 ] || fail "session rows < 1"
+
+SESSION_DETAIL=$(get_json "/debug/sessions/$SESSION_ID?includeGrid=true")
+[ "$(printf '%s' "$SESSION_DETAIL" | jq -r '.id')" = "$SESSION_ID" ] \
+  || fail "session detail id mismatch: $SESSION_DETAIL"
+printf '%s' "$SESSION_DETAIL" | jq -e '.grid.cells | length > 0' >/dev/null 2>&1 \
+  || fail "session detail grid missing visible cells: $SESSION_DETAIL"
+
+ATLAS=$(get_json /debug/atlas)
+[ "$(printf '%s' "$ATLAS" | jq -r '.backend')" = "software" ] \
+  || fail "atlas backend is not software: $ATLAS"
+printf '%s' "$ATLAS" | jq -e \
+  '(.font | length > 0) and (.fontSize > 0) and (.cell.width > 0) and (.glyphs.loaded >= 0) and has("atlases")' >/dev/null 2>&1 \
+  || fail "atlas diagnostics invalid: $ATLAS"
 
 # 14. newTab — state should now have 2 tabs
 NEW_TAB_RESULT=$(post_json /debug/actions '{"action":"newTab"}')
@@ -524,6 +650,17 @@ printf '%s' "$TIMING" | jq -e \
   '.frame >= 1 and .lastFrameMs >= 0 and .renderMs >= 0 and .screenshotMs >= 0' >/dev/null 2>&1 \
   || fail "timing response invalid: $TIMING"
 
+METRICS=$(get_json /debug/metrics)
+printf '%s' "$METRICS" | jq -e \
+  '.frame >= 1
+   and .counters.framesRendered >= 1
+   and .counters.inputEvents >= 1
+   and .counters.terminalLogEvents >= 1
+   and .terminalBytes.input >= 1
+   and .lastFrame.commands >= 1
+   and .lastFrame.renderMs >= 0' >/dev/null 2>&1 \
+  || fail "metrics response invalid: $METRICS"
+
 UNSUPPORTED=$(post_json /debug/actions '{"action":"definitelyUnsupported"}')
 [ "$(printf '%s' "$UNSUPPORTED" | jq -r '.ok')" = "false" ] \
   || fail "unsupported action should return ok:false: $UNSUPPORTED"
@@ -539,7 +676,7 @@ SNAPSHOT_MANIFEST=$(printf '%s' "$SNAPSHOT" | jq -r '.path // empty')
 SNAPSHOT_DIR=$(dirname "$SNAPSHOT_MANIFEST")
 for _snapshot_file in state.json sessions.json render.json frame-commands.json \
                       render-trace.json events.json input-log.json terminal-log.json \
-                      errors.json timing.json screenshot.png; do
+                      errors.json timing.json metrics.json screenshot.png; do
   [ -f "$SNAPSHOT_DIR/$_snapshot_file" ] \
     || fail "snapshot missing $_snapshot_file in $SNAPSHOT_DIR"
 done
@@ -585,21 +722,19 @@ wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 
 # 31. Bare --debug-server shorthand — launches and answers health
-_bare_stdout=$(mktemp)
-"$AGENT_BIN" --headless --debug-server --deterministic >"$_bare_stdout" &
+"$AGENT_BIN" --headless --debug-server --deterministic >"$BARE_STDOUT" 2>"$BARE_STDERR" &
 BARE_PID=$!
 BARE_URL=""
 BARE_TOKEN=""
 for _i in $(seq 1 100); do
-  if [ -s "$_bare_stdout" ]; then
-    BARE_READY=$(head -1 "$_bare_stdout")
+  if [ -s "$BARE_STDOUT" ]; then
+    BARE_READY=$(head -1 "$BARE_STDOUT")
     BARE_URL=$(printf '%s' "$BARE_READY" | jq -r '.debugServer // empty' 2>/dev/null)
     BARE_TOKEN=$(printf '%s' "$BARE_READY" | jq -r '.debugToken // empty' 2>/dev/null)
     [ -n "$BARE_URL" ] && [ -n "$BARE_TOKEN" ] && break
   fi
   sleep 0.1
 done
-rm -f "$_bare_stdout"
 [ -n "$BARE_URL" ] || fail "bare --debug-server: did not receive readiness JSON"
 [ -n "$BARE_TOKEN" ] || fail "bare --debug-server: readiness JSON missing debugToken"
 BARE_HEALTH=$(curl -sf -H "Authorization: Bearer $BARE_TOKEN" "$BARE_URL/debug/health")

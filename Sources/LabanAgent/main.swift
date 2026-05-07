@@ -86,6 +86,7 @@ func usage() -> String {
     Useful starting points:
       GET  /debug/health
       GET  /debug/state
+      GET  /debug/metrics
       POST /debug/actions
       POST /debug/wait
       POST /debug/snapshot

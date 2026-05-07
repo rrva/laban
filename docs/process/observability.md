@@ -49,8 +49,12 @@ Secrets and full environment values must be redacted.
 
 ### Metrics
 
-Metrics should be simple counters and histograms that agents can query locally.
-Useful early metrics:
+Metrics are exposed by `GET /debug/metrics` as defined in
+`docs/process/dev-process.md` and `schemas/debug/metrics.schema.json`.
+They start as simple local counters and last-frame work summaries; richer
+histograms can be added without changing the basic query path.
+
+Useful metrics:
 
 - startup duration
 - frames rendered
@@ -84,6 +88,7 @@ files. A richer stack can come later.
 Minimum acceptable local queries:
 
 - recent events since sequence number
+- runtime metrics counters and last-frame work summary
 - final state snapshot
 - final session snapshot
 - final render snapshot

@@ -185,10 +185,29 @@ struct SessionResponse: Encodable {
   var mouseTracking: Bool
   var focusReporting: Bool
   var dirty: Bool
+  var grid: SessionGridResponse?
 }
 
 struct SessionsResponse: Encodable {
   var sessions: [SessionResponse]
+}
+
+struct SessionGridCellResponse: Encodable {
+  var row: Int
+  var col: Int
+  var text: String
+  var foreground: [Int]
+  var background: [Int]
+  var attributes: [String]
+  var wide: String
+  var hyperlink: String?
+}
+
+struct SessionGridResponse: Encodable {
+  var rows: Int
+  var cols: Int
+  var cells: [SessionGridCellResponse]
+  var truncated: Bool
 }
 
 struct CellSizeResponse: Encodable {
@@ -212,6 +231,34 @@ struct RenderResponse: Encodable {
   var cell: CellSizeResponse
   var damage: [RectResponse]
   var lastDraw: DrawStatsResponse
+}
+
+struct AtlasCellResponse: Encodable {
+  var width: Int
+  var height: Int
+  var baseline: Int
+}
+
+struct AtlasGlyphsResponse: Encodable {
+  var loaded: Int
+  var missing: Int
+}
+
+struct AtlasTextureResponse: Encodable {
+  var id: String
+  var width: Int
+  var height: Int
+  var occupancy: Double
+}
+
+struct AtlasResponse: Encodable {
+  var font: String
+  var fontSize: Double
+  var cell: AtlasCellResponse
+  var glyphs: AtlasGlyphsResponse
+  var missingCodepoints: [String]
+  var atlases: [AtlasTextureResponse]
+  var backend: String
 }
 
 struct FrameCommandResponse: Encodable {
@@ -512,6 +559,47 @@ struct TimingResponse: Encodable {
   var commandExtractionMs: Double
   var renderMs: Double
   var screenshotMs: Double
+}
+
+struct MetricsCountersResponse: Encodable {
+  var framesRendered: Int
+  var events: Int
+  var inputEvents: Int
+  var terminalLogEvents: Int
+  var errors: Int
+  var screenshots: Int
+  var tabs: Int
+  var sessions: Int
+}
+
+struct TerminalByteMetricsResponse: Encodable {
+  var input: Int
+  var output: Int
+  var terminalResponse: Int
+}
+
+struct LastFrameMetricsResponse: Encodable {
+  var commands: Int
+  var cells: Int
+  var glyphs: Int
+  var backgroundRects: Int
+  var images: Int
+  var cursor: Bool
+  var lastFrameMs: Double
+  var terminalPollMs: Double
+  var snapshotMs: Double
+  var commandExtractionMs: Double
+  var renderMs: Double
+}
+
+struct MetricsResponse: Encodable {
+  var runId: String
+  var mode: String
+  var frame: Int
+  var uptimeMs: Double
+  var counters: MetricsCountersResponse
+  var terminalBytes: TerminalByteMetricsResponse
+  var lastFrame: LastFrameMetricsResponse
 }
 
 struct DebugErrorEntryResponse: Encodable {

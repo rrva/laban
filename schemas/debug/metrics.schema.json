@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/metrics.schema.json",
+  "title": "Debug Metrics",
+  "type": "object",
+  "required": ["runId", "mode", "frame", "uptimeMs", "counters", "terminalBytes", "lastFrame"],
+  "additionalProperties": true,
+  "properties": {
+    "runId": {"type": "string"},
+    "mode": {"type": "string"},
+    "frame": {"type": "integer", "minimum": 0},
+    "uptimeMs": {"type": "number", "minimum": 0},
+    "counters": {
+      "type": "object",
+      "required": [
+        "framesRendered",
+        "events",
+        "inputEvents",
+        "terminalLogEvents",
+        "errors",
+        "screenshots",
+        "tabs",
+        "sessions"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "framesRendered": {"type": "integer", "minimum": 0},
+        "events": {"type": "integer", "minimum": 0},
+        "inputEvents": {"type": "integer", "minimum": 0},
+        "terminalLogEvents": {"type": "integer", "minimum": 0},
+        "errors": {"type": "integer", "minimum": 0},
+        "screenshots": {"type": "integer", "minimum": 0},
+        "tabs": {"type": "integer", "minimum": 0},
+        "sessions": {"type": "integer", "minimum": 0}
+      }
+    },
+    "terminalBytes": {
+      "type": "object",
+      "required": ["input", "output", "terminalResponse"],
+      "additionalProperties": true,
+      "properties": {
+        "input": {"type": "integer", "minimum": 0},
+        "output": {"type": "integer", "minimum": 0},
+        "terminalResponse": {"type": "integer", "minimum": 0}
+      }
+    },
+    "lastFrame": {
+      "type": "object",
+      "required": [
+        "commands",
+        "cells",
+        "glyphs",
+        "backgroundRects",
+        "images",
+        "cursor",
+        "lastFrameMs",
+        "terminalPollMs",
+        "snapshotMs",
+        "commandExtractionMs",
+        "renderMs"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "commands": {"type": "integer", "minimum": 0},
+        "cells": {"type": "integer", "minimum": 0},
+        "glyphs": {"type": "integer", "minimum": 0},
+        "backgroundRects": {"type": "integer", "minimum": 0},
+        "images": {"type": "integer", "minimum": 0},
+        "cursor": {"type": "boolean"},
+        "lastFrameMs": {"type": "number", "minimum": 0},
+        "terminalPollMs": {"type": "number", "minimum": 0},
+        "snapshotMs": {"type": "number", "minimum": 0},
+        "commandExtractionMs": {"type": "number", "minimum": 0},
+        "renderMs": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

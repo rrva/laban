@@ -632,7 +632,9 @@ Returns recent normalized input events and their routing decisions.
 ```
 
 Agents use this endpoint to diagnose wrong keyboard layout handling and
-Command/Option leakage into terminal input.
+Command/Option leakage into terminal input. For terminal-routed key and mouse
+events, `encodedHex` is populated from the terminal core's committed send path,
+not from a separate preview encode.
 
 ### Terminal Log
 
@@ -668,6 +670,47 @@ Returns frame and endpoint timings useful for diagnosing sluggishness.
   "commandExtractionMs": 0.7,
   "renderMs": 1.6,
   "screenshotMs": 2.1
+}
+```
+
+### Metrics
+
+`GET /debug/metrics`
+
+Returns queryable counters and last-frame work metrics. These values let an
+agent confirm that a scenario rendered frames, produced terminal byte traffic,
+captured screenshots, or accumulated errors without scraping prose logs.
+
+```json
+{
+  "runId": "run-001",
+  "mode": "headless",
+  "frame": 12,
+  "uptimeMs": 1250.4,
+  "counters": {
+    "framesRendered": 12,
+    "events": 30,
+    "inputEvents": 4,
+    "terminalLogEvents": 6,
+    "errors": 0,
+    "screenshots": 1,
+    "tabs": 1,
+    "sessions": 1
+  },
+  "terminalBytes": {"input": 24, "output": 96, "terminalResponse": 0},
+  "lastFrame": {
+    "commands": 42,
+    "cells": 24,
+    "glyphs": 8,
+    "backgroundRects": 25,
+    "images": 0,
+    "cursor": true,
+    "lastFrameMs": 3.4,
+    "terminalPollMs": 0.2,
+    "snapshotMs": 0.4,
+    "commandExtractionMs": 0.7,
+    "renderMs": 1.6
+  }
 }
 ```
 
@@ -736,6 +779,13 @@ Example actions:
 {"action":"setClipboardText","text":"printf 'ok\\n'\\n"}
 {"action":"scrollViewport","sessionId":"session-1","deltaRows":-3}
 ```
+
+Paste actions use the same shared sanitizer as the AppKit paste path before
+writing terminal input: HT, LF, and CR are preserved, while other C0 controls,
+DEL, and C1 controls are stripped before libghostty encodes bracketed or plain
+paste bytes. `/debug/clipboard` reports the sanitized text, while
+`/debug/input-log` and terminal-input logs report the committed encoded bytes
+from the terminal-core paste send path.
 
 Actions return the resulting frame number and a state summary:
 
@@ -817,7 +867,7 @@ symlink components are rejected.
 Writes a diagnostic bundle into the artifact directory and returns the manifest
 path. A snapshot should include current state, sessions, render state, frame
 commands, render trace summary, events, input log, terminal log, errors, and
-screenshot metadata.
+timing, metrics, and screenshot metadata.
 
 ```json
 {

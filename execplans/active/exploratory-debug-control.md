@@ -11,13 +11,13 @@ to explore failures without desktop automation. The existing debug server
 already supports core actions, screenshots, state, sessions, render state, frame
 commands, render traces, events, input logs, selection, clipboard, and capture
 controls. This plan fills the remaining exploratory gaps: artifact snapshots,
-pixel probes, terminal byte logs, timing summaries, structured errors, and
-fixture reload/restart/step control.
+pixel probes, terminal byte logs, timing summaries, metrics counters,
+structured errors, and fixture reload/restart/step control.
 
 The behavior is visible by starting `laban-agent --headless
 --debug-server=127.0.0.1:0`, parsing the readiness URL, then calling endpoints
-such as `/debug/pixel-probe`, `/debug/terminal-log`, `/debug/snapshot`, and
-`/debug/fixture`. The live server advertises this surface from `/debug` and
+such as `/debug/pixel-probe`, `/debug/terminal-log`, `/debug/metrics`,
+`/debug/snapshot`, and `/debug/fixture`. The live server advertises this surface from `/debug` and
 `/debug/capabilities`, and the CLI advertises the same entry points from
 `--help`.
 
@@ -47,6 +47,12 @@ such as `/debug/pixel-probe`, `/debug/terminal-log`, `/debug/snapshot`, and
 - [x] Add runtime, CLI, script, docs, and schema discoverability for the debug
   control surface.
 - [x] Run discovery validation commands and record results.
+- [x] (2026-05-07) Add `/debug/metrics` with runtime counters, terminal byte
+  counts, last-frame draw/timing work, schema/docs, snapshot artifact coverage,
+  focused tests, and E2E assertions.
+- [x] (2026-05-07) Add the documented `/debug/sessions/<id>` and
+  `/debug/atlas` endpoints to close debug-contract drift between
+  `docs/process/dev-process.md`, discovery, routing, tests, and E2E.
 
 ## Decision Log
 
@@ -114,12 +120,13 @@ or `waitFrames`.
 ## Plan of Work
 
 1. Add request/response models in `DebugModels.swift` for pixel probes,
-   terminal logs, timing, structured errors, fixture control, and artifact
-   snapshots when existing models are not sufficient.
+   terminal logs, timing, metrics, structured errors, fixture control, and
+   artifact snapshots when existing models are not sufficient.
 2. Extend `DebugHTTPServer.route` with:
    - `POST /debug/pixel-probe`
    - `GET /debug/terminal-log`
    - `GET /debug/timing`
+   - `GET /debug/metrics`
    - `GET /debug/errors`
    - `POST /debug/fixture`
    - `POST /debug/snapshot`
@@ -128,6 +135,8 @@ or `waitFrames`.
    - bounded terminal-byte projections derived from debug input, output, and
      paste actions;
    - timing fields for the last frame and screenshot capture;
+   - metrics counters for rendered frames, input/log events, terminal bytes,
+     screenshots, errors, tabs, sessions, and last-frame draw work;
    - pixel point/region probes against `BitmapSurface`;
    - a general artifact snapshot writer under
      `<artifacts>/snapshots/snapshot-######/manifest.json`;
@@ -183,6 +192,8 @@ Acceptance:
 - `/debug/terminal-log` returns bounded input/output events for the requested
   session.
 - `/debug/timing` returns the current frame and non-negative timing fields.
+- `/debug/metrics` returns frame counters, input/log counters, terminal byte
+  counts, screenshots, errors, tabs, sessions, and last-frame draw/timing work.
 - `/debug/errors` returns structured errors after invalid debug requests.
 - `/debug/snapshot` writes a diagnostic bundle containing JSON state files and
   a screenshot under the requested artifact directory.

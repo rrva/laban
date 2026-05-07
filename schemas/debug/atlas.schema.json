@@ -42,6 +42,7 @@
           "occupancy": {"type": "number", "minimum": 0, "maximum": 1}
         }
       }
-    }
+    },
+    "backend": {"type": "string"}
   }
 }

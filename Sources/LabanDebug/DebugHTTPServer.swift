@@ -246,6 +246,11 @@ public final class DebugHTTPServer {
     case ("GET", "/debug/sessions"):
       return json(runtime.sessions())
 
+    case ("GET", let sessionPath) where sessionPath.hasPrefix("/debug/sessions/"):
+      let rawId = String(sessionPath.dropFirst("/debug/sessions/".count))
+      let id = rawId.removingPercentEncoding ?? rawId
+      return json(runtime.session(id: id, query: query))
+
     case ("GET", "/debug/render"):
       return json(runtime.renderState())
 
@@ -257,6 +262,9 @@ public final class DebugHTTPServer {
 
     case ("POST", "/debug/pixel-probe"):
       return json(runtime.pixelProbe(body))
+
+    case ("GET", "/debug/atlas"):
+      return json(runtime.atlas())
 
     case ("POST", "/debug/wait"):
       return json(runtime.wait(body))
@@ -280,6 +288,9 @@ public final class DebugHTTPServer {
 
     case ("GET", "/debug/timing"):
       return json(runtime.timingResponse())
+
+    case ("GET", "/debug/metrics"):
+      return json(runtime.metricsResponse())
 
     case ("GET", "/debug/errors"):
       let since = query["since"].flatMap { Int($0) } ?? 0

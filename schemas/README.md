@@ -20,6 +20,7 @@ any programming language is chosen.
 - `debug/input-log.schema.json` - normalized input routing log.
 - `debug/terminal-log.schema.json` - bounded terminal byte-flow log.
 - `debug/timing.schema.json` - frame and endpoint timing diagnostics.
+- `debug/metrics.schema.json` - queryable runtime counters and last-frame work metrics.
 - `debug/errors.schema.json` - structured warning/error log.
 - `debug/events.schema.json` - bounded debug event response.
 - `debug/action.schema.json` - debug control action request.

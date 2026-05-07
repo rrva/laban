@@ -41,6 +41,18 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
       endpoints.contains {
         $0["method"] as? String == "POST" && $0["path"] as? String == "/debug/pixel-probe"
       })
+    XCTAssertTrue(
+      endpoints.contains {
+        $0["method"] as? String == "GET" && $0["path"] as? String == "/debug/metrics"
+      })
+    XCTAssertTrue(
+      endpoints.contains {
+        $0["method"] as? String == "GET" && $0["path"] as? String == "/debug/sessions/<id>"
+      })
+    XCTAssertTrue(
+      endpoints.contains {
+        $0["method"] as? String == "GET" && $0["path"] as? String == "/debug/atlas"
+      })
 
     let actions = obj["actions"] as! [[String: Any]]
     XCTAssertTrue(actions.contains { $0["name"] as? String == "typeText" })
@@ -104,6 +116,74 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
     XCTAssertTrue(entries.contains { $0["kind"] as? String == "action.invalid" })
   }
 
+  func testMetricsEndpointReportsCountersAndTerminalBytes() throws {
+    let (runtime, artifacts) = try makeRuntime("metrics")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    _ = runtime.applyAction(#"{"action":"typeText","text":"abc"}"#.data(using: .utf8)!)
+    _ = runtime.applyAction(#"{"action":"feedOutput","text":"xyz"}"#.data(using: .utf8)!)
+    _ = try runtime.screenshotBytes()
+
+    let metrics = try json(runtime.metricsResponse())
+    XCTAssertEqual(metrics["runId"] as? String, "metrics")
+    XCTAssertGreaterThanOrEqual(metrics["frame"] as? Int ?? -1, 1)
+    XCTAssertGreaterThanOrEqual(metrics["uptimeMs"] as? Double ?? -1, 0)
+
+    let counters = metrics["counters"] as! [String: Any]
+    XCTAssertGreaterThanOrEqual(counters["framesRendered"] as? Int ?? -1, 3)
+    XCTAssertGreaterThanOrEqual(counters["inputEvents"] as? Int ?? -1, 1)
+    XCTAssertGreaterThanOrEqual(counters["terminalLogEvents"] as? Int ?? -1, 2)
+    XCTAssertGreaterThanOrEqual(counters["screenshots"] as? Int ?? -1, 1)
+    XCTAssertEqual(counters["tabs"] as? Int, 1)
+    XCTAssertEqual(counters["sessions"] as? Int, 1)
+
+    let terminalBytes = metrics["terminalBytes"] as! [String: Any]
+    XCTAssertGreaterThanOrEqual(terminalBytes["input"] as? Int ?? -1, 3)
+    XCTAssertGreaterThanOrEqual(terminalBytes["output"] as? Int ?? -1, 3)
+    XCTAssertGreaterThanOrEqual(terminalBytes["terminalResponse"] as? Int ?? -1, 0)
+
+    let lastFrame = metrics["lastFrame"] as! [String: Any]
+    XCTAssertGreaterThan(lastFrame["commands"] as? Int ?? 0, 0)
+    XCTAssertGreaterThanOrEqual(lastFrame["renderMs"] as? Double ?? -1, 0)
+  }
+
+  func testSessionDetailAndAtlasDiagnosticsAreQueryable() throws {
+    let (runtime, artifacts) = try makeRuntime("session-detail-atlas")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    _ = runtime.applyAction(#"{"action":"feedOutput","text":"grid atlas"}"#.data(using: .utf8)!)
+
+    let sessions = try json(runtime.sessions())
+    let firstSession = (sessions["sessions"] as! [[String: Any]]).first!
+    let sessionId = firstSession["id"] as! String
+
+    let detail = try json(runtime.session(id: sessionId, query: ["includeGrid": "true"]))
+    XCTAssertEqual(detail["id"] as? String, sessionId)
+    XCTAssertEqual(detail["tabId"] as? String, firstSession["tabId"] as? String)
+    let grid = detail["grid"] as! [String: Any]
+    XCTAssertGreaterThan(grid["rows"] as? Int ?? 0, 0)
+    XCTAssertGreaterThan(grid["cols"] as? Int ?? 0, 0)
+    XCTAssertEqual(grid["truncated"] as? Bool, false)
+    let cells = grid["cells"] as! [[String: Any]]
+    XCTAssertTrue(cells.contains { $0["text"] as? String == "g" })
+
+    XCTAssertEqual(runtime.session(id: "missing-session", query: [:]).status, 404)
+
+    let atlas = try json(runtime.atlas())
+    XCTAssertEqual(atlas["backend"] as? String, "software")
+    XCTAssertFalse((atlas["font"] as? String ?? "").isEmpty)
+    XCTAssertGreaterThan((atlas["fontSize"] as? NSNumber)?.doubleValue ?? 0, 0)
+    let cell = atlas["cell"] as! [String: Any]
+    XCTAssertGreaterThan(cell["width"] as? Int ?? 0, 0)
+    XCTAssertGreaterThan(cell["height"] as? Int ?? 0, 0)
+    XCTAssertGreaterThanOrEqual(cell["baseline"] as? Int ?? -1, 0)
+    let glyphs = atlas["glyphs"] as! [String: Any]
+    XCTAssertGreaterThan(glyphs["loaded"] as? Int ?? 0, 0)
+    XCTAssertGreaterThanOrEqual(glyphs["missing"] as? Int ?? -1, 0)
+    XCTAssertNotNil(atlas["missingCodepoints"] as? [String])
+    XCTAssertNotNil(atlas["atlases"] as? [[String: Any]])
+  }
+
   func testArtifactSnapshotWritesDiagnosticBundle() throws {
     let (runtime, artifacts) = try makeRuntime("artifact-snapshot")
     defer { try? FileManager.default.removeItem(at: artifacts) }
@@ -119,7 +199,7 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
     for file in [
       "state.json", "sessions.json", "render.json", "frame-commands.json",
       "render-trace.json", "events.json", "input-log.json", "terminal-log.json",
-      "errors.json", "timing.json", "screenshot.png",
+      "errors.json", "timing.json", "metrics.json", "screenshot.png",
     ] {
       XCTAssertTrue(
         FileManager.default.fileExists(atPath: dir.appendingPathComponent(file).path),

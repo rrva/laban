@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Darwin
 import Dispatch
 import Foundation
@@ -287,6 +288,14 @@ public final class HeadlessDebugRuntime {
       responseSchema: "schemas/debug/sessions.schema.json"),
     DebugDiscoveryEndpoint(
       method: "GET",
+      path: "/debug/sessions/<id>",
+      category: "state",
+      summary: "Return one terminal session, optionally with bounded visible-grid cells.",
+      queryParameters: ["includeGrid"],
+      requestSchema: nil,
+      responseSchema: "schemas/debug/session.schema.json"),
+    DebugDiscoveryEndpoint(
+      method: "GET",
       path: "/debug/render",
       category: "rendering",
       summary: "Return surface, viewport, cell size, damage, and draw stats.",
@@ -317,6 +326,14 @@ public final class HeadlessDebugRuntime {
       queryParameters: [],
       requestSchema: "schemas/debug/pixel-probe.schema.json",
       responseSchema: "schemas/debug/pixel-probe-result.schema.json"),
+    DebugDiscoveryEndpoint(
+      method: "GET",
+      path: "/debug/atlas",
+      category: "rendering",
+      summary: "Return font, cell, and glyph diagnostics for the active renderer.",
+      queryParameters: [],
+      requestSchema: nil,
+      responseSchema: "schemas/debug/atlas.schema.json"),
     DebugDiscoveryEndpoint(
       method: "POST",
       path: "/debug/snapshot",
@@ -357,6 +374,14 @@ public final class HeadlessDebugRuntime {
       queryParameters: [],
       requestSchema: nil,
       responseSchema: "schemas/debug/timing.schema.json"),
+    DebugDiscoveryEndpoint(
+      method: "GET",
+      path: "/debug/metrics",
+      category: "logs",
+      summary: "Return local counters for frames, input, terminal bytes, and draw work.",
+      queryParameters: [],
+      requestSchema: nil,
+      responseSchema: "schemas/debug/metrics.schema.json"),
     DebugDiscoveryEndpoint(
       method: "GET",
       path: "/debug/errors",
@@ -528,6 +553,11 @@ public final class HeadlessDebugRuntime {
   private var errorLog: [DebugErrorEntry] = []
   private var errorSeq: Int = 0
   private var timing = RuntimeTiming()
+  private let startedAt = DispatchTime.now()
+  private var terminalInputBytes: Int = 0
+  private var terminalOutputBytes: Int = 0
+  private var terminalResponseBytes: Int = 0
+  private var screenshotCount: Int = 0
   private var fixtureURL: URL?
   private var fixtureRunner: FixtureRunner?
   private var fixtureStepIndex: Int = 0
@@ -813,6 +843,16 @@ public final class HeadlessDebugRuntime {
 
   private func appendTerminalLog(sessionId: String?, direction: String, bytes: [UInt8]) {
     guard !bytes.isEmpty else { return }
+    switch direction {
+    case "input":
+      terminalInputBytes += bytes.count
+    case "output":
+      terminalOutputBytes += bytes.count
+    case "terminal-response", "terminalResponse":
+      terminalResponseBytes += bytes.count
+    default:
+      break
+    }
     appendTerminalLog(
       TerminalLogEntry(
         sessionId: sessionId,
@@ -1151,6 +1191,187 @@ public final class HeadlessDebugRuntime {
     )
   }
 
+  private func sessionResponse(for tab: Tab, index _: Int, includeGrid: Bool) -> SessionResponse {
+    let metadata = tab.titleMetadata
+    let sessionObj = model.session(forTab: tab.id)
+    var rows = 1
+    var cols = 1
+    var exitStatus: Int? = nil
+    var mouseTracking = false
+    var focusReporting = false
+    var dirty = false
+    var grid: SessionGridResponse? = nil
+
+    if let session = sessionObj, let snap = session.snapshot() {
+      defer { laban_snapshot_destroy(snap) }
+      rows = max(Int(snap.pointee.rows), 1)
+      cols = max(Int(snap.pointee.cols), 1)
+      if snap.pointee.status != 0 { exitStatus = Int(snap.pointee.exit_status) }
+      mouseTracking = snap.pointee.mouse_tracking != 0
+      focusReporting = snap.pointee.focus_reporting != 0
+      dirty = snap.pointee.dirty != 0
+      if includeGrid {
+        grid = sessionGridResponse(from: snap, maxCells: 2_000)
+      }
+    }
+    if exitStatus == nil { exitStatus = metadata.exitStatus }
+
+    var scrollbackLines = 0
+    var viewportOffset = 0
+    if let sessionObj, let vs = sessionObj.viewportState() {
+      scrollbackLines = vs.scrollbackRows
+      viewportOffset = vs.viewportOffset
+    }
+
+    let statusStr = sessionObj != nil ? tab.status.debugString : "failed"
+    return SessionResponse(
+      id: tab.sessionId, tabId: tab.id, pid: nil,
+      status: statusStr, exitStatus: exitStatus,
+      rows: rows, cols: cols,
+      cellWidth: cellWidth, cellHeight: cellHeight,
+      scrollbackLines: scrollbackLines, viewportOffset: viewportOffset,
+      title: metadata.displayTitle,
+      displayTitle: metadata.displayTitle,
+      titleSource: metadata.titleSource.rawValue,
+      terminalTitle: metadata.terminalTitle,
+      userTitle: metadata.userTitle,
+      titleFrozen: metadata.titleFrozen,
+      activityState: metadata.activityState.rawValue,
+      lastActivityAt: metadata.lastActivityAt,
+      lastOutputAt: metadata.lastOutputAt,
+      unseenOutput: metadata.unseenOutput,
+      workspace: metadata.workspace,
+      process: metadata.process,
+      agent: metadata.agent,
+      mouseTracking: mouseTracking,
+      focusReporting: focusReporting,
+      dirty: dirty,
+      grid: grid
+    )
+  }
+
+  private func sessionGridResponse(
+    from snap: UnsafePointer<LabanSnapshot>,
+    maxCells: Int
+  ) -> SessionGridResponse {
+    let snapshot = snap.pointee
+    let rows = max(Int(snapshot.rows), 1)
+    let cols = max(Int(snapshot.cols), 1)
+    guard let cells = snapshot.cells, let storage = snapshot.utf8_storage else {
+      return SessionGridResponse(rows: rows, cols: cols, cells: [], truncated: false)
+    }
+
+    let links = snapshotHyperlinks(snapshot)
+    var result: [SessionGridCellResponse] = []
+    result.reserveCapacity(min(Int(snapshot.cell_count), maxCells))
+    var truncated = false
+
+    for row in 0..<rows {
+      for col in 0..<cols {
+        let idx = row * cols + col
+        guard idx < Int(snapshot.cell_count) else { continue }
+        let cell = cells[idx]
+        guard cell.utf8_length > 0 else { continue }
+
+        let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+        let buf = UnsafeBufferPointer<UInt8>(
+          start: ptr.assumingMemoryBound(to: UInt8.self),
+          count: Int(cell.utf8_length)
+        )
+        guard let text = String(bytes: buf, encoding: .utf8), !text.isEmpty else { continue }
+
+        if result.count >= maxCells {
+          truncated = true
+          break
+        }
+
+        let hyperlink: String? = {
+          let id = Int(cell.hyperlink_id)
+          guard id > 0, id <= links.count else { return nil }
+          return links[id - 1]
+        }()
+
+        result.append(
+          SessionGridCellResponse(
+            row: row,
+            col: col,
+            text: text,
+            foreground: rgbaArray(cell.foreground_rgba),
+            background: rgbaArray(cell.background_rgba),
+            attributes: TextAttributes(rawValue: cell.flags).intersection(.renderableMask).names,
+            wide: wideName(cell.wide),
+            hyperlink: hyperlink
+          ))
+      }
+      if truncated { break }
+    }
+
+    return SessionGridResponse(rows: rows, cols: cols, cells: result, truncated: truncated)
+  }
+
+  private func snapshotHyperlinks(_ snapshot: LabanSnapshot) -> [String] {
+    let count = Int(snapshot.hyperlink_count)
+    guard count > 0, let table = snapshot.hyperlink_uris else { return [] }
+    var result: [String] = []
+    result.reserveCapacity(count)
+    for idx in 0..<count {
+      result.append(table[idx].map { String(cString: $0) } ?? "")
+    }
+    return result
+  }
+
+  private func wideName(_ wide: UInt8) -> String {
+    switch Int(wide) {
+    case Int(LABAN_CELL_WIDE_WIDE): return "wide"
+    case Int(LABAN_CELL_WIDE_SPACER_TAIL): return "spacerTail"
+    case Int(LABAN_CELL_WIDE_SPACER_HEAD): return "spacerHead"
+    default: return "narrow"
+    }
+  }
+
+  private func glyphDiagnosticsUnlocked() -> (loaded: Int, missingCodepoints: [String]) {
+    var loaded = Set<String>()
+    var missing = Set<String>()
+
+    for command in lastFrameCommands {
+      guard case .glyphRun(_, let text, _, _, _, _, _, _, _) = command else { continue }
+      for scalar in text.unicodeScalars {
+        let label = codepointLabel(scalar)
+        if fontHasGlyph(for: scalar) {
+          loaded.insert(label)
+        } else {
+          missing.insert(label)
+        }
+      }
+    }
+
+    return (loaded.count, missing.sorted())
+  }
+
+  private func fontHasGlyph(for scalar: UnicodeScalar) -> Bool {
+    let chars = Array(String(scalar).utf16)
+    guard !chars.isEmpty else { return false }
+    var glyphs = [CGGlyph](repeating: 0, count: chars.count)
+    return chars.withUnsafeBufferPointer { charPtr in
+      glyphs.withUnsafeMutableBufferPointer { glyphPtr in
+        guard let charsBase = charPtr.baseAddress, let glyphsBase = glyphPtr.baseAddress else {
+          return false
+        }
+        return CTFontGetGlyphsForCharacters(
+          fontAtlas.font,
+          charsBase,
+          glyphsBase,
+          chars.count
+        )
+      }
+    }
+  }
+
+  private func codepointLabel(_ scalar: UnicodeScalar) -> String {
+    let hex = String(scalar.value, radix: 16, uppercase: true)
+    return "U+" + String(repeating: "0", count: max(0, 4 - hex.count)) + hex
+  }
+
   // MARK: - Endpoints
 
   public func captureStatus() -> DebugResponse {
@@ -1397,6 +1618,7 @@ public final class HeadlessDebugRuntime {
     let start = monotonicNow()
     guard let pngData = surface.pngData else { throw DebugServerError.encodingFailed }
     timing.screenshotMs = elapsedMs(since: start)
+    screenshotCount += 1
     return (pngData, currentFrame, surface.width, surface.height)
   }
 
@@ -1409,6 +1631,7 @@ public final class HeadlessDebugRuntime {
       return jsonError("PNG encoding failed", status: 500)
     }
     timing.screenshotMs = elapsedMs(since: start)
+    screenshotCount += 1
     let ssDir = artifactsURL.appendingPathComponent("screenshots")
     do {
       try FileManager.default.createDirectory(at: ssDir, withIntermediateDirectories: true)
@@ -1716,20 +1939,31 @@ public final class HeadlessDebugRuntime {
       // Without this a malicious automation client could feed an
       // arbitrarily large clipboard via setClipboardText then trigger
       // paste, freezing the debug-runtime thread and bloating memory.
-      let pasteHardLimit = 10 * 1024 * 1024  // 10 MB
+      let pasteHardLimit = TerminalPaste.hardLimitBytes
       if debugClipboard.utf8.count > pasteHardLimit {
         return jsonError("clipboard exceeds paste limit (\(pasteHardLimit) bytes)")
       }
+      let sanitized = TerminalPaste.sanitize(debugClipboard)
+      var encodedBytes: [UInt8] = []
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
-        let result = session.writePaste(debugClipboard)
-        lastPasteText = debugClipboard
+        let result: Session.PasteWriteResult?
+        if sanitized.isEmpty {
+          result = nil
+        } else {
+          let sent = session.writePasteCapturingBytes(sanitized)
+          result = sent.result
+          encodedBytes = sent.bytes
+        }
+        lastPasteText = sanitized
         lastPasteUsedBracketedPaste = result?.bracketed
-        lastPasteIgnoredNonText = false
-        appendTerminalLog(
-          sessionId: session.id,
-          direction: "input",
-          bytes: Array(debugClipboard.utf8)
-        )
+        lastPasteIgnoredNonText = sanitized != debugClipboard
+        if !encodedBytes.isEmpty {
+          appendTerminalLog(
+            sessionId: session.id,
+            direction: "input",
+            bytes: encodedBytes
+          )
+        }
       }
       renderFrameUnlocked()
       appendInputEnvelope(
@@ -1741,10 +1975,14 @@ public final class HeadlessDebugRuntime {
           frameBefore: frameBefore,
           tabId: activeTab?.id,
           sessionId: activeTab?.sessionId,
-          text: debugClipboard,
-          command: "paste"
+          text: sanitized,
+          command: "paste",
+          encodedHex: encodedBytes.isEmpty
+            ? nil
+            : encodedBytes.map { String(format: "%02x", $0) }.joined(),
+          encodedLength: encodedBytes.isEmpty ? nil : encodedBytes.count
         ))
-      appendEvent(EventEntry(kind: "clipboard.pasted", text: debugClipboard))
+      appendEvent(EventEntry(kind: "clipboard.pasted", text: sanitized))
       return actionResult(ok: true)
 
     case "scrollViewport":
@@ -1805,14 +2043,34 @@ public final class HeadlessDebugRuntime {
           cellWidth: cellWidth,
           cellHeight: cellHeight
         )
-        let result = session.sendMouse(me)
+        let sent = session.sendMouseCapturingBytes(me)
+        let encoded = sent.bytes
+        if !encoded.isEmpty {
+          appendTerminalLog(sessionId: session.id, direction: "input", bytes: encoded)
+        }
+        appendInputEnvelope(
+          InputEventEnvelope(
+            inputId: UUID().uuidString,
+            source: "debug",
+            kind: "mouse",
+            route: "terminal",
+            frameBefore: frameBefore,
+            tabId: tab.id,
+            sessionId: session.id,
+            command: "mouseWheel",
+            encodedHex: encoded.isEmpty
+              ? nil
+              : encoded.map { String(format: "%02x", $0) }
+                .joined(),
+            encodedLength: encoded.isEmpty ? nil : encoded.count
+          ))
         appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "mouseWheel"))
         renderFrameUnlocked()
         return jsonEncode(
           MouseActionResult(
-            ok: result == 0, frame: currentFrame,
+            ok: sent.result == 0, frame: currentFrame,
             activeTabId: tab.id, activeSessionId: tab.sessionId,
-            mouseTracking: true, sent: result == 0
+            mouseTracking: true, sent: sent.result == 0
           ))
       } else {
         // Normal mode: scroll viewport.
@@ -1899,15 +2157,41 @@ public final class HeadlessDebugRuntime {
           screenWidth: terminalSurfaceWidth, screenHeight: windowHeight,
           cellWidth: cellWidth, cellHeight: cellHeight
         )
-        session.sendMouse(pressEvent)
-        session.sendMouse(releaseEvent)
+        let pressSent = session.sendMouseCapturingBytes(pressEvent)
+        let releaseSent =
+          pressSent.result == 0
+          ? session.sendMouseCapturingBytes(releaseEvent)
+          : (result: Int32(-1), bytes: [])
+        let pressBytes = pressSent.bytes
+        let releaseBytes = releaseSent.bytes
+        let encoded = pressBytes + releaseBytes
+        if !encoded.isEmpty {
+          appendTerminalLog(sessionId: session.id, direction: "input", bytes: encoded)
+        }
+        appendInputEnvelope(
+          InputEventEnvelope(
+            inputId: UUID().uuidString,
+            source: "debug",
+            kind: "mouse",
+            route: "terminal",
+            frameBefore: frameBefore,
+            tabId: tab.id,
+            sessionId: session.id,
+            command: "click",
+            encodedHex: encoded.isEmpty
+              ? nil
+              : encoded.map { String(format: "%02x", $0) }
+                .joined(),
+            encodedLength: encoded.isEmpty ? nil : encoded.count
+          ))
         renderFrameUnlocked()
         appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "click"))
+        let sent = pressSent.result == 0 && releaseSent.result == 0
         return jsonEncode(
           MouseActionResult(
-            ok: true, frame: currentFrame,
+            ok: sent, frame: currentFrame,
             activeTabId: tab.id, activeSessionId: tab.sessionId,
-            mouseTracking: true, sent: true
+            mouseTracking: true, sent: sent
           ))
       } else {
         // No mouse tracking: set a one-cell local selection at the clicked cell.
@@ -1988,12 +2272,12 @@ public final class HeadlessDebugRuntime {
       var encodedHex: String? = nil
       var encodedLength: Int? = nil
       if let tab = activeTab, let session = model.session(forTab: tab.id) {
-        if let bytes = session.encodeKey(keyEvent), !bytes.isEmpty {
-          encodedHex = bytes.map { String(format: "%02x", $0) }.joined()
-          encodedLength = bytes.count
-          appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
+        let sent = session.sendKeyCapturingBytes(keyEvent)
+        if sent.result == 0, !sent.bytes.isEmpty {
+          encodedHex = sent.bytes.map { String(format: "%02x", $0) }.joined()
+          encodedLength = sent.bytes.count
+          appendTerminalLog(sessionId: session.id, direction: "input", bytes: sent.bytes)
         }
-        session.sendKey(keyEvent)
       }
       renderFrameUnlocked()
       appendInputEnvelope(
@@ -2041,65 +2325,49 @@ public final class HeadlessDebugRuntime {
 
     syncSessionMetadataUnlocked()
 
-    let list = model.tabs.map { tab -> SessionResponse in
-      let metadata = tab.titleMetadata
-      var rows = 1
-      var cols = 1
-      var exitStatus: Int? = nil
-      var mouseTracking = false
-      var focusReporting = false
-      var dirty = false
-
-      if let session = model.session(forTab: tab.id),
-        let snap = session.snapshot()
-      {
-        defer { laban_snapshot_destroy(snap) }
-        rows = max(Int(snap.pointee.rows), 1)
-        cols = max(Int(snap.pointee.cols), 1)
-        if snap.pointee.status != 0 { exitStatus = Int(snap.pointee.exit_status) }
-        mouseTracking = snap.pointee.mouse_tracking != 0
-        focusReporting = snap.pointee.focus_reporting != 0
-        dirty = snap.pointee.dirty != 0
-      }
-      if exitStatus == nil { exitStatus = metadata.exitStatus }
-
-      let statusStr = model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
-
-      // Fetch real viewport state if available.
-      var scrollbackLines = 0
-      var viewportOffset = 0
-      if let sessionObj = model.session(forTab: tab.id),
-        let vs = sessionObj.viewportState()
-      {
-        scrollbackLines = vs.scrollbackRows
-        viewportOffset = vs.viewportOffset
-      }
-
-      return SessionResponse(
-        id: tab.sessionId, tabId: tab.id, pid: nil,
-        status: statusStr, exitStatus: exitStatus,
-        rows: rows, cols: cols,
-        cellWidth: cellWidth, cellHeight: cellHeight,
-        scrollbackLines: scrollbackLines, viewportOffset: viewportOffset,
-        title: metadata.displayTitle,
-        displayTitle: metadata.displayTitle,
-        titleSource: metadata.titleSource.rawValue,
-        terminalTitle: metadata.terminalTitle,
-        userTitle: metadata.userTitle,
-        titleFrozen: metadata.titleFrozen,
-        activityState: metadata.activityState.rawValue,
-        lastActivityAt: metadata.lastActivityAt,
-        lastOutputAt: metadata.lastOutputAt,
-        unseenOutput: metadata.unseenOutput,
-        workspace: metadata.workspace,
-        process: metadata.process,
-        agent: metadata.agent,
-        mouseTracking: mouseTracking,
-        focusReporting: focusReporting, dirty: dirty
-      )
+    let list = model.tabs.enumerated().map { idx, tab in
+      sessionResponse(for: tab, index: idx, includeGrid: false)
     }
 
     return jsonEncode(SessionsResponse(sessions: list))
+  }
+
+  public func session(id: String, query: [String: String]) -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+
+    syncSessionMetadataUnlocked()
+
+    guard let match = model.tabs.enumerated().first(where: { $0.element.sessionId == id }) else {
+      return jsonError("session not found: \(id)", status: 404)
+    }
+    let includeGrid = query["includeGrid"] == "true"
+    return jsonEncode(
+      sessionResponse(for: match.element, index: match.offset, includeGrid: includeGrid))
+  }
+
+  public func atlas() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+
+    let diagnostics = glyphDiagnosticsUnlocked()
+    return jsonEncode(
+      AtlasResponse(
+        font: CTFontCopyPostScriptName(fontAtlas.font) as String,
+        fontSize: Double(fontAtlas.pointSize),
+        cell: AtlasCellResponse(
+          width: cellWidth,
+          height: cellHeight,
+          baseline: max(Int(ceil(fontAtlas.ascent)), 0)
+        ),
+        glyphs: AtlasGlyphsResponse(
+          loaded: diagnostics.loaded,
+          missing: diagnostics.missingCodepoints.count
+        ),
+        missingCodepoints: diagnostics.missingCodepoints,
+        atlases: [],
+        backend: "software"
+      ))
   }
 
   public func renderState() -> DebugResponse {
@@ -2567,6 +2835,46 @@ public final class HeadlessDebugRuntime {
       ))
   }
 
+  public func metricsResponse() -> DebugResponse {
+    lock.lock()
+    defer { lock.unlock() }
+    return jsonEncode(
+      MetricsResponse(
+        runId: runId,
+        mode: mode,
+        frame: currentFrame,
+        uptimeMs: elapsedMs(since: startedAt),
+        counters: MetricsCountersResponse(
+          framesRendered: currentFrame,
+          events: eventSeq,
+          inputEvents: inputLogSeq,
+          terminalLogEvents: terminalLogSeq,
+          errors: errorSeq,
+          screenshots: screenshotCount,
+          tabs: model.tabs.count,
+          sessions: model.tabs.count
+        ),
+        terminalBytes: TerminalByteMetricsResponse(
+          input: terminalInputBytes,
+          output: terminalOutputBytes,
+          terminalResponse: terminalResponseBytes
+        ),
+        lastFrame: LastFrameMetricsResponse(
+          commands: lastFrameCommands.count,
+          cells: lastDrawStats.cells,
+          glyphs: lastDrawStats.glyphs,
+          backgroundRects: lastDrawStats.backgroundRects,
+          images: lastDrawStats.images,
+          cursor: lastDrawStats.cursor,
+          lastFrameMs: timing.lastFrameMs,
+          terminalPollMs: timing.terminalPollMs,
+          snapshotMs: timing.snapshotMs,
+          commandExtractionMs: timing.commandExtractionMs,
+          renderMs: timing.renderMs
+        )
+      ))
+  }
+
   public func errors(since: Int) -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
@@ -2630,6 +2938,9 @@ public final class HeadlessDebugRuntime {
     let start = monotonicNow()
     pngData = surface.pngData
     timing.screenshotMs = elapsedMs(since: start)
+    if pngData != nil {
+      screenshotCount += 1
+    }
     pngWidth = surface.width
     pngHeight = surface.height
     lock.unlock()
@@ -2660,6 +2971,7 @@ public final class HeadlessDebugRuntime {
       "terminal-log.json": terminalLogResponse(query: [:]).body,
       "errors.json": errors(since: 0).body,
       "timing.json": timingResponse().body,
+      "metrics.json": metricsResponse().body,
     ]
 
     if let pngData {

@@ -485,6 +485,47 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertNotNil(selObj["focus"])
   }
 
+  func testRuntimeMouseTrackingActionsAreRecordedInInputLog() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-mouse-track-log")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let enable = try JSONSerialization.data(
+      withJSONObject: ["action": "feedOutput", "text": "\u{1B}[?1000h\u{1B}[?1006h"])
+    _ = runtime.applyAction(enable)
+
+    let wheel = try JSONSerialization.data(
+      withJSONObject: ["action": "mouseWheel", "x": 300, "y": 200, "deltaY": 3])
+    let wheelResult = runtime.applyAction(wheel)
+    let wheelObj = try JSONSerialization.jsonObject(with: wheelResult.body) as! [String: Any]
+    XCTAssertEqual(wheelObj["ok"] as? Bool, true)
+    XCTAssertEqual(wheelObj["mouseTracking"] as? Bool, true)
+    XCTAssertEqual(wheelObj["sent"] as? Bool, true)
+
+    let click = try JSONSerialization.data(
+      withJSONObject: ["action": "click", "x": 300, "y": 200, "button": "right"])
+    let clickResult = runtime.applyAction(click)
+    let clickObj = try JSONSerialization.jsonObject(with: clickResult.body) as! [String: Any]
+    XCTAssertEqual(clickObj["ok"] as? Bool, true)
+    XCTAssertEqual(clickObj["mouseTracking"] as? Bool, true)
+    XCTAssertEqual(clickObj["sent"] as? Bool, true)
+
+    let inputLog = runtime.inputLogResponse(since: 0)
+    let inputObj = try JSONSerialization.jsonObject(with: inputLog.body) as! [String: Any]
+    let events = inputObj["events"] as! [[String: Any]]
+    let terminalMouse = events.filter {
+      ($0["kind"] as? String) == "mouse" && ($0["route"] as? String) == "terminal"
+    }
+    let wheelEvents = terminalMouse.filter { ($0["command"] as? String) == "mouseWheel" }
+    let clickEvents = terminalMouse.filter { ($0["command"] as? String) == "click" }
+
+    XCTAssertEqual(wheelEvents.count, 1)
+    XCTAssertEqual(clickEvents.count, 1)
+    XCTAssertGreaterThan(wheelEvents[0]["encodedLength"] as? Int ?? 0, 0)
+    XCTAssertGreaterThan(clickEvents[0]["encodedLength"] as? Int ?? 0, 0)
+    XCTAssertNotNil(wheelEvents[0]["encodedHex"])
+    XCTAssertNotNil(clickEvents[0]["encodedHex"])
+  }
+
   func testRuntimeSessionsReportsRealViewportState() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
@@ -739,6 +780,86 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(clipObj["lastPasteText"] as? String, "hello paste")
     XCTAssertNotNil(clipObj["lastPasteUsedBracketedPaste"])
     XCTAssertEqual(clipObj["lastPasteIgnoredNonText"] as? Bool, false)
+  }
+
+  func testPasteActionLogsCommittedBracketedPasteBytes() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-paste-encoded"
+    )
+
+    let enable = try JSONSerialization.data(
+      withJSONObject: ["action": "feedOutput", "text": "\u{1B}[?2004h"])
+    _ = runtime.applyAction(enable)
+    let setClipBody = #"{"action":"setClipboardText","text":"hello paste"}"#.data(using: .utf8)!
+    _ = runtime.applyAction(setClipBody)
+
+    let pasteBody = #"{"action":"paste"}"#.data(using: .utf8)!
+    let result = runtime.applyAction(pasteBody)
+    XCTAssertEqual(result.status, 200)
+
+    let expectedBytes = Array("\u{1b}[200~hello paste\u{1b}[201~".utf8)
+    let expectedHex = expectedBytes.map { String(format: "%02x", $0) }.joined()
+
+    let inputLog = runtime.inputLogResponse(since: 0)
+    let logObj = try JSONSerialization.jsonObject(with: inputLog.body) as! [String: Any]
+    let events = try XCTUnwrap(logObj["events"] as? [[String: Any]])
+    let pasteEvent = try XCTUnwrap(events.last { $0["kind"] as? String == "paste" })
+    XCTAssertEqual(pasteEvent["encodedHex"] as? String, expectedHex)
+    XCTAssertEqual(pasteEvent["encodedLength"] as? Int, expectedBytes.count)
+
+    let terminalLog = runtime.terminalLogResponse(query: ["since": "0"])
+    let termObj = try JSONSerialization.jsonObject(with: terminalLog.body) as! [String: Any]
+    let terminalEvents = try XCTUnwrap(termObj["events"] as? [[String: Any]])
+    XCTAssertTrue(
+      terminalEvents.contains {
+        ($0["direction"] as? String) == "input"
+          && ($0["escaped"] as? String) == "\\e[200~hello paste\\e[201~"
+      },
+      "terminal log must include committed bracketed paste bytes")
+  }
+
+  func testPasteActionSanitizesDebugClipboardLikeAppPaste() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-paste-sanitize"
+    )
+
+    let setClipBody =
+      #"{"action":"setClipboardText","text":"safe\u001b]0;owned\u0007\u009b31m"}"#
+      .data(using: .utf8)!
+    _ = runtime.applyAction(setClipBody)
+
+    let pasteBody = #"{"action":"paste"}"#.data(using: .utf8)!
+    let result = runtime.applyAction(pasteBody)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+
+    let clipResp = runtime.clipboard()
+    let clipObj = try JSONSerialization.jsonObject(with: clipResp.body) as! [String: Any]
+    XCTAssertEqual(clipObj["lastPasteText"] as? String, "safe]0;owned31m")
+    XCTAssertEqual(clipObj["lastPasteIgnoredNonText"] as? Bool, true)
+
+    let inputLog = runtime.inputLogResponse(since: 0)
+    let logObj = try JSONSerialization.jsonObject(with: inputLog.body) as! [String: Any]
+    let events = try XCTUnwrap(logObj["events"] as? [[String: Any]])
+    let pasteEvent = try XCTUnwrap(events.last { $0["kind"] as? String == "paste" })
+    XCTAssertEqual(pasteEvent["text"] as? String, "safe]0;owned31m")
   }
 
   func testSelectionFrameCommandsAppearsWithSourceFilter() throws {

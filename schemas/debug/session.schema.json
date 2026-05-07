@@ -61,6 +61,67 @@
     "agent": {"type": "object", "additionalProperties": true},
     "mouseTracking": {"type": "boolean"},
     "focusReporting": {"type": "boolean"},
-    "dirty": {"type": "boolean"}
+    "dirty": {"type": "boolean"},
+    "grid": {
+      "type": "object",
+      "required": ["rows", "cols", "cells", "truncated"],
+      "properties": {
+        "rows": {"type": "integer", "minimum": 1},
+        "cols": {"type": "integer", "minimum": 1},
+        "truncated": {"type": "boolean"},
+        "cells": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "row",
+              "col",
+              "text",
+              "foreground",
+              "background",
+              "attributes",
+              "wide"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "row": {"type": "integer", "minimum": 0},
+              "col": {"type": "integer", "minimum": 0},
+              "text": {"type": "string"},
+              "foreground": {
+                "type": "array",
+                "prefixItems": [
+                  {"type": "integer", "minimum": 0, "maximum": 255},
+                  {"type": "integer", "minimum": 0, "maximum": 255},
+                  {"type": "integer", "minimum": 0, "maximum": 255},
+                  {"type": "integer", "minimum": 0, "maximum": 255}
+                ],
+                "minItems": 4,
+                "maxItems": 4
+              },
+              "background": {
+                "type": "array",
+                "prefixItems": [
+                  {"type": "integer", "minimum": 0, "maximum": 255},
+                  {"type": "integer", "minimum": 0, "maximum": 255},
+                  {"type": "integer", "minimum": 0, "maximum": 255},
+                  {"type": "integer", "minimum": 0, "maximum": 255}
+                ],
+                "minItems": 4,
+                "maxItems": 4
+              },
+              "attributes": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "wide": {
+                "type": "string",
+                "enum": ["narrow", "wide", "spacerHead", "spacerTail"]
+              },
+              "hyperlink": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    }
   }
 }
