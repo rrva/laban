@@ -48,6 +48,24 @@ private func waitForForegroundProcess(
   return false
 }
 
+private func shellSingleQuote(_ value: String) -> String {
+  "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+private func processExists(_ pid: pid_t) -> Bool {
+  if kill(pid, 0) == 0 { return true }
+  return errno == EPERM
+}
+
+private func waitForProcessExit(_ pid: pid_t, timeout: TimeInterval = 2.0) -> Bool {
+  let deadline = Date().addingTimeInterval(timeout)
+  while Date() < deadline {
+    if !processExists(pid) { return true }
+    Thread.sleep(forTimeInterval: 0.02)
+  }
+  return !processExists(pid)
+}
+
 private final class TabStatusProbe {
   var calls = 0
   var status: String?
@@ -72,6 +90,12 @@ final class LabanSessionTests: XCTestCase {
     let result = laban_session_create(&config, size, &session)
     guard result == 0 else { return nil }
     return session
+  }
+
+  func testExitStateNullSessionReturnsZeroState() {
+    let exit = laban_session_exit_state(nil)
+    XCTAssertEqual(exit.status, 0)
+    XCTAssertEqual(exit.exit_status, 0)
   }
 
   func testFixtureCreatePollSnapshotDestroy() {
@@ -518,6 +542,68 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  func testDestroyTerminatesProcessGroupChildrenThatIgnoreHangup() {
+    let pidURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-destroy-child-\(UUID().uuidString).pid")
+    defer { try? FileManager.default.removeItem(at: pidURL) }
+
+    let exe = "/bin/sh"
+    let command =
+      "trap '' HUP TERM; sleep 30 & printf '%s\\n' \"$!\" > "
+      + shellSingleQuote(pidURL.path) + "; wait"
+    let argStrings = ["/bin/sh", "-lc", command]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 24
+        size.cols = 80
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let created = session else {
+          XCTFail("laban_session_create failed for destroy process-group test")
+          return
+        }
+
+        let deadline = Date().addingTimeInterval(2.0)
+        var sleepPid: pid_t = -1
+        while Date() < deadline {
+          _ = laban_session_poll(created)
+          if let text = try? String(contentsOf: pidURL, encoding: .utf8),
+            let parsed = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+          {
+            sleepPid = parsed
+            break
+          }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        guard sleepPid > 0 else {
+          laban_session_destroy(created)
+          XCTFail("shell did not report child sleep pid")
+          return
+        }
+        XCTAssertTrue(processExists(sleepPid), "sleep child should be alive before destroy")
+
+        laban_session_destroy(created)
+        session = nil
+
+        let exited = waitForProcessExit(sleepPid)
+        if !exited {
+          kill(sleepPid, SIGKILL)
+        }
+        XCTAssertTrue(
+          exited,
+          "destroy must terminate shell-launched children in the PTY process group")
+      }
+    }
+  }
+
   func testControlCInterruptsForegroundPTYProcess() {
     let exe = "/bin/cat"
     let argStrings = ["/bin/cat"]
@@ -854,6 +940,79 @@ final class LabanSessionTests: XCTestCase {
         XCTAssertEqual(s.pointee.rows, 10, "rows should be 10 after resize")
         XCTAssertEqual(s.pointee.cols, 30, "cols should be 30 after resize")
         XCTAssertEqual(s.pointee.cell_count, 10 * 30)
+      }
+    }
+  }
+
+  func testPTYZeroSizedResizeDoesNotPropagateToChildWinsize() {
+    let captureURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-zero-resize-\(UUID().uuidString).log")
+    defer { try? FileManager.default.removeItem(at: captureURL) }
+
+    let exe = "/bin/sh"
+    let argStrings = ["/bin/sh", "-lc", "read line; stty size"]
+
+    exe.withCString { exeCStr in
+      captureURL.path.withCString { capturePath in
+        withCArgv(argStrings) { argvPtr in
+          var config = LabanLaunchConfig()
+          config.executable = exeCStr
+          config.argv = argvPtr
+          config.fixture_mode = 0
+
+          var size = LabanTerminalSize()
+          size.rows = 24
+          size.cols = 80
+
+          var session: OpaquePointer?
+          guard laban_session_create(&config, size, &session) == 0, let session else {
+            XCTFail("laban_session_create failed for zero-sized PTY resize test")
+            return
+          }
+          defer { laban_session_destroy(session) }
+
+          XCTAssertEqual(laban_session_capture_start(session, capturePath), 0)
+          defer { _ = laban_session_capture_stop(session) }
+
+          var zeroSize = LabanTerminalSize()
+          zeroSize.rows = 0
+          zeroSize.cols = 0
+          XCTAssertEqual(laban_session_resize(session, zeroSize), 0)
+
+          let newline = [UInt8(ascii: "\n")]
+          newline.withUnsafeBytes { buf in
+            XCTAssertEqual(
+              laban_session_write(
+                session,
+                buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                newline.count
+              ),
+              0
+            )
+          }
+
+          var exit = LabanExitState()
+          let deadline = Date().addingTimeInterval(2.0)
+          while Date() < deadline {
+            XCTAssertEqual(laban_session_poll(session), 0)
+            exit = laban_session_exit_state(session)
+            if exit.status != 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+          }
+
+          XCTAssertNotEqual(exit.status, 0, "shell should exit after reporting stty size")
+          XCTAssertEqual(laban_session_capture_stop(session), 0)
+
+          let output = (try? String(contentsOf: captureURL, encoding: .utf8)) ?? ""
+          XCTAssertTrue(
+            output.contains("24 80"),
+            "zero-sized AppKit view resize must not set child PTY winsize to 0x0; "
+              + "captured output: \(output.debugDescription)"
+          )
+          XCTAssertFalse(
+            output.contains("0 0"),
+            "child PTY winsize must preserve the last non-empty geometry during empty views")
+        }
       }
     }
   }

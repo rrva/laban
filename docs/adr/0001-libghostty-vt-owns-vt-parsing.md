@@ -28,10 +28,11 @@ provides key and mouse encoders. A link spike confirmed that SwiftPM can compile
 a C file against the self-built `libghostty-vt.a` and that `swift test` passes.
 
 libghostty-vt does not own a PTY or spawn child processes. The calling
-application is responsible for forking the shell via `forkpty`, reading bytes
-from the PTY master fd, and feeding them to `ghostty_terminal_vt_write`. This
+application is responsible for launching the shell, owning the PTY master fd,
+reading bytes from it, and feeding them to `ghostty_terminal_vt_write`. This
 "application owns the PTY" model is the only valid architecture for this
-library.
+library. The concrete PTY launch mechanism is governed by
+`docs/adr/0002-pty-launch-uses-openpty-constrained-fork.md`.
 
 ## Decision
 

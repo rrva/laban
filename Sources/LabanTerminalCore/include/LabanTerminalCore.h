@@ -129,6 +129,7 @@ typedef struct {
     size_t dirty_row_count;
 } LabanSnapshot;
 
+/* Creates a terminal session. On failure, *out_session is set to NULL. */
 int laban_session_create(
     const LabanLaunchConfig *config,
     LabanTerminalSize initial_size,
@@ -418,7 +419,7 @@ int laban_session_write_paste(
  *   Lightweight query for the session's exit state. Reads status and
  *   exit_status directly from session storage without rendering or allocating.
  *   status values match LabanSnapshot.status (0=running, 1=exited normally,
- *   2=exited by signal). Safe to call on any live session handle.
+ *   2=exited by signal). Returns a zero state for NULL.
  */
 typedef struct {
     int status;      /* 0=running, 1=exited normally, 2=exited by signal */

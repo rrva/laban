@@ -142,6 +142,16 @@ static pid_t waitpid_retry(pid_t pid, int *status, int options) {
     return ret;
 }
 
+static void signal_child_process_group(pid_t child_pid, int sig) {
+    if (child_pid <= 0) return;
+    /* The child becomes a session leader, so its pid is also its process group.
+     * Escalating the group catches shell-launched foreground/background
+     * children that ignore SIGHUP when the PTY closes. */
+    if (kill(-child_pid, sig) < 0 && errno == ESRCH) {
+        (void)kill(child_pid, sig);
+    }
+}
+
 static void init_sane_termios(struct termios *tio) {
     memset(tio, 0, sizeof(*tio));
     tio->c_iflag = BRKINT | ICRNL | IXON;
@@ -939,43 +949,61 @@ int laban_session_create(
     struct termios term;
     init_sane_termios(&term);
 
-    /* forkpty makes the child a session leader with the slave PTY as its
-     * controlling terminal. Prepare argv/env/cwd before forking; the child
-     * path below only restores signal defaults, chdirs, and execs. */
     int pty_fd = -1;
-    pid_t child = forkpty(&pty_fd, NULL, &term, &ws);
+    int slave_fd = -1;
+    if (openpty(&pty_fd, &slave_fd, NULL, &term, &ws) < 0) {
+        free(spawn_env);
+        free_ghostty_resources(s);
+        free(s);
+        return -1;
+    }
+
+    if (set_cloexec(pty_fd) < 0 || set_cloexec(slave_fd) < 0) {
+        close(slave_fd);
+        close(pty_fd);
+        free(spawn_env);
+        free_ghostty_resources(s);
+        free(s);
+        return -1;
+    }
+
+    /* Keep the child branch constrained: become a session leader, claim the
+     * already-sized slave as the controlling terminal, wire stdio, then exec.
+     * Darwin posix_spawn cannot express this controlling-terminal setup while
+     * preserving both initial TIOCSWINSZ geometry and terminal-generated
+     * SIGINT/SIGTSTP delivery. */
+    pid_t child = fork();
     if (child < 0) {
+        close(slave_fd);
+        close(pty_fd);
         free(spawn_env);
         free_ghostty_resources(s);
         free(s);
         return -1;
     }
     if (child == 0) {
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
+        struct sigaction sa = {0};
         sa.sa_handler = SIG_DFL;
         sigemptyset(&sa.sa_mask);
         sigaction(SIGPIPE, &sa, NULL);
         sigaction(SIGINT, &sa, NULL);
         sigaction(SIGQUIT, &sa, NULL);
         sigaction(SIGTSTP, &sa, NULL);
+        close(pty_fd);
+        if (setsid() < 0) _exit(127);
+        if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) _exit(127);
+        if (dup2(slave_fd, STDIN_FILENO) < 0) _exit(127);
+        if (dup2(slave_fd, STDOUT_FILENO) < 0) _exit(127);
+        if (dup2(slave_fd, STDERR_FILENO) < 0) _exit(127);
+        if (slave_fd > STDERR_FILENO) close(slave_fd);
         if (launch_cwd && launch_cwd[0] && chdir(launch_cwd) != 0) {
             _exit(127);
         }
         execve(exe, spawn_argv, spawn_env);
         _exit(127);
     }
+    close(slave_fd);
     free(spawn_env);
-
-    if (set_cloexec(pty_fd) < 0) {
-        close(pty_fd);
-        kill(child, SIGHUP);
-        int ws_child = 0;
-        waitpid_retry(child, &ws_child, 0);
-        free_ghostty_resources(s);
-        free(s);
-        return -1;
-    }
 
     int flags = fcntl(pty_fd, F_GETFL, 0);
     if (flags >= 0) fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
@@ -1007,14 +1035,14 @@ void laban_session_destroy(LabanSession *s) {
         int ws = 0;
         int reaped = (waitpid_retry(s->child_pid, &ws, WNOHANG) == s->child_pid);
         if (!reaped) {
-            kill(s->child_pid, SIGTERM);
+            signal_child_process_group(s->child_pid, SIGTERM);
             for (int i = 0; i < 5 && !reaped; i++) {
                 struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000 }; /* 10 ms */
                 nanosleep(&ts, NULL);
                 reaped = (waitpid_retry(s->child_pid, &ws, WNOHANG) == s->child_pid);
             }
             if (!reaped) {
-                kill(s->child_pid, SIGKILL);
+                signal_child_process_group(s->child_pid, SIGKILL);
                 waitpid_retry(s->child_pid, &ws, 0);
             }
         }
@@ -1085,7 +1113,7 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
     s->rows        = rows;
     s->cell_width  = (uint32_t)size.cell_width;
     s->cell_height = (uint32_t)size.cell_height;
-    if (s->pty_fd >= 0) {
+    if (s->pty_fd >= 0 && cols > 0 && rows > 0) {
         struct winsize ws = {
             .ws_row    = (unsigned short)rows,
             .ws_col    = (unsigned short)cols,
@@ -2045,7 +2073,10 @@ int laban_session_send_mouse(LabanSession *s, const LabanMouseEvent *event) {
 }
 
 LabanExitState laban_session_exit_state(LabanSession *session) {
-    LabanExitState r = { session->status, session->exit_status };
+    LabanExitState r = { 0, 0 };
+    if (!session) return r;
+    r.status      = session->status;
+    r.exit_status = session->exit_status;
     return r;
 }
 
