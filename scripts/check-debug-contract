@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+import re
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DOC = ROOT / "docs/process/dev-process.md"
+RUNTIME = ROOT / "Sources/LabanDebug/HeadlessDebugRuntime.swift"
+SERVER = ROOT / "Sources/LabanDebug/DebugHTTPServer.swift"
+
+DOC_ENDPOINT = re.compile(r"`(GET|POST) (/debug[^`\s]+)`")
+DISCOVERY_ENDPOINT = re.compile(
+    r'DebugDiscoveryEndpoint\(\s*method:\s*"(?P<method>GET|POST)",\s*'
+    r'path:\s*"(?P<path>[^"]+)"',
+    re.S,
+)
+DISCOVERY_SCHEMA = re.compile(r'(?:requestSchema|responseSchema):\s*"([^"]+)"')
+ROUTE_CASE = re.compile(r'\("(?P<method>GET|POST)",\s*"(?P<path>/debug[^"]*)"\)')
+
+
+def normalize_path(path: str) -> str:
+    return path.split("?", 1)[0]
+
+
+def doc_endpoints() -> set[tuple[str, str]]:
+    text = DOC.read_text(encoding="utf-8")
+    return {
+        (match.group(1), normalize_path(match.group(2)))
+        for match in DOC_ENDPOINT.finditer(text)
+    }
+
+
+def discovery_endpoints() -> set[tuple[str, str]]:
+    text = RUNTIME.read_text(encoding="utf-8")
+    return {
+        (match.group("method"), match.group("path"))
+        for match in DISCOVERY_ENDPOINT.finditer(text)
+    }
+
+
+def discovery_schemas() -> set[str]:
+    text = RUNTIME.read_text(encoding="utf-8")
+    return set(DISCOVERY_SCHEMA.findall(text))
+
+
+def router_endpoints() -> set[tuple[str, str]]:
+    text = SERVER.read_text(encoding="utf-8")
+    endpoints = {
+        (match.group("method"), match.group("path"))
+        for match in ROUTE_CASE.finditer(text)
+    }
+    if 'hasPrefix("/debug/sessions/")' in text:
+        endpoints.add(("GET", "/debug/sessions/<id>"))
+    return endpoints
+
+
+def main() -> int:
+    errors: list[str] = []
+
+    docs = doc_endpoints()
+    discovery = discovery_endpoints()
+    router = router_endpoints()
+
+    for endpoint in sorted(docs - discovery):
+        errors.append(f"documented endpoint missing from discovery: {endpoint[0]} {endpoint[1]}")
+
+    for endpoint in sorted(discovery - router):
+        errors.append(f"discovered endpoint missing from router: {endpoint[0]} {endpoint[1]}")
+
+    for schema in sorted(discovery_schemas()):
+        if not (ROOT / schema).is_file():
+            errors.append(f"discovery references missing schema: {schema}")
+
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+
+    print("check-debug-contract passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

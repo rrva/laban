@@ -30,12 +30,17 @@ if [ -d execplans/active ]; then
 fi
 
 git diff --check
+./scripts/check-boundaries
+./scripts/check-docs
+./scripts/check-debug-contract
 
 if [ -f Package.swift ]; then
   ./scripts/lint
   ./scripts/fetch-libghostty-vt
+  ./scripts/check-dependencies
   swift build
   swift test
+  ./scripts/check-sanitize
   ./scripts/smoke-runtime
   ./scripts/test-e2e
 fi

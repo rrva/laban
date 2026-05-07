@@ -31,6 +31,19 @@ not block the renderer milestone on heavyweight optional tools.
 - [x] (2026-05-03) Add a sanitizer script for deep local checks of `LabanTerminalCore`.
 - [x] (2026-05-03) Update `docs/quality/quality.md` with the new gates after they exist.
 - [x] (2026-05-03) Run all validation commands and record any surprises in this plan.
+- [x] (2026-05-07) Add `./scripts/check-docs` to verify repository-local
+  Markdown link targets and run it from `./scripts/check`.
+- [x] (2026-05-07) Update quality docs to close the repository-local link
+  checker debt.
+- [x] (2026-05-07) Add `./scripts/check-debug-contract` to compare debug
+  endpoint docs, discovery, router cases, and schema paths, and run it from
+  `./scripts/check`.
+- [x] (2026-05-07) Add failed-run artifact collection to
+  `./scripts/test-e2e` and verify it with a forced failure after debug-server
+  readiness.
+- [x] (2026-05-07) Add `./scripts/check-dependencies` to enforce the current
+  no-SwiftPM-dependencies policy and verify the libghostty-vt pin, source,
+  checkout, archive, and header.
 
 ## Decision Log
 
@@ -230,6 +243,12 @@ is enough static analysis for this shard.
 Update `docs/quality/quality.md` after the scripts exist:
 
 - Change mechanical enforcement evidence to include `./scripts/lint`.
+- Change mechanical enforcement evidence to include `./scripts/check-docs`.
+- Change mechanical enforcement evidence to include
+  `./scripts/check-debug-contract`.
+- Change debug harness evidence to include `./scripts/test-e2e` failed-run
+  artifacts.
+- Change mechanical enforcement evidence to include `./scripts/check-dependencies`.
 - Add `./scripts/check-sanitize` as the deep local memory-safety gate.
 - Add `./scripts/dev-index` and `clangd --check=...` as editor/static-analysis
   evidence for the C target.
@@ -243,6 +262,10 @@ Run these commands from the repository root, `/Users/rrj/wrk/laban`:
 ```sh
 ./scripts/format
 ./scripts/lint
+./scripts/check-docs
+./scripts/check-debug-contract
+./scripts/check-dependencies
+LABAN_E2E_FORCE_FAILURE_AFTER_READY=1 ./scripts/test-e2e
 ./scripts/dev-index
 clangd --check=Sources/LabanTerminalCore/session.c --tweaks=
 ./scripts/check-sanitize
@@ -253,6 +276,11 @@ Expected success shape:
 
 ```text
 ./scripts/lint exits 0
+./scripts/check-docs exits 0 and prints check-docs passed
+./scripts/check-debug-contract exits 0 and prints check-debug-contract passed
+./scripts/check-dependencies exits 0 and prints check-dependencies passed
+LABAN_E2E_FORCE_FAILURE_AFTER_READY=1 ./scripts/test-e2e exits nonzero and
+writes `.artifacts/runs/<run-id>/failure/`
 compile_commands.json exists and contains Sources/LabanTerminalCore/session.c
 clangd --check=Sources/LabanTerminalCore/session.c --tweaks= exits 0
 ./scripts/check-sanitize exits 0 with LabanTerminalCoreTests passing
@@ -266,6 +294,17 @@ This plan is complete when all of the following are true:
 - `./scripts/format` can be run twice in a row without producing new diffs on
   the second run.
 - `./scripts/lint` exits 0.
+- `./scripts/check-docs` exits 0 and fails if a repository-local Markdown link
+  points at a missing file.
+- `./scripts/check-debug-contract` exits 0 and fails if a documented debug
+  endpoint is absent from discovery, a discovered endpoint is absent from the
+  router, or a discovery schema path is missing.
+- `./scripts/check-dependencies` exits 0 and fails if SwiftPM grows an
+  undocumented external package dependency or the libghostty-vt pin/source,
+  checkout, archive, or header violates policy.
+- `LABAN_E2E_FORCE_FAILURE_AFTER_READY=1 ./scripts/test-e2e` exits nonzero
+  after readiness and writes a failure bundle containing debug JSON, screenshot,
+  server log tails, and run metadata.
 - `./scripts/dev-index` creates an ignored root `compile_commands.json`.
 - `clangd --check=Sources/LabanTerminalCore/session.c --tweaks=` exits 0 using
   the generated compile database.

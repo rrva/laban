@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = ROOT / "Package.swift"
+FETCH = ROOT / "scripts/fetch-libghostty-vt"
+ADR = ROOT / "docs/adr/0001-libghostty-vt-owns-vt-parsing.md"
+
+
+def fail(errors: list[str], message: str) -> None:
+    errors.append(message)
+
+
+def shell(command: list[str], cwd: Path | None = None) -> str | None:
+    try:
+        return subprocess.check_output(command, cwd=cwd, text=True, stderr=subprocess.DEVNULL).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def shell_script_value(text: str, name: str) -> str | None:
+    match = re.search(rf'^{re.escape(name)}="([^"]+)"$', text, re.M)
+    return match.group(1) if match else None
+
+
+def main() -> int:
+    errors: list[str] = []
+    package = PACKAGE.read_text(encoding="utf-8")
+    fetch = FETCH.read_text(encoding="utf-8")
+    adr = ADR.read_text(encoding="utf-8")
+
+    if ".package(" in package:
+        fail(errors, "Package.swift declares a SwiftPM package dependency; document and pin it first")
+
+    commit = shell_script_value(fetch, "GHOSTTY_COMMIT")
+    url = shell_script_value(fetch, "GHOSTTY_URL")
+    dest = shell_script_value(fetch, "DEST")
+
+    if not commit or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        fail(errors, "scripts/fetch-libghostty-vt must define a 40-character GHOSTTY_COMMIT")
+    if url != "https://github.com/ghostty-org/ghostty":
+        fail(errors, "scripts/fetch-libghostty-vt must fetch the official Ghostty repository")
+    if dest != ".external/libghostty-vt":
+        fail(errors, "scripts/fetch-libghostty-vt must keep libghostty-vt under .external/libghostty-vt")
+    if "-Demit-lib-vt" not in fetch:
+        fail(errors, "scripts/fetch-libghostty-vt must build the libghostty-vt archive")
+    if "-Doptimize=ReleaseFast" not in fetch:
+        fail(errors, "scripts/fetch-libghostty-vt must build the vendored library with ReleaseFast")
+    if commit and commit not in adr:
+        fail(errors, "ADR 0001 must name the same libghostty-vt commit as scripts/fetch-libghostty-vt")
+
+    external = ROOT / ".external/libghostty-vt"
+    if external.exists():
+        git_dir = external / ".git"
+        if git_dir.exists():
+            head = shell(["git", "-C", str(external), "rev-parse", "HEAD"])
+            if commit and head != commit:
+                fail(errors, f".external/libghostty-vt is at {head or 'unknown'}, expected {commit}")
+
+            origin = shell(["git", "-C", str(external), "remote", "get-url", "origin"])
+            if origin and origin.rstrip("/") != "https://github.com/ghostty-org/ghostty":
+                fail(errors, f".external/libghostty-vt origin is {origin}, expected official Ghostty")
+
+            lib = external / "zig-out/lib/libghostty-vt.a"
+            header = external / "zig-out/include/ghostty/vt.h"
+            if not lib.is_file():
+                fail(errors, f"missing vendored libghostty-vt archive: {lib.relative_to(ROOT)}")
+            if not header.is_file():
+                fail(errors, f"missing vendored libghostty-vt header: {header.relative_to(ROOT)}")
+        else:
+            fail(errors, ".external/libghostty-vt exists but is not a git checkout")
+
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+
+    print("check-dependencies passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+import re
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DOC_ROOTS = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "PLANS.md",
+    "README.md",
+    "docs",
+    "execplans",
+    "fixtures",
+    "schemas",
+]
+
+INLINE_LINK = re.compile(r"!?\[[^\]\n]*\]\(([^)\n]+)\)")
+REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*(\S+)")
+
+
+def markdown_files():
+    seen: set[Path] = set()
+    for root in DOC_ROOTS:
+        path = ROOT / root
+        if path.is_file():
+            resolved = path.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                yield path
+        elif path.is_dir():
+            for md in sorted(path.rglob("*.md")):
+                resolved = md.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    yield md
+
+
+def link_target(raw: str) -> str:
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw.startswith("<"):
+        end = raw.find(">")
+        if end > 0:
+            return raw[1:end].strip()
+    return raw.split()[0].strip()
+
+
+def local_path(target: str, source: Path) -> Path | None:
+    if not target or target.startswith("#"):
+        return None
+
+    parts = urlsplit(target)
+    if parts.scheme:
+        return None
+
+    path = unquote(parts.path)
+    if not path:
+        return None
+
+    if path.startswith("/"):
+        candidate = ROOT / path.lstrip("/")
+    else:
+        candidate = source.parent / path
+    return candidate
+
+
+def iter_link_targets(source: Path):
+    in_fence = False
+    for line_no, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+
+        for match in INLINE_LINK.finditer(line):
+            yield line_no, link_target(match.group(1))
+
+        ref = REFERENCE_LINK.match(line)
+        if ref:
+            yield line_no, link_target(ref.group(1))
+
+
+def main() -> int:
+    errors: list[str] = []
+    root_real = ROOT.resolve()
+
+    for source in markdown_files():
+        for line_no, target in iter_link_targets(source):
+            candidate = local_path(target, source)
+            if candidate is None:
+                continue
+            candidate_real = candidate.resolve(strict=False)
+            try:
+                candidate_real.relative_to(root_real)
+            except ValueError:
+                errors.append(
+                    f"{source.relative_to(ROOT)}:{line_no}: link escapes repository: {target}"
+                )
+                continue
+            if not candidate_real.exists():
+                errors.append(
+                    f"{source.relative_to(ROOT)}:{line_no}: missing local link target: {target}"
+                )
+
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+
+    print("check-docs passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

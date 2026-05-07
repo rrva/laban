@@ -13,26 +13,6 @@ Desired outcome: CI runs `./scripts/check` on every push and pull request.
 
 Blocked by: repository hosting and CI provider have not been selected.
 
-### Add repository-local link checker
-
-Problem: docs now cross-link through several directories. Broken links would
-make the repo less legible to agents.
-
-Desired outcome: a stable `check-docs` or equivalent command fails on broken
-repository-local Markdown links.
-
-Blocked by: link-check tooling has not been added to `./scripts/check`.
-
-### Implement observability contract
-
-Problem: `docs/process/observability.md` defines logs, events, metrics, and
-traces, but no app or local query command exists yet.
-
-Desired outcome: a stable local command or debug endpoint lets agents query the
-observability signals for an isolated run.
-
-Blocked by: implementation has not started.
-
 ## Closed
 
 ### Add implementation-selection decision record
@@ -42,3 +22,56 @@ Closed: 2026-05-03.
 Outcome: `execplans/completed/choose-implementation.md` records the selected
 SwiftPM/AppKit/C/libghostty/software-renderer-first stack, rejected
 alternatives, and follow-up execution plans.
+
+### Implement baseline observability query path
+
+Closed: 2026-05-07.
+
+Outcome: the headless debug runtime exposes `/debug/events`; app-side logs and
+events are recorded through `AppLog` and `EventLog`; capture/replay artifacts
+record ordered input, PTY, snapshot, and frame-command evidence.
+
+### Add queryable observability metrics and traces
+
+Closed: 2026-05-07.
+
+Outcome: the headless debug runtime exposes `/debug/metrics`, `/debug/timing`,
+and `/debug/render-trace`; diagnostic snapshots include `metrics.json`, and
+the E2E gate checks the metrics contract.
+
+### Add repository-local link checker
+
+Closed: 2026-05-07.
+
+Outcome: `./scripts/check-docs` validates repository-local Markdown link
+targets under the root docs, schema, fixture, and ExecPlan docs, and
+`./scripts/check` runs it before the Swift build/test gates.
+
+### Add debug endpoint contract checker
+
+Closed: 2026-05-07.
+
+Outcome: `./scripts/check-debug-contract` compares the debug endpoints
+documented in `docs/process/dev-process.md` with the runtime discovery table,
+HTTP router cases, and schema paths, and `./scripts/check` runs it before the
+Swift build/test gates.
+
+### Add E2E failure artifact collection
+
+Closed: 2026-05-07.
+
+Outcome: `./scripts/test-e2e` now writes a bounded failure bundle before
+tearing down the debug server, including run metadata, environment summary,
+debug state, sessions, render state, render trace, events, input and terminal
+logs, errors, timing, metrics, a screenshot, stdout/stderr tails, and a
+one-shot debug snapshot result.
+
+### Add dependency policy check
+
+Closed: 2026-05-07.
+
+Outcome: `./scripts/check-dependencies` keeps the SwiftPM package free of
+external package dependencies unless a future change explicitly documents and
+pins one, verifies `scripts/fetch-libghostty-vt` fetches the official Ghostty
+repository at the ADR-documented commit, and checks the local libghostty-vt
+checkout and static archive/header when `.external/` is present.
