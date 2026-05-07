@@ -6,6 +6,7 @@ import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
 import QuartzCore
+import os
 
 protocol ExternalURLOpening {
   @discardableResult
@@ -205,6 +206,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastCursorBlinkToggleAt = Date()
   private var lastRenderedCursorBlinking = false
 
+  /// Coalesces wake-ups from per-session reader threads. Set to true
+  /// when a background drain has fired but no main-thread advanceFrame
+  /// is yet in flight; cleared when the main-thread block runs. Lives
+  /// behind an unfair lock so the comparison/swap is atomic across
+  /// the reader threads and the main thread.
+  private let pendingDisplayKick = OSAllocatedUnfairLock(initialState: false)
+
   // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
   // renderer's onFrameCompleted callback. Bounded ring buffer.
   private var pendingInputAt: ContinuousClock.Instant?
@@ -275,6 +283,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       forName: Theme.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
       self?.renderInvalidated = true
+    }
+
+    /* The per-session reader thread fires this callback whenever it
+     * drained bytes. We coalesce them into a single main-thread
+     * advanceFrame so a chatty child does not pile up advanceFrame
+     * tasks behind a long render. The display link still ticks on its
+     * own clock — this hop only matters when VRR has throttled the
+     * link to a low rate and we need to bypass that throttle. */
+    model.onSessionDirty = { [weak self] _ in
+      self?.kickDisplayFromBackground()
     }
   }
 
@@ -430,6 +448,27 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     advanceFrame()
   }
 
+  /// Called from a per-session reader thread (off main) when the
+  /// reader has drained bytes through the VT parser. Coalesces wake-
+  /// ups via `pendingDisplayKick`: only the first dirty drain since
+  /// the last main-thread tick posts to main, the rest are folded
+  /// into that pending tick. Bypasses the CADisplayLink VRR throttle
+  /// so a top(1) refresh that lands during an "idle" window is not
+  /// stuck waiting up to 41 ms for the link to ramp back up.
+  fileprivate func kickDisplayFromBackground() {
+    let alreadyPending = pendingDisplayKick.withLock { value -> Bool in
+      let was = value
+      value = true
+      return was
+    }
+    if alreadyPending { return }
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.pendingDisplayKick.withLock { $0 = false }
+      self.advanceFrame()
+    }
+  }
+
   private func stopDisplayLink() {
     if #available(macOS 14.0, *) {
       if let link = caDisplayLink as? CADisplayLink {
@@ -582,7 +621,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id) {
         session.setCaptureFrame(captureFrame)
-        session.poll()
+        /* PTY draining now happens off the main thread on the per-
+         * session reader thread that AppModel spawns; the main thread
+         * just observes the snapshot via renderDirty() / snapshot()
+         * below. The reader wakes us here via onSessionDirty →
+         * kickDisplay() so we don't have to wait for the next vsync
+         * when bytes arrive between ticks. */
         if model.syncProcessMetadata(forTab: tab.id, from: session) {
           renderInvalidated = true
         }

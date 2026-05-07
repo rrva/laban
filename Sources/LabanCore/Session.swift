@@ -144,6 +144,15 @@ public final class Session {
     return laban_session_poll(h)
   }
 
+  /// Build a `SessionRunner` that owns this session's PTY drain on a
+  /// dedicated thread. Returns nil if the session is closed. The
+  /// caller is responsible for `start()`ing the runner and for calling
+  /// `stop()` before this session is `close()`d.
+  public func makeRunner(onDirty: @escaping @Sendable () -> Void) -> SessionRunner? {
+    guard !isClosed, let h = handle else { return nil }
+    return SessionRunner(handle: h, onDirty: onDirty)
+  }
+
   @discardableResult
   public func resize(_ size: LabanTerminalSize) -> Int32 {
     guard !isClosed, let h = handle else { return -1 }

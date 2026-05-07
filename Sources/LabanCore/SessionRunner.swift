@@ -31,6 +31,17 @@ public final class SessionRunner {
   private let onDirty: @Sendable () -> Void
   private let shouldStop = OSAllocatedUnfairLock(initialState: false)
   private let started = OSAllocatedUnfairLock(initialState: false)
+  /// Latches once the first `stop()` call has waited for the thread.
+  /// A second `stop()` (e.g. from `deinit` after an explicit
+  /// `stop()` was already called by AppModel.deinit) must be a
+  /// no-op; otherwise it tries to consume the one-shot
+  /// DispatchSemaphore signal a second time and blocks forever.
+  private let joined = OSAllocatedUnfairLock(initialState: false)
+  /// Signals the join in `stop()`. Counts up exactly once, when the
+  /// reader thread exits its loop. `stop()` blocks on this so the
+  /// caller is guaranteed the reader is no longer touching the C
+  /// session before `Session.close()` runs `laban_session_destroy`.
+  private let exited = DispatchSemaphore(value: 0)
   private var thread: Thread?
 
   /// `handle` is the opaque C session pointer (`Session.handle`).
@@ -53,10 +64,12 @@ public final class SessionRunner {
     let ref = self.ref
     let onDirty = self.onDirty
     let shouldStop = self.shouldStop
+    let exited = self.exited
     let timeout = Self.pollTimeoutMs
     let t = Thread {
       Thread.current.name = "laban.session.reader"
       pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0)
+      defer { exited.signal() }
       while !shouldStop.withLock({ $0 }) {
         let drained = laban_session_poll_blocking(ref.pointer, timeout)
         if drained > 0 { onDirty() }
@@ -67,13 +80,24 @@ public final class SessionRunner {
     t.start()
   }
 
+  /// Signal the reader thread to exit and wait until it does. The
+  /// caller MUST call this before `laban_session_destroy` runs against
+  /// the same handle, otherwise the reader can re-acquire the C lock
+  /// after the destructor has called `pthread_mutex_destroy`. Worst-
+  /// case wait is `pollTimeoutMs` (100 ms) per session. Idempotent —
+  /// repeated calls return immediately, which matters because the
+  /// runner is typically stopped both explicitly (e.g. from
+  /// `AppModel.closeTab`) and again from `deinit`.
   public func stop() {
+    let alreadyJoined = joined.withLock { value -> Bool in
+      let was = value
+      value = true
+      return was
+    }
+    if alreadyJoined { return }
+    let wasStarted = started.withLock { $0 }
     shouldStop.withLock { $0 = true }
-    /* The reader thread observes the flag after at most pollTimeoutMs.
-     * We do not join here because joining would block the caller for
-     * up to pollTimeoutMs and stop() is typically called from teardown
-     * paths that expect to return immediately. The thread will exit
-     * shortly and self-collect. */
+    if wasStarted { exited.wait() }
   }
 
   deinit { stop() }
