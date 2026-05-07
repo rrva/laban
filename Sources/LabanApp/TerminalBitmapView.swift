@@ -864,7 +864,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   override func mouseMoved(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
     updateHoveredSidebarTab(at: pt)
-    updateHoverCursor(at: pt)
+    updateHoverCursor(at: pt, modifierFlags: event.modifierFlags)
   }
 
   override func mouseExited(with event: NSEvent) {
@@ -872,13 +872,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     setHoverCursor(.arrow)
   }
 
-  private func updateHoverCursor(at pt: NSPoint) {
-    let uri = pt.x >= sidebarWidth ? externalHyperlinkURI(at: pt) : nil
-    setHoverCursor(Self.hoverCursorStyle(externalHyperlinkURI: uri))
+  override func flagsChanged(with event: NSEvent) {
+    let pt = convert(event.locationInWindow, from: nil)
+    updateHoverCursor(at: pt, modifierFlags: event.modifierFlags)
   }
 
-  static func hoverCursorStyle(externalHyperlinkURI uri: String?) -> TerminalHoverCursorStyle {
-    uri == nil ? .arrow : .pointingHand
+  private func updateHoverCursor(at pt: NSPoint, modifierFlags: NSEvent.ModifierFlags = []) {
+    let uri = pt.x >= sidebarWidth ? externalHyperlinkURI(at: pt) : nil
+    setHoverCursor(Self.hoverCursorStyle(externalHyperlinkURI: uri, modifierFlags: modifierFlags))
+  }
+
+  static func shouldActivateExternalHyperlink(
+    clickCount: Int,
+    modifierFlags: NSEvent.ModifierFlags
+  ) -> Bool {
+    clickCount == 1 && modifierFlags.contains(.command)
+  }
+
+  static func hoverCursorStyle(
+    externalHyperlinkURI uri: String?,
+    modifierFlags: NSEvent.ModifierFlags = []
+  ) -> TerminalHoverCursorStyle {
+    uri != nil && modifierFlags.contains(.command) ? .pointingHand : .arrow
   }
 
   private func setHoverCursor(_ style: TerminalHoverCursorStyle) {
@@ -1535,7 +1550,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     window?.makeFirstResponder(self)
 
-    if event.clickCount == 1, let uri = externalHyperlinkURI(at: pt) {
+    if Self.shouldActivateExternalHyperlink(
+      clickCount: event.clickCount,
+      modifierFlags: event.modifierFlags
+    ), let uri = externalHyperlinkURI(at: pt) {
       pendingHyperlinkClick = PendingHyperlinkClick(uri: uri, downPoint: pt)
       return
     }

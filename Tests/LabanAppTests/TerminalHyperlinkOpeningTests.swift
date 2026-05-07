@@ -41,10 +41,32 @@ final class TerminalHyperlinkOpeningTests: XCTestCase {
 
   func testHoverCursorStyleUsesPointingHandForExternalHyperlinks() {
     XCTAssertEqual(
-      TerminalBitmapView.hoverCursorStyle(externalHyperlinkURI: "https://example.com"),
+      TerminalBitmapView.hoverCursorStyle(
+        externalHyperlinkURI: "https://example.com",
+        modifierFlags: .command),
       .pointingHand)
     XCTAssertEqual(
-      TerminalBitmapView.hoverCursorStyle(externalHyperlinkURI: nil),
+      TerminalBitmapView.hoverCursorStyle(
+        externalHyperlinkURI: "https://example.com",
+        modifierFlags: []),
       .arrow)
+    XCTAssertEqual(
+      TerminalBitmapView.hoverCursorStyle(externalHyperlinkURI: nil, modifierFlags: .command),
+      .arrow)
+  }
+
+  func testExternalHyperlinkActivationRequiresCommandClick() {
+    XCTAssertTrue(
+      TerminalBitmapView.shouldActivateExternalHyperlink(
+        clickCount: 1,
+        modifierFlags: .command))
+    XCTAssertFalse(
+      TerminalBitmapView.shouldActivateExternalHyperlink(
+        clickCount: 1,
+        modifierFlags: []))
+    XCTAssertFalse(
+      TerminalBitmapView.shouldActivateExternalHyperlink(
+        clickCount: 2,
+        modifierFlags: .command))
   }
 }
