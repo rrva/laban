@@ -1096,19 +1096,11 @@ void laban_session_destroy(LabanSession *s) {
     free(s);
 }
 
-int laban_session_poll(LabanSession *s) {
-    if (!s) return -1;
-    SESSION_LOCK(s);
-    if (s->fixture_mode) return 0; /* no PTY to drain */
-    if (s->status != 0) return 0;  /* already exited */
-
-    /* Cap how much we drain in a single tick. Without this, a runaway
-     * child (`yes`, an infinite log loop, a confused REPL) keeps the
-     * read loop spinning until EAGAIN — which it never reaches because
-     * the child outpaces us — and the entire main thread is monopolized
-     * parsing megabytes of output before a single frame renders. With
-     * the cap, the rest of the buffer drains on subsequent ticks and
-     * the UI stays responsive at vsync rate. */
+/* Drain the PTY through the VT parser. Caller must hold s->lock and
+ * have already gated on fixture_mode/exit-status. Returns the number
+ * of bytes drained. The 256 KB cap prevents a runaway child from
+ * monopolising the calling thread for an unbounded time per tick. */
+static size_t laban_session_drain_locked_(LabanSession *s) {
     enum { MAX_BYTES_PER_POLL = 256 * 1024 };
     size_t drained = 0;
 
@@ -1139,7 +1131,73 @@ int laban_session_poll(LabanSession *s) {
         }
         break;
     }
+    return drained;
+}
+
+int laban_session_poll(LabanSession *s) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    if (s->fixture_mode) return 0; /* no PTY to drain */
+    if (s->status != 0) return 0;  /* already exited */
+    (void)laban_session_drain_locked_(s);
     return 0;
+}
+
+/* Block until pty_fd is readable or timeout_ms elapses, then drain
+ * available bytes. The select(2) wait happens lock-free so other
+ * threads (e.g. the main thread calling snapshot/write/resize) are
+ * not held off while the reader is parked. The drain itself happens
+ * under the session lock, identical to laban_session_poll's body.
+ *
+ * Returns:
+ *   >= 0 : number of bytes drained (0 means timeout or nothing to read).
+ *   -1   : permanent error on select.
+ *
+ * Negative timeout_ms blocks indefinitely. The caller is responsible
+ * for stopping this thread before laban_session_destroy() — that is the
+ * same single-shutdown contract the destructor already documents. */
+int laban_session_poll_blocking(LabanSession *s, int timeout_ms) {
+    if (!s) return -1;
+
+    /* Snapshot fd / mode / exit-state under the lock so we observe a
+     * coherent view; release before parking in select() so other
+     * threads can mutate the session while we wait. */
+    int fd;
+    int fixture;
+    int exited;
+    {
+        SESSION_LOCK(s);
+        fd = s->pty_fd;
+        fixture = s->fixture_mode;
+        exited = (s->status != 0);
+    }
+    if (fixture) return 0;
+    if (exited) return 0;
+    if (fd < 0) return 0;
+
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    struct timeval tv = {
+        .tv_sec = timeout_ms / 1000,
+        .tv_usec = (timeout_ms % 1000) * 1000,
+    };
+    int sr;
+    do {
+        sr = select(fd + 1, &rfds, NULL, NULL,
+                    timeout_ms < 0 ? NULL : &tv);
+    } while (sr < 0 && errno == EINTR);
+    if (sr < 0) return -1;
+    if (sr == 0) return 0; /* timeout */
+
+    SESSION_LOCK(s);
+    /* Re-validate after re-acquiring the lock: another thread may have
+     * resized the PTY (unlikely) or the session may have transitioned
+     * to exited during our wait. */
+    if (s->pty_fd != fd) return 0;
+    if (s->fixture_mode) return 0;
+    if (s->status != 0) return 0;
+    return (int)laban_session_drain_locked_(s);
 }
 
 int laban_session_resize(LabanSession *s, LabanTerminalSize size) {

@@ -137,6 +137,21 @@ int laban_session_create(
 );
 void laban_session_destroy(LabanSession *session);
 int laban_session_poll(LabanSession *session);
+
+/*
+ * laban_session_poll_blocking:
+ *   Block until pty_fd is readable or `timeout_ms` elapses, then drain
+ *   available bytes through the VT parser. Holds the session lock only
+ *   while draining (read+vt_write); the select(2) wait happens lock-free
+ *   so the main thread can take the lock to call snapshot/write/resize/
+ *   etc. while the reader is parked. A negative timeout blocks
+ *   indefinitely. Returns the number of bytes drained (0 on timeout or
+ *   nothing to read), or -1 on a permanent select error. The caller is
+ *   responsible for stopping any thread that calls this before
+ *   laban_session_destroy() runs.
+ */
+int laban_session_poll_blocking(LabanSession *session, int timeout_ms);
+
 int laban_session_resize(LabanSession *session, LabanTerminalSize size);
 
 /*
