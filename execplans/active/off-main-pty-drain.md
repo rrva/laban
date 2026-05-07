@@ -553,12 +553,21 @@ Laban's `LSMinimumSystemVersion`.
 ## Progress
 
 - [x] (2026-05-07) ExecPlan written.
-- [ ] Step 1 — recursive `pthread_mutex_t` in `LabanSession`.
-- [ ] Step 2 — `laban_session_poll_blocking`.
-- [ ] Step 3 — `SessionRunner.swift`.
-- [ ] Step 4 — AppModel wiring + remove main-thread `session.poll()`.
-- [ ] Step 5 — new tests + TSan run.
-- [ ] Validation — capture comparison + watchdog clean run.
+- [x] (2026-05-07) Step 1 — recursive `pthread_mutex_t` in `LabanSession`,
+      35 entry points wrapped via `__attribute__((cleanup))`.
+- [x] (2026-05-07) Step 2 — `laban_session_poll_blocking` with the
+      select-outside-the-lock + drain-inside-the-lock pattern.
+- [x] (2026-05-07) Step 3 — `SessionRunner.swift` (per-session
+      `Thread`, QoS `userInitiated`, idempotent `stop()`).
+- [x] (2026-05-07) Step 4 — AppModel wiring, removed
+      `session.poll()` from `TerminalBitmapView.advanceFrame`,
+      added the wake-on-dirty `kickDisplayFromBackground` to
+      bypass VRR throttle.
+- [x] (2026-05-08) Step 5 — `LabanSessionPollBlockingTests` and
+      `SessionRunnerTests`, all green under
+      `swift test --sanitize=thread` (31+ tests, zero races).
+- [x] (2026-05-08) Validation — user reports `top` flickers less
+      under the same workload; full test suite passes.
 
 ## Surprises & Discoveries
 
@@ -574,6 +583,28 @@ Laban's `LSMinimumSystemVersion`.
   via the wake-on-dirty signal; (b) is a separate workstream.
   Evidence: `jq` of `frame.rendered` deltas in the capture, and
   `head -60 ~/laban-watchdog/inproc-stall-624ms-20260507-211413.317.txt`.
+
+- Observation: A naive port of the synchronous tab-status callback
+  introduced a lock-order inversion. The C session lock is held while
+  the parser fires the OSC 21337 callback. In the original
+  single-threaded design this was fine; with the off-main reader, a
+  reader thread holding the C lock and synchronously taking
+  `modelLock` inverts against any main-thread path that holds
+  `modelLock` first (e.g. `advanceFrame` calling `session.snapshot()`).
+  Fix: `AppModel.attachTabStatus` now wraps the handler in
+  `DispatchQueue.main.async` so the reader thread holds exactly one
+  lock at a time. Tests had to be updated to pump the main queue
+  before reading back the deferred mutation.
+
+- Observation: `SessionRunner.stop()` originally used a one-shot
+  `DispatchSemaphore` consumed by the first `wait()`. `AppModel.deinit`
+  calls `stop()` explicitly, then the dictionary tear-down also fires
+  `SessionRunner.deinit → stop()`. The second `wait()` blocked
+  forever because the signal had already been consumed. Caught via
+  `sample` of a hung `xctest`: the main thread was parked in
+  `semaphore_wait_trap` from `SessionRunner.stop()` while the reader
+  thread was already gone. Fixed by latching a `joined` flag so
+  `stop()` is idempotent.
 
 ## Outcomes & Retrospective
 
