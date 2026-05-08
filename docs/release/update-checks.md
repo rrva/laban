@@ -53,6 +53,55 @@ It does not download, install, replace, or execute anything.
    shasum -a 256 /tmp/Laban-<version>.zip
    ```
 
+## Drive CLI Fast Path
+
+For agent-driven releases, check for the local `gws` CLI before trying browser
+automation or generic Drive connector discovery:
+
+```sh
+which gws
+gws --help
+```
+
+`gws` can upload raw zip bytes and update the existing manifest revision without
+opening Chrome:
+
+```sh
+version=0.4.3
+folder_id=0AOJsI5dKCixPUk9PVA
+manifest_id=1021htaI6ngLEoF1ItVLvFJHzP-TczOeG
+zip=".artifacts/release/Laban-${version}.zip"
+manifest=".artifacts/release/laban-latest-${version}.json"
+
+gws drive files create \
+  --params '{"supportsAllDrives":true,"fields":"id,name,mimeType,size,md5Checksum,sha256Checksum,webContentLink,webViewLink"}' \
+  --json "{\"name\":\"Laban-${version}.zip\",\"mimeType\":\"application/zip\",\"parents\":[\"${folder_id}\"]}" \
+  --upload "$zip" \
+  --upload-content-type application/zip
+
+gws drive permissions create \
+  --params '{"fileId":"<ZIP_FILE_ID>","supportsAllDrives":true,"sendNotificationEmail":false,"fields":"id,type,role"}' \
+  --json '{"type":"anyone","role":"reader"}'
+
+cat > "$manifest" <<EOF
+{
+  "latest": "${version}",
+  "link": "https://drive.google.com/uc?export=download&id=<ZIP_FILE_ID>",
+  "notes": "Laban ${version} release."
+}
+EOF
+
+gws drive files update \
+  --params "{\"fileId\":\"${manifest_id}\",\"supportsAllDrives\":true,\"fields\":\"id,name,mimeType,size,md5Checksum,modifiedTime,webContentLink,webViewLink\"}" \
+  --json '{"name":"laban-latest.json","mimeType":"application/json"}' \
+  --upload "$manifest" \
+  --upload-content-type application/json
+```
+
+Keep using a new Drive file ID for each zip. Keep updating
+`laban-latest.json` in place so the manifest ID stamped into the app remains
+stable.
+
 ## Manifest
 
 ```json
