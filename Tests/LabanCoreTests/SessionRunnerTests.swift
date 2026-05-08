@@ -17,15 +17,17 @@ final class SessionRunnerTests: XCTestCase {
   func testRunnerStartStopOnFixtureSession() throws {
     let session = try makeFixtureSession()
     let calls = OSAllocatedUnfairLock(initialState: 0)
-    guard let runner = session.makeRunner(onDirty: {
-      calls.withLock { $0 += 1 }
-    }) else {
+    guard
+      let runner = session.makeRunner(onDirty: {
+        calls.withLock { $0 += 1 }
+      })
+    else {
       XCTFail("makeRunner returned nil for an open fixture session")
       return
     }
     runner.start()
-    /* Fixture mode: poll_blocking short-circuits, so the loop spins
-     * checking shouldStop. Give it a few iterations, then stop. */
+    // Fixture mode: poll_blocking short-circuits, so the loop spins checking
+    // shouldStop. Give it a few iterations, then stop.
     Thread.sleep(forTimeInterval: 0.05)
     runner.stop()
     XCTAssertEqual(
@@ -41,10 +43,9 @@ final class SessionRunnerTests: XCTestCase {
     }
     runner.start()
     Thread.sleep(forTimeInterval: 0.05)
-    /* Three back-to-back stop() calls must not deadlock. The
-     * idempotence latch matters because AppModel.deinit calls stop()
-     * explicitly and the dictionary tear-down then triggers
-     * SessionRunner.deinit which calls stop() again. */
+    // Three back-to-back stop() calls must not deadlock. The idempotence latch
+    // matters because AppModel.deinit calls stop() explicitly and the dictionary
+    // tear-down then triggers SessionRunner.deinit which calls stop() again.
     runner.stop()
     runner.stop()
     runner.stop()
@@ -56,14 +57,14 @@ final class SessionRunnerTests: XCTestCase {
       XCTFail("makeRunner returned nil")
       return
     }
-    /* Never started: stop() must short-circuit, not block forever
-     * waiting for a thread that does not exist. */
+    // Never started: stop() must short-circuit, not block forever waiting for a
+    // thread that does not exist.
     runner.stop()
   }
 
   func testRunnerOnDirtyFiresWhenRealShellOutputs() throws {
-    /* Build a real-shell session that prints something. Using
-     * the C API directly because Session.realShell takes no argv. */
+    // Build a real-shell session that prints something. Using the C API
+    // directly because Session.realShell takes no argv.
     let exe = strdup("/bin/sh")!
     var ptrs: [UnsafeMutablePointer<CChar>?] = [
       strdup("/bin/sh"), strdup("-c"), strdup("printf hi; sleep 0.3"),
@@ -78,7 +79,8 @@ final class SessionRunnerTests: XCTestCase {
     config.executable = UnsafePointer(exe)
     config.fixture_mode = 0
     var size = LabanTerminalSize()
-    size.rows = 24; size.cols = 80
+    size.rows = 24
+    size.cols = 80
     let session = try ptrs.withUnsafeMutableBufferPointer { mbuf -> Session in
       try mbuf.baseAddress!.withMemoryRebound(
         to: UnsafePointer<CChar>?.self, capacity: count
@@ -89,9 +91,11 @@ final class SessionRunnerTests: XCTestCase {
     }
 
     let calls = OSAllocatedUnfairLock(initialState: 0)
-    guard let runner = session.makeRunner(onDirty: {
-      calls.withLock { $0 += 1 }
-    }) else {
+    guard
+      let runner = session.makeRunner(onDirty: {
+        calls.withLock { $0 += 1 }
+      })
+    else {
       XCTFail("makeRunner returned nil")
       return
     }

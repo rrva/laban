@@ -46,7 +46,10 @@ final class LabanSessionPollBlockingTests: XCTestCase {
   }
 
   func testPollBlockingShortCircuitsForFixtureSessions() {
-    guard let s = makeFixtureSession() else { XCTFail("create"); return }
+    guard let s = makeFixtureSession() else {
+      XCTFail("create")
+      return
+    }
     defer { laban_session_destroy(s) }
     let start = Date()
     let n = laban_session_poll_blocking(s, 200)
@@ -63,9 +66,9 @@ final class LabanSessionPollBlockingTests: XCTestCase {
       return
     }
     defer { laban_session_destroy(s) }
-    /* Drain any startup output the shell may have emitted (typically
-     * nothing for /bin/sh -c, but the kernel may surface the PTY's
-     * winsize ack as readable). */
+    // Drain any startup output the shell may have emitted (typically nothing
+    // for /bin/sh -c, but the kernel may surface the PTY's winsize ack as
+    // readable).
     while laban_session_poll_blocking(s, 50) > 0 {}
     let start = Date()
     let n = laban_session_poll_blocking(s, 80)
@@ -80,8 +83,8 @@ final class LabanSessionPollBlockingTests: XCTestCase {
   }
 
   func testPollBlockingDrainsAvailableBytesFromRealShell() {
-    /* Print 11 bytes, hold the PTY open briefly so the read survives
-     * the SIGHUP-on-close dance. */
+    // Print 11 bytes, hold the PTY open briefly so the read survives the
+    // SIGHUP-on-close dance.
     let argv = ["/bin/sh", "-c", "printf hello-readme; sleep 0.5"]
     guard let s = makeRealShellSession(argv: argv) else {
       XCTFail("create")
@@ -102,11 +105,12 @@ final class LabanSessionPollBlockingTests: XCTestCase {
   }
 
   func testConcurrentSnapshotAndPollBlockingDoNotRace() {
-    /* Generate a steady byte stream so both the poller and the
-     * snapper are exercising real code paths under contention. The
-     * `yes` builtin emits ~100 KB/s into the PTY, with the per-poll
-     * cap kicking in. */
-    let argv = ["/bin/sh", "-c", "i=0; while [ $i -lt 800 ]; do echo line-$i; i=$((i+1)); done; sleep 0.2"]
+    // Generate a steady byte stream so both the poller and the snapper are
+    // exercising real code paths under contention. The `yes` builtin emits
+    // ~100 KB/s into the PTY, with the per-poll cap kicking in.
+    let argv = [
+      "/bin/sh", "-c", "i=0; while [ $i -lt 800 ]; do echo line-$i; i=$((i+1)); done; sleep 0.2",
+    ]
     guard let s = makeRealShellSession(argv: argv) else {
       XCTFail("create")
       return
@@ -133,8 +137,8 @@ final class LabanSessionPollBlockingTests: XCTestCase {
       }
       snapperDone.fulfill()
     }
-    /* A third thread that mutates: feed_output writes through the
-     * VT parser, which exercises a different path than poll's read. */
+    // A third thread that mutates: feed_output writes through the VT parser,
+    // which exercises a different path than poll's read.
     let writer = Thread {
       let probe = Array("\u{1B}]2;probe\u{07}".utf8)
       var i = 0

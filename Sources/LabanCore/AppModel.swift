@@ -106,9 +106,8 @@ public final class AppModel {
     if let themeChangeObserver {
       NotificationCenter.default.removeObserver(themeChangeObserver)
     }
-    /* Stop every reader thread before the dictionary holding the
-     * sessions is destroyed; otherwise a reader could be mid-poll
-     * against a freed C session. */
+    // Stop every reader thread before the dictionary holding the sessions is
+    // destroyed; otherwise a reader could be mid-poll against a freed C session.
     for (_, runner) in sessionRunners { runner.stop() }
     sessionRunners.removeAll()
     for (_, session) in sessions { session.close() }
@@ -120,9 +119,11 @@ public final class AppModel {
   /// Caller must hold `modelLock` (every call site already does).
   private func startRunner(for session: Session) {
     let id = session.id
-    guard let runner = session.makeRunner(onDirty: { [weak self] in
-      self?.onSessionDirty?(id)
-    }) else { return }
+    guard
+      let runner = session.makeRunner(onDirty: { [weak self] in
+        self?.onSessionDirty?(id)
+      })
+    else { return }
     sessionRunners[id] = runner
     runner.start()
   }
@@ -568,15 +569,13 @@ public final class AppModel {
   /// field is preserved when the update doesn't mention it (nil), cleared
   /// when an empty value comes through, or set otherwise.
   private func attachTabStatus(session: Session, tabId: Tab.ID) {
-    /* The C tab-status callback fires from whichever thread drove the
-     * VT parser — historically the main thread, now the per-session
-     * reader thread. The C session lock is held while the callback
-     * runs. If the handler synchronously took `modelLock`, an
-     * inversion against any path that holds `modelLock` and then
-     * calls a session method (e.g. `advanceFrame`'s
-     * `session.snapshot()`) would deadlock. Punting the model
-     * mutation onto the main queue keeps the reader thread holding
-     * exactly one lock at a time. */
+    // The C tab-status callback fires from whichever thread drove the VT parser
+    // -- historically the main thread, now the per-session reader thread. The C
+    // session lock is held while the callback runs. If the handler synchronously
+    // took `modelLock`, an inversion against any path that holds `modelLock` and
+    // then calls a session method (e.g. `advanceFrame`'s `session.snapshot()`)
+    // would deadlock. Punting the model mutation onto the main queue keeps the
+    // reader thread holding exactly one lock at a time.
     session.onTabStatus = { [weak self] update in
       DispatchQueue.main.async { [weak self] in
         self?.applyTabStatusUpdate(update, forTab: tabId)

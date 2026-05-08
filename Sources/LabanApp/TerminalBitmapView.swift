@@ -285,12 +285,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       self?.renderInvalidated = true
     }
 
-    /* The per-session reader thread fires this callback whenever it
-     * drained bytes. We coalesce them into a single main-thread
-     * advanceFrame so a chatty child does not pile up advanceFrame
-     * tasks behind a long render. The display link still ticks on its
-     * own clock — this hop only matters when VRR has throttled the
-     * link to a low rate and we need to bypass that throttle. */
+    // The per-session reader thread fires this callback whenever it drained
+    // bytes. We coalesce them into a single main-thread advanceFrame so a chatty
+    // child does not pile up advanceFrame tasks behind a long render. The
+    // display link still ticks on its own clock -- this hop only matters when
+    // VRR has throttled the link to a low rate and we need to bypass that
+    // throttle.
     model.onSessionDirty = { [weak self] _ in
       self?.kickDisplayFromBackground()
     }
@@ -621,12 +621,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     for tab in model.tabs {
       if let session = model.session(forTab: tab.id) {
         session.setCaptureFrame(captureFrame)
-        /* PTY draining now happens off the main thread on the per-
-         * session reader thread that AppModel spawns; the main thread
-         * just observes the snapshot via renderDirty() / snapshot()
-         * below. The reader wakes us here via onSessionDirty →
-         * kickDisplay() so we don't have to wait for the next vsync
-         * when bytes arrive between ticks. */
+        // PTY draining now happens off the main thread on the per-session
+        // reader thread that AppModel spawns; the main thread just observes the
+        // snapshot via renderDirty() / snapshot() below. The reader wakes us
+        // here via onSessionDirty -> kickDisplay() so we don't have to wait for
+        // the next vsync when bytes arrive between ticks.
         if model.syncProcessMetadata(forTab: tab.id, from: session) {
           renderInvalidated = true
         }

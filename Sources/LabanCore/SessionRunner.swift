@@ -73,7 +73,7 @@ public final class SessionRunner {
       while !shouldStop.withLock({ $0 }) {
         let drained = laban_session_poll_blocking(ref.pointer, timeout)
         if drained > 0 { onDirty() }
-        if drained < 0 { break } // permanent error from select; bail
+        if drained < 0 { break }  // permanent error from select; bail
       }
     }
     thread = t

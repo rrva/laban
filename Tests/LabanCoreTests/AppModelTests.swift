@@ -245,12 +245,11 @@ final class AppModelTests: XCTestCase {
     }
     wait(for: [delivered], timeout: 1)
 
-    /* AppModel.attachTabStatus now defers the model mutation onto the
-     * main queue (to avoid a lock-order inversion against modelLock
-     * when the OSC bytes are parsed by the off-main reader thread).
-     * Pump the main queue once so the deferred apply runs before we
-     * read the metadata back. FIFO ordering on the main queue
-     * guarantees the apply ran before this trailing dispatch. */
+    // AppModel.attachTabStatus now defers the model mutation onto the main queue
+    // (to avoid a lock-order inversion against modelLock when the OSC bytes are
+    // parsed by the off-main reader thread). Pump the main queue once so the
+    // deferred apply runs before we read the metadata back. FIFO ordering on the
+    // main queue guarantees the apply ran before this trailing dispatch.
     let mainPump = expectation(description: "main queue pumped")
     DispatchQueue.main.async { mainPump.fulfill() }
     wait(for: [mainPump], timeout: 1)
