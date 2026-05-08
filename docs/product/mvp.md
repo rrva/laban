@@ -195,7 +195,11 @@ rather than as unintended modified key chords.
 Paste reads text from the macOS clipboard. If the active terminal has bracketed
 paste enabled and terminal state exposes that mode, paste is wrapped in
 bracketed paste sequences; otherwise it is written as plain text. Non-text
-clipboard data is ignored.
+clipboard data is ignored, except for one Claude Code compatibility path: when
+the pasteboard contains image data and the active foreground tab is recognized
+as Claude Code, the app forwards terminal `Ctrl+V` so Claude Code can perform
+its documented local clipboard-image read. Laban does not serialize image bytes
+into PTY input.
 
 Basic native menus are part of the MVP: app menu, tab commands, and edit
 commands for copy and paste. Unhandled Command chords must not leak into

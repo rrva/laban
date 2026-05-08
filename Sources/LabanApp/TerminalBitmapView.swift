@@ -1265,9 +1265,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   @objc func paste(_ sender: Any?) {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else { return }
+
+    let pasteboard = NSPasteboard.general
+    if Self.pasteboardContainsImage(pasteboard),
+      Self.shouldForwardImagePasteToTerminal(for: activeTab)
+    {
+      forwardClipboardImagePasteToTerminal(session: session)
+      return
+    }
+
     let raw: String
     let rawBytes: Int
-    switch Self.readPasteboardString(NSPasteboard.general) {
+    switch Self.readPasteboardString(pasteboard) {
     case .empty:
       return
     case .tooLarge(let bytes):
@@ -1284,10 +1296,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       raw = value
       rawBytes = bytes
     }
-
-    guard let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId)
-    else { return }
 
     // Sanitize control characters out of the paste before handing it to
     // libghostty's bracketed-paste encoder. Strips ESC and the rest of the
@@ -1355,6 +1363,27 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     )
   }
 
+  private func forwardClipboardImagePasteToTerminal(session: Session) {
+    let event = KeyEvent(action: .press, key: .v, modifiers: .control)
+    let sent = session.sendKeyCapturingBytes(event)
+    EventLog.shared.log(
+      "paste.image.forwarded",
+      [
+        "encodedBytes": sent.bytes.count,
+        "result": Int(sent.result),
+      ])
+    recordInput(
+      kind: "key",
+      route: "terminal",
+      key: "v",
+      modifiers: ["control"],
+      command: "pasteImage",
+      encodedHex: Self.encodedHex(sent.bytes),
+      encodedLength: Self.encodedLength(sent.bytes)
+    )
+    renderInvalidated = true
+  }
+
   static let pasteHardLimitBytes = TerminalPaste.hardLimitBytes
   static let pasteWarnLimitBytes = TerminalPaste.warnLimitBytes
 
@@ -1370,6 +1399,39 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return .tooLarge(bytes)
     }
     return .value(raw, bytes: bytes)
+  }
+
+  static func pasteboardContainsImage(_ pasteboard: NSPasteboard) -> Bool {
+    pasteboard.canReadObject(forClasses: [NSImage.self], options: nil)
+  }
+
+  static func shouldForwardImagePasteToTerminal(for tab: Tab) -> Bool {
+    let metadata = tab.titleMetadata
+    if executableLooksLikeClaude(metadata.process.foregroundProcess) {
+      return true
+    }
+    if executableLooksLikeClaude(metadata.process.foregroundCommand) {
+      return true
+    }
+
+    let titles = [
+      metadata.terminalTitle,
+      metadata.displayTitle,
+      metadata.userTitle,
+      metadata.agent.agentName,
+      metadata.agent.sessionName,
+    ]
+    return titles.contains { value in
+      value?.range(of: "Claude Code", options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+  }
+
+  private static func executableLooksLikeClaude(_ value: String?) -> Bool {
+    guard let value, !value.isEmpty else { return false }
+    let token = value.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? value
+    let trimmed = token.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+    let basename = URL(fileURLWithPath: trimmed).lastPathComponent.lowercased()
+    return basename == "claude" || basename == "claude-code"
   }
 
   static func sanitizePaste(_ text: String) -> String {

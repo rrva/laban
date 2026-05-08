@@ -61,6 +61,70 @@ final class TerminalKeyInputTests: XCTestCase {
     )
   }
 
+  func testPasteboardContainsImageDetectsPngData() throws {
+    let pasteboard = NSPasteboard.withUniqueName()
+    XCTAssertFalse(TerminalBitmapView.pasteboardContainsImage(pasteboard))
+
+    let data = try XCTUnwrap(
+      Data(
+        base64Encoded:
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+      ))
+    pasteboard.declareTypes([.png], owner: nil)
+    XCTAssertTrue(pasteboard.setData(data, forType: .png))
+
+    XCTAssertTrue(TerminalBitmapView.pasteboardContainsImage(pasteboard))
+  }
+
+  func testClaudeCodeImagePasteForwardingRecognizesClaudeTitleAndCommand() {
+    let titled = Tab(
+      id: "tab-1",
+      position: 1,
+      title: "Tab 1",
+      isActive: true,
+      sessionId: "session-1",
+      titleMetadata: TabTitleMetadata(
+        terminalTitle: "* Claude Code",
+        displayTitle: "* Claude Code",
+        titleSource: .terminal
+      )
+    )
+    XCTAssertTrue(TerminalBitmapView.shouldForwardImagePasteToTerminal(for: titled))
+
+    let command = Tab(
+      id: "tab-2",
+      position: 1,
+      title: "Tab 1",
+      isActive: true,
+      sessionId: "session-2",
+      titleMetadata: TabTitleMetadata(
+        displayTitle: "claude",
+        titleSource: .process,
+        process: TabProcessMetadata(foregroundCommand: "/opt/homebrew/bin/claude --resume")
+      )
+    )
+    XCTAssertTrue(TerminalBitmapView.shouldForwardImagePasteToTerminal(for: command))
+  }
+
+  func testClaudeCodeImagePasteForwardingRejectsNonClaudeTab() {
+    let tab = Tab(
+      id: "tab-1",
+      position: 1,
+      title: "Tab 1",
+      isActive: true,
+      sessionId: "session-1",
+      titleMetadata: TabTitleMetadata(
+        displayTitle: "zsh",
+        titleSource: .process,
+        process: TabProcessMetadata(
+          foregroundProcess: "zsh",
+          foregroundCommand: "/bin/zsh"
+        )
+      )
+    )
+    XCTAssertFalse(TerminalBitmapView.shouldForwardImagePasteToTerminal(for: tab))
+  }
+
   func testControlCRoutesToEncodedKeyWithNoText() {
     let desc = TerminalKeyDescriptor(action: .press, key: .c, modifiers: .control)
     guard case .encodedKey(let ev) = desc.route() else {
@@ -68,6 +132,17 @@ final class TerminalKeyInputTests: XCTestCase {
       return
     }
     XCTAssertEqual(ev.key, .c)
+    XCTAssertEqual(ev.modifiers, .control)
+    XCTAssertNil(ev.text)
+  }
+
+  func testControlVRoutesToEncodedKeyWithNoText() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .v, modifiers: .control)
+    guard case .encodedKey(let ev) = desc.route() else {
+      XCTFail("expected .encodedKey")
+      return
+    }
+    XCTAssertEqual(ev.key, .v)
     XCTAssertEqual(ev.modifiers, .control)
     XCTAssertNil(ev.text)
   }
