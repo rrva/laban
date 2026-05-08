@@ -19,9 +19,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // sample(1) capture to ~/laban-watchdog/. Cheap; safe to leave on.
     MainThreadWatchdog.shared.start()
 
-    // Restore the user's last theme picks BEFORE the appearance KVO fires
-    // its initial callback so the first frame already uses them.
+    // Restore the user's last theme picks and settle the initial appearance
+    // before creating the first terminal session. Shell startup files may set
+    // the terminal palette via OSC 4/10/11; a late initial theme notification
+    // would overwrite that user-provided palette shortly after zsh starts.
     themeMenuController.loadPersistedChoices()
+    Self.applyTheme(for: NSApp.effectiveAppearance)
     MenuCommands.setupMenuBar(themeMenu: themeMenuController)
     do {
       windowController = try MainWindowController.makeAndShow()
@@ -35,16 +38,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     NSApp.activate(ignoringOtherApps: true)
 
-    // System appearance binding. KVO fires on main; .initial primes Theme so
-    // the first frame already matches the system's dark/light setting rather
-    // than flashing the compile-time default.
+    // System appearance binding. The initial value was applied before window
+    // creation; this observer handles later live system changes only.
     appearanceObservation = NSApp.observe(
-      \.effectiveAppearance, options: [.initial, .new]
+      \.effectiveAppearance, options: [.new]
     ) { _, _ in
-      let isDark =
-        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-      Theme.applyForAppearance(isDark: isDark)
+      Self.applyTheme(for: NSApp.effectiveAppearance)
     }
+  }
+
+  static func applyTheme(for appearance: NSAppearance) {
+    let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    Theme.applyForAppearance(isDark: isDark)
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

@@ -925,6 +925,154 @@ final class LabanSessionTests: XCTestCase {
     }
   }
 
+  func testPTYSpawnEnvironmentStripsInheritedColorSuppression() {
+    let oldTerm = getenv("TERM").map { String(cString: $0) }
+    let oldColorTerm = getenv("COLORTERM").map { String(cString: $0) }
+    let oldNoColor = getenv("NO_COLOR").map { String(cString: $0) }
+    setenv("TERM", "dumb", 1)
+    setenv("COLORTERM", "disabled", 1)
+    setenv("NO_COLOR", "inherited", 1)
+    defer {
+      if let oldTerm { setenv("TERM", oldTerm, 1) } else { unsetenv("TERM") }
+      if let oldColorTerm {
+        setenv("COLORTERM", oldColorTerm, 1)
+      } else {
+        unsetenv("COLORTERM")
+      }
+      if let oldNoColor { setenv("NO_COLOR", oldNoColor, 1) } else { unsetenv("NO_COLOR") }
+    }
+
+    let exe = "/bin/sh"
+    let command =
+      "printf '%s|%s|%s\\n' \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-unset}\""
+    let argStrings = ["/bin/sh", "-lc", command]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 8
+        size.cols = 80
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed for inherited spawn environment test")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        var snap: UnsafeMutablePointer<LabanSnapshot>?
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          if let current = snap {
+            laban_snapshot_destroy(current)
+            snap = nil
+          }
+          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          let text = visibleText(from: UnsafePointer(s))
+          if text.contains("xterm-256color|truecolor|unset") { break }
+          if s.pointee.status != 0 { break }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+        defer { laban_snapshot_destroy(snap) }
+
+        guard let s = snap else {
+          XCTFail("no snapshot obtained after polling for inherited environment output")
+          return
+        }
+
+        let text = visibleText(from: UnsafePointer(s))
+        XCTAssertTrue(
+          text.contains("xterm-256color|truecolor|unset"),
+          "spawn env should replace inherited terminal/color suppression; got "
+            + text.debugDescription)
+      }
+    }
+  }
+
+  func testPTYZshPromptColorSequencesReachSnapshot() throws {
+    let exe = "/bin/zsh"
+    guard access(exe, X_OK) == 0 else {
+      throw XCTSkip("/bin/zsh is not available on this platform")
+    }
+
+    let command =
+      "autoload -U colors; colors; "
+      + "print -P '%F{#00ff00}HEX%f %F{46}IDX%f %K{#112233}BGHEX%k'"
+    let argStrings = [exe, "-fc", command]
+
+    exe.withCString { exeCStr in
+      withCArgv(argStrings) { argvPtr in
+        var config = LabanLaunchConfig()
+        config.executable = exeCStr
+        config.argv = argvPtr
+        config.fixture_mode = 0
+
+        var size = LabanTerminalSize()
+        size.rows = 8
+        size.cols = 80
+
+        var session: OpaquePointer?
+        guard laban_session_create(&config, size, &session) == 0, let session else {
+          XCTFail("laban_session_create failed for zsh color PTY test")
+          return
+        }
+        defer { laban_session_destroy(session) }
+
+        var snap: UnsafeMutablePointer<LabanSnapshot>?
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          if let current = snap {
+            laban_snapshot_destroy(current)
+            snap = nil
+          }
+          guard laban_session_snapshot(session, &snap) == 0, let s = snap else { break }
+          let text = visibleText(from: UnsafePointer(s))
+          if text.contains("HEX") && text.contains("IDX") && text.contains("BGHEX") {
+            break
+          }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+        defer { laban_snapshot_destroy(snap) }
+
+        guard let s = snap else {
+          XCTFail("no snapshot obtained after polling for zsh color output")
+          return
+        }
+
+        let text = visibleText(from: UnsafePointer(s))
+        XCTAssertTrue(
+          text.contains("HEX") && text.contains("IDX") && text.contains("BGHEX"),
+          "zsh color output text should reach the terminal snapshot; got \(text.debugDescription)")
+
+        guard let hex = cellColors(in: UnsafePointer(s), matchingASCII: "HEX") else {
+          XCTFail("missing HEX cells in zsh color snapshot")
+          return
+        }
+        XCTAssertEqual(hex.foreground, 0x00FF_00FF, "zsh truecolor foreground must survive PTY")
+
+        guard let indexed = cellColors(in: UnsafePointer(s), matchingASCII: "IDX") else {
+          XCTFail("missing IDX cells in zsh color snapshot")
+          return
+        }
+        XCTAssertEqual(indexed.foreground, 0x00FF_00FF, "zsh 256-color foreground must survive PTY")
+
+        guard let background = cellColors(in: UnsafePointer(s), matchingASCII: "BGHEX") else {
+          XCTFail("missing BGHEX cells in zsh color snapshot")
+          return
+        }
+        XCTAssertEqual(
+          background.background, 0x1122_33FF, "zsh truecolor background must survive PTY")
+      }
+    }
+  }
+
   func testForcedSpawnFailureDoesNotLeak() {
     let exe = "/nonexistent/executable"
     exe.withCString { exeCStr in
@@ -2231,4 +2379,36 @@ private func visibleText(from snap: UnsafePointer<LabanSnapshot>) -> String {
     if !trimmed.isEmpty { lines.append(trimmed) }
   }
   return lines.joined(separator: "\n")
+}
+
+private func cellColors(
+  in snap: UnsafePointer<LabanSnapshot>,
+  matchingASCII needle: String
+) -> (foreground: UInt32, background: UInt32)? {
+  let scalars = needle.utf8.map(UInt32.init)
+  guard !scalars.isEmpty else { return nil }
+
+  let snapshot = snap.pointee
+  let rows = Int(snapshot.rows)
+  let cols = Int(snapshot.cols)
+  guard let cells = snapshot.cells, scalars.count <= cols else { return nil }
+
+  for row in 0..<rows {
+    for col in 0...(cols - scalars.count) {
+      var matched = true
+      for offset in 0..<scalars.count {
+        let cell = cells[row * cols + col + offset]
+        if cell.codepoint != scalars[offset] {
+          matched = false
+          break
+        }
+      }
+      if matched {
+        let cell = cells[row * cols + col]
+        return (cell.foreground_rgba, cell.background_rgba)
+      }
+    }
+  }
+
+  return nil
 }

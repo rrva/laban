@@ -557,6 +557,126 @@ final class FrameProducerTests: XCTestCase {
 
   // MARK: - SGR attributes
 
+  func testZshAnsiNamedColorsUseInjectedThemePalette() throws {
+    let oldTheme = Theme.current
+    Theme.apply(Theme.selenizedDark)
+    defer { Theme.apply(oldTheme) }
+
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let model = try AppModel(initialSize: size) { size in
+      try Session.fixture(size: size)
+    }
+
+    guard let tab = model.activeTab, let session = model.session(forTab: tab.id) else {
+      XCTFail("model must expose its initial active session")
+      return
+    }
+
+    // These are the forms zsh emits for prompt escapes like %F{red} and %K{blue}.
+    let line = "\u{1B}[31mRED\u{1B}[39m \u{1B}[44mBG\u{1B}[49m\r\n"
+    session.write(Array(line.utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
+
+    guard let redRun = terminalGlyphRun(in: cmds, containing: "RED") else {
+      XCTFail("missing RED glyph run")
+      return
+    }
+    XCTAssertEqual(
+      redRun.foreground, Theme.selenizedDark.ansi16[1],
+      "zsh named foreground color must resolve through the injected ANSI palette")
+
+    guard let bgRun = terminalGlyphRun(in: cmds, containing: "BG") else {
+      XCTFail("missing BG glyph run")
+      return
+    }
+    XCTAssertEqual(
+      bgRun.background, Theme.selenizedDark.ansi16[4],
+      "zsh named background color must resolve through the injected ANSI palette")
+  }
+
+  func testZshIndexedAndTruecolorSgrColorsReachGlyphRuns() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    // zsh expands %F{46}, %F{#00ff00}, and %K{#112233} to these SGR forms.
+    let line =
+      "\u{1B}[38;5;46mIDX\u{1B}[39m "
+      + "\u{1B}[38;2;0;255;0mHEX\u{1B}[39m "
+      + "\u{1B}[48;2;17;34;51mBGHEX\u{1B}[49m\r\n"
+    session.write(Array(line.utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
+
+    guard let indexed = terminalGlyphRun(in: cmds, containing: "IDX") else {
+      XCTFail("missing IDX glyph run")
+      return
+    }
+    XCTAssertEqual(indexed.foreground, 0x00FF_00FF, "256-color index 46 should be green")
+
+    guard let truecolor = terminalGlyphRun(in: cmds, containing: "HEX") else {
+      XCTFail("missing HEX glyph run")
+      return
+    }
+    XCTAssertEqual(truecolor.foreground, 0x00FF_00FF, "truecolor foreground must survive")
+
+    guard let truecolorBg = terminalGlyphRun(in: cmds, containing: "BGHEX") else {
+      XCTFail("missing BGHEX glyph run")
+      return
+    }
+    XCTAssertEqual(truecolorBg.background, 0x1122_33FF, "truecolor background must survive")
+  }
+
+  func testZshPaletteSchemeOsc4RgbFormAffectsAnsiColors() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    // Shell color-scheme scripts commonly use OSC 4 with rgb:RR/GG/BB and ST.
+    let line =
+      "\u{1B}]4;1;rgb:12/34/56\u{1B}\\"
+      + "\u{1B}[31mRED\u{1B}[39m\r\n"
+    session.write(Array(line.utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(from: UnsafePointer(snap))
+
+    guard let redRun = terminalGlyphRun(in: cmds, containing: "RED") else {
+      XCTFail("missing RED glyph run")
+      return
+    }
+    XCTAssertEqual(
+      redRun.foreground, 0x1234_56FF,
+      "zsh palette scripts must be able to update ANSI colors via OSC 4 rgb: form")
+  }
+
   // Bold/italic/underline/strikethrough/overline must propagate from the
   // Ghostty render state through LabanCell.flags to FrameCommand.glyphRun
   // attributes. The fixture writes overlapping SGR ranges so a single line
@@ -729,5 +849,19 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertTrue(
       triangleGlyphs.isEmpty,
       "triangle glyphs must not be emitted as glyph runs; got \(triangleGlyphs)")
+  }
+
+  private func terminalGlyphRun(
+    in cmds: [FrameCommand],
+    containing needle: String
+  ) -> (text: String, foreground: UInt32, background: UInt32)? {
+    for cmd in cmds {
+      if case .glyphRun(_, let text, let foreground, let background, _, let src, _, _, _) = cmd,
+        src == .terminal, text.contains(needle)
+      {
+        return (text, foreground, background)
+      }
+    }
+    return nil
   }
 }
