@@ -984,12 +984,14 @@ public final class MetalRenderer: RendererBackend {
     func appendGlyph(
       cellX: CGFloat, cellY: CGFloat,
       tilePixelW: Int, tilePixelH: Int,
+      logicalOriginX: CGFloat,
       logicalWidth: CGFloat,
       atlasX: Int, atlasY: Int,
       color: UInt32,
       toSidebar: Bool
     ) {
-      let originPx = SIMD2<Float>(Float(cellX) * scale, Float(cellY) * scale)
+      let originPx = SIMD2<Float>(
+        Float(cellX + logicalOriginX) * scale, Float(cellY) * scale)
       let sizePx = SIMD2<Float>(Float(tilePixelW), Float(tilePixelH))
       let atlas = toSidebar ? sidebarGlyphAtlas : glyphAtlas
       let atlasW = Float(atlas.textureSize)
@@ -1061,6 +1063,7 @@ public final class MetalRenderer: RendererBackend {
           appendGlyph(
             cellX: cellX, cellY: origin.y,
             tilePixelW: entry.pixelWidth, tilePixelH: entry.pixelHeight,
+            logicalOriginX: entry.logicalOriginX,
             logicalWidth: entry.logicalWidth,
             atlasX: entry.originX, atlasY: entry.originY,
             color: fg,

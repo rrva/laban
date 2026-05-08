@@ -21,9 +21,13 @@ public final class MetalGlyphAtlas {
     /// Position in the atlas texture in pixels (top-left origin).
     public let originX: Int
     public let originY: Int
+    /// Logical x offset, in CG points, where this tile starts relative to the
+    /// terminal cell origin. Italic glyphs can have ink before x=0, so this
+    /// value can be negative.
+    public let logicalOriginX: CGFloat
     /// Logical (CG-points) tile width; matches the per-cell drawing width
     /// so wide CJK glyphs occupy two cells and italic-shifted glyphs reserve
-    /// the slop on the right.
+    /// ink slop on either side.
     public let logicalWidth: CGFloat
   }
 
@@ -35,19 +39,27 @@ public final class MetalGlyphAtlas {
   }
 
   private enum RasterPlan {
-    case glyph(CGGlyph, advance: CGFloat)
-    case line(CTLine, width: CGFloat)
+    case glyph(CGGlyph, advance: CGFloat, bounds: CGRect)
+    case line(CTLine, width: CGFloat, bounds: CGRect)
 
-    var width: CGFloat {
+    var layoutWidth: CGFloat {
       switch self {
-      case .glyph(_, let advance): return advance
-      case .line(_, let width): return width
+      case .glyph(_, let advance, _): return advance
+      case .line(_, let width, _): return width
+      }
+    }
+
+    var inkBounds: CGRect {
+      switch self {
+      case .glyph(_, _, let bounds): return bounds
+      case .line(_, _, let bounds): return bounds
       }
     }
   }
 
-  // Italic shear matches SoftwareRenderer's fake-italic transform.
-  private static let italicShear: CGFloat = -0.18
+  // Italic shear matches SoftwareRenderer's fake-italic transform. Positive
+  // x shear makes glyph tops lean right in CoreGraphics' y-up coordinate space.
+  private static let italicShear: CGFloat = 0.18
 
   private let device: MTLDevice
   public let texture: MTLTexture
@@ -151,13 +163,19 @@ public final class MetalGlyphAtlas {
   ) -> Entry? {
     guard !text.isEmpty else { return nil }
     let plan = rasterPlan(text: text, font: font)
-    let intrinsicWidth = max(plan.width, cellWidth)
-    let isWide = intrinsicWidth > cellWidth * 1.5
-    let baseTileCellWidth = max(isWide ? cellWidth * 2 : cellWidth, intrinsicWidth)
+    let layoutWidth = max(plan.layoutWidth, 0)
+    let isWide = layoutWidth > cellWidth * 1.5
+    let baseTileCellWidth = max(isWide ? cellWidth * 2 : cellWidth, layoutWidth)
+    let inkBounds = normalizedInkBounds(plan.inkBounds, fallbackWidth: layoutWidth)
 
+    let leftSlop = max(0, ceil(-inkBounds.minX))
+    let rightInkSlop = max(0, ceil(inkBounds.maxX - baseTileCellWidth))
     let italicSlop: CGFloat = italicFallback ? ceil(cellHeight * abs(Self.italicShear)) : 0
     let boldSlop: CGFloat = boldFallback ? max(1.0 / scale, 0.5) : 0
-    let logicalTileWidth = baseTileCellWidth + italicSlop + boldSlop
+    let rightSlop = rightInkSlop + italicSlop + boldSlop
+    let logicalOriginX = -leftSlop
+    let drawOriginX = leftSlop
+    let logicalTileWidth = baseTileCellWidth + leftSlop + rightSlop
     let pixelW = max(1, Int((logicalTileWidth * scale).rounded(.up)))
     let pixelH = max(1, Int((cellHeight * scale).rounded(.up)))
 
@@ -209,7 +227,7 @@ public final class MetalGlyphAtlas {
 
       func drawPlan(xOffset: CGFloat) {
         switch plan {
-        case .glyph(let glyph, _):
+        case .glyph(let glyph, _, _):
           let positions = [CGPoint(x: xOffset, y: descent)]
           glyph.withUnsafePointer { gPtr in
             positions.withUnsafeBufferPointer { pPtr in
@@ -219,16 +237,16 @@ public final class MetalGlyphAtlas {
             }
           }
 
-        case .line(let line, _):
+        case .line(let line, _, _):
           ctx.textMatrix = .identity
           ctx.textPosition = CGPoint(x: xOffset, y: descent)
           CTLineDraw(line, ctx)
         }
       }
 
-      drawPlan(xOffset: 0)
+      drawPlan(xOffset: drawOriginX)
       if boldFallback {
-        drawPlan(xOffset: max(1.0 / scale, 0.5))
+        drawPlan(xOffset: drawOriginX + max(1.0 / scale, 0.5))
       }
     }
 
@@ -245,7 +263,19 @@ public final class MetalGlyphAtlas {
     return Entry(
       pixelWidth: pixelW, pixelHeight: pixelH,
       originX: originX, originY: originY,
+      logicalOriginX: logicalOriginX,
       logicalWidth: logicalTileWidth)
+  }
+
+  private func normalizedInkBounds(_ bounds: CGRect, fallbackWidth: CGFloat) -> CGRect {
+    guard !bounds.isNull, !bounds.isInfinite else {
+      return CGRect(x: 0, y: 0, width: max(fallbackWidth, 0), height: cellHeight)
+    }
+    let standardized = bounds.standardized
+    guard standardized.width.isFinite, standardized.height.isFinite else {
+      return CGRect(x: 0, y: 0, width: max(fallbackWidth, 0), height: cellHeight)
+    }
+    return standardized
   }
 
   private func rasterPlan(text: String, font: CTFont) -> RasterPlan {
@@ -257,7 +287,8 @@ public final class MetalGlyphAtlas {
     var descent: CGFloat = 0
     var leading: CGFloat = 0
     let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
-    return .line(line, width: max(width, 0))
+    let glyphBounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+    return .line(line, width: max(width, 0), bounds: glyphBounds)
   }
 
   private func simpleGlyphPlan(text: String, font: CTFont) -> RasterPlan? {
@@ -267,7 +298,9 @@ public final class MetalGlyphAtlas {
       let glyph = lookupGlyph(scalar: scalar, font: font)
     else { return nil }
     let advance = lookupAdvance(glyph: glyph, font: font)
-    return .glyph(glyph, advance: advance)
+    var glyphCopy = glyph
+    let bounds = CTFontGetBoundingRectsForGlyphs(font, .default, &glyphCopy, nil, 1)
+    return .glyph(glyph, advance: advance, bounds: bounds)
   }
 
   private func fallbackLine(text: String, font: CTFont) -> CTLine {

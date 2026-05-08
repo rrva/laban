@@ -93,7 +93,7 @@ public final class SoftwareRenderer {
     ctx.saveGState()
     if needsItalicFallback {
       ctx.translateBy(x: origin.x, y: origin.y)
-      ctx.concatenate(CGAffineTransform(a: 1, b: 0, c: -0.18, d: 1, tx: 0, ty: 0))
+      ctx.concatenate(CGAffineTransform(a: 1, b: 0, c: 0.18, d: 1, tx: 0, ty: 0))
       ctx.translateBy(x: -origin.x, y: -origin.y)
     }
 

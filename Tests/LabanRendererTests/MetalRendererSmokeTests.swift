@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Metal
 import QuartzCore
 import XCTest
@@ -249,6 +250,72 @@ final class MetalRendererSmokeTests: XCTestCase {
       blank,
       withText,
       "Arabic presentation forms and Hangul syllables must produce visible Metal glyph pixels")
+  }
+
+  func testMetalGlyphAtlasReservesRealItalicOverhang() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard
+      let italicFont = CTFontCreateCopyWithSymbolicTraits(
+        fontAtlas.font, fontAtlas.pointSize, nil, .traitItalic, .traitItalic),
+      CTFontGetSymbolicTraits(italicFont).contains(.traitItalic)
+    else {
+      throw XCTSkip("no real italic face available for this font")
+    }
+
+    let cellW = fontAtlas.cellSize.width
+    let overhanging = (0x21...0x7E).compactMap { value -> (character: Character, bounds: CGRect)? in
+      guard let scalar = UnicodeScalar(value) else { return nil }
+      var unit = UniChar(value)
+      var glyph = CGGlyph()
+      guard CTFontGetGlyphsForCharacters(italicFont, &unit, &glyph, 1), glyph != 0 else {
+        return nil
+      }
+      var glyphCopy = glyph
+      let bounds = CTFontGetBoundingRectsForGlyphs(italicFont, .default, &glyphCopy, nil, 1)
+      return bounds.minX < -0.01 || bounds.maxX > cellW + 0.01
+        ? (Character(scalar), bounds) : nil
+    }
+    guard let overhang = overhanging.first else {
+      throw XCTSkip("italic face has no ASCII overhang beyond the terminal cell")
+    }
+
+    guard
+      let atlas = MetalGlyphAtlas(
+        device: device,
+        cellWidth: cellW,
+        cellHeight: fontAtlas.cellSize.height,
+        descent: fontAtlas.descent,
+        scale: 1,
+        textureSize: 128)
+    else {
+      XCTFail("MetalGlyphAtlas.init returned nil")
+      return
+    }
+
+    guard
+      let entry = atlas.entry(
+        character: overhang.character,
+        font: italicFont,
+        boldFallback: false,
+        italicFallback: false)
+    else {
+      XCTFail("italic overhang glyph must produce an atlas entry")
+      return
+    }
+    XCTAssertGreaterThan(
+      entry.pixelWidth,
+      Int(cellW.rounded(.up)),
+      "real italic glyph overhang must not be clipped to the fixed cell tile")
+    XCTAssertGreaterThan(entry.logicalWidth, cellW)
+    if overhang.bounds.minX < -0.01 {
+      XCTAssertLessThan(
+        entry.logicalOriginX,
+        0,
+        "left italic overhang must place the atlas tile before the cell origin")
+    }
   }
 
   func testMetalGlyphAtlasGrowsAfterOverflow() throws {
