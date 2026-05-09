@@ -114,6 +114,117 @@ private final class AppKitFrameProbe {
   deinit { close() }
 }
 
+private final class AppKitResizeProbe {
+  private struct ProbeRect: Encodable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+
+    init(_ rect: CGRect) {
+      x = Double(rect.origin.x)
+      y = Double(rect.origin.y)
+      width = Double(rect.size.width)
+      height = Double(rect.size.height)
+    }
+  }
+
+  private struct ProbeSize: Encodable {
+    var width: Double
+    var height: Double
+
+    init(_ size: CGSize) {
+      width = Double(size.width)
+      height = Double(size.height)
+    }
+  }
+
+  private struct ProbeEvent: Encodable {
+    var schemaVersion = 1
+    var sequence: Int
+    var label: String
+    var timeNs: UInt64
+    var renderedFrame: Int
+    var windowNumber: Int
+    var windowFrame: ProbeRect
+    var viewBounds: ProbeRect
+    var layerBounds: ProbeRect?
+    var drawableSize: ProbeSize
+    var screenshotPath: String?
+  }
+
+  private let directory: URL
+  private let screenshotsDirectory: URL
+  private let handle: FileHandle
+  private var sequence = 0
+  private let encoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return encoder
+  }()
+
+  init(directory: URL) throws {
+    self.directory = directory
+    screenshotsDirectory = directory.appendingPathComponent("screenshots", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: screenshotsDirectory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("resize-probe.ndjson")
+    FileManager.default.createFile(atPath: url.path, contents: nil)
+    handle = try FileHandle(forWritingTo: url)
+    try handle.truncate(atOffset: 0)
+  }
+
+  func record(
+    label: String,
+    window: NSWindow,
+    view: NSView,
+    backend: RendererBackend,
+    renderedFrame: Int
+  ) {
+    sequence += 1
+    let safeLabel = label.map { char -> Character in
+      char.isLetter || char.isNumber || char == "-" || char == "_" ? char : "-"
+    }
+    let screenshotName = String(format: "%03d-%@.png", sequence, String(safeLabel))
+    let screenshotURL = screenshotsDirectory.appendingPathComponent(screenshotName)
+    let screenshotPath: String?
+    if let image = CGWindowListCreateImage(
+      .null,
+      .optionIncludingWindow,
+      CGWindowID(window.windowNumber),
+      [.boundsIgnoreFraming, .nominalResolution]),
+      let data = PNGEncoder.encode(image)
+    {
+      try? data.write(to: screenshotURL, options: [.atomic])
+      screenshotPath = "screenshots/\(screenshotName)"
+    } else {
+      screenshotPath = nil
+    }
+
+    let event = ProbeEvent(
+      sequence: sequence,
+      label: label,
+      timeNs: CaptureClock.nowNs(),
+      renderedFrame: renderedFrame,
+      windowNumber: window.windowNumber,
+      windowFrame: ProbeRect(window.frame),
+      viewBounds: ProbeRect(view.bounds),
+      layerBounds: view.layer.map { ProbeRect($0.bounds) },
+      drawableSize: ProbeSize(
+        CGSize(width: backend.surfaceWidth, height: backend.surfaceHeight)),
+      screenshotPath: screenshotPath)
+    guard let payload = try? encoder.encode(event) else { return }
+    handle.write(payload)
+    handle.write(Data([0x0A]))
+  }
+
+  func close() {
+    try? handle.close()
+  }
+
+  deinit { close() }
+}
+
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
   /// Reserved strip at the top of the contentView that sits behind the
@@ -273,6 +384,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastSurfaceScale: CGFloat = 0
   private var captureRecorder: CaptureRecorder?
   private var frameProbe: AppKitFrameProbe?
+  private var resizeProbe: AppKitResizeProbe?
+  private var resizeAutomationScheduled = false
+  private var renderingResizeFrame = false
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
@@ -413,6 +527,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
 
     configureFrameProbeIfRequested()
+    configureResizeProbeIfRequested()
     scheduleAutomationIfRequested()
   }
 
@@ -425,6 +540,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       AppLog.capture.info("frame probe started \(raw)")
     } catch {
       AppLog.capture.error("frame probe failed: \(error)")
+    }
+  }
+
+  private func configureResizeProbeIfRequested() {
+    guard let raw = ProcessInfo.processInfo.environment["LABAN_RESIZE_PROBE_DIR"],
+      !raw.isEmpty
+    else { return }
+    do {
+      resizeProbe = try AppKitResizeProbe(directory: URL(fileURLWithPath: raw, isDirectory: true))
+      AppLog.capture.info("resize probe started \(raw)")
+    } catch {
+      AppLog.capture.error("resize probe failed: \(error)")
     }
   }
 
@@ -446,6 +573,76 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       }
       NSApp.terminate(nil)
     }
+  }
+
+  private func scheduleResizeAutomationIfRequested() {
+    guard !resizeAutomationScheduled,
+      ProcessInfo.processInfo.environment["LABAN_RESIZE_AUTOMATION"] == "1",
+      window != nil
+    else { return }
+    resizeAutomationScheduled = true
+    let delay = Self.envDouble("LABAN_RESIZE_START_DELAY_MS", fallback: 500) / 1000
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      self?.runResizeAutomation()
+    }
+  }
+
+  private static func envDouble(_ name: String, fallback: Double) -> Double {
+    guard let raw = ProcessInfo.processInfo.environment[name],
+      let value = Double(raw)
+    else { return fallback }
+    return value
+  }
+
+  private static func resizeAutomationSteps() -> [CGSize] {
+    let raw =
+      ProcessInfo.processInfo.environment["LABAN_RESIZE_STEPS"]
+      ?? "1200x788,960x640,1328x860,1040x700,1260x820,900x620"
+    let parsed = raw.split(separator: ",").compactMap { part -> CGSize? in
+      let pieces = part.lowercased().split(separator: "x")
+      guard pieces.count == 2,
+        let width = Double(pieces[0]),
+        let height = Double(pieces[1]),
+        width > 0,
+        height > 0
+      else { return nil }
+      return CGSize(width: width, height: height)
+    }
+    return parsed.isEmpty ? [CGSize(width: 1000, height: 680)] : parsed
+  }
+
+  private func runResizeAutomation() {
+    guard let window else { return }
+    let steps = Self.resizeAutomationSteps()
+    let settleDelay = Self.envDouble("LABAN_RESIZE_CAPTURE_DELAY_MS", fallback: 35) / 1000
+    resizeProbe?.record(
+      label: "initial", window: window, view: self, backend: backend,
+      renderedFrame: renderedFrameCount)
+
+    func applyStep(_ index: Int) {
+      guard index < steps.count else {
+        resizeProbe?.record(
+          label: "final", window: window, view: self, backend: backend,
+          renderedFrame: renderedFrameCount)
+        if ProcessInfo.processInfo.environment["LABAN_RESIZE_AUTO_QUIT"] == "1" {
+          NSApp.terminate(nil)
+        }
+        return
+      }
+      let size = steps[index]
+      window.setContentSize(size)
+      resizeProbe?.record(
+        label: "step-\(index)-immediate", window: window, view: self, backend: backend,
+        renderedFrame: renderedFrameCount)
+      DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) {
+        self.resizeProbe?.record(
+          label: "step-\(index)-settled", window: window, view: self, backend: self.backend,
+          renderedFrame: self.renderedFrameCount)
+        applyStep(index + 1)
+      }
+    }
+
+    applyStep(0)
   }
 
   /// Pop the pending input timestamp (if any) and record the elapsed time.
@@ -514,6 +711,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
     window?.makeFirstResponder(self)
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
+    scheduleResizeAutomationIfRequested()
   }
 
   private func installWindowFocusObservers(for window: NSWindow) {
@@ -649,6 +847,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     stopDisplayLink()
     removeWindowFocusObservers()
     frameProbe?.close()
+    resizeProbe?.close()
     if let themeChangeObserver {
       NotificationCenter.default.removeObserver(themeChangeObserver)
     }
@@ -961,7 +1160,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // visual update. Rendering between fragments can expose transient parser
     // states, so wait for a short quiet window while bounding the hold for
     // continuous output.
-    if !tabChanged && !scrollAnimating {
+    if !tabChanged && !scrollAnimating && !renderingResizeFrame {
       let settleGate = Self.outputSettleGateDecision(
         terminalDirty: terminalDirty,
         sessionId: session.id,

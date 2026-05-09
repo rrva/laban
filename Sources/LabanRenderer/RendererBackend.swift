@@ -40,7 +40,8 @@ public protocol RendererBackend: AnyObject {
   /// to its layer (Metal). The `damage` hint lets backends with a persistent
   /// target avoid re-rasterizing clean rows; backends without one ignore it
   /// and always do a full redraw.
-  func render(_ commands: [FrameCommand], damage: RenderDamage)
+  @discardableResult
+  func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool
 
   /// Surface metrics in device pixels and the backing scale factor.
   var surfaceWidth: Int { get }
@@ -64,7 +65,8 @@ public protocol RendererBackend: AnyObject {
 extension RendererBackend {
   /// Convenience for callers that have no damage info — equivalent to a full
   /// redraw.
-  public func render(_ commands: [FrameCommand]) {
+  @discardableResult
+  public func render(_ commands: [FrameCommand]) -> Bool {
     render(commands, damage: .full)
   }
 }

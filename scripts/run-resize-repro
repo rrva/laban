@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/run-resize-repro [--seconds N] [--renderer metal|software] [--no-build]
+
+Launches Laban with a deterministic resize-torture shell, drives programmatic
+AppKit content-size changes, captures composited window PNGs, and analyzes
+obvious resize paint gaps.
+EOF
+}
+
+seconds=8
+renderer=metal
+build=1
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --seconds)
+    seconds=$2
+    shift 2
+    ;;
+  --renderer)
+    renderer=$2
+    shift 2
+    ;;
+  --no-build)
+    build=0
+    shift
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+  esac
+done
+
+case "$renderer" in
+metal|software) ;;
+*) echo "run-resize-repro: renderer must be metal or software" >&2; exit 2 ;;
+esac
+
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$repo_root"
+
+if [ "$build" -eq 1 ]; then
+  ./scripts/build-app >/dev/null
+fi
+
+stamp=$(date -u +"%Y%m%dT%H%M%SZ")
+run_dir=".artifacts/resize-repro/$stamp"
+probe_dir="$run_dir/probe"
+mkdir -p "$probe_dir"
+
+echo "run-resize-repro: starting run in $run_dir"
+LABAN_RENDERER="$renderer" \
+  SHELL="$repo_root/scripts/resize-torture" \
+  LABAN_RESIZE_PROBE_DIR="$repo_root/$probe_dir" \
+  LABAN_RESIZE_AUTOMATION=1 \
+  LABAN_RESIZE_AUTO_QUIT=1 \
+  LABAN_AUTO_QUIT_AFTER_SECONDS="$seconds" \
+  .build/laban/Laban.app/Contents/MacOS/LabanApp \
+  >"$run_dir/app.stdout.log" 2>"$run_dir/app.stderr.log" &
+pid=$!
+
+deadline=$((seconds + 4))
+elapsed=0
+while kill -0 "$pid" 2>/dev/null; do
+  if [ "$elapsed" -ge "$deadline" ]; then
+    echo "run-resize-repro: terminating stalled app pid $pid" >&2
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    break
+  fi
+  sleep 1
+  elapsed=$((elapsed + 1))
+done
+wait "$pid" 2>/dev/null || true
+
+if [ -f "$probe_dir/resize-probe.ndjson" ]; then
+  ./scripts/analyze-resize-repro "$probe_dir" --pretty >"$run_dir/summary.json"
+  cat "$run_dir/summary.json"
+else
+  echo "run-resize-repro: missing probe output at $probe_dir" >&2
+  tail -n 50 "$run_dir/app.stderr.log" >&2 || true
+  exit 1
+fi
+
+echo "run-resize-repro: artifacts in $run_dir"

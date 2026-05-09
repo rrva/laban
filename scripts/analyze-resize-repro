@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Analyze AppKit resize probe screenshots for obvious paint gaps."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import struct
+import sys
+import zlib
+from pathlib import Path
+from typing import Any
+
+
+def read_png(path: Path) -> tuple[int, int, int, list[list[int]]]:
+    raw = path.read_bytes()
+    if raw[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"{path} is not a PNG")
+    pos = 8
+    width = height = color_type = None
+    idat: list[bytes] = []
+    while pos < len(raw):
+        size = struct.unpack(">I", raw[pos : pos + 4])[0]
+        pos += 4
+        kind = raw[pos : pos + 4]
+        pos += 4
+        data = raw[pos : pos + size]
+        pos += size + 4
+        if kind == b"IHDR":
+            width, height, bit_depth, color_type, comp, filt, interlace = struct.unpack(
+                ">IIBBBBB", data
+            )
+            if bit_depth != 8 or comp != 0 or filt != 0 or interlace != 0:
+                raise ValueError(f"unsupported PNG format in {path}")
+        elif kind == b"IDAT":
+            idat.append(data)
+        elif kind == b"IEND":
+            break
+    if width is None or height is None or color_type is None:
+        raise ValueError(f"{path} has no IHDR")
+    channels = {2: 3, 6: 4}.get(color_type)
+    if channels is None:
+        raise ValueError(f"unsupported PNG color type {color_type} in {path}")
+    stride = width * channels
+    inflated = zlib.decompress(b"".join(idat))
+    rows: list[list[int]] = []
+    prev = [0] * stride
+    pos = 0
+    for _ in range(height):
+        filter_type = inflated[pos]
+        pos += 1
+        cur = list(inflated[pos : pos + stride])
+        pos += stride
+        if filter_type == 1:
+            for i in range(stride):
+                cur[i] = (cur[i] + (cur[i - channels] if i >= channels else 0)) & 255
+        elif filter_type == 2:
+            for i in range(stride):
+                cur[i] = (cur[i] + prev[i]) & 255
+        elif filter_type == 3:
+            for i in range(stride):
+                left = cur[i - channels] if i >= channels else 0
+                cur[i] = (cur[i] + ((left + prev[i]) // 2)) & 255
+        elif filter_type == 4:
+            def paeth(a: int, b: int, c: int) -> int:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                if pa <= pb and pa <= pc:
+                    return a
+                return b if pb <= pc else c
+
+            for i in range(stride):
+                left = cur[i - channels] if i >= channels else 0
+                up = prev[i]
+                up_left = prev[i - channels] if i >= channels else 0
+                cur[i] = (cur[i] + paeth(left, up, up_left)) & 255
+        elif filter_type != 0:
+            raise ValueError(f"unsupported PNG row filter {filter_type} in {path}")
+        prev = cur
+        rows.append(cur)
+    return width, height, channels, rows
+
+
+def pixel(row: list[int], x: int, channels: int) -> tuple[int, int, int]:
+    offset = x * channels
+    return tuple(row[offset : offset + 3])  # type: ignore[return-value]
+
+
+def near_white(rgb: tuple[int, int, int]) -> bool:
+    return min(rgb) >= 250 and max(rgb) - min(rgb) <= 5
+
+
+def near_black(rgb: tuple[int, int, int]) -> bool:
+    return max(rgb) <= 35
+
+
+def analyze_event(root: Path, event: dict[str, Any]) -> dict[str, Any]:
+    rel = event.get("screenshotPath")
+    result: dict[str, Any] = {
+        "sequence": event.get("sequence"),
+        "label": event.get("label"),
+        "renderedFrame": event.get("renderedFrame"),
+        "screenshotPath": rel,
+    }
+    if not rel:
+        result["error"] = "missing screenshot"
+        return result
+    path = root / rel
+    width, height, channels, rows = read_png(path)
+    top_rows = rows[: min(3, height)]
+    top_pixels = width * len(top_rows)
+    top_white = sum(
+        1 for row in top_rows for x in range(width) if near_white(pixel(row, x, channels))
+    )
+    black = sum(
+        1
+        for row in rows
+        for x in range(width)
+        if near_black(pixel(row, x, channels))
+    )
+    result.update(
+        {
+            "width": width,
+            "height": height,
+            "topWhitePixels": top_white,
+            "topWhiteRatio": top_white / max(1, top_pixels),
+            "nearBlackPixels": black,
+            "nearBlackRatio": black / max(1, width * height),
+        }
+    )
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--pretty", action="store_true")
+    args = parser.parse_args()
+
+    root = args.path
+    probe = root / "resize-probe.ndjson"
+    if args.path.is_file():
+        probe = args.path
+        root = args.path.parent
+    events = [
+        json.loads(line)
+        for line in probe.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    frames = [analyze_event(root, event) for event in events]
+    summary = {
+        "path": str(args.path),
+        "events": len(events),
+        "screenshots": sum(1 for frame in frames if not frame.get("error")),
+        "maxTopWhiteRatio": max(
+            (frame.get("topWhiteRatio", 0.0) for frame in frames), default=0.0
+        ),
+        "maxNearBlackRatio": max(
+            (frame.get("nearBlackRatio", 0.0) for frame in frames), default=0.0
+        ),
+        "frames": frames,
+    }
+    print(
+        json.dumps(
+            summary,
+            indent=2 if args.pretty else None,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

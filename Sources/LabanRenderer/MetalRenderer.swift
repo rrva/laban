@@ -505,23 +505,27 @@ public final class MetalRenderer: RendererBackend {
 
   // MARK: - render
 
-  public func render(_ commands: [FrameCommand], damage: RenderDamage) {
+  @discardableResult
+  public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     let cpuStart = ContinuousClock.now
 
     // Drop this frame if the previous GPU frame has not retired. Without a
     // gate, multiple in-flight frames stomp on the shared persistent target
     // and scratch textures; blocking here would put that wait on the caller.
-    guard frameInFlight.wait(timeout: .now()) == .success else {
-      return
+    let needsFullFrame = targetNeedsFullRedraw || damage == .full
+    let inFlightTimeout: DispatchTime =
+      needsFullFrame ? .now() + .milliseconds(16) : .now()
+    guard frameInFlight.wait(timeout: inFlightTimeout) == .success else {
+      return false
     }
     guard let drawable = acquireDrawableWithinBudget() else {
       frameInFlight.signal()
-      return
+      return false
     }
     let drawableTex = drawable.texture
     guard let cmdBuf = queue.makeCommandBuffer() else {
       frameInFlight.signal()
-      return
+      return false
     }
     cmdBuf.label = "laban.frame"
     // Strong-self capture keeps the renderer alive until the GPU work
@@ -554,7 +558,7 @@ public final class MetalRenderer: RendererBackend {
     ensureTargetTexture(matching: drawableTex)
     guard let target = targetTexture else {
       frameInFlight.signal()
-      return
+      return false
     }
 
     let surfaceWPx = drawableTex.width
@@ -579,7 +583,7 @@ public final class MetalRenderer: RendererBackend {
       cmdBuf: cmdBuf)
     if targetNeedsFullRedraw && !didContent {
       frameInFlight.signal()
-      return
+      return false
     }
     passSlots.contentActive = didContent
 
@@ -680,6 +684,7 @@ public final class MetalRenderer: RendererBackend {
     cmdBuf.commit()
     lastCmdBuf = cmdBuf
     targetNeedsFullRedraw = false
+    return true
   }
 
   private func acquireDrawableWithinBudget() -> (any CAMetalDrawable)? {

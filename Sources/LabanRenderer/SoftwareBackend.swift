@@ -42,10 +42,12 @@ public final class SoftwareBackend: RendererBackend {
     return true
   }
 
-  public func render(_ commands: [FrameCommand], damage: RenderDamage) {
+  @discardableResult
+  public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     // Software backend has no persistent target; damage is ignored.
     renderer.render(commands)
     lastImage = surface.cgImage
+    return true
   }
 
   public var surfaceWidth: Int { surface.width }
