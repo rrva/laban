@@ -82,4 +82,29 @@ enum TerminalScrollInput {
     )
     return (actual, actual != desiredAppliedRows)
   }
+
+  static func dragAutoscrollDeltaRows(
+    pointerY: CGFloat,
+    contentBottom: CGFloat,
+    contentTop: CGFloat
+  ) -> Int {
+    if pointerY >= contentTop {
+      return -1
+    }
+    if pointerY < contentBottom {
+      return 1
+    }
+    return 0
+  }
+
+  static func canApplyDragAutoscroll(
+    deltaRows: Int,
+    appliedRows: Int
+  ) -> Bool {
+    guard deltaRows != 0 else { return false }
+    if deltaRows > 0, appliedRows >= 0 {
+      return false
+    }
+    return true
+  }
 }

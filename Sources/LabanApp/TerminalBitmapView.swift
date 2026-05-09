@@ -112,8 +112,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     case value(String, bytes: Int)
   }
 
-  /// Active drag-edge auto-scroll. `direction` is +1 to scroll back (drag
-  /// past the top edge) or -1 to scroll forward (drag past the bottom);
+  /// Active drag-edge auto-scroll. `direction` matches
+  /// `Session.scrollViewport(deltaRows:)`: negative rows scroll back toward
+  /// older content, positive rows scroll forward toward the active bottom.
   /// the timer fires every ~50 ms and scrolls one row in that direction
   /// until the drag returns to inside the viewport or mouseUp fires.
   private var dragAutoscrollDirection: Int = 0
@@ -2204,16 +2205,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let insets = Self.contentInsets
     let contentBottom = insets.bottom
     let contentTop = bounds.height - insets.top
-    let direction: Int
-    if pt.y >= contentTop {
-      // Above the top edge — user wants older content; scroll back.
-      direction = +1
-    } else if pt.y < contentBottom {
-      // Below the bottom edge — user wants newer content; scroll forward.
-      direction = -1
-    } else {
-      direction = 0
-    }
+    let direction = TerminalScrollInput.dragAutoscrollDeltaRows(
+      pointerY: pt.y,
+      contentBottom: contentBottom,
+      contentTop: contentTop
+    )
     if direction == 0 {
       stopDragAutoscroll()
     } else if dragAutoscrollDirection != direction {
@@ -2253,8 +2249,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       stopDragAutoscroll()
       return
     }
-    // Don't scroll forward past the bottom of scrollback.
-    if dragAutoscrollDirection < 0, appliedScrollRows == 0 { return }
+    // Don't scroll forward past the active bottom of scrollback.
+    guard
+      TerminalScrollInput.canApplyDragAutoscroll(
+        deltaRows: dragAutoscrollDirection,
+        appliedRows: appliedScrollRows
+      )
+    else { return }
     session.scrollViewport(deltaRows: dragAutoscrollDirection)
     syncSmoothScrollState(
       session: session,

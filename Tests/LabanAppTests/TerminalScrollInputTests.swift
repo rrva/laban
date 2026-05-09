@@ -109,6 +109,48 @@ final class TerminalScrollInputTests: XCTestCase {
     XCTAssertTrue(reconciled.clamped)
   }
 
+  func testDragAutoscrollAboveTopMovesTowardOlderHistory() {
+    XCTAssertEqual(
+      TerminalScrollInput.dragAutoscrollDeltaRows(
+        pointerY: 472,
+        contentBottom: 8,
+        contentTop: 440
+      ),
+      -1
+    )
+  }
+
+  func testDragAutoscrollBelowBottomMovesTowardActiveBottom() {
+    XCTAssertEqual(
+      TerminalScrollInput.dragAutoscrollDeltaRows(
+        pointerY: 2,
+        contentBottom: 8,
+        contentTop: 440
+      ),
+      1
+    )
+  }
+
+  func testDragAutoscrollInsideViewportDoesNotScroll() {
+    XCTAssertEqual(
+      TerminalScrollInput.dragAutoscrollDeltaRows(
+        pointerY: 120,
+        contentBottom: 8,
+        contentTop: 440
+      ),
+      0
+    )
+  }
+
+  func testDragAutoscrollDoesNotScrollForwardPastActiveBottom() {
+    XCTAssertFalse(
+      TerminalScrollInput.canApplyDragAutoscroll(deltaRows: 1, appliedRows: 0))
+    XCTAssertTrue(
+      TerminalScrollInput.canApplyDragAutoscroll(deltaRows: -1, appliedRows: 0))
+    XCTAssertTrue(
+      TerminalScrollInput.canApplyDragAutoscroll(deltaRows: 1, appliedRows: -12))
+  }
+
   // MARK: - Captured-gesture replay
 
   /// Replays a real two-gesture trackpad capture (saved as JSONL alongside this
