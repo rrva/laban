@@ -24,6 +24,12 @@ agents before any rendering fix is attempted.
   calling `pngData` or enabling Metal capture mode.
 - [x] Add a runner and analyzer for probe-only and full-capture repro runs.
 - [x] Run the reproducer locally and record artifact paths and analyzer output.
+- [x] Add a bounded output-settle gate in the AppKit frame loop so fragmented
+  cursor-home/erase/glyph writes are not rendered mid-update.
+- [x] Teach the analyzer to distinguish startup blank frames from frames after
+  the first spinner glyph is visible.
+- [x] Validate that probe-only and capture-on runs have zero left-cursor frames
+  during the spinner phase.
 
 ## Decision Log
 
@@ -40,6 +46,15 @@ agents before any rendering fix is attempted.
   bytes to store. The reported bug changes when capture is enabled, so an
   observer that does not call `pngData` is needed to see capture-off behavior.
   The probe records frame commands and snapshot cursor fields only.
+  Date/Author: 2026-05-09 / Codex.
+
+- Decision: Settle recent PTY output before rendering, with a 12 ms quiet
+  window and a 25 ms maximum hold.
+  Rationale: Programs commonly produce one visual update as several adjacent
+  writes, such as cursor motion, erasure, and replacement text. Each
+  intermediate terminal state is technically valid, but presenting it creates
+  visible flicker. A short quiet window coalesces the fragments; the maximum
+  hold keeps continuous output from starving the renderer.
   Date/Author: 2026-05-09 / Codex.
 
 ## Context and Orientation
@@ -90,6 +105,13 @@ leftmost cursor column and how many had no spinner glyph visible. Add
 `scripts/run-spinner-repro` to build the app, run probe-only and/or capture
 mode, and invoke the analyzer on produced artifacts.
 
+Fix phase: add a bounded output-settle gate in `TerminalBitmapView.advanceFrame`.
+The session reader records the latest PTY drain time, and the frame loop defers
+terminal renders until either output has been quiet for the settle interval or
+the maximum hold is reached. Tab switches and scroll animation bypass the hold
+because they are user-directed viewport changes rather than PTY output
+fragments.
+
 ## Validation and Acceptance
 
 Run from `/Users/rrj/wrk/laban`:
@@ -124,6 +146,10 @@ rtk env LABAN_SPINNER_STYLE=split-home LABAN_SPINNER_HOME_GAP_MS=4 scripts/run-s
 rtk ./scripts/lint
 rtk python3 -m py_compile scripts/cursor-spinner-repro scripts/analyze-spinner-repro
 rtk ./scripts/check-docs
+rtk swift test --filter TerminalBitmapViewSyncOutputTests
+rtk scripts/run-spinner-repro --seconds 2 --mode probe
+rtk scripts/run-spinner-repro --seconds 2 --mode both --no-build
+rtk env LABAN_SPINNER_STYLE=split-home LABAN_SPINNER_HOME_GAP_MS=4 scripts/run-spinner-repro --seconds 2 --mode both --no-build
 ```
 
 Observed outputs:
@@ -140,6 +166,19 @@ Observed outputs:
 - Matching split-home capture run
   `.artifacts/spinner-repro/20260509T072224Z/capture-on/captures/appkit-2026-05-09T07-22-28Z`:
   `frames=22`, `cursorCols={"0":1,"1":21}`, `leftCursorFrames=1`.
+- After the output-settle fix, aggressive three-write probe-only run
+  `.artifacts/spinner-repro/20260509T072932Z/probe-off/probe/frame-probe.ndjson`:
+  `frames=20`, `cursorCols={"0":1,"1":19}`,
+  `leftCursorDuringSpinnerFrames=0`, `blankDuringSpinnerFrames=0`. The one
+  `cursorCol=0` frame is before the first spinner glyph appears.
+- After the output-settle fix, aggressive three-write probe and capture run
+  `.artifacts/spinner-repro/20260509T073022Z`:
+  probe-off, capture-on probe, and full capture all reported
+  `leftCursorDuringSpinnerFrames=0` and `blankDuringSpinnerFrames=0`.
+- After the output-settle fix, closer split-home probe and capture run
+  `.artifacts/spinner-repro/20260509T073031Z`:
+  probe-off, capture-on probe, and full capture all reported
+  `leftCursorDuringSpinnerFrames=0` and `blankDuringSpinnerFrames=0`.
 
 ## Idempotence and Recovery
 

@@ -55,6 +55,50 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     XCTAssertNil(reset.hold)
   }
 
+  func testOutputSettleGateDefersBrieflyAfterRecentDrain() {
+    let start = Date(timeIntervalSinceReferenceDate: 1_000)
+    let decision = TerminalBitmapView.outputSettleGateDecision(
+      terminalDirty: true,
+      sessionId: "session-1",
+      lastDirtyAt: start,
+      now: start.addingTimeInterval(0.004),
+      hold: nil,
+      quiet: 0.012,
+      maxHold: 0.025)
+
+    XCTAssertTrue(decision.shouldDefer)
+    XCTAssertEqual(decision.hold?.sessionId, "session-1")
+    XCTAssertEqual(decision.hold?.startedAt, start.addingTimeInterval(0.004))
+    XCTAssertEqual(decision.wakeAfter ?? 0, 0.008, accuracy: 0.000_001)
+  }
+
+  func testOutputSettleGateRendersAfterQuietWindowOrMaxHold() {
+    let start = Date(timeIntervalSinceReferenceDate: 1_000)
+    let hold = TerminalBitmapView.OutputSettleHold(sessionId: "session-1", startedAt: start)
+
+    let quietEnough = TerminalBitmapView.outputSettleGateDecision(
+      terminalDirty: true,
+      sessionId: "session-1",
+      lastDirtyAt: start,
+      now: start.addingTimeInterval(0.013),
+      hold: hold,
+      quiet: 0.012,
+      maxHold: 0.025)
+    XCTAssertFalse(quietEnough.shouldDefer)
+    XCTAssertNil(quietEnough.hold)
+
+    let maxHoldReached = TerminalBitmapView.outputSettleGateDecision(
+      terminalDirty: true,
+      sessionId: "session-1",
+      lastDirtyAt: start.addingTimeInterval(0.020),
+      now: start.addingTimeInterval(0.026),
+      hold: hold,
+      quiet: 0.012,
+      maxHold: 0.025)
+    XCTAssertFalse(maxHoldReached.shouldDefer)
+    XCTAssertNil(maxHoldReached.hold)
+  }
+
   func testDirtySynchronizedOutputDoesNotAdvanceRenderedFrame() throws {
     let oldRenderer = getenv("LABAN_RENDERER").map { String(cString: $0) }
     setenv("LABAN_RENDERER", "software", 1)

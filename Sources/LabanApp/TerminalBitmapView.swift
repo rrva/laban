@@ -290,11 +290,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     var hold: SynchronizedOutputHold?
   }
 
+  struct OutputSettleHold: Equatable {
+    var sessionId: Session.ID
+    var startedAt: Date
+  }
+
+  struct OutputSettleGateDecision: Equatable {
+    var shouldDefer: Bool
+    var hold: OutputSettleHold?
+    var wakeAfter: TimeInterval?
+  }
+
   private static let synchronizedOutputMaxHoldSeconds: TimeInterval = 1.0
   private var synchronizedOutputHold: SynchronizedOutputHold?
   var synchronizedOutputHoldForTests: SynchronizedOutputHold? {
     get { synchronizedOutputHold }
     set { synchronizedOutputHold = newValue }
+  }
+
+  private static let outputSettleQuietSeconds: TimeInterval = 0.012
+  private static let outputSettleMaxHoldSeconds: TimeInterval = 0.025
+  private var outputSettleHold: OutputSettleHold?
+  private var outputSettleWakeScheduled = false
+  var outputSettleHoldForTests: OutputSettleHold? {
+    get { outputSettleHold }
+    set { outputSettleHold = newValue }
   }
 
   private static let cursorBlinkInterval: TimeInterval = 0.5
@@ -308,6 +328,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// behind an unfair lock so the comparison/swap is atomic across
   /// the reader threads and the main thread.
   private let pendingDisplayKick = OSAllocatedUnfairLock(initialState: false)
+  private let latestOutputDirtyAt = OSAllocatedUnfairLock<Date?>(initialState: nil)
 
   // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
   // renderer's onFrameCompleted callback. Bounded ring buffer.
@@ -587,6 +608,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// so a top(1) refresh that lands during an "idle" window is not
   /// stuck waiting up to 41 ms for the link to ramp back up.
   fileprivate func kickDisplayFromBackground() {
+    latestOutputDirtyAt.withLock { $0 = Date() }
     let alreadyPending = pendingDisplayKick.withLock { value -> Bool in
       let was = value
       value = true
@@ -596,6 +618,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.pendingDisplayKick.withLock { $0 = false }
+      self.advanceFrame()
+    }
+  }
+
+  private func scheduleOutputSettleWake(after delay: TimeInterval) {
+    guard !outputSettleWakeScheduled else { return }
+    outputSettleWakeScheduled = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      self.outputSettleWakeScheduled = false
       self.advanceFrame()
     }
   }
@@ -723,6 +755,39 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     return SynchronizedOutputGateDecision(
       shouldDefer: true, shouldResetMode: false, hold: currentHold)
+  }
+
+  static func outputSettleGateDecision(
+    terminalDirty: Bool,
+    sessionId: Session.ID,
+    lastDirtyAt: Date?,
+    now: Date,
+    hold: OutputSettleHold?,
+    quiet: TimeInterval = outputSettleQuietSeconds,
+    maxHold: TimeInterval = outputSettleMaxHoldSeconds
+  ) -> OutputSettleGateDecision {
+    guard terminalDirty, let lastDirtyAt else {
+      return OutputSettleGateDecision(shouldDefer: false, hold: nil, wakeAfter: nil)
+    }
+
+    let currentHold: OutputSettleHold
+    if let hold, hold.sessionId == sessionId {
+      currentHold = hold
+    } else {
+      currentHold = OutputSettleHold(sessionId: sessionId, startedAt: now)
+    }
+
+    let quietElapsed = now.timeIntervalSince(lastDirtyAt)
+    let holdElapsed = now.timeIntervalSince(currentHold.startedAt)
+    guard quietElapsed < quiet, holdElapsed < maxHold else {
+      return OutputSettleGateDecision(shouldDefer: false, hold: nil, wakeAfter: nil)
+    }
+
+    let remainingQuiet = quiet - quietElapsed
+    let remainingHold = maxHold - holdElapsed
+    let wakeAfter = max(0.001, min(remainingQuiet, remainingHold))
+    return OutputSettleGateDecision(
+      shouldDefer: true, hold: currentHold, wakeAfter: wakeAfter)
   }
 
   private func advanceCursorBlinkState(now: Date = Date()) -> Bool {
@@ -890,6 +955,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       // uses libghostty-vt without Ghostty's termio timer, so this mirrors
       // Ghostty's one-second watchdog before rendering anyway.
       return
+    }
+
+    // PTY output often arrives as related fragments that together form one
+    // visual update. Rendering between fragments can expose transient parser
+    // states, so wait for a short quiet window while bounding the hold for
+    // continuous output.
+    if !tabChanged && !scrollAnimating {
+      let settleGate = Self.outputSettleGateDecision(
+        terminalDirty: terminalDirty,
+        sessionId: session.id,
+        lastDirtyAt: latestOutputDirtyAt.withLock { $0 },
+        now: Date(),
+        hold: outputSettleHold)
+      outputSettleHold = settleGate.hold
+      if settleGate.shouldDefer {
+        scheduleOutputSettleWake(after: settleGate.wakeAfter ?? Self.outputSettleQuietSeconds)
+        return
+      }
+    } else {
+      outputSettleHold = nil
     }
 
     // Return early when nothing changed

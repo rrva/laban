@@ -108,6 +108,17 @@ def summarize(kind: str, events: list[dict[str, Any]], path: Path) -> dict[str, 
     left_cursor = [e for e in events if e.get("cursorVisible") and e.get("cursorCol") == 0]
     non_one = [e for e in events if e.get("cursorVisible") and e.get("cursorCol") != 1]
     blank_spinner = [e for e in events if not e.get("spinnerVisible")]
+    spinner_phase: list[dict[str, Any]] = []
+    spinner_started = False
+    for event in events:
+        if event.get("spinnerVisible"):
+            spinner_started = True
+        if spinner_started:
+            spinner_phase.append(event)
+    left_cursor_during_spinner = [
+        e for e in spinner_phase if e.get("cursorVisible") and e.get("cursorCol") == 0
+    ]
+    blank_during_spinner = [e for e in spinner_phase if not e.get("spinnerVisible")]
 
     def examples(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result = []
@@ -128,10 +139,14 @@ def summarize(kind: str, events: list[dict[str, Any]], path: Path) -> dict[str, 
         "frames": len(events),
         "cursorCols": dict(sorted(cursor_cols.items())),
         "leftCursorFrames": len(left_cursor),
+        "leftCursorDuringSpinnerFrames": len(left_cursor_during_spinner),
         "nonOneCursorFrames": len(non_one),
         "blankSpinnerFrames": len(blank_spinner),
+        "blankDuringSpinnerFrames": len(blank_during_spinner),
         "leftCursorExamples": examples(left_cursor),
+        "leftCursorDuringSpinnerExamples": examples(left_cursor_during_spinner),
         "blankSpinnerExamples": examples(blank_spinner),
+        "blankDuringSpinnerExamples": examples(blank_during_spinner),
     }
 
 
