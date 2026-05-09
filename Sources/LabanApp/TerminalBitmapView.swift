@@ -27,6 +27,20 @@ private final class AppKitFrameProbe {
     var text: String
   }
 
+  private struct ProbeRect: Encodable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+
+    init(_ rect: CGRect) {
+      x = Double(rect.origin.x)
+      y = Double(rect.origin.y)
+      width = Double(rect.size.width)
+      height = Double(rect.size.height)
+    }
+  }
+
   private struct ProbeCursor: Encodable {
     var x: Double
     var y: Double
@@ -46,6 +60,8 @@ private final class AppKitFrameProbe {
     var cursorCol: Int
     var cursorVisible: Bool
     var terminalGlyphs: [ProbeGlyph]
+    var sidebarGlyphs: [ProbeGlyph]
+    var sidebarRects: [ProbeRect]
     var cursors: [ProbeCursor]
   }
 
@@ -73,13 +89,20 @@ private final class AppKitFrameProbe {
     surfaceHeight: Int,
     surfaceScale: Double
   ) {
-    var glyphs: [ProbeGlyph] = []
+    var terminalGlyphs: [ProbeGlyph] = []
+    var sidebarGlyphs: [ProbeGlyph] = []
+    var sidebarRects: [ProbeRect] = []
     var cursors: [ProbeCursor] = []
     for command in commands {
       switch command {
       case .glyphRun(let origin, let text, _, _, _, let source, _, _, _)
       where source == .terminal:
-        glyphs.append(ProbeGlyph(x: Double(origin.x), y: Double(origin.y), text: text))
+        terminalGlyphs.append(ProbeGlyph(x: Double(origin.x), y: Double(origin.y), text: text))
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _)
+      where source == .sidebar:
+        sidebarGlyphs.append(ProbeGlyph(x: Double(origin.x), y: Double(origin.y), text: text))
+      case .rect(let rect, _, let source) where source == .sidebar:
+        sidebarRects.append(ProbeRect(rect))
       case .cursor(let rect, _):
         cursors.append(
           ProbeCursor(
@@ -100,7 +123,9 @@ private final class AppKitFrameProbe {
       cursorRow: Int(snapshot.cursor_row),
       cursorCol: Int(snapshot.cursor_col),
       cursorVisible: snapshot.cursor_visible != 0,
-      terminalGlyphs: glyphs,
+      terminalGlyphs: terminalGlyphs,
+      sidebarGlyphs: sidebarGlyphs,
+      sidebarRects: sidebarRects,
       cursors: cursors)
     guard let data = try? encoder.encode(event) else { return }
     handle.write(data)
@@ -388,6 +413,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var resizeAutomationScheduled = false
   private var renderingResizeFrame = false
   private var renderRetryScheduled = false
+  private var resizeBackgroundReset: DispatchWorkItem?
+  private weak var resizeBackgroundView: NSView?
+  private var normalResizeBackgroundColor: CGColor?
+  private var normalResizeBackgroundWantsLayer: Bool?
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
@@ -514,7 +543,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.updateWindowBackground()
       self?.renderInvalidated = true
     }
 
@@ -531,13 +559,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     configureFrameProbeIfRequested()
     configureResizeProbeIfRequested()
     scheduleAutomationIfRequested()
-  }
-
-  private func updateWindowBackground() {
-    let color = cgColorFrom(Theme.current.bg0)
-    if let nsColor = NSColor(cgColor: color) {
-      window?.backgroundColor = nsColor
-    }
   }
 
   private func configureFrameProbeIfRequested() {
@@ -639,6 +660,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         return
       }
       let size = steps[index]
+      applyTransientResizeBackground()
       window.setContentSize(size)
       resizeProbe?.record(
         label: "step-\(index)-immediate", window: window, view: self, backend: backend,
@@ -705,12 +727,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard window != nil else {
       syncActiveSessionFocus(windowFocused: false)
       stopDisplayLink()
+      resizeBackgroundReset?.cancel()
+      resizeBackgroundReset = nil
+      resizeBackgroundView = nil
+      normalResizeBackgroundColor = nil
+      normalResizeBackgroundWantsLayer = nil
       return
     }
     if let window {
       installWindowFocusObservers(for: window)
     }
-    updateWindowBackground()
     // Prevent duplicate links when view transitions between windows.
     if caDisplayLink == nil && cvDisplayLink == nil {
       recreateSurface()
@@ -850,6 +876,36 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
   }
 
+  private func applyTransientResizeBackground() {
+    guard let view = window?.contentView?.superview else { return }
+    if resizeBackgroundView !== view {
+      normalResizeBackgroundColor = nil
+      normalResizeBackgroundWantsLayer = nil
+      resizeBackgroundView = view
+    }
+    if normalResizeBackgroundWantsLayer == nil {
+      normalResizeBackgroundWantsLayer = view.wantsLayer
+      normalResizeBackgroundColor = view.layer?.backgroundColor
+    }
+    view.wantsLayer = true
+    view.layer?.backgroundColor = cgColorFrom(Theme.current.bg0)
+
+    resizeBackgroundReset?.cancel()
+    let reset = DispatchWorkItem { [weak self, weak view] in
+      guard let self, let view, view === self.resizeBackgroundView else { return }
+      if let originalWantsLayer = self.normalResizeBackgroundWantsLayer {
+        view.layer?.backgroundColor = self.normalResizeBackgroundColor
+        view.wantsLayer = originalWantsLayer
+      }
+      self.resizeBackgroundView = nil
+      self.normalResizeBackgroundColor = nil
+      self.normalResizeBackgroundWantsLayer = nil
+      self.resizeBackgroundReset = nil
+    }
+    resizeBackgroundReset = reset
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120), execute: reset)
+  }
+
   private func stopDisplayLink() {
     if #available(macOS 14.0, *) {
       if let link = caDisplayLink as? CADisplayLink {
@@ -866,6 +922,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   deinit {
     stopDisplayLink()
     removeWindowFocusObservers()
+    resizeBackgroundReset?.cancel()
+    if let view = resizeBackgroundView,
+      let originalWantsLayer = normalResizeBackgroundWantsLayer
+    {
+      view.layer?.backgroundColor = normalResizeBackgroundColor
+      view.wantsLayer = originalWantsLayer
+    }
     frameProbe?.close()
     resizeProbe?.close()
     if let themeChangeObserver {
@@ -878,6 +941,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if recreateSurface() {
       renderInvalidated = true
     }
+  }
+
+  override func viewWillStartLiveResize() {
+    super.viewWillStartLiveResize()
+    applyTransientResizeBackground()
   }
 
   /// Returns true if the surface was actually recreated.
@@ -945,6 +1013,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       }
     }
     return .partial(yRanges: ranges)
+  }
+
+  static func terminalGridOriginY(
+    boundsHeight: CGFloat,
+    rows: Int,
+    cellHeight: CGFloat,
+    insets: NSEdgeInsets
+  ) -> CGFloat {
+    let gridHeight = CGFloat(max(rows, 1)) * cellHeight
+    return max(insets.bottom, boundsHeight - insets.top - gridHeight)
   }
 
   // MARK: - Frame loop
@@ -1250,11 +1328,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // delta. Zero when no scroll is in flight.
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     let scrollContentYOffset = -CGFloat(subCellRows) * CGFloat(cellHeight)
+    let gridOriginY = Self.terminalGridOriginY(
+      boundsHeight: bounds.height,
+      rows: Int(snap.pointee.rows),
+      cellHeight: CGFloat(cellHeight),
+      insets: insets)
     let termProducer = FrameProducer(
       cellWidth: cellWidth,
       cellHeight: cellHeight,
       originX: sidebarWidth + insets.left,
-      originY: insets.bottom,
+      originY: gridOriginY,
       contentYOffset: scrollContentYOffset
     )
     let selection = currentTerminalSelection(sessionId: session.id)
@@ -1291,7 +1374,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       snapshot: snap,
       forceFull: renderInvalidated || tabChanged || scrollAnimating,
       cellHeight: CGFloat(cellHeight),
-      originY: insets.bottom)
+      originY: gridOriginY)
     guard backend.render(cmds, damage: damage) else {
       renderInvalidated = true
       scheduleRenderRetry()
@@ -1474,6 +1557,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // anchored to the top of the grid (e.g. cursor at row 0) appears to
     // jump as the gap closes.
     if inLiveResize || surfaceChanged {
+      applyTransientResizeBackground()
       renderingResizeFrame = true
       defer { renderingResizeFrame = false }
       advanceFrame()
@@ -1572,6 +1656,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       sidebarWidth: sidebarWidth,
       cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
+      boundsHeight: bounds.height,
       insets: Self.contentInsets
     )
     let windowRect = convert(rect, to: nil)
@@ -2412,7 +2497,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func termCell(at pt: NSPoint) -> (row: Int, col: Int)? {
     let insets = Self.contentInsets
     let x = pt.x - sidebarWidth - insets.left
-    let yLocal = pt.y - insets.bottom
+    let gridOriginY = Self.terminalGridOriginY(
+      boundsHeight: bounds.height,
+      rows: lastRows,
+      cellHeight: CGFloat(cellHeight),
+      insets: insets)
+    let yLocal = pt.y - gridOriginY
     guard x >= 0, yLocal >= 0 else { return nil }
     let col = Int(x / CGFloat(cellWidth))
     // CG y=0 at bottom; terminal row 0 is at the top of the cell grid.
@@ -2429,7 +2519,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func clampedSelectionPoint(at pt: NSPoint) -> SelectionPoint {
     let insets = Self.contentInsets
     let x = max(0, pt.x - sidebarWidth - insets.left)
-    let yLocal = pt.y - insets.bottom
+    let gridOriginY = Self.terminalGridOriginY(
+      boundsHeight: bounds.height,
+      rows: lastRows,
+      cellHeight: CGFloat(cellHeight),
+      insets: insets)
+    let yLocal = pt.y - gridOriginY
     let cols = max(
       1,
       Int((bounds.width - sidebarWidth - insets.left - insets.right) / CGFloat(cellWidth)))
@@ -2579,14 +2674,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     sidebarWidth: CGFloat,
     cellWidth: CGFloat,
     cellHeight: CGFloat,
+    boundsHeight: CGFloat,
     insets: NSEdgeInsets
   ) -> NSRect {
     let clampedRows = max(rows, 1)
     let row = min(max(cursorRow, 0), clampedRows - 1)
     let col = max(cursorCol, 0)
+    let gridOriginY = terminalGridOriginY(
+      boundsHeight: boundsHeight,
+      rows: clampedRows,
+      cellHeight: cellHeight,
+      insets: insets)
     return NSRect(
       x: sidebarWidth + insets.left + CGFloat(col) * cellWidth,
-      y: insets.bottom + CGFloat(clampedRows - 1 - row) * cellHeight,
+      y: gridOriginY + CGFloat(clampedRows - 1 - row) * cellHeight,
       width: cellWidth,
       height: cellHeight
     )

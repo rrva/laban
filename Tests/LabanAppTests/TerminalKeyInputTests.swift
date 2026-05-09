@@ -238,6 +238,7 @@ final class TerminalKeyInputTests: XCTestCase {
       sidebarWidth: 200,
       cellWidth: 9,
       cellHeight: 18,
+      boundsHeight: 476,
       insets: NSEdgeInsets(top: 36, left: 14, bottom: 8, right: 8)
     )
 
@@ -255,6 +256,7 @@ final class TerminalKeyInputTests: XCTestCase {
       sidebarWidth: 12,
       cellWidth: 10,
       cellHeight: 20,
+      boundsHeight: 24,
       insets: NSEdgeInsets(top: 0, left: 3, bottom: 4, right: 0)
     )
 
@@ -262,5 +264,22 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(rect.origin.y, 4)
     XCTAssertEqual(rect.size.width, 10)
     XCTAssertEqual(rect.size.height, 20)
+  }
+
+  func testTextInputCursorRectKeepsTopRowAnchoredWithExtraHeight() {
+    let insets = NSEdgeInsets(top: 36, left: 14, bottom: 8, right: 8)
+    let exactHeight = insets.top + 24 * CGFloat(18) + insets.bottom
+    let rect = TerminalBitmapView.cursorRectForTextInput(
+      rows: 24,
+      cursorRow: 0,
+      cursorCol: 0,
+      sidebarWidth: 200,
+      cellWidth: 9,
+      cellHeight: 18,
+      boundsHeight: exactHeight + 11,
+      insets: insets
+    )
+
+    XCTAssertEqual((exactHeight + 11) - (rect.origin.y + rect.height), insets.top)
   }
 }

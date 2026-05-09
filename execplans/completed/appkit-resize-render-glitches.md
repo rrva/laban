@@ -24,9 +24,12 @@ without watching the screen manually.
 - [x] Reproduce and classify at least one resize artifact with saved evidence.
 - [x] Finish the focused fix for the observed resize path. Dropped Metal frames
   now remain dirty in `TerminalBitmapView`; resize-triggered surface changes
-  render synchronously even outside AppKit live-resize; and the window
-  background follows the current terminal theme.
+  render synchronously even outside AppKit live-resize; and a transient
+  resize-only theme-frame backing color covers compositor gaps without
+  permanently changing AppKit titlebar chrome.
 - [x] Validate with resize repro artifacts and targeted tests.
+- [x] Follow up on the sidebar-specific resize report with command-level
+  sidebar probes and stressed diagonal screenshots.
 
 ## Completed Follow-Through
 
@@ -43,9 +46,16 @@ and returns before incrementing `renderedFrameCount` or calling
 surface size changes, not only during AppKit's `inLiveResize`, so programmatic
 resize automation follows the same path as user resize.
 
-The top-window background is handled at the window level with
-`window.backgroundColor = Theme.current.bg0`. The CAMetalLayer background is
+The top-window background is handled with a transient resize-only background on
+the AppKit theme-frame backing view, then restored shortly after resize
+settles. The `NSWindow.backgroundColor` and CAMetalLayer background are
 intentionally not set; see Decision Log.
+
+The resize fallback now starts before a live resize begins, and the automated
+resize harness applies the same fallback before each programmatic
+`setContentSize` call. `LABAN_FRAME_PROBE_DIR` also records sidebar glyph runs
+and sidebar rects so agents can distinguish true sidebar layout movement from
+WindowServer presentation timing.
 
 `scripts/analyze-resize-repro` gained a faster ImageMagick raw-RGB path when
 `magick` is installed, with the standard-library PNG decoder retained as a
@@ -62,13 +72,26 @@ fallback. This keeps the AppKit resize repro practical for repeated local runs.
   succeeds.
   Date/Author: 2026-05-09 / Codex.
 
-- Decision: Theme the AppKit window background, but do not set
+- Decision: Use the AppKit theme-frame backing layer only as a transient resize
+  fallback, and do not set `NSWindow.backgroundColor` or
   `CAMetalLayer.backgroundColor`.
   Rationale: Setting the CAMetalLayer background made capture-off Metal window
   screenshots turn fully black, while capture-on and software paths still
   looked correct. Leaving the Metal layer background alone restored normal
-  capture-off presentation; setting the window background still covers the
-  transparent titlebar/top-window area that can otherwise flash white.
+  capture-off presentation. Keeping `window.backgroundColor` set permanently
+  hid AppKit's traffic-light controls in a rebuilt instance, and even transient
+  use made capture-off Metal probes black. The fallback now colors the
+  theme-frame backing layer during resize and restores it afterward.
+  Date/Author: 2026-05-09 / Codex.
+
+- Decision: Apply the transient theme-frame fallback before resize mutation,
+  not only after `setFrameSize(_:)`.
+  Rationale: Sidebar command geometry stayed top-anchored, but immediate
+  diagonal-shrink screenshots could still show the current smaller content
+  composited into the previous larger WindowServer image, exposing white
+  titlebar/window backing above and to the right of the app content. Pre-filling
+  the theme-frame backing before resize removes that stale-frame flash while
+  avoiding `NSWindow.backgroundColor`.
   Date/Author: 2026-05-09 / Codex.
 
 ## Surprises & Discoveries
@@ -101,6 +124,22 @@ fallback. This keeps the AppKit resize repro practical for repeated local runs.
   about 64 seconds before the ImageMagick fast path and under 10 seconds after
   the direct RGB scan optimization.
 
+- Observation: The sidebar's own layout commands were not jumping during the
+  empty-terminal resize report.
+  Evidence: `.artifacts/resize-sidebar/20260509T163106Z/frame-probe/frame-probe.ndjson`
+  recorded 38 sidebar frames with `tabTop=[28.0]`,
+  `titleBaselineTop=[55.5]`, and `cursorTop=[36.0]`.
+
+- Observation: The visible sidebar jump came from stale WindowServer resize
+  presentation, not from `SidebarProducer` changing coordinates.
+  Evidence: `.artifacts/resize-sidebar/20260509T163106Z` had two immediate
+  screenshots with `topWhiteRatio` near `0.987`; the probe event for the same
+  sequence had already moved the view to the new smaller bounds while
+  `CGWindowListCreateImage` still returned the previous larger window image.
+  After pre-filling before resize mutation,
+  `.artifacts/resize-sidebar/20260509T163508Z` reported
+  `events=74`, `screenshots=74`, and `maxTopWhiteRatio=0.0`.
+
 ## Outcomes & Retrospective
 
 The stressed resize repro that previously captured a white region now reports
@@ -111,6 +150,12 @@ aggressive run is `.artifacts/resize-repro/20260509T122240Z`, with
 
 The normal Metal run is `.artifacts/resize-repro/20260509T122224Z`, with
 `events=14`, `screenshots=14`, `maxTopWhiteRatio=0.0`, and
+`maxNearBlackRatio=0.0003154121863799283`.
+
+The sidebar follow-up found stable command geometry and removed a stale
+WindowServer white-frame flash in the diagonal stress harness. The final
+sidebar stress artifact is `.artifacts/resize-sidebar/20260509T163508Z`, with
+`events=74`, `screenshots=74`, `maxTopWhiteRatio=0.0`, and
 `maxNearBlackRatio=0.0003154121863799283`.
 
 ## Context and Orientation
@@ -162,6 +207,7 @@ rtk env LABAN_RESIZE_CAPTURE_DELAY_MS=1 \
   scripts/run-resize-repro --seconds 8 --renderer metal --no-build
 rtk swift test --filter TerminalBitmapViewSyncOutputTests
 rtk swift test --filter MetalRendererSmokeTests
+rtk swift test --filter SidebarProducerTests
 rtk python3 -m py_compile scripts/analyze-resize-repro scripts/resize-torture
 rtk git diff --check
 rtk ./scripts/lint
@@ -177,6 +223,8 @@ Results:
   `.artifacts/resize-repro/20260509T122240Z`, `maxTopWhiteRatio=0.0`;
 - `TerminalBitmapViewSyncOutputTests`: 4 tests passed;
 - `MetalRendererSmokeTests`: 8 tests passed;
+- `SidebarProducerTests`: 20 tests passed after adding
+  `testTopTabGeometryStaysTopAnchoredAcrossResizeHeights`;
 - `scripts/lint`, `scripts/check-docs`, and `scripts/check`: passed.
 
 The first `rtk ./scripts/check` run saw one transient full-suite Swift test

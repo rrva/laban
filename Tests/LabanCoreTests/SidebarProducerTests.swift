@@ -164,6 +164,52 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertEqual(result, .none)
   }
 
+  func testTopTabGeometryStaysTopAnchoredAcrossResizeHeights() {
+    let tabs = makeTabs(count: 1)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let topInset: CGFloat = 28
+    var expectedTabTop: CGFloat?
+    var expectedTitleBaselineTop: CGFloat?
+
+    for height in [620, 634, 760, 874] as [CGFloat] {
+      let cmds = p.commands(
+        tabs: tabs,
+        activeTabId: tabs[0].id,
+        height: height,
+        topInset: topInset)
+      let tabRect = cmds.compactMap { cmd -> CGRect? in
+        guard case .rect(let rect, _, let source) = cmd,
+          source == .sidebar,
+          rect.width == p.sidebarWidth,
+          rect.height == p.rowHeight
+        else { return nil }
+        return rect
+      }.first
+      let titleRun = cmds.compactMap { cmd -> CGPoint? in
+        guard case .glyphRun(let origin, let text, _, _, _, let source, _, _, _) = cmd,
+          source == .sidebar,
+          text == "1"
+        else { return nil }
+        return origin
+      }.first
+
+      XCTAssertNotNil(tabRect)
+      XCTAssertNotNil(titleRun)
+      guard let tabRect, let titleRun else { continue }
+
+      let tabTop = height - (tabRect.origin.y + tabRect.height)
+      let titleBaselineTop = height - titleRun.y
+      if expectedTabTop == nil {
+        expectedTabTop = tabTop
+        expectedTitleBaselineTop = titleBaselineTop
+      }
+      XCTAssertEqual(tabTop, expectedTabTop ?? -1, accuracy: 0.001)
+      XCTAssertEqual(titleBaselineTop, expectedTitleBaselineTop ?? -1, accuracy: 0.001)
+    }
+
+    XCTAssertEqual(expectedTabTop ?? -1, topInset)
+  }
+
   func testHitTestEmptyAreaBelowRows() {
     let tabs = makeTabs(count: 1)
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
