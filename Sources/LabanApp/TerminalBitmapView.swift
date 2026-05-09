@@ -387,6 +387,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var resizeProbe: AppKitResizeProbe?
   private var resizeAutomationScheduled = false
   private var renderingResizeFrame = false
+  private var renderRetryScheduled = false
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
@@ -513,6 +514,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
+      self?.updateWindowBackground()
       self?.renderInvalidated = true
     }
 
@@ -529,6 +531,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     configureFrameProbeIfRequested()
     configureResizeProbeIfRequested()
     scheduleAutomationIfRequested()
+  }
+
+  private func updateWindowBackground() {
+    let color = cgColorFrom(Theme.current.bg0)
+    if let nsColor = NSColor(cgColor: color) {
+      window?.backgroundColor = nsColor
+    }
   }
 
   private func configureFrameProbeIfRequested() {
@@ -701,6 +710,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if let window {
       installWindowFocusObservers(for: window)
     }
+    updateWindowBackground()
     // Prevent duplicate links when view transitions between windows.
     if caDisplayLink == nil && cvDisplayLink == nil {
       recreateSurface()
@@ -826,6 +836,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
       guard let self else { return }
       self.outputSettleWakeScheduled = false
+      self.advanceFrame()
+    }
+  }
+
+  private func scheduleRenderRetry() {
+    guard !renderRetryScheduled else { return }
+    renderRetryScheduled = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.renderRetryScheduled = false
       self.advanceFrame()
     }
   }
@@ -1272,7 +1292,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       forceFull: renderInvalidated || tabChanged || scrollAnimating,
       cellHeight: CGFloat(cellHeight),
       originY: insets.bottom)
-    backend.render(cmds, damage: damage)
+    guard backend.render(cmds, damage: damage) else {
+      renderInvalidated = true
+      scheduleRenderRetry()
+      return
+    }
     renderedFrameCount = captureFrame
     if let recorder = captureRecorder {
       // Both software and Metal flow through the same recorder entry now.
@@ -1420,7 +1444,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let w = Int(newSize.width)
     let h = Int(newSize.height)
     guard w > 0, h > 0 else { return }
-    if recreateSurface() {
+    let surfaceChanged = recreateSurface()
+    if surfaceChanged {
       renderInvalidated = true
     }
     let insets = Self.contentInsets
@@ -1448,7 +1473,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // resized layer until the next displayLink tick (~16 ms) and content
     // anchored to the top of the grid (e.g. cursor at row 0) appears to
     // jump as the gap closes.
-    if inLiveResize {
+    if inLiveResize || surfaceChanged {
+      renderingResizeFrame = true
+      defer { renderingResizeFrame = false }
       advanceFrame()
     }
   }
