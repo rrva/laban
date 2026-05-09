@@ -1,10 +1,9 @@
 #!/bin/sh
-# laban-watchdog — rolling external sampler for Laban + its tab descendants.
+# laban-watchdog — rolling external sampler for Laban.
 #
 # Run as a LaunchAgent or in any persistent shell. Every INTERVAL seconds it
-# samples Laban and every direct child PID (your in-tab shells / agents),
-# writing the result to OUT_DIR. Keeps only the most recent KEEP files per
-# pid so disk usage stays bounded.
+# samples Laban, writing the result to OUT_DIR. Keeps only the most recent KEEP
+# files per pid so disk usage stays bounded.
 #
 # Use this when the system itself becomes too unresponsive to launch
 # `sample` interactively — by the time you can type a command, the evidence
@@ -15,6 +14,9 @@
 #   LABAN_WATCHDOG_DURATION  seconds per sample              (default 1)
 #   LABAN_WATCHDOG_KEEP      max samples to retain per pid   (default 30)
 #   LABAN_WATCHDOG_OUT       output directory                (default ~/laban-watchdog)
+#   LABAN_WATCHDOG_DESCENDANTS sample shell/agent descendants (default 0)
+#   LABAN_WATCHDOG_MAX_PIDS   max pids per sweep             (default 4)
+#   LABAN_WATCHDOG_MAX_JOBS   max concurrent sample jobs     (default 1)
 
 set -u
 
@@ -22,6 +24,9 @@ INTERVAL=${LABAN_WATCHDOG_INTERVAL:-5}
 DURATION=${LABAN_WATCHDOG_DURATION:-1}
 KEEP=${LABAN_WATCHDOG_KEEP:-30}
 OUT_DIR=${LABAN_WATCHDOG_OUT:-"$HOME/laban-watchdog"}
+INCLUDE_DESCENDANTS=${LABAN_WATCHDOG_DESCENDANTS:-0}
+MAX_PIDS=${LABAN_WATCHDOG_MAX_PIDS:-4}
+MAX_JOBS=${LABAN_WATCHDOG_MAX_JOBS:-1}
 
 mkdir -p "$OUT_DIR"
 
@@ -40,9 +45,10 @@ sample_one() {
 trim_pid() {
     prefix=$1
     # sort newest first, skip the first $KEEP, delete the rest
-    /bin/ls -t "$OUT_DIR"/"${prefix}"-*.txt 2>/dev/null \
-        | /usr/bin/awk -v keep="$KEEP" 'NR > keep { print }' \
-        | /usr/bin/xargs -r rm -f 2>/dev/null
+    old=$(/bin/ls -t "$OUT_DIR"/"${prefix}"-*.txt 2>/dev/null \
+        | /usr/bin/awk -v keep="$KEEP" 'NR > keep { print }')
+    [ -n "$old" ] || return 0
+    printf '%s\n' "$old" | /usr/bin/xargs rm -f 2>/dev/null
 }
 
 while :; do
@@ -55,11 +61,9 @@ while :; do
         continue
     fi
 
-    # Sample Laban + every descendant. We have to walk the process tree
-    # transitively because the actual interesting process (Claude Code,
-    # Codex, etc.) is usually a grandchild: Laban → zsh → agent. A direct
-    # `pgrep -P` only catches the shell, which is itself idle in waitjobs
-    # and tells you nothing about the hang.
+    # By default sample only Laban. Descendant sampling is useful for targeted
+    # session diagnostics, but it can become expensive when tabs contain agent
+    # sessions with many child processes.
     walk_descendants() {
         for pid in $(/usr/bin/pgrep -P "$1" 2>/dev/null || true); do
             echo "$pid"
@@ -68,14 +72,33 @@ while :; do
     }
     pids=""
     for parent in $laban_pids; do
-        pids="$pids $parent $(walk_descendants "$parent")"
+        pids="$pids $parent"
+        case "$INCLUDE_DESCENDANTS" in
+            1|true|TRUE|yes|YES)
+                pids="$pids $(walk_descendants "$parent")"
+                ;;
+        esac
     done
 
+    seen=""
+    pid_count=0
+    active_jobs=0
     for pid in $pids; do
         [ -n "$pid" ] || continue
+        case " $seen " in
+            *" $pid "*) continue ;;
+        esac
+        seen="$seen $pid"
+        pid_count=$((pid_count + 1))
+        [ "$pid_count" -le "$MAX_PIDS" ] || break
         name=$(/bin/ps -p "$pid" -o comm= 2>/dev/null | /usr/bin/sed 's|.*/||' | /usr/bin/tr -c 'A-Za-z0-9_-' '_')
         [ -n "$name" ] || continue
         sample_one "$pid" "$name" "$ts" &
+        active_jobs=$((active_jobs + 1))
+        if [ "$active_jobs" -ge "$MAX_JOBS" ]; then
+            wait
+            active_jobs=0
+        fi
     done
     wait
 

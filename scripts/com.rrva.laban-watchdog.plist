@@ -11,6 +11,8 @@
 
   Logs land at /tmp/laban-watchdog.{out,err}; samples at ~/laban-watchdog/.
   When Laban isn't running, the script idles cheaply (one pgrep per interval).
+  By default only the Laban app process is sampled. Set
+  LABAN_WATCHDOG_DESCENDANTS=1 for targeted child-process sweeps.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
