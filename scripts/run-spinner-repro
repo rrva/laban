@@ -1,0 +1,133 @@
+#!/usr/bin/env sh
+set -eu
+
+usage() {
+  cat <<'EOF'
+usage: scripts/run-spinner-repro [--mode probe|capture|both] [--seconds N] [--renderer metal|software] [--no-build]
+
+Launches the AppKit app with scripts/cursor-spinner-repro as SHELL, records a
+frame probe, and optionally enables full Laban capture.
+EOF
+}
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+mode=both
+seconds=4
+renderer=metal
+build=1
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --mode)
+      mode=${2:?missing mode}
+      shift 2
+      ;;
+    --seconds)
+      seconds=${2:?missing seconds}
+      shift 2
+      ;;
+    --renderer)
+      renderer=${2:?missing renderer}
+      shift 2
+      ;;
+    --no-build)
+      build=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$mode" in
+  probe|capture|both) ;;
+  *) echo "invalid --mode: $mode" >&2; exit 2 ;;
+esac
+
+if [ "$build" = 1 ]; then
+  ./scripts/build-app >/dev/null
+fi
+
+app=".build/laban/Laban.app/Contents/MacOS/LabanApp"
+if [ ! -x "$app" ]; then
+  echo "missing app executable: $app" >&2
+  exit 1
+fi
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+root=".artifacts/spinner-repro/$stamp"
+mkdir -p "$root"
+
+run_one() {
+  name=$1
+  autostart_capture=$2
+  run_dir="$root/$name"
+  probe_dir="$run_dir/probe"
+  capture_dir="$run_dir/captures"
+  mkdir -p "$probe_dir" "$capture_dir"
+
+  echo "run-spinner-repro: starting $name run in $run_dir"
+  env \
+    SHELL="$repo_root/scripts/cursor-spinner-repro" \
+    LABAN_RENDERER="$renderer" \
+    LABAN_FRAME_PROBE_DIR="$repo_root/$probe_dir" \
+    LABAN_CAPTURE_DIR="$repo_root/$capture_dir" \
+    LABAN_AUTOSTART_CAPTURE="$autostart_capture" \
+    LABAN_AUTO_QUIT_AFTER_SECONDS="$seconds" \
+    LABAN_SPINNER_CYCLES=10000 \
+    "$repo_root/$app" >"$run_dir/laban-app.log" 2>&1 &
+  pid=$!
+
+  timeout=$((seconds + 8))
+  elapsed=0
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$timeout" ]; then
+      echo "run-spinner-repro: timeout; terminating pid $pid" >&2
+      kill -TERM "$pid" >/dev/null 2>&1 || true
+      sleep 1
+      kill -KILL "$pid" >/dev/null 2>&1 || true
+      break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$pid" 2>/dev/null || true
+
+  if [ -f "$probe_dir/frame-probe.ndjson" ]; then
+    ./scripts/analyze-spinner-repro "$probe_dir/frame-probe.ndjson" --pretty \
+      >"$run_dir/probe-summary.json"
+    cat "$run_dir/probe-summary.json"
+  else
+    echo "run-spinner-repro: no probe file written for $name" >&2
+  fi
+
+  latest_capture=$(find "$capture_dir" -mindepth 1 -maxdepth 1 -type d -name 'appkit-*' -print | sort | tail -n 1 || true)
+  if [ -n "$latest_capture" ] && [ -f "$latest_capture/timeline.ndjson" ]; then
+    ./scripts/analyze-spinner-repro "$latest_capture" --pretty >"$run_dir/capture-summary.json"
+    cat "$run_dir/capture-summary.json"
+  fi
+}
+
+case "$mode" in
+  probe)
+    run_one probe-off 0
+    ;;
+  capture)
+    run_one capture-on 1
+    ;;
+  both)
+    run_one probe-off 0
+    run_one capture-on 1
+    ;;
+esac
+
+echo "run-spinner-repro: artifacts in $root"

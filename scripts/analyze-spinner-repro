@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Summarize cursor/spinner state from a Laban frame probe or full capture."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+
+SPINNER = set("⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼")
+
+
+def load_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def spinner_visible(texts: list[str]) -> bool:
+    return any(any(ch in SPINNER for ch in text) for text in texts)
+
+
+def probe_events(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            texts = [g.get("text", "") for g in item.get("terminalGlyphs", [])]
+            events.append(
+                {
+                    "frame": item.get("frame"),
+                    "cursorRow": item.get("cursorRow"),
+                    "cursorCol": item.get("cursorCol"),
+                    "cursorVisible": item.get("cursorVisible"),
+                    "texts": texts,
+                    "spinnerVisible": spinner_visible(texts),
+                    "source": "probe",
+                }
+            )
+    return events
+
+
+def capture_events(capture_dir: Path) -> list[dict[str, Any]]:
+    timeline_path = capture_dir / "timeline.ndjson"
+    if not timeline_path.exists():
+        raise SystemExit(f"not a capture directory: missing {timeline_path}")
+
+    snapshots: dict[int, dict[str, Any]] = {}
+    commands: dict[int, Path] = {}
+    with timeline_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            kind = item.get("kind")
+            frame = item.get("frame")
+            if not isinstance(frame, int):
+                continue
+            if kind == "terminal.snapshot":
+                snapshots[frame] = item
+            elif kind == "frame.commands" and item.get("path"):
+                commands[frame] = capture_dir / item["path"]
+
+    events: list[dict[str, Any]] = []
+    for frame in sorted(snapshots):
+        texts: list[str] = []
+        command_path = commands.get(frame)
+        if command_path and command_path.exists():
+            payload = load_json(command_path)
+            for cmd in payload.get("commands", []):
+                if cmd.get("kind") == "glyphRun" and cmd.get("source") == "terminal":
+                    texts.append(cmd.get("text", ""))
+        snap = snapshots[frame]
+        events.append(
+            {
+                "frame": frame,
+                "cursorRow": snap.get("cursorRow"),
+                "cursorCol": snap.get("cursorCol"),
+                "cursorVisible": snap.get("cursorVisible"),
+                "texts": texts,
+                "spinnerVisible": spinner_visible(texts),
+                "source": "capture",
+            }
+        )
+    return events
+
+
+def resolve_input(path: Path) -> tuple[str, list[dict[str, Any]]]:
+    if path.is_file():
+        return ("probe", probe_events(path))
+    if (path / "frame-probe.ndjson").exists():
+        return ("probe", probe_events(path / "frame-probe.ndjson"))
+    if (path / "timeline.ndjson").exists():
+        return ("capture", capture_events(path))
+    raise SystemExit(
+        f"expected frame-probe.ndjson, a probe directory, or a capture directory: {path}"
+    )
+
+
+def summarize(kind: str, events: list[dict[str, Any]], path: Path) -> dict[str, Any]:
+    cursor_cols = Counter(str(e.get("cursorCol")) for e in events)
+    left_cursor = [e for e in events if e.get("cursorVisible") and e.get("cursorCol") == 0]
+    non_one = [e for e in events if e.get("cursorVisible") and e.get("cursorCol") != 1]
+    blank_spinner = [e for e in events if not e.get("spinnerVisible")]
+
+    def examples(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result = []
+        for item in items[:10]:
+            result.append(
+                {
+                    "frame": item.get("frame"),
+                    "cursorCol": item.get("cursorCol"),
+                    "spinnerVisible": item.get("spinnerVisible"),
+                    "texts": item.get("texts", [])[:4],
+                }
+            )
+        return result
+
+    return {
+        "path": str(path),
+        "kind": kind,
+        "frames": len(events),
+        "cursorCols": dict(sorted(cursor_cols.items())),
+        "leftCursorFrames": len(left_cursor),
+        "nonOneCursorFrames": len(non_one),
+        "blankSpinnerFrames": len(blank_spinner),
+        "leftCursorExamples": examples(left_cursor),
+        "blankSpinnerExamples": examples(blank_spinner),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--pretty", action="store_true")
+    args = parser.parse_args()
+
+    kind, events = resolve_input(args.path)
+    summary = summarize(kind, events, args.path)
+    if args.pretty:
+        print(json.dumps(summary, indent=2, sort_keys=True, ensure_ascii=False))
+    else:
+        print(json.dumps(summary, sort_keys=True, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

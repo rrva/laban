@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Emit fragmented spinner updates that mimic the observed Codex updater output."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+
+
+SPINNER = ["⠴", "⠦", "⠧", "⠇", "⠏", "⠋", "⠙", "⠹", "⠸", "⠼"]
+
+
+def env_float(name: str, fallback: float) -> float:
+    raw = os.environ.get(name)
+    if not raw:
+        return fallback
+    try:
+        return float(raw)
+    except ValueError:
+        return fallback
+
+
+def env_int(name: str, fallback: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except ValueError:
+        return fallback
+
+
+def write(text: str) -> None:
+    os.write(sys.stdout.fileno(), text.encode("utf-8"))
+
+
+def sleep_ms(ms: float) -> None:
+    if ms > 0:
+        time.sleep(ms / 1000.0)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Emit spinner frames as small PTY writes: CSI 1G, CSI 0K, then one "
+            "Braille spinner glyph. Useful for reproducing cursor frames that "
+            "land between fragments."
+        )
+    )
+    parser.add_argument("--cycles", type=int, default=env_int("LABAN_SPINNER_CYCLES", 180))
+    parser.add_argument(
+        "--home-gap-ms",
+        type=float,
+        default=env_float("LABAN_SPINNER_HOME_GAP_MS", 8.0),
+        help="Delay after ESC[1G before erasing/writing the spinner.",
+    )
+    parser.add_argument(
+        "--erase-gap-ms",
+        type=float,
+        default=env_float("LABAN_SPINNER_ERASE_GAP_MS", 2.0),
+        help="Delay after ESC[0K before writing the spinner glyph.",
+    )
+    parser.add_argument(
+        "--frame-gap-ms",
+        type=float,
+        default=env_float("LABAN_SPINNER_FRAME_GAP_MS", 80.0),
+        help="Delay after each spinner glyph.",
+    )
+    parser.add_argument(
+        "--style",
+        choices=["split-all", "split-home", "atomic"],
+        default=os.environ.get("LABAN_SPINNER_STYLE", "split-all"),
+        help="How aggressively to split each spinner frame into separate writes.",
+    )
+    parser.add_argument(
+        "--header",
+        default=os.environ.get(
+            "LABAN_SPINNER_HEADER",
+            "Updating Codex via `npm install -g @openai/codex`...",
+        ),
+    )
+    parser.add_argument("--no-header", action="store_true")
+    parser.add_argument("--complete-line", action="store_true")
+    args = parser.parse_args()
+
+    if not args.no_header:
+        write(args.header + "\r\n")
+        sleep_ms(120)
+
+    for index in range(max(0, args.cycles)):
+        glyph = SPINNER[index % len(SPINNER)]
+        if args.style == "atomic":
+            write("\x1b[1G\x1b[0K" + glyph)
+        elif args.style == "split-home":
+            write("\x1b[1G")
+            sleep_ms(args.home_gap_ms)
+            write("\x1b[0K" + glyph)
+        else:
+            write("\x1b[1G")
+            sleep_ms(args.home_gap_ms)
+            write("\x1b[0K")
+            sleep_ms(args.erase_gap_ms)
+            write(glyph)
+        sleep_ms(args.frame_gap_ms)
+
+    if args.complete_line:
+        write("\r\nspinner repro complete\r\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

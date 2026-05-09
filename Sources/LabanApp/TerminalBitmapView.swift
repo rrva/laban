@@ -20,6 +20,100 @@ enum TerminalHoverCursorStyle: Equatable {
   case pointingHand
 }
 
+private final class AppKitFrameProbe {
+  private struct ProbeGlyph: Encodable {
+    var x: Double
+    var y: Double
+    var text: String
+  }
+
+  private struct ProbeCursor: Encodable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+  }
+
+  private struct ProbeEvent: Encodable {
+    var schemaVersion = 1
+    var frame: Int
+    var timeNs: UInt64
+    var surfaceWidth: Int
+    var surfaceHeight: Int
+    var surfaceScale: Double
+    var commandCount: Int
+    var cursorRow: Int
+    var cursorCol: Int
+    var cursorVisible: Bool
+    var terminalGlyphs: [ProbeGlyph]
+    var cursors: [ProbeCursor]
+  }
+
+  private let handle: FileHandle
+  private let encoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return encoder
+  }()
+
+  init(directory: URL) throws {
+    try FileManager.default.createDirectory(
+      at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("frame-probe.ndjson")
+    FileManager.default.createFile(atPath: url.path, contents: nil)
+    handle = try FileHandle(forWritingTo: url)
+    try handle.truncate(atOffset: 0)
+  }
+
+  func record(
+    frame: Int,
+    snapshot: LabanSnapshot,
+    commands: [FrameCommand],
+    surfaceWidth: Int,
+    surfaceHeight: Int,
+    surfaceScale: Double
+  ) {
+    var glyphs: [ProbeGlyph] = []
+    var cursors: [ProbeCursor] = []
+    for command in commands {
+      switch command {
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _)
+      where source == .terminal:
+        glyphs.append(ProbeGlyph(x: Double(origin.x), y: Double(origin.y), text: text))
+      case .cursor(let rect, _):
+        cursors.append(
+          ProbeCursor(
+            x: Double(rect.origin.x), y: Double(rect.origin.y),
+            width: Double(rect.size.width), height: Double(rect.size.height)))
+      default:
+        break
+      }
+    }
+
+    let event = ProbeEvent(
+      frame: frame,
+      timeNs: CaptureClock.nowNs(),
+      surfaceWidth: surfaceWidth,
+      surfaceHeight: surfaceHeight,
+      surfaceScale: surfaceScale,
+      commandCount: commands.count,
+      cursorRow: Int(snapshot.cursor_row),
+      cursorCol: Int(snapshot.cursor_col),
+      cursorVisible: snapshot.cursor_visible != 0,
+      terminalGlyphs: glyphs,
+      cursors: cursors)
+    guard let data = try? encoder.encode(event) else { return }
+    handle.write(data)
+    handle.write(Data([0x0A]))
+  }
+
+  func close() {
+    try? handle.close()
+  }
+
+  deinit { close() }
+}
+
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
   /// Reserved strip at the top of the contentView that sits behind the
@@ -178,6 +272,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastPixelHeight: Int = 0
   private var lastSurfaceScale: CGFloat = 0
   private var captureRecorder: CaptureRecorder?
+  private var frameProbe: AppKitFrameProbe?
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
@@ -294,6 +389,41 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // throttle.
     model.onSessionDirty = { [weak self] _ in
       self?.kickDisplayFromBackground()
+    }
+
+    configureFrameProbeIfRequested()
+    scheduleAutomationIfRequested()
+  }
+
+  private func configureFrameProbeIfRequested() {
+    guard let raw = ProcessInfo.processInfo.environment["LABAN_FRAME_PROBE_DIR"],
+      !raw.isEmpty
+    else { return }
+    do {
+      frameProbe = try AppKitFrameProbe(directory: URL(fileURLWithPath: raw, isDirectory: true))
+      AppLog.capture.info("frame probe started \(raw)")
+    } catch {
+      AppLog.capture.error("frame probe failed: \(error)")
+    }
+  }
+
+  private func scheduleAutomationIfRequested() {
+    let env = ProcessInfo.processInfo.environment
+    if env["LABAN_AUTOSTART_CAPTURE"] == "1" {
+      DispatchQueue.main.async { [weak self] in
+        self?.toggleCapture(nil)
+      }
+    }
+
+    guard let rawSeconds = env["LABAN_AUTO_QUIT_AFTER_SECONDS"],
+      let seconds = Double(rawSeconds),
+      seconds > 0
+    else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+      if let self, self.captureRecorder != nil {
+        self.toggleCapture(nil)
+      }
+      NSApp.terminate(nil)
     }
   }
 
@@ -486,6 +616,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   deinit {
     stopDisplayLink()
     removeWindowFocusObservers()
+    frameProbe?.close()
     if let themeChangeObserver {
       NotificationCenter.default.removeObserver(themeChangeObserver)
     }
@@ -827,6 +958,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       from: UnsafePointer(snap),
       selection: selection,
       cursorBlinkVisible: cursorBlinkVisible)
+
+    frameProbe?.record(
+      frame: captureFrame,
+      snapshot: snap.pointee,
+      commands: cmds,
+      surfaceWidth: backend.surfaceWidth,
+      surfaceHeight: backend.surfaceHeight,
+      surfaceScale: Double(backend.surfaceScale))
 
     captureRecorder?.recordFrameCommands(
       frame: captureFrame,
