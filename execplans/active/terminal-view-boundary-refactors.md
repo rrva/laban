@@ -30,6 +30,7 @@ small enough to verify directly and already has focused tests.
 - [x] Extract text-input cursor geometry out of `TerminalBitmapView`.
 - [x] Extract selection input geometry and word-boundary policy out of `TerminalBitmapView`.
 - [x] Extract input-capture metadata formatting out of `TerminalBitmapView`.
+- [x] Extract resize automation configuration out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -73,6 +74,13 @@ small enough to verify directly and already has focused tests.
   Rationale: The view should decide when to record input events, while stable
   capture vocabulary and byte serialization should be testable without the
   rendering view.
+  Date/Author: 2026-05-10 / Codex
+
+- Decision: Move resize automation environment parsing and defaults into a
+  dedicated helper.
+  Rationale: AppKit window mutation and probe recording belong in the view, but
+  interpreting `LABAN_RESIZE_*` debug knobs is pure configuration policy and
+  should be covered without a live window.
   Date/Author: 2026-05-10 / Codex
 
 ## Context and Orientation
@@ -127,6 +135,10 @@ live view.
 Input-capture metadata is emitted by `TerminalBitmapView.recordInput`, but the
 byte hex strings, byte lengths, modifier names, and app-command names are pure
 debug-contract formatting.
+
+Resize automation is debug infrastructure for reproducing AppKit resize
+glitches. `TerminalBitmapView` must still drive the live window and probes, but
+the environment configuration is independent of rendering.
 
 ## Plan of Work
 
@@ -184,6 +196,11 @@ Move input-capture metadata formatting into
 `TerminalBitmapView.recordInput` responsible for creating and sending
 `InputEventEnvelope` values.
 
+Move resize automation configuration into
+`Sources/LabanApp/TerminalResizeAutomation.swift`. Keep
+`TerminalBitmapView` responsible for scheduling the timer, resizing the live
+window, recording probe frames, and honoring auto-quit.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -194,6 +211,7 @@ swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
 swift test --filter TerminalInputCaptureMetadataTests
+swift test --filter TerminalResizeAutomationTests
 swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
@@ -219,7 +237,9 @@ terminal rendering view. Text-input cursor geometry is covered through
 Selection grid hit-testing, clamped drag points, viewport-offset translation,
 and word-boundary scans are covered through `TerminalSelectionInputTests`.
 Input-capture byte formatting, modifier labels, and app-command names are
-covered through `TerminalInputCaptureMetadataTests`.
+covered through `TerminalInputCaptureMetadataTests`. Resize automation
+environment parsing, delay conversion, step parsing, and auto-quit flags are
+covered through `TerminalResizeAutomationTests`.
 
 Validation completed on 2026-05-10:
 
@@ -229,6 +249,7 @@ swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
 swift test --filter TerminalInputCaptureMetadataTests
+swift test --filter TerminalResizeAutomationTests
 swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
@@ -239,7 +260,7 @@ swift test
 
 All targeted commands passed. Full `swift test` intermittently exited early
 with `xctest` signal code 5 without a reported test assertion failure; each
-immediate rerun passed. The latest successful full run executed 416 tests with
+immediate rerun passed. The latest successful full run executed 421 tests with
 2 skipped and 0 failures. The first build required the documented worktree
 setup symlink:
 

@@ -321,44 +321,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private func scheduleResizeAutomationIfRequested() {
     guard !resizeAutomationScheduled,
-      ProcessInfo.processInfo.environment["LABAN_RESIZE_AUTOMATION"] == "1",
-      window != nil
+      window != nil,
+      let config = TerminalResizeAutomation.configuration(
+        environment: ProcessInfo.processInfo.environment)
     else { return }
     resizeAutomationScheduled = true
-    let delay = Self.envDouble("LABAN_RESIZE_START_DELAY_MS", fallback: 500) / 1000
-    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-      self?.runResizeAutomation()
+    DispatchQueue.main.asyncAfter(deadline: .now() + config.startDelaySeconds) { [weak self] in
+      self?.runResizeAutomation(config: config)
     }
   }
 
-  private static func envDouble(_ name: String, fallback: Double) -> Double {
-    guard let raw = ProcessInfo.processInfo.environment[name],
-      let value = Double(raw)
-    else { return fallback }
-    return value
-  }
-
-  private static func resizeAutomationSteps() -> [CGSize] {
-    let raw =
-      ProcessInfo.processInfo.environment["LABAN_RESIZE_STEPS"]
-      ?? "1200x788,960x640,1328x860,1040x700,1260x820,900x620"
-    let parsed = raw.split(separator: ",").compactMap { part -> CGSize? in
-      let pieces = part.lowercased().split(separator: "x")
-      guard pieces.count == 2,
-        let width = Double(pieces[0]),
-        let height = Double(pieces[1]),
-        width > 0,
-        height > 0
-      else { return nil }
-      return CGSize(width: width, height: height)
-    }
-    return parsed.isEmpty ? [CGSize(width: 1000, height: 680)] : parsed
-  }
-
-  private func runResizeAutomation() {
+  private func runResizeAutomation(config: TerminalResizeAutomation.Configuration) {
     guard let window else { return }
-    let steps = Self.resizeAutomationSteps()
-    let settleDelay = Self.envDouble("LABAN_RESIZE_CAPTURE_DELAY_MS", fallback: 35) / 1000
+    let steps = config.steps
+    let settleDelay = config.settleDelaySeconds
     resizeProbe?.record(
       label: "initial", window: window, view: self, backend: backend,
       renderedFrame: renderedFrameCount)
@@ -368,7 +344,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         resizeProbe?.record(
           label: "final", window: window, view: self, backend: backend,
           renderedFrame: renderedFrameCount)
-        if ProcessInfo.processInfo.environment["LABAN_RESIZE_AUTO_QUIT"] == "1" {
+        if config.autoQuit {
           NSApp.terminate(nil)
         }
         return
