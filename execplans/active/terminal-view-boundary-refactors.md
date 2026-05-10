@@ -31,6 +31,7 @@ small enough to verify directly and already has focused tests.
 - [x] Extract selection input geometry and word-boundary policy out of `TerminalBitmapView`.
 - [x] Extract input-capture metadata formatting out of `TerminalBitmapView`.
 - [x] Extract resize automation configuration out of `TerminalBitmapView`.
+- [x] Extract display-kick coalescing out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -81,6 +82,14 @@ small enough to verify directly and already has focused tests.
   Rationale: AppKit window mutation and probe recording belong in the view, but
   interpreting `LABAN_RESIZE_*` debug knobs is pure configuration policy and
   should be covered without a live window.
+  Date/Author: 2026-05-10 / Codex
+
+- Decision: Move off-main display-kick coalescing into a non-view helper.
+  Rationale: Session dirty callbacks are `@Sendable` and can run off the main
+  actor, while `TerminalBitmapView` is main-actor isolated through `NSView`.
+  Keeping the locks in an explicitly sendable helper preserves coalescing and
+  removes the Swift concurrency warning without pushing every dirty event onto
+  the main queue.
   Date/Author: 2026-05-10 / Codex
 
 ## Context and Orientation
@@ -139,6 +148,10 @@ debug-contract formatting.
 Resize automation is debug infrastructure for reproducing AppKit resize
 glitches. `TerminalBitmapView` must still drive the live window and probes, but
 the environment configuration is independent of rendering.
+
+Display-kick coalescing bridges background PTY reader callbacks to main-actor
+frame advancement. The coalescing state is thread-safe infrastructure and does
+not need to live on the AppKit view.
 
 ## Plan of Work
 
@@ -201,6 +214,11 @@ Move resize automation configuration into
 `TerminalBitmapView` responsible for scheduling the timer, resizing the live
 window, recording probe frames, and honoring auto-quit.
 
+Move display-kick coalescing into
+`Sources/LabanApp/TerminalDisplayKickCoalescer.swift`. Keep
+`TerminalBitmapView` responsible for deciding what frame work to run on the
+main actor.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -211,6 +229,7 @@ swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
 swift test --filter TerminalInputCaptureMetadataTests
+swift test --filter TerminalDisplayKickCoalescerTests
 swift test --filter TerminalResizeAutomationTests
 swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
@@ -239,7 +258,8 @@ and word-boundary scans are covered through `TerminalSelectionInputTests`.
 Input-capture byte formatting, modifier labels, and app-command names are
 covered through `TerminalInputCaptureMetadataTests`. Resize automation
 environment parsing, delay conversion, step parsing, and auto-quit flags are
-covered through `TerminalResizeAutomationTests`.
+covered through `TerminalResizeAutomationTests`. Display-kick coalescing and
+main-actor handoff are covered through `TerminalDisplayKickCoalescerTests`.
 
 Validation completed on 2026-05-10:
 
@@ -249,6 +269,7 @@ swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
 swift test --filter TerminalInputCaptureMetadataTests
+swift test --filter TerminalDisplayKickCoalescerTests
 swift test --filter TerminalResizeAutomationTests
 swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
@@ -260,7 +281,7 @@ swift test
 
 All targeted commands passed. Full `swift test` intermittently exited early
 with `xctest` signal code 5 without a reported test assertion failure; each
-immediate rerun passed. The latest successful full run executed 421 tests with
+immediate rerun passed. The latest successful full run executed 422 tests with
 2 skipped and 0 failures. The first build required the documented worktree
 setup symlink:
 
@@ -268,5 +289,5 @@ setup symlink:
 ln -s /Users/rrj/wrk/laban/.external .external
 ```
 
-The build emitted the existing `TerminalBitmapView.kickDisplayFromBackground()`
-main-actor warning; this slice did not change that path.
+The previous `TerminalBitmapView.kickDisplayFromBackground()` main-actor warning
+was resolved by moving off-main display-kick coalescing out of the AppKit view.

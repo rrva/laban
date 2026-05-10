@@ -6,7 +6,6 @@ import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
 import QuartzCore
-import os
 
 final class TerminalBitmapView: NSView, NSTextInputClient {
 
@@ -177,8 +176,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// is yet in flight; cleared when the main-thread block runs. Lives
   /// behind an unfair lock so the comparison/swap is atomic across
   /// the reader threads and the main thread.
-  private let pendingDisplayKick = OSAllocatedUnfairLock(initialState: false)
-  private let latestOutputDirtyAt = OSAllocatedUnfairLock<Date?>(initialState: nil)
+  private let displayKickCoalescer = TerminalDisplayKickCoalescer()
 
   // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
   // renderer's onFrameCompleted callback. Bounded ring buffer.
@@ -266,8 +264,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // display link still ticks on its own clock -- this hop only matters when
     // VRR has throttled the link to a low rate and we need to bypass that
     // throttle.
-    model.onSessionDirty = { [weak self] _ in
-      self?.kickDisplayFromBackground()
+    let displayKickCoalescer = displayKickCoalescer
+    model.onSessionDirty = { [weak self, displayKickCoalescer] _ in
+      displayKickCoalescer.requestFrameAdvance {
+        self?.advanceFrame()
+      }
     }
 
     configureFrameProbeIfRequested()
@@ -531,21 +532,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// into that pending tick. Bypasses the CADisplayLink VRR throttle
   /// so a top(1) refresh that lands during an "idle" window is not
   /// stuck waiting up to 41 ms for the link to ramp back up.
-  fileprivate func kickDisplayFromBackground() {
-    latestOutputDirtyAt.withLock { $0 = Date() }
-    let alreadyPending = pendingDisplayKick.withLock { value -> Bool in
-      let was = value
-      value = true
-      return was
-    }
-    if alreadyPending { return }
-    DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-      self.pendingDisplayKick.withLock { $0 = false }
-      self.advanceFrame()
-    }
-  }
-
   private func scheduleOutputSettleWake(after delay: TimeInterval) {
     guard !outputSettleWakeScheduled else { return }
     outputSettleWakeScheduled = true
@@ -830,7 +816,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let settleGate = TerminalRenderGate.outputSettleDecision(
         terminalDirty: terminalDirty,
         sessionId: session.id,
-        lastDirtyAt: latestOutputDirtyAt.withLock { $0 },
+        lastDirtyAt: displayKickCoalescer.latestDirtyAt(),
         now: Date(),
         hold: outputSettleHold)
       outputSettleHold = settleGate.hold
