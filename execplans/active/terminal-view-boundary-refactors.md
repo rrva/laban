@@ -26,6 +26,7 @@ small enough to verify directly and already has focused tests.
 - [x] Extract external hyperlink opening policy out of `TerminalBitmapView`.
 - [x] Move pure mouse input geometry/modifier helpers out of `TerminalBitmapView`.
 - [x] Move AppKit frame/resize debug probes out of `TerminalBitmapView`.
+- [x] Extract render gate decisions out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -85,6 +86,10 @@ The AppKit frame and resize probes are diagnostic support objects used by the
 view, not the view itself. Keeping them in the same file made the primary view
 harder to scan before reaching the actual `TerminalBitmapView` declaration.
 
+Synchronized-output and output-settle gates are render-loop policy decisions.
+They decide when to hold or release a frame, but they do not need direct access
+to AppKit, renderer state, or the terminal view.
+
 ## Plan of Work
 
 Create a `TerminalClipboard` helper in `Sources/LabanApp/` for AppKit-facing
@@ -120,6 +125,10 @@ Move `AppKitFrameProbe` and `AppKitResizeProbe` into
 `Sources/LabanApp/AppKitTerminalProbes.swift`. Keep their construction,
 recording calls, and artifact formats unchanged.
 
+Move synchronized-output and output-settle hold types plus decision functions
+into `Sources/LabanApp/TerminalRenderGate.swift`. Keep `advanceFrame()` in the
+view responsible for applying those decisions to the live session.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -146,7 +155,9 @@ covered through `TerminalHyperlinkOpeningTests` without calling static helpers
 on the terminal rendering view. Mouse geometry and modifier helpers live in
 their own source file and remain covered by `TerminalMouseInputTests`. AppKit
 diagnostic probes live in their own source file and continue to compile through
-the App target.
+the App target. Render gate policy is covered through
+`TerminalBitmapViewSyncOutputTests` without calling static helpers on the
+terminal rendering view.
 
 Validation completed on 2026-05-10:
 
@@ -162,11 +173,11 @@ swift test --filter LabanDebugSmokeTests
 swift test
 ```
 
-All targeted commands passed. The first full `swift test` run after hyperlink
-extraction exited early with `xctest` signal code 5 without a reported test
-assertion failure; rerunning `swift test` immediately afterward passed with 406
-tests, 2 skipped, and 0 failures. The first build required the documented
-worktree setup symlink:
+All targeted commands passed. Full `swift test` intermittently exited early
+with `xctest` signal code 5 without a reported test assertion failure; each
+immediate rerun passed. The latest successful full run executed 406 tests with
+2 skipped and 0 failures. The first build required the documented worktree
+setup symlink:
 
 ```sh
 ln -s /Users/rrj/wrk/laban/.external .external

@@ -176,40 +176,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var windowFocusObservers: [NSObjectProtocol] = []
   private var lastReportedFocusBySession: [Session.ID: Bool] = [:]
 
-  struct SynchronizedOutputHold: Equatable {
-    var sessionId: Session.ID
-    var startedAt: Date
-  }
-
-  struct SynchronizedOutputGateDecision: Equatable {
-    var shouldDefer: Bool
-    var shouldResetMode: Bool
-    var hold: SynchronizedOutputHold?
-  }
-
-  struct OutputSettleHold: Equatable {
-    var sessionId: Session.ID
-    var startedAt: Date
-  }
-
-  struct OutputSettleGateDecision: Equatable {
-    var shouldDefer: Bool
-    var hold: OutputSettleHold?
-    var wakeAfter: TimeInterval?
-  }
-
-  private static let synchronizedOutputMaxHoldSeconds: TimeInterval = 1.0
-  private var synchronizedOutputHold: SynchronizedOutputHold?
-  var synchronizedOutputHoldForTests: SynchronizedOutputHold? {
+  private var synchronizedOutputHold: TerminalRenderGate.SynchronizedOutputHold?
+  var synchronizedOutputHoldForTests: TerminalRenderGate.SynchronizedOutputHold? {
     get { synchronizedOutputHold }
     set { synchronizedOutputHold = newValue }
   }
 
-  private static let outputSettleQuietSeconds: TimeInterval = 0.012
-  private static let outputSettleMaxHoldSeconds: TimeInterval = 0.025
-  private var outputSettleHold: OutputSettleHold?
+  private var outputSettleHold: TerminalRenderGate.OutputSettleHold?
   private var outputSettleWakeScheduled = false
-  var outputSettleHoldForTests: OutputSettleHold? {
+  var outputSettleHoldForTests: TerminalRenderGate.OutputSettleHold? {
     get { outputSettleHold }
     set { outputSettleHold = newValue }
   }
@@ -750,66 +725,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   // MARK: - Frame loop
 
-  static func synchronizedOutputGateDecision(
-    terminalDirty: Bool,
-    synchronizedOutputActive: Bool,
-    sessionId: Session.ID,
-    now: Date,
-    hold: SynchronizedOutputHold?,
-    timeout: TimeInterval = synchronizedOutputMaxHoldSeconds
-  ) -> SynchronizedOutputGateDecision {
-    guard terminalDirty && synchronizedOutputActive else {
-      return SynchronizedOutputGateDecision(shouldDefer: false, shouldResetMode: false, hold: nil)
-    }
-
-    let currentHold: SynchronizedOutputHold
-    if let hold, hold.sessionId == sessionId {
-      currentHold = hold
-    } else {
-      currentHold = SynchronizedOutputHold(sessionId: sessionId, startedAt: now)
-    }
-
-    if now.timeIntervalSince(currentHold.startedAt) >= timeout {
-      return SynchronizedOutputGateDecision(shouldDefer: false, shouldResetMode: true, hold: nil)
-    }
-
-    return SynchronizedOutputGateDecision(
-      shouldDefer: true, shouldResetMode: false, hold: currentHold)
-  }
-
-  static func outputSettleGateDecision(
-    terminalDirty: Bool,
-    sessionId: Session.ID,
-    lastDirtyAt: Date?,
-    now: Date,
-    hold: OutputSettleHold?,
-    quiet: TimeInterval = outputSettleQuietSeconds,
-    maxHold: TimeInterval = outputSettleMaxHoldSeconds
-  ) -> OutputSettleGateDecision {
-    guard terminalDirty, let lastDirtyAt else {
-      return OutputSettleGateDecision(shouldDefer: false, hold: nil, wakeAfter: nil)
-    }
-
-    let currentHold: OutputSettleHold
-    if let hold, hold.sessionId == sessionId {
-      currentHold = hold
-    } else {
-      currentHold = OutputSettleHold(sessionId: sessionId, startedAt: now)
-    }
-
-    let quietElapsed = now.timeIntervalSince(lastDirtyAt)
-    let holdElapsed = now.timeIntervalSince(currentHold.startedAt)
-    guard quietElapsed < quiet, holdElapsed < maxHold else {
-      return OutputSettleGateDecision(shouldDefer: false, hold: nil, wakeAfter: nil)
-    }
-
-    let remainingQuiet = quiet - quietElapsed
-    let remainingHold = maxHold - holdElapsed
-    let wakeAfter = max(0.001, min(remainingQuiet, remainingHold))
-    return OutputSettleGateDecision(
-      shouldDefer: true, hold: currentHold, wakeAfter: wakeAfter)
-  }
-
   private func advanceCursorBlinkState(now: Date = Date()) -> Bool {
     guard lastRenderedCursorBlinking else {
       let changed = !cursorBlinkVisible
@@ -936,7 +851,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     let terminalDirty = activeTerminalDirty || session.renderDirty()
 
-    let syncGate = Self.synchronizedOutputGateDecision(
+    let syncGate = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: terminalDirty,
       synchronizedOutputActive: session.synchronizedOutputActive,
       sessionId: session.id,
@@ -958,7 +873,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // states, so wait for a short quiet window while bounding the hold for
     // continuous output.
     if !tabChanged && !scrollAnimating && !renderingResizeFrame {
-      let settleGate = Self.outputSettleGateDecision(
+      let settleGate = TerminalRenderGate.outputSettleDecision(
         terminalDirty: terminalDirty,
         sessionId: session.id,
         lastDirtyAt: latestOutputDirtyAt.withLock { $0 },
@@ -966,7 +881,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         hold: outputSettleHold)
       outputSettleHold = settleGate.hold
       if settleGate.shouldDefer {
-        scheduleOutputSettleWake(after: settleGate.wakeAfter ?? Self.outputSettleQuietSeconds)
+        scheduleOutputSettleWake(
+          after: settleGate.wakeAfter ?? TerminalRenderGate.outputSettleQuietSeconds)
         return
       }
     } else {

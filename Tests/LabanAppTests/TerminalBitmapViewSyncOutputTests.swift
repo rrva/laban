@@ -11,7 +11,7 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
 
   func testSynchronizedOutputGateTimesOutStuckWindow() {
     let start = Date(timeIntervalSinceReferenceDate: 1_000)
-    let first = TerminalBitmapView.synchronizedOutputGateDecision(
+    let first = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: true,
       synchronizedOutputActive: true,
       sessionId: "session-1",
@@ -19,12 +19,12 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
       hold: nil)
     XCTAssertEqual(
       first,
-      TerminalBitmapView.SynchronizedOutputGateDecision(
+      TerminalRenderGate.SynchronizedOutputDecision(
         shouldDefer: true,
         shouldResetMode: false,
-        hold: TerminalBitmapView.SynchronizedOutputHold(sessionId: "session-1", startedAt: start)))
+        hold: TerminalRenderGate.SynchronizedOutputHold(sessionId: "session-1", startedAt: start)))
 
-    let beforeTimeout = TerminalBitmapView.synchronizedOutputGateDecision(
+    let beforeTimeout = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: true,
       synchronizedOutputActive: true,
       sessionId: "session-1",
@@ -34,7 +34,7 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     XCTAssertFalse(beforeTimeout.shouldResetMode)
     XCTAssertEqual(beforeTimeout.hold, first.hold)
 
-    let afterTimeout = TerminalBitmapView.synchronizedOutputGateDecision(
+    let afterTimeout = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: true,
       synchronizedOutputActive: true,
       sessionId: "session-1",
@@ -44,7 +44,7 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     XCTAssertTrue(afterTimeout.shouldResetMode)
     XCTAssertNil(afterTimeout.hold)
 
-    let reset = TerminalBitmapView.synchronizedOutputGateDecision(
+    let reset = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: true,
       synchronizedOutputActive: false,
       sessionId: "session-1",
@@ -57,7 +57,7 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
 
   func testOutputSettleGateDefersBrieflyAfterRecentDrain() {
     let start = Date(timeIntervalSinceReferenceDate: 1_000)
-    let decision = TerminalBitmapView.outputSettleGateDecision(
+    let decision = TerminalRenderGate.outputSettleDecision(
       terminalDirty: true,
       sessionId: "session-1",
       lastDirtyAt: start,
@@ -74,9 +74,9 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
 
   func testOutputSettleGateRendersAfterQuietWindowOrMaxHold() {
     let start = Date(timeIntervalSinceReferenceDate: 1_000)
-    let hold = TerminalBitmapView.OutputSettleHold(sessionId: "session-1", startedAt: start)
+    let hold = TerminalRenderGate.OutputSettleHold(sessionId: "session-1", startedAt: start)
 
-    let quietEnough = TerminalBitmapView.outputSettleGateDecision(
+    let quietEnough = TerminalRenderGate.outputSettleDecision(
       terminalDirty: true,
       sessionId: "session-1",
       lastDirtyAt: start,
@@ -87,7 +87,7 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     XCTAssertFalse(quietEnough.shouldDefer)
     XCTAssertNil(quietEnough.hold)
 
-    let maxHoldReached = TerminalBitmapView.outputSettleGateDecision(
+    let maxHoldReached = TerminalRenderGate.outputSettleDecision(
       terminalDirty: true,
       sessionId: "session-1",
       lastDirtyAt: start.addingTimeInterval(0.020),
@@ -156,7 +156,7 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
       baselineFrame,
       "dirty synchronized output must keep presenting the last completed frame")
 
-    view.synchronizedOutputHoldForTests = TerminalBitmapView.SynchronizedOutputHold(
+    view.synchronizedOutputHoldForTests = TerminalRenderGate.SynchronizedOutputHold(
       sessionId: session.id,
       startedAt: Date(timeIntervalSinceNow: -2)
     )
