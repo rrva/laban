@@ -273,6 +273,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private let cellWidth: Int
   private let cellHeight: Int
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
+  private let surfaceController: TerminalSurfaceController
   // Vsync-aligned tick.
   // - macOS 14+: CADisplayLink with a `preferredFrameRateRange` so a
   //   ProMotion panel can drop to a low rate when the terminal is idle and
@@ -504,6 +505,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     self.cellHeight = cellHeight
     self.sidebarCellWidth = Int(sidebarFontAtlas.cellSize.width)
     self.sidebarCellHeight = Int(sidebarFontAtlas.cellSize.height)
+    self.surfaceController = TerminalSurfaceController(
+      model: model,
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      sidebarWidth: SidebarLayout.defaultWidth,
+      sidebarCellWidth: sidebarFontAtlas.cellSize.width,
+      sidebarCellHeight: sidebarFontAtlas.cellSize.height
+    )
 
     let preference = ProcessInfo.processInfo.environment["LABAN_RENDERER"]?.lowercased()
     let wantSoftware = preference == "software" || preference == "cpu"
@@ -972,57 +981,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
-  /// Translate libghostty's per-row dirty bits into the CG-point Y bands the
-  /// renderer's damage hint expects. Returns `.full` whenever the snapshot
-  /// can't supply per-row info or when the caller needs a full redraw for
-  /// reasons unrelated to terminal content (tab change, invalidation,
-  /// resize). Returns `.partial([])` when nothing changed (renderer skips
-  /// the persistent-target update entirely and just re-presents).
-  private func computeDamage(
-    snapshot snap: UnsafePointer<LabanSnapshot>,
-    forceFull: Bool,
-    cellHeight: CGFloat,
-    originY: CGFloat
-  ) -> RenderDamage {
-    if forceFull { return .full }
-    let s = snap.pointee
-    let rows = Int(s.rows)
-    guard
-      rows > 0,
-      s.dirty_row_count == rows,
-      let dirty = s.dirty_rows
-    else {
-      return .full
-    }
-    var ranges: [DirtyYRange] = []
-    var i = 0
-    while i < rows {
-      if dirty[i] != 0 {
-        var j = i
-        while j < rows, dirty[j] != 0 { j += 1 }
-        // Rows count top-down; FrameProducer maps row r → y = originY +
-        // (rows - 1 - r) * cellHeight. A contiguous dirty span [i, j) maps
-        // to y-bottom = originY + (rows - 1 - (j-1)) * cellHeight = originY
-        // + (rows - j) * cellHeight, height = (j - i) * cellHeight.
-        let yBottom = originY + CGFloat(rows - j) * cellHeight
-        let height = CGFloat(j - i) * cellHeight
-        ranges.append(DirtyYRange(y: yBottom, height: height))
-        i = j
-      } else {
-        i += 1
-      }
-    }
-    return .partial(yRanges: ranges)
-  }
-
   static func terminalGridOriginY(
     boundsHeight: CGFloat,
     rows: Int,
     cellHeight: CGFloat,
     insets: NSEdgeInsets
   ) -> CGFloat {
-    let gridHeight = CGFloat(max(rows, 1)) * cellHeight
-    return max(insets.bottom, boundsHeight - insets.top - gridHeight)
+    TerminalSurfaceController.terminalGridOriginY(
+      viewportHeight: boundsHeight,
+      rows: rows,
+      cellHeight: cellHeight,
+      insets: TerminalSurfaceInsets(
+        top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right)
+    )
   }
 
   // MARK: - Frame loop
@@ -1109,39 +1080,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     MainThreadWatchdog.shared.heartbeat()
 
     let captureFrame = renderedFrameCount + 1
-    let activeTabId = model.activeTab?.id
-    var activeTerminalDirty = false
-
-    for tab in model.tabs {
-      if let session = model.session(forTab: tab.id) {
-        session.setCaptureFrame(captureFrame)
-        // PTY draining now happens off the main thread on the per-session
-        // reader thread that AppModel spawns; the main thread just observes the
-        // snapshot via renderDirty() / snapshot() below. The reader wakes us
-        // here via onSessionDirty -> kickDisplay() so we don't have to wait for
-        // the next vsync when bytes arrive between ticks.
-        if model.syncProcessMetadata(forTab: tab.id, from: session) {
-          renderInvalidated = true
-        }
-        if model.syncTitle(forTab: tab.id, from: session) {
-          renderInvalidated = true
-        }
-        if model.syncExitState(forTab: tab.id, from: session) {
-          renderInvalidated = true
-        }
-        let dirty = session.renderDirty()
-        if dirty {
-          if model.noteOutput(forTab: tab.id) {
-            renderInvalidated = true
-          }
-          if tab.id == activeTabId {
-            activeTerminalDirty = true
-          } else {
-            session.markRendered()
-          }
-        }
-      }
+    let sync = surfaceController.syncSessions(
+      captureFrame: captureFrame,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true)
+    if sync.modelChanged {
+      renderInvalidated = true
     }
+    var activeTerminalDirty = sync.activeTerminalDirty
 
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)
@@ -1277,49 +1224,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // Return early when nothing changed
     guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame else { return }
 
-    guard let snap = session.snapshot() else { return }
-    defer { laban_snapshot_destroy(snap) }
-
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: captureFrame))
-    captureRecorder?.recordTerminalSnapshot(
-      frame: captureFrame,
-      tabId: activeTab.id,
-      sessionId: session.id,
-      snapshot: UnsafePointer(snap)
-    )
 
-    lastRows = Int(snap.pointee.rows)
-    let snapshotCursorBlinking = snap.pointee.cursor_blinking != 0
-    lastRenderedCursorBlinking = snapshotCursorBlinking
-    if !snapshotCursorBlinking {
-      cursorBlinkVisible = true
-      lastCursorBlinkToggleAt = Date()
-    }
     let h = bounds.height
-
-    var cmds: [FrameCommand] = []
-
-    let sidebarProducer = SidebarProducer(
-      sidebarWidth: sidebarWidth,
-      cellWidth: CGFloat(sidebarCellWidth),
-      cellHeight: CGFloat(sidebarCellHeight)
-    )
-    cmds += sidebarProducer.commands(
-      tabs: model.tabs, activeTabId: activeTab.id, height: h,
-      topInset: Self.titlebarReservedHeight,
-      hoveredTabId: hoveredSidebarTabId)
-
-    // Fill the entire terminal area (including the inset padding) with the
-    // session's default background so the gap between the sidebar and the
-    // first cell doesn't expose the underlying cleared surface.
-    let insets = Self.contentInsets
-    let termAreaWidth = max(0, bounds.width - sidebarWidth)
-    cmds.append(
-      .rect(
-        CGRect(x: sidebarWidth, y: 0, width: termAreaWidth, height: h),
-        color: snap.pointee.default_background_rgba,
-        source: .terminal
-      ))
 
     // Sub-cell pixel offset for smooth scroll. Fractional remainder of the
     // PD-controlled displayed position is rendered as a vertical pixel
@@ -1328,39 +1235,47 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // delta. Zero when no scroll is in flight.
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     let scrollContentYOffset = -CGFloat(subCellRows) * CGFloat(cellHeight)
-    let gridOriginY = Self.terminalGridOriginY(
-      boundsHeight: bounds.height,
-      rows: Int(snap.pointee.rows),
-      cellHeight: CGFloat(cellHeight),
-      insets: insets)
-    let termProducer = FrameProducer(
-      cellWidth: cellWidth,
-      cellHeight: cellHeight,
-      originX: sidebarWidth + insets.left,
-      originY: gridOriginY,
-      contentYOffset: scrollContentYOffset
-    )
-    let selection = currentTerminalSelection(sessionId: session.id)
-    cmds += termProducer.commands(
-      from: UnsafePointer(snap),
-      selection: selection,
-      cursorBlinkVisible: cursorBlinkVisible)
-
-    frameProbe?.record(
+    let insets = Self.contentInsets
+    let request = TerminalSurfaceFrameRequest(
       frame: captureFrame,
-      snapshot: snap.pointee,
-      commands: cmds,
+      viewportWidth: bounds.width,
+      viewportHeight: h,
+      insets: TerminalSurfaceInsets(
+        top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right),
+      sidebarTopInset: Self.titlebarReservedHeight,
+      hoveredSidebarTabId: hoveredSidebarTabId,
+      contentYOffset: scrollContentYOffset,
+      cursorBlinkVisible: cursorBlinkVisible,
+      selection: currentTerminalSelection(sessionId: session.id),
+      includeTerminalAreaBackground: true,
+      requireActiveSnapshot: true,
+      forceFullDamage: renderInvalidated || tabChanged || scrollAnimating,
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
-      surfaceScale: Double(backend.surfaceScale))
-
-    captureRecorder?.recordFrameCommands(
-      frame: captureFrame,
-      commands: cmds,
-      surfaceWidth: backend.surfaceWidth,
-      surfaceHeight: backend.surfaceHeight,
-      scale: Double(backend.surfaceScale)
+      surfaceScale: Double(backend.surfaceScale)
     )
+    guard
+      let surfaceFrame = surfaceController.makeFrame(
+        request,
+        snapshotCommandsHook: { snapshot, commands in
+          self.frameProbe?.record(
+            frame: captureFrame,
+            snapshot: snapshot.pointee,
+            commands: commands,
+            surfaceWidth: self.backend.surfaceWidth,
+            surfaceHeight: self.backend.surfaceHeight,
+            surfaceScale: Double(self.backend.surfaceScale))
+        })
+    else { return }
+
+    lastRows = surfaceFrame.rows ?? lastRows
+    let snapshotCursorBlinking = surfaceFrame.cursorBlinking
+    lastRenderedCursorBlinking = snapshotCursorBlinking
+    if !snapshotCursorBlinking {
+      cursorBlinkVisible = true
+      lastCursorBlinkToggleAt = Date()
+    }
+    let cmds = surfaceFrame.commands
     // Compute damage hint from libghostty's per-row dirty bits. Tab changes
     // and renderInvalidated force .full because we may be drawing different
     // content into the persistent target. Otherwise translate dirty rows
@@ -1370,12 +1285,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // Smooth-scroll forces .full while animating: the persistent target
     // holds last frame's pixels at the previous fractional position, so
     // partial damage would leave stale pixels at the new sub-cell offset.
-    let damage = computeDamage(
-      snapshot: snap,
-      forceFull: renderInvalidated || tabChanged || scrollAnimating,
-      cellHeight: CGFloat(cellHeight),
-      originY: gridOriginY)
-    guard backend.render(cmds, damage: damage) else {
+    guard backend.render(cmds, damage: surfaceFrame.damage) else {
       renderInvalidated = true
       scheduleRenderRetry()
       return
@@ -2895,6 +2805,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         AppLog.capture.error("stop failed: \(error)")
       }
       captureRecorder = nil
+      surfaceController.captureSink = nil
       // Capture stopped: drop the per-frame readback blit again.
       (backend as? MetalRenderer)?.captureMode = false
       model.captureSink = nil
@@ -2913,6 +2824,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         executable: "LabanApp"
       )
       captureRecorder = recorder
+      surfaceController.captureSink = recorder
       // Capture started: turn on the per-frame drawable→CPU readback so
       // pngData has bytes to serve. Off-state was the default since boot.
       (backend as? MetalRenderer)?.captureMode = true

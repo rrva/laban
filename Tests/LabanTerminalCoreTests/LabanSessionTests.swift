@@ -700,6 +700,26 @@ final class LabanSessionTests: XCTestCase {
           waitForForegroundProcess(session, named: "sh"),
           "shell must own the foreground PTY before Ctrl-Z")
 
+        var readySnap: UnsafeMutablePointer<LabanSnapshot>?
+        let readyDeadline = Date().addingTimeInterval(2.0)
+        var readyVisible = ""
+        while Date() < readyDeadline {
+          XCTAssertEqual(laban_session_poll(session), 0)
+          if let current = readySnap {
+            laban_snapshot_destroy(current)
+            readySnap = nil
+          }
+          guard laban_session_snapshot(session, &readySnap) == 0, let s = readySnap else { break }
+          readyVisible = visibleText(from: UnsafePointer(s))
+          if readyVisible.contains("READY") { break }
+          Thread.sleep(forTimeInterval: 0.02)
+        }
+        defer { laban_snapshot_destroy(readySnap) }
+        XCTAssertTrue(
+          readyVisible.contains("READY"),
+          "shell must reach the read before Ctrl-Z; visible text: \(readyVisible)")
+        guard readyVisible.contains("READY") else { return }
+
         var event = LabanKeyEvent()
         event.action = LABAN_KEY_ACTION_PRESS
         event.key = LABAN_KEY_Z

@@ -532,8 +532,7 @@ public final class HeadlessDebugRuntime {
   private var windowHeight: Int
   private var surface: BitmapSurface
   private var renderer: SoftwareRenderer
-  private var sidebarProducer: SidebarProducer
-  private var frameProducer: FrameProducer
+  private var surfaceController: TerminalSurfaceController
 
   private var currentFrame: Int = 0
   private var lastFrameCommands: [FrameCommand] = []
@@ -651,16 +650,14 @@ public final class HeadlessDebugRuntime {
       height: max(windowHeight, 1)
     )
     self.renderer = SoftwareRenderer(surface: surface, fontAtlas: fa)
-    self.sidebarProducer = SidebarProducer(
-      sidebarWidth: CGFloat(200),
-      cellWidth: cs.width,
-      cellHeight: cs.height
-    )
-    self.frameProducer = FrameProducer(
+    self.surfaceController = TerminalSurfaceController(
+      model: model,
       cellWidth: Int(cs.width),
       cellHeight: Int(cs.height),
-      originX: CGFloat(200),
-      originY: 0
+      sidebarWidth: CGFloat(200),
+      sidebarCellWidth: cs.width,
+      sidebarCellHeight: cs.height,
+      captureSink: initialRecorder
     )
 
     if let r = runner {
@@ -702,69 +699,39 @@ public final class HeadlessDebugRuntime {
   private func renderFrameUnlocked() {
     let frameStart = monotonicNow()
     var terminalPollMs = 0.0
-    var snapshotMs = 0.0
+    let snapshotMs = 0.0
     var commandExtractionMs = 0.0
+    let frame = currentFrame + 1
 
     var timer = monotonicNow()
-    syncSessionMetadataUnlocked()
+    _ = surfaceController.syncSessions(
+      captureFrame: frame,
+      polling: .pollAllSessions,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
     terminalPollMs += elapsedMs(since: timer)
 
-    let frame = currentFrame + 1
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: frame))
 
-    guard let activeTab = model.activeTab else {
-      renderCommandsUnlocked(
-        [],
-        captureFrame: frame,
-        frameStart: frameStart,
-        terminalPollMs: terminalPollMs,
-        snapshotMs: snapshotMs,
-        commandExtractionMs: commandExtractionMs
-      )
-      return
-    }
-
     timer = monotonicNow()
-    var cmds = sidebarProducer.commands(
-      tabs: model.tabs,
-      activeTabId: activeTab.id,
-      height: CGFloat(windowHeight)
+    let activeSelection = model.activeTab.flatMap { selectionBySession[$0.sessionId] }
+    let surfaceFrame = surfaceController.makeFrame(
+      TerminalSurfaceFrameRequest(
+        frame: frame,
+        viewportWidth: CGFloat(windowWidth),
+        viewportHeight: CGFloat(windowHeight),
+        cursorBlinkVisible: true,
+        selection: activeSelection,
+        includeTerminalAreaBackground: false,
+        requireActiveSnapshot: false,
+        forceFullDamage: true,
+        surfaceWidth: surface.width,
+        surfaceHeight: surface.height,
+        surfaceScale: Double(surface.scale))
     )
     commandExtractionMs += elapsedMs(since: timer)
-
-    if let session = model.session(forTab: activeTab.id) {
-      session.setCaptureFrame(frame)
-      timer = monotonicNow()
-      session.poll()
-      terminalPollMs += elapsedMs(since: timer)
-      timer = monotonicNow()
-      if let snap = session.snapshot() {
-        snapshotMs += elapsedMs(since: timer)
-        defer { laban_snapshot_destroy(snap) }
-        captureRecorder?.recordTerminalSnapshot(
-          frame: frame,
-          tabId: activeTab.id,
-          sessionId: session.id,
-          snapshot: UnsafePointer(snap)
-        )
-        timer = monotonicNow()
-        let sel = selectionBySession[session.id]
-        cmds += frameProducer.commands(from: UnsafePointer(snap), selection: sel)
-        commandExtractionMs += elapsedMs(since: timer)
-      } else {
-        snapshotMs += elapsedMs(since: timer)
-      }
-    }
-
-    captureRecorder?.recordFrameCommands(
-      frame: frame,
-      commands: cmds,
-      surfaceWidth: surface.width,
-      surfaceHeight: surface.height,
-      scale: Double(surface.scale)
-    )
     renderCommandsUnlocked(
-      cmds,
+      surfaceFrame?.commands ?? [],
       captureFrame: frame,
       frameStart: frameStart,
       terminalPollMs: terminalPollMs,
@@ -1089,30 +1056,6 @@ public final class HeadlessDebugRuntime {
     }
   }
 
-  private func visibleText(from snap: UnsafePointer<LabanSnapshot>) -> String {
-    let snapshot = snap.pointee
-    let rows = Int(snapshot.rows)
-    let cols = Int(snapshot.cols)
-    guard let cells = snapshot.cells, let storage = snapshot.utf8_storage else { return "" }
-    var lines: [String] = []
-    for row in 0..<rows {
-      var line = ""
-      for col in 0..<cols {
-        let cell = cells[row * cols + col]
-        guard cell.utf8_length > 0 else { continue }
-        let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
-        let buf = UnsafeBufferPointer<UInt8>(
-          start: ptr.assumingMemoryBound(to: UInt8.self),
-          count: Int(cell.utf8_length)
-        )
-        if let text = String(bytes: buf, encoding: .utf8) { line += text }
-      }
-      let trimmed = line.trimmingCharacters(in: .whitespaces)
-      if !trimmed.isEmpty { lines.append(trimmed) }
-    }
-    return lines.joined(separator: "\n")
-  }
-
   private func rgbaArray(_ color: UInt32) -> [Int] {
     [
       Int((color >> 24) & 0xFF),
@@ -1145,24 +1088,11 @@ public final class HeadlessDebugRuntime {
   // MARK: - Session metadata synchronization
 
   private func syncSessionMetadataUnlocked() {
-    for tab in model.tabs {
-      if let session = model.session(forTab: tab.id) {
-        session.poll()
-        model.syncProcessMetadata(forTab: tab.id, from: session)
-        if model.syncTitle(forTab: tab.id, from: session),
-          let updated = model.tabs.first(where: { $0.id == tab.id })
-        {
-          var event = CaptureTimelineEvent(
-            kind: .appState,
-            tabId: updated.id,
-            sessionId: updated.sessionId
-          )
-          event.title = updated.title
-          captureRecorder?.record(event)
-        }
-        model.syncExitState(forTab: tab.id, from: session)
-      }
-    }
+    _ = surfaceController.syncSessions(
+      captureFrame: currentFrame + 1,
+      polling: .pollAllSessions,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
   }
 
   private func tabResponse(for tab: Tab, index: Int) -> TabResponse {
@@ -1428,6 +1358,7 @@ public final class HeadlessDebugRuntime {
         executable: "laban-agent"
       )
       captureRecorder = recorder
+      surfaceController.captureSink = recorder
       model.captureSink = recorder
       lastCaptureRunId = recorder.runId
       lastCaptureDirectory = recorder.directoryURL.path
@@ -1502,6 +1433,7 @@ public final class HeadlessDebugRuntime {
       frame: currentFrame
     )
     captureRecorder = nil
+    surfaceController.captureSink = nil
     model.captureSink = nil
     lastCaptureManifestPath = manifest.path
     lastCaptureRunId = recorder.runId
@@ -2734,7 +2666,10 @@ public final class HeadlessDebugRuntime {
         let snap = session.snapshot()
       else { return false }
       defer { laban_snapshot_destroy(snap) }
-      return visibleText(from: UnsafePointer(snap)).contains(cond.text ?? "")
+      return TerminalSnapshotText.visibleText(
+        from: UnsafePointer(snap),
+        mode: .trimmedNonEmptyRows
+      ).contains(cond.text ?? "")
     case "renderCommandSeen":
       guard let kind = cond.commandKind else { return false }
       return lastFrameCommands.contains { cmdKindString($0) == kind }
@@ -3165,6 +3100,14 @@ public final class HeadlessDebugRuntime {
         return session
       })
     model.captureSink = captureRecorder
+    surfaceController = TerminalSurfaceController(
+      model: model,
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      sidebarWidth: CGFloat(sidebarWidth),
+      sidebarCellWidth: CGFloat(cellWidth),
+      sidebarCellHeight: CGFloat(cellHeight),
+      captureSink: captureRecorder)
     selectionBySession.removeAll()
     debugClipboard = ""
     lastCopyText = nil

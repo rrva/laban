@@ -620,29 +620,7 @@ public final class CaptureReplayRunner {
   }
 
   private static func visibleText(from snap: UnsafePointer<LabanSnapshot>) -> String {
-    let snapshot = snap.pointee
-    let rows = Int(snapshot.rows)
-    let cols = Int(snapshot.cols)
-    guard let cells = snapshot.cells, let storage = snapshot.utf8_storage else { return "" }
-    var lines: [String] = []
-    for row in 0..<rows {
-      var line = ""
-      for col in 0..<cols {
-        let cell = cells[row * cols + col]
-        if cell.utf8_length > 0 {
-          let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
-          let buf = UnsafeBufferPointer<UInt8>(
-            start: ptr.assumingMemoryBound(to: UInt8.self),
-            count: Int(cell.utf8_length)
-          )
-          line += String(bytes: buf, encoding: .utf8) ?? " "
-        } else {
-          line += " "
-        }
-      }
-      lines.append(line)
-    }
-    return lines.joined(separator: "\n")
+    TerminalSnapshotText.visibleText(from: snap, mode: .fullGrid)
   }
 
   private static func hydrationBytes(from snapshot: ReplayTerminalSnapshot) -> [UInt8] {
