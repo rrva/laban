@@ -25,6 +25,7 @@ small enough to verify directly and already has focused tests.
 - [x] Run targeted Core, AppKit, and Debug tests for captured input writes.
 - [x] Extract external hyperlink opening policy out of `TerminalBitmapView`.
 - [x] Move pure mouse input geometry/modifier helpers out of `TerminalBitmapView`.
+- [x] Move AppKit frame/resize debug probes out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -80,6 +81,10 @@ already covered those decisions without needing a live terminal view.
 `Tests/LabanAppTests/TerminalMouseInputTests.swift`, but it lived at the bottom
 of the terminal rendering view file.
 
+The AppKit frame and resize probes are diagnostic support objects used by the
+view, not the view itself. Keeping them in the same file made the primary view
+harder to scan before reaching the actual `TerminalBitmapView` declaration.
+
 ## Plan of Work
 
 Create a `TerminalClipboard` helper in `Sources/LabanApp/` for AppKit-facing
@@ -111,6 +116,10 @@ Move `TerminalMouseInput` into `Sources/LabanApp/TerminalMouseInput.swift`
 without changing its API. The view keeps using the helper for geometry,
 modifier-mask conversion, and tracked button checks.
 
+Move `AppKitFrameProbe` and `AppKitResizeProbe` into
+`Sources/LabanApp/AppKitTerminalProbes.swift`. Keep their construction,
+recording calls, and artifact formats unchanged.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -120,6 +129,7 @@ swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
+swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
 swift test --filter LabanDebugSmokeTests
@@ -134,7 +144,9 @@ return named `Session.Captured*Write` values while preserving `.result` and
 `.bytes` behavior. External hyperlink URL filtering and activation policy are
 covered through `TerminalHyperlinkOpeningTests` without calling static helpers
 on the terminal rendering view. Mouse geometry and modifier helpers live in
-their own source file and remain covered by `TerminalMouseInputTests`.
+their own source file and remain covered by `TerminalMouseInputTests`. AppKit
+diagnostic probes live in their own source file and continue to compile through
+the App target.
 
 Validation completed on 2026-05-10:
 
@@ -143,6 +155,7 @@ swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
+swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
 swift test --filter LabanDebugSmokeTests
