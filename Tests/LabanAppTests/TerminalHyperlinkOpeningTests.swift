@@ -15,57 +15,57 @@ final class TerminalHyperlinkOpeningTests: XCTestCase {
 
   func testExternalBrowserURLAcceptsHTTPAndHTTPSOnly() {
     XCTAssertEqual(
-      TerminalBitmapView.externalBrowserURL(from: "https://example.com/docs")?.absoluteString,
+      TerminalHyperlinkOpening.browserURL(from: "https://example.com/docs")?.absoluteString,
       "https://example.com/docs")
-    XCTAssertNotNil(TerminalBitmapView.externalBrowserURL(from: "HTTP://example.com"))
+    XCTAssertNotNil(TerminalHyperlinkOpening.browserURL(from: "HTTP://example.com"))
 
-    XCTAssertNil(TerminalBitmapView.externalBrowserURL(from: "ftp://example.com/file"))
-    XCTAssertNil(TerminalBitmapView.externalBrowserURL(from: "file:///tmp/example"))
-    XCTAssertNil(TerminalBitmapView.externalBrowserURL(from: "mailto:dev@example.com"))
-    XCTAssertNil(TerminalBitmapView.externalBrowserURL(from: "javascript:alert(1)"))
-    XCTAssertNil(TerminalBitmapView.externalBrowserURL(from: "https://"))
-    XCTAssertNil(TerminalBitmapView.externalBrowserURL(from: "example.com"))
+    XCTAssertNil(TerminalHyperlinkOpening.browserURL(from: "ftp://example.com/file"))
+    XCTAssertNil(TerminalHyperlinkOpening.browserURL(from: "file:///tmp/example"))
+    XCTAssertNil(TerminalHyperlinkOpening.browserURL(from: "mailto:dev@example.com"))
+    XCTAssertNil(TerminalHyperlinkOpening.browserURL(from: "javascript:alert(1)"))
+    XCTAssertNil(TerminalHyperlinkOpening.browserURL(from: "https://"))
+    XCTAssertNil(TerminalHyperlinkOpening.browserURL(from: "example.com"))
   }
 
   func testOpenExternalHyperlinkUsesInjectedOpener() {
     let opener = RecordingOpener()
 
     XCTAssertTrue(
-      TerminalBitmapView.openExternalHyperlink("https://example.com/docs", using: opener))
+      TerminalHyperlinkOpening.open("https://example.com/docs", using: opener))
     XCTAssertEqual(opener.opened.map(\.absoluteString), ["https://example.com/docs"])
 
     XCTAssertFalse(
-      TerminalBitmapView.openExternalHyperlink("file:///tmp/example", using: opener))
+      TerminalHyperlinkOpening.open("file:///tmp/example", using: opener))
     XCTAssertEqual(opener.opened.map(\.absoluteString), ["https://example.com/docs"])
   }
 
   func testHoverCursorStyleUsesPointingHandForExternalHyperlinks() {
     XCTAssertEqual(
-      TerminalBitmapView.hoverCursorStyle(
+      TerminalHyperlinkOpening.hoverCursorStyle(
         externalHyperlinkURI: "https://example.com",
         modifierFlags: .command),
       .pointingHand)
     XCTAssertEqual(
-      TerminalBitmapView.hoverCursorStyle(
+      TerminalHyperlinkOpening.hoverCursorStyle(
         externalHyperlinkURI: "https://example.com",
         modifierFlags: []),
       .arrow)
     XCTAssertEqual(
-      TerminalBitmapView.hoverCursorStyle(externalHyperlinkURI: nil, modifierFlags: .command),
+      TerminalHyperlinkOpening.hoverCursorStyle(externalHyperlinkURI: nil, modifierFlags: .command),
       .arrow)
   }
 
   func testExternalHyperlinkActivationRequiresCommandClick() {
     XCTAssertTrue(
-      TerminalBitmapView.shouldActivateExternalHyperlink(
+      TerminalHyperlinkOpening.shouldActivate(
         clickCount: 1,
         modifierFlags: .command))
     XCTAssertFalse(
-      TerminalBitmapView.shouldActivateExternalHyperlink(
+      TerminalHyperlinkOpening.shouldActivate(
         clickCount: 1,
         modifierFlags: []))
     XCTAssertFalse(
-      TerminalBitmapView.shouldActivateExternalHyperlink(
+      TerminalHyperlinkOpening.shouldActivate(
         clickCount: 2,
         modifierFlags: .command))
   }

@@ -8,18 +8,6 @@ import LabanTerminalCore
 import QuartzCore
 import os
 
-protocol ExternalURLOpening {
-  @discardableResult
-  func open(_ url: URL) -> Bool
-}
-
-extension NSWorkspace: ExternalURLOpening {}
-
-enum TerminalHoverCursorStyle: Equatable {
-  case arrow
-  case pointingHand
-}
-
 private final class AppKitFrameProbe {
   private struct ProbeGlyph: Encodable {
     var x: Double
@@ -1357,21 +1345,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private func updateHoverCursor(at pt: NSPoint, modifierFlags: NSEvent.ModifierFlags = []) {
     let uri = pt.x >= sidebarWidth ? externalHyperlinkURI(at: pt) : nil
-    setHoverCursor(Self.hoverCursorStyle(externalHyperlinkURI: uri, modifierFlags: modifierFlags))
-  }
-
-  static func shouldActivateExternalHyperlink(
-    clickCount: Int,
-    modifierFlags: NSEvent.ModifierFlags
-  ) -> Bool {
-    clickCount == 1 && modifierFlags.contains(.command)
-  }
-
-  static func hoverCursorStyle(
-    externalHyperlinkURI uri: String?,
-    modifierFlags: NSEvent.ModifierFlags = []
-  ) -> TerminalHoverCursorStyle {
-    uri != nil && modifierFlags.contains(.command) ? .pointingHand : .arrow
+    setHoverCursor(
+      TerminalHyperlinkOpening.hoverCursorStyle(
+        externalHyperlinkURI: uri,
+        modifierFlags: modifierFlags
+      ))
   }
 
   private func setHoverCursor(_ style: TerminalHoverCursorStyle) {
@@ -1832,27 +1810,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
-  static func externalBrowserURL(from uri: String) -> URL? {
-    guard let url = URL(string: uri),
-      let scheme = url.scheme?.lowercased(),
-      scheme == "http" || scheme == "https",
-      let host = url.host,
-      !host.isEmpty
-    else {
-      return nil
-    }
-    return url
-  }
-
-  @discardableResult
-  static func openExternalHyperlink(
-    _ uri: String,
-    using opener: any ExternalURLOpening
-  ) -> Bool {
-    guard let url = externalBrowserURL(from: uri) else { return false }
-    return opener.open(url)
-  }
-
   // MARK: - Mouse (selection + sidebar hits + mouse tracking)
 
   override func scrollWheel(with event: NSEvent) {
@@ -1965,7 +1922,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     defer { laban_snapshot_destroy(snap) }
     guard let uri = TerminalHyperlink.uri(atRow: cell.row, col: cell.col, in: snap.pointee),
-      Self.externalBrowserURL(from: uri) != nil
+      TerminalHyperlinkOpening.browserURL(from: uri) != nil
     else {
       return nil
     }
@@ -2049,7 +2006,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     window?.makeFirstResponder(self)
 
-    if Self.shouldActivateExternalHyperlink(
+    if TerminalHyperlinkOpening.shouldActivate(
       clickCount: event.clickCount,
       modifierFlags: event.modifierFlags
     ), let uri = externalHyperlinkURI(at: pt) {
@@ -2183,7 +2140,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         return
       }
       clearSelectionAfterHyperlinkActivation()
-      _ = Self.openExternalHyperlink(pending.uri, using: urlOpener)
+      _ = TerminalHyperlinkOpening.open(pending.uri, using: urlOpener)
       EventLog.shared.log("hyperlink.open", ["url": pending.uri])
       recordInput(
         kind: "command",

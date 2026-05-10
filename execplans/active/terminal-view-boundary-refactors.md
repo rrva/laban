@@ -23,6 +23,7 @@ small enough to verify directly and already has focused tests.
 - [x] Run targeted Swift tests for the changed behavior.
 - [x] Replace captured-write tuple returns in `Session` with named result types.
 - [x] Run targeted Core, AppKit, and Debug tests for captured input writes.
+- [x] Extract external hyperlink opening policy out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -38,6 +39,13 @@ small enough to verify directly and already has focused tests.
   Rationale: `.result` and `.bytes` remain ergonomic, but signatures now
   communicate durable API concepts that can be documented, extended, and tested
   without relying on anonymous tuple shapes.
+  Date/Author: 2026-05-10 / Codex
+
+- Decision: Move hyperlink URL allow-listing and command-click policy without
+  moving terminal hit-testing.
+  Rationale: URL safety and activation policy are pure AppKit-facing decisions,
+  while locating a URI in the terminal grid still depends on view geometry and
+  snapshots. Keeping that split avoids pulling rendering state into the helper.
   Date/Author: 2026-05-10 / Codex
 
 ## Context and Orientation
@@ -62,6 +70,11 @@ mouse events, and paste. Those APIs were tuple-shaped even though they are
 cross-target contracts used by AppKit, debug automation, capture logging, and
 tests.
 
+`Sources/LabanApp/TerminalBitmapView.swift` also held external hyperlink URL
+filtering, injected opener dispatch, hover cursor policy, and command-click
+activation checks. `Tests/LabanAppTests/TerminalHyperlinkOpeningTests.swift`
+already covered those decisions without needing a live terminal view.
+
 ## Plan of Work
 
 Create a `TerminalClipboard` helper in `Sources/LabanApp/` for AppKit-facing
@@ -83,12 +96,19 @@ Replace the tuple returns from `sendKeyCapturingBytes(_:)`,
 call sites remain unchanged except where a synthetic fallback value must be
 constructed explicitly.
 
+Create a `TerminalHyperlinkOpening` helper in `Sources/LabanApp/` for external
+browser URL filtering, opener dispatch, hover cursor style, and command-click
+activation. Keep `TerminalBitmapView.externalHyperlinkURI(at:)` in the view
+because it depends on terminal geometry, active session snapshots, and sidebar
+exclusion.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
 
 ```sh
 swift test --filter TerminalClipboardTests
+swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
@@ -101,12 +121,15 @@ string decoding, image-bearing pasteboards are detected, Claude Code tabs are
 recognized for image forwarding, and `TerminalBitmapView` no longer owns the
 static clipboard policy implementation. Captured key, mouse, and paste writes
 return named `Session.Captured*Write` values while preserving `.result` and
-`.bytes` behavior.
+`.bytes` behavior. External hyperlink URL filtering and activation policy are
+covered through `TerminalHyperlinkOpeningTests` without calling static helpers
+on the terminal rendering view.
 
 Validation completed on 2026-05-10:
 
 ```sh
 swift test --filter TerminalClipboardTests
+swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
@@ -114,9 +137,11 @@ swift test --filter LabanDebugSmokeTests
 swift test
 ```
 
-All commands passed. The full `swift test` run executed 406 tests with 2
-skipped and 0 failures. The first build required the documented worktree setup
-symlink:
+All targeted commands passed. The first full `swift test` run after hyperlink
+extraction exited early with `xctest` signal code 5 without a reported test
+assertion failure; rerunning `swift test` immediately afterward passed with 406
+tests, 2 skipped, and 0 failures. The first build required the documented
+worktree setup symlink:
 
 ```sh
 ln -s /Users/rrj/wrk/laban/.external .external
