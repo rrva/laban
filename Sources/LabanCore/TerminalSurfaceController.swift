@@ -1,4 +1,5 @@
 import CoreGraphics
+import Dispatch
 import Foundation
 import LabanRenderer
 import LabanTerminalCore
@@ -131,6 +132,7 @@ public struct TerminalSurfaceFrame {
   public var cursorBlinking: Bool
   public var gridOriginY: CGFloat
   public var damage: RenderDamage
+  public var snapshotMs: Double
 
   public init(
     frame: Int,
@@ -141,7 +143,8 @@ public struct TerminalSurfaceFrame {
     cols: Int?,
     cursorBlinking: Bool,
     gridOriginY: CGFloat,
-    damage: RenderDamage
+    damage: RenderDamage,
+    snapshotMs: Double = 0
   ) {
     self.frame = frame
     self.tabId = tabId
@@ -152,6 +155,7 @@ public struct TerminalSurfaceFrame {
     self.cursorBlinking = cursorBlinking
     self.gridOriginY = gridOriginY
     self.damage = damage
+    self.snapshotMs = snapshotMs
   }
 }
 
@@ -344,7 +348,9 @@ public final class TerminalSurfaceController {
       )
     }
 
+    let snapshotStart = DispatchTime.now()
     guard let snap = session.snapshot() else {
+      let snapshotMs = Self.elapsedMs(since: snapshotStart)
       if request.requireActiveSnapshot { return nil }
       recordFrameCommands(request, commands: commands)
       return TerminalSurfaceFrame(
@@ -356,9 +362,11 @@ public final class TerminalSurfaceController {
         cols: nil,
         cursorBlinking: false,
         gridOriginY: 0,
-        damage: .full
+        damage: .full,
+        snapshotMs: snapshotMs
       )
     }
+    let snapshotMs = Self.elapsedMs(since: snapshotStart)
     defer { laban_snapshot_destroy(snap) }
 
     captureSink?.recordTerminalSnapshot(
@@ -417,7 +425,8 @@ public final class TerminalSurfaceController {
       cols: cols,
       cursorBlinking: snapshot.cursor_blinking != 0,
       gridOriginY: gridOriginY,
-      damage: damage
+      damage: damage,
+      snapshotMs: snapshotMs
     )
   }
 
@@ -490,5 +499,9 @@ public final class TerminalSurfaceController {
       surfaceHeight: request.surfaceHeight,
       scale: request.surfaceScale,
       backend: request.captureBackend)
+  }
+
+  private static func elapsedMs(since start: DispatchTime) -> Double {
+    Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
   }
 }

@@ -699,7 +699,7 @@ public final class HeadlessDebugRuntime {
   private func renderFrameUnlocked() {
     let frameStart = monotonicNow()
     var terminalPollMs = 0.0
-    let snapshotMs = 0.0
+    var snapshotMs = 0.0
     var commandExtractionMs = 0.0
     let frame = currentFrame + 1
 
@@ -729,7 +729,9 @@ public final class HeadlessDebugRuntime {
         surfaceHeight: surface.height,
         surfaceScale: Double(surface.scale))
     )
-    commandExtractionMs += elapsedMs(since: timer)
+    let surfaceBuildMs = elapsedMs(since: timer)
+    snapshotMs = surfaceFrame?.snapshotMs ?? 0
+    commandExtractionMs += max(0, surfaceBuildMs - snapshotMs)
     renderCommandsUnlocked(
       surfaceFrame?.commands ?? [],
       captureFrame: frame,

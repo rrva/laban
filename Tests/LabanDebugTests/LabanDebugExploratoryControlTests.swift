@@ -108,6 +108,7 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
     let timing = try json(runtime.timingResponse())
     XCTAssertGreaterThanOrEqual(timing["frame"] as? Int ?? -1, 1)
     XCTAssertGreaterThanOrEqual(timing["lastFrameMs"] as? Double ?? -1, 0)
+    XCTAssertGreaterThan(timing["snapshotMs"] as? Double ?? -1, 0)
     XCTAssertGreaterThanOrEqual(timing["renderMs"] as? Double ?? -1, 0)
 
     _ = runtime.applyAction(Data("{}".utf8))
