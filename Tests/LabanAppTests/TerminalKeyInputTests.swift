@@ -154,7 +154,7 @@ final class TerminalKeyInputTests: XCTestCase {
   }
 
   func testTextInputCursorRectUsesTopDownTerminalGrid() {
-    let rect = TerminalBitmapView.cursorRectForTextInput(
+    let rect = TerminalTextInputGeometry.cursorRect(
       rows: 24,
       cursorRow: 2,
       cursorCol: 3,
@@ -172,7 +172,7 @@ final class TerminalKeyInputTests: XCTestCase {
   }
 
   func testTextInputCursorRectClampsRowsAndCursor() {
-    let rect = TerminalBitmapView.cursorRectForTextInput(
+    let rect = TerminalTextInputGeometry.cursorRect(
       rows: 0,
       cursorRow: 8,
       cursorCol: -2,
@@ -192,7 +192,7 @@ final class TerminalKeyInputTests: XCTestCase {
   func testTextInputCursorRectKeepsTopRowAnchoredWithExtraHeight() {
     let insets = NSEdgeInsets(top: 36, left: 14, bottom: 8, right: 8)
     let exactHeight = insets.top + 24 * CGFloat(18) + insets.bottom
-    let rect = TerminalBitmapView.cursorRectForTextInput(
+    let rect = TerminalTextInputGeometry.cursorRect(
       rows: 24,
       cursorRow: 0,
       cursorCol: 0,

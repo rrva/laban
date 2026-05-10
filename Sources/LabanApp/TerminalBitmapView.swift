@@ -1225,7 +1225,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     else { return .zero }
     defer { laban_snapshot_destroy(snap) }
 
-    let rect = Self.cursorRectForTextInput(
+    let rect = TerminalTextInputGeometry.cursorRect(
       rows: Int(snap.pointee.rows),
       cursorRow: Int(snap.pointee.cursor_row),
       cursorCol: Int(snap.pointee.cursor_col),
@@ -2166,32 +2166,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let vs = session.viewportState()
     else { return 0 }
     return vs.viewportOffset
-  }
-
-  static func cursorRectForTextInput(
-    rows: Int,
-    cursorRow: Int,
-    cursorCol: Int,
-    sidebarWidth: CGFloat,
-    cellWidth: CGFloat,
-    cellHeight: CGFloat,
-    boundsHeight: CGFloat,
-    insets: NSEdgeInsets
-  ) -> NSRect {
-    let clampedRows = max(rows, 1)
-    let row = min(max(cursorRow, 0), clampedRows - 1)
-    let col = max(cursorCol, 0)
-    let gridOriginY = terminalGridOriginY(
-      boundsHeight: boundsHeight,
-      rows: clampedRows,
-      cellHeight: cellHeight,
-      insets: insets)
-    return NSRect(
-      x: sidebarWidth + insets.left + CGFloat(col) * cellWidth,
-      y: gridOriginY + CGFloat(clampedRows - 1 - row) * cellHeight,
-      width: cellWidth,
-      height: cellHeight
-    )
   }
 
   private func authoritativeAppliedRows(for session: Session) -> Int? {

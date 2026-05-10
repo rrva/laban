@@ -27,6 +27,7 @@ small enough to verify directly and already has focused tests.
 - [x] Move pure mouse input geometry/modifier helpers out of `TerminalBitmapView`.
 - [x] Move AppKit frame/resize debug probes out of `TerminalBitmapView`.
 - [x] Extract render gate decisions out of `TerminalBitmapView`.
+- [x] Extract text-input cursor geometry out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -49,6 +50,13 @@ small enough to verify directly and already has focused tests.
   Rationale: URL safety and activation policy are pure AppKit-facing decisions,
   while locating a URI in the terminal grid still depends on view geometry and
   snapshots. Keeping that split avoids pulling rendering state into the helper.
+  Date/Author: 2026-05-10 / Codex
+
+- Decision: Keep text-input geometry independent from the rendering view while
+  leaving screen-coordinate conversion in `TerminalBitmapView`.
+  Rationale: Cursor-cell geometry is pure terminal grid math and can be tested
+  without naming the view. Converting that rect through AppKit window/screen
+  APIs still belongs in the `NSTextInputClient` implementation.
   Date/Author: 2026-05-10 / Codex
 
 ## Context and Orientation
@@ -90,6 +98,11 @@ Synchronized-output and output-settle gates are render-loop policy decisions.
 They decide when to hold or release a frame, but they do not need direct access
 to AppKit, renderer state, or the terminal view.
 
+Text-input cursor geometry is a small pure policy used by
+`TerminalBitmapView.firstRect(forCharacterRange:actualRange:)`. The live method
+still needs the active session snapshot and AppKit coordinate conversion, but
+the terminal-grid rect calculation does not depend on the view.
+
 ## Plan of Work
 
 Create a `TerminalClipboard` helper in `Sources/LabanApp/` for AppKit-facing
@@ -129,6 +142,12 @@ Move synchronized-output and output-settle hold types plus decision functions
 into `Sources/LabanApp/TerminalRenderGate.swift`. Keep `advanceFrame()` in the
 view responsible for applying those decisions to the live session.
 
+Move text-input cursor geometry into
+`Sources/LabanApp/TerminalTextInputGeometry.swift`. Keep
+`TerminalBitmapView.firstRect(forCharacterRange:actualRange:)` responsible for
+reading the active cursor snapshot and converting the helper's local rect to
+screen coordinates.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -157,7 +176,8 @@ their own source file and remain covered by `TerminalMouseInputTests`. AppKit
 diagnostic probes live in their own source file and continue to compile through
 the App target. Render gate policy is covered through
 `TerminalBitmapViewSyncOutputTests` without calling static helpers on the
-terminal rendering view.
+terminal rendering view. Text-input cursor geometry is covered through
+`TerminalKeyInputTests` without calling a static helper on the rendering view.
 
 Validation completed on 2026-05-10:
 
