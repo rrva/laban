@@ -20,6 +20,19 @@ public enum TerminalColorScheme {
 public final class Session {
   public typealias ID = String
 
+  public struct CapturedWrite<Result: Equatable & Sendable>: Equatable, Sendable {
+    public var result: Result
+    public var bytes: [UInt8]
+
+    public init(result: Result, bytes: [UInt8]) {
+      self.result = result
+      self.bytes = bytes
+    }
+  }
+
+  public typealias CapturedKeyWrite = CapturedWrite<Int32>
+  public typealias CapturedMouseWrite = CapturedWrite<Int32>
+
   public struct ProcessMetadata: Equatable, Sendable {
     public var childPid: Int?
     public var foregroundPid: Int?
@@ -426,8 +439,8 @@ public final class Session {
   /// Encode and send a key event, returning the exact bytes accepted by the
   /// terminal-core send path. In fixture mode, returns encoded bytes without a
   /// PTY write.
-  public func sendKeyCapturingBytes(_ event: KeyEvent) -> (result: Int32, bytes: [UInt8]) {
-    guard !isClosed, let h = handle else { return (-1, []) }
+  public func sendKeyCapturingBytes(_ event: KeyEvent) -> CapturedKeyWrite {
+    guard !isClosed, let h = handle else { return CapturedKeyWrite(result: -1, bytes: []) }
     var buf = [UInt8](repeating: 0, count: 128)
     var len = 0
     let result = event.withLabanKeyEvent { raw in
@@ -455,11 +468,11 @@ public final class Session {
             &len)
         }
       }
-      guard retry == 0 else { return (retry, []) }
-      return (retry, Array(buf.prefix(len)))
+      guard retry == 0 else { return CapturedKeyWrite(result: retry, bytes: []) }
+      return CapturedKeyWrite(result: retry, bytes: Array(buf.prefix(len)))
     }
-    guard result == 0 else { return (result, []) }
-    return (result, Array(buf.prefix(len)))
+    guard result == 0 else { return CapturedKeyWrite(result: result, bytes: []) }
+    return CapturedKeyWrite(result: result, bytes: Array(buf.prefix(len)))
   }
 
   // MARK: - Mouse encoding
@@ -486,8 +499,8 @@ public final class Session {
     return laban_session_send_mouse(h, &raw)
   }
 
-  public func sendMouseCapturingBytes(_ event: MouseEvent) -> (result: Int32, bytes: [UInt8]) {
-    guard !isClosed, let h = handle else { return (-1, []) }
+  public func sendMouseCapturingBytes(_ event: MouseEvent) -> CapturedMouseWrite {
+    guard !isClosed, let h = handle else { return CapturedMouseWrite(result: -1, bytes: []) }
     var raw = event.toLabanMouseEvent()
     var buf = [UInt8](repeating: 0, count: 128)
     var outLen: size_t = 0
@@ -496,11 +509,11 @@ public final class Session {
       buf = [UInt8](repeating: 0, count: outLen)
       outLen = 0
       let retry = laban_session_send_mouse_encoded(h, &raw, &buf, buf.count, &outLen)
-      guard retry == 0 else { return (retry, []) }
-      return (retry, Array(buf.prefix(Int(outLen))))
+      guard retry == 0 else { return CapturedMouseWrite(result: retry, bytes: []) }
+      return CapturedMouseWrite(result: retry, bytes: Array(buf.prefix(Int(outLen))))
     }
-    guard result == 0 else { return (result, []) }
-    return (result, Array(buf.prefix(Int(outLen))))
+    guard result == 0 else { return CapturedMouseWrite(result: result, bytes: []) }
+    return CapturedMouseWrite(result: result, bytes: Array(buf.prefix(Int(outLen))))
   }
 
   // MARK: - Paste
@@ -527,6 +540,8 @@ public final class Session {
     public var bytesWritten: Int
   }
 
+  public typealias CapturedPasteWrite = CapturedWrite<PasteWriteResult?>
+
   @discardableResult
   public func writePaste(_ text: String) -> PasteWriteResult? {
     guard !isClosed, let h = handle else { return nil }
@@ -547,13 +562,14 @@ public final class Session {
     return PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written)
   }
 
-  public func writePasteCapturingBytes(_ text: String) -> (
-    result: PasteWriteResult?, bytes: [UInt8]
-  ) {
-    guard !isClosed, let h = handle else { return (nil, []) }
+  public func writePasteCapturingBytes(_ text: String) -> CapturedPasteWrite {
+    guard !isClosed, let h = handle else { return CapturedPasteWrite(result: nil, bytes: []) }
     let bytes = Array(text.utf8)
     if bytes.isEmpty {
-      return (PasteWriteResult(bracketed: bracketedPasteEnabled(), bytesWritten: 0), [])
+      return CapturedPasteWrite(
+        result: PasteWriteResult(bracketed: bracketedPasteEnabled(), bytesWritten: 0),
+        bytes: []
+      )
     }
 
     var out = [UInt8](repeating: 0, count: bytes.count + 16)
@@ -591,16 +607,16 @@ public final class Session {
           )
         }
       }
-      guard retry == 0 else { return (nil, []) }
-      return (
-        PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written),
-        Array(out.prefix(Int(outLen)))
+      guard retry == 0 else { return CapturedPasteWrite(result: nil, bytes: []) }
+      return CapturedPasteWrite(
+        result: PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written),
+        bytes: Array(out.prefix(Int(outLen)))
       )
     }
-    guard rc == 0 else { return (nil, []) }
-    return (
-      PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written),
-      Array(out.prefix(Int(outLen)))
+    guard rc == 0 else { return CapturedPasteWrite(result: nil, bytes: []) }
+    return CapturedPasteWrite(
+      result: PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written),
+      bytes: Array(out.prefix(Int(outLen)))
     )
   }
 

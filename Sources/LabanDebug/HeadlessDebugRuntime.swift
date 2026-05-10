@@ -2095,7 +2095,7 @@ public final class HeadlessDebugRuntime {
         let releaseSent =
           pressSent.result == 0
           ? session.sendMouseCapturingBytes(releaseEvent)
-          : (result: Int32(-1), bytes: [])
+          : Session.CapturedMouseWrite(result: -1, bytes: [])
         let pressBytes = pressSent.bytes
         let releaseBytes = releaseSent.bytes
         let encoded = pressBytes + releaseBytes

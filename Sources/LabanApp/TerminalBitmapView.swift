@@ -337,12 +337,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var selectionsByTab: [Tab.ID: (anchor: SelectionPoint, focus: SelectionPoint?)] = [:]
   private var trackedMouseButton: MouseButton = .none
 
-  enum PasteboardStringRead: Equatable {
-    case empty
-    case tooLarge(Int)
-    case value(String, bytes: Int)
-  }
-
   /// Active drag-edge auto-scroll. `direction` matches
   /// `Session.scrollViewport(deltaRows:)`: negative rows scroll back toward
   /// older content, positive rows scroll forward toward the active bottom.
@@ -1724,8 +1718,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     else { return }
 
     let pasteboard = NSPasteboard.general
-    if Self.pasteboardContainsImage(pasteboard),
-      Self.shouldForwardImagePasteToTerminal(for: activeTab)
+    if TerminalClipboard.containsImage(pasteboard),
+      TerminalClipboard.shouldForwardImagePasteToTerminal(for: activeTab)
     {
       forwardClipboardImagePasteToTerminal(session: session)
       return
@@ -1733,7 +1727,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     let raw: String
     let rawBytes: Int
-    switch Self.readPasteboardString(pasteboard) {
+    switch TerminalClipboard.readString(pasteboard) {
     case .empty:
       return
     case .tooLarge(let bytes):
@@ -1741,7 +1735,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       alert.alertStyle = .warning
       alert.messageText = "Paste too large"
       alert.informativeText =
-        "Refusing to paste \(bytes) bytes (limit is \(Self.pasteHardLimitBytes))."
+        "Refusing to paste \(bytes) bytes (limit is \(TerminalClipboard.hardLimitBytes))."
       alert.addButton(withTitle: "OK")
       alert.runModal()
       EventLog.shared.log("paste.refused.size", ["bytes": bytes])
@@ -1758,14 +1752,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // could smuggle arbitrary escape sequences (CSI / OSC) past bracketed
     // paste's framing and re-color the terminal, set the title, or set
     // the cursor as if the user had typed them.
-    let sanitized = TerminalPaste.sanitize(raw)
+    let sanitized = TerminalClipboard.sanitizePaste(raw)
     guard !sanitized.isEmpty else { return }
     let bytes = Array(sanitized.utf8)
 
     // Soft cap with a confirmation. Anything over a few KB is unusual
     // for terminal input; ChatGPT-style "I copied a giant blob"
     // accidents are common.
-    if bytes.count > Self.pasteWarnLimitBytes {
+    if bytes.count > TerminalClipboard.warnLimitBytes {
       let alert = NSAlert()
       alert.alertStyle = .warning
       alert.messageText = "Large paste"
@@ -1836,60 +1830,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       encodedLength: Self.encodedLength(sent.bytes)
     )
     renderInvalidated = true
-  }
-
-  static let pasteHardLimitBytes = TerminalPaste.hardLimitBytes
-  static let pasteWarnLimitBytes = TerminalPaste.warnLimitBytes
-
-  static func readPasteboardString(_ pasteboard: NSPasteboard) -> PasteboardStringRead {
-    if let data = pasteboard.data(forType: .string), data.count > pasteHardLimitBytes {
-      return .tooLarge(data.count)
-    }
-    guard let raw = pasteboard.string(forType: .string), !raw.isEmpty else {
-      return .empty
-    }
-    let bytes = raw.utf8.count
-    if bytes > pasteHardLimitBytes {
-      return .tooLarge(bytes)
-    }
-    return .value(raw, bytes: bytes)
-  }
-
-  static func pasteboardContainsImage(_ pasteboard: NSPasteboard) -> Bool {
-    pasteboard.canReadObject(forClasses: [NSImage.self], options: nil)
-  }
-
-  static func shouldForwardImagePasteToTerminal(for tab: Tab) -> Bool {
-    let metadata = tab.titleMetadata
-    if executableLooksLikeClaude(metadata.process.foregroundProcess) {
-      return true
-    }
-    if executableLooksLikeClaude(metadata.process.foregroundCommand) {
-      return true
-    }
-
-    let titles = [
-      metadata.terminalTitle,
-      metadata.displayTitle,
-      metadata.userTitle,
-      metadata.agent.agentName,
-      metadata.agent.sessionName,
-    ]
-    return titles.contains { value in
-      value?.range(of: "Claude Code", options: [.caseInsensitive, .diacriticInsensitive]) != nil
-    }
-  }
-
-  private static func executableLooksLikeClaude(_ value: String?) -> Bool {
-    guard let value, !value.isEmpty else { return false }
-    let token = value.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? value
-    let trimmed = token.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
-    let basename = URL(fileURLWithPath: trimmed).lastPathComponent.lowercased()
-    return basename == "claude" || basename == "claude-code"
-  }
-
-  static func sanitizePaste(_ text: String) -> String {
-    TerminalPaste.sanitize(text)
   }
 
   static func externalBrowserURL(from uri: String) -> URL? {
