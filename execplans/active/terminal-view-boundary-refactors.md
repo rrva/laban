@@ -24,6 +24,7 @@ small enough to verify directly and already has focused tests.
 - [x] Replace captured-write tuple returns in `Session` with named result types.
 - [x] Run targeted Core, AppKit, and Debug tests for captured input writes.
 - [x] Extract external hyperlink opening policy out of `TerminalBitmapView`.
+- [x] Move pure mouse input geometry/modifier helpers out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -75,6 +76,10 @@ filtering, injected opener dispatch, hover cursor policy, and command-click
 activation checks. `Tests/LabanAppTests/TerminalHyperlinkOpeningTests.swift`
 already covered those decisions without needing a live terminal view.
 
+`TerminalMouseInput` was already a pure helper covered by
+`Tests/LabanAppTests/TerminalMouseInputTests.swift`, but it lived at the bottom
+of the terminal rendering view file.
+
 ## Plan of Work
 
 Create a `TerminalClipboard` helper in `Sources/LabanApp/` for AppKit-facing
@@ -102,6 +107,10 @@ activation. Keep `TerminalBitmapView.externalHyperlinkURI(at:)` in the view
 because it depends on terminal geometry, active session snapshots, and sidebar
 exclusion.
 
+Move `TerminalMouseInput` into `Sources/LabanApp/TerminalMouseInput.swift`
+without changing its API. The view keeps using the helper for geometry,
+modifier-mask conversion, and tracked button checks.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -110,6 +119,7 @@ Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
 swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
+swift test --filter TerminalMouseInputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
 swift test --filter LabanDebugSmokeTests
@@ -123,7 +133,8 @@ static clipboard policy implementation. Captured key, mouse, and paste writes
 return named `Session.Captured*Write` values while preserving `.result` and
 `.bytes` behavior. External hyperlink URL filtering and activation policy are
 covered through `TerminalHyperlinkOpeningTests` without calling static helpers
-on the terminal rendering view.
+on the terminal rendering view. Mouse geometry and modifier helpers live in
+their own source file and remain covered by `TerminalMouseInputTests`.
 
 Validation completed on 2026-05-10:
 
@@ -131,6 +142,7 @@ Validation completed on 2026-05-10:
 swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
+swift test --filter TerminalMouseInputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
 swift test --filter LabanDebugSmokeTests
