@@ -1238,10 +1238,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       route: "terminal",
       key: String(describing: event.key),
       text: event.text,
-      modifiers: modifierNames(event.modifiers),
-      consumedModifiers: modifierNames(event.consumedModifiers),
-      encodedHex: Self.encodedHex(bytes),
-      encodedLength: Self.encodedLength(bytes)
+      modifiers: TerminalInputCaptureMetadata.modifierNames(event.modifiers),
+      consumedModifiers: TerminalInputCaptureMetadata.modifierNames(event.consumedModifiers),
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
     )
     renderInvalidated = true
   }
@@ -1252,22 +1252,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     recordInput(
       kind: "text",
       route: "terminal",
-      encodedHex: Self.encodedHex(bytes),
-      encodedLength: Self.encodedLength(bytes)
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
     )
   }
 
-  private static func encodedHex(_ bytes: [UInt8]) -> String? {
-    guard !bytes.isEmpty else { return nil }
-    return bytes.map { String(format: "%02x", $0) }.joined()
-  }
-
-  private static func encodedLength(_ bytes: [UInt8]) -> Int? {
-    bytes.isEmpty ? nil : bytes.count
-  }
-
   private func executeAppCommand(_ command: AppCommand) {
-    recordInput(kind: "key", route: "appCommand", command: command.captureName)
+    recordInput(
+      kind: "key",
+      route: "appCommand",
+      command: TerminalInputCaptureMetadata.captureName(for: command))
     switch command {
     case .newTab:
       _ = try? model.createTab()
@@ -1323,16 +1317,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         focusRow: focus?.row,
         focusCol: focus?.col
       ))
-  }
-
-  private func modifierNames(_ modifiers: KeyModifiers) -> [String]? {
-    var names: [String] = []
-    if modifiers.contains(.shift) { names.append("shift") }
-    if modifiers.contains(.control) { names.append("control") }
-    if modifiers.contains(.alt) { names.append("option") }
-    if modifiers.contains(.command) { names.append("command") }
-    if modifiers.contains(.capsLock) { names.append("capsLock") }
-    return names.isEmpty ? nil : names
   }
 
   // MARK: - Clipboard
@@ -1448,8 +1432,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       route: "terminal",
       text: sanitized,
       command: "paste",
-      encodedHex: Self.encodedHex(sent.bytes),
-      encodedLength: Self.encodedLength(sent.bytes)
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(sent.bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(sent.bytes)
     )
   }
 
@@ -1468,8 +1452,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       key: "v",
       modifiers: ["control"],
       command: "pasteImage",
-      encodedHex: Self.encodedHex(sent.bytes),
-      encodedLength: Self.encodedLength(sent.bytes)
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(sent.bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(sent.bytes)
     )
     renderInvalidated = true
   }
@@ -1519,8 +1503,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         kind: "mouse",
         route: "terminal",
         command: "mouseWheel",
-        encodedHex: Self.encodedHex(bytes),
-        encodedLength: Self.encodedLength(bytes)
+        encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
       )
       renderInvalidated = true
       return
@@ -1703,8 +1687,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         kind: "mouse",
         route: "terminal",
         command: "mouseDown",
-        encodedHex: Self.encodedHex(bytes),
-        encodedLength: Self.encodedLength(bytes)
+        encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
       )
       renderInvalidated = true
       return
@@ -1775,8 +1759,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         kind: "mouse",
         route: "terminal",
         command: "mouseDragged",
-        encodedHex: Self.encodedHex(bytes),
-        encodedLength: Self.encodedLength(bytes)
+        encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
       )
       renderInvalidated = true
       return
@@ -1847,8 +1831,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         kind: "mouse",
         route: "terminal",
         command: "mouseUp",
-        encodedHex: Self.encodedHex(bytes),
-        encodedLength: Self.encodedLength(bytes)
+        encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
       )
       if trackedMouseButton == .left { trackedMouseButton = .none }
       renderInvalidated = true
@@ -2348,17 +2332,5 @@ extension NSEvent {
   /// Bit 0 = Shift, Bit 1 = Ctrl, Bit 2 = Alt/Option, Bit 3 = Super/Command.
   fileprivate var labanModifiers: Int {
     TerminalMouseInput.ghosttyModifierMask(from: modifierFlags)
-  }
-}
-
-extension AppCommand {
-  fileprivate var captureName: String {
-    switch self {
-    case .newTab: return "newTab"
-    case .closeTab: return "closeTab"
-    case .selectTab: return "selectTab"
-    case .copy: return "copy"
-    case .paste: return "paste"
-    }
   }
 }

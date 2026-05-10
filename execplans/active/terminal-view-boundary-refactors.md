@@ -29,6 +29,7 @@ small enough to verify directly and already has focused tests.
 - [x] Extract render gate decisions out of `TerminalBitmapView`.
 - [x] Extract text-input cursor geometry out of `TerminalBitmapView`.
 - [x] Extract selection input geometry and word-boundary policy out of `TerminalBitmapView`.
+- [x] Extract input-capture metadata formatting out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -65,6 +66,13 @@ small enough to verify directly and already has focused tests.
   Rationale: Mouse event handling still belongs in `TerminalBitmapView`, but
   the grid math and snapshot row scanning are independent policies that deserve
   focused tests and stable names.
+  Date/Author: 2026-05-10 / Codex
+
+- Decision: Move input-capture byte formatting, modifier labels, and app-command
+  capture names into a small metadata helper.
+  Rationale: The view should decide when to record input events, while stable
+  capture vocabulary and byte serialization should be testable without the
+  rendering view.
   Date/Author: 2026-05-10 / Codex
 
 ## Context and Orientation
@@ -115,6 +123,10 @@ Selection input state combines AppKit points, terminal grid dimensions,
 libghostty viewport offsets, and snapshot cell scanning. Those policies were
 embedded in `TerminalBitmapView`, even though they can be checked without a
 live view.
+
+Input-capture metadata is emitted by `TerminalBitmapView.recordInput`, but the
+byte hex strings, byte lengths, modifier names, and app-command names are pure
+debug-contract formatting.
 
 ## Plan of Work
 
@@ -167,6 +179,11 @@ translation, and word-boundary scanning into
 `TerminalBitmapView` responsible for live mouse events, active session snapshot
 lifetimes, and mutating the current selection state.
 
+Move input-capture metadata formatting into
+`Sources/LabanApp/TerminalInputCaptureMetadata.swift`. Keep
+`TerminalBitmapView.recordInput` responsible for creating and sending
+`InputEventEnvelope` values.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -176,6 +193,7 @@ swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
+swift test --filter TerminalInputCaptureMetadataTests
 swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
@@ -200,6 +218,8 @@ terminal rendering view. Text-input cursor geometry is covered through
 `TerminalKeyInputTests` without calling a static helper on the rendering view.
 Selection grid hit-testing, clamped drag points, viewport-offset translation,
 and word-boundary scans are covered through `TerminalSelectionInputTests`.
+Input-capture byte formatting, modifier labels, and app-command names are
+covered through `TerminalInputCaptureMetadataTests`.
 
 Validation completed on 2026-05-10:
 
@@ -208,6 +228,7 @@ swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
+swift test --filter TerminalInputCaptureMetadataTests
 swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
@@ -218,7 +239,7 @@ swift test
 
 All targeted commands passed. Full `swift test` intermittently exited early
 with `xctest` signal code 5 without a reported test assertion failure; each
-immediate rerun passed. The latest successful full run executed 412 tests with
+immediate rerun passed. The latest successful full run executed 416 tests with
 2 skipped and 0 failures. The first build required the documented worktree
 setup symlink:
 
