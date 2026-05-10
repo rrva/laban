@@ -1555,11 +1555,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // loop turn. Otherwise AppKit composites the previous drawable over the
     // resized layer until the next displayLink tick (~16 ms) and content
     // anchored to the top of the grid (e.g. cursor at row 0) appears to
-    // jump as the gap closes.
+    // jump as the gap closes. Metal resize frames also wait for command
+    // completion so CAMetalLayer's top-left gravity has an actual drawable
+    // to present before AppKit/WindowServer samples the resized surface.
     if inLiveResize || surfaceChanged {
       applyTransientResizeBackground()
       renderingResizeFrame = true
-      defer { renderingResizeFrame = false }
+      let metal = backend as? MetalRenderer
+      let previousWaitForFrameCompletion = metal?.waitForFrameCompletion ?? false
+      metal?.waitForFrameCompletion = true
+      defer {
+        metal?.waitForFrameCompletion = previousWaitForFrameCompletion
+        renderingResizeFrame = false
+      }
       advanceFrame()
     }
   }

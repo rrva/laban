@@ -30,6 +30,9 @@ without watching the screen manually.
 - [x] Validate with resize repro artifacts and targeted tests.
 - [x] Follow up on the sidebar-specific resize report with command-level
   sidebar probes and stressed diagonal screenshots.
+- [x] Follow up on height-only fast alternating resize. Metal now presents
+  resize frames with top-left native drawable gravity and waits for the
+  resize command buffer to complete before returning to AppKit.
 
 ## Completed Follow-Through
 
@@ -56,6 +59,13 @@ resize harness applies the same fallback before each programmatic
 `setContentSize` call. `LABAN_FRAME_PROBE_DIR` also records sidebar glyph runs
 and sidebar rects so agents can distinguish true sidebar layout movement from
 WindowServer presentation timing.
+
+The height-only follow-up found that logical frame commands were already
+top-anchored, but CAMetalLayer bottom-left gravity placed a new shorter
+drawable at the bottom of a stale taller WindowServer image. `MetalRenderer`
+now uses `.topLeft` contents gravity, and `TerminalBitmapView` temporarily
+enables `MetalRenderer.waitForFrameCompletion` for resize-triggered frames so
+the top-left anchored layer has a completed drawable before AppKit samples it.
 
 `scripts/analyze-resize-repro` gained a faster ImageMagick raw-RGB path when
 `magick` is installed, with the standard-library PNG decoder retained as a
@@ -93,6 +103,17 @@ fallback. This keeps the AppKit resize repro practical for repeated local runs.
   the theme-frame backing before resize removes that stale-frame flash while
   avoiding `NSWindow.backgroundColor`.
   Date/Author: 2026-05-09 / Codex.
+
+- Decision: Metal resize presentation uses native top-left drawable gravity,
+  with command-buffer completion waits only for resize-triggered frames.
+  Rationale: Height-only alternating shrink/grow could capture a newly sized
+  shorter drawable bottom-aligned inside the previous taller WindowServer
+  image, moving the sidebar tab and row-0 cursor downward by the height delta.
+  `.resize` gravity removed the white band but visibly stretched and shifted
+  stale frames; `.top` fixed height while centering width-only stale frames.
+  `.topLeft` plus a resize-only completion wait preserved native pixels and
+  anchored both axes.
+  Date/Author: 2026-05-10 / Codex.
 
 ## Surprises & Discoveries
 
@@ -140,6 +161,24 @@ fallback. This keeps the AppKit resize repro practical for repeated local runs.
   `.artifacts/resize-sidebar/20260509T163508Z` reported
   `events=74`, `screenshots=74`, and `maxTopWhiteRatio=0.0`.
 
+- Observation: The height-only jump was Metal presentation anchoring, not
+  terminal-grid or sidebar command geometry.
+  Evidence: `.artifacts/resize-height/20260510T082326Z` captured
+  `step-9-settled` with `viewBounds=1200x580` and `drawableSize=2400x1160`,
+  but `CGWindowListCreateImage` still returned a `1200x820` image whose
+  new content was bottom-aligned under a large white top band. The frame probe
+  for the same run kept the tab and cursor top positions stable.
+
+- Observation: The rejected alternatives each failed a different autonomous
+  probe. `.topLeft` without waiting could produce all-black Metal window
+  screenshots; `.resize` removed the white band but stretched a stale
+  height frame; `.top` kept height stable but centered width-only stale
+  frames and exposed white side bands.
+  Evidence: `.artifacts/resize-height-resizegravity/20260510T161842Z` had
+  `maxTopWhiteRatio=0.0` but visibly stretched `009-step-3-settled.png`;
+  `.artifacts/resize-width-topgravity/20260510T162145Z` exposed side bands
+  with `maxTopWhiteRatio=0.27525252525252525`.
+
 ## Outcomes & Retrospective
 
 The stressed resize repro that previously captured a white region now reports
@@ -157,6 +196,13 @@ WindowServer white-frame flash in the diagonal stress harness. The final
 sidebar stress artifact is `.artifacts/resize-sidebar/20260509T163508Z`, with
 `events=74`, `screenshots=74`, `maxTopWhiteRatio=0.0`, and
 `maxNearBlackRatio=0.0003154121863799283`.
+
+The height-only follow-up artifact after the Metal anchoring fix is
+`.artifacts/resize-height-topleft-wait/20260510T162347Z`, with `events=42`,
+`screenshots=42`, `maxTopWhiteRatio=0.0`, and
+`maxNearBlackRatio=0.0002933333333333333`. The width-only guard run is
+`.artifacts/resize-width-topleft-wait/20260510T162310Z`, with `events=22`,
+`screenshots=22`, and `maxTopWhiteRatio=0.0`.
 
 ## Context and Orientation
 
@@ -215,6 +261,11 @@ rtk ./scripts/check-docs
 rtk ./scripts/check
 ```
 
+Additional follow-up repros were run with the environment-only resize harness
+using `LABAN_RESIZE_AUTOMATION=1`, `LABAN_RESIZE_PROBE_DIR`,
+`LABAN_FRAME_PROBE_DIR`, and explicit alternating height/width
+`LABAN_RESIZE_STEPS`.
+
 Results:
 
 - normal Metal resize repro:
@@ -226,6 +277,12 @@ Results:
 - `SidebarProducerTests`: 20 tests passed after adding
   `testTopTabGeometryStaysTopAnchoredAcrossResizeHeights`;
 - `scripts/lint`, `scripts/check-docs`, and `scripts/check`: passed.
+- height-only alternating Metal resize after the follow-up fix:
+  `.artifacts/resize-height-topleft-wait/20260510T162347Z`,
+  `maxTopWhiteRatio=0.0`;
+- width-only alternating Metal resize guard after the follow-up fix:
+  `.artifacts/resize-width-topleft-wait/20260510T162310Z`,
+  `maxTopWhiteRatio=0.0`.
 
 The first `rtk ./scripts/check` run saw one transient full-suite Swift test
 failure, but rerunning `rtk swift test` immediately passed and the next full

@@ -203,6 +203,8 @@ final class MetalRendererSmokeTests: XCTestCase {
     }
     XCTAssertEqual(layer.maximumDrawableCount, 3)
     XCTAssertTrue(layer.allowsNextDrawableTimeout)
+    XCTAssertEqual(layer.contentsGravity, .topLeft)
+    XCTAssertFalse(renderer.waitForFrameCompletion)
   }
 
   func testMetalRendererDrawsFallbackArabicAndHangulGlyphs() throws {

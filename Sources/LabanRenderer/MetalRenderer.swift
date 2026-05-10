@@ -234,6 +234,12 @@ public final class MetalRenderer: RendererBackend {
   /// (~50–100 µs of pure overhead with no consumer).
   public var captureMode: Bool = false
 
+  /// Blocks `render()` until the committed command buffer has completed.
+  /// Normal display-link frames leave this off; AppKit resize frames turn it
+  /// on briefly so layer geometry and the just-sized drawable do not race in
+  /// WindowServer presentation.
+  public var waitForFrameCompletion: Bool = false
+
   /// Rolling per-frame timing samples. CPU = wall time spent in render()
   /// itself (encoding work). GPU = cmdBuf.gpuEndTime - gpuStartTime, set in
   /// the completion handler. Per-pass GPU times come from
@@ -323,13 +329,12 @@ public final class MetalRenderer: RendererBackend {
     layer.isOpaque = true
     layer.maximumDrawableCount = 3
     layer.allowsNextDrawableTimeout = true
-    // Anchor the drawable to the bottom-left of the layer's frame. Without
-    // this, CAMetalLayer's default `.resize` gravity stretches the old
-    // drawable to the new layer frame between a window-resize event and
-    // the next render — which visibly drifts content (most noticeably the
-    // cursor at row 0). With bottomLeft, the existing pixels stay at their
-    // native size and any newly-uncovered area shows the layer background.
-    layer.contentsGravity = .bottomLeft
+    // Keep native-size Metal drawables pinned to the window's top-left
+    // during AppKit resize. WindowServer can briefly composite a newly
+    // sized drawable into the previous window image; bottom-left gravity
+    // made row 0 and the sidebar tab jump downward on height-only shrink,
+    // while `.resize` stretched text and shifted content on stale frames.
+    layer.contentsGravity = .topLeft
 
     let solidDesc = MTLRenderPipelineDescriptor()
     solidDesc.label = "laban.solid-quad"
@@ -683,6 +688,9 @@ public final class MetalRenderer: RendererBackend {
     cmdBuf.present(drawable)
     cmdBuf.commit()
     lastCmdBuf = cmdBuf
+    if waitForFrameCompletion {
+      cmdBuf.waitUntilCompleted()
+    }
     targetNeedsFullRedraw = false
     return true
   }
