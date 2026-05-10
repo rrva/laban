@@ -1,0 +1,106 @@
+import AppKit
+import LabanCore
+import LabanTerminalCore
+import XCTest
+
+@testable import LabanApp
+
+final class TerminalSelectionInputTests: XCTestCase {
+  func testTerminalCellUsesTopDownGrid() {
+    let cell = TerminalSelectionInput.terminalCell(
+      at: NSPoint(x: 241, y: 386),
+      geometry: geometry()
+    )
+
+    XCTAssertEqual(cell, TerminalCellCoordinate(row: 2, col: 3))
+  }
+
+  func testTerminalCellRejectsSidebarAndOutsideGrid() {
+    XCTAssertNil(
+      TerminalSelectionInput.terminalCell(
+        at: NSPoint(x: 199, y: 386),
+        geometry: geometry()
+      ))
+    XCTAssertNil(
+      TerminalSelectionInput.terminalCell(
+        at: NSPoint(x: 241, y: 460),
+        geometry: geometry()
+      ))
+  }
+
+  func testClampedPointCapturesViewportOffsetAndClampsToEdges() {
+    let bottomLeft = TerminalSelectionInput.clampedPoint(
+      at: NSPoint(x: 0, y: 0),
+      geometry: geometry(),
+      viewportOffset: 7
+    )
+    XCTAssertEqual(bottomLeft, TerminalSelectionPoint(row: 23, col: 0, viewportOffsetAtCapture: 7))
+
+    let topRight = TerminalSelectionInput.clampedPoint(
+      at: NSPoint(x: 999, y: 999),
+      geometry: geometry(),
+      viewportOffset: 9
+    )
+    XCTAssertEqual(topRight, TerminalSelectionPoint(row: 0, col: 29, viewportOffsetAtCapture: 9))
+  }
+
+  func testTerminalSelectionTranslatesCapturedViewportOffsets() {
+    let selection = TerminalSelectionInput.terminalSelection(
+      sessionId: "session-1",
+      anchor: TerminalSelectionPoint(row: 5, col: 2, viewportOffsetAtCapture: 10),
+      focus: TerminalSelectionPoint(row: 6, col: 4, viewportOffsetAtCapture: 10),
+      currentViewportOffset: 8
+    )
+
+    XCTAssertEqual(
+      selection,
+      TerminalSelection(
+        sessionId: "session-1",
+        anchor: TerminalCellCoordinate(row: 7, col: 2),
+        focus: TerminalCellCoordinate(row: 8, col: 4)
+      ))
+  }
+
+  func testTerminalSelectionRequiresAnchorAndFocus() {
+    XCTAssertNil(
+      TerminalSelectionInput.terminalSelection(
+        sessionId: "session-1",
+        anchor: TerminalSelectionPoint(row: 5, col: 2, viewportOffsetAtCapture: 10),
+        focus: nil,
+        currentViewportOffset: 8
+      ))
+  }
+
+  func testWordBoundsStopsAtSpacesAndIncludesPathGlue() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("cd /tmp/foo-bar baz\r\n".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let bounds = TerminalSelectionInput.wordBounds(row: 0, col: 4, in: snap.pointee)
+    XCTAssertEqual(bounds.start, 3)
+    XCTAssertEqual(bounds.end, 14)
+  }
+
+  private func geometry() -> TerminalSelectionInput.GridGeometry {
+    TerminalSelectionInput.GridGeometry(
+      boundsWidth: 500,
+      boundsHeight: 476,
+      sidebarWidth: 200,
+      cellWidth: 9,
+      cellHeight: 18,
+      rows: 24,
+      insets: NSEdgeInsets(top: 36, left: 14, bottom: 8, right: 8)
+    )
+  }
+}

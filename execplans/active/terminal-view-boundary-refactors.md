@@ -28,6 +28,7 @@ small enough to verify directly and already has focused tests.
 - [x] Move AppKit frame/resize debug probes out of `TerminalBitmapView`.
 - [x] Extract render gate decisions out of `TerminalBitmapView`.
 - [x] Extract text-input cursor geometry out of `TerminalBitmapView`.
+- [x] Extract selection input geometry and word-boundary policy out of `TerminalBitmapView`.
 
 ## Decision Log
 
@@ -57,6 +58,13 @@ small enough to verify directly and already has focused tests.
   Rationale: Cursor-cell geometry is pure terminal grid math and can be tested
   without naming the view. Converting that rect through AppKit window/screen
   APIs still belongs in the `NSTextInputClient` implementation.
+  Date/Author: 2026-05-10 / Codex
+
+- Decision: Move selection hit-testing, clamped drag points, viewport-offset
+  translation, and word-boundary scans behind a selection input helper.
+  Rationale: Mouse event handling still belongs in `TerminalBitmapView`, but
+  the grid math and snapshot row scanning are independent policies that deserve
+  focused tests and stable names.
   Date/Author: 2026-05-10 / Codex
 
 ## Context and Orientation
@@ -103,6 +111,11 @@ Text-input cursor geometry is a small pure policy used by
 still needs the active session snapshot and AppKit coordinate conversion, but
 the terminal-grid rect calculation does not depend on the view.
 
+Selection input state combines AppKit points, terminal grid dimensions,
+libghostty viewport offsets, and snapshot cell scanning. Those policies were
+embedded in `TerminalBitmapView`, even though they can be checked without a
+live view.
+
 ## Plan of Work
 
 Create a `TerminalClipboard` helper in `Sources/LabanApp/` for AppKit-facing
@@ -148,6 +161,12 @@ Move text-input cursor geometry into
 reading the active cursor snapshot and converting the helper's local rect to
 screen coordinates.
 
+Move selection hit-testing, clamped drag-point construction, viewport-offset
+translation, and word-boundary scanning into
+`Sources/LabanApp/TerminalSelectionInput.swift`. Keep
+`TerminalBitmapView` responsible for live mouse events, active session snapshot
+lifetimes, and mutating the current selection state.
+
 ## Validation and Acceptance
 
 Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
@@ -157,6 +176,7 @@ swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
+swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
@@ -178,6 +198,8 @@ the App target. Render gate policy is covered through
 `TerminalBitmapViewSyncOutputTests` without calling static helpers on the
 terminal rendering view. Text-input cursor geometry is covered through
 `TerminalKeyInputTests` without calling a static helper on the rendering view.
+Selection grid hit-testing, clamped drag points, viewport-offset translation,
+and word-boundary scans are covered through `TerminalSelectionInputTests`.
 
 Validation completed on 2026-05-10:
 
@@ -186,6 +208,7 @@ swift test --filter TerminalClipboardTests
 swift test --filter TerminalHyperlinkOpeningTests
 swift test --filter TerminalKeyInputTests
 swift test --filter TerminalMouseInputTests
+swift test --filter TerminalSelectionInputTests
 swift test --filter TerminalBitmapViewSyncOutputTests
 swift test --filter TerminalPasteTests
 swift test --filter SessionKeyEncodingTests
@@ -195,7 +218,7 @@ swift test
 
 All targeted commands passed. Full `swift test` intermittently exited early
 with `xctest` signal code 5 without a reported test assertion failure; each
-immediate rerun passed. The latest successful full run executed 406 tests with
+immediate rerun passed. The latest successful full run executed 412 tests with
 2 skipped and 0 failures. The first build required the documented worktree
 setup symlink:
 

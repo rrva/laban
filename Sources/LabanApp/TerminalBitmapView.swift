@@ -44,43 +44,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // Last known terminal grid size (updated each frame)
   private var lastRows: Int = 24
 
-  /// One end of a selection. Stores the cell coordinate the user clicked
-  /// AND libghostty's authoritative viewport offset at that moment so the
-  /// selection tracks the actual content even after the user scrolls.
-  ///
-  /// `viewportOffsetAtCapture` is `scrollbar.offset` from libghostty:
-  /// "offset into the total scrollable area that the viewport's top is
-  /// at". 0 = scrolled all the way back; `total - len` = at-bottom.
-  /// Decreases as the user scrolls back, increases as they scroll
-  /// forward toward the latest output. Clamped by libghostty at the
-  /// edges, which is *why* we use it instead of our own Swift counter
-  /// — the Swift counter can drift past the edge (logging requested
-  /// scrolls libghostty refuses to honor) and the rect drifts with it.
-  private struct SelectionPoint: Equatable {
-    var row: Int
-    var col: Int
-    var viewportOffsetAtCapture: Int
-
-    func visibleRow(currentViewportOffset: Int) -> Int {
-      row + (viewportOffsetAtCapture - currentViewportOffset)
-    }
-  }
-
-  private var selectionAnchor: SelectionPoint?
-  private var selectionFocus: SelectionPoint?
+  private var selectionAnchor: TerminalSelectionPoint?
+  private var selectionFocus: TerminalSelectionPoint?
 
   /// Grain of the active selection. Set on mouseDown by the click count;
   /// drives whether mouseDragged extends by character (`.char`), by word
   /// boundary (`.word`), or by full line (`.line`). Without this, even
   /// 1-pixel jitter during a double-click would fire mouseDragged and
   /// collapse the just-selected word back to a single character.
-  private enum SelectionMode { case char, word, line }
-  private var selectionMode: SelectionMode = .char
+  private var selectionMode: TerminalSelectionMode = .char
   /// The cell the user originally clicked when starting a word- or
   /// line-grain selection. Drag extension recomputes the selection union
   /// from this origin to the current drag cell, in the chosen grain —
   /// without remembering the origin we'd lose it the moment a drag fires.
-  private var selectionOriginCell: SelectionPoint?
+  private var selectionOriginCell: TerminalSelectionPoint?
   private struct PendingHyperlinkClick {
     var uri: String
     var downPoint: NSPoint
@@ -92,7 +69,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// grid (the renderer reads view-level state, not session-level). On
   /// tab switch we save the outgoing tab's pair into this dict and
   /// restore the incoming tab's pair from it.
-  private var selectionsByTab: [Tab.ID: (anchor: SelectionPoint, focus: SelectionPoint?)] = [:]
+  private var selectionsByTab:
+    [Tab.ID: (anchor: TerminalSelectionPoint, focus: TerminalSelectionPoint?)] = [:]
   private var trackedMouseButton: MouseButton = .none
 
   /// Active drag-edge auto-scroll. `direction` matches
@@ -1994,22 +1972,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if trackedMouseButton == .right { trackedMouseButton = .none }
   }
 
-  // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
-  private func termCell(at pt: NSPoint) -> (row: Int, col: Int)? {
-    let insets = Self.contentInsets
-    let x = pt.x - sidebarWidth - insets.left
-    let gridOriginY = Self.terminalGridOriginY(
+  private func selectionGeometry() -> TerminalSelectionInput.GridGeometry {
+    TerminalSelectionInput.GridGeometry(
+      boundsWidth: bounds.width,
       boundsHeight: bounds.height,
-      rows: lastRows,
+      sidebarWidth: sidebarWidth,
+      cellWidth: CGFloat(cellWidth),
       cellHeight: CGFloat(cellHeight),
-      insets: insets)
-    let yLocal = pt.y - gridOriginY
-    guard x >= 0, yLocal >= 0 else { return nil }
-    let col = Int(x / CGFloat(cellWidth))
-    // CG y=0 at bottom; terminal row 0 is at the top of the cell grid.
-    let row = lastRows - 1 - Int(yLocal / CGFloat(cellHeight))
-    guard row >= 0, row < lastRows, col >= 0 else { return nil }
-    return (row, col)
+      rows: lastRows,
+      insets: Self.contentInsets)
+  }
+
+  // Convert a CG-coordinate view point to a terminal grid cell (row 0 = top).
+  private func termCell(at pt: NSPoint) -> TerminalCellCoordinate? {
+    TerminalSelectionInput.terminalCell(at: pt, geometry: selectionGeometry())
   }
 
   /// Like `termCell(at:)` but always returns a valid cell, clamped to the
@@ -2017,32 +1993,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// clamping, dragging past the bottom would yield nil and clear the
   /// in-progress selection. Captures libghostty's viewport offset so the
   /// point tracks the actual content as the viewport scrolls.
-  private func clampedSelectionPoint(at pt: NSPoint) -> SelectionPoint {
-    let insets = Self.contentInsets
-    let x = max(0, pt.x - sidebarWidth - insets.left)
-    let gridOriginY = Self.terminalGridOriginY(
-      boundsHeight: bounds.height,
-      rows: lastRows,
-      cellHeight: CGFloat(cellHeight),
-      insets: insets)
-    let yLocal = pt.y - gridOriginY
-    let cols = max(
-      1,
-      Int((bounds.width - sidebarWidth - insets.left - insets.right) / CGFloat(cellWidth)))
-    let col = min(cols - 1, max(0, Int(x / CGFloat(cellWidth))))
-    let unclampedRow = lastRows - 1 - Int(yLocal / CGFloat(cellHeight))
-    let row = min(max(0, unclampedRow), max(0, lastRows - 1))
-    return SelectionPoint(
-      row: row, col: col, viewportOffsetAtCapture: currentViewportOffset())
+  private func clampedSelectionPoint(at pt: NSPoint) -> TerminalSelectionPoint {
+    TerminalSelectionInput.clampedPoint(
+      at: pt,
+      geometry: selectionGeometry(),
+      viewportOffset: currentViewportOffset())
   }
 
   /// Word-grain selection at the click cell.
   private func selectWordAt(_ pt: NSPoint) {
     let p = clampedSelectionPoint(at: pt)
     let bounds = wordBoundsAt(row: p.row, col: p.col)
-    selectionAnchor = SelectionPoint(
+    selectionAnchor = TerminalSelectionPoint(
       row: p.row, col: bounds.start, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
-    selectionFocus = SelectionPoint(
+    selectionFocus = TerminalSelectionPoint(
       row: p.row, col: bounds.end, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
   }
 
@@ -2050,9 +2014,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func selectLineAt(_ pt: NSPoint) {
     let p = clampedSelectionPoint(at: pt)
     let cols = currentCols()
-    selectionAnchor = SelectionPoint(
+    selectionAnchor = TerminalSelectionPoint(
       row: p.row, col: 0, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
-    selectionFocus = SelectionPoint(
+    selectionFocus = TerminalSelectionPoint(
       row: p.row, col: cols - 1, viewportOffsetAtCapture: p.viewportOffsetAtCapture)
   }
 
@@ -2066,39 +2030,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let snap = session.snapshot()
     else { return (col, col) }
     defer { laban_snapshot_destroy(snap) }
-    let snapPtr = snap.pointee
-    let cols = Int(snapPtr.cols)
-    guard row >= 0, row < Int(snapPtr.rows), col >= 0, col < cols,
-      let cells = snapPtr.cells, let storage = snapPtr.utf8_storage
-    else { return (col, col) }
-    func cellChar(at c: Int) -> Unicode.Scalar? {
-      let cell = cells[row * cols + c]
-      guard cell.utf8_length > 0 else { return nil }
-      let buf = UnsafeBufferPointer<UInt8>(
-        start: UnsafeRawPointer(storage)
-          .advanced(by: Int(cell.utf8_offset))
-          .assumingMemoryBound(to: UInt8.self),
-        count: Int(cell.utf8_length))
-      let s = String(bytes: buf, encoding: .utf8) ?? ""
-      return s.unicodeScalars.first
-    }
-    func isWord(_ scalar: Unicode.Scalar?) -> Bool {
-      guard let scalar else { return false }
-      if CharacterSet.alphanumerics.contains(scalar) { return true }
-      return "-_./:~@".unicodeScalars.contains(scalar)
-    }
-    var startCol = col
-    var endCol = col
-    while startCol > 0, isWord(cellChar(at: startCol - 1)) { startCol -= 1 }
-    while endCol < cols - 1, isWord(cellChar(at: endCol + 1)) { endCol += 1 }
-    return (startCol, endCol)
+    return TerminalSelectionInput.wordBounds(row: row, col: col, in: snap.pointee)
   }
 
   private func currentCols() -> Int {
-    let insets = Self.contentInsets
-    return max(
-      1,
-      Int((bounds.width - sidebarWidth - insets.left - insets.right) / CGFloat(cellWidth)))
+    selectionGeometry().cols
   }
 
   /// Update the selection from the current drag point, respecting the
@@ -2119,7 +2055,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
   }
 
-  private func extendWordSelection(to drag: SelectionPoint) {
+  private func extendWordSelection(to drag: TerminalSelectionPoint) {
     guard let orig = selectionOriginCell else {
       selectionFocus = drag
       return
@@ -2133,15 +2069,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let dragEndLin = drag.row * cols + dragBounds.end
     let startLin = min(origStartLin, dragStartLin)
     let endLin = max(origEndLin, dragEndLin)
-    selectionAnchor = SelectionPoint(
+    selectionAnchor = TerminalSelectionPoint(
       row: startLin / cols, col: startLin % cols,
       viewportOffsetAtCapture: orig.viewportOffsetAtCapture)
-    selectionFocus = SelectionPoint(
+    selectionFocus = TerminalSelectionPoint(
       row: endLin / cols, col: endLin % cols,
       viewportOffsetAtCapture: drag.viewportOffsetAtCapture)
   }
 
-  private func extendLineSelection(to drag: SelectionPoint) {
+  private func extendLineSelection(to drag: TerminalSelectionPoint) {
     guard let orig = selectionOriginCell else {
       selectionFocus = drag
       return
@@ -2149,9 +2085,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let cols = currentCols()
     let topRow = min(orig.row, drag.row)
     let bottomRow = max(orig.row, drag.row)
-    selectionAnchor = SelectionPoint(
+    selectionAnchor = TerminalSelectionPoint(
       row: topRow, col: 0, viewportOffsetAtCapture: orig.viewportOffsetAtCapture)
-    selectionFocus = SelectionPoint(
+    selectionFocus = TerminalSelectionPoint(
       row: bottomRow, col: cols - 1,
       viewportOffsetAtCapture: drag.viewportOffsetAtCapture)
   }
@@ -2210,15 +2146,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// stored row by the actual viewport-offset delta since capture so the
   /// selection rect follows the underlying content as the viewport scrolls.
   private func currentTerminalSelection(sessionId: Session.ID) -> TerminalSelection? {
-    guard let anchor = selectionAnchor, let focus = selectionFocus else { return nil }
-    let offset = currentViewportOffset()
-    let aRow = anchor.visibleRow(currentViewportOffset: offset)
-    let fRow = focus.visibleRow(currentViewportOffset: offset)
-    return TerminalSelection(
+    TerminalSelectionInput.terminalSelection(
       sessionId: sessionId,
-      anchor: TerminalCellCoordinate(row: aRow, col: anchor.col),
-      focus: TerminalCellCoordinate(row: fRow, col: focus.col)
-    )
+      anchor: selectionAnchor,
+      focus: selectionFocus,
+      currentViewportOffset: currentViewportOffset())
   }
 
   // MARK: - Drag-edge auto-scroll
