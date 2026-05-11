@@ -39,6 +39,8 @@ focused tests, making future endpoint and action changes less risky.
   byte counters, and error projection.
 - [x] Investigate intermittent XCTest `SIGTRAP` during fixture reload and fix
   session teardown to stop AppModel reader threads before closing C sessions.
+- [x] Extract frame-command list/trace serialization into a focused helper
+  with serializer tests.
 - [ ] Extract render diagnostics and frame-command serialization.
 
 ## Decision Log
@@ -94,6 +96,14 @@ focused tests, making future endpoint and action changes less risky.
   `SessionRunner.stop()` join that must happen before `laban_session_destroy`.
   Stopping every runner before closing C handles removes that use-after-free
   window.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Move frame-command JSON projection into
+  `DebugFrameCommandSerializer`.
+  Rationale: The runtime had repeated knowledge of command ids, kind names,
+  approximate glyph geometry, RGBA expansion, and list-vs-trace payload shapes.
+  A focused serializer makes endpoint behavior easier to test directly and
+  keeps future renderer changes from drifting between debug endpoints.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation
@@ -160,6 +170,8 @@ Acceptance for the first milestone:
   keyboard, title, capture, selection, clipboard, and mouse tests.
 - Fixture reload teardown is covered by a repeated restart regression test and
   allocator-scribble stress runs of the same path.
+- Frame-command serialization is covered by focused tests for glyph decoration
+  payloads, text hiding, trace geometry, and command kind naming.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.

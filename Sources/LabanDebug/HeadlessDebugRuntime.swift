@@ -668,22 +668,6 @@ public final class HeadlessDebugRuntime {
     }
   }
 
-  private func rgbaArray(_ color: UInt32) -> [Int] {
-    [
-      Int((color >> 24) & 0xFF),
-      Int((color >> 16) & 0xFF),
-      Int((color >> 8) & 0xFF),
-      Int(color & 0xFF),
-    ]
-  }
-
-  private func rectResponse(_ r: CGRect) -> RectResponse {
-    RectResponse(
-      x: Int(r.origin.x), y: Int(r.origin.y),
-      width: Int(r.size.width), height: Int(r.size.height)
-    )
-  }
-
   func terminalMousePosition(x: Int, y: Int) -> (x: Float, y: Float) {
     DebugMouseInput.terminalSurfacePosition(
       windowX: x,
@@ -838,8 +822,8 @@ public final class HeadlessDebugRuntime {
             row: row,
             col: col,
             text: text,
-            foreground: rgbaArray(cell.foreground_rgba),
-            background: rgbaArray(cell.background_rgba),
+            foreground: DebugFrameCommandSerializer.rgbaArray(cell.foreground_rgba),
+            background: DebugFrameCommandSerializer.rgbaArray(cell.background_rgba),
             attributes: TextAttributes(rawValue: cell.flags).intersection(.renderableMask).names,
             wide: wideName(cell.wide),
             hyperlink: hyperlink
@@ -1059,12 +1043,13 @@ public final class HeadlessDebugRuntime {
     }
     let enc = JSONEncoder()
     enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let serializer = DebugFrameCommandSerializer(cellWidth: cellWidth, cellHeight: cellHeight)
     let frameCommandBody =
       FrameCommandsResponse(
         frame: currentFrame,
         backend: "software",
         commands: lastFrameCommands.enumerated().map {
-          serializeCommandForList($0.element, index: $0.offset, includeText: true)
+          serializer.listCommand($0.element, index: $0.offset, includeText: true)
         },
         truncated: false
       )
@@ -1292,12 +1277,13 @@ public final class HeadlessDebugRuntime {
     let sourceFilter = query["source"] ?? "all"
     let limit = min(query["limit"].flatMap { Int($0) } ?? 500, 2000)
     let includeText = query["includeText"] != "false"
+    let serializer = DebugFrameCommandSerializer(cellWidth: cellWidth, cellHeight: cellHeight)
 
     var result: [FrameCommandResponse] = []
     var truncated = false
 
     for (idx, cmd) in lastFrameCommands.enumerated() {
-      let r = serializeCommandForList(cmd, index: idx, includeText: includeText)
+      let r = serializer.listCommand(cmd, index: idx, includeText: includeText)
       if sourceFilter != "all" && r.source != sourceFilter { continue }
       if result.count >= limit {
         truncated = true
@@ -1313,53 +1299,6 @@ public final class HeadlessDebugRuntime {
       ))
   }
 
-  private func serializeCommandForList(
-    _ cmd: FrameCommand, index: Int, includeText: Bool
-  ) -> FrameCommandResponse {
-    let id = "cmd-\(index)"
-    switch cmd {
-    case .rect(let rect, let color, let src):
-      return FrameCommandResponse(
-        id: id, index: index, kind: "rect", source: src.rawValue,
-        rect: rectResponse(rect), color: rgbaArray(color))
-    case .glyphRun(
-      let origin, let text, let fg, let bg, let attrs, let src,
-      let underlineStyle, let underlineColor, let hyperlink
-    ):
-      let approxRect = CGRect(
-        x: origin.x, y: origin.y,
-        width: CGFloat(text.count * cellWidth), height: CGFloat(cellHeight)
-      )
-      let attrNames = attrs.names
-      return FrameCommandResponse(
-        id: id, index: index, kind: "glyphRun", source: src.rawValue,
-        rect: rectResponse(approxRect),
-        foreground: rgbaArray(fg), background: rgbaArray(bg),
-        text: includeText ? text : nil,
-        attributes: attrNames.isEmpty ? nil : attrNames,
-        underlineStyle: underlineStyle.name,
-        underlineColor: underlineColor.map { rgbaArray($0) },
-        hyperlink: hyperlink
-      )
-    case .cursor(let rect, let color):
-      return FrameCommandResponse(
-        id: id, index: index, kind: "cursor", source: "cursor",
-        rect: rectResponse(rect), color: rgbaArray(color))
-    case .selection(let rect, let color):
-      return FrameCommandResponse(
-        id: id, index: index, kind: "selection", source: "selection",
-        rect: rectResponse(rect), color: rgbaArray(color))
-    case .clip(let rect):
-      return FrameCommandResponse(
-        id: id, index: index, kind: "clip", source: "unknown",
-        rect: rectResponse(rect))
-    case .texturedQuad(let rect, let resId, let src):
-      return FrameCommandResponse(
-        id: id, index: index, kind: "texturedQuad", source: src.rawValue,
-        rect: rectResponse(rect), resourceId: String(resId))
-    }
-  }
-
   // MARK: - Render trace
 
   public func renderTrace(_ data: Data) -> DebugResponse {
@@ -1371,6 +1310,7 @@ public final class HeadlessDebugRuntime {
       (try? JSONDecoder().decode(RenderTraceRequest.self, from: body)) ?? RenderTraceRequest()
     let limit = min(req.limit ?? 500, 2000)
     let frame = currentFrame
+    let serializer = DebugFrameCommandSerializer(cellWidth: cellWidth, cellHeight: cellHeight)
 
     var sources: [TraceSourceResponse] = [
       TraceSourceResponse(id: "state-\(frame)", kind: "appState", revision: frame)
@@ -1467,7 +1407,7 @@ public final class HeadlessDebugRuntime {
         truncated = true
         break
       }
-      traceCmds.append(serializeTraceCommand(cmd, index: i))
+      traceCmds.append(serializer.traceCommand(cmd, index: i))
     }
 
     let resources: [TraceResource] = [
@@ -1493,7 +1433,7 @@ public final class HeadlessDebugRuntime {
     for probe in req.pixelProbes ?? [] {
       let rgba: [Int]
       if let px = surface.pixel(x: probe.x, y: probe.y) {
-        rgba = rgbaArray(px)
+        rgba = DebugFrameCommandSerializer.rgbaArray(px)
       } else {
         rgba = [0, 0, 0, 255]
       }
@@ -1523,37 +1463,6 @@ public final class HeadlessDebugRuntime {
         pixelProbes: pixelProbes, invariants: invariants,
         truncated: truncated
       ))
-  }
-
-  private func serializeTraceCommand(_ cmd: FrameCommand, index: Int) -> TraceCommand {
-    let id = "cmd-\(index)"
-    switch cmd {
-    case .rect(let rect, _, let src):
-      return TraceCommand(
-        id: id, index: index, kind: "rect", source: src.rawValue, rect: rectResponse(rect))
-    case .glyphRun(let origin, let text, _, _, let attrs, let src, _, _, _):
-      let approxRect = CGRect(
-        x: origin.x, y: origin.y,
-        width: CGFloat(text.count * cellWidth), height: CGFloat(cellHeight)
-      )
-      let attrNames = attrs.names
-      return TraceCommand(
-        id: id, index: index, kind: "glyphRun", source: src.rawValue,
-        rect: rectResponse(approxRect), text: text,
-        attributes: attrNames.isEmpty ? nil : attrNames)
-    case .cursor(let rect, _):
-      return TraceCommand(
-        id: id, index: index, kind: "cursor", source: "cursor", rect: rectResponse(rect))
-    case .selection(let rect, _):
-      return TraceCommand(
-        id: id, index: index, kind: "selection", source: "selection", rect: rectResponse(rect))
-    case .clip(let rect):
-      return TraceCommand(
-        id: id, index: index, kind: "clip", source: "unknown", rect: rectResponse(rect))
-    case .texturedQuad(let rect, _, let src):
-      return TraceCommand(
-        id: id, index: index, kind: "texturedQuad", source: src.rawValue, rect: rectResponse(rect))
-    }
   }
 
   // MARK: - Wait
@@ -1634,7 +1543,7 @@ public final class HeadlessDebugRuntime {
       ).contains(cond.text ?? "")
     case "renderCommandSeen":
       guard let kind = cond.commandKind else { return false }
-      return lastFrameCommands.contains { cmdKindString($0) == kind }
+      return lastFrameCommands.contains { DebugFrameCommandSerializer.kind($0) == kind }
     case "eventSeen":
       guard let kind = cond.eventKind else { return false }
       return logs.containsEvent(kind: kind)
@@ -1655,17 +1564,6 @@ public final class HeadlessDebugRuntime {
     return model.activeTab
   }
 
-  private func cmdKindString(_ cmd: FrameCommand) -> String {
-    switch cmd {
-    case .rect: return "rect"
-    case .glyphRun: return "glyphRun"
-    case .cursor: return "cursor"
-    case .selection: return "selection"
-    case .clip: return "clip"
-    case .texturedQuad: return "texturedQuad"
-    }
-  }
-
   // MARK: - Exploratory diagnostics
 
   public func pixelProbe(_ data: Data) -> DebugResponse {
@@ -1681,7 +1579,9 @@ public final class HeadlessDebugRuntime {
     defer { lock.unlock() }
 
     let points = (req.points ?? []).map { p -> PixelProbePointResult in
-      let rgba = surface.pixel(x: p.x, y: p.y).map(rgbaArray) ?? [0, 0, 0, 0]
+      let rgba =
+        surface.pixel(x: p.x, y: p.y)
+        .map(DebugFrameCommandSerializer.rgbaArray) ?? [0, 0, 0, 0]
       return PixelProbePointResult(x: p.x, y: p.y, rgba: rgba)
     }
 
@@ -1697,7 +1597,7 @@ public final class HeadlessDebugRuntime {
         for y in r.y..<maxY {
           for x in r.x..<maxX {
             guard let px = surface.pixel(x: x, y: y) else { continue }
-            let rgba = rgbaArray(px)
+            let rgba = DebugFrameCommandSerializer.rgbaArray(px)
             for i in 0..<4 { sums[i] += rgba[i] }
             sampled += 1
             if px != background { nonBackground += 1 }
@@ -2101,7 +2001,7 @@ public final class HeadlessDebugRuntime {
         cellWidth: CGFloat(cellWidth), cellHeight: CGFloat(cellHeight),
         originX: CGFloat(sidebarWidth), originY: 0
       ) {
-        rects.append(rectResponse(r))
+        rects.append(DebugFrameCommandSerializer.rectResponse(r))
       }
       text = sel.selectedText(from: snap.pointee)
     }
