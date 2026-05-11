@@ -27,7 +27,11 @@ focused tests, making future endpoint and action changes less risky.
   helper with focused tests.
 - [x] Run targeted `LabanDebugTests`.
 - [x] Commit the first behavior-preserving milestone.
-- [ ] Extract action dispatch into smaller action handlers.
+- [x] Extract action dispatch and key-input decoding out of
+  `HeadlessDebugRuntime.swift`.
+- [ ] Split the extracted action dispatch into typed domain command objects.
+- [ ] Replace the optional-bag `ActionRequest` with tagged, typed action
+  payloads while preserving the JSON wire shape.
 - [x] Extract event/input/terminal/error log storage and projections.
 - [x] Add focused log-store tests for sequence assignment, filtering, terminal
   byte counters, and error projection.
@@ -49,6 +53,15 @@ focused tests, making future endpoint and action changes less risky.
   frame rendering, and capture recording. The store owns bounded buffers,
   sequence numbers, terminal byte counters, and response filtering, which are
   pure debug-contract policies.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Move action dispatch and key-input decoding before changing the
+  action request model.
+  Rationale: The existing optional-bag action request is easier to replace
+  safely once the endpoint adapter is isolated in `DebugRuntimeActions.swift`
+  and pure key decoding lives in `DebugRuntimeKeyInput.swift`. This first cut
+  preserves every `/debug/actions` wire shape and keeps the typed-payload
+  migration as the next behavioral-neutral refactor.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation
@@ -109,6 +122,9 @@ Acceptance for the first milestone:
   rejects unsafe inputs before fixture loading.
 - Focused log-store tests prove sequence assignment, filtering, byte counters,
   escaped previews, and error response projection.
+- `/debug/actions` behavior remains covered by the existing debug smoke,
+  keyboard, title, capture, and exploratory-control tests after action dispatch
+  moves out of the runtime file.
 
 ## Idempotence and Recovery
 
