@@ -58,6 +58,8 @@ focused tests, making future endpoint and action changes less risky.
   `HeadlessDebugRuntime`.
 - [x] Move screenshot byte and artifact endpoint adapters out of
   `HeadlessDebugRuntime`.
+- [x] Move discovery catalog plus health/discovery endpoint adapters out of
+  `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -196,6 +198,14 @@ focused tests, making future endpoint and action changes less risky.
   oriented while preserving the same lock-held surface access.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move the static debug discovery catalog and health/discovery
+  endpoint adapters into `DebugDiscoveryEndpoints`.
+  Rationale: Discovery metadata is large, static contract documentation. Moving
+  it out of the runtime makes the main type read as executable lifecycle and
+  render code rather than an endpoint catalog, while keeping the catalog and
+  endpoint response together.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -286,6 +296,9 @@ Acceptance for the first milestone:
 - Screenshot endpoint behavior remains covered by smoke and exploratory-control
   tests for non-empty PNG bytes, screenshot timing, and diagnostic artifact
   bundles.
+- Discovery and health endpoint behavior remains covered by smoke and
+  exploratory-control tests for health readiness, HTTP health concurrency, and
+  the exploratory controls catalog.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
