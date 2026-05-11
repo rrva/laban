@@ -40,11 +40,13 @@
 #define LABAN_TITLE_MAX_BYTES 1024
 
 /* Every public laban_session_* entry point holds this lock for the body
- * of the call. Recursive so a future capture/tab-status callback that
- * re-enters a session method does not deadlock; the AppModel layer in
- * Swift already chose NSRecursiveLock for the same reason. The
- * destructor (laban_session_destroy) deliberately does NOT lock — it is
- * the caller's contract to have stopped all other access first.
+ * of the call. Internal helpers that require the caller to hold the lock
+ * use a `_locked` suffix and must not acquire it again. The mutex remains
+ * recursive as a defensive callback contract: capture/tab-status callbacks
+ * can run while the lock is held, and external callback code may re-enter a
+ * session method. The destructor (laban_session_destroy) deliberately does
+ * NOT lock — it is the caller's contract to have stopped all other access
+ * first.
  *
  * SESSION_LOCK(s) acquires the lock and registers an automatic release
  * on scope exit via __attribute__((cleanup)), so every return path —
@@ -151,7 +153,7 @@ int laban_write_pty_bytes(
 int laban_write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len);
 pid_t laban_waitpid_retry(pid_t pid, int *status, int options);
 void laban_signal_child_process_group(pid_t child_pid, int sig);
-int laban_session_mode_active(LabanSession *s, GhosttyMode mode, int *out_active);
+int laban_session_mode_active_locked(LabanSession *s, GhosttyMode mode, int *out_active);
 int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t len);
 
 void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata);

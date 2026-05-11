@@ -118,7 +118,7 @@ static int utf8_is_c0_or_pua(const char *utf8, size_t len) {
     return 0;
 }
 
-int laban_session_encode_key(
+static int laban_session_encode_key_locked(
     LabanSession *s,
     const LabanKeyEvent *event,
     uint8_t *out_bytes,
@@ -128,7 +128,6 @@ int laban_session_encode_key(
     if (out_len) *out_len = 0;
     if (!s || !event || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
-    SESSION_LOCK(s);
 
     /* Sync encoder from terminal state; this resets option-as-alt to FALSE. */
     ghostty_key_encoder_setopt_from_terminal(s->key_encoder, s->terminal);
@@ -165,6 +164,40 @@ int laban_session_encode_key(
     return -1;
 }
 
+int laban_session_encode_key(
+    LabanSession *s,
+    const LabanKeyEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    if (out_len) *out_len = 0;
+    if (!s || !event || !out_len) return -1;
+    if (!out_bytes && out_capacity > 0) return -1;
+    SESSION_LOCK(s);
+    return laban_session_encode_key_locked(s, event, out_bytes, out_capacity, out_len);
+}
+
+static int laban_session_send_key_encoded_locked(
+    LabanSession *s,
+    const LabanKeyEvent *event,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    if (out_len) *out_len = 0;
+    if (!s || !event || !out_len) return -1;
+    if (!out_bytes && out_capacity > 0) return -1;
+
+    int rc = laban_session_encode_key_locked(s, event, out_bytes, out_capacity, out_len);
+    if (rc != 0) return rc;
+    if (*out_len == 0) return 0;
+    if (s->fixture_mode) return 0;
+    if (s->pty_fd < 0) return -1;
+
+    return laban_write_pty_input(s, out_bytes, *out_len);
+}
+
 int laban_session_send_key_encoded(
     LabanSession *s,
     const LabanKeyEvent *event,
@@ -176,34 +209,28 @@ int laban_session_send_key_encoded(
     if (!s || !event || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
     SESSION_LOCK(s);
-
-    int rc = laban_session_encode_key(s, event, out_bytes, out_capacity, out_len);
-    if (rc != 0) return rc;
-    if (*out_len == 0) return 0;
-    if (s->fixture_mode) return 0;
-    if (s->pty_fd < 0) return -1;
-
-    return laban_write_pty_input(s, out_bytes, *out_len);
+    return laban_session_send_key_encoded_locked(
+        s, event, out_bytes, out_capacity, out_len);
 }
 
 int laban_session_send_key(LabanSession *s, const LabanKeyEvent *event) {
-    if (!s) return -1;
+    if (!s || !event) return -1;
     SESSION_LOCK(s);
 
     uint8_t stack_buf[128];
     size_t len = 0;
-    int rc = laban_session_send_key_encoded(s, event, stack_buf, sizeof(stack_buf), &len);
+    int rc = laban_session_send_key_encoded_locked(
+        s, event, stack_buf, sizeof(stack_buf), &len);
 
     if (rc == LABAN_KEY_ENCODE_OUT_OF_SPACE) {
         /* len now holds required size; heap-allocate and re-encode. */
         uint8_t *heap_buf = malloc(len);
         if (!heap_buf) return -1;
         size_t heap_len = 0;
-        rc = laban_session_send_key_encoded(s, event, heap_buf, len, &heap_len);
+        rc = laban_session_send_key_encoded_locked(s, event, heap_buf, len, &heap_len);
         free(heap_buf);
         return rc;
     }
 
     return rc;
 }
-

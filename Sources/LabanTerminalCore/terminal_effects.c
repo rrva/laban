@@ -111,7 +111,7 @@ bool laban_effect_color_scheme(GhosttyTerminal terminal, void *userdata,
     return true;
 }
 
-static int laban_session_emit_color_scheme_report(LabanSession *s) {
+static int laban_session_emit_color_scheme_report_locked(LabanSession *s) {
     if (!s) return -1;
     static const uint8_t dark[] = "\x1B[?997;1n";
     static const uint8_t light[] = "\x1B[?997;2n";
@@ -121,7 +121,7 @@ static int laban_session_emit_color_scheme_report(LabanSession *s) {
     return laban_write_terminal_response(s, dark, sizeof(dark) - 1);
 }
 
-int laban_session_mode_active(LabanSession *s, GhosttyMode mode, int *out_active) {
+int laban_session_mode_active_locked(LabanSession *s, GhosttyMode mode, int *out_active) {
     if (out_active) *out_active = 0;
     if (!s || !out_active) return -1;
     bool active = false;
@@ -152,7 +152,7 @@ int laban_session_drain_response(
 int laban_session_synchronized_output_active(LabanSession *s, int *out_active) {
     if (!s) return -1;
     SESSION_LOCK(s);
-    return laban_session_mode_active(s, GHOSTTY_MODE_SYNC_OUTPUT, out_active);
+    return laban_session_mode_active_locked(s, GHOSTTY_MODE_SYNC_OUTPUT, out_active);
 }
 
 int laban_session_reset_synchronized_output(LabanSession *s) {
@@ -175,9 +175,9 @@ int laban_session_set_color_scheme(LabanSession *s, int color_scheme) {
     if (!changed) return 0;
 
     int report = 0;
-    if (laban_session_mode_active(s, GHOSTTY_MODE_COLOR_SCHEME_REPORT, &report) == 0 &&
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_COLOR_SCHEME_REPORT, &report) == 0 &&
         report) {
-        return laban_session_emit_color_scheme_report(s);
+        return laban_session_emit_color_scheme_report_locked(s);
     }
     return 0;
 }
@@ -185,7 +185,33 @@ int laban_session_set_color_scheme(LabanSession *s, int color_scheme) {
 int laban_session_focus_reporting_enabled(LabanSession *s, int *out_enabled) {
     if (!s) return -1;
     SESSION_LOCK(s);
-    return laban_session_mode_active(s, GHOSTTY_MODE_FOCUS_EVENT, out_enabled);
+    return laban_session_mode_active_locked(s, GHOSTTY_MODE_FOCUS_EVENT, out_enabled);
+}
+
+static int laban_session_encode_focus_locked(
+    LabanSession *s,
+    int focused,
+    uint8_t *out_bytes,
+    size_t out_capacity,
+    size_t *out_len
+) {
+    if (out_len) *out_len = 0;
+    if (!s || !out_len) return -1;
+    if (!out_bytes && out_capacity > 0) return -1;
+    if (s->status != 0) return 0;
+
+    int enabled = 0;
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_FOCUS_EVENT, &enabled) != 0) return -1;
+    if (!enabled) return 0;
+
+    GhosttyResult r = ghostty_focus_encode(
+        focused ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,
+        (char *)out_bytes,
+        out_capacity,
+        out_len);
+    if (r == GHOSTTY_SUCCESS) return 0;
+    if (r == GHOSTTY_OUT_OF_SPACE) return 1;
+    return -1;
 }
 
 int laban_session_encode_focus(
@@ -199,20 +225,8 @@ int laban_session_encode_focus(
     if (!s || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
     SESSION_LOCK(s);
-    if (s->status != 0) return 0;
-
-    int enabled = 0;
-    if (laban_session_focus_reporting_enabled(s, &enabled) != 0) return -1;
-    if (!enabled) return 0;
-
-    GhosttyResult r = ghostty_focus_encode(
-        focused ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,
-        (char *)out_bytes,
-        out_capacity,
-        out_len);
-    if (r == GHOSTTY_SUCCESS) return 0;
-    if (r == GHOSTTY_OUT_OF_SPACE) return 1;
-    return -1;
+    return laban_session_encode_focus_locked(
+        s, focused, out_bytes, out_capacity, out_len);
 }
 
 int laban_session_send_focus(LabanSession *s, int focused) {
@@ -220,11 +234,10 @@ int laban_session_send_focus(LabanSession *s, int focused) {
     SESSION_LOCK(s);
     uint8_t stack_buf[16];
     size_t len = 0;
-    int rc = laban_session_encode_focus(s, focused, stack_buf, sizeof(stack_buf), &len);
+    int rc = laban_session_encode_focus_locked(s, focused, stack_buf, sizeof(stack_buf), &len);
     if (rc != 0) return rc;
     if (len == 0) return 0;
     if (s->fixture_mode) return 0;
     if (s->pty_fd < 0) return -1;
     return laban_write_pty_input(s, stack_buf, len);
 }
-

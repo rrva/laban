@@ -488,7 +488,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->exit_status            = s->exit_status;
     snap->mouse_tracking         = mouse_tracking;
     int focus_reporting = 0;
-    (void)laban_session_mode_active(s, GHOSTTY_MODE_FOCUS_EVENT, &focus_reporting);
+    (void)laban_session_mode_active_locked(s, GHOSTTY_MODE_FOCUS_EVENT, &focus_reporting);
     snap->focus_reporting        = focus_reporting;
     snap->dirty                  = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
     snap->default_foreground_rgba = default_fg;
@@ -619,4 +619,3 @@ int laban_session_viewport_state(LabanSession *s, LabanViewportState *out_state)
 
     return 0;
 }
-

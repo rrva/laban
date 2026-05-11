@@ -8,32 +8,28 @@ public final class AppModel {
   private let modelLock = NSRecursiveLock()
   private var _tabs: [Tab] = []
   public var tabs: [Tab] { withModelLock { _tabs } }
-  private var sessions: [Session.ID: Session] = [:]
-  /// Per-session reader thread. Populated whenever a session is added
-  /// to `sessions`; stopped & removed before the session is closed so
-  /// the reader is not racing the C destructor.
-  private var sessionRunners: [Session.ID: SessionRunner] = [:]
-  private var lastProcessMetadataSyncAtByTab: [Tab.ID: Date] = [:]
-  private var processIdentityByTab: [Tab.ID: ProcessIdentity] = [:]
-  private var terminalTitleOwnerByTab: [Tab.ID: ProcessIdentity] = [:]
+  private let sessionRegistry = SessionRegistry()
+  private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
-  private let processMetadataSyncInterval: TimeInterval = 0.25
   private var themeChangeObserver: NSObjectProtocol?
-  private let gitInfo = GitInfoTracker()
 
   /// Set by the AppKit view to receive "this session has new bytes
   /// to render" wake-ups from the per-session reader threads. The
   /// callback fires on a background thread and must be cheap and
   /// non-blocking — typically a coalesced `DispatchQueue.main.async`
   /// post that kicks the display link.
-  public var onSessionDirty: (@Sendable (Session.ID) -> Void)?
+  public var onSessionDirty: (@Sendable (Session.ID) -> Void)? {
+    didSet {
+      withModelLock {
+        sessionRegistry.onSessionDirty = onSessionDirty
+      }
+    }
+  }
   public weak var captureSink: CaptureSink? {
     didSet {
       withModelLock {
-        for session in sessions.values {
-          session.captureSink = captureSink
-        }
+        sessionRegistry.captureSink = captureSink
       }
     }
   }
@@ -43,22 +39,6 @@ public final class AppModel {
     modelLock.lock()
     defer { modelLock.unlock() }
     return try body()
-  }
-
-  private struct ProcessIdentity: Equatable {
-    var pid: Int?
-    var process: String?
-    var command: String?
-
-    init?(_ metadata: Session.ProcessMetadata) {
-      let pid = metadata.foregroundPid ?? metadata.childPid
-      let process = TerminalTitle.sanitize(metadata.foregroundProcess)
-      let command = TerminalTitle.sanitize(metadata.foregroundCommand)
-      guard pid != nil || process != nil || command != nil else { return nil }
-      self.pid = pid
-      self.process = process
-      self.command = command
-    }
   }
 
   public init(
@@ -79,11 +59,9 @@ public final class AppModel {
       isActive: true,
       sessionId: session.id
     )
-    sessions[session.id] = session
-    startRunner(for: session)
-    if let captureSink {
-      session.captureSink = captureSink
-    }
+    sessionRegistry.captureSink = captureSink
+    sessionRegistry.onSessionDirty = onSessionDirty
+    sessionRegistry.add(session)
     _tabs.append(tab)
     attachTabStatus(session: session, tabId: tab.id)
     themeChangeObserver = NotificationCenter.default.addObserver(
@@ -95,7 +73,7 @@ public final class AppModel {
       // output match the swapped theme. Cells already in scrollback keep
       // their resolved RGB — that's standard terminal behavior.
       self.withModelLock {
-        for session in self.sessions.values {
+        self.sessionRegistry.forEachSession { session in
           AppModel.applyThemePalette(to: session)
         }
       }
@@ -109,31 +87,6 @@ public final class AppModel {
     closeAllSessionsUnlocked()
   }
 
-  /// Starts a reader thread for `session` and stores it in
-  /// `sessionRunners`. The reader fires `onSessionDirty(session.id)`
-  /// from a background thread whenever a poll returned bytes.
-  /// Caller must hold `modelLock` (every call site already does).
-  private func startRunner(for session: Session) {
-    let id = session.id
-    guard
-      let runner = session.makeRunner(onDirty: { [weak self] in
-        self?.onSessionDirty?(id)
-      })
-    else { return }
-    sessionRunners[id] = runner
-    runner.start()
-  }
-
-  /// Stops the reader thread for `sessionId` (joining it) and removes
-  /// it from `sessionRunners`. Must be called *before* the matching
-  /// `Session.close()` so the reader is guaranteed not to be touching
-  /// the C session when `laban_session_destroy` runs.
-  private func stopRunner(for sessionId: Session.ID) {
-    if let runner = sessionRunners.removeValue(forKey: sessionId) {
-      runner.stop()
-    }
-  }
-
   /// Stop every session reader before closing its C session handle.
   /// Callers that replace or tear down the whole model must use this instead
   /// of closing sessions directly; the C destructor requires exclusive access.
@@ -145,21 +98,9 @@ public final class AppModel {
 
   private func closeAllSessionsUnlocked() {
     let closedCwds = _tabs.compactMap { $0.titleMetadata.workspace.cwd }
-    for runner in sessionRunners.values {
-      runner.stop()
-    }
-    sessionRunners.removeAll()
-    for session in sessions.values {
-      session.close()
-    }
-    sessions.removeAll()
+    sessionRegistry.closeAll()
     _tabs.removeAll()
-    for cwd in closedCwds {
-      gitInfo.forget(cwd: cwd)
-    }
-    lastProcessMetadataSyncAtByTab.removeAll()
-    processIdentityByTab.removeAll()
-    terminalTitleOwnerByTab.removeAll()
+    metadataSync.reset(closedCwds: closedCwds)
   }
 
   public var activeTab: Tab? { withModelLock { _tabs.first(where: { $0.isActive }) } }
@@ -167,7 +108,7 @@ public final class AppModel {
   public func session(forTab tabId: Tab.ID) -> Session? {
     withModelLock {
       guard let tab = _tabs.first(where: { $0.id == tabId }) else { return nil }
-      return sessions[tab.sessionId]
+      return sessionRegistry.session(id: tab.sessionId)
     }
   }
 
@@ -187,36 +128,39 @@ public final class AppModel {
         isActive: false,
         sessionId: session.id
       )
-      sessions[session.id] = session
-      startRunner(for: session)
+      sessionRegistry.add(session)
       _tabs.append(tab)
       attachTabStatus(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
-      selectTab(tab.id)
+      selectTabUnlocked(tab.id)
       return _tabs.last!
     }
   }
 
   public func selectTab(_ tabId: Tab.ID) {
     withModelLock {
-      guard let selectedIdx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
-      for i in _tabs.indices {
-        let selected = i == selectedIdx
-        _tabs[i].isActive = selected
-        if selected {
-          _tabs[i].titleMetadata.unseenOutput = false
-        }
-        if _tabs[i].status == .running {
-          _tabs[i].titleMetadata.activityState =
-            selected
-            ? .active
-            : (_tabs[i].titleMetadata.unseenOutput ? .unseenOutput : .background)
-        }
-      }
-      let tab = _tabs[selectedIdx]
-      recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
+      selectTabUnlocked(tabId)
     }
+  }
+
+  private func selectTabUnlocked(_ tabId: Tab.ID) {
+    guard let selectedIdx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    for i in _tabs.indices {
+      let selected = i == selectedIdx
+      _tabs[i].isActive = selected
+      if selected {
+        _tabs[i].titleMetadata.unseenOutput = false
+      }
+      if _tabs[i].status == .running {
+        _tabs[i].titleMetadata.activityState =
+          selected
+          ? .active
+          : (_tabs[i].titleMetadata.unseenOutput ? .unseenOutput : .background)
+      }
+    }
+    let tab = _tabs[selectedIdx]
+    recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
   }
 
   public func closeTab(_ tabId: Tab.ID) throws {
@@ -225,16 +169,10 @@ public final class AppModel {
         throw AppError.tabNotFound
       }
       let tab = _tabs[idx]
-      let closedCwd = tab.titleMetadata.workspace.cwd
 
       if _tabs.count == 1 {
-        stopRunner(for: tab.sessionId)
-        sessions[tab.sessionId]?.close()
-        sessions.removeValue(forKey: tab.sessionId)
-        if let closedCwd { gitInfo.forget(cwd: closedCwd) }
-        lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
-        processIdentityByTab.removeValue(forKey: tab.id)
-        terminalTitleOwnerByTab.removeValue(forKey: tab.id)
+        sessionRegistry.close(sessionId: tab.sessionId)
+        metadataSync.forget(tab: tab)
         _tabs = []
         recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
         throw AppError.lastTabClosed
@@ -242,13 +180,8 @@ public final class AppModel {
 
       // Determine next active tab before removing
       let wasActive = tab.isActive
-      stopRunner(for: tab.sessionId)
-      sessions[tab.sessionId]?.close()
-      sessions.removeValue(forKey: tab.sessionId)
-      if let closedCwd { gitInfo.forget(cwd: closedCwd) }
-      lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
-      processIdentityByTab.removeValue(forKey: tab.id)
-      terminalTitleOwnerByTab.removeValue(forKey: tab.id)
+      sessionRegistry.close(sessionId: tab.sessionId)
+      metadataSync.forget(tab: tab)
       _tabs.remove(at: idx)
       recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
 
@@ -290,7 +223,9 @@ public final class AppModel {
         throw AppError.tabNotFound
       }
       guard let sanitized = TerminalTitle.sanitize(title) else {
-        try clearUserTitle(forTab: tabId)
+        _tabs[idx].titleMetadata.userTitle = nil
+        _tabs[idx].titleMetadata.titleFrozen = false
+        resolveTitle(at: idx)
         return
       }
       _tabs[idx].titleMetadata.userTitle = sanitized
@@ -358,13 +293,7 @@ public final class AppModel {
   @discardableResult
   public func syncTitle(forTab tabId: Tab.ID, from session: Session) -> Bool {
     withModelLock {
-      let (dirty, raw) = session.consumeTitle()
-      guard dirty else { return false }
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-      let before = _tabs[idx].titleMetadata
-      setTerminalTitle(TerminalTitle.sanitize(raw), forTab: tabId, at: idx)
-      resolveTitle(at: idx)
-      return _tabs[idx].titleMetadata != before
+      metadataSync.syncTitle(forTab: tabId, from: session, tabs: &_tabs)
     }
   }
 
@@ -375,16 +304,15 @@ public final class AppModel {
     now: Date = Date()
   ) -> Bool {
     withModelLock {
-      guard _tabs.contains(where: { $0.id == tabId }) else { return false }
-      if let last = lastProcessMetadataSyncAtByTab[tabId],
-        now.timeIntervalSince(last) < processMetadataSyncInterval
-      {
-        return false
-      }
-      lastProcessMetadataSyncAtByTab[tabId] = now
-
-      guard let metadata = session.processMetadata() else { return false }
-      return applyProcessMetadata(metadata, forTab: tabId, now: now)
+      metadataSync.syncProcessMetadata(
+        forTab: tabId,
+        from: session,
+        now: now,
+        tabs: &_tabs,
+        onBranchResolved: { [weak self] branch, tabId, cwd in
+          self?.applyResolvedBranch(branch, forTab: tabId, cwd: cwd)
+        }
+      )
     }
   }
 
@@ -395,52 +323,15 @@ public final class AppModel {
     now: Date = Date()
   ) -> Bool {
     withModelLock {
-      _ = now
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-      let before = _tabs[idx].titleMetadata
-      let newIdentity = ProcessIdentity(metadata)
-      let oldIdentity = processIdentityByTab[tabId]
-      let processChanged = oldIdentity != nil && oldIdentity != newIdentity
-
-      if processChanged {
-        _tabs[idx].titleMetadata.terminalTitle = nil
-        terminalTitleOwnerByTab.removeValue(forKey: tabId)
-      } else if let owner = terminalTitleOwnerByTab[tabId], owner != newIdentity {
-        _tabs[idx].titleMetadata.terminalTitle = nil
-        terminalTitleOwnerByTab.removeValue(forKey: tabId)
-      } else if terminalTitleOwnerByTab[tabId] == nil,
-        _tabs[idx].titleMetadata.terminalTitle != nil,
-        let newIdentity
-      {
-        terminalTitleOwnerByTab[tabId] = newIdentity
-      }
-
-      if let newIdentity {
-        processIdentityByTab[tabId] = newIdentity
-      } else {
-        processIdentityByTab.removeValue(forKey: tabId)
-      }
-
-      var workspace = _tabs[idx].titleMetadata.workspace
-      if let cwd = metadata.cwd {
-        workspace.cwd = cwd
-        // Kick off git branch resolution off-main; the completion writes
-        // the branch back into the tab if the cwd hasn't changed in the
-        // meantime. Cheap when cached + HEAD mtime stable.
-        gitInfo.refresh(cwd: cwd) { [weak self] resolvedCwd, branch in
-          self?.applyResolvedBranch(branch, forTab: tabId, cwd: resolvedCwd)
+      metadataSync.applyProcessMetadata(
+        metadata,
+        forTab: tabId,
+        now: now,
+        tabs: &_tabs,
+        onBranchResolved: { [weak self] branch, tabId, cwd in
+          self?.applyResolvedBranch(branch, forTab: tabId, cwd: cwd)
         }
-      }
-
-      var process = _tabs[idx].titleMetadata.process
-      process.foregroundProcess = metadata.foregroundProcess
-      process.foregroundCommand = metadata.foregroundCommand
-      process.pid = metadata.foregroundPid
-
-      _tabs[idx].titleMetadata.workspace = workspace
-      _tabs[idx].titleMetadata.process = process
-      resolveTitle(at: idx)
-      return _tabs[idx].titleMetadata != before
+      )
     }
   }
 
@@ -450,19 +341,7 @@ public final class AppModel {
   @discardableResult
   public func syncExitState(forTab tabId: Tab.ID, from session: Session) -> Bool {
     withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-      guard _tabs[idx].status == .running else { return false }
-      let s = session.exitState()
-      guard s != .running else { return false }
-      _tabs[idx].status = s
-      _tabs[idx].titleMetadata.activityState = .exited
-      switch s {
-      case .exited(let code), .exitedSignal(let code):
-        _tabs[idx].titleMetadata.exitStatus = code
-      case .running:
-        break
-      }
-      return true
+      metadataSync.syncExitState(forTab: tabId, from: session, tabs: &_tabs)
     }
   }
 
@@ -486,28 +365,16 @@ public final class AppModel {
   @discardableResult
   public func noteOutput(forTab tabId: Tab.ID, at date: Date = Date()) -> Bool {
     withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-      let before = _tabs[idx].titleMetadata
-      _tabs[idx].titleMetadata.lastOutputAt = date
-      _tabs[idx].titleMetadata.lastActivityAt = date
-      if _tabs[idx].status == .running {
-        if _tabs[idx].isActive {
-          _tabs[idx].titleMetadata.unseenOutput = false
-          _tabs[idx].titleMetadata.activityState = .active
-        } else {
-          _tabs[idx].titleMetadata.unseenOutput = true
-          _tabs[idx].titleMetadata.activityState = .unseenOutput
-        }
-      }
-      resolveTitle(at: idx)
-      return _tabs[idx].titleMetadata != before
+      metadataSync.noteOutput(forTab: tabId, at: date, tabs: &_tabs)
     }
   }
 
   /// The display title for the AppKit window: active tab title, or "Laban" as fallback.
   public var windowTitle: String {
     withModelLock {
-      guard let title = activeTab?.title, !title.isEmpty else { return "Laban" }
+      guard let title = _tabs.first(where: { $0.isActive })?.title, !title.isEmpty else {
+        return "Laban"
+      }
       return title
     }
   }
@@ -569,7 +436,7 @@ public final class AppModel {
       size.cell_width = Self.clampedTerminalMetric(safeCellWidth, minimum: 1)
       size.cell_height = Self.clampedTerminalMetric(safeCellHeight, minimum: 1)
       currentSize = size
-      for session in sessions.values {
+      sessionRegistry.forEachSession { session in
         if session.resize(size) == 0 {
           var event = CaptureTimelineEvent(kind: .sessionResized, sessionId: session.id)
           event.rows = Int(size.rows)
@@ -628,33 +495,23 @@ public final class AppModel {
     }
   }
 
-  /// Completion target for `gitInfo.refresh`. Writes the resolved branch into
+  /// Completion target for `TabMetadataSynchronizer` git refresh. Writes the resolved branch into
   /// the tab's workspace metadata only when the tab's cwd still matches the
   /// cwd that was queried — avoids a stale background result clobbering a
   /// fresh `cd` that happened mid-flight.
   private func applyResolvedBranch(_ branch: String?, forTab tabId: Tab.ID, cwd: String) {
     withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
-      guard _tabs[idx].titleMetadata.workspace.cwd == cwd else { return }
-      guard _tabs[idx].titleMetadata.workspace.branch != branch else { return }
-      _tabs[idx].titleMetadata.workspace.branch = branch
-      resolveTitle(at: idx)
+      _ = metadataSync.applyResolvedBranch(branch, forTab: tabId, cwd: cwd, tabs: &_tabs)
     }
   }
 
   private func resolveTitle(at idx: Int) {
-    _tabs[idx].titleMetadata = TabTitleResolver.resolvedMetadata(
-      _tabs[idx].titleMetadata,
-      fallbackPosition: _tabs[idx].position
-    )
+    TabMetadataSynchronizer.resolveTitle(in: &_tabs, at: idx)
   }
 
   public func allSessions() -> [(tab: Tab, session: Session)] {
     withModelLock {
-      _tabs.compactMap { tab in
-        guard let session = sessions[tab.sessionId] else { return nil }
-        return (tab, session)
-      }
+      sessionRegistry.tabSessions(for: _tabs)
     }
   }
 
@@ -681,12 +538,7 @@ public final class AppModel {
   }
 
   private func setTerminalTitle(_ title: String?, forTab tabId: Tab.ID, at idx: Int) {
-    _tabs[idx].titleMetadata.terminalTitle = title
-    if title != nil, let owner = processIdentityByTab[tabId] {
-      terminalTitleOwnerByTab[tabId] = owner
-    } else {
-      terminalTitleOwnerByTab.removeValue(forKey: tabId)
-    }
+    metadataSync.setTerminalTitle(title, forTab: tabId, at: idx, tabs: &_tabs)
   }
 }
 
