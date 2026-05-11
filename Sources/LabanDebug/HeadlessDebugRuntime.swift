@@ -16,7 +16,7 @@ struct DrawStats {
   var cursor: Bool = false
 }
 
-private struct RuntimeTiming {
+struct RuntimeTiming {
   var lastFrameMs: Double = 0
   var terminalPollMs: Double = 0
   var snapshotMs: Double = 0
@@ -352,7 +352,7 @@ public final class HeadlessDebugRuntime {
   public let runId: String
   private var mode: String
   private var sessionMode: HeadlessSessionMode
-  private let artifactsURL: URL
+  let artifactsURL: URL
   private let fixtureRootURL: URL
   private let deterministic: Bool
 
@@ -377,9 +377,9 @@ public final class HeadlessDebugRuntime {
   var lastPasteUsedBracketedPaste: Bool?
   var lastPasteIgnoredNonText: Bool?
   private var logs = DebugRuntimeLogStore()
-  private var timing = RuntimeTiming()
+  var timing = RuntimeTiming()
   private let startedAt = DispatchTime.now()
-  private var screenshotCount: Int = 0
+  var screenshotCount: Int = 0
   private var fixtureURL: URL?
   private var fixtureRunner: FixtureRunner?
   private var fixtureStepIndex: Int = 0
@@ -1352,97 +1352,6 @@ public final class HeadlessDebugRuntime {
     defer { lock.unlock() }
     return jsonEncode(
       logs.terminalLogResponse(query: query, defaultSessionId: model.activeTab?.sessionId))
-  }
-
-  public func artifactSnapshot() -> DebugResponse {
-    let frame: Int
-    let pngData: Data?
-    let pngWidth: Int
-    let pngHeight: Int
-    lock.lock()
-    frame = currentFrame
-    let start = monotonicNow()
-    pngData = surface.pngData
-    timing.screenshotMs = elapsedMs(since: start)
-    if pngData != nil {
-      screenshotCount += 1
-    }
-    pngWidth = surface.width
-    pngHeight = surface.height
-    lock.unlock()
-
-    let snapshotsRoot = artifactsURL.appendingPathComponent("snapshots", isDirectory: true)
-    let snapshotDir = snapshotsRoot.appendingPathComponent(
-      String(format: "snapshot-%06d", frame),
-      isDirectory: true
-    )
-
-    do {
-      try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
-    } catch {
-      lock.lock()
-      appendError(kind: "snapshot.artifact", message: "failed to create snapshot dir: \(error)")
-      lock.unlock()
-      return jsonError("failed to create snapshot dir: \(error)", status: 500)
-    }
-
-    var files: [String: Data] = [
-      "state.json": state().body,
-      "sessions.json": sessions().body,
-      "render.json": renderState().body,
-      "frame-commands.json": frameCommands(query: ["source": "all", "limit": "2000"]).body,
-      "render-trace.json": renderTrace(Data("{}".utf8)).body,
-      "events.json": events(since: 0).body,
-      "input-log.json": inputLogResponse(since: 0).body,
-      "terminal-log.json": terminalLogResponse(query: [:]).body,
-      "errors.json": errors(since: 0).body,
-      "timing.json": timingResponse().body,
-      "metrics.json": metricsResponse().body,
-    ]
-
-    if let pngData {
-      files["screenshot.png"] = pngData
-      files["screenshot.json"] =
-        jsonEncode(
-          ScreenshotResult(
-            path: snapshotDir.appendingPathComponent("screenshot.png").path,
-            width: pngWidth,
-            height: pngHeight,
-            frame: frame,
-            target: "window"
-          )
-        ).body
-    }
-
-    var manifestFiles: [ArtifactSnapshotFile] = []
-    do {
-      for (name, data) in files.sorted(by: { $0.key < $1.key }) {
-        let url = snapshotDir.appendingPathComponent(name)
-        try data.write(to: url)
-        manifestFiles.append(ArtifactSnapshotFile(name: name, path: url.path))
-      }
-      let manifestURL = snapshotDir.appendingPathComponent("manifest.json")
-      let manifest = ArtifactSnapshotManifest(
-        kind: "laban-debug-snapshot",
-        runId: runId,
-        frame: frame,
-        createdAt: Date(),
-        files: manifestFiles
-      )
-      let enc = JSONEncoder()
-      enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-      enc.dateEncodingStrategy = .iso8601
-      try enc.encode(manifest).write(to: manifestURL)
-      lock.lock()
-      appendEvent(EventEntry(kind: "snapshot.written", frame: frame, path: manifestURL.path))
-      lock.unlock()
-      return jsonEncode(SnapshotResultResponse(path: manifestURL.path, frame: frame))
-    } catch {
-      lock.lock()
-      appendError(kind: "snapshot.artifact", message: "failed to write snapshot: \(error)")
-      lock.unlock()
-      return jsonError("failed to write snapshot: \(error)", status: 500)
-    }
   }
 
   // MARK: - Fixture control

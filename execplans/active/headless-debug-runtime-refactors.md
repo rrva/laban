@@ -44,6 +44,8 @@ focused tests, making future endpoint and action changes less risky.
 - [x] Extract render trace and pixel-probe diagnostics into focused builders
   with direct tests.
 - [x] Move remaining render endpoint adapters out of `HeadlessDebugRuntime`.
+- [x] Extract one-shot diagnostic snapshot writing into an artifact endpoint
+  extension and focused writer.
 
 ## Decision Log
 
@@ -124,6 +126,16 @@ focused tests, making future endpoint and action changes less risky.
   preserving the runtime as the synchronization owner.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move one-shot diagnostic snapshot file and manifest writes into
+  `DebugArtifactSnapshotWriter`, with the endpoint adapter in
+  `DebugArtifactEndpoints`.
+  Rationale: Snapshot writing has its own filesystem policy: deterministic
+  directory names, sorted file writes, manifest encoding, and error
+  classification. Keeping that policy out of the runtime makes artifact
+  behavior directly testable while the runtime still supplies live endpoint
+  payloads.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -193,6 +205,9 @@ Acceptance for the first milestone:
 - Render trace and pixel-probe payload construction are covered by focused
   builder/sampler tests for sources, ranges, truncation, probes, and region
   averaging.
+- One-shot diagnostic snapshot writes are covered by focused writer tests for
+  directory naming, file creation, and sorted manifest entries plus the existing
+  runtime artifact snapshot test.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
