@@ -56,6 +56,8 @@ focused tests, making future endpoint and action changes less risky.
   `HeadlessDebugRuntime`.
 - [x] Move state/session endpoint adapters and grid projection helpers out of
   `HeadlessDebugRuntime`.
+- [x] Move screenshot byte and artifact endpoint adapters out of
+  `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -186,6 +188,14 @@ focused tests, making future endpoint and action changes less risky.
   state endpoints.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move screenshot readback and artifact endpoint adapters into
+  `DebugScreenshotEndpoints`.
+  Rationale: Screenshot endpoints own PNG readback timing, screenshot counters,
+  artifact directory writes, screenshot events, and capture sidecar recording.
+  Keeping this file separate makes the remaining runtime body less endpoint
+  oriented while preserving the same lock-held surface access.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -273,6 +283,9 @@ Acceptance for the first milestone:
   exploratory-control tests for state shape, session detail, viewport state,
   title metadata, injected workspace metadata, grid detail, and atlas-adjacent
   session diagnostics.
+- Screenshot endpoint behavior remains covered by smoke and exploratory-control
+  tests for non-empty PNG bytes, screenshot timing, and diagnostic artifact
+  bundles.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
