@@ -50,6 +50,8 @@ focused tests, making future endpoint and action changes less risky.
   finalization out of `HeadlessDebugRuntime`.
 - [x] Move fixture load/restart/step endpoint adapters and fixture reset helpers
   out of `HeadlessDebugRuntime`.
+- [x] Move telemetry/log and selection/clipboard endpoint adapters out of
+  `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -155,6 +157,14 @@ focused tests, making future endpoint and action changes less risky.
   the crash-sensitive teardown/rebuild flow easier to audit.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move telemetry/log endpoints into `DebugTelemetryEndpoints` and
+  selection/clipboard endpoints into `DebugSelectionEndpoints`.
+  Rationale: These endpoint families project already-owned runtime state but do
+  not own lifecycle decisions. Keeping their adapters outside the main runtime
+  makes the remaining file focus more tightly on synchronization, session
+  state, rendering, and request routing.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -232,6 +242,9 @@ Acceptance for the first milestone:
   rejected names, and interrupted shutdown.
 - Fixture endpoint behavior remains covered by resolver tests plus runtime
   fixture load/step/restart, unsafe path, and repeated-restart teardown tests.
+- Telemetry/log and selection/clipboard endpoints remain covered by existing
+  timing, metrics, input-log, terminal-log, error-log, event, selection, and
+  clipboard debug tests.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.

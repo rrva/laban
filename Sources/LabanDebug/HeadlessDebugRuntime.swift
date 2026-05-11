@@ -378,7 +378,7 @@ public final class HeadlessDebugRuntime {
   var lastPasteIgnoredNonText: Bool?
   var logs = DebugRuntimeLogStore()
   var timing = RuntimeTiming()
-  private let startedAt = DispatchTime.now()
+  let startedAt = DispatchTime.now()
   var screenshotCount: Int = 0
   var fixtureURL: URL?
   var fixtureRunner: FixtureRunner?
@@ -625,7 +625,7 @@ public final class HeadlessDebugRuntime {
     DispatchTime.now()
   }
 
-  private func elapsedMs(since start: DispatchTime) -> Double {
+  func elapsedMs(since start: DispatchTime) -> Double {
     Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
   }
 
@@ -1107,143 +1107,4 @@ public final class HeadlessDebugRuntime {
     return model.activeTab
   }
 
-  public func timingResponse() -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    return jsonEncode(
-      TimingResponse(
-        frame: currentFrame,
-        lastFrameMs: timing.lastFrameMs,
-        terminalPollMs: timing.terminalPollMs,
-        snapshotMs: timing.snapshotMs,
-        commandExtractionMs: timing.commandExtractionMs,
-        renderMs: timing.renderMs,
-        screenshotMs: timing.screenshotMs
-      ))
-  }
-
-  public func metricsResponse() -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    return jsonEncode(
-      MetricsResponse(
-        runId: runId,
-        mode: mode,
-        frame: currentFrame,
-        uptimeMs: elapsedMs(since: startedAt),
-        counters: MetricsCountersResponse(
-          framesRendered: currentFrame,
-          events: logs.eventSeq,
-          inputEvents: logs.inputLogSeq,
-          terminalLogEvents: logs.terminalLogSeq,
-          errors: logs.errorSeq,
-          screenshots: screenshotCount,
-          tabs: model.tabs.count,
-          sessions: model.tabs.count
-        ),
-        terminalBytes: TerminalByteMetricsResponse(
-          input: logs.terminalBytes.input,
-          output: logs.terminalBytes.output,
-          terminalResponse: logs.terminalBytes.terminalResponse
-        ),
-        lastFrame: LastFrameMetricsResponse(
-          commands: lastFrameCommands.count,
-          cells: lastDrawStats.cells,
-          glyphs: lastDrawStats.glyphs,
-          backgroundRects: lastDrawStats.backgroundRects,
-          images: lastDrawStats.images,
-          cursor: lastDrawStats.cursor,
-          lastFrameMs: timing.lastFrameMs,
-          terminalPollMs: timing.terminalPollMs,
-          snapshotMs: timing.snapshotMs,
-          commandExtractionMs: timing.commandExtractionMs,
-          renderMs: timing.renderMs
-        )
-      ))
-  }
-
-  public func errors(since: Int) -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    return jsonEncode(logs.errorsResponse(since: since))
-  }
-
-  public func terminalLogResponse(query: [String: String]) -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    return jsonEncode(
-      logs.terminalLogResponse(query: query, defaultSessionId: model.activeTab?.sessionId))
-  }
-
-  // MARK: - Events endpoint
-
-  // MARK: - Selection and clipboard endpoints
-
-  public func selection() -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-
-    guard let tab = model.activeTab, let session = model.session(forTab: tab.id) else {
-      return jsonEncode(
-        SelectionResponse(
-          active: false, sessionId: nil, anchor: nil, focus: nil, rects: [], text: ""))
-    }
-
-    guard let sel = selectionBySession[session.id] else {
-      return jsonEncode(
-        SelectionResponse(
-          active: false, sessionId: tab.sessionId, anchor: nil, focus: nil, rects: [], text: ""))
-    }
-
-    var rects: [RectResponse] = []
-    var text = ""
-
-    if let snap = session.snapshot() {
-      defer { laban_snapshot_destroy(snap) }
-      let rows = Int(snap.pointee.rows)
-      let cols = Int(snap.pointee.cols)
-      for r in sel.cgRects(
-        rows: rows, cols: cols,
-        cellWidth: CGFloat(cellWidth), cellHeight: CGFloat(cellHeight),
-        originX: CGFloat(sidebarWidth), originY: 0
-      ) {
-        rects.append(DebugFrameCommandSerializer.rectResponse(r))
-      }
-      text = sel.selectedText(from: snap.pointee)
-    }
-
-    return jsonEncode(
-      SelectionResponse(
-        active: true,
-        sessionId: tab.sessionId,
-        anchor: CellCoordResponse(row: sel.anchor.row, col: sel.anchor.col),
-        focus: CellCoordResponse(row: sel.focus.row, col: sel.focus.col),
-        rects: rects,
-        text: text
-      ))
-  }
-
-  public func clipboard() -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    return jsonEncode(
-      ClipboardResponse(
-        lastCopyText: lastCopyText,
-        lastPasteText: lastPasteText,
-        lastPasteUsedBracketedPaste: lastPasteUsedBracketedPaste,
-        lastPasteIgnoredNonText: lastPasteIgnoredNonText
-      ))
-  }
-
-  public func inputLogResponse(since: Int) -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    return jsonEncode(logs.inputLogResponse(since: since))
-  }
-
-  public func events(since: Int) -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    return jsonEncode(logs.eventsResponse(since: since))
-  }
 }
