@@ -350,10 +350,10 @@ public final class HeadlessDebugRuntime {
   private let lock = NSLock()
 
   public let runId: String
-  private var mode: String
-  private var sessionMode: HeadlessSessionMode
+  var mode: String
+  var sessionMode: HeadlessSessionMode
   let artifactsURL: URL
-  private let fixtureRootURL: URL
+  let fixtureRootURL: URL
   private let deterministic: Bool
 
   var model: AppModel
@@ -380,9 +380,9 @@ public final class HeadlessDebugRuntime {
   var timing = RuntimeTiming()
   private let startedAt = DispatchTime.now()
   var screenshotCount: Int = 0
-  private var fixtureURL: URL?
-  private var fixtureRunner: FixtureRunner?
-  private var fixtureStepIndex: Int = 0
+  var fixtureURL: URL?
+  var fixtureRunner: FixtureRunner?
+  var fixtureStepIndex: Int = 0
   var captureRecorder: CaptureRecorder?
   var lastCaptureManifestPath: String?
   var lastCaptureRunId: String?
@@ -1173,199 +1173,6 @@ public final class HeadlessDebugRuntime {
     defer { lock.unlock() }
     return jsonEncode(
       logs.terminalLogResponse(query: query, defaultSessionId: model.activeTab?.sessionId))
-  }
-
-  // MARK: - Fixture control
-
-  public func fixtureControl(_ data: Data) -> DebugResponse {
-    guard let req = try? JSONDecoder().decode(FixtureControlRequest.self, from: data) else {
-      lock.lock()
-      appendError(kind: "fixture.invalid", message: "invalid fixture control request")
-      lock.unlock()
-      return jsonError("invalid fixture control request")
-    }
-
-    lock.lock()
-    defer { lock.unlock() }
-
-    switch req.action {
-    case "load":
-      guard let rawPath = req.path else {
-        appendError(kind: "fixture.load", message: "fixture load requires path")
-        return fixtureResult(ok: false, action: req.action, error: "fixture load requires path")
-      }
-      let url: URL
-      do {
-        url = try resolveFixtureURL(rawPath)
-      } catch {
-        appendError(kind: "fixture.load", message: "rejected fixture path: \(error)")
-        return fixtureResult(
-          ok: false,
-          action: req.action,
-          error: "rejected fixture path: \(error)"
-        )
-      }
-      do {
-        let runner = try FixtureRunner.load(from: url)
-        try resetFixtureModelUnlocked(runner: runner)
-        fixtureURL = url
-        fixtureRunner = runner
-        fixtureStepIndex = 0
-        mode = "fixture"
-        renderFrameUnlocked()
-        appendEvent(EventEntry(kind: "fixture.loaded", path: url.path))
-        return fixtureResult(ok: true, action: req.action)
-      } catch {
-        appendError(kind: "fixture.load", message: "failed to load fixture: \(error)")
-        return fixtureResult(
-          ok: false,
-          action: req.action,
-          error: "failed to load fixture: \(error)"
-        )
-      }
-
-    case "restart":
-      guard let runner = fixtureRunner else {
-        appendError(kind: "fixture.restart", message: "no fixture is loaded")
-        return fixtureResult(ok: false, action: req.action, error: "no fixture is loaded")
-      }
-      do {
-        try resetFixtureModelUnlocked(runner: runner)
-        fixtureStepIndex = 0
-        mode = "fixture"
-        renderFrameUnlocked()
-        appendEvent(EventEntry(kind: "fixture.restarted", path: fixtureURL?.path))
-        return fixtureResult(ok: true, action: req.action)
-      } catch {
-        appendError(kind: "fixture.restart", message: "failed to restart fixture: \(error)")
-        return fixtureResult(
-          ok: false, action: req.action, error: "failed to restart fixture: \(error)")
-      }
-
-    case "step":
-      guard fixtureRunner != nil else {
-        appendError(kind: "fixture.step", message: "no fixture is loaded")
-        return fixtureResult(ok: false, action: req.action, error: "no fixture is loaded")
-      }
-      let count = max(req.count ?? 1, 1)
-      do {
-        try applyFixtureStepsUnlocked(count: count)
-        appendEvent(EventEntry(kind: "fixture.stepped", action: "step"))
-        return fixtureResult(ok: true, action: req.action)
-      } catch {
-        appendError(kind: "fixture.step", message: "failed to step fixture: \(error)")
-        return fixtureResult(
-          ok: false,
-          action: req.action,
-          error: "failed to step fixture: \(error)"
-        )
-      }
-
-    default:
-      appendError(kind: "fixture.unsupported", message: "unsupported fixture action \(req.action)")
-      return fixtureResult(
-        ok: false, action: req.action, error: "unsupported fixture action \(req.action)")
-    }
-  }
-
-  private func resolveFixtureURL(_ path: String) throws -> URL {
-    try DebugFixtureResolver.resolve(path, root: fixtureRootURL)
-  }
-
-  private func resetFixtureModelUnlocked(runner: FixtureRunner) throws {
-    model.closeAllSessions()
-    sessionMode = .fixture
-
-    var size = LabanTerminalSize()
-    size.rows = Int32(runner.fixture.initialSize.rows)
-    size.cols = Int32(runner.fixture.initialSize.cols)
-
-    model = try AppModel(
-      initialSize: size,
-      sessionFactory: { [weak self] size in
-        let session = try Session.fixture(size: size)
-        session.captureSink = self?.captureRecorder
-        return session
-      })
-    model.captureSink = captureRecorder
-    surfaceController = TerminalSurfaceController(
-      model: model,
-      cellWidth: cellWidth,
-      cellHeight: cellHeight,
-      sidebarWidth: CGFloat(sidebarWidth),
-      sidebarCellWidth: CGFloat(cellWidth),
-      sidebarCellHeight: CGFloat(cellHeight),
-      captureSink: captureRecorder)
-    selectionBySession.removeAll()
-    debugClipboard = ""
-    lastCopyText = nil
-    lastPasteText = nil
-    lastPasteUsedBracketedPaste = nil
-    lastPasteIgnoredNonText = nil
-
-    windowWidth = sidebarWidth + runner.fixture.initialSize.cols * cellWidth
-    windowHeight = runner.fixture.initialSize.rows * cellHeight
-    surface = BitmapSurface(width: max(windowWidth, 1), height: max(windowHeight, 1))
-    renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
-  }
-
-  private func applyFixtureStepsUnlocked(count: Int) throws {
-    guard let runner = fixtureRunner, let tab = model.activeTab,
-      let session = model.session(forTab: tab.id)
-    else { return }
-
-    let steps = runner.fixture.steps
-    guard fixtureStepIndex < steps.count else {
-      renderFrameUnlocked()
-      return
-    }
-
-    let end = min(fixtureStepIndex + count, steps.count)
-    while fixtureStepIndex < end {
-      let step = steps[fixtureStepIndex]
-      fixtureStepIndex += 1
-      switch step {
-      case .setTitle(let title):
-        let bytes = Array("\u{1B}]0;\(title)\u{07}".utf8)
-        _ = session.write(bytes)
-        _ = session.poll()
-        appendTerminalLog(sessionId: session.id, direction: "output", bytes: bytes)
-        renderFrameUnlocked()
-
-      case .writeBytes(let encoding, let data):
-        guard encoding == "utf8" else { throw FixtureError.unsupportedEncoding(encoding) }
-        let bytes = Array(data.utf8)
-        _ = session.write(bytes)
-        _ = session.poll()
-        appendTerminalLog(sessionId: session.id, direction: "output", bytes: bytes)
-        renderFrameUnlocked()
-
-      case .waitFrames(let frameCount):
-        for _ in 0..<frameCount {
-          _ = session.poll()
-          renderFrameUnlocked()
-        }
-      }
-    }
-  }
-
-  private func fixtureResult(ok: Bool, action: String, error: String? = nil) -> DebugResponse {
-    let active = model.activeTab
-    return jsonEncode(
-      FixtureControlResponse(
-        ok: ok,
-        action: action,
-        frame: currentFrame,
-        fixtureName: fixtureRunner?.fixture.name,
-        fixturePath: fixtureURL?.path,
-        stepIndex: fixtureStepIndex,
-        stepCount: fixtureRunner?.fixture.steps.count ?? 0,
-        activeTabId: active?.id,
-        activeSessionId: active?.sessionId,
-        error: error
-      ),
-      status: ok ? 200 : 400
-    )
   }
 
   // MARK: - Events endpoint

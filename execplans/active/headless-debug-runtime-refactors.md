@@ -48,6 +48,8 @@ focused tests, making future endpoint and action changes less risky.
   extension and focused writer.
 - [x] Move capture status/start/stop/snapshot endpoint adapters and capture
   finalization out of `HeadlessDebugRuntime`.
+- [x] Move fixture load/restart/step endpoint adapters and fixture reset helpers
+  out of `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -146,6 +148,13 @@ focused tests, making future endpoint and action changes less risky.
   hooks or AppModel capture sinks.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move fixture control and reset helpers into
+  `DebugFixtureEndpoints`.
+  Rationale: Fixture load, restart, step, and reset all share the same fixture
+  runner state and model-replacement path. Keeping those methods together makes
+  the crash-sensitive teardown/rebuild flow easier to audit.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -221,6 +230,8 @@ Acceptance for the first milestone:
 - Capture endpoint lifecycle behavior remains covered by the existing capture
   tests for disabled status, start conflicts, snapshot bundles, stop manifests,
   rejected names, and interrupted shutdown.
+- Fixture endpoint behavior remains covered by resolver tests plus runtime
+  fixture load/step/restart, unsafe path, and repeated-restart teardown tests.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
