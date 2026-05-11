@@ -37,6 +37,8 @@ focused tests, making future endpoint and action changes less risky.
 - [x] Extract event/input/terminal/error log storage and projections.
 - [x] Add focused log-store tests for sequence assignment, filtering, terminal
   byte counters, and error projection.
+- [x] Investigate intermittent XCTest `SIGTRAP` during fixture reload and fix
+  session teardown to stop AppModel reader threads before closing C sessions.
 - [ ] Extract render diagnostics and frame-command serialization.
 
 ## Decision Log
@@ -81,6 +83,17 @@ focused tests, making future endpoint and action changes less risky.
   command objects make tab, window, input, clipboard, selection, viewport, and
   mouse behavior independently readable without adding another lifecycle owner
   or changing the debug HTTP contract.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Route whole-runtime fixture reset and shutdown through
+  `AppModel.closeAllSessions()` instead of closing `Session` instances
+  directly.
+  Rationale: Crash reports for the intermittent XCTest signal 5 showed malloc
+  trapping while `ghostty_terminal_new` allocated a replacement fixture
+  session. The reset path was calling `Session.close()` directly, bypassing the
+  `SessionRunner.stop()` join that must happen before `laban_session_destroy`.
+  Stopping every runner before closing C handles removes that use-after-free
+  window.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation
@@ -145,6 +158,8 @@ Acceptance for the first milestone:
   existing flat JSON wire shape and preserves unsupported-action routing.
 - Domain command objects are covered by the existing `/debug/actions` smoke,
   keyboard, title, capture, selection, clipboard, and mouse tests.
+- Fixture reload teardown is covered by a repeated restart regression test and
+  allocator-scribble stress runs of the same path.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.

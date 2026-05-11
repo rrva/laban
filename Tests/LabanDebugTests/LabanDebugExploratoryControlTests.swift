@@ -242,6 +242,34 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
     XCTAssertEqual(restart["stepIndex"] as? Int, 0)
   }
 
+  func testFixtureControlRepeatedRestartDoesNotRaceSessionTeardown() throws {
+    let artifacts = tempArtifacts("fixture-restart-stress")
+    let fixtureRoot = artifacts.appendingPathComponent("fixtures", isDirectory: true)
+    let (runtime, _) = try makeRuntime(
+      "fixture-restart-stress", artifactsURL: artifacts, fixtureRootURL: fixtureRoot)
+    defer {
+      runtime.shutdown(interrupted: true)
+      try? FileManager.default.removeItem(at: artifacts)
+    }
+
+    let fixtureURL = fixtureRoot.appendingPathComponent("fixture-restart-stress.fixture.json")
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    try fixtureJSON(name: "fixture-restart-stress", text: "fixture hello").write(to: fixtureURL)
+
+    let loadBody = try JSONSerialization.data(withJSONObject: [
+      "action": "load",
+      "path": "fixture-restart-stress.fixture.json",
+    ])
+    let load = try json(runtime.fixtureControl(loadBody))
+    XCTAssertEqual(load["ok"] as? Bool, true)
+
+    for _ in 0..<25 {
+      let restart = try json(runtime.fixtureControl(#"{"action":"restart"}"#.data(using: .utf8)!))
+      XCTAssertEqual(restart["ok"] as? Bool, true)
+      XCTAssertEqual(restart["stepIndex"] as? Int, 0)
+    }
+  }
+
   func testFixtureControlRejectsAbsoluteTraversalAndSymlinkPaths() throws {
     let artifacts = tempArtifacts("fixture-paths")
     let fixtureRoot = artifacts.appendingPathComponent("fixtures", isDirectory: true)

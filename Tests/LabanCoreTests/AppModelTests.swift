@@ -122,6 +122,23 @@ final class AppModelTests: XCTestCase {
     XCTAssertTrue(originalSessionRef.isClosed, "original session must be destroyed")
   }
 
+  func testCloseAllSessionsClosesEverySessionAndClearsTabs() throws {
+    let model = try makeModel()
+    try model.createTab()
+    let sessions = model.tabs.compactMap { model.session(forTab: $0.id) }
+
+    model.closeAllSessions()
+
+    XCTAssertTrue(model.tabs.isEmpty)
+    XCTAssertEqual(sessions.count, 2)
+    for session in sessions {
+      XCTAssertTrue(session.isClosed)
+      XCTAssertEqual(session.poll(), -1)
+    }
+
+    model.closeAllSessions()
+  }
+
   func testMaxNineEnforcement() throws {
     let model = try makeModel()
     for _ in 2...AppModel.maxTabs {

@@ -1021,9 +1021,7 @@ public final class HeadlessDebugRuntime {
     lock.lock()
     defer { lock.unlock() }
     _ = try? finishCaptureUnlocked(interrupted: interrupted)
-    for tab in model.tabs {
-      model.session(forTab: tab.id)?.close()
-    }
+    model.closeAllSessions()
   }
 
   private func finishCaptureUnlocked(
@@ -1976,9 +1974,7 @@ public final class HeadlessDebugRuntime {
   }
 
   private func resetFixtureModelUnlocked(runner: FixtureRunner) throws {
-    for tab in model.tabs {
-      model.session(forTab: tab.id)?.close()
-    }
+    model.closeAllSessions()
     sessionMode = .fixture
 
     var size = LabanTerminalSize()

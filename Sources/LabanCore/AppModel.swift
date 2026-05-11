@@ -106,11 +106,7 @@ public final class AppModel {
     if let themeChangeObserver {
       NotificationCenter.default.removeObserver(themeChangeObserver)
     }
-    // Stop every reader thread before the dictionary holding the sessions is
-    // destroyed; otherwise a reader could be mid-poll against a freed C session.
-    for (_, runner) in sessionRunners { runner.stop() }
-    sessionRunners.removeAll()
-    for (_, session) in sessions { session.close() }
+    closeAllSessionsUnlocked()
   }
 
   /// Starts a reader thread for `session` and stores it in
@@ -136,6 +132,34 @@ public final class AppModel {
     if let runner = sessionRunners.removeValue(forKey: sessionId) {
       runner.stop()
     }
+  }
+
+  /// Stop every session reader before closing its C session handle.
+  /// Callers that replace or tear down the whole model must use this instead
+  /// of closing sessions directly; the C destructor requires exclusive access.
+  public func closeAllSessions() {
+    withModelLock {
+      closeAllSessionsUnlocked()
+    }
+  }
+
+  private func closeAllSessionsUnlocked() {
+    let closedCwds = _tabs.compactMap { $0.titleMetadata.workspace.cwd }
+    for runner in sessionRunners.values {
+      runner.stop()
+    }
+    sessionRunners.removeAll()
+    for session in sessions.values {
+      session.close()
+    }
+    sessions.removeAll()
+    _tabs.removeAll()
+    for cwd in closedCwds {
+      gitInfo.forget(cwd: cwd)
+    }
+    lastProcessMetadataSyncAtByTab.removeAll()
+    processIdentityByTab.removeAll()
+    terminalTitleOwnerByTab.removeAll()
   }
 
   public var activeTab: Tab? { withModelLock { _tabs.first(where: { $0.isActive }) } }
