@@ -46,6 +46,8 @@ focused tests, making future endpoint and action changes less risky.
 - [x] Move remaining render endpoint adapters out of `HeadlessDebugRuntime`.
 - [x] Extract one-shot diagnostic snapshot writing into an artifact endpoint
   extension and focused writer.
+- [x] Move capture status/start/stop/snapshot endpoint adapters and capture
+  finalization out of `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -136,6 +138,14 @@ focused tests, making future endpoint and action changes less risky.
   payloads.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move capture lifecycle endpoint adapters into
+  `DebugCaptureEndpoints`.
+  Rationale: Starting, stopping, snapshotting, and interrupted shutdown all
+  operate on the same recorder state and capture sinks. Grouping those methods
+  keeps recorder lifecycle policy readable without changing ownership of render
+  hooks or AppModel capture sinks.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -208,6 +218,9 @@ Acceptance for the first milestone:
 - One-shot diagnostic snapshot writes are covered by focused writer tests for
   directory naming, file creation, and sorted manifest entries plus the existing
   runtime artifact snapshot test.
+- Capture endpoint lifecycle behavior remains covered by the existing capture
+  tests for disabled status, start conflicts, snapshot bundles, stop manifests,
+  rejected names, and interrupted shutdown.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
