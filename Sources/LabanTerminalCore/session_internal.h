@@ -1,0 +1,169 @@
+#ifndef LABAN_SESSION_INTERNAL_H
+#define LABAN_SESSION_INTERNAL_H
+
+#include "LabanTerminalCore.h"
+#include <ghostty/vt/terminal.h>
+#include <ghostty/vt/render.h>
+#include <ghostty/vt/style.h>
+#include <ghostty/vt/mouse.h>
+#include <ghostty/vt/paste.h>
+#include <ghostty/vt/modes.h>
+#include <ghostty/vt/device.h>
+#include <ghostty/vt/focus.h>
+#include <ghostty/vt/grid_ref.h>
+#include <ghostty/vt/screen.h>
+#include <ghostty/vt/point.h>
+#include <ghostty/vt/size_report.h>
+#include <ghostty/vt/key/encoder.h>
+#include <ghostty/vt/key/event.h>
+#include <stdbool.h>
+#include <util.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#include <termios.h>
+#include <sys/time.h>
+#include <sys/wait.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <libproc.h>
+#include <limits.h>
+#include <signal.h>
+#include <sys/proc_info.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <pwd.h>
+#include <pthread.h>
+#include <time.h>
+
+#define LABAN_TITLE_MAX_BYTES 1024
+
+/* Every public laban_session_* entry point holds this lock for the body
+ * of the call. Recursive so a future capture/tab-status callback that
+ * re-enters a session method does not deadlock; the AppModel layer in
+ * Swift already chose NSRecursiveLock for the same reason. The
+ * destructor (laban_session_destroy) deliberately does NOT lock — it is
+ * the caller's contract to have stopped all other access first.
+ *
+ * SESSION_LOCK(s) acquires the lock and registers an automatic release
+ * on scope exit via __attribute__((cleanup)), so every return path —
+ * including the many existing early returns scattered through this
+ * target — unlocks correctly without needing UNLOCK at each return. */
+#define SESSION_LOCK(s)                                                 \
+    pthread_mutex_lock(&(s)->lock);                                     \
+    LabanSession *_session_lock_guard                                   \
+        __attribute__((cleanup(laban_session_unlock_cleanup_))) = (s);  \
+    (void)_session_lock_guard
+
+/* OSC 21337 scanner state. Sniffs `ESC ] 21337 ; key=value;... ST/BEL`
+ * out of the PTY byte stream in parallel with libghostty's own parser
+ * (libghostty has no generic "unknown OSC" callback and silently drops
+ * everything outside its known set). The scanner observes only — every
+ * byte still flows unchanged to libghostty. iTerm2-compatible. */
+typedef enum {
+    TS_NORMAL = 0,
+    TS_AFTER_ESC,
+    TS_OSC_NUM,
+    TS_BODY_21337,
+    TS_BODY_21337_AFTER_ESC,
+    TS_BODY_OTHER,
+    TS_BODY_OTHER_AFTER_ESC,
+} TabStatusState;
+
+#define TAB_STATUS_NUM_MAX 8       /* "21337" + room */
+#define TAB_STATUS_PAYLOAD_MAX 1024 /* observed payloads < 100 bytes */
+
+typedef struct {
+    TabStatusState state;
+    char num[TAB_STATUS_NUM_MAX];
+    size_t num_len;
+    char payload[TAB_STATUS_PAYLOAD_MAX];
+    size_t payload_len;
+    int payload_overflow;
+} LabanTabStatusScanner;
+
+struct LabanSession {
+    /* Serializes access to every field below. Recursive (PTHREAD_MUTEX_RECURSIVE). */
+    pthread_mutex_t lock;
+
+    GhosttyTerminal terminal;
+    GhosttyRenderState render_state;
+    GhosttyRenderStateRowIterator row_iter;   /* pre-allocated; reused each snapshot */
+    GhosttyRenderStateRowCells row_cells;     /* pre-allocated; reused each snapshot */
+    int pty_fd;          /* master side; -1 in fixture mode */
+    pid_t child_pid;     /* -1 in fixture mode */
+    char launch_cwd[PATH_MAX];
+    int status;          /* 0=running, 1=exited normally, 2=signaled */
+    int exit_status;
+    int fixture_mode;
+    GhosttyMouseEncoder mouse_encoder;
+    int mouse_button_pressed;  /* boolean: is any mouse button currently down */
+    LabanMouseButton mouse_pressed_button;
+    GhosttyKeyEncoder key_encoder;
+    GhosttyKeyEvent key_event;
+
+    int title_dirty;     /* set to 1 by title-changed callback; cleared by consume */
+
+    int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
+    LabanCaptureBytesCallback capture_callback;
+    void *capture_userdata;
+
+    LabanTabStatusScanner tab_status_scanner;
+    LabanTabStatusCallback tab_status_callback;
+    void *tab_status_userdata;
+
+    /* Cached geometry for the SIZE effect (XTWINOPS replies). */
+    uint16_t cols;
+    uint16_t rows;
+    uint32_t cell_width;
+    uint32_t cell_height;
+    int color_scheme;
+
+    /* Capture of bytes the terminal wants written back to the pty
+       (capability replies: DA1/DA2/DA3, XTWINOPS, DSR, XTVERSION, ...).
+       In pty mode these are also forwarded to pty_fd; in fixture mode
+       this is the only place they live. Drained via
+       laban_session_drain_response. */
+    uint8_t *response_buf;
+    size_t   response_len;
+    size_t   response_cap;
+};
+
+static inline void laban_session_unlock_cleanup_(LabanSession **sp) {
+    if (sp && *sp) pthread_mutex_unlock(&(*sp)->lock);
+}
+
+void laban_emit_capture_bytes(
+    LabanSession *s,
+    LabanCaptureBytesDirection direction,
+    const uint8_t *bytes,
+    size_t len
+);
+void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len);
+void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len);
+int laban_write_pty_bytes(
+    LabanSession *s,
+    const uint8_t *bytes,
+    size_t len,
+    LabanCaptureBytesDirection direction
+);
+int laban_write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len);
+pid_t laban_waitpid_retry(pid_t pid, int *status, int options);
+void laban_signal_child_process_group(pid_t child_pid, int sig);
+int laban_session_mode_active(LabanSession *s, GhosttyMode mode, int *out_active);
+int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t len);
+
+void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata);
+void laban_effect_write_pty(GhosttyTerminal terminal, void *userdata,
+                            const uint8_t *data, size_t len);
+bool laban_effect_size(GhosttyTerminal terminal, void *userdata,
+                       GhosttySizeReportSize *out_size);
+bool laban_effect_device_attributes(GhosttyTerminal terminal, void *userdata,
+                                    GhosttyDeviceAttributes *out_attrs);
+GhosttyString laban_effect_xtversion(GhosttyTerminal terminal, void *userdata);
+GhosttyString laban_effect_enquiry(GhosttyTerminal terminal, void *userdata);
+bool laban_effect_color_scheme(GhosttyTerminal terminal, void *userdata,
+                               GhosttyColorScheme *out_scheme);
+
+#endif /* LABAN_SESSION_INTERNAL_H */

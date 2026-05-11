@@ -1,0 +1,66 @@
+#include "session_internal.h"
+
+void laban_emit_capture_bytes(
+    LabanSession *s,
+    LabanCaptureBytesDirection direction,
+    const uint8_t *bytes,
+    size_t len
+) {
+    if (!s || !s->capture_callback || !bytes || len == 0) return;
+    s->capture_callback(s->capture_userdata, s, direction, bytes, len);
+}
+
+void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
+    laban_emit_capture_bytes(s, LABAN_CAPTURE_BYTES_PTY_OUTPUT, bytes, len);
+    if (s->capture_fd >= 0 && len > 0) {
+        const uint8_t *p = bytes;
+        size_t remaining = len;
+        while (remaining > 0) {
+            ssize_t w = write(s->capture_fd, p, remaining);
+            if (w > 0) { p += w; remaining -= (size_t)w; continue; }
+            if (w < 0 && errno == EINTR) continue;
+            break; /* drop on EAGAIN/permanent error rather than block */
+        }
+    }
+    laban_scan_tab_status(s, bytes, len);
+    ghostty_terminal_vt_write(s->terminal, bytes, len);
+}
+
+int laban_session_capture_start(LabanSession *s, const char *path) {
+    if (!s || !path) return -1;
+    SESSION_LOCK(s);
+    if (s->capture_fd >= 0) return -1; /* already capturing */
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    s->capture_fd = fd;
+    return 0;
+}
+
+int laban_session_capture_stop(LabanSession *s) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    if (s->capture_fd >= 0) {
+        close(s->capture_fd);
+        s->capture_fd = -1;
+    }
+    return 0;
+}
+
+int laban_session_capture_active(LabanSession *s) {
+    if (!s) return 0;
+    SESSION_LOCK(s);
+    return s->capture_fd >= 0 ? 1 : 0;
+}
+
+int laban_session_set_capture_callback(
+    LabanSession *s,
+    LabanCaptureBytesCallback callback,
+    void *userdata
+) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    s->capture_callback = callback;
+    s->capture_userdata = userdata;
+    return 0;
+}
+
