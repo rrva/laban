@@ -249,115 +249,46 @@ public final class SoftwareRenderer {
     cellAdvance: CGFloat,
     in ctx: CGContext
   ) {
-    let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
     guard
-      drawsUnderline || attributes.contains(.strikethrough) || attributes.contains(.overline),
-      !text.isEmpty
+      let layout = TextDecorationLayout.make(
+        origin: origin,
+        cellCount: text.count,
+        attributes: attributes,
+        underlineStyle: underlineStyle,
+        cellAdvance: cellAdvance,
+        cellHeight: atlas.cellSize.height,
+        descent: atlas.descent,
+        scale: surface.scale)
     else {
       return
     }
 
-    let width = CGFloat(text.count) * cellAdvance
-    let cellHeight = atlas.cellSize.height
-    let thickness = max(1.0 / surface.scale, 1)
-
     ctx.saveGState()
-    if drawsUnderline {
-      // The cell's underline_style takes precedence; .underline alone is
-      // single. .none here means the attribute flag is set without a sub-style.
-      let style: UnderlineStyle = underlineStyle == .none ? .single : underlineStyle
-      let underlineY = origin.y + max(1, floor(atlas.descent * 0.45))
-      drawUnderline(
-        style: style,
-        x: origin.x,
-        y: underlineY,
-        width: width,
-        thickness: thickness,
-        cellAdvance: cellAdvance,
-        color: underlineColor,
-        in: ctx)
+    ctx.setFillColor(underlineColor)
+    for rect in layout.underlineRects {
+      ctx.fill(rect)
     }
-    ctx.setFillColor(fgColor)
-    if attributes.contains(.strikethrough) {
-      ctx.fill(
-        CGRect(
-          x: origin.x,
-          y: origin.y + floor(cellHeight * 0.52),
-          width: width,
-          height: thickness
-        ))
-    }
-    if attributes.contains(.overline) {
-      ctx.fill(
-        CGRect(
-          x: origin.x,
-          y: origin.y + cellHeight - thickness - 1,
-          width: width,
-          height: thickness
-        ))
-    }
-    ctx.restoreGState()
-  }
-
-  private func drawUnderline(
-    style: UnderlineStyle,
-    x: CGFloat,
-    y: CGFloat,
-    width: CGFloat,
-    thickness: CGFloat,
-    cellAdvance: CGFloat,
-    color: CGColor,
-    in ctx: CGContext
-  ) {
-    ctx.setFillColor(color)
-    ctx.setStrokeColor(color)
-    switch style {
-    case .none:
-      return
-    case .single:
-      ctx.fill(CGRect(x: x, y: y, width: width, height: thickness))
-    case .double:
-      // Two thin lines, one at the underline position and one slightly above.
-      ctx.fill(CGRect(x: x, y: y, width: width, height: thickness))
-      let gap = max(thickness, 1)
-      ctx.fill(CGRect(x: x, y: y + thickness + gap, width: width, height: thickness))
-    case .curly:
-      // Sine wave approximated with line segments at one cell-width period.
-      let amplitude = max(thickness * 1.2, 1.0)
-      let period = max(cellAdvance, 6)
-      let baseY = y + thickness * 0.5
-      ctx.setLineWidth(thickness)
+    if !layout.curlyUnderlinePoints.isEmpty {
+      ctx.setStrokeColor(underlineColor)
+      ctx.setLineWidth(layout.thickness)
       ctx.setLineJoin(.round)
       ctx.beginPath()
-      let steps = max(Int(width / 1.5), 8)
-      for i in 0...steps {
-        let t = CGFloat(i) / CGFloat(steps)
-        let cx = x + width * t
-        let cy =
-          baseY + amplitude * CGFloat(sin((Double(t) * Double(width) / Double(period)) * 2 * .pi))
-        if i == 0 {
-          ctx.move(to: CGPoint(x: cx, y: cy))
+      for (idx, point) in layout.curlyUnderlinePoints.enumerated() {
+        if idx == 0 {
+          ctx.move(to: point)
         } else {
-          ctx.addLine(to: CGPoint(x: cx, y: cy))
+          ctx.addLine(to: point)
         }
       }
       ctx.strokePath()
-    case .dotted:
-      let dot = max(thickness, 1)
-      var cx = x
-      while cx < x + width {
-        ctx.fill(CGRect(x: cx, y: y, width: dot, height: thickness))
-        cx += dot * 2
-      }
-    case .dashed:
-      let dash = max(cellAdvance * 0.5, 3)
-      let gap = max(cellAdvance * 0.25, 2)
-      var cx = x
-      while cx < x + width {
-        let segW = min(dash, x + width - cx)
-        ctx.fill(CGRect(x: cx, y: y, width: segW, height: thickness))
-        cx += dash + gap
-      }
     }
+    ctx.setFillColor(fgColor)
+    if let rect = layout.strikethroughRect {
+      ctx.fill(rect)
+    }
+    if let rect = layout.overlineRect {
+      ctx.fill(rect)
+    }
+    ctx.restoreGState()
   }
 }

@@ -57,7 +57,7 @@ public final class MetalRenderer: RendererBackend {
   /// Last-frame readback for screenshots / capture. Returns nil when
   /// `captureMode` is off (the drawable→CPU blit is skipped to keep
   /// cursor-blink frames cheap).
-  public var pngData: Data? { encodeLastFrameAsPNG() }
+  public var pngData: Data? { readback.pngData(waitingFor: lastCmdBuf) }
 
   /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time
   /// inside `render()`. GPU = `cmdBuf.gpuEndTime - gpuStartTime` from the
@@ -185,54 +185,16 @@ public final class MetalRenderer: RendererBackend {
   /// readback texture so capture-side callers see the actual just-rendered
   /// pixels and not whatever the previous frame happened to leave behind.
   private var lastCmdBuf: MTLCommandBuffer?
-
-  private let drawableQueue = DispatchQueue(label: "laban.metal-drawable", qos: .userInteractive)
-  private let drawableRequestLock = NSLock()
-  private var drawableRequestActive = false
-  private static let drawableAcquireTimeout: DispatchTimeInterval = .milliseconds(8)
-
-  private final class DrawableAcquisitionState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var callerWaiting = true
-    private var drawable: (any CAMetalDrawable)?
-
-    func fulfill(_ acquired: (any CAMetalDrawable)?) -> Bool {
-      lock.lock()
-      defer { lock.unlock() }
-      guard callerWaiting else { return false }
-      drawable = acquired
-      return true
-    }
-
-    func take() -> (any CAMetalDrawable)? {
-      lock.lock()
-      defer { lock.unlock() }
-      callerWaiting = false
-      let result = drawable
-      drawable = nil
-      return result
-    }
-
-    func cancel() {
-      lock.lock()
-      callerWaiting = false
-      lock.unlock()
-    }
-  }
-
-  /// Limits frames in flight to 1. CAMetalLayer hands out up to 3 drawables
-  /// in parallel, but our persistent target + scratch are SINGLE shared
-  /// MTLTextures — without serialization, frame N's blit can read the
-  /// target while frame N+1's content pass writes it. The visible artefact
-  /// is a "ghost" (mixed pixels from two frames). One frame in flight on a
-  /// terminal at vsync still leaves several ms of headroom; the safety
-  /// outweighs the lost pipeline depth.
-  private let frameInFlight = DispatchSemaphore(value: 1)
+  private let drawableScheduler: MetalDrawableScheduler
+  private let readback: MetalReadback
 
   /// Set true while a capture session needs the per-frame readback blit;
   /// false otherwise so cursor-blink frames don't pay the drawable→CPU copy
   /// (~50–100 µs of pure overhead with no consumer).
-  public var captureMode: Bool = false
+  public var captureMode: Bool {
+    get { readback.captureMode }
+    set { readback.captureMode = newValue }
+  }
 
   /// Blocks `render()` until the committed command buffer has completed.
   /// Normal display-link frames leave this off; AppKit resize frames turn it
@@ -282,9 +244,6 @@ public final class MetalRenderer: RendererBackend {
   /// Nanoseconds per GPU timestamp tick, computed from a CPU/GPU anchor
   /// pair. ~1 on Apple silicon but read instead of assumed.
   private var gpuNsPerTick: Double = 1.0
-  // CGImage of the last rendered drawable, captured via blit-readback on
-  // demand for the pngData accessor (capture/screenshot path).
-  private var readbackTexture: MTLTexture?
   private let glyphCellAdvance: CGFloat
   private let glyphCellHeight: CGFloat
   private let sidebarCellAdvance: CGFloat
@@ -410,6 +369,8 @@ public final class MetalRenderer: RendererBackend {
     self.device = device
     self.queue = queue
     self.layer = layer
+    self.drawableScheduler = MetalDrawableScheduler(layer: layer)
+    self.readback = MetalReadback(device: device, pixelFormat: layer.pixelFormat)
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarAtlas
     self.solidPipeline = solidPipeline
@@ -502,7 +463,7 @@ public final class MetalRenderer: RendererBackend {
     }
     if sizeChanged {
       layer.drawableSize = CGSize(width: pw, height: ph)
-      readbackTexture = nil
+      readback.invalidate()
       targetTexture = nil
       targetNeedsFullRedraw = true
     }
@@ -514,30 +475,22 @@ public final class MetalRenderer: RendererBackend {
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     let cpuStart = ContinuousClock.now
 
-    // Drop this frame if the previous GPU frame has not retired. Without a
-    // gate, multiple in-flight frames stomp on the shared persistent target
-    // and scratch textures; blocking here would put that wait on the caller.
+    // Drop this frame if the previous GPU frame has not retired or a drawable
+    // cannot be acquired inside the scheduler's frame budget.
     let needsFullFrame = targetNeedsFullRedraw || damage == .full
-    let inFlightTimeout: DispatchTime =
-      needsFullFrame ? .now() + .milliseconds(16) : .now()
-    guard frameInFlight.wait(timeout: inFlightTimeout) == .success else {
+    guard let scheduledFrame = drawableScheduler.beginFrame(needsFullFrame: needsFullFrame) else {
       return false
     }
-    guard let drawable = acquireDrawableWithinBudget() else {
-      frameInFlight.signal()
-      return false
-    }
+    let drawable = scheduledFrame.drawable
     let drawableTex = drawable.texture
     guard let cmdBuf = queue.makeCommandBuffer() else {
-      frameInFlight.signal()
+      scheduledFrame.finish()
       return false
     }
     cmdBuf.label = "laban.frame"
     // Strong-self capture keeps the renderer alive until the GPU work
-    // completes — DispatchSemaphore traps on deinit if a wait() outstrips
-    // the matching signal(), so the renderer must outlive any frame it
-    // committed. The same handler also closes out per-frame timing once
-    // the GPU has reported gpuStartTime/gpuEndTime.
+    // completes. The same handler closes out per-frame timing and releases
+    // the scheduled frame once the GPU has reported gpuStartTime/gpuEndTime.
     cmdBuf.addCompletedHandler { [self] buffer in
       let cpuMs = msSince(cpuStart)
       let gpuMs = max(0.0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
@@ -557,12 +510,12 @@ public final class MetalRenderer: RendererBackend {
       }
       self.frameSampleLock.unlock()
       self.onFrameCompleted?()
-      self.frameInFlight.signal()
+      scheduledFrame.finish()
     }
 
     ensureTargetTexture(matching: drawableTex)
     guard let target = targetTexture else {
-      frameInFlight.signal()
+      scheduledFrame.finish()
       return false
     }
 
@@ -587,7 +540,7 @@ public final class MetalRenderer: RendererBackend {
       uniforms: &u,
       cmdBuf: cmdBuf)
     if targetNeedsFullRedraw && !didContent {
-      frameInFlight.signal()
+      scheduledFrame.finish()
       return false
     }
     passSlots.contentActive = didContent
@@ -648,41 +601,11 @@ public final class MetalRenderer: RendererBackend {
     // ProMotion display ticking at 120 Hz, dropping the no-op blit on
     // cursor-blink frames saves measurable wall time and a memory copy
     // of the whole drawable.
-    if captureMode {
-      if readbackTexture == nil
-        || readbackTexture?.width != drawableTex.width
-        || readbackTexture?.height != drawableTex.height
-      {
-        let desc = MTLTextureDescriptor.texture2DDescriptor(
-          pixelFormat: layer.pixelFormat,
-          width: drawableTex.width, height: drawableTex.height, mipmapped: false)
-        desc.usage = [.shaderRead]
-        desc.storageMode = .shared
-        readbackTexture = device.makeTexture(descriptor: desc)
-        readbackTexture?.label = "readback"
-      }
-      let readbackBlitDesc = MTLBlitPassDescriptor()
-      if counterBlitSupported, let cb = counterSampleBuffer,
-        let attach = readbackBlitDesc.sampleBufferAttachments[0]
-      {
-        attach.sampleBuffer = cb
-        attach.startOfEncoderSampleIndex = 6
-        attach.endOfEncoderSampleIndex = 7
-      }
-      if let dst = readbackTexture,
-        let blit = cmdBuf.makeBlitCommandEncoder(descriptor: readbackBlitDesc)
-      {
-        blit.label = "readback-blit"
-        blit.copy(
-          from: drawableTex, sourceSlice: 0, sourceLevel: 0,
-          sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-          sourceSize: MTLSize(width: drawableTex.width, height: drawableTex.height, depth: 1),
-          to: dst, destinationSlice: 0, destinationLevel: 0,
-          destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-        blit.endEncoding()
-        passSlots.readbackActive = true
-      }
-    }
+    passSlots.readbackActive = readback.encodeIfNeeded(
+      from: drawableTex,
+      commandBuffer: cmdBuf,
+      counterSampleBuffer: counterSampleBuffer,
+      counterBlitSupported: counterBlitSupported)
 
     self.lastFramePassSlots = passSlots
     cmdBuf.present(drawable)
@@ -693,37 +616,6 @@ public final class MetalRenderer: RendererBackend {
     }
     targetNeedsFullRedraw = false
     return true
-  }
-
-  private func acquireDrawableWithinBudget() -> (any CAMetalDrawable)? {
-    drawableRequestLock.lock()
-    if drawableRequestActive {
-      drawableRequestLock.unlock()
-      return nil
-    }
-    drawableRequestActive = true
-    drawableRequestLock.unlock()
-
-    let completed = DispatchSemaphore(value: 0)
-    let state = DrawableAcquisitionState()
-
-    drawableQueue.async { [self] in
-      let drawable = layer.nextDrawable()
-      if state.fulfill(drawable) {
-        completed.signal()
-      }
-
-      drawableRequestLock.lock()
-      drawableRequestActive = false
-      drawableRequestLock.unlock()
-    }
-
-    if completed.wait(timeout: .now() + Self.drawableAcquireTimeout) == .success {
-      return state.take()
-    }
-
-    state.cancel()
-    return nil
   }
 
   /// Slots in flight for the most recent frame. Read by the completion
@@ -1086,6 +978,9 @@ public final class MetalRenderer: RendererBackend {
         // Decorations
         emitDecorations(
           for: text, at: origin, attributes: attrs,
+          cellAdvance: activeAdvance,
+          cellHeight: isSidebar ? sidebarCellHeight : glyphCellHeight,
+          descent: activeFontAtlas.descent,
           fg: fg,
           underlineStyle: underlineStyle, underlineColor: underlineColor,
           appendSolid: appendSolid)
@@ -1143,95 +1038,52 @@ public final class MetalRenderer: RendererBackend {
     for text: String,
     at origin: CGPoint,
     attributes: TextAttributes,
+    cellAdvance: CGFloat,
+    cellHeight: CGFloat,
+    descent: CGFloat,
     fg: UInt32,
     underlineStyle: UnderlineStyle,
     underlineColor: UInt32?,
     appendSolid: (CGRect, UInt32) -> Void
   ) {
-    let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
-    let drawsStrike = attributes.contains(.strikethrough)
-    let drawsOverline = attributes.contains(.overline)
-    guard drawsUnderline || drawsStrike || drawsOverline, !text.isEmpty else { return }
+    guard
+      let layout = TextDecorationLayout.make(
+        origin: origin,
+        cellCount: text.count,
+        attributes: attributes,
+        underlineStyle: underlineStyle,
+        cellAdvance: cellAdvance,
+        cellHeight: cellHeight,
+        descent: descent,
+        scale: layer.contentsScale)
+    else { return }
 
-    let width = CGFloat(text.count) * glyphCellAdvance
-    let cellHeight = glyphCellHeight
-    let thickness = max(1.0 / layer.contentsScale, 1)
-    let underlineY = origin.y + max(1, floor(fontAtlas.descent * 0.45))
     let underlineRGBA = underlineColor ?? fg
 
-    if drawsUnderline {
-      let style: UnderlineStyle = underlineStyle == .none ? .single : underlineStyle
-      switch style {
-      case .none, .single:
-        appendSolid(
-          CGRect(x: origin.x, y: underlineY, width: width, height: thickness),
-          underlineRGBA)
-      case .double:
-        appendSolid(
-          CGRect(x: origin.x, y: underlineY, width: width, height: thickness),
-          underlineRGBA)
-        let gap = max(thickness, 1)
+    for rect in layout.underlineRects {
+      appendSolid(rect, underlineRGBA)
+    }
+
+    if !layout.curlyUnderlinePoints.isEmpty {
+      for (start, end) in zip(
+        layout.curlyUnderlinePoints,
+        layout.curlyUnderlinePoints.dropFirst())
+      {
         appendSolid(
           CGRect(
-            x: origin.x, y: underlineY + thickness + gap,
-            width: width, height: thickness),
+            x: start.x,
+            y: min(start.y, end.y),
+            width: max(end.x - start.x, layout.thickness),
+            height: max(layout.thickness, abs(end.y - start.y))),
           underlineRGBA)
-      case .curly:
-        // Approximate a sine wave with short segments — keeps the renderer
-        // shader-free at the cost of ~2× cell-width quads per cell.
-        let amplitude = max(thickness * 1.2, 1.0)
-        let baseY = underlineY + thickness * 0.5
-        let steps = max(Int(width / 1.5), 8)
-        var prev = CGPoint(x: origin.x, y: baseY)
-        for i in 1...steps {
-          let t = CGFloat(i) / CGFloat(steps)
-          let cx = origin.x + width * t
-          let cy = baseY + amplitude * CGFloat(sin(Double(t * width / glyphCellAdvance) * 2 * .pi))
-          appendSolid(
-            CGRect(
-              x: prev.x,
-              y: min(prev.y, cy),
-              width: max(cx - prev.x, 1),
-              height: max(thickness, abs(cy - prev.y))),
-            underlineRGBA)
-          prev = CGPoint(x: cx, y: cy)
-        }
-      case .dotted:
-        let dot = max(thickness, 1)
-        var cx = origin.x
-        while cx < origin.x + width {
-          appendSolid(
-            CGRect(x: cx, y: underlineY, width: dot, height: thickness),
-            underlineRGBA)
-          cx += dot * 2
-        }
-      case .dashed:
-        let dash = max(glyphCellAdvance * 0.5, 3)
-        let gap = max(glyphCellAdvance * 0.25, 2)
-        var cx = origin.x
-        while cx < origin.x + width {
-          let segW = min(dash, origin.x + width - cx)
-          appendSolid(
-            CGRect(x: cx, y: underlineY, width: segW, height: thickness),
-            underlineRGBA)
-          cx += dash + gap
-        }
       }
     }
 
-    if drawsStrike {
-      appendSolid(
-        CGRect(
-          x: origin.x, y: origin.y + floor(cellHeight * 0.52),
-          width: width, height: thickness),
-        fg)
+    if let rect = layout.strikethroughRect {
+      appendSolid(rect, fg)
     }
-    if drawsOverline {
-      appendSolid(
-        CGRect(
-          x: origin.x, y: origin.y + cellHeight - thickness - 1,
-          width: width, height: thickness),
-        fg)
+    if let rect = layout.overlineRect {
+      appendSolid(rect, fg)
     }
   }
 
@@ -1261,40 +1113,6 @@ public final class MetalRenderer: RendererBackend {
     return font
   }
 
-  // MARK: - PNG readback
-
-  private func encodeLastFrameAsPNG() -> Data? {
-    guard let tex = readbackTexture else { return nil }
-    // Capture / screenshot callers can read pngData any time; the GPU might
-    // not have finished the most recent render yet. Block until it has so
-    // we never serialise a stale frame.
-    lastCmdBuf?.waitUntilCompleted()
-    let w = tex.width
-    let h = tex.height
-    let bytesPerRow = w * 4
-    var bytes = [UInt8](repeating: 0, count: bytesPerRow * h)
-    bytes.withUnsafeMutableBytes { ptr in
-      if let base = ptr.baseAddress {
-        tex.getBytes(
-          base,
-          bytesPerRow: bytesPerRow,
-          from: MTLRegionMake2D(0, 0, w, h),
-          mipmapLevel: 0)
-      }
-    }
-    let bitmapInfo: UInt32 =
-      CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-    guard
-      let provider = CGDataProvider(data: Data(bytes) as CFData),
-      let image = CGImage(
-        width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
-        bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
-        provider: provider, decode: nil, shouldInterpolate: false,
-        intent: .defaultIntent)
-    else { return nil }
-    return PNGEncoder.encode(image)
-  }
 }
 
 // MARK: - Helpers

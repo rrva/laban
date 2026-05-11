@@ -51,7 +51,7 @@ public final class AppModel {
     self.sessionFactory = sessionFactory
     let session = try sessionFactory(initialSize)
     AppModel.maybeAutoCapture(session)
-    AppModel.applyThemePalette(to: session)
+    ThemePaletteInjector.injectCurrentTheme(into: session)
     let tab = Tab(
       id: UUID().uuidString,
       position: 1,
@@ -74,7 +74,7 @@ public final class AppModel {
       // their resolved RGB — that's standard terminal behavior.
       self.withModelLock {
         self.sessionRegistry.forEachSession { session in
-          AppModel.applyThemePalette(to: session)
+          ThemePaletteInjector.injectCurrentTheme(into: session)
         }
       }
     }
@@ -119,7 +119,7 @@ public final class AppModel {
       let session = try sessionFactory(currentSize)
       session.captureSink = captureSink
       AppModel.maybeAutoCapture(session)
-      AppModel.applyThemePalette(to: session)
+      ThemePaletteInjector.injectCurrentTheme(into: session)
       let position = _tabs.count + 1
       let tab = Tab(
         id: UUID().uuidString,
@@ -381,9 +381,9 @@ public final class AppModel {
 
   /// If `LABAN_CAPTURE_DIR` is set, start a fresh PTY-byte capture for this
   /// session into `<dir>/session-<id>-<timestamp>.bin`. Capture begins
-  /// before `applyThemePalette` so the OSC palette injection — which sets
-  /// the default colors that subsequent rendering depends on — is recorded
-  /// alongside the rest of the byte stream.
+  /// before theme palette injection so the OSC palette injection — which
+  /// sets the default colors that subsequent rendering depends on — is
+  /// recorded alongside the rest of the byte stream.
   private static func maybeAutoCapture(_ session: Session) {
     guard let dir = ProcessInfo.processInfo.environment["LABAN_CAPTURE_DIR"],
       !dir.isEmpty
@@ -395,29 +395,6 @@ public final class AppModel {
       .replacingOccurrences(of: ":", with: "-")
     let fileURL = dirURL.appendingPathComponent("session-\(session.id)-\(stamp).bin")
     _ = session.startCapture(path: fileURL.path)
-  }
-
-  private static func applyThemePalette(to session: Session) {
-    session.setColorScheme(Theme.current.isDark ? .dark : .light)
-    var bytes: [UInt8] = []
-    for (i, color) in Theme.current.ansi16.enumerated() {
-      bytes += oscSeq(4, index: i, rgba: color)
-    }
-    bytes += oscSeq(10, rgba: Theme.current.fg0)
-    bytes += oscSeq(11, rgba: Theme.current.bg0)
-    bytes += oscSeq(12, rgba: Theme.current.cursor)
-    session.feedOutput(bytes)
-  }
-
-  private static func oscSeq(_ n: Int, index: Int? = nil, rgba: UInt32) -> [UInt8] {
-    let r = (rgba >> 24) & 0xFF
-    let g = (rgba >> 16) & 0xFF
-    let b = (rgba >> 8) & 0xFF
-    let hex = String(format: "%02x%02x%02x", r, g, b)
-    let s =
-      index.map { "\u{1B}]\(n);\($0);#\(hex)\u{07}" }
-      ?? "\u{1B}]\(n);#\(hex)\u{07}"
-    return Array(s.utf8)
   }
 
   public func resize(viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int) {
