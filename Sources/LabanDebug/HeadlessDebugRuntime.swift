@@ -1310,159 +1310,39 @@ public final class HeadlessDebugRuntime {
       (try? JSONDecoder().decode(RenderTraceRequest.self, from: body)) ?? RenderTraceRequest()
     let limit = min(req.limit ?? 500, 2000)
     let frame = currentFrame
-    let serializer = DebugFrameCommandSerializer(cellWidth: cellWidth, cellHeight: cellHeight)
 
-    var sources: [TraceSourceResponse] = [
-      TraceSourceResponse(id: "state-\(frame)", kind: "appState", revision: frame)
-    ]
-
-    var snapRows = 1
-    var snapCols = 1
+    let hasActiveTab = model.activeTab != nil
+    var terminalSnapshot: DebugRenderTraceTerminalSnapshot? = nil
     if let tab = model.activeTab,
       let session = model.session(forTab: tab.id),
       let snap = session.snapshot()
     {
       defer { laban_snapshot_destroy(snap) }
-      snapRows = Int(snap.pointee.rows)
-      snapCols = Int(snap.pointee.cols)
-      sources.append(
-        TraceSourceResponse(
-          id: "term-snap-\(frame)", kind: "terminalSnapshot",
-          sessionId: tab.sessionId, rows: snapRows, cols: snapCols
-        ))
+      terminalSnapshot = DebugRenderTraceTerminalSnapshot(
+        sessionId: tab.sessionId,
+        rows: Int(snap.pointee.rows),
+        cols: Int(snap.pointee.cols)
+      )
     }
 
-    let tvW = max(windowWidth - sidebarWidth, 1)
-    let layout: [TraceLayoutItem] = [
-      TraceLayoutItem(
-        id: "layout-window", kind: "window",
-        rect: RectResponse(x: 0, y: 0, width: windowWidth, height: windowHeight),
-        sourceRefs: ["state-\(frame)"]),
-      TraceLayoutItem(
-        id: "layout-sidebar", kind: "sidebar",
-        rect: RectResponse(x: 0, y: 0, width: sidebarWidth, height: windowHeight),
-        sourceRefs: ["state-\(frame)"]),
-      TraceLayoutItem(
-        id: "layout-terminal", kind: "terminalViewport",
-        rect: RectResponse(x: sidebarWidth, y: 0, width: tvW, height: windowHeight),
-        sourceRefs: ["state-\(frame)"]),
-    ]
-
-    var termGlyphs = 0
-    var termBgRects = 0
-    var sidebarFirst: Int? = nil
-    var sidebarLast: Int? = nil
-    var termFirst: Int? = nil
-    var termLast: Int? = nil
-    for (i, cmd) in lastFrameCommands.enumerated() {
-      switch cmd {
-      case .rect(_, _, let src) where src == .sidebar:
-        sidebarFirst = sidebarFirst ?? i
-        sidebarLast = i
-      case .rect(_, _, let src) where src == .terminal:
-        termBgRects += 1
-        termFirst = termFirst ?? i
-        termLast = i
-      case .glyphRun(_, _, _, _, _, let src, _, _, _) where src == .sidebar:
-        sidebarFirst = sidebarFirst ?? i
-        sidebarLast = i
-      case .glyphRun(_, _, _, _, _, let src, _, _, _) where src == .terminal:
-        termGlyphs += 1
-        termFirst = termFirst ?? i
-        termLast = i
-      default: break
-      }
-    }
-
-    let packets: [TracePacket] =
-      model.activeTab != nil
-      ? [
-        TracePacket(
-          id: "pkt-term-\(frame)", producer: "LabanTerminalCore",
-          sourceRefs: ["term-snap-\(frame)"],
-          dirtyRows: [], glyphRuns: termGlyphs, backgroundRuns: termBgRects)
-      ]
-      : []
-
-    var commandRanges: [TraceCommandRange] = []
-    if let f = sidebarFirst, let l = sidebarLast {
-      commandRanges.append(
-        TraceCommandRange(
-          producer: "sidebar", inputRefs: ["state-\(frame)"],
-          firstCommandId: "cmd-\(f)", lastCommandId: "cmd-\(l)"
-        ))
-    }
-    if let f = termFirst, let l = termLast {
-      commandRanges.append(
-        TraceCommandRange(
-          producer: "terminal", inputRefs: ["pkt-term-\(frame)"],
-          firstCommandId: "cmd-\(f)", lastCommandId: "cmd-\(l)"
-        ))
-    }
-
-    var traceCmds: [TraceCommand] = []
-    var truncated = false
-    for (i, cmd) in lastFrameCommands.enumerated() {
-      if traceCmds.count >= limit {
-        truncated = true
-        break
-      }
-      traceCmds.append(serializer.traceCommand(cmd, index: i))
-    }
-
-    let resources: [TraceResource] = [
-      TraceResource(id: "font-jetbrainsmono", kind: "font", status: "resident"),
-      TraceResource(
-        id: "surface-main", kind: "surface", status: "resident",
-        width: surface.width, height: surface.height),
-    ]
-
-    let clipRect = RectResponse(x: 0, y: 0, width: windowWidth, height: windowHeight)
-    let draws: [TraceDraw] =
-      traceCmds.isEmpty
-      ? []
-      : [
-        TraceDraw(
-          id: "draw-main", kind: "batch",
-          commandRefs: traceCmds.map { $0.id },
-          clip: clipRect, drawRect: clipRect)
-      ]
-    let passes = [TraceRenderPass(id: "pass-main", target: "window", draws: draws)]
-
-    var pixelProbes: [TracePixelProbe] = []
-    for probe in req.pixelProbes ?? [] {
-      let rgba: [Int]
-      if let px = surface.pixel(x: probe.x, y: probe.y) {
-        rgba = DebugFrameCommandSerializer.rgbaArray(px)
-      } else {
-        rgba = [0, 0, 0, 255]
-      }
-      pixelProbes.append(
-        TracePixelProbe(
-          name: probe.name, x: probe.x, y: probe.y, rgba: rgba,
-          contributors: [
-            TraceContributor(passId: "pass-main", drawId: "draw-main", commandId: "cmd-0")
-          ]
-        ))
-    }
-
-    let invariants = [
-      TraceInvariant(
-        level: "ok", kind: "renderer.software",
-        message: "trace produced from software renderer")
-    ]
-
-    return jsonEncode(
-      RenderTraceResponse(
-        traceId: "frame-\(frame)", frame: frame, backend: "software",
-        surface: SurfaceResponse(
-          width: surface.width, height: surface.height, scale: Double(surface.scale)),
-        sources: sources, layout: layout, packets: packets,
-        commandRanges: commandRanges, commands: traceCmds,
-        resources: resources, passes: passes,
-        pixelProbes: pixelProbes, invariants: invariants,
-        truncated: truncated
-      ))
+    let builder = DebugRenderTraceBuilder(
+      frame: frame,
+      windowWidth: windowWidth,
+      windowHeight: windowHeight,
+      sidebarWidth: sidebarWidth,
+      surfaceWidth: surface.width,
+      surfaceHeight: surface.height,
+      surfaceScale: Double(surface.scale),
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      hasActiveTab: hasActiveTab,
+      terminalSnapshot: terminalSnapshot,
+      commands: lastFrameCommands,
+      limit: limit,
+      pixelProbes: req.pixelProbes,
+      pixelSampler: DebugPixelProbeSampler(surface: surface)
+    )
+    return jsonEncode(builder.response())
   }
 
   // MARK: - Wait
@@ -1578,43 +1458,8 @@ public final class HeadlessDebugRuntime {
     lock.lock()
     defer { lock.unlock() }
 
-    let points = (req.points ?? []).map { p -> PixelProbePointResult in
-      let rgba =
-        surface.pixel(x: p.x, y: p.y)
-        .map(DebugFrameCommandSerializer.rgbaArray) ?? [0, 0, 0, 0]
-      return PixelProbePointResult(x: p.x, y: p.y, rgba: rgba)
-    }
-
-    let regions = (req.regions ?? []).map { r -> PixelProbeRegionResult in
-      var sampled = 0
-      var nonBackground = 0
-      var sums = [0, 0, 0, 0]
-      let background = surface.pixel(x: r.x, y: r.y)
-
-      let maxX = min(surface.width, r.x + r.width)
-      let maxY = min(surface.height, r.y + r.height)
-      if r.x < maxX && r.y < maxY {
-        for y in r.y..<maxY {
-          for x in r.x..<maxX {
-            guard let px = surface.pixel(x: x, y: y) else { continue }
-            let rgba = DebugFrameCommandSerializer.rgbaArray(px)
-            for i in 0..<4 { sums[i] += rgba[i] }
-            sampled += 1
-            if px != background { nonBackground += 1 }
-          }
-        }
-      }
-
-      let average = sampled > 0 ? sums.map { $0 / sampled } : [0, 0, 0, 0]
-      return PixelProbeRegionResult(
-        name: r.name,
-        averageRgba: average,
-        nonBackgroundPixels: nonBackground,
-        sampledPixels: sampled
-      )
-    }
-
-    return jsonEncode(PixelProbeResponse(frame: currentFrame, points: points, regions: regions))
+    let sampler = DebugPixelProbeSampler(surface: surface)
+    return jsonEncode(sampler.response(frame: currentFrame, request: req))
   }
 
   public func timingResponse() -> DebugResponse {

@@ -41,7 +41,9 @@ focused tests, making future endpoint and action changes less risky.
   session teardown to stop AppModel reader threads before closing C sessions.
 - [x] Extract frame-command list/trace serialization into a focused helper
   with serializer tests.
-- [ ] Extract render diagnostics and frame-command serialization.
+- [x] Extract render trace and pixel-probe diagnostics into focused builders
+  with direct tests.
+- [ ] Move remaining render endpoint adapters out of `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -104,6 +106,14 @@ focused tests, making future endpoint and action changes less risky.
   approximate glyph geometry, RGBA expansion, and list-vs-trace payload shapes.
   A focused serializer makes endpoint behavior easier to test directly and
   keeps future renderer changes from drifting between debug endpoints.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Move render-trace assembly and pixel-probe sampling into
+  `DebugRenderTraceBuilder` and `DebugPixelProbeSampler`.
+  Rationale: The runtime should own locking, live session snapshots, and JSON
+  endpoint decoding, not the render-diagnostic schema assembly. Focused helpers
+  make trace source/range/pixel behavior testable without constructing the full
+  headless runtime.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation
@@ -172,6 +182,9 @@ Acceptance for the first milestone:
   allocator-scribble stress runs of the same path.
 - Frame-command serialization is covered by focused tests for glyph decoration
   payloads, text hiding, trace geometry, and command kind naming.
+- Render trace and pixel-probe payload construction are covered by focused
+  builder/sampler tests for sources, ranges, truncation, probes, and region
+  averaging.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
