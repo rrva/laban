@@ -1,0 +1,232 @@
+import Foundation
+import LabanCore
+import LabanRenderer
+import LabanTerminalCore
+
+extension HeadlessDebugRuntime {
+  public func state() -> DebugResponse {
+    withRuntimeLock {
+      stateUnlocked()
+    }
+  }
+
+  func stateUnlocked() -> DebugResponse {
+    syncSessionMetadataUnlocked()
+    let tabs = model.tabs.enumerated().map { index, tab -> TabResponse in
+      tabResponse(for: tab, index: index)
+    }
+    let activeTab = model.activeTab
+    return jsonEncode(
+      StateResponse(
+        mode: mode,
+        frame: currentFrame,
+        window: WindowResponse(width: windowWidth, height: windowHeight, focused: true),
+        tabs: tabs,
+        activeTabId: activeTab?.id,
+        activeSessionId: activeTab?.sessionId
+      ))
+  }
+
+  public func sessions() -> DebugResponse {
+    withRuntimeLock {
+      syncSessionMetadataUnlocked()
+
+      let list = model.tabs.enumerated().map { index, tab in
+        sessionResponse(for: tab, index: index, includeGrid: false)
+      }
+
+      return jsonEncode(SessionsResponse(sessions: list))
+    }
+  }
+
+  public func session(id: String, query: [String: String]) -> DebugResponse {
+    withRuntimeLock {
+      syncSessionMetadataUnlocked()
+
+      guard let match = model.tabs.enumerated().first(where: { $0.element.sessionId == id }) else {
+        return jsonError("session not found: \(id)", status: 404)
+      }
+      let includeGrid = query["includeGrid"] == "true"
+      return jsonEncode(
+        sessionResponse(for: match.element, index: match.offset, includeGrid: includeGrid))
+    }
+  }
+
+  func syncSessionMetadataUnlocked() {
+    _ = surfaceController.syncSessions(
+      captureFrame: currentFrame + 1,
+      polling: .pollAllSessions,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+  }
+
+  private func tabResponse(for tab: Tab, index: Int) -> TabResponse {
+    let metadata = tab.titleMetadata
+    let status = model.session(forTab: tab.id) != nil ? tab.status.debugString : "failed"
+    return TabResponse(
+      id: tab.id,
+      index: index,
+      title: metadata.displayTitle,
+      displayTitle: metadata.displayTitle,
+      titleSource: metadata.titleSource.rawValue,
+      terminalTitle: metadata.terminalTitle,
+      userTitle: metadata.userTitle,
+      titleFrozen: metadata.titleFrozen,
+      activityState: metadata.activityState.rawValue,
+      lastActivityAt: metadata.lastActivityAt,
+      lastOutputAt: metadata.lastOutputAt,
+      unseenOutput: metadata.unseenOutput,
+      exitStatus: metadata.exitStatus,
+      workspace: metadata.workspace,
+      process: metadata.process,
+      agent: metadata.agent,
+      active: tab.isActive,
+      status: status,
+      sessionId: tab.sessionId
+    )
+  }
+
+  private func sessionResponse(for tab: Tab, index _: Int, includeGrid: Bool) -> SessionResponse {
+    let metadata = tab.titleMetadata
+    let sessionObj = model.session(forTab: tab.id)
+    var rows = 1
+    var cols = 1
+    var exitStatus: Int? = nil
+    var mouseTracking = false
+    var focusReporting = false
+    var dirty = false
+    var grid: SessionGridResponse? = nil
+
+    if let session = sessionObj, let snapshot = session.snapshot() {
+      defer { laban_snapshot_destroy(snapshot) }
+      rows = max(Int(snapshot.pointee.rows), 1)
+      cols = max(Int(snapshot.pointee.cols), 1)
+      if snapshot.pointee.status != 0 { exitStatus = Int(snapshot.pointee.exit_status) }
+      mouseTracking = snapshot.pointee.mouse_tracking != 0
+      focusReporting = snapshot.pointee.focus_reporting != 0
+      dirty = snapshot.pointee.dirty != 0
+      if includeGrid {
+        grid = sessionGridResponse(from: snapshot, maxCells: 2_000)
+      }
+    }
+    if exitStatus == nil { exitStatus = metadata.exitStatus }
+
+    var scrollbackLines = 0
+    var viewportOffset = 0
+    if let sessionObj, let viewportState = sessionObj.viewportState() {
+      scrollbackLines = viewportState.scrollbackRows
+      viewportOffset = viewportState.viewportOffset
+    }
+
+    let status = sessionObj != nil ? tab.status.debugString : "failed"
+    return SessionResponse(
+      id: tab.sessionId,
+      tabId: tab.id,
+      pid: nil,
+      status: status,
+      exitStatus: exitStatus,
+      rows: rows,
+      cols: cols,
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      scrollbackLines: scrollbackLines,
+      viewportOffset: viewportOffset,
+      title: metadata.displayTitle,
+      displayTitle: metadata.displayTitle,
+      titleSource: metadata.titleSource.rawValue,
+      terminalTitle: metadata.terminalTitle,
+      userTitle: metadata.userTitle,
+      titleFrozen: metadata.titleFrozen,
+      activityState: metadata.activityState.rawValue,
+      lastActivityAt: metadata.lastActivityAt,
+      lastOutputAt: metadata.lastOutputAt,
+      unseenOutput: metadata.unseenOutput,
+      workspace: metadata.workspace,
+      process: metadata.process,
+      agent: metadata.agent,
+      mouseTracking: mouseTracking,
+      focusReporting: focusReporting,
+      dirty: dirty,
+      grid: grid
+    )
+  }
+
+  private func sessionGridResponse(
+    from snapshotPointer: UnsafePointer<LabanSnapshot>,
+    maxCells: Int
+  ) -> SessionGridResponse {
+    let snapshot = snapshotPointer.pointee
+    let rows = max(Int(snapshot.rows), 1)
+    let cols = max(Int(snapshot.cols), 1)
+    guard let cells = snapshot.cells, let storage = snapshot.utf8_storage else {
+      return SessionGridResponse(rows: rows, cols: cols, cells: [], truncated: false)
+    }
+
+    let links = snapshotHyperlinks(snapshot)
+    var result: [SessionGridCellResponse] = []
+    result.reserveCapacity(min(Int(snapshot.cell_count), maxCells))
+    var truncated = false
+
+    for row in 0..<rows {
+      for col in 0..<cols {
+        let idx = row * cols + col
+        guard idx < Int(snapshot.cell_count) else { continue }
+        let cell = cells[idx]
+        guard cell.utf8_length > 0 else { continue }
+
+        let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+        let buffer = UnsafeBufferPointer<UInt8>(
+          start: ptr.assumingMemoryBound(to: UInt8.self),
+          count: Int(cell.utf8_length)
+        )
+        guard let text = String(bytes: buffer, encoding: .utf8), !text.isEmpty else { continue }
+
+        if result.count >= maxCells {
+          truncated = true
+          break
+        }
+
+        let hyperlink: String? = {
+          let id = Int(cell.hyperlink_id)
+          guard id > 0, id <= links.count else { return nil }
+          return links[id - 1]
+        }()
+
+        result.append(
+          SessionGridCellResponse(
+            row: row,
+            col: col,
+            text: text,
+            foreground: DebugFrameCommandSerializer.rgbaArray(cell.foreground_rgba),
+            background: DebugFrameCommandSerializer.rgbaArray(cell.background_rgba),
+            attributes: TextAttributes(rawValue: cell.flags).intersection(.renderableMask).names,
+            wide: wideName(cell.wide),
+            hyperlink: hyperlink
+          ))
+      }
+      if truncated { break }
+    }
+
+    return SessionGridResponse(rows: rows, cols: cols, cells: result, truncated: truncated)
+  }
+
+  private func snapshotHyperlinks(_ snapshot: LabanSnapshot) -> [String] {
+    let count = Int(snapshot.hyperlink_count)
+    guard count > 0, let table = snapshot.hyperlink_uris else { return [] }
+    var result: [String] = []
+    result.reserveCapacity(count)
+    for idx in 0..<count {
+      result.append(table[idx].map { String(cString: $0) } ?? "")
+    }
+    return result
+  }
+
+  private func wideName(_ wide: UInt8) -> String {
+    switch Int(wide) {
+    case Int(LABAN_CELL_WIDE_WIDE): return "wide"
+    case Int(LABAN_CELL_WIDE_SPACER_TAIL): return "spacerTail"
+    case Int(LABAN_CELL_WIDE_SPACER_HEAD): return "spacerHead"
+    default: return "narrow"
+    }
+  }
+}

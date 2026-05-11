@@ -54,6 +54,8 @@ focused tests, making future endpoint and action changes less risky.
   `HeadlessDebugRuntime`.
 - [x] Move wait endpoint polling and condition checks out of
   `HeadlessDebugRuntime`.
+- [x] Move state/session endpoint adapters and grid projection helpers out of
+  `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -175,6 +177,15 @@ focused tests, making future endpoint and action changes less risky.
   boundary.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move state/session response projection into
+  `DebugStateEndpoints`.
+  Rationale: State, session list, session detail, grid cells, hyperlink lookup,
+  and wide-cell naming are debug JSON projection concerns. Moving them out of
+  the main runtime leaves the runtime focused on lifecycle, locking, rendering,
+  and action entry while preserving a shared metadata-sync helper for wait and
+  state endpoints.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -258,6 +269,10 @@ Acceptance for the first milestone:
 - Wait endpoint behavior remains covered by debug smoke tests for frame waits,
   background-session text waits, title waits after metadata sync, and HTTP
   wait concurrency.
+- State/session endpoint behavior remains covered by debug smoke, title, and
+  exploratory-control tests for state shape, session detail, viewport state,
+  title metadata, injected workspace metadata, grid detail, and atlas-adjacent
+  session diagnostics.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
