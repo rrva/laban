@@ -7,29 +7,6 @@ import LabanCore
 import LabanRenderer
 import LabanTerminalCore
 
-private enum FixturePathError: Error, CustomStringConvertible {
-  case empty
-  case absolute
-  case traversal
-  case escapedRoot
-  case symlink(String)
-
-  var description: String {
-    switch self {
-    case .empty:
-      return "fixture path must not be empty"
-    case .absolute:
-      return "fixture path must be relative to the fixture root"
-    case .traversal:
-      return "fixture path must not contain '..'"
-    case .escapedRoot:
-      return "fixture path must remain inside the fixture root"
-    case .symlink(let component):
-      return "fixture path must not contain symlink component '\(component)'"
-    }
-  }
-}
-
 // MARK: - Internal helpers
 
 private struct DrawStats {
@@ -79,117 +56,6 @@ private struct RuntimeTiming {
   var commandExtractionMs: Double = 0
   var renderMs: Double = 0
   var screenshotMs: Double = 0
-}
-
-private struct CellCoordinateReq: Decodable {
-  var row: Int
-  var col: Int
-}
-
-private struct ActionRequest: Decodable {
-  var action: String
-  var tabId: String?
-  var width: Int?
-  var height: Int?
-  var text: String?
-  var title: String?
-  var frozen: Bool?
-  var count: Int?
-  var key: String?
-  var type: String?
-  var modifiers: [String]?
-  var consumedModifiers: [String]?
-  var unshifted: String?
-  var x: Int?
-  var y: Int?
-  var deltaY: Double?
-  var button: String?
-  var sessionId: String?
-  var deltaRows: Int?
-  var anchor: CellCoordinateReq?
-  var focus: CellCoordinateReq?
-  var cwd: String?
-  var repoName: String?
-  var repoRoot: String?
-  var worktreeName: String?
-  var branch: String?
-  var isDirty: Bool?
-  var foregroundProcess: String?
-  var foregroundCommand: String?
-  var pid: Int?
-  var agentName: String?
-  var sessionName: String?
-  var agentSessionId: String?
-  var taskLabel: String?
-  var model: String?
-  var contextPercent: Int?
-  var awaitingInput: Bool?
-  var activityState: String?
-  var unseenOutput: Bool?
-  var exitStatus: Int?
-}
-
-private struct CaptureStartRequest: Decodable {
-  var name: String? = nil
-  var screenshots: String? = nil
-}
-
-private struct CaptureStatusResponse: Encodable {
-  var active: Bool
-  var runId: String?
-  var directory: String?
-  var manifestPath: String?
-  var screenshots: String?
-}
-
-private struct CaptureStartResponse: Encodable {
-  var active: Bool
-  var alreadyActive: Bool
-  var runId: String
-  var directory: String
-  var screenshots: String
-}
-
-private struct CaptureStopResponse: Encodable {
-  var active: Bool
-  var runId: String?
-  var directory: String?
-  var manifestPath: String
-}
-
-private struct WaitRequest: Decodable {
-  var timeoutMs: Int
-  var condition: WaitCondition
-}
-
-private struct WaitCondition: Decodable {
-  var kind: String
-  var frame: Int?
-  var eventKind: String?
-  var count: Int?
-  var tabId: String?
-  var sessionId: String?
-  var status: String?
-  var title: String?
-  var text: String?
-  var commandKind: String?
-  var invariantKind: String?
-  var level: String?
-}
-
-private struct RenderTraceRequest: Decodable {
-  var frame: Int?
-  var target: String?
-  var include: [String]?
-  var commandIds: [String]?
-  var pixelProbes: [PixelProbeReq]?
-  var limit: Int?
-}
-
-private struct PixelProbeReq: Decodable {
-  var name: String?
-  var x: Int
-  var y: Int
 }
 
 enum DebugMouseInput {
@@ -3050,38 +2916,7 @@ public final class HeadlessDebugRuntime {
   }
 
   private func resolveFixtureURL(_ path: String) throws -> URL {
-    let nsPath = path as NSString
-    guard !path.isEmpty else { throw FixturePathError.empty }
-    guard !nsPath.isAbsolutePath else { throw FixturePathError.absolute }
-
-    let components = nsPath.pathComponents.filter { $0 != "." }
-    guard !components.isEmpty else { throw FixturePathError.empty }
-    guard !components.contains("..") else { throw FixturePathError.traversal }
-
-    let root = fixtureRootURL.standardizedFileURL.resolvingSymlinksInPath()
-    var candidate = root
-    for component in components {
-      candidate.appendPathComponent(component)
-      if isSymlink(candidate) {
-        throw FixturePathError.symlink(component)
-      }
-    }
-
-    let canonical = candidate.standardizedFileURL.resolvingSymlinksInPath()
-    guard canonical.path == root.path || canonical.path.hasPrefix(root.path + "/") else {
-      throw FixturePathError.escapedRoot
-    }
-    return candidate
-  }
-
-  private func isSymlink(_ url: URL) -> Bool {
-    guard
-      let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-      let type = attrs[.type] as? FileAttributeType
-    else {
-      return false
-    }
-    return type == .typeSymbolicLink
+    try DebugFixtureResolver.resolve(path, root: fixtureRootURL)
   }
 
   private func resetFixtureModelUnlocked(runner: FixtureRunner) throws {
