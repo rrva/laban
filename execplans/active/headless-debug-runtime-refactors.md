@@ -29,7 +29,7 @@ focused tests, making future endpoint and action changes less risky.
 - [x] Commit the first behavior-preserving milestone.
 - [x] Extract action dispatch and key-input decoding out of
   `HeadlessDebugRuntime.swift`.
-- [ ] Split the extracted action dispatch into typed domain command objects.
+- [x] Split the extracted action dispatch into typed domain command objects.
 - [x] Replace the optional-bag `ActionRequest` with tagged, typed action
   payloads while preserving the JSON wire shape.
 - [x] Add focused typed-action decoding tests for discriminator routing,
@@ -73,6 +73,14 @@ focused tests, making future endpoint and action changes less risky.
   current debug clients or endpoint-specific validation messages. Unknown
   action names still reach the unsupported-action response path instead of
   becoming generic decode failures.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Keep `applyActionUnlocked(_:)` as the lock-held dispatcher, but
+  move each action family into focused command objects.
+  Rationale: The runtime still owns synchronization and shared state. The
+  command objects make tab, window, input, clipboard, selection, viewport, and
+  mouse behavior independently readable without adding another lifecycle owner
+  or changing the debug HTTP contract.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation
@@ -135,6 +143,8 @@ Acceptance for the first milestone:
   escaped previews, and error response projection.
 - Focused action-decoding tests prove the tagged action model still accepts the
   existing flat JSON wire shape and preserves unsupported-action routing.
+- Domain command objects are covered by the existing `/debug/actions` smoke,
+  keyboard, title, capture, selection, clipboard, and mouse tests.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.
