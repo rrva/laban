@@ -43,7 +43,7 @@ focused tests, making future endpoint and action changes less risky.
   with serializer tests.
 - [x] Extract render trace and pixel-probe diagnostics into focused builders
   with direct tests.
-- [ ] Move remaining render endpoint adapters out of `HeadlessDebugRuntime`.
+- [x] Move remaining render endpoint adapters out of `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -114,6 +114,14 @@ focused tests, making future endpoint and action changes less risky.
   endpoint decoding, not the render-diagnostic schema assembly. Focused helpers
   make trace source/range/pixel behavior testable without constructing the full
   headless runtime.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Move atlas, render-state, frame-command, render-trace, and
+  pixel-probe endpoint adapters into `DebugRenderEndpoints`.
+  Rationale: Render endpoints share the same state snapshot and lock-held
+  access pattern, but they do not need to live inside the main runtime body.
+  Keeping them in an extension gives the render diagnostics a bounded home while
+  preserving the runtime as the synchronization owner.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation

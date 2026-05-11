@@ -1,5 +1,4 @@
 import CoreGraphics
-import CoreText
 import Darwin
 import Dispatch
 import Foundation
@@ -9,7 +8,7 @@ import LabanTerminalCore
 
 // MARK: - Internal helpers
 
-private struct DrawStats {
+struct DrawStats {
   var cells: Int = 0
   var glyphs: Int = 0
   var backgroundRects: Int = 0
@@ -369,8 +368,8 @@ public final class HeadlessDebugRuntime {
   private var surfaceController: TerminalSurfaceController
 
   var currentFrame: Int = 0
-  private var lastFrameCommands: [FrameCommand] = []
-  private var lastDrawStats = DrawStats()
+  var lastFrameCommands: [FrameCommand] = []
+  var lastDrawStats = DrawStats()
   var debugClipboard: String = ""
   var selectionBySession: [Session.ID: TerminalSelection] = [:]
   var lastCopyText: String?
@@ -388,6 +387,12 @@ public final class HeadlessDebugRuntime {
   private var lastCaptureManifestPath: String?
   private var lastCaptureRunId: String?
   private var lastCaptureDirectory: String?
+
+  func withRuntimeLock<T>(_ body: () throws -> T) rethrows -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    return try body()
+  }
 
   // MARK: - Init
 
@@ -855,49 +860,6 @@ public final class HeadlessDebugRuntime {
     }
   }
 
-  private func glyphDiagnosticsUnlocked() -> (loaded: Int, missingCodepoints: [String]) {
-    var loaded = Set<String>()
-    var missing = Set<String>()
-
-    for command in lastFrameCommands {
-      guard case .glyphRun(_, let text, _, _, _, _, _, _, _) = command else { continue }
-      for scalar in text.unicodeScalars {
-        let label = codepointLabel(scalar)
-        if fontHasGlyph(for: scalar) {
-          loaded.insert(label)
-        } else {
-          missing.insert(label)
-        }
-      }
-    }
-
-    return (loaded.count, missing.sorted())
-  }
-
-  private func fontHasGlyph(for scalar: UnicodeScalar) -> Bool {
-    let chars = Array(String(scalar).utf16)
-    guard !chars.isEmpty else { return false }
-    var glyphs = [CGGlyph](repeating: 0, count: chars.count)
-    return chars.withUnsafeBufferPointer { charPtr in
-      glyphs.withUnsafeMutableBufferPointer { glyphPtr in
-        guard let charsBase = charPtr.baseAddress, let glyphsBase = glyphPtr.baseAddress else {
-          return false
-        }
-        return CTFontGetGlyphsForCharacters(
-          fontAtlas.font,
-          charsBase,
-          glyphsBase,
-          chars.count
-        )
-      }
-    }
-  }
-
-  private func codepointLabel(_ scalar: UnicodeScalar) -> String {
-    let hex = String(scalar.value, radix: 16, uppercase: true)
-    return "U+" + String(repeating: "0", count: max(0, 4 - hex.count)) + hex
-  }
-
   // MARK: - Endpoints
 
   public func captureStatus() -> DebugResponse {
@@ -1225,126 +1187,6 @@ public final class HeadlessDebugRuntime {
       sessionResponse(for: match.element, index: match.offset, includeGrid: includeGrid))
   }
 
-  public func atlas() -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-
-    let diagnostics = glyphDiagnosticsUnlocked()
-    return jsonEncode(
-      AtlasResponse(
-        font: CTFontCopyPostScriptName(fontAtlas.font) as String,
-        fontSize: Double(fontAtlas.pointSize),
-        cell: AtlasCellResponse(
-          width: cellWidth,
-          height: cellHeight,
-          baseline: max(Int(ceil(fontAtlas.ascent)), 0)
-        ),
-        glyphs: AtlasGlyphsResponse(
-          loaded: diagnostics.loaded,
-          missing: diagnostics.missingCodepoints.count
-        ),
-        missingCodepoints: diagnostics.missingCodepoints,
-        atlases: [],
-        backend: "software"
-      ))
-  }
-
-  public func renderState() -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-
-    let tvW = max(windowWidth - sidebarWidth, 1)
-    return jsonEncode(
-      RenderResponse(
-        frame: currentFrame, backend: "software",
-        surface: SurfaceResponse(
-          width: surface.width, height: surface.height, scale: Double(surface.scale)),
-        terminalViewport: RectResponse(x: sidebarWidth, y: 0, width: tvW, height: windowHeight),
-        cell: CellSizeResponse(width: cellWidth, height: cellHeight),
-        damage: [RectResponse(x: 0, y: 0, width: surface.width, height: surface.height)],
-        lastDraw: DrawStatsResponse(
-          cells: lastDrawStats.cells, glyphs: lastDrawStats.glyphs,
-          backgroundRects: lastDrawStats.backgroundRects,
-          images: lastDrawStats.images, cursor: lastDrawStats.cursor
-        )
-      ))
-  }
-
-  public func frameCommands(query: [String: String]) -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-
-    let sourceFilter = query["source"] ?? "all"
-    let limit = min(query["limit"].flatMap { Int($0) } ?? 500, 2000)
-    let includeText = query["includeText"] != "false"
-    let serializer = DebugFrameCommandSerializer(cellWidth: cellWidth, cellHeight: cellHeight)
-
-    var result: [FrameCommandResponse] = []
-    var truncated = false
-
-    for (idx, cmd) in lastFrameCommands.enumerated() {
-      let r = serializer.listCommand(cmd, index: idx, includeText: includeText)
-      if sourceFilter != "all" && r.source != sourceFilter { continue }
-      if result.count >= limit {
-        truncated = true
-        break
-      }
-      result.append(r)
-    }
-
-    return jsonEncode(
-      FrameCommandsResponse(
-        frame: currentFrame, backend: "software",
-        commands: result, truncated: truncated
-      ))
-  }
-
-  // MARK: - Render trace
-
-  public func renderTrace(_ data: Data) -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-
-    let body = data.isEmpty ? Data("{}".utf8) : data
-    let req =
-      (try? JSONDecoder().decode(RenderTraceRequest.self, from: body)) ?? RenderTraceRequest()
-    let limit = min(req.limit ?? 500, 2000)
-    let frame = currentFrame
-
-    let hasActiveTab = model.activeTab != nil
-    var terminalSnapshot: DebugRenderTraceTerminalSnapshot? = nil
-    if let tab = model.activeTab,
-      let session = model.session(forTab: tab.id),
-      let snap = session.snapshot()
-    {
-      defer { laban_snapshot_destroy(snap) }
-      terminalSnapshot = DebugRenderTraceTerminalSnapshot(
-        sessionId: tab.sessionId,
-        rows: Int(snap.pointee.rows),
-        cols: Int(snap.pointee.cols)
-      )
-    }
-
-    let builder = DebugRenderTraceBuilder(
-      frame: frame,
-      windowWidth: windowWidth,
-      windowHeight: windowHeight,
-      sidebarWidth: sidebarWidth,
-      surfaceWidth: surface.width,
-      surfaceHeight: surface.height,
-      surfaceScale: Double(surface.scale),
-      cellWidth: cellWidth,
-      cellHeight: cellHeight,
-      hasActiveTab: hasActiveTab,
-      terminalSnapshot: terminalSnapshot,
-      commands: lastFrameCommands,
-      limit: limit,
-      pixelProbes: req.pixelProbes,
-      pixelSampler: DebugPixelProbeSampler(surface: surface)
-    )
-    return jsonEncode(builder.response())
-  }
-
   // MARK: - Wait
 
   public func wait(_ data: Data) -> DebugResponse {
@@ -1442,24 +1284,6 @@ public final class HeadlessDebugRuntime {
       return model.tabs.first { $0.id == tabId }
     }
     return model.activeTab
-  }
-
-  // MARK: - Exploratory diagnostics
-
-  public func pixelProbe(_ data: Data) -> DebugResponse {
-    let body = data.isEmpty ? Data("{}".utf8) : data
-    guard let req = try? JSONDecoder().decode(PixelProbeRequest.self, from: body) else {
-      lock.lock()
-      appendError(kind: "pixel-probe.invalid", message: "invalid pixel probe request")
-      lock.unlock()
-      return jsonError("invalid pixel probe request")
-    }
-
-    lock.lock()
-    defer { lock.unlock() }
-
-    let sampler = DebugPixelProbeSampler(surface: surface)
-    return jsonEncode(sampler.response(frame: currentFrame, request: req))
   }
 
   public func timingResponse() -> DebugResponse {
