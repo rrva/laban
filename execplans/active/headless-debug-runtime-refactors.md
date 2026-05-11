@@ -52,6 +52,8 @@ focused tests, making future endpoint and action changes less risky.
   out of `HeadlessDebugRuntime`.
 - [x] Move telemetry/log and selection/clipboard endpoint adapters out of
   `HeadlessDebugRuntime`.
+- [x] Move wait endpoint polling and condition checks out of
+  `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -165,6 +167,14 @@ focused tests, making future endpoint and action changes less risky.
   state, rendering, and request routing.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move `/debug/wait` polling and condition checks into
+  `DebugWaitEndpoints` while keeping the runtime lock private.
+  Rationale: Wait handling is an endpoint adapter with domain-specific
+  condition projection. The extraction now uses the runtime's lock wrapper
+  rather than exposing the lock itself, preserving a cleaner synchronization
+  boundary.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -245,6 +255,9 @@ Acceptance for the first milestone:
 - Telemetry/log and selection/clipboard endpoints remain covered by existing
   timing, metrics, input-log, terminal-log, error-log, event, selection, and
   clipboard debug tests.
+- Wait endpoint behavior remains covered by debug smoke tests for frame waits,
+  background-session text waits, title waits after metadata sync, and HTTP
+  wait concurrency.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.

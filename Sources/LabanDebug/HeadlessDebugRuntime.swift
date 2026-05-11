@@ -354,7 +354,7 @@ public final class HeadlessDebugRuntime {
   var sessionMode: HeadlessSessionMode
   let artifactsURL: URL
   let fixtureRootURL: URL
-  private let deterministic: Bool
+  let deterministic: Bool
 
   var model: AppModel
   let fontAtlas: FontAtlas
@@ -665,7 +665,7 @@ public final class HeadlessDebugRuntime {
 
   // MARK: - Snapshot helpers
 
-  private func snapshotStatus(_ snap: UnsafePointer<LabanSnapshot>) -> String {
+  func snapshotStatus(_ snap: UnsafePointer<LabanSnapshot>) -> String {
     switch snap.pointee.status {
     case 0: return "running"
     case 1, 2: return "exited"
@@ -688,7 +688,7 @@ public final class HeadlessDebugRuntime {
 
   // MARK: - Session metadata synchronization
 
-  private func syncSessionMetadataUnlocked() {
+  func syncSessionMetadataUnlocked() {
     _ = surfaceController.syncSessions(
       captureFrame: currentFrame + 1,
       polling: .pollAllSessions,
@@ -1006,105 +1006,6 @@ public final class HeadlessDebugRuntime {
     let includeGrid = query["includeGrid"] == "true"
     return jsonEncode(
       sessionResponse(for: match.element, index: match.offset, includeGrid: includeGrid))
-  }
-
-  // MARK: - Wait
-
-  public func wait(_ data: Data) -> DebugResponse {
-    guard let req = try? JSONDecoder().decode(WaitRequest.self, from: data) else {
-      return jsonError("invalid wait request")
-    }
-
-    let startTime = Date()
-    let timeoutSec = Double(req.timeoutMs) / 1000.0
-
-    while true {
-      lock.lock()
-      syncSessionMetadataUnlocked()
-      let satisfied = checkConditionUnlocked(req.condition)
-      let frame = currentFrame
-      if satisfied {
-        lock.unlock()
-        let elapsed = Date().timeIntervalSince(startTime) * 1000.0
-        return jsonEncode(WaitResult(ok: true, frame: frame, elapsedMs: elapsed))
-      }
-      if deterministic {
-        for tab in model.tabs {
-          model.session(forTab: tab.id)?.poll()
-        }
-        renderFrameUnlocked()
-      }
-      lock.unlock()
-
-      if Date().timeIntervalSince(startTime) >= timeoutSec { break }
-      usleep(10_000)
-      if Date().timeIntervalSince(startTime) >= timeoutSec { break }
-    }
-
-    lock.lock()
-    let frame = currentFrame
-    lock.unlock()
-    let elapsed = Date().timeIntervalSince(startTime) * 1000.0
-    return jsonEncode(
-      WaitResult(
-        ok: false, frame: frame, elapsedMs: elapsed,
-        error: "timeout after \(req.timeoutMs)ms"))
-  }
-
-  private func checkConditionUnlocked(_ cond: WaitCondition) -> Bool {
-    switch cond.kind {
-    case "frameAtLeast":
-      return currentFrame >= (cond.frame ?? 0)
-    case "tabCount":
-      return model.tabs.count == (cond.count ?? 0)
-    case "activeTab":
-      return model.activeTab?.id == cond.tabId
-    case "sessionStatus":
-      let tabId =
-        cond.sessionId.flatMap { sid in
-          model.tabs.first(where: { $0.sessionId == sid })?.id
-        } ?? cond.tabId ?? model.activeTab?.id
-      guard let tid = tabId, let session = model.session(forTab: tid),
-        let snap = session.snapshot()
-      else { return false }
-      defer { laban_snapshot_destroy(snap) }
-      return snapshotStatus(UnsafePointer(snap)) == cond.status
-    case "titleEquals":
-      let tab =
-        cond.tabId.flatMap { id in model.tabs.first(where: { $0.id == id }) }
-        ?? model.activeTab
-      return tab?.title == cond.title
-    case "textVisible":
-      guard let tab = waitTargetTabUnlocked(cond),
-        let session = model.session(forTab: tab.id),
-        let snap = session.snapshot()
-      else { return false }
-      defer { laban_snapshot_destroy(snap) }
-      return TerminalSnapshotText.visibleText(
-        from: UnsafePointer(snap),
-        mode: .trimmedNonEmptyRows
-      ).contains(cond.text ?? "")
-    case "renderCommandSeen":
-      guard let kind = cond.commandKind else { return false }
-      return lastFrameCommands.contains { DebugFrameCommandSerializer.kind($0) == kind }
-    case "eventSeen":
-      guard let kind = cond.eventKind else { return false }
-      return logs.containsEvent(kind: kind)
-    case "renderTraceInvariant":
-      return true
-    default:
-      return false
-    }
-  }
-
-  private func waitTargetTabUnlocked(_ cond: WaitCondition) -> Tab? {
-    if let sessionId = cond.sessionId {
-      return model.tabs.first { $0.sessionId == sessionId }
-    }
-    if let tabId = cond.tabId {
-      return model.tabs.first { $0.id == tabId }
-    }
-    return model.activeTab
   }
 
 }
