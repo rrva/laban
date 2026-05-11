@@ -60,6 +60,8 @@ focused tests, making future endpoint and action changes less risky.
   `HeadlessDebugRuntime`.
 - [x] Move discovery catalog plus health/discovery endpoint adapters out of
   `HeadlessDebugRuntime`.
+- [x] Move the `/debug/actions` endpoint entry and shared action result helper
+  out of `HeadlessDebugRuntime`.
 
 ## Decision Log
 
@@ -206,6 +208,14 @@ focused tests, making future endpoint and action changes less risky.
   endpoint response together.
   Date/Author: 2026-05-11 / Codex
 
+- Decision: Move the `/debug/actions` endpoint entry and shared action result
+  helper into `DebugRuntimeActions`.
+  Rationale: Action decoding, dispatch, unsupported-action handling, and common
+  action responses now live together. The main runtime no longer owns endpoint
+  bodies and can stay focused on lifecycle state, rendering, locking, and shared
+  runtime helpers.
+  Date/Author: 2026-05-11 / Codex
+
 ## Context and Orientation
 
 The debug server is local-only product infrastructure. `Sources/LabanDebug`
@@ -299,6 +309,9 @@ Acceptance for the first milestone:
 - Discovery and health endpoint behavior remains covered by smoke and
   exploratory-control tests for health readiness, HTTP health concurrency, and
   the exploratory controls catalog.
+- Action endpoint entry behavior remains covered by typed-action decoding tests
+  and the existing smoke, keyboard, title, capture, clipboard, selection, mouse,
+  and unsupported-action tests.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.

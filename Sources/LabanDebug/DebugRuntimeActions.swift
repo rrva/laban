@@ -1,6 +1,16 @@
 import Foundation
 
 extension HeadlessDebugRuntime {
+  public func applyAction(_ data: Data) -> DebugResponse {
+    withRuntimeLock {
+      guard let action = try? JSONDecoder().decode(DebugAction.self, from: data) else {
+        appendError(kind: "action.invalid", message: "invalid action request")
+        return jsonError("invalid action request")
+      }
+      return applyActionUnlocked(action)
+    }
+  }
+
   func applyActionUnlocked(_ action: DebugAction) -> DebugResponse {
     switch action {
     case .newTab:
@@ -58,6 +68,18 @@ extension HeadlessDebugRuntime {
         ok: false, frame: currentFrame,
         activeTabId: active?.id, activeSessionId: active?.sessionId,
         error: "debug action \(actionName) is not implemented yet"
+      ))
+  }
+
+  func actionResult(ok: Bool) -> DebugResponse {
+    let active = model.activeTab
+    return jsonEncode(
+      ActionResult(
+        ok: ok,
+        frame: currentFrame,
+        activeTabId: active?.id,
+        activeSessionId: active?.sessionId,
+        error: nil
       ))
   }
 }

@@ -385,24 +385,4 @@ public final class HeadlessDebugRuntime {
     DebugMouseInput.terminalSurfaceWidth(windowWidth: windowWidth, sidebarWidth: sidebarWidth)
   }
 
-  public func applyAction(_ data: Data) -> DebugResponse {
-    lock.lock()
-    defer { lock.unlock() }
-    guard let action = try? JSONDecoder().decode(DebugAction.self, from: data) else {
-      appendError(kind: "action.invalid", message: "invalid action request")
-      return jsonError("invalid action request")
-    }
-    return applyActionUnlocked(action)
-  }
-
-  func actionResult(ok: Bool) -> DebugResponse {
-    let active = model.activeTab
-    return jsonEncode(
-      ActionResult(
-        ok: ok, frame: currentFrame,
-        activeTabId: active?.id, activeSessionId: active?.sessionId,
-        error: nil
-      ))
-  }
-
 }
