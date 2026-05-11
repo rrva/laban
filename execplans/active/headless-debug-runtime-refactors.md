@@ -26,9 +26,11 @@ focused tests, making future endpoint and action changes less risky.
 - [x] Extract fixture-path resolution and symlink rejection into a dedicated
   helper with focused tests.
 - [x] Run targeted `LabanDebugTests`.
-- [ ] Commit the first behavior-preserving milestone.
+- [x] Commit the first behavior-preserving milestone.
 - [ ] Extract action dispatch into smaller action handlers.
-- [ ] Extract event/input/terminal/error log storage and projections.
+- [x] Extract event/input/terminal/error log storage and projections.
+- [x] Add focused log-store tests for sequence assignment, filtering, terminal
+  byte counters, and error projection.
 - [ ] Extract render diagnostics and frame-command serialization.
 
 ## Decision Log
@@ -39,6 +41,14 @@ focused tests, making future endpoint and action changes less risky.
   fixture resolver is security-sensitive and deserves direct tests, while DTOs
   do not need to live inside the runtime type. This creates room for later
   action and render extraction without changing the debug HTTP contract.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Keep log append timing in `HeadlessDebugRuntime` while moving log
+  storage and JSON projection into `DebugRuntimeLogStore`.
+  Rationale: The runtime still owns behavioral events such as action routing,
+  frame rendering, and capture recording. The store owns bounded buffers,
+  sequence numbers, terminal byte counters, and response filtering, which are
+  pure debug-contract policies.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation
@@ -90,11 +100,15 @@ Acceptance for the first milestone:
 
 - `HeadlessDebugRuntime.swift` no longer declares the debug request DTOs or
   fixture path resolver.
+- `HeadlessDebugRuntime.swift` no longer owns bounded event/input/terminal/error
+  buffers or response projection for those logs.
 - Fixture control still loads a valid relative fixture through the runtime.
 - Absolute, traversal, and symlink fixture paths still return HTTP 400 through
   the runtime.
 - Focused resolver tests prove the helper accepts nested relative paths and
   rejects unsafe inputs before fixture loading.
+- Focused log-store tests prove sequence assignment, filtering, byte counters,
+  escaped previews, and error response projection.
 
 ## Idempotence and Recovery
 

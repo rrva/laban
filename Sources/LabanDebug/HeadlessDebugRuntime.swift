@@ -17,38 +17,6 @@ private struct DrawStats {
   var cursor: Bool = false
 }
 
-private struct EventEntry {
-  var seq: Int = 0
-  var kind: String
-  var tabId: String?
-  var sessionId: String?
-  var frame: Int?
-  var width: Int?
-  var height: Int?
-  var text: String?
-  var path: String?
-  var action: String?
-  var deltaRows: Int?
-  var error: String?
-}
-
-private struct TerminalLogEntry {
-  var seq: Int = 0
-  var sessionId: String?
-  var direction: String
-  var escaped: String
-  var frame: Int?
-}
-
-private struct DebugErrorEntry {
-  var seq: Int = 0
-  var level: String
-  var kind: String
-  var message: String
-  var sessionId: String?
-  var tabId: String?
-}
-
 private struct RuntimeTiming {
   var lastFrameMs: Double = 0
   var terminalPollMs: Double = 0
@@ -409,19 +377,9 @@ public final class HeadlessDebugRuntime {
   private var lastPasteText: String?
   private var lastPasteUsedBracketedPaste: Bool?
   private var lastPasteIgnoredNonText: Bool?
-  private var eventLog: [EventEntry] = []
-  private var eventSeq: Int = 0
-  private var inputLog: [InputEventEnvelope] = []
-  private var inputLogSeq: Int = 0
-  private var terminalLog: [TerminalLogEntry] = []
-  private var terminalLogSeq: Int = 0
-  private var errorLog: [DebugErrorEntry] = []
-  private var errorSeq: Int = 0
+  private var logs = DebugRuntimeLogStore()
   private var timing = RuntimeTiming()
   private let startedAt = DispatchTime.now()
-  private var terminalInputBytes: Int = 0
-  private var terminalOutputBytes: Int = 0
-  private var terminalResponseBytes: Int = 0
   private var screenshotCount: Int = 0
   private var fixtureURL: URL?
   private var fixtureRunner: FixtureRunner?
@@ -667,44 +625,16 @@ public final class HeadlessDebugRuntime {
   }
 
   private func appendEvent(_ e: EventEntry) {
-    var e = e
-    e.seq = eventSeq
-    eventSeq += 1
-    eventLog.append(e)
-    if eventLog.count > 2000 {
-      eventLog.removeFirst(eventLog.count - 2000)
-    }
+    logs.appendEvent(e)
   }
 
   private func appendTerminalLog(sessionId: String?, direction: String, bytes: [UInt8]) {
-    guard !bytes.isEmpty else { return }
-    switch direction {
-    case "input":
-      terminalInputBytes += bytes.count
-    case "output":
-      terminalOutputBytes += bytes.count
-    case "terminal-response", "terminalResponse":
-      terminalResponseBytes += bytes.count
-    default:
-      break
-    }
-    appendTerminalLog(
-      TerminalLogEntry(
-        sessionId: sessionId,
-        direction: direction,
-        escaped: escapedPreview(bytes),
-        frame: currentFrame
-      ))
-  }
-
-  private func appendTerminalLog(_ e: TerminalLogEntry) {
-    var e = e
-    e.seq = terminalLogSeq
-    terminalLogSeq += 1
-    terminalLog.append(e)
-    if terminalLog.count > 1024 {
-      terminalLog.removeFirst(terminalLog.count - 1024)
-    }
+    logs.appendTerminalLog(
+      sessionId: sessionId,
+      direction: direction,
+      bytes: bytes,
+      frame: currentFrame
+    )
   }
 
   private func appendError(
@@ -714,53 +644,18 @@ public final class HeadlessDebugRuntime {
     sessionId: String? = nil,
     tabId: String? = nil
   ) {
-    var e = DebugErrorEntry(
+    logs.appendError(
       level: level,
       kind: kind,
       message: message,
       sessionId: sessionId,
       tabId: tabId
     )
-    e.seq = errorSeq
-    errorSeq += 1
-    errorLog.append(e)
-    if errorLog.count > 512 {
-      errorLog.removeFirst(errorLog.count - 512)
-    }
-  }
-
-  private func escapedPreview(_ bytes: [UInt8], limit: Int = 512) -> String {
-    var out = ""
-    var count = 0
-    for b in bytes {
-      if count >= limit {
-        out += "..."
-        break
-      }
-      count += 1
-      switch b {
-      case 0x09: out += "\\t"
-      case 0x0A: out += "\\n"
-      case 0x0D: out += "\\r"
-      case 0x1B: out += "\\e"
-      case 0x20...0x7E:
-        out.append(Character(UnicodeScalar(b)))
-      default:
-        out += String(format: "\\x%02x", b)
-      }
-    }
-    return out
   }
 
   private func appendInputEnvelope(_ e: InputEventEnvelope) {
-    var e = e
-    e.seq = inputLogSeq
-    inputLogSeq += 1
-    inputLog.append(e)
-    captureRecorder?.recordInput(e)
-    if inputLog.count > 512 {
-      inputLog.removeFirst(inputLog.count - 512)
-    }
+    let recorded = logs.appendInputEnvelope(e)
+    captureRecorder?.recordInput(recorded)
   }
 
   // MARK: - Key action helpers
@@ -1317,14 +1212,6 @@ public final class HeadlessDebugRuntime {
     }
     let enc = JSONEncoder()
     enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let events = eventLog.map { e in
-      EventResponse(
-        seq: e.seq, kind: e.kind,
-        tabId: e.tabId, sessionId: e.sessionId, frame: e.frame,
-        width: e.width, height: e.height, text: e.text,
-        path: e.path, action: e.action, deltaRows: e.deltaRows, error: e.error
-      )
-    }
     let frameCommandBody =
       FrameCommandsResponse(
         frame: currentFrame,
@@ -1336,9 +1223,8 @@ public final class HeadlessDebugRuntime {
       )
     var files: [String: Data] = [
       "state.json": stateUnlocked().body,
-      "events.json": (try? enc.encode(EventsResponse(events: events, next: eventSeq))) ?? Data(),
-      "input-log.json": (try? enc.encode(InputLogResponse(events: inputLog, next: inputLogSeq)))
-        ?? Data(),
+      "events.json": (try? enc.encode(logs.eventsResponse(since: 0))) ?? Data(),
+      "input-log.json": (try? enc.encode(logs.inputLogResponse(since: 0))) ?? Data(),
       "frame-commands.json": (try? enc.encode(frameCommandBody)) ?? Data(),
     ]
     if let png = surface.pngData {
@@ -2543,7 +2429,7 @@ public final class HeadlessDebugRuntime {
       return lastFrameCommands.contains { cmdKindString($0) == kind }
     case "eventSeen":
       guard let kind = cond.eventKind else { return false }
-      return eventLog.contains { $0.kind == kind }
+      return logs.containsEvent(kind: kind)
     case "renderTraceInvariant":
       return true
     default:
@@ -2649,18 +2535,18 @@ public final class HeadlessDebugRuntime {
         uptimeMs: elapsedMs(since: startedAt),
         counters: MetricsCountersResponse(
           framesRendered: currentFrame,
-          events: eventSeq,
-          inputEvents: inputLogSeq,
-          terminalLogEvents: terminalLogSeq,
-          errors: errorSeq,
+          events: logs.eventSeq,
+          inputEvents: logs.inputLogSeq,
+          terminalLogEvents: logs.terminalLogSeq,
+          errors: logs.errorSeq,
           screenshots: screenshotCount,
           tabs: model.tabs.count,
           sessions: model.tabs.count
         ),
         terminalBytes: TerminalByteMetricsResponse(
-          input: terminalInputBytes,
-          output: terminalOutputBytes,
-          terminalResponse: terminalResponseBytes
+          input: logs.terminalBytes.input,
+          output: logs.terminalBytes.output,
+          terminalResponse: logs.terminalBytes.terminalResponse
         ),
         lastFrame: LastFrameMetricsResponse(
           commands: lastFrameCommands.count,
@@ -2681,54 +2567,14 @@ public final class HeadlessDebugRuntime {
   public func errors(since: Int) -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
-    let filtered = errorLog.filter { $0.seq >= since }.map { e in
-      DebugErrorEntryResponse(
-        seq: e.seq,
-        level: e.level,
-        kind: e.kind,
-        message: e.message,
-        sessionId: e.sessionId,
-        tabId: e.tabId
-      )
-    }
-    return jsonEncode(DebugErrorsResponse(errors: filtered, next: errorSeq))
+    return jsonEncode(logs.errorsResponse(since: since))
   }
 
   public func terminalLogResponse(query: [String: String]) -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
-
-    let since = query["since"].flatMap { Int($0) } ?? 0
-    let limit = min(query["limit"].flatMap { Int($0) } ?? 200, 1000)
-    let requestedSessionId = query["sessionId"] ?? model.activeTab?.sessionId ?? ""
-    var entries: [TerminalLogEntryResponse] = []
-    var truncated = false
-
-    for entry in terminalLog where entry.seq >= since {
-      if let sid = entry.sessionId, !requestedSessionId.isEmpty, sid != requestedSessionId {
-        continue
-      }
-      if entries.count >= limit {
-        truncated = true
-        break
-      }
-      entries.append(
-        TerminalLogEntryResponse(
-          seq: entry.seq,
-          direction: entry.direction,
-          escaped: entry.escaped,
-          sessionId: entry.sessionId,
-          frame: entry.frame
-        ))
-    }
-
     return jsonEncode(
-      TerminalLogResponse(
-        sessionId: requestedSessionId,
-        events: entries,
-        next: terminalLogSeq,
-        truncated: truncated
-      ))
+      logs.terminalLogResponse(query: query, defaultSessionId: model.activeTab?.sessionId))
   }
 
   public func artifactSnapshot() -> DebugResponse {
@@ -3080,22 +2926,12 @@ public final class HeadlessDebugRuntime {
   public func inputLogResponse(since: Int) -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
-    let filtered = inputLog.filter { $0.seq >= since }
-    return jsonEncode(InputLogResponse(events: filtered, next: inputLogSeq))
+    return jsonEncode(logs.inputLogResponse(since: since))
   }
 
   public func events(since: Int) -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
-
-    let filtered = eventLog.filter { $0.seq >= since }.map { e in
-      EventResponse(
-        seq: e.seq, kind: e.kind,
-        tabId: e.tabId, sessionId: e.sessionId, frame: e.frame,
-        width: e.width, height: e.height, text: e.text,
-        path: e.path, action: e.action, deltaRows: e.deltaRows, error: e.error
-      )
-    }
-    return jsonEncode(EventsResponse(events: filtered, next: eventSeq))
+    return jsonEncode(logs.eventsResponse(since: since))
   }
 }
