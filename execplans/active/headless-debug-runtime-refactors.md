@@ -30,8 +30,10 @@ focused tests, making future endpoint and action changes less risky.
 - [x] Extract action dispatch and key-input decoding out of
   `HeadlessDebugRuntime.swift`.
 - [ ] Split the extracted action dispatch into typed domain command objects.
-- [ ] Replace the optional-bag `ActionRequest` with tagged, typed action
+- [x] Replace the optional-bag `ActionRequest` with tagged, typed action
   payloads while preserving the JSON wire shape.
+- [x] Add focused typed-action decoding tests for discriminator routing,
+  payload-free actions, unknown actions, and invalid requests.
 - [x] Extract event/input/terminal/error log storage and projections.
 - [x] Add focused log-store tests for sequence assignment, filtering, terminal
   byte counters, and error projection.
@@ -62,6 +64,15 @@ focused tests, making future endpoint and action changes less risky.
   and pure key decoding lives in `DebugRuntimeKeyInput.swift`. This first cut
   preserves every `/debug/actions` wire shape and keeps the typed-payload
   migration as the next behavioral-neutral refactor.
+  Date/Author: 2026-05-11 / Codex
+
+- Decision: Decode `/debug/actions` into a tagged `DebugAction` enum with
+  per-action payload structs while keeping fields at the existing top-level
+  JSON shape.
+  Rationale: This removes the large optional-bag request type without breaking
+  current debug clients or endpoint-specific validation messages. Unknown
+  action names still reach the unsupported-action response path instead of
+  becoming generic decode failures.
   Date/Author: 2026-05-11 / Codex
 
 ## Context and Orientation
@@ -122,6 +133,8 @@ Acceptance for the first milestone:
   rejects unsafe inputs before fixture loading.
 - Focused log-store tests prove sequence assignment, filtering, byte counters,
   escaped previews, and error response projection.
+- Focused action-decoding tests prove the tagged action model still accepts the
+  existing flat JSON wire shape and preserves unsupported-action routing.
 - `/debug/actions` behavior remains covered by the existing debug smoke,
   keyboard, title, capture, and exploratory-control tests after action dispatch
   moves out of the runtime file.

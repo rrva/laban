@@ -5,10 +5,10 @@ import LabanRenderer
 import LabanTerminalCore
 
 extension HeadlessDebugRuntime {
-  func applyActionUnlocked(_ req: ActionRequest) -> DebugResponse {
-    switch req.action {
+  func applyActionUnlocked(_ action: DebugAction) -> DebugResponse {
+    switch action {
 
-    case "newTab":
+    case .newTab:
       do { try model.createTab() } catch {
         return jsonError("createTab failed: \(error)")
       }
@@ -16,7 +16,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "tab.created", tabId: model.activeTab?.id))
       return actionResult(ok: true)
 
-    case "closeTab":
+    case .closeTab(let req):
       guard let tabId = req.tabId else { return jsonError("closeTab requires tabId") }
       do { try model.closeTab(tabId) } catch {
         return jsonError("closeTab failed: \(error)")
@@ -25,14 +25,14 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "tab.closed", tabId: tabId))
       return actionResult(ok: true)
 
-    case "selectTab":
+    case .selectTab(let req):
       guard let tabId = req.tabId else { return jsonError("selectTab requires tabId") }
       model.selectTab(tabId)
       renderFrameUnlocked()
       appendEvent(EventEntry(kind: "tab.selected", tabId: tabId))
       return actionResult(ok: true)
 
-    case "setTabTitle":
+    case .setTabTitle(let req):
       let targetTabId = req.tabId ?? model.activeTab?.id
       guard let tabId = targetTabId else { return jsonError("setTabTitle requires an active tab") }
       guard let title = req.title ?? req.text else {
@@ -45,7 +45,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "tab.title.set", tabId: tabId, text: title))
       return actionResult(ok: true)
 
-    case "freezeTabTitle":
+    case .freezeTabTitle(let req):
       let targetTabId = req.tabId ?? model.activeTab?.id
       guard let tabId = targetTabId else {
         return jsonError("freezeTabTitle requires an active tab")
@@ -57,7 +57,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "tab.title.frozen", tabId: tabId))
       return actionResult(ok: true)
 
-    case "clearTabTitle":
+    case .clearTabTitle(let req):
       let targetTabId = req.tabId ?? model.activeTab?.id
       guard let tabId = targetTabId else {
         return jsonError("clearTabTitle requires an active tab")
@@ -69,7 +69,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "tab.title.cleared", tabId: tabId))
       return actionResult(ok: true)
 
-    case "setTabMetadata":
+    case .setTabMetadata(let req):
       let targetTabId = req.tabId ?? model.activeTab?.id
       guard let tabId = targetTabId else {
         return jsonError("setTabMetadata requires an active tab")
@@ -126,7 +126,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "tab.metadata.set", tabId: tabId))
       return actionResult(ok: true)
 
-    case "resizeWindow":
+    case .resizeWindow(let req):
       guard let w = req.width, let h = req.height else {
         return jsonError("resizeWindow requires width and height")
       }
@@ -143,7 +143,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "window.resized", width: windowWidth, height: windowHeight))
       return actionResult(ok: true)
 
-    case "typeText":
+    case .typeText(let req):
       guard let text = req.text else { return jsonError("typeText requires text") }
       let frameBefore = currentFrame
       let activeTab = model.activeTab
@@ -170,7 +170,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "input.typed", text: text))
       return actionResult(ok: true)
 
-    case "feedOutput":
+    case .feedOutput(let req):
       guard let text = req.text else { return jsonError("feedOutput requires text") }
       if let tab = model.activeTab, let session = model.session(forTab: tab.id) {
         let bytes = Array(text.utf8)
@@ -182,20 +182,20 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "output.fed", text: text))
       return actionResult(ok: true)
 
-    case "advanceFrames":
+    case .advanceFrames(let req):
       let count = max(req.count ?? 1, 1)
       for _ in 0..<count {
         renderFrameUnlocked()
       }
       return actionResult(ok: true)
 
-    case "setClipboardText":
+    case .setClipboardText(let req):
       guard let text = req.text else { return jsonError("setClipboardText requires text") }
       debugClipboard = text
       appendEvent(EventEntry(kind: "clipboard.set", text: text))
       return actionResult(ok: true)
 
-    case "setSelection":
+    case .setSelection(let req):
       let frameBefore = currentFrame
       guard let anchorReq = req.anchor, let focusReq = req.focus else {
         return jsonError("setSelection requires anchor and focus")
@@ -231,7 +231,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "selection.set", sessionId: tab.sessionId))
       return actionResult(ok: true)
 
-    case "copy":
+    case .copy(let req):
       let frameBefore = currentFrame
       let targetTab =
         req.sessionId.flatMap { sid in model.tabs.first(where: { $0.sessionId == sid }) }
@@ -267,7 +267,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "clipboard.copied", text: text))
       return actionResult(ok: true)
 
-    case "paste":
+    case .paste:
       let frameBefore = currentFrame
       let activeTab = model.activeTab
       // Apply the same hard-size cap that the AppKit paste path uses.
@@ -320,7 +320,7 @@ extension HeadlessDebugRuntime {
       appendEvent(EventEntry(kind: "clipboard.pasted", text: sanitized))
       return actionResult(ok: true)
 
-    case "scrollViewport":
+    case .scrollViewport(let req):
       let frameBefore = currentFrame
       let targetTab =
         req.sessionId.flatMap { sid in
@@ -347,7 +347,7 @@ extension HeadlessDebugRuntime {
         EventEntry(kind: "viewport.scrolled", sessionId: t.sessionId, deltaRows: req.deltaRows))
       return actionResult(ok: true)
 
-    case "mouseWheel":
+    case .mouseWheel(let req):
       let frameBefore = currentFrame
       guard let x = req.x, let y = req.y, let deltaY = req.deltaY else {
         return jsonError("mouseWheel requires x, y, and deltaY")
@@ -431,7 +431,7 @@ extension HeadlessDebugRuntime {
         return actionResult(ok: true)
       }
 
-    case "click":
+    case .click(let req):
       let frameBefore = currentFrame
       guard let x = req.x, let y = req.y, let button = req.button else {
         return jsonError("click requires x, y, and button")
@@ -562,7 +562,7 @@ extension HeadlessDebugRuntime {
           ))
       }
 
-    case "key":
+    case .key(let req):
       guard let keyName = req.key,
         let key = DebugRuntimeKeyInput.key(fromName: keyName)
       else {
@@ -585,7 +585,7 @@ extension HeadlessDebugRuntime {
             tabId: activeTab?.id, sessionId: activeTab?.sessionId,
             key: keyName, modifiers: req.modifiers, command: commandStr
           ))
-        appendEvent(EventEntry(kind: "input.key", text: keyName, action: req.action))
+        appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
         if route == "appCommand" {
           executeCommandKey(key)
         }
@@ -625,21 +625,21 @@ extension HeadlessDebugRuntime {
           modifiers: req.modifiers, consumedModifiers: req.consumedModifiers,
           encodedHex: encodedHex, encodedLength: encodedLength
         ))
-      appendEvent(EventEntry(kind: "input.key", text: keyName, action: req.action))
+      appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
       return actionResult(ok: true)
 
-    default:
-      appendEvent(EventEntry(kind: "action.unsupported", action: req.action))
+    case .unsupported(let actionName):
+      appendEvent(EventEntry(kind: "action.unsupported", action: actionName))
       appendError(
         kind: "action.unsupported",
-        message: "debug action \(req.action) is not implemented yet"
+        message: "debug action \(actionName) is not implemented yet"
       )
       let active = model.activeTab
       return jsonEncode(
         ActionResult(
           ok: false, frame: currentFrame,
           activeTabId: active?.id, activeSessionId: active?.sessionId,
-          error: "debug action \(req.action) is not implemented yet"
+          error: "debug action \(actionName) is not implemented yet"
         ))
     }
   }

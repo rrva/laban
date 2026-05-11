@@ -5,28 +5,93 @@ struct CellCoordinateReq: Decodable {
   var col: Int
 }
 
-struct ActionRequest: Decodable {
-  var action: String
+enum DebugAction: Decodable {
+  case newTab
+  case closeTab(TabTargetActionRequest)
+  case selectTab(TabTargetActionRequest)
+  case setTabTitle(TabTitleActionRequest)
+  case freezeTabTitle(TabTitleActionRequest)
+  case clearTabTitle(TabTargetActionRequest)
+  case setTabMetadata(TabMetadataActionRequest)
+  case resizeWindow(ResizeWindowActionRequest)
+  case typeText(TextActionRequest)
+  case feedOutput(TextActionRequest)
+  case advanceFrames(AdvanceFramesActionRequest)
+  case setClipboardText(TextActionRequest)
+  case setSelection(SelectionActionRequest)
+  case copy(SessionTargetActionRequest)
+  case paste
+  case scrollViewport(ScrollViewportActionRequest)
+  case mouseWheel(MouseWheelActionRequest)
+  case click(ClickActionRequest)
+  case key(DebugKeyActionRequest)
+  case unsupported(String)
+
+  private enum CodingKeys: String, CodingKey {
+    case action
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let action = try container.decode(String.self, forKey: .action)
+    switch action {
+    case "newTab":
+      self = .newTab
+    case "closeTab":
+      self = .closeTab(try TabTargetActionRequest(from: decoder))
+    case "selectTab":
+      self = .selectTab(try TabTargetActionRequest(from: decoder))
+    case "setTabTitle":
+      self = .setTabTitle(try TabTitleActionRequest(from: decoder))
+    case "freezeTabTitle":
+      self = .freezeTabTitle(try TabTitleActionRequest(from: decoder))
+    case "clearTabTitle":
+      self = .clearTabTitle(try TabTargetActionRequest(from: decoder))
+    case "setTabMetadata":
+      self = .setTabMetadata(try TabMetadataActionRequest(from: decoder))
+    case "resizeWindow":
+      self = .resizeWindow(try ResizeWindowActionRequest(from: decoder))
+    case "typeText":
+      self = .typeText(try TextActionRequest(from: decoder))
+    case "feedOutput":
+      self = .feedOutput(try TextActionRequest(from: decoder))
+    case "advanceFrames":
+      self = .advanceFrames(try AdvanceFramesActionRequest(from: decoder))
+    case "setClipboardText":
+      self = .setClipboardText(try TextActionRequest(from: decoder))
+    case "setSelection":
+      self = .setSelection(try SelectionActionRequest(from: decoder))
+    case "copy":
+      self = .copy(try SessionTargetActionRequest(from: decoder))
+    case "paste":
+      self = .paste
+    case "scrollViewport":
+      self = .scrollViewport(try ScrollViewportActionRequest(from: decoder))
+    case "mouseWheel":
+      self = .mouseWheel(try MouseWheelActionRequest(from: decoder))
+    case "click":
+      self = .click(try ClickActionRequest(from: decoder))
+    case "key":
+      self = .key(try DebugKeyActionRequest(from: decoder))
+    default:
+      self = .unsupported(action)
+    }
+  }
+}
+
+struct TabTargetActionRequest: Decodable {
   var tabId: String?
-  var width: Int?
-  var height: Int?
-  var text: String?
+}
+
+struct TabTitleActionRequest: Decodable {
+  var tabId: String?
   var title: String?
+  var text: String?
   var frozen: Bool?
-  var count: Int?
-  var key: String?
-  var type: String?
-  var modifiers: [String]?
-  var consumedModifiers: [String]?
-  var unshifted: String?
-  var x: Int?
-  var y: Int?
-  var deltaY: Double?
-  var button: String?
-  var sessionId: String?
-  var deltaRows: Int?
-  var anchor: CellCoordinateReq?
-  var focus: CellCoordinateReq?
+}
+
+struct TabMetadataActionRequest: Decodable {
+  var tabId: String?
   var cwd: String?
   var repoName: String?
   var repoRoot: String?
@@ -46,6 +111,55 @@ struct ActionRequest: Decodable {
   var activityState: String?
   var unseenOutput: Bool?
   var exitStatus: Int?
+}
+
+struct ResizeWindowActionRequest: Decodable {
+  var width: Int?
+  var height: Int?
+}
+
+struct TextActionRequest: Decodable {
+  var text: String?
+}
+
+struct AdvanceFramesActionRequest: Decodable {
+  var count: Int?
+}
+
+struct DebugKeyActionRequest: Decodable {
+  var key: String?
+  var type: String?
+  var modifiers: [String]?
+  var consumedModifiers: [String]?
+  var unshifted: String?
+  var text: String?
+}
+
+struct MouseWheelActionRequest: Decodable {
+  var x: Int?
+  var y: Int?
+  var deltaY: Double?
+}
+
+struct ClickActionRequest: Decodable {
+  var x: Int?
+  var y: Int?
+  var button: String?
+}
+
+struct SelectionActionRequest: Decodable {
+  var sessionId: String?
+  var anchor: CellCoordinateReq?
+  var focus: CellCoordinateReq?
+}
+
+struct SessionTargetActionRequest: Decodable {
+  var sessionId: String?
+}
+
+struct ScrollViewportActionRequest: Decodable {
+  var sessionId: String?
+  var deltaRows: Int?
 }
 
 struct CaptureStartRequest: Decodable {

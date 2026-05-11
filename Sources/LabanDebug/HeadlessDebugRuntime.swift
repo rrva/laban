@@ -1198,11 +1198,11 @@ public final class HeadlessDebugRuntime {
   public func applyAction(_ data: Data) -> DebugResponse {
     lock.lock()
     defer { lock.unlock() }
-    guard let req = try? JSONDecoder().decode(ActionRequest.self, from: data) else {
+    guard let action = try? JSONDecoder().decode(DebugAction.self, from: data) else {
       appendError(kind: "action.invalid", message: "invalid action request")
       return jsonError("invalid action request")
     }
-    return applyActionUnlocked(req)
+    return applyActionUnlocked(action)
   }
 
   func actionResult(ok: Bool) -> DebugResponse {
