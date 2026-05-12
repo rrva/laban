@@ -10,6 +10,50 @@ private struct HTTPResponse {
   var body: Data
 }
 
+private struct DebugHTTPRequest {
+  var query: [String: String]
+  var body: Data
+}
+
+private struct DebugRouteMatch {
+  var sessionId: String?
+}
+
+private struct DebugHTTPRoute {
+  var endpoint: DebugDiscoveryEndpoint
+  var match: (String, String) -> DebugRouteMatch?
+  var handle: (HeadlessDebugRuntime, DebugHTTPRequest, DebugRouteMatch) -> HTTPResponse
+
+  init(
+    method: String,
+    path: String,
+    category: String,
+    summary: String,
+    queryParameters: [String] = [],
+    requestSchema: String? = nil,
+    responseSchema: String? = nil,
+    match: ((String, String) -> DebugRouteMatch?)? = nil,
+    handle: @escaping (HeadlessDebugRuntime, DebugHTTPRequest, DebugRouteMatch) -> HTTPResponse
+  ) {
+    self.endpoint = DebugDiscoveryEndpoint(
+      method: method,
+      path: path,
+      category: category,
+      summary: summary,
+      queryParameters: queryParameters,
+      requestSchema: requestSchema,
+      responseSchema: responseSchema)
+    if let match {
+      self.match = match
+    } else {
+      self.match = { requestMethod, requestPath in
+        requestMethod == method && requestPath == path ? DebugRouteMatch() : nil
+      }
+    }
+    self.handle = handle
+  }
+}
+
 // MARK: - Server
 
 public final class DebugHTTPServer {
@@ -26,6 +70,299 @@ public final class DebugHTTPServer {
   public init(runtime: HeadlessDebugRuntime) {
     self.runtime = runtime
   }
+
+  static var discoveryEndpoints: [DebugDiscoveryEndpoint] {
+    routes.map(\.endpoint)
+  }
+
+  private static let routes: [DebugHTTPRoute] = [
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug",
+      category: "discovery",
+      summary: "List the live debug endpoints, controls, and command examples.",
+      responseSchema: "schemas/debug/discovery.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.discovery())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/capabilities",
+      category: "discovery",
+      summary: "Alias for /debug for agents that look for a capabilities document.",
+      responseSchema: "schemas/debug/discovery.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.discovery())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/health",
+      category: "readiness",
+      summary: "Check whether the process is ready and report the current frame."
+    ) { runtime, _, _ in
+      json(runtime.health())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/state",
+      category: "state",
+      summary: "Return tabs, active session identity, window size, and focus state.",
+      responseSchema: "schemas/debug/state.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.state())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/screenshot",
+      category: "artifacts",
+      summary: "Return the current rendered surface as PNG bytes."
+    ) { runtime, _, _ in
+      do {
+        let (data, frame, width, height) = try runtime.screenshotBytes()
+        return HTTPResponse(
+          status: 200, contentType: "image/png",
+          extraHeaders: [
+            "X-App-Frame: \(frame)",
+            "X-App-Size: \(width)x\(height)",
+          ],
+          body: data
+        )
+      } catch {
+        return json(jsonError("screenshot failed: \(error)", status: 500))
+      }
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/screenshot",
+      category: "artifacts",
+      summary: "Write a screenshot PNG under the artifact directory.",
+      responseSchema: "schemas/debug/screenshot-result.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.writeScreenshotArtifact())
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/actions",
+      category: "control",
+      summary: "Drive tabs, input, mouse, clipboard, selection, and frames.",
+      requestSchema: "schemas/debug/action.schema.json",
+      responseSchema: "schemas/debug/action-result.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.applyAction(request.body))
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/wait",
+      category: "control",
+      summary: "Block until a frame, state, text, event, or render condition is true.",
+      requestSchema: "schemas/debug/wait.schema.json",
+      responseSchema: "schemas/debug/wait-result.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.wait(request.body))
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/sessions",
+      category: "state",
+      summary: "Return terminal-session lifecycle and metadata for all tabs.",
+      responseSchema: "schemas/debug/sessions.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.sessions())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/sessions/<id>",
+      category: "state",
+      summary: "Return one terminal session, optionally with bounded visible-grid cells.",
+      queryParameters: ["includeGrid"],
+      responseSchema: "schemas/debug/session.schema.json",
+      match: { requestMethod, requestPath in
+        guard requestMethod == "GET", requestPath.hasPrefix("/debug/sessions/") else {
+          return nil
+        }
+        let rawId = String(requestPath.dropFirst("/debug/sessions/".count))
+        return DebugRouteMatch(sessionId: rawId.removingPercentEncoding ?? rawId)
+      },
+      handle: { runtime, request, match in
+        json(runtime.session(id: match.sessionId ?? "", query: request.query))
+      }
+    ),
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/render",
+      category: "rendering",
+      summary: "Return surface, viewport, cell size, damage, and draw stats.",
+      responseSchema: "schemas/debug/render.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.renderState())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/frame-commands",
+      category: "rendering",
+      summary: "Return bounded frame commands, optionally filtered by source.",
+      queryParameters: ["source", "limit"],
+      responseSchema: "schemas/debug/frame-commands.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.frameCommands(query: request.query))
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/render-trace",
+      category: "rendering",
+      summary: "Return render contributors, resources, passes, probes, and invariants.",
+      requestSchema: "schemas/debug/render-trace-request.schema.json",
+      responseSchema: "schemas/debug/render-trace.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.renderTrace(request.body))
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/pixel-probe",
+      category: "exploration",
+      summary: "Sample exact pixels and rectangular regions from the rendered surface.",
+      requestSchema: "schemas/debug/pixel-probe.schema.json",
+      responseSchema: "schemas/debug/pixel-probe-result.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.pixelProbe(request.body))
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/atlas",
+      category: "rendering",
+      summary: "Return font, cell, and glyph diagnostics for the active renderer.",
+      responseSchema: "schemas/debug/atlas.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.atlas())
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/snapshot",
+      category: "exploration",
+      summary: "Write a one-shot diagnostic bundle with JSON state and a screenshot.",
+      responseSchema: "schemas/debug/snapshot-result.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.artifactSnapshot())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/events",
+      category: "logs",
+      summary: "Return bounded app/debug events after a sequence number.",
+      queryParameters: ["since"],
+      responseSchema: "schemas/debug/events.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.events(since: request.query["since"].flatMap { Int($0) } ?? 0))
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/input-log",
+      category: "logs",
+      summary: "Return keyboard/text routing diagnostics after a sequence number.",
+      queryParameters: ["since"],
+      responseSchema: "schemas/debug/input-log.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.inputLogResponse(since: request.query["since"].flatMap { Int($0) } ?? 0))
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/terminal-log",
+      category: "logs",
+      summary: "Return bounded escaped terminal input/output byte-flow diagnostics.",
+      queryParameters: ["sessionId", "since", "limit"],
+      responseSchema: "schemas/debug/terminal-log.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.terminalLogResponse(query: request.query))
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/timing",
+      category: "logs",
+      summary: "Return frame and endpoint timing fields for sluggishness diagnosis.",
+      responseSchema: "schemas/debug/timing.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.timingResponse())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/metrics",
+      category: "logs",
+      summary: "Return local counters for frames, input, terminal bytes, and draw work.",
+      responseSchema: "schemas/debug/metrics.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.metricsResponse())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/errors",
+      category: "logs",
+      summary: "Return structured warnings and errors after a sequence number.",
+      queryParameters: ["since"],
+      responseSchema: "schemas/debug/errors.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.errors(since: request.query["since"].flatMap { Int($0) } ?? 0))
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/fixture",
+      category: "control",
+      summary: "Load, restart, or step fixture sessions without restarting the server.",
+      requestSchema: "schemas/debug/fixture-control.schema.json",
+      responseSchema: "schemas/debug/fixture-control.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.fixtureControl(request.body))
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/capture/status",
+      category: "capture",
+      summary: "Return whether full capture recording is active."
+    ) { runtime, _, _ in
+      json(runtime.captureStatus())
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/capture/start",
+      category: "capture",
+      summary: "Start full capture recording under the artifact directory."
+    ) { runtime, request, _ in
+      json(runtime.startCapture(request.body))
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/capture/stop",
+      category: "capture",
+      summary: "Stop full capture recording and return manifest metadata."
+    ) { runtime, _, _ in
+      json(runtime.stopCapture())
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/capture/snapshot",
+      category: "capture",
+      summary: "Write a snapshot inside the active capture run."
+    ) { runtime, _, _ in
+      json(runtime.captureSnapshot())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/selection",
+      category: "state",
+      summary: "Return the current terminal selection projection.",
+      responseSchema: "schemas/debug/selection.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.selection())
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/clipboard",
+      category: "state",
+      summary: "Return debug clipboard copy/paste diagnostics.",
+      responseSchema: "schemas/debug/clipboard.schema.json"
+    ) { runtime, _, _ in
+      json(runtime.clipboard())
+    },
+  ]
 
   public func start(host: String, port: UInt16) throws -> DebugReadiness {
     guard host == "127.0.0.1" || host == "localhost" else {
@@ -212,116 +549,18 @@ public final class DebugHTTPServer {
         body: #"{"error":"missing or invalid bearer token"}"#.data(using: .utf8)!)
     }
 
-    switch (method, path) {
-    case ("GET", "/debug"), ("GET", "/debug/capabilities"):
-      return json(runtime.discovery())
-
-    case ("GET", "/debug/health"):
-      return json(runtime.health())
-
-    case ("GET", "/debug/state"):
-      return json(runtime.state())
-
-    case ("GET", "/debug/screenshot"):
-      do {
-        let (data, frame, width, height) = try runtime.screenshotBytes()
-        return HTTPResponse(
-          status: 200, contentType: "image/png",
-          extraHeaders: [
-            "X-App-Frame: \(frame)",
-            "X-App-Size: \(width)x\(height)",
-          ],
-          body: data
-        )
-      } catch {
-        return json(jsonError("screenshot failed: \(error)", status: 500))
+    let request = DebugHTTPRequest(query: query, body: body)
+    for route in Self.routes {
+      if let match = route.match(method, path) {
+        return route.handle(runtime, request, match)
       }
-
-    case ("POST", "/debug/screenshot"):
-      return json(runtime.writeScreenshotArtifact())
-
-    case ("POST", "/debug/actions"):
-      return json(runtime.applyAction(body))
-
-    case ("GET", "/debug/sessions"):
-      return json(runtime.sessions())
-
-    case ("GET", let sessionPath) where sessionPath.hasPrefix("/debug/sessions/"):
-      let rawId = String(sessionPath.dropFirst("/debug/sessions/".count))
-      let id = rawId.removingPercentEncoding ?? rawId
-      return json(runtime.session(id: id, query: query))
-
-    case ("GET", "/debug/render"):
-      return json(runtime.renderState())
-
-    case ("GET", "/debug/frame-commands"):
-      return json(runtime.frameCommands(query: query))
-
-    case ("POST", "/debug/render-trace"):
-      return json(runtime.renderTrace(body))
-
-    case ("POST", "/debug/pixel-probe"):
-      return json(runtime.pixelProbe(body))
-
-    case ("GET", "/debug/atlas"):
-      return json(runtime.atlas())
-
-    case ("POST", "/debug/wait"):
-      return json(runtime.wait(body))
-
-    case ("POST", "/debug/fixture"):
-      return json(runtime.fixtureControl(body))
-
-    case ("POST", "/debug/snapshot"):
-      return json(runtime.artifactSnapshot())
-
-    case ("GET", "/debug/events"):
-      let since = query["since"].flatMap { Int($0) } ?? 0
-      return json(runtime.events(since: since))
-
-    case ("GET", "/debug/input-log"):
-      let since = query["since"].flatMap { Int($0) } ?? 0
-      return json(runtime.inputLogResponse(since: since))
-
-    case ("GET", "/debug/terminal-log"):
-      return json(runtime.terminalLogResponse(query: query))
-
-    case ("GET", "/debug/timing"):
-      return json(runtime.timingResponse())
-
-    case ("GET", "/debug/metrics"):
-      return json(runtime.metricsResponse())
-
-    case ("GET", "/debug/errors"):
-      let since = query["since"].flatMap { Int($0) } ?? 0
-      return json(runtime.errors(since: since))
-
-    case ("GET", "/debug/capture/status"):
-      return json(runtime.captureStatus())
-
-    case ("POST", "/debug/capture/start"):
-      return json(runtime.startCapture(body))
-
-    case ("POST", "/debug/capture/stop"):
-      return json(runtime.stopCapture())
-
-    case ("POST", "/debug/capture/snapshot"):
-      return json(runtime.captureSnapshot())
-
-    case ("GET", "/debug/selection"):
-      return json(runtime.selection())
-
-    case ("GET", "/debug/clipboard"):
-      return json(runtime.clipboard())
-
-    default:
-      return json(jsonError("not found", status: 404))
     }
+    return Self.json(jsonError("not found", status: 404))
   }
 
   // MARK: - Helpers
 
-  private func json(_ r: DebugResponse) -> HTTPResponse {
+  private static func json(_ r: DebugResponse) -> HTTPResponse {
     HTTPResponse(status: r.status, contentType: "application/json", extraHeaders: [], body: r.body)
   }
 

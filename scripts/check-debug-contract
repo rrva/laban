@@ -6,17 +6,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs/process/dev-process.md"
-RUNTIME = ROOT / "Sources/LabanDebug/HeadlessDebugRuntime.swift"
-SERVER = ROOT / "Sources/LabanDebug/DebugHTTPServer.swift"
+ROUTES = ROOT / "Sources/LabanDebug/DebugHTTPServer.swift"
 
 DOC_ENDPOINT = re.compile(r"`(GET|POST) (/debug[^`\s]+)`")
-DISCOVERY_ENDPOINT = re.compile(
-    r'DebugDiscoveryEndpoint\(\s*method:\s*"(?P<method>GET|POST)",\s*'
+ROUTE_ENDPOINT = re.compile(
+    r'DebugHTTPRoute\(\s*method:\s*"(?P<method>GET|POST)",\s*'
     r'path:\s*"(?P<path>[^"]+)"',
     re.S,
 )
-DISCOVERY_SCHEMA = re.compile(r'(?:requestSchema|responseSchema):\s*"([^"]+)"')
-ROUTE_CASE = re.compile(r'\("(?P<method>GET|POST)",\s*"(?P<path>/debug[^"]*)"\)')
+ROUTE_SCHEMA = re.compile(r'(?:requestSchema|responseSchema):\s*"([^"]+)"')
 
 
 def normalize_path(path: str) -> str:
@@ -31,46 +29,31 @@ def doc_endpoints() -> set[tuple[str, str]]:
     }
 
 
-def discovery_endpoints() -> set[tuple[str, str]]:
-    text = RUNTIME.read_text(encoding="utf-8")
+def route_endpoints() -> set[tuple[str, str]]:
+    text = ROUTES.read_text(encoding="utf-8")
     return {
         (match.group("method"), match.group("path"))
-        for match in DISCOVERY_ENDPOINT.finditer(text)
+        for match in ROUTE_ENDPOINT.finditer(text)
     }
 
 
-def discovery_schemas() -> set[str]:
-    text = RUNTIME.read_text(encoding="utf-8")
-    return set(DISCOVERY_SCHEMA.findall(text))
-
-
-def router_endpoints() -> set[tuple[str, str]]:
-    text = SERVER.read_text(encoding="utf-8")
-    endpoints = {
-        (match.group("method"), match.group("path"))
-        for match in ROUTE_CASE.finditer(text)
-    }
-    if 'hasPrefix("/debug/sessions/")' in text:
-        endpoints.add(("GET", "/debug/sessions/<id>"))
-    return endpoints
+def route_schemas() -> set[str]:
+    text = ROUTES.read_text(encoding="utf-8")
+    return set(ROUTE_SCHEMA.findall(text))
 
 
 def main() -> int:
     errors: list[str] = []
 
     docs = doc_endpoints()
-    discovery = discovery_endpoints()
-    router = router_endpoints()
+    routes = route_endpoints()
 
-    for endpoint in sorted(docs - discovery):
-        errors.append(f"documented endpoint missing from discovery: {endpoint[0]} {endpoint[1]}")
+    for endpoint in sorted(docs - routes):
+        errors.append(f"documented endpoint missing from route table: {endpoint[0]} {endpoint[1]}")
 
-    for endpoint in sorted(discovery - router):
-        errors.append(f"discovered endpoint missing from router: {endpoint[0]} {endpoint[1]}")
-
-    for schema in sorted(discovery_schemas()):
+    for schema in sorted(route_schemas()):
         if not (ROOT / schema).is_file():
-            errors.append(f"discovery references missing schema: {schema}")
+            errors.append(f"route table references missing schema: {schema}")
 
     if errors:
         for error in errors:
