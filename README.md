@@ -137,3 +137,15 @@ The selected implementation optimizes for:
 MVP behavior is not done until an agent can launch the app in headless mode,
 drive it through debug actions, query internal state, capture screenshots, and
 run the same flow in CI..
+
+## License
+
+Laban is released under the MIT license; see `LICENSE`.
+
+JetBrains Mono (`Sources/LabanRenderer/Resources/JetBrainsMono-Regular.ttf`)
+is licensed under the SIL Open Font License 1.1; see
+`Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt`.
+
+libghostty-vt, fetched at build time into `.external/libghostty-vt/`, is
+licensed under the MIT license (© 2024 Mitchell Hashimoto, Ghostty
+contributors).

@@ -32,6 +32,7 @@ let package = Package(
       dependencies: [],
       resources: [
         .copy("Resources/JetBrainsMono-Regular.ttf"),
+        .copy("Resources/JetBrainsMono-OFL.txt"),
         .process("Shaders.metal"),
       ]
     ),
