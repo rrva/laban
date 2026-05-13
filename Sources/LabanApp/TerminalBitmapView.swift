@@ -501,21 +501,40 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let createResult = CVDisplayLinkCreateWithActiveCGDisplays(&link)
     guard createResult == kCVReturnSuccess, let link else { return }
 
-    let opaqueSelf = Unmanaged.passUnretained(self).toOpaque()
+    // The previous implementation passed `Unmanaged.passUnretained(self)`
+    // straight to the CVDisplayLink. That left the view's lifetime racing the
+    // display-link thread: `CVDisplayLinkStop` is documented as *not*
+    // synchronous against an in-flight output callback, so a callback already
+    // past `takeUnretainedValue` on a now-deallocated view would crash.
+    // Indirect through a small proxy with a weak ref instead; the proxy is
+    // retained for the lifetime of the link's userInfo and the weak ref
+    // nils out cleanly when the view deinits.
+    let proxy = CVDisplayLinkProxy(self)
+    let opaqueProxy = Unmanaged.passRetained(proxy).toOpaque()
     let setCallbackResult = CVDisplayLinkSetOutputCallback(
       link,
       { (_, _, _, _, _, userInfo) -> CVReturn in
         guard let userInfo else { return kCVReturnSuccess }
-        let view = Unmanaged<TerminalBitmapView>.fromOpaque(userInfo).takeUnretainedValue()
+        let proxy = Unmanaged<CVDisplayLinkProxy>.fromOpaque(userInfo)
+          .takeUnretainedValue()
+        guard let view = proxy.view else { return kCVReturnSuccess }
         // Vsync callback runs on a dedicated high-priority thread; bounce to
         // main where AppKit, the model, and the renderer must be touched.
         DispatchQueue.main.async { view.advanceFrame() }
         return kCVReturnSuccess
       },
-      opaqueSelf
+      opaqueProxy
     )
-    guard setCallbackResult == kCVReturnSuccess else { return }
+    guard setCallbackResult == kCVReturnSuccess else {
+      Unmanaged<CVDisplayLinkProxy>.fromOpaque(opaqueProxy).release()
+      return
+    }
 
+    // The retain on `proxy` is intentionally not balanced: there is no
+    // public API to wait for an in-flight CVDisplayLink callback to drain,
+    // so any release would race UAF on the proxy itself. The proxy is a
+    // ~24-byte object; leaking one per display-link start (typically
+    // once per view per window attach) is the documented trade.
     cvDisplayLink = link
     CVDisplayLinkStart(link)
   }
@@ -2295,4 +2314,14 @@ extension NSEvent {
   fileprivate var labanModifiers: Int {
     TerminalMouseInput.ghosttyModifierMask(from: modifierFlags)
   }
+}
+
+// MARK: - CVDisplayLink lifetime indirection
+
+/// Weak-ref holder used as the userInfo for `CVDisplayLinkSetOutputCallback`.
+/// The proxy is retained for the link's lifetime; the weak `view` makes
+/// callbacks that fire after the view is gone harmless.
+private final class CVDisplayLinkProxy {
+  weak var view: TerminalBitmapView?
+  init(_ view: TerminalBitmapView) { self.view = view }
 }
