@@ -12,10 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.15.2
+      - name: Install Zig 0.15
+        run: brew install zig@0.15
 
       - name: Fetch and build libghostty-vt
         run: ./scripts/fetch-libghostty-vt
