@@ -69,10 +69,11 @@ Write a new ADR when a change establishes durable architectural policy, reverses
 ## Worktree Setup
 
 Git worktrees do not clone `.external/`. If `.external/` is missing and the
-build fails, symlink it from the main repo rather than re-fetching:
+build fails, symlink it from the main repo rather than re-fetching (substitute
+the absolute path to your primary checkout):
 
 ```sh
-ln -s /Users/rrj/wrk/laban/.external .external
+ln -s "$LABAN_MAIN_REPO/.external" .external
 ```
 
 `.external/` contains vendored native libraries (currently `libghostty-vt`)
