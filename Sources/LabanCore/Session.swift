@@ -344,6 +344,17 @@ public final class Session {
     return ViewportState(from: vs)
   }
 
+  /// Snap the viewport to the active bottom if it is currently showing older
+  /// scrollback. Returns the row delta applied through `scrollViewport`.
+  @discardableResult
+  public func scrollViewportToActiveBottom() -> Int {
+    guard let state = viewportState() else { return 0 }
+    let deltaRows = state.scrollDeltaToActiveBottom
+    guard deltaRows > 0 else { return 0 }
+    scrollViewport(deltaRows: deltaRows)
+    return deltaRows
+  }
+
   public var synchronizedOutputActive: Bool {
     guard !isClosed, let h = handle else { return false }
     var active: Int32 = 0
@@ -786,6 +797,23 @@ public struct ViewportState {
     viewportOffset = Int(raw.viewport_offset)
     viewportRows = Int(raw.viewport_rows)
     mouseTracking = raw.mouse_tracking != 0
+  }
+
+  public static func scrollDeltaToActiveBottom(
+    viewportOffset: Int,
+    totalRows: Int,
+    viewportRows: Int
+  ) -> Int {
+    let bottomOffset = max(0, totalRows - viewportRows)
+    return max(0, bottomOffset - viewportOffset)
+  }
+
+  public var scrollDeltaToActiveBottom: Int {
+    Self.scrollDeltaToActiveBottom(
+      viewportOffset: viewportOffset,
+      totalRows: totalRows,
+      viewportRows: viewportRows
+    )
   }
 }
 

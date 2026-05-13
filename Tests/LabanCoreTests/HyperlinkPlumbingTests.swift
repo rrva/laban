@@ -102,4 +102,47 @@ final class HyperlinkPlumbingTests: XCTestCase {
       "https://example.com/docs")
     XCTAssertNil(TerminalHyperlink.uri(atRow: 0, col: 7, in: snap.pointee))
   }
+
+  func testPlainHTTPURLHitTestReturnsURLUnderCell() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("visit https://example.com/docs, ok\r\n".utf8))
+    session.poll()
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    XCTAssertNil(TerminalHyperlink.uri(atRow: 0, col: 1, in: snap.pointee))
+    XCTAssertEqual(
+      TerminalHyperlink.uri(atRow: 0, col: 6, in: snap.pointee),
+      "https://example.com/docs")
+    XCTAssertEqual(
+      TerminalHyperlink.uri(atRow: 0, col: 29, in: snap.pointee),
+      "https://example.com/docs")
+    XCTAssertNil(
+      TerminalHyperlink.uri(atRow: 0, col: 30, in: snap.pointee),
+      "trailing punctuation is not part of the clickable URL")
+  }
+
+  func testPlainHTTPURLHitTestIgnoresInvalidBrowserURL() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("bad http:// ok\r\n".utf8))
+    session.poll()
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    XCTAssertNil(TerminalHyperlink.uri(atRow: 0, col: 4, in: snap.pointee))
+  }
 }

@@ -1212,6 +1212,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId)
     else { return }
+    if event.action != .release {
+      followActiveBottomBeforeTerminalInput(session: session)
+    }
     let sent = session.sendKeyCapturingBytes(event)
     let bytes = sent.result == 0 ? sent.bytes : []
     recordInput(
@@ -1228,8 +1231,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func sendBytes(_ bytes: [UInt8]) {
-    guard let tabId = model.activeTab?.id else { return }
-    model.session(forTab: tabId)?.write(bytes)
+    guard let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId)
+    else { return }
+    followActiveBottomBeforeTerminalInput(session: session)
+    session.write(bytes)
     recordInput(
       kind: "text",
       route: "terminal",
@@ -1400,6 +1406,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       }
     }
 
+    followActiveBottomBeforeTerminalInput(session: session)
     let sent = session.writePasteCapturingBytes(sanitized)
     EventLog.shared.log(
       "paste",
@@ -1419,6 +1426,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func forwardClipboardImagePasteToTerminal(session: Session) {
+    followActiveBottomBeforeTerminalInput(session: session)
     let event = KeyEvent(action: .press, key: .v, modifiers: .control)
     let sent = session.sendKeyCapturingBytes(event)
     EventLog.shared.log(
@@ -2105,6 +2113,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if resetOnClamp && reconciled.clamped {
       resetSmoothScrollState(to: reconciled.actualAppliedRows)
     }
+  }
+
+  private func followActiveBottomBeforeTerminalInput(session: Session) {
+    let deltaRows = session.scrollViewportToActiveBottom()
+    guard deltaRows > 0 else { return }
+    resetSmoothScrollState(to: 0)
+    scrollResidualPx = 0
+    scrollAnimating = false
+    renderInvalidated = true
   }
 
   /// Build the renderer-facing selection from view-state, translating each

@@ -15,6 +15,7 @@ struct DebugInputActions {
     let activeTab = runtime.model.activeTab
     let bytes = Array(text.utf8)
     if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id) {
+      session.scrollViewportToActiveBottom()
       session.write(bytes)
       runtime.model.noteOutput(forTab: tab.id)
       runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
@@ -95,6 +96,9 @@ struct DebugInputActions {
     var encodedHex: String? = nil
     var encodedLength: Int? = nil
     if let tab = activeTab, let session = runtime.model.session(forTab: tab.id) {
+      if action != .release {
+        session.scrollViewportToActiveBottom()
+      }
       let sent = session.sendKeyCapturingBytes(keyEvent)
       if sent.result == 0, !sent.bytes.isEmpty {
         encodedHex = sent.bytes.map { String(format: "%02x", $0) }.joined()

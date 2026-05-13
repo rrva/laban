@@ -554,6 +554,50 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(s["viewportOffset"] as? Int ?? -1, 0)
   }
 
+  func testRuntimeTypingAfterScrollbackReturnsViewportToBottom() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-input-follow-bottom"
+    )
+
+    let history = (1...100).map { "line \($0)" }.joined(separator: "\r\n") + "\r\n"
+    let historyAction = try JSONSerialization.data(
+      withJSONObject: ["action": "feedOutput", "text": history])
+    _ = runtime.applyAction(historyAction)
+    _ = runtime.applyAction(#"{"action":"scrollViewport","deltaRows":-12}"#.data(using: .utf8)!)
+
+    func firstSession() throws -> [String: Any] {
+      let resp = runtime.sessions()
+      let obj = try JSONSerialization.jsonObject(with: resp.body) as! [String: Any]
+      let sessions = obj["sessions"] as! [[String: Any]]
+      guard let session = sessions.first else {
+        throw NSError(domain: "LabanDebugSmokeTests", code: 1)
+      }
+      return session
+    }
+
+    let scrolled = try firstSession()
+    let scrolledOffset = scrolled["viewportOffset"] as? Int ?? 0
+    let scrolledBottom = scrolled["scrollbackLines"] as? Int ?? 0
+    XCTAssertLessThan(scrolledOffset, scrolledBottom)
+
+    _ = runtime.applyAction(
+      #"{"action":"typeText","text":"printf 'bottom\\n'\n"}"#.data(using: .utf8)!)
+
+    let followed = try firstSession()
+    XCTAssertEqual(
+      followed["viewportOffset"] as? Int,
+      followed["scrollbackLines"] as? Int
+    )
+  }
+
   func testRuntimeUnsupportedActionReturnsOkFalse() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")

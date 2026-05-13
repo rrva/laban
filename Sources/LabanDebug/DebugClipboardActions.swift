@@ -68,6 +68,7 @@ struct DebugClipboardActions {
       if sanitized.isEmpty {
         result = nil
       } else {
+        session.scrollViewportToActiveBottom()
         let sent = session.writePasteCapturingBytes(sanitized)
         result = sent.result
         encodedBytes = sent.bytes
