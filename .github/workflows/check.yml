@@ -54,12 +54,28 @@ jobs:
       # mtime to its last-commit time is deterministic across runs.
       - name: Restore source mtimes
         run: |
-          git ls-tree -r HEAD --name-only | while read -r f; do
-            [ -e "$f" ] || continue
-            ts=$(git log -1 --format=%ct -- "$f") || continue
-            [ -n "$ts" ] || continue
-            touch -t "$(date -ujf %s "$ts" +%Y%m%d%H%M.%S)" "$f"
-          done
+          python3 - <<'PY'
+          import os, subprocess
+          out = subprocess.run(
+              ["git", "log", "--pretty=format:%ct", "--name-only"],
+              capture_output=True, text=True, check=True,
+          ).stdout
+          ts = None
+          mtimes = {}
+          for line in out.splitlines():
+              line = line.strip()
+              if not line:
+                  continue
+              if line.isdigit():
+                  ts = int(line)
+              elif line not in mtimes:
+                  mtimes[line] = ts
+          for path, t in mtimes.items():
+              try:
+                  os.utime(path, (t, t))
+              except FileNotFoundError:
+                  pass
+          PY
 
       - name: Cache libghostty-vt artifact
         id: cache-vt
