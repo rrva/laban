@@ -30,11 +30,14 @@ public struct CaptureReplayReport: Codable, Equatable, Sendable {
 
 public enum CaptureReplayError: Error, Equatable, CustomStringConvertible, Sendable {
   case malformedTimelineLine(line: Int, message: String)
+  case pathOutsideCaptureRoot(String)
 
   public var description: String {
     switch self {
     case .malformedTimelineLine(let line, let message):
       return "malformed timeline line \(line): \(message)"
+    case .pathOutsideCaptureRoot(let path):
+      return "timeline path escapes capture root: \(path)"
     }
   }
 }
@@ -580,19 +583,39 @@ public final class CaptureReplayRunner {
   }
 
   private func loadFrameCommands(relativePath: String) throws -> CapturedFrameCommands {
-    let data = try Data(contentsOf: captureURL.appendingPathComponent(relativePath))
+    let data = try Data(contentsOf: sidecarURL(relativePath: relativePath))
     return try JSONDecoder().decode(CapturedFrameCommands.self, from: data)
   }
 
   private func loadTerminalSnapshot(relativePath: String) throws -> ReplayTerminalSnapshot {
-    let data = try Data(contentsOf: captureURL.appendingPathComponent(relativePath))
+    let data = try Data(contentsOf: sidecarURL(relativePath: relativePath))
     return try JSONDecoder().decode(ReplayTerminalSnapshot.self, from: data)
   }
 
   private func readSidecarBytes(relativePath: String, offset: Int, length: Int) throws -> [UInt8] {
-    let data = try Data(contentsOf: captureURL.appendingPathComponent(relativePath))
-    guard offset >= 0, length >= 0, offset + length <= data.count else { return [] }
+    let data = try Data(contentsOf: sidecarURL(relativePath: relativePath))
+    guard offset >= 0, length >= 0, offset <= data.count, length <= data.count - offset else {
+      return []
+    }
     return Array(data[offset..<(offset + length)])
+  }
+
+  /// Resolve `relativePath` against the capture root and reject paths that
+  /// escape it via `..` or symlink. The timeline's `path` field is otherwise
+  /// trusted directly by `Data(contentsOf:)`, which would read any file the
+  /// running user can read when given a tampered capture.
+  private func sidecarURL(relativePath: String) throws -> URL {
+    let root = captureURL.standardizedFileURL.resolvingSymlinksInPath()
+    let candidate = captureURL.appendingPathComponent(relativePath)
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+    let rootPath = root.path
+    let candidatePath = candidate.path
+    let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+    guard candidatePath == rootPath || candidatePath.hasPrefix(prefix) else {
+      throw CaptureReplayError.pathOutsideCaptureRoot(relativePath)
+    }
+    return candidate
   }
 
   private func writeReport(_ report: CaptureReplayReport) throws {
