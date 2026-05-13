@@ -43,15 +43,19 @@ final class TerminalResizeAutomationTests: XCTestCase {
   func testStepsParseCaseInsensitiveDimensionsAndSkipInvalidEntries() {
     let steps = TerminalResizeAutomation.steps(from: "800X600,bad,0x20,1200x900")
 
-    XCTAssertEqual(steps, [
-      CGSize(width: 800, height: 600),
-      CGSize(width: 1200, height: 900),
-    ])
+    XCTAssertEqual(
+      steps,
+      [
+        CGSize(width: 800, height: 600),
+        CGSize(width: 1200, height: 900),
+      ])
   }
 
   func testStepsFallBackWhenNothingValidIsProvided() {
-    XCTAssertEqual(TerminalResizeAutomation.steps(from: "bad,0x20"), [
-      TerminalResizeAutomation.fallbackStep
-    ])
+    XCTAssertEqual(
+      TerminalResizeAutomation.steps(from: "bad,0x20"),
+      [
+        TerminalResizeAutomation.fallbackStep
+      ])
   }
 }

@@ -4,9 +4,11 @@ import XCTest
 
 final class DebugActionDecodingTests: XCTestCase {
   func testDecodesResizePayloadFromFlatWireShape() throws {
-    guard case .resizeWindow(let request) = try decode(
-      #"{"action":"resizeWindow","width":132,"height":44}"#
-    ) else {
+    guard
+      case .resizeWindow(let request) = try decode(
+        #"{"action":"resizeWindow","width":132,"height":44}"#
+      )
+    else {
       return XCTFail("Expected resizeWindow action")
     }
 
@@ -15,9 +17,11 @@ final class DebugActionDecodingTests: XCTestCase {
   }
 
   func testDecodesKeyPayloadFromFlatWireShape() throws {
-    guard case .key(let request) = try decode(
-      #"{"action":"key","key":"ArrowLeft","type":"keyDown","modifiers":["shift"],"text":"x"}"#
-    ) else {
+    guard
+      case .key(let request) = try decode(
+        #"{"action":"key","key":"ArrowLeft","type":"keyDown","modifiers":["shift"],"text":"x"}"#
+      )
+    else {
       return XCTFail("Expected key action")
     }
 

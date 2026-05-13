@@ -1,7 +1,7 @@
 import CoreGraphics
+import LabanRenderer
 import XCTest
 
-import LabanRenderer
 @testable import LabanDebug
 
 final class DebugFrameCommandSerializerTests: XCTestCase {
@@ -56,7 +56,8 @@ final class DebugFrameCommandSerializerTests: XCTestCase {
 
   func testTraceCommandAndKindShareCommandNames() {
     let serializer = DebugFrameCommandSerializer(cellWidth: 10, cellHeight: 20)
-    let command = FrameCommand.selection(CGRect(x: 1, y: 2, width: 3, height: 4), color: 0xAABB_CCDD)
+    let command = FrameCommand.selection(
+      CGRect(x: 1, y: 2, width: 3, height: 4), color: 0xAABB_CCDD)
 
     let trace = serializer.traceCommand(command, index: 2)
 

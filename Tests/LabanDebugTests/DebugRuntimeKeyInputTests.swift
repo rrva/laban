@@ -1,6 +1,6 @@
+import LabanCore
 import XCTest
 
-import LabanCore
 @testable import LabanDebug
 
 final class DebugRuntimeKeyInputTests: XCTestCase {
