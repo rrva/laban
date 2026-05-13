@@ -25,6 +25,7 @@ jobs:
         with:
           path: .external/libghostty-vt
           key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_COMMIT }}
+          save-always: true
 
       - name: Install Zig 0.15
         if: steps.cache-vt.outputs.cache-hit != 'true'
@@ -44,6 +45,7 @@ jobs:
           key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
           restore-keys: |
             swiftpm-${{ runner.os }}-${{ runner.arch }}-
+          save-always: true
 
       - name: Lint (swift-format)
         run: swift-format lint --strict --recursive --parallel Sources Tests
