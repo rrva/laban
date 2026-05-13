@@ -1,13 +1,38 @@
 # Laban
 
+[![check](https://github.com/rrva/laban/actions/workflows/check.yml/badge.svg)](https://github.com/rrva/laban/actions/workflows/check.yml)
+
 Laban is a macOS terminal-application project designed for agent-driven
 development. The first milestone is a minimal macOS terminal app with vertical
 tabs, one independent shell session per tab, correct terminal behavior, and
 autonomous headless end-to-end testing.
 
+> **Status: alpha.** Laban is an early macOS terminal scaffold under active
+> development, not a daily-driver replacement. APIs, scripts, debug endpoints,
+> and on-disk artifact formats all change without notice.
+
 The first implementation stack is selected. Cross-platform code is welcome
 when it supports terminal core reuse, fixtures, schemas, CI, or headless
 rendering, but it must not redefine the product as a non-macOS app.
+
+## Quickstart
+
+Requirements:
+
+- macOS 13 or later, Xcode 15 or later (Swift 5.9+)
+- Zig 0.15.2 or later (used to build the vendored libghostty-vt core)
+
+```sh
+brew install zig
+git clone https://github.com/rrva/laban
+cd laban
+./scripts/fetch-libghostty-vt
+./scripts/build-app
+open .artifacts/Laban.app
+```
+
+The first build of libghostty-vt takes a couple of minutes. Subsequent builds
+are cached under `.external/libghostty-vt/zig-out/`.
 
 Settled direction:
 
