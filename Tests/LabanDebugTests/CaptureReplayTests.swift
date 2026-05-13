@@ -20,6 +20,40 @@ final class CaptureReplayTests: XCTestCase {
         atPath: capture.appendingPathComponent("replay/report.json").path))
   }
 
+  func testInputFollowBottomCaptureReplays() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-replay-input-follow-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "input-follow-replay",
+      captureName: "input-follow-replay",
+      captureScreenshots: .final
+    )
+
+    let history = (1...40).map { "line \($0)" }.joined(separator: "\r\n") + "\r\n"
+    _ = runtime.applyAction(
+      try JSONSerialization.data(
+        withJSONObject: ["action": "feedOutput", "text": history]))
+    _ = runtime.applyAction(#"{"action":"scrollViewport","deltaRows":-6}"#.data(using: .utf8)!)
+    _ = runtime.applyAction(
+      #"{"action":"typeText","text":"echo replay-bottom\n"}"#.data(using: .utf8)!)
+
+    let stop = runtime.stopCapture()
+    XCTAssertEqual(stop.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: stop.body) as! [String: Any]
+    let dir = obj["directory"] as! String
+
+    let report = try CaptureReplayRunner(captureURL: URL(fileURLWithPath: dir), mode: .both).run()
+    XCTAssertEqual(report.terminalReplay, "passed")
+    XCTAssertEqual(report.rendererReplay, "passed")
+    XCTAssertTrue(report.mismatches.isEmpty)
+  }
+
   func testReplayReportsFrameCommandHashMismatch() throws {
     let capture = try makeCapture(name: "replay-fail")
     let timelineURL = capture.appendingPathComponent("timeline.ndjson")

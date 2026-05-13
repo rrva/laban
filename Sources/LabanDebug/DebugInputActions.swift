@@ -15,12 +15,12 @@ struct DebugInputActions {
     let activeTab = runtime.model.activeTab
     let bytes = Array(text.utf8)
     if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id) {
-      session.scrollViewportToActiveBottom()
+      let deltaRows = session.scrollViewportToActiveBottom()
+      appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
       session.write(bytes)
       runtime.model.noteOutput(forTab: tab.id)
       runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
     }
-    runtime.renderFrameUnlocked()
     runtime.appendInputEnvelope(
       InputEventEnvelope(
         inputId: UUID().uuidString,
@@ -34,6 +34,7 @@ struct DebugInputActions {
         encodedHex: bytes.map { String(format: "%02x", $0) }.joined(),
         encodedLength: bytes.count
       ))
+    runtime.renderFrameUnlocked()
     runtime.appendEvent(EventEntry(kind: "input.typed", text: text))
     return runtime.actionResult(ok: true)
   }
@@ -97,7 +98,8 @@ struct DebugInputActions {
     var encodedLength: Int? = nil
     if let tab = activeTab, let session = runtime.model.session(forTab: tab.id) {
       if action != .release {
-        session.scrollViewportToActiveBottom()
+        let deltaRows = session.scrollViewportToActiveBottom()
+        appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
       }
       let sent = session.sendKeyCapturingBytes(keyEvent)
       if sent.result == 0, !sent.bytes.isEmpty {
@@ -106,7 +108,6 @@ struct DebugInputActions {
         runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: sent.bytes)
       }
     }
-    runtime.renderFrameUnlocked()
     runtime.appendInputEnvelope(
       InputEventEnvelope(
         inputId: inputId, seq: 0,
@@ -117,6 +118,7 @@ struct DebugInputActions {
         modifiers: request.modifiers, consumedModifiers: request.consumedModifiers,
         encodedHex: encodedHex, encodedLength: encodedLength
       ))
+    runtime.renderFrameUnlocked()
     runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
     return runtime.actionResult(ok: true)
   }
@@ -144,5 +146,21 @@ struct DebugInputActions {
       runtime.model.selectTab(runtime.model.tabs[index].id)
       runtime.renderFrameUnlocked()
     }
+  }
+
+  private func appendInputFollowBottom(deltaRows: Int, frameBefore: Int, tab: Tab) {
+    guard deltaRows != 0 else { return }
+    runtime.appendInputEnvelope(
+      InputEventEnvelope(
+        inputId: UUID().uuidString,
+        source: "debug",
+        kind: "scroll",
+        route: "terminal",
+        frameBefore: frameBefore,
+        tabId: tab.id,
+        sessionId: tab.sessionId,
+        command: "inputFollowBottom",
+        deltaRows: deltaRows
+      ))
   }
 }

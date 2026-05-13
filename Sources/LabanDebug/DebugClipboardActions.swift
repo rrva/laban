@@ -68,7 +68,8 @@ struct DebugClipboardActions {
       if sanitized.isEmpty {
         result = nil
       } else {
-        session.scrollViewportToActiveBottom()
+        let deltaRows = session.scrollViewportToActiveBottom()
+        appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
         let sent = session.writePasteCapturingBytes(sanitized)
         result = sent.result
         encodedBytes = sent.bytes
@@ -84,7 +85,6 @@ struct DebugClipboardActions {
         )
       }
     }
-    runtime.renderFrameUnlocked()
     runtime.appendInputEnvelope(
       InputEventEnvelope(
         inputId: UUID().uuidString,
@@ -101,7 +101,24 @@ struct DebugClipboardActions {
           : encodedBytes.map { String(format: "%02x", $0) }.joined(),
         encodedLength: encodedBytes.isEmpty ? nil : encodedBytes.count
       ))
+    runtime.renderFrameUnlocked()
     runtime.appendEvent(EventEntry(kind: "clipboard.pasted", text: sanitized))
     return runtime.actionResult(ok: true)
+  }
+
+  private func appendInputFollowBottom(deltaRows: Int, frameBefore: Int, tab: Tab) {
+    guard deltaRows != 0 else { return }
+    runtime.appendInputEnvelope(
+      InputEventEnvelope(
+        inputId: UUID().uuidString,
+        source: "debug",
+        kind: "scroll",
+        route: "terminal",
+        frameBefore: frameBefore,
+        tabId: tab.id,
+        sessionId: tab.sessionId,
+        command: "inputFollowBottom",
+        deltaRows: deltaRows
+      ))
   }
 }

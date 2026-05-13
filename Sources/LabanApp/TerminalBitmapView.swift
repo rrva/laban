@@ -1212,8 +1212,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId)
     else { return }
+    let inputFollowDeltaRows: Int
     if event.action != .release {
-      followActiveBottomBeforeTerminalInput(session: session)
+      inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
+      recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
+    } else {
+      inputFollowDeltaRows = 0
     }
     let sent = session.sendKeyCapturingBytes(event)
     let bytes = sent.result == 0 ? sent.bytes : []
@@ -1234,7 +1238,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId)
     else { return }
-    followActiveBottomBeforeTerminalInput(session: session)
+    let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
+    recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
     session.write(bytes)
     recordInput(
       kind: "text",
@@ -1304,6 +1309,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         focusRow: focus?.row,
         focusCol: focus?.col
       ))
+  }
+
+  private func recordInputFollowBottom(deltaRows: Int) {
+    guard deltaRows != 0 else { return }
+    recordInput(
+      kind: "scroll",
+      route: "terminal",
+      command: "inputFollowBottom",
+      deltaRows: deltaRows
+    )
   }
 
   // MARK: - Clipboard
@@ -1406,7 +1421,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       }
     }
 
-    followActiveBottomBeforeTerminalInput(session: session)
+    let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
+    recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
     let sent = session.writePasteCapturingBytes(sanitized)
     EventLog.shared.log(
       "paste",
@@ -1426,7 +1442,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func forwardClipboardImagePasteToTerminal(session: Session) {
-    followActiveBottomBeforeTerminalInput(session: session)
+    let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
+    recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
     let event = KeyEvent(action: .press, key: .v, modifiers: .control)
     let sent = session.sendKeyCapturingBytes(event)
     EventLog.shared.log(
@@ -2115,13 +2132,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
   }
 
-  private func followActiveBottomBeforeTerminalInput(session: Session) {
+  @discardableResult
+  private func followActiveBottomBeforeTerminalInput(session: Session) -> Int {
+    let hadPendingScrollState =
+      appliedScrollRows != 0
+      || targetScrollRows != Double(appliedScrollRows)
+      || displayedScrollRows != Double(appliedScrollRows)
+      || abs(scrollVelocityRowsPerSec) > 0.001
+      || scrollAnimating
+      || scrollResidualPx != 0
     let deltaRows = session.scrollViewportToActiveBottom()
-    guard deltaRows > 0 else { return }
-    resetSmoothScrollState(to: 0)
+    let appliedRows = authoritativeAppliedRows(for: session) ?? 0
+    resetSmoothScrollState(to: appliedRows)
     scrollResidualPx = 0
     scrollAnimating = false
-    renderInvalidated = true
+    if deltaRows > 0 || hadPendingScrollState {
+      renderInvalidated = true
+    }
+    return deltaRows
   }
 
   /// Build the renderer-facing selection from view-state, translating each
