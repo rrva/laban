@@ -2,8 +2,13 @@
 <!--
   LaunchAgent template for the external sampler watchdog.
 
-  Install:
-    cp scripts/com.rrva.laban-watchdog.plist ~/Library/LaunchAgents/
+  This file contains a `__LABAN_REPO__` placeholder for the absolute path to
+  this checkout. LaunchAgents require absolute paths, so the template must be
+  expanded before installation.
+
+  Install (from the repository root):
+    sed "s|__LABAN_REPO__|$(pwd)|g" scripts/com.rrva.laban-watchdog.plist.template \
+      > ~/Library/LaunchAgents/com.rrva.laban-watchdog.plist
     launchctl load -w ~/Library/LaunchAgents/com.rrva.laban-watchdog.plist
 
   Stop:
@@ -22,7 +27,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/rrj/wrk/laban/scripts/laban-watchdog</string>
+        <string>__LABAN_REPO__/scripts/laban-watchdog</string>
     </array>
 
     <key>RunAtLoad</key>
