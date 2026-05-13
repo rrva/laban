@@ -531,7 +531,17 @@ public final class DebugHTTPServer {
       method: method, path: path, query: parseQuery(queryString), headers: headers, body: body)
     let bytes = buildHTTPResponse(resp)
     bytes.withUnsafeBytes { ptr in
-      _ = send(fd, ptr.baseAddress!, ptr.count, 0)
+      guard let base = ptr.baseAddress else { return }
+      var offset = 0
+      while offset < ptr.count {
+        let n = send(fd, base.advanced(by: offset), ptr.count - offset, 0)
+        if n < 0 {
+          if errno == EINTR { continue }
+          return
+        }
+        if n == 0 { return }
+        offset += n
+      }
     }
   }
 
