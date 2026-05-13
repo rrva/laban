@@ -67,9 +67,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
+          key: swiftpm-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
           restore-keys: |
-            swiftpm-${{ runner.os }}-${{ runner.arch }}-
+            swiftpm-v2-${{ runner.os }}-${{ runner.arch }}-
 
       # actions/checkout sets source mtimes to extraction time, which is newer
       # than the cached .build artifacts. SwiftPM/llbuild stores absolute build
