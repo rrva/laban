@@ -19,10 +19,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install swift-format
-        run: brew install swift-format
+      - name: Cache swift-format binary
+        id: cache-fmt
+        uses: actions/cache@v4
+        with:
+          path: ~/swift-format-bin
+          key: swift-format-602-${{ runner.os }}-${{ runner.arch }}
+          save-always: true
 
-      - name: Lint (swift-format)
+      - name: Install swift-format
+        if: steps.cache-fmt.outputs.cache-hit != 'true'
+        run: |
+          brew install swift-format
+          mkdir -p "$HOME/swift-format-bin"
+          cp "$(brew --prefix)/bin/swift-format" "$HOME/swift-format-bin/"
+
+      - name: Add swift-format to PATH
+        run: echo "$HOME/swift-format-bin" >> "$GITHUB_PATH"
+
+      - name: Lint
         run: swift-format lint --strict --recursive --parallel Sources Tests
 
   build:
@@ -31,12 +46,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache libghostty-vt build
+      - name: Cache libghostty-vt artifact
         id: cache-vt
         uses: actions/cache@v4
         with:
-          path: .external/libghostty-vt
-          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_COMMIT }}
+          path: .external/libghostty-vt/zig-out
+          key: libghostty-vt-zigout-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_COMMIT }}
           save-always: true
 
       - name: Install Zig 0.15
@@ -48,13 +63,23 @@ jobs:
         run: ./scripts/fetch-libghostty-vt
 
       - name: Cache SwiftPM build
+        id: cache-swiftpm
         uses: actions/cache@v4
         with:
-          path: .build
+          path: |
+            .build
+            !.build/index-build
           key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
           restore-keys: |
             swiftpm-${{ runner.os }}-${{ runner.arch }}-
           save-always: true
+
+      # actions/checkout sets source mtimes to extraction time, which is newer
+      # than the cached .build artifacts. SwiftPM/llbuild compares mtimes and
+      # rebuilds everything. Bumping artifact mtimes to "now" restores trust.
+      - name: Refresh .build mtimes
+        if: hashFiles('.build/build.db') != ''
+        run: find .build -exec touch {} +
 
       - name: Build
         run: swift build
