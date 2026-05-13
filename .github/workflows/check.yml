@@ -75,11 +75,13 @@ jobs:
           save-always: true
 
       # actions/checkout sets source mtimes to extraction time, which is newer
-      # than the cached .build artifacts. SwiftPM/llbuild compares mtimes and
-      # rebuilds everything. Bumping artifact mtimes to "now" restores trust.
-      - name: Refresh .build mtimes
+      # than the cached .build artifacts. SwiftPM/llbuild stores absolute build
+      # times in build.db and rebuilds anything whose input is now newer than
+      # the recorded "built at" time. Backdating sources to a fixed past time
+      # makes them deterministically older than any cached artifact.
+      - name: Backdate sources
         if: hashFiles('.build/build.db') != ''
-        run: find .build -exec touch {} +
+        run: find Package.swift Sources -exec touch -t 202001010000 {} +
 
       - name: Build
         run: swift build
