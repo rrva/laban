@@ -20,7 +20,7 @@ final class TabTitleMetadataTests: XCTestCase {
       displayTitle: "Tab 1",
       titleSource: .fallback,
       workspace: TabWorkspaceMetadata(
-        cwd: "/Users/rrj/wrk/laban",
+        cwd: "/tmp/laban",
         repoName: "laban",
         worktreeName: "cobra",
         branch: "main",
