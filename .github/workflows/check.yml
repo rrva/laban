@@ -1,0 +1,25 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: lint + build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: brew install zig
+
+      - name: Fetch and build libghostty-vt
+        run: ./scripts/fetch-libghostty-vt
+
+      - name: Lint (swift-format)
+        run: ./scripts/lint
+
+      - name: Build
+        run: swift build
