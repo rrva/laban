@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Ghostty commit pinned in scripts/fetch-libghostty-vt. Bump this when that
+# pin changes so the cache key invalidates.
+env:
+  GHOSTTY_COMMIT: fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
 jobs:
   build:
     name: lint + build
@@ -12,14 +19,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache libghostty-vt build
+        id: cache-vt
+        uses: actions/cache@v4
+        with:
+          path: .external/libghostty-vt
+          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_COMMIT }}
+
       - name: Install Zig 0.15
+        if: steps.cache-vt.outputs.cache-hit != 'true'
         run: brew install zig@0.15
 
       - name: Fetch and build libghostty-vt
+        if: steps.cache-vt.outputs.cache-hit != 'true'
         run: ./scripts/fetch-libghostty-vt
 
+      - name: Install swift-format
+        run: brew install swift-format
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Lint (swift-format)
-        run: ./scripts/lint
+        run: swift-format lint --strict --recursive --parallel Sources Tests
 
       - name: Build
         run: swift build
