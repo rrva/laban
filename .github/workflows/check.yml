@@ -45,6 +45,21 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # actions/checkout sets every file's mtime to extraction time, which
+      # invalidates SwiftPM's cached build.db (it records absolute input
+      # mtimes from when the cache was created). Setting each tracked file's
+      # mtime to its last-commit time is deterministic across runs.
+      - name: Restore source mtimes
+        run: |
+          git ls-tree -r HEAD --name-only | while read -r f; do
+            [ -e "$f" ] || continue
+            ts=$(git log -1 --format=%ct -- "$f") || continue
+            [ -n "$ts" ] || continue
+            touch -t "$(date -ujf %s "$ts" +%Y%m%d%H%M.%S)" "$f"
+          done
 
       - name: Cache libghostty-vt artifact
         id: cache-vt
@@ -67,18 +82,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
+          key: swiftpm-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
           restore-keys: |
-            swiftpm-v2-${{ runner.os }}-${{ runner.arch }}-
-
-      # actions/checkout sets source mtimes to extraction time, which is newer
-      # than the cached .build artifacts. SwiftPM/llbuild stores absolute build
-      # times in build.db and rebuilds anything whose input is now newer than
-      # the recorded "built at" time. Backdating sources to a fixed past time
-      # makes them deterministically older than any cached artifact.
-      - name: Backdate sources
-        if: hashFiles('.build/build.db') != ''
-        run: find Package.swift Sources -exec touch -t 202001010000 {} +
+            swiftpm-v3-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build
         run: swift build
