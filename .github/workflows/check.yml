@@ -13,8 +13,20 @@ env:
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
 jobs:
+  lint:
+    name: lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install swift-format
+        run: brew install swift-format
+
+      - name: Lint (swift-format)
+        run: swift-format lint --strict --recursive --parallel Sources Tests
+
   build:
-    name: lint + build
+    name: build
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,20 +47,14 @@ jobs:
         if: steps.cache-vt.outputs.cache-hit != 'true'
         run: ./scripts/fetch-libghostty-vt
 
-      - name: Install swift-format
-        run: brew install swift-format
-
       - name: Cache SwiftPM build
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**', 'Tests/**') }}
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
           restore-keys: |
             swiftpm-${{ runner.os }}-${{ runner.arch }}-
           save-always: true
-
-      - name: Lint (swift-format)
-        run: swift-format lint --strict --recursive --parallel Sources Tests
 
       - name: Build
         run: swift build
