@@ -152,7 +152,11 @@ public final class AppModel {
   }
 
   @discardableResult
-  public func updateFindNeedle(sessionID: Session.ID, needle: String) -> TerminalFindState? {
+  public func updateFindNeedle(
+    sessionID: Session.ID,
+    needle: String,
+    scrollSelectedIntoView: Bool = false
+  ) -> TerminalFindState? {
     withModelLock {
       guard let session = sessionRegistry.session(id: sessionID) else { return nil }
       if findStateBySession[sessionID]?.isActive != true {
@@ -168,7 +172,35 @@ public final class AppModel {
       } else {
         findStateBySession[sessionID]?.needle = needle
       }
-      return refreshFindFullUnlocked(sessionID: sessionID, preserving: nil)
+      let refreshed = refreshFindFullUnlocked(sessionID: sessionID, preserving: nil)
+      if scrollSelectedIntoView {
+        scrollSelectedFindMatchIntoViewUnlocked(sessionID: sessionID)
+        return findStateBySession[sessionID] ?? refreshed
+      }
+      return refreshed
+    }
+  }
+
+  @discardableResult
+  public func setFindNeedlePending(sessionID: Session.ID, needle: String) -> TerminalFindState? {
+    withModelLock {
+      guard let session = sessionRegistry.session(id: sessionID) else { return nil }
+      if findStateBySession[sessionID]?.isActive != true {
+        let viewport = session.viewportState()
+        findStateBySession[sessionID] = TerminalFindState(
+          isActive: true,
+          needle: needle,
+          matches: [],
+          selectedIndex: nil,
+          viewportScrollOffsetAtStart: viewport?.viewportOffset,
+          viewportRowsAtStart: viewport?.viewportRows
+        )
+      } else {
+        findStateBySession[sessionID]?.needle = needle
+        findStateBySession[sessionID]?.matches = []
+        findStateBySession[sessionID]?.selectedIndex = nil
+      }
+      return findStateBySession[sessionID]
     }
   }
 

@@ -42,8 +42,11 @@ explicitly deferred (see *Out Of Scope*). The viewport portion of the
 result set *does* refresh when the active terminal area changes
 (typing into a `tail -f`, for example), but the refresh is a main-thread,
 frame-bound recomputation — not a background search loop. Full
-scrollback rescans only happen on explicit user action (open, needle
-change, step). The exact policy is in *Plan of Work* → M2.2b.
+scrollback rescans happen on open and step immediately; AppKit needle
+typing stores the pending needle cheaply and coalesces the full rescan
+after a short pause so the search field remains responsive, then scrolls
+once to reveal the selected first match. The exact policy is in *Plan of
+Work* → M2.2b.
 
 The MVP document (`docs/product/mvp.md:215-218`) excludes "search integration"
 with terminal selection but does not forbid find itself; this is a post-MVP

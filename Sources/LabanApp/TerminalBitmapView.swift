@@ -88,6 +88,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var hoverCursorStyle: TerminalHoverCursorStyle?
   private var findChip: TerminalFindChipView?
   private var lastFindNeedle: String = ""
+  private var pendingFindSearchWorkItem: DispatchWorkItem?
+  private var pendingFindSearchGeneration: UInt64 = 0
+  private var pendingFindSearchSessionID: Session.ID?
+  private var pendingFindSearchNeedle: String = ""
+  private static let findTypingSearchDelay: TimeInterval = 0.25
 
   // Damage-driven render budget state
   private var renderInvalidated = true
@@ -1319,14 +1324,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func updateFindNeedle(_ needle: String) {
     guard let sessionId = model.activeTab?.sessionId else { return }
     lastFindNeedle = needle
-    _ = model.updateFindNeedle(sessionID: sessionId, needle: needle)
+    if needle.isEmpty {
+      cancelPendingFindSearch()
+      _ = model.updateFindNeedle(sessionID: sessionId, needle: needle)
+      syncFindChip()
+      renderInvalidated = true
+      advanceFrame()
+      return
+    }
+
+    _ = model.setFindNeedlePending(sessionID: sessionId, needle: needle)
+    scheduleFindSearch(sessionID: sessionId, needle: needle)
     syncFindChip()
-    renderInvalidated = true
-    advanceFrame()
   }
 
   private func stepFind(_ direction: TerminalFindDirection) {
     guard let sessionId = model.activeTab?.sessionId else { return }
+    cancelPendingFindSearch()
     _ = model.stepFind(sessionID: sessionId, direction: direction)
     syncFindChip()
     renderInvalidated = true
@@ -1334,6 +1348,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func closeFindChip() {
+    cancelPendingFindSearch()
     guard let sessionId = model.activeTab?.sessionId else {
       findChip?.removeFromSuperview()
       findChip = nil
@@ -1350,7 +1365,61 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private func syncFindChip() {
     guard let chip = findChip, let sessionId = model.activeTab?.sessionId else { return }
-    chip.update(with: model.findState(forSession: sessionId))
+    let state = model.findState(forSession: sessionId)
+    let isSearching =
+      pendingFindSearchSessionID == sessionId
+      && pendingFindSearchNeedle == state.needle
+    chip.update(with: state, isSearching: isSearching)
+  }
+
+  private func scheduleFindSearch(sessionID: Session.ID, needle: String) {
+    pendingFindSearchGeneration &+= 1
+    let generation = pendingFindSearchGeneration
+    pendingFindSearchWorkItem?.cancel()
+    pendingFindSearchSessionID = sessionID
+    pendingFindSearchNeedle = needle
+
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.runPendingFindSearch(sessionID: sessionID, needle: needle, generation: generation)
+    }
+    pendingFindSearchWorkItem = workItem
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + Self.findTypingSearchDelay,
+      execute: workItem
+    )
+  }
+
+  private func runPendingFindSearch(
+    sessionID: Session.ID,
+    needle: String,
+    generation: UInt64
+  ) {
+    guard pendingFindSearchGeneration == generation,
+      pendingFindSearchSessionID == sessionID,
+      pendingFindSearchNeedle == needle
+    else { return }
+
+    pendingFindSearchWorkItem = nil
+    pendingFindSearchSessionID = nil
+    pendingFindSearchNeedle = ""
+    guard model.activeTab?.sessionId == sessionID, findChip != nil else { return }
+
+    _ = model.updateFindNeedle(
+      sessionID: sessionID,
+      needle: needle,
+      scrollSelectedIntoView: true
+    )
+    syncFindChip()
+    renderInvalidated = true
+    advanceFrame()
+  }
+
+  private func cancelPendingFindSearch() {
+    pendingFindSearchGeneration &+= 1
+    pendingFindSearchWorkItem?.cancel()
+    pendingFindSearchWorkItem = nil
+    pendingFindSearchSessionID = nil
+    pendingFindSearchNeedle = ""
   }
 
   private func layoutFindChip() {

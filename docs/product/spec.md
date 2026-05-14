@@ -155,10 +155,13 @@ After any failed spawn, close, restore, or render-resource allocation, registrie
 Command-F opens a small floating find control for the active terminal session.
 Typing a literal needle highlights matches in the visible viewport and normal
 scrollback without writing bytes to the pty, moving the cursor, changing local
-selection, or changing clipboard state. Return advances to the next match,
-Shift-Return advances to the previous match, and Escape closes find and clears
-the highlight. Closing find restores the viewport scroll position that was
-active when find opened when the terminal dimensions still match.
+selection, or changing clipboard state. AppKit typing coalesces full rescans
+briefly so the search field stays responsive, then reveals the selected first
+match after the user pauses. Return advances to the next match, Shift-Return
+advances to the previous match, and both force the latest needle to be searched
+before stepping. Escape closes find and clears the highlight. Closing find
+restores the viewport scroll position that was active when find opened when the
+terminal dimensions still match.
 
 Find uses smart case by default: all-lowercase ASCII needles match ASCII case
 insensitively, while needles containing uppercase ASCII match case-sensitively.

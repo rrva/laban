@@ -77,11 +77,13 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
     fatalError("init(coder:) has not been implemented")
   }
 
-  func update(with state: TerminalFindState) {
+  func update(with state: TerminalFindState, isSearching: Bool = false) {
     if searchField.stringValue != state.needle {
       searchField.stringValue = state.needle
     }
-    if state.needle.isEmpty {
+    if isSearching, !state.needle.isEmpty {
+      counterLabel.stringValue = "..."
+    } else if state.needle.isEmpty {
       counterLabel.stringValue = ""
     } else if let selected = state.selectedIndex, state.total > 0 {
       counterLabel.stringValue = "\(selected + 1)/\(state.total)"

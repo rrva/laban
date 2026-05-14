@@ -31,6 +31,51 @@ final class TerminalFindStateTests: XCTestCase {
     XCTAssertEqual(state.matches.map(\.startColumn), [6])
   }
 
+  func testPendingNeedleUpdateDefersMatchRefreshUntilStep() throws {
+    let model = try makeModel(rows: 5, cols: 40)
+    let session = try XCTUnwrap(model.session(forTab: model.tabs[0].id))
+    session.write(Array("apple banana\r\n".utf8))
+    session.poll()
+    _ = model.startFind(sessionID: session.id, needle: "apple")
+
+    let pending = try XCTUnwrap(model.setFindNeedlePending(sessionID: session.id, needle: "banana"))
+
+    XCTAssertEqual(pending.needle, "banana")
+    XCTAssertEqual(pending.total, 0)
+    XCTAssertNil(pending.selectedIndex)
+
+    let stepped = try XCTUnwrap(model.stepFind(sessionID: session.id, direction: .next))
+    XCTAssertEqual(stepped.needle, "banana")
+    XCTAssertEqual(stepped.matches.map(\.startColumn), [6])
+    XCTAssertEqual(stepped.selectedIndex, 0)
+  }
+
+  func testIdleNeedleRefreshSelectsFirstMatchAndScrollsToIt() throws {
+    let model = try makeModel(rows: 5, cols: 40)
+    let session = try XCTUnwrap(model.session(forTab: model.tabs[0].id))
+    var output = "target first\r\n"
+    for line in 0..<40 {
+      output += "filler \(line)\r\n"
+    }
+    session.write(Array(output.utf8))
+    session.poll()
+    let startOffset = try XCTUnwrap(session.viewportState()).viewportOffset
+    XCTAssertGreaterThan(startOffset, 0)
+
+    _ = model.startFind(sessionID: session.id)
+    _ = model.setFindNeedlePending(sessionID: session.id, needle: "target")
+    let state = try XCTUnwrap(
+      model.updateFindNeedle(
+        sessionID: session.id,
+        needle: "target",
+        scrollSelectedIntoView: true
+      ))
+
+    XCTAssertEqual(state.selectedIndex, 0)
+    XCTAssertEqual(state.matches.first?.row, 0)
+    XCTAssertEqual(session.viewportState()?.viewportOffset, 0)
+  }
+
   func testStepWrapsInBothDirections() throws {
     let model = try makeModel(rows: 5, cols: 40)
     let session = try XCTUnwrap(model.session(forTab: model.tabs[0].id))
