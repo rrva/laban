@@ -24,7 +24,7 @@ autonomously verifiable.
 | Headless graphics contract | Good | `Sources/LabanDebug/HeadlessDebugRuntime.swift`, `Sources/LabanRenderer/SoftwareRenderer.swift`, `scripts/run-headless`, `scripts/smoke-runtime`, `scripts/test-e2e` | CI still needs to run the full local gate. |
 | Fixture format | Good | `schemas/fixture.schema.json`, `fixtures/`, `Sources/LabanCore/FixtureRunner.swift`, `Tests/LabanCoreTests/FixtureRunnerTests.swift` | Expand fixtures when protocol-specific regressions are found. |
 | Observability | Good | `docs/process/observability.md`, `GET /debug/events`, `GET /debug/metrics`, `GET /debug/timing`, `POST /debug/render-trace`, `Sources/LabanApp/EventLog.swift`, `Sources/LabanApp/AppLog.swift`, capture timeline artifacts | Keep expanding production AppKit metrics as renderer and shell-integration behavior grows. |
-| Mechanical enforcement | Good | `./scripts/check` validates JSON, AGENTS size, ExecPlan sections, whitespace, architecture boundaries, repository-local Markdown links, debug endpoint contract drift, dependency policy, Swift format/build/tests, `LabanTerminalCoreTests` under Address Sanitizer, runtime smoke, and E2E. `./scripts/check-docs`, `./scripts/check-debug-contract`, and `./scripts/check-dependencies` are available as focused policy gates, `./scripts/check-sanitize` remains available as the focused sanitizer gate, and `./scripts/dev-index` generates `compile_commands.json` for clangd C diagnostics. | Needs hosted CI. |
+| Mechanical enforcement | Good | `./scripts/check` validates JSON, AGENTS size, ExecPlan sections, whitespace, architecture boundaries, repository-local Markdown links, debug endpoint contract drift, dependency policy, Swift format/build/tests, `LabanTerminalCoreTests` under Address Sanitizer, runtime smoke, and E2E. `./scripts/check-docs`, `./scripts/check-debug-contract`, and `./scripts/check-dependencies` are available as focused policy gates, `./scripts/check-sanitize` remains available as the focused sanitizer gate, `./scripts/test-find-perf` guards terminal-find latency in release mode, and `./scripts/dev-index` generates `compile_commands.json` for clangd C diagnostics. | Needs hosted CI. |
 | Architecture boundaries | Good | `Sources/LabanTerminalCore/` exposes the C ABI, `Sources/LabanCore/` owns session/app model wrappers, `Sources/LabanApp/` owns AppKit, `Sources/LabanRenderer/` owns render backends, ADRs in `docs/adr/`, and `./scripts/check-boundaries` blocks forbidden imports across these layers. | Keep the automated check current as new modules or adapter seams are added. |
 | Drift control | Partial | This document, `tech-debt.md`, `AGENTS.md`, `PLANS.md`, and `./scripts/check` ExecPlan validation. | Needs regular cleanup of stale active plans and local doc-link checking. |
 
@@ -52,6 +52,9 @@ autonomously verifiable.
   local checkout, and built artifacts match policy.
 - ~~Artifact collection on E2E failure.~~ Done: `./scripts/test-e2e`
   writes bounded failure artifacts before teardown.
+- ~~Terminal-find performance guard.~~ Done: `./scripts/test-find-perf`
+  runs a release-mode benchmark for cold full-history search, cached
+  navigation, and pending needle updates.
 
 ## Updating This File
 

@@ -113,6 +113,11 @@ state. Timestamps are encouraged once implementation starts.
 - [x] (2026-05-15) M4: Validate that the direct path preserves current ASCII find behavior,
   falls back safely for unsupported Unicode rows, and improves release-mode
   `find.start` timings.
+- [x] (2026-05-15) Added a tracked release-mode find performance guard:
+  `scripts/test-find-perf` runs the `find-perf` SwiftPM executable and fails
+  on large regressions in cold start, cached step, or pending-needle update.
+- [x] (2026-05-15) Merged and pushed the terminal-find work to `origin/main`
+  at merge commit `136bcac`, then archived this plan to `execplans/completed/`.
 
 ## Decision Log
 
@@ -381,6 +386,13 @@ needle or any selected row contains non-ASCII bytes, it reports an incomplete
 result so Swift falls back to the existing `ScrollbackBlock` search and
 preserves current Unicode column mapping.
 
+The feature was merged and pushed to `origin/main` at merge commit `136bcac`.
+After merge, a tracked performance guard was added as `scripts/test-find-perf`
+and `find-perf`. The guard runs the release-mode fixture benchmark that was
+previously ad hoc under `.tmp/find-perf`, prints cold and cached timings, and
+fails only on generous thresholds intended to catch large regressions without
+making normal CI noisy.
+
 Validation run by the executing agent:
 
 ```text
@@ -396,6 +408,9 @@ rtk swift test --filter TerminalFind
 rtk swift run -c release --package-path .tmp/find-perf find-perf
   find.start lines=10000 mean=2.122ms p95=2.206ms
   find.step lines=10000 mean=0.003ms p95=0.008ms
+
+rtk ./scripts/test-find-perf
+  find performance guard passed
 
 rtk git diff --check
 rtk ./scripts/check-docs
