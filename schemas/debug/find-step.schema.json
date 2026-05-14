@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/find-step.schema.json",
+  "title": "Debug Find Step",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "sessionID": {"type": "string"},
+    "sessionId": {"type": "string"},
+    "direction": {"enum": ["next", "previous"]}
+  }
+}

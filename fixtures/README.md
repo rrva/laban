@@ -21,3 +21,5 @@ actions. UI actions belong in debug-server E2E tests via `/debug/actions`.
 ## Examples
 
 - `colored-boxes.fixture.json` - color and box-drawing smoke fixture.
+- `find-viewport.json` - repeated literal text for terminal find
+  highlight and frame-command checks.

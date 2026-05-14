@@ -59,6 +59,11 @@ public final class SoftwareRenderer {
         ctx.setFillColor(color(colorValue))
         ctx.fill(rect)
 
+      case .findMatch(let rect, let colorValue),
+        .findSelected(let rect, let colorValue):
+        ctx.setFillColor(color(colorValue))
+        ctx.fill(rect)
+
       case .clip(let rect):
         ctx.clip(to: rect)
 

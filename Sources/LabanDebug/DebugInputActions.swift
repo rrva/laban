@@ -137,6 +137,11 @@ struct DebugInputActions {
         try? runtime.model.closeTab(tabId)
         runtime.renderFrameUnlocked()
       }
+    case .f:
+      if let sessionId = runtime.model.activeTab?.sessionId {
+        _ = runtime.model.startFind(sessionID: sessionId)
+        runtime.renderFrameUnlocked()
+      }
     default:
       guard let index = DebugRuntimeKeyInput.tabIndex(for: key),
         index < runtime.model.tabs.count

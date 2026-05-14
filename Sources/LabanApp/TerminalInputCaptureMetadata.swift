@@ -28,6 +28,7 @@ enum TerminalInputCaptureMetadata {
     case .selectTab: return "selectTab"
     case .copy: return "copy"
     case .paste: return "paste"
+    case .find: return "find"
     }
   }
 }

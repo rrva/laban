@@ -55,6 +55,10 @@ enum MenuCommands {
       NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
     editMenu.addItem(
       NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+    editMenu.addItem(NSMenuItem.separator())
+    editMenu.addItem(
+      NSMenuItem(title: "Find…", action: #selector(TerminalBitmapView.find(_:)), keyEquivalent: "f")
+    )
 
     // View menu — chrome + theme picker
     let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")

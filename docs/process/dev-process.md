@@ -276,7 +276,15 @@ Returns a stable, implementation-neutral snapshot of app state:
     }
   ],
   "activeTabId": "tab-1",
-  "activeSessionId": "session-1"
+  "activeSessionId": "session-1",
+  "findStateBySession": {
+    "session-1": {
+      "isActive": true,
+      "needle": "apple",
+      "total": 2,
+      "selectedIndex": 0
+    }
+  }
 }
 ```
 
@@ -358,7 +366,7 @@ frame commands show what the renderer intended to draw.
 
 Query parameters:
 
-- `source=sidebar|terminal|selection|cursor|image|all`; default `all`
+- `source=sidebar|terminal|selection|find|cursor|image|all`; default `all`
 - `limit=<n>`; default implementation-defined bounded limit
 - `includeText=true|false`; default `true` for bounded visible text
 
@@ -565,6 +573,54 @@ Returns font and glyph-atlas diagnostics.
 
 Agents use this endpoint to diagnose question-mark glyphs, baseline drift, and
 cell metric errors.
+
+### Find
+
+`POST /debug/find/start`
+
+Starts literal find in the active or named terminal session.
+
+```json
+{"sessionID": "session-1", "needle": "apple"}
+```
+
+`POST /debug/find/step`
+
+Moves the selected match and scrolls it into view when necessary.
+
+```json
+{"sessionID": "session-1", "direction": "next"}
+```
+
+`POST /debug/find/stop`
+
+Stops find, clears find highlights, and restores the starting viewport offset
+when terminal dimensions still match.
+
+```json
+{"sessionID": "session-1"}
+```
+
+`GET /debug/find/state?sessionID=session-1`
+
+Returns bounded find state:
+
+```json
+{
+  "isActive": true,
+  "needle": "apple",
+  "total": 2,
+  "selectedIndex": 0,
+  "matches": [
+    {"row": 3, "startColumn": 0, "endColumn": 5},
+    {"row": 5, "startColumn": 0, "endColumn": 5}
+  ]
+}
+```
+
+`/debug/frame-commands?source=find` returns `findMatch` and `findSelected`
+rectangles for the current frame so agents can verify highlighted cells without
+desktop automation.
 
 ### Selection
 
@@ -778,6 +834,9 @@ Example actions:
 {"action":"paste"}
 {"action":"setClipboardText","text":"printf 'ok\\n'\\n"}
 {"action":"scrollViewport","sessionId":"session-1","deltaRows":-3}
+{"action":"find.start","sessionID":"session-1","needle":"apple"}
+{"action":"find.step","sessionID":"session-1","direction":"next"}
+{"action":"find.stop","sessionID":"session-1"}
 ```
 
 Paste actions use the same shared sanitizer as the AppKit paste path before

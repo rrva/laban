@@ -44,6 +44,14 @@ struct DebugFrameCommandSerializer {
       return FrameCommandResponse(
         id: id, index: index, kind: "selection", source: "selection",
         rect: Self.rectResponse(rect), color: Self.rgbaArray(color))
+    case .findMatch(let rect, let color):
+      return FrameCommandResponse(
+        id: id, index: index, kind: "findMatch", source: "find",
+        rect: Self.rectResponse(rect), color: Self.rgbaArray(color))
+    case .findSelected(let rect, let color):
+      return FrameCommandResponse(
+        id: id, index: index, kind: "findSelected", source: "find",
+        rect: Self.rectResponse(rect), color: Self.rgbaArray(color))
     case .clip(let rect):
       return FrameCommandResponse(
         id: id, index: index, kind: "clip", source: "unknown",
@@ -80,6 +88,14 @@ struct DebugFrameCommandSerializer {
       return TraceCommand(
         id: id, index: index, kind: "selection",
         source: "selection", rect: Self.rectResponse(rect))
+    case .findMatch(let rect, _):
+      return TraceCommand(
+        id: id, index: index, kind: "findMatch",
+        source: "find", rect: Self.rectResponse(rect))
+    case .findSelected(let rect, _):
+      return TraceCommand(
+        id: id, index: index, kind: "findSelected",
+        source: "find", rect: Self.rectResponse(rect))
     case .clip(let rect):
       return TraceCommand(
         id: id, index: index, kind: "clip",
@@ -97,6 +113,8 @@ struct DebugFrameCommandSerializer {
     case .glyphRun: return "glyphRun"
     case .cursor: return "cursor"
     case .selection: return "selection"
+    case .findMatch: return "findMatch"
+    case .findSelected: return "findSelected"
     case .clip: return "clip"
     case .texturedQuad: return "texturedQuad"
     }

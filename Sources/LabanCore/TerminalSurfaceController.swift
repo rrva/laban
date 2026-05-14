@@ -379,6 +379,13 @@ public final class TerminalSurfaceController {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
     let cols = Int(snapshot.cols)
+    let viewportOffset = session.viewportState()?.viewportOffset ?? 0
+    model.refreshFindVisible(
+      sessionID: session.id,
+      snapshot: UnsafePointer(snap),
+      viewportOffset: viewportOffset
+    )
+    let findState = model.findState(forSession: session.id)
     let gridOriginY = Self.terminalGridOriginY(
       viewportHeight: request.viewportHeight,
       rows: rows,
@@ -405,6 +412,8 @@ public final class TerminalSurfaceController {
     commands += producer.commands(
       from: UnsafePointer(snap),
       selection: request.selection,
+      findState: findState,
+      viewportRowOffset: viewportOffset,
       cursorBlinkVisible: request.cursorBlinkVisible)
 
     snapshotCommandsHook?(UnsafePointer(snap), commands)

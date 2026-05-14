@@ -344,6 +344,49 @@ public final class Session {
     return ViewportState(from: vs)
   }
 
+  public func scrollbackBlock(rowOffset: Int = 0, maxRows: Int = 0) -> ScrollbackBlock? {
+    guard !isClosed, let h = handle else { return nil }
+    let safeOffset = max(0, rowOffset)
+    let safeMaxRows = max(0, maxRows)
+
+    var textBuffer: UnsafeMutablePointer<CChar>?
+    var rowOffsets: UnsafeMutablePointer<UInt32>?
+    var outRows: size_t = 0
+    var outTextLen: size_t = 0
+    guard
+      laban_session_scrollback_extract_alloc(
+        h,
+        size_t(safeOffset),
+        size_t(safeMaxRows),
+        &textBuffer,
+        &rowOffsets,
+        &outRows,
+        &outTextLen
+      ) == 0,
+      let textBuffer
+    else { return nil }
+    defer { laban_session_scrollback_extract_free(textBuffer) }
+    defer {
+      if let rowOffsets {
+        laban_session_scrollback_extract_free(rowOffsets)
+      }
+    }
+
+    let byteCount = Int(outTextLen)
+    let raw = UnsafeRawBufferPointer(start: textBuffer, count: byteCount)
+    let text = String(decoding: raw, as: UTF8.self)
+    let offsets: [Int]
+    if let rowOffsets, outRows > 0 {
+      offsets = UnsafeBufferPointer(start: rowOffsets, count: Int(outRows)).map(Int.init)
+    } else {
+      offsets = []
+    }
+    return ScrollbackBlock(
+      text: text,
+      rowOffsets: offsets
+    )
+  }
+
   /// Snap the viewport to the active bottom if it is currently showing older
   /// scrollback. Returns the row delta applied through `scrollViewport`.
   @discardableResult

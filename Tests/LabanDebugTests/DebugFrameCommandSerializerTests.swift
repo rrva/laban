@@ -70,4 +70,17 @@ final class DebugFrameCommandSerializerTests: XCTestCase {
     XCTAssertEqual(trace.rect?.width, 3)
     XCTAssertEqual(trace.rect?.height, 4)
   }
+
+  func testFindCommandsSerializeWithFindSource() {
+    let serializer = DebugFrameCommandSerializer(cellWidth: 10, cellHeight: 20)
+    let command = FrameCommand.findSelected(
+      CGRect(x: 4, y: 5, width: 30, height: 10), color: 0x0102_0344)
+
+    let response = serializer.listCommand(command, index: 3, includeText: true)
+
+    XCTAssertEqual(response.kind, "findSelected")
+    XCTAssertEqual(response.source, "find")
+    XCTAssertEqual(response.color, [1, 2, 3, 68])
+    XCTAssertEqual(DebugFrameCommandSerializer.kind(.findMatch(.zero, color: 0)), "findMatch")
+  }
 }

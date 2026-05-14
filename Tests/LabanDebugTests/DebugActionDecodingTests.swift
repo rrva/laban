@@ -37,6 +37,28 @@ final class DebugActionDecodingTests: XCTestCase {
     }
   }
 
+  func testDecodesFindActions() throws {
+    guard
+      case .findStart(let start) = try decode(
+        #"{"action":"find.start","sessionID":"s1","needle":"apple"}"#
+      )
+    else {
+      return XCTFail("Expected find.start action")
+    }
+    XCTAssertEqual(start.targetSessionId, "s1")
+    XCTAssertEqual(start.needle, "apple")
+
+    guard case .findStep(let step) = try decode(#"{"action":"find.step","direction":"previous"}"#)
+    else {
+      return XCTFail("Expected find.step action")
+    }
+    XCTAssertEqual(step.direction, "previous")
+
+    guard case .findStop = try decode(#"{"action":"find.stop"}"#) else {
+      return XCTFail("Expected find.stop action")
+    }
+  }
+
   func testUnknownActionDecodesAsUnsupported() throws {
     guard case .unsupported(let action) = try decode(#"{"action":"futureAction"}"#) else {
       return XCTFail("Expected unsupported action")

@@ -152,6 +152,45 @@ public final class DebugHTTPServer {
     },
     DebugHTTPRoute(
       method: "POST",
+      path: "/debug/find/start",
+      category: "control",
+      summary: "Start literal find in the active or named terminal session.",
+      requestSchema: "schemas/debug/find-start.schema.json",
+      responseSchema: "schemas/debug/find-state.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.findStart(request.body))
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/find/step",
+      category: "control",
+      summary: "Advance the selected find match in the active or named terminal session.",
+      requestSchema: "schemas/debug/find-step.schema.json",
+      responseSchema: "schemas/debug/find-state.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.findStep(request.body))
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/find/stop",
+      category: "control",
+      summary: "Stop find and clear highlights in the active or named terminal session.",
+      requestSchema: "schemas/debug/find-stop.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.findStop(request.body))
+    },
+    DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/find/state",
+      category: "state",
+      summary: "Return current find state for the active or named terminal session.",
+      queryParameters: ["sessionID", "sessionId"],
+      responseSchema: "schemas/debug/find-state.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.findState(query: request.query))
+    },
+    DebugHTTPRoute(
+      method: "POST",
       path: "/debug/wait",
       category: "control",
       summary: "Block until a frame, state, text, event, or render condition is true.",

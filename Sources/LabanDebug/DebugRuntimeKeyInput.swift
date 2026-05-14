@@ -111,6 +111,7 @@ enum DebugRuntimeKeyInput {
     case .w: return ("appCommand", "closeTab")
     case .c: return ("appCommand", "copy")
     case .v: return ("appCommand", "paste")
+    case .f: return ("appCommand", "find")
     case .digit1, .digit2, .digit3, .digit4, .digit5,
       .digit6, .digit7, .digit8, .digit9:
       return ("appCommand", "selectTab")

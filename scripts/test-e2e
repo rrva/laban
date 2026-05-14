@@ -40,6 +40,8 @@ printf '%s' "$HELP_OUTPUT" | grep -q 'GET  /debug/state' \
   || fail "help output does not mention GET /debug/state"
 printf '%s' "$HELP_OUTPUT" | grep -q 'POST /debug/actions' \
   || fail "help output does not mention POST /debug/actions"
+printf '%s' "$HELP_OUTPUT" | grep -q 'POST /debug/find/start' \
+  || fail "help output does not mention POST /debug/find/start"
 printf '%s' "$HELP_OUTPUT" | grep -q 'Authorization: Bearer $DEBUG_TOKEN' \
   || fail "help output does not mention discovery curl"
 
@@ -331,7 +333,72 @@ printf '%s' "$ATLAS" | jq -e \
   '(.font | length > 0) and (.fontSize > 0) and (.cell.width > 0) and (.glyphs.loaded >= 0) and has("atlases")' >/dev/null 2>&1 \
   || fail "atlas diagnostics invalid: $ATLAS"
 
-# 14. newTab — state should now have 2 tabs
+# 14. Find flow — debug endpoints, state, frame commands, and rendered yellow region.
+FIND_FEED=$(post_json /debug/actions '{"action":"feedOutput","text":"apple\nbanana\napple pie\n"}')
+[ "$(printf '%s' "$FIND_FEED" | jq -r '.ok')" = "true" ] \
+  || fail "find fixture feedOutput failed: $FIND_FEED"
+
+FIND_START=$(post_json /debug/find/start '{"needle":"apple"}')
+[ "$(printf '%s' "$FIND_START" | jq -r '.isActive')" = "true" ] \
+  || fail "find/start did not activate: $FIND_START"
+[ "$(printf '%s' "$FIND_START" | jq -r '.total')" -eq 2 ] \
+  || fail "find/start expected total 2: $FIND_START"
+[ "$(printf '%s' "$FIND_START" | jq -r '.selectedIndex')" -eq 0 ] \
+  || fail "find/start expected selectedIndex 0: $FIND_START"
+
+FIND_STATE=$(get_json "/debug/find/state?sessionID=$SESSION_ID")
+[ "$(printf '%s' "$FIND_STATE" | jq -r '.total')" -eq 2 ] \
+  || fail "find/state expected total 2: $FIND_STATE"
+STATE_WITH_FIND=$(get_json /debug/state)
+printf '%s' "$STATE_WITH_FIND" | jq -e --arg id "$SESSION_ID" \
+  '.findStateBySession[$id].total == 2' >/dev/null 2>&1 \
+  || fail "debug state missing findStateBySession total: $STATE_WITH_FIND"
+
+FIND_STEP=$(post_json /debug/find/step '{"direction":"next"}')
+[ "$(printf '%s' "$FIND_STEP" | jq -r '.selectedIndex')" -eq 1 ] \
+  || fail "find/step next expected selectedIndex 1: $FIND_STEP"
+
+FIND_COMMANDS=$(get_json "/debug/frame-commands?source=find&limit=20")
+FIND_SELECTED_COUNT=$(printf '%s' "$FIND_COMMANDS" \
+  | jq '[.commands[] | select(.kind=="findSelected")] | length')
+FIND_MATCH_COUNT=$(printf '%s' "$FIND_COMMANDS" \
+  | jq '[.commands[] | select(.kind=="findMatch")] | length')
+[ "$FIND_SELECTED_COUNT" -eq 1 ] \
+  || fail "expected one findSelected command: $FIND_COMMANDS"
+[ "$FIND_MATCH_COUNT" -eq 1 ] \
+  || fail "expected one findMatch command: $FIND_COMMANDS"
+
+FIND_REGION=$(printf '%s' "$FIND_COMMANDS" | jq -c '
+  {
+    regions: [
+      (
+        .commands[]
+        | select(.kind=="findSelected")
+        | .rect
+        | {
+            name: "find-selected",
+            x: (.x | floor),
+            y: (.y | floor),
+            width: ((.width | ceil) | if . < 1 then 1 else . end),
+            height: ((.height | ceil) | if . < 1 then 1 else . end)
+          }
+      )
+    ]
+  }')
+FIND_PIXELS=$(post_json /debug/pixel-probe "$FIND_REGION")
+printf '%s' "$FIND_PIXELS" | jq -e \
+  '.regions[0].sampledPixels > 0
+   and (.regions[0].averageRgba[0] >= 100)
+   and (.regions[0].averageRgba[1] >= 100)
+   and (.regions[0].averageRgba[2] < .regions[0].averageRgba[0])
+   and (.regions[0].averageRgba[2] < .regions[0].averageRgba[1])' >/dev/null 2>&1 \
+  || fail "find selected region is not yellow-tinted in screenshot pixels: $FIND_PIXELS"
+
+FIND_STOP=$(post_json /debug/find/stop '{}')
+[ "$(printf '%s' "$FIND_STOP" | jq -r '.stopped')" = "true" ] \
+  || fail "find/stop failed: $FIND_STOP"
+
+# 15. newTab — state should now have 2 tabs
 NEW_TAB_RESULT=$(post_json /debug/actions '{"action":"newTab"}')
 [ "$(printf '%s' "$NEW_TAB_RESULT" | jq -r '.ok')" = "true" ] \
   || fail "newTab action failed: $NEW_TAB_RESULT"
@@ -700,6 +767,10 @@ fi
 printf '%s' "$REPLAY_OUTPUT" | jq -e \
   '.terminalReplay == "passed" and .rendererReplay == "passed"' >/dev/null 2>&1 \
   || fail "capture replay failed: $REPLAY_OUTPUT"
+if ! find "$CAP_DIR/frames" -name 'frame-*.commands.json' -print \
+  | xargs grep -q '"findSelected"'; then
+  fail "capture replay artifact never recorded findSelected frame commands"
+fi
 
 # 29. Fixture control: restart and step the current fixture without relaunching
 FIXTURE_RESTART=$(post_json /debug/fixture '{"action":"restart"}')

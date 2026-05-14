@@ -40,19 +40,25 @@ public struct FrameProducer {
     from snap: UnsafePointer<LabanSnapshot>,
     selection: TerminalSelection? = nil
   ) -> [FrameCommand] {
-    commands(from: snap, selection: selection, cursorBlinkVisible: true)
+    commands(from: snap, selection: selection, findState: nil, cursorBlinkVisible: true)
   }
 
   public func commands(
     from snap: UnsafePointer<LabanSnapshot>,
     cursorBlinkVisible: Bool
   ) -> [FrameCommand] {
-    commands(from: snap, selection: nil, cursorBlinkVisible: cursorBlinkVisible)
+    commands(
+      from: snap,
+      selection: nil,
+      findState: nil,
+      cursorBlinkVisible: cursorBlinkVisible)
   }
 
   public func commands(
     from snap: UnsafePointer<LabanSnapshot>,
     selection: TerminalSelection?,
+    findState: TerminalFindState? = nil,
+    viewportRowOffset: Int = 0,
     cursorBlinkVisible: Bool
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
@@ -162,7 +168,37 @@ public struct FrameProducer {
       }
     }
 
-    // ---- Pass 3: Glyph runs and block-element rects for all rows ----
+    // ---- Pass 3: Find highlight rects ----
+    if let findState, findState.isActive, !findState.matches.isEmpty {
+      let selectedMatch = findState.selectedMatch
+      for match in findState.matches where match != selectedMatch {
+        guard
+          let rect = findRect(
+            for: match,
+            viewportRowOffset: viewportRowOffset,
+            rows: rows,
+            cols: cols,
+            cellWidth: cw,
+            cellHeight: ch
+          )
+        else { continue }
+        cmds.append(.findMatch(rect, color: findMatchColor()))
+      }
+      if let selectedMatch,
+        let rect = findRect(
+          for: selectedMatch,
+          viewportRowOffset: viewportRowOffset,
+          rows: rows,
+          cols: cols,
+          cellWidth: cw,
+          cellHeight: ch
+        )
+      {
+        cmds.append(.findSelected(rect, color: findSelectedColor()))
+      }
+    }
+
+    // ---- Pass 4: Glyph runs and block-element rects for all rows ----
     let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
@@ -406,6 +442,42 @@ public struct FrameProducer {
       }
     }
     return result
+  }
+
+  private func findRect(
+    for match: TerminalFindMatch,
+    viewportRowOffset: Int,
+    rows: Int,
+    cols: Int,
+    cellWidth: CGFloat,
+    cellHeight: CGFloat
+  ) -> CGRect? {
+    let localRow = match.row - viewportRowOffset
+    guard localRow >= 0, localRow < rows else { return nil }
+    let start = min(max(match.startColumn, 0), cols)
+    let end = min(max(match.endColumn, 0), cols)
+    guard end > start else { return nil }
+    return CGRect(
+      x: originX + CGFloat(start) * cellWidth,
+      y: originY + CGFloat(rows - 1 - localRow) * cellHeight + contentYOffset,
+      width: CGFloat(end - start) * cellWidth,
+      height: cellHeight
+    )
+  }
+
+  private static func alphaColor(_ rgba: UInt32, alpha: UInt32) -> UInt32 {
+    (rgba & 0xFFFF_FF00) | min(alpha, 0xFF)
+  }
+
+  private func findMatchColor() -> UInt32 {
+    Self.alphaColor(
+      Theme.current.ansi16.indices.contains(3) ? Theme.current.ansi16[3] : 0xDBB3_2DFF, alpha: 0x4D)
+  }
+
+  private func findSelectedColor() -> UInt32 {
+    Self.alphaColor(
+      Theme.current.ansi16.indices.contains(11) ? Theme.current.ansi16[11] : 0xEBC1_3DFF,
+      alpha: 0xB3)
   }
 
   private static func blend(
