@@ -283,6 +283,42 @@ final class VTRedrawRegressionTests: XCTestCase {
       "every row must be dirty after exiting the alt screen; got \(dirty)")
   }
 
+  /// The alt-screen swap must still be caught when `?1049l` lands *between* a
+  /// frame's snapshot and its mark_rendered — the pty reader thread runs
+  /// independently of the render loop, so this interleaving is the common
+  /// case, not the exception. The "screen last rendered" must be derived from
+  /// what the snapshot observed, not re-queried live at mark_rendered time;
+  /// otherwise mark_rendered records the already-swapped screen and the next
+  /// frame sees no change.
+  func testAlternateScreenExitDetectedWhenSwapRacesMarkRendered() {
+    let session = makeFixtureSession(rows: 4, cols: 80)
+    defer { laban_session_destroy(session) }
+
+    feed(session, "primary line 1\r\n")
+    feed(session, "primary line 2")
+    renderFrame(session)
+
+    feed(session, "\(esc)[?1049h")
+    feed(session, "alt screen content here")
+
+    // Frame N: snapshot sees the alt screen...
+    var snap: UnsafeMutablePointer<LabanSnapshot>?
+    precondition(laban_session_snapshot(session, &snap) == 0)
+    laban_snapshot_destroy(snap)
+    // ...the pty thread delivers ?1049l before this frame's mark_rendered...
+    feed(session, "\(esc)[?1049l")
+    // ...and the frame completes.
+    _ = laban_session_mark_rendered(session)
+
+    // Frame N+1 must still see the swap and repaint every row.
+    let dirty = dirtyRows(session: session)
+    XCTAssertEqual(
+      dirty.count, 4, "snapshot must report per-row dirty bits; got \(dirty)")
+    XCTAssertTrue(
+      dirty.allSatisfy { $0 },
+      "every row must be dirty when ?1049l races mark_rendered; got \(dirty)")
+  }
+
   // MARK: - CSI J variants (erase in display)
 
   /// CSI 0J = erase from cursor to end of display.

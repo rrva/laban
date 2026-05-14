@@ -503,16 +503,20 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     /* libghostty's per-row dirty bits track cell mutations, not screen swaps.
      * Entering/exiting the alternate screen (?1049/?1047/?47) restores a
      * buffer whose untouched rows stay clean even though every visible row
-     * changed. Force all rows dirty across a swap so partial damage does not
-     * leave the previous screen's pixels in the renderer's persistent target
-     * (the "black flash" when quitting one full-screen TUI and starting
-     * another). active_screen_rendered is updated by mark_rendered. */
-    if (dirty_rows && rows > 0) {
+     * changed. Force all rows dirty when the active screen differs from the
+     * one last rendered, so partial damage does not leave the previous
+     * screen's pixels in the renderer's persistent target (the "black flash"
+     * when quitting one full-screen TUI and starting another).
+     * last_rendered_active_screen is committed by mark_rendered. */
+    {
         GhosttyTerminalScreen active_screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
         if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
-                &active_screen) == GHOSTTY_SUCCESS &&
-            (int)active_screen != s->active_screen_rendered) {
-            memset(dirty_rows, 1, (size_t)rows);
+                &active_screen) == GHOSTTY_SUCCESS) {
+            if (dirty_rows && rows > 0 &&
+                (int)active_screen != s->last_rendered_active_screen) {
+                memset(dirty_rows, 1, (size_t)rows);
+            }
+            s->last_snapshot_active_screen = (int)active_screen;
         }
     }
 
@@ -569,14 +573,14 @@ int laban_session_mark_rendered(LabanSession *session) {
             GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &row_clean);
     }
 
-    /* Record which screen this rendered frame showed. The next snapshot
-     * compares against this to force full damage across an alt-screen swap,
-     * whose restored rows libghostty leaves clean. */
-    GhosttyTerminalScreen active_screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
-    if (ghostty_terminal_get(session->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
-            &active_screen) == GHOSTTY_SUCCESS) {
-        session->active_screen_rendered = (int)active_screen;
-    }
+    /* Commit the active screen the most recent snapshot observed as the one
+     * now on the renderer's persistent target. The next snapshot compares
+     * against this to force full damage across an alt-screen swap, whose
+     * restored rows libghostty leaves clean. Copying the snapshot-observed
+     * value (rather than re-querying the terminal here) keeps the comparison
+     * race-free against the pty thread mutating state between snapshot and
+     * mark_rendered. */
+    session->last_rendered_active_screen = session->last_snapshot_active_screen;
 
     return 0;
 }
