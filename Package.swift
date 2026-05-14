@@ -15,6 +15,7 @@ let package = Package(
     .library(name: "LabanDebug", targets: ["LabanDebug"]),
     .executable(name: "LabanApp", targets: ["LabanApp"]),
     .executable(name: "laban-agent", targets: ["LabanAgent"]),
+    .executable(name: "find-perf", targets: ["FindPerf"]),
   ],
   targets: [
     .target(
@@ -52,6 +53,11 @@ let package = Package(
     .executableTarget(
       name: "LabanAgent",
       dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore"]
+    ),
+    .executableTarget(
+      name: "FindPerf",
+      dependencies: ["LabanCore", "LabanTerminalCore"],
+      path: "Tools/FindPerf"
     ),
     .testTarget(
       name: "LabanTerminalCoreTests",
