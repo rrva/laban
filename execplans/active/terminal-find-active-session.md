@@ -104,6 +104,15 @@ state. Timestamps are encouraged once implementation starts.
 - [x] M3: Update `docs/product/spec.md` with a short "Find" section and a
   one-line decision note in `docs/adr/` if the find architecture warrants
   it.
+- [x] (2026-05-15) First repeated-navigation performance pass completed:
+  full-history match results are cached by session, needle, and row count;
+  cache hits avoid scrollback extraction, search, and sorting.
+- [x] (2026-05-15) M4: Reduce first-scan cost by adding a terminal-core direct find path
+  that returns match coordinates without first copying the whole scrollback
+  into a Swift `String`.
+- [x] (2026-05-15) M4: Validate that the direct path preserves current ASCII find behavior,
+  falls back safely for unsupported Unicode rows, and improves release-mode
+  `find.start` timings.
 
 ## Decision Log
 
@@ -213,6 +222,19 @@ state. Timestamps are encouraged once implementation starts.
   source of truth.
   Date/Author: 2026-05-14 / Codex.
 
+- Decision: M4 should add a LabanTerminalCore C-side direct match scan over
+  the existing plain formatter output, not a raw `ghostty_terminal_grid_ref`
+  traversal.
+  Rationale: A raw history scan would require resolving many arbitrary grid
+  references, and the Ghostty C API documents `ghostty_terminal_grid_ref` as
+  unsuitable for render-loop-scale traversal. The direct C scan still uses the
+  formatter as the source of terminal text, preserving current row and wrapping
+  semantics, but removes the extra copied text buffer, row-offset array,
+  Swift `String` decode, and Swift byte scan from first-search hot paths. It
+  is an incremental improvement that keeps the raw-grid or upstream Zig search
+  binding available for a later, larger change.
+  Date/Author: 2026-05-15 / Codex.
+
 ## Surprises & Discoveries
 
 - Observation: libghostty-vt has a mature search subsystem in Zig but
@@ -263,6 +285,14 @@ state. Timestamps are encouraged once implementation starts.
   mismatches while renderer replay passed. Adding replay handling for
   `find.start`, `find.step`, and `find.stop` fixed the mismatch, and the
   subsequent `scripts/test-e2e` run exited 0.
+- Observation: The M4 direct C scan removes Swift search from the cold
+  first-search profile but does not remove the dominant formatter cost.
+  Evidence: `find.start lines=10000` improved from about `2.394ms` to
+  `2.122ms` mean in the release harness. A sampled cold loop showed
+  `Session.findMatchesInScrollback` calling
+  `laban_session_find_matches_alloc`, with the dominant stack still inside
+  `ghostty_formatter_format_alloc` and `terminal.formatter.PageListFormatter`.
+  No `TerminalFind.search` samples appeared in that cold loop.
 
 ## Review Gate
 
@@ -337,20 +367,35 @@ Reviewer evidence:
 
 ## Outcomes & Retrospective
 
-As of 2026-05-14, the `cmd_f` worktree contains an end-to-end implementation:
+As of 2026-05-15, the `cmd_f` worktree contains an end-to-end implementation:
 Command-F opens the AppKit chip, debug endpoints drive the same model state,
 find highlights render as `findMatch`/`findSelected`, scrollback search uses
 caller-owned C extraction buffers, and capture/replay can reproduce frames that
 contain find highlights.
 
+M4 added `laban_session_find_matches_alloc` to `LabanTerminalCore`, exposed
+it through `Session.findMatchesInScrollback`, and routed full-history
+`AppModel` find refreshes through that fast path before the existing
+scrollback-block fallback. The fast path is intentionally ASCII-only. If the
+needle or any selected row contains non-ASCII bytes, it reports an incomplete
+result so Swift falls back to the existing `ScrollbackBlock` search and
+preserves current Unicode column mapping.
+
 Validation run by the executing agent:
 
 ```text
 rtk ./scripts/test
-  Executed 480 tests, with 2 tests skipped and 0 failures.
+  Executed 488 tests, with 2 tests skipped and 0 failures.
 
 rtk ./scripts/test-e2e
   test-e2e passed
+
+rtk swift test --filter TerminalFind
+  Executed 21 tests, with 0 failures.
+
+rtk swift run -c release --package-path .tmp/find-perf find-perf
+  find.start lines=10000 mean=2.122ms p95=2.206ms
+  find.step lines=10000 mean=0.003ms p95=0.008ms
 
 rtk git diff --check
 rtk ./scripts/check-docs

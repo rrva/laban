@@ -309,7 +309,7 @@ public enum TerminalFind {
     return true
   }
 
-  private static func shouldFoldASCII(
+  static func shouldFoldASCII(
     needleBytes: [UInt8],
     caseMode: TerminalFindCaseMode
   ) -> Bool {

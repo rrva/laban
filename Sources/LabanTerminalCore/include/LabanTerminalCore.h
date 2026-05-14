@@ -354,6 +354,41 @@ int laban_session_scrollback_extract_alloc(
 
 void laban_session_scrollback_extract_free(void *ptr);
 
+typedef struct {
+    int row;
+    int start_column;
+    int end_column;
+} LabanFindMatch;
+
+/*
+ * Search terminal rows for an ASCII needle and return match coordinates
+ * directly. This uses the same plain-text terminal row source as scrollback
+ * extraction but avoids copying all rows into a Swift string before search.
+ *
+ * Rows are traversed in the same global order as scrollback extraction, and
+ * returned match rows are relative to the selected range. row_offset and
+ * max_rows select that range. fold_ascii is non-zero for smart-case lowercase
+ * ASCII search. On success, out_complete is set to 1 when every selected row
+ * was searched, or 0 when the fast path declined the input and the caller
+ * must fall back to full text extraction for exact Unicode column behavior.
+ * Release out_matches with
+ * laban_session_find_matches_free. Returns 0 on success and -1 on permanent
+ * error.
+ */
+int laban_session_find_matches_alloc(
+    LabanSession *session,
+    const uint8_t *needle,
+    size_t needle_len,
+    int fold_ascii,
+    size_t row_offset,
+    size_t max_rows,
+    LabanFindMatch **out_matches,
+    size_t *out_count,
+    int *out_complete
+);
+
+void laban_session_find_matches_free(void *ptr);
+
 /* --- Mouse event ABI (no Ghostty handles exposed) --- */
 
 typedef enum {

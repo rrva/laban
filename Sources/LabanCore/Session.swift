@@ -387,6 +387,55 @@ public final class Session {
     )
   }
 
+  public func findMatchesInScrollback(
+    needle: String,
+    rowOffset: Int = 0,
+    maxRows: Int = 0,
+    caseMode: TerminalFindCaseMode = .smart
+  ) -> [TerminalFindMatch]? {
+    guard !isClosed, let h = handle else { return nil }
+    let needleBytes = Array(needle.utf8)
+    guard !needleBytes.isEmpty else { return [] }
+    guard needleBytes.allSatisfy({ $0 < 0x80 }) else { return nil }
+
+    let foldASCII = TerminalFind.shouldFoldASCII(needleBytes: needleBytes, caseMode: caseMode)
+    let safeOffset = max(0, rowOffset)
+    let safeMaxRows = max(0, maxRows)
+
+    var matchesPointer: UnsafeMutablePointer<LabanFindMatch>?
+    var matchCount: size_t = 0
+    var complete: Int32 = 0
+    let rc = needleBytes.withUnsafeBufferPointer { buffer -> Int32 in
+      guard let baseAddress = buffer.baseAddress else { return -1 }
+      return laban_session_find_matches_alloc(
+        h,
+        baseAddress,
+        size_t(buffer.count),
+        foldASCII ? 1 : 0,
+        size_t(safeOffset),
+        size_t(safeMaxRows),
+        &matchesPointer,
+        &matchCount,
+        &complete
+      )
+    }
+    defer {
+      if let matchesPointer {
+        laban_session_find_matches_free(matchesPointer)
+      }
+    }
+
+    guard rc == 0, complete != 0 else { return nil }
+    guard let matchesPointer, matchCount > 0 else { return [] }
+    return UnsafeBufferPointer(start: matchesPointer, count: Int(matchCount)).map { match in
+      TerminalFindMatch(
+        row: Int(match.row),
+        startColumn: Int(match.start_column),
+        endColumn: Int(match.end_column)
+      )
+    }
+  }
+
   /// Snap the viewport to the active bottom if it is currently showing older
   /// scrollback. Returns the row delta applied through `scrollViewport`.
   @discardableResult

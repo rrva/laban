@@ -99,6 +99,42 @@ final class TerminalFindTests: XCTestCase {
     )
   }
 
+  func testSessionFastScrollbackFindMatchesExtractedScrollback() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("alpha apple\r\nbanana\r\nApple pie\r\n".utf8))
+    session.poll()
+
+    let viewportRows = try XCTUnwrap(session.viewportState()).totalRows
+    let fastMatches = try XCTUnwrap(
+      session.findMatchesInScrollback(needle: "apple", maxRows: viewportRows))
+    let block = try XCTUnwrap(session.scrollbackBlock(maxRows: viewportRows))
+
+    XCTAssertEqual(fastMatches, TerminalFind.search(needle: "apple", in: block))
+    XCTAssertEqual(
+      fastMatches,
+      [
+        TerminalFindMatch(row: 0, startColumn: 6, endColumn: 11),
+        TerminalFindMatch(row: 2, startColumn: 0, endColumn: 5),
+      ])
+  }
+
+  func testSessionFastScrollbackFindDeclinesUnicodeRows() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.write(Array("café apple\r\n".utf8))
+    session.poll()
+
+    let viewportRows = try XCTUnwrap(session.viewportState()).totalRows
+    XCTAssertNil(session.findMatchesInScrollback(needle: "apple", maxRows: viewportRows))
+  }
+
   private func withSnapshot(
     text: String,
     rows: Int32 = 4,

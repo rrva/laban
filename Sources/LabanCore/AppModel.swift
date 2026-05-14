@@ -665,6 +665,12 @@ public final class AppModel {
       {
         state.matches = cache.matches
         needsMatchSort = false
+      } else if let matches = session.findMatchesInScrollback(
+        needle: state.needle,
+        maxRows: viewport.totalRows
+      ) {
+        state.matches = matches
+        fullSearchCacheKey = (state.needle, viewport.totalRows)
       } else if let scrollback = session.scrollbackBlock(rowOffset: 0, maxRows: viewport.totalRows),
         scrollback.rows > 0
       {

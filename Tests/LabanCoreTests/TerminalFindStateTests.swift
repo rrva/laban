@@ -104,6 +104,17 @@ final class TerminalFindStateTests: XCTestCase {
     XCTAssertEqual(state.total, 2)
   }
 
+  func testFullFindFallsBackWhenFastPathDeclinesUnicodeRows() throws {
+    let model = try makeModel(rows: 5, cols: 40)
+    let session = try XCTUnwrap(model.session(forTab: model.tabs[0].id))
+    session.write(Array("café apple\r\n".utf8))
+    session.poll()
+
+    let state = try XCTUnwrap(model.startFind(sessionID: session.id, needle: "apple"))
+
+    XCTAssertEqual(state.matches, [TerminalFindMatch(row: 0, startColumn: 5, endColumn: 10)])
+  }
+
   func testStopRestoresViewportOffsetAfterStepScrolls() throws {
     let model = try makeModel(rows: 6, cols: 40)
     let session = try XCTUnwrap(model.session(forTab: model.tabs[0].id))
