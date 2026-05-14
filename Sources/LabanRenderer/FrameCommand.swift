@@ -6,6 +6,7 @@ public enum FrameSource: String, Sendable {
   case terminal
   case cursor
   case selection
+  case find
   case image
 }
 
@@ -110,6 +111,8 @@ public enum FrameCommand: Sendable {
   )
   case cursor(CGRect, color: UInt32)
   case selection(CGRect, color: UInt32)
+  case findMatch(CGRect, color: UInt32)
+  case findSelected(CGRect, color: UInt32)
   case clip(CGRect)
   case texturedQuad(rect: CGRect, resourceId: UInt64, source: FrameSource)
 }

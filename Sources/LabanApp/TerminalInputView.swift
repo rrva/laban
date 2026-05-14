@@ -10,6 +10,7 @@ enum AppCommand: Equatable {
   case selectTab(index: Int)
   case copy
   case paste
+  case find
 }
 
 // MARK: - Key descriptor
@@ -93,6 +94,7 @@ extension TerminalKeyDescriptor {
     case .w: return .appCommand(.closeTab)
     case .c: return .appCommand(.copy)
     case .v: return .appCommand(.paste)
+    case .f: return .appCommand(.find)
     case .digit1: return .appCommand(.selectTab(index: 0))
     case .digit2: return .appCommand(.selectTab(index: 1))
     case .digit3: return .appCommand(.selectTab(index: 2))

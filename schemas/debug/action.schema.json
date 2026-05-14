@@ -21,7 +21,10 @@
     {"$ref": "#/$defs/paste"},
     {"$ref": "#/$defs/setClipboardText"},
     {"$ref": "#/$defs/scrollViewport"},
-    {"$ref": "#/$defs/setSelection"}
+    {"$ref": "#/$defs/setSelection"},
+    {"$ref": "#/$defs/findStart"},
+    {"$ref": "#/$defs/findStep"},
+    {"$ref": "#/$defs/findStop"}
   ],
   "$defs": {
     "newTab": {
@@ -227,6 +230,38 @@
         "sessionId": {"type": "string"},
         "anchor": {"$ref": "#/$defs/cell"},
         "focus": {"$ref": "#/$defs/cell"}
+      },
+      "additionalProperties": false
+    },
+    "findStart": {
+      "type": "object",
+      "required": ["action", "needle"],
+      "properties": {
+        "action": {"const": "find.start"},
+        "sessionID": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "needle": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "findStep": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "find.step"},
+        "sessionID": {"type": "string"},
+        "sessionId": {"type": "string"},
+        "direction": {"enum": ["next", "previous"]}
+      },
+      "additionalProperties": false
+    },
+    "findStop": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "find.stop"},
+        "sessionID": {"type": "string"},
+        "sessionId": {"type": "string"}
       },
       "additionalProperties": false
     },

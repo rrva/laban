@@ -11,6 +11,8 @@
 #include <ghostty/vt/device.h>
 #include <ghostty/vt/focus.h>
 #include <ghostty/vt/grid_ref.h>
+#include <ghostty/vt/formatter.h>
+#include <ghostty/vt/allocator.h>
 #include <ghostty/vt/screen.h>
 #include <ghostty/vt/point.h>
 #include <ghostty/vt/size_report.h>

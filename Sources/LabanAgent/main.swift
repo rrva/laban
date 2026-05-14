@@ -88,6 +88,8 @@ func usage() -> String {
       GET  /debug/state
       GET  /debug/metrics
       POST /debug/actions
+      POST /debug/find/start
+      GET  /debug/find/state
       POST /debug/wait
       POST /debug/snapshot
       POST /debug/fixture

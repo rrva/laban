@@ -663,6 +663,14 @@ public enum FrameCommandCaptureCodec {
         return CapturedFrameCommand(
           index: index, kind: "selection", source: FrameSource.selection.rawValue,
           rect: CapturedRect(rect), color: color)
+      case .findMatch(let rect, let color):
+        return CapturedFrameCommand(
+          index: index, kind: "findMatch", source: FrameSource.find.rawValue,
+          rect: CapturedRect(rect), color: color)
+      case .findSelected(let rect, let color):
+        return CapturedFrameCommand(
+          index: index, kind: "findSelected", source: FrameSource.find.rawValue,
+          rect: CapturedRect(rect), color: color)
       case .clip(let rect):
         return CapturedFrameCommand(
           index: index, kind: "clip", source: "unknown", rect: CapturedRect(rect))
@@ -703,6 +711,12 @@ public enum FrameCommandCaptureCodec {
       case "selection":
         guard let rect = item.rect, let color = item.color else { return nil }
         return .selection(rect.cgRect, color: color)
+      case "findMatch":
+        guard let rect = item.rect, let color = item.color else { return nil }
+        return .findMatch(rect.cgRect, color: color)
+      case "findSelected":
+        guard let rect = item.rect, let color = item.color else { return nil }
+        return .findSelected(rect.cgRect, color: color)
       case "clip":
         guard let rect = item.rect else { return nil }
         return .clip(rect.cgRect)

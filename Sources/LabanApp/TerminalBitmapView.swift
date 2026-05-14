@@ -86,6 +86,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// mouseExited; nil when the cursor isn't inside any sidebar tab row.
   private var hoveredSidebarTabId: Tab.ID?
   private var hoverCursorStyle: TerminalHoverCursorStyle?
+  private var findChip: TerminalFindChipView?
+  private var lastFindNeedle: String = ""
+  private var pendingFindSearchWorkItem: DispatchWorkItem?
+  private var pendingFindSearchGeneration: UInt64 = 0
+  private var pendingFindSearchSessionID: Session.ID?
+  private var pendingFindSearchNeedle: String = ""
+  private static let findTypingSearchDelay: TimeInterval = 0.25
 
   // Damage-driven render budget state
   private var renderInvalidated = true
@@ -937,6 +944,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     session.markRendered()
     renderInvalidated = false
     lastRenderedActiveTabId = activeTab.id
+    syncFindChip()
   }
 
   // MARK: - Drawing
@@ -1051,6 +1059,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
+    layoutFindChip()
     let w = Int(newSize.width)
     let h = Int(newSize.height)
     guard w > 0, h > 0 else { return }
@@ -1268,7 +1277,178 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       copy(nil)
     case .paste:
       paste(nil)
+    case .find:
+      showFindChip(selectingExistingNeedle: true)
     }
+  }
+
+  @objc func find(_ sender: Any?) {
+    showFindChip(selectingExistingNeedle: true)
+  }
+
+  private func showFindChip(selectingExistingNeedle: Bool) {
+    guard let activeTab = model.activeTab else { return }
+    let sessionId = activeTab.sessionId
+    var state = model.findState(forSession: sessionId)
+    if !state.isActive {
+      state = model.startFind(sessionID: sessionId, needle: lastFindNeedle) ?? .inactive
+    }
+
+    let chip: TerminalFindChipView
+    if let existing = findChip {
+      chip = existing
+    } else {
+      chip = TerminalFindChipView(frame: .zero)
+      chip.onNeedleChanged = { [weak self] needle in
+        self?.updateFindNeedle(needle)
+      }
+      chip.onStep = { [weak self] direction in
+        self?.stepFind(direction)
+      }
+      chip.onClose = { [weak self] in
+        self?.closeFindChip()
+      }
+      findChip = chip
+      addSubview(chip)
+    }
+
+    chip.update(with: state)
+    layoutFindChip()
+    if selectingExistingNeedle {
+      chip.focusAndSelectAll()
+    }
+    renderInvalidated = true
+    advanceFrame()
+  }
+
+  private func updateFindNeedle(_ needle: String) {
+    guard let sessionId = model.activeTab?.sessionId else { return }
+    lastFindNeedle = needle
+    if needle.isEmpty {
+      cancelPendingFindSearch()
+      _ = model.updateFindNeedle(sessionID: sessionId, needle: needle)
+      syncFindChip()
+      renderInvalidated = true
+      advanceFrame()
+      return
+    }
+
+    _ = model.setFindNeedlePending(sessionID: sessionId, needle: needle)
+    scheduleFindSearch(sessionID: sessionId, needle: needle)
+    syncFindChip()
+  }
+
+  private func stepFind(_ direction: TerminalFindDirection) {
+    guard let sessionId = model.activeTab?.sessionId else { return }
+    cancelPendingFindSearch()
+    _ = model.stepFind(sessionID: sessionId, direction: direction)
+    syncFindChip()
+    renderInvalidated = true
+    advanceFrame()
+  }
+
+  private func closeFindChip() {
+    cancelPendingFindSearch()
+    guard let sessionId = model.activeTab?.sessionId else {
+      findChip?.removeFromSuperview()
+      findChip = nil
+      return
+    }
+    lastFindNeedle = model.findState(forSession: sessionId).needle
+    _ = model.stopFind(sessionID: sessionId)
+    findChip?.removeFromSuperview()
+    findChip = nil
+    window?.makeFirstResponder(self)
+    renderInvalidated = true
+    advanceFrame()
+  }
+
+  private func syncFindChip() {
+    guard let chip = findChip, let sessionId = model.activeTab?.sessionId else { return }
+    let state = model.findState(forSession: sessionId)
+    let isSearching =
+      pendingFindSearchSessionID == sessionId
+      && pendingFindSearchNeedle == state.needle
+    chip.update(with: state, isSearching: isSearching)
+  }
+
+  private func scheduleFindSearch(sessionID: Session.ID, needle: String) {
+    pendingFindSearchGeneration &+= 1
+    let generation = pendingFindSearchGeneration
+    pendingFindSearchWorkItem?.cancel()
+    pendingFindSearchSessionID = sessionID
+    pendingFindSearchNeedle = needle
+
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.runPendingFindSearch(sessionID: sessionID, needle: needle, generation: generation)
+    }
+    pendingFindSearchWorkItem = workItem
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + Self.findTypingSearchDelay,
+      execute: workItem
+    )
+  }
+
+  private func runPendingFindSearch(
+    sessionID: Session.ID,
+    needle: String,
+    generation: UInt64
+  ) {
+    guard pendingFindSearchGeneration == generation,
+      pendingFindSearchSessionID == sessionID,
+      pendingFindSearchNeedle == needle
+    else { return }
+
+    pendingFindSearchWorkItem = nil
+    pendingFindSearchSessionID = nil
+    pendingFindSearchNeedle = ""
+    guard model.activeTab?.sessionId == sessionID, findChip != nil else { return }
+
+    _ = model.updateFindNeedle(
+      sessionID: sessionID,
+      needle: needle,
+      scrollSelectedIntoView: true
+    )
+    syncFindChip()
+    renderInvalidated = true
+    advanceFrame()
+  }
+
+  private func cancelPendingFindSearch() {
+    pendingFindSearchGeneration &+= 1
+    pendingFindSearchWorkItem?.cancel()
+    pendingFindSearchWorkItem = nil
+    pendingFindSearchSessionID = nil
+    pendingFindSearchNeedle = ""
+  }
+
+  private func layoutFindChip() {
+    guard let chip = findChip else { return }
+    let size = NSSize(width: 314, height: 30)
+    let frame = TerminalFindChipView.defaultFrame(in: terminalContentRect(), size: size)
+    if chip.frame.size == .zero {
+      chip.frame = frame
+    } else if chip.frame.origin.x == 0 && chip.frame.origin.y == 0 {
+      chip.frame = frame
+    } else {
+      var next = chip.frame
+      next.size = size
+      next.origin.x = min(max(0, next.origin.x), max(0, bounds.width - size.width))
+      next.origin.y = min(max(0, next.origin.y), max(0, bounds.height - size.height))
+      chip.frame = next
+    }
+  }
+
+  private func terminalContentRect() -> NSRect {
+    let insets = Self.contentInsets
+    let x = sidebarWidth + insets.left
+    let y = insets.bottom
+    return NSRect(
+      x: x,
+      y: y,
+      width: max(1, bounds.width - x - insets.right),
+      height: max(1, bounds.height - insets.top - insets.bottom)
+    )
   }
 
   private func recordInput(

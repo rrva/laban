@@ -1,0 +1,29 @@
+{
+  "name": "find-viewport",
+  "version": 1,
+  "description": "Writes repeated literal text so debug find can assert viewport highlight rectangles.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 12
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Fixture: Find Viewport"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "apple\r\nbanana\r\napple pie\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "title": "Fixture: Find Viewport",
+    "nonEmptyScreenshot": true,
+    "containsText": ["apple", "apple pie"]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/find-state.schema.json",
+  "title": "Debug Find State",
+  "type": "object",
+  "required": ["isActive", "needle", "total", "selectedIndex", "matches"],
+  "additionalProperties": true,
+  "properties": {
+    "isActive": {"type": "boolean"},
+    "needle": {"type": "string"},
+    "total": {"type": "integer", "minimum": 0},
+    "selectedIndex": {"type": ["integer", "null"], "minimum": 0},
+    "matches": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/match"}
+    },
+    "viewportScrollOffsetAtStart": {"type": ["integer", "null"], "minimum": 0}
+  },
+  "$defs": {
+    "match": {
+      "type": "object",
+      "required": ["row", "startColumn", "endColumn"],
+      "additionalProperties": false,
+      "properties": {
+        "row": {"type": "integer", "minimum": 0},
+        "startColumn": {"type": "integer", "minimum": 0},
+        "endColumn": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

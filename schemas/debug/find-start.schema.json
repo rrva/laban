@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/find-start.schema.json",
+  "title": "Debug Find Start",
+  "type": "object",
+  "required": ["needle"],
+  "additionalProperties": false,
+  "properties": {
+    "sessionID": {"type": "string"},
+    "sessionId": {"type": "string"},
+    "needle": {"type": "string", "minLength": 1}
+  }
+}

@@ -19,6 +19,9 @@ enum DebugAction: Decodable {
   case advanceFrames(AdvanceFramesActionRequest)
   case setClipboardText(TextActionRequest)
   case setSelection(SelectionActionRequest)
+  case findStart(FindStartRequest)
+  case findStep(FindStepRequest)
+  case findStop(FindSessionRequest)
   case copy(SessionTargetActionRequest)
   case paste
   case scrollViewport(ScrollViewportActionRequest)
@@ -61,6 +64,12 @@ enum DebugAction: Decodable {
       self = .setClipboardText(try TextActionRequest(from: decoder))
     case "setSelection":
       self = .setSelection(try SelectionActionRequest(from: decoder))
+    case "find.start":
+      self = .findStart(try FindStartRequest(from: decoder))
+    case "find.step":
+      self = .findStep(try FindStepRequest(from: decoder))
+    case "find.stop":
+      self = .findStop(try FindSessionRequest(from: decoder))
     case "copy":
       self = .copy(try SessionTargetActionRequest(from: decoder))
     case "paste":
@@ -160,6 +169,29 @@ struct SessionTargetActionRequest: Decodable {
 struct ScrollViewportActionRequest: Decodable {
   var sessionId: String?
   var deltaRows: Int?
+}
+
+struct FindStartRequest: Decodable {
+  var sessionID: String?
+  var sessionId: String?
+  var needle: String?
+
+  var targetSessionId: String? { sessionID ?? sessionId }
+}
+
+struct FindStepRequest: Decodable {
+  var sessionID: String?
+  var sessionId: String?
+  var direction: String?
+
+  var targetSessionId: String? { sessionID ?? sessionId }
+}
+
+struct FindSessionRequest: Decodable {
+  var sessionID: String?
+  var sessionId: String?
+
+  var targetSessionId: String? { sessionID ?? sessionId }
 }
 
 struct CaptureStartRequest: Decodable {

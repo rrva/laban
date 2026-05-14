@@ -24,6 +24,7 @@ final class DebugRuntimeKeyInputTests: XCTestCase {
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .w).command, "closeTab")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .c).command, "copy")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .v).command, "paste")
+    XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .f).command, "find")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .digit4).command, "selectTab")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .enter).route, "ignored")
   }

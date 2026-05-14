@@ -936,6 +936,10 @@ public final class MetalRenderer: RendererBackend {
       case .selection(let rect, let color):
         appendSolid(rect: rect, color: color)
 
+      case .findMatch(let rect, let color),
+        .findSelected(let rect, let color):
+        appendSolid(rect: rect, color: color)
+
       case .clip:
         // Flushing the batch + applying a scissor would honour clip ranges,
         // but FrameProducer doesn't currently emit .clip on the terminal

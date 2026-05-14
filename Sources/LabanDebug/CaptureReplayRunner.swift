@@ -245,6 +245,24 @@ public final class CaptureReplayRunner {
             focus: TerminalCellCoordinate(row: focusRow, col: focusCol)
           )
         }
+        if event.command == "find.start",
+          let needle = event.text,
+          let replaySession = session(for: event.sessionId)
+        {
+          _ = model.startFind(sessionID: replaySession.id, needle: needle)
+        }
+        if event.command == "find.step",
+          let rawDirection = event.text,
+          let direction = TerminalFindDirection(rawValue: rawDirection),
+          let replaySession = session(for: event.sessionId)
+        {
+          _ = model.stepFind(sessionID: replaySession.id, direction: direction)
+        }
+        if event.command == "find.stop",
+          let replaySession = session(for: event.sessionId)
+        {
+          _ = model.stopFind(sessionID: replaySession.id)
+        }
 
       case CaptureEventKind.terminalSnapshot.rawValue:
         if let capturedSession = event.sessionId,
@@ -322,25 +340,23 @@ public final class CaptureReplayRunner {
               source: .terminal
             ))
         }
+        let selection = selectionBySession[session.id]
+        let findState = model.findState(forSession: session.id)
+        let activeFindState = findState.isActive ? findState : nil
+        let viewportRowOffset = session.viewportState()?.viewportOffset ?? 0
         let producer = FrameProducer(
           cellWidth: cellWidth,
           cellHeight: cellHeight,
           originX: layout.terminalOriginX,
           originY: layout.terminalOriginY
         )
-        commands += producer.commands(from: UnsafePointer(snap))
-        if let selection = selectionBySession[session.id] {
-          commands = sidebarCommands
-          if let terminalArea = layout.terminalArea {
-            commands.append(
-              .rect(
-                terminalArea,
-                color: snap.pointee.default_background_rgba,
-                source: .terminal
-              ))
-          }
-          commands += producer.commands(from: UnsafePointer(snap), selection: selection)
-        }
+        commands += producer.commands(
+          from: UnsafePointer(snap),
+          selection: selection,
+          findState: activeFindState,
+          viewportRowOffset: viewportRowOffset,
+          cursorBlinkVisible: true
+        )
         let payload = CapturedFrameCommands(
           frame: recorded.frame,
           backend: recorded.backend,

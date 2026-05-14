@@ -293,6 +293,102 @@ typedef struct {
 int laban_session_scroll_viewport(LabanSession *session, int delta_rows);
 int laban_session_viewport_state(LabanSession *session, LabanViewportState *out_state);
 
+/*
+ * Probe sizes for a plain-text extraction of terminal rows.
+ *
+ * Rows are addressed in global order: scrollback/history rows first, then the
+ * active viewport rows. max_rows == 0 means "all rows after row_offset".
+ * On success, *out_rows is the number of rows that would be returned and
+ * *out_text_capacity is the number of UTF-8 bytes needed, including newline
+ * separators between returned rows and a trailing NUL. Returns 0 on success
+ * and -1 on permanent error.
+ */
+int laban_session_scrollback_extract_size(
+    LabanSession *session,
+    size_t row_offset,
+    size_t max_rows,
+    size_t *out_rows,
+    size_t *out_text_capacity
+);
+
+/*
+ * Extract terminal rows as plain text into caller-owned buffers.
+ *
+ * The caller allocates text_buffer and row_offsets using the probe result.
+ * row_offsets receives one byte offset per returned row, relative to
+ * text_buffer. Rows in text_buffer are separated by '\n' and the buffer is
+ * NUL-terminated. Returns 0 on success, 1 when either buffer is too small
+ * (required sizes are reported), and -1 on permanent error.
+ */
+int laban_session_scrollback_extract(
+    LabanSession *session,
+    size_t row_offset,
+    size_t max_rows,
+    char *text_buffer,
+    size_t text_capacity,
+    uint32_t *row_offsets,
+    size_t row_offsets_capacity,
+    size_t *out_rows,
+    size_t *out_text_len,
+    size_t *out_required_text_capacity,
+    size_t *out_required_row_offsets
+);
+
+/*
+ * Extract terminal rows as plain text into newly allocated caller-owned
+ * buffers. This is the single-pass variant used by Swift hot paths: the
+ * returned text_buffer is NUL-terminated, and row_offsets receives one byte
+ * offset per returned row. Release either returned pointer with
+ * laban_session_scrollback_extract_free. Returns 0 on success and -1 on
+ * permanent error.
+ */
+int laban_session_scrollback_extract_alloc(
+    LabanSession *session,
+    size_t row_offset,
+    size_t max_rows,
+    char **out_text_buffer,
+    uint32_t **out_row_offsets,
+    size_t *out_rows,
+    size_t *out_text_len
+);
+
+void laban_session_scrollback_extract_free(void *ptr);
+
+typedef struct {
+    int row;
+    int start_column;
+    int end_column;
+} LabanFindMatch;
+
+/*
+ * Search terminal rows for an ASCII needle and return match coordinates
+ * directly. This uses the same plain-text terminal row source as scrollback
+ * extraction but avoids copying all rows into a Swift string before search.
+ *
+ * Rows are traversed in the same global order as scrollback extraction, and
+ * returned match rows are relative to the selected range. row_offset and
+ * max_rows select that range. fold_ascii is non-zero for smart-case lowercase
+ * ASCII search. On success, out_complete is set to 1 when every selected row
+ * was searched, or 0 when the fast path declined the input and the caller
+ * must fall back to full text extraction for exact Unicode column behavior.
+ * Release out_matches with
+ * laban_session_find_matches_free. Returns 0 on success and -1 on permanent
+ * error.
+ */
+int laban_session_find_matches_alloc(
+    LabanSession *session,
+    const uint8_t *needle,
+    size_t needle_len,
+    int fold_ascii,
+    size_t row_offset,
+    size_t max_rows,
+    LabanFindMatch **out_matches,
+    size_t *out_count,
+    int *out_complete
+);
+
+void laban_session_find_matches_free(void *ptr);
+
 /* --- Mouse event ABI (no Ghostty handles exposed) --- */
 
 typedef enum {

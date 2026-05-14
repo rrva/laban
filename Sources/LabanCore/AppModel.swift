@@ -9,10 +9,18 @@ public final class AppModel {
   private var _tabs: [Tab] = []
   public var tabs: [Tab] { withModelLock { _tabs } }
   private let sessionRegistry = SessionRegistry()
+  private var findStateBySession: [Session.ID: TerminalFindState] = [:]
+  private var findFullSearchCacheBySession: [Session.ID: FindFullSearchCache] = [:]
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
   private var themeChangeObserver: NSObjectProtocol?
+
+  private struct FindFullSearchCache {
+    var needle: String
+    var totalRows: Int
+    var matches: [TerminalFindMatch]
+  }
 
   /// Set by the AppKit view to receive "this session has new bytes
   /// to render" wake-ups from the per-session reader threads. The
@@ -100,6 +108,8 @@ public final class AppModel {
     let closedCwds = _tabs.compactMap { $0.titleMetadata.workspace.cwd }
     sessionRegistry.closeAll()
     _tabs.removeAll()
+    findStateBySession.removeAll()
+    findFullSearchCacheBySession.removeAll()
     metadataSync.reset(closedCwds: closedCwds)
   }
 
@@ -109,6 +119,192 @@ public final class AppModel {
     withModelLock {
       guard let tab = _tabs.first(where: { $0.id == tabId }) else { return nil }
       return sessionRegistry.session(id: tab.sessionId)
+    }
+  }
+
+  public func session(forSessionID sessionID: Session.ID) -> Session? {
+    withModelLock {
+      sessionRegistry.session(id: sessionID)
+    }
+  }
+
+  public func findState(forSession sessionID: Session.ID) -> TerminalFindState {
+    withModelLock {
+      findStateBySession[sessionID] ?? .inactive
+    }
+  }
+
+  public var allFindStates: [Session.ID: TerminalFindState] {
+    withModelLock { findStateBySession }
+  }
+
+  @discardableResult
+  public func startFind(sessionID: Session.ID, needle: String = "") -> TerminalFindState? {
+    withModelLock {
+      guard let session = sessionRegistry.session(id: sessionID) else { return nil }
+      let viewport = session.viewportState()
+      var state = TerminalFindState(
+        isActive: true,
+        needle: needle,
+        matches: [],
+        selectedIndex: nil,
+        viewportScrollOffsetAtStart: viewport?.viewportOffset,
+        viewportRowsAtStart: viewport?.viewportRows
+      )
+      findStateBySession[sessionID] = state
+      findFullSearchCacheBySession.removeValue(forKey: sessionID)
+      if !needle.isEmpty {
+        state = refreshFindFullUnlocked(sessionID: sessionID, preserving: nil) ?? state
+      }
+      return state
+    }
+  }
+
+  @discardableResult
+  public func updateFindNeedle(
+    sessionID: Session.ID,
+    needle: String,
+    scrollSelectedIntoView: Bool = false
+  ) -> TerminalFindState? {
+    withModelLock {
+      guard let session = sessionRegistry.session(id: sessionID) else { return nil }
+      if findStateBySession[sessionID]?.isActive != true {
+        let viewport = session.viewportState()
+        findStateBySession[sessionID] = TerminalFindState(
+          isActive: true,
+          needle: needle,
+          matches: [],
+          selectedIndex: nil,
+          viewportScrollOffsetAtStart: viewport?.viewportOffset,
+          viewportRowsAtStart: viewport?.viewportRows
+        )
+        findFullSearchCacheBySession.removeValue(forKey: sessionID)
+      } else {
+        if findStateBySession[sessionID]?.needle != needle {
+          findFullSearchCacheBySession.removeValue(forKey: sessionID)
+        }
+        findStateBySession[sessionID]?.needle = needle
+      }
+      let refreshed = refreshFindFullUnlocked(sessionID: sessionID, preserving: nil)
+      if scrollSelectedIntoView {
+        scrollSelectedFindMatchIntoViewUnlocked(sessionID: sessionID)
+        return findStateBySession[sessionID] ?? refreshed
+      }
+      return refreshed
+    }
+  }
+
+  @discardableResult
+  public func setFindNeedlePending(sessionID: Session.ID, needle: String) -> TerminalFindState? {
+    withModelLock {
+      guard let session = sessionRegistry.session(id: sessionID) else { return nil }
+      if findStateBySession[sessionID]?.isActive != true {
+        let viewport = session.viewportState()
+        findStateBySession[sessionID] = TerminalFindState(
+          isActive: true,
+          needle: needle,
+          matches: [],
+          selectedIndex: nil,
+          viewportScrollOffsetAtStart: viewport?.viewportOffset,
+          viewportRowsAtStart: viewport?.viewportRows
+        )
+        findFullSearchCacheBySession.removeValue(forKey: sessionID)
+      } else {
+        if findStateBySession[sessionID]?.needle != needle {
+          findFullSearchCacheBySession.removeValue(forKey: sessionID)
+        }
+        findStateBySession[sessionID]?.needle = needle
+        findStateBySession[sessionID]?.matches = []
+        findStateBySession[sessionID]?.selectedIndex = nil
+      }
+      return findStateBySession[sessionID]
+    }
+  }
+
+  @discardableResult
+  public func stepFind(
+    sessionID: Session.ID,
+    direction: TerminalFindDirection
+  ) -> TerminalFindState? {
+    withModelLock {
+      guard findStateBySession[sessionID]?.isActive == true else { return nil }
+      _ = refreshFindFullUnlocked(sessionID: sessionID)
+      guard var state = findStateBySession[sessionID] else { return nil }
+      guard !state.matches.isEmpty else {
+        state.selectedIndex = nil
+        findStateBySession[sessionID] = state
+        return state
+      }
+
+      let current = state.selectedIndex ?? (direction == .previous ? 0 : state.matches.count - 1)
+      switch direction {
+      case .next:
+        state.selectedIndex = (current + 1) % state.matches.count
+      case .previous:
+        state.selectedIndex = (current - 1 + state.matches.count) % state.matches.count
+      }
+      findStateBySession[sessionID] = state
+      scrollSelectedFindMatchIntoViewUnlocked(sessionID: sessionID)
+      return findStateBySession[sessionID] ?? state
+    }
+  }
+
+  @discardableResult
+  public func stopFind(sessionID: Session.ID) -> TerminalFindState? {
+    withModelLock {
+      guard let state = findStateBySession[sessionID], state.isActive else {
+        findStateBySession[sessionID] = .inactive
+        return .inactive
+      }
+      if let session = sessionRegistry.session(id: sessionID),
+        let savedOffset = state.viewportScrollOffsetAtStart,
+        let savedRows = state.viewportRowsAtStart,
+        let viewport = session.viewportState(),
+        viewport.viewportRows == savedRows
+      {
+        let delta = savedOffset - viewport.viewportOffset
+        if delta != 0 {
+          _ = session.scrollViewport(deltaRows: delta)
+        }
+      }
+      findStateBySession[sessionID] = .inactive
+      findFullSearchCacheBySession.removeValue(forKey: sessionID)
+      return .inactive
+    }
+  }
+
+  public func refreshFindVisible(
+    sessionID: Session.ID,
+    snapshot: UnsafePointer<LabanSnapshot>,
+    viewportOffset: Int
+  ) {
+    withModelLock {
+      guard var state = findStateBySession[sessionID], state.isActive else { return }
+      guard !state.needle.isEmpty else {
+        state.matches = []
+        state.selectedIndex = nil
+        findStateBySession[sessionID] = state
+        return
+      }
+
+      let previousSelected = state.selectedMatch
+      let rows = Int(snapshot.pointee.rows)
+      let visibleEnd = viewportOffset + rows
+      let visibleMatches = TerminalFind.search(
+        needle: state.needle,
+        inSnapshot: snapshot,
+        rowOffset: viewportOffset
+      )
+      let preserved = state.matches.filter { match in
+        match.row < viewportOffset || match.row >= visibleEnd
+      }
+      state.matches = (preserved + visibleMatches).sorted(by: Self.findMatchSort)
+      state.selectedIndex = Self.findSelectedIndex(
+        preserving: previousSelected,
+        preferredIndex: state.selectedIndex,
+        in: state.matches
+      )
+      findStateBySession[sessionID] = state
     }
   }
 
@@ -172,6 +368,8 @@ public final class AppModel {
 
       if _tabs.count == 1 {
         sessionRegistry.close(sessionId: tab.sessionId)
+        findStateBySession.removeValue(forKey: tab.sessionId)
+        findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
         metadataSync.forget(tab: tab)
         _tabs = []
         recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
@@ -181,6 +379,8 @@ public final class AppModel {
       // Determine next active tab before removing
       let wasActive = tab.isActive
       sessionRegistry.close(sessionId: tab.sessionId)
+      findStateBySession.removeValue(forKey: tab.sessionId)
+      findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
       metadataSync.forget(tab: tab)
       _tabs.remove(at: idx)
       recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
@@ -365,7 +565,10 @@ public final class AppModel {
   @discardableResult
   public func noteOutput(forTab tabId: Tab.ID, at date: Date = Date()) -> Bool {
     withModelLock {
-      metadataSync.noteOutput(forTab: tabId, at: date, tabs: &_tabs)
+      if let tab = _tabs.first(where: { $0.id == tabId }) {
+        findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
+      }
+      return metadataSync.noteOutput(forTab: tabId, at: date, tabs: &_tabs)
     }
   }
 
@@ -423,9 +626,154 @@ public final class AppModel {
           event.cellWidth = safeCellWidth
           event.cellHeight = safeCellHeight
           captureSink?.record(event)
+          if findStateBySession[session.id]?.isActive == true {
+            findFullSearchCacheBySession.removeValue(forKey: session.id)
+            _ = refreshFindFullUnlocked(sessionID: session.id)
+          }
         }
       }
     }
+  }
+
+  @discardableResult
+  private func refreshFindFullUnlocked(
+    sessionID: Session.ID,
+    preserving explicitPrevious: TerminalFindMatch? = nil
+  ) -> TerminalFindState? {
+    guard var state = findStateBySession[sessionID],
+      state.isActive,
+      let session = sessionRegistry.session(id: sessionID)
+    else { return nil }
+
+    let previousSelected = explicitPrevious ?? state.selectedMatch
+    guard !state.needle.isEmpty else {
+      state.matches = []
+      state.selectedIndex = nil
+      findStateBySession[sessionID] = state
+      findFullSearchCacheBySession.removeValue(forKey: sessionID)
+      return state
+    }
+
+    var needsMatchSort = true
+    var fullSearchCacheKey: (needle: String, totalRows: Int)?
+    if let viewport = session.viewportState(),
+      viewport.totalRows > 0
+    {
+      if let cache = findFullSearchCacheBySession[sessionID],
+        cache.needle == state.needle,
+        cache.totalRows == viewport.totalRows
+      {
+        state.matches = cache.matches
+        needsMatchSort = false
+      } else if let matches = session.findMatchesInScrollback(
+        needle: state.needle,
+        maxRows: viewport.totalRows
+      ) {
+        state.matches = matches
+        fullSearchCacheKey = (state.needle, viewport.totalRows)
+      } else if let scrollback = session.scrollbackBlock(rowOffset: 0, maxRows: viewport.totalRows),
+        scrollback.rows > 0
+      {
+        state.matches = TerminalFind.search(needle: state.needle, in: scrollback)
+        fullSearchCacheKey = (state.needle, viewport.totalRows)
+      } else if let snapshot = session.snapshot() {
+        defer { laban_snapshot_destroy(snapshot) }
+        state.matches = TerminalFind.search(
+          needle: state.needle,
+          inSnapshot: UnsafePointer(snapshot),
+          rowOffset: viewport.viewportOffset
+        )
+      } else {
+        state.matches = []
+      }
+    } else if let snapshot = session.snapshot() {
+      defer { laban_snapshot_destroy(snapshot) }
+      let rowOffset = session.viewportState()?.viewportOffset ?? 0
+      state.matches = TerminalFind.search(
+        needle: state.needle,
+        inSnapshot: UnsafePointer(snapshot),
+        rowOffset: rowOffset
+      )
+    } else {
+      state.matches = []
+    }
+
+    if needsMatchSort {
+      state.matches.sort(by: Self.findMatchSort)
+    }
+    if let fullSearchCacheKey {
+      findFullSearchCacheBySession[sessionID] = FindFullSearchCache(
+        needle: fullSearchCacheKey.needle,
+        totalRows: fullSearchCacheKey.totalRows,
+        matches: state.matches
+      )
+    }
+    state.selectedIndex = Self.findSelectedIndex(
+      preserving: previousSelected,
+      preferredIndex: state.selectedIndex,
+      in: state.matches
+    )
+    findStateBySession[sessionID] = state
+    return state
+  }
+
+  private func scrollSelectedFindMatchIntoViewUnlocked(sessionID: Session.ID) {
+    guard let session = sessionRegistry.session(id: sessionID),
+      var state = findStateBySession[sessionID],
+      let match = state.selectedMatch,
+      let viewport = session.viewportState()
+    else { return }
+
+    let visibleStart = viewport.viewportOffset
+    let visibleEnd = visibleStart + viewport.viewportRows
+    guard match.row < visibleStart || match.row >= visibleEnd else { return }
+
+    let maxOffset = max(0, viewport.totalRows - viewport.viewportRows)
+    let anchorRow = max(0, viewport.viewportRows / 3)
+    let targetOffset = min(max(0, match.row - anchorRow), maxOffset)
+    let delta = targetOffset - viewport.viewportOffset
+    guard delta != 0 else { return }
+    _ = session.scrollViewport(deltaRows: delta)
+    if let selected = state.matches.firstIndex(of: match) {
+      state.selectedIndex = selected
+      findStateBySession[sessionID] = state
+    }
+  }
+
+  private static func findMatchSort(_ lhs: TerminalFindMatch, _ rhs: TerminalFindMatch) -> Bool {
+    if lhs.row != rhs.row { return lhs.row < rhs.row }
+    if lhs.startColumn != rhs.startColumn { return lhs.startColumn < rhs.startColumn }
+    return lhs.endColumn < rhs.endColumn
+  }
+
+  private static func findSelectedIndex(
+    preserving previous: TerminalFindMatch?,
+    preferredIndex: Int?,
+    in matches: [TerminalFindMatch]
+  ) -> Int? {
+    guard !matches.isEmpty else { return nil }
+    if let previous {
+      if let exact = matches.firstIndex(of: previous) {
+        return exact
+      }
+      return matches.indices.min { lhs, rhs in
+        let l = findDistance(matches[lhs], from: previous)
+        let r = findDistance(matches[rhs], from: previous)
+        if l != r { return l < r }
+        return lhs < rhs
+      }
+    }
+    if let preferredIndex, matches.indices.contains(preferredIndex) {
+      return preferredIndex
+    }
+    return 0
+  }
+
+  private static func findDistance(
+    _ match: TerminalFindMatch,
+    from previous: TerminalFindMatch
+  ) -> Int {
+    abs(match.row - previous.row) * 10_000 + abs(match.startColumn - previous.startColumn)
   }
 
   private static func clampedTerminalMetric(_ value: Int, minimum: Int = 0) -> Int32 {

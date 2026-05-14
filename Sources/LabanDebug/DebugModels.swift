@@ -129,6 +129,7 @@ struct StateResponse: Encodable {
   var tabs: [TabResponse]
   var activeTabId: String?
   var activeSessionId: String?
+  var findStateBySession: [String: FindStateResponse]
 }
 
 struct ActionResult: Encodable {
@@ -137,6 +138,25 @@ struct ActionResult: Encodable {
   var activeTabId: String?
   var activeSessionId: String?
   var error: String?
+}
+
+struct FindMatchResponse: Encodable {
+  var row: Int
+  var startColumn: Int
+  var endColumn: Int
+}
+
+struct FindStateResponse: Encodable {
+  var isActive: Bool
+  var needle: String
+  var total: Int
+  var selectedIndex: Int?
+  var matches: [FindMatchResponse]
+  var viewportScrollOffsetAtStart: Int?
+}
+
+struct FindStopResponse: Encodable {
+  var stopped: Bool
 }
 
 struct MouseActionResult: Encodable {

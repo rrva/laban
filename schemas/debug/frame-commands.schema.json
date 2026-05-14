@@ -38,8 +38,21 @@
       "properties": {
         "id": {"type": "string"},
         "index": {"type": "integer", "minimum": 0},
-        "kind": {"enum": ["rect", "glyphRun", "texturedQuad", "clip", "cursor", "selection"]},
-        "source": {"enum": ["sidebar", "terminal", "selection", "cursor", "image", "chrome", "unknown"]},
+        "kind": {
+          "enum": [
+            "rect",
+            "glyphRun",
+            "texturedQuad",
+            "clip",
+            "cursor",
+            "selection",
+            "findMatch",
+            "findSelected"
+          ]
+        },
+        "source": {
+          "enum": ["sidebar", "terminal", "selection", "find", "cursor", "image", "chrome", "unknown"]
+        },
         "rect": {"$ref": "#/$defs/rect"},
         "color": {"$ref": "#/$defs/rgba"},
         "foreground": {"$ref": "#/$defs/rgba"},

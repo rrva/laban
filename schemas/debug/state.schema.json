@@ -3,7 +3,15 @@
   "$id": "https://laban.local/schemas/debug/state.schema.json",
   "title": "Debug State",
   "type": "object",
-  "required": ["mode", "frame", "window", "tabs", "activeTabId", "activeSessionId"],
+  "required": [
+    "mode",
+    "frame",
+    "window",
+    "tabs",
+    "activeTabId",
+    "activeSessionId",
+    "findStateBySession"
+  ],
   "additionalProperties": true,
   "properties": {
     "mode": {
@@ -33,6 +41,10 @@
     },
     "activeSessionId": {
       "type": ["string", "null"]
+    },
+    "findStateBySession": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/findState"}
     }
   },
   "$defs": {
@@ -81,6 +93,32 @@
           "enum": ["starting", "running", "exited", "failed"]
         },
         "sessionId": {"type": "string"}
+      }
+    },
+    "findMatch": {
+      "type": "object",
+      "required": ["row", "startColumn", "endColumn"],
+      "additionalProperties": false,
+      "properties": {
+        "row": {"type": "integer", "minimum": 0},
+        "startColumn": {"type": "integer", "minimum": 0},
+        "endColumn": {"type": "integer", "minimum": 0}
+      }
+    },
+    "findState": {
+      "type": "object",
+      "required": ["isActive", "needle", "total", "selectedIndex", "matches"],
+      "additionalProperties": true,
+      "properties": {
+        "isActive": {"type": "boolean"},
+        "needle": {"type": "string"},
+        "total": {"type": "integer", "minimum": 0},
+        "selectedIndex": {"type": ["integer", "null"], "minimum": 0},
+        "matches": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/findMatch"}
+        },
+        "viewportScrollOffsetAtStart": {"type": ["integer", "null"], "minimum": 0}
       }
     }
   }

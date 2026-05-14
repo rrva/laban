@@ -23,7 +23,8 @@ extension HeadlessDebugRuntime {
         window: WindowResponse(width: windowWidth, height: windowHeight, focused: true),
         tabs: tabs,
         activeTabId: activeTab?.id,
-        activeSessionId: activeTab?.sessionId
+        activeSessionId: activeTab?.sessionId,
+        findStateBySession: findStateResponsesUnlocked()
       ))
   }
 
@@ -37,6 +38,23 @@ extension HeadlessDebugRuntime {
 
       return jsonEncode(SessionsResponse(sessions: list))
     }
+  }
+
+  func findStateResponsesUnlocked() -> [String: FindStateResponse] {
+    model.allFindStates.mapValues { Self.findStateResponse($0) }
+  }
+
+  static func findStateResponse(_ state: TerminalFindState) -> FindStateResponse {
+    FindStateResponse(
+      isActive: state.isActive,
+      needle: state.needle,
+      total: state.matches.count,
+      selectedIndex: state.selectedIndex,
+      matches: state.matches.map {
+        FindMatchResponse(row: $0.row, startColumn: $0.startColumn, endColumn: $0.endColumn)
+      },
+      viewportScrollOffsetAtStart: state.viewportScrollOffsetAtStart
+    )
   }
 
   public func session(id: String, query: [String: String]) -> DebugResponse {

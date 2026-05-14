@@ -45,6 +45,12 @@ extension HeadlessDebugRuntime {
       return DebugClipboardActions(runtime: self).paste()
     case .setSelection(let request):
       return DebugSelectionActions(runtime: self).setSelection(request)
+    case .findStart(let request):
+      return DebugFindActions(runtime: self).start(request)
+    case .findStep(let request):
+      return DebugFindActions(runtime: self).step(request)
+    case .findStop(let request):
+      return DebugFindActions(runtime: self).stop(request)
     case .scrollViewport(let request):
       return DebugViewportActions(runtime: self).scrollViewport(request)
     case .mouseWheel(let request):

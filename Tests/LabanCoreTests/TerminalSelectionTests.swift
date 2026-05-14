@@ -342,4 +342,63 @@ final class TerminalSelectionTests: XCTestCase {
         lastSelIndex, firstGlyphIndex, "selection must appear before all glyph runs")
     }
   }
+
+  func testFindCommandsAppearBetweenSelectionAndGlyphs() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("apple banana apple\r\n".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let findState = TerminalFindState(
+      isActive: true,
+      needle: "apple",
+      matches: TerminalFind.search(needle: "apple", inSnapshot: UnsafePointer(snap)),
+      selectedIndex: 0,
+      viewportScrollOffsetAtStart: nil,
+      viewportRowsAtStart: nil
+    )
+
+    let cmds = FrameProducer(cellWidth: 8, cellHeight: 16).commands(
+      from: UnsafePointer(snap),
+      selection: nil,
+      findState: findState,
+      cursorBlinkVisible: true
+    )
+
+    XCTAssertEqual(
+      cmds.filter {
+        if case .findMatch = $0 { return true }
+        return false
+      }.count, 1)
+    XCTAssertEqual(
+      cmds.filter {
+        if case .findSelected = $0 { return true }
+        return false
+      }.count, 1)
+
+    let firstFind = cmds.firstIndex { command in
+      if case .findMatch = command { return true }
+      if case .findSelected = command { return true }
+      return false
+    }
+    let firstGlyph = cmds.firstIndex { command in
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command, source == .terminal {
+        return true
+      }
+      return false
+    }
+    XCTAssertNotNil(firstFind)
+    XCTAssertNotNil(firstGlyph)
+    XCTAssertLessThan(firstFind!, firstGlyph!)
+  }
 }
