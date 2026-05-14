@@ -245,6 +245,44 @@ final class VTRedrawRegressionTests: XCTestCase {
       "alt-screen content must not leak into primary; rows: \(row0) | \(row1)")
   }
 
+  /// Exiting the alternate screen must mark every visible row dirty.
+  ///
+  /// Repro for the "black flash" seen running `btop`, quitting it, then
+  /// `top`: the renderer keeps a persistent target and only repaints rows
+  /// libghostty reports as dirty. The alt screen (btop) painted every row;
+  /// when `?1049l` restores the primary screen, the primary rows did not
+  /// themselves change, so their dirty bits can stay clean — partial damage
+  /// then leaves the alt screen's pixels on screen until the shell happens
+  /// to rewrite each row. Every visible row genuinely changed, so every row
+  /// must be reported dirty.
+  func testAlternateScreenExitMarksAllRowsDirty() {
+    let session = makeFixtureSession(rows: 4, cols: 80)
+    defer { laban_session_destroy(session) }
+
+    feed(session, "primary line 1\r\n")
+    feed(session, "primary line 2")
+
+    // Render the primary screen and clear dirty state, mirroring the frame
+    // loop (snapshot → render → mark_rendered).
+    renderFrame(session)
+
+    // Enter the alt screen, paint it, and render+clear again — this is the
+    // "btop is running" steady state.
+    feed(session, "\(esc)[?1049h")
+    feed(session, "alt screen content here")
+    renderFrame(session)
+
+    // Exit the alt screen. The primary screen is restored.
+    feed(session, "\(esc)[?1049l")
+
+    let dirty = dirtyRows(session: session)
+    XCTAssertEqual(
+      dirty.count, 4, "snapshot must report per-row dirty bits; got \(dirty)")
+    XCTAssertTrue(
+      dirty.allSatisfy { $0 },
+      "every row must be dirty after exiting the alt screen; got \(dirty)")
+  }
+
   // MARK: - CSI J variants (erase in display)
 
   /// CSI 0J = erase from cursor to end of display.
@@ -353,6 +391,25 @@ final class VTRedrawRegressionTests: XCTestCase {
       }
     }
     return line
+  }
+
+  /// Mirrors one frame of the render loop: take a snapshot (the renderer's
+  /// damage input), then mark the frame rendered (clears dirty state).
+  private func renderFrame(_ session: OpaquePointer) {
+    var snap: UnsafeMutablePointer<LabanSnapshot>?
+    precondition(laban_session_snapshot(session, &snap) == 0)
+    laban_snapshot_destroy(snap)
+    _ = laban_session_mark_rendered(session)
+  }
+
+  /// Returns the per-row dirty bits from a fresh snapshot.
+  private func dirtyRows(session: OpaquePointer) -> [Bool] {
+    var snap: UnsafeMutablePointer<LabanSnapshot>?
+    precondition(laban_session_snapshot(session, &snap) == 0)
+    defer { laban_snapshot_destroy(snap) }
+    let s = snap!.pointee
+    guard let dirty = s.dirty_rows else { return [] }
+    return (0..<Int(s.dirty_row_count)).map { dirty[$0] != 0 }
   }
 
   private func dumpGrid(session: OpaquePointer, label: String) {

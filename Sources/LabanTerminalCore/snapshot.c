@@ -500,6 +500,22 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->cell_count      = cell_count;
     snap->hyperlink_uris  = (const char *const *)hyperlink_uris;
     snap->hyperlink_count = hyperlink_count;
+    /* libghostty's per-row dirty bits track cell mutations, not screen swaps.
+     * Entering/exiting the alternate screen (?1049/?1047/?47) restores a
+     * buffer whose untouched rows stay clean even though every visible row
+     * changed. Force all rows dirty across a swap so partial damage does not
+     * leave the previous screen's pixels in the renderer's persistent target
+     * (the "black flash" when quitting one full-screen TUI and starting
+     * another). active_screen_rendered is updated by mark_rendered. */
+    if (dirty_rows && rows > 0) {
+        GhosttyTerminalScreen active_screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+        if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                &active_screen) == GHOSTTY_SUCCESS &&
+            (int)active_screen != s->active_screen_rendered) {
+            memset(dirty_rows, 1, (size_t)rows);
+        }
+    }
+
     snap->dirty_rows      = dirty_rows;
     snap->dirty_row_count = dirty_rows ? (size_t)rows : 0;
 
@@ -551,6 +567,15 @@ int laban_session_mark_rendered(LabanSession *session) {
     while (ghostty_render_state_row_iterator_next(session->row_iter)) {
         ghostty_render_state_row_set(session->row_iter,
             GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &row_clean);
+    }
+
+    /* Record which screen this rendered frame showed. The next snapshot
+     * compares against this to force full damage across an alt-screen swap,
+     * whose restored rows libghostty leaves clean. */
+    GhosttyTerminalScreen active_screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+    if (ghostty_terminal_get(session->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+            &active_screen) == GHOSTTY_SUCCESS) {
+        session->active_screen_rendered = (int)active_screen;
     }
 
     return 0;

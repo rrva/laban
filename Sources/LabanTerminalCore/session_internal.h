@@ -107,6 +107,14 @@ struct LabanSession {
 
     int title_dirty;     /* set to 1 by title-changed callback; cleared by consume */
 
+    /* Active screen (primary/alternate) at the last laban_session_mark_rendered.
+     * libghostty's per-row dirty bits track cell mutations, not screen swaps:
+     * restoring the primary screen on ?1049l leaves its untouched rows clean
+     * even though every visible row changed. snapshot.c compares the live
+     * active screen against this and forces all rows dirty on a swap so the
+     * renderer's persistent target does not keep the alt screen's pixels. */
+    int active_screen_rendered;
+
     int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
     LabanCaptureBytesCallback capture_callback;
     void *capture_userdata;
