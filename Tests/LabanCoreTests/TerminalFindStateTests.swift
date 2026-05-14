@@ -87,6 +87,23 @@ final class TerminalFindStateTests: XCTestCase {
     XCTAssertEqual(model.stepFind(sessionID: session.id, direction: .next)?.selectedIndex, 0)
   }
 
+  func testOutputInvalidatesCachedFullFindResults() throws {
+    let model = try makeModel(rows: 5, cols: 40)
+    let tab = model.tabs[0]
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    session.write(Array("apple one\r\n".utf8))
+    session.poll()
+    XCTAssertEqual(model.startFind(sessionID: session.id, needle: "apple")?.total, 1)
+    XCTAssertEqual(model.stepFind(sessionID: session.id, direction: .next)?.total, 1)
+
+    session.write(Array("apple two\r\n".utf8))
+    session.poll()
+    _ = model.noteOutput(forTab: tab.id)
+
+    let state = try XCTUnwrap(model.stepFind(sessionID: session.id, direction: .next))
+    XCTAssertEqual(state.total, 2)
+  }
+
   func testStopRestoresViewportOffsetAfterStepScrolls() throws {
     let model = try makeModel(rows: 6, cols: 40)
     let session = try XCTUnwrap(model.session(forTab: model.tabs[0].id))

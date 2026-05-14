@@ -10,10 +10,17 @@ public final class AppModel {
   public var tabs: [Tab] { withModelLock { _tabs } }
   private let sessionRegistry = SessionRegistry()
   private var findStateBySession: [Session.ID: TerminalFindState] = [:]
+  private var findFullSearchCacheBySession: [Session.ID: FindFullSearchCache] = [:]
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
   private var themeChangeObserver: NSObjectProtocol?
+
+  private struct FindFullSearchCache {
+    var needle: String
+    var totalRows: Int
+    var matches: [TerminalFindMatch]
+  }
 
   /// Set by the AppKit view to receive "this session has new bytes
   /// to render" wake-ups from the per-session reader threads. The
@@ -102,6 +109,7 @@ public final class AppModel {
     sessionRegistry.closeAll()
     _tabs.removeAll()
     findStateBySession.removeAll()
+    findFullSearchCacheBySession.removeAll()
     metadataSync.reset(closedCwds: closedCwds)
   }
 
@@ -144,6 +152,7 @@ public final class AppModel {
         viewportRowsAtStart: viewport?.viewportRows
       )
       findStateBySession[sessionID] = state
+      findFullSearchCacheBySession.removeValue(forKey: sessionID)
       if !needle.isEmpty {
         state = refreshFindFullUnlocked(sessionID: sessionID, preserving: nil) ?? state
       }
@@ -169,7 +178,11 @@ public final class AppModel {
           viewportScrollOffsetAtStart: viewport?.viewportOffset,
           viewportRowsAtStart: viewport?.viewportRows
         )
+        findFullSearchCacheBySession.removeValue(forKey: sessionID)
       } else {
+        if findStateBySession[sessionID]?.needle != needle {
+          findFullSearchCacheBySession.removeValue(forKey: sessionID)
+        }
         findStateBySession[sessionID]?.needle = needle
       }
       let refreshed = refreshFindFullUnlocked(sessionID: sessionID, preserving: nil)
@@ -195,7 +208,11 @@ public final class AppModel {
           viewportScrollOffsetAtStart: viewport?.viewportOffset,
           viewportRowsAtStart: viewport?.viewportRows
         )
+        findFullSearchCacheBySession.removeValue(forKey: sessionID)
       } else {
+        if findStateBySession[sessionID]?.needle != needle {
+          findFullSearchCacheBySession.removeValue(forKey: sessionID)
+        }
         findStateBySession[sessionID]?.needle = needle
         findStateBySession[sessionID]?.matches = []
         findStateBySession[sessionID]?.selectedIndex = nil
@@ -251,6 +268,7 @@ public final class AppModel {
         }
       }
       findStateBySession[sessionID] = .inactive
+      findFullSearchCacheBySession.removeValue(forKey: sessionID)
       return .inactive
     }
   }
@@ -351,6 +369,7 @@ public final class AppModel {
       if _tabs.count == 1 {
         sessionRegistry.close(sessionId: tab.sessionId)
         findStateBySession.removeValue(forKey: tab.sessionId)
+        findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
         metadataSync.forget(tab: tab)
         _tabs = []
         recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
@@ -361,6 +380,7 @@ public final class AppModel {
       let wasActive = tab.isActive
       sessionRegistry.close(sessionId: tab.sessionId)
       findStateBySession.removeValue(forKey: tab.sessionId)
+      findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
       metadataSync.forget(tab: tab)
       _tabs.remove(at: idx)
       recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
@@ -545,7 +565,10 @@ public final class AppModel {
   @discardableResult
   public func noteOutput(forTab tabId: Tab.ID, at date: Date = Date()) -> Bool {
     withModelLock {
-      metadataSync.noteOutput(forTab: tabId, at: date, tabs: &_tabs)
+      if let tab = _tabs.first(where: { $0.id == tabId }) {
+        findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
+      }
+      return metadataSync.noteOutput(forTab: tabId, at: date, tabs: &_tabs)
     }
   }
 
@@ -604,6 +627,7 @@ public final class AppModel {
           event.cellHeight = safeCellHeight
           captureSink?.record(event)
           if findStateBySession[session.id]?.isActive == true {
+            findFullSearchCacheBySession.removeValue(forKey: session.id)
             _ = refreshFindFullUnlocked(sessionID: session.id)
           }
         }
@@ -626,14 +650,36 @@ public final class AppModel {
       state.matches = []
       state.selectedIndex = nil
       findStateBySession[sessionID] = state
+      findFullSearchCacheBySession.removeValue(forKey: sessionID)
       return state
     }
 
+    var needsMatchSort = true
+    var fullSearchCacheKey: (needle: String, totalRows: Int)?
     if let viewport = session.viewportState(),
-      let scrollback = session.scrollbackBlock(rowOffset: 0, maxRows: viewport.totalRows),
-      scrollback.rows > 0
+      viewport.totalRows > 0
     {
-      state.matches = TerminalFind.search(needle: state.needle, in: scrollback)
+      if let cache = findFullSearchCacheBySession[sessionID],
+        cache.needle == state.needle,
+        cache.totalRows == viewport.totalRows
+      {
+        state.matches = cache.matches
+        needsMatchSort = false
+      } else if let scrollback = session.scrollbackBlock(rowOffset: 0, maxRows: viewport.totalRows),
+        scrollback.rows > 0
+      {
+        state.matches = TerminalFind.search(needle: state.needle, in: scrollback)
+        fullSearchCacheKey = (state.needle, viewport.totalRows)
+      } else if let snapshot = session.snapshot() {
+        defer { laban_snapshot_destroy(snapshot) }
+        state.matches = TerminalFind.search(
+          needle: state.needle,
+          inSnapshot: UnsafePointer(snapshot),
+          rowOffset: viewport.viewportOffset
+        )
+      } else {
+        state.matches = []
+      }
     } else if let snapshot = session.snapshot() {
       defer { laban_snapshot_destroy(snapshot) }
       let rowOffset = session.viewportState()?.viewportOffset ?? 0
@@ -646,7 +692,16 @@ public final class AppModel {
       state.matches = []
     }
 
-    state.matches.sort(by: Self.findMatchSort)
+    if needsMatchSort {
+      state.matches.sort(by: Self.findMatchSort)
+    }
+    if let fullSearchCacheKey {
+      findFullSearchCacheBySession[sessionID] = FindFullSearchCache(
+        needle: fullSearchCacheKey.needle,
+        totalRows: fullSearchCacheKey.totalRows,
+        matches: state.matches
+      )
+    }
     state.selectedIndex = Self.findSelectedIndex(
       preserving: previousSelected,
       preferredIndex: state.selectedIndex,
@@ -673,19 +728,9 @@ public final class AppModel {
     let delta = targetOffset - viewport.viewportOffset
     guard delta != 0 else { return }
     _ = session.scrollViewport(deltaRows: delta)
-
-    if let snapshot = session.snapshot() {
-      defer { laban_snapshot_destroy(snapshot) }
-      refreshFindVisible(
-        sessionID: sessionID,
-        snapshot: UnsafePointer(snapshot),
-        viewportOffset: targetOffset
-      )
-      state = findStateBySession[sessionID] ?? state
-      if let selected = state.matches.firstIndex(of: match) {
-        state.selectedIndex = selected
-        findStateBySession[sessionID] = state
-      }
+    if let selected = state.matches.firstIndex(of: match) {
+      state.selectedIndex = selected
+      findStateBySession[sessionID] = state
     }
   }
 
