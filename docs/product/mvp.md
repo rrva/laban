@@ -36,7 +36,8 @@ The first usable version has:
 - mouse scrollback and terminal mouse reporting
 - color terminal output
 - enough glyph coverage for common TUI borders and symbols
-- basic terminal text selection, copy, and paste
+- terminal text selection, copy, and paste with full clipboard support
+- drag-and-drop file and screenshot paths into the active terminal
 - minimal native macOS menus for tab and edit commands
 - fixed Selenized Light theme
 - bundled JetBrains Mono font
@@ -177,7 +178,8 @@ Application shortcuts are handled before terminal input. The MVP requires:
 - close active tab
 - select tab by number for the visible tab range
 - copy selected terminal text
-- paste macOS clipboard text into the active terminal
+- paste macOS clipboard contents into the active terminal
+- drop local files or screenshots into the active terminal as shell-quoted paths
 
 Handled application shortcuts consume both the key event and any text generated
 by that key event.
@@ -192,14 +194,20 @@ event reaches terminal encoding. Layout-specific characters, including
 Option-produced characters on macOS-style layouts, must be delivered as text
 rather than as unintended modified key chords.
 
-Paste reads text from the macOS clipboard. If the active terminal has bracketed
-paste enabled and terminal state exposes that mode, paste is wrapped in
-bracketed paste sequences; otherwise it is written as plain text. Non-text
-clipboard data is ignored, except for one Claude Code compatibility path: when
-the pasteboard contains image data and the active foreground tab is recognized
-as Claude Code, the app forwards terminal `Ctrl+V` so Claude Code can perform
-its documented local clipboard-image read. Laban does not serialize image bytes
-into PTY input.
+Paste reads from the macOS clipboard. Text paste uses the terminal core paste
+path: if the active terminal has bracketed paste enabled and terminal state
+exposes that mode, paste is wrapped in bracketed paste sequences; otherwise it
+is written as plain text. Full clipboard support is part of the MVP; non-text
+clipboard contents, terminal-initiated clipboard operations, and
+foreground-application clipboard handoff paths must be handled through
+supported terminal or macOS clipboard mechanisms rather than silently ignored.
+
+File and screenshot drag-and-drop is part of the MVP. Dropping existing files
+inserts shell-quoted local paths into the active terminal through the same
+bracketed-paste-aware terminal input path as text paste. Dropped screenshot
+thumbnails or raw images are first materialized into a Laban-owned local drop
+cache, then inserted as paths. Sidebar drops are rejected and must not leak to
+the terminal session.
 
 Basic native menus are part of the MVP: app menu, tab commands, and edit
 commands for copy and paste. Unhandled Command chords must not leak into
@@ -330,7 +338,8 @@ The MVP is acceptable when it can:
 - close tabs without leaving stale references
 - resize without corrupting terminal layout
 - type layout-specific characters correctly
-- copy visible selected text and paste text clipboard contents
+- copy visible selected text, paste supported macOS clipboard contents, and
+  drop files/screenshots as terminal paths
 - scroll shell output when no app mouse tracking is active
 - pass mouse events to terminal apps that request mouse tracking
 - produce deterministic headless screenshots through the software renderer
@@ -344,7 +353,7 @@ The MVP is acceptable when it can:
 4. Vertical tab model and sidebar.
 5. Frame-command renderer with Metal and software backend seams.
 6. Mouse input and scrollback behavior.
-7. Basic selection, copy, and paste.
+7. Selection, copy, full clipboard paste support, and file/screenshot drops.
 8. Title handling, environment defaults, theme, and glyph coverage.
 9. Debug/headless fixtures and controlled shell smoke tests.
 10. Cleanup paths and failure handling.

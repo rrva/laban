@@ -21,6 +21,7 @@ enum DebugAction: Decodable {
   case setSelection(SelectionActionRequest)
   case copy(SessionTargetActionRequest)
   case paste
+  case dropFiles(DropFilesActionRequest)
   case scrollViewport(ScrollViewportActionRequest)
   case mouseWheel(MouseWheelActionRequest)
   case click(ClickActionRequest)
@@ -65,6 +66,8 @@ enum DebugAction: Decodable {
       self = .copy(try SessionTargetActionRequest(from: decoder))
     case "paste":
       self = .paste
+    case "dropFiles":
+      self = .dropFiles(try DropFilesActionRequest(from: decoder))
     case "scrollViewport":
       self = .scrollViewport(try ScrollViewportActionRequest(from: decoder))
     case "mouseWheel":
@@ -155,6 +158,10 @@ struct SelectionActionRequest: Decodable {
 
 struct SessionTargetActionRequest: Decodable {
   var sessionId: String?
+}
+
+struct DropFilesActionRequest: Decodable {
+  var paths: [String]?
 }
 
 struct ScrollViewportActionRequest: Decodable {

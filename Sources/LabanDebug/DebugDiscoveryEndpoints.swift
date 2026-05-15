@@ -14,6 +14,8 @@ enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(name: "click", summary: "Send a click to sidebar or terminal content."),
     DebugDiscoveryControl(name: "setClipboardText", summary: "Set the debug clipboard text."),
     DebugDiscoveryControl(name: "paste", summary: "Paste debug clipboard text into the terminal."),
+    DebugDiscoveryControl(
+      name: "dropFiles", summary: "Insert dropped file paths into the terminal."),
     DebugDiscoveryControl(name: "copy", summary: "Copy the current terminal selection."),
     DebugDiscoveryControl(name: "setSelection", summary: "Set terminal selection cell anchors."),
     DebugDiscoveryControl(name: "scrollViewport", summary: "Move terminal scrollback viewport."),

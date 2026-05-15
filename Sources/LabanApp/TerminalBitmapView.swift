@@ -230,6 +230,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       self.backendSelfPresents = false
     }
     super.init(frame: .zero)
+    registerForDraggedTypes(TerminalDrop.acceptedTypes)
 
     if backendSelfPresents, let layer = backend.presentationLayer {
       self.layer = layer
@@ -983,6 +984,30 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     setHoverCursor(.arrow)
   }
 
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    dropOperation(for: sender)
+  }
+
+  override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    dropOperation(for: sender)
+  }
+
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    guard dropOperation(for: sender).contains(.copy) else { return false }
+    TerminalDrop.resolve(sender.draggingPasteboard) { [weak self] result in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        switch result {
+        case .success(let drop):
+          self.pasteDroppedFilePaths(drop.urls, sourceKinds: drop.sourceKinds)
+        case .failure(let error):
+          EventLog.shared.log("drop.failed", ["error": String(describing: error)])
+        }
+      }
+    }
+    return true
+  }
+
   override func flagsChanged(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
     updateHoverCursor(at: pt, modifierFlags: event.modifierFlags)
@@ -1033,6 +1058,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard hoveredSidebarTabId != id else { return }
     hoveredSidebarTabId = id
     renderInvalidated = true
+  }
+
+  private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+    let pt = convert(sender.draggingLocation, from: nil)
+    guard pt.x >= sidebarWidth,
+      let activeTab = model.activeTab,
+      model.session(forTab: activeTab.id) != nil,
+      TerminalDrop.canRead(sender.draggingPasteboard)
+    else { return [] }
+    return .copy
   }
 
   private func pruneClosedTabState(_ tabId: Tab.ID) {
@@ -1458,6 +1493,38 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       key: "v",
       modifiers: ["control"],
       command: "pasteImage",
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(sent.bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(sent.bytes)
+    )
+    renderInvalidated = true
+  }
+
+  private func pasteDroppedFilePaths(_ urls: [URL], sourceKinds: [String]) {
+    guard !urls.isEmpty else { return }
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else {
+      EventLog.shared.log("drop.cancelled", ["reason": "no-active-session"])
+      return
+    }
+
+    let text = TerminalDrop.terminalText(for: urls)
+    guard !text.isEmpty else { return }
+    let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
+    recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
+    let sent = session.writePasteCapturingBytes(text)
+    EventLog.shared.log(
+      "drop.files",
+      [
+        "count": urls.count,
+        "sourceKinds": sourceKinds,
+        "bytes": text.utf8.count,
+      ])
+    recordInput(
+      kind: "drop",
+      route: "terminal",
+      text: text,
+      command: "dropFiles",
       encodedHex: TerminalInputCaptureMetadata.encodedHex(sent.bytes),
       encodedLength: TerminalInputCaptureMetadata.encodedLength(sent.bytes)
     )
