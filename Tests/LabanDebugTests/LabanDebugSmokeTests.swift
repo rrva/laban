@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanCore
 import XCTest
 
 @testable import LabanDebug
@@ -904,6 +905,78 @@ final class LabanDebugSmokeTests: XCTestCase {
     let events = try XCTUnwrap(logObj["events"] as? [[String: Any]])
     let pasteEvent = try XCTUnwrap(events.last { $0["kind"] as? String == "paste" })
     XCTAssertEqual(pasteEvent["text"] as? String, "safe]0;owned31m")
+  }
+
+  func testDropFilesActionPastesEscapedPaths() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-drop-files"
+    )
+
+    let paths = ["/tmp/example image.png", "/tmp/spec.pdf"]
+    let body = try JSONSerialization.data(
+      withJSONObject: ["action": "dropFiles", "paths": paths])
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertEqual(obj["ok"] as? Bool, true)
+
+    let expectedText = TerminalDropText.format(paths: paths)
+    let expectedBytes = Array(expectedText.utf8)
+    let expectedHex = expectedBytes.map { String(format: "%02x", $0) }.joined()
+
+    let inputLog = runtime.inputLogResponse(since: 0)
+    let logObj = try JSONSerialization.jsonObject(with: inputLog.body) as! [String: Any]
+    let events = try XCTUnwrap(logObj["events"] as? [[String: Any]])
+    let dropEvent = try XCTUnwrap(events.last { $0["kind"] as? String == "drop" })
+    XCTAssertEqual(dropEvent["text"] as? String, expectedText)
+    XCTAssertEqual(dropEvent["encodedHex"] as? String, expectedHex)
+    XCTAssertEqual(dropEvent["encodedLength"] as? Int, expectedBytes.count)
+
+    let terminalLog = runtime.terminalLogResponse(query: ["since": "0"])
+    let termObj = try JSONSerialization.jsonObject(with: terminalLog.body) as! [String: Any]
+    let terminalEvents = try XCTUnwrap(termObj["events"] as? [[String: Any]])
+    XCTAssertTrue(
+      terminalEvents.contains {
+        ($0["direction"] as? String) == "input"
+          && ($0["escaped"] as? String) == expectedText
+      },
+      "terminal log must include committed dropped path paste bytes")
+  }
+
+  func testDropFilesActionRecordsInputEnvelope() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-drop-envelope"
+    )
+
+    let body = try JSONSerialization.data(
+      withJSONObject: ["action": "dropFiles", "paths": ["/tmp/screenshot.png"]])
+    let result = runtime.applyAction(body)
+    XCTAssertEqual(result.status, 200)
+
+    let inputLog = runtime.inputLogResponse(since: 0)
+    let logObj = try JSONSerialization.jsonObject(with: inputLog.body) as! [String: Any]
+    let events = try XCTUnwrap(logObj["events"] as? [[String: Any]])
+    let dropEvent = try XCTUnwrap(events.last { $0["command"] as? String == "dropFiles" })
+    XCTAssertEqual(dropEvent["kind"] as? String, "drop")
+    XCTAssertEqual(dropEvent["route"] as? String, "terminal")
+    XCTAssertNotNil(dropEvent["tabId"])
+    XCTAssertNotNil(dropEvent["sessionId"])
   }
 
   func testSelectionFrameCommandsAppearsWithSourceFilter() throws {

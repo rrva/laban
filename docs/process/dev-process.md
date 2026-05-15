@@ -832,6 +832,7 @@ Example actions:
 {"action":"advanceFrames","count":3}
 {"action":"copy"}
 {"action":"paste"}
+{"action":"dropFiles","paths":["/tmp/screenshot.png","/tmp/spec.pdf"]}
 {"action":"setClipboardText","text":"printf 'ok\\n'\\n"}
 {"action":"scrollViewport","sessionId":"session-1","deltaRows":-3}
 {"action":"find.start","sessionID":"session-1","needle":"apple"}
@@ -845,6 +846,11 @@ DEL, and C1 controls are stripped before libghostty encodes bracketed or plain
 paste bytes. `/debug/clipboard` reports the sanitized text, while
 `/debug/input-log` and terminal-input logs report the committed encoded bytes
 from the terminal-core paste send path.
+
+`dropFiles` formats the supplied local paths the same way AppKit drag-and-drop
+does, then writes the formatted path text through the terminal-core paste send
+path. This action models terminal delivery of a file drop; it does not
+synthesize a desktop drag session or read arbitrary file contents.
 
 Actions return the resulting frame number and a state summary:
 

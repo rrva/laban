@@ -31,6 +31,18 @@ final class DebugActionDecodingTests: XCTestCase {
     XCTAssertEqual(request.text, "x")
   }
 
+  func testDecodesDropFilesPayloadFromFlatWireShape() throws {
+    guard
+      case .dropFiles(let request) = try decode(
+        #"{"action":"dropFiles","paths":["/tmp/a.png","/tmp/file with spaces.pdf"]}"#
+      )
+    else {
+      return XCTFail("Expected dropFiles action")
+    }
+
+    XCTAssertEqual(request.paths, ["/tmp/a.png", "/tmp/file with spaces.pdf"])
+  }
+
   func testDecodesPayloadFreeActions() throws {
     guard case .paste = try decode(#"{"action":"paste","ignored":true}"#) else {
       return XCTFail("Expected paste action")

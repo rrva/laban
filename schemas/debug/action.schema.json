@@ -19,6 +19,7 @@
     {"$ref": "#/$defs/advanceFrames"},
     {"$ref": "#/$defs/copy"},
     {"$ref": "#/$defs/paste"},
+    {"$ref": "#/$defs/dropFiles"},
     {"$ref": "#/$defs/setClipboardText"},
     {"$ref": "#/$defs/scrollViewport"},
     {"$ref": "#/$defs/setSelection"},
@@ -201,6 +202,19 @@
       "type": "object",
       "required": ["action"],
       "properties": {"action": {"const": "paste"}},
+      "additionalProperties": false
+    },
+    "dropFiles": {
+      "type": "object",
+      "required": ["action", "paths"],
+      "properties": {
+        "action": {"const": "dropFiles"},
+        "paths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        }
+      },
       "additionalProperties": false
     },
     "setClipboardText": {

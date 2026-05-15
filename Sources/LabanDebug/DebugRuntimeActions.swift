@@ -43,6 +43,8 @@ extension HeadlessDebugRuntime {
       return DebugClipboardActions(runtime: self).copy(request)
     case .paste:
       return DebugClipboardActions(runtime: self).paste()
+    case .dropFiles(let request):
+      return DebugDropActions(runtime: self).dropFiles(request)
     case .setSelection(let request):
       return DebugSelectionActions(runtime: self).setSelection(request)
     case .findStart(let request):
