@@ -18,8 +18,12 @@ struct DebugTabActions {
 
   func closeTab(_ request: TabTargetActionRequest) -> DebugResponse {
     guard let tabId = request.tabId else { return jsonError("closeTab requires tabId") }
+    let closingSessionId = runtime.model.tabs.first(where: { $0.id == tabId })?.sessionId
     do { try runtime.model.closeTab(tabId) } catch {
       return jsonError("closeTab failed: \(error)")
+    }
+    if let closingSessionId {
+      runtime.selectionBySession.removeValue(forKey: closingSessionId)
     }
     runtime.renderFrameUnlocked()
     runtime.appendEvent(EventEntry(kind: "tab.closed", tabId: tabId))

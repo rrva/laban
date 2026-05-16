@@ -658,6 +658,58 @@ CLIP_TEXT=$(printf '%s' "$CLIP" | jq -r '.lastCopyText')
 [ "$CLIP_TEXT" = "hello mvp" ] \
   || fail "clipboard after copy: expected 'hello mvp', got '$CLIP_TEXT'"
 
+# 24c. selections stay bound to their sessions across tab switches
+FLOW_NEW_TAB=$(post_json /debug/actions '{"action":"newTab"}')
+[ "$(printf '%s' "$FLOW_NEW_TAB" | jq -r '.ok')" = "true" ] \
+  || fail "newTab for selection tab flow failed: $FLOW_NEW_TAB"
+FLOW_STATE=$(get_json /debug/state)
+FLOW_TAB_ID=$(printf '%s' "$FLOW_STATE" | jq -r '.activeTabId')
+[ -n "$FLOW_TAB_ID" ] || fail "selection tab flow active tab id missing: $FLOW_STATE"
+[ "$FLOW_TAB_ID" != "$FIRST_TAB_ID" ] \
+  || fail "selection tab flow new tab reused first tab id: $FLOW_STATE"
+
+FLOW_OUTPUT=$(post_json /debug/actions '{"action":"feedOutput","text":"bravo tab\n"}')
+[ "$(printf '%s' "$FLOW_OUTPUT" | jq -r '.ok')" = "true" ] \
+  || fail "selection tab flow feedOutput failed: $FLOW_OUTPUT"
+FLOW_WAIT=$(post_json /debug/wait '{"timeoutMs":5000,"condition":{"kind":"textVisible","text":"bravo tab"}}')
+[ "$(printf '%s' "$FLOW_WAIT" | jq -r '.ok')" = "true" ] \
+  || fail "selection tab flow wait for bravo failed: $FLOW_WAIT"
+
+FLOW_SET=$(post_json /debug/actions \
+  '{"action":"setSelection","anchor":{"row":0,"col":0},"focus":{"row":0,"col":4}}')
+[ "$(printf '%s' "$FLOW_SET" | jq -r '.ok')" = "true" ] \
+  || fail "selection tab flow setSelection failed: $FLOW_SET"
+FLOW_SEL=$(get_json /debug/selection)
+FLOW_SEL_TEXT=$(printf '%s' "$FLOW_SEL" | jq -r '.text')
+[ "$FLOW_SEL_TEXT" = "bravo" ] \
+  || fail "selection tab flow active text: expected 'bravo', got '$FLOW_SEL_TEXT'"
+FLOW_COPY=$(post_json /debug/actions '{"action":"copy"}')
+[ "$(printf '%s' "$FLOW_COPY" | jq -r '.ok')" = "true" ] \
+  || fail "selection tab flow copy failed: $FLOW_COPY"
+FLOW_CLIP=$(get_json /debug/clipboard)
+FLOW_CLIP_TEXT=$(printf '%s' "$FLOW_CLIP" | jq -r '.lastCopyText')
+[ "$FLOW_CLIP_TEXT" = "bravo" ] \
+  || fail "selection tab flow clipboard: expected 'bravo', got '$FLOW_CLIP_TEXT'"
+FLOW_SELECTION_CMDS=$(get_json '/debug/frame-commands?source=selection&limit=20')
+FLOW_SELECTION_CMD_COUNT=$(printf '%s' "$FLOW_SELECTION_CMDS" | jq '.commands | length')
+[ "$FLOW_SELECTION_CMD_COUNT" -gt 0 ] \
+  || fail "selection tab flow expected active selection frame commands: $FLOW_SELECTION_CMDS"
+
+FLOW_BACK=$(post_json /debug/actions "{\"action\":\"selectTab\",\"tabId\":\"$FIRST_TAB_ID\"}")
+[ "$(printf '%s' "$FLOW_BACK" | jq -r '.ok')" = "true" ] \
+  || fail "selection tab flow select first tab failed: $FLOW_BACK"
+FLOW_BACK_SEL=$(get_json /debug/selection)
+FLOW_BACK_TEXT=$(printf '%s' "$FLOW_BACK_SEL" | jq -r '.text')
+[ "$FLOW_BACK_TEXT" = "hello mvp" ] \
+  || fail "selection tab flow first tab text: expected 'hello mvp', got '$FLOW_BACK_TEXT'"
+FLOW_BACK_COPY=$(post_json /debug/actions '{"action":"copy"}')
+[ "$(printf '%s' "$FLOW_BACK_COPY" | jq -r '.ok')" = "true" ] \
+  || fail "selection tab flow first tab copy failed: $FLOW_BACK_COPY"
+FLOW_BACK_CLIP=$(get_json /debug/clipboard)
+FLOW_BACK_CLIP_TEXT=$(printf '%s' "$FLOW_BACK_CLIP" | jq -r '.lastCopyText')
+[ "$FLOW_BACK_CLIP_TEXT" = "hello mvp" ] \
+  || fail "selection tab flow first tab clipboard: expected 'hello mvp', got '$FLOW_BACK_CLIP_TEXT'"
+
 # 25. /debug/events — includes server.ready and frame.rendered
 # (events check already confirmed; events emitted includes server.ready from emitServerReady()
 # and frame.rendered from each renderFrameUnlocked() call)

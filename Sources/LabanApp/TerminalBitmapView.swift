@@ -70,6 +70,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// restore the incoming tab's pair from it.
   private var selectionsByTab:
     [Tab.ID: (anchor: TerminalSelectionPoint, focus: TerminalSelectionPoint?)] = [:]
+  private var activeSelectionTabId: Tab.ID?
   private var trackedMouseButton: MouseButton = .none
 
   /// Active drag-edge auto-scroll. `direction` matches
@@ -747,25 +748,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // controller doesn't keep ticking against the wrong viewport.
     if tabChanged {
       resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
-      // Save the outgoing tab's selection and restore the incoming tab's,
-      // so the rectangle stays in the tab where it was made instead of
-      // bleeding through to whatever's next.
-      if let outgoing = lastRenderedActiveTabId {
-        if let anchor = selectionAnchor {
-          selectionsByTab[outgoing] = (anchor, selectionFocus)
-        } else {
-          selectionsByTab.removeValue(forKey: outgoing)
-        }
-      }
-      if let restored = selectionsByTab[activeTab.id] {
-        selectionAnchor = restored.anchor
-        selectionFocus = restored.focus
-      } else {
-        selectionAnchor = nil
-        selectionFocus = nil
-      }
-      stopDragAutoscroll()
-      lastDragPoint = nil
+      syncSelectionStateToActiveTab()
     }
 
     // Critically-damped PD controller. Drives `displayedScrollRows` toward
@@ -1068,6 +1051,71 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
+  private func persistSelectionStateForCurrentTab() {
+    guard let tabId = activeSelectionTabId else { return }
+    if let anchor = selectionAnchor, selectionFocus != nil {
+      selectionsByTab[tabId] = (anchor, selectionFocus)
+    } else {
+      selectionsByTab.removeValue(forKey: tabId)
+    }
+  }
+
+  private func restoreSelectionState(for tabId: Tab.ID?) {
+    activeSelectionTabId = tabId
+    if let tabId, let restored = selectionsByTab[tabId] {
+      selectionAnchor = restored.anchor
+      selectionFocus = restored.focus
+    } else {
+      selectionAnchor = nil
+      selectionFocus = nil
+    }
+    selectionOriginCell = nil
+    stopDragAutoscroll()
+    lastDragPoint = nil
+  }
+
+  private func syncSelectionStateToActiveTab() {
+    let activeTabId = model.activeTab?.id
+    if activeSelectionTabId == nil {
+      if selectionAnchor == nil && selectionFocus == nil {
+        restoreSelectionState(for: activeTabId)
+      } else {
+        activeSelectionTabId = activeTabId
+      }
+      return
+    }
+    guard activeSelectionTabId != activeTabId else { return }
+    persistSelectionStateForCurrentTab()
+    restoreSelectionState(for: activeTabId)
+  }
+
+  private func selectTabPreservingSelection(_ tabId: Tab.ID) {
+    syncSelectionStateToActiveTab()
+    guard model.activeTab?.id != tabId else { return }
+    persistSelectionStateForCurrentTab()
+    model.selectTab(tabId)
+    restoreSelectionState(for: model.activeTab?.id)
+  }
+
+  @discardableResult
+  private func createTabPreservingSelection() throws -> Tab {
+    syncSelectionStateToActiveTab()
+    persistSelectionStateForCurrentTab()
+    let tab = try model.createTab()
+    restoreSelectionState(for: tab.id)
+    return tab
+  }
+
+  private func clearAllSelectionState() {
+    selectionsByTab.removeAll()
+    selectionAnchor = nil
+    selectionFocus = nil
+    selectionOriginCell = nil
+    activeSelectionTabId = model.activeTab?.id
+    stopDragAutoscroll()
+    lastDragPoint = nil
+  }
+
   private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
     let pt = convert(sender.draggingLocation, from: nil)
     guard pt.x >= sidebarWidth,
@@ -1083,13 +1131,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if hoveredSidebarTabId == tabId {
       hoveredSidebarTabId = nil
     }
-    if lastRenderedActiveTabId == tabId {
+    if activeSelectionTabId == tabId {
       selectionAnchor = nil
       selectionFocus = nil
       selectionOriginCell = nil
+      activeSelectionTabId = nil
       stopDragAutoscroll()
       lastDragPoint = nil
     }
+    syncSelectionStateToActiveTab()
   }
 
   override func setFrameSize(_ newSize: NSSize) {
@@ -1113,8 +1163,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let cols = max(1, termW / cellWidth)
     if cols != lastAppliedCols, lastAppliedCols != 0 {
       // Reflow invalidates grid-anchored selection coordinates.
-      selectionAnchor = nil
-      selectionFocus = nil
+      clearAllSelectionState()
     }
     lastAppliedCols = cols
     model.resize(
@@ -1300,13 +1349,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       command: TerminalInputCaptureMetadata.captureName(for: command))
     switch command {
     case .newTab:
-      _ = try? model.createTab()
+      _ = try? createTabPreservingSelection()
       renderInvalidated = true
     case .closeTab:
       closeTab(nil)
     case .selectTab(let index):
       guard index < model.tabs.count else { return }
-      model.selectTab(model.tabs[index].id)
+      selectTabPreservingSelection(model.tabs[index].id)
       renderInvalidated = true
     case .copy:
       copy(nil)
@@ -1539,6 +1588,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - Clipboard
 
   @objc func copy(_ sender: Any?) {
+    syncSelectionStateToActiveTab()
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id),
       let selection = currentTerminalSelection(sessionId: session.id),
@@ -1831,6 +1881,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func beginSelection(at pt: NSPoint, clickCount: Int) {
+    syncSelectionStateToActiveTab()
     let hadSelection = selectionAnchor != nil && selectionFocus != nil
     let originCell = clampedSelectionPoint(at: pt)
     lastDragPoint = pt
@@ -1886,10 +1937,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         topInset: Self.titlebarReservedHeight)
       {
       case .newTab:
-        _ = try? model.createTab()
+        _ = try? createTabPreservingSelection()
         renderInvalidated = true
       case .selectTab(let id):
-        model.selectTab(id)
+        selectTabPreservingSelection(id)
         renderInvalidated = true
       case .closeTab(let id):
         do {
@@ -2507,7 +2558,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - Menu actions
 
   @objc func newTab(_ sender: Any?) {
-    _ = try? model.createTab()
+    _ = try? createTabPreservingSelection()
     renderInvalidated = true
   }
 
@@ -2528,7 +2579,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let item = sender as? NSMenuItem else { return }
     let idx = item.tag - 1
     guard idx >= 0, idx < model.tabs.count else { return }
-    model.selectTab(model.tabs[idx].id)
+    selectTabPreservingSelection(model.tabs[idx].id)
     renderInvalidated = true
   }
 

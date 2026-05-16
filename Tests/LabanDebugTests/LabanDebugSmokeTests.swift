@@ -760,6 +760,97 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(copyResp.status, 200)
   }
 
+  func testSelectionsStayBoundToSessionsAcrossTabSwitchAndCopy() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-sel-tabs"
+    )
+
+    let firstTab = try XCTUnwrap(runtime.model.activeTab)
+    let firstSession = try XCTUnwrap(runtime.model.session(forTab: firstTab.id))
+    firstSession.write(Array("alpha one\r\n".utf8))
+    firstSession.poll()
+
+    let firstSelection =
+      #"{"action":"setSelection","anchor":{"row":0,"col":0},"focus":{"row":0,"col":4}}"#
+      .data(using: .utf8)!
+    XCTAssertEqual(runtime.applyAction(firstSelection).status, 200)
+
+    XCTAssertEqual(runtime.applyAction(#"{"action":"newTab"}"#.data(using: .utf8)!).status, 200)
+    let secondTab = try XCTUnwrap(runtime.model.activeTab)
+    XCTAssertNotEqual(secondTab.id, firstTab.id)
+    let secondSession = try XCTUnwrap(runtime.model.session(forTab: secondTab.id))
+    secondSession.write(Array("bravo two\r\n".utf8))
+    secondSession.poll()
+
+    let secondSelection =
+      #"{"action":"setSelection","anchor":{"row":0,"col":0},"focus":{"row":0,"col":4}}"#
+      .data(using: .utf8)!
+    XCTAssertEqual(runtime.applyAction(secondSelection).status, 200)
+
+    var selection = runtime.selection()
+    var selectionObj = try JSONSerialization.jsonObject(with: selection.body) as! [String: Any]
+    XCTAssertEqual(selectionObj["sessionId"] as? String, secondSession.id)
+    XCTAssertEqual(selectionObj["text"] as? String, "bravo")
+
+    XCTAssertEqual(runtime.applyAction(#"{"action":"copy"}"#.data(using: .utf8)!).status, 200)
+    var clipboard = runtime.clipboard()
+    var clipboardObj = try JSONSerialization.jsonObject(with: clipboard.body) as! [String: Any]
+    XCTAssertEqual(clipboardObj["lastCopyText"] as? String, "bravo")
+
+    let selectFirst = try JSONSerialization.data(
+      withJSONObject: ["action": "selectTab", "tabId": firstTab.id])
+    XCTAssertEqual(runtime.applyAction(selectFirst).status, 200)
+
+    selection = runtime.selection()
+    selectionObj = try JSONSerialization.jsonObject(with: selection.body) as! [String: Any]
+    XCTAssertEqual(selectionObj["sessionId"] as? String, firstSession.id)
+    XCTAssertEqual(selectionObj["text"] as? String, "alpha")
+
+    XCTAssertEqual(runtime.applyAction(#"{"action":"copy"}"#.data(using: .utf8)!).status, 200)
+    clipboard = runtime.clipboard()
+    clipboardObj = try JSONSerialization.jsonObject(with: clipboard.body) as! [String: Any]
+    XCTAssertEqual(clipboardObj["lastCopyText"] as? String, "alpha")
+  }
+
+  func testCloseTabPrunesDebugSelectionForClosedSession() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-sel-close"
+    )
+
+    let firstTab = try XCTUnwrap(runtime.model.activeTab)
+    let firstSessionId = firstTab.sessionId
+    let setSelection =
+      #"{"action":"setSelection","anchor":{"row":0,"col":0},"focus":{"row":0,"col":3}}"#
+      .data(using: .utf8)!
+    XCTAssertEqual(runtime.applyAction(setSelection).status, 200)
+    XCTAssertNotNil(runtime.selectionBySession[firstSessionId])
+
+    XCTAssertEqual(runtime.applyAction(#"{"action":"newTab"}"#.data(using: .utf8)!).status, 200)
+    let closeFirst = try JSONSerialization.data(
+      withJSONObject: ["action": "closeTab", "tabId": firstTab.id])
+    XCTAssertEqual(runtime.applyAction(closeFirst).status, 200)
+
+    XCTAssertNil(
+      runtime.selectionBySession[firstSessionId],
+      "closing a tab must discard its stale selection state")
+  }
+
   func testCopyActionPopulatesDebugClipboard() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
