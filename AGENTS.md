@@ -71,17 +71,9 @@ Write a new ADR when a change establishes durable architectural policy, reverses
 
 ## Worktree Setup
 
-Git worktrees do not clone `.external/`. If `.external/` is missing and the
-build fails, symlink it from the main repo rather than re-fetching (substitute
-the absolute path to your primary checkout):
-
-```sh
-ln -s "$LABAN_MAIN_REPO/.external" .external
-```
-
-`.external/` contains vendored native libraries (currently `libghostty-vt`)
-that are checked out once in the main repo and shared across worktrees via
-symlink.
+Git worktrees do not clone `.external/`. If missing, symlink it from the
+main repo: `ln -s "$LABAN_MAIN_REPO/.external" .external`. `.external/`
+holds vendored libs (`libghostty-vt`) shared across worktrees.
 
 ## Hard Rules
 
@@ -90,11 +82,14 @@ symlink.
   artifacts.
 - The debug/headless harness in `docs/process/dev-process.md` is product
   infrastructure, not optional polish.
+- `HeadlessDebugRuntime` stays in feature parity with
+  `MainWindowController.makeAndShow`. Wire new subsystems into both and
+  expose HTTP endpoints. Move shared types from `LabanApp` down to
+  `LabanCore` (no AppKit deps) so `LabanDebug` can reach them.
 - Terminal session identity must survive tab selection, view rebuilds, resize,
   and UI refresh.
 - Native text input wins over raw modifier interpretation.
 - Keep changesets focused on one behavioral reason.
-- Git commits are atomic. Commit messages must be single-line reason statements:
-  describe why the change exists, not what changed, not which files changed,
-  and not the task performed. Bad: `Update plans`. Good:
+- Git commits are atomic. Commit messages are single-line reason statements:
+  why the change exists, not what changed. Bad: `Update plans`. Good:
   `Agents need bounded execution shards`.

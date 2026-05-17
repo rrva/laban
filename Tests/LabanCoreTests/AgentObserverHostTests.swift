@@ -3,7 +3,7 @@ import LabanCore
 import LabanTerminalCore
 import XCTest
 
-@testable import LabanApp
+@testable import LabanCore
 
 /// Tests for `AgentObserverHost`'s toggle-gating and
 /// mirror-untrack-on-death behavior. The host owns no detector here

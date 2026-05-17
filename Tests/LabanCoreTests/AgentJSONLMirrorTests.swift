@@ -2,7 +2,7 @@ import Foundation
 import LabanCore
 import XCTest
 
-@testable import LabanApp
+@testable import LabanCore
 
 /// Tests for the runtime kill-switch behavior on the JSONL mirror.
 /// The unit tests for `AgentObserverHost` already cover the

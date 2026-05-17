@@ -2,7 +2,7 @@ import Darwin
 import LabanCore
 import XCTest
 
-@testable import LabanApp
+@testable import LabanCore
 
 final class AgentSupportTests: XCTestCase {
 

@@ -2,7 +2,7 @@ import Foundation
 import LabanCore
 import XCTest
 
-@testable import LabanApp
+@testable import LabanCore
 
 /// Unit tests for `AgentSessionDetector` driven by a mock
 /// `ProcessIntrospector`. The production detector still uses

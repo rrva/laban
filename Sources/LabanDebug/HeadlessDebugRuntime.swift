@@ -87,6 +87,20 @@ public final class HeadlessDebugRuntime {
   var lastCaptureRunId: String?
   var lastCaptureDirectory: String?
 
+  /// Optional persistence wiring. When `--persistence-dir=<path>` is
+  /// passed to the laban-agent CLI, the runtime mirrors what
+  /// `MainWindowController` does in the real app: TranscriptHost
+  /// captures PTY bytes, PersistenceCoordinator writes
+  /// workspace.json on a debounce, AgentObserverHost watches for
+  /// claude/codex descendants. Existing test/fixture runs leave
+  /// these nil so the headless path stays self-contained when no
+  /// directory is provided.
+  public let persistenceBaseURL: URL?
+  public let persistenceStore: PersistenceStore?
+  public let transcriptHost: TranscriptHost?
+  public let persistenceCoordinator: PersistenceCoordinator?
+  public let agentObserverHost: AgentObserverHost?
+
   func withRuntimeLock<T>(_ body: () throws -> T) rethrows -> T {
     lock.lock()
     defer { lock.unlock() }
@@ -104,7 +118,9 @@ public final class HeadlessDebugRuntime {
     fixtureRootURL: URL? = nil,
     sessionMode: HeadlessSessionMode = .fixture,
     captureName: String? = nil,
-    captureScreenshots: CaptureScreenshotPolicy = .marked
+    captureScreenshots: CaptureScreenshotPolicy = .marked,
+    persistenceBaseURL: URL? = nil,
+    restoreOnLaunchEnabled: @escaping () -> Bool = { true }
   ) throws {
     self.runId = runId
     self.artifactsURL = artifactsURL
@@ -169,6 +185,81 @@ public final class HeadlessDebugRuntime {
     self.model.captureSink = initialRecorder
     self.lastCaptureRunId = initialRecorder?.runId
     self.lastCaptureDirectory = initialRecorder?.directoryURL.path
+
+    // Optional persistence wiring. Mirrors MainWindowController so
+    // bugs in M0/M1/M2 paths can be reproduced inside the headless
+    // debug harness against the actual PersistenceCoordinator /
+    // TranscriptHost / AgentObserverHost objects, not a parallel
+    // test rig that might silently diverge from production.
+    self.persistenceBaseURL = persistenceBaseURL
+    if let baseURL = persistenceBaseURL {
+      let store = PersistenceStore(baseURL: baseURL)
+      let transcripts = TranscriptHost(
+        store: store, isEnabled: restoreOnLaunchEnabled)
+      let mirror = AgentJSONLMirror(
+        store: store, isEnabled: restoreOnLaunchEnabled)
+      let observers = AgentObserverHost(
+        appModel: model, mirror: mirror, isEnabled: restoreOnLaunchEnabled)
+      let coordinator = PersistenceCoordinator(
+        store: store,
+        windowId: "headless-window",
+        debounceInterval: .milliseconds(50),
+        isEnabled: restoreOnLaunchEnabled)
+      coordinator.transcriptHost = transcripts
+      self.persistenceStore = store
+      self.transcriptHost = transcripts
+      self.persistenceCoordinator = coordinator
+      self.agentObserverHost = observers
+
+      self.model.transcriptDelegate = transcripts
+      self.model.restoredSessionFactory = { sz, _ in
+        try Self.makeSession(size: sz, mode: initialSessionMode)
+      }
+      self.model.restoredDeferredSessionFactory = { spec in
+        // fixture sessions don't really "spawn"; deferred mode is
+        // only meaningful for real shells. For fixture/debug mode
+        // we just make a fresh session and replay the transcript
+        // into it before returning.
+        let session: Session
+        switch initialSessionMode {
+        case .fixture:
+          session = try Session.fixture(size: spec.size)
+        case .realShell:
+          session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
+        }
+        if let url = spec.transcriptURL {
+          TranscriptRenderer.render(
+            fileURL: url,
+            into: session,
+            altBufferAtQuit: spec.altBufferAtQuit)
+        }
+        if case .realShell = initialSessionMode {
+          _ = session.startSpawn(
+            overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil)
+        }
+        return session
+      }
+      self.model.onTabCreated = { [weak observers] tabId, session in
+        observers?.attach(session: session, tabId: tabId)
+      }
+      self.model.onTabClosed = { [weak observers] tabId in
+        observers?.detach(tabId: tabId)
+      }
+
+      // Attach writer + detector to the initial default tab.
+      for (tab, session) in model.allSessions() {
+        transcripts.attachTranscriptWriter(to: session, tabId: tab.id)
+        observers.attach(session: session, tabId: tab.id)
+      }
+
+      coordinator.attach(model)
+      coordinator.scheduleSave()
+    } else {
+      self.persistenceStore = nil
+      self.transcriptHost = nil
+      self.persistenceCoordinator = nil
+      self.agentObserverHost = nil
+    }
 
     self.windowWidth = 200 + initialCols * Int(cs.width)
     self.windowHeight = initialRows * Int(cs.height)

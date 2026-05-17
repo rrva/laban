@@ -2,7 +2,7 @@ import Foundation
 import LabanCore
 import XCTest
 
-@testable import LabanApp
+@testable import LabanCore
 
 final class RestorePlannerTests: XCTestCase {
 

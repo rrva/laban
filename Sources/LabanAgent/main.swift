@@ -20,6 +20,12 @@ struct AgentArgs {
   var captureScreenshots: CaptureScreenshotPolicy = .marked
   var replayCapture: String? = nil
   var replayMode: CaptureReplayMode = .both
+  /// Optional persistence directory. When set, the headless runtime
+  /// wires the same PersistenceCoordinator / TranscriptHost /
+  /// AgentObserverHost chain that `MainWindowController` uses in the
+  /// real app — so persistence bugs can be reproduced and observed
+  /// inside the debug harness against the production classes.
+  var persistenceDir: String? = nil
 }
 
 func parseArgs() -> AgentArgs {
@@ -54,6 +60,8 @@ func parseArgs() -> AgentArgs {
       } else if arg.hasPrefix("--replay-mode=") {
         let raw = String(arg.dropFirst("--replay-mode=".count)).lowercased()
         a.replayMode = CaptureReplayMode(rawValue: raw) ?? .both
+      } else if arg.hasPrefix("--persistence-dir=") {
+        a.persistenceDir = String(arg.dropFirst("--persistence-dir=".count))
       }
     }
   }
@@ -74,6 +82,11 @@ func usage() -> String {
     --temp-dir=PATH                 Use an isolated temp directory.
     --capture=NAME                  Start full capture recording immediately.
     --capture-screenshots=POLICY    final, all, none, or marked.
+    --persistence-dir=PATH          Wire workspace.json + transcript + agent
+                                    persistence against PATH. Use this directory
+                                    to reproduce M0/M1/M2 bugs against the same
+                                    PersistenceCoordinator / TranscriptHost /
+                                    AgentObserverHost the real app uses.
 
   Discoverability:
     The debug server prints one readiness JSON line:
@@ -219,7 +232,8 @@ if let debugAddr = args.debugServerAddress {
       runId: runId,
       sessionMode: fixtureURL == nil ? .realShell : .fixture,
       captureName: args.capture,
-      captureScreenshots: args.captureScreenshots
+      captureScreenshots: args.captureScreenshots,
+      persistenceBaseURL: args.persistenceDir.map(resolveURL)
     )
   } catch {
     fail("failed to initialise debug runtime: \(error)")

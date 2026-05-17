@@ -151,6 +151,32 @@ public final class DebugHTTPServer {
       json(runtime.applyAction(request.body))
     },
     DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/persistence/state",
+      category: "state",
+      summary: "Inspect workspace.json, transcript files, and agent JSONL mirrors."
+    ) { runtime, _, _ in
+      json(runtime.persistenceState())
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/persistence/flush",
+      category: "control",
+      summary:
+        "Drain the persistence debounce + transcript writers synchronously (simulates applicationWillTerminate)."
+    ) { runtime, _, _ in
+      json(runtime.persistenceFlush())
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/persistence/relaunch",
+      category: "control",
+      summary:
+        "Flush, close every session, then rebuild from workspace.json. Use to run quit/restore cycles inside one debug-server lifetime."
+    ) { runtime, _, _ in
+      json(runtime.persistenceRelaunch())
+    },
+    DebugHTTPRoute(
       method: "POST",
       path: "/debug/find/start",
       category: "control",
