@@ -391,7 +391,15 @@ downstream. Record any change to these decisions here with rationale.
 - Decision: The entire restore-on-launch behavior is gated by a
   single user-facing toggle, **"Restore on Launch"**, persisted in
   `NSUserDefaults` under the key `LabanRestoreOnLaunch` (Bool,
-  default `true`). The toggle is surfaced as a checkable menu item
+  default `true`). All call sites read the value through a
+  shared `RestoreOnLaunchSettings.isEnabled` helper — never via
+  `UserDefaults.standard.bool(forKey:)` directly — because that
+  method returns `false` for a missing key, which would ship a
+  fresh install with restore *disabled* (the opposite of the
+  intended default). The helper uses
+  `UserDefaults.standard.object(forKey: "LabanRestoreOnLaunch") as? Bool ?? true`
+  so an absent key yields `true`. The toggle is surfaced as a
+  checkable menu item
   in the AppKit menu bar (placement: under the **Window** menu, or
   a new **Workspace** submenu — either is fine; the implementing
   agent picks whichever is more consistent with the existing menu
@@ -710,17 +718,34 @@ adds these):
   observes `AppModel` changes, debounces 200ms on a background
   dispatch queue, and calls `PersistenceStore.save`. Subscribes to
   `applicationWillTerminate` for a synchronous final flush.
-  **Every save and every load goes through a
-  `RestoreOnLaunchEnabled` check** that reads
-  `UserDefaults.standard.bool(forKey: "LabanRestoreOnLaunch")`
-  (default `true`). If `false`, `save(_:)` and `load()` both
-  no-op silently. The same key gates M1's transcript writes and
-  M2's detector/mirror start.
+  **Every save and every load goes through
+  `RestoreOnLaunchSettings.isEnabled` (defined below).** If
+  `false`, `save(_:)` and `load()` both no-op silently. The same
+  helper gates M1's transcript writes and M2's detector/mirror
+  start.
+- `Sources/LabanApp/Persistence/RestoreOnLaunchSettings.swift` —
+  thin namespaced helper exposing:
+  ```swift
+  public enum RestoreOnLaunchSettings {
+    public static let key = "LabanRestoreOnLaunch"
+    public static var isEnabled: Bool {
+      (UserDefaults.standard.object(forKey: key) as? Bool) ?? true
+    }
+    public static func set(_ enabled: Bool) {
+      UserDefaults.standard.set(enabled, forKey: key)
+    }
+  }
+  ```
+  This is the only correct way to read the toggle — callers must
+  never use `UserDefaults.standard.bool(forKey:)` directly, since
+  that returns `false` for a missing key and would invert the
+  intended default on fresh installs.
 - `Sources/LabanApp/RestoreOnLaunchMenuController.swift` — owns
   the "Restore on Launch" checkable menu item. On selection,
-  flips the `UserDefaults` key and updates the item's checkmark.
-  No app restart required — the next quit will (or will not) save;
-  the next launch will (or will not) load.
+  calls `RestoreOnLaunchSettings.set(!isEnabled)` and updates the
+  item's checkmark to match the new value. No app restart
+  required — the next quit will (or will not) save; the next
+  launch will (or will not) load.
 
 **Modifications.**
 
@@ -728,9 +753,9 @@ adds these):
   add/remove/reorder, tab selection, and cwd change. Add
   `restore(from: WorkspaceState)` initializer path.
 - `Sources/LabanApp/AppDelegate.swift` — at launch:
-  1. If `UserDefaults.standard.bool(forKey: "LabanRestoreOnLaunch")`
-     returns `false`, start with a fresh empty workspace; skip the
-     ⇧ check and `PersistenceStore.load()`.
+  1. If `RestoreOnLaunchSettings.isEnabled` is `false`, start with
+     a fresh empty workspace; skip the ⇧ check and
+     `PersistenceStore.load()`.
   2. Otherwise, check `⇧` modifier via `NSEvent.modifierFlags`. If
      pressed, call `PersistenceStore.archiveCurrent()` and create
      a fresh empty workspace.
@@ -746,8 +771,8 @@ adds these):
   judgement — under the **Window** menu or a new **Workspace**
   submenu, whichever is more consistent with the existing menu
   structure. The item's checkmark reflects the current value of
-  `UserDefaults.standard.bool(forKey: "LabanRestoreOnLaunch")`.
-  Default is on.
+  `RestoreOnLaunchSettings.isEnabled`. Default is on (because the
+  helper falls back to `true` for a missing key).
 
 **Schema (M0).**
 
@@ -790,15 +815,16 @@ adds these):
 8. Relaunch with ⇧ held. Observe: empty workspace, one default tab.
   `~/Library/Application Support/Laban/workspace.json.previous`
   exists with the prior content.
-9. **Toggle test.** Quit, set the menu's "Restore on Launch" item
-  to **off** (uncheck), create three new tabs in different cwds,
-  quit again. Inspect
-  `~/Library/Application Support/Laban/workspace.json` — expect
-  its `lastActiveAt` and tab list have **not** been updated since
-  step 4 (no save happened while the toggle was off). Relaunch.
-  Observe: empty workspace, no tabs from step 4 or step 9 restored
-  (no load happened either). Re-check the menu item and verify
-  it is still off (state persisted). Toggle it back on, quit, and
+9. **Toggle test.** With Laban still running from step 7, set
+  the menu's "Restore on Launch" item to **off** (uncheck).
+  Create three new tabs in different cwds. Quit with Cmd-Q.
+  Inspect `~/Library/Application Support/Laban/workspace.json` —
+  expect its `lastActiveAt` and tab list have **not** been
+  updated since step 4 (no save happened while the toggle was
+  off). Relaunch Laban. Observe: empty workspace, no tabs from
+  step 4 or step 9 restored (no load happened either). Open the
+  menu and verify "Restore on Launch" is still unchecked (state
+  persisted across launches). Toggle it back on (check), quit,
   relaunch — the workspace from step 4 is restored (the saved
   state was never deleted).
 
@@ -1403,22 +1429,37 @@ Per-milestone gates:
 - [ ] Manual: launch with ⇧ held; confirm fresh workspace and
   presence of `workspace.json.previous`.
 - [ ] **Restore-on-Launch toggle present:**
-  `grep -rn "LabanRestoreOnLaunch" Sources/` — expect hits in
-  the persistence coordinator, the AppDelegate launch path, and
-  the menu controller.
+  `grep -rn "LabanRestoreOnLaunch\|RestoreOnLaunchSettings" Sources/` —
+  expect the literal key `"LabanRestoreOnLaunch"` appears **only**
+  inside `RestoreOnLaunchSettings.swift`; every other call site
+  reads via `RestoreOnLaunchSettings.isEnabled`.
+- [ ] **Default-true trap is closed:**
+  `grep -rn 'UserDefaults\..*\.bool(forKey: *"LabanRestoreOnLaunch"' Sources/` —
+  expect **zero hits**. `bool(forKey:)` returns `false` for a
+  missing key; using it directly would invert the intended
+  default. The helper uses `object(forKey:) as? Bool ?? true`.
 - [ ] **Toggle gates both save and load:**
-  `grep -n "LabanRestoreOnLaunch\|RestoreOnLaunchEnabled" Sources/LabanCore/Persistence/PersistenceCoordinator.swift` —
-  expect the flag is checked at the top of both `save(_:)` and
+  `grep -n "RestoreOnLaunchSettings.isEnabled" Sources/LabanCore/Persistence/PersistenceCoordinator.swift` —
+  expect the helper is checked at the top of both `save(_:)` and
   `load()` paths; both no-op when off.
 - [ ] **Menu item exists and is checkable:**
   `grep -n "Restore on Launch\|RestoreOnLaunch" Sources/LabanApp/MenuCommands.swift Sources/LabanApp/RestoreOnLaunchMenuController.swift` —
-  expect a checkable `NSMenuItem` wired to the user-defaults
-  flag.
-- [ ] Manual: toggle "Restore on Launch" off via the menu, quit,
-  create state, quit again, inspect `workspace.json` mtime —
-  expect it has not changed since the toggle was flipped (no
-  saves happened). Relaunch and confirm empty workspace. Toggle
-  back on, quit, relaunch — pre-toggle state is restored.
+  expect a checkable `NSMenuItem` wired to
+  `RestoreOnLaunchSettings.set(_:)`.
+- [ ] **Empty-defaults test exists:** a test under
+  `Tests/LabanAppTests/` (or `Tests/LabanCoreTests/`) creates a
+  `UserDefaults` suite with no `LabanRestoreOnLaunch` key set and
+  asserts `RestoreOnLaunchSettings.isEnabled == true`. Run via
+  `./scripts/check` and confirm it passes.
+- [ ] Manual: launch Laban, toggle "Restore on Launch" off via the
+  menu (item should change from checked to unchecked), then
+  create three tabs in different cwds, quit. Inspect
+  `workspace.json` mtime — expect it has not advanced past the
+  moment the toggle was flipped (no saves happened while off).
+  Relaunch — confirm empty workspace appears. Launch the menu
+  again, toggle "Restore on Launch" back on, quit, relaunch —
+  the pre-toggle workspace (from before step 9 began) is
+  restored.
 - [ ] `grep -rn "SQLite\|Core[ ]Data\|sqlite3" Sources/LabanCore/Persistence/ Sources/LabanApp/` —
   expect zero hits. The persistence stack must be Foundation-only.
 - [ ] `grep -rn "tmux\|screen[ -]session" Sources/` — expect zero
@@ -1441,12 +1482,14 @@ Per-milestone gates:
   verify the file is capped (not unbounded growth):
   `dd if=/dev/urandom bs=1M count=15 | od -c` inside a tab, then
   inspect file size — expect ≤ 10MB after truncation.
-- [ ] **Toggle gates transcript writes:** with the "Restore on
-  Launch" menu item set to off, run a session that produces
-  output, quit, and inspect
+- [ ] **Toggle gates transcript writes:** launch Laban, set
+  "Restore on Launch" to off via the menu, run a session in a
+  tab that produces output (e.g. `ls -la`, `seq 1 50`), quit
+  with Cmd-Q, then inspect
   `~/Library/Application Support/Laban/transcripts/` — expect no
   new or updated `.bin` files (mtimes unchanged from before the
-  toggle was flipped, or directory empty if first run).
+  toggle was flipped, or directory empty if this is a fresh
+  install).
 
 **M2 gate**
 
@@ -1505,11 +1548,12 @@ Per-milestone gates:
   `grep -rn "session not found\|replaceItemAt.*\.claude\|replaceItemAt.*\.codex" Sources/` —
   expect zero hits. The fallback path is deferred to M2.5; M2
   ships only the mirror writes.
-- [ ] **Toggle gates agent subsystem:** with "Restore on Launch"
-  set to off, run `claude` in a tab — confirm
-  `~/Library/Application Support/Laban/agent-mirror/` does not
-  receive any new files, and `workspace.json` does not gain an
-  `agent` field for that tab.
+- [ ] **Toggle gates agent subsystem:** launch Laban, set
+  "Restore on Launch" to off via the menu, run `claude` in a tab
+  and have a brief exchange. Quit. Confirm
+  `~/Library/Application Support/Laban/agent-mirror/` did not
+  receive new files (mtimes unchanged) and `workspace.json` does
+  not gain an `agent` field for that tab.
 
 Review status: NOT REVIEWED
 
