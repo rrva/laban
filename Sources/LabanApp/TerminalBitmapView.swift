@@ -63,11 +63,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
   private var pendingHyperlinkClick: PendingHyperlinkClick?
   private static let hyperlinkClickDragTolerance: CGFloat = 3
-  /// True while the current mouseDown→mouseUp pair was consumed by the
-  /// sidebar (tab select, close, new-tab). Without this, the paired
-  /// mouseUp would treat the just-restored selection as an in-progress
-  /// drag and extend its focus to the sidebar click point.
-  private var mouseDownConsumedBySidebar = false
+  /// True while the current mouseDown→mouseUp pair was consumed by
+  /// window chrome (sidebar tab actions or the reserved titlebar strip).
+  /// Without this, the paired mouseUp would treat the just-restored or
+  /// pre-existing selection as an in-progress drag and extend its focus
+  /// to the chrome click point.
+  private var mouseDownConsumedByChrome = false
   /// Per-tab saved selection state. Without this, switching tabs leaves
   /// the previous tab's selection rectangle painted across the new tab's
   /// grid (the renderer reads view-level state, not session-level). On
@@ -1121,6 +1122,45 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     lastDragPoint = nil
   }
 
+  /// Mirror AppKit's title-bar double-click handler. Reads the user's
+  /// `AppleActionOnDoubleClick` preference (system default is zoom) and
+  /// dispatches the matching window action. Needed because the contentView
+  /// covers the titlebar region under `fullSizeContentView` and consumes
+  /// the click before AppKit's own handler can run. Defers the action so
+  /// it doesn't run while AppKit is still mid-dispatch of this mouseDown.
+  ///
+  /// Reads from `NSGlobalDomain` rather than `UserDefaults.standard`
+  /// because AppKit can cache a stale `AppleActionOnDoubleClick = None`
+  /// into the app's own preferences plist; that would shadow the real
+  /// system preference and silently disable the action. Falls back to the
+  /// legacy `AppleMiniaturizeOnDoubleClick` boolean and then to zoom,
+  /// matching AppKit's own resolution order.
+  private func performTitlebarDoubleClickAction() {
+    let global = UserDefaults.standard.persistentDomain(
+      forName: UserDefaults.globalDomain)
+    let action: String
+    if let raw = global?["AppleActionOnDoubleClick"] as? String {
+      // User has an explicit system-wide choice; respect it (including "None").
+      action = raw
+    } else if let miniaturize = global?["AppleMiniaturizeOnDoubleClick"] as? Bool {
+      action = miniaturize ? "Minimize" : "Maximize"
+    } else {
+      action = "Maximize"
+    }
+    AppLog.app.notice("titlebar double-click action=\(action)")
+    guard let window else { return }
+    DispatchQueue.main.async {
+      switch action {
+      case "Maximize", "Zoom":
+        window.performZoom(nil)
+      case "Minimize":
+        window.performMiniaturize(nil)
+      default:
+        break
+      }
+    }
+  }
+
   private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
     let pt = convert(sender.draggingLocation, from: nil)
     guard pt.x >= sidebarWidth,
@@ -1939,7 +1979,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     // Sidebar hit test.
     if pt.x < sidebarWidth {
-      mouseDownConsumedBySidebar = true
+      mouseDownConsumedByChrome = true
       let sp = SidebarProducer(
         sidebarWidth: sidebarWidth,
         cellWidth: CGFloat(sidebarCellWidth),
@@ -1965,6 +2005,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         } catch {}
         renderInvalidated = true
       case .none: break
+      }
+      return
+    }
+
+    // Reserved titlebar strip sits above the terminal grid and behind the
+    // transparent system titlebar. Don't begin a selection here — the user
+    // is interacting with window chrome. Drive the titlebar double-click
+    // action explicitly: AppKit normally handles this at the title-bar
+    // hit-test level, but with `fullSizeContentView` the contentView
+    // covers that region and intercepts the event first, so we have to
+    // dispatch the action ourselves.
+    if pt.y > bounds.height - Self.titlebarReservedHeight {
+      mouseDownConsumedByChrome = true
+      if event.clickCount == 2 {
+        performTitlebarDoubleClickAction()
       }
       return
     }
@@ -2021,7 +2076,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func mouseDragged(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
-    if mouseDownConsumedBySidebar {
+    if mouseDownConsumedByChrome {
       return
     }
     if let pending = pendingHyperlinkClick {
@@ -2102,8 +2157,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func mouseUp(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
-    if mouseDownConsumedBySidebar {
-      mouseDownConsumedBySidebar = false
+    if mouseDownConsumedByChrome {
+      mouseDownConsumedByChrome = false
       return
     }
     if let pending = pendingHyperlinkClick {
