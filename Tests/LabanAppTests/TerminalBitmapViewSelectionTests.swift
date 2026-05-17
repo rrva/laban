@@ -273,6 +273,49 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testShiftDragStartsLocalSelectionWhenMouseTrackingIsActive() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    enableMouseTracking(in: session)
+    harness.view.advanceFrame()
+
+    shiftSelectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "alpha",
+      "holding shift should force local selection even when the terminal app tracks the mouse"
+    )
+  }
+
+  func testShiftClickExtendsSelectionWhenMouseTrackingIsActive() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    enableMouseTracking(in: session)
+    shiftClickCell(row: 0, col: 10, in: harness)
+
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "alpha bravo",
+      "holding shift should extend selection instead of sending the click to mouse tracking"
+    )
+  }
+
   private struct Harness {
     var model: AppModel
     var view: TerminalBitmapView
@@ -344,6 +387,17 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: end))
   }
 
+  private func shiftSelectCells(row: Int, startCol: Int, endCol: Int, in harness: Harness) {
+    let start = point(row: row, col: startCol, in: harness)
+    let end = point(row: row, col: endCol, in: harness)
+    harness.view.mouseDown(
+      with: mouseEvent(type: .leftMouseDown, at: start, modifierFlags: .shift))
+    harness.view.mouseDragged(
+      with: mouseEvent(type: .leftMouseDragged, at: end, modifierFlags: .shift))
+    harness.view.mouseUp(
+      with: mouseEvent(type: .leftMouseUp, at: end, modifierFlags: .shift))
+  }
+
   private func shiftClickCell(row: Int, col: Int, in harness: Harness) {
     let point = point(row: row, col: col, in: harness)
     harness.view.mouseDown(
@@ -377,6 +431,12 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       clickCount: 1,
       pressure: 1
     )!
+  }
+
+  private func enableMouseTracking(in session: Session) {
+    session.write(Array("\u{1B}[?1000h\u{1B}[?1006h".utf8))
+    session.poll()
+    XCTAssertEqual(session.viewportState()?.mouseTracking, true)
   }
 
   private func clickTabRow(tabIndex: Int, in harness: Harness) {

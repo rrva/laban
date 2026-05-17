@@ -69,6 +69,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// pre-existing selection as an in-progress drag and extend its focus
   /// to the chrome click point.
   private var mouseDownConsumedByChrome = false
+  /// True while the current mouse gesture is being forced into local
+  /// terminal selection even though the terminal application has mouse
+  /// tracking enabled. This is the standard terminal Shift override.
+  private var localSelectionMouseGestureActive = false
   /// Per-tab saved selection state. Without this, switching tabs leaves
   /// the previous tab's selection rectangle painted across the new tab's
   /// grid (the renderer reads view-level state, not session-level). On
@@ -1856,7 +1860,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     guard let vs = session.viewportState() else { return }
 
-    if vs.mouseTracking {
+    if vs.mouseTracking && !localSelectionMouseGestureActive {
       // Mouse tracking active: encode wheel as press+release. Use legacy
       // deltaY for notched wheels and precise scrollingDeltaY for trackpads.
       let direction = TerminalScrollInput.mouseTrackingWheelDirection(
@@ -1993,6 +1997,51 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     return true
   }
 
+  private func beginLocalSelectionMouseGesture(at pt: NSPoint, clickCount: Int) {
+    localSelectionMouseGestureActive = true
+    if !extendExistingSelection(at: pt) {
+      beginSelection(at: pt, clickCount: clickCount)
+    }
+  }
+
+  private func updateLocalSelectionMouseGesture(to pt: NSPoint) {
+    lastDragPoint = pt
+    extendSelection(to: pt)
+    updateDragAutoscroll(at: pt)
+    if let anchor = selectionAnchor, let focus = selectionFocus {
+      recordInput(
+        kind: "selection",
+        route: "terminal",
+        command: "updateSelection",
+        anchor: (row: anchor.row, col: anchor.col),
+        focus: (row: focus.row, col: focus.col)
+      )
+    }
+  }
+
+  private func finishLocalSelectionMouseGesture(at pt: NSPoint) {
+    localSelectionMouseGestureActive = false
+    stopDragAutoscroll()
+    lastDragPoint = nil
+    // Only finalize focus if a drag established one. A bare click leaves
+    // selectionFocus nil, which clears the rendered selection.
+    if selectionFocus != nil {
+      extendSelection(to: pt)
+      if let anchor = selectionAnchor, let focus = selectionFocus {
+        recordInput(
+          kind: "selection",
+          route: "terminal",
+          command: "updateSelection",
+          anchor: (row: anchor.row, col: anchor.col),
+          focus: (row: focus.row, col: focus.col)
+        )
+      }
+    } else {
+      selectionAnchor = nil
+      recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+    }
+  }
+
   private func clearSelectionAfterHyperlinkActivation() {
     let hadSelection = selectionAnchor != nil || selectionFocus != nil
     selectionAnchor = nil
@@ -2071,6 +2120,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
 
+    if event.modifierFlags.contains(.shift) {
+      beginLocalSelectionMouseGesture(at: pt, clickCount: event.clickCount)
+      renderInvalidated = true
+      return
+    }
+    localSelectionMouseGestureActive = false
+
     // Check if mouse tracking is active.
     if let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId),
@@ -2107,10 +2163,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // so a click without drag clears any prior selection instead of leaving a
     // one-cell highlight behind. Double-click selects the word under the
     // cursor; triple-click selects the entire row.
-    if event.modifierFlags.contains(.shift), extendExistingSelection(at: pt) {
-      renderInvalidated = true
-      return
-    }
     beginSelection(at: pt, clickCount: event.clickCount)
     renderInvalidated = true
   }
@@ -2138,6 +2190,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
           focus: (row: focus.row, col: focus.col)
         )
       }
+      renderInvalidated = true
+      return
+    }
+
+    if localSelectionMouseGestureActive {
+      updateLocalSelectionMouseGesture(to: pt)
       renderInvalidated = true
       return
     }
@@ -2181,18 +2239,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       renderInvalidated = true
       return
     }
-    lastDragPoint = pt
-    extendSelection(to: pt)
-    updateDragAutoscroll(at: pt)
-    if let anchor = selectionAnchor, let focus = selectionFocus {
-      recordInput(
-        kind: "selection",
-        route: "terminal",
-        command: "updateSelection",
-        anchor: (row: anchor.row, col: anchor.col),
-        focus: (row: focus.row, col: focus.col)
-      )
-    }
+    updateLocalSelectionMouseGesture(to: pt)
     renderInvalidated = true
   }
 
@@ -2215,6 +2262,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         route: "appCommand",
         text: pending.uri,
         command: "openHyperlink")
+      renderInvalidated = true
+      return
+    }
+
+    if localSelectionMouseGestureActive {
+      finishLocalSelectionMouseGesture(at: pt)
       renderInvalidated = true
       return
     }
@@ -2259,25 +2312,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
     if trackedMouseButton == .left { trackedMouseButton = .none }
-    stopDragAutoscroll()
-    lastDragPoint = nil
-    // Only finalize focus if a drag established one. A bare click leaves
-    // selectionFocus nil, which clears the rendered selection.
-    if selectionFocus != nil {
-      extendSelection(to: pt)
-      if let anchor = selectionAnchor, let focus = selectionFocus {
-        recordInput(
-          kind: "selection",
-          route: "terminal",
-          command: "updateSelection",
-          anchor: (row: anchor.row, col: anchor.col),
-          focus: (row: focus.row, col: focus.col)
-        )
-      }
-    } else {
-      selectionAnchor = nil
-      recordInput(kind: "selection", route: "terminal", command: "clearSelection")
-    }
+    finishLocalSelectionMouseGesture(at: pt)
     renderInvalidated = true
   }
 
@@ -2614,6 +2649,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private func cancelSelectionDragForMouseTracking() {
     stopDragAutoscroll()
+    localSelectionMouseGestureActive = false
     lastDragPoint = nil
     selectionOriginCell = nil
   }
@@ -2626,7 +2662,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id),
       let vs = session.viewportState(),
-      !vs.mouseTracking
+      !vs.mouseTracking || localSelectionMouseGestureActive
     else {
       stopDragAutoscroll()
       return
