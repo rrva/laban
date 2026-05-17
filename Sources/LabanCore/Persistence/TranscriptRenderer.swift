@@ -82,19 +82,28 @@ public enum TranscriptRenderer {
     }
   }
 
-  /// Feed bytes into libghostty, then guarantee a clean line break
-  /// for the live shell that follows. zsh prints its PROMPT_SP
-  /// marker (the inverse-video `%`) whenever it detects the
-  /// previous line lacked a trailing newline. Our captured
-  /// transcripts often end mid-prompt-sequence (e.g.
-  /// `\x1b[?2004h`), which fires PROMPT_SP unnecessarily on
-  /// restore. Emitting a CR+LF after the replay puts the cursor at
-  /// column 0 of a fresh row, so the live shell starts cleanly.
+  /// Feed bytes into libghostty, then nudge the cursor to column 0
+  /// so the live shell's prompt lands cleanly without firing
+  /// zsh's PROMPT_SP marker.
+  ///
+  /// Two cases:
+  /// - The file ends with `\n` (a real prior command produced
+  ///   output that finished with a newline). The replay already
+  ///   landed the cursor at column 0 of a fresh row; we do
+  ///   nothing. The live shell's prompt appears below.
+  /// - The file ends mid-prompt-sequence (e.g. `\x1b[?2004h`
+  ///   after zsh painted its next prompt). The replay's cursor
+  ///   is somewhere inside the painted prompt. We emit a bare CR
+  ///   so the cursor returns to column 0 of the SAME row — the
+  ///   live shell's prompt then overwrites the replayed prompt
+  ///   in place (its `\x1b[K` clears residue). Emitting CR+LF
+  ///   here would push the live prompt onto a fresh row below
+  ///   the replayed one, leaving a visible blank gap and a
+  ///   ghost prompt above.
   private static func replayWithCleanHandoff(data: Data, into session: Session) {
     _ = session.replayPtyOutput([UInt8](data))
-    let last = data.last
-    if last != 0x0A {
-      _ = session.replayPtyOutput([0x0D, 0x0A])
+    if data.last != 0x0A {
+      _ = session.replayPtyOutput([0x0D])
     }
   }
 
