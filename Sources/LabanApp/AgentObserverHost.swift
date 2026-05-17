@@ -14,20 +14,29 @@ import LabanTerminalCore
 /// next saves.
 public final class AgentObserverHost: AgentSessionDetectorObserver {
   private let appModel: AppModel
-  private let mirror: AgentJSONLMirror
+  private let mirror: JSONLMirroring
+  private let isEnabled: () -> Bool
 
   private let lock = NSLock()
   private var detectorsByTab: [String: AgentSessionDetector] = [:]
 
-  public init(appModel: AppModel, mirror: AgentJSONLMirror) {
+  public init(
+    appModel: AppModel,
+    mirror: JSONLMirroring,
+    isEnabled: @escaping () -> Bool = { RestoreOnLaunchSettings.isEnabled }
+  ) {
     self.appModel = appModel
     self.mirror = mirror
+    self.isEnabled = isEnabled
   }
 
   /// Begin watching `session`'s shell descendants for the configured
   /// agent binaries. No-op when the session has no PID (fixture
   /// mode); detectors only make sense against real PTY children.
+  /// No-op when the kill-switch toggle is off — detector and mirror
+  /// stay completely dormant per the plan's toggle contract.
   public func attach(session: Session, tabId: String) {
+    guard isEnabled() else { return }
     guard let pid = session.processMetadata()?.childPid, pid > 0 else { return }
     lock.lock()
     detectorsByTab[tabId]?.stop()
@@ -45,14 +54,18 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
     detector?.stop()
     // Final mirror snapshot — captures the conversation as it
     // existed when the tab closed even if the agent process is
-    // still running in some other window.
-    mirror.untrack(tabId: tabId, finalSnapshot: true)
+    // still running in some other window. Skipped when the toggle
+    // is off (the detector never ran, so there's nothing tracked).
+    if isEnabled() {
+      mirror.untrack(tabId: tabId, finalSnapshot: true)
+    }
   }
 
   /// Snapshot every tracked tab's JSONL. Called from
   /// `applicationWillTerminate` so quit captures the final state of
   /// every active agent conversation.
   public func flushAll() {
+    guard isEnabled() else { return }
     mirror.snapshotAll()
   }
 
@@ -61,14 +74,21 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
   public func agentSessionDetector(
     _ detector: AgentSessionDetector, didObserve agent: AgentInfo?
   ) {
+    guard isEnabled() else { return }
     let tabId = detector.tabId
     appModel.updateAgent(agent, forTab: tabId)
-    if let agent {
+    if let agent, agent.wasRunningAtQuit {
+      // Agent is alive — start (or refresh) the periodic mirror
+      // timer pointed at its JSONL.
       mirror.track(tabId: tabId, jsonlPath: agent.jsonlPath)
-    } else {
-      // Agent died — leave the mirror tracking alone so quit /
-      // close still produces a final snapshot; the periodic timer
-      // simply won't have anything new to copy.
+    } else if agent != nil {
+      // The detector preserves the captured identity but flips
+      // `wasRunningAtQuit` to false when the agent disappears
+      // (Ctrl-D, crash). Take one final mirror snapshot of the
+      // last-known JSONL path and stop the periodic timer — per
+      // the plan, periodic mirroring is only while the agent is
+      // alive, with a single lifecycle snapshot on exit.
+      mirror.untrack(tabId: tabId, finalSnapshot: true)
     }
   }
 }

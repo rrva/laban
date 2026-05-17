@@ -126,14 +126,21 @@ public final class TranscriptWriter {
     ringLock.unlock()
   }
 
-  /// Drain whatever is currently in the ring synchronously. Used by
-  /// tests, by `flushSync()`, and by the periodic drain timer. No-ops
-  /// when the gate is disabled — bytes stay in the ring (bounded by
-  /// `ringCapacity`'s drop-oldest policy) until either the gate is
-  /// re-enabled or the writer is torn down.
+  /// Drain whatever is currently in the ring. The drain ALWAYS empties
+  /// the ring; what it does with the bytes depends on the gate:
+  ///   - enabled: append to the `.bin` file (and head-truncate when
+  ///     over the cap).
+  ///   - disabled: discard the bytes entirely. The kill switch is
+  ///     "discard while off, not defer" — a later re-enable must
+  ///     never resurrect bytes captured during the off window.
+  /// Called by the periodic timer, by `flushSync()`, and by tests.
   public func drainNow() {
-    guard isEnabled() else { return }
     let bytes = takeRingSnapshot()
+    guard isEnabled() else {
+      // Bytes accumulated during the disabled window are dropped.
+      // `takeRingSnapshot` has already reset the ring head/tail/size.
+      return
+    }
     guard !bytes.isEmpty else { return }
     do {
       try append(bytes)

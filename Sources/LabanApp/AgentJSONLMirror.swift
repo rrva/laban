@@ -1,6 +1,16 @@
 import Foundation
 import LabanCore
 
+/// Protocol the `AgentObserverHost` uses to drive snapshots — lets
+/// tests substitute a recording double without subclassing
+/// `AgentJSONLMirror`. Production wires the host directly to
+/// `AgentJSONLMirror`.
+public protocol JSONLMirroring: AnyObject {
+  func track(tabId: String, jsonlPath: String)
+  func untrack(tabId: String, finalSnapshot: Bool)
+  func snapshotAll()
+}
+
 /// Per-tab JSONL snapshotter. Copies the agent's session JSONL to
 /// `~/Library/Application Support/Laban/agent-mirror/<tab-id>.jsonl`
 /// on three lifecycle events — agent exit, tab close, app quit — and
@@ -13,7 +23,7 @@ import LabanCore
 /// supported restore path remains `claude --resume` /
 /// `codex resume`. Auto-restore from the mirror is deferred to
 /// M2.5.
-public final class AgentJSONLMirror {
+public final class AgentJSONLMirror: JSONLMirroring {
 
   public let store: PersistenceStore
   public let periodicInterval: DispatchTimeInterval

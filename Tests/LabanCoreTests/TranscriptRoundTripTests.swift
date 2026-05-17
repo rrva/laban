@@ -224,7 +224,7 @@ final class TranscriptRoundTripTests: XCTestCase {
 
   // MARK: - Toggle gating
 
-  func testWriterSuppressesDiskWritesWhenDisabled() throws {
+  func testWriterDiscardsBytesCapturedWhileDisabled() throws {
     let dir = makeTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
     let file = dir.appendingPathComponent("t.bin")
@@ -238,24 +238,29 @@ final class TranscriptRoundTripTests: XCTestCase {
       debounceInterval: .milliseconds(10),
       isEnabled: { enabled })
 
-    let payload = Array("toggle-off should NOT reach disk\n".utf8)
-    payload.withUnsafeBufferPointer { buf in
-      writer.writeChunk(bytes: buf.baseAddress!, count: payload.count)
+    let off = Array("toggle-off must be DISCARDED\n".utf8)
+    off.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: off.count)
     }
     writer.flushSync()
     XCTAssertFalse(
       FileManager.default.fileExists(atPath: file.path),
       "disabled writer must not create the transcript file")
 
-    // Re-enable and flush: ring still held the bytes (memcpy
-    // happened in writeChunk regardless of the gate), so the next
-    // drain catches up. This is the "kill switch survives flip-then-
-    // flip" case.
+    // Re-enable. A later drain must NOT include the bytes from the
+    // off window — the kill-switch contract is "discard while off,
+    // not defer." Write a fresh payload and verify the file
+    // contains only that.
     enabled = true
+    let on = Array("toggle-on bytes should land\n".utf8)
+    on.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: on.count)
+    }
     writer.flushSync()
-    XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     let data = try Data(contentsOf: file)
-    XCTAssertEqual(Array(data), payload)
+    XCTAssertEqual(
+      Array(data), on,
+      "file must contain only the post-enable bytes; the off-window bytes must be gone")
   }
 
   // MARK: - Hot-path discipline

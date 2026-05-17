@@ -115,6 +115,37 @@ authorization per milestone.
   fixes (replaceTabs delegate detach, cwdFallback persistence,
   restoreFailureLogger) all pass. Manual UI acceptance still needs a
   freshly built bundle.
+- [x] (2026-05-17) **M2 review fixes** (commit on top of M2). Four
+  review findings addressed:
+    - **High:** Restore-on-Launch toggle off now stops the agent
+      subsystem at every layer — `AgentObserverHost.attach`,
+      `detach`, `flushAll`, and the `AgentSessionDetectorObserver`
+      handler all self-gate on `RestoreOnLaunchSettings.isEnabled`
+      (plus an injectable `isEnabled` closure for tests). Detector
+      timers never start while disabled.
+    - **High:** `TranscriptWriter.drainNow` now **discards** any
+      bytes captured while disabled instead of holding them in the
+      ring. The kill switch is "discard while off, not defer" — a
+      later re-enable cannot resurrect disabled-window bytes. Test
+      `testWriterDiscardsBytesCapturedWhileDisabled` enforces this.
+    - **Medium:** `AgentObserverHost`'s observer handler now reads
+      `agent.wasRunningAtQuit` and calls
+      `mirror.untrack(tabId:, finalSnapshot: true)` on the
+      "agent died" transition. Previously the host called
+      `mirror.track` on every non-nil observation, including the
+      dead-with-identity-preserved case, which never stopped the
+      5-minute periodic timer. `JSONLMirroring` protocol extracted
+      so tests can substitute a recording mirror without
+      subclassing.
+    - **Medium:** `matchClaudeStem` and `matchCodexStem` now read
+      `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from
+      `ProcessInfo.processInfo.environment` and match against the
+      override-rooted path in addition to the default
+      `~/.claude/projects/` / `~/.codex/sessions/` layout. The
+      claim in the doc-comment is now true. Tests in
+      `AgentSupportTests` cover both overrides plus a negative
+      mismatched-override case.
+  Tests: full suite 566 passes (5 new), 0 failures.
 - [x] (2026-05-17) **M2** — agent (Claude + Codex) session id
   capture + autoresume + JSONL mirror. New LabanApp components:
   `AgentSupport` (per-agent table: binary basenames, resume command

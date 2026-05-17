@@ -97,20 +97,53 @@ extension AgentSupport {
 
   // MARK: - Extractors
 
+  /// Read `name` from Laban's own environment. Used by the
+  /// `CLAUDE_CONFIG_DIR` / `CODEX_HOME` overrides — since the agent
+  /// is a grandchild of Laban it inherits Laban's env, so Laban's
+  /// values are the right source. Returned values are stripped of
+  /// trailing slashes so the suffix matching below works
+  /// uniformly.
+  static func envOverride(_ name: String) -> String? {
+    guard let raw = ProcessInfo.processInfo.environment[name],
+      !raw.isEmpty
+    else { return nil }
+    if raw.hasSuffix("/") {
+      return String(raw.dropLast())
+    }
+    return raw
+  }
+
   static func matchClaudeStem(_ vnodePath: String) -> String? {
-    // Required suffix: `/.claude/projects/<some-dir>/<uuid>.jsonl`.
-    // We don't pin the prefix because users may have a
-    // CLAUDE_CONFIG_DIR override; the relative shape under
-    // `.claude/projects/` is what matters.
-    let pattern = #"(?:^|/)\.claude/projects/[^/]+/([0-9a-fA-F-]{36})\.jsonl$"#
-    return Self.firstUUIDMatch(in: vnodePath, regex: pattern)
+    // Default layout: `/.claude/projects/<some-dir>/<uuid>.jsonl`.
+    let defaultPattern = #"(?:^|/)\.claude/projects/[^/]+/([0-9a-fA-F-]{36})\.jsonl$"#
+    if let id = Self.firstUUIDMatch(in: vnodePath, regex: defaultPattern) {
+      return id
+    }
+    // CLAUDE_CONFIG_DIR override: when set, claude puts JSONLs at
+    // `$CLAUDE_CONFIG_DIR/projects/<dir>/<uuid>.jsonl`. Match an
+    // absolute-prefix variant rooted at the override path.
+    guard let prefix = envOverride("CLAUDE_CONFIG_DIR") else { return nil }
+    let escaped = NSRegularExpression.escapedPattern(for: prefix)
+    let overridePattern =
+      "^\(escaped)/projects/[^/]+/([0-9a-fA-F-]{36})\\.jsonl$"
+    return Self.firstUUIDMatch(in: vnodePath, regex: overridePattern)
   }
 
   static func matchCodexStem(_ vnodePath: String) -> String? {
-    // Required shape: `/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl`
-    let pattern =
+    // Default layout:
+    // `/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl`
+    let defaultPattern =
       #"(?:^|/)\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[0-9T:\-]+-([0-9a-fA-F-]{36})\.jsonl$"#
-    return Self.firstUUIDMatch(in: vnodePath, regex: pattern)
+    if let id = Self.firstUUIDMatch(in: vnodePath, regex: defaultPattern) {
+      return id
+    }
+    // CODEX_HOME override: when set, codex puts rollouts at
+    // `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-...-<uuid>.jsonl`.
+    guard let prefix = envOverride("CODEX_HOME") else { return nil }
+    let escaped = NSRegularExpression.escapedPattern(for: prefix)
+    let overridePattern =
+      "^\(escaped)/sessions/\\d{4}/\\d{2}/\\d{2}/rollout-[0-9T:\\-]+-([0-9a-fA-F-]{36})\\.jsonl$"
+    return Self.firstUUIDMatch(in: vnodePath, regex: overridePattern)
   }
 
   /// Apply a regex with one capture group; the capture must be a
