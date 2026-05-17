@@ -119,6 +119,17 @@ public final class TranscriptHost {
     let text = TerminalSnapshotText.visibleText(
       from: UnsafePointer(snap),
       mode: .fullGrid)
+    // Exclude the cursor row and below. The cursor sits on the
+    // live shell's prompt — capturing that row would persist a
+    // copy of the prompt, which would replay as text on next
+    // restart, then the new shell would print ANOTHER prompt
+    // beneath it. Across N restarts the user would see N stacked
+    // prompts. By stopping above the cursor we capture only
+    // committed output; the new shell paints its prompt in the
+    // same place the old one was, with no stacking.
+    let cursorRow = Int(snap.pointee.cursor_row)
+    let allRows = text.split(separator: "\n", omittingEmptySubsequences: false)
+    let beforeCursor = Array(allRows.prefix(cursorRow))
     // Trim trailing whitespace rows so the file doesn't carry pages
     // of empty padding from libghostty's grid dimensions, then
     // re-join with CR+LF. libghostty's VT parser treats bare \n as
@@ -126,8 +137,7 @@ public final class TranscriptHost {
     // return to column 0. Without a CR, the second row's text
     // ends up indented by the prior row's column position, which
     // produces visibly mangled scrollback on replay.
-    let nonEmptyRows = text
-      .split(separator: "\n", omittingEmptySubsequences: false)
+    let nonEmptyRows = beforeCursor
       .reversed()
       .drop(while: { $0.trimmingCharacters(in: .whitespaces).isEmpty })
       .reversed()
