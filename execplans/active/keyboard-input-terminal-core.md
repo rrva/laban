@@ -178,11 +178,30 @@ done until this gate has passed.
 - [ ] In the AppKit app, run `cat -v`, press Enter, Backspace, Tab, Shift-Tab,
   arrows, Ctrl-C, and Option-produced text; verify no Command shortcut text
   leaks to the terminal. Record outcomes in `Outcomes & Retrospective`.
+  **REQUIRES HUMAN.** The headless `cat -vet` smoke
+  (`LabanDebugKeyboardSmokeTests`) already exercises the same key set through
+  the debug action path; this gate is the visible-AppKit equivalent and
+  cannot be driven without the GUI.
 - [ ] In a real TUI (`vim`, `nvim`, or `tmux`), verify arrows, modified arrows,
   function keys, and release-aware keyboard mode behavior. Record in
-  `Outcomes & Retrospective`.
+  `Outcomes & Retrospective`. **REQUIRES HUMAN.**
 
-Review status: AUTOMATED GATES EXPANDED — manual visible-AppKit and full TUI acceptance pending
+Review status: AUTOMATED GATES PASS (rerun 2026-05-17 against current tree
+after the `session.c` file split). Only the two manual AppKit/TUI items
+remain and require a human reviewer. Rerun evidence:
+
+- `swift test --filter LabanSessionKeyEncodingTests`: 9 tests, 0 failures.
+- `swift test --filter TerminalKeyInputTests`: 17 tests, 0 failures.
+- `swift test --filter LabanDebugKeyboardSmokeTests`: 6 tests, 0 failures.
+- ABI greps confirm `LabanKeyEvent`/`LabanKey`/`LabanKeyAction`/
+  `laban_session_encode_key`/`laban_session_send_key` in
+  `Sources/LabanTerminalCore/include/LabanTerminalCore.h`.
+- `ghostty_key_encoder_*` and `ghostty_key_event_new` calls now live in
+  `Sources/LabanTerminalCore/session_lifecycle.c` and
+  `Sources/LabanTerminalCore/key_input.c` (post-file-split) — same contract.
+- `InputEventEnvelope` is defined in `Sources/LabanCore/CaptureTypes.swift`
+  with the required `inputId`, `source`, `frameBefore`, `sessionId`, `route`,
+  and `encodedHex` fields.
 
 ## Context and Orientation
 

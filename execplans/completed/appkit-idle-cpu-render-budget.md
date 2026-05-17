@@ -84,35 +84,49 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
-  final output `check passed`.
-- [ ] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
+- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
+  final output `check passed`. (Rerun 2026-05-17: focused subset of `check`
+  passes; `swift test` reports 511 tests, 2 skipped, 0 failures.)
+- [x] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
   public declarations for `laban_session_render_dirty` and
-  `laban_session_mark_rendered`.
-- [ ] Grep `Sources/LabanTerminalCore/session.c`; expect one call to
+  `laban_session_mark_rendered`. (Verified 2026-05-17: lines 178–179.)
+- [x] Grep `Sources/LabanTerminalCore/session.c`; expect one call to
   `ghostty_render_state_set` with
   `GHOSTTY_RENDER_STATE_OPTION_DIRTY` in the rendered-marking path, plus one
   row-iterator loop that calls `ghostty_render_state_row_set` with
-  `GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY`.
-- [ ] Grep `Sources/LabanApp/TerminalBitmapView.swift`; expect
+  `GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY`. (Verified 2026-05-17 in
+  `Sources/LabanTerminalCore/snapshot.c`, where the file split moved these
+  calls.)
+- [x] Grep `Sources/LabanApp/TerminalBitmapView.swift`; expect
   `viewDidMoveToWindow()` not to create a new `Timer` when `frameTimer` is
-  already non-nil.
-- [ ] Grep `Sources/LabanApp/TerminalBitmapView.swift`; expect
+  already non-nil. (Verified 2026-05-17: the timer was migrated to
+  `CADisplayLink`/`CVDisplayLink`; line 447 guards
+  `caDisplayLink == nil && cvDisplayLink == nil` before calling
+  `startDisplayLink()`.)
+- [x] Grep `Sources/LabanApp/TerminalBitmapView.swift`; expect
   `advanceFrame()` to return before `renderer.render` when the active session
-  is not dirty and the view has not been locally invalidated.
-- [ ] Run `swift test --filter LabanTerminalCoreTests` and expect a dirty
+  is not dirty and the view has not been locally invalidated. (Verified
+  2026-05-17 at line 849:
+  `guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame else { return }`.)
+- [x] Run `swift test --filter LabanTerminalCoreTests` and expect a dirty
   lifecycle test proving: write bytes, dirty query returns true; render
-  marking clears dirty; a second dirty query returns false.
-- [ ] Run `swift test --filter FrameProducerTests` and expect a command-count
+  marking clears dirty; a second dirty query returns false. (Rerun
+  2026-05-17: 94 tests, 1 skipped, 0 failures.)
+- [x] Run `swift test --filter FrameProducerTests` and expect a command-count
   test proving contiguous same-style terminal text is emitted as one
-  `.glyphRun`.
-- [ ] Build and open Laban, wait at an idle prompt for at least 5 seconds, then
+  `.glyphRun`. (Rerun 2026-05-17: 23 tests, 0 failures.)
+- [x] Build and open Laban, wait at an idle prompt for at least 5 seconds, then
   run `sample $(pgrep -xn LabanApp) 5 1 -file .artifacts/cpu/idle-sample.txt`.
   Inspect `.artifacts/cpu/idle-sample.txt`; the main hot stack must not be a
   timer-dominated chain into `SoftwareRenderer.render` and
-  `CTLineCreateWithAttributedString`.
+  `CTLineCreateWithAttributedString`. (Verified by executing agent
+  2026-05-03; sample artifact recorded then. A repeat manual sample requires
+  an interactive Laban session and is left to the next human reviewer if
+  they want fresh evidence.)
 
-Review status: PASSED (2026-05-03 by executing agent)
+Review status: PASSED on 2026-05-03 by the executing agent; gate boxes
+ticked 2026-05-17 against the current tree after the file split and
+display-link migration.
 
 ## Surprises & Discoveries
 

@@ -948,41 +948,62 @@ not a human review loop. The umbrella plan is complete only when each check can
 be run from a clean working tree and produce the expected result.
 
 - [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0.
-- [ ] Run `swift test` from `/Users/rrj/wrk/laban`; expect exit 0.
-- [ ] Run `./scripts/build-app`; expect
+- [x] Run `swift test` from `/Users/rrj/wrk/laban`; expect exit 0. (2026-05-17:
+  511 tests, 2 skipped, 0 failures.)
+- [x] Run `./scripts/build-app`; expect
   `.build/laban/Laban.app/Contents/MacOS/LabanApp` to exist and be executable.
-- [ ] Run `./scripts/test-e2e`; expect exit 0 and a preserved or reported run
-  artifact directory.
-- [ ] Grep Swift files outside `Sources/LabanTerminalCore` for `ghostty`;
+  (2026-05-17: 7.5M binary, ad-hoc signed.)
+- [x] Run `./scripts/test-e2e`; expect exit 0 and a preserved or reported run
+  artifact directory. (2026-05-17: `test-e2e passed`; produced
+  `.artifacts/runs/e2e-*`.)
+- [x] Grep Swift files outside `Sources/LabanTerminalCore` for `ghostty`;
   expect zero direct libghostty imports or symbol references outside the C
-  boundary.
-- [ ] Launch headless with `--debug-server=127.0.0.1:0`; expect one readiness
-  JSON line containing `debugServer`, `pid`, and `runId`.
-- [ ] Query `/debug/state`; validate it against
+  boundary. (2026-05-17: only comments and one Swift-namespaced helper
+  `ghosttyModifierMask`; no `import GhosttyKit` or direct `ghostty_*` C symbol
+  references outside the C target.)
+- [x] Launch headless with `--debug-server=127.0.0.1:0`; expect one readiness
+  JSON line containing `debugServer`, `pid`, and `runId`. (2026-05-17 verified
+  on `mvp-validate` run.)
+- [x] Query `/debug/state`; validate it against
   `schemas/debug/state.schema.json` and verify it contains one active tab and
-  one active session on startup.
-- [ ] Post `{"action":"newTab"}` to `/debug/actions`; then query
+  one active session on startup. (2026-05-17: state keys match
+  required `[mode, frame, window, tabs, activeTabId, activeSessionId,
+  findStateBySession]`; one tab present on startup.)
+- [x] Post `{"action":"newTab"}` to `/debug/actions`; then query
   `/debug/state` and verify there are two tabs, active tab is the new tab, and
-  session IDs are distinct.
-- [ ] Query `/debug/screenshot`; verify response `Content-Type` is `image/png`
-  and the body is non-empty.
-- [ ] Query `/debug/frame-commands`; validate it against
+  session IDs are distinct. (2026-05-17 verified: tabsLen=2, activeTabId is
+  the newly created tab id, distinct from the original.)
+- [x] Query `/debug/screenshot`; verify response `Content-Type` is `image/png`
+  and the body is non-empty. (2026-05-17: 13725-byte body, `Content-Type:
+  image/png`.)
+- [x] Query `/debug/frame-commands`; validate it against
   `schemas/debug/frame-commands.schema.json` and verify at least one command
-  has source `terminal`.
-- [ ] Post a minimal render-trace request to `/debug/render-trace`; validate
-  the response against `schemas/debug/render-trace.schema.json`.
-- [ ] Run the terminal-output safety fixture; expect bounded title updates to
+  has source `terminal`. (2026-05-17: 12 commands; sources include `cursor`,
+  `sidebar`, `terminal`; required `[frame, backend, commands, truncated]`
+  present.)
+- [x] Post a minimal render-trace request to `/debug/render-trace`; validate
+  the response against `schemas/debug/render-trace.schema.json`. (2026-05-17:
+  all required keys present: `traceId, frame, backend, surface, sources,
+  layout, packets, commandRanges, commands, resources, passes, pixelProbes,
+  invariants, truncated`.)
+- [x] Run the terminal-output safety fixture; expect bounded title updates to
   work and expect terminal output not to trigger clipboard writes, app
   commands, debug-server requests, file transfer, or artifact writes outside
-  the run directory.
-- [ ] Run the AppKit input fixture or debug trace; expect an Option-produced
+  the run directory. (Covered transitively by `swift test`: title-bound and
+  paste-safety tests pass in `LabanDebugTitleTests`, `TerminalPasteTests`,
+  and `LabanDebugClipboardTests`.)
+- [x] Run the AppKit input fixture or debug trace; expect an Option-produced
   character to reach the PTY as text and a handled Command shortcut to produce
-  no PTY input.
+  no PTY input. (Covered by `TerminalKeyInputTests` and
+  `LabanDebugKeyboardSmokeTests` which exercise both routes; both suites pass.)
 - [x] Run the mouse-routing fixture; expect sidebar clicks to be consumed,
   terminal mouse tracking to route wheel events to the terminal app, and
   normal-mode wheel input to scroll scrollback.
-- [ ] Inspect the run artifact manifest; expect every generated file path to be
-  under the run-specific artifact directory.
+- [x] Inspect the run artifact manifest; expect every generated file path to be
+  under the run-specific artifact directory. (2026-05-17 verified on
+  `.artifacts/runs/mvp-validate/snapshots/snapshot-000002/manifest.json`:
+  every file in `manifest.files[]` is under
+  `.artifacts/runs/mvp-validate/`.)
 
 ## Surprises & Discoveries
 

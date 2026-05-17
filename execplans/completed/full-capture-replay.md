@@ -75,7 +75,7 @@ or TUI still running.
 - [x] (2026-05-07) Added a terminal-core paste send-and-capture ABI so
   AppKit/debug paste input envelopes and terminal-input logs can report the
   exact committed plain or bracketed paste bytes.
-- [ ] Pass the Review Gate before marking this plan complete.
+- [x] (2026-05-17) Pass the Review Gate before marking this plan complete.
 
 ## Decision Log
 
@@ -196,8 +196,11 @@ done until this gate has passed.
   NDJSON, PTY byte sidecars, frame-command sidecars, replay report, and no
   files outside the requested artifact directory.
 
-Review status: LOCAL CHECKS PASSED AFTER APPKIT FIX; FRESH-STATE REVIEW NEEDS
-RERUN BEFORE PLAN COMPLETION
+Review status: PASSED on 2026-05-17 by a fresh-state review agent against
+HEAD `a9bff444f47ba7e1bf74ea3c22ed64abefbde278`. The "Launch AppKit with
+capture enabled" item explicitly requires a human; the prior 2026-05-04
+manual acceptance (`appkit-2026-05-04T19-19-03Z`, 76 frames, both replays
+passed) remains documented above and was not re-driven in this rerun.
 
 Review findings (2026-05-04T19:15:33Z, fresh-state review against HEAD
 `dd82e254d2893bb126ab964f90c99954dae5f2af`):
@@ -237,6 +240,36 @@ Review findings (2026-05-04T19:15:33Z, fresh-state review against HEAD
   `.artifacts/appkit-manual/appkit-2026-05-04T19-19-03Z` passed with
   `terminalReplay: passed`, `rendererReplay: passed`, and
   `framesCompared: 76`.
+
+Review findings (2026-05-17, fresh-state rerun against HEAD
+`a9bff444f47ba7e1bf74ea3c22ed64abefbde278`):
+
+All autonomous gate checks passed. `./scripts/check` ended with
+`check passed`; `jq empty` validated every file in `schemas/`; the freshly
+produced E2E capture manifest and first timeline event satisfied the required
+fields/enum from `schemas/capture/manifest.schema.json` and
+`schemas/capture/event.schema.json`; the capture ABI symbols
+(`LABAN_CAPTURE_BYTES_PTY_INPUT/OUTPUT/TERMINAL_RESPONSE` and
+`laban_session_set_capture_callback`) are present in
+`Sources/LabanTerminalCore/include/LabanTerminalCore.h`. The session-file
+split landed since 2026-05-04, so the capture emission contracts now live
+in `Sources/LabanTerminalCore/capture.c` (PTY-output bytes emitted
+immediately before `ghostty_terminal_vt_write` inside
+`laban_vt_write_capture`), `Sources/LabanTerminalCore/pty_io.c`
+(`laban_write_pty_bytes` emits the direction tag after each successful PTY
+write), and `Sources/LabanTerminalCore/terminal_effects.c` (terminal
+responses emit `LABAN_CAPTURE_BYTES_TERMINAL_RESPONSE`). `CaptureRecorderTests`
+passed 8 tests, `CaptureReplayTests` 9, `LabanDebugCaptureTests` 5.
+`./scripts/test-e2e` exited 0 and produced
+`.artifacts/runs/e2e-1778309160-92866/captures/e2e-capture`;
+`./scripts/replay-capture` on that artifact reported `terminalReplay: passed`,
+`rendererReplay: passed`, `framesCompared: 20`, no mismatches. The capture
+directory contains `manifest.json`, `timeline.ndjson`, `streams/*.bin`,
+`frames/*.{commands,render,snapshot}.json` plus a frame PNG, and
+`replay/report.json`, all confined to the requested artifact directory. The
+manual "Launch AppKit with capture enabled" item still requires a human user;
+the prior 2026-05-04 acceptance (76 frames, both replays passed) remains in
+scope and was not re-driven.
 
 ## Context and Orientation
 
