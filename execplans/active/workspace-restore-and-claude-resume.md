@@ -388,6 +388,47 @@ downstream. Record any change to these decisions here with rationale.
   each side to pay for the other's requirements.
   Date/Author: 2026-05-17 / Grilling session.
 
+- Decision: The entire restore-on-launch behavior is gated by a
+  single user-facing toggle, **"Restore on Launch"**, persisted in
+  `NSUserDefaults` under the key `LabanRestoreOnLaunch` (Bool,
+  default `true`). The toggle is surfaced as a checkable menu item
+  in the AppKit menu bar (placement: under the **Window** menu, or
+  a new **Workspace** submenu — either is fine; the implementing
+  agent picks whichever is more consistent with the existing menu
+  structure in `Sources/LabanApp/MenuCommands.swift`). When the
+  toggle is **off**:
+  - The `PersistenceCoordinator` does not save `workspace.json` and
+    does not write transcript `.bin` files.
+  - At launch, the existing `workspace.json` (if any) is **not
+    read**. The app starts in its default empty-workspace state.
+  - The `AgentSessionDetector` does not start.
+  - The `AgentJSONLMirror` does not run.
+  - On-disk state from prior runs is left in place — the user can
+    re-enable the toggle and pick up where they left off, or
+    `rm -rf ~/Library/Application Support/Laban/` manually if
+    they want a hard reset.
+  The toggle complements the ⇧-at-launch escape hatch: ⇧ is a
+  one-shot "skip this launch's restore" while keeping persistence
+  running; the menu toggle is the persistent "turn this whole
+  subsystem off."
+  Rationale: User requirement, captured verbatim:
+
+  > "change the plan so that this behavior can be toggled on off
+  > via a config setting in the menu easily (if it turns out to
+  > be buggy or annoying its great with configurability)"
+
+  Granularity was deliberately kept to a single toggle rather
+  than three (one per milestone). Reasoning: the user's framing
+  is "if this whole subsystem misbehaves, I want to turn it off."
+  A single kill switch matches that mental model and is easier
+  to discover than three nested toggles. If telemetry or user
+  feedback later shows people want to disable individual layers
+  (e.g. keep tab restore but disable agent autoresume), per-layer
+  toggles are an additive follow-up — the `PersistenceCoordinator`
+  already gates each subsystem at a single point, so splitting the
+  toggle is mechanical.
+  Date/Author: 2026-05-17 / User requirement.
+
 - Decision: The persistence PTY-byte callback registered through
   `laban_session_set_persistence_callback` performs **no disk IO,
   truncation, or fsync**. It copies bytes into a per-session in-memory
@@ -669,20 +710,44 @@ adds these):
   observes `AppModel` changes, debounces 200ms on a background
   dispatch queue, and calls `PersistenceStore.save`. Subscribes to
   `applicationWillTerminate` for a synchronous final flush.
+  **Every save and every load goes through a
+  `RestoreOnLaunchEnabled` check** that reads
+  `UserDefaults.standard.bool(forKey: "LabanRestoreOnLaunch")`
+  (default `true`). If `false`, `save(_:)` and `load()` both
+  no-op silently. The same key gates M1's transcript writes and
+  M2's detector/mirror start.
+- `Sources/LabanApp/RestoreOnLaunchMenuController.swift` — owns
+  the "Restore on Launch" checkable menu item. On selection,
+  flips the `UserDefaults` key and updates the item's checkmark.
+  No app restart required — the next quit will (or will not) save;
+  the next launch will (or will not) load.
 
 **Modifications.**
 
 - `Sources/LabanCore/AppModel.swift` — emit a change signal on tab
   add/remove/reorder, tab selection, and cwd change. Add
   `restore(from: WorkspaceState)` initializer path.
-- `Sources/LabanApp/AppDelegate.swift` — at launch, check `⇧` modifier
-  via `NSEvent.modifierFlags`. If pressed, call
-  `PersistenceStore.archiveCurrent()` and create a fresh empty
-  workspace. Otherwise, call `PersistenceStore.load()` and if
-  non-nil pass it to `AppModel.restore(from:)`.
+- `Sources/LabanApp/AppDelegate.swift` — at launch:
+  1. If `UserDefaults.standard.bool(forKey: "LabanRestoreOnLaunch")`
+     returns `false`, start with a fresh empty workspace; skip the
+     ⇧ check and `PersistenceStore.load()`.
+  2. Otherwise, check `⇧` modifier via `NSEvent.modifierFlags`. If
+     pressed, call `PersistenceStore.archiveCurrent()` and create
+     a fresh empty workspace.
+  3. Otherwise, call `PersistenceStore.load()` and if non-nil
+     pass it to `AppModel.restore(from:)`.
 - `Sources/LabanApp/AppDelegate.swift` — implement
   `applicationWillTerminate` to call
-  `PersistenceCoordinator.flushSync()`.
+  `PersistenceCoordinator.flushSync()` (no-ops internally if the
+  toggle is off).
+- `Sources/LabanApp/MenuCommands.swift` — add a checkable menu
+  item titled "Restore on Launch" wired to
+  `RestoreOnLaunchMenuController`. Placement is the implementer's
+  judgement — under the **Window** menu or a new **Workspace**
+  submenu, whichever is more consistent with the existing menu
+  structure. The item's checkmark reflects the current value of
+  `UserDefaults.standard.bool(forKey: "LabanRestoreOnLaunch")`.
+  Default is on.
 
 **Schema (M0).**
 
@@ -725,6 +790,17 @@ adds these):
 8. Relaunch with ⇧ held. Observe: empty workspace, one default tab.
   `~/Library/Application Support/Laban/workspace.json.previous`
   exists with the prior content.
+9. **Toggle test.** Quit, set the menu's "Restore on Launch" item
+  to **off** (uncheck), create three new tabs in different cwds,
+  quit again. Inspect
+  `~/Library/Application Support/Laban/workspace.json` — expect
+  its `lastActiveAt` and tab list have **not** been updated since
+  step 4 (no save happened while the toggle was off). Relaunch.
+  Observe: empty workspace, no tabs from step 4 or step 9 restored
+  (no load happened either). Re-check the menu item and verify
+  it is still off (state persisted). Toggle it back on, quit, and
+  relaunch — the workspace from step 4 is restored (the saved
+  state was never deleted).
 
 **Test (M0).** Add headless test in `Tests/LabanCoreTests/`:
 `PersistenceRoundTripTests.swift` — constructs an `AppModel` with
@@ -1245,6 +1321,9 @@ The user-visible behavior at completion of all three milestones is:
   `transcripts/<tab-id>.bin` files, and (for agent tabs) an
   `agent-mirror/<tab-id>.jsonl` file each.
 - All headless tests pass; `./scripts/check` reports passed.
+- The "Restore on Launch" menu toggle exists and works: setting
+  it to off stops all save and load activity; setting it back on
+  resumes them. The setting persists across launches.
 
 ## Idempotence and Recovery
 
@@ -1291,6 +1370,11 @@ The user-visible behavior at completion of all three milestones is:
   loop.
 - `rm -rf ~/Library/Application Support/Laban/` is a safe full
   reset.
+- The "Restore on Launch" menu toggle is a non-destructive kill
+  switch. Setting it to off stops persistence and restore but
+  leaves prior on-disk state intact, so re-enabling can recover
+  it. The setting is itself persisted in `NSUserDefaults` so it
+  survives quit and reinstall.
 
 ## Review Gate
 
@@ -1318,6 +1402,23 @@ Per-milestone gates:
   saved cwds.
 - [ ] Manual: launch with ⇧ held; confirm fresh workspace and
   presence of `workspace.json.previous`.
+- [ ] **Restore-on-Launch toggle present:**
+  `grep -rn "LabanRestoreOnLaunch" Sources/` — expect hits in
+  the persistence coordinator, the AppDelegate launch path, and
+  the menu controller.
+- [ ] **Toggle gates both save and load:**
+  `grep -n "LabanRestoreOnLaunch\|RestoreOnLaunchEnabled" Sources/LabanCore/Persistence/PersistenceCoordinator.swift` —
+  expect the flag is checked at the top of both `save(_:)` and
+  `load()` paths; both no-op when off.
+- [ ] **Menu item exists and is checkable:**
+  `grep -n "Restore on Launch\|RestoreOnLaunch" Sources/LabanApp/MenuCommands.swift Sources/LabanApp/RestoreOnLaunchMenuController.swift` —
+  expect a checkable `NSMenuItem` wired to the user-defaults
+  flag.
+- [ ] Manual: toggle "Restore on Launch" off via the menu, quit,
+  create state, quit again, inspect `workspace.json` mtime —
+  expect it has not changed since the toggle was flipped (no
+  saves happened). Relaunch and confirm empty workspace. Toggle
+  back on, quit, relaunch — pre-toggle state is restored.
 - [ ] `grep -rn "SQLite\|Core[ ]Data\|sqlite3" Sources/LabanCore/Persistence/ Sources/LabanApp/` —
   expect zero hits. The persistence stack must be Foundation-only.
 - [ ] `grep -rn "tmux\|screen[ -]session" Sources/` — expect zero
@@ -1340,6 +1441,12 @@ Per-milestone gates:
   verify the file is capped (not unbounded growth):
   `dd if=/dev/urandom bs=1M count=15 | od -c` inside a tab, then
   inspect file size — expect ≤ 10MB after truncation.
+- [ ] **Toggle gates transcript writes:** with the "Restore on
+  Launch" menu item set to off, run a session that produces
+  output, quit, and inspect
+  `~/Library/Application Support/Laban/transcripts/` — expect no
+  new or updated `.bin` files (mtimes unchanged from before the
+  toggle was flipped, or directory empty if first run).
 
 **M2 gate**
 
@@ -1398,6 +1505,11 @@ Per-milestone gates:
   `grep -rn "session not found\|replaceItemAt.*\.claude\|replaceItemAt.*\.codex" Sources/` —
   expect zero hits. The fallback path is deferred to M2.5; M2
   ships only the mirror writes.
+- [ ] **Toggle gates agent subsystem:** with "Restore on Launch"
+  set to off, run `claude` in a tab — confirm
+  `~/Library/Application Support/Laban/agent-mirror/` does not
+  receive any new files, and `workspace.json` does not gain an
+  `agent` field for that tab.
 
 Review status: NOT REVIEWED
 
