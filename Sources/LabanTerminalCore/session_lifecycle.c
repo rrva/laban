@@ -293,16 +293,29 @@ int laban_session_create(
         snprintf(s->launch_cwd, sizeof(s->launch_cwd), "%s", launch_cwd);
     }
 
+    if (config->defer_spawn) {
+        /* Defer fork+exec until laban_session_start_spawn fires. The
+         * VT parser is fully constructed and can absorb replayed bytes
+         * (transcript restore feeds via laban_session_replay_pty_output).
+         * Pixel geometry is preserved so the openpty winsize matches
+         * what the renderer will report. */
+        s->pending_spawn = 1;
+        s->pending_pixel_width  = initial_size.pixel_width;
+        s->pending_pixel_height = initial_size.pixel_height;
+        *out_session = s;
+        return 0;
+    }
+
+    /* Non-deferred path: honor the caller's executable / argv / envp
+     * (tests rely on this — they pass /bin/sh -c "exit 7" or
+     * /bin/sleep). The deferred path goes through
+     * laban_session_spawn_now_ which uses $SHELL discovery instead. */
     char login_arg[256];
     char *default_argv[] = { login_arg, NULL };
     char *const *spawn_argv = NULL;
     if (config->argv) {
         spawn_argv = (char *const *)config->argv;
     } else {
-        /* Invoke as login shell by prefixing argv[0] with '-'.
-           This causes shells to source login profiles and start in $HOME.
-           This is the standard approach used by Ghostty, iTerm2, Warp, and
-           other modern terminal emulators. */
         const char *base = strrchr(exe, '/');
         base = base ? base + 1 : exe;
         snprintf(login_arg, sizeof(login_arg), "-%s", base);
@@ -344,11 +357,6 @@ int laban_session_create(
         return -1;
     }
 
-    /* Keep the child branch constrained: become a session leader, claim the
-     * already-sized slave as the controlling terminal, wire stdio, then exec.
-     * Darwin posix_spawn cannot express this controlling-terminal setup while
-     * preserving both initial TIOCSWINSZ geometry and terminal-generated
-     * SIGINT/SIGTSTP delivery. */
     pid_t child = fork();
     if (child < 0) {
         close(slave_fd);
@@ -390,6 +398,122 @@ int laban_session_create(
 
     *out_session = s;
     return 0;
+}
+
+/* Performs the openpty + fork + exec for a session whose libghostty
+ * parser was already constructed by laban_session_create. Used both
+ * by create (non-deferred case) and by laban_session_start_spawn
+ * (deferred case). On success leaves s->pty_fd / s->child_pid set.
+ * On failure returns -1; the caller decides whether to tear down the
+ * session.
+ *
+ * `override_cwd` is consulted only in deferred mode — when NULL, the
+ * launch_cwd captured at create time is used. The non-deferred create
+ * path passes NULL because launch_cwd was already populated above. */
+int laban_session_spawn_now_(LabanSession *s, const char *override_cwd) {
+    if (!s) return -1;
+    if (s->fixture_mode) return -1;
+    if (s->pty_fd >= 0) return 0;  /* already spawned */
+
+    const char *exe = getenv("SHELL");
+    if (!exe || !exe[0]) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw && pw->pw_shell && pw->pw_shell[0]) exe = pw->pw_shell;
+    }
+    if (!exe || !exe[0]) exe = "/bin/sh";
+    if (access(exe, X_OK) != 0) return -1;
+
+    /* If the caller is replaying a deferred spawn with a new cwd, prefer
+     * that over the cwd captured at create time. */
+    const char *launch_cwd = NULL;
+    if (override_cwd && override_cwd[0]) {
+        launch_cwd = override_cwd;
+        snprintf(s->launch_cwd, sizeof(s->launch_cwd), "%s", launch_cwd);
+    } else if (s->launch_cwd[0]) {
+        launch_cwd = s->launch_cwd;
+    }
+
+    char login_arg[256];
+    char *default_argv[] = { login_arg, NULL };
+    const char *base = strrchr(exe, '/');
+    base = base ? base + 1 : exe;
+    snprintf(login_arg, sizeof(login_arg), "-%s", base);
+    char *const *spawn_argv = default_argv;
+
+    char **spawn_env = build_spawn_env(NULL);
+    if (!spawn_env) return -1;
+
+    struct winsize ws = {
+        .ws_row    = (unsigned short)s->rows,
+        .ws_col    = (unsigned short)s->cols,
+        .ws_xpixel = (unsigned short)(s->pending_pixel_width > 0
+            ? s->pending_pixel_width : 0),
+        .ws_ypixel = (unsigned short)(s->pending_pixel_height > 0
+            ? s->pending_pixel_height : 0),
+    };
+
+    struct termios term;
+    init_sane_termios(&term);
+
+    int pty_fd = -1;
+    int slave_fd = -1;
+    if (openpty(&pty_fd, &slave_fd, NULL, &term, &ws) < 0) {
+        free(spawn_env);
+        return -1;
+    }
+
+    if (set_cloexec(pty_fd) < 0 || set_cloexec(slave_fd) < 0) {
+        close(slave_fd);
+        close(pty_fd);
+        free(spawn_env);
+        return -1;
+    }
+
+    pid_t child = fork();
+    if (child < 0) {
+        close(slave_fd);
+        close(pty_fd);
+        free(spawn_env);
+        return -1;
+    }
+    if (child == 0) {
+        struct sigaction sa = {0};
+        sa.sa_handler = SIG_DFL;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPIPE, &sa, NULL);
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGQUIT, &sa, NULL);
+        sigaction(SIGTSTP, &sa, NULL);
+        close(pty_fd);
+        if (setsid() < 0) _exit(127);
+        if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) _exit(127);
+        if (dup2(slave_fd, STDIN_FILENO) < 0) _exit(127);
+        if (dup2(slave_fd, STDOUT_FILENO) < 0) _exit(127);
+        if (dup2(slave_fd, STDERR_FILENO) < 0) _exit(127);
+        if (slave_fd > STDERR_FILENO) close(slave_fd);
+        if (launch_cwd && launch_cwd[0] && chdir(launch_cwd) != 0) {
+            _exit(127);
+        }
+        execve(exe, spawn_argv, spawn_env);
+        _exit(127);
+    }
+    close(slave_fd);
+    free(spawn_env);
+
+    int flags = fcntl(pty_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
+
+    s->pty_fd = pty_fd;
+    s->child_pid = child;
+    s->pending_spawn = 0;
+    return 0;
+}
+
+int laban_session_start_spawn(LabanSession *s, const char *override_cwd) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    if (!s->pending_spawn) return -1;  /* already spawned or not deferred */
+    return laban_session_spawn_now_(s, override_cwd);
 }
 
 void laban_session_destroy(LabanSession *s) {

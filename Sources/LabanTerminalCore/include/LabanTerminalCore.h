@@ -18,6 +18,13 @@ typedef struct {
     const char *const *envp;
     const char *cwd;
     int fixture_mode;
+    /* When non-zero, laban_session_create returns a session with its
+     * libghostty parser ready but no child process spawned. Use
+     * laban_session_start_spawn(session, NULL) (or with an override
+     * cwd) to fork+exec the shell later. Used by the workspace
+     * persistence path to replay a previous transcript into the VT
+     * parser BEFORE any live shell output competes for the screen. */
+    int defer_spawn;
 } LabanLaunchConfig;
 
 typedef struct {
@@ -135,6 +142,19 @@ int laban_session_create(
     LabanTerminalSize initial_size,
     LabanSession **out_session
 );
+
+/*
+ * Fork+exec the child process for a session created with
+ * `defer_spawn = 1`. The session keeps its libghostty parser; this
+ * call only attaches a fresh PTY pair and child process. Returns 0 on
+ * success, -1 on error or when the session was created without
+ * deferred-spawn intent (in which case the spawn already happened).
+ *
+ * `override_cwd` overrides the cwd recorded on the session at create
+ * time. Pass NULL to use the create-time cwd.
+ */
+int laban_session_start_spawn(LabanSession *session, const char *override_cwd);
+
 void laban_session_destroy(LabanSession *session);
 int laban_session_poll(LabanSession *session);
 
@@ -212,6 +232,41 @@ int laban_session_set_capture_callback(
     LabanCaptureBytesCallback callback,
     void *userdata
 );
+
+/*
+ * Persistence PTY-byte tee.
+ *
+ * Fires on every chunk of PTY OUTPUT after the existing capture callback
+ * and before the bytes reach libghostty-vt. The contract is intentionally
+ * narrow: the callback MUST do nothing more than copy bytes into its own
+ * buffer and return. No file IO, no truncation, no fsync, no allocation.
+ * The PTY drain holds the session lock while invoking the callback;
+ * synchronous IO here stalls rendering.
+ *
+ * `bytes`/`len` are valid only for the duration of the call. Pass NULL
+ * for `callback` to detach.
+ */
+typedef void (*LabanPersistenceBytesCallback)(
+    void *userdata,
+    LabanSession *session,
+    const uint8_t *bytes,
+    size_t len
+);
+
+int laban_session_set_persistence_callback(
+    LabanSession *session,
+    LabanPersistenceBytesCallback callback,
+    void *userdata
+);
+
+/*
+ * Returns 1 when the terminal is currently in alternate-screen-buffer
+ * mode (vim/htop/less and similar full-screen TUIs), 0 otherwise.
+ * Used by the workspace persistence path to decide whether transcript
+ * replay would paint half-finished TUI state on restore. Returns 0 for
+ * a NULL session.
+ */
+int laban_session_alt_buffer_active(LabanSession *session);
 
 /*
  * iTerm2-compatible OSC 21337 ("tab status") observer. The PTY byte

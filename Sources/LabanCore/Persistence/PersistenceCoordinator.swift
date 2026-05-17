@@ -17,6 +17,10 @@ public final class PersistenceCoordinator {
   public let store: PersistenceStore
   public let windowId: String
 
+  /// Per-tab transcript writer registry. Optional so headless test
+  /// configurations can leave it nil and skip the transcript path.
+  public var transcriptHost: TranscriptHost?
+
   private weak var model: AppModel?
 
   private let queue: DispatchQueue
@@ -100,6 +104,9 @@ public final class PersistenceCoordinator {
     queue.sync {
       self.performSave()
     }
+    // Then flush any transcript writers so quit does not lose the
+    // last few hundred ms of PTY output queued in the ring buffers.
+    transcriptHost?.flushAll()
   }
 
   private func cancelPending() {

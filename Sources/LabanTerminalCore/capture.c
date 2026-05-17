@@ -22,6 +22,12 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
             break; /* drop on EAGAIN/permanent error rather than block */
         }
     }
+    /* Persistence tee runs BEFORE libghostty so the on-disk transcript
+     * sees bytes in the same order they enter the VT parser. The
+     * callback contract is memcpy-only — see the public header. */
+    if (s->persistence_callback && bytes && len > 0) {
+        s->persistence_callback(s->persistence_userdata, s, bytes, len);
+    }
     laban_scan_tab_status(s, bytes, len);
     ghostty_terminal_vt_write(s->terminal, bytes, len);
 }
@@ -62,5 +68,27 @@ int laban_session_set_capture_callback(
     s->capture_callback = callback;
     s->capture_userdata = userdata;
     return 0;
+}
+
+int laban_session_set_persistence_callback(
+    LabanSession *s,
+    LabanPersistenceBytesCallback callback,
+    void *userdata
+) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    s->persistence_callback = callback;
+    s->persistence_userdata = userdata;
+    return 0;
+}
+
+int laban_session_alt_buffer_active(LabanSession *s) {
+    if (!s) return 0;
+    SESSION_LOCK(s);
+    GhosttyTerminalScreen active = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+    GhosttyResult r = ghostty_terminal_get(
+        s->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &active);
+    if (r != GHOSTTY_SUCCESS) return 0;
+    return active == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? 1 : 0;
 }
 

@@ -39,14 +39,49 @@ final class MainWindowController: NSWindowController {
       initialSize: size,
       sessionFactory: Session.realShell
     )
+
+    // The transcript host owns one TranscriptWriter per tab. AppModel
+    // calls it when tabs are created/closed so the per-tab `.bin`
+    // file is opened, fed PTY bytes, and torn down at the right
+    // moments. Hook this up BEFORE any tab work so the default tab
+    // created by AppModel.init gets a writer too.
+    let transcriptHost = TranscriptHost()
+    model.transcriptDelegate = transcriptHost
+
+    // Restore-time factory: build a deferred-spawn session, replay
+    // the persisted transcript into its VT parser, then start the
+    // shell. The replay-before-spawn ordering is what keeps live
+    // shell output from interleaving with rebuilt scrollback.
+    model.restoredDeferredSessionFactory = { spec in
+      let session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
+      if let url = spec.transcriptURL {
+        TranscriptRenderer.render(
+          fileURL: url,
+          into: session,
+          altBufferAtQuit: spec.altBufferAtQuit
+        )
+      }
+      _ = session.startSpawn(overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil)
+      return session
+    }
+    // Simple fallback for restored tabs that don't have a deferred
+    // factory (used by headless tests that swap the factory out).
     model.restoredSessionFactory = { size, cwd in
       try Session.realShell(size: size, cwd: cwd)
+    }
+
+    // The default tab created by AppModel.init() needs its writer
+    // attached too — its session was constructed before the delegate
+    // was assigned. Attach explicitly here.
+    for (tab, session) in model.allSessions() {
+      transcriptHost.attachTranscriptWriter(to: session, tabId: tab.id)
     }
 
     // Rebuild the tab list from `workspace.json` BEFORE creating the
     // terminal view so the user never sees a flash of the default tab.
     // `replaceTabs(from:)` closes the auto-created first session and
-    // spawns one shell per persisted tab in its prior cwd.
+    // spawns one shell per persisted tab in its prior cwd. Replay
+    // happens inside `restoredDeferredSessionFactory`.
     if let restoredState, !restoredState.windows.isEmpty {
       model.replaceTabs(from: restoredState)
     }
@@ -118,6 +153,7 @@ final class MainWindowController: NSWindowController {
     // is checked inside the coordinator on every save and load attempt,
     // so flipping the menu item off makes both no-op silently.
     let coordinator = PersistenceCoordinator()
+    coordinator.transcriptHost = transcriptHost
     coordinator.attach(model)
     controller.persistenceCoordinator = coordinator
 

@@ -1,4 +1,5 @@
 import Foundation
+import LabanTerminalCore
 
 public enum WorkspaceSchema {
   public static let currentVersion: Int = 1
@@ -56,6 +57,36 @@ public struct AgentInfo: Codable, Equatable {
     self.sessionId = sessionId
     self.jsonlPath = jsonlPath
     self.wasRunningAtQuit = wasRunningAtQuit
+  }
+}
+
+/// Restoration-time spec passed to `AppModel.restoredDeferredSessionFactory`.
+/// Production wires the factory to build a deferred-spawn Session,
+/// replay the persisted transcript into it via `TranscriptRenderer`,
+/// and call `Session.startSpawn(overrideCwd:)` — so live shell output
+/// always lands after the replayed scrollback, never interleaved.
+public struct RestoredSessionSpec {
+  public let size: LabanTerminalSize
+  public let tabId: String
+  public let cwd: String
+  public let cwdFallbackApplied: Bool
+  public let transcriptURL: URL?
+  public let altBufferAtQuit: Bool
+
+  public init(
+    size: LabanTerminalSize,
+    tabId: String,
+    cwd: String,
+    cwdFallbackApplied: Bool,
+    transcriptURL: URL?,
+    altBufferAtQuit: Bool
+  ) {
+    self.size = size
+    self.tabId = tabId
+    self.cwd = cwd
+    self.cwdFallbackApplied = cwdFallbackApplied
+    self.transcriptURL = transcriptURL
+    self.altBufferAtQuit = altBufferAtQuit
   }
 }
 

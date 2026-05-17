@@ -109,6 +109,39 @@ public final class Session {
     }
   }
 
+  /// Create a real-shell session whose libghostty parser is fully
+  /// constructed but whose child process has not been fork+exec'd yet.
+  /// Pair with `startSpawn()` to actually launch the shell. The
+  /// workspace-restore path uses this so a transcript replay can paint
+  /// scrollback into the parser BEFORE any live shell output arrives.
+  /// The cwd is recorded on the C session and applied at spawn time.
+  public static func makeDeferred(size: LabanTerminalSize, cwd: String) throws -> Session {
+    var config = LabanLaunchConfig()
+    config.fixture_mode = 0
+    config.defer_spawn = 1
+    return try cwd.withCString { cwdPtr in
+      config.cwd = cwdPtr
+      return try Session(config: &config, size: size)
+    }
+  }
+
+  /// Fork+exec the deferred-spawn child. No-op when the session was
+  /// not created with `makeDeferred(...)`. Returns 0 on success, -1
+  /// otherwise. The override cwd, if non-nil, replaces the cwd
+  /// captured at create time — used by the cwd-gone fallback to swap
+  /// in `$HOME` when the originally persisted directory is no longer
+  /// reachable.
+  @discardableResult
+  public func startSpawn(overrideCwd: String? = nil) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    if let overrideCwd {
+      return overrideCwd.withCString { ptr in
+        laban_session_start_spawn(h, ptr)
+      }
+    }
+    return laban_session_start_spawn(h, nil)
+  }
+
   public static func debugShell(size: LabanTerminalSize) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0
@@ -282,6 +315,30 @@ public final class Session {
   public var isCapturing: Bool {
     guard !isClosed, let h = handle else { return false }
     return laban_session_capture_active(h) != 0
+  }
+
+  /// True when libghostty-vt currently has the alternate-screen buffer
+  /// active (full-screen TUI mode — vim/htop/less). The workspace
+  /// persistence path samples this at quit so transcript replay does
+  /// not paint half-finished TUI state on the next launch.
+  public var altBufferActive: Bool {
+    guard !isClosed, let h = handle else { return false }
+    return laban_session_alt_buffer_active(h) != 0
+  }
+
+  /// Register a persistence-tee callback through the C ABI. The
+  /// callback fires from `laban_vt_write_capture` AFTER the existing
+  /// capture callback and BEFORE libghostty's VT parser receives the
+  /// bytes. The contract is memcpy-only — the implementer must not do
+  /// IO or block in the callback. See the C header for the full
+  /// contract. Pass `(nil, nil)` to clear.
+  @discardableResult
+  public func setPersistenceCallback(
+    _ callback: LabanPersistenceBytesCallback?,
+    userdata: UnsafeMutableRawPointer?
+  ) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    return laban_session_set_persistence_callback(h, callback, userdata)
   }
 
   // MARK: - Title

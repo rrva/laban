@@ -87,10 +87,22 @@ authorization per milestone.
   suite (524 tests) passes. Manual UI acceptance (steps in the M0
   Acceptance section) still needs to be exercised against a freshly
   built bundle.
-- [ ] **M1** — transcript capture and render-on-restore: PTY byte tee
-  writes append-only per-tab `.bin` files; last ~1MB byte-replays through
-  libghostty-vt on restore; older history renders as text-only scrollback;
-  alt-buffer-at-quit skips restore.
+- [x] (2026-05-17) **M1** — transcript capture and render-on-restore.
+  New C ABI: `laban_session_set_persistence_callback`,
+  `laban_session_alt_buffer_active`, and deferred-spawn mode
+  (`LabanLaunchConfig.defer_spawn` + `laban_session_start_spawn`). New
+  Swift types: `TranscriptWriter` (ring buffer with drop-oldest, 200ms
+  debounced disk drain, 10MB head-truncation cap), `TranscriptRenderer`
+  (hybrid restore: text-strip prefix + byte-replay suffix at first LF
+  after nominal cutoff), `TranscriptHost` (per-tab writer registry +
+  C-callback bridge), `RestoredSessionSpec`, `Session.makeDeferred` /
+  `startSpawn`. AppModel grew a `transcriptDelegate` and a
+  `restoredDeferredSessionFactory`; `replaceTabs(from:)` now uses
+  deferred spawn so transcript replay completes before live shell
+  output. Cwd-gone fallback to `$HOME` is wired (banner UI deferred).
+  Tests: 11 cases in `Tests/LabanCoreTests/TranscriptRoundTripTests.swift`
+  pass; full suite (535 tests) passes. Manual UI acceptance still
+  needs a freshly built bundle.
 - [ ] **M2** — agent (Claude + Codex) session id capture and
   autoresume + JSONL mirror: detect `claude` and `codex` processes
   via descendant-tree polling (`DispatchSourceTimer` +

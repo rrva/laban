@@ -131,6 +131,14 @@ struct LabanSession {
     LabanCaptureBytesCallback capture_callback;
     void *capture_userdata;
 
+    /* Persistence tee: fires from laban_vt_write_capture after the
+     * capture callback and before ghostty_terminal_vt_write. The
+     * callback MUST do nothing more than memcpy bytes into a Swift-side
+     * ring buffer and return — see LabanPersistenceBytesCallback
+     * comment in the public header. */
+    LabanPersistenceBytesCallback persistence_callback;
+    void *persistence_userdata;
+
     LabanTabStatusScanner tab_status_scanner;
     LabanTabStatusCallback tab_status_callback;
     void *tab_status_userdata;
@@ -141,6 +149,19 @@ struct LabanSession {
     uint32_t cell_width;
     uint32_t cell_height;
     int color_scheme;
+
+    /* True for a session created with `defer_spawn=1` whose
+     * laban_session_start_spawn has not been called yet. While true
+     * the session has no PTY and no child process; the VT parser still
+     * accepts bytes via laban_session_feed_output /
+     * laban_session_replay_pty_output, which is how restored
+     * transcripts paint scrollback before the live shell starts. */
+    int pending_spawn;
+    /* Pixel/row geometry captured at create time so a later deferred
+     * spawn can reproduce the openpty winsize correctly even if the
+     * caller no longer holds the original LabanTerminalSize. */
+    int pending_pixel_width;
+    int pending_pixel_height;
 
     /* Capture of bytes the terminal wants written back to the pty
        (capability replies: DA1/DA2/DA3, XTWINOPS, DSR, XTVERSION, ...).
@@ -175,6 +196,7 @@ pid_t laban_waitpid_retry(pid_t pid, int *status, int options);
 void laban_signal_child_process_group(pid_t child_pid, int sig);
 int laban_session_mode_active_locked(LabanSession *s, GhosttyMode mode, int *out_active);
 int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t len);
+int laban_session_spawn_now_(LabanSession *s, const char *override_cwd);
 
 void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata);
 void laban_effect_write_pty(GhosttyTerminal terminal, void *userdata,

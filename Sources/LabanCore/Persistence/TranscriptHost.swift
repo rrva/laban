@@ -1,0 +1,115 @@
+import Foundation
+import LabanTerminalCore
+
+/// Per-tab transcript writer registry. Owns one `TranscriptWriter`
+/// per active tab, wires the C persistence callback to it, and tears
+/// it down when the tab closes. The `AppModel` calls into this host
+/// via the `TranscriptHostDelegate` protocol so the persistence
+/// subsystem stays optional — tests and headless runs that don't need
+/// transcripts can leave the delegate nil.
+public final class TranscriptHost {
+  public let store: PersistenceStore
+
+  private let lock = NSLock()
+  private var writersByTab: [String: TranscriptWriter] = [:]
+  private var bridges: [String: Unmanaged<TranscriptWriterBridge>] = [:]
+
+  public init(store: PersistenceStore = .shared) {
+    self.store = store
+  }
+
+  /// Path the writer for `tabId` appends to. Used by the restore
+  /// orchestrator to find the file to replay through libghostty
+  /// BEFORE the new session starts capturing into the same file.
+  public func transcriptURL(forTabId tabId: String) -> URL {
+    store.transcriptURL(forTabId: tabId)
+  }
+
+  /// Attach a fresh `TranscriptWriter` to the session, wiring the C
+  /// persistence callback so PTY output bytes flow into the writer's
+  /// ring buffer. If a writer already exists for this tab (re-attach
+  /// after restore), it is flushed and replaced — the new writer
+  /// continues to append to the same `.bin` file, so the on-disk
+  /// transcript carries across the restore boundary.
+  public func attachTranscriptWriter(to session: Session, tabId: String) {
+    let writer = TranscriptWriter(tabId: tabId, fileURL: transcriptURL(forTabId: tabId))
+    let bridge = TranscriptWriterBridge(writer: writer)
+    lock.lock()
+    let priorBridge = bridges[tabId]
+    let priorWriter = writersByTab[tabId]
+    writersByTab[tabId] = writer
+    bridges[tabId] = Unmanaged.passRetained(bridge)
+    lock.unlock()
+    priorWriter?.flushSync()
+    priorBridge?.release()
+    let userdata = UnsafeMutableRawPointer(Unmanaged.passUnretained(bridge).toOpaque())
+    _ = session.setPersistenceCallback(transcriptBridgeCallback, userdata: userdata)
+  }
+
+  /// Detach and flush the writer for `tabId`. Called from
+  /// `AppModel.closeTab`. The on-disk `.bin` file is left in place so
+  /// a later restore (or manual inspection) can read it.
+  public func detachTranscriptWriter(forTabId tabId: String, in session: Session?) {
+    lock.lock()
+    let writer = writersByTab.removeValue(forKey: tabId)
+    let bridge = bridges.removeValue(forKey: tabId)
+    lock.unlock()
+    if let session {
+      _ = session.setPersistenceCallback(nil, userdata: nil)
+    }
+    writer?.flushSync()
+    bridge?.release()
+  }
+
+  /// Flush every writer the host currently owns. Called from
+  /// `applicationWillTerminate` so quit does not lose the last few
+  /// hundred ms of PTY output queued in the ring buffers.
+  public func flushAll() {
+    let snapshot: [TranscriptWriter] = {
+      lock.lock()
+      defer { lock.unlock() }
+      return Array(writersByTab.values)
+    }()
+    for writer in snapshot {
+      writer.flushSync()
+    }
+  }
+
+  /// Test/diagnostic accessor — returns the writer for a tab, if any.
+  public func writer(forTabId tabId: String) -> TranscriptWriter? {
+    lock.lock()
+    defer { lock.unlock() }
+    return writersByTab[tabId]
+  }
+}
+
+/// Pinned wrapper around a `TranscriptWriter` so the C callback's
+/// userdata can be an `UnsafeMutableRawPointer` pointing at a stable
+/// Swift object. `TranscriptHost` owns the lifetime via the
+/// `Unmanaged<TranscriptWriterBridge>` table.
+final class TranscriptWriterBridge {
+  let writer: TranscriptWriter
+  init(writer: TranscriptWriter) { self.writer = writer }
+}
+
+/// The C entry point. Memcpy-only by contract — see ExecPlan Decision
+/// Log on PTY-byte-callback IO discipline.
+private let transcriptBridgeCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?,
+    OpaquePointer?,
+    UnsafePointer<UInt8>?,
+    Int
+  ) -> Void = { userdata, _, bytes, len in
+    guard let userdata, let bytes, len > 0 else { return }
+    let bridge = Unmanaged<TranscriptWriterBridge>.fromOpaque(userdata).takeUnretainedValue()
+    bridge.writer.writeChunk(bytes: bytes, count: len)
+  }
+
+public protocol TranscriptHostDelegate: AnyObject {
+  func attachTranscriptWriter(to session: Session, tabId: String)
+  func detachTranscriptWriter(forTabId tabId: String, in session: Session?)
+  func transcriptURL(forTabId tabId: String) -> URL
+}
+
+extension TranscriptHost: TranscriptHostDelegate {}

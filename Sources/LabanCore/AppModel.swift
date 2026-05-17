@@ -58,6 +58,21 @@ public final class AppModel {
   /// `Session.realShell(size:, cwd:)`.
   public var restoredSessionFactory: ((LabanTerminalSize, String) throws -> Session)?
 
+  /// Richer restore-time factory. When set, takes precedence over
+  /// `restoredSessionFactory`. The spec carries enough state for the
+  /// factory to construct a deferred-spawn Session, replay the
+  /// persisted transcript into it, then start the shell — see
+  /// `TranscriptRenderer` and `Session.makeDeferred(...)`. Production
+  /// wires this in `MainWindowController.makeAndShow(...)`.
+  public var restoredDeferredSessionFactory: ((RestoredSessionSpec) throws -> Session)?
+
+  /// Per-tab transcript writer registry. AppModel notifies the
+  /// delegate on tab creation/close so the delegate can attach a
+  /// `TranscriptWriter` to each session's PTY-byte tee. Weak so a
+  /// host owned by `MainWindowController` can outlive intermediate
+  /// AppModel teardowns without retain cycles.
+  public weak var transcriptDelegate: TranscriptHostDelegate?
+
   /// Recorded as `launchCommand` in `WorkspaceState` for tabs that were
   /// not themselves restored from state. Defaults to the user's `SHELL`
   /// env var, falling back to `/bin/zsh`. Tabs restored from a prior
@@ -339,7 +354,8 @@ public final class AppModel {
 
   @discardableResult
   public func createTab() throws -> Tab {
-    let tab = try withModelLock {
+    let (tab, session) = try withModelLock {
+      () -> (Tab, Session) in
       guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
       let session = try sessionFactory(currentSize)
       session.captureSink = captureSink
@@ -359,21 +375,18 @@ public final class AppModel {
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
       selectTabUnlocked(tab.id)
-      return _tabs.last!
+      return (_tabs.last!, session)
     }
+    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: tab.id)
     notifyWorkspaceMutation()
     return tab
   }
 
   /// Create a tab pinned to a specific working directory with a
-  /// caller-supplied id and launch command. Used by `replaceTabs(from:)`
-  /// to rebuild tabs from a persisted `WorkspaceState`; the id is
-  /// preserved so per-tab transcript files (`<tab-id>.bin`) and the
-  /// agent JSONL mirror (`<tab-id>.jsonl`) keep referring to the same
-  /// tab across launches.
-  ///
-  /// Returns the freshly created tab. Throws `AppError.tabLimitReached`
-  /// when the tab cap is hit.
+  /// caller-supplied id and launch command. Used directly by tests
+  /// that want to exercise restored-tab semantics without going
+  /// through a full `WorkspaceState`. Production restore flows go
+  /// through `replaceTabs(from:)`.
   @discardableResult
   public func createRestoredTab(
     id: Tab.ID,
@@ -381,37 +394,17 @@ public final class AppModel {
     launchCommand: String,
     isActive: Bool
   ) throws -> Tab {
-    let tab = try withModelLock {
-      guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
-      let factory = restoredSessionFactory
-      let session: Session
-      if let factory {
-        session = try factory(currentSize, cwd)
-      } else {
-        session = try sessionFactory(currentSize)
-      }
-      session.captureSink = captureSink
-      AppModel.maybeAutoCapture(session)
-      ThemePaletteInjector.injectCurrentTheme(into: session)
-      let position = _tabs.count + 1
-      let tab = Tab(
-        id: id,
-        position: position,
-        title: "Tab \(position)",
-        isActive: false,
-        sessionId: session.id
-      )
-      sessionRegistry.add(session)
-      _tabs.append(tab)
-      launchCommandByTab[id] = launchCommand
-      attachTabStatus(session: session, tabId: tab.id)
-      recordSessionCreated(sessionId: session.id, tabId: tab.id)
-      recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
-      if isActive {
-        selectTabUnlocked(tab.id)
-      }
-      return _tabs.last!
-    }
+    let synthesizedState = TabState(
+      id: id,
+      cwd: cwd,
+      launchCommand: launchCommand,
+      lastActiveAt: Date()
+    )
+    let tab = try createRestoredTabSuppressingNotification(
+      id: id,
+      persistedTab: synthesizedState,
+      isActive: isActive
+    )
     notifyWorkspaceMutation()
     return tab
   }
@@ -421,6 +414,11 @@ public final class AppModel {
   /// the restored ones so the user never sees a flash of the default
   /// tab. Multi-window persistence is not implemented in M0; only the
   /// first window in `state.windows` is consumed.
+  ///
+  /// Per-tab restore goes through the deferred-spawn factory when one
+  /// is set so the transcript renderer paints scrollback BEFORE the
+  /// shell starts producing live output. If the deferred factory is
+  /// not set, falls back to the simple cwd-only factory used by tests.
   ///
   /// Mutation notifications are coalesced: one `onWorkspaceMutation`
   /// fires at the end, not per tab. This keeps the persistence
@@ -435,8 +433,7 @@ public final class AppModel {
         || (window.selectedTabId == nil && index == 0)
       _ = try? createRestoredTabSuppressingNotification(
         id: persistedTab.id,
-        cwd: persistedTab.cwd,
-        launchCommand: persistedTab.launchCommand,
+        persistedTab: persistedTab,
         isActive: isActive
       )
     }
@@ -445,19 +442,36 @@ public final class AppModel {
 
   /// Internal helper shared by `replaceTabs(from:)` so per-tab creation
   /// does not fire the mutation callback (the caller coalesces).
+  ///
+  /// Spawn-or-fallback ordering: when a `restoredDeferredSessionFactory`
+  /// is set we use it (this is the production path and the one that
+  /// gives transcript replay before live output). Otherwise we fall
+  /// back to the older simple cwd-only `restoredSessionFactory` and
+  /// finally to the default `sessionFactory` — useful for headless
+  /// tests that work with fixture sessions.
   @discardableResult
   private func createRestoredTabSuppressingNotification(
     id: Tab.ID,
-    cwd: String,
-    launchCommand: String,
+    persistedTab: TabState,
     isActive: Bool
   ) throws -> Tab {
-    try withModelLock {
+    let resolved = resolveRestoredCwd(persistedTab.cwd)
+    let (tab, session) = try withModelLock {
+      () -> (Tab, Session) in
       guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
-      let factory = restoredSessionFactory
       let session: Session
-      if let factory {
-        session = try factory(currentSize, cwd)
+      if let deferredFactory = restoredDeferredSessionFactory {
+        let spec = RestoredSessionSpec(
+          size: currentSize,
+          tabId: id,
+          cwd: resolved.cwd,
+          cwdFallbackApplied: resolved.fallbackApplied,
+          transcriptURL: transcriptDelegate?.transcriptURL(forTabId: id),
+          altBufferAtQuit: persistedTab.altBufferAtQuit ?? false
+        )
+        session = try deferredFactory(spec)
+      } else if let factory = restoredSessionFactory {
+        session = try factory(currentSize, resolved.cwd)
       } else {
         session = try sessionFactory(currentSize)
       }
@@ -474,15 +488,38 @@ public final class AppModel {
       )
       sessionRegistry.add(session)
       _tabs.append(tab)
-      launchCommandByTab[id] = launchCommand
+      launchCommandByTab[id] = persistedTab.launchCommand
+      if resolved.fallbackApplied {
+        _tabs[_tabs.count - 1].titleMetadata.workspace = TabWorkspaceMetadata(cwd: resolved.cwd)
+      }
       attachTabStatus(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
       if isActive {
         selectTabUnlocked(tab.id)
       }
-      return _tabs.last!
+      return (_tabs.last!, session)
     }
+    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: id)
+    return tab
+  }
+
+  /// Resolve the cwd to use when restoring a tab. The persisted cwd may
+  /// no longer exist (unmounted external drive, deleted directory); in
+  /// that case we fall back to `$HOME` and report
+  /// `fallbackApplied = true` so callers can persist the fact and
+  /// (eventually) render a one-line banner. The default fallback is the
+  /// user's home directory.
+  private func resolveRestoredCwd(_ cwd: String) -> (cwd: String, fallbackApplied: Bool) {
+    let fm = FileManager.default
+    var isDir: ObjCBool = false
+    if fm.fileExists(atPath: cwd, isDirectory: &isDir),
+      isDir.boolValue,
+      fm.isReadableFile(atPath: cwd)
+    {
+      return (cwd, false)
+    }
+    return (fm.homeDirectoryForCurrentUser.path, true)
   }
 
   /// Snapshot the current workspace into a Codable structure suitable
@@ -497,11 +534,12 @@ public final class AppModel {
     withModelLock {
       let now = Date()
       let states: [TabState] = _tabs.map { tab in
+        let session = sessionRegistry.session(id: tab.sessionId)
         let liveCwd: String? = {
           if let cached = tab.titleMetadata.workspace.cwd, !cached.isEmpty {
             return cached
           }
-          if let session = sessionRegistry.session(id: tab.sessionId),
+          if let session,
             let metadata = session.processMetadata(),
             let cwd = metadata.cwd, !cwd.isEmpty
           {
@@ -525,13 +563,18 @@ public final class AppModel {
           case .exited(let code), .exitedSignal(let code): return code
           }
         }()
+        let altBuffer = session?.altBufferActive ?? false
+        let transcriptPath: String? = {
+          if transcriptDelegate == nil { return nil }
+          return "transcripts/\(tab.id).bin"
+        }()
         return TabState(
           id: tab.id,
           cwd: cwd,
           launchCommand: launchCommand,
           lastActiveAt: now,
-          transcriptPath: nil,
-          altBufferAtQuit: nil,
+          transcriptPath: transcriptPath,
+          altBufferAtQuit: altBuffer,
           cwdFallbackApplied: nil,
           processStatus: processStatus,
           exitCode: exitCode,
@@ -586,12 +629,16 @@ public final class AppModel {
 
   public func closeTab(_ tabId: Tab.ID) throws {
     var lastTabClosedThrown = false
+    var closedSession: Session?
+    var closedTabId: Tab.ID?
     do {
       try withModelLock {
         guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
           throw AppError.tabNotFound
         }
         let tab = _tabs[idx]
+        closedTabId = tab.id
+        closedSession = sessionRegistry.session(id: tab.sessionId)
 
         if _tabs.count == 1 {
           sessionRegistry.close(sessionId: tab.sessionId)
@@ -631,10 +678,16 @@ public final class AppModel {
         }
       }
     } catch {
+      if let id = closedTabId {
+        transcriptDelegate?.detachTranscriptWriter(forTabId: id, in: closedSession)
+      }
       if lastTabClosedThrown {
         notifyWorkspaceMutation()
       }
       throw error
+    }
+    if let id = closedTabId {
+      transcriptDelegate?.detachTranscriptWriter(forTabId: id, in: closedSession)
     }
     notifyWorkspaceMutation()
   }
