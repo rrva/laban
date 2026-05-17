@@ -131,6 +131,99 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testSelectionsInBothTabsPersistAfterRoundTrip() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let first = try XCTUnwrap(harness.model.activeTab)
+    let firstSession = try XCTUnwrap(harness.model.session(forTab: first.id))
+    firstSession.write(Array("ONE first\r\n".utf8))
+    firstSession.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 2, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "ONE")
+
+    harness.view.newTab(nil)
+    let second = try XCTUnwrap(harness.model.activeTab)
+    XCTAssertNotEqual(second.id, first.id)
+    let secondSession = try XCTUnwrap(harness.model.session(forTab: second.id))
+    secondSession.write(Array("TWO second\r\n".utf8))
+    secondSession.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 4, endCol: 9, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "second")
+
+    let toFirst = NSMenuItem(title: "Tab 1", action: nil, keyEquivalent: "")
+    toFirst.tag = 1
+    harness.view.selectTabByIndex(toFirst)
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "ONE",
+      "tab 1 selection must survive selecting in tab 2 and switching back"
+    )
+
+    let toSecond = NSMenuItem(title: "Tab 2", action: nil, keyEquivalent: "")
+    toSecond.tag = 2
+    harness.view.selectTabByIndex(toSecond)
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "second",
+      "tab 2 selection must survive switching back to tab 1 and forward again"
+    )
+
+    harness.view.selectTabByIndex(toFirst)
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "ONE",
+      "tab 1 selection must survive a third tab switch with no intervening edit"
+    )
+  }
+
+  func testSidebarClickRoundTripPreservesBothSelections() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let first = try XCTUnwrap(harness.model.activeTab)
+    let firstSession = try XCTUnwrap(harness.model.session(forTab: first.id))
+    firstSession.write(Array("ONE first\r\n".utf8))
+    firstSession.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 2, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "ONE")
+
+    harness.view.newTab(nil)
+    let second = try XCTUnwrap(harness.model.activeTab)
+    XCTAssertNotEqual(second.id, first.id)
+    let secondSession = try XCTUnwrap(harness.model.session(forTab: second.id))
+    secondSession.write(Array("TWO second\r\n".utf8))
+    secondSession.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 4, endCol: 9, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "second")
+
+    clickTabRow(tabIndex: 0, in: harness)
+    harness.view.advanceFrame()
+    XCTAssertEqual(harness.model.activeTab?.id, first.id)
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "ONE",
+      "tab 1 selection must survive a sidebar-click round trip"
+    )
+
+    clickTabRow(tabIndex: 1, in: harness)
+    harness.view.advanceFrame()
+    XCTAssertEqual(harness.model.activeTab?.id, second.id)
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "second",
+      "tab 2 selection must survive a sidebar-click round trip"
+    )
+  }
+
   func testScrollWheelKeepsSelectionAttachedToContent() throws {
     let harness = try makeHarness(rows: 5, cols: 20)
     defer { harness.restoreRenderer() }
@@ -250,6 +343,20 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       clickCount: 1,
       pressure: 1
     )!
+  }
+
+  private func clickTabRow(tabIndex: Int, in harness: Harness) {
+    let producer = SidebarProducer(
+      sidebarWidth: SidebarLayout.defaultWidth,
+      cellWidth: CGFloat(harness.sidebarCellWidth),
+      cellHeight: CGFloat(harness.sidebarCellHeight)
+    )
+    let rowTop =
+      harness.view.frame.height - TerminalBitmapView.titlebarReservedHeight
+      - CGFloat(tabIndex) * producer.rowHeight
+    let point = NSPoint(x: SidebarLayout.defaultWidth / 2, y: rowTop - producer.rowHeight / 2)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: point))
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: point))
   }
 
   private func clickCloseButton(tabIndex: Int, in harness: Harness) {

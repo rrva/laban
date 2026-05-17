@@ -63,6 +63,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
   private var pendingHyperlinkClick: PendingHyperlinkClick?
   private static let hyperlinkClickDragTolerance: CGFloat = 3
+  /// True while the current mouseDown→mouseUp pair was consumed by the
+  /// sidebar (tab select, close, new-tab). Without this, the paired
+  /// mouseUp would treat the just-restored selection as an in-progress
+  /// drag and extend its focus to the sidebar click point.
+  private var mouseDownConsumedBySidebar = false
   /// Per-tab saved selection state. Without this, switching tabs leaves
   /// the previous tab's selection rectangle painted across the new tab's
   /// grid (the renderer reads view-level state, not session-level). On
@@ -1934,6 +1939,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     // Sidebar hit test.
     if pt.x < sidebarWidth {
+      mouseDownConsumedBySidebar = true
       let sp = SidebarProducer(
         sidebarWidth: sidebarWidth,
         cellWidth: CGFloat(sidebarCellWidth),
@@ -2015,6 +2021,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func mouseDragged(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
+    if mouseDownConsumedBySidebar {
+      return
+    }
     if let pending = pendingHyperlinkClick {
       guard Self.pointDistance(pending.downPoint, pt) > Self.hyperlinkClickDragTolerance else {
         return
@@ -2093,6 +2102,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func mouseUp(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
+    if mouseDownConsumedBySidebar {
+      mouseDownConsumedBySidebar = false
+      return
+    }
     if let pending = pendingHyperlinkClick {
       pendingHyperlinkClick = nil
       guard Self.pointDistance(pending.downPoint, pt) <= Self.hyperlinkClickDragTolerance else {
