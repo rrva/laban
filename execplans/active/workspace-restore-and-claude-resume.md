@@ -750,8 +750,21 @@ adds these):
 **Modifications.**
 
 - `Sources/LabanCore/AppModel.swift` — emit a change signal on tab
-  add/remove/reorder, tab selection, and cwd change. Add
-  `restore(from: WorkspaceState)` initializer path.
+  add/remove/reorder, tab selection, and cwd change. Add a
+  **cwd-aware tab-creation entry point** distinct from the existing
+  default-tab path: either extend the current tab-creation API
+  (whatever the existing `newTab()`-equivalent is called in this
+  AppModel) to accept optional `cwd: String? = nil` and
+  `launchCommand: String? = nil` parameters, or add a sibling
+  `createRestoredTab(id: String, cwd: String, launchCommand: String) -> Tab`
+  method. The default path uses the user's shell and the user's
+  home directory; the restore path uses the persisted values.
+  Add `restore(from: WorkspaceState)` that iterates the persisted
+  tabs and calls the cwd-aware creation entry point for each,
+  preserving order and applying the persisted `selectedTabId`.
+  The implementer chooses which of the two API shapes fits the
+  existing AppModel best — both achieve the same goal of "create
+  a tab in a specific cwd."
 - `Sources/LabanApp/AppDelegate.swift` — at launch:
   1. If `RestoreOnLaunchSettings.isEnabled` is `false`, start with
      a fresh empty workspace; skip the ⇧ check and
@@ -927,21 +940,45 @@ active at quit).
   capture `altBufferAtQuit` and `processStatus` into the saved
   tab state.
 - `Sources/LabanCore/Persistence/PersistenceCoordinator.swift` —
-  drives the restore sequence. Strict order per tab:
-  1. Construct the `Session` and spawn its shell in the saved (or
-     fallback) cwd.
+  drives the restore sequence. **Strict order per tab; the shell
+  must not spawn until replay has completed, otherwise live shell
+  output (the first prompt) interleaves with replayed scrollback
+  and produces garbled rendering:**
+  1. Construct the `Session` in **deferred-spawn mode**: create
+     the libghostty-vt parser, render state, and per-session
+     storage, but do **not** call `laban_session_spawn` yet. No
+     PTY exists; no child process exists; libghostty-vt has no
+     live input source competing with the replay.
   2. Call `TranscriptRenderer.render(file: ..., into: session)`.
-     Text-stripped scrollback is fed first; the byte-replay window
-     is fed second. libghostty-vt processes both before the first
-     visible frame is rendered.
-  3. (M2) Ask `RestoreLaunchPlanner` for the launch instruction
-     and apply it (`executeNow` writes bytes + newline;
-     `prefillPrompt` writes bytes only; `noPrefill` no-ops).
-  4. Mark the session ready for display.
+     Text-stripped scrollback bytes are fed through
+     `ghostty_terminal_vt_write` first; the byte-replay window is
+     fed second. libghostty-vt processes both into a coherent
+     scrollback + visible-screen state before any live byte
+     arrives.
+  3. Stat the saved `cwd`; if missing, fall back per the cwd-gone
+     policy (`$HOME` + banner + `cwdFallbackApplied: true`).
+  4. **Call `laban_session_spawn` now** — the shell starts in the
+     restored cwd and its first prompt appears below the replayed
+     scrollback, not interleaved with it.
+  5. (M2) Ask `RestoreLaunchPlanner` for the launch instruction
+     and apply it (`executeNow` writes bytes + newline to the
+     PTY; `prefillPrompt` writes bytes only; `noPrefill` no-ops).
+  6. Mark the session ready for display.
 
-  Steps 1–4 happen per tab on a background queue; the
-  selected tab is processed first so the user sees their focused
-  tab fastest. All other tabs hydrate concurrently.
+  Steps 1–6 happen per tab on a background queue; the selected
+  tab is processed first so the user sees their focused tab
+  fastest. All other tabs hydrate concurrently.
+
+  **API change required.** The current `Session` (in
+  `Sources/LabanCore/Session.swift`) couples construction with
+  shell spawn through `laban_session_spawn`. M1 must add either
+  (a) a `Session.makeDeferred(cwd:)` factory plus an explicit
+  `start()` method that performs the spawn, or (b) an
+  `autoSpawn: Bool` parameter to the existing initializer that
+  defaults to `true` for non-restore call sites. The implementer
+  picks whichever fits the existing API better — both achieve
+  the same separation of "create the parser" from "start the
+  child."
 
 **Cwd-gone fallback (M1).**
 
@@ -1059,10 +1096,15 @@ third agent later is one entry in `AgentSupport`.
       `github.com/openai/codex` cli `main.rs` — codex uses a
       subcommand, not a `--resume` flag),
       extract: match against
-      `(.+/)?\.codex/sessions/.+/([0-9a-f-]{36})\.jsonl$`
-      (verify the exact subpath against `~/.codex/` layout at
-      implementation time; the regex anchors on `.codex/sessions/`
-      and a UUID stem — adjust if the upstream layout differs).
+      `^.*/\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f-]{36})\.jsonl$`
+      and return the captured UUID group. Verified against
+      `codex-rs/rollout/src/recorder.rs` — Codex writes
+      `~/.codex/sessions/YYYY/MM/DD/rollout-{ISO-date}-{UUID}.jsonl`,
+      where the **UUID** (not the full filename stem) is the
+      session identifier accepted by `codex resume`. The Codex
+      home directory may be overridden via the `CODEX_HOME` env
+      var (analogous to `CLAUDE_CONFIG_DIR`); the extractor
+      should substitute that prefix when set.
   Single source of truth. Adding a new agent later is a single
   entry; no other code changes. Agents whose session ids are not
   UUIDs need their own extractor; the default UUID-shape check
@@ -1194,7 +1236,8 @@ third agent later is one entry in `AgentSupport`.
     "agent": {
       "name": "claude",
       "sessionId": "0fa31a8c-...-...",
-      "jsonlPath": "/Users/rrj/.claude/projects/.../0fa31a8c-...-....jsonl"
+      "jsonlPath": "/Users/rrj/.claude/projects/.../0fa31a8c-...-....jsonl",
+      "wasRunningAtQuit": true
     }
   }
 ]
@@ -1202,6 +1245,11 @@ third agent later is one entry in `AgentSupport`.
 
 The `agent` field is optional; non-agent tabs omit it. `name` is
 the lowercase agent name (`"claude"` or `"codex"`).
+`wasRunningAtQuit` is **required when `agent` is present** and is
+set from the detector's most recent liveness observation at quit
+time. The `RestoreLaunchPlanner` reads this field, not the tab's
+`processStatus`, to decide silent (`true`) vs prefilled (`false`)
+resume.
 
 **Acceptance (M2).** Run the scenario twice — once with Claude,
 once with Codex — to confirm equal support.
@@ -1212,7 +1260,8 @@ once with Codex — to confirm equal support.
   (e.g. "What's 2+2?", wait for reply).
 2. While Claude is still running, quit Laban.
 3. Inspect `workspace.json` — tab 1's `agent` field is
-  `{"name": "claude", "sessionId": "...", "jsonlPath": "..."}`.
+  `{"name": "claude", "sessionId": "...", "jsonlPath": "...",
+  "wasRunningAtQuit": true}`.
 4. Inspect `~/Library/Application Support/Laban/agent-mirror/` —
   expect `<tab-id>.jsonl` exists with the conversation contents.
 5. Relaunch Laban.
@@ -1229,7 +1278,8 @@ once with Codex — to confirm equal support.
   (e.g. "What's 2+2?", wait for reply).
 2. While Codex is still running, quit Laban.
 3. Inspect `workspace.json` — tab 1's `agent` field is
-  `{"name": "codex", "sessionId": "...", "jsonlPath": "..."}`.
+  `{"name": "codex", "sessionId": "...", "jsonlPath": "...",
+  "wasRunningAtQuit": true}`.
 4. Inspect `~/Library/Application Support/Laban/agent-mirror/` —
   expect `<tab-id>.jsonl` exists with the conversation contents.
 5. Relaunch Laban.
@@ -1260,14 +1310,20 @@ once with Codex — to confirm equal support.
   recent one wins as the tab's `agent`.
 
 Add `Tests/LabanAppTests/RestorePlannerTests.swift`:
-- For each combination of (processStatus, agentName, hasSessionId),
-  assert the planner returns the expected instruction. Specifically:
-  - `(running, .claude, true)` → `executeNow("claude --resume <id>")`.
-  - `(running, .codex, true)` → `executeNow("codex resume <id>")`.
-  - `(exited_clean, .claude, true)` → `prefillPrompt("claude --resume <id>")`.
-  - `(exited_clean, .codex, true)` → `prefillPrompt("codex resume <id>")`.
-  - `(running, nil, _)` → `noPrefill`.
-  - `(exited_*, _, false)` → `noPrefill`.
+- For each combination of (`agent` present/absent,
+  `agent.name`, `agent.wasRunningAtQuit`), assert the planner
+  returns the expected instruction. The planner reads
+  `tab.agent?.wasRunningAtQuit`, **not** `tab.processStatus`
+  (codex review caught the earlier confusion). Specifically:
+  - `(.claude, wasRunningAtQuit: true)`
+    → `executeNow("claude --resume <id>")`.
+  - `(.codex, wasRunningAtQuit: true)`
+    → `executeNow("codex resume <id>")`.
+  - `(.claude, wasRunningAtQuit: false)`
+    → `prefillPrompt("claude --resume <id>")`.
+  - `(.codex, wasRunningAtQuit: false)`
+    → `prefillPrompt("codex resume <id>")`.
+  - `agent == nil` (regardless of processStatus) → `noPrefill`.
 
 Add an end-to-end fixture in `fixtures/` that replays a captured
 Claude session and one that replays a captured Codex session;
@@ -1524,6 +1580,17 @@ Per-milestone gates:
   when `tab.agent.wasRunningAtQuit == true`; dead-agent tabs with
   a session id use `prefillPrompt`; everything else uses
   `noPrefill`. Non-agent tabs never receive a pre-fill.
+- [ ] **Schema includes `wasRunningAtQuit`:**
+  `grep -n "wasRunningAtQuit" Sources/LabanCore/Persistence/WorkspaceState.swift` —
+  expect the field is present on `AgentInfo` and is non-optional
+  (always written when `agent` is set). The reviewer caught a
+  prior round where the schema example omitted this field while
+  the planner depended on it — round-trip the field through
+  Codable to catch the divergence.
+- [ ] **Schema round-trip preserves agent liveness:** add to
+  `Tests/LabanCoreTests/PersistenceRoundTripTests.swift` a case
+  that constructs an `AgentInfo` with `wasRunningAtQuit: false`,
+  serializes to JSON, decodes, asserts the value survives.
 - [ ] Per-agent path matcher present:
   `grep -n "extractSessionId" Sources/LabanApp/AgentSupport.swift` —
   expect each agent entry supplies an extractor that returns nil
