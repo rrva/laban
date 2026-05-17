@@ -44,6 +44,37 @@ state is the source of truth, and every change is persisted within ~200ms.
 A SIGKILL, panic, or power loss costs at most that quarter-second window.
 There is no "your last session crashed" prompt; relaunch silently restores.
 
+## Product Alignment
+
+This is **post-MVP scope.** `docs/product/mvp.md` line 61 excludes
+workspace persistence from the shipped MVP, but line 80 clarifies that
+the MVP non-goals are valid later requirements, and `docs/product/mvp.md`
+line 378 lists "persistence and restoration" as item **4** in the
+Later-Milestones ordering. `docs/product/spec.md` sections 11–12 already
+describe the persistence/restoration tactics this plan implements (three-
+plane persistence with transcript-replay restore).
+
+This plan **intentionally takes item 4 ("persistence and restoration")
+before items 1–3** (split panes, multi-window scene identity, window-
+scoped command publication). That ordering override is authorized by the
+user, who asked for workspace restore now and specifically for the
+Claude/Codex autoresume brand moment (M2). To avoid pretending features
+exist that the app does not yet ship, the implementation stays
+**single-window and no-panes throughout** — `WorkspaceState.windows`
+always has length 1 in M0/M1/M2, and the schema treats panes as
+out-of-scope. This keeps the door open for items 1–3 to be added later
+without schema migration: multi-window persistence becomes
+"`windows.count > 1`" and panes plug into the existing per-tab
+structure when those features land.
+
+M2's agent-aware autoresume (Claude + Codex) is **outside spec.md** as
+written; it ships under the AGENTS.md "unless the user asks for it"
+clause, with the verbatim user quotes recorded in M2's "Product-scope
+anchor" subsection. If agent-aware terminal behavior becomes a durable
+direction, future work should fold an agent-host policy section into
+`docs/product/spec.md` rather than continuing to quote ad-hoc user
+authorization per milestone.
+
 ## Progress
 
 - [x] (2026-05-17) Author this ExecPlan from a grilling session that
