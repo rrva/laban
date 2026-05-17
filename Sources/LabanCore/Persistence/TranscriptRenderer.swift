@@ -49,25 +49,52 @@ public enum TranscriptRenderer {
     }
     guard !data.isEmpty else { return }
 
-    let nominal = max(0, data.count - byteReplayWindow)
-    let replayStart = safeReplayStart(in: data, nominal: nominal)
-    let prefixEnd = (replayStart != nil) ? replayStart! : data.count
-    let prefix = data.subdata(in: 0..<prefixEnd)
+    // Small file: byte-replay the whole thing. The text-strip
+    // alternative mangles in-band PTY edits (backspace, CR, OSC
+    // title) that libghostty's parser would otherwise handle
+    // correctly. For a 518-byte transcript captured from a single
+    // `echo hej` command, the on-wire bytes contain
+    // `e \b echo hej` (zsh's predictive completion typed `e`,
+    // backspaced, then wrote the full word). The stripper kept
+    // both `e`s and dropped the `\b`, so the replay rendered as
+    // `eecho hej`. Skipping the strip path entirely fixes this.
+    if data.count <= byteReplayWindow {
+      replayWithCleanHandoff(data: data, into: session)
+      return
+    }
+
+    // Large file: drop the older head to bound replay cost. The
+    // dropped prefix is NOT text-replayed because text-stripping
+    // produces visible artefacts (see the small-file branch above);
+    // for now the older-than-1MB portion is silently discarded. A
+    // future revision can restore approximate-scrollback by using
+    // a stripper that respects backspace and cursor moves.
+    let nominal = data.count - byteReplayWindow
+    let replayStart = safeReplayStart(in: data, nominal: nominal) ?? data.count
     let suffix: Data
-    if let replayStart, replayStart < data.count {
+    if replayStart < data.count {
       suffix = data.subdata(in: replayStart..<data.count)
     } else {
       suffix = Data()
     }
-
-    if !prefix.isEmpty {
-      let stripped = AnsiEscapeStripper.strip(prefix)
-      if !stripped.isEmpty {
-        _ = session.replayPtyOutput([UInt8](stripped))
-      }
-    }
     if !suffix.isEmpty {
-      _ = session.replayPtyOutput([UInt8](suffix))
+      replayWithCleanHandoff(data: suffix, into: session)
+    }
+  }
+
+  /// Feed bytes into libghostty, then guarantee a clean line break
+  /// for the live shell that follows. zsh prints its PROMPT_SP
+  /// marker (the inverse-video `%`) whenever it detects the
+  /// previous line lacked a trailing newline. Our captured
+  /// transcripts often end mid-prompt-sequence (e.g.
+  /// `\x1b[?2004h`), which fires PROMPT_SP unnecessarily on
+  /// restore. Emitting a CR+LF after the replay puts the cursor at
+  /// column 0 of a fresh row, so the live shell starts cleanly.
+  private static func replayWithCleanHandoff(data: Data, into session: Session) {
+    _ = session.replayPtyOutput([UInt8](data))
+    let last = data.last
+    if last != 0x0A {
+      _ = session.replayPtyOutput([0x0D, 0x0A])
     }
   }
 

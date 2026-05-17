@@ -184,6 +184,69 @@ final class TranscriptRoundTripTests: XCTestCase {
     }
   }
 
+  func testRendererReplaysSmallEchoTranscriptWithoutBoundaryCorruption() throws {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("t.bin")
+    try Data("echo hej\r\nhej\r\n".utf8).write(to: file)
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    TranscriptRenderer.render(
+      fileURL: file, into: session, altBufferAtQuit: false)
+
+    let snap = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snap) }
+    let visible = TerminalSnapshotText.visibleText(
+      from: UnsafePointer(snap),
+      mode: .trimmedNonEmptyRows)
+    XCTAssertTrue(visible.contains("echo hej"))
+    XCTAssertFalse(visible.contains("eecho hej"))
+    XCTAssertFalse(
+      visible.unicodeScalars.contains { $0.value == 0 },
+      "restore replay must not inject NUL glyphs")
+  }
+
+  func testTranscriptHostRoundTripsSmallEchoTranscriptWithoutBoundaryCorruption() throws {
+    let baseDir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: baseDir) }
+    let store = PersistenceStore(baseURL: baseDir)
+    let host = TranscriptHost(store: store)
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let producer = try Session.fixture(size: size)
+    defer { producer.close() }
+    let tabId = "tab-echo-boundary-test"
+    host.attachTranscriptWriter(to: producer, tabId: tabId)
+
+    _ = producer.feedOutput(Array("echo hej\r\nhej\r\n".utf8))
+    host.detachTranscriptWriter(forTabId: tabId, in: producer)
+
+    let replay = try Session.fixture(size: size)
+    defer { replay.close() }
+    TranscriptRenderer.render(
+      fileURL: store.transcriptURL(forTabId: tabId),
+      into: replay,
+      altBufferAtQuit: false)
+
+    let snap = try XCTUnwrap(replay.snapshot())
+    defer { laban_snapshot_destroy(snap) }
+    let visible = TerminalSnapshotText.visibleText(
+      from: UnsafePointer(snap),
+      mode: .trimmedNonEmptyRows)
+    XCTAssertTrue(visible.contains("echo hej"))
+    XCTAssertFalse(visible.contains("eecho hej"))
+    XCTAssertFalse(
+      visible.unicodeScalars.contains { $0.value == 0 },
+      "restore replay must not inject NUL glyphs")
+  }
+
   // MARK: - TranscriptHost end-to-end
 
   func testTranscriptHostAttachWriterCapturesBytes() throws {
