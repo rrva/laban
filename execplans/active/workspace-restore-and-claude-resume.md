@@ -115,6 +115,26 @@ authorization per milestone.
   fixes (replaceTabs delegate detach, cwdFallback persistence,
   restoreFailureLogger) all pass. Manual UI acceptance still needs a
   freshly built bundle.
+- [x] (2026-05-17) **Post-M2 runtime-toggle fixes**. Two P1 findings
+  addressed:
+    - **P1:** A running mirror's periodic timer continued copying
+      JSONL after the menu toggle flipped off. `AgentJSONLMirror`
+      now takes its own `isEnabled` closure and short-circuits
+      every `snapshot(tabId:)` call when disabled. `AgentObserverHost.detach`
+      now untracks the mirror unconditionally so a tab close
+      cancels the timer even after a toggle-off. Tests added:
+      `AgentJSONLMirrorTests.testSnapshotIsNoOpWhenToggleDisabled`,
+      `AgentObserverHostTests.testDetachUntracksMirrorEvenWhenToggleFlippedOff`.
+    - **P1:** "Write while disabled, re-enable, drain" could
+      resurrect off-window bytes because `writeChunk` queued bytes
+      in the ring and the gate was checked only at drain time.
+      `TranscriptWriter.writeChunk` now consults `isEnabled` and
+      drops at capture, so off-window bytes never enter the ring.
+      New test
+      `testWriterDropsBytesAtCaptureTimeWhenDisabled` exercises
+      the write-off → re-enable → drain sequence and asserts only
+      post-enable bytes land on disk.
+  Full suite: 569 passing, 0 failures.
 - [x] (2026-05-17) **M2 review fixes** (commit on top of M2). Four
   review findings addressed:
     - **High:** Restore-on-Launch toggle off now stops the agent

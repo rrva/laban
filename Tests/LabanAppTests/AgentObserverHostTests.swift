@@ -50,6 +50,50 @@ final class AgentObserverHostTests: XCTestCase {
       "disabled host must not push observations into AppModel")
   }
 
+  func testDetachUntracksMirrorEvenWhenToggleFlippedOff() throws {
+    // A tab was created while the toggle was on, a detector
+    // started, the mirror picked up an agent and began its 5-min
+    // timer. Then the user flips the menu toggle off. Closing the
+    // tab MUST still untrack the mirror — otherwise the periodic
+    // timer keeps running with no way to stop it short of quitting
+    // Laban.
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-detach-untrack-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+
+    let recordingMirror = RecordingMirror(store: PersistenceStore(baseURL: dir))
+    var enabled = true
+    let host = AgentObserverHost(
+      appModel: model,
+      mirror: recordingMirror,
+      isEnabled: { enabled })
+
+    let detector = AgentSessionDetector(
+      tabId: tabId, shellPid: 1, introspector: NoChildrenIntrospector())
+    let alive = AgentInfo(
+      name: .claude,
+      sessionId: "0fa31a8c-1234-5678-9abc-deadbeef0000",
+      jsonlPath: "/tmp/session.jsonl",
+      wasRunningAtQuit: true)
+    host.agentSessionDetector(detector, didObserve: alive)
+    XCTAssertEqual(
+      recordingMirror.events,
+      [.track(tabId: tabId, path: "/tmp/session.jsonl")])
+
+    // Toggle off mid-session, then close the tab.
+    enabled = false
+    host.detach(tabId: tabId)
+    XCTAssertTrue(
+      recordingMirror.events.contains { event in
+        if case .untrack(let id, _) = event, id == tabId { return true }
+        return false
+      },
+      "detach must untrack mirror to cancel the periodic timer regardless of toggle state")
+  }
+
   func testObserverUntracksMirrorWhenAgentDies() throws {
     let dir = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-observer-untrack-\(UUID().uuidString)")

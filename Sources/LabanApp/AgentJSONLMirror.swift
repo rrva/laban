@@ -28,6 +28,7 @@ public final class AgentJSONLMirror: JSONLMirroring {
   public let store: PersistenceStore
   public let periodicInterval: DispatchTimeInterval
   public let queue: DispatchQueue
+  public let isEnabled: () -> Bool
 
   private let lock = NSLock()
   private var timersByTab: [String: DispatchSourceTimer] = [:]
@@ -36,11 +37,13 @@ public final class AgentJSONLMirror: JSONLMirroring {
   public init(
     store: PersistenceStore = .shared,
     periodicInterval: DispatchTimeInterval = .seconds(300),
-    queue: DispatchQueue = DispatchQueue(label: "laban.agentmirror", qos: .utility)
+    queue: DispatchQueue = DispatchQueue(label: "laban.agentmirror", qos: .utility),
+    isEnabled: @escaping () -> Bool = { RestoreOnLaunchSettings.isEnabled }
   ) {
     self.store = store
     self.periodicInterval = periodicInterval
     self.queue = queue
+    self.isEnabled = isEnabled
   }
 
   /// Begin tracking `tabId` with the given JSONL path. Starts a
@@ -102,8 +105,11 @@ public final class AgentJSONLMirror: JSONLMirroring {
   /// directory. Atomic via `FileManager.replaceItemAt` so a partial
   /// copy never overwrites a complete prior snapshot. Skipped if the
   /// source path no longer exists (the agent removed its session
-  /// file, or the JSONL path was never tracked).
+  /// file, or the JSONL path was never tracked) or when the
+  /// kill-switch toggle has been flipped off mid-session — periodic
+  /// ticks become no-ops as soon as the gate is closed.
   public func snapshot(tabId: String) {
+    guard isEnabled() else { return }
     let sourcePath: String? = {
       lock.lock()
       defer { lock.unlock() }

@@ -224,6 +224,42 @@ final class TranscriptRoundTripTests: XCTestCase {
 
   // MARK: - Toggle gating
 
+  func testWriterDropsBytesAtCaptureTimeWhenDisabled() throws {
+    // The "write off, re-enable, flush" sequence must NOT resurrect
+    // off-window bytes. writeChunk has to drop at capture; deferring
+    // the drop to drainNow leaves a race where the ring still holds
+    // the bytes when the toggle flips back on.
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("t.bin")
+    var enabled = false
+    let writer = TranscriptWriter(
+      tabId: "t",
+      fileURL: file,
+      ringCapacity: 4096,
+      fileCapacity: 1_000_000,
+      debounceInterval: .milliseconds(10),
+      isEnabled: { enabled })
+
+    let off = Array("MUST_BE_DROPPED\n".utf8)
+    off.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: off.count)
+    }
+    // No flush yet — the ring should be empty because writeChunk
+    // dropped at capture.
+    enabled = true
+    let on = Array("kept\n".utf8)
+    on.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: on.count)
+    }
+    writer.flushSync()
+    let data = try Data(contentsOf: file)
+    XCTAssertEqual(
+      Array(data), on,
+      "write-off, re-enable, flush must not resurrect off-window bytes")
+    XCTAssertEqual(writer.droppedBytes, UInt64(off.count))
+  }
+
   func testWriterDiscardsBytesCapturedWhileDisabled() throws {
     let dir = makeTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }

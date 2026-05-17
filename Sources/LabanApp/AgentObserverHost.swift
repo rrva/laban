@@ -52,13 +52,13 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
     let detector = detectorsByTab.removeValue(forKey: tabId)
     lock.unlock()
     detector?.stop()
-    // Final mirror snapshot — captures the conversation as it
-    // existed when the tab closed even if the agent process is
-    // still running in some other window. Skipped when the toggle
-    // is off (the detector never ran, so there's nothing tracked).
-    if isEnabled() {
-      mirror.untrack(tabId: tabId, finalSnapshot: true)
-    }
+    // Untrack unconditionally — the periodic timer may have been
+    // started during an enabled window and a subsequent toggle-off
+    // alone does not cancel it. Skip only the final snapshot when
+    // disabled (the snapshot would be a no-op anyway because
+    // `AgentJSONLMirror.snapshot` self-gates, but skipping the
+    // intent makes the disabled path strictly inert).
+    mirror.untrack(tabId: tabId, finalSnapshot: isEnabled())
   }
 
   /// Snapshot every tracked tab's JSONL. Called from

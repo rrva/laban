@@ -102,8 +102,22 @@ public final class TranscriptWriter {
   /// IO, no timer mutation. The single repeating drain timer started
   /// at init handles the periodic disk flush; the callback only
   /// updates the ring buffer.
+  ///
+  /// When the kill-switch toggle is off the bytes are dropped
+  /// immediately. Storing them in the ring and discarding at drain
+  /// time is not enough — the "write off, re-enable, drain" sequence
+  /// would resurrect them. The cost of the gate check is one closure
+  /// call (UserDefaults read in production) per PTY chunk, which is
+  /// negligible compared to the syscall stack the chunk just came
+  /// from.
   public func writeChunk(bytes: UnsafePointer<UInt8>, count: Int) {
     guard count > 0 else { return }
+    guard isEnabled() else {
+      // Discard at capture so disabled-window bytes can never reach
+      // disk regardless of toggle order or drain timing.
+      droppedBytes &+= UInt64(count)
+      return
+    }
     ringLock.lock()
     ingestedBytes &+= UInt64(count)
     let cap = ringCapacity
