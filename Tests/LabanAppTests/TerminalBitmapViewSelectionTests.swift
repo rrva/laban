@@ -251,6 +251,28 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testShiftClickExtendsExistingSelectionFocus() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    shiftClickCell(row: 0, col: 10, in: harness)
+
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "alpha bravo",
+      "shift-click should keep the existing selection anchor and move the focus"
+    )
+  }
+
   private struct Harness {
     var model: AppModel
     var view: TerminalBitmapView
@@ -322,6 +344,14 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: end))
   }
 
+  private func shiftClickCell(row: Int, col: Int, in harness: Harness) {
+    let point = point(row: row, col: col, in: harness)
+    harness.view.mouseDown(
+      with: mouseEvent(type: .leftMouseDown, at: point, modifierFlags: .shift))
+    harness.view.mouseUp(
+      with: mouseEvent(type: .leftMouseUp, at: point, modifierFlags: .shift))
+  }
+
   private func point(row: Int, col: Int, in harness: Harness) -> NSPoint {
     NSPoint(
       x: SidebarLayout.defaultWidth + harness.insets.left
@@ -331,11 +361,15 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
-  private func mouseEvent(type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+  private func mouseEvent(
+    type: NSEvent.EventType,
+    at point: NSPoint,
+    modifierFlags: NSEvent.ModifierFlags = []
+  ) -> NSEvent {
     NSEvent.mouseEvent(
       with: type,
       location: point,
-      modifierFlags: [],
+      modifierFlags: modifierFlags,
       timestamp: 0,
       windowNumber: 0,
       context: nil,

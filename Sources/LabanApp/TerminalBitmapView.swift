@@ -1983,6 +1983,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
   }
 
+  private func extendExistingSelection(at pt: NSPoint) -> Bool {
+    syncSelectionStateToActiveTab()
+    guard selectionAnchor != nil, selectionFocus != nil else { return false }
+    selectionMode = .char
+    selectionOriginCell = selectionAnchor
+    lastDragPoint = pt
+    extendSelection(to: pt)
+    return true
+  }
+
   private func clearSelectionAfterHyperlinkActivation() {
     let hadSelection = selectionAnchor != nil || selectionFocus != nil
     selectionAnchor = nil
@@ -2097,6 +2107,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     // so a click without drag clears any prior selection instead of leaving a
     // one-cell highlight behind. Double-click selects the word under the
     // cursor; triple-click selects the entire row.
+    if event.modifierFlags.contains(.shift), extendExistingSelection(at: pt) {
+      renderInvalidated = true
+      return
+    }
     beginSelection(at: pt, clickCount: event.clickCount)
     renderInvalidated = true
   }
