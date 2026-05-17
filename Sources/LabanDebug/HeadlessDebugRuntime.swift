@@ -252,6 +252,16 @@ public final class HeadlessDebugRuntime {
         observers.attach(session: session, tabId: tab.id)
       }
 
+      // Production parity: AppDelegate calls
+      // `PersistenceCoordinator.load()` at launch BEFORE the user
+      // can interact with the app, and pipes the loaded state into
+      // `AppModel.replaceTabs(from:)`. The headless runtime now
+      // does the same so launch-time bugs (corrupt-rename, restore
+      // failures, missing transcripts) reproduce here.
+      if let restored = coordinator.load() {
+        model.replaceTabs(from: restored)
+      }
+
       coordinator.attach(model)
       coordinator.scheduleSave()
     } else {
