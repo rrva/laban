@@ -6,6 +6,7 @@
 .tmp/
 .env
 .claude/worktrees/
+.codex/worktrees/
 compile_commands.json
 Sources/LabanApp/BuildInfo.generated.swift
 __pycache__/
