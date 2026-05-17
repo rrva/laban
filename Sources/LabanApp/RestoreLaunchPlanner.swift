@@ -1,0 +1,43 @@
+import Foundation
+import LabanCore
+
+/// Decides what (if anything) Laban should feed into a restored tab's
+/// PTY right after the shell starts. Three outcomes only:
+///
+///   - `.executeNow(command)` — write the bytes followed by a newline
+///     so the shell runs the command immediately. Used ONLY when the
+///     tab carries a captured agent session id AND
+///     `agent.wasRunningAtQuit == true`. The non-destructive action
+///     of `claude --resume <id>` / `codex resume <id>` is the only
+///     thing we auto-execute.
+///   - `.prefillPrompt(command)` — write the bytes WITHOUT a
+///     trailing newline. The user sees the resume command sitting at
+///     the shell prompt and presses ENTER to run it. Used when the
+///     tab has a captured agent session id but the agent was no
+///     longer running at quit (the user had Ctrl-D'd it earlier).
+///   - `.noPrefill` — do nothing; the fresh shell prompt is the
+///     final state. Used for every non-agent tab and for agent tabs
+///     where detection never fired.
+///
+/// The decision reads `agent.wasRunningAtQuit`, NOT `processStatus`.
+/// `processStatus` tracks the *shell* — always alive while the tab is
+/// open — not the agent grandchild. Using shell processStatus would
+/// silently auto-resume long-dead Claude conversations, which is
+/// wrong.
+public enum RestoreLaunchInstruction: Equatable {
+  case executeNow(command: String)
+  case prefillPrompt(command: String)
+  case noPrefill
+}
+
+public enum RestoreLaunchPlanner {
+
+  public static func instruction(for tab: TabState) -> RestoreLaunchInstruction {
+    guard let agent = tab.agent else { return .noPrefill }
+    guard let support = AgentRegistry.entry(for: agent.name) else { return .noPrefill }
+    let command = support.resumeCommand(agent.sessionId)
+    return agent.wasRunningAtQuit
+      ? .executeNow(command: command)
+      : .prefillPrompt(command: command)
+  }
+}

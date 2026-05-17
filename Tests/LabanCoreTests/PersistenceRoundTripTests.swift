@@ -21,6 +21,31 @@ private func makeTempStore() -> PersistenceStore {
   return PersistenceStore(baseURL: tmp)
 }
 
+/// Records every attach/detach call into a list so tests can assert
+/// the host wiring fires for both default and restored tabs.
+private final class TranscriptRecorder: TranscriptHostDelegate {
+  let lock = NSLock()
+  var attached: [String] = []
+  var detached: [String] = []
+
+  func attachTranscriptWriter(to session: Session, tabId: String) {
+    lock.lock()
+    attached.append(tabId)
+    lock.unlock()
+  }
+
+  func detachTranscriptWriter(forTabId tabId: String, in session: Session?) {
+    lock.lock()
+    detached.append(tabId)
+    lock.unlock()
+  }
+
+  func transcriptURL(forTabId tabId: String) -> URL {
+    FileManager.default.temporaryDirectory
+      .appendingPathComponent("\(tabId).bin")
+  }
+}
+
 final class PersistenceRoundTripTests: XCTestCase {
 
   override func tearDown() {
@@ -287,6 +312,112 @@ final class PersistenceRoundTripTests: XCTestCase {
     enabled = true
     coord.flushSync()
     XCTAssertTrue(FileManager.default.fileExists(atPath: store.workspaceURL.path))
+  }
+
+  // MARK: - M1 fixes
+
+  func testReplaceTabsDetachesDefaultTabTranscriptDelegate() throws {
+    // The M1 review flagged a leak: replaceTabs calls
+    // closeAllSessionsUnlocked() which removed sessions without
+    // notifying the transcript host. Verify the host's detach is
+    // called for the default tab AS WELL AS for the restored tab on
+    // close.
+    let model = try makeModel()
+    let recorder = TranscriptRecorder()
+    model.transcriptDelegate = recorder
+
+    // Default tab was constructed before transcriptDelegate was set,
+    // so it never got an attach — simulate the production wiring of
+    // attaching writers to pre-existing sessions.
+    for (tab, session) in model.allSessions() {
+      recorder.attachTranscriptWriter(to: session, tabId: tab.id)
+    }
+    XCTAssertEqual(recorder.attached.count, 1)
+    let defaultTabId = model.tabs[0].id
+
+    let now = Date()
+    let state = WorkspaceState(
+      windows: [
+        WindowState(
+          id: "win",
+          selectedTabId: "restored",
+          tabs: [
+            TabState(
+              id: "restored",
+              cwd: NSHomeDirectory(),
+              launchCommand: "/bin/zsh -l",
+              lastActiveAt: now
+            )
+          ]
+        )
+      ]
+    )
+
+    model.replaceTabs(from: state)
+
+    XCTAssertTrue(
+      recorder.detached.contains(defaultTabId),
+      "default tab id must be in the detach record after replaceTabs (\(recorder.detached))")
+    XCTAssertTrue(
+      recorder.attached.contains(where: { $0 == "restored" }),
+      "restored tab must trigger attach")
+  }
+
+  func testCwdFallbackAppliedPersistsAcrossSnapshot() throws {
+    let model = try makeModel()
+    let now = Date()
+    let state = WorkspaceState(
+      windows: [
+        WindowState(
+          id: "win",
+          selectedTabId: "missing",
+          tabs: [
+            TabState(
+              id: "missing",
+              cwd: "/this/path/does/not/exist/\(UUID().uuidString)",
+              launchCommand: "/bin/zsh -l",
+              lastActiveAt: now
+            )
+          ]
+        )
+      ]
+    )
+    model.replaceTabs(from: state)
+    let snap = model.snapshotForPersistence(windowId: "win")
+    let restored = try XCTUnwrap(snap.windows.first?.tabs.first)
+    XCTAssertEqual(restored.cwdFallbackApplied, true)
+  }
+
+  func testRestoreFailureLoggerInvokedOnFactoryError() throws {
+    let model = try makeModel()
+    // Inject a deferred factory that always throws to simulate a
+    // restore failure.
+    model.restoredDeferredSessionFactory = { _ in
+      throw NSError(domain: "test", code: 1)
+    }
+    var recorded: [(Tab.ID, Error)] = []
+    model.restoreFailureLogger = { id, err in
+      recorded.append((id, err))
+    }
+    let now = Date()
+    let state = WorkspaceState(
+      windows: [
+        WindowState(
+          id: "win",
+          selectedTabId: "bad",
+          tabs: [
+            TabState(
+              id: "bad",
+              cwd: NSHomeDirectory(),
+              launchCommand: "/bin/zsh -l",
+              lastActiveAt: now)
+          ]
+        )
+      ]
+    )
+    model.replaceTabs(from: state)
+    XCTAssertEqual(recorded.count, 1)
+    XCTAssertEqual(recorded.first?.0, "bad")
   }
 
   func testRestoreOnLaunchSettingsDefaultsToTrueWithMissingKey() throws {

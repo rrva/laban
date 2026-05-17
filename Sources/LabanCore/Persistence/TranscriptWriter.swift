@@ -45,8 +45,10 @@ public final class TranscriptWriter {
 
   private let drainQueue: DispatchQueue
   private let debounceInterval: DispatchTimeInterval
-  private let debounceLock = NSLock()
-  private var pendingTimer: DispatchSourceTimer?
+  private let timerLock = NSLock()
+  private var drainTimer: DispatchSourceTimer?
+  private var didStart = false
+  private let isEnabled: () -> Bool
 
   /// Designated init.
   ///
@@ -62,13 +64,21 @@ public final class TranscriptWriter {
   ///   - debounceInterval: how long the drain queue coalesces writes.
   ///   - drainQueue: optional override so tests can inject a serial
   ///     queue they own.
+  ///   - isEnabled: gate consulted on every disk drain. When false,
+  ///     bytes still accumulate in the in-memory ring (so the PTY
+  ///     callback's contract — memcpy-only — is preserved) but never
+  ///     reach disk. The kill-switch toggle wires this to
+  ///     `RestoreOnLaunchSettings.isEnabled` so flipping it off mid-
+  ///     session stops `.bin` writes immediately without disturbing
+  ///     the PTY hot path.
   public init(
     tabId: String,
     fileURL: URL,
     ringCapacity: Int = 256 * 1024,
     fileCapacity: Int = 10 * 1024 * 1024,
     debounceInterval: DispatchTimeInterval = .milliseconds(200),
-    drainQueue: DispatchQueue? = nil
+    drainQueue: DispatchQueue? = nil,
+    isEnabled: @escaping () -> Bool = { true }
   ) {
     self.tabId = tabId
     self.fileURL = fileURL
@@ -78,16 +88,20 @@ public final class TranscriptWriter {
     self.drainQueue =
       drainQueue ?? DispatchQueue(label: "laban.persistence.transcript", qos: .utility)
     self.ring = UnsafeMutablePointer<UInt8>.allocate(capacity: ringCapacity)
+    self.isEnabled = isEnabled
+    startTimer()
   }
 
   deinit {
-    pendingTimer?.cancel()
+    drainTimer?.cancel()
     ring.deallocate()
   }
 
-  /// The single entry point invoked by the C persistence callback. MUST
-  /// remain memcpy-only — see ExecPlan Decision Log. Schedules a drain
-  /// via the dedicated queue; never blocks the caller.
+  /// The single entry point invoked by the C persistence callback. By
+  /// contract this is memcpy-only — no allocation, no dispatch, no
+  /// IO, no timer mutation. The single repeating drain timer started
+  /// at init handles the periodic disk flush; the callback only
+  /// updates the ring buffer.
   public func writeChunk(bytes: UnsafePointer<UInt8>, count: Int) {
     guard count > 0 else { return }
     ringLock.lock()
@@ -110,12 +124,15 @@ public final class TranscriptWriter {
       i += chunk
     }
     ringLock.unlock()
-    scheduleDrain()
   }
 
   /// Drain whatever is currently in the ring synchronously. Used by
-  /// tests, by `flushSync()`, and by the periodic drain timer.
+  /// tests, by `flushSync()`, and by the periodic drain timer. No-ops
+  /// when the gate is disabled — bytes stay in the ring (bounded by
+  /// `ringCapacity`'s drop-oldest policy) until either the gate is
+  /// re-enabled or the writer is torn down.
   public func drainNow() {
+    guard isEnabled() else { return }
     let bytes = takeRingSnapshot()
     guard !bytes.isEmpty else { return }
     do {
@@ -135,32 +152,40 @@ public final class TranscriptWriter {
   }
 
   /// Synchronously drain the ring and write to disk. Called by the
-  /// persistence coordinator from `applicationWillTerminate`.
+  /// persistence coordinator from `applicationWillTerminate`. Skips
+  /// the timer hop; runs the drain on the calling thread under the
+  /// drain queue's serial guarantee.
   public func flushSync() {
-    cancelPendingTimer()
     drainQueue.sync { [weak self] in
       self?.drainNow()
     }
   }
 
-  private func scheduleDrain() {
-    debounceLock.lock()
-    pendingTimer?.cancel()
+  /// Start the single repeating drain timer. Called from init; safe
+  /// to call again (idempotent) only as a no-op on re-entry.
+  private func startTimer() {
+    timerLock.lock()
+    defer { timerLock.unlock() }
+    if didStart { return }
+    didStart = true
     let timer = DispatchSource.makeTimerSource(queue: drainQueue)
-    timer.schedule(deadline: .now() + debounceInterval)
+    timer.schedule(
+      deadline: .now() + debounceInterval, repeating: debounceInterval, leeway: .milliseconds(20))
     timer.setEventHandler { [weak self] in
       self?.drainNow()
     }
-    pendingTimer = timer
-    debounceLock.unlock()
+    drainTimer = timer
     timer.resume()
   }
 
+  /// Reserved for symmetry with the original API; the repeating timer
+  /// is cancelled at deinit and never needs to be cancelled
+  /// mid-flight in normal flow.
   private func cancelPendingTimer() {
-    debounceLock.lock()
-    pendingTimer?.cancel()
-    pendingTimer = nil
-    debounceLock.unlock()
+    timerLock.lock()
+    drainTimer?.cancel()
+    drainTimer = nil
+    timerLock.unlock()
   }
 
   /// Drain the ring into a contiguous Data buffer and reset the ring.

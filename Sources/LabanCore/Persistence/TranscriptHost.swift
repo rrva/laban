@@ -9,13 +9,23 @@ import LabanTerminalCore
 /// transcripts can leave the delegate nil.
 public final class TranscriptHost {
   public let store: PersistenceStore
+  public let isEnabled: () -> Bool
 
   private let lock = NSLock()
   private var writersByTab: [String: TranscriptWriter] = [:]
   private var bridges: [String: Unmanaged<TranscriptWriterBridge>] = [:]
 
-  public init(store: PersistenceStore = .shared) {
+  /// - Parameter isEnabled: gate consulted by every `TranscriptWriter`
+  ///   this host hands out. When false, PTY bytes still flow into the
+  ///   ring buffer (memcpy-only contract preserved), but nothing
+  ///   reaches disk. The kill-switch toggle wires this to
+  ///   `RestoreOnLaunchSettings.isEnabled`.
+  public init(
+    store: PersistenceStore = .shared,
+    isEnabled: @escaping () -> Bool = { RestoreOnLaunchSettings.isEnabled }
+  ) {
     self.store = store
+    self.isEnabled = isEnabled
   }
 
   /// Path the writer for `tabId` appends to. Used by the restore
@@ -32,7 +42,10 @@ public final class TranscriptHost {
   /// continues to append to the same `.bin` file, so the on-disk
   /// transcript carries across the restore boundary.
   public func attachTranscriptWriter(to session: Session, tabId: String) {
-    let writer = TranscriptWriter(tabId: tabId, fileURL: transcriptURL(forTabId: tabId))
+    let writer = TranscriptWriter(
+      tabId: tabId,
+      fileURL: transcriptURL(forTabId: tabId),
+      isEnabled: isEnabled)
     let bridge = TranscriptWriterBridge(writer: writer)
     lock.lock()
     let priorBridge = bridges[tabId]

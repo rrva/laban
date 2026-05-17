@@ -49,6 +49,19 @@ public final class AppModel {
   /// Set by `PersistenceCoordinator.attach(_:)` in normal operation.
   public var onWorkspaceMutation: (() -> Void)?
 
+  /// Fires after every successful tab creation (default, fresh, or
+  /// restored). Lets LabanApp wire up per-tab subsystems like the
+  /// agent-session detector that depend on a real shell PID.
+  public var onTabCreated: ((Tab.ID, Session) -> Void)?
+
+  /// Fires after every tab close so per-tab subsystems can tear down.
+  public var onTabClosed: ((Tab.ID) -> Void)?
+
+  /// Optional logger invoked for each tab that fails to spawn during
+  /// `replaceTabs(from:)`. Production wires this to `AppLog` so
+  /// restore failures don't disappear silently.
+  public var restoreFailureLogger: ((Tab.ID, Error) -> Void)?
+
   /// Factory used by `replaceTabs(from:)` and `createRestoredTab(...)`
   /// to spawn a session pinned to a specific cwd. When nil, restored
   /// tabs fall back to the default `sessionFactory` and the persisted
@@ -84,6 +97,41 @@ public final class AppModel {
   /// created with an explicit launch command (restored tabs). Keyed by
   /// Tab.ID. Cleared on tab close.
   private var launchCommandByTab: [Tab.ID: String] = [:]
+
+  /// Most recent agent observation per tab, fed by the LabanApp-side
+  /// `AgentSessionDetector`. Persisted into `TabState.agent` by
+  /// `snapshotForPersistence(windowId:)`. Cleared on tab close.
+  private var agentByTab: [Tab.ID: AgentInfo] = [:]
+
+  /// True when the tab was restored with a cwd that no longer existed
+  /// and we fell back to `$HOME`. Surfaced into
+  /// `TabState.cwdFallbackApplied` so headless tests can assert the
+  /// fallback was taken and the next save round-trips the flag.
+  /// Cleared on tab close.
+  private var cwdFallbackAppliedByTab: [Tab.ID: Bool] = [:]
+
+  /// Update the captured agent state for a tab. Setting nil clears
+  /// any previously captured state. Triggers a workspace mutation
+  /// notification so the persistence coordinator records the change.
+  public func updateAgent(_ agent: AgentInfo?, forTab tabId: Tab.ID) {
+    let changed: Bool = withModelLock {
+      let prior = agentByTab[tabId]
+      if prior == agent { return false }
+      if let agent {
+        agentByTab[tabId] = agent
+      } else {
+        agentByTab.removeValue(forKey: tabId)
+      }
+      return true
+    }
+    if changed { notifyWorkspaceMutation() }
+  }
+
+  /// Read the captured agent state for a tab. Returns nil when the
+  /// tab does not exist or no agent has been detected.
+  public func agent(forTab tabId: Tab.ID) -> AgentInfo? {
+    withModelLock { agentByTab[tabId] }
+  }
 
   @discardableResult
   private func withModelLock<T>(_ body: () throws -> T) rethrows -> T {
@@ -149,11 +197,28 @@ public final class AppModel {
 
   private func closeAllSessionsUnlocked() {
     let closedCwds = _tabs.compactMap { $0.titleMetadata.workspace.cwd }
+    // Notify the transcript delegate BEFORE we tear down the session
+    // registry, so the host can flush each writer's ring and detach
+    // the C callback while the Session pointer is still valid.
+    // Otherwise the host retains stale writers/bridges until its own
+    // teardown — a real leak the M1 review flagged after restore
+    // calls `closeAllSessionsUnlocked` to replace the default tab.
+    if let transcriptDelegate {
+      for tab in _tabs {
+        let session = sessionRegistry.session(id: tab.sessionId)
+        transcriptDelegate.detachTranscriptWriter(forTabId: tab.id, in: session)
+      }
+    }
+    if let onTabClosed {
+      for tab in _tabs { onTabClosed(tab.id) }
+    }
     sessionRegistry.closeAll()
     _tabs.removeAll()
     findStateBySession.removeAll()
     findFullSearchCacheBySession.removeAll()
     launchCommandByTab.removeAll()
+    agentByTab.removeAll()
+    cwdFallbackAppliedByTab.removeAll()
     metadataSync.reset(closedCwds: closedCwds)
   }
 
@@ -378,6 +443,7 @@ public final class AppModel {
       return (_tabs.last!, session)
     }
     transcriptDelegate?.attachTranscriptWriter(to: session, tabId: tab.id)
+    onTabCreated?(tab.id, session)
     notifyWorkspaceMutation()
     return tab
   }
@@ -431,11 +497,20 @@ public final class AppModel {
     for (index, persistedTab) in window.tabs.enumerated() {
       let isActive = (window.selectedTabId == persistedTab.id)
         || (window.selectedTabId == nil && index == 0)
-      _ = try? createRestoredTabSuppressingNotification(
-        id: persistedTab.id,
-        persistedTab: persistedTab,
-        isActive: isActive
-      )
+      do {
+        _ = try createRestoredTabSuppressingNotification(
+          id: persistedTab.id,
+          persistedTab: persistedTab,
+          isActive: isActive
+        )
+      } catch {
+        // A restored tab failed to spawn (tab cap hit, factory error,
+        // etc.). Log but keep going so one bad tab doesn't take out
+        // the whole workspace. Future work could materialize a
+        // placeholder error tab here; for now the missing tab is
+        // visible by its absence after relaunch.
+        restoreFailureLogger?(persistedTab.id, error)
+      }
     }
     notifyWorkspaceMutation()
   }
@@ -489,8 +564,12 @@ public final class AppModel {
       sessionRegistry.add(session)
       _tabs.append(tab)
       launchCommandByTab[id] = persistedTab.launchCommand
+      if let agent = persistedTab.agent {
+        agentByTab[id] = agent
+      }
       if resolved.fallbackApplied {
         _tabs[_tabs.count - 1].titleMetadata.workspace = TabWorkspaceMetadata(cwd: resolved.cwd)
+        cwdFallbackAppliedByTab[id] = true
       }
       attachTabStatus(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
@@ -501,6 +580,7 @@ public final class AppModel {
       return (_tabs.last!, session)
     }
     transcriptDelegate?.attachTranscriptWriter(to: session, tabId: id)
+    onTabCreated?(id, session)
     return tab
   }
 
@@ -575,10 +655,10 @@ public final class AppModel {
           lastActiveAt: now,
           transcriptPath: transcriptPath,
           altBufferAtQuit: altBuffer,
-          cwdFallbackApplied: nil,
+          cwdFallbackApplied: cwdFallbackAppliedByTab[tab.id],
           processStatus: processStatus,
           exitCode: exitCode,
-          agent: nil
+          agent: agentByTab[tab.id]
         )
       }
       let selectedId = _tabs.first(where: { $0.isActive })?.id
@@ -645,6 +725,8 @@ public final class AppModel {
           findStateBySession.removeValue(forKey: tab.sessionId)
           findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
           launchCommandByTab.removeValue(forKey: tab.id)
+          agentByTab.removeValue(forKey: tab.id)
+          cwdFallbackAppliedByTab.removeValue(forKey: tab.id)
           metadataSync.forget(tab: tab)
           _tabs = []
           recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
@@ -658,6 +740,7 @@ public final class AppModel {
         findStateBySession.removeValue(forKey: tab.sessionId)
         findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
         launchCommandByTab.removeValue(forKey: tab.id)
+        agentByTab.removeValue(forKey: tab.id)
         metadataSync.forget(tab: tab)
         _tabs.remove(at: idx)
         recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
@@ -680,6 +763,7 @@ public final class AppModel {
     } catch {
       if let id = closedTabId {
         transcriptDelegate?.detachTranscriptWriter(forTabId: id, in: closedSession)
+        onTabClosed?(id)
       }
       if lastTabClosedThrown {
         notifyWorkspaceMutation()
@@ -688,6 +772,7 @@ public final class AppModel {
     }
     if let id = closedTabId {
       transcriptDelegate?.detachTranscriptWriter(forTabId: id, in: closedSession)
+      onTabClosed?(id)
     }
     notifyWorkspaceMutation()
   }

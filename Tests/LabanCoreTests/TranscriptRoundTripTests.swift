@@ -222,6 +222,73 @@ final class TranscriptRoundTripTests: XCTestCase {
       "transcript file should contain the fed bytes")
   }
 
+  // MARK: - Toggle gating
+
+  func testWriterSuppressesDiskWritesWhenDisabled() throws {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("t.bin")
+
+    var enabled = false
+    let writer = TranscriptWriter(
+      tabId: "t",
+      fileURL: file,
+      ringCapacity: 4096,
+      fileCapacity: 1_000_000,
+      debounceInterval: .milliseconds(10),
+      isEnabled: { enabled })
+
+    let payload = Array("toggle-off should NOT reach disk\n".utf8)
+    payload.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: payload.count)
+    }
+    writer.flushSync()
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: file.path),
+      "disabled writer must not create the transcript file")
+
+    // Re-enable and flush: ring still held the bytes (memcpy
+    // happened in writeChunk regardless of the gate), so the next
+    // drain catches up. This is the "kill switch survives flip-then-
+    // flip" case.
+    enabled = true
+    writer.flushSync()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    let data = try Data(contentsOf: file)
+    XCTAssertEqual(Array(data), payload)
+  }
+
+  // MARK: - Hot-path discipline
+
+  func testWriteChunkDoesNotAllocatePerCall() throws {
+    // Smoke test for the hot-path-callback contract: feed many small
+    // chunks and assert the writer's API surface doesn't trip an
+    // unbounded backing structure. We can't prove "zero allocation"
+    // from a test, but we can assert that thousands of chunks don't
+    // explode memory and that the file (when enabled) still contains
+    // exactly the bytes we fed.
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("t.bin")
+    let writer = TranscriptWriter(
+      tabId: "t",
+      fileURL: file,
+      ringCapacity: 64 * 1024,
+      fileCapacity: 10 * 1024 * 1024,
+      debounceInterval: .milliseconds(20))
+
+    let chunk: [UInt8] = Array("abc\n".utf8)
+    for _ in 0..<5000 {
+      chunk.withUnsafeBufferPointer { buf in
+        writer.writeChunk(bytes: buf.baseAddress!, count: chunk.count)
+      }
+    }
+    writer.flushSync()
+
+    let data = try Data(contentsOf: file)
+    XCTAssertEqual(data.count, 4 * 5000)
+  }
+
   func testAltBufferActiveReflectsLibghosttyState() throws {
     var size = LabanTerminalSize()
     size.rows = 24

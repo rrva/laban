@@ -91,18 +91,62 @@ authorization per milestone.
   New C ABI: `laban_session_set_persistence_callback`,
   `laban_session_alt_buffer_active`, and deferred-spawn mode
   (`LabanLaunchConfig.defer_spawn` + `laban_session_start_spawn`). New
-  Swift types: `TranscriptWriter` (ring buffer with drop-oldest, 200ms
-  debounced disk drain, 10MB head-truncation cap), `TranscriptRenderer`
-  (hybrid restore: text-strip prefix + byte-replay suffix at first LF
-  after nominal cutoff), `TranscriptHost` (per-tab writer registry +
-  C-callback bridge), `RestoredSessionSpec`, `Session.makeDeferred` /
-  `startSpawn`. AppModel grew a `transcriptDelegate` and a
-  `restoredDeferredSessionFactory`; `replaceTabs(from:)` now uses
+  Swift types: `TranscriptWriter` (ring buffer with drop-oldest,
+  **single repeating drain timer** so the C callback path stays
+  memcpy-only, 200ms debounced disk drain, 10MB head-truncation cap,
+  gated by an `isEnabled` closure that suppresses disk writes when
+  the kill switch is off), `TranscriptRenderer` (hybrid restore:
+  text-strip prefix + byte-replay suffix at first LF after nominal
+  cutoff), `TranscriptHost` (per-tab writer registry + C-callback
+  bridge), `RestoredSessionSpec`, `Session.makeDeferred` /
+  `startSpawn`. AppModel grew a `transcriptDelegate`,
+  `restoredDeferredSessionFactory`, `restoreFailureLogger`, and
+  `cwdFallbackAppliedByTab` tracking. `replaceTabs(from:)` now uses
   deferred spawn so transcript replay completes before live shell
-  output. Cwd-gone fallback to `$HOME` is wired (banner UI deferred).
-  Tests: 11 cases in `Tests/LabanCoreTests/TranscriptRoundTripTests.swift`
-  pass; full suite (535 tests) passes. Manual UI acceptance still
-  needs a freshly built bundle.
+  output; `closeAllSessionsUnlocked` notifies the transcript delegate
+  so the default-tab writer detaches cleanly during restore (was a
+  leak in the first M1 draft). Alt-buffer-at-quit restore now skips
+  shell spawn entirely and paints a "process exited" marker, matching
+  the M1 acceptance behavior. Cwd-gone fallback persists
+  `cwdFallbackApplied: true` across snapshots. Restore failures are
+  logged through `AppLog`. Tests: 16 cases in
+  `Tests/LabanCoreTests/TranscriptRoundTripTests.swift` and the
+  additional `PersistenceRoundTripTests` cases for the M1-review
+  fixes (replaceTabs delegate detach, cwdFallback persistence,
+  restoreFailureLogger) all pass. Manual UI acceptance still needs a
+  freshly built bundle.
+- [x] (2026-05-17) **M2** — agent (Claude + Codex) session id
+  capture + autoresume + JSONL mirror. New LabanApp components:
+  `AgentSupport` (per-agent table: binary basenames, resume command
+  form, UUID-validating session-id extractor) with built-in entries
+  for Claude (`claude --resume <id>`,
+  `.claude/projects/<dir>/<uuid>.jsonl` matcher) and Codex
+  (`codex resume <id>`,
+  `.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl` matcher);
+  `AgentSessionDetector` (per-tab `DispatchSourceTimer` polling at
+  500ms; walks descendant tree via `proc_listpids(PROC_PPID_ONLY)`
+  with a depth-4 cap, resolves executables via `proc_pidpath`, scans
+  open file descriptors via
+  `proc_pidinfo(PROC_PIDLISTFDS)` /
+  `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)`; `ProcessIntrospector`
+  protocol so tests can inject a mock instead of fighting xctest's
+  flaky process visibility; never-stop timer that flips
+  `wasRunningAtQuit` to false while preserving the captured
+  identity); `AgentJSONLMirror` (lifecycle + 5-minute periodic
+  snapshots to `agent-mirror/<tab-id>.jsonl`);
+  `RestoreLaunchPlanner` (pure decision: `.executeNow` only when
+  `tab.agent.wasRunningAtQuit == true`, `.prefillPrompt` when agent
+  is captured but was dead at quit, `.noPrefill` everywhere else —
+  reads `wasRunningAtQuit`, never `processStatus`); `AgentObserverHost`
+  (per-tab orchestration). AppModel gained `updateAgent(_:forTab:)`,
+  `onTabCreated`/`onTabClosed` hooks, and surfaces `agent` in
+  `snapshotForPersistence`. `MainWindowController` wires the detector
+  to every default and restored tab, feeds the resume command into
+  the PTY via `RestoreLaunchPlanner` after restore, and
+  `applicationWillTerminate` flushes the mirror. Tests: 7 detector
+  unit tests (mock-driven), 8 `AgentSupportTests`, 6
+  `RestorePlannerTests` — all pass. Full suite: 561 tests, 2
+  skipped, 0 failures.
 - [ ] **M2** — agent (Claude + Codex) session id capture and
   autoresume + JSONL mirror: detect `claude` and `codex` processes
   via descendant-tree polling (`DispatchSourceTimer` +
