@@ -318,6 +318,48 @@ final class PersistenceRoundTripTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: store.workspaceURL.path))
   }
 
+  func testPersistenceCoordinatorFlushKeepsTranscriptAsRawPtyBytes() throws {
+    let store = makeTempStore()
+    defer { try? FileManager.default.removeItem(at: store.baseURL) }
+
+    let model = try makeModel()
+    let host = TranscriptHost(store: store, isEnabled: { true })
+    model.transcriptDelegate = host
+    for (tab, session) in model.allSessions() {
+      host.attachTranscriptWriter(to: session, tabId: tab.id)
+    }
+
+    let coord = PersistenceCoordinator(
+      store: store,
+      windowId: "win-raw-transcript",
+      debounceInterval: .milliseconds(10),
+      isEnabled: { true }
+    )
+    coord.transcriptHost = host
+    coord.attach(model)
+
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let payloadText =
+      "\u{001B}[31mraw color survives\u{001B}[0m\r\n"
+      + (0..<40).map { "scrollback line \($0)\r\n" }.joined()
+    let payload = Array(payloadText.utf8)
+    _ = session.feedOutput(payload)
+
+    coord.flushSync()
+
+    let data = try Data(contentsOf: store.transcriptURL(forTabId: tab.id))
+    XCTAssertEqual(
+      Array(data), payload,
+      "quit flush must drain writers without replacing .bin with visible-grid text")
+    XCTAssertTrue(
+      data.contains(0x1B),
+      "raw SGR escape bytes must remain so recent restore keeps color/style")
+    XCTAssertTrue(
+      String(data: data, encoding: .utf8)?.contains("scrollback line 0") == true,
+      "flush must not truncate persisted history to only the visible grid")
+  }
+
   // MARK: - M1 fixes
 
   func testReplaceTabsDetachesDefaultTabTranscriptDelegate() throws {

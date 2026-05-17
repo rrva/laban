@@ -82,29 +82,12 @@ public enum TranscriptRenderer {
     }
   }
 
-  /// Feed bytes into libghostty, then nudge the cursor to column 0
-  /// so the live shell's prompt lands cleanly without firing
-  /// zsh's PROMPT_SP marker.
-  ///
-  /// Two cases:
-  /// - The file ends with `\n` (a real prior command produced
-  ///   output that finished with a newline). The replay already
-  ///   landed the cursor at column 0 of a fresh row; we do
-  ///   nothing. The live shell's prompt appears below.
-  /// - The file ends mid-prompt-sequence (e.g. `\x1b[?2004h`
-  ///   after zsh painted its next prompt). The replay's cursor
-  ///   is somewhere inside the painted prompt. We emit a bare CR
-  ///   so the cursor returns to column 0 of the SAME row — the
-  ///   live shell's prompt then overwrites the replayed prompt
-  ///   in place (its `\x1b[K` clears residue). Emitting CR+LF
-  ///   here would push the live prompt onto a fresh row below
-  ///   the replayed one, leaving a visible blank gap and a
-  ///   ghost prompt above.
+  /// Feed transcript bytes into libghostty without capturing them.
+  /// The replacement shell's startup output is suppressed at the PTY
+  /// boundary until first input, so the replayed cursor position is
+  /// the position user input should continue from.
   private static func replayWithCleanHandoff(data: Data, into session: Session) {
     _ = session.replayPtyOutput([UInt8](data))
-    if data.last != 0x0A {
-      _ = session.replayPtyOutput([0x0D])
-    }
   }
 
   /// Walks forward from `nominal` to the first ASCII LF. Returns the

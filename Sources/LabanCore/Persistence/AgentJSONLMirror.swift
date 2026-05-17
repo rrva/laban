@@ -1,5 +1,4 @@
 import Foundation
-import LabanCore
 
 /// Protocol the `AgentObserverHost` uses to drive snapshots — lets
 /// tests substitute a recording double without subclassing

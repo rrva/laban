@@ -1,5 +1,4 @@
 import Foundation
-import LabanCore
 
 /// Decides what (if anything) Laban should feed into a restored tab's
 /// PTY right after the shell starts. Three outcomes only:

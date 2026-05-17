@@ -24,6 +24,8 @@ static uint64_t monotonic_us(void) {
     return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
 }
 
+static size_t laban_session_drain_locked_(LabanSession *s);
+
 int laban_write_pty_bytes(
     LabanSession *s,
     const uint8_t *bytes,
@@ -85,6 +87,10 @@ int laban_write_pty_bytes(
 }
 
 int laban_write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
+    if (s && s->suppress_pty_output_until_input) {
+        (void)laban_session_drain_locked_(s);
+        s->suppress_pty_output_until_input = 0;
+    }
     return laban_write_pty_bytes(s, bytes, len, LABAN_CAPTURE_BYTES_PTY_INPUT);
 }
 
@@ -97,7 +103,9 @@ static size_t laban_session_drain_locked_(LabanSession *s) {
         if (drained >= MAX_BYTES_PER_POLL) break;
         ssize_t n = read(s->pty_fd, buf, sizeof(buf));
         if (n > 0) {
-            laban_vt_write_capture(s, buf, (size_t)n);
+            if (!s->suppress_pty_output_until_input) {
+                laban_vt_write_capture(s, buf, (size_t)n);
+            }
             drained += (size_t)n;
             continue;
         }
@@ -174,4 +182,3 @@ int laban_session_poll_blocking(LabanSession *s, int timeout_ms) {
     if (s->status != 0) return 0;
     return (int)laban_session_drain_locked_(s);
 }
-

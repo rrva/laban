@@ -1,5 +1,4 @@
 import Foundation
-import LabanCore
 
 /// Per-agent capability table. Single source of truth for everything
 /// agent-specific: the binary names the descendant detector watches

@@ -1,5 +1,4 @@
 import Foundation
-import LabanCore
 import LabanTerminalCore
 
 /// Per-tab orchestrator that owns one `AgentSessionDetector` and

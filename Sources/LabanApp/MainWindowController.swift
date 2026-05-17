@@ -85,6 +85,7 @@ final class MainWindowController: NSWindowController {
           altBufferAtQuit: spec.altBufferAtQuit
         )
       }
+      _ = session.suppressPtyOutputUntilInput()
       let rc = session.startSpawn(
         overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil)
       if rc != 0 {

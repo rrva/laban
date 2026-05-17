@@ -182,6 +182,7 @@ int laban_session_create(
     s->capture_callback = NULL;
     s->capture_userdata = NULL;
     s->fixture_mode = config->fixture_mode;
+    s->suppress_pty_output_until_input = 0;
     s->color_scheme = LABAN_COLOR_SCHEME_DARK;
 
     GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 10000000 };
@@ -516,6 +517,13 @@ int laban_session_start_spawn(LabanSession *s, const char *override_cwd) {
     return laban_session_spawn_now_(s, override_cwd);
 }
 
+int laban_session_suppress_pty_output_until_input(LabanSession *s, int enabled) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    s->suppress_pty_output_until_input = enabled ? 1 : 0;
+    return 0;
+}
+
 void laban_session_destroy(LabanSession *s) {
     if (!s) return;
 
@@ -623,4 +631,3 @@ LabanExitState laban_session_exit_state(LabanSession *session) {
     r.exit_status = session->exit_status;
     return r;
 }
-

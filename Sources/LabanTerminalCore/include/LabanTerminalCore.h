@@ -155,6 +155,15 @@ int laban_session_create(
  */
 int laban_session_start_spawn(LabanSession *session, const char *override_cwd);
 
+/*
+ * Drop PTY output from a deferred-spawn restore until the first input
+ * write reaches the shell. Restored tabs replay the old transcript
+ * before launching a replacement shell; the replacement shell's
+ * startup prompt must not visibly or persistently stack on top of the
+ * already-restored prompt. Returns 0 on success, -1 on NULL session.
+ */
+int laban_session_suppress_pty_output_until_input(LabanSession *session, int enabled);
+
 void laban_session_destroy(LabanSession *session);
 int laban_session_poll(LabanSession *session);
 

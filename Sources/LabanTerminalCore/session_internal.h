@@ -163,6 +163,14 @@ struct LabanSession {
     int pending_pixel_width;
     int pending_pixel_height;
 
+    /* Restore handoff guard. When true, PTY output from the newly
+     * spawned shell is drained and discarded until the first input
+     * write. A restored tab already painted the prior prompt from the
+     * transcript; keeping the replacement shell's startup prompt out
+     * of the VT parser prevents quit/reopen cycles from stacking zsh
+     * PROMPT_SP markers or prompt rows. */
+    int suppress_pty_output_until_input;
+
     /* Capture of bytes the terminal wants written back to the pty
        (capability replies: DA1/DA2/DA3, XTWINOPS, DSR, XTVERSION, ...).
        In pty mode these are also forwarded to pty_fd; in fixture mode

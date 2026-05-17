@@ -25,6 +25,15 @@ import XCTest
 /// path works once but corrupts state on the second relaunch.
 final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
+  private enum HarnessSessionMode {
+    case fixture
+    case realShell
+  }
+
+  private enum HarnessError: Error {
+    case spawnFailed
+  }
+
   private struct Harness {
     let baseDir: URL
     let model: AppModel
@@ -37,29 +46,40 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
   /// shells so the test is fast and deterministic.
   private func makeHarness(
     baseDir: URL,
-    restoring restoredState: WorkspaceState? = nil
+    restoring restoredState: WorkspaceState? = nil,
+    sessionMode: HarnessSessionMode = .fixture
   ) throws -> Harness {
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
     let model = try AppModel(
       initialSize: size,
-      sessionFactory: { try Session.fixture(size: $0) })
+      sessionFactory: { size in
+        try Self.makeFreshSession(size: size, mode: sessionMode)
+      })
 
     let transcriptHost = TranscriptHost(
       store: PersistenceStore(baseURL: baseDir),
       isEnabled: { true })
     model.transcriptDelegate = transcriptHost
     // Deferred factory used by replaceTabs(from:). Replays the
-    // transcript into a fresh fixture session, then "starts" it
-    // (no-op for fixture mode but the call matches production).
+    // transcript into a fresh session, then starts a real shell only
+    // after replay. This matches production's launch boundary: prior
+    // scrollback first, live shell output second.
     model.restoredDeferredSessionFactory = { spec in
-      let session = try Session.fixture(size: spec.size)
+      let session = try Self.makeRestoredSession(spec: spec, mode: sessionMode)
       if let url = spec.transcriptURL {
         TranscriptRenderer.render(
           fileURL: url,
           into: session,
           altBufferAtQuit: spec.altBufferAtQuit)
+      }
+      if case .realShell = sessionMode {
+        let override = spec.cwdFallbackApplied ? spec.cwd : nil
+        _ = session.suppressPtyOutputUntilInput()
+        guard session.startSpawn(overrideCwd: override) == 0 else {
+          throw HarnessError.spawnFailed
+        }
       }
       return session
     }
@@ -102,6 +122,32 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       .appendingPathComponent("laban-e2e-\(UUID().uuidString)", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir
+  }
+
+  private static func makeFreshSession(
+    size: LabanTerminalSize,
+    mode: HarnessSessionMode
+  ) throws -> Session {
+    switch mode {
+    case .fixture:
+      return try Session.fixture(size: size)
+    case .realShell:
+      let session = try Session.makeDeferred(size: size, cwd: NSHomeDirectory())
+      guard session.startSpawn() == 0 else { throw HarnessError.spawnFailed }
+      return session
+    }
+  }
+
+  private static func makeRestoredSession(
+    spec: RestoredSessionSpec,
+    mode: HarnessSessionMode
+  ) throws -> Session {
+    switch mode {
+    case .fixture:
+      return try Session.fixture(size: spec.size)
+    case .realShell:
+      return try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
+    }
   }
 
   // MARK: - Cycle test
@@ -234,7 +280,481 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     let _ = harness3
   }
 
+  func testSmallEchoTranscriptStaysStableAcrossRepeatedRestoreCycles() throws {
+    let base = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+    let store = PersistenceStore(baseURL: base)
+
+    let first = try makeHarness(baseDir: base)
+    let tabId = try XCTUnwrap(first.model.activeTab?.id)
+    let echoBytes = Array("e\u{0008}echo hej\r\nhej\r\n".utf8)
+    _ = first.model.session(forTab: tabId)?.feedOutput(echoBytes)
+    quit(first)
+    let _ = first
+
+    for cycle in 1...5 {
+      let workspace = try XCTUnwrap(
+        store.load(),
+        "workspace must exist before restore cycle \(cycle)")
+      let restored = try makeHarness(baseDir: base, restoring: workspace)
+
+      let visible = visibleText(restored.model, tabId: tabId)
+      XCTAssertTrue(
+        visible.contains("echo hej"),
+        "cycle \(cycle) lost echo command; visible=\(visible.debugDescription)")
+      XCTAssertTrue(
+        visible.contains("hej"),
+        "cycle \(cycle) lost echo output; visible=\(visible.debugDescription)")
+      XCTAssertFalse(
+        visible.contains("eecho hej"),
+        "cycle \(cycle) duplicated the first character; visible=\(visible.debugDescription)")
+      XCTAssertFalse(
+        visible.contains("%"),
+        "cycle \(cycle) persisted zsh PROMPT_SP marker; visible=\(visible.debugDescription)")
+      XCTAssertFalse(
+        visible.unicodeScalars.contains { $0.value == 0 },
+        "cycle \(cycle) rendered a NUL glyph; visible=\(visible.debugDescription)")
+
+      let data = try Data(contentsOf: store.transcriptURL(forTabId: tabId))
+      XCTAssertEqual(
+        Array(data), echoBytes,
+        "cycle \(cycle) must not rewrite or append to the original echo transcript")
+
+      // Simulate the restored shell's startup prompt while the
+      // restored-tab suppression window is still active. This output
+      // may paint the live grid in the current process, but it must
+      // not enter the persisted transcript and therefore must not show
+      // up on the next restore.
+      let promptNoise = Array("\u{001B}[1m\u{001B}[7m%\u{001B}[27m\u{001B}[K\r~$ ".utf8)
+      _ = restored.model.session(forTab: tabId)?.feedOutput(promptNoise)
+      quit(restored)
+      let _ = restored
+    }
+  }
+
+  func testRealZshEchoStaysStableAcrossRepeatedRestoreCycles() throws {
+    guard access("/bin/zsh", X_OK) == 0 else {
+      throw XCTSkip("/bin/zsh is not available")
+    }
+    let base = tempBase()
+    let zdotdir = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+    defer { try? FileManager.default.removeItem(at: zdotdir) }
+    try writeMinimalZshConfig(to: zdotdir)
+
+    try withEnvironment(["SHELL": "/bin/zsh", "ZDOTDIR": zdotdir.path]) {
+      let store = PersistenceStore(baseURL: base)
+      let first = try makeHarness(baseDir: base, sessionMode: .realShell)
+      let tabId = try XCTUnwrap(first.model.activeTab?.id)
+      let session = try XCTUnwrap(first.model.session(forTab: tabId))
+
+      _ = session.write(Array("echo hej\n".utf8))
+      XCTAssertTrue(
+        waitForVisibleText(first.model, tabId: tabId, contains: "hej"),
+        "initial zsh session never rendered echo output")
+      quit(first)
+      let _ = first
+
+      let transcriptURL = store.transcriptURL(forTabId: tabId)
+      let baseline = try Data(contentsOf: transcriptURL)
+      XCTAssertTrue(
+        String(data: baseline, encoding: .utf8)?.contains("hej") == true,
+        "baseline transcript should contain the echo output")
+
+      for cycle in 1...4 {
+        let workspace = try XCTUnwrap(
+          store.load(),
+          "workspace must exist before real zsh restore cycle \(cycle)")
+        let restored = try makeHarness(
+          baseDir: base,
+          restoring: workspace,
+          sessionMode: .realShell)
+
+        XCTAssertTrue(
+          waitForVisibleText(restored.model, tabId: tabId, contains: "echo hej"),
+          "cycle \(cycle) did not restore the command text")
+        XCTAssertTrue(
+          waitForVisibleText(restored.model, tabId: tabId, contains: "hej"),
+          "cycle \(cycle) did not restore the command output")
+
+        // Let zsh finish painting its startup prompt. Restored-tab
+        // capture suppression should drop those bytes, so a
+        // quit/reopen loop without user input does not append another
+        // prompt or PROMPT_SP marker to the transcript.
+        Thread.sleep(forTimeInterval: 0.7)
+        let visible = visibleText(restored.model, tabId: tabId)
+        XCTAssertFalse(
+          visible.contains("eecho hej"),
+          "cycle \(cycle) duplicated the first character; visible=\(visible.debugDescription)")
+        XCTAssertFalse(
+          visible.contains("%"),
+          "cycle \(cycle) rendered zsh PROMPT_SP marker; visible=\(visible.debugDescription)")
+        XCTAssertFalse(
+          visible.unicodeScalars.contains { $0.value == 0 },
+          "cycle \(cycle) rendered a NUL glyph; visible=\(visible.debugDescription)")
+
+        quit(restored)
+        let _ = restored
+
+        let afterQuit = try Data(contentsOf: transcriptURL)
+        XCTAssertEqual(
+          afterQuit, baseline,
+          "cycle \(cycle) must not append zsh startup prompt bytes on quit")
+      }
+    }
+  }
+
+  func testRealZshEchoCanMutateAcrossRepeatedRestoreCycles() throws {
+    guard access("/bin/zsh", X_OK) == 0 else {
+      throw XCTSkip("/bin/zsh is not available")
+    }
+    let base = tempBase()
+    let zdotdir = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+    defer { try? FileManager.default.removeItem(at: zdotdir) }
+    try writeMinimalZshConfig(to: zdotdir)
+
+    try withEnvironment(["SHELL": "/bin/zsh", "ZDOTDIR": zdotdir.path]) {
+      let store = PersistenceStore(baseURL: base)
+      var commandCount = 0
+
+      let first = try makeHarness(baseDir: base, sessionMode: .realShell)
+      let tabId = try XCTUnwrap(first.model.activeTab?.id)
+      try writeEchoCommand(
+        first.model,
+        tabId: tabId,
+        expectedCommandCount: commandCount + 1,
+        context: "initial zsh session")
+      commandCount += 1
+      assertCleanEchoState(
+        first.model,
+        tabId: tabId,
+        expectedCommandCount: commandCount,
+        context: "initial zsh session")
+      quit(first)
+      let _ = first
+      try assertCleanEchoTranscript(
+        store,
+        tabId: tabId,
+        expectedCommandCount: commandCount,
+        context: "initial quit")
+
+      for cycle in 1...4 {
+        let workspace = try XCTUnwrap(
+          store.load(),
+          "workspace must exist before mutating restore cycle \(cycle)")
+        let restored = try makeHarness(
+          baseDir: base,
+          restoring: workspace,
+          sessionMode: .realShell)
+
+        XCTAssertTrue(
+          waitForEchoCommandCount(
+            restored.model,
+            tabId: tabId,
+            expected: commandCount),
+          "cycle \(cycle) did not restore all prior echo commands")
+
+        // Wait out restored-tab capture suppression before sending
+        // intentional input. Startup prompt bytes should be ignored,
+        // but user input after this point must still persist.
+        Thread.sleep(forTimeInterval: 0.7)
+        assertCleanEchoState(
+          restored.model,
+          tabId: tabId,
+          expectedCommandCount: commandCount,
+          context: "cycle \(cycle) before new input")
+
+        try writeEchoCommand(
+          restored.model,
+          tabId: tabId,
+          expectedCommandCount: commandCount + 1,
+          context: "cycle \(cycle) after new input")
+        commandCount += 1
+        assertCleanEchoState(
+          restored.model,
+          tabId: tabId,
+          expectedCommandCount: commandCount,
+          context: "cycle \(cycle) after new input")
+
+        quit(restored)
+        let _ = restored
+        try assertCleanEchoTranscript(
+          store,
+          tabId: tabId,
+          expectedCommandCount: commandCount,
+          context: "cycle \(cycle) quit")
+      }
+
+      let workspace = try XCTUnwrap(store.load(), "workspace must exist before final restore")
+      let final = try makeHarness(
+        baseDir: base,
+        restoring: workspace,
+        sessionMode: .realShell)
+      XCTAssertTrue(
+        waitForEchoCommandCount(final.model, tabId: tabId, expected: commandCount),
+        "final restore did not replay all intentional echo commands")
+      Thread.sleep(forTimeInterval: 0.7)
+      assertCleanEchoState(
+        final.model,
+        tabId: tabId,
+        expectedCommandCount: commandCount,
+        context: "final restore")
+      quit(final)
+      let _ = final
+    }
+  }
+
+  func testRealZshStartupPromptDoesNotStackAcrossNoInputRestarts() throws {
+    guard access("/bin/zsh", X_OK) == 0 else {
+      throw XCTSkip("/bin/zsh is not available")
+    }
+    let base = tempBase()
+    let zdotdir = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+    defer { try? FileManager.default.removeItem(at: zdotdir) }
+    try writePromptSpZshConfig(to: zdotdir)
+
+    try withEnvironment(["SHELL": "/bin/zsh", "ZDOTDIR": zdotdir.path]) {
+      let store = PersistenceStore(baseURL: base)
+      let first = try makeHarness(baseDir: base, sessionMode: .realShell)
+      let tabId = try XCTUnwrap(first.model.activeTab?.id)
+      let session = try XCTUnwrap(first.model.session(forTab: tabId))
+
+      _ = session.write(Array("echo hej\n".utf8))
+      XCTAssertTrue(
+        waitForVisibleText(first.model, tabId: tabId, contains: "hej"),
+        "initial zsh session never rendered echo output")
+      quit(first)
+      let _ = first
+
+      let transcriptURL = store.transcriptURL(forTabId: tabId)
+      let baseline = try Data(contentsOf: transcriptURL)
+
+      for cycle in 1...4 {
+        let workspace = try XCTUnwrap(
+          store.load(),
+          "workspace must exist before PROMPT_SP restore cycle \(cycle)")
+        let restored = try makeHarness(
+          baseDir: base,
+          restoring: workspace,
+          sessionMode: .realShell)
+
+        XCTAssertTrue(
+          waitForVisibleText(restored.model, tabId: tabId, contains: "echo hej"),
+          "cycle \(cycle) did not restore the command text")
+        Thread.sleep(forTimeInterval: 1.0)
+        let visible = visibleText(restored.model, tabId: tabId)
+        XCTAssertFalse(
+          visible.contains("%"),
+          "cycle \(cycle) rendered a stacked zsh PROMPT_SP marker; visible=\(visible.debugDescription)")
+
+        quit(restored)
+        let _ = restored
+
+        let afterQuit = try Data(contentsOf: transcriptURL)
+        XCTAssertEqual(
+          afterQuit,
+          baseline,
+          "cycle \(cycle) must not append zsh startup prompt bytes on no-input restart")
+      }
+    }
+  }
+
   // MARK: - Helpers
+
+  private func writeMinimalZshConfig(to zdotdir: URL) throws {
+    let zshConfig = "PROMPT='$ '\nRPROMPT=''\n"
+    try zshConfig.write(
+      to: zdotdir.appendingPathComponent(".zshenv"),
+      atomically: true,
+      encoding: .utf8)
+    try zshConfig.write(
+      to: zdotdir.appendingPathComponent(".zshrc"),
+      atomically: true,
+      encoding: .utf8)
+  }
+
+  private func writePromptSpZshConfig(to zdotdir: URL) throws {
+    let zshConfig = """
+      setopt PROMPT_SP
+      PROMPT='~$ '
+      RPROMPT=''
+      PROMPT_EOL_MARK='%'
+
+      """
+    try zshConfig.write(
+      to: zdotdir.appendingPathComponent(".zshenv"),
+      atomically: true,
+      encoding: .utf8)
+    let zshRc = zshConfig + "sleep 0.8\nprintf partial\n"
+    try zshRc.write(
+      to: zdotdir.appendingPathComponent(".zshrc"),
+      atomically: true,
+      encoding: .utf8)
+  }
+
+  private func withEnvironment(
+    _ updates: [String: String],
+    _ body: () throws -> Void
+  ) throws {
+    let prior = updates.mapValues { _ -> String? in nil }
+    var saved = prior
+    for key in updates.keys {
+      saved[key] = getenv(key).map { String(cString: $0) }
+    }
+    for (key, value) in updates {
+      setenv(key, value, 1)
+    }
+    defer {
+      for (key, value) in saved {
+        if let value {
+          setenv(key, value, 1)
+        } else {
+          unsetenv(key)
+        }
+      }
+    }
+    try body()
+  }
+
+  private func waitForVisibleText(
+    _ model: AppModel,
+    tabId: String,
+    contains needle: String,
+    timeout: TimeInterval = 3.0
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      _ = model.session(forTab: tabId)?.poll()
+      if visibleText(model, tabId: tabId).contains(needle) {
+        return true
+      }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    return false
+  }
+
+  private func waitForEchoCommandCount(
+    _ model: AppModel,
+    tabId: String,
+    expected: Int,
+    timeout: TimeInterval = 3.0
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      _ = model.session(forTab: tabId)?.poll()
+      if echoCommandCount(in: visibleText(model, tabId: tabId)) >= expected {
+        return true
+      }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    return false
+  }
+
+  private func writeEchoCommand(
+    _ model: AppModel,
+    tabId: String,
+    expectedCommandCount: Int,
+    context: String,
+    file: StaticString = #file,
+    line: UInt = #line
+  ) throws {
+    let session = try XCTUnwrap(model.session(forTab: tabId), file: file, line: line)
+    _ = session.write(Array("echo hej\n".utf8))
+    XCTAssertTrue(
+      waitForEchoCommandCount(model, tabId: tabId, expected: expectedCommandCount),
+      "\(context) never rendered echo command \(expectedCommandCount)",
+      file: file,
+      line: line)
+  }
+
+  private func assertCleanEchoState(
+    _ model: AppModel,
+    tabId: String,
+    expectedCommandCount: Int,
+    context: String,
+    file: StaticString = #file,
+    line: UInt = #line
+  ) {
+    _ = model.session(forTab: tabId)?.poll()
+    let visible = visibleText(model, tabId: tabId)
+    XCTAssertEqual(
+      echoCommandCount(in: visible),
+      expectedCommandCount,
+      "\(context) has the wrong number of echo commands; visible=\(visible.debugDescription)",
+      file: file,
+      line: line)
+    XCTAssertFalse(
+      visible.contains("eecho hej"),
+      "\(context) duplicated the first character; visible=\(visible.debugDescription)",
+      file: file,
+      line: line)
+    XCTAssertFalse(
+      visible.contains("%"),
+      "\(context) rendered zsh PROMPT_SP marker; visible=\(visible.debugDescription)",
+      file: file,
+      line: line)
+    XCTAssertFalse(
+      visible.unicodeScalars.contains { $0.value == 0 },
+      "\(context) rendered a NUL glyph; visible=\(visible.debugDescription)",
+      file: file,
+      line: line)
+  }
+
+  private func assertCleanEchoTranscript(
+    _ store: PersistenceStore,
+    tabId: String,
+    expectedCommandCount: Int,
+    context: String,
+    file: StaticString = #file,
+    line: UInt = #line
+  ) throws {
+    let data = try Data(contentsOf: store.transcriptURL(forTabId: tabId))
+    let transcript = String(decoding: data, as: UTF8.self)
+    XCTAssertEqual(
+      echoCommandCount(in: transcript),
+      expectedCommandCount,
+      "\(context) persisted the wrong number of echo commands",
+      file: file,
+      line: line)
+    XCTAssertFalse(
+      transcript.contains("eecho hej"),
+      "\(context) persisted a duplicated command prefix",
+      file: file,
+      line: line)
+    XCTAssertFalse(
+      data.contains(0),
+      "\(context) persisted a NUL byte",
+      file: file,
+      line: line)
+  }
+
+  private func echoCommandCount(in text: String) -> Int {
+    occurrenceCount(of: "echo hej", in: text)
+  }
+
+  private func occurrenceCount(of needle: String, in haystack: String) -> Int {
+    guard !needle.isEmpty else { return 0 }
+    var count = 0
+    var start = haystack.startIndex
+    while let range = haystack.range(of: needle, range: start..<haystack.endIndex) {
+      count += 1
+      start = range.upperBound
+    }
+    return count
+  }
+
+  private func visibleText(_ model: AppModel, tabId: String) -> String {
+    guard let session = model.session(forTab: tabId),
+      let snap = session.snapshot()
+    else {
+      return ""
+    }
+    defer { laban_snapshot_destroy(snap) }
+    return TerminalSnapshotText.visibleText(
+      from: UnsafePointer(snap), mode: .trimmedNonEmptyRows)
+  }
 
   private func assertVisible(
     _ model: AppModel, tabId: String, contains needle: String,

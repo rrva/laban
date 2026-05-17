@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import LabanCore
 import LabanTerminalCore
 
 /// Per-tab background poller that watches the tab's shell descendants

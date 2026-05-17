@@ -104,24 +104,12 @@ public final class PersistenceCoordinator {
     queue.sync {
       self.performSave()
     }
-    // Drain any in-flight ring buffer state FIRST so the writers
-    // are quiescent before we replace their files. If we
-    // snapshotted before flushing, the subsequent drain would
-    // append the just-flushed bytes AFTER the snapshot, doubling
-    // the content on disk.
+    // Then flush any transcript writers so quit does not lose the
+    // last few hundred ms of PTY output queued in the ring buffers.
+    // The transcript file remains raw PTY bytes; restore depends on
+    // byte replay to preserve scrollback, colors, cursor edits, and
+    // other terminal state.
     transcriptHost?.flushAll()
-    // Replace every live tab's transcript file with a plain-text
-    // snapshot of its current libghostty grid. This is the source
-    // of truth for "what should the user see on next restore" —
-    // not the raw byte stream from this session. Without this
-    // step, each restore cycle accumulates the new shell's
-    // startup prompts in the .bin file, eventually painting
-    // stacked ghost prompts in the next restore's scrollback.
-    if let model, let host = transcriptHost {
-      for (tab, session) in model.allSessions() {
-        host.captureGridSnapshot(forTabId: tab.id, session: session)
-      }
-    }
   }
 
   private func cancelPending() {

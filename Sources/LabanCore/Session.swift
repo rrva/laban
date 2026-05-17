@@ -142,6 +142,16 @@ public final class Session {
     return laban_session_start_spawn(h, nil)
   }
 
+  /// Drop PTY output from a restored deferred spawn until the first
+  /// input write. The restored transcript already painted the prior
+  /// prompt; the replacement shell's startup prompt is only launch
+  /// noise until the user or autoresume writes real input.
+  @discardableResult
+  public func suppressPtyOutputUntilInput(_ enabled: Bool = true) -> Int32 {
+    guard !isClosed, let h = handle else { return -1 }
+    return laban_session_suppress_pty_output_until_input(h, enabled ? 1 : 0)
+  }
+
   public static func debugShell(size: LabanTerminalSize) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0
