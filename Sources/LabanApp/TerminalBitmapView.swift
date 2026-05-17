@@ -1122,6 +1122,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     lastDragPoint = nil
   }
 
+  /// Frame to restore on the next zoom-toggle. Set when we zoom out,
+  /// cleared when the user resizes the window manually, when the window
+  /// stops being key, or after a successful restore. Tracked here rather
+  /// than relying on `NSWindow.zoom(_:)`'s own user-frame because that
+  /// path doesn't reliably toggle when the window's content view performs
+  /// its own resize-time adjustments (and `isZoomed` then returns false
+  /// even though we just maximized).
+  private var preZoomFrame: NSRect?
+
   /// Mirror AppKit's title-bar double-click handler. Reads the user's
   /// `AppleActionOnDoubleClick` preference (system default is zoom) and
   /// dispatches the matching window action. Needed because the contentView
@@ -1149,16 +1158,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     AppLog.app.notice("titlebar double-click action=\(action)")
     guard let window else { return }
-    DispatchQueue.main.async {
+    DispatchQueue.main.async { [weak self] in
       switch action {
       case "Maximize", "Zoom":
-        window.performZoom(nil)
+        self?.toggleZoom(window)
       case "Minimize":
         window.performMiniaturize(nil)
       default:
         break
       }
     }
+  }
+
+  /// Toggle between the screen's visible frame and the previously saved
+  /// window frame. Mirrors what the green traffic-light button does, but
+  /// tracks the unzoomed frame explicitly so the second double-click
+  /// always restores even when `NSWindow.isZoomed` would report false
+  /// after a tiny content-driven frame adjustment.
+  private func toggleZoom(_ window: NSWindow) {
+    if let saved = preZoomFrame {
+      window.setFrame(saved, display: true, animate: true)
+      preZoomFrame = nil
+      return
+    }
+    let target = (window.screen ?? NSScreen.main)?.visibleFrame
+    guard let target, target != window.frame else { return }
+    preZoomFrame = window.frame
+    window.setFrame(target, display: true, animate: true)
   }
 
   private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
@@ -1977,6 +2003,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let pt = convert(event.locationInWindow, from: nil)
     pendingHyperlinkClick = nil
 
+    // Reserved titlebar strip sits above both the terminal grid and the
+    // sidebar tab list, behind the transparent system titlebar. Checked
+    // before the sidebar hit test so that the sidebar's top strip (next
+    // to the `+` accessory) gets the same window-chrome behavior as the
+    // strip over the terminal grid. AppKit normally handles titlebar
+    // clicks at the hit-test level, but with `fullSizeContentView` the
+    // contentView intercepts the event first, so we dispatch the action
+    // ourselves.
+    if pt.y > bounds.height - Self.titlebarReservedHeight {
+      mouseDownConsumedByChrome = true
+      if event.clickCount == 2 {
+        performTitlebarDoubleClickAction()
+      }
+      return
+    }
+
     // Sidebar hit test.
     if pt.x < sidebarWidth {
       mouseDownConsumedByChrome = true
@@ -2005,21 +2047,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         } catch {}
         renderInvalidated = true
       case .none: break
-      }
-      return
-    }
-
-    // Reserved titlebar strip sits above the terminal grid and behind the
-    // transparent system titlebar. Don't begin a selection here — the user
-    // is interacting with window chrome. Drive the titlebar double-click
-    // action explicitly: AppKit normally handles this at the title-bar
-    // hit-test level, but with `fullSizeContentView` the contentView
-    // covers that region and intercepts the event first, so we have to
-    // dispatch the action ourselves.
-    if pt.y > bounds.height - Self.titlebarReservedHeight {
-      mouseDownConsumedByChrome = true
-      if event.clickCount == 2 {
-        performTitlebarDoubleClickAction()
       }
       return
     }
