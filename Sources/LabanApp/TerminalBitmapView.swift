@@ -1508,7 +1508,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private func layoutFindChip() {
     guard let chip = findChip else { return }
-    let size = NSSize(width: 314, height: 30)
+    let size = NSSize(width: 328, height: 30)
     let frame = TerminalFindChipView.defaultFrame(in: terminalContentRect(), size: size)
     if chip.frame.size == .zero {
       chip.frame = frame
