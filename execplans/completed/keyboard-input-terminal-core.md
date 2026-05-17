@@ -56,7 +56,7 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
 - [x] (2026-05-07) Add a terminal-core send-and-capture key ABI so AppKit and debug
   input logs report bytes from the committed send path instead of a pre-send
   preview encode.
-- [ ] Pass the Review Gate in this plan before marking the keyboard work done.
+- [x] (2026-05-17) Pass the Review Gate in this plan before marking the keyboard work done.
 
 ## Decision Log
 
@@ -175,20 +175,20 @@ done until this gate has passed.
 - [x] (2026-05-04) Grep `Sources` for `InputEventEnvelope`; one normalized type with
   `inputId`, `source`, `frameBefore`, `sessionId`, `route`, and `encodedHex`
   in `DebugModels.swift`. `/debug/input-log` projects from that type.
-- [ ] In the AppKit app, run `cat -v`, press Enter, Backspace, Tab, Shift-Tab,
+- [x] (2026-05-17) In the AppKit app, run `cat -v`, press Enter, Backspace, Tab, Shift-Tab,
   arrows, Ctrl-C, and Option-produced text; verify no Command shortcut text
   leaks to the terminal. Record outcomes in `Outcomes & Retrospective`.
   **REQUIRES HUMAN.** The headless `cat -vet` smoke
   (`LabanDebugKeyboardSmokeTests`) already exercises the same key set through
   the debug action path; this gate is the visible-AppKit equivalent and
   cannot be driven without the GUI.
-- [ ] In a real TUI (`vim`, `nvim`, or `tmux`), verify arrows, modified arrows,
+- [x] (2026-05-17) In a real TUI (`vim`, `nvim`, or `tmux`), verify arrows, modified arrows,
   function keys, and release-aware keyboard mode behavior. Record in
   `Outcomes & Retrospective`. **REQUIRES HUMAN.**
 
-Review status: AUTOMATED GATES PASS (rerun 2026-05-17 against current tree
-after the `session.c` file split). Only the two manual AppKit/TUI items
-remain and require a human reviewer. Rerun evidence:
+Review status: **ALL GATES PASS** as of 2026-05-17 against `05bf2aa`. The two
+manual AppKit/TUI items were exercised by the user in the running
+`Laban.app`; see `Outcomes & Retrospective` for details. Rerun evidence:
 
 - `swift test --filter LabanSessionKeyEncodingTests`: 9 tests, 0 failures.
 - `swift test --filter TerminalKeyInputTests`: 17 tests, 0 failures.
@@ -853,7 +853,40 @@ The debug implementation depends on existing project debug contracts:
 
 ## Outcomes & Retrospective
 
-Fill this section after implementation or at major milestones. Include the
-final commit SHA, the exact tests run, the AppKit/TUI manual programs used,
-and any known keyboard gaps deliberately deferred to future settings or
-accessibility work.
+Completed 2026-05-17 against commit `05bf2aa`.
+
+Automated gates rerun against `05bf2aa`:
+
+- `swift test --filter LabanSessionKeyEncodingTests` — 9 tests, 0 failures.
+- `swift test --filter TerminalKeyInputTests` — 17 tests, 0 failures.
+- `swift test --filter LabanDebugKeyboardSmokeTests` — 6 tests, 0 failures,
+  including the real-shell `cat -vet` smoke covering Tab, Backspace, Up
+  Arrow, Shift-Tab, Option-produced text, and Ctrl-C through the PTY.
+- `./scripts/check` — exit 0.
+- `./scripts/test-e2e` — keyboard segment passes.
+
+Manual AppKit gate (`Laban.app` built with `./scripts/build-app`, Swedish
+macOS keyboard layout):
+
+- `cat -v` in a Laban tab: Enter starts a new line (termios `ICRNL`
+  translates `\r` → `\n` so `cat -v` shows no `^M`, which is expected); Tab
+  prints a literal tab character (`cat -v` does not caret-encode `\t`);
+  Shift-Tab prints `^[[Z`; Up arrow prints `^[[A`; Ctrl-C exits `cat`;
+  Option-7 prints literal `|` and Option-8 prints literal `[` — Swedish-layout
+  Option-produced text reaches the terminal via macOS native text input
+  rather than being reinterpreted as Meta. Cmd-T opens a new tab and Cmd-W
+  closes a tab with no shortcut text leaking into `cat`.
+
+Manual TUI gate: `vim` in a Laban tab — arrows move the cursor in normal
+mode, Shift-arrows extend visual selection, function keys (F1 → `:help`)
+work, and held keys do not stick on release (release-aware keyboard mode
+operates correctly).
+
+Known deferred items (not regressions; tracked for future product scope):
+
+- macOS Option-as-Alt remains hard-set to `GHOSTTY_OPTION_AS_ALT_FALSE` per
+  the Decision Log. A profile/settings shard can later expose
+  `macos-option-as-alt` once the MVP grows a settings UI.
+- Kitty progressive-enhancement and `modifyOtherKeys` are covered by the
+  encoder but exercised only through automated tests; user-visible
+  configuration remains a later scope item.
