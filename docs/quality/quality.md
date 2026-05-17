@@ -5,13 +5,15 @@ for autonomous agents. Update it when a quality dimension materially changes.
 
 ## Current Score
 
-Overall: **Runnable MVP stack with remaining enforcement gaps**
+Overall: **MVP shipped 2026-05-17; enforcement gaps remain on hosted CI and
+stale active plans**
 
-The repo now has a SwiftPM/AppKit terminal app, a C terminal-core boundary over
+The repo has a SwiftPM/AppKit terminal app, a C terminal-core boundary over
 libghostty-vt, Metal and software/offscreen render paths, a headless debug
-runtime, capture/replay artifacts, and local verification scripts. Quality is
-therefore judged by whether terminal behavior is implemented, inspectable, and
-autonomously verifiable.
+runtime, capture/replay artifacts, and local verification scripts. Every
+requirement in `docs/product/mvp.md` is implemented and exercised by
+`./scripts/check`. Quality is now judged on regression coverage and
+enforcement strength rather than feature completeness.
 
 ## Dimensions
 

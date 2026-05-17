@@ -1,8 +1,8 @@
 # Laban
 
-This repository is for building a minimal terminal application from
-`docs/product/mvp.md` toward the longer product direction in
-`docs/product/spec.md`.
+This repository builds a macOS terminal application. The MVP described in
+`docs/product/mvp.md` shipped on 2026-05-17; that document is now the
+regression contract. New product direction lives in `docs/product/spec.md`.
 
 This file is the map. Keep it small. Open the deeper documents only when the
 task matches them.
@@ -10,25 +10,27 @@ task matches them.
 ## First Moves
 
 1. Start from the user's task and the files already in front of you.
-2. Check `docs/product/mvp.md` before expanding scope.
-3. For non-trivial or cross-boundary work, create or update an ExecPlan using
+2. Check `docs/product/mvp.md` as a regression contract — never break a
+   behavior required there.
+3. Check `docs/product/spec.md` before expanding product scope.
+4. For non-trivial or cross-boundary work, create or update an ExecPlan using
    `PLANS.md`.
 
 ## Source Of Truth
 
-- `docs/product/mvp.md` is the current implementation boundary.
-- `docs/product/spec.md` is the long-term product behavior.
-- If MVP and long-term behavior disagree, implement the MVP first and record
-  the deferred behavior.
-- Do not add product behavior outside the product docs unless the user asks for
-  it or it is required to make the MVP work.
+- `docs/product/mvp.md` is the regression contract for shipped behavior.
+- `docs/product/spec.md` is the long-term direction; new scope flows through it.
+- Bug fixes, polish, performance, and refactors that preserve MVP behavior
+  do not need spec.md approval.
+- Do not add product behavior outside the product docs unless the user asks
+  for it or it is required to keep an MVP behavior working.
 
 ## Read This When
 
 | Open | When |
 | --- | --- |
-| `docs/product/mvp.md` | You are deciding what belongs in the first usable terminal app. |
-| `docs/product/spec.md` | You need long-term product behavior or a question goes beyond MVP scope. |
+| `docs/product/mvp.md` | You are checking whether a change risks breaking shipped behavior. |
+| `docs/product/spec.md` | You are expanding product scope or need long-term direction. |
 | `docs/process/dev-process.md` | You are implementing or changing debug hooks, headless mode, screenshots, capture/replay artifacts, fixtures, CI E2E tests, or autonomous verification. |
 | `docs/process/worktree-isolation.md` | You are adding run commands, artifact directories, temp dirs, debug ports, or multi-worktree execution support. |
 | `docs/process/observability.md` | You are adding logs, debug events, metrics, traces, or failure artifacts. |

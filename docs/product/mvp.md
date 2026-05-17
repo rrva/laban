@@ -1,5 +1,15 @@
 # Minimal Terminal Application MVP
 
+## Status
+
+**Shipped on 2026-05-17.** Every requirement in this document is implemented
+in the current tree and exercised by `./scripts/check`. This document is now
+the regression contract: every behavior described here must continue to
+work. New product scope goes through `docs/product/spec.md`; new
+implementation work that strictly maintains MVP behavior (bug fixes, polish,
+performance, refactors) does not need spec.md approval but must not break
+anything required here.
+
 This document defines an implementation-agnostic MVP for a macOS terminal
 application based on the behavioral direction in `docs/product/spec.md`. It
 intentionally does not prescribe programming language, macOS UI framework,
