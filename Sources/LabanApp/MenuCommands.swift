@@ -1,7 +1,10 @@
 import AppKit
 
 enum MenuCommands {
-  static func setupMenuBar(themeMenu: ThemeMenuController) {
+  static func setupMenuBar(
+    themeMenu: ThemeMenuController,
+    restoreOnLaunchMenu: RestoreOnLaunchMenuController
+  ) {
     let mainMenu = NSMenu()
 
     // App menu (first slot, shown as app name)
@@ -79,6 +82,15 @@ enum MenuCommands {
         action: #selector(AppDelegate.showFontPicker(_:)),
         keyEquivalent: ""
       ))
+
+    // Workspace menu — restore-on-launch toggle. Lives in its own
+    // top-level submenu rather than under File or View so users have a
+    // single, obvious place to find the persistence kill switch.
+    let workspaceItem = NSMenuItem(title: "Workspace", action: nil, keyEquivalent: "")
+    mainMenu.addItem(workspaceItem)
+    let workspaceMenu = NSMenu(title: "Workspace")
+    workspaceItem.submenu = workspaceMenu
+    workspaceMenu.addItem(restoreOnLaunchMenu.makeMenuItem())
 
     // Tab-select menu — Cmd+1…9
     let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")

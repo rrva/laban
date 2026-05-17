@@ -95,6 +95,20 @@ public final class Session {
     return try Session(config: &config, size: size)
   }
 
+  /// Spawn the user's login shell with an explicit working directory.
+  /// Used by the workspace-restore path so each restored tab opens its
+  /// previously observed `cwd`. The cwd is captured by the C session
+  /// layer via `LabanLaunchConfig.cwd` and applied with `chdir(2)`
+  /// inside the constrained fork child before `execve(2)` runs.
+  public static func realShell(size: LabanTerminalSize, cwd: String) throws -> Session {
+    var config = LabanLaunchConfig()
+    config.fixture_mode = 0
+    return try cwd.withCString { cwdPtr in
+      config.cwd = cwdPtr
+      return try Session(config: &config, size: size)
+    }
+  }
+
   public static func debugShell(size: LabanTerminalSize) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0

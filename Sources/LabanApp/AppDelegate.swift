@@ -1,10 +1,12 @@
 import AppKit
+import LabanCore
 import LabanRenderer
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private var windowController: MainWindowController?
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
+  private let restoreOnLaunchMenuController = RestoreOnLaunchMenuController()
   private var updateCheckInFlight = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,9 +27,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // would overwrite that user-provided palette shortly after zsh starts.
     themeMenuController.loadPersistedChoices()
     Self.applyTheme(for: NSApp.effectiveAppearance)
-    MenuCommands.setupMenuBar(themeMenu: themeMenuController)
+    MenuCommands.setupMenuBar(
+      themeMenu: themeMenuController,
+      restoreOnLaunchMenu: restoreOnLaunchMenuController
+    )
+
+    // Decide whether to restore on this launch:
+    //   1. If the user disabled the "Restore on Launch" toggle, start
+    //      fresh. On-disk state is left in place. (PersistenceCoordinator.load
+    //      checks the same toggle, so this branch is for the ⇧ short-circuit
+    //      and to keep the launch flow explicit.)
+    //   2. Otherwise, if Shift is held at launch, archive any prior
+    //      `workspace.json` to `workspace.json.previous` and start fresh.
+    //      This is the one-shot escape hatch documented in the ExecPlan.
+    //   3. Otherwise, load via `PersistenceCoordinator.load()` which
+    //      enforces the same toggle gate as save and routes through
+    //      `PersistenceStore`. A corrupt file is moved aside; nil means
+    //      "nothing to restore" and we start fresh.
+    let bootstrapCoordinator = PersistenceCoordinator()
+    let restoredState: WorkspaceState?
+    if !RestoreOnLaunchSettings.isEnabled {
+      restoredState = nil
+    } else if NSEvent.modifierFlags.contains(.shift) {
+      try? bootstrapCoordinator.store.archiveCurrent()
+      restoredState = nil
+    } else {
+      restoredState = bootstrapCoordinator.load()
+    }
+
     do {
-      windowController = try MainWindowController.makeAndShow()
+      windowController = try MainWindowController.makeAndShow(restoring: restoredState)
     } catch {
       let alert = NSAlert()
       alert.messageText = "Laban failed to start"
@@ -55,6 +84,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
   func applicationWillTerminate(_ notification: Notification) {
+    // Drain any pending debounced workspace save so quit does not
+    // discard the last few hundred ms of state. `flushSync` no-ops when
+    // the toggle is off, so disabled persistence costs nothing here.
+    windowController?.persistenceCoordinator?.flushSync()
     EventLog.shared.log("app.quit")
   }
 

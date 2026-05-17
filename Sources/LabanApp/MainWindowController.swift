@@ -4,8 +4,17 @@ import LabanRenderer
 import LabanTerminalCore
 
 final class MainWindowController: NSWindowController {
+  /// The persistence coordinator owns its weak ref to the AppModel and
+  /// debounces saves on a background queue. Kept on the window
+  /// controller so AppDelegate can call `flushSync()` in
+  /// `applicationWillTerminate` without having to walk back to the
+  /// model.
+  private(set) var persistenceCoordinator: PersistenceCoordinator?
+  private(set) var model: AppModel?
 
-  static func makeAndShow() throws -> MainWindowController {
+  static func makeAndShow(restoring restoredState: WorkspaceState? = nil) throws
+    -> MainWindowController
+  {
     let fontAtlas = FontAtlas(pointSize: 14)
     let sidebarFontAtlas = FontAtlas(pointSize: 11)
     let cellSize = fontAtlas.cellSize
@@ -30,6 +39,17 @@ final class MainWindowController: NSWindowController {
       initialSize: size,
       sessionFactory: Session.realShell
     )
+    model.restoredSessionFactory = { size, cwd in
+      try Session.realShell(size: size, cwd: cwd)
+    }
+
+    // Rebuild the tab list from `workspace.json` BEFORE creating the
+    // terminal view so the user never sees a flash of the default tab.
+    // `replaceTabs(from:)` closes the auto-created first session and
+    // spawns one shell per persisted tab in its prior cwd.
+    if let restoredState, !restoredState.windows.isEmpty {
+      model.replaceTabs(from: restoredState)
+    }
 
     let termView = TerminalBitmapView(
       model: model,
@@ -88,6 +108,25 @@ final class MainWindowController: NSWindowController {
     window.addTitlebarAccessoryViewController(accessory)
 
     let controller = MainWindowController(window: window)
+    controller.model = model
+
+    // Persistence is wired AFTER the optional restore so the initial
+    // restored snapshot does not bounce back through the coordinator.
+    // `attach(_:)` registers as the model's `onWorkspaceMutation`
+    // subscriber; subsequent mutations debounce-save through
+    // `PersistenceStore`. The toggle gate (`RestoreOnLaunchSettings`)
+    // is checked inside the coordinator on every save and load attempt,
+    // so flipping the menu item off makes both no-op silently.
+    let coordinator = PersistenceCoordinator()
+    coordinator.attach(model)
+    controller.persistenceCoordinator = coordinator
+
+    // Schedule one save so the persisted state reflects the just-spawned
+    // (or just-restored) tab list within the debounce window. Without
+    // this, a user who quits before causing any further mutation would
+    // leave `workspace.json` unchanged from its prior contents.
+    coordinator.scheduleSave()
+
     return controller
   }
 }

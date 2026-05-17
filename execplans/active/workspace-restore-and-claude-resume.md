@@ -79,9 +79,14 @@ authorization per milestone.
 
 - [x] (2026-05-17) Author this ExecPlan from a grilling session that
   resolved the design decisions captured in the Decision Log below.
-- [ ] **M0** — workspace.json round-trip: persist tab list, cwd, launch
-  command, selection, sidebar visibility; restore tabs on launch as fresh
-  shells in saved cwds; ⇧-at-launch escape hatch.
+- [x] (2026-05-17) **M0** — workspace.json round-trip: persist tab list,
+  cwd, launch command, selection; restore tabs on launch as fresh shells
+  in saved cwds; ⇧-at-launch escape hatch; "Restore on Launch" menu
+  toggle in a new top-level Workspace submenu. Tests: 10 cases in
+  `Tests/LabanCoreTests/PersistenceRoundTripTests.swift` pass; full
+  suite (524 tests) passes. Manual UI acceptance (steps in the M0
+  Acceptance section) still needs to be exercised against a freshly
+  built bundle.
 - [ ] **M1** — transcript capture and render-on-restore: PTY byte tee
   writes append-only per-tab `.bin` files; last ~1MB byte-replays through
   libghostty-vt on restore; older history renders as text-only scrollback;
@@ -527,6 +532,37 @@ downstream. Record any change to these decisions here with rationale.
   banner is honest and actionable. Persisting the fallback flag
   makes the behavior testable and observable in headless runs.
   Date/Author: 2026-05-17 / Codex review response.
+
+- Decision (M0 implementation): `RestoreOnLaunchSettings` lives in
+  `Sources/LabanCore/Persistence/RestoreOnLaunchSettings.swift`, not in
+  `Sources/LabanApp/Persistence/` as the original plan body suggested.
+  Rationale: `PersistenceCoordinator` lives in LabanCore and must read
+  the toggle inside `save(_:)` and `load()` to satisfy the M0 gate's
+  "toggle gates both save and load" check. LabanCore cannot import
+  LabanApp (the dependency runs the other way), so the helper has to
+  be reachable from LabanCore. The helper itself depends only on
+  `Foundation.UserDefaults` and has no AppKit surface, so moving it
+  down a layer is architecturally clean. The complementary
+  `RestoreOnLaunchMenuController` (which owns an `NSMenuItem`) stays
+  in `Sources/LabanApp/` because it does depend on AppKit. Future
+  contributors looking for the toggle's storage should follow the
+  helper from LabanCore, not the file path quoted in earlier plan
+  drafts.
+  Date/Author: 2026-05-17 / M0 implementation.
+
+- Decision (M0 implementation): `PersistenceCoordinator` exposes
+  `load() -> WorkspaceState?` and `flushSync()` in addition to the
+  expected `attach`/`scheduleSave` flow. Both `save` paths
+  (`scheduleSave` / `flushSync` / the debounce drain) and the `load`
+  path check `isEnabled()` at the top, so the kill switch is enforced
+  at one layer regardless of whether the caller is `AppDelegate`'s
+  launch path or the live mutation observer. Directly calling
+  `PersistenceStore.load()` from launch paths bypasses the toggle and
+  must not be done.
+  Rationale: Single chokepoint for the gate matches the M0 review
+  gate's expectation that the toggle gates both save and load from
+  inside the coordinator.
+  Date/Author: 2026-05-17 / M0 implementation.
 
 ## Context and Orientation
 

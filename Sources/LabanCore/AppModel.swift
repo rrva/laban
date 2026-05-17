@@ -42,6 +42,34 @@ public final class AppModel {
     }
   }
 
+  /// Fires after every workspace mutation (tab add/remove/reorder, tab
+  /// select, cwd update) so the persistence coordinator can debounce a
+  /// save. The callback runs on the calling thread under no lock;
+  /// implementers should not call back into the model synchronously.
+  /// Set by `PersistenceCoordinator.attach(_:)` in normal operation.
+  public var onWorkspaceMutation: (() -> Void)?
+
+  /// Factory used by `replaceTabs(from:)` and `createRestoredTab(...)`
+  /// to spawn a session pinned to a specific cwd. When nil, restored
+  /// tabs fall back to the default `sessionFactory` and the persisted
+  /// cwd is recorded into the launch_cwd path passed to the C layer but
+  /// otherwise ignored — useful for headless tests where every session
+  /// is a fixture. Production wires this to a wrapper around
+  /// `Session.realShell(size:, cwd:)`.
+  public var restoredSessionFactory: ((LabanTerminalSize, String) throws -> Session)?
+
+  /// Recorded as `launchCommand` in `WorkspaceState` for tabs that were
+  /// not themselves restored from state. Defaults to the user's `SHELL`
+  /// env var, falling back to `/bin/zsh`. Tabs restored from a prior
+  /// `WorkspaceState` keep their persisted launch command.
+  public var defaultLaunchCommand: String =
+    (ProcessInfo.processInfo.environment["SHELL"].map { "\($0) -l" }) ?? "/bin/zsh -l"
+
+  /// Optional launch command override per tab; used when a tab was
+  /// created with an explicit launch command (restored tabs). Keyed by
+  /// Tab.ID. Cleared on tab close.
+  private var launchCommandByTab: [Tab.ID: String] = [:]
+
   @discardableResult
   private func withModelLock<T>(_ body: () throws -> T) rethrows -> T {
     modelLock.lock()
@@ -110,6 +138,7 @@ public final class AppModel {
     _tabs.removeAll()
     findStateBySession.removeAll()
     findFullSearchCacheBySession.removeAll()
+    launchCommandByTab.removeAll()
     metadataSync.reset(closedCwds: closedCwds)
   }
 
@@ -310,7 +339,7 @@ public final class AppModel {
 
   @discardableResult
   public func createTab() throws -> Tab {
-    try withModelLock {
+    let tab = try withModelLock {
       guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
       let session = try sessionFactory(currentSize)
       session.captureSink = captureSink
@@ -332,12 +361,208 @@ public final class AppModel {
       selectTabUnlocked(tab.id)
       return _tabs.last!
     }
+    notifyWorkspaceMutation()
+    return tab
+  }
+
+  /// Create a tab pinned to a specific working directory with a
+  /// caller-supplied id and launch command. Used by `replaceTabs(from:)`
+  /// to rebuild tabs from a persisted `WorkspaceState`; the id is
+  /// preserved so per-tab transcript files (`<tab-id>.bin`) and the
+  /// agent JSONL mirror (`<tab-id>.jsonl`) keep referring to the same
+  /// tab across launches.
+  ///
+  /// Returns the freshly created tab. Throws `AppError.tabLimitReached`
+  /// when the tab cap is hit.
+  @discardableResult
+  public func createRestoredTab(
+    id: Tab.ID,
+    cwd: String,
+    launchCommand: String,
+    isActive: Bool
+  ) throws -> Tab {
+    let tab = try withModelLock {
+      guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
+      let factory = restoredSessionFactory
+      let session: Session
+      if let factory {
+        session = try factory(currentSize, cwd)
+      } else {
+        session = try sessionFactory(currentSize)
+      }
+      session.captureSink = captureSink
+      AppModel.maybeAutoCapture(session)
+      ThemePaletteInjector.injectCurrentTheme(into: session)
+      let position = _tabs.count + 1
+      let tab = Tab(
+        id: id,
+        position: position,
+        title: "Tab \(position)",
+        isActive: false,
+        sessionId: session.id
+      )
+      sessionRegistry.add(session)
+      _tabs.append(tab)
+      launchCommandByTab[id] = launchCommand
+      attachTabStatus(session: session, tabId: tab.id)
+      recordSessionCreated(sessionId: session.id, tabId: tab.id)
+      recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
+      if isActive {
+        selectTabUnlocked(tab.id)
+      }
+      return _tabs.last!
+    }
+    notifyWorkspaceMutation()
+    return tab
+  }
+
+  /// Replace the current tab set with one rebuilt from a persisted
+  /// `WorkspaceState`. Closes every existing session before spawning
+  /// the restored ones so the user never sees a flash of the default
+  /// tab. Multi-window persistence is not implemented in M0; only the
+  /// first window in `state.windows` is consumed.
+  ///
+  /// Mutation notifications are coalesced: one `onWorkspaceMutation`
+  /// fires at the end, not per tab. This keeps the persistence
+  /// coordinator from scheduling N debounced saves during restore.
+  public func replaceTabs(from state: WorkspaceState) {
+    guard let window = state.windows.first else { return }
+    withModelLock {
+      closeAllSessionsUnlocked()
+    }
+    for (index, persistedTab) in window.tabs.enumerated() {
+      let isActive = (window.selectedTabId == persistedTab.id)
+        || (window.selectedTabId == nil && index == 0)
+      _ = try? createRestoredTabSuppressingNotification(
+        id: persistedTab.id,
+        cwd: persistedTab.cwd,
+        launchCommand: persistedTab.launchCommand,
+        isActive: isActive
+      )
+    }
+    notifyWorkspaceMutation()
+  }
+
+  /// Internal helper shared by `replaceTabs(from:)` so per-tab creation
+  /// does not fire the mutation callback (the caller coalesces).
+  @discardableResult
+  private func createRestoredTabSuppressingNotification(
+    id: Tab.ID,
+    cwd: String,
+    launchCommand: String,
+    isActive: Bool
+  ) throws -> Tab {
+    try withModelLock {
+      guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
+      let factory = restoredSessionFactory
+      let session: Session
+      if let factory {
+        session = try factory(currentSize, cwd)
+      } else {
+        session = try sessionFactory(currentSize)
+      }
+      session.captureSink = captureSink
+      AppModel.maybeAutoCapture(session)
+      ThemePaletteInjector.injectCurrentTheme(into: session)
+      let position = _tabs.count + 1
+      let tab = Tab(
+        id: id,
+        position: position,
+        title: "Tab \(position)",
+        isActive: false,
+        sessionId: session.id
+      )
+      sessionRegistry.add(session)
+      _tabs.append(tab)
+      launchCommandByTab[id] = launchCommand
+      attachTabStatus(session: session, tabId: tab.id)
+      recordSessionCreated(sessionId: session.id, tabId: tab.id)
+      recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
+      if isActive {
+        selectTabUnlocked(tab.id)
+      }
+      return _tabs.last!
+    }
+  }
+
+  /// Snapshot the current workspace into a Codable structure suitable
+  /// for atomic persistence. Reads under the model lock so the
+  /// resulting `WorkspaceState` is internally consistent even if other
+  /// threads mutate during the call. The persisted `cwd` for each tab
+  /// is the most recently observed shell cwd
+  /// (`tab.titleMetadata.workspace.cwd`); when unavailable (the tab was
+  /// just created and metadata sync hasn't fired yet), it falls back to
+  /// the live process metadata, and finally the user's home directory.
+  public func snapshotForPersistence(windowId: String) -> WorkspaceState {
+    withModelLock {
+      let now = Date()
+      let states: [TabState] = _tabs.map { tab in
+        let liveCwd: String? = {
+          if let cached = tab.titleMetadata.workspace.cwd, !cached.isEmpty {
+            return cached
+          }
+          if let session = sessionRegistry.session(id: tab.sessionId),
+            let metadata = session.processMetadata(),
+            let cwd = metadata.cwd, !cwd.isEmpty
+          {
+            return cwd
+          }
+          return nil
+        }()
+        let cwd = liveCwd ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let launchCommand =
+          launchCommandByTab[tab.id] ?? defaultLaunchCommand
+        let processStatus: PersistedProcessStatus = {
+          switch tab.status {
+          case .running: return .running
+          case .exited(let code): return code == 0 ? .exitedClean : .exitedError
+          case .exitedSignal: return .exitedError
+          }
+        }()
+        let exitCode: Int? = {
+          switch tab.status {
+          case .running: return nil
+          case .exited(let code), .exitedSignal(let code): return code
+          }
+        }()
+        return TabState(
+          id: tab.id,
+          cwd: cwd,
+          launchCommand: launchCommand,
+          lastActiveAt: now,
+          transcriptPath: nil,
+          altBufferAtQuit: nil,
+          cwdFallbackApplied: nil,
+          processStatus: processStatus,
+          exitCode: exitCode,
+          agent: nil
+        )
+      }
+      let selectedId = _tabs.first(where: { $0.isActive })?.id
+      let window = WindowState(
+        id: windowId,
+        selectedTabId: selectedId,
+        tabs: states
+      )
+      return WorkspaceState(windows: [window])
+    }
+  }
+
+  /// Fires `onWorkspaceMutation` outside the model lock. Callers must
+  /// invoke this AFTER `withModelLock` returns so the callback chain
+  /// cannot re-enter the model under the same lock.
+  private func notifyWorkspaceMutation() {
+    onWorkspaceMutation?()
   }
 
   public func selectTab(_ tabId: Tab.ID) {
-    withModelLock {
+    let changed: Bool = withModelLock {
+      let prior = _tabs.first(where: { $0.isActive })?.id
       selectTabUnlocked(tabId)
+      let now = _tabs.first(where: { $0.isActive })?.id
+      return prior != now
     }
+    if changed { notifyWorkspaceMutation() }
   }
 
   private func selectTabUnlocked(_ tabId: Tab.ID) {
@@ -360,46 +585,58 @@ public final class AppModel {
   }
 
   public func closeTab(_ tabId: Tab.ID) throws {
-    try withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
-        throw AppError.tabNotFound
-      }
-      let tab = _tabs[idx]
+    var lastTabClosedThrown = false
+    do {
+      try withModelLock {
+        guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
+          throw AppError.tabNotFound
+        }
+        let tab = _tabs[idx]
 
-      if _tabs.count == 1 {
+        if _tabs.count == 1 {
+          sessionRegistry.close(sessionId: tab.sessionId)
+          findStateBySession.removeValue(forKey: tab.sessionId)
+          findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
+          launchCommandByTab.removeValue(forKey: tab.id)
+          metadataSync.forget(tab: tab)
+          _tabs = []
+          recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
+          lastTabClosedThrown = true
+          throw AppError.lastTabClosed
+        }
+
+        // Determine next active tab before removing
+        let wasActive = tab.isActive
         sessionRegistry.close(sessionId: tab.sessionId)
         findStateBySession.removeValue(forKey: tab.sessionId)
         findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
+        launchCommandByTab.removeValue(forKey: tab.id)
         metadataSync.forget(tab: tab)
-        _tabs = []
+        _tabs.remove(at: idx)
         recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
-        throw AppError.lastTabClosed
-      }
 
-      // Determine next active tab before removing
-      let wasActive = tab.isActive
-      sessionRegistry.close(sessionId: tab.sessionId)
-      findStateBySession.removeValue(forKey: tab.sessionId)
-      findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
-      metadataSync.forget(tab: tab)
-      _tabs.remove(at: idx)
-      recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
+        // Recompute one-based positions
+        for i in _tabs.indices {
+          _tabs[i].position = i + 1
+          resolveTitle(at: i)
+        }
 
-      // Recompute one-based positions
-      for i in _tabs.indices {
-        _tabs[i].position = i + 1
-        resolveTitle(at: i)
-      }
-
-      if wasActive {
-        let newActiveIdx = min(idx, _tabs.count - 1)
-        _tabs[newActiveIdx].isActive = true
-        _tabs[newActiveIdx].titleMetadata.unseenOutput = false
-        if _tabs[newActiveIdx].status == .running {
-          _tabs[newActiveIdx].titleMetadata.activityState = .active
+        if wasActive {
+          let newActiveIdx = min(idx, _tabs.count - 1)
+          _tabs[newActiveIdx].isActive = true
+          _tabs[newActiveIdx].titleMetadata.unseenOutput = false
+          if _tabs[newActiveIdx].status == .running {
+            _tabs[newActiveIdx].titleMetadata.activityState = .active
+          }
         }
       }
+    } catch {
+      if lastTabClosedThrown {
+        notifyWorkspaceMutation()
+      }
+      throw error
     }
+    notifyWorkspaceMutation()
   }
 
   public func updateTitle(_ title: String, forTab tabId: Tab.ID) throws {
@@ -503,7 +740,10 @@ public final class AppModel {
     from session: Session,
     now: Date = Date()
   ) -> Bool {
-    withModelLock {
+    let priorCwd = withModelLock {
+      _tabs.first(where: { $0.id == tabId })?.titleMetadata.workspace.cwd
+    }
+    let changed = withModelLock {
       metadataSync.syncProcessMetadata(
         forTab: tabId,
         from: session,
@@ -514,6 +754,15 @@ public final class AppModel {
         }
       )
     }
+    if changed {
+      let newCwd = withModelLock {
+        _tabs.first(where: { $0.id == tabId })?.titleMetadata.workspace.cwd
+      }
+      if priorCwd != newCwd {
+        notifyWorkspaceMutation()
+      }
+    }
+    return changed
   }
 
   @discardableResult
@@ -522,7 +771,10 @@ public final class AppModel {
     forTab tabId: Tab.ID,
     now: Date = Date()
   ) -> Bool {
-    withModelLock {
+    let priorCwd = withModelLock {
+      _tabs.first(where: { $0.id == tabId })?.titleMetadata.workspace.cwd
+    }
+    let changed = withModelLock {
       metadataSync.applyProcessMetadata(
         metadata,
         forTab: tabId,
@@ -533,6 +785,15 @@ public final class AppModel {
         }
       )
     }
+    if changed {
+      let newCwd = withModelLock {
+        _tabs.first(where: { $0.id == tabId })?.titleMetadata.workspace.cwd
+      }
+      if priorCwd != newCwd {
+        notifyWorkspaceMutation()
+      }
+    }
+    return changed
   }
 
   /// Read exit state from the session and record it in the tab.
