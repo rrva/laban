@@ -188,7 +188,7 @@ final class TranscriptRoundTripTests: XCTestCase {
     let dir = makeTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
     let file = dir.appendingPathComponent("t.bin")
-    try Data("echo hej\r\nhej\r\n".utf8).write(to: file)
+    try Data("e\u{0008}echo hej\r\nhej\r\n".utf8).write(to: file)
 
     var size = LabanTerminalSize()
     size.rows = 24
@@ -205,7 +205,7 @@ final class TranscriptRoundTripTests: XCTestCase {
       from: UnsafePointer(snap),
       mode: .trimmedNonEmptyRows)
     XCTAssertTrue(visible.contains("echo hej"))
-    XCTAssertFalse(visible.contains("eecho hej"))
+    XCTAssertFalse(visible.contains("eecho hej"), visible)
     XCTAssertFalse(
       visible.unicodeScalars.contains { $0.value == 0 },
       "restore replay must not inject NUL glyphs")
