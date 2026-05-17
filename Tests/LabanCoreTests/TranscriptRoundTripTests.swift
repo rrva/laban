@@ -285,6 +285,74 @@ final class TranscriptRoundTripTests: XCTestCase {
       "transcript file should contain the fed bytes")
   }
 
+  // MARK: - Snapshot-on-quit
+
+  func testCaptureGridSnapshotReplacesBinWithPlainText() throws {
+    let baseDir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: baseDir) }
+    let store = PersistenceStore(baseURL: baseDir)
+    let host = TranscriptHost(store: store, isEnabled: { true })
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let producer = try Session.fixture(size: size)
+    defer { producer.close() }
+
+    let tabId = "snapshot-tab"
+    host.attachTranscriptWriter(to: producer, tabId: tabId)
+    // Feed bytes that include escape codes — the snapshot must
+    // contain the rendered text, NOT the raw bytes.
+    _ = producer.feedOutput(
+      Array("\u{001B}[31m$ echo hej\u{001B}[0m\r\nhej\r\n".utf8))
+    host.captureGridSnapshot(forTabId: tabId, session: producer)
+
+    let data = try Data(contentsOf: store.transcriptURL(forTabId: tabId))
+    let text = String(data: data, encoding: .utf8) ?? ""
+    XCTAssertTrue(text.contains("$ echo hej"),
+      "snapshot must contain rendered text; got: \(text.debugDescription)")
+    XCTAssertTrue(text.contains("hej"))
+    XCTAssertFalse(text.contains("\u{001B}"),
+      "snapshot must NOT contain raw escape codes")
+    XCTAssertTrue(text.hasSuffix("\r\n"),
+      "snapshot must end with CR+LF so the live shell starts on a fresh row at column 0")
+  }
+
+  func testCaptureGridSnapshotIsIdempotentAcrossCycles() throws {
+    // The bug: prior implementation appended raw PTY bytes to .bin
+    // on every restore, so each cycle accumulated the new shell's
+    // PROMPT_SP. With snapshot-on-quit, the file size must stay
+    // bounded across many cycles even if the writer captured
+    // bytes mid-session.
+    let baseDir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: baseDir) }
+    let store = PersistenceStore(baseURL: baseDir)
+    let host = TranscriptHost(store: store, isEnabled: { true })
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let producer = try Session.fixture(size: size)
+    defer { producer.close() }
+    let tabId = "idempotent-tab"
+    host.attachTranscriptWriter(to: producer, tabId: tabId)
+    _ = producer.feedOutput(Array("real user output\r\n".utf8))
+    host.captureGridSnapshot(forTabId: tabId, session: producer)
+    let firstSize = (try Data(contentsOf: store.transcriptURL(forTabId: tabId))).count
+
+    // Pretend N restore cycles happen — each feeds spurious bytes
+    // (simulating shell startup noise) and snapshots again.
+    for _ in 0..<5 {
+      _ = producer.feedOutput(
+        Array("\u{001B}[1m\u{001B}[7m%\u{001B}[27m\u{001B}[K\r~$ ".utf8))
+      host.captureGridSnapshot(forTabId: tabId, session: producer)
+    }
+    let lastSize = (try Data(contentsOf: store.transcriptURL(forTabId: tabId))).count
+    XCTAssertLessThanOrEqual(
+      lastSize, firstSize + 200,
+      "snapshot must not balloon across cycles; first=\(firstSize), last=\(lastSize)")
+  }
+
   // MARK: - Suppression window
 
   func testWriterSuppressesCaptureUntilDeadline() throws {
