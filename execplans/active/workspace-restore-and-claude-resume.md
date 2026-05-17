@@ -609,8 +609,8 @@ opens one default tab.
 ### M0 — Workspace.json round-trip
 
 **Scope.** Persist enough metadata that quitting and relaunching
-Laban brings back the same set of windows, the same tabs in the same
-order in each window, each tab in its previous working directory.
+Laban brings back the same single window's tabs in the same order,
+each in its previous working directory.
 Tabs come back as **fresh shells**. This proves out the metadata
 layer end to end and provides the foundation everything else plugs
 into.
@@ -643,8 +643,8 @@ adds these):
   `claude --resume X`).
 - No scroll position, find state, or selection restore (deferred
   beyond M2; fidelity rung iii).
-- No "recently closed tab" or library plane (deferred indefinitely;
-  S2/S3 in the Decision Log).
+- No "recently closed tab" or library plane — these are future
+  planned planes (S2/S3 in the Decision Log), out of M0/M1/M2 scope.
 - No multi-window persistence (schema is forward-compatible; add when
   the app shell grows to multiple windows).
 - No window frame/size/zoom persistence — left to macOS's built-in
@@ -899,6 +899,30 @@ without parsing UI text.
   skips byte-replay.
 
 ### M2 — Agent (Claude + Codex) session id capture, autoresume, JSONL mirror
+
+**Product-scope anchor.** M2 introduces agent-aware terminal
+behavior — detecting `claude`/`codex` processes inside tabs and
+rewriting their launch on restore — which is **not** described in
+`docs/product/spec.md` as written. Per `AGENTS.md`:
+
+> Do not add product behavior outside the product docs unless the
+> user asks for it or it is required to keep an MVP behavior
+> working.
+
+M2 ships under the **user-asked-for-it** clause. The user's verbatim
+requirements from the grilling session that produced this plan:
+
+> "I want something brand-defining" — (in the context of the Claude
+> session autopilot)
+
+> "I want it to work for codex as well as for claude. both should
+> have equal support. they are similar."
+
+These statements authorize the M2 scope. If product direction
+shifts away from agent-awareness, M2 should be revisited; in the
+meantime, future work that introduces *additional* agent-aware
+behavior should either fold into a future spec.md update covering
+agent-host policy or carry its own user-authorization quote.
 
 **Scope.** Detect when a `claude` or `codex` process runs in a tab,
 capture its session id and JSONL path, persist them, and on restore
