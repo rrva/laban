@@ -361,8 +361,13 @@ downstream. Record any change to these decisions here with rationale.
   top, not part of the differentiating outcome. Each additional plane
   multiplies UI surface, menu items, and identity-management work.
   `workspace.json` schema is forward-compatible (Codable optional
-  fields) so adding planes later is additive. Spec.md commits only to
-  the live plane.
+  fields) so adding planes later is additive. `docs/product/spec.md`
+  section 11 ("Three-plane persistence") describes all three planes
+  — live, recently-closed, and library — as the target end-state for
+  workspace persistence; this plan ships only the live plane as the
+  first slice toward that end-state. Recently-closed and library
+  remain future scope, anchored in spec.md, not deferred or
+  contradicted.
   Date/Author: 2026-05-17 / Grilling session.
 
 - Decision: Persistence subsystem is separate from the existing capture
