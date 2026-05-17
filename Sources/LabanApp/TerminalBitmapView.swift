@@ -1611,7 +1611,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     else { return }
 
     let pasteboard = NSPasteboard.general
-    if TerminalClipboard.containsImage(pasteboard),
+    let hasImage = TerminalClipboard.containsImage(pasteboard)
+    if hasImage,
       TerminalClipboard.shouldForwardImagePasteToTerminal(for: activeTab)
     {
       forwardClipboardImagePasteToTerminal(session: session)
@@ -1622,6 +1623,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let rawBytes: Int
     switch TerminalClipboard.readString(pasteboard) {
     case .empty:
+      // Image-only clipboard: mirror Ghostty's performable-keybind pass-through —
+      // when the clipboard has no text, forward as ctrl+v so TUIs like Claude
+      // Code can read the image from the system pasteboard themselves.
+      if hasImage {
+        forwardClipboardImagePasteToTerminal(session: session)
+      }
       return
     case .tooLarge(let bytes):
       let alert = NSAlert()
