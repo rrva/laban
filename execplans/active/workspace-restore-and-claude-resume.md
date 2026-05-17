@@ -209,30 +209,140 @@ downstream. Record any change to these decisions here with rationale.
   Date/Author: 2026-05-17 / User requirement.
 
 - Decision: Mirror agent JSONL on lifecycle events (agent process
-  exit, tab close, Laban quit) to
+  exit, tab close, Laban quit) **and on a 5-minute periodic timer
+  while an agent process is observed alive** in a tab, to
   `~/Library/Application Support/Laban/agent-mirror/<tab-id>.jsonl`.
-  The mirror is **best-effort diagnostics only** in M2 — the supported
-  restore path is the agent's own `resume` invocation, period.
-  Auto-fallback (copy the mirror back to the agent's expected path on
-  "session not found" and retry) is deferred to a separately-scoped
-  M2.5 follow-up; M2 does not ship it.
+  The mirror covers post-clean-quit reboot scenarios (lifecycle
+  fires before quit) and bounds the mid-session loss window to 5
+  minutes (periodic timer fires during long-running sessions). It
+  does **not** protect against mid-session SIGKILL/power loss in
+  the gap between two periodic ticks — at most 5 minutes of recent
+  agent state may be lost if both Laban and Claude's own JSONL go
+  down inside that window. The mirror is **best-effort diagnostics
+  only** in M2 — the supported restore path is the agent's own
+  `resume` invocation, period. Auto-fallback (copy the mirror back
+  to the agent's expected path on "session not found" and retry)
+  is deferred to a separately-scoped M2.5 follow-up; M2 does not
+  ship it.
   Rationale: Anthropic issue #54907 documents JSONL files disappearing
-  after macOS reboot in some setups. The bug fires post-reboot, not
-  post-quit, so snapshotting at lifecycle events captures Claude's
-  state before the bug fires. Mirror is ~30 lines of Swift, costs one
-  `cp` at three known moments. Continuous tailing would be over-
-  engineering and tail semantics for files another process is appending
-  to are tricky. Periodic snapshot is unnecessary because the documented
-  failure mode is reboot, which happens *after* quit (and quit is when
-  we already snapshot). Auto-fallback was deferred because the codex
-  review correctly flagged that copying the mirror to Claude's
-  expected path makes Laban version-coupled to Claude internals — a
-  future Claude release that reorganizes its session layout would
-  break the fallback silently. M2 ships the mirror so the fallback
-  can be added as a tested follow-up if telemetry shows users hitting
-  "session not found" with non-trivial frequency. The mirror is still
-  useful at M2 for manual recovery — users can copy it back themselves
-  if Claude has lost the original.
+  after macOS reboot in some setups. The lifecycle triggers cover
+  the post-clean-quit reboot scenario; the periodic 5-min snapshot
+  bounds the mid-session loss window so that a Laban SIGKILL or a
+  machine reboot during an active agent conversation loses at most
+  ~5 minutes of agent state rather than the entire session.
+  Periodic-snapshot cost is one `cp` per active agent tab per 5
+  minutes — a one-Claude-tab-open-all-day user sees ~96 extra `cp`
+  calls per day, each sub-millisecond. Battery impact unmeasurable.
+  Continuous tailing was rejected as over-engineering: tail
+  semantics for files another process is appending to are tricky
+  (truncation, rotation, partial-line reads), and the 5-min bound
+  is enough for "you didn't lose your whole day's conversation"
+  without becoming a streaming-replicator. Auto-fallback was
+  deferred because the codex review correctly flagged that copying
+  the mirror to the agent's expected path makes Laban
+  version-coupled to agent internals — a future Claude or Codex
+  release that reorganizes session layout would break the fallback
+  silently. M2 ships the mirror so the fallback can be added as a
+  tested follow-up if telemetry shows users hitting "session not
+  found" with non-trivial frequency. The mirror is still useful at
+  M2 for manual recovery — users can copy it back themselves if
+  the agent has lost the original.
+  Date/Author: 2026-05-17 / Codex review response.
+
+- Decision: `AgentSupport` table holds a per-agent
+  `extractSessionId(vnodePath: String) -> String?` closure, not just
+  binary name + resume-command. The default implementation matches
+  the path against the agent's known JSONL layout (`.claude/projects/
+  <encoded-cwd>/<uuid>.jsonl` for Claude with `CLAUDE_CONFIG_DIR`
+  override; analogous for Codex with whatever its env-var override
+  is) AND validates that the extracted stem is a UUID (or other
+  agent-defined session-id shape). A `.jsonl` open fd whose path or
+  filename does not match returns `nil` — the detector treats it as
+  "not the session log."
+  Rationale: The codex review correctly flagged that "any `.jsonl`
+  open fd is the session id" is too loose — `claude` or `codex` may
+  open arbitrary `.jsonl` files (configs, caches, data) that aren't
+  the session log. Misidentifying one as the session id would write
+  garbage to `agent.sessionId` and produce a guaranteed-to-fail
+  resume invocation. The per-agent matcher + UUID validation keeps
+  the detector general (the AgentSupport table is the single source
+  of truth) while making each agent's path expectations explicit and
+  testable. If a future agent uses non-UUID session ids, that's one
+  new entry in the table with its own validator.
+  Date/Author: 2026-05-17 / Codex review response.
+
+- Decision: Agent liveness is tracked **separately** from
+  `processStatus`. `AgentInfo` carries a `wasRunningAtQuit: Bool`
+  field maintained by the detector: set true on the first detection,
+  set false on a tick where no matching agent descendant is found,
+  re-set true if the agent reappears. At quit time the persistence
+  layer reads the current value into the saved state. The restore
+  launch planner uses `agent.wasRunningAtQuit` (not
+  `tab.processStatus`) to decide silent vs prefilled resume.
+  Rationale: `processStatus` tracks the *shell* (the tab's direct
+  child), which is always alive while the tab is open. The agent
+  (claude/codex) runs as a grandchild and has its own independent
+  lifetime — the user may have exited claude with Ctrl-D 20 minutes
+  before quitting Laban. Using shell processStatus would make a
+  long-dead Claude conversation auto-resume silently, which is
+  wrong. The detector already observes agent existence on every
+  tick; recording its own observation is the source of truth.
+  Date/Author: 2026-05-17 / Codex review response.
+
+- Decision: The `AgentSessionDetector` timer **never stops**. Each
+  500ms tick: (1) walk the descendant tree; (2) if a matching agent
+  descendant is found and its session id is unchanged, no-op; (3) if
+  found with a new session id, update the tab's `AgentInfo`; (4) if
+  not found, set `wasRunningAtQuit = false` while preserving the
+  previously-captured `name`/`sessionId`/`jsonlPath`. The timer
+  continues for the life of the tab so we observe agent restarts,
+  re-launches, and Ctrl-D exits uniformly.
+  Rationale: The earlier draft said "stops the timer once a session
+  id is captured" and also "re-arms on the next tick's discovery" —
+  which is self-contradictory because a stopped timer has no next
+  tick. Never-stop is simpler, costs almost nothing (one
+  `proc_listpids` per 500ms per tab), and yields the liveness
+  signal the launch planner needs.
+  Date/Author: 2026-05-17 / Codex review response.
+
+- Decision: Persistence ring-buffer overflow policy is **drop
+  oldest**. If the per-session in-memory ring fills before the
+  persistence drain queue can process it (pathological case:
+  sustained PTY output faster than disk can absorb), the C
+  callback's `memcpy` overwrites the oldest bytes in the ring,
+  advancing the head pointer. The callback never blocks and never
+  returns an error.
+  Rationale: The codex review flagged that ring overflow was
+  unspecified. Three options exist: drop oldest (lossy but bounded
+  memory, never blocks PTY drain), block the callback (blocks PTY
+  drain — defeats the whole reason for async sink), or grow the
+  ring unboundedly (memory bomb). Drop-oldest matches every other
+  "we can't lose the producer" subsystem in Laban (log ring
+  buffers, capture streams). The user-visible effect under sustained
+  overload is "older bytes don't make it into the transcript file" —
+  the agent moment is still preserved because the on-screen output
+  is rendered live by libghostty-vt; the transcript is only used on
+  restore. Telemetry should count overflow events; non-zero counts
+  indicate the ring size needs raising.
+  Date/Author: 2026-05-17 / Codex review response.
+
+- Decision: The byte-replay cutoff at restore is **not** an exact
+  `file_size - 1MB` offset. After computing the nominal cutoff, the
+  TranscriptRenderer walks forward through the file looking for the
+  first `\n` (ASCII LF, 0x0A); the byte-replay window starts at the
+  first byte *after* that LF. Everything before is text-stripped.
+  If no LF exists between the nominal cutoff and EOF (degenerate
+  case), the entire suffix is text-stripped and no byte replay
+  happens.
+  Rationale: The codex review correctly flagged that cutting the
+  byte stream at an arbitrary offset can land mid-escape-sequence
+  or mid-multibyte-UTF-8, producing garbage in the first replayed
+  frame. ASCII LF is the safest universal resync point: it can
+  never appear inside a VT escape sequence (escapes don't contain
+  LF) and it always marks a UTF-8-aligned position. The forward
+  walk from nominal cutoff has bounded cost (typically <1KB until
+  the next LF in real terminal output) and gives a clean replay
+  starting point.
   Date/Author: 2026-05-17 / Codex review response.
 
 - Decision: Scope is single-plane (live tabs only) **and single-window**
@@ -513,10 +623,8 @@ into.
   `windows: [WindowState]` array — M0 always writes a one-element
   array and reads only the first element — so adding multi-window
   later is an implementation change with no schema migration.
-- Per-window UI bools — `sidebarVisible`, `inspectorVisible`,
-  `selectedTabId` are properties of the one `WindowState` because
-  they are per-window state by definition; persisting them costs one
-  Codable line each.
+- Per-window selected tab — `selectedTabId` so the same tab is
+  focused after relaunch.
 - The ⇧-at-launch escape hatch — without it the user has no way to
   recover from a corrupt or unwanted restore.
 
@@ -560,8 +668,8 @@ adds these):
 **Modifications.**
 
 - `Sources/LabanCore/AppModel.swift` — emit a change signal on tab
-  add/remove/reorder, tab selection, cwd change, sidebar visibility
-  change. Add `restore(from: WorkspaceState)` initializer path.
+  add/remove/reorder, tab selection, and cwd change. Add
+  `restore(from: WorkspaceState)` initializer path.
 - `Sources/LabanApp/AppDelegate.swift` — at launch, check `⇧` modifier
   via `NSEvent.modifierFlags`. If pressed, call
   `PersistenceStore.archiveCurrent()` and create a fresh empty
@@ -580,8 +688,6 @@ adds these):
     {
       "id": "win-7E2F",
       "selectedTabId": "tab-A1B2",
-      "sidebarVisible": true,
-      "inspectorVisible": false,
       "tabs": [
         {
           "id": "tab-A1B2",
@@ -603,17 +709,15 @@ adds these):
   `./scripts/build-app` produces).
 3. Create three tabs. In each, run `cd /tmp` (tab 1), `cd ~/Documents`
   (tab 2), leave default cwd (tab 3). Switch the selection to tab 2.
-4. Toggle the sidebar off.
-5. Quit with Cmd-Q.
-6. Inspect `~/Library/Application Support/Laban/workspace.json` —
+4. Quit with Cmd-Q.
+5. Inspect `~/Library/Application Support/Laban/workspace.json` —
   expect `windows` is an array of length 1, that one window has
-  three tabs with the three cwds, `selectedTabId` matching tab 2,
-  `sidebarVisible: false`.
-7. Relaunch Laban.
-8. Observe: three tabs in the same order, tab 2 selected, sidebar
-  hidden. Each tab is at a fresh shell prompt. Run `pwd` in each
-  tab — outputs match the saved cwds.
-9. Relaunch with ⇧ held. Observe: empty workspace, one default tab.
+  three tabs with the three cwds and `selectedTabId` matching tab 2.
+6. Relaunch Laban.
+7. Observe: three tabs in the same order, tab 2 selected. Each tab
+  is at a fresh shell prompt. Run `pwd` in each tab — outputs match
+  the saved cwds.
+8. Relaunch with ⇧ held. Observe: empty workspace, one default tab.
   `~/Library/Application Support/Laban/workspace.json.previous`
   exists with the prior content.
 
@@ -638,8 +742,13 @@ active at quit).
   `transcripts/<tab-id>.bin` opened for append. The C persistence
   callback (registered via `laban_session_set_persistence_callback`)
   calls a `writeChunk(_:)` method that does **only** `memcpy` into the
-  ring buffer under a short critical section, then returns. A
-  dedicated drain dispatch queue (`label: "laban.persistence",
+  ring buffer under a short critical section, then returns.
+  **Overflow policy: drop oldest.** If the ring is full when
+  `writeChunk` arrives, the new bytes overwrite the oldest bytes
+  and the head pointer advances. The callback never blocks, never
+  returns an error, never allocates. A drop counter is incremented
+  so telemetry can detect sustained-overflow conditions.
+  A dedicated drain dispatch queue (`label: "laban.persistence",
   qos: .utility`) ticks on 200ms debounce, drains the ring into the
   file via `write(2)`, optionally calls `fsync(2)`, and runs the
   head-truncation pass when the file exceeds 10MB (re-writes via temp
@@ -647,7 +756,13 @@ active at quit).
   PTY callback's caller.
 - `Sources/LabanCore/Persistence/TranscriptRenderer.swift` — given a
   file path and a target `Session`, performs the hybrid restore.
-  Reads file size, splits at `last_screen_offset = max(0, size - 1MB)`.
+  Reads file size, computes `nominal_cutoff = max(0, size - 1MB)`,
+  then **walks forward from `nominal_cutoff` to the next ASCII LF
+  (0x0A)** to find a safe resync point. The byte-replay window
+  starts at the byte *after* that LF. If no LF exists between
+  `nominal_cutoff` and EOF, the entire suffix is text-stripped and
+  no byte replay happens (degenerate but safe — terminal output
+  almost always contains newlines).
   For the prefix (older bytes):
     1. Strip ANSI escape sequences and other non-printable control
        bytes via a small pure-Swift stripper (CSI introducers `ESC [`
@@ -705,9 +820,21 @@ active at quit).
   capture `altBufferAtQuit` and `processStatus` into the saved
   tab state.
 - `Sources/LabanCore/Persistence/PersistenceCoordinator.swift` —
-  on restore, after `AppModel.restore(from:)` creates each tab,
-  call `TranscriptRenderer.render(file: ..., into: session)`
-  before the session is presented.
+  drives the restore sequence. Strict order per tab:
+  1. Construct the `Session` and spawn its shell in the saved (or
+     fallback) cwd.
+  2. Call `TranscriptRenderer.render(file: ..., into: session)`.
+     Text-stripped scrollback is fed first; the byte-replay window
+     is fed second. libghostty-vt processes both before the first
+     visible frame is rendered.
+  3. (M2) Ask `RestoreLaunchPlanner` for the launch instruction
+     and apply it (`executeNow` writes bytes + newline;
+     `prefillPrompt` writes bytes only; `noPrefill` no-ops).
+  4. Mark the session ready for display.
+
+  Steps 1–4 happen per tab on a background queue; the
+  selected tab is processed first so the user sees their focused
+  tab fastest. All other tabs hydrate concurrently.
 
 **Cwd-gone fallback (M1).**
 
@@ -784,16 +911,31 @@ third agent later is one entry in `AgentSupport`.
 **New files.**
 
 - `Sources/LabanApp/AgentSupport.swift` — table of supported agents.
-  Each entry is `(name: AgentName, binaryBasenames: [String],
-  resumeCommand: (String) -> String)`. Initial entries:
+  Each entry is
+  `(name: AgentName, binaryBasenames: [String],
+  resumeCommand: (String) -> String,
+  extractSessionId: (vnodePath: String) -> String?)`.
+  Initial entries:
     - `.claude` → basenames `["claude"]`,
-      resume: `{ id in "claude --resume \(id)" }`.
+      resume: `{ id in "claude --resume \(id)" }`,
+      extract: match `vnodePath` against
+      `(.+/)?\.claude/projects/[^/]+/([0-9a-f-]{36})\.jsonl$`
+      (UUID-shape stem under `.claude/projects/`); also honor
+      `CLAUDE_CONFIG_DIR` if set in Laban's own environment by
+      substituting the prefix.
     - `.codex` → basenames `["codex"]`,
       resume: `{ id in "codex resume \(id)" }` (verified against
-      `github.com/openai/codex` cli main.rs — codex uses a
-      subcommand, not a `--resume` flag).
+      `github.com/openai/codex` cli `main.rs` — codex uses a
+      subcommand, not a `--resume` flag),
+      extract: match against
+      `(.+/)?\.codex/sessions/.+/([0-9a-f-]{36})\.jsonl$`
+      (verify the exact subpath against `~/.codex/` layout at
+      implementation time; the regex anchors on `.codex/sessions/`
+      and a UUID stem — adjust if the upstream layout differs).
   Single source of truth. Adding a new agent later is a single
-  entry; no other code changes.
+  entry; no other code changes. Agents whose session ids are not
+  UUIDs need their own extractor; the default UUID-shape check
+  rejects them.
 - `Sources/LabanApp/AgentSessionDetector.swift` — for each active
   session, owns a `DispatchSourceTimer` firing every 500ms on a
   background queue. On each tick:
@@ -810,48 +952,68 @@ third agent later is one entry in `AgentSupport`.
     `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO, ...)` to enumerate the
     process's open file descriptors and resolve each to its vnode
     path.
-  4. The first open fd whose vnode path ends in `.jsonl` yields the
-    session id (filename stem) and the JSONL path. We do **not**
-    require the path to contain `/.claude/` or `/.codex/` — this
-    honors `CLAUDE_CONFIG_DIR` and analogous Codex env-var
-    redirection, survives future path reorganization in either
-    agent, and avoids embedding fragile internal-path assumptions.
-    If multiple `.jsonl` fds are open, pick the most recently
-    opened (last in fd order). If zero `.jsonl` fds are open
-    (sessions disabled, or this is not actually the agent despite
-    the executable name), no detection is made and the tab restores
-    as a fresh agent invocation without the resume form. Captures
-    `(agentName, sessionId, jsonlPath)` and notifies the tab via a
-    delegate. Stops the timer for that tab once a session id is
-    captured (re-arms on tab re-launch or new descendant agent exec
-    via the next tick's discovery; the detector treats subsequent
-    matches as the same session if the session id is unchanged and
-    updates only on change).
+  4. For each `.jsonl` open fd, call the matched agent's
+    `AgentSupport.extractSessionId(vnodePath:)`. The first fd whose
+    extractor returns a non-nil session id wins. The extractor
+    enforces both the agent's known path layout and a UUID-shape
+    check, so unrelated `.jsonl` files the process may have open
+    (configs, caches, data) are filtered out. If no `.jsonl` fd
+    matches, no detection is made on this tick and the tab restores
+    later as a fresh agent invocation without the resume form.
+    Captures `(agentName, sessionId, jsonlPath,
+    wasRunningAtQuit: true)` and notifies the tab via a delegate.
+
+  **Timer never stops.** Each subsequent tick:
+  - If the previously-matched agent descendant is still alive and
+    its session id is unchanged, no-op.
+  - If a matched descendant is alive but the session id has
+    changed (user invoked `claude --resume Y` after the original
+    session ended), update the tab's `AgentInfo` to the new id.
+  - If no matched agent descendant is found (user Ctrl-D'd
+    `claude`), set `wasRunningAtQuit = false` while preserving the
+    previously-captured `name`/`sessionId`/`jsonlPath`. The
+    `RestoreLaunchPlanner` uses this to decide silent vs prefilled
+    resume on next launch.
 
   Race handling: if `proc_pidinfo` returns no `.jsonl` fd on the
   first match (the agent process exec'd but has not yet opened its
-  log file), the detector keeps the timer running and retries on
-  the next tick. The window between exec and JSONL-open in observed
-  `claude` and `codex` versions is well under one tick (500ms), but
-  the retry loop is the safety net.
-- `Sources/LabanApp/AgentJSONLMirror.swift` — on three events
-  (agent exit, tab close, Laban quit), copies the captured
+  log file), the next tick retries — the timer's never-stop policy
+  handles this naturally. The window between exec and JSONL-open in
+  observed `claude` and `codex` versions is well under one tick
+  (500ms).
+- `Sources/LabanApp/AgentJSONLMirror.swift` — copies the captured
   `jsonl_path` to `agent-mirror/<tab-id>.jsonl` using `FileManager`
   atomic copy. Idempotent. One mirror file per tab regardless of
-  agent — the agent type is recorded in `workspace.json`.
+  agent — the agent type is recorded in `workspace.json`. Fires on:
+  - The agent process exits (detector observes
+    `wasRunningAtQuit: true → false` transition).
+  - The tab is closed.
+  - Laban quits (`applicationWillTerminate`).
+  - **A 5-minute periodic `DispatchSourceTimer` while the agent is
+    observed alive in the tab.** The periodic timer starts when
+    the detector first captures an `AgentInfo` for the tab and is
+    cancelled when the agent dies, when the tab closes, or at
+    quit. Bounds mid-session loss to ~5 minutes if Laban or the
+    machine crashes during an active agent conversation.
 - `Sources/LabanApp/RestoreLaunchPlanner.swift` — given a
-  `TabState`, computes the launch instruction:
+  `TabState`, computes the launch instruction. The decision uses
+  `tab.agent?.wasRunningAtQuit`, **not** `tab.processStatus`
+  (which tracks the shell, always alive, not the agent — see
+  Decision Log).
   - `executeNow(command:)` — run the command immediately, no
     visible prompt prefill. Used **only** for the agent's resume
-    invocation (looked up via `AgentSupport[agentName].resumeCommand(id)`)
-    when the tab had `processStatus == running` at quit *and* a
-    captured agent session id.
+    invocation (looked up via
+    `AgentSupport[agent.name].resumeCommand(agent.sessionId)`)
+    when `tab.agent` is non-nil *and*
+    `tab.agent.wasRunningAtQuit == true`.
   - `prefillPrompt(command:)` — feed the command bytes into the
     PTY as input without a trailing newline; the prompt shows the
     command and the user presses ENTER to run it. Used **only**
-    for dead-agent tabs (`processStatus` clean or error) with a
-    captured agent session id; the pre-filled command is the
-    agent's resume invocation.
+    when `tab.agent` is non-nil and
+    `tab.agent.wasRunningAtQuit == false` (the user had exited
+    the agent before quitting Laban, but we have the session id
+    captured); the pre-filled command is the agent's resume
+    invocation.
   - `noPrefill` — fresh shell, no command pre-fill. Used for every
     other case: non-agent tabs (running or dead), agent tabs where
     session id capture failed, never-started tabs.
@@ -1058,16 +1220,29 @@ The user-visible behavior at completion of all three milestones is:
 ## Idempotence and Recovery
 
 - All persistence writes use `Data.write(to:options:.atomic)` —
-  POSIX `write-tmp + close + rename`. **Process-crash-safe**: a
-  SIGKILL, Force Quit, OOM kill, Laban panic, or most kernel
-  panics leave the prior file intact (the journaled filesystem
-  recovers the rename atomicity guarantee). **Not hard-power-loss
-  safe**: a power-button-hold or wall-unplug within the 200ms
-  debounce window may lose the most recent writes because regular
-  `write()` + `close()` does not force the SSD's own write cache
-  to NAND. This matches the durability contract Chrome, VS Code,
-  and Sublime ship; see Decision Log for the rationale and the
-  revisit trigger. If F_FULLFSYNC is added later, it is on the
+  POSIX `write-tmp + close + rename`. The atomic *rename* always
+  produces either the prior file or the new file, never a half
+  state. What it does **not** guarantee:
+  - **Process-crash safety (SIGKILL, Force Quit, OOM, Laban
+    panic)**: the prior `workspace.json` is always intact, but
+    writes from inside the 200ms debounce window may be lost
+    because they had not yet flushed from Swift's debounce queue
+    to disk. *The prior file is intact; the most recent few
+    hundred ms of state may not be.*
+  - **Kernel panic**: same as process crash, plus the OS buffer
+    cache may not have written the renamed file's data blocks to
+    disk yet — APFS's journal recovers filesystem consistency
+    (the rename is journaled atomically) but may discard recent
+    data writes that had not been flushed. Prior file intact;
+    rename may roll back.
+  - **Hard power loss (power-button hold, wall unplug)**: same as
+    kernel panic, plus the SSD's own write cache may not have
+    committed to NAND. Without `F_FULLFSYNC` we cannot bound how
+    much recent state survives — could be the last few seconds,
+    could be more.
+  This matches the durability contract Chrome, VS Code, and
+  Sublime ship; see Decision Log for the rationale and the
+  revisit trigger. If `F_FULLFSYNC` is added later, it is on the
   `workspace.json` write only (transcript bytes stay on the cheap
   path).
 - `workspace.json.previous` is overwritten on every ⇧-at-launch
@@ -1162,12 +1337,34 @@ Per-milestone gates:
 - [ ] Inspect the mirror directory after agent sessions:
   `ls -la "$HOME/Library/Application Support/Laban/agent-mirror/"`
   — expect a `.jsonl` per agent-running tab; file size > 0.
-- [ ] Verify the silent auto-resume rule:
-  `grep -n "executeNow\|prefillPrompt" Sources/LabanApp/RestoreLaunchPlanner.swift` —
-  `executeNow` is taken **only** for the
-  `(processStatus == running, hasAgentSessionId)` case; dead-agent
-  tabs with a session id use `prefillPrompt`; everything else uses
+- [ ] Verify the silent auto-resume rule uses **agent liveness**,
+  not shell processStatus:
+  `grep -n "wasRunningAtQuit\|processStatus" Sources/LabanApp/RestoreLaunchPlanner.swift` —
+  expect `wasRunningAtQuit` is read; `processStatus` must NOT
+  appear in the planner's decision. `executeNow` is taken **only**
+  when `tab.agent.wasRunningAtQuit == true`; dead-agent tabs with
+  a session id use `prefillPrompt`; everything else uses
   `noPrefill`. Non-agent tabs never receive a pre-fill.
+- [ ] Per-agent path matcher present:
+  `grep -n "extractSessionId" Sources/LabanApp/AgentSupport.swift` —
+  expect each agent entry supplies an extractor that returns nil
+  for non-session `.jsonl` paths. Universal `.jsonl`-stem matching
+  was rejected; see Decision Log.
+- [ ] Periodic snapshot timer present:
+  `grep -n "5.*min\|300.*second\|DispatchSourceTimer" Sources/LabanApp/AgentJSONLMirror.swift` —
+  expect a periodic timer fires while the agent is observed alive.
+- [ ] Detector timer never stops:
+  `grep -n "cancel\(\)\|suspend\(\)" Sources/LabanApp/AgentSessionDetector.swift` —
+  expect the only `cancel`/`suspend` calls are on tab teardown,
+  not on session-id capture. (Self-contradictory "stop on capture
+  + re-arm on next tick" wording was rejected; see Decision Log.)
+- [ ] Safe replay boundary in TranscriptRenderer:
+  `grep -n "0x0A\|\"\\\\n\"\|LF" Sources/LabanCore/Persistence/TranscriptRenderer.swift` —
+  expect a forward walk from the 1MB nominal cutoff to the next LF.
+- [ ] Ring overflow policy present:
+  `grep -n "drop\|overflow\|head pointer" Sources/LabanCore/Persistence/TranscriptWriter.swift` —
+  expect the drop-oldest behavior is documented in code or comment;
+  expect a drop counter for telemetry.
 - [ ] Confirm auto-fallback is **NOT** in M2:
   `grep -rn "session not found\|replaceItemAt.*\.claude\|replaceItemAt.*\.codex" Sources/` —
   expect zero hits. The fallback path is deferred to M2.5; M2
@@ -1221,8 +1418,6 @@ public struct WorkspaceState: Codable, Equatable {
 public struct WindowState: Codable, Equatable {
   public var id: String
   public var selectedTabId: String?
-  public var sidebarVisible: Bool
-  public var inspectorVisible: Bool
   public var tabs: [TabState]
 }
 
@@ -1245,6 +1440,7 @@ public struct AgentInfo: Codable, Equatable {
   public var name: AgentName
   public var sessionId: String
   public var jsonlPath: String
+  public var wasRunningAtQuit: Bool  // detector-observed agent liveness at quit
 }
 
 public enum AgentName: String, Codable {
