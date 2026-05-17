@@ -579,7 +579,14 @@ public final class AppModel {
       }
       return (_tabs.last!, session)
     }
-    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: id)
+    // Restored tabs ask the delegate to suppress capture for ~500ms
+    // so the new shell's spawn-time prompt sequences don't get
+    // appended to the prior session's `.bin`. Without this, every
+    // quit-restore cycle accumulates a stacked prompt block that
+    // shows up in the next restore's scrollback.
+    transcriptDelegate?.attachTranscriptWriter(
+      to: session, tabId: id,
+      suppressInitialOutputFor: .milliseconds(500))
     onTabCreated?(id, session)
     return tab
   }

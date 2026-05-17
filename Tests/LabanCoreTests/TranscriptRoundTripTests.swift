@@ -285,6 +285,47 @@ final class TranscriptRoundTripTests: XCTestCase {
       "transcript file should contain the fed bytes")
   }
 
+  // MARK: - Suppression window
+
+  func testWriterSuppressesCaptureUntilDeadline() throws {
+    // Restored tabs ask the writer to drop the new shell's startup
+    // bytes so they don't pile up in the on-disk transcript across
+    // quit-restore cycles. Verify the deadline is honored and that
+    // bytes after the deadline land on disk.
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("t.bin")
+    let writer = TranscriptWriter(
+      tabId: "t",
+      fileURL: file,
+      ringCapacity: 4096,
+      fileCapacity: 1_000_000,
+      debounceInterval: .milliseconds(10))
+
+    writer.suppressCapture(forNext: .milliseconds(150))
+    let pre = Array("DROP_ME prompt sequences\r\n".utf8)
+    pre.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: pre.count)
+    }
+    writer.flushSync()
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: file.path),
+      "bytes inside the suppression window must not reach disk")
+    XCTAssertEqual(writer.droppedBytes, UInt64(pre.count))
+
+    Thread.sleep(forTimeInterval: 0.2)
+
+    let post = Array("real user output\r\n".utf8)
+    post.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: post.count)
+    }
+    writer.flushSync()
+    let data = try Data(contentsOf: file)
+    XCTAssertEqual(
+      Array(data), post,
+      "bytes after the suppression deadline must land on disk")
+  }
+
   // MARK: - Toggle gating
 
   func testWriterDropsBytesAtCaptureTimeWhenDisabled() throws {

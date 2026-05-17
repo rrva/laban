@@ -176,6 +176,13 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     assertVisible(
       harness1.model, tabId: tab2Id, contains: "tab two content")
 
+    // Restored tabs suppress capture for ~500ms after attach so the
+    // new shell's spawn-time prompt doesn't accumulate across
+    // restore cycles. Wait past that window before injecting
+    // "post-restore user activity" so the test asserts the
+    // captured-after-startup path.
+    Thread.sleep(forTimeInterval: 0.6)
+
     // Add a new tab in this cycle, write new content to existing
     // tabs, and shift the selection.
     let tab3 = try harness1.model.createTab()

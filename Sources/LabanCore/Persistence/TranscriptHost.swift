@@ -41,11 +41,29 @@ public final class TranscriptHost {
   /// after restore), it is flushed and replaced — the new writer
   /// continues to append to the same `.bin` file, so the on-disk
   /// transcript carries across the restore boundary.
-  public func attachTranscriptWriter(to session: Session, tabId: String) {
+  ///
+  /// - Parameter suppressInitialOutputFor: when non-zero, the
+  ///   writer drops bytes for the given interval after attach.
+  ///   Restored tabs pass ~500ms here so the new shell's spawn-time
+  ///   prompt sequences don't get appended to the prior session's
+  ///   `.bin` — otherwise every quit-then-restore cycle pads the
+  ///   transcript with another stacked prompt that shows up on the
+  ///   next restore. Fresh tabs leave this at zero so their full
+  ///   initial prompt is captured.
+  public func attachTranscriptWriter(
+    to session: Session,
+    tabId: String,
+    suppressInitialOutputFor: DispatchTimeInterval = .never
+  ) {
     let writer = TranscriptWriter(
       tabId: tabId,
       fileURL: transcriptURL(forTabId: tabId),
       isEnabled: isEnabled)
+    if case .never = suppressInitialOutputFor {
+      // No suppression.
+    } else {
+      writer.suppressCapture(forNext: suppressInitialOutputFor)
+    }
     let bridge = TranscriptWriterBridge(writer: writer)
     lock.lock()
     let priorBridge = bridges[tabId]
@@ -120,9 +138,20 @@ private let transcriptBridgeCallback:
   }
 
 public protocol TranscriptHostDelegate: AnyObject {
-  func attachTranscriptWriter(to session: Session, tabId: String)
+  func attachTranscriptWriter(
+    to session: Session,
+    tabId: String,
+    suppressInitialOutputFor: DispatchTimeInterval)
   func detachTranscriptWriter(forTabId tabId: String, in session: Session?)
   func transcriptURL(forTabId tabId: String) -> URL
+}
+
+extension TranscriptHostDelegate {
+  /// Convenience: fresh-tab attach (no suppression).
+  public func attachTranscriptWriter(to session: Session, tabId: String) {
+    attachTranscriptWriter(
+      to: session, tabId: tabId, suppressInitialOutputFor: .never)
+  }
 }
 
 extension TranscriptHost: TranscriptHostDelegate {}

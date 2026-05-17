@@ -28,7 +28,11 @@ private final class TranscriptRecorder: TranscriptHostDelegate {
   var attached: [String] = []
   var detached: [String] = []
 
-  func attachTranscriptWriter(to session: Session, tabId: String) {
+  func attachTranscriptWriter(
+    to session: Session,
+    tabId: String,
+    suppressInitialOutputFor: DispatchTimeInterval
+  ) {
     lock.lock()
     attached.append(tabId)
     lock.unlock()

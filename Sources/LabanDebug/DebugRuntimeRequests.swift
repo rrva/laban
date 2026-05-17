@@ -132,6 +132,12 @@ struct ResizeWindowActionRequest: Decodable {
 
 struct TextActionRequest: Decodable {
   var text: String?
+  /// Optional target tab. Honored by `feedOutput` so callers can
+  /// target a specific tab without first changing focus. Other
+  /// actions that use `TextActionRequest` (`typeText`,
+  /// `setClipboardText`) ignore this — typed text goes to the
+  /// active tab by definition.
+  var tabId: String?
 }
 
 struct AdvanceFramesActionRequest: Decodable {

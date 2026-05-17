@@ -50,6 +50,17 @@ public final class TranscriptWriter {
   private var didStart = false
   private let isEnabled: () -> Bool
 
+  /// Suppress capture until this deadline. Used by restored tabs so
+  /// the new shell's startup output (prompt sequences,
+  /// bracketed-paste enable, etc.) is dropped instead of being
+  /// appended to the prior session's `.bin`. Without this, every
+  /// quit-then-restore cycle accumulates ~90 bytes of shell-startup
+  /// noise that show up as a stacked prompt in the next restore's
+  /// scrollback. The deadline is consulted at capture time so
+  /// suppressed bytes never enter the ring at all.
+  private let suppressLock = NSLock()
+  private var suppressUntil: DispatchTime?
+
   /// Designated init.
   ///
   /// - Parameters:
@@ -118,6 +129,12 @@ public final class TranscriptWriter {
       droppedBytes &+= UInt64(count)
       return
     }
+    if isWithinSuppressionWindow() {
+      // Restored-tab suppression: drop the new shell's startup
+      // output so it doesn't accumulate across restore cycles.
+      droppedBytes &+= UInt64(count)
+      return
+    }
     ringLock.lock()
     ingestedBytes &+= UInt64(count)
     let cap = ringCapacity
@@ -170,6 +187,27 @@ public final class TranscriptWriter {
       // until the next successful write. This is acceptable for a
       // persistence-only path; the user does not see this state.
     }
+  }
+
+  /// Suppress `writeChunk` for the next `interval`. Used by restored
+  /// tabs to drop the spawn-time prompt bytes so they don't pile up
+  /// in the on-disk transcript across restore cycles. Pass `.zero`
+  /// (or never call this) for fresh tabs whose entire output
+  /// belongs on disk. Idempotent: a second call replaces the
+  /// previous deadline.
+  public func suppressCapture(forNext interval: DispatchTimeInterval) {
+    suppressLock.lock()
+    suppressUntil = DispatchTime.now() + interval
+    suppressLock.unlock()
+  }
+
+  private func isWithinSuppressionWindow() -> Bool {
+    suppressLock.lock()
+    defer { suppressLock.unlock() }
+    guard let deadline = suppressUntil else { return false }
+    if DispatchTime.now() < deadline { return true }
+    suppressUntil = nil
+    return false
   }
 
   /// Synchronously drain the ring and write to disk. Called by the

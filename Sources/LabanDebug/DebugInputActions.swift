@@ -41,14 +41,21 @@ struct DebugInputActions {
 
   func feedOutput(_ request: TextActionRequest) -> DebugResponse {
     guard let text = request.text else { return jsonError("feedOutput requires text") }
-    if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id) {
-      let bytes = Array(text.utf8)
-      session.feedOutput(bytes)
-      runtime.model.noteOutput(forTab: tab.id)
-      runtime.appendTerminalLog(sessionId: session.id, direction: "output", bytes: bytes)
+    // Honor explicit `tabId` so callers can target a specific tab
+    // without first having to selectTab + risk losing focus context.
+    // Falls back to the active tab when `tabId` is omitted.
+    let targetTabId = request.tabId ?? runtime.model.activeTab?.id
+    guard let tabId = targetTabId,
+      let session = runtime.model.session(forTab: tabId)
+    else {
+      return jsonError("feedOutput could not resolve a target tab")
     }
+    let bytes = Array(text.utf8)
+    session.feedOutput(bytes)
+    runtime.model.noteOutput(forTab: tabId)
+    runtime.appendTerminalLog(sessionId: session.id, direction: "output", bytes: bytes)
     runtime.renderFrameUnlocked()
-    runtime.appendEvent(EventEntry(kind: "output.fed", text: text))
+    runtime.appendEvent(EventEntry(kind: "output.fed", tabId: tabId, text: text))
     return runtime.actionResult(ok: true)
   }
 
