@@ -115,7 +115,7 @@ extension HeadlessDebugRuntime {
         continue
       case .executeNow(let command):
         guard let session = model.session(forTab: tabState.id) else { continue }
-        _ = session.write(Array("\(command)\n".utf8))
+        _ = session.write(Array("clear && \(command)\n".utf8))
       case .prefillPrompt(let command):
         guard let session = model.session(forTab: tabState.id) else { continue }
         _ = session.write(Array(command.utf8))

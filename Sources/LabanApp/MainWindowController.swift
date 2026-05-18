@@ -214,9 +214,12 @@ final class MainWindowController: NSWindowController {
 
   /// For each restored tab whose persisted state has an `agent`,
   /// ask `RestoreLaunchPlanner` what to do and apply it:
-  ///   - `.executeNow(cmd)` writes `cmd\n` into the new tab's PTY
-  ///     so the shell runs `claude --resume <id>` (or codex) on its
-  ///     own. This is the autoresume brand moment.
+  ///   - `.executeNow(cmd)` writes `clear && cmd\n` into the new
+  ///     tab's PTY. The `clear` prefix wipes the visible grid before
+  ///     the agent paints — without it, the shell's echo of the
+  ///     resume line sits stuck at the top of the buffer because
+  ///     claude/codex render inline (no alt-screen) and never
+  ///     overwrite row 0.
   ///   - `.prefillPrompt(cmd)` writes `cmd` without a newline; the
   ///     user sees the resume command at the prompt and presses
   ///     ENTER to run it.
@@ -235,7 +238,7 @@ final class MainWindowController: NSWindowController {
         continue
       case .executeNow(let command):
         guard let session = model.session(forTab: tabState.id) else { continue }
-        let bytes = Array("\(command)\n".utf8)
+        let bytes = Array("clear && \(command)\n".utf8)
         _ = session.write(bytes)
       case .prefillPrompt(let command):
         guard let session = model.session(forTab: tabState.id) else { continue }
