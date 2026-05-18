@@ -57,17 +57,11 @@ final class TerminalBitmapViewInputFollowTests: XCTestCase {
     XCTAssertGreaterThan(viewport.scrollbackRows, 0)
     XCTAssertEqual(viewport.viewportOffset, viewport.scrollbackRows)
 
-    let event = try XCTUnwrap(
-      CGEvent(
-        scrollWheelEvent2Source: nil,
-        units: .line,
-        wheelCount: 1,
-        wheel1: 4,
-        wheel2: 0,
-        wheel3: 0
-      ))
-    event.location = CGPoint(x: SidebarLayout.defaultWidth + 50, y: 50)
-    view.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: event)))
+    let event = TestScrollWheelEvent(
+      locationInWindow: CGPoint(x: SidebarLayout.defaultWidth + 50, y: 50),
+      deltaY: 4
+    )
+    view.scrollWheel(with: event)
 
     viewport = try XCTUnwrap(session.viewportState())
     XCTAssertEqual(

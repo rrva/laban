@@ -251,6 +251,35 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testScrollWheelInTitlebarStripDoesNotScrollTerminalViewport() throws {
+    let harness = try makeHarness(rows: 5, cols: 20)
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    let history = (1...12).map { String(format: "line %02d\r\n", $0) }.joined()
+    session.write(Array(history.utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    let before = try XCTUnwrap(session.viewportState()).viewportOffset
+    let event = TestScrollWheelEvent(
+      locationInWindow: NSPoint(
+        x: SidebarLayout.defaultWidth + 50,
+        y: harness.view.frame.height - TerminalBitmapView.titlebarReservedHeight / 2
+      ),
+      deltaY: 1
+    )
+
+    harness.view.scrollWheel(with: event)
+
+    XCTAssertEqual(
+      try XCTUnwrap(session.viewportState()).viewportOffset,
+      before,
+      "scroll events in the transparent titlebar strip belong to window chrome, not the terminal"
+    )
+  }
+
   func testShiftClickExtendsExistingSelectionFocus() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
@@ -469,16 +498,11 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
   private func scrollOneRowTowardHistory(in harness: Harness, session: Session) {
     let before = session.viewportState()?.viewportOffset
     for wheelDelta in [1, -1] {
-      let event = CGEvent(
-        scrollWheelEvent2Source: nil,
-        units: .line,
-        wheelCount: 1,
-        wheel1: Int32(wheelDelta),
-        wheel2: 0,
-        wheel3: 0
-      )!
-      event.location = point(row: 2, col: 0, in: harness)
-      harness.view.scrollWheel(with: NSEvent(cgEvent: event)!)
+      let event = TestScrollWheelEvent(
+        locationInWindow: point(row: 2, col: 0, in: harness),
+        deltaY: CGFloat(wheelDelta)
+      )
+      harness.view.scrollWheel(with: event)
       let after = session.viewportState()?.viewportOffset
       if before != after {
         return

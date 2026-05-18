@@ -1855,8 +1855,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     let pt = convert(event.locationInWindow, from: nil)
 
-    // Sidebar scrolls are consumed locally.
+    // Sidebar and titlebar-strip scrolls are window chrome, not terminal input.
     guard pt.x >= sidebarWidth else { return }
+    guard pt.y <= bounds.height - Self.titlebarReservedHeight else { return }
 
     guard let vs = session.viewportState() else { return }
 
