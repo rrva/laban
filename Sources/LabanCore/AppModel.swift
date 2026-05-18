@@ -14,6 +14,12 @@ public final class AppModel {
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
+
+  /// Current grid size in cells (cols, rows). Read under the model
+  /// lock so callers see a stable size even mid-resize.
+  public var terminalSize: LabanTerminalSize {
+    withModelLock { currentSize }
+  }
   private var themeChangeObserver: NSObjectProtocol?
 
   private struct FindFullSearchCache {

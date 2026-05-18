@@ -2,17 +2,23 @@ import Foundation
 import LabanTerminalCore
 
 /// Per-tab transcript writer registry. Owns one `TranscriptWriter`
-/// per active tab, wires the C persistence callback to it, and tears
-/// it down when the tab closes. The `AppModel` calls into this host
-/// via the `TranscriptHostDelegate` protocol so the persistence
-/// subsystem stays optional — tests and headless runs that don't need
-/// transcripts can leave the delegate nil.
+/// plus one `RecentByteRing` per active tab, wires the C persistence
+/// callback to both, and tears them down when the tab closes. The
+/// `AppModel` calls into this host via the `TranscriptHostDelegate`
+/// protocol so the persistence subsystem stays optional — tests and
+/// headless runs that don't need transcripts can leave the delegate
+/// nil.
+///
+/// The writer is gated by `isEnabled` (the persistence kill switch);
+/// the recent-byte ring is always on so the "Export Recent N seconds"
+/// feature works regardless of the persistence toggle.
 public final class TranscriptHost {
   public let store: PersistenceStore
   public let isEnabled: () -> Bool
 
   private let lock = NSLock()
   private var writersByTab: [String: TranscriptWriter] = [:]
+  private var ringsByTab: [String: RecentByteRing] = [:]
   private var bridges: [String: Unmanaged<TranscriptWriterBridge>] = [:]
 
   /// - Parameter isEnabled: gate consulted by every `TranscriptWriter`
@@ -64,7 +70,17 @@ public final class TranscriptHost {
     } else {
       writer.suppressCapture(forNext: suppressInitialOutputFor)
     }
-    let bridge = TranscriptWriterBridge(writer: writer)
+    // Re-use any prior ring for this tab so the recent-byte history
+    // survives a restore-time writer swap. Fresh tab: allocate.
+    let ring: RecentByteRing = {
+      lock.lock()
+      defer { lock.unlock() }
+      if let existing = ringsByTab[tabId] { return existing }
+      let r = RecentByteRing()
+      ringsByTab[tabId] = r
+      return r
+    }()
+    let bridge = TranscriptWriterBridge(writer: writer, ring: ring)
     lock.lock()
     let priorBridge = bridges[tabId]
     let priorWriter = writersByTab[tabId]
@@ -79,17 +95,30 @@ public final class TranscriptHost {
 
   /// Detach and flush the writer for `tabId`. Called from
   /// `AppModel.closeTab`. The on-disk `.bin` file is left in place so
-  /// a later restore (or manual inspection) can read it.
+  /// a later restore (or manual inspection) can read it. The
+  /// recent-byte ring is dropped at the same time — its contents
+  /// are scoped to the live tab and would be misleading to retain.
   public func detachTranscriptWriter(forTabId tabId: String, in session: Session?) {
     lock.lock()
     let writer = writersByTab.removeValue(forKey: tabId)
     let bridge = bridges.removeValue(forKey: tabId)
+    ringsByTab.removeValue(forKey: tabId)
     lock.unlock()
     if let session {
       _ = session.setPersistenceCallback(nil, userdata: nil)
     }
     writer?.flushSync()
     bridge?.release()
+  }
+
+  /// Accessor for the per-tab recent-byte ring. Returned reference is
+  /// safe to call `snapshot(window:)` on from the main thread; the
+  /// ring's internal lock handles concurrent `record` calls from the
+  /// PTY callback thread.
+  public func recentByteRing(forTabId tabId: String) -> RecentByteRing? {
+    lock.lock()
+    defer { lock.unlock() }
+    return ringsByTab[tabId]
   }
 
   /// Flush every writer the host currently owns. Called from
@@ -114,17 +143,24 @@ public final class TranscriptHost {
   }
 }
 
-/// Pinned wrapper around a `TranscriptWriter` so the C callback's
-/// userdata can be an `UnsafeMutableRawPointer` pointing at a stable
-/// Swift object. `TranscriptHost` owns the lifetime via the
+/// Pinned wrapper around a `TranscriptWriter` and its sibling
+/// `RecentByteRing` so the C callback's userdata can be an
+/// `UnsafeMutableRawPointer` pointing at a stable Swift object.
+/// `TranscriptHost` owns the lifetime via the
 /// `Unmanaged<TranscriptWriterBridge>` table.
 final class TranscriptWriterBridge {
   let writer: TranscriptWriter
-  init(writer: TranscriptWriter) { self.writer = writer }
+  let ring: RecentByteRing
+  init(writer: TranscriptWriter, ring: RecentByteRing) {
+    self.writer = writer
+    self.ring = ring
+  }
 }
 
 /// The C entry point. Memcpy-only by contract — see ExecPlan Decision
-/// Log on PTY-byte-callback IO discipline.
+/// Log on PTY-byte-callback IO discipline. Fans out to both the
+/// disk-backed writer (gated by the persistence kill switch) and the
+/// in-memory recent-byte ring (always on).
 private let transcriptBridgeCallback:
   @convention(c) (
     UnsafeMutableRawPointer?,
@@ -135,6 +171,7 @@ private let transcriptBridgeCallback:
     guard let userdata, let bytes, len > 0 else { return }
     let bridge = Unmanaged<TranscriptWriterBridge>.fromOpaque(userdata).takeUnretainedValue()
     bridge.writer.writeChunk(bytes: bytes, count: len)
+    bridge.ring.record(bytes: bytes, count: len)
   }
 
 public protocol TranscriptHostDelegate: AnyObject {
@@ -144,6 +181,13 @@ public protocol TranscriptHostDelegate: AnyObject {
     suppressInitialOutputFor: DispatchTimeInterval)
   func detachTranscriptWriter(forTabId tabId: String, in session: Session?)
   func transcriptURL(forTabId tabId: String) -> URL
+  func recentByteRing(forTabId tabId: String) -> RecentByteRing?
+}
+
+extension TranscriptHostDelegate {
+  /// Default: no recent-byte ring. Test/headless adapters that
+  /// don't wire the ring can skip this method.
+  public func recentByteRing(forTabId tabId: String) -> RecentByteRing? { nil }
 }
 
 extension TranscriptHostDelegate {

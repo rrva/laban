@@ -411,6 +411,31 @@ public final class DebugHTTPServer {
     },
     DebugHTTPRoute(
       method: "GET",
+      path: "/debug/cast/recent",
+      category: "capture",
+      summary:
+        "Snapshot the last N seconds of a tab's PTY output as an asciinema v2 cast.",
+      queryParameters: ["seconds", "tabId"]
+    ) { runtime, request, _ in
+      let seconds = Double(request.query["seconds"] ?? "") ?? 10
+      let tabId = request.query["tabId"]
+      switch runtime.recentCastBytes(seconds: seconds, tabId: tabId) {
+      case let .success(data, resolvedTabId, chunks, windowSeconds):
+        return HTTPResponse(
+          status: 200,
+          contentType: "application/x-asciicast",
+          extraHeaders: [
+            "X-App-Tab: \(resolvedTabId)",
+            "X-App-Cast-Chunks: \(chunks)",
+            "X-App-Cast-Window-Seconds: \(windowSeconds)",
+          ],
+          body: data)
+      case let .failure(status, message):
+        return json(jsonError(message, status: status))
+      }
+    },
+    DebugHTTPRoute(
+      method: "GET",
       path: "/debug/selection",
       category: "state",
       summary: "Return the current terminal selection projection.",

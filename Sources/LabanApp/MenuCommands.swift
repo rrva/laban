@@ -48,6 +48,43 @@ enum MenuCommands {
         keyEquivalent: "w"
       ))
 
+    fileMenu.addItem(NSMenuItem.separator())
+
+    // Export Recent: snapshot the active tab's recent-byte ring as an
+    // asciinema v2 cast. Default Cmd-E exports the last 10 s; the
+    // submenu offers other windows.
+    let exportTen = NSMenuItem(
+      title: "Export Last 10 s as Cast",
+      action: #selector(TerminalBitmapView.exportLastTenSeconds(_:)),
+      keyEquivalent: "e")
+    fileMenu.addItem(exportTen)
+
+    let exportRecent = NSMenuItem(
+      title: "Export Recent…", action: nil, keyEquivalent: "")
+    fileMenu.addItem(exportRecent)
+    let exportSubmenu = NSMenu(title: "Export Recent")
+    exportRecent.submenu = exportSubmenu
+    exportSubmenu.addItem(
+      NSMenuItem(
+        title: "Last 5 s as Cast",
+        action: #selector(TerminalBitmapView.exportLastFiveSeconds(_:)),
+        keyEquivalent: ""))
+    exportSubmenu.addItem(
+      NSMenuItem(
+        title: "Last 10 s as Cast",
+        action: #selector(TerminalBitmapView.exportLastTenSeconds(_:)),
+        keyEquivalent: ""))
+    exportSubmenu.addItem(
+      NSMenuItem(
+        title: "Last 30 s as Cast",
+        action: #selector(TerminalBitmapView.exportLastThirtySeconds(_:)),
+        keyEquivalent: ""))
+    exportSubmenu.addItem(
+      NSMenuItem(
+        title: "Last 60 s as Cast",
+        action: #selector(TerminalBitmapView.exportLastSixtySeconds(_:)),
+        keyEquivalent: ""))
+
     // Edit menu — clipboard
     let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
     mainMenu.addItem(editItem)

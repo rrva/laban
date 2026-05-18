@@ -2736,6 +2736,202 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
+  @objc func exportLastFiveSeconds(_ sender: Any?) { exportRecentBytes(seconds: 5) }
+  @objc func exportLastTenSeconds(_ sender: Any?) { exportRecentBytes(seconds: 10) }
+  @objc func exportLastThirtySeconds(_ sender: Any?) { exportRecentBytes(seconds: 30) }
+  @objc func exportLastSixtySeconds(_ sender: Any?) { exportRecentBytes(seconds: 60) }
+
+  /// Snapshot the active tab's recent-byte ring and write it out as
+  /// an asciinema v2 cast file. Bytes that were dropped by ring
+  /// overflow are not in the snapshot — for normal terminal usage
+  /// the ring holds well over a minute, so 5/10/30/60 s windows
+  /// always fit.
+  private func exportRecentBytes(seconds: TimeInterval) {
+    guard let tabId = model.activeTab?.id else {
+      showCastAlert(title: "No active tab", message: "Open a tab and try again.")
+      return
+    }
+    guard let ring = model.transcriptDelegate?.recentByteRing(forTabId: tabId) else {
+      showCastAlert(
+        title: "Recent-byte recording is not available",
+        message:
+          "This tab has no recent-byte recording — open a new tab and try again. "
+          + "(The recording is always on; this state means no transcript host is wired, "
+          + "which only happens in test or headless setups.)"
+      )
+      return
+    }
+    let entries = ring.snapshot(window: seconds)
+    guard !entries.isEmpty else {
+      showCastAlert(
+        title: "Nothing to export",
+        message:
+          "No terminal output was recorded in the last \(Int(seconds)) seconds. Run a command and try again."
+      )
+      return
+    }
+    let size = model.terminalSize
+    let cols = max(Int(size.cols), 1)
+    let rows = max(Int(size.rows), 1)
+    let title: String? = {
+      guard let active = model.activeTab else { return nil }
+      let raw = active.titleMetadata.workspace.cwd ?? active.title
+      return raw.isEmpty ? nil : raw
+    }()
+    let startedAt = Date().addingTimeInterval(-seconds).timeIntervalSince1970
+    do {
+      let data = try AsciinemaCast.encode(
+        entries: entries,
+        cols: cols,
+        rows: rows,
+        title: title,
+        startedAtUnixSeconds: startedAt)
+      let url = try writeCast(data: data, seconds: Int(seconds))
+      AppLog.app.info(
+        "exported cast: \(url.path) (\(entries.count) chunks, \(data.count) bytes)")
+      EventLog.shared.log(
+        "cast.export",
+        [
+          "path": url.path,
+          "window": "\(Int(seconds))s",
+          "chunks": "\(entries.count)",
+          "bytes": "\(data.count)",
+        ])
+      revealCastInFinder(url: url, seconds: Int(seconds))
+    } catch {
+      AppLog.app.error("cast export failed: \(error)")
+      showCastAlert(
+        title: "Export failed",
+        message: "\(error.localizedDescription)")
+    }
+  }
+
+  /// `~/Library/Logs/Laban/casts/` by default; overridable via
+  /// `LABAN_CAST_DIR` for cases where the user wants casts somewhere
+  /// auto-cleaned (e.g., a tmpfs).
+  private static func castDirectory() -> URL {
+    if let env = ProcessInfo.processInfo.environment["LABAN_CAST_DIR"], !env.isEmpty {
+      return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+    }
+    return FileManager.default
+      .urls(for: .libraryDirectory, in: .userDomainMask).first!
+      .appendingPathComponent("Logs/Laban/casts", isDirectory: true)
+  }
+
+  private func writeCast(data: Data, seconds: Int) throws -> URL {
+    let dir = TerminalBitmapView.castDirectory()
+    try FileManager.default.createDirectory(
+      at: dir, withIntermediateDirectories: true)
+    let stamp = ISO8601DateFormatter().string(from: Date())
+      .replacingOccurrences(of: ":", with: "-")
+    let url = dir.appendingPathComponent("laban-\(stamp)-last\(seconds)s.cast")
+    try data.write(to: url, options: [.atomic])
+    return url
+  }
+
+  private func revealCastInFinder(url: URL, seconds: Int) {
+    let alert = NSAlert()
+    alert.messageText = "Exported last \(seconds) s to a cast file"
+    alert.informativeText = """
+      \(url.lastPathComponent)
+
+      Heads up: terminal output can contain secrets (tokens, keys, .env contents). \
+      Review the file before sharing it publicly.
+      """
+    alert.addButton(withTitle: "Open in Browser")
+    alert.addButton(withTitle: "Reveal in Finder")
+    alert.addButton(withTitle: "Copy Path")
+    alert.addButton(withTitle: "Done")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn:
+      do {
+        let htmlURL = try openCastInBrowser(castURL: url)
+        AppLog.app.info("opened cast HTML: \(htmlURL.path)")
+      } catch {
+        showCastAlert(
+          title: "Could not open cast in browser",
+          message: "\(error.localizedDescription)")
+      }
+    case .alertSecondButtonReturn:
+      NSWorkspace.shared.activateFileViewerSelecting([url])
+    case .alertThirdButtonReturn:
+      let pb = NSPasteboard.general
+      pb.clearContents()
+      pb.setString(url.path, forType: .string)
+    default:
+      break
+    }
+  }
+
+  /// Generate a self-contained HTML page that embeds the cast text
+  /// inline and plays it back with the asciinema-player v3 bundle
+  /// from a CDN. The HTML is written next to the `.cast` file so
+  /// it's easy to find again later. Returns the HTML file URL.
+  ///
+  /// Inlining strategy: a `<script type="text/plain">` block holds
+  /// the raw cast text. The browser does not execute it; the
+  /// surrounding script reads `.textContent` and hands it to the
+  /// asciinema player as the `data` source. This avoids the
+  /// file://-CORS restrictions that would block a `<script src>` or
+  /// `fetch()` of the sibling cast file.
+  private func openCastInBrowser(castURL: URL) throws -> URL {
+    let castData = try Data(contentsOf: castURL)
+    let castText = String(data: castData, encoding: .utf8) ?? ""
+    // PTY output containing the literal substring `</script>` is
+    // extraordinarily unlikely but trivially defended against.
+    let safeCast =
+      castText.replacingOccurrences(of: "</script", with: "<\\/script")
+    let title = castURL.lastPathComponent
+      .replacingOccurrences(of: "<", with: "&lt;")
+      .replacingOccurrences(of: ">", with: "&gt;")
+    let html = """
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <title>\(title) · Laban cast</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.15.1/dist/bundle/asciinema-player.css">
+        <style>
+          html, body { margin: 0; padding: 0; background: #161616; color: #d8d8d8; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+          .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 24px 48px; }
+          h1 { font-size: 13px; font-weight: 500; opacity: 0.7; margin: 0 0 16px; letter-spacing: 0.02em; }
+          h1 code { font: 12px ui-monospace, "SF Mono", Menlo, monospace; opacity: 0.85; }
+          #player { border-radius: 6px; overflow: hidden; }
+        </style>
+      </head>
+      <body>
+        <div class="wrap">
+          <h1>Laban cast · <code>\(title)</code></h1>
+          <div id="player"></div>
+        </div>
+        <script type="text/plain" id="cast">
+      \(safeCast)
+        </script>
+        <script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.15.1/dist/bundle/asciinema-player.min.js"></script>
+        <script>
+          AsciinemaPlayer.create(
+            { data: () => document.getElementById('cast').textContent.trim() },
+            document.getElementById('player'),
+            { autoPlay: true, theme: 'monokai', fit: 'width' }
+          );
+        </script>
+      </body>
+      </html>
+      """
+    let htmlURL = castURL.deletingPathExtension().appendingPathExtension("html")
+    try html.write(to: htmlURL, atomically: true, encoding: .utf8)
+    NSWorkspace.shared.open(htmlURL)
+    return htmlURL
+  }
+
+  private func showCastAlert(title: String, message: String) {
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = message
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
+  }
+
   // MARK: - PTY-byte capture (debug)
 
   /// Toggle a full capture artifact. The directory path is printed to stderr so
