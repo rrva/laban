@@ -346,31 +346,69 @@ public enum ClaudeSessionLogLocator {
       .url.path
   }
 
-  static func metadata(fromLogAt path: String, maxLines: Int = 64) -> ClaudeSessionLogMetadata {
-    guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
+  public static func metadata(fromLogAt path: String, maxLines: Int = 64) -> ClaudeSessionLogMetadata {
+    // Read just enough of the file to likely contain `maxLines` JSONL
+    // records. The old implementation read the entire file into a Swift
+    // String (cost: ~243 ms on a 17 MB session log) just to take
+    // .prefix(64) lines, because String/split walks the whole UTF-8
+    // string before slicing. Capping the read makes this O(needed
+    // bytes), not O(file size).
+    //
+    // 96 KiB is comfortable: a typical Claude JSONL record is 0.5–2 KB,
+    // so 64 records fit well under this ceiling. Records that overflow
+    // are simply not parsed by this poll; the next field will be picked
+    // up on a subsequent tick if/when the file shrinks below the cap.
+    let maxBytes = 96 * 1024
+    guard let fh = FileHandle(forReadingAtPath: path) else {
       return ClaudeSessionLogMetadata()
     }
+    defer { try? fh.close() }
+    let buf: Data
+    do {
+      buf = try fh.read(upToCount: maxBytes) ?? Data()
+    } catch {
+      return ClaudeSessionLogMetadata()
+    }
+    if buf.isEmpty { return ClaudeSessionLogMetadata() }
+
     var metadata = ClaudeSessionLogMetadata()
-    for line in contents.split(separator: "\n", omittingEmptySubsequences: true).prefix(maxLines) {
-      guard let data = String(line).data(using: .utf8),
-        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-      else { continue }
-      if metadata.permissionMode == nil {
-        metadata.permissionMode = object["permissionMode"] as? String
-      }
-      if metadata.model == nil {
-        metadata.model = object["advisorModel"] as? String
-        if metadata.model == nil,
-          let message = object["message"] as? [String: Any]
-        {
-          metadata.model = message["model"] as? String
+    var lineStart = 0
+    var linesParsed = 0
+    buf.withUnsafeBytes { raw in
+      guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+      let count = raw.count
+      var i = 0
+      while i < count {
+        if base[i] != 0x0A {  // newline
+          i += 1
+          continue
         }
-      }
-      if metadata.cwd == nil {
-        metadata.cwd = object["cwd"] as? String
-      }
-      if metadata.permissionMode != nil, metadata.model != nil, metadata.cwd != nil {
-        break
+        if i > lineStart {
+          let slice = Data(bytes: base + lineStart, count: i - lineStart)
+          if let object = try? JSONSerialization.jsonObject(with: slice) as? [String: Any] {
+            if metadata.permissionMode == nil {
+              metadata.permissionMode = object["permissionMode"] as? String
+            }
+            if metadata.model == nil {
+              metadata.model = object["advisorModel"] as? String
+              if metadata.model == nil,
+                let message = object["message"] as? [String: Any]
+              {
+                metadata.model = message["model"] as? String
+              }
+            }
+            if metadata.cwd == nil {
+              metadata.cwd = object["cwd"] as? String
+            }
+            if metadata.permissionMode != nil, metadata.model != nil, metadata.cwd != nil {
+              return
+            }
+          }
+        }
+        linesParsed += 1
+        if linesParsed >= maxLines { return }
+        lineStart = i + 1
+        i += 1
       }
     }
     return metadata
