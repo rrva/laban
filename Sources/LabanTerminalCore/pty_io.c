@@ -94,15 +94,56 @@ int laban_write_pty_input(LabanSession *s, const uint8_t *bytes, size_t len) {
     return laban_write_pty_bytes(s, bytes, len, LABAN_CAPTURE_BYTES_PTY_INPUT);
 }
 
+/* Drain-buffer size (per read(2) syscall). Override at build time via
+ * -DLABAN_DRAIN_BUF_BYTES=N. Larger reduces syscall count on bulk
+ * output (cat a large log, build with verbose output) at the cost of
+ * more stack and a longer single read window. The 256 KB per-drain
+ * cap below still bounds total lock-hold time. */
+#ifndef LABAN_DRAIN_BUF_BYTES
+#define LABAN_DRAIN_BUF_BYTES 4096
+#endif
+
+size_t laban_session_drain_buf_bytes(void) {
+    return (size_t)LABAN_DRAIN_BUF_BYTES;
+}
+
+void laban_session_drain_stats(LabanSession *s, uint64_t *out_reads, uint64_t *out_bytes) {
+    if (!s) {
+        if (out_reads) *out_reads = 0;
+        if (out_bytes) *out_bytes = 0;
+        return;
+    }
+    SESSION_LOCK(s);
+    if (out_reads) *out_reads = s->drain_reads;
+    if (out_bytes) *out_bytes = s->drain_bytes;
+}
+
+/* Per-drain byte ceiling. Drain bails after this many bytes and lets
+ * the caller release the session lock, giving other threads (chiefly
+ * the main thread calling snapshot/viewport/find) a chance to take it
+ * before the next drain. Smaller = shorter lock-hold windows = lower
+ * snapshot tail latency under heavy output; throughput barely changes
+ * because select(2) re-arms immediately when more bytes are ready.
+ * Override at build time via -DLABAN_DRAIN_MAX_BYTES_PER_POLL=N. */
+#ifndef LABAN_DRAIN_MAX_BYTES_PER_POLL
+#define LABAN_DRAIN_MAX_BYTES_PER_POLL (256 * 1024)
+#endif
+
+size_t laban_session_drain_max_bytes_per_poll(void) {
+    return (size_t)LABAN_DRAIN_MAX_BYTES_PER_POLL;
+}
+
 static size_t laban_session_drain_locked_(LabanSession *s) {
-    enum { MAX_BYTES_PER_POLL = 256 * 1024 };
+    enum { MAX_BYTES_PER_POLL = LABAN_DRAIN_MAX_BYTES_PER_POLL };
     size_t drained = 0;
 
-    uint8_t buf[4096];
+    uint8_t buf[LABAN_DRAIN_BUF_BYTES];
     for (;;) {
         if (drained >= MAX_BYTES_PER_POLL) break;
         ssize_t n = read(s->pty_fd, buf, sizeof(buf));
+        s->drain_reads += 1;
         if (n > 0) {
+            s->drain_bytes += (uint64_t)n;
             if (!s->suppress_pty_output_until_input) {
                 laban_vt_write_capture(s, buf, (size_t)n);
             }

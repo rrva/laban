@@ -1,0 +1,137 @@
+#!/bin/bash
+# Idle CPU bench for LabanApp (and optional control processes).
+#
+# Launches the app, waits for it to settle, samples total CPU time at
+# the start and end of a fixed-length idle window, reports CPU% as
+# (cpu_delta / wall_delta) * 100.
+#
+# Usage:
+#   scripts/bench-idle-cpu                  # 30s window, LabanApp only
+#   scripts/bench-idle-cpu 60               # 60s window
+#   scripts/bench-idle-cpu 30 Terminal      # also sample Terminal.app
+#
+# The first arg is the idle window in seconds; remaining args are
+# extra process names to sample alongside LabanApp (already-running).
+
+set -eu
+
+DURATION="${1:-30}"
+shift || true
+declare -a EXTRA_PROCESSES
+EXTRA_PROCESSES=("$@")
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_PATH="$REPO_ROOT/.build/laban/Laban.app"
+APP_BINARY="$APP_PATH/Contents/MacOS/LabanApp"
+
+if [ ! -x "$APP_BINARY" ]; then
+    echo "bench-idle-cpu: app not built at $APP_BINARY" >&2
+    echo "                run scripts/build-app first" >&2
+    exit 1
+fi
+
+# Convert "MM:SS" or "HH:MM:SS" or "D-HH:MM:SS" cputime to seconds.
+cputime_seconds() {
+    ps -p "$1" -o cputime= 2>/dev/null | awk '
+    {
+        s = $1;
+        # ps may print "[D-]HH:MM:SS" — split on - first if present
+        days = 0;
+        n = split(s, parts, "-");
+        if (n == 2) { days = parts[1]; s = parts[2]; }
+        n = split(s, t, ":");
+        sec = 0;
+        if (n == 2)      sec = t[1]*60 + t[2];
+        else if (n == 3) sec = t[1]*3600 + t[2]*60 + t[3];
+        printf "%.3f\n", days*86400 + sec;
+    }'
+}
+
+# Kill any stale LabanApp before launching fresh.
+pkill -f "$APP_BINARY" 2>/dev/null || true
+sleep 1
+
+echo "bench-idle-cpu: launching $APP_PATH"
+open -F "$APP_PATH"
+sleep 4  # settle: initial render, fonts, restore, etc.
+
+PID="$(pgrep -f "$APP_BINARY" | head -1)"
+if [ -z "$PID" ]; then
+    echo "bench-idle-cpu: failed to find LabanApp pid after launch" >&2
+    exit 1
+fi
+echo "bench-idle-cpu: PID=$PID  window=${DURATION}s"
+
+# Find extra-process PIDs (must already be running).
+declare -a EXTRA_PIDS=()
+declare -a EXTRA_NAMES=()
+if [ "${#EXTRA_PROCESSES[@]}" -gt 0 ]; then
+    for name in "${EXTRA_PROCESSES[@]}"; do
+        pid="$(pgrep -x "$name" | head -1 || true)"
+        if [ -z "$pid" ]; then
+            echo "bench-idle-cpu: warning — no process named '$name' running, skipping" >&2
+            continue
+        fi
+        EXTRA_PIDS+=("$pid")
+        EXTRA_NAMES+=("$name")
+    done
+fi
+
+# Initial samples
+T0_LABAN="$(cputime_seconds "$PID")"
+if [ -z "$T0_LABAN" ]; then
+    echo "bench-idle-cpu: app died before initial sample (pid $PID gone)" >&2
+    exit 1
+fi
+declare -a T0_EXTRA=()
+if [ "${#EXTRA_PIDS[@]}" -gt 0 ]; then
+    for pid in "${EXTRA_PIDS[@]}"; do
+        T0_EXTRA+=("$(cputime_seconds "$pid")")
+    done
+fi
+W0="$(python3 -c 'import time; print(time.monotonic())')"
+
+sleep "$DURATION"
+
+W1="$(python3 -c 'import time; print(time.monotonic())')"
+T1_LABAN="$(cputime_seconds "$PID")"
+if [ -z "$T1_LABAN" ]; then
+    echo "bench-idle-cpu: app died during measurement window (pid $PID gone)" >&2
+    exit 1
+fi
+declare -a T1_EXTRA=()
+if [ "${#EXTRA_PIDS[@]}" -gt 0 ]; then
+    for pid in "${EXTRA_PIDS[@]}"; do
+        T1_EXTRA+=("$(cputime_seconds "$pid")")
+    done
+fi
+
+WALL="$(python3 -c "print($W1 - $W0)")"
+
+report() {
+    local name="$1"
+    local pid="$2"
+    local t0="$3"
+    local t1="$4"
+    python3 -c "
+t0 = float('$t0')
+t1 = float('$t1')
+wall = float('$WALL')
+delta = t1 - t0
+pct = (delta / wall) * 100
+print(f'  {\"$name\":12s} pid=$pid  cpu_delta={delta:7.3f}s  wall={wall:6.2f}s  CPU={pct:5.2f}%')
+"
+}
+
+echo "---"
+report "LabanApp" "$PID" "$T0_LABAN" "$T1_LABAN"
+if [ "${#EXTRA_PIDS[@]}" -gt 0 ]; then
+    for i in "${!EXTRA_PIDS[@]}"; do
+        report "${EXTRA_NAMES[$i]}" "${EXTRA_PIDS[$i]}" "${T0_EXTRA[$i]}" "${T1_EXTRA[$i]}"
+    done
+fi
+
+# Tear down
+osascript -e 'tell application "LabanApp" to quit' 2>/dev/null || kill "$PID" 2>/dev/null || true
+sleep 1
+pkill -f "$APP_BINARY" 2>/dev/null || true

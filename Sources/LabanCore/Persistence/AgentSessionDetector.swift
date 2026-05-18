@@ -311,14 +311,15 @@ public final class AgentSessionDetector {
   }
 }
 
-struct ClaudeSessionLogMetadata: Equatable {
-  var model: String?
-  var permissionMode: String?
-  var cwd: String?
+public struct ClaudeSessionLogMetadata: Equatable {
+  public var model: String?
+  public var permissionMode: String?
+  public var cwd: String?
+  public init() {}
 }
 
-enum ClaudeSessionLogLocator {
-  static func newestSessionLog(
+public enum ClaudeSessionLogLocator {
+  public static func newestSessionLog(
     cwd: String,
     fileManager: FileManager = .default,
     modifiedAfter: Date? = nil

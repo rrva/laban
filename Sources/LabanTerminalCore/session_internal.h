@@ -179,6 +179,12 @@ struct LabanSession {
     uint8_t *response_buf;
     size_t   response_len;
     size_t   response_cap;
+
+    /* Drain-loop microbench counters. Incremented inside
+     * laban_session_drain_locked_; sampled via laban_session_drain_stats.
+     * Wraps after 2^64 reads — bench-only, not used by product code. */
+    uint64_t drain_reads;
+    uint64_t drain_bytes;
 };
 
 static inline void laban_session_unlock_cleanup_(LabanSession **sp) {

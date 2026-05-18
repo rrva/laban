@@ -16,6 +16,7 @@ let package = Package(
     .executable(name: "LabanApp", targets: ["LabanApp"]),
     .executable(name: "laban-agent", targets: ["LabanAgent"]),
     .executable(name: "find-perf", targets: ["FindPerf"]),
+    .executable(name: "bench-pty-drain", targets: ["BenchPtyDrain"]),
   ],
   targets: [
     .target(
@@ -58,6 +59,11 @@ let package = Package(
       name: "FindPerf",
       dependencies: ["LabanCore", "LabanTerminalCore"],
       path: "Tools/FindPerf"
+    ),
+    .executableTarget(
+      name: "BenchPtyDrain",
+      dependencies: ["LabanTerminalCore", "LabanCore"],
+      path: "Tools/BenchPtyDrain"
     ),
     .testTarget(
       name: "LabanTerminalCoreTests",

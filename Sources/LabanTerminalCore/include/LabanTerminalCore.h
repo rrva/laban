@@ -181,6 +181,21 @@ int laban_session_poll(LabanSession *session);
  */
 int laban_session_poll_blocking(LabanSession *session, int timeout_ms);
 
+/*
+ * Microbench observability for the PTY drain loop. Returns the running
+ * totals of read(2) calls and bytes drained on this session. Counters
+ * are monotonic and updated under the session lock. Not used by product
+ * code; intended for Tools/BenchPtyDrain.
+ */
+void laban_session_drain_stats(LabanSession *session, uint64_t *out_reads, uint64_t *out_bytes);
+
+/* Build-time read-buffer size used by the drain loop (per syscall). */
+size_t laban_session_drain_buf_bytes(void);
+
+/* Build-time per-drain byte ceiling (drains bail after this many bytes
+ * to bound session-lock hold time). */
+size_t laban_session_drain_max_bytes_per_poll(void);
+
 int laban_session_resize(LabanSession *session, LabanTerminalSize size);
 
 /*
