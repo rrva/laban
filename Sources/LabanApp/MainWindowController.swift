@@ -99,6 +99,13 @@ final class MainWindowController: NSWindowController {
     if let restoredState, !restoredState.windows.isEmpty {
       model.replaceTabs(from: restoredState)
     }
+    // Restore can leave zero tabs (window had no persisted tabs, or
+    // every restore spawn threw). The app must always show at least
+    // one tab, so fall back to a fresh default-shell tab — the same
+    // path the "+" titlebar button uses.
+    if model.tabs.isEmpty {
+      _ = try? model.createTab()
+    }
 
     let termView = TerminalBitmapView(
       model: model,

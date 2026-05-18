@@ -256,6 +256,12 @@ public final class HeadlessDebugRuntime {
         model.replaceTabs(from: restored)
         Self.applyRestoreLaunchPlans(for: restored, model: model)
       }
+      // Production parity: if restore left zero tabs (empty window or
+      // every restore spawn threw), fall back to a fresh default tab
+      // — the same path the "+" button uses.
+      if model.tabs.isEmpty {
+        _ = try? model.createTab()
+      }
 
       coordinator.attach(model)
       coordinator.scheduleSave()

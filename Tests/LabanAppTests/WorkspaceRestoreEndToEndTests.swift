@@ -84,6 +84,11 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       model.replaceTabs(from: restoredState)
       applyRestoreLaunchPlans(for: restoredState, model: model)
     }
+    // Mirror MainWindowController: restore can leave zero tabs; the
+    // app shell layer falls back to a fresh default tab.
+    if model.tabs.isEmpty {
+      _ = try? model.createTab()
+    }
 
     let coordinator = PersistenceCoordinator(
       store: PersistenceStore(baseURL: baseDir),
@@ -360,6 +365,31 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     XCTAssertFalse(
       visible.contains("throwaway"),
       "native resume must not replay destructive flag values; visible=\(visible.debugDescription)")
+
+    quit(harness)
+    let _ = harness
+  }
+
+  func testRestoreWithEmptyWindowFallsBackToFreshDefaultTab() throws {
+    let base = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+
+    // Degenerate state: a persisted window with zero tabs. This shape
+    // is reachable when the user closed the last tab right before
+    // quit. replaceTabs(from:) will tear down the auto-created
+    // default tab and find nothing to spawn — the app shell must
+    // recover by opening a fresh default-shell tab, the same path
+    // the "+" titlebar button uses.
+    let state = WorkspaceState(
+      windows: [WindowState(id: "main-window", selectedTabId: nil, tabs: [])])
+
+    let harness = try makeHarness(baseDir: base, restoring: state)
+    XCTAssertEqual(
+      harness.model.tabs.count, 1,
+      "empty-window restore must fall back to one fresh default tab")
+    XCTAssertNotNil(
+      harness.model.activeTab,
+      "the fallback tab must be selected so the user has a focused terminal")
 
     quit(harness)
     let _ = harness
