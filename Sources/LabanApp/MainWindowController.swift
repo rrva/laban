@@ -219,7 +219,7 @@ final class MainWindowController: NSWindowController {
   ///     the agent paints — without it, the shell's echo of the
   ///     resume line sits stuck at the top of the buffer because
   ///     claude/codex render inline (no alt-screen) and never
-  ///     overwrite row 0.
+  ///     overwrite row 0. This is the autoresume brand moment.
   ///   - `.prefillPrompt(cmd)` writes `cmd` without a newline; the
   ///     user sees the resume command at the prompt and presses
   ///     ENTER to run it.
