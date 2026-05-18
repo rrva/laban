@@ -4,7 +4,7 @@ import LabanTerminalCore
 
 /// Per-tab background poller that watches the tab's shell descendants
 /// for `claude` / `codex` processes and captures their session id
-/// from the open `.jsonl` file the agent holds.
+/// from the agent's `.jsonl` file.
 ///
 /// Why poll instead of kqueue: an earlier design used
 /// `EVFILT_PROC | NOTE_EXEC` registered on the shell's pid, but the
@@ -36,6 +36,14 @@ public protocol ProcessIntrospector {
   /// Enumerate the absolute paths of vnode-backed file descriptors
   /// the given pid currently has open.
   func openVnodePaths(of pid: pid_t) -> [String]
+  /// Return the argv vector observed for the given process. Empty
+  /// when the kernel denies access or parsing fails.
+  func arguments(of pid: pid_t) -> [String]
+  /// Return the environment observed for the given process. Empty
+  /// when the kernel denies access or parsing fails.
+  func environment(of pid: pid_t) -> [String: String]
+  /// Return the process cwd when visible to the current user.
+  func currentWorkingDirectory(of pid: pid_t) -> String?
 }
 
 public final class AgentSessionDetector {
@@ -46,6 +54,7 @@ public final class AgentSessionDetector {
   public let queue: DispatchQueue
   public weak var observer: AgentSessionDetectorObserver?
   public let introspector: ProcessIntrospector
+  private let recentSessionCutoff: Date
 
   private(set) var lastObservedAgent: AgentInfo?
   private var timer: DispatchSourceTimer?
@@ -62,12 +71,14 @@ public final class AgentSessionDetector {
     shellPid: pid_t,
     tickInterval: DispatchTimeInterval = .milliseconds(500),
     queue: DispatchQueue = DispatchQueue(label: "laban.agentdetector", qos: .utility),
+    recentSessionCutoff: Date = Date(),
     introspector: ProcessIntrospector = LibprocIntrospector()
   ) {
     self.tabId = tabId
     self.shellPid = shellPid
     self.tickInterval = tickInterval
     self.queue = queue
+    self.recentSessionCutoff = recentSessionCutoff
     self.introspector = introspector
   }
 
@@ -96,9 +107,19 @@ public final class AgentSessionDetector {
   }
 
   private func tick() {
+    handleObservation(detect())
+  }
+
+  internal func observeNow() {
+    handleObservation(detect())
+  }
+
+  internal func detect() -> AgentInfo? {
     let descendants = collectDescendants(of: shellPid, depth: 0)
-    let detected = findAgent(in: descendants)
-    handleObservation(detected)
+    if let agent = findAgent(in: descendants) {
+      return agent
+    }
+    return findRecentClaudeSessionForShellCwd()
   }
 
   /// Walk the descendant tree of `parent` up to `Self.maxDescendantDepth`
@@ -113,26 +134,78 @@ public final class AgentSessionDetector {
     return result
   }
 
-  /// Find the first agent descendant whose open `.jsonl` fd yields a
-  /// session id via the matching `AgentSupport.extractSessionId`
-  /// extractor. Returns nil when no descendant matches.
+  /// Find the first agent descendant whose `.jsonl` yields a session
+  /// id via the matching `AgentSupport` extractor. Codex keeps its
+  /// rollout open, so the open-fd path is enough. Claude Code may
+  /// close the session file while idle, so Claude also falls back to
+  /// the newest session JSONL in the process cwd's project directory.
   internal func findAgent(in descendants: [(pid: pid_t, basename: String)]) -> AgentInfo? {
     for entry in descendants {
-      guard let support = AgentRegistry.agent(forBinaryBasename: entry.basename) else {
+      let argv = introspector.arguments(of: entry.pid)
+      guard let support = AgentRegistry.agent(forBinaryBasename: entry.basename, arguments: argv)
+      else {
         continue
       }
+      let env = AgentEnvironmentSanitizer.sanitize(introspector.environment(of: entry.pid))
+      let cwd = introspector.currentWorkingDirectory(of: entry.pid)
       for path in introspector.openVnodePaths(of: entry.pid) where path.hasSuffix(".jsonl") {
         if let sessionId = support.extractSessionId(path) {
           return AgentInfo(
             name: support.name,
             sessionId: sessionId,
             jsonlPath: path,
-            wasRunningAtQuit: true
+            wasRunningAtQuit: true,
+            argv: argv,
+            env: env,
+            cwd: cwd
           )
         }
       }
+      if support.name == .claude,
+        let cwd,
+        let path = ClaudeSessionLogLocator.newestSessionLog(cwd: cwd),
+        let sessionId = support.extractSessionId(path)
+      {
+        return AgentInfo(
+          name: support.name,
+          sessionId: sessionId,
+          jsonlPath: path,
+          wasRunningAtQuit: true,
+          argv: argv,
+          env: env,
+          cwd: cwd
+        )
+      }
     }
     return nil
+  }
+
+  internal func findRecentClaudeSessionForShellCwd() -> AgentInfo? {
+    guard let support = AgentRegistry.entry(for: .claude),
+      let cwd = introspector.currentWorkingDirectory(of: shellPid),
+      let path = ClaudeSessionLogLocator.newestSessionLog(
+        cwd: cwd, modifiedAfter: recentSessionCutoff),
+      let sessionId = support.extractSessionId(path)
+    else { return nil }
+
+    let metadata = ClaudeSessionLogLocator.metadata(fromLogAt: path)
+    var argv = ["claude"]
+    if let model = metadata.model, !model.isEmpty {
+      argv += ["--model", model]
+    }
+    if metadata.permissionMode == "bypassPermissions" {
+      argv.append("--dangerously-skip-permissions")
+    }
+
+    return AgentInfo(
+      name: .claude,
+      sessionId: sessionId,
+      jsonlPath: path,
+      wasRunningAtQuit: false,
+      argv: argv,
+      env: AgentEnvironmentSanitizer.sanitize(introspector.environment(of: shellPid)),
+      cwd: metadata.cwd ?? cwd
+    )
   }
 
   internal func handleObservation(_ detected: AgentInfo?) {
@@ -140,21 +213,12 @@ public final class AgentSessionDetector {
     let prior = lastObservedAgent
     let next: AgentInfo?
     if let detected {
-      // Liveness signal: just observed alive.
-      next = AgentInfo(
-        name: detected.name,
-        sessionId: detected.sessionId,
-        jsonlPath: detected.jsonlPath,
-        wasRunningAtQuit: true
-      )
+      next = detected
     } else if let prior {
       // Lost: preserve identity but mark not-alive.
-      next = AgentInfo(
-        name: prior.name,
-        sessionId: prior.sessionId,
-        jsonlPath: prior.jsonlPath,
-        wasRunningAtQuit: false
-      )
+      var dead = prior
+      dead.wasRunningAtQuit = false
+      next = dead
     } else {
       next = nil
     }
@@ -247,6 +311,89 @@ public final class AgentSessionDetector {
   }
 }
 
+struct ClaudeSessionLogMetadata: Equatable {
+  var model: String?
+  var permissionMode: String?
+  var cwd: String?
+}
+
+enum ClaudeSessionLogLocator {
+  static func newestSessionLog(
+    cwd: String,
+    fileManager: FileManager = .default,
+    modifiedAfter: Date? = nil
+  ) -> String? {
+    let projectURL = projectsRoot(fileManager: fileManager)
+      .appendingPathComponent(encodedProjectName(for: cwd), isDirectory: true)
+    guard
+      let entries = try? fileManager.contentsOfDirectory(
+        at: projectURL,
+        includingPropertiesForKeys: [.contentModificationDateKey],
+        options: [.skipsHiddenFiles])
+    else { return nil }
+
+    return entries
+      .filter { $0.pathExtension == "jsonl" && AgentSupport.isUUID($0.deletingPathExtension().lastPathComponent) }
+      .compactMap { url -> (url: URL, modified: Date)? in
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        let modified = values?.contentModificationDate
+        guard let modified else { return nil }
+        if let modifiedAfter, modified < modifiedAfter { return nil }
+        return (url, modified)
+      }
+      .max { lhs, rhs in lhs.modified < rhs.modified }?
+      .url.path
+  }
+
+  static func metadata(fromLogAt path: String, maxLines: Int = 64) -> ClaudeSessionLogMetadata {
+    guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
+      return ClaudeSessionLogMetadata()
+    }
+    var metadata = ClaudeSessionLogMetadata()
+    for line in contents.split(separator: "\n", omittingEmptySubsequences: true).prefix(maxLines) {
+      guard let data = String(line).data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      else { continue }
+      if metadata.permissionMode == nil {
+        metadata.permissionMode = object["permissionMode"] as? String
+      }
+      if metadata.model == nil {
+        metadata.model = object["advisorModel"] as? String
+        if metadata.model == nil,
+          let message = object["message"] as? [String: Any]
+        {
+          metadata.model = message["model"] as? String
+        }
+      }
+      if metadata.cwd == nil {
+        metadata.cwd = object["cwd"] as? String
+      }
+      if metadata.permissionMode != nil, metadata.model != nil, metadata.cwd != nil {
+        break
+      }
+    }
+    return metadata
+  }
+
+  static func encodedProjectName(for cwd: String) -> String {
+    cwd.unicodeScalars.map { scalar in
+      if CharacterSet.alphanumerics.contains(scalar) || scalar == "-" {
+        return String(scalar)
+      }
+      return "-"
+    }.joined()
+  }
+
+  private static func projectsRoot(fileManager: FileManager) -> URL {
+    if let override = AgentSupport.envOverride("CLAUDE_CONFIG_DIR") {
+      return URL(fileURLWithPath: override).appendingPathComponent("projects", isDirectory: true)
+    }
+    return fileManager.homeDirectoryForCurrentUser
+      .appendingPathComponent(".claude", isDirectory: true)
+      .appendingPathComponent("projects", isDirectory: true)
+  }
+}
+
 public protocol AgentSessionDetectorObserver: AnyObject {
   func agentSessionDetector(
     _ detector: AgentSessionDetector, didObserve agent: AgentInfo?)
@@ -306,6 +453,29 @@ public struct LibprocIntrospector: ProcessIntrospector {
     return paths
   }
 
+  public func arguments(of pid: pid_t) -> [String] {
+    processArgumentsAndEnvironment(of: pid).arguments
+  }
+
+  public func environment(of pid: pid_t) -> [String: String] {
+    processArgumentsAndEnvironment(of: pid).environment
+  }
+
+  public func currentWorkingDirectory(of pid: pid_t) -> String? {
+    var info = proc_vnodepathinfo()
+    let infoSize = MemoryLayout<proc_vnodepathinfo>.size
+    let rc = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
+      proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, ptr, Int32(infoSize))
+    }
+    guard rc == Int32(infoSize) else { return nil }
+    let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) {
+      $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) {
+        String(cString: $0)
+      }
+    }
+    return path.isEmpty ? nil : path
+  }
+
   private func childPids(of parent: pid_t) -> [pid_t] {
     let count = proc_listpids(UInt32(PROC_PPID_ONLY), UInt32(parent), nil, 0)
     guard count > 0 else { return [] }
@@ -334,5 +504,82 @@ public struct LibprocIntrospector: ProcessIntrospector {
       return String(exe[exe.index(after: slash)...])
     }
     return exe
+  }
+
+  private func processArgumentsAndEnvironment(of pid: pid_t) -> (
+    arguments: [String], environment: [String: String]
+  ) {
+    var mib = [CTL_KERN, KERN_PROCARGS2, Int32(pid)]
+    var size = 0
+    guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 0 else {
+      return ([], [:])
+    }
+
+    var buffer = [UInt8](repeating: 0, count: size)
+    let rc = buffer.withUnsafeMutableBytes { rawBuffer -> Int32 in
+      sysctl(&mib, u_int(mib.count), rawBuffer.baseAddress, &size, nil, 0)
+    }
+    guard rc == 0, size >= MemoryLayout<Int32>.size else {
+      return ([], [:])
+    }
+
+    let bytes = Array(buffer.prefix(size))
+    var argc: Int32 = 0
+    withUnsafeMutableBytes(of: &argc) { dst in
+      dst.copyBytes(from: bytes.prefix(MemoryLayout<Int32>.size))
+    }
+    guard argc >= 0 else { return ([], [:]) }
+
+    var index = MemoryLayout<Int32>.size
+    skipString(in: bytes, index: &index)
+    skipNuls(in: bytes, index: &index)
+
+    var arguments: [String] = []
+    for _ in 0..<Int(argc) {
+      skipNuls(in: bytes, index: &index)
+      guard let value = readCString(in: bytes, index: &index), !value.isEmpty else {
+        break
+      }
+      arguments.append(value)
+    }
+
+    var environment: [String: String] = [:]
+    while index < bytes.count {
+      skipNuls(in: bytes, index: &index)
+      guard index < bytes.count else { break }
+      guard let value = readCString(in: bytes, index: &index), !value.isEmpty else {
+        break
+      }
+      guard let equals = value.firstIndex(of: "=") else { continue }
+      let name = String(value[..<equals])
+      let envValue = String(value[value.index(after: equals)...])
+      environment[name] = envValue
+    }
+    return (arguments, environment)
+  }
+
+  private func readCString(in bytes: [UInt8], index: inout Int) -> String? {
+    let start = index
+    while index < bytes.count && bytes[index] != 0 {
+      index += 1
+    }
+    guard index <= bytes.count else { return nil }
+    let end = index
+    if index < bytes.count { index += 1 }
+    guard end > start else { return "" }
+    return String(bytes: bytes[start..<end], encoding: .utf8)
+  }
+
+  private func skipString(in bytes: [UInt8], index: inout Int) {
+    while index < bytes.count && bytes[index] != 0 {
+      index += 1
+    }
+    if index < bytes.count { index += 1 }
+  }
+
+  private func skipNuls(in bytes: [UInt8], index: inout Int) {
+    while index < bytes.count && bytes[index] == 0 {
+      index += 1
+    }
   }
 }

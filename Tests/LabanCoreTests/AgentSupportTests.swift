@@ -47,11 +47,169 @@ final class AgentSupportTests: XCTestCase {
     XCTAssertNil(AgentRegistry.agent(forBinaryBasename: "vim"))
   }
 
+  func testRegistryFallsBackToInvocationNameForVersionedClaudeExecutable() {
+    XCTAssertEqual(
+      AgentRegistry.agent(forBinaryBasename: "2.1.143", arguments: ["claude", "--chrome"])?.name,
+      .claude)
+    XCTAssertEqual(
+      AgentRegistry.agent(
+        forBinaryBasename: "2.1.143",
+        arguments: ["/Users/x/.local/bin/claude", "--chrome"])?.name,
+      .claude)
+    XCTAssertNil(
+      AgentRegistry.agent(forBinaryBasename: "2.1.143", arguments: ["vim"]))
+  }
+
   func testResumeCommandShape() {
     XCTAssertEqual(
       AgentSupport.claude().resumeCommand("abc"), "claude --resume abc")
     XCTAssertEqual(
       AgentSupport.codex().resumeCommand("xyz"), "codex resume xyz")
+  }
+
+  func testShellCommandQuotesUnsafeArguments() {
+    XCTAssertEqual(ShellCommand.quote("a b"), "'a b'")
+    XCTAssertEqual(ShellCommand.quote("a'b"), "'a'\\''b'")
+    XCTAssertEqual(
+      ShellCommand.render(["cmd", "plain", "a b"]),
+      "cmd plain 'a b'")
+  }
+
+  func testClaudeAdapterPreservesResumeSafeOptionsAndDropsReplayingFlags() {
+    let command = ClaudeResumeAdapter().resumeCommand(
+      sessionId: "0fa31a8c-1234-5678-9abc-deadbeef0000",
+      context: AgentLaunchContext(
+        cwd: "/tmp",
+        argv: [
+          "claude",
+          "--worktree",
+          "throwaway",
+          "--model",
+          "sonnet",
+          "--chrome",
+          "--effort=high",
+          "--permission-mode",
+          "plan",
+          "--fork-session",
+          "--dangerously-skip-permissions",
+          "--add-dir",
+          "/Users/x/extra dir",
+          "--permission-mode",
+          "bypassPermissions",
+          "prompt text",
+        ],
+        env: [:]))
+
+    XCTAssertTrue(command.hasPrefix("claude --resume 0fa31a8c-1234-5678-9abc-deadbeef0000"))
+    XCTAssertTrue(command.contains("--model sonnet"))
+    XCTAssertTrue(command.contains("--chrome"))
+    XCTAssertTrue(command.contains("--effort high"))
+    XCTAssertTrue(command.contains("--permission-mode plan"))
+    XCTAssertTrue(command.contains("--dangerously-skip-permissions"))
+    XCTAssertTrue(command.contains("--add-dir '/Users/x/extra dir'"))
+    XCTAssertTrue(command.contains("--permission-mode bypassPermissions"))
+    XCTAssertFalse(command.contains("worktree"))
+    XCTAssertFalse(command.contains("throwaway"))
+    XCTAssertFalse(command.contains("fork-session"))
+    XCTAssertFalse(command.contains("prompt text"))
+  }
+
+  func testClaudeAdapterDropsOriginalResumeAndSessionOptions() {
+    let command = ClaudeResumeAdapter().resumeCommand(
+      sessionId: "fresh",
+      context: AgentLaunchContext(
+        cwd: "/tmp",
+        argv: ["claude", "--resume", "old", "--session-id", "old-session", "-c", "--model", "opus"],
+        env: [:]))
+
+    XCTAssertEqual(command, "claude --resume fresh --model opus")
+    XCTAssertFalse(command.contains("old"))
+  }
+
+  func testCodexAdapterPreservesResumeSafeOptionsAndDropsReplayingFlags() {
+    let command = CodexResumeAdapter().resumeCommand(
+      sessionId: "0fa31a8c-1234-5678-9abc-deadbeef0000",
+      context: AgentLaunchContext(
+        cwd: "/Users/x/project dir",
+        argv: [
+          "codex",
+          "resume",
+          "--last",
+          "--model",
+          "gpt-5.2",
+          "--profile=work",
+          "--sandbox",
+          "workspace-write",
+          "--ask-for-approval",
+          "on-request",
+          "--search",
+          "--no-alt-screen",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--sandbox",
+          "danger-full-access",
+          "--ask-for-approval",
+          "never",
+          "prompt text",
+        ],
+        env: [:]))
+
+    XCTAssertTrue(
+      command.hasPrefix("codex resume 0fa31a8c-1234-5678-9abc-deadbeef0000 -C '/Users/x/project dir'"))
+    XCTAssertTrue(command.contains("--model gpt-5.2"))
+    XCTAssertTrue(command.contains("--profile work"))
+    XCTAssertTrue(command.contains("--sandbox workspace-write"))
+    XCTAssertTrue(command.contains("--ask-for-approval on-request"))
+    XCTAssertTrue(command.contains("--search"))
+    XCTAssertTrue(command.contains("--no-alt-screen"))
+    XCTAssertTrue(command.contains("--dangerously-bypass-approvals-and-sandbox"))
+    XCTAssertTrue(command.contains("--sandbox danger-full-access"))
+    XCTAssertTrue(command.contains("--ask-for-approval never"))
+    XCTAssertFalse(command.contains("--last"))
+    XCTAssertFalse(command.contains("prompt text"))
+  }
+
+  func testCodexAdapterDropsRemoteAndOriginalCwdOptions() {
+    let command = CodexResumeAdapter().resumeCommand(
+      sessionId: "fresh",
+      context: AgentLaunchContext(
+        cwd: "/safe/cwd",
+        argv: [
+          "codex",
+          "-C",
+          "/old/cwd",
+          "--remote",
+          "ws://host:1",
+          "--remote-auth-token-env",
+          "TOKEN_ENV",
+          "--local-provider",
+          "ollama",
+          "--model",
+          "gpt-5.2",
+        ],
+        env: [:]))
+
+    XCTAssertEqual(command, "codex resume fresh -C /safe/cwd --model gpt-5.2")
+    XCTAssertFalse(command.contains("/old/cwd"))
+    XCTAssertFalse(command.contains("TOKEN_ENV"))
+    XCTAssertFalse(command.contains("ollama"))
+  }
+
+  func testAgentEnvironmentSanitizerOnlyKeepsSafeNonSecretNames() {
+    let sanitized = AgentEnvironmentSanitizer.sanitize([
+      "TERM": "xterm-256color",
+      "LANG": "en_US.UTF-8",
+      "PATH": "/bin",
+      "OPENAI_API_KEY": "secret",
+      "CLAUDE_CONFIG_DIR": "/tmp/claude",
+      "CODEX_HOME": "TOKEN=secret",
+    ])
+
+    XCTAssertEqual(sanitized["TERM"], "xterm-256color")
+    XCTAssertEqual(sanitized["LANG"], "en_US.UTF-8")
+    XCTAssertEqual(sanitized["CLAUDE_CONFIG_DIR"], "/tmp/claude")
+    XCTAssertNil(sanitized["PATH"])
+    XCTAssertNil(sanitized["OPENAI_API_KEY"])
+    XCTAssertNil(sanitized["CODEX_HOME"])
   }
 
   func testClaudeExtractorHonorsClaudeConfigDirOverride() {

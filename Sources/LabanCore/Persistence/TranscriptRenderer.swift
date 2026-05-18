@@ -1,16 +1,20 @@
 import Foundation
 import LabanTerminalCore
 
-/// Restores a tab's scrollback from its persisted `<tab-id>.bin`
-/// transcript. The render strategy is hybrid:
+/// Diagnostic renderer for a persisted `<tab-id>.bin` transcript.
+/// This tech is intentionally kept for explicit inspection, crash-log
+/// peek, or future product pivots. It is not used by automatic
+/// workspace restore; replaying output into a fresh terminal would
+/// imply process state survived relaunch. The render strategy is
+/// hybrid:
 ///   - The last ~1 MB of bytes are byte-replayed through libghostty-vt
 ///     so color, styling, and cursor position match what the user saw
 ///     before quit.
 ///   - Everything older is stripped of escape sequences and fed as
 ///     plain text so libghostty scrolls the lines into scrollback.
-///   - If `altBufferAtQuit` is true, both passes are skipped: the tab
-///     comes back as an empty terminal so we never paint half-finished
-///     vim/htop/less state.
+///   - If `altBufferAtQuit` is true, both passes are skipped so an
+///     inspection surface never paints half-finished vim/htop/less
+///     state.
 ///
 /// To avoid landing the byte-replay cutoff in the middle of an escape
 /// sequence (which would produce garbage in the first replayed frame),
@@ -22,15 +26,13 @@ public enum TranscriptRenderer {
 
   public static let byteReplayWindow: Int = 1 * 1024 * 1024
 
-  /// Render the persisted transcript into the given Session.
+  /// Render the persisted transcript into the given diagnostic Session.
   ///
   /// - Parameters:
   ///   - fileURL: path to the `<tab-id>.bin` file. Missing or empty
   ///     files are no-ops.
-  ///   - session: the deferred-spawn Session whose VT parser will
-  ///     receive replayed bytes. Calling this before
-  ///     `Session.start()` ensures replayed scrollback lands before
-  ///     any live shell output.
+  ///   - session: the diagnostic Session whose VT parser will receive
+  ///     replayed bytes.
   ///   - altBufferAtQuit: true when the tab was in alternate-screen
   ///     mode at quit. When true, no replay happens.
   public static func render(
@@ -83,9 +85,6 @@ public enum TranscriptRenderer {
   }
 
   /// Feed transcript bytes into libghostty without capturing them.
-  /// The replacement shell's startup output is suppressed at the PTY
-  /// boundary until first input, so the replayed cursor position is
-  /// the position user input should continue from.
   private static func replayWithCleanHandoff(data: Data, into session: Session) {
     _ = session.replayPtyOutput([UInt8](data))
   }

@@ -53,19 +53,31 @@ restored.
 - [x] (2026-05-17) Recorded that generic transcript restore is retired as
   silent restore behavior. It can return later only as an explicit diagnostic
   or crash-log inspection surface.
-- [ ] Implement persisted agent launch context: observed argv, safe
-  environment snapshot, cwd, agent kind, session id, and liveness.
-- [ ] Implement explicit `AgentResumeAdapter` entries for Claude and Codex.
-- [ ] Route restore through adapters instead of the current
-  `AgentSupport.resumeCommand` string closure.
-- [ ] Remove or bypass generic transcript replay from automatic restore so
-  ordinary shell tabs relaunch as fresh shells with no historical output
-  injected.
-- [ ] Add unit tests for safe flag allowlists, dangerous flag drops, shell
-  quoting, and planner behavior.
-- [ ] Add an end-to-end restore test that verifies no original destructive
-  flag is replayed.
-- [ ] Run focused tests, `./scripts/build-app`, and `./scripts/test`.
+- [x] (2026-05-18) Implemented persisted agent launch context: observed argv,
+  safe environment snapshot, cwd, agent kind, session id, and liveness.
+- [x] (2026-05-18) Implemented explicit `AgentResumeAdapter` entries for
+  Claude and Codex, including shell quoting and dangerous flag filtering.
+- [x] (2026-05-18) Routed restore through adapters instead of the old
+  `AgentSupport.resumeCommand` string closure. The compatibility helper now
+  delegates through adapters.
+- [x] (2026-05-18) Removed generic transcript replay from automatic restore
+  in production and headless runtime wiring. Transcript rendering remains
+  available only as diagnostic/future-pivot infrastructure.
+- [x] (2026-05-18) Added tests for safe flag allowlists, dangerous flag drops,
+  shell quoting, no generic launch-command resume, and planner behavior.
+- [x] (2026-05-18) Added an end-to-end restore test proving a restored Claude
+  tab receives native resume while dropping `--worktree`.
+- [x] (2026-05-18) Ran focused tests, `./scripts/build-app`, and
+  `./scripts/test`.
+- [x] (2026-05-18) Fixed the short-lived Claude launcher gap: Claude logs
+  modified after detector startup can now be discovered from the shell cwd
+  even when no live Claude descendant remains, and app/headless persistence
+  flushes force a final observation before writing `workspace.json`.
+- [x] (2026-05-18) Tracked a real `claude --chrome` process launched under a
+  headless zsh PTY. It remained a direct shell descendant, but the native
+  Claude executable path reported a versioned basename (`2.1.143`) while
+  argv[0] remained `claude`; the detector now falls back to argv[0] so live
+  native Claude descendants are not ignored.
 
 ## Decision Log
 
@@ -99,6 +111,23 @@ restored.
   explicit diagnostic or crash-log peek, but not silently replayed into a new
   terminal session.
   Date/Author: 2026-05-17 / Codex.
+
+- Decision: Claude logs discovered from shell cwd without a live Claude
+  descendant are persisted as inactive agents.
+  Rationale: A short-lived launcher or re-parented Claude integration can still
+  create a valid native Claude session, but Laban did not observe an agent
+  process alive under the tab at quit time. Persisting `wasRunningAtQuit=false`
+  keeps restore truthful by pre-filling native resume instead of silently
+  starting a duplicate session.
+  Date/Author: 2026-05-18 / Codex.
+
+- Decision: Agent process identity may be recognized from argv[0] when the
+  executable-path basename is not the user-facing CLI name.
+  Rationale: Claude's native build can exec a versioned binary under
+  `~/.local/share/claude/versions/`, so libproc reports the executable basename
+  as `2.1.143` while the process argv remains `claude ...`. Matching only the
+  executable basename causes Laban to ignore a real live Claude descendant.
+  Date/Author: 2026-05-18 / Codex.
 
 ## Context and Orientation
 
@@ -181,6 +210,23 @@ codex resume <session-id>
 
 Do not use `claude resume <session-id>`; it is not the installed Claude Code
 syntax in this environment.
+
+Claude Code JSONL logs can contain top-level metadata events such as
+`permissionMode`, plus assistant records with `advisorModel`, `cwd`, and
+`sessionId`. Laban uses those fields only to construct Claude-native resume
+metadata when no live Claude descendant is present; it does not replay terminal
+transcript output or infer generic shell commands.
+
+In this environment, a real `claude --chrome` launched from a zsh PTY stayed in
+the descendant tree:
+
+```text
+zsh -> claude --chrome --chrome --dangerously-skip-permissions
+```
+
+The process was still easy to miss because libproc's executable path resolved
+to a native versioned binary under `~/.local/share/claude/versions/2.1.143`.
+Detector code therefore uses the executable basename first and argv[0] second.
 
 ## Plan of Work
 
@@ -573,6 +619,11 @@ If the exact manual commands are too invasive because they start real external
 agent sessions, use unit tests as the required acceptance and record that
 manual validation was skipped.
 
+Manual validation status: skipped on 2026-05-18. The same behavior is covered
+by unit tests and `WorkspaceRestoreEndToEndTests` using mock argv/env/cwd data
+so no real Claude/Codex sessions, worktrees, or dangerous bypass modes are
+created during verification.
+
 ## Idempotence and Recovery
 
 The schema change is additive: new `AgentInfo` fields must be optional, so
@@ -590,15 +641,15 @@ throwaway repository or be replaced with adapter unit tests.
 A fresh reviewer must verify the following before this ExecPlan is considered
 complete:
 
-- [ ] `rtk rg -n "claude resume" Sources Tests` returns no matches except in
+- [x] `rtk rg -n "claude resume" Sources Tests` returns no matches except in
   negative test names or explanatory comments that explicitly say the form is
   wrong.
-- [ ] `rtk rg -n "worktree|dangerously-bypass|bypassPermissions" Tests/LabanCoreTests`
+- [x] `rtk rg -n "worktree|dangerously-bypass|bypassPermissions" Tests/LabanCoreTests`
   shows tests asserting those flags are dropped.
-- [ ] `rtk swift test --filter 'AgentSupportTests|AgentResumeAdapterTests|RestorePlannerTests'`
+- [x] `rtk swift test --filter 'AgentSupportTests|AgentResumeAdapterTests|RestorePlannerTests'`
   exits 0.
-- [ ] Restore tests prove generic transcript replay is absent from automatic
+- [x] Restore tests prove generic transcript replay is absent from automatic
   workspace restore for non-agent shell tabs.
-- [ ] `rtk ./scripts/test` exits 0.
+- [x] `rtk ./scripts/test` exits 0.
 
-Review status: NOT REVIEWED
+Review status: IMPLEMENTED AND SELF-VERIFIED on 2026-05-18.

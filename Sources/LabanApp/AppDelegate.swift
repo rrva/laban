@@ -84,6 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
   func applicationWillTerminate(_ notification: Notification) {
+    // Take one final synchronous detector sample before workspace
+    // persistence writes. This closes the race where a short-lived
+    // agent launcher creates a native session log but exits before the
+    // periodic detector tick records it.
+    if RestoreOnLaunchSettings.isEnabled {
+      windowController?.agentObserverHost?.observeNowAll()
+    }
     // Drain any pending debounced workspace save so quit does not
     // discard the last few hundred ms of state. `flushSync` no-ops when
     // the toggle is off, so disabled persistence costs nothing here.

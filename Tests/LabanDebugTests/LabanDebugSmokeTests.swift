@@ -187,6 +187,71 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(obj["ok"] as? Bool, true)
   }
 
+  func testPersistenceFlushRecordsRecentClaudeLogWithoutLiveChild() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    let persistence = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-persistence-\(UUID().uuidString)")
+    let claudeConfig = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-claude-\(UUID().uuidString)")
+    defer {
+      try? FileManager.default.removeItem(at: artifacts)
+      try? FileManager.default.removeItem(at: persistence)
+      try? FileManager.default.removeItem(at: claudeConfig)
+    }
+
+    setenv("CLAUDE_CONFIG_DIR", claudeConfig.path, 1)
+    defer { unsetenv("CLAUDE_CONFIG_DIR") }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-claude-log-fallback",
+      sessionMode: .realShell,
+      persistenceBaseURL: persistence
+    )
+
+    let initialTab = try XCTUnwrap(runtime.model.tabs.first)
+    let initialSession = try XCTUnwrap(runtime.model.session(forTab: initialTab.id))
+    _ = initialSession.poll()
+    let cwd = try XCTUnwrap(initialSession.processMetadata()?.cwd)
+    let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0020"
+    let project = claudeConfig
+      .appendingPathComponent("projects", isDirectory: true)
+      .appendingPathComponent(claudeProjectName(for: cwd), isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    let logURL = project.appendingPathComponent("\(sessionId).jsonl")
+    try Data(
+      """
+      {"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"\(sessionId)"}
+      {"type":"assistant","advisorModel":"claude-opus-4-7","cwd":"\(cwd)","sessionId":"\(sessionId)"}
+
+      """.utf8
+    ).write(to: logURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSinceNow: 2)], ofItemAtPath: logURL.path)
+
+    XCTAssertEqual(runtime.persistenceFlush().status, 200)
+    let state = try XCTUnwrap(runtime.persistenceStore?.load())
+    let tab = try XCTUnwrap(state.windows.first?.tabs.first)
+    let agent = try XCTUnwrap(tab.agent)
+    XCTAssertEqual(agent.name, .claude)
+    XCTAssertEqual(agent.sessionId, sessionId)
+    XCTAssertEqual(agent.wasRunningAtQuit, false)
+    XCTAssertEqual(
+      agent.argv,
+      ["claude", "--model", "claude-opus-4-7", "--dangerously-skip-permissions"])
+
+    guard case .prefillPrompt(let command) = RestoreLaunchPlanner.instruction(for: tab) else {
+      return XCTFail("recent inactive Claude log should prefill native resume")
+    }
+    XCTAssertEqual(
+      command,
+      "claude --resume \(sessionId) --model claude-opus-4-7 --dangerously-skip-permissions")
+  }
+
   func testRuntimeStateHasOneTab() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
@@ -1110,6 +1175,15 @@ final class LabanDebugSmokeTests: XCTestCase {
       runId: runId
     )
     return (runtime, artifacts)
+  }
+
+  private func claudeProjectName(for cwd: String) -> String {
+    cwd.unicodeScalars.map { scalar in
+      if CharacterSet.alphanumerics.contains(scalar) || scalar == "-" {
+        return String(scalar)
+      }
+      return "-"
+    }.joined()
   }
 
   private func httpGet(

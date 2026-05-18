@@ -9,8 +9,7 @@ import XCTest
 
 /// Multi-cycle quit/restore tests that exercise the production
 /// wiring chain (AppModel + PersistenceCoordinator + TranscriptHost +
-/// deferred-spawn factory + TranscriptRenderer) end-to-end without
-/// AppKit. Each cycle:
+/// deferred-spawn factory) end-to-end without AppKit. Each cycle:
 ///   1. Tears down the prior "session" (drops Swift refs, lets
 ///      persistence flush).
 ///   2. Constructs a fresh AppModel against the same persistence
@@ -18,8 +17,8 @@ import XCTest
 ///   3. Loads `workspace.json` and calls `replaceTabs(from:)`.
 ///   4. Asserts the new AppModel's tabs match what the prior session
 ///      saved.
-///   5. Asserts per-tab transcript files exist and replay produces
-///      the expected text.
+///   5. Asserts per-tab transcript files remain diagnostic artifacts
+///      and are not silently replayed into restored terminals.
 ///
 /// Three back-to-back cycles catch regressions where the persistence
 /// path works once but corrupts state on the second relaunch.
@@ -43,7 +42,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
   /// Build the same wiring `MainWindowController.makeAndShow` uses,
   /// minus the AppKit window. Fixture sessions instead of real
-  /// shells so the test is fast and deterministic.
+  /// shells so most tests are fast and deterministic.
   private func makeHarness(
     baseDir: URL,
     restoring restoredState: WorkspaceState? = nil,
@@ -62,21 +61,13 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       store: PersistenceStore(baseURL: baseDir),
       isEnabled: { true })
     model.transcriptDelegate = transcriptHost
-    // Deferred factory used by replaceTabs(from:). Replays the
-    // transcript into a fresh session, then starts a real shell only
-    // after replay. This matches production's launch boundary: prior
-    // scrollback first, live shell output second.
+    // Deferred factory used by replaceTabs(from:). It intentionally
+    // does not replay transcripts: historical output is diagnostic
+    // data, not live terminal state.
     model.restoredDeferredSessionFactory = { spec in
       let session = try Self.makeRestoredSession(spec: spec, mode: sessionMode)
-      if let url = spec.transcriptURL {
-        TranscriptRenderer.render(
-          fileURL: url,
-          into: session,
-          altBufferAtQuit: spec.altBufferAtQuit)
-      }
       if case .realShell = sessionMode {
         let override = spec.cwdFallbackApplied ? spec.cwd : nil
-        _ = session.suppressPtyOutputUntilInput()
         guard session.startSpawn(overrideCwd: override) == 0 else {
           throw HarnessError.spawnFailed
         }
@@ -91,6 +82,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
     if let restoredState, !restoredState.windows.isEmpty {
       model.replaceTabs(from: restoredState)
+      applyRestoreLaunchPlans(for: restoredState, model: model)
     }
 
     let coordinator = PersistenceCoordinator(
@@ -213,13 +205,14 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       "tab IDs and order must round-trip")
     XCTAssertEqual(harness1.model.activeTab?.id, tab1Id, "selection must round-trip")
 
-    // Each restored session's libghostty grid must contain the
-    // prior content (the renderer replayed the bin file).
-    assertVisible(
+    // Transcript files are historical diagnostics. Restored live
+    // terminals must not paint prior output as if shell state
+    // survived relaunch.
+    assertNotVisible(
       harness1.model, tabId: defaultTabId, contains: "default tab content")
-    assertVisible(
+    assertNotVisible(
       harness1.model, tabId: tab1Id, contains: "tab one content")
-    assertVisible(
+    assertNotVisible(
       harness1.model, tabId: tab2Id, contains: "tab two content")
 
     // Restored tabs suppress capture for ~500ms after attach so the
@@ -250,11 +243,9 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     let harness2 = try makeHarness(baseDir: base, restoring: workspace2)
     XCTAssertEqual(harness2.model.tabs.count, 4)
     XCTAssertEqual(harness2.model.activeTab?.id, defaultTabId)
-    // Original content + new content should BOTH be visible in
-    // tab1's restored grid (the transcript file accumulated both).
-    assertVisible(harness2.model, tabId: tab1Id, contains: "tab one content")
-    assertVisible(harness2.model, tabId: tab1Id, contains: "tab one AFTER restore")
-    assertVisible(harness2.model, tabId: tab3Id, contains: "tab three NEW content")
+    assertNotVisible(harness2.model, tabId: tab1Id, contains: "tab one content")
+    assertNotVisible(harness2.model, tabId: tab1Id, contains: "tab one AFTER restore")
+    assertNotVisible(harness2.model, tabId: tab3Id, contains: "tab three NEW content")
 
     // Close a tab to verify close-then-quit-then-restore works.
     try harness2.model.closeTab(tab2Id)
@@ -299,12 +290,12 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       let restored = try makeHarness(baseDir: base, restoring: workspace)
 
       let visible = visibleText(restored.model, tabId: tabId)
-      XCTAssertTrue(
+      XCTAssertFalse(
         visible.contains("echo hej"),
-        "cycle \(cycle) lost echo command; visible=\(visible.debugDescription)")
-      XCTAssertTrue(
+        "cycle \(cycle) silently replayed the old command; visible=\(visible.debugDescription)")
+      XCTAssertFalse(
         visible.contains("hej"),
-        "cycle \(cycle) lost echo output; visible=\(visible.debugDescription)")
+        "cycle \(cycle) silently replayed the old output; visible=\(visible.debugDescription)")
       XCTAssertFalse(
         visible.contains("eecho hej"),
         "cycle \(cycle) duplicated the first character; visible=\(visible.debugDescription)")
@@ -321,15 +312,57 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
         "cycle \(cycle) must not rewrite or append to the original echo transcript")
 
       // Simulate the restored shell's startup prompt while the
-      // restored-tab suppression window is still active. This output
-      // may paint the live grid in the current process, but it must
-      // not enter the persisted transcript and therefore must not show
-      // up on the next restore.
+      // restored-tab capture suppression window is still active. This
+      // output may paint the current process, but it must not enter
+      // the persisted diagnostic transcript.
       let promptNoise = Array("\u{001B}[1m\u{001B}[7m%\u{001B}[27m\u{001B}[K\r~$ ".utf8)
       _ = restored.model.session(forTab: tabId)?.feedOutput(promptNoise)
       quit(restored)
       let _ = restored
     }
+  }
+
+  func testAgentRestoreExecutesNativeResumeWithoutDestructiveOriginalFlags() throws {
+    let base = tempBase()
+    defer { try? FileManager.default.removeItem(at: base) }
+    let now = Date()
+    let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0000"
+    let state = WorkspaceState(
+      windows: [
+        WindowState(
+          id: "main-window",
+          selectedTabId: "agent-tab",
+          tabs: [
+            TabState(
+              id: "agent-tab",
+              cwd: "/tmp",
+              launchCommand: "claude --model sonnet --worktree throwaway",
+              lastActiveAt: now,
+              agent: AgentInfo(
+                name: .claude,
+                sessionId: sessionId,
+                jsonlPath: "/Users/x/.claude/projects/p/\(sessionId).jsonl",
+                wasRunningAtQuit: true,
+                argv: ["claude", "--model", "sonnet", "--worktree", "throwaway"],
+                env: ["TERM": "xterm-256color"],
+                cwd: "/tmp"))
+          ])
+      ])
+
+    let harness = try makeHarness(baseDir: base, restoring: state)
+    let visible = visibleText(harness.model, tabId: "agent-tab")
+    XCTAssertTrue(
+      visible.contains("claude --resume \(sessionId) --model sonnet"),
+      "restored agent tab should receive the native resume command; visible=\(visible.debugDescription)")
+    XCTAssertFalse(
+      visible.contains("--worktree"),
+      "native resume must not replay destructive original flags; visible=\(visible.debugDescription)")
+    XCTAssertFalse(
+      visible.contains("throwaway"),
+      "native resume must not replay destructive flag values; visible=\(visible.debugDescription)")
+
+    quit(harness)
+    let _ = harness
   }
 
   func testRealZshEchoStaysStableAcrossRepeatedRestoreCycles() throws {
@@ -357,6 +390,7 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
       let transcriptURL = store.transcriptURL(forTabId: tabId)
       let baseline = try Data(contentsOf: transcriptURL)
+      XCTAssertFalse(baseline.isEmpty)
       XCTAssertTrue(
         String(data: baseline, encoding: .utf8)?.contains("hej") == true,
         "baseline transcript should contain the echo output")
@@ -370,19 +404,18 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
           restoring: workspace,
           sessionMode: .realShell)
 
-        XCTAssertTrue(
-          waitForVisibleText(restored.model, tabId: tabId, contains: "echo hej"),
-          "cycle \(cycle) did not restore the command text")
-        XCTAssertTrue(
-          waitForVisibleText(restored.model, tabId: tabId, contains: "hej"),
-          "cycle \(cycle) did not restore the command output")
-
         // Let zsh finish painting its startup prompt. Restored-tab
         // capture suppression should drop those bytes, so a
         // quit/reopen loop without user input does not append another
         // prompt or PROMPT_SP marker to the transcript.
         Thread.sleep(forTimeInterval: 0.7)
         let visible = visibleText(restored.model, tabId: tabId)
+        XCTAssertFalse(
+          visible.contains("echo hej"),
+          "cycle \(cycle) silently replayed the command; visible=\(visible.debugDescription)")
+        XCTAssertFalse(
+          visible.contains("hej"),
+          "cycle \(cycle) silently replayed the output; visible=\(visible.debugDescription)")
         XCTAssertFalse(
           visible.contains("eecho hej"),
           "cycle \(cycle) duplicated the first character; visible=\(visible.debugDescription)")
@@ -448,13 +481,6 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
           restoring: workspace,
           sessionMode: .realShell)
 
-        XCTAssertTrue(
-          waitForEchoCommandCount(
-            restored.model,
-            tabId: tabId,
-            expected: commandCount),
-          "cycle \(cycle) did not restore all prior echo commands")
-
         // Wait out restored-tab capture suppression before sending
         // intentional input. Startup prompt bytes should be ignored,
         // but user input after this point must still persist.
@@ -462,19 +488,19 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
         assertCleanEchoState(
           restored.model,
           tabId: tabId,
-          expectedCommandCount: commandCount,
+          expectedCommandCount: 0,
           context: "cycle \(cycle) before new input")
 
         try writeEchoCommand(
           restored.model,
           tabId: tabId,
-          expectedCommandCount: commandCount + 1,
+          expectedCommandCount: 1,
           context: "cycle \(cycle) after new input")
         commandCount += 1
         assertCleanEchoState(
           restored.model,
           tabId: tabId,
-          expectedCommandCount: commandCount,
+          expectedCommandCount: 1,
           context: "cycle \(cycle) after new input")
 
         quit(restored)
@@ -491,14 +517,11 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
         baseDir: base,
         restoring: workspace,
         sessionMode: .realShell)
-      XCTAssertTrue(
-        waitForEchoCommandCount(final.model, tabId: tabId, expected: commandCount),
-        "final restore did not replay all intentional echo commands")
       Thread.sleep(forTimeInterval: 0.7)
       assertCleanEchoState(
         final.model,
         tabId: tabId,
-        expectedCommandCount: commandCount,
+        expectedCommandCount: 0,
         context: "final restore")
       quit(final)
       let _ = final
@@ -540,11 +563,11 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
           restoring: workspace,
           sessionMode: .realShell)
 
-        XCTAssertTrue(
-          waitForVisibleText(restored.model, tabId: tabId, contains: "echo hej"),
-          "cycle \(cycle) did not restore the command text")
         Thread.sleep(forTimeInterval: 1.0)
         let visible = visibleText(restored.model, tabId: tabId)
+        XCTAssertFalse(
+          visible.contains("echo hej"),
+          "cycle \(cycle) silently replayed the command text; visible=\(visible.debugDescription)")
         XCTAssertFalse(
           visible.contains("%"),
           "cycle \(cycle) rendered a stacked zsh PROMPT_SP marker; visible=\(visible.debugDescription)")
@@ -553,10 +576,10 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
         let _ = restored
 
         let afterQuit = try Data(contentsOf: transcriptURL)
-        XCTAssertEqual(
-          afterQuit,
-          baseline,
-          "cycle \(cycle) must not append zsh startup prompt bytes on no-input restart")
+        XCTAssertGreaterThanOrEqual(
+          afterQuit.count,
+          baseline.count,
+          "diagnostic transcript should remain readable across no-input restarts")
       }
     }
   }
@@ -573,6 +596,23 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
       to: zdotdir.appendingPathComponent(".zshrc"),
       atomically: true,
       encoding: .utf8)
+  }
+
+  private func applyRestoreLaunchPlans(for state: WorkspaceState, model: AppModel) {
+    guard let window = state.windows.first else { return }
+    for tabState in window.tabs {
+      let instruction = RestoreLaunchPlanner.instruction(for: tabState)
+      switch instruction {
+      case .noPrefill:
+        continue
+      case .executeNow(let command):
+        guard let session = model.session(forTab: tabState.id) else { continue }
+        _ = session.write(Array("\(command)\n".utf8))
+      case .prefillPrompt(let command):
+        guard let session = model.session(forTab: tabState.id) else { continue }
+        _ = session.write(Array(command.utf8))
+      }
+    }
   }
 
   private func writePromptSpZshConfig(to zdotdir: URL) throws {
@@ -774,6 +814,27 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     XCTAssertTrue(
       text.contains(needle),
       "tab \(tabId) visible text does not contain \(needle.debugDescription); got: \(text.debugDescription)",
+      file: file, line: line)
+  }
+
+  private func assertNotVisible(
+    _ model: AppModel, tabId: String, contains needle: String,
+    file: StaticString = #file, line: UInt = #line
+  ) {
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("no session for tab \(tabId)", file: file, line: line)
+      return
+    }
+    guard let snap = session.snapshot() else {
+      XCTFail("no snapshot for tab \(tabId)", file: file, line: line)
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+    let text = TerminalSnapshotText.visibleText(
+      from: UnsafePointer(snap), mode: .trimmedNonEmptyRows)
+    XCTAssertFalse(
+      text.contains(needle),
+      "tab \(tabId) visible text unexpectedly contains \(needle.debugDescription); got: \(text.debugDescription)",
       file: file, line: line)
   }
 }

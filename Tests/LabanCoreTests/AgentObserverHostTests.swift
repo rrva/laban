@@ -145,6 +145,9 @@ final class AgentObserverHostTests: XCTestCase {
 private final class NoChildrenIntrospector: ProcessIntrospector {
   func children(of parent: pid_t) -> [(pid: pid_t, basename: String)] { [] }
   func openVnodePaths(of pid: pid_t) -> [String] { [] }
+  func arguments(of pid: pid_t) -> [String] { [] }
+  func environment(of pid: pid_t) -> [String: String] { [:] }
+  func currentWorkingDirectory(of pid: pid_t) -> String? { nil }
 }
 
 private final class RecordingMirror: JSONLMirroring {

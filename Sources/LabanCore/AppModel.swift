@@ -482,9 +482,9 @@ public final class AppModel {
   /// first window in `state.windows` is consumed.
   ///
   /// Per-tab restore goes through the deferred-spawn factory when one
-  /// is set so the transcript renderer paints scrollback BEFORE the
-  /// shell starts producing live output. If the deferred factory is
-  /// not set, falls back to the simple cwd-only factory used by tests.
+  /// is set so production can start each fresh shell in the restored
+  /// cwd. If the deferred factory is not set, falls back to the
+  /// simple cwd-only factory used by tests.
   ///
   /// Mutation notifications are coalesced: one `onWorkspaceMutation`
   /// fires at the end, not per tab. This keeps the persistence
@@ -520,10 +520,11 @@ public final class AppModel {
   ///
   /// Spawn-or-fallback ordering: when a `restoredDeferredSessionFactory`
   /// is set we use it (this is the production path and the one that
-  /// gives transcript replay before live output). Otherwise we fall
-  /// back to the older simple cwd-only `restoredSessionFactory` and
-  /// finally to the default `sessionFactory` — useful for headless
-  /// tests that work with fixture sessions.
+  /// gives the restore factory access to cwd and diagnostic
+  /// transcript metadata). Otherwise we fall back to the older simple
+  /// cwd-only `restoredSessionFactory` and finally to the default
+  /// `sessionFactory` — useful for headless tests that work with
+  /// fixture sessions.
   @discardableResult
   private func createRestoredTabSuppressingNotification(
     id: Tab.ID,

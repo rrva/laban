@@ -106,9 +106,8 @@ public final class PersistenceCoordinator {
     }
     // Then flush any transcript writers so quit does not lose the
     // last few hundred ms of PTY output queued in the ring buffers.
-    // The transcript file remains raw PTY bytes; restore depends on
-    // byte replay to preserve scrollback, colors, cursor edits, and
-    // other terminal state.
+    // The transcript file remains raw PTY bytes for explicit
+    // diagnostic inspection; automatic restore does not replay it.
     transcriptHost?.flushAll()
   }
 

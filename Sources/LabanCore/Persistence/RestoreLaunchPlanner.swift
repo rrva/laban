@@ -16,7 +16,9 @@ import Foundation
 ///     longer running at quit (the user had Ctrl-D'd it earlier).
 ///   - `.noPrefill` — do nothing; the fresh shell prompt is the
 ///     final state. Used for every non-agent tab and for agent tabs
-///     where detection never fired.
+///     where detection never fired. Persisted `launchCommand` is
+///     historical metadata only; restore must not treat it as a
+///     generic command-resume mechanism.
 ///
 /// The decision reads `agent.wasRunningAtQuit`, NOT `processStatus`.
 /// `processStatus` tracks the *shell* — always alive while the tab is
@@ -34,7 +36,11 @@ public enum RestoreLaunchPlanner {
   public static func instruction(for tab: TabState) -> RestoreLaunchInstruction {
     guard let agent = tab.agent else { return .noPrefill }
     guard let support = AgentRegistry.entry(for: agent.name) else { return .noPrefill }
-    let command = support.resumeCommand(agent.sessionId)
+    let context = AgentLaunchContext(
+      cwd: agent.cwd ?? tab.cwd,
+      argv: agent.argv ?? [],
+      env: agent.env ?? [:])
+    let command = support.resumeCommand(sessionId: agent.sessionId, context: context)
     return agent.wasRunningAtQuit
       ? .executeNow(command: command)
       : .prefillPrompt(command: command)

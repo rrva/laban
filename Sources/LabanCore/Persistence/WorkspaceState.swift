@@ -51,20 +51,35 @@ public struct AgentInfo: Codable, Equatable {
   public var sessionId: String
   public var jsonlPath: String
   public var wasRunningAtQuit: Bool
+  public var argv: [String]?
+  public var env: [String: String]?
+  public var cwd: String?
 
-  public init(name: AgentName, sessionId: String, jsonlPath: String, wasRunningAtQuit: Bool) {
+  public init(
+    name: AgentName,
+    sessionId: String,
+    jsonlPath: String,
+    wasRunningAtQuit: Bool,
+    argv: [String]? = nil,
+    env: [String: String]? = nil,
+    cwd: String? = nil
+  ) {
     self.name = name
     self.sessionId = sessionId
     self.jsonlPath = jsonlPath
     self.wasRunningAtQuit = wasRunningAtQuit
+    self.argv = argv
+    self.env = env
+    self.cwd = cwd
   }
 }
 
 /// Restoration-time spec passed to `AppModel.restoredDeferredSessionFactory`.
-/// Production wires the factory to build a deferred-spawn Session,
-/// replay the persisted transcript into it via `TranscriptRenderer`,
-/// and call `Session.startSpawn(overrideCwd:)` — so live shell output
-/// always lands after the replayed scrollback, never interleaved.
+/// Production wires the factory to build a deferred-spawn Session and
+/// call `Session.startSpawn(overrideCwd:)` in the restored cwd. The
+/// `transcriptURL` is retained for explicit diagnostic inspection;
+/// automatic restore must not replay historical transcript bytes into
+/// the live terminal.
 public struct RestoredSessionSpec {
   public let size: LabanTerminalSize
   public let tabId: String

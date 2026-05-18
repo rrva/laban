@@ -59,33 +59,13 @@ final class MainWindowController: NSWindowController {
       AppLog.app.error("restored tab \(tabId) failed: \(String(describing: error))")
     }
 
-    // Restore-time factory: build a deferred-spawn session, replay
-    // the persisted transcript into its VT parser, then start the
-    // shell. The replay-before-spawn ordering is what keeps live
-    // shell output from interleaving with rebuilt scrollback.
-    //
-    // Alt-buffer-at-quit branch: a tab that was in vim/htop/less
-    // when Laban quit cannot have its TUI state faithfully replayed.
-    // The plan calls for an empty terminal with a "process exited"
-    // marker instead of a misleading half-restored TUI. We honor
-    // that by NOT calling startSpawn — the parser is constructed,
-    // the marker is fed in via libghostty so the tab body shows it,
-    // and the tab carries no live shell.
+    // Restore-time factory: build a deferred-spawn session in the
+    // persisted cwd, then start a fresh shell. Historical transcript
+    // bytes and persisted launch commands remain diagnostic/future
+    // pivot data only; automatic restore must not paint old output
+    // or replay generic terminal commands into a live terminal.
     model.restoredDeferredSessionFactory = { spec in
       let session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
-      if spec.altBufferAtQuit {
-        let marker = "\u{001B}[2J\u{001B}[H\r\n[process exited — tab restored without TUI state]\r\n"
-        _ = session.feedOutput(Array(marker.utf8))
-        return session
-      }
-      if let url = spec.transcriptURL {
-        TranscriptRenderer.render(
-          fileURL: url,
-          into: session,
-          altBufferAtQuit: spec.altBufferAtQuit
-        )
-      }
-      _ = session.suppressPtyOutputUntilInput()
       let rc = session.startSpawn(
         overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil)
       if rc != 0 {
@@ -115,8 +95,7 @@ final class MainWindowController: NSWindowController {
     // Rebuild the tab list from `workspace.json` BEFORE creating the
     // terminal view so the user never sees a flash of the default tab.
     // `replaceTabs(from:)` closes the auto-created first session and
-    // spawns one shell per persisted tab in its prior cwd. Replay
-    // happens inside `restoredDeferredSessionFactory`.
+    // spawns one fresh shell per persisted tab in its prior cwd.
     if let restoredState, !restoredState.windows.isEmpty {
       model.replaceTabs(from: restoredState)
     }
@@ -237,7 +216,7 @@ final class MainWindowController: NSWindowController {
   ///   - `.noPrefill` is a no-op.
   ///
   /// Called once during restore, after `replaceTabs(from:)` has
-  /// rebuilt the tab list and spawned each shell.
+  /// rebuilt the tab list and spawned each fresh shell.
   private static func applyRestoreLaunchPlans(
     for state: WorkspaceState, model: AppModel
   ) {

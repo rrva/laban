@@ -217,21 +217,15 @@ public final class HeadlessDebugRuntime {
       }
       self.model.restoredDeferredSessionFactory = { spec in
         // fixture sessions don't really "spawn"; deferred mode is
-        // only meaningful for real shells. For fixture/debug mode
-        // we just make a fresh session and replay the transcript
-        // into it before returning.
+        // only meaningful for real shells. Historical transcript
+        // bytes remain available on disk for diagnostics but are not
+        // replayed into automatic workspace restore.
         let session: Session
         switch initialSessionMode {
         case .fixture:
           session = try Session.fixture(size: spec.size)
         case .realShell:
           session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
-        }
-        if let url = spec.transcriptURL {
-          TranscriptRenderer.render(
-            fileURL: url,
-            into: session,
-            altBufferAtQuit: spec.altBufferAtQuit)
         }
         if case .realShell = initialSessionMode {
           _ = session.startSpawn(
@@ -260,6 +254,7 @@ public final class HeadlessDebugRuntime {
       // failures, missing transcripts) reproduce here.
       if let restored = coordinator.load() {
         model.replaceTabs(from: restored)
+        Self.applyRestoreLaunchPlans(for: restored, model: model)
       }
 
       coordinator.attach(model)

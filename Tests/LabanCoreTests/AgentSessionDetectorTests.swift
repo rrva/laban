@@ -29,7 +29,10 @@ final class AgentSessionDetectorTests: XCTestCase {
       "/Users/x/.claude/projects/proj/\(sessionId).jsonl"
     let mock = MockIntrospector(
       children: [100: [(101, "claude")]],
-      openVnodes: [101: [jsonlPath, "/tmp/scratch.txt"]])
+      openVnodes: [101: [jsonlPath, "/tmp/scratch.txt"]],
+      arguments: [101: ["claude", "--model", "sonnet"]],
+      environments: [101: ["TERM": "xterm-256color", "OPENAI_API_KEY": "secret"]],
+      cwds: [101: "/Users/x/project"])
     let detector = AgentSessionDetector(
       tabId: "t", shellPid: 100, introspector: mock)
 
@@ -39,6 +42,29 @@ final class AgentSessionDetectorTests: XCTestCase {
     XCTAssertEqual(agent?.name, .claude)
     XCTAssertEqual(agent?.sessionId, sessionId)
     XCTAssertEqual(agent?.jsonlPath, jsonlPath)
+    XCTAssertEqual(agent?.wasRunningAtQuit, true)
+    XCTAssertEqual(agent?.argv, ["claude", "--model", "sonnet"])
+    XCTAssertEqual(agent?.env, ["TERM": "xterm-256color"])
+    XCTAssertEqual(agent?.cwd, "/Users/x/project")
+  }
+
+  func testFindAgentMatchesVersionedClaudeExecutableByInvocationArgv() {
+    let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0013"
+    let jsonlPath =
+      "/Users/x/.claude/projects/proj/\(sessionId).jsonl"
+    let mock = MockIntrospector(
+      children: [120: [(121, "2.1.143")]],
+      openVnodes: [121: [jsonlPath]],
+      arguments: [121: ["claude", "--chrome", "--dangerously-skip-permissions"]],
+      cwds: [121: "/Users/x/project"])
+    let detector = AgentSessionDetector(
+      tabId: "t", shellPid: 120, introspector: mock)
+
+    let agent = detector.findAgent(in: detector.collectDescendants(of: 120, depth: 0))
+    XCTAssertEqual(agent?.name, .claude)
+    XCTAssertEqual(agent?.sessionId, sessionId)
+    XCTAssertEqual(agent?.argv, ["claude", "--chrome", "--dangerously-skip-permissions"])
+    XCTAssertEqual(agent?.cwd, "/Users/x/project")
     XCTAssertEqual(agent?.wasRunningAtQuit, true)
   }
 
@@ -65,6 +91,130 @@ final class AgentSessionDetectorTests: XCTestCase {
     let detector = AgentSessionDetector(
       tabId: "t", shellPid: 300, introspector: mock)
     XCTAssertNil(detector.findAgent(in: detector.collectDescendants(of: 300, depth: 0)))
+  }
+
+  func testFindAgentFallsBackToNewestClaudeJSONLForProcessCwd() throws {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-claude-detect-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let projects = base.appendingPathComponent("projects", isDirectory: true)
+    let cwd = "/Users/x/project.with.dot"
+    let project = projects.appendingPathComponent(
+      ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+    let oldId = "0fa31a8c-1234-5678-9abc-deadbeef0007"
+    let newId = "0fa31a8c-1234-5678-9abc-deadbeef0008"
+    let oldURL = project.appendingPathComponent("\(oldId).jsonl")
+    let newURL = project.appendingPathComponent("\(newId).jsonl")
+    try Data("old\n".utf8).write(to: oldURL)
+    try Data("new\n".utf8).write(to: newURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 10)], ofItemAtPath: oldURL.path)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 20)], ofItemAtPath: newURL.path)
+
+    setenv("CLAUDE_CONFIG_DIR", base.path, 1)
+    defer { unsetenv("CLAUDE_CONFIG_DIR") }
+    let resolvedNewPath = try XCTUnwrap(ClaudeSessionLogLocator.newestSessionLog(cwd: cwd))
+
+    let mock = MockIntrospector(
+      children: [350: [(351, "claude")]],
+      openVnodes: [351: []],
+      arguments: [351: ["claude", "--chrome"]],
+      cwds: [351: cwd])
+    let detector = AgentSessionDetector(
+      tabId: "t", shellPid: 350, introspector: mock)
+
+    let agent = detector.findAgent(in: detector.collectDescendants(of: 350, depth: 0))
+    XCTAssertEqual(agent?.name, .claude)
+    XCTAssertEqual(agent?.sessionId, newId)
+    XCTAssertEqual(agent?.jsonlPath, resolvedNewPath)
+    XCTAssertEqual(agent?.argv, ["claude", "--chrome"])
+    XCTAssertEqual(agent?.cwd, cwd)
+  }
+
+  func testDetectFallsBackToRecentClaudeJSONLForShellCwdWithoutLiveAgent() throws {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-claude-shell-fallback-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let projects = base.appendingPathComponent("projects", isDirectory: true)
+    let cwd = "/Users/x/project"
+    let project = projects.appendingPathComponent(
+      ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+    let staleId = "0fa31a8c-1234-5678-9abc-deadbeef0010"
+    let recentId = "0fa31a8c-1234-5678-9abc-deadbeef0011"
+    let staleURL = project.appendingPathComponent("\(staleId).jsonl")
+    let recentURL = project.appendingPathComponent("\(recentId).jsonl")
+    try Data("stale\n".utf8).write(to: staleURL)
+    try Data(
+      """
+      {"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"\(recentId)"}
+      {"type":"assistant","advisorModel":"claude-opus-4-7","cwd":"\(cwd)","sessionId":"\(recentId)"}
+
+      """.utf8
+    ).write(to: recentURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 50)], ofItemAtPath: staleURL.path)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 150)], ofItemAtPath: recentURL.path)
+
+    setenv("CLAUDE_CONFIG_DIR", base.path, 1)
+    defer { unsetenv("CLAUDE_CONFIG_DIR") }
+
+    let mock = MockIntrospector(
+      children: [800: []],
+      openVnodes: [:],
+      environments: [800: ["TERM": "xterm-256color", "ANTHROPIC_API_KEY": "secret"]],
+      cwds: [800: cwd])
+    let detector = AgentSessionDetector(
+      tabId: "t",
+      shellPid: 800,
+      recentSessionCutoff: Date(timeIntervalSince1970: 100),
+      introspector: mock)
+
+    let agent = detector.detect()
+    XCTAssertEqual(agent?.name, .claude)
+    XCTAssertEqual(agent?.sessionId, recentId)
+    XCTAssertTrue(agent?.jsonlPath.hasSuffix("/projects/-Users-x-project/\(recentId).jsonl") ?? false)
+    XCTAssertEqual(agent?.wasRunningAtQuit, false)
+    XCTAssertEqual(agent?.argv, ["claude", "--model", "claude-opus-4-7", "--dangerously-skip-permissions"])
+    XCTAssertEqual(agent?.env, ["TERM": "xterm-256color"])
+    XCTAssertEqual(agent?.cwd, cwd)
+  }
+
+  func testDetectIgnoresStaleClaudeJSONLForShellCwdWithoutLiveAgent() throws {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-claude-stale-shell-fallback-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let projects = base.appendingPathComponent("projects", isDirectory: true)
+    let cwd = "/Users/x/project"
+    let project = projects.appendingPathComponent(
+      ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+    let staleId = "0fa31a8c-1234-5678-9abc-deadbeef0012"
+    let staleURL = project.appendingPathComponent("\(staleId).jsonl")
+    try Data("stale\n".utf8).write(to: staleURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 50)], ofItemAtPath: staleURL.path)
+
+    setenv("CLAUDE_CONFIG_DIR", base.path, 1)
+    defer { unsetenv("CLAUDE_CONFIG_DIR") }
+
+    let mock = MockIntrospector(
+      children: [810: []],
+      openVnodes: [:],
+      cwds: [810: cwd])
+    let detector = AgentSessionDetector(
+      tabId: "t",
+      shellPid: 810,
+      recentSessionCutoff: Date(timeIntervalSince1970: 100),
+      introspector: mock)
+
+    XCTAssertNil(detector.detect())
   }
 
   func testFindAgentIgnoresNonAgentBasenames() {
@@ -146,6 +296,7 @@ final class AgentSessionDetectorTests: XCTestCase {
     XCTAssertEqual(recorder.observations.count, 2)
     XCTAssertEqual(recorder.observations.last??.sessionId, sessionId)
     XCTAssertEqual(recorder.observations.last??.wasRunningAtQuit, false)
+    XCTAssertEqual(recorder.observations.last??.jsonlPath, jsonlPath)
   }
 }
 
@@ -154,10 +305,22 @@ final class AgentSessionDetectorTests: XCTestCase {
 private final class MockIntrospector: ProcessIntrospector {
   var children: [pid_t: [(pid_t, String)]]
   var openVnodes: [pid_t: [String]]
+  var arguments: [pid_t: [String]]
+  var environments: [pid_t: [String: String]]
+  var cwds: [pid_t: String]
 
-  init(children: [pid_t: [(pid_t, String)]], openVnodes: [pid_t: [String]]) {
+  init(
+    children: [pid_t: [(pid_t, String)]],
+    openVnodes: [pid_t: [String]],
+    arguments: [pid_t: [String]] = [:],
+    environments: [pid_t: [String: String]] = [:],
+    cwds: [pid_t: String] = [:]
+  ) {
     self.children = children
     self.openVnodes = openVnodes
+    self.arguments = arguments
+    self.environments = environments
+    self.cwds = cwds
   }
 
   func children(of parent: pid_t) -> [(pid: pid_t, basename: String)] {
@@ -166,5 +329,13 @@ private final class MockIntrospector: ProcessIntrospector {
   func openVnodePaths(of pid: pid_t) -> [String] {
     openVnodes[pid] ?? []
   }
+  func arguments(of pid: pid_t) -> [String] {
+    arguments[pid] ?? []
+  }
+  func environment(of pid: pid_t) -> [String: String] {
+    environments[pid] ?? [:]
+  }
+  func currentWorkingDirectory(of pid: pid_t) -> String? {
+    cwds[pid]
+  }
 }
-

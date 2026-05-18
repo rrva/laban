@@ -68,6 +68,20 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
     mirror.snapshotAll()
   }
 
+  /// Force one synchronous detector sample for every tab. Called at
+  /// quit before workspace persistence flushes so short-lived agent
+  /// launchers still get one final chance to record native resume
+  /// metadata.
+  public func observeNowAll() {
+    guard isEnabled() else { return }
+    lock.lock()
+    let detectors = Array(detectorsByTab.values)
+    lock.unlock()
+    for detector in detectors {
+      detector.observeNow()
+    }
+  }
+
   // MARK: - AgentSessionDetectorObserver
 
   public func agentSessionDetector(

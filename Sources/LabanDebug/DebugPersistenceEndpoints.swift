@@ -15,6 +15,7 @@ extension HeadlessDebugRuntime {
   /// does. No-op when persistence is not wired.
   public func persistenceFlush() -> DebugResponse {
     withRuntimeLock {
+      agentObserverHost?.observeNowAll()
       persistenceCoordinator?.flushSync()
       return responseJSON(["ok": true])
     }
@@ -84,11 +85,13 @@ extension HeadlessDebugRuntime {
       guard persistenceCoordinator != nil else {
         return jsonError("persistence is not enabled (use --persistence-dir)", status: 400)
       }
+      agentObserverHost?.observeNowAll()
       persistenceCoordinator?.flushSync()
       model.closeAllSessions()
       let loaded = persistenceCoordinator?.load()
       if let loaded {
         model.replaceTabs(from: loaded)
+        applyRestoreLaunchPlansUnlocked(for: loaded)
       }
       renderFrameUnlocked()
       return responseJSON([
@@ -96,6 +99,27 @@ extension HeadlessDebugRuntime {
         "restoredTabCount": model.tabs.count,
         "activeTabId": model.activeTab?.id ?? "",
       ])
+    }
+  }
+
+  func applyRestoreLaunchPlansUnlocked(for state: WorkspaceState) {
+    Self.applyRestoreLaunchPlans(for: state, model: model)
+  }
+
+  static func applyRestoreLaunchPlans(for state: WorkspaceState, model: AppModel) {
+    guard let window = state.windows.first else { return }
+    for tabState in window.tabs {
+      let instruction = RestoreLaunchPlanner.instruction(for: tabState)
+      switch instruction {
+      case .noPrefill:
+        continue
+      case .executeNow(let command):
+        guard let session = model.session(forTab: tabState.id) else { continue }
+        _ = session.write(Array("\(command)\n".utf8))
+      case .prefillPrompt(let command):
+        guard let session = model.session(forTab: tabState.id) else { continue }
+        _ = session.write(Array(command.utf8))
+      }
     }
   }
 }

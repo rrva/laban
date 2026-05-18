@@ -106,7 +106,10 @@ final class PersistenceRoundTripTests: XCTestCase {
       name: .claude,
       sessionId: "0fa31a8c-1234-5678-9abc-deadbeef0000",
       jsonlPath: "/Users/x/.claude/projects/foo/0fa31a8c-1234-5678-9abc-deadbeef0000.jsonl",
-      wasRunningAtQuit: false
+      wasRunningAtQuit: false,
+      argv: ["claude", "--model", "sonnet"],
+      env: ["TERM": "xterm-256color", "CLAUDE_CONFIG_DIR": "/tmp/claude"],
+      cwd: "/Users/x/project"
     )
     let state = WorkspaceState(
       windows: [
@@ -137,6 +140,44 @@ final class PersistenceRoundTripTests: XCTestCase {
 
     XCTAssertEqual(decoded.windows.first?.tabs.first?.agent, agent)
     XCTAssertEqual(decoded.windows.first?.tabs.first?.agent?.wasRunningAtQuit, false)
+    XCTAssertEqual(decoded.windows.first?.tabs.first?.agent?.argv, ["claude", "--model", "sonnet"])
+    XCTAssertEqual(decoded.windows.first?.tabs.first?.agent?.env?["TERM"], "xterm-256color")
+    XCTAssertEqual(decoded.windows.first?.tabs.first?.agent?.cwd, "/Users/x/project")
+  }
+
+  func testWorkspaceStateDecodesLegacyAgentInfoWithoutLaunchContext() throws {
+    let json = """
+      {
+        "schemaVersion": 1,
+        "windows": [
+          {
+            "id": "win-A",
+            "tabs": [
+              {
+                "id": "tab-1",
+                "cwd": "/Users/x",
+                "launchCommand": "/bin/zsh -l",
+                "lastActiveAt": "2024-05-06T12:00:00Z",
+                "agent": {
+                  "name": "claude",
+                  "sessionId": "0fa31a8c-1234-5678-9abc-deadbeef0000",
+                  "jsonlPath": "/tmp/session.jsonl",
+                  "wasRunningAtQuit": true
+                }
+              }
+            ]
+          }
+        ]
+      }
+      """
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(WorkspaceState.self, from: Data(json.utf8))
+
+    let agent = try XCTUnwrap(decoded.windows.first?.tabs.first?.agent)
+    XCTAssertNil(agent.argv)
+    XCTAssertNil(agent.env)
+    XCTAssertNil(agent.cwd)
   }
 
   func testPersistenceStoreSaveLoadRoundTrip() throws {

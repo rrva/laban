@@ -28,9 +28,9 @@ public final class TranscriptHost {
     self.isEnabled = isEnabled
   }
 
-  /// Path the writer for `tabId` appends to. Used by the restore
-  /// orchestrator to find the file to replay through libghostty
-  /// BEFORE the new session starts capturing into the same file.
+  /// Path the writer for `tabId` appends to. Automatic workspace
+  /// restore no longer replays this file; callers may still use it
+  /// for explicit diagnostic inspection.
   public func transcriptURL(forTabId tabId: String) -> URL {
     store.transcriptURL(forTabId: tabId)
   }
