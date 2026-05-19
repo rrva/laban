@@ -189,6 +189,32 @@ final class PersistenceRoundTripTests: XCTestCase {
     XCTAssertEqual(decoded.windows.first?.tabs.first?.agent?.cwd, "/Users/x/project")
   }
 
+  func testClosedTabAgentMetadataIsNotPersistedOrRecreatedByLateUpdate() throws {
+    let model = try makeModel()
+    let closingTab = try XCTUnwrap(model.tabs.first)
+    _ = try model.createTab()
+    let agent = AgentInfo(
+      name: .claude,
+      sessionId: "0fa31a8c-1234-5678-9abc-deadbeef0000",
+      jsonlPath: "/Users/x/.claude/projects/foo/0fa31a8c-1234-5678-9abc-deadbeef0000.jsonl",
+      wasRunningAtQuit: true,
+      argv: ["claude"],
+      env: nil,
+      cwd: "/Users/x/project"
+    )
+
+    model.updateAgent(agent, forTab: closingTab.id)
+    XCTAssertEqual(model.agent(forTab: closingTab.id), agent)
+
+    try model.closeTab(closingTab.id)
+    model.updateAgent(agent, forTab: closingTab.id)
+
+    XCTAssertNil(model.agent(forTab: closingTab.id))
+    let persistedWindow = try XCTUnwrap(model.snapshotForPersistence(windowId: "win-A").windows.first)
+    XCTAssertFalse(persistedWindow.tabs.contains { $0.id == closingTab.id })
+    XCTAssertFalse(persistedWindow.tabs.contains { $0.agent == agent })
+  }
+
   func testWorkspaceStateDecodesLegacyAgentInfoWithoutLaunchContext() throws {
     let json = """
       {

@@ -13,8 +13,8 @@ import LabanTerminalCore
 /// re-registration has a real race window (the child may exec before
 /// re-registration completes). Polling sidesteps the race entirely;
 /// the first sample is immediate and the default repeat cadence is
-/// intentionally coarse so idle tabs do not keep rescanning kernel
-/// PID state.
+/// intentionally coarse: at 10 tabs, 2 second repeats mean roughly
+/// 5 child-PID scans/sec instead of the old 20 scans/sec.
 ///
 /// The timer NEVER stops once started. Each tick:
 ///   - If a matching agent descendant is alive and its session id is
@@ -53,6 +53,10 @@ public final class AgentSessionDetector {
   /// startup. The child scan uses `proc_listpids(PROC_PPID_ONLY, ...)`,
   /// which walks kernel PID state, so keep idle polling intentionally coarse.
   public static let defaultTickInterval: DispatchTimeInterval = .seconds(2)
+
+  /// Match the detector cadence. This coalesces duplicate filesystem lookups
+  /// within a tick while keeping normal runtime staleness bounded to the same
+  /// roughly 2 second window; explicit observeNow paths clear the cache.
   public static let defaultSessionLogLookupCacheInterval: TimeInterval = 2.0
 
   public let tabId: String

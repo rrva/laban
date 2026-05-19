@@ -52,6 +52,23 @@ shows fewer APFS and sandbox samples.
   `observeNowPreservingLiveAgentOnMiss()` clear the cache before sampling.
   Date/Author: 2026-05-19 / Codex
 
+- Decision: Do not add a forced `observeNow()` to the tab-close teardown hook.
+  Rationale: `AppModel.closeTab` removes the tab from the workspace before
+  `onTabClosed` fires, and closed tabs are not persisted for restore. Quit is the
+  path that must preserve running agent metadata, and it already calls
+  `observeNowAll()` before flushing persistence. A late detector update after tab
+  close is ignored so it cannot recreate private agent metadata for a missing
+  tab.
+  Date/Author: 2026-05-19 / Codex
+
+- Decision: Keep the Claude session-log lookup cache interval at 2 seconds for
+  now.
+  Rationale: The interval intentionally matches the detector cadence, bounding
+  runtime staleness to the same window while coalescing duplicate directory
+  scans. A longer 5 second cache can be evaluated after a follow-up idle trace if
+  `ClaudeSessionLogLocator` remains visible.
+  Date/Author: 2026-05-19 / Codex
+
 ## Surprises & Discoveries
 
 - Observation: The source audit found Laban `AppLog` calls, including an input
@@ -179,6 +196,13 @@ Validation run on 2026-05-19:
 - `rtk swift test --filter LabanDebugSmokeTests/testPersistenceFlushRecordsRecentClaudeLogWithoutLiveChild`
   passed after the forced-observation cache fix: 1 test, 0 failures.
 - `rtk swift test` passed: 641 tests, 3 skipped, 0 failures.
+- `rtk swift test --filter PersistenceRoundTripTests/testClosedTabAgentMetadataIsNotPersistedOrRecreatedByLateUpdate`
+  passed after the post-review tab-close regression test: 1 test, 0 failures.
+- `rtk swift test` passed after the post-review stale-tab guard: 642 tests, 3
+  skipped, 0 failures.
+- `./scripts/build-app --profile` passed and produced `.build/laban/Laban.app`
+  plus `.build/laban/Laban.app.dSYM`. The build emitted transient Swift module
+  cache warnings about missing `.pcm` paths but exited successfully.
 
 ## Outcomes & Retrospective
 

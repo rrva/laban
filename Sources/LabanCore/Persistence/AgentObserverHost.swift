@@ -47,6 +47,9 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
   }
 
   public func detach(tabId: String) {
+    // This is called after AppModel.closeTab has already removed the tab from
+    // the workspace. Closed tabs are not restore candidates; quit uses
+    // observeNowAll() before persistence flushes state.
     lock.lock()
     let detector = detectorsByTab.removeValue(forKey: tabId)
     lock.unlock()

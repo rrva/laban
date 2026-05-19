@@ -137,6 +137,9 @@ public final class AppModel {
   /// notification so the persistence coordinator records the change.
   public func updateAgent(_ agent: AgentInfo?, forTab tabId: Tab.ID) {
     let changed: Bool = withModelLock {
+      guard _tabs.contains(where: { $0.id == tabId }) else {
+        return agentByTab.removeValue(forKey: tabId) != nil
+      }
       let prior = agentByTab[tabId]
       if prior == agent { return false }
       if let agent {
