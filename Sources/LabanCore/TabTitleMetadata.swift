@@ -489,11 +489,22 @@ public enum TabTitleResolver {
   /// the identifying part — exactly what fits in a 200 px sidebar column.
   /// `~` for the home directory itself.
   private static func cwdDisplayName(_ path: String) -> String {
+    if let cached = cwdDisplayNameCache.object(forKey: path as NSString) {
+      return cached as String
+    }
     let standardized = (path as NSString).standardizingPath
-    let home = (NSHomeDirectory() as NSString).standardizingPath
-    if standardized == home { return "~" }
-    return pathTail(standardized)
+    let displayName = standardized == standardizedHomePath ? "~" : pathTail(standardized)
+    cwdDisplayNameCache.setObject(displayName as NSString, forKey: path as NSString)
+    return displayName
   }
+
+  private static let standardizedHomePath = (NSHomeDirectory() as NSString).standardizingPath
+
+  private static let cwdDisplayNameCache: NSCache<NSString, NSString> = {
+    let cache = NSCache<NSString, NSString>()
+    cache.countLimit = 512
+    return cache
+  }()
 
   private static func commandName(_ command: String?) -> String? {
     guard let command = useful(command) else { return nil }

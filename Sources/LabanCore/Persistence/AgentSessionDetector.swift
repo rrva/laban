@@ -12,8 +12,9 @@ import LabanTerminalCore
 /// on the shell never fires for the child. NOTE_FORK + cascading
 /// re-registration has a real race window (the child may exec before
 /// re-registration completes). Polling sidesteps the race entirely;
-/// the cost at 10 tabs × 2 ticks/sec is ~20 syscalls/sec — well
-/// within the noise floor.
+/// the first sample is immediate and the default repeat cadence is
+/// intentionally coarse so idle tabs do not keep rescanning kernel
+/// PID state.
 ///
 /// The timer NEVER stops once started. Each tick:
 ///   - If a matching agent descendant is alive and its session id is
@@ -48,6 +49,12 @@ public protocol ProcessIntrospector {
 
 public final class AgentSessionDetector {
 
+  /// First sample is still immediate; this is the repeat cadence after
+  /// startup. The child scan uses `proc_listpids(PROC_PPID_ONLY, ...)`,
+  /// which walks kernel PID state, so keep idle polling intentionally coarse.
+  public static let defaultTickInterval: DispatchTimeInterval = .seconds(2)
+  public static let defaultSessionLogLookupCacheInterval: TimeInterval = 2.0
+
   public let tabId: String
   public let shellPid: pid_t
   public let tickInterval: DispatchTimeInterval
@@ -55,10 +62,25 @@ public final class AgentSessionDetector {
   public weak var observer: AgentSessionDetectorObserver?
   public let introspector: ProcessIntrospector
   private let recentSessionCutoff: Date
+  private let sessionLogLookupCacheInterval: TimeInterval
 
   private(set) var lastObservedAgent: AgentInfo?
   private var timer: DispatchSourceTimer?
   private let lock = NSLock()
+
+  private struct ClaudeSessionLogLookupKey: Hashable {
+    var cwd: String
+    var modifiedAfter: Date?
+  }
+
+  private struct ClaudeSessionLogLookupCacheEntry {
+    var path: String?
+    var checkedAt: Date
+  }
+
+  private var claudeSessionLogLookupCache:
+    [ClaudeSessionLogLookupKey:
+      ClaudeSessionLogLookupCacheEntry] = [:]
 
   /// Recursion depth cap when walking the descendant tree. Cap = 4
   /// covers `npx claude`, `direnv exec . claude`, `time claude`, and
@@ -69,9 +91,11 @@ public final class AgentSessionDetector {
   public init(
     tabId: String,
     shellPid: pid_t,
-    tickInterval: DispatchTimeInterval = .milliseconds(500),
+    tickInterval: DispatchTimeInterval = AgentSessionDetector.defaultTickInterval,
     queue: DispatchQueue = DispatchQueue(label: "laban.agentdetector", qos: .utility),
     recentSessionCutoff: Date = Date(),
+    sessionLogLookupCacheInterval: TimeInterval = AgentSessionDetector
+      .defaultSessionLogLookupCacheInterval,
     introspector: ProcessIntrospector = LibprocIntrospector()
   ) {
     self.tabId = tabId
@@ -79,6 +103,7 @@ public final class AgentSessionDetector {
     self.tickInterval = tickInterval
     self.queue = queue
     self.recentSessionCutoff = recentSessionCutoff
+    self.sessionLogLookupCacheInterval = sessionLogLookupCacheInterval
     self.introspector = introspector
   }
 
@@ -111,10 +136,12 @@ public final class AgentSessionDetector {
   }
 
   internal func observeNow() {
+    clearSessionLogLookupCache()
     handleObservation(detect())
   }
 
   internal func observeNowPreservingLiveAgentOnMiss() {
+    clearSessionLogLookupCache()
     handleObservation(detect(), preserveLiveAgentOnMiss: true)
   }
 
@@ -153,50 +180,99 @@ public final class AgentSessionDetector {
   /// the newest session JSONL in the process cwd's project directory.
   internal func findAgent(in descendants: [(pid: pid_t, basename: String)]) -> AgentInfo? {
     for entry in descendants {
-      let argv = introspector.arguments(of: entry.pid)
-      guard let support = AgentRegistry.agent(forBinaryBasename: entry.basename, arguments: argv)
-      else {
-        continue
-      }
-      let env = AgentEnvironmentSanitizer.sanitize(introspector.environment(of: entry.pid))
-      let cwd = introspector.currentWorkingDirectory(of: entry.pid)
-      for path in introspector.openVnodePaths(of: entry.pid) where path.hasSuffix(".jsonl") {
-        if let sessionId = support.extractSessionId(path) {
-          return AgentInfo(
-            name: support.name,
-            sessionId: sessionId,
-            jsonlPath: path,
-            wasRunningAtQuit: true,
-            argv: argv,
-            env: env,
-            cwd: cwd
-          )
+      let support: AgentSupport
+      var argv: [String]?
+      if let direct = AgentRegistry.agent(forBinaryBasename: entry.basename) {
+        support = direct
+      } else {
+        guard Self.shouldInspectInvocationName(forExecutableBasename: entry.basename) else {
+          continue
         }
+        let observedArgv = introspector.arguments(of: entry.pid)
+        guard
+          let matched = AgentRegistry.agent(
+            forBinaryBasename: entry.basename, arguments: observedArgv)
+        else { continue }
+        support = matched
+        argv = observedArgv
       }
-      if support.name == .claude,
-        let cwd,
-        let path = ClaudeSessionLogLocator.newestSessionLog(cwd: cwd),
-        let sessionId = support.extractSessionId(path)
-      {
+
+      func agentInfo(sessionId: String, jsonlPath: String, cwd knownCwd: String?) -> AgentInfo {
+        let resolvedArgv = argv ?? introspector.arguments(of: entry.pid)
+        let env = AgentEnvironmentSanitizer.sanitize(introspector.environment(of: entry.pid))
+        let cwd = knownCwd ?? introspector.currentWorkingDirectory(of: entry.pid)
         return AgentInfo(
           name: support.name,
           sessionId: sessionId,
-          jsonlPath: path,
+          jsonlPath: jsonlPath,
           wasRunningAtQuit: true,
-          argv: argv,
+          argv: resolvedArgv,
           env: env,
           cwd: cwd
         )
+      }
+
+      for path in introspector.openVnodePaths(of: entry.pid) where path.hasSuffix(".jsonl") {
+        if let sessionId = support.extractSessionId(path) {
+          return agentInfo(sessionId: sessionId, jsonlPath: path, cwd: nil)
+        }
+      }
+      if support.name == .claude,
+        let cwd = introspector.currentWorkingDirectory(of: entry.pid),
+        let path = newestClaudeSessionLog(cwd: cwd),
+        let sessionId = support.extractSessionId(path)
+      {
+        return agentInfo(sessionId: sessionId, jsonlPath: path, cwd: cwd)
       }
     }
     return nil
   }
 
+  private static func shouldInspectInvocationName(forExecutableBasename basename: String) -> Bool {
+    guard let first = basename.utf8.first else { return false }
+    // Claude's native launcher may exec a versioned binary such as
+    // `2.1.143` while keeping argv[0] as `claude`. Avoid argv sysctl
+    // work for ordinary non-agent processes such as vim, git, or ssh.
+    return first >= 48 && first <= 57
+  }
+
+  private func newestClaudeSessionLog(cwd: String, modifiedAfter: Date? = nil) -> String? {
+    guard sessionLogLookupCacheInterval > 0 else {
+      return ClaudeSessionLogLocator.newestSessionLog(cwd: cwd, modifiedAfter: modifiedAfter)
+    }
+
+    let key = ClaudeSessionLogLookupKey(cwd: cwd, modifiedAfter: modifiedAfter)
+    let now = Date()
+    lock.lock()
+    if let entry = claudeSessionLogLookupCache[key],
+      now.timeIntervalSince(entry.checkedAt) < sessionLogLookupCacheInterval
+    {
+      lock.unlock()
+      return entry.path
+    }
+    lock.unlock()
+
+    let path = ClaudeSessionLogLocator.newestSessionLog(cwd: cwd, modifiedAfter: modifiedAfter)
+    let entry = ClaudeSessionLogLookupCacheEntry(path: path, checkedAt: Date())
+    lock.lock()
+    if claudeSessionLogLookupCache.count > 64 {
+      claudeSessionLogLookupCache.removeAll(keepingCapacity: true)
+    }
+    claudeSessionLogLookupCache[key] = entry
+    lock.unlock()
+    return path
+  }
+
+  private func clearSessionLogLookupCache() {
+    lock.lock()
+    claudeSessionLogLookupCache.removeAll(keepingCapacity: true)
+    lock.unlock()
+  }
+
   internal func findRecentClaudeSessionForShellCwd() -> AgentInfo? {
     guard let support = AgentRegistry.entry(for: .claude),
       let cwd = introspector.currentWorkingDirectory(of: shellPid),
-      let path = ClaudeSessionLogLocator.newestSessionLog(
-        cwd: cwd, modifiedAfter: recentSessionCutoff),
+      let path = newestClaudeSessionLog(cwd: cwd, modifiedAfter: recentSessionCutoff),
       let sessionId = support.extractSessionId(path)
     else { return nil }
 

@@ -170,6 +170,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   private var windowFocusObservers: [NSObjectProtocol] = []
   private var lastReportedFocusBySession: [Session.ID: Bool] = [:]
+  private var lastAppliedWindowTitle: String?
 
   private var synchronizedOutputHold: TerminalRenderGate.SynchronizedOutputHold?
   var synchronizedOutputHoldForTests: TerminalRenderGate.SynchronizedOutputHold? {
@@ -433,6 +434,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    lastAppliedWindowTitle = nil
     removeWindowFocusObservers()
     guard window != nil else {
       syncActiveSessionFocus(windowFocused: false)
@@ -740,7 +742,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     else { return }
 
     let suffix = captureRecorder == nil ? "" : " — capturing"
-    window?.title = model.windowTitle + suffix
+    let windowTitle = model.windowTitle + suffix
+    if windowTitle != lastAppliedWindowTitle {
+      window?.title = windowTitle
+      lastAppliedWindowTitle = windowTitle
+    }
 
     let tabChanged = lastRenderedActiveTabId != activeTab.id
     if tabChanged,

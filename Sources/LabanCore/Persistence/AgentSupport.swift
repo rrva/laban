@@ -681,15 +681,24 @@ extension AgentSupport {
   }
 
   static func isUUID(_ candidate: String) -> Bool {
-    // Lightweight check matching `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
-    guard candidate.count == 36 else { return false }
-    let parts = candidate.split(separator: "-")
-    guard parts.count == 5 else { return false }
-    let expected = [8, 4, 4, 4, 12]
-    for (i, part) in parts.enumerated() {
-      if part.count != expected[i] { return false }
-      if !part.allSatisfy({ $0.isHexDigit }) { return false }
+    // ASCII UUID shape check: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.
+    // This path runs while scanning session-log filenames, so avoid
+    // `String.count`, `split`, and `Character` iteration.
+    let bytes = candidate.utf8
+    guard bytes.count == 36 else { return false }
+
+    for (index, byte) in bytes.enumerated() {
+      switch index {
+      case 8, 13, 18, 23:
+        guard byte == 45 else { return false }  // "-"
+      default:
+        guard isASCIIHexDigit(byte) else { return false }
+      }
     }
     return true
+  }
+
+  private static func isASCIIHexDigit(_ byte: UInt8) -> Bool {
+    (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 70) || (byte >= 97 && byte <= 102)
   }
 }

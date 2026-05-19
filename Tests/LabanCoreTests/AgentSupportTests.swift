@@ -23,6 +23,17 @@ final class AgentSupportTests: XCTestCase {
     XCTAssertNil(AgentSupport.claude().extractSessionId(path))
   }
 
+  func testUUIDShapeCheckAcceptsOnlyASCIICanonicalUUIDs() {
+    XCTAssertTrue(AgentSupport.isUUID("0fa31a8c-1234-5678-9abc-deadbeef0000"))
+    XCTAssertTrue(AgentSupport.isUUID("0FA31A8C-1234-5678-9ABC-DEADBEEF0000"))
+
+    XCTAssertFalse(AgentSupport.isUUID("0fa31a8c1234-5678-9abc-deadbeef0000"))
+    XCTAssertFalse(AgentSupport.isUUID("0fa31a8c-1234-5678-9abc-deadbeef000"))
+    XCTAssertFalse(AgentSupport.isUUID("0fa31a8c-1234-5678-9abc-deadbeef00000"))
+    XCTAssertFalse(AgentSupport.isUUID("0fa31a8c-1234-5678-9abc-deadbeef000g"))
+    XCTAssertFalse(AgentSupport.isUUID("0fa31a8c-1234-5678-9abc-deadbeef000\u{00E9}"))
+  }
+
   func testCodexExtractorAcceptsRolloutPath() {
     let path =
       "/Users/x/.codex/sessions/2026/05/17/rollout-2026-05-17T14-23-11-0fa31a8c-1234-5678-9abc-deadbeef0000.jsonl"
