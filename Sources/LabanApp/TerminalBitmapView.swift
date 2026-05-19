@@ -2892,11 +2892,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         <title>\(title) · Laban cast</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.15.1/dist/bundle/asciinema-player.css">
         <style>
-          html, body { margin: 0; padding: 0; background: #161616; color: #d8d8d8; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
-          .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 24px 48px; }
-          h1 { font-size: 13px; font-weight: 500; opacity: 0.7; margin: 0 0 16px; letter-spacing: 0.02em; }
+          html, body { height: 100%; margin: 0; padding: 0; background: #161616; color: #d8d8d8; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+          .wrap { max-width: 1200px; height: 100vh; box-sizing: border-box; margin: 0 auto; padding: 24px 24px 24px; display: flex; flex-direction: column; }
+          h1 { flex: 0 0 auto; font-size: 13px; font-weight: 500; opacity: 0.7; margin: 0 0 12px; letter-spacing: 0.02em; }
           h1 code { font: 12px ui-monospace, "SF Mono", Menlo, monospace; opacity: 0.85; }
-          #player { border-radius: 6px; overflow: hidden; }
+          #player { flex: 1 1 auto; min-height: 0; border-radius: 6px; overflow: hidden; }
         </style>
       </head>
       <body>
@@ -2912,7 +2912,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
           AsciinemaPlayer.create(
             { data: () => document.getElementById('cast').textContent.trim() },
             document.getElementById('player'),
-            { autoPlay: true, theme: 'monokai', fit: 'width' }
+            { autoPlay: true, theme: 'monokai', fit: 'both' }
           );
         </script>
       </body>
