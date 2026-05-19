@@ -531,13 +531,19 @@ public final class MetalRenderer: RendererBackend {
     var passSlots = PassSlots()
 
     // ---------- Pass 1: terminal content into the persistent target ----------
-    let didContent = encodeContentPass(
-      commands: commands,
-      damage: effectiveDamage,
-      target: target,
-      surfacePxH: surfaceHPx,
-      uniforms: &u,
-      cmdBuf: cmdBuf)
+    let didContent: Bool
+    if case .partial(let yRanges) = effectiveDamage, yRanges.isEmpty {
+      buildCursorInstanceList(commands: commands)
+      didContent = false
+    } else {
+      didContent = encodeContentPass(
+        commands: commands,
+        damage: effectiveDamage,
+        target: target,
+        surfacePxH: surfaceHPx,
+        uniforms: &u,
+        cmdBuf: cmdBuf)
+    }
     if targetNeedsFullRedraw && !didContent {
       scheduledFrame.finish()
       return false
@@ -869,6 +875,26 @@ public final class MetalRenderer: RendererBackend {
         grew = growGlyphAtlas(forSidebar: true) || grew
       }
       guard grew else { return }
+    }
+  }
+
+  private func buildCursorInstanceList(commands: [FrameCommand]) {
+    solidInstances.removeAll(keepingCapacity: true)
+    glyphInstances.removeAll(keepingCapacity: true)
+    sidebarGlyphInstances.removeAll(keepingCapacity: true)
+    cursorInstances.removeAll(keepingCapacity: true)
+
+    let scale = Float(layer.contentsScale)
+    for cmd in commands {
+      guard case .cursor(let rect, let color) = cmd else { continue }
+      guard rect.width > 0, rect.height > 0 else { continue }
+      cursorInstances.append(
+        SolidInstance(
+          origin: SIMD2<Float>(
+            Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+          size: SIMD2<Float>(
+            Float(rect.width) * scale, Float(rect.height) * scale),
+          color: rgbaToFloat4(color)))
     }
   }
 

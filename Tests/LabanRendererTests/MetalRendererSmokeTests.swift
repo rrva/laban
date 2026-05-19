@@ -153,6 +153,49 @@ final class MetalRendererSmokeTests: XCTestCase {
       "removing the cursor must change visible pixels even when damage is empty")
   }
 
+  func testEmptyDamageDoesNotRasterizeContentGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard
+      let renderer = MetalRenderer(
+        fontAtlas: fontAtlas,
+        scale: 1,
+        glyphAtlasTextureSize: 64)
+    else {
+      XCTFail("MetalRenderer.init returned nil")
+      return
+    }
+    renderer.resize(pixelWidth: 480, pixelHeight: 120, scale: 1)
+    renderer.waitForFrameCompletion = true
+
+    let bg: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 480, height: 120), color: 0x10_3C_48_FF, source: .terminal)
+    ]
+    XCTAssertTrue(renderer.render(bg, damage: .full))
+    XCTAssertEqual(renderer.terminalGlyphAtlasTextureSizeForTesting, 64)
+
+    let characters = (0x21...0x7E).compactMap { UnicodeScalar($0).map(Character.init) }
+    let cursorOnlyFrame =
+      bg + [
+        .glyphRun(
+          origin: CGPoint(x: 0, y: 0),
+          text: String(characters),
+          foreground: 0xAD_BC_BC_FF,
+          background: 0x10_3C_48_FF,
+          attributes: [],
+          source: .terminal),
+        .cursor(CGRect(x: 100, y: 50, width: 9, height: 19), color: 0xFF_00_00_FF),
+      ]
+
+    XCTAssertTrue(renderer.render(cursorOnlyFrame, damage: .partial(yRanges: [])))
+    XCTAssertEqual(
+      renderer.terminalGlyphAtlasTextureSizeForTesting,
+      64,
+      "empty damage must skip content glyph rasterization")
+  }
+
   func testMetalRendererInitializesAndRendersOneFrame() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       // CI without a Metal-capable device — skip rather than fail.
