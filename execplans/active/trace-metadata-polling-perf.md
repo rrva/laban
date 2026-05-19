@@ -24,6 +24,14 @@ shows fewer APFS and sandbox samples.
 - [x] (2026-05-19) Audited `os_log` / `Logger` call sites and found no Laban per-frame logger matching the sampled trace path.
 - [x] (2026-05-19) Added focused tests for the behavior affected by the optimizations.
 - [x] (2026-05-19) Ran targeted validation and the full package test suite.
+- [x] (2026-05-19) Reviewed the fresh profile trace at
+  `/Users/rrj/Downloads/Untitled4.trace` from the profile build.
+- [x] (2026-05-19) Increased the Claude session-log lookup cache from 2 seconds
+  to 5 seconds after the follow-up trace still showed the detector/log-locator
+  cluster.
+- [x] (2026-05-19) Recorded the new dominant render-path process-metadata work
+  in `execplans/active/terminal-surface-syncsessions-idle-perf.md` rather than
+  expanding this detector-focused plan.
 
 ## Decision Log
 
@@ -61,12 +69,12 @@ shows fewer APFS and sandbox samples.
   tab.
   Date/Author: 2026-05-19 / Codex
 
-- Decision: Keep the Claude session-log lookup cache interval at 2 seconds for
-  now.
-  Rationale: The interval intentionally matches the detector cadence, bounding
-  runtime staleness to the same window while coalescing duplicate directory
-  scans. A longer 5 second cache can be evaluated after a follow-up idle trace if
-  `ClaudeSessionLogLocator` remains visible.
+- Decision: Increase the Claude session-log lookup cache interval to 5 seconds.
+  Rationale: The first pass matched the cache interval to the 2 second detector
+  cadence to preserve responsiveness. The follow-up 20 second profile trace
+  still showed `AgentSessionDetector` / `ClaudeSessionLogLocator` samples, so the
+  cache now spans multiple idle detector ticks. Explicit `observeNow` paths still
+  clear the cache before persistence flushes.
   Date/Author: 2026-05-19 / Codex
 
 ## Surprises & Discoveries
@@ -87,6 +95,24 @@ shows fewer APFS and sandbox samples.
   "AgentInfo"` at `Tests/LabanDebugTests/LabanDebugSmokeTests.swift:240`; after
   clearing the lookup cache in forced observations, that smoke test and the full
   suite passed.
+
+- Observation: The fresh profile trace removed the previous APFS/sandbox cluster
+  as a headline cost, but exposed render-path process metadata as the next
+  dominant fixable source of libproc work.
+  Evidence: `xcrun xctrace export --input ~/Downloads/Untitled4.trace --xpath
+  '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]'` shows
+  `TerminalBitmapView.advanceFrame()` →
+  `TerminalSurfaceController.syncSessions(...)` →
+  `TabMetadataSynchronizer.syncSurfaceMetadata(...)` →
+  `Session.processMetadata()` → `laban_session_process_metadata` →
+  `proc_pidpath` / `__proc_info`. The source throttle is currently 0.25 seconds
+  per tab in `Sources/LabanCore/TabMetadataSynchronizer.swift`.
+
+- Observation: Instruments trace bundles can contain the launched app's
+  environment.
+  Evidence: The table-of-contents export for `/Users/rrj/Downloads/Untitled4.trace`
+  included environment variable names and values. Treat trace bundles as
+  sensitive artifacts when sharing them.
 
 ## Context and Orientation
 
@@ -203,6 +229,18 @@ Validation run on 2026-05-19:
 - `./scripts/build-app --profile` passed and produced `.build/laban/Laban.app`
   plus `.build/laban/Laban.app.dSYM`. The build emitted transient Swift module
   cache warnings about missing `.pcm` paths but exited successfully.
+- `xcrun xctrace export --input ~/Downloads/Untitled4.trace --toc` succeeded and
+  showed a 20.273 second CPU Counters run of `.build/laban/Laban.app`.
+- A local XML row scan of the exported `time-profile` table found the new
+  process-metadata path present in samples: `TabMetadataSynchronizer.syncSurfaceMetadata`
+  in 118 rows, `Session.processMetadata()` in 78 rows,
+  `laban_session_process_metadata` in 72 rows, and `proc_pidpath` in 24 rows.
+- `rtk swift test --filter AgentSessionDetectorTests` passed after increasing
+  the default Claude session-log lookup cache to 5 seconds: 15 tests, 0 failures.
+- `./scripts/build-app --profile` passed after the 5 second cache change and
+  refreshed `.build/laban/Laban.app` plus `.build/laban/Laban.app.dSYM`. The
+  same transient Swift module-cache `.pcm` warnings appeared and the command
+  exited successfully.
 
 ## Outcomes & Retrospective
 

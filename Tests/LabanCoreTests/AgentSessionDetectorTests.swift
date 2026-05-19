@@ -35,6 +35,10 @@ final class AgentSessionDetectorTests: XCTestCase {
     default:
       XCTFail("default detector cadence should keep idle proc_listpids scans coarse")
     }
+    XCTAssertEqual(
+      AgentSessionDetector.defaultSessionLogLookupCacheInterval,
+      5.0,
+      "default Claude log lookup cache should span multiple idle detector ticks")
   }
 
   func testFindAgentMatchesClaudeBasenameAndJSONL() {

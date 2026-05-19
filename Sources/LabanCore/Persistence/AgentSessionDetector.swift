@@ -54,10 +54,10 @@ public final class AgentSessionDetector {
   /// which walks kernel PID state, so keep idle polling intentionally coarse.
   public static let defaultTickInterval: DispatchTimeInterval = .seconds(2)
 
-  /// Match the detector cadence. This coalesces duplicate filesystem lookups
-  /// within a tick while keeping normal runtime staleness bounded to the same
-  /// roughly 2 second window; explicit observeNow paths clear the cache.
-  public static let defaultSessionLogLookupCacheInterval: TimeInterval = 2.0
+  /// Coalesce filesystem lookups across multiple idle detector ticks. Normal
+  /// runtime staleness is bounded to roughly 5 seconds; explicit observeNow
+  /// paths clear the cache before sampling.
+  public static let defaultSessionLogLookupCacheInterval: TimeInterval = 5.0
 
   public let tabId: String
   public let shellPid: pid_t
