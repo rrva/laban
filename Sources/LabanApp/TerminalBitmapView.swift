@@ -1672,12 +1672,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     syncSelectionStateToActiveTab()
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id),
-      let selection = currentTerminalSelection(sessionId: session.id),
       let snap = session.snapshot()
     else { return }
     defer { laban_snapshot_destroy(snap) }
 
-    let text = selection.selectedText(from: snap.pointee)
+    let viewportState = session.viewportState()
+    guard
+      let selection = currentTerminalSelection(
+        sessionId: session.id,
+        currentViewportOffset: viewportState?.viewportOffset ?? currentViewportOffset()
+      )
+    else { return }
+
+    let text: String
+    if let viewportState {
+      text = selection.selectedText(
+        from: session,
+        viewportSnapshot: snap.pointee,
+        viewportState: viewportState
+      )
+    } else {
+      text = selection.selectedText(from: snap.pointee)
+    }
     guard !text.isEmpty else { return }
 
     NSPasteboard.general.clearContents()
@@ -2612,11 +2628,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// stored row by the actual viewport-offset delta since capture so the
   /// selection rect follows the underlying content as the viewport scrolls.
   private func currentTerminalSelection(sessionId: Session.ID) -> TerminalSelection? {
+    currentTerminalSelection(
+      sessionId: sessionId,
+      currentViewportOffset: currentViewportOffset()
+    )
+  }
+
+  private func currentTerminalSelection(
+    sessionId: Session.ID,
+    currentViewportOffset: Int
+  ) -> TerminalSelection? {
     TerminalSelectionInput.terminalSelection(
       sessionId: sessionId,
       anchor: selectionAnchor,
       focus: selectionFocus,
-      currentViewportOffset: currentViewportOffset())
+      currentViewportOffset: currentViewportOffset)
   }
 
   // MARK: - Drag-edge auto-scroll

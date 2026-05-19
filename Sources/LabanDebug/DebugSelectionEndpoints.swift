@@ -39,7 +39,15 @@ extension HeadlessDebugRuntime {
         ) {
           rects.append(DebugFrameCommandSerializer.rectResponse(rect))
         }
-        text = selection.selectedText(from: snapshot.pointee)
+        if let viewportState = session.viewportState() {
+          text = selection.selectedText(
+            from: session,
+            viewportSnapshot: snapshot.pointee,
+            viewportState: viewportState
+          )
+        } else {
+          text = selection.selectedText(from: snapshot.pointee)
+        }
       }
 
       return jsonEncode(

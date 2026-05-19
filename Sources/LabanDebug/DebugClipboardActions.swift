@@ -33,7 +33,15 @@ struct DebugClipboardActions {
     let text: String
     if let snapshot = session.snapshot() {
       defer { laban_snapshot_destroy(snapshot) }
-      text = selection.selectedText(from: snapshot.pointee)
+      if let viewportState = session.viewportState() {
+        text = selection.selectedText(
+          from: session,
+          viewportSnapshot: snapshot.pointee,
+          viewportState: viewportState
+        )
+      } else {
+        text = selection.selectedText(from: snapshot.pointee)
+      }
     } else {
       text = ""
     }

@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import LabanCore
+import LabanTerminalCore
 import XCTest
 
 @testable import LabanDebug
@@ -990,6 +991,64 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertTrue(clipObj.keys.contains("lastPasteText"))
     XCTAssertTrue(clipObj.keys.contains("lastPasteUsedBracketedPaste"))
     XCTAssertTrue(clipObj.keys.contains("lastPasteIgnoredNonText"))
+  }
+
+  func testCopyActionIncludesRowsOutsideVisibleViewport() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-copy-scrollback"
+    )
+
+    let tab = try XCTUnwrap(runtime.model.activeTab)
+    let session = try XCTUnwrap(runtime.model.session(forTab: tab.id))
+    var bytes: [UInt8] = []
+    for i in 0..<40 {
+      bytes += Array("debug-copy-row-\(i)\r\n".utf8)
+    }
+    session.write(bytes)
+    session.poll()
+
+    let viewport = try XCTUnwrap(session.viewportState())
+    XCTAssertGreaterThan(viewport.viewportOffset, 2)
+    let snapshot = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snapshot) }
+
+    let startAbsoluteRow = viewport.viewportOffset - 2
+    let endAbsoluteRow = viewport.viewportOffset + 1
+    let selectedRows = endAbsoluteRow - startAbsoluteRow + 1
+    let expected = try XCTUnwrap(
+      session.scrollbackBlock(rowOffset: startAbsoluteRow, maxRows: selectedRows)
+    ).text
+
+    let setSelection = try JSONSerialization.data(
+      withJSONObject: [
+        "action": "setSelection",
+        "anchor": [
+          "row": startAbsoluteRow - viewport.viewportOffset,
+          "col": 0,
+        ],
+        "focus": [
+          "row": endAbsoluteRow - viewport.viewportOffset,
+          "col": Int(snapshot.pointee.cols) - 1,
+        ],
+      ])
+    XCTAssertEqual(runtime.applyAction(setSelection).status, 200)
+
+    let selection = runtime.selection()
+    let selectionObj = try JSONSerialization.jsonObject(with: selection.body) as! [String: Any]
+    XCTAssertEqual(selectionObj["text"] as? String, expected)
+
+    XCTAssertEqual(runtime.applyAction(#"{"action":"copy"}"#.data(using: .utf8)!).status, 200)
+    let clipboard = runtime.clipboard()
+    let clipboardObj = try JSONSerialization.jsonObject(with: clipboard.body) as! [String: Any]
+    XCTAssertEqual(clipboardObj["lastCopyText"] as? String, expected)
   }
 
   func testPasteActionRecordsDebugClipboardState() throws {
