@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import LabanRenderer
 import LabanTerminalCore
 import XCTest
@@ -6,6 +7,46 @@ import XCTest
 @testable import LabanCore
 
 final class TerminalSurfaceControllerTests: XCTestCase {
+  private final class RecordingSurfaceCaptureSink: TerminalSurfaceCaptureSink {
+    var events: [CaptureTimelineEvent] = []
+
+    func nextSequence() -> Int { events.count + 1 }
+
+    func record(_ event: CaptureTimelineEvent) {
+      events.append(event)
+    }
+
+    func recordBytes(
+      direction: CaptureByteDirection,
+      sessionId: Session.ID?,
+      frame: Int,
+      bytes: UnsafeRawBufferPointer,
+      preview: String?
+    ) -> CaptureByteRef? {
+      nil
+    }
+
+    func recordTerminalSnapshot(
+      frame: Int,
+      tabId: String?,
+      sessionId: String?,
+      snapshot: UnsafePointer<LabanSnapshot>
+    ) -> String? {
+      nil
+    }
+
+    func recordFrameCommands(
+      frame: Int,
+      commands: [FrameCommand],
+      surfaceWidth: Int,
+      surfaceHeight: Int,
+      scale: Double,
+      backend: String
+    ) -> CaptureFrameRef? {
+      nil
+    }
+  }
+
   func testBuildsSidebarAndTerminalFrameCommands() throws {
     var size = LabanTerminalSize()
     size.rows = 4
@@ -60,6 +101,84 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       return nil
     }.joined()
     XCTAssertTrue(terminalText.contains("hello"), "got terminal text \(terminalText)")
+  }
+
+  func testSyncSessionsReportsDirtySessionsAndMarksOnlyInactiveRendered() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let firstTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let secondTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(firstTab.id)
+
+    let firstSession = try XCTUnwrap(model.session(forTab: firstTab.id))
+    let secondSession = try XCTUnwrap(model.session(forTab: secondTab.id))
+    _ = firstSession.markRendered()
+    _ = secondSession.markRendered()
+
+    _ = firstSession.feedOutput(Array("active".utf8))
+    _ = secondSession.feedOutput(Array("inactive".utf8))
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let now = Date(timeIntervalSince1970: 42)
+    let result = controller.syncSessions(
+      captureFrame: 2,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false,
+      now: now)
+
+    XCTAssertEqual(result.activeTabId, firstTab.id)
+    XCTAssertEqual(result.activeSessionId, firstSession.id)
+    XCTAssertTrue(result.activeTerminalDirty)
+    XCTAssertEqual(result.dirtySessionIds, Set([firstSession.id, secondSession.id]))
+    XCTAssertTrue(result.modelChanged)
+    XCTAssertTrue(firstSession.renderDirty(), "active session remains dirty for rendering")
+    XCTAssertFalse(secondSession.renderDirty(), "inactive dirty session is marked rendered")
+
+    let updatedSecond = try XCTUnwrap(model.tabs.first { $0.id == secondTab.id })
+    XCTAssertEqual(updatedSecond.titleMetadata.lastOutputAt, now)
+    XCTAssertTrue(updatedSecond.titleMetadata.unseenOutput)
+    XCTAssertEqual(updatedSecond.titleMetadata.activityState, .unseenOutput)
+  }
+
+  func testSyncSessionsRecordsResolvedTerminalTitleChanges() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let sink = RecordingSurfaceCaptureSink()
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200,
+      captureSink: sink)
+
+    _ = session.feedOutput(Array("\u{1B}]0;vim\u{07}".utf8))
+    let result = controller.syncSessions(
+      captureFrame: 3,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+
+    XCTAssertTrue(result.modelChanged)
+    XCTAssertEqual(model.tabs.first?.title, "vim")
+    XCTAssertEqual(model.tabs.first?.titleMetadata.titleSource, .terminal)
+    XCTAssertEqual(sink.events.count, 1)
+    XCTAssertEqual(sink.events.first?.kind, CaptureEventKind.appState.rawValue)
+    XCTAssertEqual(sink.events.first?.tabId, tab.id)
+    XCTAssertEqual(sink.events.first?.sessionId, session.id)
+    XCTAssertEqual(sink.events.first?.title, "vim")
   }
 
   func testVisibleTextSupportsTrimmedAndFullGridModes() throws {

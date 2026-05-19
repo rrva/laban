@@ -358,13 +358,12 @@ public final class Session {
   /// its raw bytes were copied; returns (false, nil) when nothing changed.
   public func consumeTitle() -> (dirty: Bool, raw: String?) {
     guard !isClosed, let h = handle else { return (false, nil) }
-    var buf = [CChar](repeating: 0, count: 1024)
-    let r = buf.withUnsafeMutableBufferPointer { ptr in
-      laban_session_consume_title(h, ptr.baseAddress, ptr.count)
+    return withUnsafeTemporaryAllocation(of: CChar.self, capacity: 1024) { buf in
+      let r = laban_session_consume_title(h, buf.baseAddress, buf.count)
+      guard r > 0, let baseAddress = buf.baseAddress else { return (false, nil) }
+      let raw = String(cString: baseAddress)
+      return (true, raw.isEmpty ? nil : raw)
     }
-    guard r > 0 else { return (false, nil) }
-    let raw = String(cString: buf)
-    return (true, raw.isEmpty ? nil : raw)
   }
 
   // MARK: - Process metadata
@@ -373,36 +372,39 @@ public final class Session {
     guard !isClosed, let h = handle else { return nil }
     var childPid: Int32 = -1
     var foregroundPid: Int32 = -1
-    var processBuf = [CChar](repeating: 0, count: 256)
-    var commandBuf = [CChar](repeating: 0, count: 1024)
-    var cwdBuf = [CChar](repeating: 0, count: 1024)
 
-    let result = processBuf.withUnsafeMutableBufferPointer { processPtr in
-      commandBuf.withUnsafeMutableBufferPointer { commandPtr in
-        cwdBuf.withUnsafeMutableBufferPointer { cwdPtr in
-          laban_session_process_metadata(
+    return withUnsafeTemporaryAllocation(of: CChar.self, capacity: 256) { processBuf in
+      withUnsafeTemporaryAllocation(of: CChar.self, capacity: 1024) { commandBuf in
+        withUnsafeTemporaryAllocation(of: CChar.self, capacity: 1024) { cwdBuf in
+          let result = laban_session_process_metadata(
             h,
             &childPid,
             &foregroundPid,
-            processPtr.baseAddress,
-            processPtr.count,
-            commandPtr.baseAddress,
-            commandPtr.count,
-            cwdPtr.baseAddress,
-            cwdPtr.count
+            processBuf.baseAddress,
+            processBuf.count,
+            commandBuf.baseAddress,
+            commandBuf.count,
+            cwdBuf.baseAddress,
+            cwdBuf.count
+          )
+          guard
+            result == 0,
+            let processBaseAddress = processBuf.baseAddress,
+            let commandBaseAddress = commandBuf.baseAddress,
+            let cwdBaseAddress = cwdBuf.baseAddress
+          else {
+            return nil
+          }
+          return ProcessMetadata(
+            childPid: childPid > 0 ? Int(childPid) : nil,
+            foregroundPid: foregroundPid > 0 ? Int(foregroundPid) : nil,
+            foregroundProcess: TerminalTitle.sanitize(String(cString: processBaseAddress)),
+            foregroundCommand: TerminalTitle.sanitize(String(cString: commandBaseAddress)),
+            cwd: TerminalTitle.sanitize(String(cString: cwdBaseAddress))
           )
         }
       }
     }
-    guard result == 0 else { return nil }
-
-    return ProcessMetadata(
-      childPid: childPid > 0 ? Int(childPid) : nil,
-      foregroundPid: foregroundPid > 0 ? Int(foregroundPid) : nil,
-      foregroundProcess: TerminalTitle.sanitize(String(cString: processBuf)),
-      foregroundCommand: TerminalTitle.sanitize(String(cString: commandBuf)),
-      cwd: TerminalTitle.sanitize(String(cString: cwdBuf))
-    )
   }
 
   // MARK: - Viewport scrolling

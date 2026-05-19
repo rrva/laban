@@ -9,6 +9,12 @@ import Foundation
 final class TabMetadataSynchronizer {
   typealias BranchResolved = @Sendable (_ branch: String?, _ tabId: Tab.ID, _ cwd: String) -> Void
 
+  struct SurfaceMetadataSyncResult {
+    var modelChanged = false
+    var processMetadataChanged = false
+    var titleChangedTab: Tab?
+  }
+
   private struct ProcessIdentity: Equatable {
     var pid: Int?
     var process: String?
@@ -54,6 +60,13 @@ final class TabMetadataSynchronizer {
     let (dirty, raw) = session.consumeTitle()
     guard dirty else { return false }
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    return syncTitle(raw: raw, forTab: tabId, at: idx, tabs: &tabs)
+  }
+
+  @discardableResult
+  private func syncTitle(raw: String?, forTab tabId: Tab.ID, at idx: Int, tabs: inout [Tab])
+    -> Bool
+  {
     let before = tabs[idx].titleMetadata
     setTerminalTitle(TerminalTitle.sanitize(raw), forTab: tabId, at: idx, tabs: &tabs)
     Self.resolveTitle(in: &tabs, at: idx)
@@ -68,7 +81,7 @@ final class TabMetadataSynchronizer {
     tabs: inout [Tab],
     onBranchResolved: @escaping BranchResolved
   ) -> Bool {
-    guard tabs.contains(where: { $0.id == tabId }) else { return false }
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
     if let last = lastProcessMetadataSyncAtByTab[tabId],
       now.timeIntervalSince(last) < processMetadataSyncInterval
     {
@@ -80,6 +93,7 @@ final class TabMetadataSynchronizer {
     return applyProcessMetadata(
       metadata,
       forTab: tabId,
+      at: idx,
       now: now,
       tabs: &tabs,
       onBranchResolved: onBranchResolved
@@ -94,8 +108,27 @@ final class TabMetadataSynchronizer {
     tabs: inout [Tab],
     onBranchResolved: @escaping BranchResolved
   ) -> Bool {
-    _ = now
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    return applyProcessMetadata(
+      metadata,
+      forTab: tabId,
+      at: idx,
+      now: now,
+      tabs: &tabs,
+      onBranchResolved: onBranchResolved
+    )
+  }
+
+  @discardableResult
+  private func applyProcessMetadata(
+    _ metadata: Session.ProcessMetadata,
+    forTab tabId: Tab.ID,
+    at idx: Int,
+    now: Date,
+    tabs: inout [Tab],
+    onBranchResolved: @escaping BranchResolved
+  ) -> Bool {
+    _ = now
     let before = tabs[idx].titleMetadata
     let newIdentity = ProcessIdentity(metadata)
     let oldIdentity = processIdentityByTab[tabId]
@@ -142,6 +175,11 @@ final class TabMetadataSynchronizer {
   @discardableResult
   func syncExitState(forTab tabId: Tab.ID, from session: Session, tabs: inout [Tab]) -> Bool {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    return syncExitState(at: idx, from: session, tabs: &tabs)
+  }
+
+  @discardableResult
+  private func syncExitState(at idx: Int, from session: Session, tabs: inout [Tab]) -> Bool {
     guard tabs[idx].status == .running else { return false }
     let state = session.exitState()
     guard state != .running else { return false }
@@ -159,6 +197,11 @@ final class TabMetadataSynchronizer {
   @discardableResult
   func noteOutput(forTab tabId: Tab.ID, at date: Date, tabs: inout [Tab]) -> Bool {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    return noteOutput(forTab: tabId, at: idx, date: date, tabs: &tabs)
+  }
+
+  @discardableResult
+  func noteOutput(forTab tabId: Tab.ID, at idx: Int, date: Date, tabs: inout [Tab]) -> Bool {
     let before = tabs[idx].titleMetadata
     tabs[idx].titleMetadata.lastOutputAt = date
     tabs[idx].titleMetadata.lastActivityAt = date
@@ -173,6 +216,54 @@ final class TabMetadataSynchronizer {
     }
     Self.resolveTitle(in: &tabs, at: idx)
     return tabs[idx].titleMetadata != before
+  }
+
+  func syncSurfaceMetadata(
+    forTab tabId: Tab.ID,
+    at idx: Int,
+    from session: Session,
+    now: Date,
+    tabs: inout [Tab],
+    onBranchResolved: @escaping BranchResolved
+  ) -> SurfaceMetadataSyncResult {
+    guard tabs.indices.contains(idx), tabs[idx].id == tabId else {
+      return SurfaceMetadataSyncResult()
+    }
+
+    var result = SurfaceMetadataSyncResult()
+    if let last = lastProcessMetadataSyncAtByTab[tabId],
+      now.timeIntervalSince(last) < processMetadataSyncInterval
+    {
+      // Keep the existing throttle behavior: process metadata is skipped, but
+      // title and exit state still sync every frame.
+    } else {
+      lastProcessMetadataSyncAtByTab[tabId] = now
+      if let metadata = session.processMetadata(),
+        applyProcessMetadata(
+          metadata,
+          forTab: tabId,
+          at: idx,
+          now: now,
+          tabs: &tabs,
+          onBranchResolved: onBranchResolved
+        )
+      {
+        result.modelChanged = true
+        result.processMetadataChanged = true
+      }
+    }
+
+    let (titleDirty, rawTitle) = session.consumeTitle()
+    if titleDirty, syncTitle(raw: rawTitle, forTab: tabId, at: idx, tabs: &tabs) {
+      result.modelChanged = true
+      result.titleChangedTab = tabs[idx]
+    }
+
+    if syncExitState(at: idx, from: session, tabs: &tabs) {
+      result.modelChanged = true
+    }
+
+    return result
   }
 
   @discardableResult

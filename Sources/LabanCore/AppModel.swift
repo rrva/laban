@@ -2,6 +2,22 @@ import Foundation
 import LabanRenderer
 import LabanTerminalCore
 
+struct AppModelSurfaceSession {
+  var tab: Tab
+  var tabIndex: Int
+  var session: Session
+}
+
+struct AppModelSurfaceSessionSnapshot {
+  var activeTab: Tab?
+  var tabSessions: [AppModelSurfaceSession]
+}
+
+struct AppModelSurfaceMetadataSyncResult {
+  var modelChanged: Bool
+  var titleChangeEvent: CaptureTimelineEvent?
+}
+
 public final class AppModel {
   public static let maxTabs = 9
 
@@ -229,6 +245,26 @@ public final class AppModel {
   }
 
   public var activeTab: Tab? { withModelLock { _tabs.first(where: { $0.isActive }) } }
+
+  func surfaceSessionSnapshot() -> AppModelSurfaceSessionSnapshot {
+    withModelLock {
+      var activeTab: Tab?
+      var tabSessions: [AppModelSurfaceSession] = []
+      tabSessions.reserveCapacity(_tabs.count)
+      for (idx, tab) in _tabs.enumerated() {
+        if tab.isActive {
+          activeTab = tab
+        }
+        if let session = sessionRegistry.session(id: tab.sessionId) {
+          tabSessions.append(AppModelSurfaceSession(tab: tab, tabIndex: idx, session: session))
+        }
+      }
+      return AppModelSurfaceSessionSnapshot(
+        activeTab: activeTab,
+        tabSessions: tabSessions
+      )
+    }
+  }
 
   public func session(forTab tabId: Tab.ID) -> Session? {
     withModelLock {
@@ -961,6 +997,62 @@ public final class AppModel {
     }
   }
 
+  func syncSurfaceMetadata(
+    forTab tabId: Tab.ID,
+    tabIndex: Int,
+    from session: Session,
+    now: Date,
+    recordTitleChanges: Bool
+  ) -> AppModelSurfaceMetadataSyncResult {
+    var shouldNotifyWorkspaceMutation = false
+    let result = withModelLock {
+      guard
+        let idx = tabIndexUnlocked(forTab: tabId, sessionId: session.id, preferredIndex: tabIndex)
+      else {
+        return AppModelSurfaceMetadataSyncResult(modelChanged: false, titleChangeEvent: nil)
+      }
+
+      let priorCwd = _tabs[idx].titleMetadata.workspace.cwd
+      let sync = metadataSync.syncSurfaceMetadata(
+        forTab: tabId,
+        at: idx,
+        from: session,
+        now: now,
+        tabs: &_tabs,
+        onBranchResolved: { [weak self] branch, tabId, cwd in
+          self?.applyResolvedBranch(branch, forTab: tabId, cwd: cwd)
+        }
+      )
+
+      if sync.processMetadataChanged {
+        shouldNotifyWorkspaceMutation = priorCwd != _tabs[idx].titleMetadata.workspace.cwd
+      }
+
+      let event: CaptureTimelineEvent?
+      if recordTitleChanges, let updated = sync.titleChangedTab {
+        var titleEvent = CaptureTimelineEvent(
+          kind: .appState,
+          tabId: updated.id,
+          sessionId: updated.sessionId
+        )
+        titleEvent.title = updated.title
+        event = titleEvent
+      } else {
+        event = nil
+      }
+
+      return AppModelSurfaceMetadataSyncResult(
+        modelChanged: sync.modelChanged,
+        titleChangeEvent: event
+      )
+    }
+
+    if shouldNotifyWorkspaceMutation {
+      notifyWorkspaceMutation()
+    }
+    return result
+  }
+
   /// Force-sets a tab's status directly. Internal; exposed for unit tests only.
   func forceExitState(forTab tabId: Tab.ID, status: TabStatus) {
     withModelLock {
@@ -986,6 +1078,37 @@ public final class AppModel {
       }
       return metadataSync.noteOutput(forTab: tabId, at: date, tabs: &_tabs)
     }
+  }
+
+  func noteSurfaceOutput(
+    forTab tabId: Tab.ID,
+    tabIndex: Int,
+    sessionId: Session.ID,
+    at date: Date
+  ) -> Bool {
+    withModelLock {
+      guard
+        let idx = tabIndexUnlocked(forTab: tabId, sessionId: sessionId, preferredIndex: tabIndex)
+      else {
+        return false
+      }
+      findFullSearchCacheBySession.removeValue(forKey: sessionId)
+      return metadataSync.noteOutput(forTab: tabId, at: idx, date: date, tabs: &_tabs)
+    }
+  }
+
+  private func tabIndexUnlocked(
+    forTab tabId: Tab.ID,
+    sessionId: Session.ID,
+    preferredIndex: Int
+  ) -> Int? {
+    if _tabs.indices.contains(preferredIndex),
+      _tabs[preferredIndex].id == tabId,
+      _tabs[preferredIndex].sessionId == sessionId
+    {
+      return preferredIndex
+    }
+    return _tabs.firstIndex { $0.id == tabId && $0.sessionId == sessionId }
   }
 
   /// The display title for the AppKit window: active tab title, or "Laban" as fallback.

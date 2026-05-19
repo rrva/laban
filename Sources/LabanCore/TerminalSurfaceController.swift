@@ -250,44 +250,45 @@ public final class TerminalSurfaceController {
     recordTitleChanges: Bool = true,
     now: Date = Date()
   ) -> TerminalSurfaceSessionSyncResult {
-    let tabs = model.tabs
-    let active = model.activeTab
+    let snapshot = model.surfaceSessionSnapshot()
+    let active = snapshot.activeTab
     let activeTabId = active?.id
     let activeSessionId = active?.sessionId
     var activeTerminalDirty = false
     var modelChanged = false
     var dirtySessionIds = Set<Session.ID>()
 
-    for tab in tabs {
-      guard let session = model.session(forTab: tab.id) else { continue }
+    for item in snapshot.tabSessions {
+      let tab = item.tab
+      let session = item.session
       session.setCaptureFrame(captureFrame)
       if polling == .pollAllSessions {
         _ = session.poll()
       }
-      if model.syncProcessMetadata(forTab: tab.id, from: session, now: now) {
+      let metadataSync = model.syncSurfaceMetadata(
+        forTab: tab.id,
+        tabIndex: item.tabIndex,
+        from: session,
+        now: now,
+        recordTitleChanges: recordTitleChanges
+      )
+      if metadataSync.modelChanged {
         modelChanged = true
       }
-      if model.syncTitle(forTab: tab.id, from: session) {
-        modelChanged = true
-        if recordTitleChanges,
-          let updated = model.tabs.first(where: { $0.id == tab.id })
-        {
-          var event = CaptureTimelineEvent(
-            kind: .appState,
-            tabId: updated.id,
-            sessionId: updated.sessionId
-          )
-          event.title = updated.title
-          captureSink?.record(event)
-        }
-      }
-      if model.syncExitState(forTab: tab.id, from: session) {
-        modelChanged = true
+      if let event = metadataSync.titleChangeEvent {
+        captureSink?.record(event)
       }
 
       guard session.renderDirty() else { continue }
       dirtySessionIds.insert(session.id)
-      if noteOutputOnDirty, model.noteOutput(forTab: tab.id, at: now) {
+      if noteOutputOnDirty,
+        model.noteSurfaceOutput(
+          forTab: tab.id,
+          tabIndex: item.tabIndex,
+          sessionId: session.id,
+          at: now
+        )
+      {
         modelChanged = true
       }
       if tab.id == activeTabId {
