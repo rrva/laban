@@ -356,14 +356,17 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
     let harness = try makeHarness(baseDir: base, restoring: state)
     let visible = visibleText(harness.model, tabId: "agent-tab")
+    let visibleCommandText = visible.replacingOccurrences(of: "\n", with: "")
     XCTAssertTrue(
-      visible.contains("claude --resume \(sessionId) --model sonnet"),
-      "restored agent tab should receive the native resume command; visible=\(visible.debugDescription)")
+      visibleCommandText.contains("claude --resume \(sessionId) --model sonnet"),
+      "restored agent tab should receive the native resume command; visible=\(visible.debugDescription)"
+    )
     XCTAssertFalse(
-      visible.contains("--worktree"),
-      "native resume must not replay destructive original flags; visible=\(visible.debugDescription)")
+      visibleCommandText.contains("--worktree"),
+      "native resume must not replay destructive original flags; visible=\(visible.debugDescription)"
+    )
     XCTAssertFalse(
-      visible.contains("throwaway"),
+      visibleCommandText.contains("throwaway"),
       "native resume must not replay destructive flag values; visible=\(visible.debugDescription)")
 
     quit(harness)
@@ -600,7 +603,8 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
           "cycle \(cycle) silently replayed the command text; visible=\(visible.debugDescription)")
         XCTAssertFalse(
           visible.contains("%"),
-          "cycle \(cycle) rendered a stacked zsh PROMPT_SP marker; visible=\(visible.debugDescription)")
+          "cycle \(cycle) rendered a stacked zsh PROMPT_SP marker; visible=\(visible.debugDescription)"
+        )
 
         quit(restored)
         let _ = restored

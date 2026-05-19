@@ -97,7 +97,7 @@ public final class PersistenceStore {
       let stamp = ISO8601DateFormatter().string(from: Date())
         .replacingOccurrences(of: ":", with: "-")
       let bad = baseURL.appendingPathComponent(
-        "workspace.json.corrupt-\(stamp)", isDirectory: false)
+        "workspace.json.corrupt-\(stamp)-\(UUID().uuidString)", isDirectory: false)
       try? fm.moveItem(at: workspaceURL, to: bad)
       return nil
     }

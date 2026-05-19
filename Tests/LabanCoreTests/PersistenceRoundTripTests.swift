@@ -268,6 +268,22 @@ final class PersistenceRoundTripTests: XCTestCase {
     XCTAssertTrue(siblings.contains { $0.hasPrefix("workspace.json.corrupt-") })
   }
 
+  func testPersistenceStoreCorruptArchiveNamesDoNotCollide() throws {
+    let store = makeTempStore()
+    defer { try? FileManager.default.removeItem(at: store.baseURL) }
+    try store.ensureDirectories()
+
+    try Data("not valid json 1".utf8).write(to: store.workspaceURL)
+    XCTAssertNil(store.load())
+
+    try Data("not valid json 2".utf8).write(to: store.workspaceURL)
+    XCTAssertNil(store.load())
+
+    let siblings = try FileManager.default.contentsOfDirectory(atPath: store.baseURL.path)
+    let corruptArchives = siblings.filter { $0.hasPrefix("workspace.json.corrupt-") }
+    XCTAssertEqual(corruptArchives.count, 2)
+  }
+
   func testPersistenceStoreArchiveCurrentMovesToPrevious() throws {
     let store = makeTempStore()
     defer { try? FileManager.default.removeItem(at: store.baseURL) }

@@ -20,6 +20,7 @@ public final class TranscriptHost {
   private var writersByTab: [String: TranscriptWriter] = [:]
   private var ringsByTab: [String: RecentByteRing] = [:]
   private var bridges: [String: Unmanaged<TranscriptWriterBridge>] = [:]
+  private var sessionsByTab: [String: WeakSessionRef] = [:]
 
   /// - Parameter isEnabled: gate consulted by every `TranscriptWriter`
   ///   this host hands out. When false, PTY bytes still flow into the
@@ -81,16 +82,22 @@ public final class TranscriptHost {
       return r
     }()
     let bridge = TranscriptWriterBridge(writer: writer, ring: ring)
+    let retainedBridge = Unmanaged.passRetained(bridge)
+    let userdata = UnsafeMutableRawPointer(Unmanaged.passUnretained(bridge).toOpaque())
     lock.lock()
     let priorBridge = bridges[tabId]
     let priorWriter = writersByTab[tabId]
+    let priorSession = sessionsByTab[tabId]?.session
     writersByTab[tabId] = writer
-    bridges[tabId] = Unmanaged.passRetained(bridge)
+    bridges[tabId] = retainedBridge
+    sessionsByTab[tabId] = WeakSessionRef(session)
     lock.unlock()
+    if let priorSession, priorSession !== session {
+      _ = priorSession.setPersistenceCallback(nil, userdata: nil)
+    }
+    _ = session.setPersistenceCallback(transcriptBridgeCallback, userdata: userdata)
     priorWriter?.flushSync()
     priorBridge?.release()
-    let userdata = UnsafeMutableRawPointer(Unmanaged.passUnretained(bridge).toOpaque())
-    _ = session.setPersistenceCallback(transcriptBridgeCallback, userdata: userdata)
   }
 
   /// Detach and flush the writer for `tabId`. Called from
@@ -102,10 +109,11 @@ public final class TranscriptHost {
     lock.lock()
     let writer = writersByTab.removeValue(forKey: tabId)
     let bridge = bridges.removeValue(forKey: tabId)
+    let registeredSession = sessionsByTab.removeValue(forKey: tabId)?.session
     ringsByTab.removeValue(forKey: tabId)
     lock.unlock()
-    if let session {
-      _ = session.setPersistenceCallback(nil, userdata: nil)
+    if let callbackSession = session ?? registeredSession {
+      _ = callbackSession.setPersistenceCallback(nil, userdata: nil)
     }
     writer?.flushSync()
     bridge?.release()
@@ -154,6 +162,14 @@ final class TranscriptWriterBridge {
   init(writer: TranscriptWriter, ring: RecentByteRing) {
     self.writer = writer
     self.ring = ring
+  }
+}
+
+private final class WeakSessionRef {
+  weak var session: Session?
+
+  init(_ session: Session) {
+    self.session = session
   }
 }
 

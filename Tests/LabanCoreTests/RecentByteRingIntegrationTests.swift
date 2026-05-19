@@ -45,14 +45,16 @@ final class RecentByteRingIntegrationTests: XCTestCase {
       rows: 24,
       title: "e2e",
       startedAtUnixSeconds: 1_716_000_000)
-    let lines = String(data: cast, encoding: .utf8)?
+    let lines =
+      String(data: cast, encoding: .utf8)?
       .split(separator: "\n", omittingEmptySubsequences: true)
       .map(String.init) ?? []
     XCTAssertEqual(lines.count, 3, "header + 2 events")
 
     // Parse the second event and verify its delta reflects the sleep.
-    let secondEvent = try JSONSerialization.jsonObject(
-      with: Data(lines[2].utf8)) as? [Any]
+    let secondEvent =
+      try JSONSerialization.jsonObject(
+        with: Data(lines[2].utf8)) as? [Any]
     let secondDelta = (secondEvent?[0] as? NSNumber)?.doubleValue ?? 0
     XCTAssertGreaterThan(
       secondDelta, 0.01,
@@ -63,7 +65,8 @@ final class RecentByteRingIntegrationTests: XCTestCase {
   /// and ask the asciinema binary to parse it. Skipped automatically
   /// when asciinema is not installed on the build host.
   func testEmittedCastIsAcceptedByAsciinemaCat() throws {
-    let asciinemaPath = ProcessInfo.processInfo.environment["ASCIINEMA_BIN"]
+    let asciinemaPath =
+      ProcessInfo.processInfo.environment["ASCIINEMA_BIN"]
       ?? "/opt/homebrew/bin/asciinema"
     guard FileManager.default.isExecutableFile(atPath: asciinemaPath) else {
       throw XCTSkip("asciinema binary not found at \(asciinemaPath)")
@@ -116,18 +119,21 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     try task.run()
     task.waitUntilExit()
 
-    let stdoutText = String(
-      data: stdout.fileHandleForReading.readDataToEndOfFile(),
-      encoding: .utf8) ?? ""
-    let stderrText = String(
-      data: stderr.fileHandleForReading.readDataToEndOfFile(),
-      encoding: .utf8) ?? ""
+    let stdoutText =
+      String(
+        data: stdout.fileHandleForReading.readDataToEndOfFile(),
+        encoding: .utf8) ?? ""
+    let stderrText =
+      String(
+        data: stderr.fileHandleForReading.readDataToEndOfFile(),
+        encoding: .utf8) ?? ""
     XCTAssertEqual(
       task.terminationStatus, 0,
       "asciinema cat rejected the cast: stderr=\(stderrText)")
     XCTAssertTrue(
       stdoutText.contains("é & 🎉"),
-      "asciinema cat output should contain the recorded multi-byte glyphs; got=\(stdoutText.debugDescription)")
+      "asciinema cat output should contain the recorded multi-byte glyphs; got=\(stdoutText.debugDescription)"
+    )
   }
 
   func testRingSurvivesWriterDetach() throws {
@@ -169,5 +175,62 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     XCTAssertEqual(snapshot.count, 2)
     XCTAssertEqual(snapshot[0].bytes, Array("first ".utf8))
     XCTAssertEqual(snapshot[1].bytes, Array("second".utf8))
+  }
+
+  func testReattachClearsOldSessionCallbackBeforeReleasingBridge() throws {
+    let baseDir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-cast-stale-callback-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: baseDir) }
+
+    let host = TranscriptHost(
+      store: PersistenceStore(baseURL: baseDir),
+      isEnabled: { true })
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let oldSession = try Session.fixture(size: size)
+    let newSession = try Session.fixture(size: size)
+    let tabId = "tab-cast-stale-callback"
+
+    host.attachTranscriptWriter(to: oldSession, tabId: tabId)
+    XCTAssertEqual(oldSession.feedOutput(Array("before ".utf8)), 0)
+
+    host.attachTranscriptWriter(to: newSession, tabId: tabId)
+    XCTAssertEqual(oldSession.feedOutput(Array("stale ".utf8)), 0)
+    XCTAssertEqual(newSession.feedOutput(Array("after".utf8)), 0)
+
+    let ring = try XCTUnwrap(host.recentByteRing(forTabId: tabId))
+    let snapshot = ring.snapshot(window: 5)
+    XCTAssertEqual(snapshot.map(\.bytes), [Array("before ".utf8), Array("after".utf8)])
+  }
+
+  func testDetachWithNilSessionClearsRegisteredSessionCallback() throws {
+    let baseDir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-cast-nil-detach-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: baseDir) }
+
+    let host = TranscriptHost(
+      store: PersistenceStore(baseURL: baseDir),
+      isEnabled: { true })
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    let tabId = "tab-cast-nil-detach"
+
+    host.attachTranscriptWriter(to: session, tabId: tabId)
+    XCTAssertEqual(session.feedOutput(Array("before".utf8)), 0)
+    let writer = try XCTUnwrap(host.writer(forTabId: tabId))
+    let ingestedBeforeDetach = writer.ingestedBytes
+
+    host.detachTranscriptWriter(forTabId: tabId, in: nil)
+    XCTAssertEqual(session.feedOutput(Array("stale".utf8)), 0)
+
+    XCTAssertNil(host.recentByteRing(forTabId: tabId))
+    XCTAssertEqual(writer.ingestedBytes, ingestedBeforeDetach)
   }
 }
