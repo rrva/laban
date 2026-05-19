@@ -16,6 +16,24 @@ build_number=${LABAN_BUILD_NUMBER:-0}
 update_manifest_url=${LABAN_UPDATE_MANIFEST_URL:-}
 build_config=${LABAN_BUILD_CONFIG:-debug}
 
+# --profile produces an Instruments-friendly .app: release config with
+# unstripped N_OSO debug-map entries kept intact and a .dSYM emitted next
+# to the bundle. The output retains absolute /Users/... paths in the
+# binary, so it must not be distributed.
+profile_build=0
+for arg in "$@"; do
+  case "$arg" in
+    --profile)
+      profile_build=1
+      build_config=release
+      ;;
+    *)
+      printf 'build-app: unknown argument: %s\n' "$arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
 xml_escape() {
   printf '%s' "$1" |
     sed \
@@ -103,15 +121,25 @@ ${update_manifest_plist}
 </plist>
 EOF
 
-# Strip DWARF debug sections and STAB symbols (N_OSO entries that point
-# at the per-object .o files under /Users/<name>/.../.build/...). Function
-# symbols stay so crash reports still symbolicate.
-strip -S "${bundle_dir}/MacOS/LabanApp"
+if [ "$profile_build" = 1 ]; then
+  # Emit a dSYM from the per-object .o files referenced by N_OSO entries
+  # so Instruments can resolve line numbers and inline frames. The dSYM
+  # lives next to the .app; Spotlight indexes it and Instruments finds it
+  # by UUID. Must run before any post-link byte mutation.
+  dsymutil -o "${app_bundle}.dSYM" "${bundle_dir}/MacOS/LabanApp"
+else
+  # Strip DWARF debug sections and STAB symbols (N_OSO entries that point
+  # at the per-object .o files under /Users/<name>/.../.build/...). Function
+  # symbols stay so crash reports still symbolicate.
+  strip -S "${bundle_dir}/MacOS/LabanApp"
+fi
 
 # SwiftPM's auto-generated `Bundle.module` accessors and native dependencies can
 # compile absolute build-host paths as string literals. Prefix-map flags do not
 # rewrite string literals, so replace forbidden local path bytes in-place with
-# NULs before signing.
+# NULs before signing. Skipped for --profile builds because the same scrub
+# zeroes N_OSO debug-map paths that Instruments needs.
+if [ "$profile_build" = 0 ]; then
 python3 - "${bundle_dir}/MacOS/LabanApp" <<'PY'
 import re, sys
 path = sys.argv[1]
@@ -143,6 +171,7 @@ verify_clean() {
   fi
 }
 verify_clean
+fi
 
 verify_signature() {
   if ! codesign --verify --verbose=4 "$app_bundle" >/dev/null 2>&1; then
@@ -167,4 +196,9 @@ else
   printf 'build-app: codesigned ad-hoc\n'
 fi
 
-printf 'build-app: %s\n' "${bundle_dir}/MacOS/LabanApp"
+if [ "$profile_build" = 1 ]; then
+  printf 'build-app: %s (profile build, do not distribute)\n' "${bundle_dir}/MacOS/LabanApp"
+  printf 'build-app: dSYM at %s.dSYM\n' "$app_bundle"
+else
+  printf 'build-app: %s\n' "${bundle_dir}/MacOS/LabanApp"
+fi
