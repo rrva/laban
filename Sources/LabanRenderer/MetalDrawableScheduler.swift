@@ -25,11 +25,7 @@ final class MetalDrawableScheduler {
     guard frameInFlight.wait(timeout: timeout) == .success else {
       return nil
     }
-    guard let drawable = acquireDrawableWithinBudget() else {
-      frameInFlight.signal()
-      return nil
-    }
-    return Frame(scheduler: self, drawable: drawable)
+    return Frame(scheduler: self)
   }
 
   private func finishFrame() {
@@ -68,15 +64,16 @@ final class MetalDrawableScheduler {
   }
 
   final class Frame: @unchecked Sendable {
-    let drawable: any CAMetalDrawable
-
     private let scheduler: MetalDrawableScheduler
     private let lock = NSLock()
     private var finished = false
 
-    fileprivate init(scheduler: MetalDrawableScheduler, drawable: any CAMetalDrawable) {
+    fileprivate init(scheduler: MetalDrawableScheduler) {
       self.scheduler = scheduler
-      self.drawable = drawable
+    }
+
+    func acquireDrawable() -> (any CAMetalDrawable)? {
+      scheduler.acquireDrawableWithinBudget()
     }
 
     func finish() {

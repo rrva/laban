@@ -475,14 +475,13 @@ public final class MetalRenderer: RendererBackend {
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     let cpuStart = ContinuousClock.now
 
-    // Drop this frame if the previous GPU frame has not retired or a drawable
-    // cannot be acquired inside the scheduler's frame budget.
+    // Drop this frame if the previous GPU frame has not retired. The drawable
+    // is acquired later, after offscreen work is encoded, so Core Animation's
+    // limited drawable pool is held for the shortest useful interval.
     let needsFullFrame = targetNeedsFullRedraw || damage == .full
     guard let scheduledFrame = drawableScheduler.beginFrame(needsFullFrame: needsFullFrame) else {
       return false
     }
-    let drawable = scheduledFrame.drawable
-    let drawableTex = drawable.texture
     guard let cmdBuf = queue.makeCommandBuffer() else {
       scheduledFrame.finish()
       return false
@@ -513,14 +512,14 @@ public final class MetalRenderer: RendererBackend {
       scheduledFrame.finish()
     }
 
-    ensureTargetTexture(matching: drawableTex)
+    let surfaceWPx = max(1, Int(layer.drawableSize.width.rounded()))
+    let surfaceHPx = max(1, Int(layer.drawableSize.height.rounded()))
+    ensureTargetTexture(width: surfaceWPx, height: surfaceHPx)
     guard let target = targetTexture else {
       scheduledFrame.finish()
       return false
     }
 
-    let surfaceWPx = drawableTex.width
-    let surfaceHPx = drawableTex.height
     var u = Uniforms(
       surfaceSizePixels: SIMD2<Float>(Float(surfaceWPx), Float(surfaceHPx)),
       scale: Float(layer.contentsScale))
@@ -544,6 +543,21 @@ public final class MetalRenderer: RendererBackend {
       return false
     }
     passSlots.contentActive = didContent
+
+    guard let drawable = scheduledFrame.acquireDrawable() else {
+      scheduledFrame.finish()
+      return false
+    }
+    let drawableTex = drawable.texture
+    guard drawableTex.width == surfaceWPx, drawableTex.height == surfaceHPx else {
+      // The layer resized between target allocation and drawable acquisition.
+      // Drop the uncommitted command buffer and force the retry to repaint a
+      // correctly-sized target.
+      targetTexture = nil
+      targetNeedsFullRedraw = true
+      scheduledFrame.finish()
+      return false
+    }
 
     // ---------- Pass 2: blit persistent target → drawable ----------
     let presentBlitDesc = MTLBlitPassDescriptor()
@@ -623,19 +637,20 @@ public final class MetalRenderer: RendererBackend {
   private var lastFramePassSlots = PassSlots()
 
   /// Allocate (or reallocate) the persistent render target to match the
-  /// drawable. Same pixel format so the end-of-frame blit is a GPU memcpy.
-  private func ensureTargetTexture(matching drawableTex: MTLTexture) {
+  /// layer's drawable size. Same pixel format so the end-of-frame blit is a
+  /// GPU memcpy once the actual drawable is acquired.
+  private func ensureTargetTexture(width: Int, height: Int) {
     if let t = targetTexture,
-      t.width == drawableTex.width,
-      t.height == drawableTex.height,
+      t.width == width,
+      t.height == height,
       t.pixelFormat == layer.pixelFormat
     {
       return
     }
     let desc = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: layer.pixelFormat,
-      width: drawableTex.width,
-      height: drawableTex.height,
+      width: width,
+      height: height,
       mipmapped: false)
     desc.usage = [.renderTarget, .shaderRead]
     desc.storageMode = .private
