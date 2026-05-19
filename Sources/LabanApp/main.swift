@@ -1,5 +1,25 @@
 import AppKit
 
+func usage() -> String {
+  """
+  Usage:
+    LabanApp [options]
+
+  Options:
+    --no-persistence-restore   Start without loading workspace.json while
+                               leaving future persistence writes enabled.
+    --no-persistence           Disable workspace, transcript, and agent
+                               persistence for this process.
+    --smoke                    Print a startup smoke line and exit.
+    --help, -h                 Show this help.
+  """
+}
+
+if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-h") {
+  print(usage())
+  exit(0)
+}
+
 let smokeMode =
   ProcessInfo.processInfo.environment["LABAN_SMOKE"] == "1"
   || CommandLine.arguments.contains("--smoke")

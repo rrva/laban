@@ -108,8 +108,11 @@ extension HeadlessDebugRuntime {
 
   static func applyRestoreLaunchPlans(for state: WorkspaceState, model: AppModel) {
     guard let window = state.windows.first else { return }
+    let activityChecker = ProcessTreeRestoreSessionActivityChecker()
     for tabState in window.tabs {
-      let instruction = RestoreLaunchPlanner.instruction(for: tabState)
+      let instruction = RestoreLaunchPlanner.instruction(
+        for: tabState,
+        activityChecker: activityChecker)
       switch instruction {
       case .noPrefill:
         continue

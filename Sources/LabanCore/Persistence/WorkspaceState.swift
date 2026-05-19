@@ -115,6 +115,12 @@ public struct TabState: Codable, Equatable {
   public var cwdFallbackApplied: Bool?
   public var processStatus: PersistedProcessStatus?
   public var exitCode: Int?
+  /// Shell process id observed when the workspace snapshot was written.
+  /// Used only as a best-effort restore-time guard: if another Laban
+  /// instance still owns this shell and the same agent session is live
+  /// below it, the new instance must not auto-resume a duplicate
+  /// Claude/Codex process.
+  public var shellPid: Int?
   public var agent: AgentInfo?
 
   public init(
@@ -127,6 +133,7 @@ public struct TabState: Codable, Equatable {
     cwdFallbackApplied: Bool? = nil,
     processStatus: PersistedProcessStatus? = nil,
     exitCode: Int? = nil,
+    shellPid: Int? = nil,
     agent: AgentInfo? = nil
   ) {
     self.id = id
@@ -138,6 +145,7 @@ public struct TabState: Codable, Equatable {
     self.cwdFallbackApplied = cwdFallbackApplied
     self.processStatus = processStatus
     self.exitCode = exitCode
+    self.shellPid = shellPid
     self.agent = agent
   }
 }

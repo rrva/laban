@@ -120,6 +120,7 @@ public final class HeadlessDebugRuntime {
     captureName: String? = nil,
     captureScreenshots: CaptureScreenshotPolicy = .marked,
     persistenceBaseURL: URL? = nil,
+    restorePersistedState: Bool = true,
     restoreOnLaunchEnabled: @escaping () -> Bool = { true }
   ) throws {
     self.runId = runId
@@ -252,7 +253,7 @@ public final class HeadlessDebugRuntime {
       // `AppModel.replaceTabs(from:)`. The headless runtime now
       // does the same so launch-time bugs (corrupt-rename, restore
       // failures, missing transcripts) reproduce here.
-      if let restored = coordinator.load() {
+      if restorePersistedState, let restored = coordinator.load() {
         model.replaceTabs(from: restored)
         Self.applyRestoreLaunchPlans(for: restored, model: model)
       }

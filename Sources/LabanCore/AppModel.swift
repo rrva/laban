@@ -501,7 +501,8 @@ public final class AppModel {
       closeAllSessionsUnlocked()
     }
     for (index, persistedTab) in window.tabs.enumerated() {
-      let isActive = (window.selectedTabId == persistedTab.id)
+      let isActive =
+        (window.selectedTabId == persistedTab.id)
         || (window.selectedTabId == nil && index == 0)
       do {
         _ = try createRestoredTabSuppressingNotification(
@@ -658,6 +659,7 @@ public final class AppModel {
           }
         }()
         let altBuffer = session?.altBufferActive ?? false
+        let shellPid = session?.processMetadata()?.childPid
         let transcriptPath: String? = {
           if transcriptDelegate == nil { return nil }
           return "transcripts/\(tab.id).bin"
@@ -672,6 +674,7 @@ public final class AppModel {
           cwdFallbackApplied: cwdFallbackAppliedByTab[tab.id],
           processStatus: processStatus,
           exitCode: exitCode,
+          shellPid: shellPid,
           agent: agentByTab[tab.id]
         )
       }

@@ -26,6 +26,8 @@ struct AgentArgs {
   /// real app — so persistence bugs can be reproduced and observed
   /// inside the debug harness against the production classes.
   var persistenceDir: String? = nil
+  var noPersistenceRestore = false
+  var noPersistence = false
 }
 
 func parseArgs() -> AgentArgs {
@@ -36,6 +38,8 @@ func parseArgs() -> AgentArgs {
     case "--headless": a.headless = true
     case "--deterministic": a.deterministic = true
     case "--debug-server": a.debugServerAddress = "127.0.0.1:0"
+    case PersistenceRestoreLaunchFlag.argument: a.noPersistenceRestore = true
+    case PersistenceRestoreLaunchFlag.noPersistenceArgument: a.noPersistence = true
     default:
       if arg.hasPrefix("--fixture=") {
         a.fixture = String(arg.dropFirst("--fixture=".count))
@@ -87,6 +91,10 @@ func usage() -> String {
                                     to reproduce M0/M1/M2 bugs against the same
                                     PersistenceCoordinator / TranscriptHost /
                                     AgentObserverHost the real app uses.
+    --no-persistence-restore        Start without loading workspace.json while
+                                    leaving future persistence writes enabled.
+    --no-persistence                Do not wire workspace, transcript, or agent
+                                    persistence for this process.
 
   Discoverability:
     The debug server prints one readiness JSON line:
@@ -233,7 +241,8 @@ if let debugAddr = args.debugServerAddress {
       sessionMode: fixtureURL == nil ? .realShell : .fixture,
       captureName: args.capture,
       captureScreenshots: args.captureScreenshots,
-      persistenceBaseURL: args.persistenceDir.map(resolveURL)
+      persistenceBaseURL: args.noPersistence ? nil : args.persistenceDir.map(resolveURL),
+      restorePersistedState: !(args.noPersistenceRestore || args.noPersistence)
     )
   } catch {
     fail("failed to initialise debug runtime: \(error)")

@@ -75,7 +75,8 @@ final class PersistenceRoundTripTests: XCTestCase {
               cwd: "/Users/x/Documents",
               launchCommand: "/bin/zsh -l",
               lastActiveAt: now,
-              processStatus: .running
+              processStatus: .running,
+              shellPid: 4321
             ),
           ]
         )
@@ -93,6 +94,49 @@ final class PersistenceRoundTripTests: XCTestCase {
     XCTAssertEqual(decoded, state)
     XCTAssertEqual(decoded.schemaVersion, 1)
     XCTAssertEqual(decoded.windows.first?.tabs.count, 2)
+    XCTAssertEqual(decoded.windows.first?.tabs.last?.shellPid, 4321)
+  }
+
+  func testWorkspaceStateDecodesLegacyTabWithoutShellPid() throws {
+    let json = """
+      {
+        "schemaVersion": 1,
+        "windows": [
+          {
+            "id": "win-A",
+            "tabs": [
+              {
+                "id": "tab-1",
+                "cwd": "/Users/x",
+                "launchCommand": "/bin/zsh -l",
+                "lastActiveAt": "2024-05-06T12:00:00Z"
+              }
+            ]
+          }
+        ]
+      }
+      """
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(WorkspaceState.self, from: Data(json.utf8))
+
+    XCTAssertNil(decoded.windows.first?.tabs.first?.shellPid)
+  }
+
+  func testNoPersistenceRestoreFlagParsing() {
+    XCTAssertTrue(
+      PersistenceRestoreLaunchFlag.isPresent(
+        in: ["LabanApp", PersistenceRestoreLaunchFlag.argument]))
+    XCTAssertTrue(
+      PersistenceRestoreLaunchFlag.disablesPersistenceRestore(
+        in: ["LabanApp", PersistenceRestoreLaunchFlag.noPersistenceArgument]))
+    XCTAssertTrue(
+      PersistenceRestoreLaunchFlag.disablesPersistenceSync(
+        in: ["LabanApp", PersistenceRestoreLaunchFlag.noPersistenceArgument]))
+    XCTAssertFalse(
+      PersistenceRestoreLaunchFlag.disablesPersistenceSync(
+        in: ["LabanApp", PersistenceRestoreLaunchFlag.noRestoreArgument]))
+    XCTAssertFalse(PersistenceRestoreLaunchFlag.isPresent(in: ["LabanApp", "--smoke"]))
   }
 
   func testWorkspaceStateRoundTripPreservesAgentInfo() throws {
@@ -307,7 +351,8 @@ final class PersistenceRoundTripTests: XCTestCase {
     // Round-trip the persisted ids: a second snapshot must report the
     // same ids and the same selection.
     let snapshot = model.snapshotForPersistence(windowId: "win-test")
-    XCTAssertEqual(snapshot.windows[0].tabs.map { $0.id }, ["restored-1", "restored-2", "restored-3"])
+    XCTAssertEqual(
+      snapshot.windows[0].tabs.map { $0.id }, ["restored-1", "restored-2", "restored-3"])
     XCTAssertEqual(snapshot.windows[0].selectedTabId, "restored-2")
   }
 

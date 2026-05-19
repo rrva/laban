@@ -37,16 +37,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     //      fresh. On-disk state is left in place. (PersistenceCoordinator.load
     //      checks the same toggle, so this branch is for the ⇧ short-circuit
     //      and to keep the launch flow explicit.)
-    //   2. Otherwise, if Shift is held at launch, archive any prior
+    //   2. Otherwise, if --no-persistence-restore or
+    //      --no-persistence is present, start fresh without loading
+    //      workspace.json. The on-disk state is not archived; this is
+    //      a launch-time escape hatch.
+    //   3. Otherwise, if Shift is held at launch, archive any prior
     //      `workspace.json` to `workspace.json.previous` and start fresh.
     //      This is the one-shot escape hatch documented in the ExecPlan.
-    //   3. Otherwise, load via `PersistenceCoordinator.load()` which
+    //   4. Otherwise, load via `PersistenceCoordinator.load()` which
     //      enforces the same toggle gate as save and routes through
     //      `PersistenceStore`. A corrupt file is moved aside; nil means
     //      "nothing to restore" and we start fresh.
     let bootstrapCoordinator = PersistenceCoordinator()
+    let persistenceSyncEnabled = !PersistenceRestoreLaunchFlag.disablesPersistenceSync()
     let restoredState: WorkspaceState?
     if !RestoreOnLaunchSettings.isEnabled {
+      restoredState = nil
+    } else if PersistenceRestoreLaunchFlag.disablesPersistenceRestore() {
       restoredState = nil
     } else if NSEvent.modifierFlags.contains(.shift) {
       try? bootstrapCoordinator.store.archiveCurrent()
@@ -56,7 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     do {
-      windowController = try MainWindowController.makeAndShow(restoring: restoredState)
+      windowController = try MainWindowController.makeAndShow(
+        restoring: restoredState,
+        persistenceSyncEnabled: persistenceSyncEnabled)
     } catch {
       let alert = NSAlert()
       alert.messageText = "Laban failed to start"

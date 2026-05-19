@@ -16,7 +16,10 @@ final class MainWindowController: NSWindowController {
   /// stop when AppDelegate's local refs go out of scope.
   private(set) var agentObserverHost: AgentObserverHost?
 
-  static func makeAndShow(restoring restoredState: WorkspaceState? = nil) throws
+  static func makeAndShow(
+    restoring restoredState: WorkspaceState? = nil,
+    persistenceSyncEnabled: Bool = true
+  ) throws
     -> MainWindowController
   {
     let fontAtlas = FontAtlas(pointSize: 14)
@@ -43,18 +46,23 @@ final class MainWindowController: NSWindowController {
       initialSize: size,
       sessionFactory: Session.realShell
     )
+    let isPersistenceEnabled = {
+      persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
+    }
 
-    // The transcript host owns one TranscriptWriter per tab. AppModel
-    // calls it when tabs are created/closed so the per-tab `.bin`
-    // file is opened, fed PTY bytes, and torn down at the right
-    // moments. Hook this up BEFORE any tab work so the default tab
-    // created by AppModel.init gets a writer too. The host's
-    // `isEnabled` gate is checked on every disk drain, so flipping
-    // the "Restore on Launch" toggle off stops `.bin` writes
-    // immediately even though writers stay attached.
-    let transcriptHost = TranscriptHost(
-      isEnabled: { RestoreOnLaunchSettings.isEnabled })
-    model.transcriptDelegate = transcriptHost
+    // The transcript host owns one TranscriptWriter per tab. When
+    // persistence sync is enabled, hook this up BEFORE any tab work
+    // so the default tab created by AppModel.init gets a writer too.
+    // With --no-persistence we leave the delegate nil, so no
+    // workspace/transcript/agent persistence layer is wired.
+    let transcriptHost: TranscriptHost?
+    if persistenceSyncEnabled {
+      let host = TranscriptHost(isEnabled: isPersistenceEnabled)
+      model.transcriptDelegate = host
+      transcriptHost = host
+    } else {
+      transcriptHost = nil
+    }
     model.restoreFailureLogger = { tabId, error in
       AppLog.app.error("restored tab \(tabId) failed: \(String(describing: error))")
     }
@@ -88,8 +96,10 @@ final class MainWindowController: NSWindowController {
     // The default tab created by AppModel.init() needs its writer
     // attached too — its session was constructed before the delegate
     // was assigned. Attach explicitly here.
-    for (tab, session) in model.allSessions() {
-      transcriptHost.attachTranscriptWriter(to: session, tabId: tab.id)
+    if let transcriptHost {
+      for (tab, session) in model.allSessions() {
+        transcriptHost.attachTranscriptWriter(to: session, tabId: tab.id)
+      }
     }
 
     // Rebuild the tab list from `workspace.json` BEFORE creating the
@@ -166,48 +176,52 @@ final class MainWindowController: NSWindowController {
     let controller = MainWindowController(window: window)
     controller.model = model
 
-    // Persistence is wired AFTER the optional restore so the initial
-    // restored snapshot does not bounce back through the coordinator.
-    // `attach(_:)` registers as the model's `onWorkspaceMutation`
-    // subscriber; subsequent mutations debounce-save through
-    // `PersistenceStore`. The toggle gate (`RestoreOnLaunchSettings`)
-    // is checked inside the coordinator on every save and load attempt,
-    // so flipping the menu item off makes both no-op silently.
-    let coordinator = PersistenceCoordinator()
-    coordinator.transcriptHost = transcriptHost
-    coordinator.attach(model)
-    controller.persistenceCoordinator = coordinator
+    if persistenceSyncEnabled {
+      // Persistence is wired AFTER the optional restore so the initial
+      // restored snapshot does not bounce back through the coordinator.
+      // `attach(_:)` registers as the model's `onWorkspaceMutation`
+      // subscriber; subsequent mutations debounce-save through
+      // `PersistenceStore`. The toggle gate (`RestoreOnLaunchSettings`)
+      // is checked inside the coordinator on every save and load attempt,
+      // so flipping the menu item off makes both no-op silently.
+      let coordinator = PersistenceCoordinator(isEnabled: isPersistenceEnabled)
+      coordinator.transcriptHost = transcriptHost
+      coordinator.attach(model)
+      controller.persistenceCoordinator = coordinator
 
-    // Agent autoresume: M2. Per-tab detector polls for claude/codex
-    // descendants and captures the session id from the open .jsonl
-    // file; mirror snapshots that file on lifecycle events and on a
-    // 5-minute periodic timer while the agent is alive. Attached
-    // here so the first default tab (and any restored ones) get a
-    // detector right away. Note that detectors short-circuit when
-    // the session has no real PID (fixture mode in tests), so this
-    // is safe even when the productive app delegate is shimmed.
-    let mirror = AgentJSONLMirror()
-    let observerHost = AgentObserverHost(appModel: model, mirror: mirror)
-    controller.agentObserverHost = observerHost
-    model.onTabCreated = { [weak observerHost] tabId, session in
-      observerHost?.attach(session: session, tabId: tabId)
-    }
-    model.onTabClosed = { [weak observerHost] tabId in
-      observerHost?.detach(tabId: tabId)
-    }
-    for (tab, session) in model.allSessions() {
-      observerHost.attach(session: session, tabId: tab.id)
-    }
-    if let restoredState, !restoredState.windows.isEmpty {
-      Self.applyRestoreLaunchPlans(
-        for: restoredState, model: model)
-    }
+      // Agent autoresume: M2. Per-tab detector polls for claude/codex
+      // descendants and captures the session id from the open .jsonl
+      // file; mirror snapshots that file on lifecycle events and on a
+      // 5-minute periodic timer while the agent is alive. Attached
+      // here so the first default tab (and any restored ones) get a
+      // detector right away. Note that detectors short-circuit when
+      // the session has no real PID (fixture mode in tests), so this
+      // is safe even when the productive app delegate is shimmed.
+      let mirror = AgentJSONLMirror(isEnabled: isPersistenceEnabled)
+      let observerHost = AgentObserverHost(
+        appModel: model, mirror: mirror,
+        isEnabled: isPersistenceEnabled)
+      controller.agentObserverHost = observerHost
+      model.onTabCreated = { [weak observerHost] tabId, session in
+        observerHost?.attach(session: session, tabId: tabId)
+      }
+      model.onTabClosed = { [weak observerHost] tabId in
+        observerHost?.detach(tabId: tabId)
+      }
+      for (tab, session) in model.allSessions() {
+        observerHost.attach(session: session, tabId: tab.id)
+      }
+      if let restoredState, !restoredState.windows.isEmpty {
+        Self.applyRestoreLaunchPlans(
+          for: restoredState, model: model)
+      }
 
-    // Schedule one save so the persisted state reflects the just-spawned
-    // (or just-restored) tab list within the debounce window. Without
-    // this, a user who quits before causing any further mutation would
-    // leave `workspace.json` unchanged from its prior contents.
-    coordinator.scheduleSave()
+      // Schedule one save so the persisted state reflects the just-spawned
+      // (or just-restored) tab list within the debounce window. Without
+      // this, a user who quits before causing any further mutation would
+      // leave `workspace.json` unchanged from its prior contents.
+      coordinator.scheduleSave()
+    }
 
     return controller
   }
@@ -231,8 +245,11 @@ final class MainWindowController: NSWindowController {
     for state: WorkspaceState, model: AppModel
   ) {
     guard let window = state.windows.first else { return }
+    let activityChecker = ProcessTreeRestoreSessionActivityChecker()
     for tabState in window.tabs {
-      let instruction = RestoreLaunchPlanner.instruction(for: tabState)
+      let instruction = RestoreLaunchPlanner.instruction(
+        for: tabState,
+        activityChecker: activityChecker)
       switch instruction {
       case .noPrefill:
         continue

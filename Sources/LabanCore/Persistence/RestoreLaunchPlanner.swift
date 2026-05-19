@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Decides what (if anything) Laban should feed into a restored tab's
@@ -31,9 +32,38 @@ public enum RestoreLaunchInstruction: Equatable {
   case noPrefill
 }
 
+public protocol RestoreSessionActivityChecking {
+  func isAgentSessionLive(for tab: TabState) -> Bool
+}
+
+public struct ProcessTreeRestoreSessionActivityChecker: RestoreSessionActivityChecking {
+  private let introspector: any ProcessIntrospector
+
+  public init(introspector: any ProcessIntrospector = LibprocIntrospector()) {
+    self.introspector = introspector
+  }
+
+  public func isAgentSessionLive(for tab: TabState) -> Bool {
+    guard let shellPid = tab.shellPid, shellPid > 0,
+      let persistedAgent = tab.agent
+    else { return false }
+
+    let detector = AgentSessionDetector(
+      tabId: tab.id,
+      shellPid: pid_t(shellPid),
+      introspector: introspector)
+    guard let liveAgent = detector.detectLiveAgentDescendant() else { return false }
+    return liveAgent.name == persistedAgent.name
+      && liveAgent.sessionId == persistedAgent.sessionId
+  }
+}
+
 public enum RestoreLaunchPlanner {
 
-  public static func instruction(for tab: TabState) -> RestoreLaunchInstruction {
+  public static func instruction(
+    for tab: TabState,
+    activityChecker: (any RestoreSessionActivityChecking)? = nil
+  ) -> RestoreLaunchInstruction {
     guard let agent = tab.agent else { return .noPrefill }
     guard let support = AgentRegistry.entry(for: agent.name) else { return .noPrefill }
     let context = AgentLaunchContext(
@@ -41,6 +71,9 @@ public enum RestoreLaunchPlanner {
       argv: agent.argv ?? [],
       env: agent.env ?? [:])
     let command = support.resumeCommand(sessionId: agent.sessionId, context: context)
+    if activityChecker?.isAgentSessionLive(for: tab) == true {
+      return .noPrefill
+    }
     return agent.wasRunningAtQuit
       ? .executeNow(command: command)
       : .prefillPrompt(command: command)

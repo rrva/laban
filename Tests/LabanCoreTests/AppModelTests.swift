@@ -459,6 +459,10 @@ final class AppModelTests: XCTestCase {
           XCTAssertEqual(model.tabs[0].titleMetadata.workspace.cwd, tempPath)
           XCTAssertEqual(model.tabs[0].title, "sleep")
           XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .process)
+          let snapshot = model.snapshotForPersistence(windowId: "win")
+          XCTAssertEqual(
+            snapshot.windows.first?.tabs.first?.shellPid,
+            session.processMetadata()?.childPid)
         }
       }
     }

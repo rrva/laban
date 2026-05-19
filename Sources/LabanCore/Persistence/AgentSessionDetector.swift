@@ -119,11 +119,18 @@ public final class AgentSessionDetector {
   }
 
   internal func detect() -> AgentInfo? {
+    if let agent = detectLiveAgentDescendant() {
+      return agent
+    }
+    return findRecentClaudeSessionForShellCwd()
+  }
+
+  internal func detectLiveAgentDescendant() -> AgentInfo? {
     let descendants = collectDescendants(of: shellPid, depth: 0)
     if let agent = findAgent(in: descendants) {
       return agent
     }
-    return findRecentClaudeSessionForShellCwd()
+    return nil
   }
 
   /// Walk the descendant tree of `parent` up to `Self.maxDescendantDepth`

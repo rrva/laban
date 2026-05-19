@@ -253,6 +253,46 @@ final class LabanDebugSmokeTests: XCTestCase {
       "command claude --resume \(sessionId) --model claude-opus-4-7 --dangerously-skip-permissions")
   }
 
+  func testRuntimeCanSkipLoadingPersistedWorkspace() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    let persistence = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-persistence-\(UUID().uuidString)")
+    defer {
+      try? FileManager.default.removeItem(at: artifacts)
+      try? FileManager.default.removeItem(at: persistence)
+    }
+
+    let store = PersistenceStore(baseURL: persistence)
+    try store.save(
+      WorkspaceState(
+        windows: [
+          WindowState(
+            id: "headless-window",
+            selectedTabId: "persisted-tab",
+            tabs: [
+              TabState(
+                id: "persisted-tab",
+                cwd: NSHomeDirectory(),
+                launchCommand: "/bin/zsh -l",
+                lastActiveAt: Date())
+            ])
+        ]))
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-skip-restore",
+      persistenceBaseURL: persistence,
+      restorePersistedState: false
+    )
+
+    XCTAssertEqual(runtime.model.tabs.count, 1)
+    XCTAssertNotEqual(runtime.model.tabs.first?.id, "persisted-tab")
+  }
+
   func testRuntimeStateHasOneTab() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
