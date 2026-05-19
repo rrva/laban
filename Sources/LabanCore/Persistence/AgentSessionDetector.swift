@@ -114,6 +114,10 @@ public final class AgentSessionDetector {
     handleObservation(detect())
   }
 
+  internal func observeNowPreservingLiveAgentOnMiss() {
+    handleObservation(detect(), preserveLiveAgentOnMiss: true)
+  }
+
   internal func detect() -> AgentInfo? {
     let descendants = collectDescendants(of: shellPid, depth: 0)
     if let agent = findAgent(in: descendants) {
@@ -124,7 +128,8 @@ public final class AgentSessionDetector {
 
   /// Walk the descendant tree of `parent` up to `Self.maxDescendantDepth`
   /// layers. Returns all observed (pid, basename) pairs.
-  internal func collectDescendants(of parent: pid_t, depth: Int) -> [(pid: pid_t, basename: String)] {
+  internal func collectDescendants(of parent: pid_t, depth: Int) -> [(pid: pid_t, basename: String)]
+  {
     if depth >= Self.maxDescendantDepth { return [] }
     let immediate = introspector.children(of: parent)
     var result: [(pid: pid_t, basename: String)] = immediate
@@ -208,12 +213,17 @@ public final class AgentSessionDetector {
     )
   }
 
-  internal func handleObservation(_ detected: AgentInfo?) {
+  internal func handleObservation(
+    _ detected: AgentInfo?,
+    preserveLiveAgentOnMiss: Bool = false
+  ) {
     lock.lock()
     let prior = lastObservedAgent
     let next: AgentInfo?
     if let detected {
       next = detected
+    } else if preserveLiveAgentOnMiss, prior?.wasRunningAtQuit == true {
+      next = prior
     } else if let prior {
       // Lost: preserve identity but mark not-alive.
       var dead = prior
@@ -333,8 +343,12 @@ public enum ClaudeSessionLogLocator {
         options: [.skipsHiddenFiles])
     else { return nil }
 
-    return entries
-      .filter { $0.pathExtension == "jsonl" && AgentSupport.isUUID($0.deletingPathExtension().lastPathComponent) }
+    return
+      entries
+      .filter {
+        $0.pathExtension == "jsonl"
+          && AgentSupport.isUUID($0.deletingPathExtension().lastPathComponent)
+      }
       .compactMap { url -> (url: URL, modified: Date)? in
         let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
         let modified = values?.contentModificationDate
@@ -346,7 +360,9 @@ public enum ClaudeSessionLogLocator {
       .url.path
   }
 
-  public static func metadata(fromLogAt path: String, maxLines: Int = 64) -> ClaudeSessionLogMetadata {
+  public static func metadata(fromLogAt path: String, maxLines: Int = 64)
+    -> ClaudeSessionLogMetadata
+  {
     // Read just enough of the file to likely contain `maxLines` JSONL
     // records. The old implementation read the entire file into a Swift
     // String (cost: ~243 ms on a 17 MB session log) just to take

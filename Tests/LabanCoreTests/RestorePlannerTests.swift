@@ -29,7 +29,7 @@ final class RestorePlannerTests: XCTestCase {
         wasRunningAtQuit: true))
     XCTAssertEqual(
       RestoreLaunchPlanner.instruction(for: state),
-      .executeNow(command: "claude --resume abc"))
+      .executeNow(command: "command claude --resume abc"))
   }
 
   func testCodexRunningAtQuitExecutesNow() {
@@ -53,7 +53,7 @@ final class RestorePlannerTests: XCTestCase {
         wasRunningAtQuit: false))
     XCTAssertEqual(
       RestoreLaunchPlanner.instruction(for: state),
-      .prefillPrompt(command: "claude --resume abc"))
+      .prefillPrompt(command: "command claude --resume abc"))
   }
 
   func testCodexDeadAtQuitPrefills() {
@@ -112,7 +112,30 @@ final class RestorePlannerTests: XCTestCase {
 
     XCTAssertEqual(
       RestoreLaunchPlanner.instruction(for: state),
-      .executeNow(command: "claude --resume abc --model sonnet"))
+      .executeNow(command: "command claude --resume abc --model sonnet"))
+  }
+
+  func testPlannerBypassesClaudeShellFunctionAndNormalizesDuplicatedWrapperArgv() {
+    let state = tab(
+      agent: AgentInfo(
+        name: .claude,
+        sessionId: "abc",
+        jsonlPath: "/x.jsonl",
+        wasRunningAtQuit: true,
+        argv: [
+          "claude",
+          "--chrome",
+          "--resume",
+          "old",
+          "--chrome",
+          "--chrome",
+          "--dangerously-skip-permissions",
+        ],
+        cwd: "/agent/cwd"))
+
+    XCTAssertEqual(
+      RestoreLaunchPlanner.instruction(for: state),
+      .executeNow(command: "command claude --resume abc --chrome --dangerously-skip-permissions"))
   }
 
   func testPlannerUsesTabCwdFallbackForCodexAndPreservesResumeSafeArgv() {

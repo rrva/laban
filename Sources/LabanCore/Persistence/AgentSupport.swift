@@ -68,8 +68,9 @@ public enum ShellCommand {
 
   public static func quote(_ arg: String) -> String {
     if arg.isEmpty { return "''" }
-    let safeScalars = CharacterSet(charactersIn:
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+-./:=,@%")
+    let safeScalars = CharacterSet(
+      charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+-./:=,@%")
     if arg.unicodeScalars.allSatisfy({ safeScalars.contains($0) }) {
       return arg
     }
@@ -144,25 +145,51 @@ public struct ClaudeResumeAdapter: AgentResumeAdapter {
   public init() {}
 
   public func resumeCommand(sessionId: String, context: AgentLaunchContext) -> String {
-    ShellCommand.render(["claude", "--resume", sessionId] + preservedArguments(from: context.argv))
+    ShellCommand.render(
+      ["command", "claude", "--resume", sessionId] + preservedArguments(from: context.argv))
   }
 
   private func preservedArguments(from argv: [String]) -> [String] {
     let tokens = ResumeArgParser.dropProgramName(argv, basenames: ["claude"])
-    var preserved: [String] = []
+    var preserved: [(option: String, value: String?)] = []
+    var singletonIndices: [String: Int] = [:]
+    var seenFlags: Set<String> = []
+    var seenAddDirs: Set<String> = []
+
+    func appendFlag(_ flag: String) {
+      guard seenFlags.insert(flag).inserted else { return }
+      preserved.append((flag, nil))
+    }
+
+    func upsertSingleton(_ option: String, value: String) {
+      if let index = singletonIndices[option] {
+        preserved[index] = (option, value)
+      } else {
+        singletonIndices[option] = preserved.count
+        preserved.append((option, value))
+      }
+    }
+
+    func appendAddDir(_ value: String) {
+      guard seenAddDirs.insert(value).inserted else { return }
+      preserved.append(("--add-dir", value))
+    }
+
     var i = 0
     while i < tokens.count {
       let token = tokens[i]
       if token == "--" { break }
 
-      if let value = ResumeArgParser.value(for: "--model", token: token, tokens: tokens, index: &i) {
-        if !value.isEmpty { preserved += ["--model", value] }
+      if let value = ResumeArgParser.value(for: "--model", token: token, tokens: tokens, index: &i)
+      {
+        if !value.isEmpty { upsertSingleton("--model", value: value) }
         i += 1
         continue
       }
-      if let value = ResumeArgParser.value(for: "--effort", token: token, tokens: tokens, index: &i) {
+      if let value = ResumeArgParser.value(for: "--effort", token: token, tokens: tokens, index: &i)
+      {
         if ["low", "medium", "high", "xhigh", "max"].contains(value) {
-          preserved += ["--effort", value]
+          upsertSingleton("--effort", value: value)
         }
         i += 1
         continue
@@ -173,7 +200,7 @@ public struct ClaudeResumeAdapter: AgentResumeAdapter {
         if ["default", "acceptEdits", "auto", "bypassPermissions", "dontAsk", "plan"].contains(
           value)
         {
-          preserved += ["--permission-mode", value]
+          upsertSingleton("--permission-mode", value: value)
         }
         i += 1
         continue
@@ -181,25 +208,25 @@ public struct ClaudeResumeAdapter: AgentResumeAdapter {
       if token == "--add-dir" {
         i += 1
         while i < tokens.count && !ResumeArgParser.isOption(tokens[i]) {
-          if !tokens[i].isEmpty { preserved += ["--add-dir", tokens[i]] }
+          if !tokens[i].isEmpty { appendAddDir(tokens[i]) }
           i += 1
         }
         continue
       }
       if let value = ResumeArgParser.inlineValue(for: "--add-dir", token: token) {
-        if !value.isEmpty { preserved += ["--add-dir", value] }
+        if !value.isEmpty { appendAddDir(value) }
         i += 1
         continue
       }
       if Self.preserveWithoutValue.contains(token) {
-        preserved.append(token)
+        appendFlag(token)
         i += 1
         continue
       }
       if token == "--dangerously-skip-permissions"
         || token == "--allow-dangerously-skip-permissions"
       {
-        preserved.append(token)
+        appendFlag(token)
         i += 1
         continue
       }
@@ -230,7 +257,10 @@ public struct ClaudeResumeAdapter: AgentResumeAdapter {
       }
       i += 1
     }
-    return preserved
+    return preserved.flatMap { item -> [String] in
+      if let value = item.value { return [item.option, value] }
+      return [item.option]
+    }
   }
 
   private static let dropWithoutValue: Set<String> = [
@@ -502,7 +532,8 @@ public enum AgentRegistry {
   /// basename and argv[0]. Claude's native launcher execs a versioned
   /// binary such as `.../versions/2.1.143`, while argv[0] still
   /// presents the user-facing `claude` invocation.
-  public static func agent(forBinaryBasename basename: String, arguments: [String]) -> AgentSupport? {
+  public static func agent(forBinaryBasename basename: String, arguments: [String]) -> AgentSupport?
+  {
     if let support = agent(forBinaryBasename: basename) {
       return support
     }

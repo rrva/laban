@@ -178,16 +178,19 @@ final class AgentSessionDetectorTests: XCTestCase {
     let agent = detector.detect()
     XCTAssertEqual(agent?.name, .claude)
     XCTAssertEqual(agent?.sessionId, recentId)
-    XCTAssertTrue(agent?.jsonlPath.hasSuffix("/projects/-Users-x-project/\(recentId).jsonl") ?? false)
+    XCTAssertTrue(
+      agent?.jsonlPath.hasSuffix("/projects/-Users-x-project/\(recentId).jsonl") ?? false)
     XCTAssertEqual(agent?.wasRunningAtQuit, false)
-    XCTAssertEqual(agent?.argv, ["claude", "--model", "claude-opus-4-7", "--dangerously-skip-permissions"])
+    XCTAssertEqual(
+      agent?.argv, ["claude", "--model", "claude-opus-4-7", "--dangerously-skip-permissions"])
     XCTAssertEqual(agent?.env, ["TERM": "xterm-256color"])
     XCTAssertEqual(agent?.cwd, cwd)
   }
 
   func testDetectIgnoresStaleClaudeJSONLForShellCwdWithoutLiveAgent() throws {
     let base = FileManager.default.temporaryDirectory
-      .appendingPathComponent("laban-claude-stale-shell-fallback-\(UUID().uuidString)", isDirectory: true)
+      .appendingPathComponent(
+        "laban-claude-stale-shell-fallback-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: base) }
     let projects = base.appendingPathComponent("projects", isDirectory: true)
     let cwd = "/Users/x/project"
@@ -297,6 +300,34 @@ final class AgentSessionDetectorTests: XCTestCase {
     XCTAssertEqual(recorder.observations.last??.sessionId, sessionId)
     XCTAssertEqual(recorder.observations.last??.wasRunningAtQuit, false)
     XCTAssertEqual(recorder.observations.last??.jsonlPath, jsonlPath)
+  }
+
+  func testFinalObserveDoesNotDemoteKnownLiveAgentOnSingleMiss() {
+    let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0014"
+    let jsonlPath = "/Users/x/.claude/projects/p/\(sessionId).jsonl"
+
+    let mock = MockIntrospector(
+      children: [900: [(901, "claude")]],
+      openVnodes: [901: [jsonlPath]])
+    let detector = AgentSessionDetector(
+      tabId: "t", shellPid: 900, introspector: mock)
+    let recorder = Recorder()
+    detector.observer = recorder
+
+    detector.handleObservation(detector.detect())
+    XCTAssertEqual(recorder.observations.count, 1)
+    XCTAssertEqual(recorder.observations.last??.wasRunningAtQuit, true)
+
+    // Final app-termination sampling is allowed to miss a live
+    // process transiently while libproc walks a changing process tree.
+    // That miss must not turn an auto-executed resume into a
+    // no-newline prompt prefill on the next launch.
+    mock.children = [900: []]
+    detector.observeNowPreservingLiveAgentOnMiss()
+
+    XCTAssertEqual(recorder.observations.count, 1)
+    XCTAssertEqual(detector.lastObservedAgent?.sessionId, sessionId)
+    XCTAssertEqual(detector.lastObservedAgent?.wasRunningAtQuit, true)
   }
 }
 

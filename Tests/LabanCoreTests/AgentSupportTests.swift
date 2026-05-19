@@ -62,7 +62,7 @@ final class AgentSupportTests: XCTestCase {
 
   func testResumeCommandShape() {
     XCTAssertEqual(
-      AgentSupport.claude().resumeCommand("abc"), "claude --resume abc")
+      AgentSupport.claude().resumeCommand("abc"), "command claude --resume abc")
     XCTAssertEqual(
       AgentSupport.codex().resumeCommand("xyz"), "codex resume xyz")
   }
@@ -100,11 +100,11 @@ final class AgentSupportTests: XCTestCase {
         ],
         env: [:]))
 
-    XCTAssertTrue(command.hasPrefix("claude --resume 0fa31a8c-1234-5678-9abc-deadbeef0000"))
+    XCTAssertTrue(command.hasPrefix("command claude --resume 0fa31a8c-1234-5678-9abc-deadbeef0000"))
     XCTAssertTrue(command.contains("--model sonnet"))
     XCTAssertTrue(command.contains("--chrome"))
     XCTAssertTrue(command.contains("--effort high"))
-    XCTAssertTrue(command.contains("--permission-mode plan"))
+    XCTAssertFalse(command.contains("--permission-mode plan"))
     XCTAssertTrue(command.contains("--dangerously-skip-permissions"))
     XCTAssertTrue(command.contains("--add-dir '/Users/x/extra dir'"))
     XCTAssertTrue(command.contains("--permission-mode bypassPermissions"))
@@ -119,11 +119,39 @@ final class AgentSupportTests: XCTestCase {
       sessionId: "fresh",
       context: AgentLaunchContext(
         cwd: "/tmp",
-        argv: ["claude", "--resume", "old", "--session-id", "old-session", "-c", "--model", "opus"],
+        argv: [
+          "claude", "--resume", "old", "--session-id", "old-session", "-c", "--model", "opus",
+        ],
         env: [:]))
 
-    XCTAssertEqual(command, "claude --resume fresh --model opus")
+    XCTAssertEqual(command, "command claude --resume fresh --model opus")
     XCTAssertFalse(command.contains("old"))
+  }
+
+  func testClaudeAdapterBypassesShellFunctionAndDeduplicatesWrapperFlags() {
+    let command = ClaudeResumeAdapter().resumeCommand(
+      sessionId: "fresh",
+      context: AgentLaunchContext(
+        cwd: "/tmp",
+        argv: [
+          "claude",
+          "--chrome",
+          "--resume",
+          "old",
+          "--chrome",
+          "--chrome",
+          "--dangerously-skip-permissions",
+          "--dangerously-skip-permissions",
+          "--model",
+          "haiku",
+          "--model",
+          "sonnet",
+        ],
+        env: [:]))
+
+    XCTAssertEqual(
+      command,
+      "command claude --resume fresh --chrome --dangerously-skip-permissions --model sonnet")
   }
 
   func testCodexAdapterPreservesResumeSafeOptionsAndDropsReplayingFlags() {
@@ -154,7 +182,8 @@ final class AgentSupportTests: XCTestCase {
         env: [:]))
 
     XCTAssertTrue(
-      command.hasPrefix("codex resume 0fa31a8c-1234-5678-9abc-deadbeef0000 -C '/Users/x/project dir'"))
+      command.hasPrefix(
+        "codex resume 0fa31a8c-1234-5678-9abc-deadbeef0000 -C '/Users/x/project dir'"))
     XCTAssertTrue(command.contains("--model gpt-5.2"))
     XCTAssertTrue(command.contains("--profile work"))
     XCTAssertTrue(command.contains("--sandbox workspace-write"))

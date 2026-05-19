@@ -218,7 +218,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     _ = initialSession.poll()
     let cwd = try XCTUnwrap(initialSession.processMetadata()?.cwd)
     let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0020"
-    let project = claudeConfig
+    let project =
+      claudeConfig
       .appendingPathComponent("projects", isDirectory: true)
       .appendingPathComponent(claudeProjectName(for: cwd), isDirectory: true)
     try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -249,7 +250,7 @@ final class LabanDebugSmokeTests: XCTestCase {
     }
     XCTAssertEqual(
       command,
-      "claude --resume \(sessionId) --model claude-opus-4-7 --dangerously-skip-permissions")
+      "command claude --resume \(sessionId) --model claude-opus-4-7 --dangerously-skip-permissions")
   }
 
   func testRuntimeStateHasOneTab() throws {

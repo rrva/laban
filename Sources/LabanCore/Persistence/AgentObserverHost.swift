@@ -78,7 +78,7 @@ public final class AgentObserverHost: AgentSessionDetectorObserver {
     let detectors = Array(detectorsByTab.values)
     lock.unlock()
     for detector in detectors {
-      detector.observeNow()
+      detector.observeNowPreservingLiveAgentOnMiss()
     }
   }
 
