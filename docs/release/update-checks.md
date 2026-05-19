@@ -7,6 +7,19 @@ browser when an update is available.
 
 It does not download, install, replace, or execute anything.
 
+## Background Auto-Check Badge
+
+Stamped release builds (i.e. `CFBundleShortVersionString != 0.0.0`) hit the
+manifest on launch, after wake / activation, and every 4 hours. The check is
+silent on failure; when a newer version is reported, a subtle pill in the
+bottom-left of the main window shows `↓ <version>`. Clicking it routes through
+the same alert as the menu's "Check for Updates" action. `swift run` builds
+are unstamped and skip the auto-check entirely.
+
+Policy decisions live in `UpdateAutoCheck.decide(...)` and are covered by
+`UpdateAutoCheckTests`. The last-check timestamp persists in the
+`LabanUpdateLastCheck` user default.
+
 ## Release Fast Path
 
 1. Build the release zip:

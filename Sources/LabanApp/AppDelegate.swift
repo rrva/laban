@@ -226,7 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
-  private func showAvailableUpdate(_ manifest: UpdateManifest) {
+  func showAvailableUpdate(_ manifest: UpdateManifest) {
     let alert = NSAlert()
     alert.messageText = "Laban \(manifest.latest) is available"
     var message = "You are running \(BuildInfo.version)."

@@ -15,6 +15,9 @@ final class MainWindowController: NSWindowController {
   /// alive on the window controller so the detector timers don't
   /// stop when AppDelegate's local refs go out of scope.
   private(set) var agentObserverHost: AgentObserverHost?
+  /// Auto-update checker. Strong ref so its timer + wake observers
+  /// outlive `makeAndShow`'s local scope.
+  private(set) var updateAutoChecker: UpdateAutoChecker?
 
   static func makeAndShow(
     restoring restoredState: WorkspaceState? = nil,
@@ -142,7 +145,24 @@ final class MainWindowController: NSWindowController {
     // interactive because AppKit composites them over the contentView.
     window.titlebarAppearsTransparent = true
     window.titleVisibility = .hidden
-    window.contentView = termView
+    // Container view hosts the terminal plus a small overlay badge. The
+    // terminal stays the full size; the badge floats in the bottom-left,
+    // sized to its content. Using a sibling instead of a TerminalBitmapView
+    // subview avoids z-order / hit-test issues with the Metal-backed
+    // terminal layer.
+    let containerView = NSView(frame: NSRect(x: 0, y: 0, width: viewW, height: viewH))
+    containerView.autoresizesSubviews = true
+    termView.autoresizingMask = [.width, .height]
+    containerView.addSubview(termView)
+    let updateBadge = UpdateBadgeView(
+      frame: NSRect(
+        x: UpdateBadgeView.cornerInset,
+        y: UpdateBadgeView.cornerInset,
+        width: 64,
+        height: UpdateBadgeView.preferredHeight))
+    updateBadge.autoresizingMask = [.maxXMargin, .maxYMargin]
+    containerView.addSubview(updateBadge)
+    window.contentView = containerView
     window.center()
     window.makeKeyAndOrderFront(nil)
 
@@ -175,6 +195,12 @@ final class MainWindowController: NSWindowController {
 
     let controller = MainWindowController(window: window)
     controller.model = model
+
+    let autoChecker = UpdateAutoChecker(badge: updateBadge) { manifest in
+      (NSApp.delegate as? AppDelegate)?.showAvailableUpdate(manifest)
+    }
+    autoChecker.start()
+    controller.updateAutoChecker = autoChecker
 
     if persistenceSyncEnabled {
       // Persistence is wired AFTER the optional restore so the initial
