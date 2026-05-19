@@ -256,6 +256,55 @@ final class TerminalSelectionTests: XCTestCase {
     XCTAssertEqual(text, "中A", "wide spacer tail must not copy as a blank; got '\(text)'")
   }
 
+  func testSelectedTextIncludesRowsOutsideVisibleViewport() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 24
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    var bytes: [UInt8] = []
+    for i in 0..<10 {
+      bytes += Array("copy-row-\(i)\r\n".utf8)
+    }
+    session.write(bytes)
+    session.poll()
+
+    let viewport = try XCTUnwrap(session.viewportState())
+    XCTAssertGreaterThan(viewport.viewportOffset, 1)
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let startAbsoluteRow = viewport.viewportOffset - 2
+    let endAbsoluteRow = viewport.viewportOffset + 1
+    let selectedRows = endAbsoluteRow - startAbsoluteRow + 1
+    let expected = try XCTUnwrap(
+      session.scrollbackBlock(rowOffset: startAbsoluteRow, maxRows: selectedRows)
+    ).text
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(
+        row: startAbsoluteRow - viewport.viewportOffset,
+        col: 0
+      ),
+      focus: TerminalCellCoordinate(
+        row: endAbsoluteRow - viewport.viewportOffset,
+        col: Int(size.cols) - 1
+      )
+    )
+
+    XCTAssertNotEqual(sel.selectedText(from: snap.pointee), expected)
+    XCTAssertEqual(
+      sel.selectedText(from: session, viewportSnapshot: snap.pointee, viewportState: viewport),
+      expected
+    )
+  }
+
   func testSelectionFrameCommandsAppearsInProducerOutput() throws {
     var size = LabanTerminalSize()
     size.rows = 24

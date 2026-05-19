@@ -93,36 +93,186 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
   public func selectedText(from snap: LabanSnapshot) -> String {
     let rows = Int(snap.rows)
     let cols = Int(snap.cols)
-    guard let cells = snap.cells, let storage = snap.utf8_storage else { return "" }
 
     var lines: [String] = []
     for seg in segments(rows: rows, cols: cols) {
-      var line = ""
-      for col in seg.startCol..<seg.endCol {
-        let cell = cells[seg.row * cols + col]
-        if cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL) {
-          continue
-        }
-        guard cell.utf8_length > 0 else {
-          line += " "
-          continue
-        }
-        let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
-        let buf = UnsafeBufferPointer<UInt8>(
-          start: ptr.assumingMemoryBound(to: UInt8.self),
-          count: Int(cell.utf8_length)
-        )
-        if let text = String(bytes: buf, encoding: .utf8) {
-          line += text
-        } else {
-          line += " "
-        }
-      }
-      // Per-row right-trim only (preserve interior spaces).
-      let trimmed = line.replacingOccurrences(
-        of: "\\s+$", with: "", options: .regularExpression)
-      lines.append(trimmed)
+      lines.append(
+        Self.snapshotLineText(
+          from: snap,
+          row: seg.row,
+          startCol: seg.startCol,
+          endCol: seg.endCol
+        ))
     }
     return lines.joined(separator: "\n")
+  }
+
+  public func selectedText(
+    from session: Session,
+    viewportSnapshot snap: LabanSnapshot,
+    viewportState: ViewportState
+  ) -> String {
+    let rows = Int(snap.rows)
+    let cols = Int(snap.cols)
+    guard rows > 0, cols > 0 else { return "" }
+
+    let segments = absoluteSegments(
+      totalRows: viewportState.totalRows,
+      viewportOffset: viewportState.viewportOffset,
+      cols: cols
+    )
+    guard !segments.isEmpty else { return "" }
+
+    if segments.allSatisfy({ segment in
+      let viewportRow = segment.row - viewportState.viewportOffset
+      return viewportRow >= 0 && viewportRow < rows
+    }) {
+      return selectedText(from: snap)
+    }
+
+    guard let firstRow = segments.first?.row, let lastRow = segments.last?.row,
+      let scrollback = session.scrollbackBlock(
+        rowOffset: firstRow,
+        maxRows: lastRow - firstRow + 1
+      )
+    else {
+      return selectedText(from: snap)
+    }
+
+    let scrollbackBytes = Array(scrollback.text.utf8)
+    var lines: [String] = []
+    for segment in segments {
+      let viewportRow = segment.row - viewportState.viewportOffset
+      if viewportRow >= 0 && viewportRow < rows {
+        lines.append(
+          Self.snapshotLineText(
+            from: snap,
+            row: viewportRow,
+            startCol: segment.startCol,
+            endCol: segment.endCol
+          ))
+      } else if let line = Self.scrollbackLineText(
+        from: scrollback,
+        bytes: scrollbackBytes,
+        row: segment.row - firstRow
+      ) {
+        lines.append(
+          Self.plainLineText(
+            from: line,
+            startCol: segment.startCol,
+            endCol: segment.endCol
+          ))
+      } else {
+        lines.append("")
+      }
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private func absoluteSegments(
+    totalRows: Int,
+    viewportOffset: Int,
+    cols: Int
+  ) -> [(row: Int, startCol: Int, endCol: Int)] {
+    guard totalRows > 0, cols > 0 else { return [] }
+    let (start, end) = startEnd(cols: cols)
+    let startRow = viewportOffset + start.row
+    let endRow = viewportOffset + end.row
+    let clippedStartRow = max(0, startRow)
+    let clippedEndRow = min(totalRows - 1, endRow)
+    guard clippedStartRow <= clippedEndRow else { return [] }
+
+    if clippedStartRow == clippedEndRow {
+      let sCol = (startRow == clippedStartRow) ? min(start.col, cols - 1) : 0
+      let eCol = (endRow == clippedEndRow) ? min(end.col + 1, cols) : cols
+      guard eCol > sCol else { return [] }
+      return [(row: clippedStartRow, startCol: sCol, endCol: eCol)]
+    }
+
+    var segs: [(row: Int, startCol: Int, endCol: Int)] = []
+    let firstStartCol = (startRow == clippedStartRow) ? start.col : 0
+    segs.append((row: clippedStartRow, startCol: firstStartCol, endCol: cols))
+    for row in (clippedStartRow + 1)..<clippedEndRow {
+      segs.append((row: row, startCol: 0, endCol: cols))
+    }
+    let lastEndCol = (endRow == clippedEndRow) ? end.col + 1 : cols
+    segs.append((row: clippedEndRow, startCol: 0, endCol: lastEndCol))
+    return segs
+  }
+
+  private static func snapshotLineText(
+    from snap: LabanSnapshot,
+    row: Int,
+    startCol: Int,
+    endCol: Int
+  ) -> String {
+    let rows = Int(snap.rows)
+    let cols = Int(snap.cols)
+    guard row >= 0, row < rows, startCol >= 0, endCol > startCol,
+      let cells = snap.cells,
+      let storage = snap.utf8_storage
+    else { return "" }
+
+    var line = ""
+    for col in startCol..<min(endCol, cols) {
+      let cell = cells[row * cols + col]
+      if cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL) {
+        continue
+      }
+      guard cell.utf8_length > 0 else {
+        line += " "
+        continue
+      }
+      let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+      let buf = UnsafeBufferPointer<UInt8>(
+        start: ptr.assumingMemoryBound(to: UInt8.self),
+        count: Int(cell.utf8_length)
+      )
+      if let text = String(bytes: buf, encoding: .utf8) {
+        line += text
+      } else {
+        line += " "
+      }
+    }
+    return rightTrim(line)
+  }
+
+  private static func scrollbackLineText(
+    from scrollback: ScrollbackBlock,
+    bytes: [UInt8],
+    row: Int
+  ) -> String? {
+    guard row >= 0, row < scrollback.rowOffsets.count else { return nil }
+    let start = max(0, min(scrollback.rowOffsets[row], bytes.count))
+    var end: Int
+    if row + 1 < scrollback.rowOffsets.count {
+      end = max(start, min(scrollback.rowOffsets[row + 1], bytes.count))
+      if end > start, bytes[end - 1] == 0x0A { end -= 1 }
+    } else {
+      end = bytes.count
+    }
+    while end > start, bytes[end - 1] == 0x0A || bytes[end - 1] == 0 {
+      end -= 1
+    }
+    return String(decoding: bytes[start..<end], as: UTF8.self)
+  }
+
+  private static func plainLineText(from row: String, startCol: Int, endCol: Int) -> String {
+    guard endCol > startCol else { return "" }
+    var col = 0
+    var line = ""
+    for character in row {
+      let nextCol = col + 1
+      if nextCol > startCol && col < endCol {
+        line.append(character)
+      }
+      col = nextCol
+      if col >= endCol { break }
+    }
+    return rightTrim(line)
+  }
+
+  private static func rightTrim(_ text: String) -> String {
+    text.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
   }
 }
