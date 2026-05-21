@@ -1376,6 +1376,224 @@ final class LabanSessionTests: XCTestCase {
       vs.viewport_offset, offsetBefore, "viewport offset should change after scrolling up")
   }
 
+  func testResizeReflowsScrollbackAfterScrollingAtNarrowWidth() {
+    guard let session = makeFixtureSession(rows: 4, cols: 20) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let longLine = "ABCDEFGHIJKLMNOPQRSTabcdefghijklmnopqrst"
+    writeBytes(session, Array((longLine + "\r\none\r\ntwo\r\nthree\r\nfour\r\n").utf8))
+
+    var narrowSize = LabanTerminalSize()
+    narrowSize.rows = 4
+    narrowSize.cols = 10
+    XCTAssertEqual(laban_session_resize(session, narrowSize), 0)
+    XCTAssertEqual(laban_session_scroll_viewport(session, -3), 0)
+
+    var wideSize = LabanTerminalSize()
+    wideSize.rows = 4
+    wideSize.cols = 20
+    XCTAssertEqual(laban_session_resize(session, wideSize), 0)
+    XCTAssertEqual(laban_session_scroll_viewport(session, -3), 0)
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+    guard let snapshot else {
+      XCTFail("snapshot nil")
+      return
+    }
+
+    let rows = rawRows(from: UnsafePointer(snapshot)).map {
+      $0.trimmingCharacters(in: .whitespaces)
+    }
+    XCTAssertTrue(
+      rows.contains("ABCDEFGHIJKLMNOPQRST"),
+      "wide scrollback should expose the first 20-column wrap row; rows: \(rows)")
+    XCTAssertTrue(
+      rows.contains("abcdefghijklmnopqrst"),
+      "wide scrollback should expose the second 20-column wrap row; rows: \(rows)")
+    XCTAssertFalse(
+      rows.contains("ABCDEFGHIJ"),
+      "scrollback must not remain wrapped at the prior 10-column geometry; rows: \(rows)")
+  }
+
+  func testScrollbackExtractionReflowsAfterNarrowResize() {
+    guard let session = makeFixtureSession(rows: 4, cols: 20) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let longLine = "ABCDEFGHIJKLMNOPQRSTabcdefghijklmnopqrst"
+    writeBytes(session, Array((longLine + "\r\none\r\ntwo\r\nthree\r\nfour\r\n").utf8))
+
+    var narrowSize = LabanTerminalSize()
+    narrowSize.rows = 4
+    narrowSize.cols = 10
+    XCTAssertEqual(laban_session_resize(session, narrowSize), 0)
+
+    var wideSize = LabanTerminalSize()
+    wideSize.rows = 4
+    wideSize.cols = 20
+    XCTAssertEqual(laban_session_resize(session, wideSize), 0)
+
+    var textBuffer: UnsafeMutablePointer<CChar>?
+    var rowOffsets: UnsafeMutablePointer<UInt32>?
+    var outRows: size_t = 0
+    var outTextLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_scrollback_extract_alloc(
+        session, 0, 0, &textBuffer, &rowOffsets, &outRows, &outTextLen),
+      0
+    )
+    defer { laban_session_scrollback_extract_free(textBuffer) }
+    defer { laban_session_scrollback_extract_free(rowOffsets) }
+    guard let textBuffer else {
+      XCTFail("scrollback extraction text nil")
+      return
+    }
+
+    let extracted = String(cString: textBuffer)
+    XCTAssertTrue(
+      extracted.contains("ABCDEFGHIJKLMNOPQRST\nabcdefghijklmnopqrst"),
+      "extracted scrollback should follow the current 20-column geometry; "
+        + "text: \(extracted.debugDescription)")
+    XCTAssertFalse(
+      extracted.contains("ABCDEFGHIJ\nKLMNOPQRST"),
+      "extracted scrollback must not stay at the prior 10-column geometry; "
+        + "text: \(extracted.debugDescription)")
+  }
+
+  func testResizeReflowsLinesWrittenAtNarrowWidth() {
+    guard let session = makeFixtureSession(rows: 4, cols: 10) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let longLine = "ABCDEFGHIJKLMNOPQRSTabcdefghijklmnopqrst"
+    writeBytes(session, Array((longLine + "\r\none\r\ntwo\r\nthree\r\nfour\r\n").utf8))
+    XCTAssertEqual(laban_session_scroll_viewport(session, -3), 0)
+
+    var wideSize = LabanTerminalSize()
+    wideSize.rows = 4
+    wideSize.cols = 20
+    XCTAssertEqual(laban_session_resize(session, wideSize), 0)
+    XCTAssertEqual(laban_session_scroll_viewport(session, -3), 0)
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+    guard let snapshot else {
+      XCTFail("snapshot nil")
+      return
+    }
+
+    let rows = rawRows(from: UnsafePointer(snapshot)).map {
+      $0.trimmingCharacters(in: .whitespaces)
+    }
+    XCTAssertTrue(
+      rows.contains("ABCDEFGHIJKLMNOPQRST"),
+      "wide scrollback should expose the first 20-column wrap row for text written narrow; "
+        + "rows: \(rows)")
+    XCTAssertTrue(
+      rows.contains("abcdefghijklmnopqrst"),
+      "wide scrollback should expose the second 20-column wrap row for text written narrow; "
+        + "rows: \(rows)")
+    XCTAssertFalse(
+      rows.contains("ABCDEFGHIJ"),
+      "scrollback must not remain wrapped at the original 10-column geometry; rows: \(rows)")
+  }
+
+  func testResizeReflowsAfterRenderedNarrowScrollbackFrame() {
+    guard let session = makeFixtureSession(rows: 4, cols: 20) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let longLine = "ABCDEFGHIJKLMNOPQRSTabcdefghijklmnopqrst"
+    writeBytes(session, Array((longLine + "\r\none\r\ntwo\r\nthree\r\nfour\r\n").utf8))
+    XCTAssertEqual(snapshotAndMarkRendered(session), 0)
+
+    var narrowSize = LabanTerminalSize()
+    narrowSize.rows = 4
+    narrowSize.cols = 10
+    XCTAssertEqual(laban_session_resize(session, narrowSize), 0)
+    XCTAssertEqual(snapshotAndMarkRendered(session), 0)
+
+    XCTAssertEqual(laban_session_scroll_viewport(session, -3), 0)
+    XCTAssertEqual(snapshotAndMarkRendered(session), 0)
+
+    var wideSize = LabanTerminalSize()
+    wideSize.rows = 4
+    wideSize.cols = 20
+    XCTAssertEqual(laban_session_resize(session, wideSize), 0)
+    XCTAssertEqual(snapshotAndMarkRendered(session), 0)
+
+    XCTAssertEqual(laban_session_scroll_viewport(session, -3), 0)
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+    guard let snapshot else {
+      XCTFail("snapshot nil")
+      return
+    }
+
+    let rows = rawRows(from: UnsafePointer(snapshot)).map {
+      $0.trimmingCharacters(in: .whitespaces)
+    }
+    XCTAssertTrue(
+      rows.contains("ABCDEFGHIJKLMNOPQRST"),
+      "wide scrollback should reflow after a rendered narrow scrollback frame; rows: \(rows)")
+    XCTAssertTrue(
+      rows.contains("abcdefghijklmnopqrst"),
+      "wide scrollback should reflow after a rendered narrow scrollback frame; rows: \(rows)")
+    XCTAssertFalse(
+      rows.contains("ABCDEFGHIJ"),
+      "scrollback must not preserve the rendered narrow geometry; rows: \(rows)")
+  }
+
+  func testColumnResizeMarksAllSnapshotRowsDirty() {
+    guard let session = makeFixtureSession(rows: 4, cols: 20) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("ABCDEFGHIJKLMNOPQRSTabcdefghijklmnopqrst\r\n".utf8))
+    var initialSnapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &initialSnapshot), 0)
+    laban_snapshot_destroy(initialSnapshot)
+    XCTAssertEqual(laban_session_mark_rendered(session), 0)
+
+    var narrowSize = LabanTerminalSize()
+    narrowSize.rows = 4
+    narrowSize.cols = 10
+    XCTAssertEqual(laban_session_resize(session, narrowSize), 0)
+
+    var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+    XCTAssertEqual(laban_session_snapshot(session, &snapshot), 0)
+    defer { laban_snapshot_destroy(snapshot) }
+    guard let snapshot else {
+      XCTFail("snapshot nil")
+      return
+    }
+
+    XCTAssertEqual(snapshot.pointee.dirty_row_count, 4)
+    let dirtyRows = (0..<Int(snapshot.pointee.dirty_row_count)).map {
+      snapshot.pointee.dirty_rows![$0]
+    }
+    XCTAssertEqual(
+      dirtyRows,
+      [1, 1, 1, 1],
+      "column reflow must force full-row damage; dirty rows: \(dirtyRows)")
+  }
+
   // MARK: - Mouse encoding tests
 
   func testMouseEncodingWithSGREnabled() {
@@ -2378,10 +2596,17 @@ final class LabanSessionTests: XCTestCase {
 }
 
 private func visibleText(from snap: UnsafePointer<LabanSnapshot>) -> String {
+  rawRows(from: snap)
+    .map { $0.trimmingCharacters(in: .whitespaces) }
+    .filter { !$0.isEmpty }
+    .joined(separator: "\n")
+}
+
+private func rawRows(from snap: UnsafePointer<LabanSnapshot>) -> [String] {
   let snapshot = snap.pointee
   let rows = Int(snapshot.rows)
   let cols = Int(snapshot.cols)
-  guard let cells = snapshot.cells, let storage = snapshot.utf8_storage else { return "" }
+  guard let cells = snapshot.cells, let storage = snapshot.utf8_storage else { return [] }
   var lines: [String] = []
   for row in 0..<rows {
     var line = ""
@@ -2395,10 +2620,16 @@ private func visibleText(from snap: UnsafePointer<LabanSnapshot>) -> String {
       )
       if let text = String(bytes: buf, encoding: .utf8) { line += text }
     }
-    let trimmed = line.trimmingCharacters(in: .whitespaces)
-    if !trimmed.isEmpty { lines.append(trimmed) }
+    lines.append(line)
   }
-  return lines.joined(separator: "\n")
+  return lines
+}
+
+private func snapshotAndMarkRendered(_ session: OpaquePointer) -> Int32 {
+  var snapshot: UnsafeMutablePointer<LabanSnapshot>?
+  guard laban_session_snapshot(session, &snapshot) == 0 else { return -1 }
+  laban_snapshot_destroy(snapshot)
+  return laban_session_mark_rendered(session)
 }
 
 private func cellColors(

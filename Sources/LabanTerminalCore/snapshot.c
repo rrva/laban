@@ -500,6 +500,9 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->cell_count      = cell_count;
     snap->hyperlink_uris  = (const char *const *)hyperlink_uris;
     snap->hyperlink_count = hyperlink_count;
+    if (dirty_rows && rows > 0 && dirty_state == GHOSTTY_RENDER_STATE_DIRTY_FULL) {
+        memset(dirty_rows, 1, (size_t)rows);
+    }
     /* libghostty's per-row dirty bits track cell mutations, not screen swaps.
      * Entering/exiting the alternate screen (?1049/?1047/?47) restores a
      * buffer whose untouched rows stay clean even though every visible row

@@ -601,6 +601,9 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
             s->terminal, cols, rows,
             (uint32_t)size.cell_width, (uint32_t)size.cell_height);
         if (r != GHOSTTY_SUCCESS) return -1;
+        GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+        ghostty_render_state_set(s->render_state,
+            GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty);
     }
     s->cols        = cols;
     s->rows        = rows;
