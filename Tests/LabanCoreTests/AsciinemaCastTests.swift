@@ -1,4 +1,5 @@
 import Foundation
+import LabanTerminalCore
 import XCTest
 
 @testable import LabanCore
@@ -72,6 +73,52 @@ final class AsciinemaCastTests: XCTestCase {
     XCTAssertEqual(secondEvent.2, "there\n")
   }
 
+  func testInitialFrameBytesAreEmittedBeforeRecordedDeltas() throws {
+    let entries = [
+      RecentByteRing.Entry(timestampNanos: 1_000_000_000, bytes: Array("\u{1B}[2;5H!".utf8))
+    ]
+    let data = try AsciinemaCast.encode(
+      entries: entries,
+      cols: 100,
+      rows: 30,
+      title: "demo",
+      startedAtUnixSeconds: 1_716_000_000,
+      initialFrameBytes: Array("\u{1B}[2Jalpha\r\nbeta!".utf8))
+    let lines = decodeLines(data)
+    XCTAssertEqual(lines.count, 3)
+
+    let seedEvent = try parseEvent(lines[1])
+    XCTAssertEqual(seedEvent.0, 0.0, accuracy: 1e-9)
+    XCTAssertEqual(seedEvent.1, "o")
+    XCTAssertTrue(seedEvent.2.contains("\u{1B}[2J"))
+    XCTAssertTrue(seedEvent.2.contains("alpha"))
+
+    let deltaEvent = try parseEvent(lines[2])
+    XCTAssertEqual(deltaEvent.0, 0.0, accuracy: 1e-9)
+    XCTAssertEqual(deltaEvent.1, "o")
+    XCTAssertEqual(deltaEvent.2, "\u{1B}[2;5H!")
+  }
+
+  func testTimelineBasePreservesDelayAfterInitialFrame() throws {
+    let entries = [
+      RecentByteRing.Entry(timestampNanos: 1_000_000_000, bytes: Array("late".utf8))
+    ]
+    let data = try AsciinemaCast.encode(
+      entries: entries,
+      cols: 80,
+      rows: 24,
+      title: nil,
+      startedAtUnixSeconds: 1_716_000_000,
+      initialFrameBytes: Array("\u{1B}[2Jseed".utf8),
+      timelineBaseNanos: 750_000_000)
+    let lines = decodeLines(data)
+    XCTAssertEqual(lines.count, 3)
+
+    let deltaEvent = try parseEvent(lines[2])
+    XCTAssertEqual(deltaEvent.0, 0.25, accuracy: 1e-9)
+    XCTAssertEqual(deltaEvent.2, "late")
+  }
+
   func testEscapeSequencesAreJSONEncoded() throws {
     // Real PTY output contains ESC, control chars, quotes. The
     // encoder must produce valid JSON the asciinema player can
@@ -121,6 +168,38 @@ final class AsciinemaCastTests: XCTestCase {
     let event = try parseEvent(lines[1])
     XCTAssertTrue(event.2.contains("\u{FFFD}"))
     XCTAssertTrue(event.2.contains("A"))
+  }
+
+  func testFullFrameSnapshotBytesRehydrateVisibleGrid() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 14
+    let source = try Session.fixture(size: size)
+    XCTAssertEqual(
+      source.feedOutput(
+        Array("\u{1B}[2J\u{1B}[Halpha\u{1B}[2;3Hβeta\u{1B}[4;1Hdone".utf8)),
+      0)
+
+    let sourceSnap = try XCTUnwrap(source.snapshot())
+    defer { laban_snapshot_destroy(sourceSnap) }
+
+    let seed = AsciinemaCast.fullFrameSnapshotBytes(from: UnsafePointer(sourceSnap))
+    let seedText = String(decoding: seed, as: UTF8.self)
+    XCTAssertTrue(seedText.contains("\u{1B}[2J"), seedText.debugDescription)
+    XCTAssertTrue(seedText.contains("alpha"), seedText.debugDescription)
+    XCTAssertTrue(seedText.contains("βeta"), seedText.debugDescription)
+
+    let target = try Session.fixture(size: size)
+    XCTAssertEqual(target.replayPtyOutput(seed), 0)
+    let targetSnap = try XCTUnwrap(target.snapshot())
+    defer { laban_snapshot_destroy(targetSnap) }
+
+    XCTAssertEqual(
+      TerminalSnapshotText.visibleText(from: UnsafePointer(targetSnap), mode: .fullGrid),
+      TerminalSnapshotText.visibleText(from: UnsafePointer(sourceSnap), mode: .fullGrid)
+    )
+    XCTAssertEqual(targetSnap.pointee.cursor_row, sourceSnap.pointee.cursor_row)
+    XCTAssertEqual(targetSnap.pointee.cursor_col, sourceSnap.pointee.cursor_col)
   }
 
   // MARK: - Helpers

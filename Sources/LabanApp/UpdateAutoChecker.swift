@@ -89,8 +89,8 @@ final class UpdateAutoChecker {
     case .failure(let error):
       AppLog.app.error("update auto-check failed: \(error.localizedDescription)")
       EventLog.shared.log("update.auto.failed", ["error": error.localizedDescription])
-      // Silent: leave badge as-is. A stale "available" badge from a prior
-      // success stays visible until the next successful up-to-date result.
+    // Silent: leave badge as-is. A stale "available" badge from a prior
+    // success stays visible until the next successful up-to-date result.
     }
   }
 }

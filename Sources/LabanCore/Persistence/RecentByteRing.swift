@@ -34,6 +34,23 @@ public final class RecentByteRing {
     }
   }
 
+  /// Split view of the retained ring for bounded cast export. The
+  /// `initialEntries` are retained bytes before the requested window;
+  /// callers can replay them into a scratch terminal to synthesize
+  /// the window's starting screen. The `entries` are the actual PTY
+  /// chunks to emit as timed cast events.
+  public struct CastWindowSnapshot: Equatable {
+    public let cutoffNanos: UInt64
+    public let initialEntries: [Entry]
+    public let entries: [Entry]
+
+    public init(cutoffNanos: UInt64, initialEntries: [Entry], entries: [Entry]) {
+      self.cutoffNanos = cutoffNanos
+      self.initialEntries = initialEntries
+      self.entries = entries
+    }
+  }
+
   public let byteCapacity: Int
   public let headerCapacity: Int
 
@@ -135,13 +152,7 @@ public final class RecentByteRing {
   /// from this call; entries older than that are skipped. Bytes
   /// dropped by ring overflow do not appear.
   public func snapshot(window: TimeInterval) -> [Entry] {
-    precondition(window >= 0, "window must be non-negative")
-    let cutoffNanos: UInt64 = {
-      let nowNanos = RecentByteRing.monotonicNanos()
-      let windowNanos = UInt64((window * 1_000_000_000).rounded())
-      if windowNanos >= nowNanos { return 0 }
-      return nowNanos - windowNanos
-    }()
+    let cutoffNanos = Self.cutoffNanos(window: window)
 
     lock.lock()
     defer { lock.unlock() }
@@ -161,6 +172,43 @@ public final class RecentByteRing {
       result.append(Entry(timestampNanos: ts, bytes: chunk))
     }
     return result
+  }
+
+  /// Return the retained bytes split around the requested recent
+  /// window. This is more expensive than `snapshot(window:)` because
+  /// it copies older retained chunks too, and is intended for explicit
+  /// user/debug export only.
+  public func castWindowSnapshot(window: TimeInterval) -> CastWindowSnapshot {
+    let cutoffNanos = Self.cutoffNanos(window: window)
+
+    lock.lock()
+    defer { lock.unlock() }
+
+    var initialEntries: [Entry] = []
+    var entries: [Entry] = []
+    initialEntries.reserveCapacity(headerSize)
+    entries.reserveCapacity(headerSize)
+
+    for i in 0..<headerSize {
+      let idx = (headerTail + i) % headerCapacity
+      let ts = headerTimestamps[idx]
+      let off = headerOffsets[idx]
+      let len = headerLengths[idx]
+      guard off >= firstRetainedByteOffset else { continue }
+      var chunk = [UInt8](repeating: 0, count: len)
+      copyChunkUnlocked(offset: off, length: len, into: &chunk)
+      let entry = Entry(timestampNanos: ts, bytes: chunk)
+      if ts < cutoffNanos {
+        initialEntries.append(entry)
+      } else {
+        entries.append(entry)
+      }
+    }
+
+    return CastWindowSnapshot(
+      cutoffNanos: cutoffNanos,
+      initialEntries: initialEntries,
+      entries: entries)
   }
 
   /// Drop all retained entries. Used by tests.
@@ -221,5 +269,13 @@ public final class RecentByteRing {
     var ts = timespec()
     clock_gettime(CLOCK_MONOTONIC, &ts)
     return UInt64(ts.tv_sec) &* 1_000_000_000 &+ UInt64(ts.tv_nsec)
+  }
+
+  private static func cutoffNanos(window: TimeInterval) -> UInt64 {
+    precondition(window >= 0, "window must be non-negative")
+    let nowNanos = RecentByteRing.monotonicNanos()
+    let windowNanos = UInt64((window * 1_000_000_000).rounded())
+    if windowNanos >= nowNanos { return 0 }
+    return nowNanos - windowNanos
   }
 }

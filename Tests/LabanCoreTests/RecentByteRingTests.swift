@@ -68,6 +68,17 @@ final class RecentByteRingTests: XCTestCase {
     XCTAssertEqual(recent[0].bytes, Array("new".utf8))
   }
 
+  func testCastWindowSnapshotSplitsInitialReplayEntriesFromTimedEntries() {
+    let ring = RecentByteRing()
+    write(ring: ring, string: "old")
+    Thread.sleep(forTimeInterval: 0.05)
+    write(ring: ring, string: "new")
+
+    let snapshot = ring.castWindowSnapshot(window: 0.02)
+    XCTAssertEqual(snapshot.initialEntries.map(\.bytes), [Array("old".utf8)])
+    XCTAssertEqual(snapshot.entries.map(\.bytes), [Array("new".utf8)])
+  }
+
   func testHeaderRingOverflowDropsOldestHeaders() {
     let ring = RecentByteRing(byteCapacity: 4096, headerCapacity: 4)
     for i in 0..<6 {

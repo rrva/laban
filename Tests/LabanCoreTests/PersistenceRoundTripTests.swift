@@ -210,7 +210,8 @@ final class PersistenceRoundTripTests: XCTestCase {
     model.updateAgent(agent, forTab: closingTab.id)
 
     XCTAssertNil(model.agent(forTab: closingTab.id))
-    let persistedWindow = try XCTUnwrap(model.snapshotForPersistence(windowId: "win-A").windows.first)
+    let persistedWindow = try XCTUnwrap(
+      model.snapshotForPersistence(windowId: "win-A").windows.first)
     XCTAssertFalse(persistedWindow.tabs.contains { $0.id == closingTab.id })
     XCTAssertFalse(persistedWindow.tabs.contains { $0.agent == agent })
   }

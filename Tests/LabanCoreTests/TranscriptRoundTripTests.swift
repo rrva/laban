@@ -176,10 +176,12 @@ final class TranscriptRoundTripTests: XCTestCase {
     // text. Don't pin to exact layout — different libghostty versions
     // may differ slightly in row placement.
     if let storagePtr = snap.pointee.utf8_storage {
-      let text = String(
-        bytes: UnsafeBufferPointer(start: UnsafeRawPointer(storagePtr).assumingMemoryBound(to: UInt8.self),
-                                   count: Int(snap.pointee.utf8_storage_len)),
-        encoding: .utf8) ?? ""
+      let text =
+        String(
+          bytes: UnsafeBufferPointer(
+            start: UnsafeRawPointer(storagePtr).assumingMemoryBound(to: UInt8.self),
+            count: Int(snap.pointee.utf8_storage_len)),
+          encoding: .utf8) ?? ""
       XCTAssertTrue(text.contains("line A") || text.contains("line C"))
     }
   }

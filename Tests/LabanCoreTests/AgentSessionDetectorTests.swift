@@ -275,7 +275,8 @@ final class AgentSessionDetectorTests: XCTestCase {
       introspector: mock)
     XCTAssertNil(detector.detect(), "first sample should cache the missing project directory")
 
-    let project = base
+    let project =
+      base
       .appendingPathComponent("projects", isDirectory: true)
       .appendingPathComponent(
         ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)

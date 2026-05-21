@@ -420,7 +420,7 @@ public final class DebugHTTPServer {
       let seconds = Double(request.query["seconds"] ?? "") ?? 10
       let tabId = request.query["tabId"]
       switch runtime.recentCastBytes(seconds: seconds, tabId: tabId) {
-      case let .success(data, resolvedTabId, chunks, windowSeconds):
+      case .success(let data, let resolvedTabId, let chunks, let windowSeconds):
         return HTTPResponse(
           status: 200,
           contentType: "application/x-asciicast",
@@ -430,7 +430,7 @@ public final class DebugHTTPServer {
             "X-App-Cast-Window-Seconds: \(windowSeconds)",
           ],
           body: data)
-      case let .failure(status, message):
+      case .failure(let status, let message):
         return json(jsonError(message, status: status))
       }
     },

@@ -28,7 +28,8 @@ final class AgentJSONLMirrorTests: XCTestCase {
     let tabId = "tab-mirror-toggle"
     mirror.track(tabId: tabId, jsonlPath: source.path)
     // track() calls snapshot once synchronously — the file should exist.
-    let dest = dir
+    let dest =
+      dir
       .appendingPathComponent("agent-mirror", isDirectory: true)
       .appendingPathComponent("\(tabId).jsonl")
     XCTAssertTrue(
@@ -38,14 +39,17 @@ final class AgentJSONLMirrorTests: XCTestCase {
     // Flip the gate off and snapshot again — the destination mtime
     // must not advance.
     enabled = false
-    let beforeMtime = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.modificationDate])
+    let beforeMtime =
+      (try? FileManager.default.attributesOfItem(atPath: dest.path)[.modificationDate])
       as? Date
     Thread.sleep(forTimeInterval: 0.05)
     try Data("changed\n".utf8).write(to: source)
     mirror.snapshot(tabId: tabId)
-    let afterMtime = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.modificationDate])
+    let afterMtime =
+      (try? FileManager.default.attributesOfItem(atPath: dest.path)[.modificationDate])
       as? Date
-    XCTAssertEqual(beforeMtime, afterMtime,
+    XCTAssertEqual(
+      beforeMtime, afterMtime,
       "disabled snapshot must NOT copy the source even when called explicitly")
     mirror.untrack(tabId: tabId, finalSnapshot: false)
   }

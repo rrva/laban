@@ -34,10 +34,15 @@ extension HeadlessDebugRuntime {
           status: 404,
           message: "no recent-byte ring for tab \(resolvedTabId)")
       }
-      let entries = ring.snapshot(window: seconds)
+      let castSnapshot = ring.castWindowSnapshot(window: seconds)
+      let entries = castSnapshot.entries
       let size = model.terminalSize
       let cols = max(Int(size.cols), 1)
       let rows = max(Int(size.rows), 1)
+      let initialFrameBytes = AsciinemaCast.fullFrameSnapshotBytes(
+        replaying: castSnapshot.initialEntries,
+        cols: cols,
+        rows: rows)
       // Cast header timestamp is when the window started, not when
       // the export ran, so a player's "recorded at" string matches
       // what the user actually saw. NOTE: cols/rows reflect the
@@ -50,7 +55,9 @@ extension HeadlessDebugRuntime {
           cols: cols,
           rows: rows,
           title: resolvedTabId,
-          startedAtUnixSeconds: startedAt)
+          startedAtUnixSeconds: startedAt,
+          initialFrameBytes: initialFrameBytes,
+          timelineBaseNanos: initialFrameBytes.isEmpty ? nil : castSnapshot.cutoffNanos)
         return .success(
           data: data,
           tabId: resolvedTabId,

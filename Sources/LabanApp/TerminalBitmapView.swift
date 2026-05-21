@@ -2793,8 +2793,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       )
       return
     }
-    let entries = ring.snapshot(window: seconds)
-    guard !entries.isEmpty else {
+    let castSnapshot = ring.castWindowSnapshot(window: seconds)
+    let entries = castSnapshot.entries
+    let size = model.terminalSize
+    let cols = max(Int(size.cols), 1)
+    let rows = max(Int(size.rows), 1)
+    let initialFrameBytes = AsciinemaCast.fullFrameSnapshotBytes(
+      replaying: castSnapshot.initialEntries,
+      cols: cols,
+      rows: rows)
+    guard !entries.isEmpty || !initialFrameBytes.isEmpty else {
       showCastAlert(
         title: "Nothing to export",
         message:
@@ -2802,9 +2810,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       )
       return
     }
-    let size = model.terminalSize
-    let cols = max(Int(size.cols), 1)
-    let rows = max(Int(size.rows), 1)
     let title: String? = {
       guard let active = model.activeTab else { return nil }
       let raw = active.titleMetadata.workspace.cwd ?? active.title
@@ -2817,7 +2822,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cols: cols,
         rows: rows,
         title: title,
-        startedAtUnixSeconds: startedAt)
+        startedAtUnixSeconds: startedAt,
+        initialFrameBytes: initialFrameBytes,
+        timelineBaseNanos: initialFrameBytes.isEmpty ? nil : castSnapshot.cutoffNanos)
       let url = try writeCast(data: data, seconds: Int(seconds))
       AppLog.app.info(
         "exported cast: \(url.path) (\(entries.count) chunks, \(data.count) bytes)")
