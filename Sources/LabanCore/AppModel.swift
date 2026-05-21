@@ -187,7 +187,7 @@ public final class AppModel {
     sessionRegistry.onSessionDirty = onSessionDirty
     sessionRegistry.add(session)
     _tabs.append(tab)
-    attachTabStatus(session: session, tabId: tab.id)
+    attachSessionCallbacks(session: session, tabId: tab.id)
     themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
@@ -481,7 +481,7 @@ public final class AppModel {
       )
       sessionRegistry.add(session)
       _tabs.append(tab)
-      attachTabStatus(session: session, tabId: tab.id)
+      attachSessionCallbacks(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
       selectTabUnlocked(tab.id)
@@ -620,7 +620,7 @@ public final class AppModel {
         _tabs[_tabs.count - 1].titleMetadata.workspace = TabWorkspaceMetadata(cwd: resolved.cwd)
         cwdFallbackAppliedByTab[id] = true
       }
-      attachTabStatus(session: session, tabId: tab.id)
+      attachSessionCallbacks(session: session, tabId: tab.id)
       recordSessionCreated(sessionId: session.id, tabId: tab.id)
       recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
       if isActive {
@@ -753,6 +753,7 @@ public final class AppModel {
       _tabs[i].isActive = selected
       if selected {
         _tabs[i].titleMetadata.unseenOutput = false
+        _tabs[i].titleMetadata.bellAttention = false
       }
       if _tabs[i].status == .running {
         _tabs[i].titleMetadata.activityState =
@@ -813,6 +814,7 @@ public final class AppModel {
           let newActiveIdx = min(idx, _tabs.count - 1)
           _tabs[newActiveIdx].isActive = true
           _tabs[newActiveIdx].titleMetadata.unseenOutput = false
+          _tabs[newActiveIdx].titleMetadata.bellAttention = false
           if _tabs[newActiveIdx].status == .running {
             _tabs[newActiveIdx].titleMetadata.activityState = .active
           }
@@ -902,6 +904,7 @@ public final class AppModel {
     lastActivityAt: Date? = nil,
     lastOutputAt: Date? = nil,
     unseenOutput: Bool? = nil,
+    bellAttention: Bool? = nil,
     exitStatus: Int? = nil
   ) throws {
     try withModelLock {
@@ -915,6 +918,7 @@ public final class AppModel {
       if let lastActivityAt { _tabs[idx].titleMetadata.lastActivityAt = lastActivityAt }
       if let lastOutputAt { _tabs[idx].titleMetadata.lastOutputAt = lastOutputAt }
       if let unseenOutput { _tabs[idx].titleMetadata.unseenOutput = unseenOutput }
+      if let bellAttention { _tabs[idx].titleMetadata.bellAttention = bellAttention }
       if let exitStatus { _tabs[idx].titleMetadata.exitStatus = exitStatus }
       resolveTitle(at: idx)
     }
@@ -1324,6 +1328,11 @@ public final class AppModel {
     Int32(max(minimum, min(value, Int(Int32.max))))
   }
 
+  private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {
+    attachTabStatus(session: session, tabId: tabId)
+    attachBellAttention(session: session, tabId: tabId)
+  }
+
   /// Subscribe to OSC 21337 tab-status pushes from the session and fold
   /// them into the matching tab's metadata. Per the iTerm2 spec, each
   /// field is preserved when the update doesn't mention it (nil), cleared
@@ -1340,6 +1349,22 @@ public final class AppModel {
       DispatchQueue.main.async { [weak self] in
         self?.applyTabStatusUpdate(update, forTab: tabId)
       }
+    }
+  }
+
+  private func attachBellAttention(session: Session, tabId: Tab.ID) {
+    session.onBell = { [weak self] _ in
+      let date = Date()
+      DispatchQueue.main.async { [weak self] in
+        self?.applyBellAttention(forTab: tabId, at: date)
+      }
+    }
+  }
+
+  @discardableResult
+  private func applyBellAttention(forTab tabId: Tab.ID, at date: Date) -> Bool {
+    withModelLock {
+      metadataSync.noteBell(forTab: tabId, at: date, tabs: &_tabs)
     }
   }
 

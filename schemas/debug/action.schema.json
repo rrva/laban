@@ -107,6 +107,7 @@
           "enum": ["active", "background", "running", "idle", "unseenOutput", "waiting", "exited"]
         },
         "unseenOutput": {"type": "boolean"},
+        "bellAttention": {"type": "boolean"},
         "exitStatus": {"type": "integer"}
       },
       "additionalProperties": false

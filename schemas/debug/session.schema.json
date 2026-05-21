@@ -20,6 +20,7 @@
     "titleFrozen",
     "activityState",
     "unseenOutput",
+    "bellAttention",
     "mouseTracking",
     "focusReporting",
     "dirty"
@@ -56,6 +57,7 @@
     "lastActivityAt": {"type": ["string", "null"], "format": "date-time"},
     "lastOutputAt": {"type": ["string", "null"], "format": "date-time"},
     "unseenOutput": {"type": "boolean"},
+    "bellAttention": {"type": "boolean"},
     "workspace": {"type": "object", "additionalProperties": true},
     "process": {"type": "object", "additionalProperties": true},
     "agent": {"type": "object", "additionalProperties": true},

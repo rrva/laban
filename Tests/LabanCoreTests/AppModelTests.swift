@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import LabanTerminalCore
 import XCTest
 
@@ -36,6 +37,12 @@ private func processMetadata(
     foregroundCommand: command,
     cwd: cwd
   )
+}
+
+private func pumpMainQueue(timeout: TimeInterval = 1.0) {
+  let pumped = XCTestExpectation(description: "main queue pumped")
+  DispatchQueue.main.async { pumped.fulfill() }
+  XCTWaiter().wait(for: [pumped], timeout: timeout)
 }
 
 final class AppModelTests: XCTestCase {
@@ -272,6 +279,42 @@ final class AppModelTests: XCTestCase {
     wait(for: [mainPump], timeout: 1)
 
     XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusText, "background")
+  }
+
+  func testActiveBellDoesNotSetAttention() throws {
+    let model = try makeModel()
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+
+    XCTAssertEqual(session.feedOutput([0x07]), 0)
+    pumpMainQueue()
+
+    XCTAssertFalse(model.tabs[0].titleMetadata.bellAttention)
+  }
+
+  func testInactiveBellSetsAttentionAndSelectionClearsIt() throws {
+    let model = try makeModel()
+    let firstTab = try XCTUnwrap(model.activeTab)
+    let secondTab = try model.createTab()
+    model.selectTab(firstTab.id)
+    let secondSession = try XCTUnwrap(model.session(forTab: secondTab.id))
+
+    XCTAssertEqual(secondSession.feedOutput([0x07]), 0)
+    pumpMainQueue()
+
+    var updatedSecond = try XCTUnwrap(model.tabs.first { $0.id == secondTab.id })
+    XCTAssertFalse(updatedSecond.isActive)
+    XCTAssertTrue(updatedSecond.titleMetadata.bellAttention)
+    XCTAssertEqual(
+      TabTitleResolver.resolve(updatedSecond.titleMetadata, fallbackPosition: updatedSecond.position)
+        .statusBadge,
+      "•")
+
+    model.selectTab(secondTab.id)
+
+    updatedSecond = try XCTUnwrap(model.tabs.first { $0.id == secondTab.id })
+    XCTAssertTrue(updatedSecond.isActive)
+    XCTAssertFalse(updatedSecond.titleMetadata.bellAttention)
   }
 
   func testSyncExitStateIsMonotonic() throws {

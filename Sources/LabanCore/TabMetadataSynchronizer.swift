@@ -218,6 +218,18 @@ final class TabMetadataSynchronizer {
     return tabs[idx].titleMetadata != before
   }
 
+  @discardableResult
+  func noteBell(forTab tabId: Tab.ID, at date: Date, tabs: inout [Tab]) -> Bool {
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    let before = tabs[idx].titleMetadata
+    tabs[idx].titleMetadata.lastActivityAt = date
+    if tabs[idx].status == .running {
+      tabs[idx].titleMetadata.bellAttention = !tabs[idx].isActive
+    }
+    Self.resolveTitle(in: &tabs, at: idx)
+    return tabs[idx].titleMetadata != before
+  }
+
   func syncSurfaceMetadata(
     forTab tabId: Tab.ID,
     at idx: Int,

@@ -119,4 +119,20 @@ final class LabanDebugTitleTests: XCTestCase {
     XCTAssertEqual(tab["activityState"] as? String, "exited")
     XCTAssertEqual(tab["exitStatus"] as? Int, 7)
   }
+
+  func testDebugCanExposeBellAttention() throws {
+    let (runtime, artifacts) = try makeRuntime()
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    try post(runtime, ["action": "setTabMetadata", "bellAttention": true])
+
+    let tab = try firstTab(from: runtime.state())
+    XCTAssertEqual(tab["bellAttention"] as? Bool, true)
+
+    let sessionsResponse = runtime.sessions()
+    XCTAssertEqual(sessionsResponse.status, 200)
+    let sessionsBody = try jsonObject(sessionsResponse)
+    let sessions = sessionsBody["sessions"] as! [[String: Any]]
+    XCTAssertEqual(sessions[0]["bellAttention"] as? Bool, true)
+  }
 }

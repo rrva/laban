@@ -358,4 +358,34 @@ final class SidebarProducerTests: XCTestCase {
 
     XCTAssertTrue(texts.contains("*"))
   }
+
+  func testBellAttentionRendersDotMarker() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
+    tab.titleMetadata.bellAttention = true
+
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+
+    XCTAssertTrue(texts.contains("•"))
+  }
+
+  func testAgentIndicatorWinsOverBellAttention() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
+    tab.titleMetadata.bellAttention = true
+    tab.titleMetadata.agentStatus = TabAgentStatus(indicatorColor: "#00ff00")
+
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: nil, height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+
+    XCTAssertTrue(texts.contains("●"))
+    XCTAssertFalse(texts.contains("•"))
+  }
 }

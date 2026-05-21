@@ -126,6 +126,7 @@ struct DebugTabActions {
         agent: agent,
         activityState: activityState,
         unseenOutput: request.unseenOutput,
+        bellAttention: request.bellAttention,
         exitStatus: request.exitStatus
       )
     } catch {

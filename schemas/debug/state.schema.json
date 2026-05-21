@@ -59,6 +59,7 @@
         "titleFrozen",
         "activityState",
         "unseenOutput",
+        "bellAttention",
         "active",
         "status",
         "sessionId"
@@ -83,6 +84,7 @@
         "lastActivityAt": {"type": ["string", "null"], "format": "date-time"},
         "lastOutputAt": {"type": ["string", "null"], "format": "date-time"},
         "unseenOutput": {"type": "boolean"},
+        "bellAttention": {"type": "boolean"},
         "exitStatus": {"type": ["integer", "null"]},
         "workspace": {"type": "object", "additionalProperties": true},
         "process": {"type": "object", "additionalProperties": true},

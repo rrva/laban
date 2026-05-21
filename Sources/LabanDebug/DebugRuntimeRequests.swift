@@ -122,6 +122,7 @@ struct TabMetadataActionRequest: Decodable {
   var awaitingInput: Bool?
   var activityState: String?
   var unseenOutput: Bool?
+  var bellAttention: Bool?
   var exitStatus: Int?
 }
 

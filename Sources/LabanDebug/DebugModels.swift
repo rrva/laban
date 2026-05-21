@@ -113,6 +113,7 @@ struct TabResponse: Encodable {
   var lastActivityAt: Date?
   var lastOutputAt: Date?
   var unseenOutput: Bool
+  var bellAttention: Bool
   var exitStatus: Int?
   var workspace: TabWorkspaceMetadata
   var process: TabProcessMetadata
@@ -199,6 +200,7 @@ struct SessionResponse: Encodable {
   var lastActivityAt: Date?
   var lastOutputAt: Date?
   var unseenOutput: Bool
+  var bellAttention: Bool
   var workspace: TabWorkspaceMetadata
   var process: TabProcessMetadata
   var agent: TabAgentMetadata

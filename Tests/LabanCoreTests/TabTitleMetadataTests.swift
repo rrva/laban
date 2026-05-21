@@ -247,4 +247,25 @@ final class TabTitleMetadataTests: XCTestCase {
     XCTAssertEqual(resolved.subtitle, "laban@cobra | main* | claude | exited 7")
     XCTAssertEqual(resolved.statusBadge, "!")
   }
+
+  func testBellAttentionBadgePriority() {
+    var metadata = TabTitleMetadata(
+      displayTitle: "Tab 1",
+      titleSource: .fallback,
+      unseenOutput: true,
+      bellAttention: true
+    )
+
+    var resolved = TabTitleResolver.resolve(metadata, fallbackPosition: 1)
+    XCTAssertEqual(resolved.statusBadge, "•")
+
+    metadata.activityState = .waiting
+    resolved = TabTitleResolver.resolve(metadata, fallbackPosition: 1)
+    XCTAssertEqual(resolved.statusBadge, "!")
+
+    metadata.activityState = .exited
+    metadata.exitStatus = 7
+    resolved = TabTitleResolver.resolve(metadata, fallbackPosition: 1)
+    XCTAssertEqual(resolved.statusBadge, "!")
+  }
 }

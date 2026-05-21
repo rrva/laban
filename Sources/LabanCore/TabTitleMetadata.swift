@@ -131,6 +131,7 @@ public struct TabTitleMetadata: Codable, Equatable {
   public var lastActivityAt: Date?
   public var lastOutputAt: Date?
   public var unseenOutput: Bool
+  public var bellAttention: Bool
   public var exitStatus: Int?
 
   public init(
@@ -147,6 +148,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     lastActivityAt: Date? = nil,
     lastOutputAt: Date? = nil,
     unseenOutput: Bool = false,
+    bellAttention: Bool = false,
     exitStatus: Int? = nil
   ) {
     self.userTitle = TerminalTitle.sanitize(userTitle)
@@ -163,6 +165,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.lastActivityAt = lastActivityAt
     self.lastOutputAt = lastOutputAt
     self.unseenOutput = unseenOutput
+    self.bellAttention = bellAttention
     self.exitStatus = exitStatus
   }
 
@@ -467,10 +470,11 @@ public enum TabTitleResolver {
 
   private static func statusBadge(for metadata: TabTitleMetadata) -> String? {
     if metadata.activityState == .waiting || metadata.agent.awaitingInput { return "!" }
-    if metadata.activityState == .unseenOutput || metadata.unseenOutput { return "*" }
     if metadata.activityState == .exited, let status = metadata.exitStatus, status != 0 {
       return "!"
     }
+    if metadata.bellAttention { return "•" }
+    if metadata.activityState == .unseenOutput || metadata.unseenOutput { return "*" }
     return nil
   }
 
