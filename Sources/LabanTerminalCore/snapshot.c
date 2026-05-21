@@ -139,8 +139,14 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
 
     /* Read dimensions. */
     uint16_t rs_cols = 80, rs_rows = 24;
-    ghostty_render_state_get(s->render_state, GHOSTTY_RENDER_STATE_DATA_COLS, &rs_cols);
-    ghostty_render_state_get(s->render_state, GHOSTTY_RENDER_STATE_DATA_ROWS, &rs_rows);
+    {
+        const GhosttyRenderStateData keys[] = {
+            GHOSTTY_RENDER_STATE_DATA_COLS,
+            GHOSTTY_RENDER_STATE_DATA_ROWS,
+        };
+        void *values[] = { &rs_cols, &rs_rows };
+        ghostty_render_state_get_multi(s->render_state, 2, keys, values, NULL);
+    }
     int rows = (int)rs_rows;
     int cols = (int)rs_cols;
     if (s->rows == 0 || s->cols == 0) {
@@ -199,58 +205,89 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     int row_idx = 0;
     while (!snapshot_error && row_idx < rows &&
            ghostty_render_state_row_iterator_next(s->row_iter)) {
-        /* Populate the pre-allocated cells container for this row. */
-        ghostty_render_state_row_get(s->row_iter,
-            GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &s->row_cells);
-
-        /* Row has any hyperlink? Skip per-cell grid-ref lookups when not.
-         * The render-state row iterator doesn't expose this directly; pull
-         * the raw GhosttyRow and ask via ghostty_row_get(). The same raw
-         * row gives us the per-row dirty bit for the renderer's damage
-         * tracking. */
-        bool row_has_hyperlink = false;
+        /* Populate the pre-allocated cells container and get the raw row in
+         * one libghostty call. The raw row gives us row-level hints used to
+         * skip common no-hyperlink work and to report renderer damage. */
+        GhosttyRow raw_row = 0;
         {
-            GhosttyRow raw_row = 0;
-            if (ghostty_render_state_row_get(s->row_iter,
-                    GHOSTTY_RENDER_STATE_ROW_DATA_RAW, &raw_row) == GHOSTTY_SUCCESS) {
-                ghostty_row_get(raw_row, GHOSTTY_ROW_DATA_HYPERLINK, &row_has_hyperlink);
-                if (dirty_rows) {
-                    bool row_dirty = false;
-                    if (ghostty_row_get(raw_row, GHOSTTY_ROW_DATA_DIRTY, &row_dirty)
-                            == GHOSTTY_SUCCESS) {
-                        dirty_rows[row_idx] = row_dirty ? 1 : 0;
-                    }
-                }
+            const GhosttyRenderStateRowData keys[] = {
+                GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+                GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+            };
+            void *values[] = { &s->row_cells, &raw_row };
+            if (ghostty_render_state_row_get_multi(s->row_iter, 2, keys, values, NULL)
+                    != GHOSTTY_SUCCESS) {
+                snapshot_error = 1;
+                break;
             }
         }
+
+        bool row_has_hyperlink = false;
+        bool row_dirty = false;
+        const GhosttyRowData row_keys[] = {
+            GHOSTTY_ROW_DATA_HYPERLINK,
+            GHOSTTY_ROW_DATA_DIRTY,
+        };
+        void *row_values[] = { &row_has_hyperlink, &row_dirty };
+        if (ghostty_row_get_multi(raw_row, 2, row_keys, row_values, NULL)
+                == GHOSTTY_SUCCESS && dirty_rows) {
+            dirty_rows[row_idx] = row_dirty ? 1 : 0;
+        }
+
+        static const GhosttyRenderStateRowCellsData cell_keys[] = {
+            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
+            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
+            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
+        };
+
+        static const GhosttyCellData cell_width_keys[] = {
+            GHOSTTY_CELL_DATA_WIDE,
+        };
+
+        static const GhosttyCellData cell_width_link_keys[] = {
+            GHOSTTY_CELL_DATA_WIDE,
+            GHOSTTY_CELL_DATA_HAS_HYPERLINK,
+        };
 
         int col_idx = 0;
         while (col_idx < cols && ghostty_render_state_row_cells_next(s->row_cells)) {
             LabanCell *cell = &cells[row_idx * cols + col_idx];
 
+            GhosttyCell raw_cell = 0;
             GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
-            if (ghostty_render_state_row_cells_get(s->row_cells,
-                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) == GHOSTTY_SUCCESS) {
-                cell->flags = laban_cell_flags_from_style(&style);
-                cell->underline_style = (uint8_t)style.underline;
-                cell->underline_color_rgba =
-                    resolve_style_color_rgba(s->render_state, style.underline_color);
+            uint32_t grapheme_len = 0;
+            void *cell_values[] = { &raw_cell, &style, &grapheme_len };
+            if (ghostty_render_state_row_cells_get_multi(
+                    s->row_cells, 3, cell_keys, cell_values, NULL) != GHOSTTY_SUCCESS) {
+                snapshot_error = 1;
+                break;
             }
+
+            cell->flags = laban_cell_flags_from_style(&style);
+            cell->underline_style = (uint8_t)style.underline;
+            cell->underline_color_rgba =
+                resolve_style_color_rgba(s->render_state, style.underline_color);
 
             /* Width category (narrow / wide / spacer-tail / spacer-head). */
-            GhosttyCell raw_cell = 0;
-            if (ghostty_render_state_row_cells_get(s->row_cells,
-                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw_cell) == GHOSTTY_SUCCESS) {
+            bool cell_has_link = false;
+            {
                 GhosttyCellWide w = GHOSTTY_CELL_WIDE_NARROW;
-                if (ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_WIDE, &w) == GHOSTTY_SUCCESS) {
-                    cell->wide = (uint8_t)w;
+                if (row_has_hyperlink) {
+                    void *cell_meta_values[] = { &w, &cell_has_link };
+                    if (ghostty_cell_get_multi(
+                            raw_cell, 2, cell_width_link_keys, cell_meta_values, NULL)
+                            == GHOSTTY_SUCCESS) {
+                        cell->wide = (uint8_t)w;
+                    }
+                } else {
+                    void *cell_meta_values[] = { &w };
+                    if (ghostty_cell_get_multi(
+                            raw_cell, 1, cell_width_keys, cell_meta_values, NULL)
+                            == GHOSTTY_SUCCESS) {
+                        cell->wide = (uint8_t)w;
+                    }
                 }
             }
-
-            /* Grapheme codepoints (0 = empty cell). */
-            uint32_t grapheme_len = 0;
-            ghostty_render_state_row_cells_get(s->row_cells,
-                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
 
             if (grapheme_len > 0) {
                 uint32_t stack_codepoints[64];
@@ -322,9 +359,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
              * marked as containing hyperlinks (avoid a per-cell grid_ref walk
              * on the common no-hyperlink path). */
             if (row_has_hyperlink) {
-                bool cell_has_link = false;
-                if (ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_HAS_HYPERLINK, &cell_has_link)
-                        == GHOSTTY_SUCCESS && cell_has_link) {
+                if (cell_has_link) {
                     GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
                     GhosttyPoint pt = {
                         .tag = GHOSTTY_POINT_TAG_VIEWPORT,

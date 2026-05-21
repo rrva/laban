@@ -44,8 +44,9 @@ Evaluate upstream additions conservatively:
   state if tests show Laban needs explicit handling.
 - APC byte limits may be set if they reduce parser resource risk without
   product surface.
-- `_get_multi` APIs are optional performance work and are not required for this
-  bump because Laban already batches render-state extraction inside C.
+- `_get_multi` APIs are used inside `LabanTerminalCore` for hot snapshot
+  extraction where they reduce repeated C ABI calls without changing snapshot
+  ownership. Broader migration is optional performance work.
 - The log callback may be wired later into Laban diagnostics if it can be kept
   quiet in normal release operation.
 - Kitty graphics helpers remain unbound until product scope includes graphics
@@ -70,7 +71,7 @@ Evaluate upstream additions conservatively:
    display behavior.
 3. Prefer existing Ghostty terminal-mode synchronization before adding
    Laban-side mode mirrors for key or mouse encoding.
-4. Any future use of `_get_multi` must keep snapshot ownership unchanged:
-   Swift receives owned `LabanSnapshot` data, not borrowed libghostty pointers.
+4. Any use of `_get_multi` must keep snapshot ownership unchanged: Swift
+   receives owned `LabanSnapshot` data, not borrowed libghostty pointers.
 5. Any future log callback wiring must route through the existing observability
    policy and must not emit noisy normal-operation logs.

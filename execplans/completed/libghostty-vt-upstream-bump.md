@@ -31,8 +31,10 @@ product scope without implying a deferred MVP non-goal.
 - [x] 2026-05-21 Rebuilt `.external/libghostty-vt` at the new commit.
 - [x] 2026-05-21 Removed Laban's explicit `-lc++` linker flag after the rebuilt
   upstream static archive linked successfully without it.
-- [x] 2026-05-21 Evaluated upstream additions and bound only the additions that should be
-  part of Laban now.
+- [x] 2026-05-21 Evaluated upstream additions and bound only the additions that
+  should be part of Laban now.
+- [x] 2026-05-21 Adopted `_get_multi` narrowly in the terminal snapshot hot
+  path, while keeping the Swift-facing `LabanSnapshot` ownership boundary.
 - [x] 2026-05-21 Added DECBKM/backarrow key-mode coverage, proving the new
   upstream mode flows through Laban's existing key encoder synchronization.
 - [x] 2026-05-21 Ran focused and full validation.
@@ -46,11 +48,13 @@ product scope without implying a deferred MVP non-goal.
   binding them now would expand product scope beyond a dependency upgrade.
   Date/Author: 2026-05-21 / Codex.
 
-- Decision: Treat `_get_multi` APIs as an optional optimization, not a required
-  migration in this bump.
-  Rationale: Laban's C layer already batches snapshot work inside one native
-  call and does not pay Swift FFI overhead per libghostty getter. Migrating all
-  render-state reads would increase blast radius without changing behavior.
+- Decision: Use `_get_multi` only in the snapshot hot path.
+  Rationale: Laban's C layer still owns snapshot extraction, but each cell
+  previously made multiple C ABI calls into libghostty for raw cell data, style,
+  grapheme length, and metadata. Batching those reads reduces per-frame call
+  volume without exposing borrowed libghostty pointers to Swift. Foreground and
+  background color getters stay individual because unset colors intentionally
+  return `GHOSTTY_INVALID_VALUE` and `_get_multi` stops at the first error.
   Date/Author: 2026-05-21 / Codex.
 
 - Decision: Remove the explicit `-lc++` linker flag from `Package.swift`.
@@ -164,11 +168,12 @@ Acceptance is:
 Laban now builds against Ghostty commit
 `46d54ed673a004df09078bee56e809421a82370e`. The bump adopts the upstream
 static-library packaging improvement by removing `-lc++`, preserves the existing
-Swift-facing C boundary, and adds a regression for the new DECBKM/backarrow key
-mode. Broader upstream additions remain intentionally deferred: Kitty graphics
-would expand product scope, `_get_multi` is performance work without current
-evidence, log callbacks need observability design, and APC policy should be
-handled as an explicit resource-limit change.
+Swift-facing C boundary, adds a regression for the new DECBKM/backarrow key
+mode, and uses `_get_multi` inside terminal snapshot extraction to reduce
+repeated libghostty getter calls. Broader upstream additions remain
+intentionally deferred: Kitty graphics would expand product scope, log callbacks
+need observability design, and APC policy should be handled as an explicit
+resource-limit change.
 
 ## Idempotence and Recovery
 
