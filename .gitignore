@@ -3,6 +3,8 @@
 .external
 .external/
 .artifacts/
+.antigravitycli/
+.rpg/
 .tmp/
 .env
 .claude/worktrees/
