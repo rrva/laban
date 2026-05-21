@@ -26,7 +26,7 @@ let package = Package(
         .unsafeFlags(["-I\(_vtInclude)"])
       ],
       linkerSettings: [
-        .unsafeFlags(["\(_vtLib)/libghostty-vt.a", "-lc++"])
+        .unsafeFlags(["\(_vtLib)/libghostty-vt.a"])
       ]
     ),
     .target(

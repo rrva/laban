@@ -36,9 +36,14 @@ library. The concrete PTY launch mechanism is governed by
 
 ## Decision
 
-**libghostty-vt at commit `fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b` is the
+**libghostty-vt at commit `46d54ed673a004df09078bee56e809421a82370e` is the
 VT parsing library for `LabanTerminalCore`. GhosttyKit is not used.
 `LabanTerminalCore` owns the PTY and child process lifecycle.**
+
+The pin was advanced from
+`fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b` to
+`46d54ed673a004df09078bee56e809421a82370e` by
+`docs/adr/0004-advance-libghostty-vt-pin.md`.
 
 ### Rules
 

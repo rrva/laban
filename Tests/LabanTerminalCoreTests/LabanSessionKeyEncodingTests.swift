@@ -181,6 +181,26 @@ final class LabanSessionKeyEncodingTests: XCTestCase {
       [0x1B, 0x5B, 0x31, 0x32, 0x37, 0x3B, 0x32, 0x75])
   }
 
+  func testBackarrowModeChangesBackspaceEncoding() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("session creation failed")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var event = LabanKeyEvent()
+    event.action = LABAN_KEY_ACTION_PRESS
+    event.key = LABAN_KEY_BACKSPACE
+
+    XCTAssertEqual(encodeKey(session, &event), [0x7F])
+
+    feedVT(session, "\u{1B}[?67h")  // DECBKM: backarrow key mode on
+    XCTAssertEqual(encodeKey(session, &event), [0x08])
+
+    feedVT(session, "\u{1B}[?67l")  // DECBKM off
+    XCTAssertEqual(encodeKey(session, &event), [0x7F])
+  }
+
   func testOptionProducedTextWithConsumedOptionPassesThroughAsText() {
     guard let session = makeFixtureSession() else {
       XCTFail("session creation failed")

@@ -8,7 +8,7 @@ on:
 # Ghostty commit pinned in scripts/fetch-libghostty-vt. Bump this when that
 # pin changes so the cache key invalidates.
 env:
-  GHOSTTY_COMMIT: fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b
+  GHOSTTY_COMMIT: 46d54ed673a004df09078bee56e809421a82370e
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 

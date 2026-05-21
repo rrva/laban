@@ -1,11 +1,11 @@
 #!/usr/bin/env sh
 # Fetch and build libghostty-vt from source.
-# Pin: Ghostty commit fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b (1.3.2-dev)
+# Pin: Ghostty commit 46d54ed673a004df09078bee56e809421a82370e (main snapshot, 2026-05-20)
 # Artifacts written to .external/libghostty-vt/zig-out/ (git-ignored).
 # Requires: git, zig >= 0.15.2
 set -eu
 
-GHOSTTY_COMMIT="fdb6e3d2c8543e2e756b7e07f44372efbc0fba4b"
+GHOSTTY_COMMIT="46d54ed673a004df09078bee56e809421a82370e"
 GHOSTTY_URL="https://github.com/ghostty-org/ghostty"
 DEST=".external/libghostty-vt"
 LIB_OUT="$DEST/zig-out/lib/libghostty-vt.a"
