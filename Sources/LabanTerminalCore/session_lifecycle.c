@@ -402,26 +402,39 @@ int laban_session_create(
 }
 
 /* Performs the openpty + fork + exec for a session whose libghostty
- * parser was already constructed by laban_session_create. Used both
- * by create (non-deferred case) and by laban_session_start_spawn
- * (deferred case). On success leaves s->pty_fd / s->child_pid set.
- * On failure returns -1; the caller decides whether to tear down the
- * session.
+ * parser was already constructed by laban_session_create. Only
+ * laban_session_start_spawn (deferred case) calls this; the
+ * non-deferred create path inlines its own fork+exec above. On success
+ * leaves s->pty_fd / s->child_pid set. On failure returns -1; the
+ * caller decides whether to tear down the session.
  *
  * `override_cwd` is consulted only in deferred mode — when NULL, the
- * launch_cwd captured at create time is used. The non-deferred create
- * path passes NULL because launch_cwd was already populated above. */
-int laban_session_spawn_now_(LabanSession *s, const char *override_cwd) {
+ * launch_cwd captured at create time is used.
+ *
+ * `exe_override` / `argv_override`, when both non-NULL, replace the
+ * default `$SHELL` login-shell launch. The workspace-restore path uses
+ * this to launch `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'` so a
+ * coding-agent resume runs as the shell's own argument instead of being
+ * typed into a live prompt. `argv_override` must be NULL-terminated and
+ * its argv[0] is what the child process sees (no login `-` prefix). */
+int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
+                             const char *exe_override,
+                             const char *const *argv_override) {
     if (!s) return -1;
     if (s->fixture_mode) return -1;
     if (s->pty_fd >= 0) return 0;  /* already spawned */
 
-    const char *exe = getenv("SHELL");
-    if (!exe || !exe[0]) {
-        struct passwd *pw = getpwuid(getuid());
-        if (pw && pw->pw_shell && pw->pw_shell[0]) exe = pw->pw_shell;
+    const char *exe = NULL;
+    if (exe_override && exe_override[0]) {
+        exe = exe_override;
+    } else {
+        exe = getenv("SHELL");
+        if (!exe || !exe[0]) {
+            struct passwd *pw = getpwuid(getuid());
+            if (pw && pw->pw_shell && pw->pw_shell[0]) exe = pw->pw_shell;
+        }
+        if (!exe || !exe[0]) exe = "/bin/sh";
     }
-    if (!exe || !exe[0]) exe = "/bin/sh";
     if (access(exe, X_OK) != 0) return -1;
 
     /* If the caller is replaying a deferred spawn with a new cwd, prefer
@@ -436,10 +449,15 @@ int laban_session_spawn_now_(LabanSession *s, const char *override_cwd) {
 
     char login_arg[256];
     char *default_argv[] = { login_arg, NULL };
-    const char *base = strrchr(exe, '/');
-    base = base ? base + 1 : exe;
-    snprintf(login_arg, sizeof(login_arg), "-%s", base);
-    char *const *spawn_argv = default_argv;
+    char *const *spawn_argv;
+    if (argv_override) {
+        spawn_argv = (char *const *)argv_override;
+    } else {
+        const char *base = strrchr(exe, '/');
+        base = base ? base + 1 : exe;
+        snprintf(login_arg, sizeof(login_arg), "-%s", base);
+        spawn_argv = default_argv;
+    }
 
     char **spawn_env = build_spawn_env(NULL);
     if (!spawn_env) return -1;
@@ -514,7 +532,16 @@ int laban_session_start_spawn(LabanSession *s, const char *override_cwd) {
     if (!s) return -1;
     SESSION_LOCK(s);
     if (!s->pending_spawn) return -1;  /* already spawned or not deferred */
-    return laban_session_spawn_now_(s, override_cwd);
+    return laban_session_spawn_now_(s, override_cwd, NULL, NULL);
+}
+
+int laban_session_start_spawn_argv(LabanSession *s, const char *override_cwd,
+                                   const char *exe,
+                                   const char *const *argv) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    if (!s->pending_spawn) return -1;  /* already spawned or not deferred */
+    return laban_session_spawn_now_(s, override_cwd, exe, argv);
 }
 
 int laban_session_suppress_pty_output_until_input(LabanSession *s, int enabled) {

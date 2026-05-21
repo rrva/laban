@@ -107,22 +107,19 @@ extension HeadlessDebugRuntime {
   }
 
   static func applyRestoreLaunchPlans(for state: WorkspaceState, model: AppModel) {
+    // `.executeNow` is injected at spawn (the restored shell launches as
+    // `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'`), so this post-spawn pass
+    // only types the `.prefillPrompt` case. Writing `.executeNow` here
+    // too would run the resume command a second time.
     guard let window = state.windows.first else { return }
     let activityChecker = ProcessTreeRestoreSessionActivityChecker()
     for tabState in window.tabs {
       let instruction = RestoreLaunchPlanner.instruction(
         for: tabState,
         activityChecker: activityChecker)
-      switch instruction {
-      case .noPrefill:
-        continue
-      case .executeNow(let command):
-        guard let session = model.session(forTab: tabState.id) else { continue }
-        _ = session.write(Array("clear && \(command)\n".utf8))
-      case .prefillPrompt(let command):
-        guard let session = model.session(forTab: tabState.id) else { continue }
-        _ = session.write(Array(command.utf8))
-      }
+      guard case .prefillPrompt(let command) = instruction else { continue }
+      guard let session = model.session(forTab: tabState.id) else { continue }
+      _ = session.write(Array(command.utf8))
     }
   }
 }

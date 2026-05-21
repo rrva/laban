@@ -67,8 +67,11 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     model.restoredDeferredSessionFactory = { spec in
       let session = try Self.makeRestoredSession(spec: spec, mode: sessionMode)
       if case .realShell = sessionMode {
+        // Mirror production: an agent tab that was running at quit
+        // launches `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'`.
+        let injection = RestoreLaunchPlanner.instruction(for: spec).spawnInjection
         let override = spec.cwdFallbackApplied ? spec.cwd : nil
-        guard session.startSpawn(overrideCwd: override) == 0 else {
+        guard session.startSpawn(overrideCwd: override, injection: injection) == 0 else {
           throw HarnessError.spawnFailed
         }
       }
@@ -327,11 +330,32 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
     }
   }
 
-  func testAgentRestoreExecutesNativeResumeWithoutDestructiveOriginalFlags() throws {
+  func testAgentRestoreLaunchesResumeInjectionAndDropsToInteractiveShell() throws {
+    // The `.executeNow` case launches the restored tab as
+    // `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'`. The resume command
+    // (`command claude --resume <id>`) fails here because `claude` is not
+    // reachable (see PATH reset below), so the only thing we can — and
+    // must — observe is the `exec $SHELL -l -i` tail: after the resume
+    // attempt the tab is left at a live interactive shell. The exact
+    // resume command string (and its destructive-flag filtering) is
+    // covered by RestorePlannerTests / RestoreShellInjectionTests.
+    guard access("/bin/zsh", X_OK) == 0 else {
+      throw XCTSkip("/bin/zsh is not available")
+    }
     let base = tempBase()
+    let zdotdir = tempBase()
     defer { try? FileManager.default.removeItem(at: base) }
-    let now = Date()
+    defer { try? FileManager.default.removeItem(at: zdotdir) }
+    // A login shell (`-l`) sources /etc/zprofile, whose `path_helper`
+    // rebuilds PATH and can re-add /usr/local/bin — so pinning PATH in
+    // the environment is not enough to keep a developer's installed
+    // `claude` off PATH. Reset PATH in .zshrc, which a login+interactive
+    // zsh sources AFTER /etc/zprofile, so `command claude` is reliably
+    // "not found" regardless of the host.
+    try writeMinimalZshConfig(to: zdotdir, extraZshrc: "export PATH=/usr/bin:/bin\n")
+
     let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0000"
+    let home = NSHomeDirectory()
     let state = WorkspaceState(
       windows: [
         WindowState(
@@ -340,9 +364,9 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
           tabs: [
             TabState(
               id: "agent-tab",
-              cwd: "/tmp",
+              cwd: home,
               launchCommand: "claude --model sonnet --worktree throwaway",
-              lastActiveAt: now,
+              lastActiveAt: Date(),
               agent: AgentInfo(
                 name: .claude,
                 sessionId: sessionId,
@@ -350,27 +374,26 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
                 wasRunningAtQuit: true,
                 argv: ["claude", "--model", "sonnet", "--worktree", "throwaway"],
                 env: ["TERM": "xterm-256color"],
-                cwd: "/tmp"))
+                cwd: home))
           ])
       ])
 
-    let harness = try makeHarness(baseDir: base, restoring: state)
-    let visible = visibleText(harness.model, tabId: "agent-tab")
-    let visibleCommandText = visible.replacingOccurrences(of: "\n", with: "")
-    XCTAssertTrue(
-      visibleCommandText.contains("claude --resume \(sessionId) --model sonnet"),
-      "restored agent tab should receive the native resume command; visible=\(visible.debugDescription)"
-    )
-    XCTAssertFalse(
-      visibleCommandText.contains("--worktree"),
-      "native resume must not replay destructive original flags; visible=\(visible.debugDescription)"
-    )
-    XCTAssertFalse(
-      visibleCommandText.contains("throwaway"),
-      "native resume must not replay destructive flag values; visible=\(visible.debugDescription)")
-
-    quit(harness)
-    let _ = harness
+    // Pin PATH to system dirs so `command claude` is deterministically
+    // "command not found" even on a developer machine that has `claude`
+    // installed — the test verifies the `exec $SHELL -i` fallback, not a
+    // real resume.
+    try withEnvironment([
+      "SHELL": "/bin/zsh", "ZDOTDIR": zdotdir.path, "PATH": "/usr/bin:/bin",
+    ]) {
+      let harness = try makeHarness(baseDir: base, restoring: state, sessionMode: .realShell)
+      let session = try XCTUnwrap(harness.model.session(forTab: "agent-tab"))
+      _ = session.write(Array("echo MARKER\n".utf8))
+      XCTAssertTrue(
+        waitForVisibleText(harness.model, tabId: "agent-tab", contains: "MARKER"),
+        "restored agent tab must drop to a live interactive shell after the resume attempt")
+      quit(harness)
+      let _ = harness
+    }
   }
 
   func testRestoreWithEmptyWindowFallsBackToFreshDefaultTab() throws {
@@ -620,32 +643,28 @@ final class WorkspaceRestoreEndToEndTests: XCTestCase {
 
   // MARK: - Helpers
 
-  private func writeMinimalZshConfig(to zdotdir: URL) throws {
+  private func writeMinimalZshConfig(to zdotdir: URL, extraZshrc: String = "") throws {
     let zshConfig = "PROMPT='$ '\nRPROMPT=''\n"
     try zshConfig.write(
       to: zdotdir.appendingPathComponent(".zshenv"),
       atomically: true,
       encoding: .utf8)
-    try zshConfig.write(
+    try (zshConfig + extraZshrc).write(
       to: zdotdir.appendingPathComponent(".zshrc"),
       atomically: true,
       encoding: .utf8)
   }
 
   private func applyRestoreLaunchPlans(for state: WorkspaceState, model: AppModel) {
+    // Mirror production: `.executeNow` is handled at spawn (the shell is
+    // launched with the resume command as its argument), so this
+    // post-spawn pass only types the `.prefillPrompt` case.
     guard let window = state.windows.first else { return }
     for tabState in window.tabs {
-      let instruction = RestoreLaunchPlanner.instruction(for: tabState)
-      switch instruction {
-      case .noPrefill:
-        continue
-      case .executeNow(let command):
-        guard let session = model.session(forTab: tabState.id) else { continue }
-        _ = session.write(Array("clear && \(command)\n".utf8))
-      case .prefillPrompt(let command):
-        guard let session = model.session(forTab: tabState.id) else { continue }
-        _ = session.write(Array(command.utf8))
-      }
+      guard case .prefillPrompt(let command) = RestoreLaunchPlanner.instruction(for: tabState)
+      else { continue }
+      guard let session = model.session(forTab: tabState.id) else { continue }
+      _ = session.write(Array(command.utf8))
     }
   }
 

@@ -87,6 +87,15 @@ public struct RestoredSessionSpec {
   public let cwdFallbackApplied: Bool
   public let transcriptURL: URL?
   public let altBufferAtQuit: Bool
+  /// Raw persisted agent metadata, forwarded so the restore factory can
+  /// run `RestoreLaunchPlanner` and decide whether to launch the shell
+  /// with an injected resume command (`.executeNow`). `nil` for tabs
+  /// that carried no agent.
+  public let agent: AgentInfo?
+  /// Shell pid observed at the previous quit, used by the planner's
+  /// activity check to avoid auto-resuming a session another Laban
+  /// instance still owns.
+  public let shellPid: Int?
 
   public init(
     size: LabanTerminalSize,
@@ -94,7 +103,9 @@ public struct RestoredSessionSpec {
     cwd: String,
     cwdFallbackApplied: Bool,
     transcriptURL: URL?,
-    altBufferAtQuit: Bool
+    altBufferAtQuit: Bool,
+    agent: AgentInfo? = nil,
+    shellPid: Int? = nil
   ) {
     self.size = size
     self.tabId = tabId
@@ -102,6 +113,8 @@ public struct RestoredSessionSpec {
     self.cwdFallbackApplied = cwdFallbackApplied
     self.transcriptURL = transcriptURL
     self.altBufferAtQuit = altBufferAtQuit
+    self.agent = agent
+    self.shellPid = shellPid
   }
 }
 

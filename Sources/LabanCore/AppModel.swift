@@ -589,7 +589,9 @@ public final class AppModel {
           cwd: resolved.cwd,
           cwdFallbackApplied: resolved.fallbackApplied,
           transcriptURL: transcriptDelegate?.transcriptURL(forTabId: id),
-          altBufferAtQuit: persistedTab.altBufferAtQuit ?? false
+          altBufferAtQuit: persistedTab.altBufferAtQuit ?? false,
+          agent: persistedTab.agent,
+          shellPid: persistedTab.shellPid
         )
         session = try deferredFactory(spec)
       } else if let factory = restoredSessionFactory {

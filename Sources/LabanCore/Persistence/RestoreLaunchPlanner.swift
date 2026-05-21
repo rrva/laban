@@ -78,4 +78,23 @@ public enum RestoreLaunchPlanner {
       ? .executeNow(command: command)
       : .prefillPrompt(command: command)
   }
+
+  /// Convenience for the restore factory, which holds a
+  /// `RestoredSessionSpec` rather than the full `TabState`. The spec
+  /// forwards the only fields the planner reads (`agent`, `shellPid`,
+  /// `cwd`, `tabId`); the others are immaterial to the decision.
+  public static func instruction(
+    for spec: RestoredSessionSpec,
+    activityChecker: (any RestoreSessionActivityChecking)? = nil
+  ) -> RestoreLaunchInstruction {
+    guard let agent = spec.agent else { return .noPrefill }
+    let tab = TabState(
+      id: spec.tabId,
+      cwd: spec.cwd,
+      launchCommand: "",
+      lastActiveAt: Date(),
+      shellPid: spec.shellPid,
+      agent: agent)
+    return instruction(for: tab, activityChecker: activityChecker)
+  }
 }

@@ -132,8 +132,19 @@ public final class Session {
   /// in `$HOME` when the originally persisted directory is no longer
   /// reachable.
   @discardableResult
-  public func startSpawn(overrideCwd: String? = nil) -> Int32 {
+  public func startSpawn(overrideCwd: String? = nil, injection: RestoreShellInjection? = nil)
+    -> Int32
+  {
     guard !isClosed, let h = handle else { return -1 }
+    if let injection {
+      return withOptionalCString(overrideCwd) { cwdPtr in
+        injection.shellPath.withCString { exePtr in
+          Session.withCStringArray(injection.argv) { argvPtr in
+            laban_session_start_spawn_argv(h, cwdPtr, exePtr, argvPtr)
+          }
+        }
+      }
+    }
     if let overrideCwd {
       return overrideCwd.withCString { ptr in
         laban_session_start_spawn(h, ptr)
@@ -173,6 +184,14 @@ public final class Session {
         }
       }
     }
+  }
+
+  private func withOptionalCString<R>(
+    _ string: String?,
+    _ body: (UnsafePointer<CChar>?) -> R
+  ) -> R {
+    guard let string else { return body(nil) }
+    return string.withCString { body($0) }
   }
 
   private static func withCStringArray<R>(

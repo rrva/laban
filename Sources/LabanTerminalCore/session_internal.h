@@ -210,7 +210,9 @@ pid_t laban_waitpid_retry(pid_t pid, int *status, int options);
 void laban_signal_child_process_group(pid_t child_pid, int sig);
 int laban_session_mode_active_locked(LabanSession *s, GhosttyMode mode, int *out_active);
 int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t len);
-int laban_session_spawn_now_(LabanSession *s, const char *override_cwd);
+int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
+                             const char *exe_override,
+                             const char *const *argv_override);
 
 void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata);
 void laban_effect_write_pty(GhosttyTerminal terminal, void *userdata,

@@ -229,8 +229,15 @@ public final class HeadlessDebugRuntime {
           session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
         }
         if case .realShell = initialSessionMode {
+          // Production parity: a restored agent tab that was running at
+          // quit launches `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'`.
+          let injection = RestoreLaunchPlanner.instruction(
+            for: spec,
+            activityChecker: ProcessTreeRestoreSessionActivityChecker()
+          ).spawnInjection
           _ = session.startSpawn(
-            overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil)
+            overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil,
+            injection: injection)
         }
         return session
       }

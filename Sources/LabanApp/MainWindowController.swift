@@ -77,8 +77,18 @@ final class MainWindowController: NSWindowController {
     // or replay generic terminal commands into a live terminal.
     model.restoredDeferredSessionFactory = { spec in
       let session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
+      // Agent tabs that were running at quit launch the shell with the
+      // resume command as its own argument (`$SHELL -l -i -c '<resume>;
+      // exec $SHELL -l -i'`) instead of typing it into a live prompt. The
+      // activity check runs against the persisted shellPid, so its
+      // answer does not depend on the freshly spawned shell.
+      let injection = RestoreLaunchPlanner.instruction(
+        for: spec,
+        activityChecker: ProcessTreeRestoreSessionActivityChecker()
+      ).spawnInjection
       let rc = session.startSpawn(
-        overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil)
+        overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil,
+        injection: injection)
       if rc != 0 {
         // Spawn failed — log and surface a banner. The session keeps
         // its VT parser so the tab body is renderable; the user sees
@@ -252,17 +262,16 @@ final class MainWindowController: NSWindowController {
     return controller
   }
 
-  /// For each restored tab whose persisted state has an `agent`,
-  /// ask `RestoreLaunchPlanner` what to do and apply it:
-  ///   - `.executeNow(cmd)` writes `clear && cmd\n` into the new
-  ///     tab's PTY. The `clear` prefix wipes the visible grid before
-  ///     the agent paints — without it, the shell's echo of the
-  ///     resume line sits stuck at the top of the buffer because
-  ///     claude/codex render inline (no alt-screen) and never
-  ///     overwrite row 0. This is the autoresume brand moment.
-  ///   - `.prefillPrompt(cmd)` writes `cmd` without a newline; the
-  ///     user sees the resume command at the prompt and presses
-  ///     ENTER to run it.
+  /// Post-spawn restore step for the `.prefillPrompt` case only:
+  ///   - `.executeNow` is handled at spawn — the shell is launched as
+  ///     `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'`, so the resume runs
+  ///     as the shell's own argument with no typed echo. Nothing to do
+  ///     here.
+  ///   - `.prefillPrompt(cmd)` writes `cmd` without a newline; the user
+  ///     sees the resume command at the prompt and presses ENTER to run
+  ///     it. This still has to be typed into a live interactive shell
+  ///     because `-c` would run it immediately rather than sit at the
+  ///     prompt.
   ///   - `.noPrefill` is a no-op.
   ///
   /// Called once during restore, after `replaceTabs(from:)` has
@@ -276,18 +285,9 @@ final class MainWindowController: NSWindowController {
       let instruction = RestoreLaunchPlanner.instruction(
         for: tabState,
         activityChecker: activityChecker)
-      switch instruction {
-      case .noPrefill:
-        continue
-      case .executeNow(let command):
-        guard let session = model.session(forTab: tabState.id) else { continue }
-        let bytes = Array("clear && \(command)\n".utf8)
-        _ = session.write(bytes)
-      case .prefillPrompt(let command):
-        guard let session = model.session(forTab: tabState.id) else { continue }
-        let bytes = Array(command.utf8)
-        _ = session.write(bytes)
-      }
+      guard case .prefillPrompt(let command) = instruction else { continue }
+      guard let session = model.session(forTab: tabState.id) else { continue }
+      _ = session.write(Array(command.utf8))
     }
   }
 }

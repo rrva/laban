@@ -156,6 +156,19 @@ int laban_session_create(
 int laban_session_start_spawn(LabanSession *session, const char *override_cwd);
 
 /*
+ * Like laban_session_start_spawn, but launches `exe` with an explicit
+ * NULL-terminated `argv` instead of the user's default login shell.
+ * Used by the workspace-restore path to run a coding-agent resume as
+ * the shell's own argument, e.g.
+ *   `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'`
+ * so nothing is typed into a live prompt. `argv[0]` is what the child
+ * process sees (no login `-` prefix). Returns 0 on success, -1 on
+ * error or when the session was not created with deferred-spawn intent.
+ */
+int laban_session_start_spawn_argv(LabanSession *session, const char *override_cwd,
+                                   const char *exe, const char *const *argv);
+
+/*
  * Drop PTY output from a deferred-spawn restore until the first input
  * write reaches the shell. Restored tabs replay the old transcript
  * before launching a replacement shell; the replacement shell's
