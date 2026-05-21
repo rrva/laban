@@ -17,12 +17,12 @@ final class UpdateAutoChecker {
 
   func start() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-      self?.runCheckIfDue()
+      self?.runCheckIfDue(trigger: .launch)
     }
     timer = Timer.scheduledTimer(
       withTimeInterval: UpdateAutoCheck.pollInterval, repeats: true
     ) { [weak self] _ in
-      self?.runCheckIfDue()
+      self?.runCheckIfDue(trigger: .running)
     }
     NotificationCenter.default.addObserver(
       self,
@@ -46,17 +46,18 @@ final class UpdateAutoChecker {
   deinit { stop() }
 
   @objc private func activeOrWake() {
-    runCheckIfDue()
+    runCheckIfDue(trigger: .running)
   }
 
-  private func runCheckIfDue() {
+  private func runCheckIfDue(trigger: UpdateAutoCheck.Trigger) {
     guard !inFlight else { return }
     let manifestURL = UpdateChecker.configuredManifestURL()
     let decision = UpdateAutoCheck.decide(
       version: BuildInfo.version,
       manifestURLConfigured: manifestURL != nil,
       lastCheck: UpdateAutoCheck.loadLastCheck(),
-      now: Date())
+      now: Date(),
+      trigger: trigger)
     guard decision == .check, let manifestURL else { return }
 
     inFlight = true

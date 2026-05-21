@@ -19,14 +19,25 @@ enum UpdateAutoCheck {
     case skip(SkipReason)
   }
 
+  /// What prompted the check. A `launch` always checks — a fresh start is the
+  /// user's clearest signal that they want the latest. The cooldown only
+  /// throttles a process that is already running, so the coarse timer and the
+  /// activate / wake notifications do not hammer the manifest.
+  enum Trigger: Equatable {
+    case launch
+    case running
+  }
+
   /// 0.0.0 means swift run / unstamped — never auto-check.
   /// A configured manifest URL is required; otherwise auto-checks are a no-op.
-  /// `lastCheck` is the timestamp of the previous successful or attempted check.
+  /// `lastCheck` is the timestamp of the previous successful or attempted check;
+  /// it only gates `running` triggers — `launch` ignores it.
   static func decide(
     version: String,
     manifestURLConfigured: Bool,
     lastCheck: Date?,
     now: Date,
+    trigger: Trigger = .running,
     interval: TimeInterval = pollInterval
   ) -> Decision {
     if version == "0.0.0" {
@@ -35,7 +46,7 @@ enum UpdateAutoCheck {
     if !manifestURLConfigured {
       return .skip(.manifestURLMissing)
     }
-    if let lastCheck, now.timeIntervalSince(lastCheck) < interval {
+    if trigger == .running, let lastCheck, now.timeIntervalSince(lastCheck) < interval {
       return .skip(.checkedRecently)
     }
     return .check

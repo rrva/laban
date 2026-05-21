@@ -33,8 +33,44 @@ final class UpdateAutoCheckTests: XCTestCase {
         version: "0.4.12",
         manifestURLConfigured: true,
         lastCheck: recent,
-        now: now),
+        now: now,
+        trigger: .running),
       .skip(.checkedRecently))
+  }
+
+  func testLaunchChecksEvenWhenLastCheckIsRecent() {
+    let recent = now.addingTimeInterval(-60)
+    XCTAssertEqual(
+      UpdateAutoCheck.decide(
+        version: "0.4.12",
+        manifestURLConfigured: true,
+        lastCheck: recent,
+        now: now,
+        trigger: .launch),
+      .check)
+  }
+
+  func testLaunchStillSkipsUnstampedDevBuild() {
+    let recent = now.addingTimeInterval(-60)
+    XCTAssertEqual(
+      UpdateAutoCheck.decide(
+        version: "0.0.0",
+        manifestURLConfigured: true,
+        lastCheck: recent,
+        now: now,
+        trigger: .launch),
+      .skip(.unstampedDevBuild))
+  }
+
+  func testLaunchStillSkipsWhenManifestURLMissing() {
+    XCTAssertEqual(
+      UpdateAutoCheck.decide(
+        version: "0.4.12",
+        manifestURLConfigured: false,
+        lastCheck: nil,
+        now: now,
+        trigger: .launch),
+      .skip(.manifestURLMissing))
   }
 
   func testChecksWhenLastCheckIsOlderThanInterval() {

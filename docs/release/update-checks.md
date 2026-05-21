@@ -10,11 +10,14 @@ It does not download, install, replace, or execute anything.
 ## Background Auto-Check Badge
 
 Stamped release builds (i.e. `CFBundleShortVersionString != 0.0.0`) hit the
-manifest on launch, after wake / activation, and every 4 hours. The check is
-silent on failure; when a newer version is reported, a subtle pill in the
-bottom-left of the main window shows `↓ <version>`. Clicking it routes through
-the same alert as the menu's "Check for Updates" action. `swift run` builds
-are unstamped and skip the auto-check entirely.
+manifest on every launch, and — for an already-running process — after wake /
+activation and every 4 hours. The 4-hour cooldown throttles only the
+running-app triggers; a fresh launch always checks, so quitting and reopening
+surfaces a new release without waiting out the cooldown. The check is silent on
+failure; when a newer version is reported, a subtle pill in the bottom-left of
+the main window shows `↓ <version>`. Clicking it routes through the same alert
+as the menu's "Check for Updates" action. `swift run` builds are unstamped and
+skip the auto-check entirely.
 
 Policy decisions live in `UpdateAutoCheck.decide(...)` and are covered by
 `UpdateAutoCheckTests`. The last-check timestamp persists in the
