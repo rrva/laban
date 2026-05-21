@@ -60,9 +60,13 @@ The pin was advanced from
    structs are the only surface. Swift must not hold `GhosttyTerminal` or any
    libghostty pointer directly.
 
-4. **Key and mouse encoders stay in the AppKit shard.** `ghostty_key_encoder`
-   and `ghostty_mouse_encoder` require AppKit event objects and belong in
-   `LabanApp` beside `NSTextInputClient`, not in `LabanTerminalCore`.
+4. **Native input is normalized by AppKit; terminal input is encoded in
+   `LabanTerminalCore`.** `LabanApp` owns `NSTextInputClient`, shortcut
+   filtering, native text composition, pointer geometry, and conversion from
+   AppKit events into Laban key and mouse event structs. `LabanTerminalCore`
+   owns the libghostty key and mouse encoders so each input event is encoded
+   against the session's current terminal modes and written through the same
+   PTY or fixture-mode path as other terminal input.
 
 5. **The Ghostty commit is pinned and verified.** `scripts/fetch-libghostty-vt`
    clones at the exact commit, runs `zig build -Demit-lib-vt`, and verifies the
@@ -104,7 +108,8 @@ Before any change to terminal library, PTY ownership, or snapshot shape, answer:
    delta and open a new ADR.
 4. Does Swift still see only `LabanSession*` and `LabanSnapshot*` — no raw
    libghostty types?
-5. If adding a key or mouse encoder: does it belong in `LabanApp` (AppKit
-   events) or `LabanTerminalCore` (raw byte feed)?
+5. If changing key or mouse input, does AppKit still only normalize native
+   events while `LabanTerminalCore` performs libghostty encoding against
+   session state?
 
 If any answer is "no" or "unclear", resolve it before merging.
