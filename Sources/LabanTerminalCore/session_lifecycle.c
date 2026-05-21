@@ -215,6 +215,8 @@ int laban_session_create(
                          (const void *)laban_effect_color_scheme);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
                          (const void *)laban_title_changed_cb);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_BELL,
+                         (const void *)laban_bell_cb);
 
     r = ghostty_render_state_new(NULL, &s->render_state);
     if (r != GHOSTTY_SUCCESS) {

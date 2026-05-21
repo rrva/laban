@@ -58,6 +58,25 @@ final class CaptureSessionBridgeTests: XCTestCase {
     XCTAssertEqual(updates.map(\.status), ["ok"])
   }
 
+  func testBellCallbackStopsAfterHandlerIsCleared() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    var counts: [UInt64] = []
+    session.onBell = { counts.append($0) }
+    XCTAssertEqual(session.feedOutput([0x07, 0x07]), 0)
+    XCTAssertEqual(counts, [1, 2])
+    XCTAssertEqual(session.bellCount(), 2)
+
+    session.onBell = nil
+    XCTAssertEqual(session.feedOutput([0x07]), 0)
+    XCTAssertEqual(counts, [1, 2])
+    XCTAssertEqual(session.bellCount(), 3)
+  }
+
   func testRealPtyInputBytesReachCaptureSinkAfterWrite() throws {
     let sink = TestCaptureSink()
     var size = LabanTerminalSize()

@@ -47,6 +47,7 @@ public final class Session {
   private let callbackState: SessionCallbackState
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
   private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
+  private var bellCallbackUserdata: UnsafeMutableRawPointer?
   public weak var captureSink: CaptureSink? {
     didSet {
       callbackState.setCaptureSink(captureSink)
@@ -69,6 +70,15 @@ public final class Session {
     didSet {
       callbackState.setTabStatusHandler(onTabStatus)
       updateTabStatusCallback()
+    }
+  }
+
+  /// Set once per Session to receive terminal BEL events. Fires on the same
+  /// thread that drove `poll()` or `feedOutput(_:)`.
+  public var onBell: ((UInt64) -> Void)? {
+    didSet {
+      callbackState.setBellHandler(onBell)
+      updateBellCallback()
     }
   }
 
@@ -220,6 +230,7 @@ public final class Session {
     if let h = handle {
       clearCaptureCallback(handle: h)
       clearTabStatusCallback(handle: h)
+      clearBellCallback(handle: h)
       laban_session_destroy(h)
       handle = nil
     }
@@ -562,6 +573,13 @@ public final class Session {
     return laban_session_reset_synchronized_output(h)
   }
 
+  public func bellCount() -> UInt64 {
+    guard !isClosed, let h = handle else { return 0 }
+    var count: UInt64 = 0
+    guard laban_session_bell_count(h, &count) == 0 else { return 0 }
+    return count
+  }
+
   @discardableResult
   public func setColorScheme(_ scheme: TerminalColorScheme) -> Int32 {
     guard !isClosed, let h = handle else { return -1 }
@@ -857,6 +875,18 @@ public final class Session {
     }
   }
 
+  private func updateBellCallback() {
+    guard !isClosed, let h = handle else { return }
+    if callbackState.hasBellHandler {
+      if bellCallbackUserdata == nil {
+        bellCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
+      laban_session_set_bell_callback(h, sessionBellCallback, bellCallbackUserdata)
+    } else {
+      clearBellCallback(handle: h)
+    }
+  }
+
   private func clearCaptureCallback(handle h: OpaquePointer) {
     laban_session_set_capture_callback(h, nil, nil)
     if let userdata = captureCallbackUserdata {
@@ -872,6 +902,14 @@ public final class Session {
       tabStatusCallbackUserdata = nil
     }
   }
+
+  private func clearBellCallback(handle h: OpaquePointer) {
+    laban_session_set_bell_callback(h, nil, nil)
+    if let userdata = bellCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      bellCallbackUserdata = nil
+    }
+  }
 }
 
 private final class SessionCallbackState {
@@ -880,6 +918,7 @@ private final class SessionCallbackState {
   private weak var captureSink: CaptureSink?
   private var captureFrame = 0
   private var tabStatusHandler: ((Session.TabStatusUpdate) -> Void)?
+  private var bellHandler: ((UInt64) -> Void)?
 
   init(sessionId: Session.ID) {
     self.sessionId = sessionId
@@ -895,6 +934,12 @@ private final class SessionCallbackState {
     lock.lock()
     defer { lock.unlock() }
     return tabStatusHandler != nil
+  }
+
+  var hasBellHandler: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return bellHandler != nil
   }
 
   func setCaptureSink(_ sink: CaptureSink?) {
@@ -915,6 +960,12 @@ private final class SessionCallbackState {
     lock.unlock()
   }
 
+  func setBellHandler(_ handler: ((UInt64) -> Void)?) {
+    lock.lock()
+    bellHandler = handler
+    lock.unlock()
+  }
+
   func captureTarget() -> (sink: CaptureSink, frame: Int)? {
     lock.lock()
     defer { lock.unlock() }
@@ -927,7 +978,21 @@ private final class SessionCallbackState {
     defer { lock.unlock() }
     return tabStatusHandler
   }
+
+  func bellTarget() -> ((UInt64) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return bellHandler
+  }
 }
+
+private let sessionBellCallback:
+  @convention(c) (UnsafeMutableRawPointer?, OpaquePointer?, UInt64) -> Void = {
+    userdata, _, count in
+    guard let userdata else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    state.bellTarget()?(count)
+  }
 
 private let sessionTabStatusCallback:
   @convention(c) (

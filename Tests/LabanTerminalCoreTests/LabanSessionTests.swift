@@ -71,11 +71,21 @@ private final class TabStatusProbe {
   var status: String?
 }
 
+private final class BellProbe {
+  var counts: [UInt64] = []
+}
+
 private let tabStatusProbeCallback: LabanTabStatusCallback = { userdata, _, status, _ in
   guard let userdata else { return }
   let probe = Unmanaged<TabStatusProbe>.fromOpaque(userdata).takeUnretainedValue()
   probe.calls += 1
   probe.status = status.map { String(cString: $0) }
+}
+
+private let bellProbeCallback: LabanBellCallback = { userdata, _, count in
+  guard let userdata else { return }
+  let probe = Unmanaged<BellProbe>.fromOpaque(userdata).takeUnretainedValue()
+  probe.counts.append(count)
 }
 
 final class LabanSessionTests: XCTestCase {
@@ -386,6 +396,33 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array(valid.utf8))
     XCTAssertEqual(probe.calls, 1)
     XCTAssertEqual(probe.status, "ok")
+  }
+
+  func testBellCallbackFiresAndCountTracksBel() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var count: UInt64 = 999
+    XCTAssertEqual(laban_session_bell_count(session, &count), 0)
+    XCTAssertEqual(count, 0)
+
+    let probe = BellProbe()
+    let userdata = Unmanaged.passUnretained(probe).toOpaque()
+    XCTAssertEqual(laban_session_set_bell_callback(session, bellProbeCallback, userdata), 0)
+
+    writeBytes(session, [0x07, 0x07])
+    XCTAssertEqual(probe.counts, [1, 2])
+    XCTAssertEqual(laban_session_bell_count(session, &count), 0)
+    XCTAssertEqual(count, 2)
+
+    XCTAssertEqual(laban_session_set_bell_callback(session, nil, nil), 0)
+    writeBytes(session, [0x07])
+    XCTAssertEqual(probe.counts, [1, 2])
+    XCTAssertEqual(laban_session_bell_count(session, &count), 0)
+    XCTAssertEqual(count, 3)
   }
 
   func testProcessMetadataReportsForegroundProcessAndCwd() {

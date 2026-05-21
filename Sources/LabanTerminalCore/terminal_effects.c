@@ -8,6 +8,16 @@ void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata) {
     s->title_dirty = 1;
 }
 
+void laban_bell_cb(GhosttyTerminal terminal, void *userdata) {
+    (void)terminal;
+    LabanSession *s = (LabanSession *)userdata;
+    if (!s) return;
+    s->bell_count++;
+    if (s->bell_callback) {
+        s->bell_callback(s->bell_userdata, s, s->bell_count);
+    }
+}
+
 static void laban_session_capture_response(
     LabanSession *s, const uint8_t *data, size_t len) {
     if (!s || !data || len == 0) return;
@@ -146,6 +156,26 @@ int laban_session_drain_response(
     }
     s->response_len = remaining;
     *out_len = take;
+    return 0;
+}
+
+int laban_session_set_bell_callback(
+    LabanSession *s,
+    LabanBellCallback callback,
+    void *userdata
+) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    s->bell_callback = callback;
+    s->bell_userdata = userdata;
+    return 0;
+}
+
+int laban_session_bell_count(LabanSession *s, uint64_t *out_count) {
+    if (out_count) *out_count = 0;
+    if (!s || !out_count) return -1;
+    SESSION_LOCK(s);
+    *out_count = s->bell_count;
     return 0;
 }
 

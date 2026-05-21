@@ -143,6 +143,10 @@ struct LabanSession {
     LabanTabStatusCallback tab_status_callback;
     void *tab_status_userdata;
 
+    uint64_t bell_count;
+    LabanBellCallback bell_callback;
+    void *bell_userdata;
+
     /* Cached geometry for the SIZE effect (XTWINOPS replies). */
     uint16_t cols;
     uint16_t rows;
@@ -215,6 +219,7 @@ int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
                              const char *const *argv_override);
 
 void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata);
+void laban_bell_cb(GhosttyTerminal terminal, void *userdata);
 void laban_effect_write_pty(GhosttyTerminal terminal, void *userdata,
                             const uint8_t *data, size_t len);
 bool laban_effect_size(GhosttyTerminal terminal, void *userdata,

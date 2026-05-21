@@ -334,6 +334,29 @@ int laban_session_set_tab_status_callback(
 );
 
 /*
+ * Terminal bell observer. libghostty invokes this when BEL (0x07) or another
+ * terminal sequence requests a bell. The count is monotonically increasing for
+ * the lifetime of the session and is incremented before the callback fires.
+ *
+ * The callback fires while the session lock is held on whichever thread drove
+ * `laban_session_poll` / `laban_session_feed_output`. It should copy the count
+ * or enqueue follow-up work and return quickly. Pass NULL for `callback` to
+ * disable.
+ */
+typedef void (*LabanBellCallback)(
+    void *userdata,
+    LabanSession *session,
+    uint64_t count
+);
+
+int laban_session_set_bell_callback(
+    LabanSession *session,
+    LabanBellCallback callback,
+    void *userdata
+);
+int laban_session_bell_count(LabanSession *session, uint64_t *out_count);
+
+/*
  * Feed captured PTY output bytes directly into the VT parser during replay.
  * This is intentionally named for replay so callers do not confuse terminal
  * byte replay with user input written to a live child process.
