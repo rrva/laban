@@ -183,6 +183,52 @@ parts of sections 15–21 of `docs/product/spec.md`.
   wired into both; the headless harness runs `/bin/sh`, so its launch is
   `.passthrough`, but the subsystem and install path exist in both runtimes.
 
+## Review Findings & Fixes (post-implementation review)
+
+A multi-angle review after all milestones surfaced real bugs; fixes applied:
+
+- **Critical — the red failure dot never showed.** Shells emit OSC 133
+  `D;<exit>` immediately followed by `A` in one precmd, so the settled phase
+  after a command is `.atPrompt`, never `.finished`. The sidebar indicator was
+  gated on `phase == .finished`, so the failure dot was only "live" for the
+  sub-millisecond between the two markers. Fixed `SidebarProducer.shellPhaseIndicatorColor`
+  to gate red on the lingering non-zero exit code (running checked first), and
+  added `ShellIntegrationTests.testFailedCommandLeavesRedIndicatorAtPrompt`
+  replaying the real `A C D;1 A` stream.
+- **High — the bash DEBUG trap was unsafe.** It fired for the hook script's
+  own `case`/`PROMPT_COMMAND=` lines (spurious `C` on every new bash tab), for
+  the components of a user's multi-statement `PROMPT_COMMAND` (spurious `C` at
+  every prompt), and `trap '...' DEBUG` clobbered a user's existing DEBUG trap
+  (bash-preexec / atuin / command timers). Fixed by removing the DEBUG trap
+  entirely: bash now uses `PROMPT_COMMAND`-only, emitting `A` + `D;<exit>` but
+  no `C`. Consequence: bash shows the red failure dot but not the blue running
+  dot. zsh and fish keep `C` (their preexec hooks are additive and
+  conflict-free). See `bashHookScript` docs.
+- **Medium — bash `--rcfile` skipped `~/.bashrc`.** `--rcfile` suppresses
+  bash's own startup lookup; the overlay only sourced the login profile chain.
+  A user whose interactive config lives solely in `~/.bashrc` (no profile
+  files) got an unconfigured shell. Fixed: `bashRcFile` falls back to
+  `~/.bashrc` when no profile file exists.
+- **Low — exit-code parse overflow.** `D;<digits>` accumulated into a signed
+  `int` unbounded (UB on a hostile/huge argument). Fixed with a clamp in
+  `parse_osc133_payload`.
+- **Nit — `payload_overflow` not reset** in `laban_session_set_osc133_callback`;
+  now reset alongside the other scanner fields.
+
+Known limitations (documented, not fixed):
+
+- **bash agent-resume tabs lack integration.** bash's overlay lives only in
+  argv (`--rcfile`), and `startSpawn` lets an agent-resume injection argv win
+  over the integration argv (correct precedence), so a resumed bash agent tab
+  has no OSC 133. zsh/fish survive because their overlay is env-based
+  (`ZDOTDIR`/`XDG_DATA_DIRS`) and persists on the session. Narrow edge
+  (bash + agent + restore); revisit if it matters.
+- **No DCS/APC string framing in the scanner.** Like the existing OSC 21337
+  scanner (`tab_status.c`), `osc133.c` does not track DCS/APC string
+  boundaries, so a `133`-looking byte run embedded in a DCS payload could be
+  mis-parsed. Matches the established scanner's behavior; low likelihood since
+  Laban's own hooks terminate with BEL.
+
 ## Outcomes & Retrospective
 
 All four milestones shipped as a stack of focused PRs (one behavioral reason

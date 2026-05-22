@@ -87,39 +87,41 @@ public enum ShellIntegrationOverlay {
     add-zsh-hook preexec _laban_osc133_preexec
     """
 
-  /// bash OSC 133 hooks via `PROMPT_COMMAND` (prompt) + a `DEBUG` trap
-  /// (preexec). The DEBUG trap preserves `$?` (returns it) so the prompt
-  /// function reads the real command exit status, and skips firing for the
-  /// PROMPT_COMMAND invocation itself. Works on macOS bash 3.2 (string
-  /// PROMPT_COMMAND, no array). Guarded against re-sourcing.
+  /// bash OSC 133 hooks via `PROMPT_COMMAND` only. Emits `A` (fresh prompt)
+  /// every prompt and `D;<exit>` for the just-finished command (captured from
+  /// `$?` at the top of the function, which runs first because it is
+  /// prepended to any existing `PROMPT_COMMAND`). The first prompt emits only
+  /// `A` (no command has run yet).
+  ///
+  /// bash does NOT get a `C` (command-start / "running") marker. The only
+  /// bash mechanism for preexec is a `DEBUG` trap, which is too coarse to use
+  /// safely: it fires for every simple command — including the components of
+  /// a user's own multi-statement `PROMPT_COMMAND` and even the lines of this
+  /// hook script itself — producing spurious `C` markers, and installing one
+  /// would clobber a user's existing `DEBUG` trap (bash-preexec, atuin,
+  /// command timers). So the bash indicator shows the red failure dot
+  /// (driven by the exit code in `D`) but not the blue running dot. zsh and
+  /// fish keep `C` because their preexec hooks (`add-zsh-hook`,
+  /// `--on-event fish_preexec`) are additive and conflict-free.
+  ///
+  /// Works on macOS bash 3.2 (string `PROMPT_COMMAND`, no array). Guarded
+  /// against re-sourcing.
   public static let bashHookScript = """
     # Laban OSC 133 shell integration (bash). Auto-generated; do not edit.
     if [ -n "${LABAN_SHELL_INTEGRATION-}" ]; then
       return 0 2>/dev/null
     fi
     export LABAN_SHELL_INTEGRATION=1
-    _laban_osc133_running=""
+    _laban_osc133_started=""
     _laban_osc133_prompt() {
       local ec=$?
-      if [ -n "$_laban_osc133_running" ]; then
+      if [ -n "$_laban_osc133_started" ]; then
         printf '\\033]133;D;%d\\007' "$ec"
-        _laban_osc133_running=""
       fi
+      _laban_osc133_started=1
       printf '\\033]133;A\\007'
     }
-    _laban_osc133_preexec() {
-      local ec=$?
-      case "$BASH_COMMAND" in
-        _laban_osc133_prompt) return $ec ;;
-      esac
-      if [ -z "$_laban_osc133_running" ]; then
-        printf '\\033]133;C\\007'
-        _laban_osc133_running=1
-      fi
-      return $ec
-    }
-    trap '_laban_osc133_preexec' DEBUG
-    case ";$PROMPT_COMMAND;" in
+    case ";${PROMPT_COMMAND-};" in
       *";_laban_osc133_prompt;"*) ;;
       *) PROMPT_COMMAND="_laban_osc133_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
     esac
@@ -161,18 +163,23 @@ public enum ShellIntegrationOverlay {
     """
   }
 
-  /// The overlay bash rcfile passed via `--rcfile`. Replicates an
-  /// interactive login shell's startup (sources `/etc/profile` then the
-  /// first existing of `~/.bash_profile` / `~/.bash_login` / `~/.profile`,
-  /// which by convention pulls in `~/.bashrc`), then installs the hooks.
+  /// The overlay bash rcfile passed via `--rcfile`. `--rcfile` suppresses
+  /// bash's own startup-file lookup, so the overlay must reproduce it.
+  /// Sources `/etc/profile` then the first existing of `~/.bash_profile` /
+  /// `~/.bash_login` / `~/.profile` (which by convention pulls in
+  /// `~/.bashrc`); if none of those exist, falls back to sourcing
+  /// `~/.bashrc` directly so a user who keeps all interactive config there
+  /// still gets it. Then installs the hooks.
   public static func bashRcFile(hookScriptPath: String) -> String {
     """
     # Laban shell integration overlay (bash). Auto-generated; do not edit.
     if [ -f /etc/profile ]; then . /etc/profile; fi
+    _laban_sourced=""
     for _laban_f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
-      if [ -r "$_laban_f" ]; then . "$_laban_f"; break; fi
+      if [ -r "$_laban_f" ]; then . "$_laban_f"; _laban_sourced=1; break; fi
     done
-    unset _laban_f
+    if [ -z "$_laban_sourced" ] && [ -r "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
+    unset _laban_f _laban_sourced
     . \(shellSingleQuote(hookScriptPath))
     """
   }

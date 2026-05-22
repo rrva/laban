@@ -1,3 +1,4 @@
+import LabanRenderer
 import LabanTerminalCore
 import XCTest
 
@@ -109,6 +110,31 @@ final class ShellIntegrationTests: XCTestCase {
     // must not move the phase off idle.
     session.feedOutput(Array("\u{1B}]133;L\u{07}".utf8))
     XCTAssertEqual(session.shellIntegrationState().phase, .idle)
+  }
+
+  /// Regression for the indicator-never-shows-red bug: real shells emit
+  /// `D;<exit>` immediately followed by `A` in one precmd, so the *settled*
+  /// phase after a failed command is `.atPrompt`, not `.finished`, while the
+  /// exit code lingers. Feed that exact stream and confirm the state the UI
+  /// reads at rest still drives a red indicator.
+  func testFailedCommandLeavesRedIndicatorAtPrompt() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // prompt, run, fail, next prompt — as the zsh/bash/fish hooks emit it.
+    session.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))
+    session.feedOutput(Array("\u{1B}]133;C\u{07}".utf8))
+    session.feedOutput(Array("\u{1B}]133;D;1\u{07}".utf8))
+    session.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))
+
+    let state = session.shellIntegrationState()
+    XCTAssertEqual(state.phase, .atPrompt, "settled phase is atPrompt, not finished")
+    XCTAssertEqual(state.lastExitCode, 1)
+
+    // The indicator must be red for this at-rest state.
+    let meta = TabTitleMetadata(
+      displayTitle: "t", titleSource: .fallback,
+      shellPhase: state.phase, lastCommandExitCode: state.lastExitCode)
+    XCTAssertEqual(SidebarProducer.shellPhaseIndicatorColor(meta), Theme.current.red)
   }
 
   func testObserverHandlerReceivesReducedState() throws {

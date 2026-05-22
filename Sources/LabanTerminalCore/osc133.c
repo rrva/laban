@@ -24,7 +24,12 @@ static void parse_osc133_payload(LabanSession *s, const char *payload, size_t le
         if (i < len && payload[i] >= '0' && payload[i] <= '9') {
             int value = 0;
             while (i < len && payload[i] >= '0' && payload[i] <= '9') {
-                value = value * 10 + (payload[i] - '0');
+                /* Clamp instead of accumulating unbounded: shell exit codes
+                 * are 0-255, and an overlong argument (hostile or buggy
+                 * emitter) would otherwise overflow a signed int (UB). */
+                if (value < 100000000) {
+                    value = value * 10 + (payload[i] - '0');
+                }
                 i++;
             }
             has_exit_code = 1;
@@ -121,5 +126,6 @@ int laban_session_set_osc133_callback(
     s->osc133_scanner.state = O133_NORMAL;
     s->osc133_scanner.payload_len = 0;
     s->osc133_scanner.num_len = 0;
+    s->osc133_scanner.payload_overflow = 0;
     return 0;
 }

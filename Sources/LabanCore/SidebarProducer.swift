@@ -256,15 +256,23 @@ public struct SidebarProducer {
   }
 
   /// The indicator color for a tab's OSC 133 shell phase, or nil when no
-  /// indicator should show. A non-zero last command exit is the most
-  /// actionable signal (red); a running command shows blue. `atPrompt` and
-  /// `idle` show nothing so the sidebar stays quiet at rest.
+  /// indicator should show. A running command shows blue; otherwise a
+  /// non-zero last-command exit shows red. `idle` and a clean prompt show
+  /// nothing so the sidebar stays quiet at rest.
+  ///
+  /// The red signal is gated on the exit code, NOT on `phase == .finished`:
+  /// shells emit OSC 133 `D;<exit>` immediately followed by `A` in the same
+  /// precmd, so the *settled* phase after a command is `.atPrompt`, never
+  /// `.finished`. Gating on `.finished` would mean the failure dot is only
+  /// "live" for the sub-millisecond between the two markers — i.e. never
+  /// visible. The running check comes first so re-running a command after a
+  /// failure shows blue, not a stale red.
   static func shellPhaseIndicatorColor(_ meta: TabTitleMetadata) -> UInt32? {
-    if let exit = meta.lastCommandExitCode, exit != 0, meta.shellPhase == .finished {
-      return Theme.current.red
-    }
     if meta.shellPhase == .running {
       return Theme.current.blue
+    }
+    if let exit = meta.lastCommandExitCode, exit != 0 {
+      return Theme.current.red
     }
     return nil
   }

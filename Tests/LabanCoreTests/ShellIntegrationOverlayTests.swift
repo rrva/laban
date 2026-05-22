@@ -71,9 +71,16 @@ final class ShellIntegrationOverlayTests: XCTestCase {
     let rcPath = argv[2]
     let rc = try String(contentsOfFile: rcPath, encoding: .utf8)
     XCTAssertTrue(rc.contains(".bash_profile"))
+    // rcfile falls back to ~/.bashrc when no profile file exists.
+    XCTAssertTrue(rc.contains(".bashrc"))
     let hook = try String(
       contentsOf: base.appendingPathComponent("bash/laban-integration.bash"), encoding: .utf8)
-    XCTAssertTrue(hook.contains("133;C"))
+    // bash uses PROMPT_COMMAND for A + D; it deliberately has no DEBUG trap
+    // and no `C` marker (see bashHookScript docs).
+    XCTAssertTrue(hook.contains("133;A"))
+    XCTAssertTrue(hook.contains("133;D"))
+    XCTAssertFalse(hook.contains("133;C"), "bash must not emit C (no DEBUG trap)")
+    XCTAssertFalse(hook.contains("trap "), "bash must not install a DEBUG trap")
     XCTAssertTrue(hook.contains("PROMPT_COMMAND"))
   }
 
