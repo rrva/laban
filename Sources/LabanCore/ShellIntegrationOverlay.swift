@@ -18,6 +18,16 @@ public struct ShellIntegrationLaunch: Equatable {
 
   /// A launch that changes nothing — used for shells without an overlay.
   public static let passthrough = ShellIntegrationLaunch()
+
+  /// The trailing-`exec` args a resumed agent shell needs to stay
+  /// instrumented, or nil to keep the default login-interactive `-l -i`.
+  /// Only argv-based integration (bash's `--rcfile <overlay> -i`) needs this;
+  /// env-based shells (zsh/fish) return nil because the exec inherits their
+  /// `ZDOTDIR`/`XDG_DATA_DIRS` overrides.
+  public var resumeExecArgs: [String]? {
+    guard let argv, argv.count > 1 else { return nil }
+    return Array(argv.dropFirst())
+  }
 }
 
 /// Generates a shell rc-overlay that makes the user's shell emit OSC 133

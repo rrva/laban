@@ -38,6 +38,25 @@ final class RestoreShellInjectionTests: XCTestCase {
       ])
   }
 
+  func testBashExecArgsCarryRcfileIntoResumeExec() {
+    // A resumed bash agent re-execs with --rcfile so OSC 133 survives.
+    let injection = RestoreShellInjection(
+      command: "command claude --resume abc",
+      shellPath: "/bin/bash",
+      execArgs: ["--rcfile", "/tmp/laban/bash/rcfile.bash", "-i"])
+    XCTAssertEqual(
+      injection.payload,
+      "command claude --resume abc; exec /bin/bash --rcfile /tmp/laban/bash/rcfile.bash -i")
+  }
+
+  func testResumeExecArgsFromLaunch() {
+    XCTAssertEqual(
+      ShellIntegrationLaunch(argv: ["/bin/bash", "--rcfile", "/p", "-i"]).resumeExecArgs,
+      ["--rcfile", "/p", "-i"])
+    XCTAssertNil(ShellIntegrationLaunch(environmentOverrides: ["ZDOTDIR": "/z"]).resumeExecArgs)
+    XCTAssertNil(ShellIntegrationLaunch.passthrough.resumeExecArgs)
+  }
+
   func testExecuteNowInstructionMapsToInjection() {
     let instruction = RestoreLaunchInstruction.executeNow(command: "command claude --resume abc")
     XCTAssertEqual(

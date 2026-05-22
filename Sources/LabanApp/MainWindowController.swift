@@ -97,10 +97,18 @@ final class MainWindowController: NSWindowController {
       // exec $SHELL -l -i'`) instead of typing it into a live prompt. The
       // activity check runs against the persisted shellPid, so its
       // answer does not depend on the freshly spawned shell.
-      let injection = RestoreLaunchPlanner.instruction(
+      var injection = RestoreLaunchPlanner.instruction(
         for: spec,
         activityChecker: ProcessTreeRestoreSessionActivityChecker()
       ).spawnInjection
+      // Keep the resumed shell instrumented: bash carries its OSC 133
+      // overlay in argv (`--rcfile`), so the trailing `exec` after the agent
+      // exits must re-apply it. zsh/fish carry it in env (inherited by exec),
+      // so resumeExecArgs is nil and the default `-l -i` stands.
+      if let inj = injection, let execArgs = shellLaunch.resumeExecArgs {
+        injection = RestoreShellInjection(
+          command: inj.command, shellPath: inj.shellPath, execArgs: execArgs)
+      }
       let rc = session.startSpawn(
         overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil,
         injection: injection,

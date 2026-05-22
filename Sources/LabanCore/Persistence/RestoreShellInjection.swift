@@ -48,16 +48,29 @@ public enum LoginShell {
 public struct RestoreShellInjection: Equatable {
   public let shellPath: String
   public let command: String
+  /// Args for the trailing `exec <shell> ...` that the user lands on after
+  /// the agent exits. Defaults to login+interactive (`-l -i`). bash's OSC 133
+  /// integration lives in argv (`--rcfile <overlay> -i`), not env, so a
+  /// resumed bash tab must re-exec with those args to stay instrumented;
+  /// zsh/fish carry their overlay in env (`ZDOTDIR`/`XDG_DATA_DIRS`), which
+  /// the exec inherits, so they keep the default.
+  public let execArgs: [String]
 
-  public init(command: String, shellPath: String = LoginShell.resolvePath()) {
+  public init(
+    command: String,
+    shellPath: String = LoginShell.resolvePath(),
+    execArgs: [String] = ["-l", "-i"]
+  ) {
     self.command = command
     self.shellPath = shellPath
+    self.execArgs = execArgs
   }
 
   /// The shell payload passed to `-c`: run the resume command, then
-  /// drop to a login+interactive shell regardless of how it exited.
+  /// drop to an interactive shell regardless of how it exited.
   public var payload: String {
-    "\(command); exec \(ShellCommand.quote(shellPath)) -l -i"
+    let tail = execArgs.map(ShellCommand.quote).joined(separator: " ")
+    return "\(command); exec \(ShellCommand.quote(shellPath)) \(tail)"
   }
 
   /// The full NULL-terminated-on-exec argv. `argv[0]` is the shell path

@@ -103,6 +103,34 @@ final class ShellIntegrationTests: XCTestCase {
     XCTAssertNil(session.shellIntegrationState().lastExitCode)
   }
 
+  func testMarkerInsideDCSStringIsIgnored() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // A DCS string (ESC P ... ST) whose payload literally contains a 133;C
+    // byte run must NOT be parsed as a real marker.
+    session.feedOutput(Array("\u{1B}P\u{1B}]133;C\u{07}data\u{1B}\\".utf8))
+    XCTAssertEqual(session.shellIntegrationState().phase, .idle)
+  }
+
+  func testBackToBackOSCAfterBareEscStillParses() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // A 133;A whose terminator is a bare ESC starting a new OSC (no ST):
+    // the new OSC's own ESC must not be swallowed. The trailing well-formed
+    // 133;C must still be recognized.
+    session.feedOutput(Array("\u{1B}]133;A\u{1B}]133;C\u{07}".utf8))
+    XCTAssertEqual(session.shellIntegrationState().phase, .running)
+  }
+
+  func testHugeExitCodeDoesNotOverflow() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.feedOutput(Array("\u{1B}]133;D;999999999999999\u{07}".utf8))
+    // No crash/UB; an exit code is recorded (clamped) and phase advances.
+    XCTAssertEqual(session.shellIntegrationState().phase, .finished)
+    XCTAssertNotNil(session.shellIntegrationState().lastExitCode)
+  }
+
   func testUnknownActionIgnored() throws {
     let session = try Session.fixture(size: size)
     defer { session.close() }

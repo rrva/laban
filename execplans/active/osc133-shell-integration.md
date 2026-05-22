@@ -215,19 +215,23 @@ A multi-angle review after all milestones surfaced real bugs; fixes applied:
 - **Nit — `payload_overflow` not reset** in `laban_session_set_osc133_callback`;
   now reset alongside the other scanner fields.
 
-Known limitations (documented, not fixed):
+Second-round fixes (the two former known limitations, now resolved):
 
-- **bash agent-resume tabs lack integration.** bash's overlay lives only in
-  argv (`--rcfile`), and `startSpawn` lets an agent-resume injection argv win
-  over the integration argv (correct precedence), so a resumed bash agent tab
-  has no OSC 133. zsh/fish survive because their overlay is env-based
-  (`ZDOTDIR`/`XDG_DATA_DIRS`) and persists on the session. Narrow edge
-  (bash + agent + restore); revisit if it matters.
-- **No DCS/APC string framing in the scanner.** Like the existing OSC 21337
-  scanner (`tab_status.c`), `osc133.c` does not track DCS/APC string
-  boundaries, so a `133`-looking byte run embedded in a DCS payload could be
-  mis-parsed. Matches the established scanner's behavior; low likelihood since
-  Laban's own hooks terminate with BEL.
+- **bash agent-resume now stays instrumented.** `RestoreShellInjection` gained
+  an `execArgs` parameter for the trailing `exec <shell> ...`. bash's overlay
+  is argv-based (`--rcfile`), so `MainWindowController` derives the resume exec
+  args from `ShellIntegrationLaunch.resumeExecArgs` and a resumed bash agent
+  re-execs with `--rcfile <overlay> -i`. zsh/fish return nil (env-based
+  overlay is inherited by the exec) and keep the default `-l -i`.
+- **The scanner now frames DCS/SOS/PM/APC strings and no longer swallows a new
+  ESC.** `osc133.c` skips `ESC P/X/^/_ ... ST` strings (so a `133`-looking byte
+  run embedded in a DCS payload is ignored) and the `*_AFTER_ESC` states now
+  dispatch a non-`\` byte through the shared `dispatch_after_esc` helper, so
+  back-to-back OSCs (`ESC]133;A` immediately followed by `ESC]133;C`) are both
+  recognized. Tests: `testMarkerInsideDCSStringIsIgnored`,
+  `testBackToBackOSCAfterBareEscStillParses`, `testHugeExitCodeDoesNotOverflow`.
+  Note: the sibling `tab_status.c` (OSC 21337) still has the original
+  string-framing gap; aligning it is out of scope for this plan.
 
 ## Outcomes & Retrospective
 

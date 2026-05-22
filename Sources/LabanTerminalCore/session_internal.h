@@ -102,6 +102,11 @@ typedef enum {
     O133_BODY_133_AFTER_ESC,
     O133_BODY_OTHER,
     O133_BODY_OTHER_AFTER_ESC,
+    /* Inside a DCS/SOS/PM/APC string (ESC P / X / ^ / _ ... ST). Bytes here
+     * are skipped, not scanned for OSC, so a 133-looking byte run embedded in
+     * such a string is not mis-parsed as a real marker. */
+    O133_STRING,
+    O133_STRING_AFTER_ESC,
 } OSC133State;
 
 #define OSC133_NUM_MAX 8        /* "133" + room */
