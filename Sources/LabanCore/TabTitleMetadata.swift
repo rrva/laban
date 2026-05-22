@@ -133,6 +133,13 @@ public struct TabTitleMetadata: Codable, Equatable {
   public var unseenOutput: Bool
   public var bellAttention: Bool
   public var exitStatus: Int?
+  /// Live OSC 133 shell phase for this tab's session. Runtime UI state, not
+  /// persisted: a restored tab's fresh shell re-emits its own markers.
+  public var shellPhase: ShellIntegrationPhase
+  /// Exit code of the last command the shell reported finished (OSC 133 `D`),
+  /// or nil if none yet. Distinct from `exitStatus`, which is the *shell
+  /// process* exit, not a command's.
+  public var lastCommandExitCode: Int?
 
   public init(
     userTitle: String? = nil,
@@ -149,7 +156,9 @@ public struct TabTitleMetadata: Codable, Equatable {
     lastOutputAt: Date? = nil,
     unseenOutput: Bool = false,
     bellAttention: Bool = false,
-    exitStatus: Int? = nil
+    exitStatus: Int? = nil,
+    shellPhase: ShellIntegrationPhase = .idle,
+    lastCommandExitCode: Int? = nil
   ) {
     self.userTitle = TerminalTitle.sanitize(userTitle)
     self.titleFrozen = titleFrozen
@@ -167,6 +176,8 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.unseenOutput = unseenOutput
     self.bellAttention = bellAttention
     self.exitStatus = exitStatus
+    self.shellPhase = shellPhase
+    self.lastCommandExitCode = lastCommandExitCode
   }
 
   public static func fallback(position: Int, active: Bool = false) -> TabTitleMetadata {

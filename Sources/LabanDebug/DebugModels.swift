@@ -115,6 +115,8 @@ struct TabResponse: Encodable {
   var unseenOutput: Bool
   var bellAttention: Bool
   var exitStatus: Int?
+  var shellPhase: String
+  var lastCommandExitCode: Int?
   var workspace: TabWorkspaceMetadata
   var process: TabProcessMetadata
   var agent: TabAgentMetadata

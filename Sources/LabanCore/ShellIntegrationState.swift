@@ -10,7 +10,7 @@ import Foundation
 /// - `running`: a command is executing (OSC 133 C).
 /// - `finished`: the last command finished (OSC 133 D); `lastExitCode`
 ///   holds its status when the shell reported one.
-public enum ShellIntegrationPhase: String, Sendable, Equatable {
+public enum ShellIntegrationPhase: String, Sendable, Equatable, Codable {
   case idle
   case atPrompt
   case running

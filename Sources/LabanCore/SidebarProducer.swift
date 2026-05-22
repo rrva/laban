@@ -140,10 +140,15 @@ public struct SidebarProducer {
           source: .sidebar
         ))
 
-      // Top-right indicator. The OSC 21337 dot wins over the legacy red
-      // attention badge — when an agent has reported a status, that's
-      // more specific than "something happened in this tab".
-      let agentStatus = tab.titleMetadata.agentStatus
+      // Top-right indicator, by specificity:
+      //  1. OSC 21337 agent dot — an agent explicitly reported a status.
+      //  2. OSC 133 shell phase — a command failed (red) or is running
+      //     (blue). This complements the bell badge: the bell says "output
+      //     happened", the shell phase says "the command finished, here's
+      //     whether it succeeded".
+      //  3. Legacy red attention badge — "something happened in this tab".
+      let meta = tab.titleMetadata
+      let agentStatus = meta.agentStatus
       if let hex = agentStatus.indicatorColor,
         let color = Self.parseHexColor(hex)
       {
@@ -152,6 +157,16 @@ public struct SidebarProducer {
             origin: CGPoint(x: badgeX, y: titleY),
             text: "●",
             foreground: color,
+            background: bg,
+            attributes: [],
+            source: .sidebar
+          ))
+      } else if let shellColor = Self.shellPhaseIndicatorColor(meta) {
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: badgeX, y: titleY),
+            text: "●",
+            foreground: shellColor,
             background: bg,
             attributes: [],
             source: .sidebar
@@ -238,6 +253,20 @@ public struct SidebarProducer {
     }
 
     return .none
+  }
+
+  /// The indicator color for a tab's OSC 133 shell phase, or nil when no
+  /// indicator should show. A non-zero last command exit is the most
+  /// actionable signal (red); a running command shows blue. `atPrompt` and
+  /// `idle` show nothing so the sidebar stays quiet at rest.
+  static func shellPhaseIndicatorColor(_ meta: TabTitleMetadata) -> UInt32? {
+    if let exit = meta.lastCommandExitCode, exit != 0, meta.shellPhase == .finished {
+      return Theme.current.red
+    }
+    if meta.shellPhase == .running {
+      return Theme.current.blue
+    }
+    return nil
   }
 
   /// Parse OSC 21337 color values into the 0xRRGGBBAA format the renderer

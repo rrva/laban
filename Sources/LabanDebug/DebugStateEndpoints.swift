@@ -96,6 +96,8 @@ extension HeadlessDebugRuntime {
       unseenOutput: metadata.unseenOutput,
       bellAttention: metadata.bellAttention,
       exitStatus: metadata.exitStatus,
+      shellPhase: metadata.shellPhase.rawValue,
+      lastCommandExitCode: metadata.lastCommandExitCode,
       workspace: metadata.workspace,
       process: metadata.process,
       agent: metadata.agent,

@@ -54,6 +54,20 @@ final class ShellIntegrationEndpointTests: XCTestCase {
     XCTAssertEqual(phases, ["atPrompt", "running", "finished"])
   }
 
+  func testActiveTabMetadataReflectsPhase() throws {
+    let (runtime, artifacts) = try makeRuntime()
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    try feed(runtime, "\u{1B}]133;C\u{07}\u{1B}]133;D;3\u{07}")
+    drainMainQueue()
+
+    let state = try json(runtime.state())
+    let tabs = try XCTUnwrap(state["tabs"] as? [[String: Any]])
+    let active = try XCTUnwrap(tabs.first { $0["active"] as? Bool == true })
+    XCTAssertEqual(active["shellPhase"] as? String, "finished")
+    XCTAssertEqual(active["lastCommandExitCode"] as? Int, 3)
+  }
+
   func testMissingSessionReturns404() throws {
     let (runtime, artifacts) = try makeRuntime()
     defer { try? FileManager.default.removeItem(at: artifacts) }

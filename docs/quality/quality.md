@@ -19,7 +19,7 @@ enforcement strength rather than feature completeness.
 
 | Area | Status | Evidence | Gap |
 | --- | --- | --- | --- |
-| Product scope | Good | `docs/product/mvp.md`, `docs/product/spec.md`, `README.md` | Keep deferred features explicit: shell integration markers, settings persistence, custom terminfo, and Kitty graphics remain outside MVP. |
+| Product scope | Good | `docs/product/mvp.md`, `docs/product/spec.md`, `README.md`, `Sources/LabanCore/ShellIntegrationOverlay.swift` | OSC 133 shell integration (spec §7) now ships: parsing, zsh/bash/fish injection, and a sidebar phase indicator. Keep deferred features explicit: settings persistence, custom terminfo, and Kitty graphics remain outside MVP. |
 | Agent map | Good | `AGENTS.md` is a small map. | Keep it short as docs grow. |
 | ExecPlans | Partial | `PLANS.md`, `execplans/completed/choose-implementation.md`, `execplans/completed/pty-launch-lifecycle.md`, active plans under `execplans/active/` | Several active plans are historical umbrella plans and should be retired or refreshed as slices complete. |
 | Debug harness contract | Good | `docs/process/dev-process.md`, `schemas/debug/`, `Sources/LabanDebug/`, `Tests/LabanDebugTests/`, `scripts/test-e2e` success coverage, and `scripts/test-e2e` failed-run artifact bundles. | Keep schema examples and endpoint behavior synchronized as debug actions expand. |

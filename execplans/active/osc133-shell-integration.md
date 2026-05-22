@@ -93,9 +93,16 @@ parts of sections 15–21 of `docs/product/spec.md`.
   `/bin/bash` end-to-end (`false` -> `lastExitCode == 1`); fish e2e skips when
   fish is absent but its install (file + `XDG_DATA_DIRS`) is unit-tested. Full
   `./scripts/check` passes.
-- [ ] **Milestone 4 — UI consumers.** Tab status indicator + bell-badge
-  augmentation driven by the state machine. Only when this lands does
-  `docs/quality/quality.md` stop listing shell integration as deferred.
+- [x] (2026-05-22) **Milestone 4 — UI consumers.** Done: OSC 133 phase +
+  last command exit code fold into `TabTitleMetadata` (runtime UI state, not
+  persisted) via `AppModel.applyShellIntegration`. `SidebarProducer` renders a
+  top-right indicator dot: red for a non-zero finished command, blue while a
+  command runs, nothing at prompt/idle — slotted below the OSC 21337 agent dot
+  and above the legacy attention badge. Debug `/debug/state` `TabResponse`
+  exposes `shellPhase` + `lastCommandExitCode` (schema updated). Tests: 5
+  `SidebarShellIndicatorTests` (indicator color matrix) + a `/debug/state`
+  assertion that the active tab reflects `finished`/exit 3. `quality.md` no
+  longer lists shell integration as deferred.
 
 ## Decision Log
 
@@ -149,6 +156,33 @@ parts of sections 15–21 of `docs/product/spec.md`.
   is correct even across tab restarts. OS temp cleanup reclaims it; Laban does
   not delete it at exit because live shells still reference it.
   Date/Author: 2026-05-22
+
+- Decision: the shell-phase indicator and the bell badge stay independent but
+  layered by specificity in the sidebar's single top-right indicator slot:
+  OSC 21337 agent dot > OSC 133 shell phase (red = failed command, blue =
+  running) > legacy bell/attention badge. The bell says "output happened"; the
+  shell phase says "the command finished, and whether it succeeded" — distinct
+  signals, so the shell phase does not replace or recolor the bell badge, it
+  occupies the slot when more specific.
+  Rationale: a single indicator slot can show only one thing; ordering by
+  specificity surfaces the most actionable signal without inventing a second
+  badge column. Date/Author: 2026-05-22
+
+## Outcomes & Retrospective
+
+All four milestones shipped as a stack of focused PRs (one behavioral reason
+each, per AGENTS.md): #4 parsing + headless contract, #5 zsh injection, #6
+bash + fish injection, #7 UI consumers. A user now sees, per tab, whether the
+shell is at a prompt, running a command, or just failed — driven by real OSC
+133 markers their own shell emits through Laban's rc-overlays, with no dotfile
+edits. The architecture validated cleanly against the existing OSC 21337
+scanner and `RestoreShellInjection` precedents; the only load-bearing new
+mechanism was persisting `config->envp` on the C session so env overrides
+survive the deferred-spawn restore path. Deferred within §7 (unchanged): regex
+needles are unrelated; for shell integration specifically, the `B`
+(prompt-end) marker, command-line capture (`aid=`/`cmdline=`), and detecting
+the user's pre-existing integration to suppress double-emit are left for later
+if real usage demands them.
 
 ## Review Gate
 

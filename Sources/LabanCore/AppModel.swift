@@ -1350,8 +1350,19 @@ public final class AppModel {
   private func attachShellIntegration(session: Session, tabId: Tab.ID) {
     session.onShellIntegration = { [weak self] state in
       DispatchQueue.main.async { [weak self] in
+        self?.applyShellIntegration(state, forTab: tabId)
         self?.onShellIntegrationChange?(tabId, state)
       }
+    }
+  }
+
+  /// Fold the latest OSC 133 phase + command exit code into the tab's
+  /// metadata so the sidebar can render a status indicator.
+  private func applyShellIntegration(_ state: ShellIntegrationState, forTab tabId: Tab.ID) {
+    withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
+      _tabs[idx].titleMetadata.shellPhase = state.phase
+      _tabs[idx].titleMetadata.lastCommandExitCode = state.lastExitCode
     }
   }
 
