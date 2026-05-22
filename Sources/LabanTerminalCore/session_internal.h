@@ -200,6 +200,14 @@ struct LabanSession {
     int pending_pixel_width;
     int pending_pixel_height;
 
+    /* Deep copy of config->envp captured at create time. The caller's
+     * envp strings live only for the duration of laban_session_create
+     * (Swift's withCStringArray scope), so a deferred spawn — which runs
+     * much later in laban_session_spawn_now_ — must read from this owned
+     * copy, not the freed originals. NULL when no overrides were given.
+     * NULL-terminated array of owned C strings; freed in destroy. */
+    char **stored_envp;
+
     /* Restore handoff guard. When true, PTY output from the newly
      * spawned shell is drained and discarded until the first input
      * write. A restored tab already painted the prior prompt from the

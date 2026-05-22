@@ -136,10 +136,11 @@ public final class Session {
     return try Session(config: &config, size: size)
   }
 
-  public static func realShell(size: LabanTerminalSize) throws -> Session {
-    var config = LabanLaunchConfig()
-    config.fixture_mode = 0
-    return try Session(config: &config, size: size)
+  public static func realShell(
+    size: LabanTerminalSize,
+    environment: [String: String] = [:]
+  ) throws -> Session {
+    try makeRealShell(size: size, cwd: nil, environment: environment, deferSpawn: false)
   }
 
   /// Spawn the user's login shell with an explicit working directory.
@@ -147,13 +148,46 @@ public final class Session {
   /// previously observed `cwd`. The cwd is captured by the C session
   /// layer via `LabanLaunchConfig.cwd` and applied with `chdir(2)`
   /// inside the constrained fork child before `execve(2)` runs.
-  public static func realShell(size: LabanTerminalSize, cwd: String) throws -> Session {
+  ///
+  /// `environment` supplies env overrides merged into the spawn environment
+  /// (the C layer keeps the parent environment and applies these on top) —
+  /// used to point the shell at the OSC 133 rc-overlay via `ZDOTDIR`. See
+  /// `ShellIntegrationOverlay`.
+  public static func realShell(
+    size: LabanTerminalSize,
+    cwd: String,
+    environment: [String: String] = [:]
+  ) throws -> Session {
+    try makeRealShell(size: size, cwd: cwd, environment: environment, deferSpawn: false)
+  }
+
+  /// Build a real-shell session, optionally deferred, with env overrides.
+  /// Keeps the C-string lifetimes (cwd, envp) valid for the duration of
+  /// `laban_session_create`, which deep-copies the env array internally.
+  private static func makeRealShell(
+    size: LabanTerminalSize,
+    cwd: String?,
+    environment: [String: String],
+    deferSpawn: Bool
+  ) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0
-    return try cwd.withCString { cwdPtr in
+    if deferSpawn { config.defer_spawn = 1 }
+
+    func build(cwdPtr: UnsafePointer<CChar>?) throws -> Session {
       config.cwd = cwdPtr
-      return try Session(config: &config, size: size)
+      guard !environment.isEmpty else {
+        return try Session(config: &config, size: size)
+      }
+      let entries = environment.map { "\($0.key)=\($0.value)" }
+      return try withCStringArray(entries) { envPtr in
+        config.envp = envPtr
+        return try Session(config: &config, size: size)
+      }
     }
+
+    guard let cwd else { return try build(cwdPtr: nil) }
+    return try cwd.withCString { try build(cwdPtr: $0) }
   }
 
   /// Create a real-shell session whose libghostty parser is fully
@@ -162,14 +196,16 @@ public final class Session {
   /// workspace-restore path uses this so a transcript replay can paint
   /// scrollback into the parser BEFORE any live shell output arrives.
   /// The cwd is recorded on the C session and applied at spawn time.
-  public static func makeDeferred(size: LabanTerminalSize, cwd: String) throws -> Session {
-    var config = LabanLaunchConfig()
-    config.fixture_mode = 0
-    config.defer_spawn = 1
-    return try cwd.withCString { cwdPtr in
-      config.cwd = cwdPtr
-      return try Session(config: &config, size: size)
-    }
+  ///
+  /// `environment` overrides are captured at create time and applied when
+  /// the deferred child finally spawns (the C layer persists them on the
+  /// session), so the OSC 133 `ZDOTDIR` overlay survives restore.
+  public static func makeDeferred(
+    size: LabanTerminalSize,
+    cwd: String,
+    environment: [String: String] = [:]
+  ) throws -> Session {
+    try makeRealShell(size: size, cwd: cwd, environment: environment, deferSpawn: true)
   }
 
   /// Fork+exec the deferred-spawn child. No-op when the session was

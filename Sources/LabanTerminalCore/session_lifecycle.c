@@ -66,6 +66,34 @@ static char **build_spawn_env(const char *const *overrides) {
     return env;
 }
 
+/* Deep-copy a NULL-terminated env-override array into freshly owned
+ * storage. Returns NULL when `envp` is NULL or on allocation failure;
+ * the caller treats both as "no overrides". The result is owned by the
+ * session and freed in laban_session_destroy via free_stored_envp. */
+static char **dup_envp(const char *const *envp) {
+    if (!envp) return NULL;
+    size_t count = 0;
+    while (envp[count]) count++;
+    char **copy = calloc(count + 1, sizeof(char *));
+    if (!copy) return NULL;
+    for (size_t i = 0; i < count; i++) {
+        copy[i] = strdup(envp[i]);
+        if (!copy[i]) {
+            for (size_t j = 0; j < i; j++) free(copy[j]);
+            free(copy);
+            return NULL;
+        }
+    }
+    copy[count] = NULL;
+    return copy;
+}
+
+static void free_stored_envp(char **envp) {
+    if (!envp) return;
+    for (size_t i = 0; envp[i]; i++) free(envp[i]);
+    free(envp);
+}
+
 static int set_cloexec(int fd) {
     int flags = fcntl(fd, F_GETFD, 0);
     if (flags < 0) return -1;
@@ -184,6 +212,10 @@ int laban_session_create(
     s->fixture_mode = config->fixture_mode;
     s->suppress_pty_output_until_input = 0;
     s->color_scheme = LABAN_COLOR_SCHEME_DARK;
+    /* Capture env overrides now: the caller's strings (Swift's
+     * withCStringArray scope) do not outlive this call, but a deferred
+     * spawn reads them much later. NULL when none were given. */
+    s->stored_envp = dup_envp(config->envp);
 
     GhosttyTerminalOptions opts = { .cols = cols, .rows = rows, .max_scrollback = 10000000 };
 
@@ -461,7 +493,7 @@ int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
         spawn_argv = default_argv;
     }
 
-    char **spawn_env = build_spawn_env(NULL);
+    char **spawn_env = build_spawn_env((const char *const *)s->stored_envp);
     if (!spawn_env) return -1;
 
     struct winsize ws = {
@@ -587,6 +619,7 @@ void laban_session_destroy(LabanSession *s) {
     }
 
     free_ghostty_resources(s);
+    free_stored_envp(s->stored_envp);
     pthread_mutex_destroy(&s->lock);
     free(s);
 }

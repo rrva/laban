@@ -63,8 +63,20 @@ parts of sections 15–21 of `docs/product/spec.md`.
   Full `./scripts/check` gate passes (build, swift-format, ASan tests, smoke,
   E2E, boundaries, debug-contract, deps). Shipped as PR #4. Awaiting the
   fresh-agent Review Gate below.
-- [ ] **Milestone 2 — zsh injection.** Generate a zsh rc-overlay that emits the
-  markers, inject it via `ZDOTDIR`, prove markers come back out of a real shell.
+- [x] (2026-05-22) **Milestone 2 — zsh injection.** Done:
+  `Sources/LabanCore/ShellIntegrationOverlay.swift` generates a zsh rc-overlay
+  (`.zshenv` restores the user's real `ZDOTDIR` then sources a guarded
+  `laban-integration.zsh` that emits A/C/D via `precmd`/`preexec`). C layer
+  persists `config->envp` on the session (`stored_envp`, deep-copied at
+  create, used by the deferred-spawn path, freed in destroy) so the `ZDOTDIR`
+  override survives restore. `Session.realShell`/`makeDeferred` gained an
+  `environment:` parameter; `MainWindowController` installs the overlay once
+  per process under a unique temp dir and threads the overrides into all
+  session factories. End-to-end test spawns real `/bin/zsh` under the overlay,
+  runs `false`, and observes `lastExitCode == 1` (5 tests pass,
+  `swift test --filter ShellIntegrationOverlay`). Full `./scripts/check`
+  (incl. ASan) passes. The `B` (prompt-end) marker is omitted — it needs PS1
+  surgery and `A` already drives `atPrompt`. See Decision Log.
 - [ ] **Milestone 3 — bash + fish injection.** Each shell gets its own overlay
   strategy (`--rcfile`/`BASH_ENV` for bash, `XDG_CONFIG_HOME` for fish).
 - [ ] **Milestone 4 — UI consumers.** Tab status indicator + bell-badge
@@ -99,15 +111,29 @@ parts of sections 15–21 of `docs/product/spec.md`.
   erroring, so adding them later is additive.
   Date/Author: 2026-05-22
 
-- Decision (to confirm during Milestone 2): idempotence with the user's
-  existing shell integration. Starship, oh-my-zsh, and Ghostty's own
-  shell-integration script all emit OSC 133. If the user already has one, the
-  overlay would double-emit. **Policy:** the overlay sets a guard variable
-  (`LABAN_SHELL_INTEGRATION=1`) and the precmd/preexec snippet checks a
-  well-known marker; additionally the *parser* is naturally idempotent for
-  phase (two `A`s in a row just means "at prompt" twice) — the only risk is a
-  duplicated `D` with conflicting exit codes, where the scanner keeps the last
-  one seen before the next `C`. Revisit if real double-emit is observed.
+- Decision: idempotence with the user's existing shell integration —
+  emit-anyway, tolerate in the parser. Starship, oh-my-zsh, and Ghostty's own
+  shell-integration script all emit OSC 133. Rather than detect and suppress
+  the user's integration (fragile, shell-and-framework-specific), Laban's
+  overlay sets `LABAN_SHELL_INTEGRATION=1` only to guard against re-sourcing
+  itself, and otherwise emits its markers unconditionally. The `ShellIntegrationState`
+  reducer is idempotent for phase (two `A`s in a row stay `atPrompt`); the only
+  duplication risk is two `D`s, where the reducer keeps the last reported exit
+  code. If real-world double-emit proves noisy, revisit in a later milestone.
+  Date/Author: 2026-05-22
+
+- Decision: the zsh rc-overlay is a **per-process shared directory**, generated
+  lazily on the first real-shell spawn under a unique temp directory, not a
+  global fixed path.
+  Rationale: the OSC 133 snippet is identical for every session, so a
+  per-session mkdir+write would be pure overhead. `docs/process/worktree-isolation.md`
+  forbids global fixed temp paths (they collide across concurrent worktree
+  runs), so the overlay base is a unique per-process directory
+  (`<temp>/laban-shell-integration-<uuid>/`) and is injectable so headless runs
+  can place it under their run-scoped temp dir. The overlay sources the user's
+  real `ZDOTDIR` (or `$HOME`) captured at generation time, so a per-process dir
+  is correct even across tab restarts. OS temp cleanup reclaims it; Laban does
+  not delete it at exit because live shells still reference it.
   Date/Author: 2026-05-22
 
 ## Review Gate
