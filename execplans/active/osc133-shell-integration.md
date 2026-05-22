@@ -60,7 +60,9 @@ parts of sections 15–21 of `docs/product/spec.md`.
   `GET /debug/events` via `AppModel.onShellIntegrationChange`. 15 tests pass
   (`swift test --filter ShellIntegration`): reducer, scanner (split reads, ESC\
   terminator, unknown/unrelated OSC), and endpoint/event-stream coverage.
-  Awaiting Review Gate.
+  Full `./scripts/check` gate passes (build, swift-format, ASan tests, smoke,
+  E2E, boundaries, debug-contract, deps). Shipped as PR #4. Awaiting the
+  fresh-agent Review Gate below.
 - [ ] **Milestone 2 — zsh injection.** Generate a zsh rc-overlay that emits the
   markers, inject it via `ZDOTDIR`, prove markers come back out of a real shell.
 - [ ] **Milestone 3 — bash + fish injection.** Each shell gets its own overlay
