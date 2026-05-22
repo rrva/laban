@@ -77,8 +77,22 @@ parts of sections 15–21 of `docs/product/spec.md`.
   `swift test --filter ShellIntegrationOverlay`). Full `./scripts/check`
   (incl. ASan) passes. The `B` (prompt-end) marker is omitted — it needs PS1
   surgery and `A` already drives `atPrompt`. See Decision Log.
-- [ ] **Milestone 3 — bash + fish injection.** Each shell gets its own overlay
-  strategy (`--rcfile`/`BASH_ENV` for bash, `XDG_CONFIG_HOME` for fish).
+- [x] (2026-05-22) **Milestone 3 — bash + fish injection.** Done:
+  `ShellIntegrationOverlay.install` now returns a `ShellIntegrationLaunch`
+  (env overrides + optional argv). **bash**: launches `bash --rcfile <overlay>
+  -i` (interactive, non-login); the overlay rcfile sources the login profile
+  chain then installs a `PROMPT_COMMAND` + `DEBUG`-trap hook that preserves
+  `$?`. **fish**: prepends a dir to `XDG_DATA_DIRS` holding
+  `fish/vendor_conf.d/laban-integration.fish` (additive vendor conf.d, verified
+  against fish docs — not `XDG_CONFIG_HOME`, which would replace user config),
+  using `fish_prompt`/`fish_preexec`/`fish_postexec` events. `Session` gained
+  `launchArgv:` on `realShell`/`startSpawn` (argv[0] is the executable);
+  `startSpawn` prefers a resume injection over the integration argv so agent
+  resume still wins. `MainWindowController` threads the full launch through all
+  factories. Tests: 10 in `ShellIntegrationOverlayTests` — real `/bin/zsh` and
+  `/bin/bash` end-to-end (`false` -> `lastExitCode == 1`); fish e2e skips when
+  fish is absent but its install (file + `XDG_DATA_DIRS`) is unit-tested. Full
+  `./scripts/check` passes.
 - [ ] **Milestone 4 — UI consumers.** Tab status indicator + bell-badge
   augmentation driven by the state machine. Only when this lands does
   `docs/quality/quality.md` stop listing shell integration as deferred.

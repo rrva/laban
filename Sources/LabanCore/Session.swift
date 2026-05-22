@@ -138,9 +138,11 @@ public final class Session {
 
   public static func realShell(
     size: LabanTerminalSize,
-    environment: [String: String] = [:]
+    environment: [String: String] = [:],
+    launchArgv: [String]? = nil
   ) throws -> Session {
-    try makeRealShell(size: size, cwd: nil, environment: environment, deferSpawn: false)
+    try makeRealShell(
+      size: size, cwd: nil, environment: environment, launchArgv: launchArgv, deferSpawn: false)
   }
 
   /// Spawn the user's login shell with an explicit working directory.
@@ -156,34 +158,51 @@ public final class Session {
   public static func realShell(
     size: LabanTerminalSize,
     cwd: String,
-    environment: [String: String] = [:]
+    environment: [String: String] = [:],
+    launchArgv: [String]? = nil
   ) throws -> Session {
-    try makeRealShell(size: size, cwd: cwd, environment: environment, deferSpawn: false)
+    try makeRealShell(
+      size: size, cwd: cwd, environment: environment, launchArgv: launchArgv, deferSpawn: false)
   }
 
-  /// Build a real-shell session, optionally deferred, with env overrides.
-  /// Keeps the C-string lifetimes (cwd, envp) valid for the duration of
+  /// Build a real-shell session, optionally deferred, with env overrides and
+  /// an optional explicit argv (argv[0] is the executable). Keeps the
+  /// C-string lifetimes (cwd, envp, argv) valid for the duration of
   /// `laban_session_create`, which deep-copies the env array internally.
   private static func makeRealShell(
     size: LabanTerminalSize,
     cwd: String?,
     environment: [String: String],
+    launchArgv: [String]?,
     deferSpawn: Bool
   ) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0
     if deferSpawn { config.defer_spawn = 1 }
 
-    func build(cwdPtr: UnsafePointer<CChar>?) throws -> Session {
-      config.cwd = cwdPtr
-      guard !environment.isEmpty else {
-        return try Session(config: &config, size: size)
-      }
+    // Compose the nested withCString scopes from inside out so every C
+    // pointer (cwd, envp, executable, argv) outlives the create call.
+    func withEnv(_ body: () throws -> Session) throws -> Session {
+      guard !environment.isEmpty else { return try body() }
       let entries = environment.map { "\($0.key)=\($0.value)" }
       return try withCStringArray(entries) { envPtr in
         config.envp = envPtr
-        return try Session(config: &config, size: size)
+        return try body()
       }
+    }
+    func withArgv(_ body: () throws -> Session) throws -> Session {
+      guard let launchArgv, !launchArgv.isEmpty else { return try body() }
+      return try launchArgv[0].withCString { exePtr in
+        config.executable = exePtr
+        return try withCStringArray(launchArgv) { argvPtr in
+          config.argv = argvPtr
+          return try body()
+        }
+      }
+    }
+    func build(cwdPtr: UnsafePointer<CChar>?) throws -> Session {
+      config.cwd = cwdPtr
+      return try withEnv { try withArgv { try Session(config: &config, size: size) } }
     }
 
     guard let cwd else { return try build(cwdPtr: nil) }
@@ -205,7 +224,11 @@ public final class Session {
     cwd: String,
     environment: [String: String] = [:]
   ) throws -> Session {
-    try makeRealShell(size: size, cwd: cwd, environment: environment, deferSpawn: true)
+    // The deferred create path ignores config.argv (it returns before argv
+    // handling and resolves the shell at spawn time), so an argv override for
+    // bash must go through startSpawn(launchArgv:), not here.
+    try makeRealShell(
+      size: size, cwd: cwd, environment: environment, launchArgv: nil, deferSpawn: true)
   }
 
   /// Fork+exec the deferred-spawn child. No-op when the session was
@@ -214,15 +237,24 @@ public final class Session {
   /// captured at create time — used by the cwd-gone fallback to swap
   /// in `$HOME` when the originally persisted directory is no longer
   /// reachable.
+  ///
+  /// `injection` (agent resume) takes precedence over `launchArgv`: a
+  /// running agent must relaunch with its resume command. `launchArgv` is
+  /// the shell-integration argv for shells that need one (bash's
+  /// `--rcfile`); zsh/fish pass `nil` and rely on their env overlay, which
+  /// survives via the session's persisted envp.
   @discardableResult
-  public func startSpawn(overrideCwd: String? = nil, injection: RestoreShellInjection? = nil)
-    -> Int32
-  {
+  public func startSpawn(
+    overrideCwd: String? = nil,
+    injection: RestoreShellInjection? = nil,
+    launchArgv: [String]? = nil
+  ) -> Int32 {
     guard !isClosed, let h = handle else { return -1 }
-    if let injection {
+    if let argv = injection?.argv ?? launchArgv, !argv.isEmpty {
+      let exe = injection?.shellPath ?? argv[0]
       return withOptionalCString(overrideCwd) { cwdPtr in
-        injection.shellPath.withCString { exePtr in
-          Session.withCStringArray(injection.argv) { argvPtr in
+        exe.withCString { exePtr in
+          Session.withCStringArray(argv) { argvPtr in
             laban_session_start_spawn_argv(h, cwdPtr, exePtr, argvPtr)
           }
         }

@@ -46,15 +46,22 @@ final class MainWindowController: NSWindowController {
     size.cols = Int32(termW / cellW)
 
     // Install the OSC 133 shell-integration overlay once per process and
-    // thread its env overrides (e.g. ZDOTDIR for zsh) into every shell
-    // Laban spawns — new tabs and restored tabs alike. A non-zsh shell or a
-    // failed install yields no overrides, so the shell launches unchanged.
+    // thread it into every shell Laban spawns — new tabs and restored tabs
+    // alike. Each shell needs a different launch shape: zsh/fish via env
+    // overrides (ZDOTDIR / XDG_DATA_DIRS), bash via an explicit
+    // `--rcfile` argv. A shell without an overlay or a failed install yields
+    // a passthrough launch, so the shell starts unchanged.
     // See `ShellIntegrationOverlay` and `docs/product/spec.md` §7.
-    let shellIntegrationEnv = Self.installShellIntegrationOverlay()
+    let shellLaunch = Self.installShellIntegrationOverlay()
 
     let model = try AppModel(
       initialSize: size,
-      sessionFactory: { try Session.realShell(size: $0, environment: shellIntegrationEnv) }
+      sessionFactory: {
+        try Session.realShell(
+          size: $0,
+          environment: shellLaunch.environmentOverrides,
+          launchArgv: shellLaunch.argv)
+      }
     )
     let isPersistenceEnabled = {
       persistenceSyncEnabled && RestoreOnLaunchSettings.isEnabled
@@ -84,7 +91,7 @@ final class MainWindowController: NSWindowController {
     // or replay generic terminal commands into a live terminal.
     model.restoredDeferredSessionFactory = { spec in
       let session = try Session.makeDeferred(
-        size: spec.size, cwd: spec.cwd, environment: shellIntegrationEnv)
+        size: spec.size, cwd: spec.cwd, environment: shellLaunch.environmentOverrides)
       // Agent tabs that were running at quit launch the shell with the
       // resume command as its own argument (`$SHELL -l -i -c '<resume>;
       // exec $SHELL -l -i'`) instead of typing it into a live prompt. The
@@ -96,7 +103,8 @@ final class MainWindowController: NSWindowController {
       ).spawnInjection
       let rc = session.startSpawn(
         overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil,
-        injection: injection)
+        injection: injection,
+        launchArgv: shellLaunch.argv)
       if rc != 0 {
         // Spawn failed — log and surface a banner. The session keeps
         // its VT parser so the tab body is renderable; the user sees
@@ -111,7 +119,10 @@ final class MainWindowController: NSWindowController {
     // Simple fallback for restored tabs that don't have a deferred
     // factory (used by headless tests that swap the factory out).
     model.restoredSessionFactory = { size, cwd in
-      try Session.realShell(size: size, cwd: cwd, environment: shellIntegrationEnv)
+      try Session.realShell(
+        size: size, cwd: cwd,
+        environment: shellLaunch.environmentOverrides,
+        launchArgv: shellLaunch.argv)
     }
 
     // The default tab created by AppModel.init() needs its writer
@@ -305,7 +316,7 @@ final class MainWindowController: NSWindowController {
   /// forbids a global fixed path); the OS reclaims it. Failures degrade to
   /// no overrides — the shell then launches without integration rather than
   /// failing to spawn.
-  private static func installShellIntegrationOverlay() -> [String: String] {
+  private static func installShellIntegrationOverlay() -> ShellIntegrationLaunch {
     let shellPath = LoginShell.resolvePath()
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-shell-integration-\(UUID().uuidString)", isDirectory: true)
@@ -316,7 +327,7 @@ final class MainWindowController: NSWindowController {
         environment: ProcessInfo.processInfo.environment)
     } catch {
       AppLog.app.error("shell integration overlay install failed: \(String(describing: error))")
-      return [:]
+      return .passthrough
     }
   }
 }
