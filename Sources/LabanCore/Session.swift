@@ -278,16 +278,23 @@ public final class Session {
     return laban_session_suppress_pty_output_until_input(h, enabled ? 1 : 0)
   }
 
-  public static func debugShell(size: LabanTerminalSize) throws -> Session {
+  public static func debugShell(
+    size: LabanTerminalSize,
+    extraEnvironment: [String: String] = [:]
+  ) throws -> Session {
     var config = LabanLaunchConfig()
     config.fixture_mode = 0
     let executable = "/bin/sh"
     let argv = ["/bin/sh"]
-    let envp = [
-      "TERM=xterm-256color",
-      "COLORTERM=truecolor",
-      "PS1=$ ",
+    // Base deterministic env, plus any shell-integration overrides the
+    // headless runtime threads in (empty for /bin/sh, which has no overlay).
+    var env: [String: String] = [
+      "TERM": "xterm-256color",
+      "COLORTERM": "truecolor",
+      "PS1": "$ ",
     ]
+    for (k, v) in extraEnvironment { env[k] = v }
+    let envp = env.map { "\($0.key)=\($0.value)" }
 
     return try executable.withCString { exePtr in
       try withCStringArray(argv) { argvPtr in

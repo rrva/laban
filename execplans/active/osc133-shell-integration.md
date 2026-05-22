@@ -168,6 +168,21 @@ parts of sections 15–21 of `docs/product/spec.md`.
   specificity surfaces the most actionable signal without inventing a second
   badge column. Date/Author: 2026-05-22
 
+## Surprises & Discoveries
+
+- Observation: the new C `dup_envp`/`free_stored_envp` path (M2) initially had
+  no Address Sanitizer coverage — `./scripts/check-sanitize` only runs
+  `LabanTerminalCoreTests` (C-level), while the env path was exercised only by
+  Swift-level real-shell tests. Added
+  `LabanSessionTests.testCreateWithEnvOverridesIsSanitizerClean`, which creates
+  a fixture session with a non-NULL `envp` and destroys it, so ASan now covers
+  the alloc/free.
+  Evidence: `./scripts/check-sanitize` runs the test and passes.
+- Observation: `HeadlessDebugRuntime` must stay in parity with
+  `MainWindowController` (AGENTS.md hard rule). The overlay install is now
+  wired into both; the headless harness runs `/bin/sh`, so its launch is
+  `.passthrough`, but the subsystem and install path exist in both runtimes.
+
 ## Outcomes & Retrospective
 
 All four milestones shipped as a stack of focused PRs (one behavioral reason

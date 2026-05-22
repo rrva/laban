@@ -175,10 +175,12 @@ public final class HeadlessDebugRuntime {
       initialRecorder = nil
     }
 
+    let shellLaunch = Self.installShellIntegrationOverlay()
     self.model = try AppModel(
       initialSize: initSize,
       sessionFactory: { size in
-        let session = try Self.makeSession(size: size, mode: initialSessionMode)
+        let session = try Self.makeSession(
+          size: size, mode: initialSessionMode, shellLaunch: shellLaunch)
         session.captureSink = initialRecorder
         return session
       })
@@ -214,7 +216,7 @@ public final class HeadlessDebugRuntime {
 
       self.model.transcriptDelegate = transcripts
       self.model.restoredSessionFactory = { sz, _ in
-        try Self.makeSession(size: sz, mode: initialSessionMode)
+        try Self.makeSession(size: sz, mode: initialSessionMode, shellLaunch: shellLaunch)
       }
       self.model.restoredDeferredSessionFactory = { spec in
         // fixture sessions don't really "spawn"; deferred mode is
@@ -321,14 +323,32 @@ public final class HeadlessDebugRuntime {
 
   private static func makeSession(
     size: LabanTerminalSize,
-    mode: HeadlessSessionMode
+    mode: HeadlessSessionMode,
+    shellLaunch: ShellIntegrationLaunch = .passthrough
   ) throws -> Session {
     switch mode {
     case .fixture:
       return try Session.fixture(size: size)
     case .realShell:
-      return try Session.debugShell(size: size)
+      // Parity with MainWindowController: thread the shell-integration
+      // overlay env into the spawned shell. The headless harness runs
+      // /bin/sh, which has no overlay, so this is `.passthrough` in
+      // practice — but the subsystem is wired into both runtimes.
+      return try Session.debugShell(size: size, extraEnvironment: shellLaunch.environmentOverrides)
     }
+  }
+
+  /// Install the OSC 133 overlay for the headless harness's shell, mirroring
+  /// `MainWindowController.installShellIntegrationOverlay`. The harness uses
+  /// `/bin/sh`, which has no overlay, so this returns `.passthrough`; the call
+  /// exists for runtime parity and to exercise the install path headlessly.
+  private static func installShellIntegrationOverlay() -> ShellIntegrationLaunch {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-headless-shell-integration-\(UUID().uuidString)")
+    return
+      (try? ShellIntegrationOverlay.install(
+        shellPath: "/bin/sh", baseDirectory: base,
+        environment: ProcessInfo.processInfo.environment)) ?? .passthrough
   }
 
   // MARK: - Server ready notification

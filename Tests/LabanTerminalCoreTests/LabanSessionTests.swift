@@ -102,6 +102,52 @@ final class LabanSessionTests: XCTestCase {
     return session
   }
 
+  /// Exercises the env-override deep-copy (`dup_envp` / `free_stored_envp`
+  /// in session_lifecycle.c) so Address Sanitizer covers the alloc/free of
+  /// the stored envp array. The copy happens at create for every mode, so a
+  /// fixture session is enough — no real spawn needed.
+  func testCreateWithEnvOverridesIsSanitizerClean() {
+    let exe = strdup("/bin/sh")!
+    var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sh"), nil]
+    var envp: [UnsafeMutablePointer<CChar>?] = [
+      strdup("ZDOTDIR=/tmp/overlay"), strdup("LABAN_REAL_ZDOTDIR=/home/u"), nil,
+    ]
+    let argvCount = argv.count
+    let envCount = envp.count
+    defer {
+      free(exe)
+      for p in argv where p != nil { free(p) }
+      for p in envp where p != nil { free(p) }
+    }
+
+    var config = LabanLaunchConfig()
+    config.fixture_mode = 1
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+
+    let session: OpaquePointer? = argv.withUnsafeMutableBufferPointer { argvBuf in
+      argvBuf.baseAddress!.withMemoryRebound(
+        to: UnsafePointer<CChar>?.self, capacity: argvCount
+      ) { argvRebound in
+        envp.withUnsafeMutableBufferPointer { envBuf in
+          envBuf.baseAddress!.withMemoryRebound(
+            to: UnsafePointer<CChar>?.self, capacity: envCount
+          ) { envRebound -> OpaquePointer? in
+            config.executable = UnsafePointer(exe)
+            config.argv = UnsafePointer(argvRebound)
+            config.envp = UnsafePointer(envRebound)
+            var s: OpaquePointer?
+            return laban_session_create(&config, size, &s) == 0 ? s : nil
+          }
+        }
+      }
+    }
+    XCTAssertNotNil(session, "create with env overrides should succeed")
+    // Destroy frees the deep-copied envp; ASan flags any leak or double-free.
+    laban_session_destroy(session)
+  }
+
   func testExitStateNullSessionReturnsZeroState() {
     let exit = laban_session_exit_state(nil)
     XCTAssertEqual(exit.status, 0)
