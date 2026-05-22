@@ -256,33 +256,78 @@ ExecPlan's **Milestone 1** is considered complete. The executing agent must not
 mark Milestone 1 as done until this gate passes. See "Review gate and
 review-fix loop" in `PLANS.md`.
 
-- [ ] `grep -n "laban_scan_osc133" Sources/LabanTerminalCore/capture.c` returns
+- [x] `grep -n "laban_scan_osc133" Sources/LabanTerminalCore/capture.c` returns
   a hit on the same call path as `laban_scan_tab_status` (i.e. inside
   `laban_vt_write_capture`, before `ghostty_terminal_vt_write`).
-- [ ] `swift build` exits 0.
-- [ ] `swift test` exits 0 and includes a new test whose name contains
+- [x] `swift build` exits 0.
+- [x] `swift test` exits 0 and includes a new test whose name contains
   `OSC133` (or `ShellIntegration`) that fails if the scanner is removed.
   Demonstrate: comment out the `laban_scan_osc133` call in `capture.c`, rerun
   the targeted test, expect failure; restore it, expect pass.
-- [ ] `./scripts/check-boundaries` exits 0 (the new C scanner must not pull in
+- [x] `./scripts/check-boundaries` exits 0 (the new C scanner must not pull in
   AppKit/renderer/debug-HTTP includes; the state machine lives in `LabanCore`).
-- [ ] Feed this exact byte stream to a session and assert the resulting phase
+- [x] Feed this exact byte stream to a session and assert the resulting phase
   is `finished` with exit code `0`:
   `ESC]133;A BEL` + `prompt$ ` + `ESC]133;B BEL` + `ls` + `ESC]133;C BEL` +
   `output\n` + `ESC]133;D;0 BEL`. A unit test or a `GET
   /debug/shell-integration/state` transcript both satisfy this.
-- [ ] `GET /debug/shell-integration/state` is reachable on the headless debug
+- [x] `GET /debug/shell-integration/state` is reachable on the headless debug
   runtime and returns a JSON object containing keys `phase` and
   `lastExitCode`. Confirm via `./scripts/check-debug-contract` exit 0 (the
   endpoint must be registered in discovery and documented in
   `docs/process/dev-process.md`).
-- [ ] `./scripts/check` exits 0.
+- [x] `./scripts/check` exits 0.
 
-Review status: NOT REVIEWED
+Review status: PASSED — 2026-05-22T19:05:00Z — against commit 7e7dc65e64b4582677206fc2383766c167c21a17
 
 Review findings (filled in by the review agent):
 
-(none yet)
+All eight Review Gate items pass. Reviewed against commit
+`7e7dc65e64b4582677206fc2383766c167c21a17` on branch `osc133-shell-integration`,
+working tree clean.
+
+1. **grep on call path — PASS.** `grep -n laban_scan_osc133
+   Sources/LabanTerminalCore/capture.c` hits line 32, inside
+   `laban_vt_write_capture`, immediately after `laban_scan_tab_status` (line 31)
+   and before `ghostty_terminal_vt_write` (line 33). Same observe-only path as
+   the tab-status scanner.
+2. **`swift build` — PASS.** Exit 0; `osc133.c` compiles as part of
+   `LabanTerminalCore` (build step `[28/60] Compiling LabanTerminalCore osc133.c`).
+3. **Targeted test + mutation — PASS.** `swift test --filter ShellIntegration`
+   exits 0 with 15 tests passing (10 in `Tests/LabanCoreTests/ShellIntegrationTests.swift`,
+   5 in `Tests/LabanDebugTests/ShellIntegrationEndpointTests.swift`). Mutation:
+   commenting out `laban_scan_osc133(s, bytes, len);` at
+   `Sources/LabanTerminalCore/capture.c:32` makes the run exit 1 — the
+   scanner-driven tests fail (e.g. `testScannerFullCycleEndsFinishedExitZero`,
+   `testScannerMarkerSplitAcrossReads`, `testScannerStringTerminatorVariant`,
+   `testFullCommandCycleEndsFinishedExitZero`, `testTransitionsAppearOnEventStream`),
+   while the pure-reducer tests (which never touch the C path) still pass —
+   correctly isolating the scanner wiring. Reverted via `git checkout -- ` and
+   reran: exit 0, 15 passed, 0 failed. Working tree left clean.
+4. **`./scripts/check-boundaries` — PASS.** Exit 0 (`check-boundaries passed`).
+   The new C scanner pulls in no AppKit/renderer/debug-HTTP includes; the state
+   machine (`ShellIntegrationState`) lives in `LabanCore`.
+5. **Exact byte stream → finished/exit 0 — PASS.** Covered by two passing tests:
+   `testScannerFullCycleEndsFinishedExitZero`
+   (`Tests/LabanCoreTests/ShellIntegrationTests.swift:54`) feeds the exact
+   `A`/`prompt$ `/`B`/`ls`/`C`/`output\n`/`D;0` BEL-terminated stream through a
+   fixture session and asserts `phase == .finished`, `lastExitCode == 0`; and
+   `testFullCommandCycleEndsFinishedExitZero`
+   (`Tests/LabanDebugTests/ShellIntegrationEndpointTests.swift:16`) feeds the
+   same stream through the headless runtime and asserts the
+   `GET /debug/shell-integration/state` JSON returns `phase: "finished"`,
+   `lastExitCode: 0`.
+6. **Endpoint reachable + JSON shape — PASS.** Route registered in
+   `Sources/LabanDebug/DebugHTTPServer.swift:220` (`/debug/shell-integration/state`)
+   with `responseSchema: schemas/debug/shell-integration-state.schema.json`;
+   handler in `Sources/LabanDebug/DebugShellIntegrationEndpoints.swift` returns
+   a JSON object with `phase` and `lastExitCode`. Documented at
+   `docs/process/dev-process.md:627`. `./scripts/check-debug-contract` exits 0
+   (`check-debug-contract passed`). `testInitialPhaseIsIdle` confirms the JSON
+   keys.
+7. **`./scripts/check` — PASS.** Exit 0 (`check passed`): full gate (build,
+   swift-format, ASan tests, smoke-runtime, test-e2e, boundaries, debug-contract,
+   deps) all green.
 
 ## Context and Orientation
 
