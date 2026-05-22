@@ -29,6 +29,7 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
         s->persistence_callback(s->persistence_userdata, s, bytes, len);
     }
     laban_scan_tab_status(s, bytes, len);
+    laban_scan_osc133(s, bytes, len);
     ghostty_terminal_vt_write(s->terminal, bytes, len);
 }
 

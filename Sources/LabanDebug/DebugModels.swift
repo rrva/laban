@@ -160,6 +160,15 @@ struct FindStopResponse: Encodable {
   var stopped: Bool
 }
 
+/// OSC 133 shell-integration state for one session. `phase` is one of
+/// `idle` / `atPrompt` / `running` / `finished`; `lastExitCode` is the
+/// status of the last finished command when the shell reported one.
+struct ShellIntegrationStateResponse: Encodable {
+  var sessionId: String
+  var phase: String
+  var lastExitCode: Int?
+}
+
 struct MouseActionResult: Encodable {
   var ok: Bool
   var frame: Int

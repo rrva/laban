@@ -622,6 +622,28 @@ Returns bounded find state:
 rectangles for the current frame so agents can verify highlighted cells without
 desktop automation.
 
+### Shell integration (OSC 133)
+
+`GET /debug/shell-integration/state?sessionID=session-1`
+
+Returns the OSC 133 ("semantic prompt") phase for the active or named session.
+`phase` is `idle` before any marker, `atPrompt` after a prompt marker (A/B),
+`running` while a command executes (C), and `finished` once the command ends
+(D). `lastExitCode` is the status the shell reported with the last `D` marker,
+or `null` if none was reported.
+
+```json
+{
+  "sessionId": "session-1",
+  "phase": "finished",
+  "lastExitCode": 0
+}
+```
+
+Each transition is also appended to `GET /debug/events` as a
+`shell.integration` event whose `action` is the new phase and whose `text` is
+the last exit code (when known).
+
 ### Selection
 
 `GET /debug/selection`

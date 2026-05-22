@@ -79,6 +79,14 @@ public final class AppModel {
   /// Fires after every tab close so per-tab subsystems can tear down.
   public var onTabClosed: ((Tab.ID) -> Void)?
 
+  /// Fires after each OSC 133 shell-integration transition for a tab, with
+  /// the post-reduction `ShellIntegrationState`. Always dispatched to the
+  /// main queue. Lets hosts react to prompt/command/exit changes — the
+  /// debug runtime records them as events, and the AppKit UI (later
+  /// milestone) drives a per-tab status indicator. Single broadcast point so
+  /// `Session.onShellIntegration` stays owned by AppModel.
+  public var onShellIntegrationChange: ((Tab.ID, ShellIntegrationState) -> Void)?
+
   /// Optional logger invoked for each tab that fails to spawn during
   /// `replaceTabs(from:)`. Production wires this to `AppLog` so
   /// restore failures don't disappear silently.
@@ -1331,6 +1339,20 @@ public final class AppModel {
   private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {
     attachTabStatus(session: session, tabId: tabId)
     attachBellAttention(session: session, tabId: tabId)
+    attachShellIntegration(session: session, tabId: tabId)
+  }
+
+  /// Subscribe to OSC 133 transitions and re-broadcast them on the main
+  /// queue via `onShellIntegrationChange`. The C callback fires from the
+  /// per-session reader thread with the session lock held, so — like
+  /// `attachTabStatus` — the model mutation is punted to the main queue to
+  /// avoid holding two locks at once.
+  private func attachShellIntegration(session: Session, tabId: Tab.ID) {
+    session.onShellIntegration = { [weak self] state in
+      DispatchQueue.main.async { [weak self] in
+        self?.onShellIntegrationChange?(tabId, state)
+      }
+    }
   }
 
   /// Subscribe to OSC 21337 tab-status pushes from the session and fold

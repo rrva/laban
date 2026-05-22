@@ -309,6 +309,13 @@ public final class HeadlessDebugRuntime {
       model.recordExistingStateForCapture()
     }
 
+    // Set after all stored properties are initialized so the self-capturing
+    // closure is legal. The hook fires only when OSC 133 bytes arrive, which
+    // cannot happen before init returns, so initial tabs are still covered.
+    model.onShellIntegrationChange = { [weak self] tabId, state in
+      self?.recordShellIntegrationEvent(tabId: tabId, state: state)
+    }
+
     renderFrameUnlocked()
   }
 

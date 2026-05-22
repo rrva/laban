@@ -1,0 +1,124 @@
+import LabanTerminalCore
+import XCTest
+
+@testable import LabanCore
+
+/// Milestone 1 of the OSC 133 shell-integration ExecPlan
+/// (`execplans/active/osc133-shell-integration.md`): the C scanner in
+/// `Sources/LabanTerminalCore/osc133.c` turns raw OSC 133 bytes into a
+/// `ShellIntegrationState` phase + exit code, observable through a fixture
+/// session with no real shell.
+final class ShellIntegrationTests: XCTestCase {
+  private var size: LabanTerminalSize {
+    var s = LabanTerminalSize()
+    s.rows = 24
+    s.cols = 80
+    return s
+  }
+
+  // MARK: - Reducer (pure, no session)
+
+  func testReducerFullCommandCycle() {
+    var state = ShellIntegrationState()
+    XCTAssertEqual(state.phase, .idle)
+    state.apply(.promptStart)
+    XCTAssertEqual(state.phase, .atPrompt)
+    state.apply(.promptEnd)
+    XCTAssertEqual(state.phase, .atPrompt)
+    state.apply(.commandStart)
+    XCTAssertEqual(state.phase, .running)
+    state.apply(.commandEnd(exitCode: 0))
+    XCTAssertEqual(state.phase, .finished)
+    XCTAssertEqual(state.lastExitCode, 0)
+  }
+
+  func testReducerNonZeroExit() {
+    var state = ShellIntegrationState()
+    state.apply(.commandEnd(exitCode: 1))
+    XCTAssertEqual(state.lastExitCode, 1)
+  }
+
+  func testReducerMissingExitCodePreservesPrior() {
+    var state = ShellIntegrationState()
+    state.apply(.commandEnd(exitCode: 42))
+    state.apply(.commandStart)
+    state.apply(.commandEnd(exitCode: nil))
+    XCTAssertEqual(state.phase, .finished)
+    // A 'D' with no numeric arg means "finished, status unknown" and must
+    // not clobber the last real code.
+    XCTAssertEqual(state.lastExitCode, 42)
+  }
+
+  // MARK: - Scanner (bytes through a fixture session)
+
+  func testScannerFullCycleEndsFinishedExitZero() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))
+    session.feedOutput(Array("prompt$ ".utf8))
+    session.feedOutput(Array("\u{1B}]133;B\u{07}".utf8))
+    session.feedOutput(Array("ls".utf8))
+    session.feedOutput(Array("\u{1B}]133;C\u{07}".utf8))
+    session.feedOutput(Array("output\n".utf8))
+    session.feedOutput(Array("\u{1B}]133;D;0\u{07}".utf8))
+    let state = session.shellIntegrationState()
+    XCTAssertEqual(state.phase, .finished)
+    XCTAssertEqual(state.lastExitCode, 0)
+  }
+
+  func testScannerNonZeroExit() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.feedOutput(Array("\u{1B}]133;C\u{07}".utf8))
+    session.feedOutput(Array("\u{1B}]133;D;1\u{07}".utf8))
+    XCTAssertEqual(session.shellIntegrationState().lastExitCode, 1)
+  }
+
+  func testScannerMarkerSplitAcrossReads() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // The PTY delivers bytes in arbitrary chunks; a marker may straddle two
+    // scanner calls. The scanner must buffer partial state across calls.
+    session.feedOutput(Array("\u{1B}]13".utf8))
+    session.feedOutput(Array("3;C".utf8))
+    session.feedOutput(Array("\u{07}".utf8))
+    XCTAssertEqual(session.shellIntegrationState().phase, .running)
+  }
+
+  func testScannerStringTerminatorVariant() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // ST = ESC \ instead of BEL.
+    session.feedOutput(Array("\u{1B}]133;A\u{1B}\\".utf8))
+    XCTAssertEqual(session.shellIntegrationState().phase, .atPrompt)
+  }
+
+  func testUnrelatedOSCDoesNotChangePhase() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // A window-title set (OSC 0) must leave the shell phase at idle.
+    session.feedOutput(Array("\u{1B}]0;hello\u{07}".utf8))
+    XCTAssertEqual(session.shellIntegrationState().phase, .idle)
+    XCTAssertNil(session.shellIntegrationState().lastExitCode)
+  }
+
+  func testUnknownActionIgnored() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // 'L' (fresh line) is a valid OSC 133 action Laban does not consume; it
+    // must not move the phase off idle.
+    session.feedOutput(Array("\u{1B}]133;L\u{07}".utf8))
+    XCTAssertEqual(session.shellIntegrationState().phase, .idle)
+  }
+
+  func testObserverHandlerReceivesReducedState() throws {
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    var observed: [ShellIntegrationPhase] = []
+    session.onShellIntegration = { observed.append($0.phase) }
+    session.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))
+    session.feedOutput(Array("\u{1B}]133;C\u{07}".utf8))
+    session.feedOutput(Array("\u{1B}]133;D;0\u{07}".utf8))
+    XCTAssertEqual(observed, [.atPrompt, .running, .finished])
+  }
+}

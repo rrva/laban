@@ -87,6 +87,35 @@ typedef struct {
     int payload_overflow;
 } LabanTabStatusScanner;
 
+/* OSC 133 ("semantic prompt") scanner state. Sniffs
+ * `ESC ] 133 ; <action>[;<exit>] ST/BEL` out of the PTY byte stream in
+ * parallel with libghostty's parser. libghostty-vt parses OSC 133 internally
+ * but its C API exposes no way to read the action letter or exit code (only
+ * GHOSTTY_OSC_DATA_CHANGE_WINDOW_TITLE_STR), so Laban scans for it directly —
+ * the same approach as the OSC 21337 scanner above. Observe-only: every byte
+ * still flows unchanged to libghostty. */
+typedef enum {
+    O133_NORMAL = 0,
+    O133_AFTER_ESC,
+    O133_OSC_NUM,
+    O133_BODY_133,
+    O133_BODY_133_AFTER_ESC,
+    O133_BODY_OTHER,
+    O133_BODY_OTHER_AFTER_ESC,
+} OSC133State;
+
+#define OSC133_NUM_MAX 8        /* "133" + room */
+#define OSC133_PAYLOAD_MAX 64   /* action char + optional ";<digits>" */
+
+typedef struct {
+    OSC133State state;
+    char num[OSC133_NUM_MAX];
+    size_t num_len;
+    char payload[OSC133_PAYLOAD_MAX];
+    size_t payload_len;
+    int payload_overflow;
+} LabanOSC133Scanner;
+
 struct LabanSession {
     /* Serializes access to every field below. Recursive (PTHREAD_MUTEX_RECURSIVE). */
     pthread_mutex_t lock;
@@ -142,6 +171,10 @@ struct LabanSession {
     LabanTabStatusScanner tab_status_scanner;
     LabanTabStatusCallback tab_status_callback;
     void *tab_status_userdata;
+
+    LabanOSC133Scanner osc133_scanner;
+    LabanOSC133Callback osc133_callback;
+    void *osc133_userdata;
 
     uint64_t bell_count;
     LabanBellCallback bell_callback;
@@ -202,6 +235,7 @@ void laban_emit_capture_bytes(
     size_t len
 );
 void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len);
+void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len);
 int laban_write_pty_bytes(
     LabanSession *s,

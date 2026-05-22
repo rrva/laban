@@ -216,6 +216,17 @@ public final class DebugHTTPServer {
       json(runtime.findState(query: request.query))
     },
     DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/shell-integration/state",
+      category: "state",
+      summary:
+        "Return OSC 133 shell-integration phase + last exit code for the active or named session.",
+      queryParameters: ["sessionID", "sessionId"],
+      responseSchema: "schemas/debug/shell-integration-state.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.shellIntegrationState(query: request.query))
+    },
+    DebugHTTPRoute(
       method: "POST",
       path: "/debug/wait",
       category: "control",

@@ -48,6 +48,7 @@ public final class Session {
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
   private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
   private var bellCallbackUserdata: UnsafeMutableRawPointer?
+  private var shellIntegrationCallbackUserdata: UnsafeMutableRawPointer?
   public weak var captureSink: CaptureSink? {
     didSet {
       callbackState.setCaptureSink(captureSink)
@@ -82,6 +83,17 @@ public final class Session {
     }
   }
 
+  /// Set to observe OSC 133 shell-integration transitions. Fires with the
+  /// *post-reduction* `ShellIntegrationState` after each marker, on the same
+  /// thread that drove `poll()` or `feedOutput(_:)`. The state is tracked
+  /// unconditionally (so `shellIntegrationState()` is always live); this
+  /// handler is only for observers that want to react to changes.
+  public var onShellIntegration: ((ShellIntegrationState) -> Void)? {
+    didSet {
+      callbackState.setShellIntegrationHandler(onShellIntegration)
+    }
+  }
+
   public init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
     let id = UUID().uuidString
     self.id = id
@@ -91,6 +103,31 @@ public final class Session {
       throw SessionError.createFailed
     }
     self.handle = h
+    installShellIntegrationCallback()
+  }
+
+  /// Register the OSC 133 observer once at creation. Unlike the bell and
+  /// tab-status callbacks (which only register when a handler is set), shell
+  /// integration state is tracked for the session's whole life so the debug
+  /// endpoint and UI can read the current phase at any time, even before any
+  /// observer attaches.
+  private func installShellIntegrationCallback() {
+    guard let h = handle else { return }
+    if shellIntegrationCallbackUserdata == nil {
+      shellIntegrationCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+    }
+    laban_session_set_osc133_callback(
+      h,
+      sessionShellIntegrationCallback,
+      shellIntegrationCallbackUserdata
+    )
+  }
+
+  /// The current OSC 133 shell-integration phase and last exit code.
+  /// Tracked from session creation; returns `.idle` with no exit code
+  /// until the shell emits its first marker.
+  public func shellIntegrationState() -> ShellIntegrationState {
+    callbackState.currentShellIntegration()
   }
 
   public static func fixture(size: LabanTerminalSize) throws -> Session {
@@ -231,6 +268,7 @@ public final class Session {
       clearCaptureCallback(handle: h)
       clearTabStatusCallback(handle: h)
       clearBellCallback(handle: h)
+      clearShellIntegrationCallback(handle: h)
       laban_session_destroy(h)
       handle = nil
     }
@@ -910,6 +948,14 @@ public final class Session {
       bellCallbackUserdata = nil
     }
   }
+
+  private func clearShellIntegrationCallback(handle h: OpaquePointer) {
+    laban_session_set_osc133_callback(h, nil, nil)
+    if let userdata = shellIntegrationCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      shellIntegrationCallbackUserdata = nil
+    }
+  }
 }
 
 private final class SessionCallbackState {
@@ -919,6 +965,8 @@ private final class SessionCallbackState {
   private var captureFrame = 0
   private var tabStatusHandler: ((Session.TabStatusUpdate) -> Void)?
   private var bellHandler: ((UInt64) -> Void)?
+  private var shellIntegrationHandler: ((ShellIntegrationState) -> Void)?
+  private var shellIntegration = ShellIntegrationState()
 
   init(sessionId: Session.ID) {
     self.sessionId = sessionId
@@ -966,6 +1014,30 @@ private final class SessionCallbackState {
     lock.unlock()
   }
 
+  func setShellIntegrationHandler(_ handler: ((ShellIntegrationState) -> Void)?) {
+    lock.lock()
+    shellIntegrationHandler = handler
+    lock.unlock()
+  }
+
+  /// Reduce one OSC 133 action into the running state and return the
+  /// post-reduction state plus the observer to notify (if any). Done under
+  /// the lock so the C scanner thread and the accessor never race.
+  func applyShellIntegration(
+    _ action: ShellIntegrationAction
+  ) -> (state: ShellIntegrationState, handler: ((ShellIntegrationState) -> Void)?) {
+    lock.lock()
+    defer { lock.unlock() }
+    shellIntegration.apply(action)
+    return (shellIntegration, shellIntegrationHandler)
+  }
+
+  func currentShellIntegration() -> ShellIntegrationState {
+    lock.lock()
+    defer { lock.unlock() }
+    return shellIntegration
+  }
+
   func captureTarget() -> (sink: CaptureSink, frame: Int)? {
     lock.lock()
     defer { lock.unlock() }
@@ -992,6 +1064,33 @@ private let sessionBellCallback:
     guard let userdata else { return }
     let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
     state.bellTarget()?(count)
+  }
+
+private let sessionShellIntegrationCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?,
+    OpaquePointer?,
+    LabanOSC133Action,
+    Int32,
+    Int32
+  ) -> Void = { userdata, _, action, hasExitCode, exitCode in
+    guard let userdata else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    let mapped: ShellIntegrationAction
+    switch action {
+    case LABAN_OSC133_PROMPT_START:
+      mapped = .promptStart
+    case LABAN_OSC133_PROMPT_END:
+      mapped = .promptEnd
+    case LABAN_OSC133_COMMAND_START:
+      mapped = .commandStart
+    case LABAN_OSC133_COMMAND_END:
+      mapped = .commandEnd(exitCode: hasExitCode != 0 ? Int(exitCode) : nil)
+    default:
+      return
+    }
+    let (reduced, handler) = state.applyShellIntegration(mapped)
+    handler?(reduced)
   }
 
 private let sessionTabStatusCallback:

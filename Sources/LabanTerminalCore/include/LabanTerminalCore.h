@@ -334,6 +334,43 @@ int laban_session_set_tab_status_callback(
 );
 
 /*
+ * OSC 133 ("semantic prompt") observer. The PTY byte stream is scanned
+ * alongside the VT parser; on every successfully parsed
+ * `ESC ] 133 ; <action>[;<exit>] BEL/ST` sequence this callback fires with
+ * the parsed action. Only the iTerm2/FinalTerm A/B/C/D subset is reported;
+ * other actions (L/I/N/P) and options (aid=, cmdline=, ...) are ignored.
+ *
+ * `has_exit_code` is 1 only for a 'D' action carrying a numeric argument
+ * (`ESC ] 133 ; D ; <n> ST`); `exit_code` is meaningful only then. For all
+ * other actions `has_exit_code` is 0 and `exit_code` is 0.
+ *
+ * libghostty-vt parses OSC 133 internally but its C API cannot surface the
+ * action letter or exit code, so Laban scans for it directly. The callback
+ * fires on whichever thread drove `laban_session_poll` /
+ * `laban_session_feed_output`. Pass NULL for `callback` to disable.
+ */
+typedef enum {
+    LABAN_OSC133_PROMPT_START = 0,   /* 'A' — fresh prompt about to draw */
+    LABAN_OSC133_PROMPT_END = 1,     /* 'B' — prompt drawn, input starts */
+    LABAN_OSC133_COMMAND_START = 2,  /* 'C' — command now running */
+    LABAN_OSC133_COMMAND_END = 3,    /* 'D' — command finished */
+} LabanOSC133Action;
+
+typedef void (*LabanOSC133Callback)(
+    void *userdata,
+    LabanSession *session,
+    LabanOSC133Action action,
+    int has_exit_code,
+    int exit_code
+);
+
+int laban_session_set_osc133_callback(
+    LabanSession *session,
+    LabanOSC133Callback callback,
+    void *userdata
+);
+
+/*
  * Terminal bell observer. libghostty invokes this when BEL (0x07) or another
  * terminal sequence requests a bell. The count is monotonically increasing for
  * the lifetime of the session and is incremented before the callback fires.
