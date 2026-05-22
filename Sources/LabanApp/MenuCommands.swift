@@ -135,7 +135,25 @@ enum MenuCommands {
     let tabMenu = NSMenu(title: "Tab")
     tabItem.submenu = tabMenu
 
-    for i in 1...9 {
+    let previousItem = NSMenuItem(
+      title: "Previous Tab",
+      action: #selector(TerminalBitmapView.selectPreviousTab(_:)),
+      keyEquivalent: String(UnicodeScalar(UInt32(NSLeftArrowFunctionKey))!)
+    )
+    previousItem.keyEquivalentModifierMask = [.command, .option]
+    tabMenu.addItem(previousItem)
+
+    let nextItem = NSMenuItem(
+      title: "Next Tab",
+      action: #selector(TerminalBitmapView.selectNextTab(_:)),
+      keyEquivalent: String(UnicodeScalar(UInt32(NSRightArrowFunctionKey))!)
+    )
+    nextItem.keyEquivalentModifierMask = [.command, .option]
+    tabMenu.addItem(nextItem)
+
+    tabMenu.addItem(NSMenuItem.separator())
+
+    for i in 1...8 {
       let item = NSMenuItem(
         title: "Select Tab \(i)",
         action: #selector(TerminalBitmapView.selectTabByIndex(_:)),
@@ -144,6 +162,13 @@ enum MenuCommands {
       item.tag = i
       tabMenu.addItem(item)
     }
+
+    tabMenu.addItem(
+      NSMenuItem(
+        title: "Select Last Tab",
+        action: #selector(TerminalBitmapView.selectLastTab(_:)),
+        keyEquivalent: "9"
+      ))
 
     // Debug menu — capture mode for reproducing rendering bugs
     let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")

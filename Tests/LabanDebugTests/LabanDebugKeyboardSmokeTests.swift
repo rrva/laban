@@ -92,6 +92,36 @@ final class LabanDebugKeyboardSmokeTests: XCTestCase {
     XCTAssertEqual(ev["command"] as? String, "newTab")
   }
 
+  func testControlTabCyclesTabsAndLogsAppCommand() throws {
+    let runtime = try makeRuntime()
+    _ = try runtime.model.createTab()
+    _ = try runtime.model.createTab()
+    let tabs = runtime.model.tabs
+    runtime.model.selectTab(tabs[0].id)
+
+    _ = runtime.applyAction(
+      action(["action": "key", "key": "tab", "modifiers": ["control"]]))
+    XCTAssertEqual(runtime.model.activeTab?.id, tabs[1].id)
+    XCTAssertEqual(inputLog(runtime).last?["command"] as? String, "selectNextTab")
+
+    _ = runtime.applyAction(
+      action(["action": "key", "key": "tab", "modifiers": ["control", "shift"]]))
+    XCTAssertEqual(runtime.model.activeTab?.id, tabs[0].id)
+    XCTAssertEqual(inputLog(runtime).last?["command"] as? String, "selectPreviousTab")
+  }
+
+  func testCommandOptionArrowCyclesTabsAndLogsAppCommand() throws {
+    let runtime = try makeRuntime()
+    _ = try runtime.model.createTab()
+    let tabs = runtime.model.tabs
+    runtime.model.selectTab(tabs[0].id)
+
+    _ = runtime.applyAction(
+      action(["action": "key", "key": "arrowRight", "modifiers": ["command", "option"]]))
+    XCTAssertEqual(runtime.model.activeTab?.id, tabs[1].id)
+    XCTAssertEqual(inputLog(runtime).last?["command"] as? String, "selectNextTab")
+  }
+
   func testUnhandledCommandKeyLogsIgnored() throws {
     let runtime = try makeRuntime()
     _ = runtime.applyAction(

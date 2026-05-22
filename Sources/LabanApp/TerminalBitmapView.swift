@@ -1113,6 +1113,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     restoreSelectionState(for: model.activeTab?.id)
   }
 
+  private func selectTab(at index: Int) {
+    guard index >= 0, index < model.tabs.count else { return }
+    selectTabPreservingSelection(model.tabs[index].id)
+    renderInvalidated = true
+  }
+
+  private func selectLastTab() {
+    guard !model.tabs.isEmpty else { return }
+    selectTab(at: model.tabs.count - 1)
+  }
+
+  private func selectRelativeTab(delta: Int) {
+    let tabs = model.tabs
+    guard tabs.count > 1, let activeTab = model.activeTab,
+      let currentIndex = tabs.firstIndex(where: { $0.id == activeTab.id })
+    else {
+      return
+    }
+    let nextIndex = (currentIndex + delta + tabs.count) % tabs.count
+    selectTab(at: nextIndex)
+  }
+
   @discardableResult
   private func createTabPreservingSelection() throws -> Tab {
     syncSelectionStateToActiveTab()
@@ -1435,9 +1457,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     case .closeTab:
       closeTab(nil)
     case .selectTab(let index):
-      guard index < model.tabs.count else { return }
-      selectTabPreservingSelection(model.tabs[index].id)
-      renderInvalidated = true
+      selectTab(at: index)
+    case .selectLastTab:
+      selectLastTab()
+    case .selectNextTab:
+      selectRelativeTab(delta: 1)
+    case .selectPreviousTab:
+      selectRelativeTab(delta: -1)
     case .copy:
       copy(nil)
     case .paste:
@@ -2762,10 +2788,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   @objc func selectTabByIndex(_ sender: Any?) {
     guard let item = sender as? NSMenuItem else { return }
-    let idx = item.tag - 1
-    guard idx >= 0, idx < model.tabs.count else { return }
-    selectTabPreservingSelection(model.tabs[idx].id)
-    renderInvalidated = true
+    selectTab(at: item.tag - 1)
+  }
+
+  @objc func selectLastTab(_ sender: Any?) {
+    selectLastTab()
+  }
+
+  @objc func selectNextTab(_ sender: Any?) {
+    selectRelativeTab(delta: 1)
+  }
+
+  @objc func selectPreviousTab(_ sender: Any?) {
+    selectRelativeTab(delta: -1)
   }
 
   @objc func exportLastFiveSeconds(_ sender: Any?) { exportRecentBytes(seconds: 5) }

@@ -31,6 +31,40 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(desc.route(), .appCommand(.selectTab(index: 0)))
   }
 
+  func testCommandNineRoutesToSelectLastTab() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .digit9, modifiers: .command)
+    XCTAssertEqual(desc.route(), .appCommand(.selectLastTab))
+  }
+
+  func testCommandOptionArrowsRouteToAdjacentTabs() {
+    let next = TerminalKeyDescriptor(
+      action: .press, key: .arrowRight, modifiers: [.command, .alt])
+    XCTAssertEqual(next.route(), .appCommand(.selectNextTab))
+
+    let previous = TerminalKeyDescriptor(
+      action: .press, key: .arrowLeft, modifiers: [.command, .alt])
+    XCTAssertEqual(previous.route(), .appCommand(.selectPreviousTab))
+  }
+
+  func testCommandShiftBracketsRouteToAdjacentTabs() {
+    let next = TerminalKeyDescriptor(
+      action: .press, key: .bracketRight, modifiers: [.command, .shift])
+    XCTAssertEqual(next.route(), .appCommand(.selectNextTab))
+
+    let previous = TerminalKeyDescriptor(
+      action: .press, key: .bracketLeft, modifiers: [.command, .shift])
+    XCTAssertEqual(previous.route(), .appCommand(.selectPreviousTab))
+  }
+
+  func testControlTabRoutesToAdjacentTabs() {
+    let next = TerminalKeyDescriptor(action: .press, key: .tab, modifiers: .control)
+    XCTAssertEqual(next.route(), .appCommand(.selectNextTab))
+
+    let previous = TerminalKeyDescriptor(
+      action: .press, key: .tab, modifiers: [.control, .shift])
+    XCTAssertEqual(previous.route(), .appCommand(.selectPreviousTab))
+  }
+
   func testUnhandledCommandChordSwallows() {
     let desc = TerminalKeyDescriptor(action: .press, key: .x, modifiers: .command)
     XCTAssertEqual(desc.route(), .swallowCommand)

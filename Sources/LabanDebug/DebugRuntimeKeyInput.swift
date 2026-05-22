@@ -50,6 +50,8 @@ enum DebugRuntimeKeyInput {
     case "end": return .end
     case "pageup": return .pageUp
     case "pagedown": return .pageDown
+    case "[", "bracketleft": return .bracketLeft
+    case "]", "bracketright": return .bracketRight
     case "insert": return .insert
     case "arrowup": return .arrowUp
     case "arrowdown": return .arrowDown
@@ -106,15 +108,39 @@ enum DebugRuntimeKeyInput {
   }
 
   static func commandRoute(for key: Key) -> (route: String, command: String?) {
+    appCommandRoute(for: key, modifiers: .command)
+  }
+
+  static func appCommandRoute(
+    for key: Key,
+    modifiers: KeyModifiers
+  ) -> (route: String, command: String?) {
+    if modifiers.contains(.control), key == .tab {
+      return modifiers.contains(.shift)
+        ? ("appCommand", "selectPreviousTab")
+        : ("appCommand", "selectNextTab")
+    }
+
+    guard modifiers.contains(.command) else { return ("ignored", nil) }
+
     switch key {
     case .t: return ("appCommand", "newTab")
     case .w: return ("appCommand", "closeTab")
     case .c: return ("appCommand", "copy")
     case .v: return ("appCommand", "paste")
     case .f: return ("appCommand", "find")
-    case .digit1, .digit2, .digit3, .digit4, .digit5,
-      .digit6, .digit7, .digit8, .digit9:
+    case .digit1, .digit2, .digit3, .digit4, .digit5, .digit6, .digit7, .digit8:
       return ("appCommand", "selectTab")
+    case .digit9:
+      return ("appCommand", "selectLastTab")
+    case .arrowRight where modifiers.contains(.alt):
+      return ("appCommand", "selectNextTab")
+    case .arrowLeft where modifiers.contains(.alt):
+      return ("appCommand", "selectPreviousTab")
+    case .bracketRight where modifiers.contains(.shift):
+      return ("appCommand", "selectNextTab")
+    case .bracketLeft where modifiers.contains(.shift):
+      return ("appCommand", "selectPreviousTab")
     default: return ("ignored", nil)
     }
   }
@@ -129,7 +155,6 @@ enum DebugRuntimeKeyInput {
     case .digit6: return 5
     case .digit7: return 6
     case .digit8: return 7
-    case .digit9: return 8
     default: return nil
     }
   }

@@ -72,19 +72,22 @@ struct DebugInputActions {
     let activeTab = runtime.model.activeTab
     let inputId = UUID().uuidString
 
-    if mods.contains(.command) {
-      let (route, commandStr) = commandRoute(for: key)
+    let (appRoute, commandStr) = DebugRuntimeKeyInput.appCommandRoute(
+      for: key,
+      modifiers: mods
+    )
+    if appRoute == "appCommand" || mods.contains(.command) {
       runtime.appendInputEnvelope(
         InputEventEnvelope(
           inputId: inputId, seq: 0,
-          source: "debug", kind: "key", route: route,
+          source: "debug", kind: "key", route: appRoute,
           frameBefore: frameBefore,
           tabId: activeTab?.id, sessionId: activeTab?.sessionId,
           key: keyName, modifiers: request.modifiers, command: commandStr
         ))
       runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
-      if route == "appCommand" {
-        executeCommandKey(key)
+      if appRoute == "appCommand", let commandStr {
+        executeCommandKey(commandStr, key: key)
       }
       return runtime.actionResult(ok: true)
     }
@@ -130,34 +133,51 @@ struct DebugInputActions {
     return runtime.actionResult(ok: true)
   }
 
-  private func commandRoute(for key: Key) -> (route: String, command: String?) {
-    DebugRuntimeKeyInput.commandRoute(for: key)
-  }
-
-  private func executeCommandKey(_ key: Key) {
-    switch key {
-    case .t:
+  private func executeCommandKey(_ command: String, key: Key) {
+    switch command {
+    case "newTab":
       _ = try? runtime.model.createTab()
       runtime.renderFrameUnlocked()
-    case .w:
+    case "closeTab":
       if let tabId = runtime.model.activeTab?.id {
         try? runtime.model.closeTab(tabId)
         runtime.renderFrameUnlocked()
       }
-    case .f:
+    case "find":
       if let sessionId = runtime.model.activeTab?.sessionId {
         _ = runtime.model.startFind(sessionID: sessionId)
         runtime.renderFrameUnlocked()
       }
-    default:
-      guard let index = DebugRuntimeKeyInput.tabIndex(for: key),
-        index < runtime.model.tabs.count
-      else {
-        return
+    case "selectLastTab":
+      selectTab(at: runtime.model.tabs.count - 1)
+    case "selectNextTab":
+      selectRelativeTab(delta: 1)
+    case "selectPreviousTab":
+      selectRelativeTab(delta: -1)
+    case "selectTab":
+      if let index = DebugRuntimeKeyInput.tabIndex(for: key) {
+        selectTab(at: index)
       }
-      runtime.model.selectTab(runtime.model.tabs[index].id)
-      runtime.renderFrameUnlocked()
+    default:
+      return
     }
+  }
+
+  private func selectTab(at index: Int) {
+    guard index >= 0, index < runtime.model.tabs.count else { return }
+    runtime.model.selectTab(runtime.model.tabs[index].id)
+    runtime.renderFrameUnlocked()
+  }
+
+  private func selectRelativeTab(delta: Int) {
+    let tabs = runtime.model.tabs
+    guard tabs.count > 1, let activeTab = runtime.model.activeTab,
+      let currentIndex = tabs.firstIndex(where: { $0.id == activeTab.id })
+    else {
+      return
+    }
+    let nextIndex = (currentIndex + delta + tabs.count) % tabs.count
+    selectTab(at: nextIndex)
   }
 
   private func appendInputFollowBottom(deltaRows: Int, frameBefore: Int, tab: Tab) {

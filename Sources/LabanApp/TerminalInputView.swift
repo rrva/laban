@@ -8,6 +8,9 @@ enum AppCommand: Equatable {
   case newTab
   case closeTab
   case selectTab(index: Int)
+  case selectLastTab
+  case selectNextTab
+  case selectPreviousTab
   case copy
   case paste
   case find
@@ -66,6 +69,12 @@ extension TerminalKeyDescriptor {
       return .nativeText
     }
 
+    if let key, modifiers.contains(.control), key == .tab {
+      return modifiers.contains(.shift)
+        ? .appCommand(.selectPreviousTab)
+        : .appCommand(.selectNextTab)
+    }
+
     if modifiers.contains(.command) {
       return routeCommand()
     }
@@ -103,7 +112,11 @@ extension TerminalKeyDescriptor {
     case .digit6: return .appCommand(.selectTab(index: 5))
     case .digit7: return .appCommand(.selectTab(index: 6))
     case .digit8: return .appCommand(.selectTab(index: 7))
-    case .digit9: return .appCommand(.selectTab(index: 8))
+    case .digit9: return .appCommand(.selectLastTab)
+    case .arrowRight where modifiers.contains(.alt): return .appCommand(.selectNextTab)
+    case .arrowLeft where modifiers.contains(.alt): return .appCommand(.selectPreviousTab)
+    case .bracketRight where modifiers.contains(.shift): return .appCommand(.selectNextTab)
+    case .bracketLeft where modifiers.contains(.shift): return .appCommand(.selectPreviousTab)
     default: return .swallowCommand
     }
   }
