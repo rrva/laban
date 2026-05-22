@@ -306,8 +306,10 @@ final class AppModelTests: XCTestCase {
     XCTAssertFalse(updatedSecond.isActive)
     XCTAssertTrue(updatedSecond.titleMetadata.bellAttention)
     XCTAssertEqual(
-      TabTitleResolver.resolve(updatedSecond.titleMetadata, fallbackPosition: updatedSecond.position)
-        .statusBadge,
+      TabTitleResolver.resolve(
+        updatedSecond.titleMetadata,
+        fallbackPosition: updatedSecond.position
+      ).statusBadge,
       "•")
 
     model.selectTab(secondTab.id)
