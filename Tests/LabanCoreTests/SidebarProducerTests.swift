@@ -73,17 +73,28 @@ final class SidebarProducerTests: XCTestCase {
       rectCount0, rectCount1, "rect count must be the same regardless of which tab is active")
   }
 
-  func testTabPositionsAppearInGlyphText() {
+  func testTabPositionsRenderAsDimGutter() {
     let tabs = makeTabs(count: 3)
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: tabs, activeTabId: tabs[0].id, height: 600)
-    let texts = cmds.compactMap { cmd -> String? in
-      if case .glyphRun(_, let t, _, _, _, _, _, _, _) = cmd { return t }
+    let runs = cmds.compactMap { cmd -> (CGPoint, String, UInt32)? in
+      if case .glyphRun(let origin, let text, let fg, _, _, _, _, _, _) = cmd {
+        return (origin, text, fg)
+      }
       return nil
     }
-    XCTAssertTrue(texts.contains { $0.contains("1") })
-    XCTAssertTrue(texts.contains { $0.contains("2") })
-    XCTAssertTrue(texts.contains { $0.contains("3") })
+    for tab in tabs {
+      let index = "\(tab.position)"
+      let title = "Tab \(tab.position)"
+      guard let indexRun = runs.first(where: { $0.1 == index }),
+        let titleRun = runs.first(where: { $0.1 == title })
+      else {
+        XCTFail("expected gutter index and title for \(title); got \(runs.map(\.1))")
+        continue
+      }
+      XCTAssertEqual(indexRun.2, Theme.current.dim0)
+      XCTAssertEqual(titleRun.0.x, indexRun.0.x + 3 * p.cellWidth, accuracy: 0.001)
+    }
   }
 
   // MARK: - hitTest
@@ -188,7 +199,7 @@ final class SidebarProducerTests: XCTestCase {
       let titleRun = cmds.compactMap { cmd -> CGPoint? in
         guard case .glyphRun(let origin, let text, _, _, _, let source, _, _, _) = cmd,
           source == .sidebar,
-          text == "1"
+          text == "Tab 1"
         else { return nil }
         return origin
       }.first

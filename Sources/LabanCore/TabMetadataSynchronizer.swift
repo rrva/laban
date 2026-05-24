@@ -19,15 +19,20 @@ final class TabMetadataSynchronizer {
     var pid: Int?
     var process: String?
     var command: String?
+    var arguments: [String]?
 
     init?(_ metadata: Session.ProcessMetadata) {
       let pid = metadata.foregroundPid ?? metadata.childPid
       let process = TerminalTitle.sanitize(metadata.foregroundProcess)
       let command = TerminalTitle.sanitize(metadata.foregroundCommand)
-      guard pid != nil || process != nil || command != nil else { return nil }
+      let arguments = metadata.foregroundArguments?.compactMap { TerminalTitle.sanitize($0) }
+      guard pid != nil || process != nil || command != nil || arguments?.isEmpty == false else {
+        return nil
+      }
       self.pid = pid
       self.process = process
       self.command = command
+      self.arguments = arguments?.isEmpty == false ? arguments : nil
     }
   }
 
@@ -164,6 +169,7 @@ final class TabMetadataSynchronizer {
     var process = tabs[idx].titleMetadata.process
     process.foregroundProcess = metadata.foregroundProcess
     process.foregroundCommand = metadata.foregroundCommand
+    process.foregroundArguments = metadata.foregroundArguments
     process.pid = metadata.foregroundPid
 
     tabs[idx].titleMetadata.workspace = workspace

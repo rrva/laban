@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LabanTerminalCore
 
@@ -38,7 +39,24 @@ public final class Session {
     public var foregroundPid: Int?
     public var foregroundProcess: String?
     public var foregroundCommand: String?
+    public var foregroundArguments: [String]?
     public var cwd: String?
+
+    public init(
+      childPid: Int? = nil,
+      foregroundPid: Int? = nil,
+      foregroundProcess: String? = nil,
+      foregroundCommand: String? = nil,
+      foregroundArguments: [String]? = nil,
+      cwd: String? = nil
+    ) {
+      self.childPid = childPid
+      self.foregroundPid = foregroundPid
+      self.foregroundProcess = foregroundProcess
+      self.foregroundCommand = foregroundCommand
+      self.foregroundArguments = foregroundArguments
+      self.cwd = cwd
+    }
   }
 
   public let id: ID
@@ -538,16 +556,25 @@ public final class Session {
           else {
             return nil
           }
+          let foregroundArguments =
+            foregroundPid > 0 ? Self.foregroundArguments(for: foregroundPid) : nil
           return ProcessMetadata(
             childPid: childPid > 0 ? Int(childPid) : nil,
             foregroundPid: foregroundPid > 0 ? Int(foregroundPid) : nil,
             foregroundProcess: TerminalTitle.sanitize(String(cString: processBaseAddress)),
             foregroundCommand: TerminalTitle.sanitize(String(cString: commandBaseAddress)),
+            foregroundArguments: foregroundArguments,
             cwd: TerminalTitle.sanitize(String(cString: cwdBaseAddress))
           )
         }
       }
     }
+  }
+
+  private static func foregroundArguments(for pid: Int32) -> [String]? {
+    let arguments = LibprocIntrospector().arguments(of: pid_t(pid)).prefix(16)
+      .compactMap { TerminalTitle.sanitize($0) }
+    return arguments.isEmpty ? nil : arguments
   }
 
   // MARK: - Viewport scrolling

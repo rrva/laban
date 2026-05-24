@@ -48,15 +48,19 @@ public struct TabWorkspaceMetadata: Codable, Equatable {
 public struct TabProcessMetadata: Codable, Equatable {
   public var foregroundProcess: String?
   public var foregroundCommand: String?
+  public var foregroundArguments: [String]?
   public var pid: Int?
 
   public init(
     foregroundProcess: String? = nil,
     foregroundCommand: String? = nil,
+    foregroundArguments: [String]? = nil,
     pid: Int? = nil
   ) {
     self.foregroundProcess = TerminalTitle.sanitize(foregroundProcess)
     self.foregroundCommand = TerminalTitle.sanitize(foregroundCommand)
+    let sanitizedArguments = foregroundArguments?.compactMap { TerminalTitle.sanitize($0) }
+    self.foregroundArguments = sanitizedArguments?.isEmpty == false ? sanitizedArguments : nil
     self.pid = pid
   }
 }
@@ -226,12 +230,17 @@ public enum TabTitleResolver {
     let choice = titleChoice(metadata, fallbackPosition: fallbackPosition)
     let title =
       maxTitleScalars.map { truncateRight(choice.title, maxScalars: $0) } ?? choice.title
-    let subtitle = secondaryLine(for: metadata, now: now)
-      .flatMap { subtitleText in
-        maxSubtitleScalars.map { limit in
-          truncateMiddle(subtitleText, maxScalars: limit)
-        } ?? subtitleText
-      }
+    let subtitle = secondaryLine(
+      for: metadata,
+      now: now,
+      title: choice.title,
+      titleSource: choice.source
+    )
+    .flatMap { subtitleText in
+      maxSubtitleScalars.map { limit in
+        truncateMiddle(subtitleText, maxScalars: limit)
+      } ?? subtitleText
+    }
     let infoLines = breakdownLines(
       for: metadata,
       now: now,
@@ -249,7 +258,7 @@ public enum TabTitleResolver {
   }
 
   /// Per-line breakdown shown under the title in tall sidebar layouts.
-  /// Order, top-to-bottom: workspace path, full foreground command, status.
+  /// Order, top-to-bottom: workspace path, compact foreground command detail, status.
   /// Each line independently truncated; entries that duplicate the title or
   /// add no signal (idle shell, repeated cwd) are dropped so the rendered
   /// tab stays information-dense rather than visually padded.
@@ -304,24 +313,15 @@ public enum TabTitleResolver {
       }
     }
 
-    // Line 3: foreground command — only when it's something more useful
-    // than "the user's shell idling at a prompt" or "the binary that
-    // already named the tab via OSC". A bare shell adds no signal; an
-    // OSC-set title means the running process self-identified, so its
-    // argv is redundant. Skipped to keep room for status when the branch
-    // line already takes a slot.
-    let processSelfNamed = titleSource == .terminal || titleSource == .agent
-    if !processSelfNamed {
-      if let cmd = useful(metadata.process.foregroundCommand),
-        let runnable = commandName(cmd),
-        !isShellProcess(runnable)
-      {
-        lines.append(truncateMid(cmd))
-      } else if let proc = useful(metadata.process.foregroundProcess),
-        !isShellProcess(proc)
-      {
-        lines.append(truncateMid(proc))
-      }
+    // Line 3: foreground command detail — only when it adds signal beyond
+    // the title. The raw executable path is usually noise; argv can reveal
+    // the script or package target behind generic launchers like node.
+    if let detail = foregroundCommandDetail(
+      for: metadata.process,
+      title: title,
+      titleSource: titleSource
+    ) {
+      lines.append(truncateMid(detail))
     }
 
     // Line: status — only when the tab is in a state that warrants
@@ -412,6 +412,7 @@ public enum TabTitleResolver {
       return (repo, .repo)
     }
     if let process = useful(metadata.process.foregroundProcess)
+      ?? executableName(metadata.process.foregroundArguments)
       ?? commandName(metadata.process.foregroundCommand),
       !isShellProcess(process)
     {
@@ -424,6 +425,7 @@ public enum TabTitleResolver {
       return (cwdDisplayName(cwd), .cwd)
     }
     if let process = useful(metadata.process.foregroundProcess)
+      ?? executableName(metadata.process.foregroundArguments)
       ?? commandName(metadata.process.foregroundCommand)
     {
       return (process, .process)
@@ -436,7 +438,9 @@ public enum TabTitleResolver {
 
   private static func secondaryLine(
     for metadata: TabTitleMetadata,
-    now: Date
+    now: Date,
+    title: String,
+    titleSource: TabTitleSource
   ) -> String? {
     var parts: [String] = []
 
@@ -454,10 +458,12 @@ public enum TabTitleResolver {
       parts.append(branch + (metadata.workspace.isDirty ? "*" : ""))
     }
 
-    if let process = useful(metadata.process.foregroundProcess)
-      ?? commandName(metadata.process.foregroundCommand)
-    {
-      parts.append(process)
+    if let detail = foregroundCommandDetail(
+      for: metadata.process,
+      title: title,
+      titleSource: titleSource
+    ) {
+      parts.append(detail)
     }
 
     switch metadata.activityState {
@@ -525,6 +531,116 @@ public enum TabTitleResolver {
     guard let command = useful(command) else { return nil }
     let first = command.split(separator: " ").first.map(String.init) ?? command
     return pathTail(first)
+  }
+
+  private static func executableName(_ arguments: [String]?) -> String? {
+    guard let first = arguments?.compactMap({ useful($0) }).first else { return nil }
+    return pathTail(first)
+  }
+
+  private static func foregroundCommandDetail(
+    for process: TabProcessMetadata,
+    title: String,
+    titleSource: TabTitleSource
+  ) -> String? {
+    if let arguments = process.foregroundArguments,
+      let detail = commandDetail(arguments: arguments, title: title, titleSource: titleSource)
+    {
+      return detail
+    }
+
+    if let command = useful(process.foregroundCommand) {
+      let commandArguments = command.split(separator: " ").map(String.init)
+      if commandArguments.count > 1,
+        let detail = commandDetail(
+          arguments: commandArguments, title: title, titleSource: titleSource)
+      {
+        return detail
+      }
+      if let runnable = commandName(command), !isShellProcess(runnable) {
+        return titleSource == .process && runnable == title ? nil : runnable
+      }
+    }
+
+    if let processName = useful(process.foregroundProcess), !isShellProcess(processName) {
+      let runnable = pathTail(processName)
+      return titleSource == .process && runnable == title ? nil : runnable
+    }
+
+    return nil
+  }
+
+  private static func commandDetail(
+    arguments rawArguments: [String],
+    title: String,
+    titleSource: TabTitleSource
+  ) -> String? {
+    let arguments = rawArguments.compactMap { useful($0) }
+    guard let executableArgument = arguments.first else { return nil }
+    let executable = pathTail(executableArgument)
+    guard !isShellProcess(executable) else { return nil }
+
+    let rest = Array(arguments.dropFirst())
+    let titleMatchesExecutable = titleSource == .process && executable == title
+    guard !rest.isEmpty else {
+      return titleMatchesExecutable ? nil : executable
+    }
+
+    if executable == "node", let detail = nodeCommandDetail(rest) {
+      return detail
+    }
+
+    let displayedRest = rest.map(commandArgumentDisplay)
+    if titleMatchesExecutable {
+      let detail = displayedRest.prefix(3).joined(separator: " ")
+      return detail.isEmpty ? nil : detail
+    }
+
+    return ([executable] + displayedRest).prefix(4).joined(separator: " ")
+  }
+
+  private static func nodeCommandDetail(_ arguments: [String]) -> String? {
+    guard let first = arguments.first else { return nil }
+    if let runner = nodePackageRunnerName(first) {
+      return ([runner] + arguments.dropFirst().map(commandArgumentDisplay)).prefix(4)
+        .joined(separator: " ")
+    }
+
+    if let scriptIndex = arguments.firstIndex(where: isJavaScriptEntrypoint) {
+      return arguments[scriptIndex...].prefix(3).map(commandArgumentDisplay).joined(separator: " ")
+    }
+
+    let nonFlagArguments = arguments.drop(while: { $0.hasPrefix("-") })
+    let detail = nonFlagArguments.prefix(3).map(commandArgumentDisplay).joined(separator: " ")
+    return detail.isEmpty ? nil : detail
+  }
+
+  private static func nodePackageRunnerName(_ script: String) -> String? {
+    let lowerPath = script.lowercased()
+    let basename = pathTail(lowerPath)
+    switch basename {
+    case "npm-cli.js":
+      return "npm"
+    case "pnpm.cjs", "pnpm.js":
+      return "pnpm"
+    case "yarn.js":
+      return "yarn"
+    default:
+      if lowerPath.contains("/tsx/") { return "tsx" }
+      return nil
+    }
+  }
+
+  private static func isJavaScriptEntrypoint(_ argument: String) -> Bool {
+    let lower = argument.lowercased()
+    return [".js", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"].contains {
+      lower.hasSuffix($0)
+    }
+  }
+
+  private static func commandArgumentDisplay(_ argument: String) -> String {
+    guard argument.hasPrefix("/") else { return argument }
+    return pathTail(argument)
   }
 
   private static func isShellProcess(_ process: String) -> Bool {

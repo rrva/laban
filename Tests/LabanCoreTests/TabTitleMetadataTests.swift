@@ -163,6 +163,71 @@ final class TabTitleMetadataTests: XCTestCase {
     XCTAssertEqual(resolved.titleSource, .process)
   }
 
+  func testProcessBinaryPathMatchingTitleDoesNotBecomeInfoLine() {
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        process: TabProcessMetadata(
+          foregroundProcess: "agy",
+          foregroundCommand: "/Users/rrj/.local/bin/agy"
+        )
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "agy")
+    XCTAssertEqual(resolved.titleSource, .process)
+    XCTAssertFalse(
+      resolved.infoLines.contains { $0.contains("/Users/rrj") || $0 == "agy" },
+      "binary path should not duplicate the process title: \(resolved.infoLines)")
+  }
+
+  func testNodeArgumentsRenderUsefulCommandDetail() {
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        process: TabProcessMetadata(
+          foregroundProcess: "node",
+          foregroundCommand: "/Users/rrj/.volta/bin/node",
+          foregroundArguments: [
+            "/Users/rrj/.volta/bin/node",
+            "/Users/rrj/wrk/portal-caddy-route/src/server.ts",
+            "--watch",
+          ]
+        )
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "node")
+    XCTAssertEqual(resolved.infoLines, ["server.ts --watch"])
+  }
+
+  func testNodePackageRunnerArgumentsRenderTarget() {
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        process: TabProcessMetadata(
+          foregroundProcess: "node",
+          foregroundCommand: "/opt/homebrew/bin/node",
+          foregroundArguments: [
+            "/opt/homebrew/bin/node",
+            "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js",
+            "run",
+            "dev",
+          ]
+        )
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "node")
+    XCTAssertEqual(resolved.infoLines, ["npm run dev"])
+  }
+
   func testHomeRelativeCwdUsesBasename() {
     let resolved = TabTitleResolver.resolve(
       TabTitleMetadata(

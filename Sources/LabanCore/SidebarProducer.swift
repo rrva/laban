@@ -3,9 +3,8 @@ import LabanRenderer
 
 // Produces FrameCommands for the left-side tab sidebar.
 // Uses CG coordinates (y=0 at bottom-left); callers pass the view height.
-// Row layout (top → bottom in display, high → low in CG y):
-//   Row 0 (top):    "+" new-tab button
-//   Row 1..N:       one row per tab
+// Row layout (top to bottom in display, high to low in CG y):
+//   Row 0..N:       one row per tab
 public struct SidebarProducer {
   public let sidebarWidth: CGFloat
   public let cellWidth: CGFloat
@@ -93,11 +92,12 @@ public struct SidebarProducer {
       let closeGlyphX = sidebarWidth - 18
       let badgeX = closeGlyphX - 16
       let indexText = "\(tab.position)"
-      let titleX = labelX + CGFloat(indexText.count + 1) * cellWidth
+      let indexX = labelX
+      let titleX = labelX + 3 * cellWidth
       let titleMaxScalars = max(1, Int(floor((badgeX - titleX - 4) / cellWidth)))
-      // Info lines start at labelX (no index prefix indent) so they get the
-      // full row width; subtract the right-edge padding for the close X.
-      let infoMaxScalars = max(1, Int(floor((closeGlyphX - labelX - 4) / cellWidth)))
+      // Info lines align with the title after the quiet shortcut gutter.
+      // Subtract the right-edge padding for the close X.
+      let infoMaxScalars = max(1, Int(floor((closeGlyphX - titleX - 4) / cellWidth)))
       let resolved = TabTitleResolver.resolve(
         tab.titleMetadata,
         fallbackPosition: tab.position,
@@ -123,9 +123,9 @@ public struct SidebarProducer {
 
       cmds.append(
         .glyphRun(
-          origin: CGPoint(x: labelX, y: titleY),
+          origin: CGPoint(x: indexX, y: titleY),
           text: indexText,
-          foreground: labelFg,
+          foreground: Theme.current.dim0,
           background: bg,
           attributes: [],
           source: .sidebar
@@ -202,7 +202,7 @@ public struct SidebarProducer {
       for (offset, entry) in displayLines.enumerated() {
         cmds.append(
           .glyphRun(
-            origin: CGPoint(x: labelX, y: lineY(offset + 1)),
+            origin: CGPoint(x: titleX, y: lineY(offset + 1)),
             text: entry.0,
             foreground: entry.1,
             background: bg,

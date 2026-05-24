@@ -166,7 +166,8 @@ replacement tab. Selection must never point at freed state.
 ### Tab Sidebar
 
 The sidebar shows a new-tab affordance and one row per tab. Each row shows a
-stable one-based position, a title, and a close affordance.
+stable one-based position as a quiet fixed gutter, a title, and a close
+affordance.
 
 Clicking a tab row selects it. Clicking its close affordance closes that tab.
 Clicking the new-tab affordance creates and selects a new tab.
