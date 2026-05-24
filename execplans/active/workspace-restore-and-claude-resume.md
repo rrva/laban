@@ -351,6 +351,20 @@ downstream. Record any change to these decisions here with rationale.
   with the agent name persisted alongside).
   Date/Author: 2026-05-17 / User requirement.
 
+- Decision: Defer any Claude Code or Codex integration that requires
+  modifying the agent's user-visible config, global config directory,
+  hook files, statusline files, or equivalent startup configuration.
+  First-class agent support may observe process trees, known session
+  files, documented app-server/protocol surfaces, and terminal state,
+  but Laban must not silently install or rewrite Claude/Codex config
+  as part of this restore plan.
+  Rationale: The daemon-era design wants richer structured agent
+  activity signals, but user trust is more important than hidden agent
+  setup. Session-scoped adapters, Claude hook/statusline overlays, or
+  Codex protocol bridges that require config changes are future work
+  and need their own explicit design, opt-in story, and tests.
+  Date/Author: 2026-05-24 / User direction.
+
 - Decision: Mirror agent JSONL on lifecycle events (agent process
   exit, tab close, Laban quit) **and on a 5-minute periodic timer
   while an agent process is observed alive** in a tab, to
