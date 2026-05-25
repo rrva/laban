@@ -713,6 +713,7 @@ public final class AppModel {
           if transcriptDelegate == nil { return nil }
           return "transcripts/\(tab.id).bin"
         }()
+        let repoFingerprint = RepoFingerprint.fingerprint(cwd: cwd)
         return TabState(
           id: tab.id,
           cwd: cwd,
@@ -721,6 +722,7 @@ public final class AppModel {
           transcriptPath: transcriptPath,
           altBufferAtQuit: altBuffer,
           cwdFallbackApplied: cwdFallbackAppliedByTab[tab.id],
+          repoFingerprint: repoFingerprint,
           processStatus: processStatus,
           exitCode: exitCode,
           shellPid: shellPid,

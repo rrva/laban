@@ -1,0 +1,21 @@
+{
+  "name": "debug-script-laband-agent-restore",
+  "description": "M6 daemon-loss Claude/Codex restore picker markers used by scripts/test-laband-agent-restore.",
+  "metadata": {
+    "milestone": "M6",
+    "expectedPickerWarnings": ["cwdMissing", "repoFingerprintMismatch"],
+    "expectedResumeMarker": "laband-m6-native-resume"
+  },
+  "steps": [
+    {
+      "kind": "discover"
+    },
+    {
+      "kind": "snapshot",
+      "path": "sessions",
+      "assertions": [
+        {"path": "sessions[0].transportMode", "equals": "laband"}
+      ]
+    }
+  ]
+}

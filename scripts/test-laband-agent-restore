@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+SESSION_ID = "0fa31a8c-1234-5678-9abc-deadbeef0600"
+
+
+class AgentRestoreError(RuntimeError):
+    pass
+
+
+def scoped_path(repo_root, value, prefix):
+    path = Path(value)
+    if path.is_absolute():
+      raise AgentRestoreError(f"{value} must be relative and scoped under {prefix}")
+    normalized = Path(os.path.normpath(value))
+    normalized_text = normalized.as_posix()
+    if normalized_text != prefix and not normalized_text.startswith(f"{prefix}/"):
+      raise AgentRestoreError(f"{value} must be under {prefix}/")
+    return repo_root / normalized
+
+
+def run_command(argv, cwd, env=None):
+    result = subprocess.run(argv, cwd=cwd, env=env, text=True)
+    if result.returncode != 0:
+        raise AgentRestoreError(f"command failed ({result.returncode}): {' '.join(argv)}")
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def install_fake_claude(fake_bin):
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    claude = fake_bin / "claude"
+    claude.write_text(
+        "#!/bin/sh\n"
+        "echo laband-m6-native-resume \"$@\"\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    claude.chmod(0o755)
+    shell = fake_bin / "laband-m6-shell"
+    shell.write_text(
+        "#!/bin/sh\n"
+        "payload=\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"-c\" ]; then\n"
+        "    shift\n"
+        "    payload=$1\n"
+        "    break\n"
+        "  fi\n"
+        "  shift\n"
+        "done\n"
+        "if [ -n \"$payload\" ]; then\n"
+        "  eval \"$payload\"\n"
+        "  exit $?\n"
+        "fi\n"
+        "echo laband-m6-shell-ready\n"
+        "while IFS= read -r line; do\n"
+        "  eval \"$line\"\n"
+        "done\n",
+        encoding="utf-8",
+    )
+    shell.chmod(0o755)
+    return shell
+
+
+def write_workspace(persistence_dir, missing_cwd):
+    workspace = {
+        "schemaVersion": 1,
+        "windows": [
+            {
+                "id": "headless-window",
+                "selectedTabId": "agent-tab",
+                "tabs": [
+                    {
+                        "id": "agent-tab",
+                        "cwd": str(missing_cwd),
+                        "launchCommand": "/bin/zsh -l",
+                        "lastActiveAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                        "repoFingerprint": "root=/old/laban;gitdir=/old/laban/.git",
+                        "processStatus": "running",
+                        "agent": {
+                            "name": "claude",
+                            "sessionId": SESSION_ID,
+                            "jsonlPath": "/tmp/laband-m6/claude-session.jsonl",
+                            "wasRunningAtQuit": True,
+                            "argv": ["claude", "--model", "sonnet"],
+                            "env": {"TERM": "xterm-256color"},
+                            "cwd": str(missing_cwd),
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    write_json(persistence_dir / "workspace.json", workspace)
+
+
+def terminate_process(process):
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def read_readiness(process, stderr_path):
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if process.poll() is not None:
+            raise AgentRestoreError(
+                f"debug process exited before readiness; see {stderr_path}")
+        line = process.stdout.readline()
+        if not line:
+            time.sleep(0.05)
+            continue
+        try:
+            readiness = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise AgentRestoreError(f"readiness was not JSON: {line.strip()}") from exc
+        if readiness.get("debugServer") and readiness.get("debugToken"):
+            return readiness
+    raise AgentRestoreError(f"timed out waiting for debug readiness; see {stderr_path}")
+
+
+def start_debug_client(repo_root, socket_arg, artifacts_dir, temp_dir, persistence_dir, fake_bin, fake_shell):
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    stderr_path = artifacts_dir / "debug-server.stderr.log"
+    stderr_file = stderr_path.open("w", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "LABAN_TERMINAL_BACKEND": "laband",
+            "LABAN_LABAND_SOCKET": socket_arg,
+            "LABAN_LABAND_BIN": str(repo_root / ".build/debug/laband"),
+            "PATH": f"{fake_bin}:{env.get('PATH', '')}",
+            "SHELL": str(fake_shell),
+        }
+    )
+    process = subprocess.Popen(
+        [
+            str(repo_root / ".build/debug/laban-agent"),
+            "--headless",
+            "--debug-server=127.0.0.1:0",
+            "--deterministic",
+            f"--artifacts={artifacts_dir}",
+            f"--temp-dir={temp_dir}",
+            f"--persistence-dir={persistence_dir}",
+        ],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=stderr_file,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        readiness = read_readiness(process, stderr_path)
+    except Exception:
+        terminate_process(process)
+        stderr_file.close()
+        raise
+    return process, stderr_file, readiness
+
+
+def http_json(server_url, token, method, path, body=None):
+    data = None
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        server_url.rstrip("/") + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        payload = exc.read().decode("utf-8", "replace")
+        raise AgentRestoreError(f"HTTP {method} {path} failed: {exc.code} {payload}") from exc
+    return json.loads(payload.decode("utf-8"))
+
+
+def laband_request(socket_path, request_type, **fields):
+    request = {
+        "protocolVersion": 1,
+        "requestId": str(uuid.uuid4()),
+        "type": request_type,
+    }
+    request.update(fields)
+    payload = json.dumps(request).encode("utf-8")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.connect(socket_path)
+        sock.sendall(struct.pack("<I", len(payload)) + payload)
+        header = sock.recv(4)
+        if len(header) != 4:
+            raise AgentRestoreError("laband closed before response header")
+        length = struct.unpack("<I", header)[0]
+        data = bytearray()
+        while len(data) < length:
+            chunk = sock.recv(length - len(data))
+            if not chunk:
+                raise AgentRestoreError("laband closed before response body")
+            data.extend(chunk)
+    response = json.loads(data.decode("utf-8"))
+    if not response.get("ok"):
+        raise AgentRestoreError(f"laband {request_type} failed: {response}")
+    return response
+
+
+def wait_laband_text(socket_path, text):
+    deadline = time.time() + 10
+    last_visible = ""
+    while time.time() < deadline:
+        response = laband_request(socket_path, "snapshot", sessionId="agent-tab")
+        snapshot = response.get("snapshot") or {}
+        last_visible = snapshot.get("visibleText") or ""
+        if text in last_visible:
+            return snapshot
+        time.sleep(0.1)
+    raise AgentRestoreError(
+        f"timed out waiting for laband text {text!r}; visible={last_visible!r}")
+
+
+def validate_picker(picker):
+    candidates = picker.get("candidates") or []
+    if not picker.get("pending") or len(candidates) != 1:
+        raise AgentRestoreError(f"expected one pending restore candidate: {picker}")
+    candidate = candidates[0]
+    if candidate.get("tabId") != "agent-tab":
+        raise AgentRestoreError(f"wrong restore candidate: {candidate}")
+    if candidate.get("checkedByDefault") is not False:
+        raise AgentRestoreError(f"semantic restore must default unchecked: {candidate}")
+    if candidate.get("ageSeconds", -1) < 0:
+        raise AgentRestoreError(f"candidate missing nonnegative age: {candidate}")
+    warning_codes = {warning.get("code") for warning in candidate.get("warnings", [])}
+    required = {"cwdMissing", "repoFingerprintMismatch"}
+    if not required.issubset(warning_codes):
+        raise AgentRestoreError(f"candidate missing cwd/repo warnings: {candidate}")
+    expected_command = f"command claude --resume {SESSION_ID} --model sonnet"
+    if candidate.get("command") != expected_command:
+        raise AgentRestoreError(f"candidate command was not native Claude resume: {candidate}")
+    return candidate
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Verify laband daemon-loss agent restore picker and selected native resume.")
+    parser.add_argument("--socket", required=True, help="Scoped laband socket path under .tmp/.")
+    parser.add_argument("--artifacts", required=True, help="Artifact directory under .artifacts/runs/.")
+    parser.add_argument("--temp-dir", required=True, help="Temporary directory under .tmp/.")
+    parser.add_argument("--no-build", action="store_true", help="Skip building laband and laban-agent.")
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    socket_path = scoped_path(repo_root, args.socket, ".tmp")
+    artifacts_dir = scoped_path(repo_root, args.artifacts, ".artifacts/runs")
+    temp_dir = scoped_path(repo_root, args.temp_dir, ".tmp")
+    persistence_dir = temp_dir / "workspace-persistence"
+    fake_bin = temp_dir / "fake-bin"
+    missing_cwd = temp_dir / "deleted-worktree"
+    report_path = artifacts_dir / "laband-agent-restore-report.json"
+
+    debug_process = None
+    debug_stderr = None
+    report = {
+        "ok": False,
+        "socket": str(socket_path),
+        "artifacts": str(artifacts_dir),
+        "tempDir": str(temp_dir),
+    }
+    try:
+        shutil.rmtree(artifacts_dir, ignore_errors=True)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        fake_shell = install_fake_claude(fake_bin)
+        write_workspace(persistence_dir, missing_cwd)
+
+        if not args.no_build:
+            run_command(["swift", "build", "--product", "laband", "--product", "laban-agent"], cwd=repo_root)
+
+        debug_process, debug_stderr, readiness = start_debug_client(
+            repo_root,
+            args.socket,
+            artifacts_dir / "client",
+            temp_dir / "client",
+            persistence_dir,
+            fake_bin,
+            fake_shell,
+        )
+        server_url = readiness["debugServer"]
+        token = readiness["debugToken"]
+
+        picker = http_json(server_url, token, "GET", "/debug/persistence/restore-picker")
+        candidate = validate_picker(picker)
+        write_json(artifacts_dir / "restore-picker.json", picker)
+
+        before_sessions = http_json(server_url, token, "GET", "/debug/sessions")
+        write_json(artifacts_dir / "before-selection-sessions.json", before_sessions)
+
+        selection = http_json(
+            server_url,
+            token,
+            "POST",
+            "/debug/persistence/restore-picker/select",
+            {
+                "tabIds": ["agent-tab"],
+                "environmentPatch": {
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                    "SHELL": str(fake_shell),
+                },
+            },
+        )
+        write_json(artifacts_dir / "restore-selection.json", selection)
+        if not selection.get("ok") or len(selection.get("restored", [])) != 1:
+            raise AgentRestoreError(f"restore selection did not launch: {selection}")
+
+        marker = f"laband-m6-native-resume --resume {SESSION_ID}"
+        marker_snapshot = wait_laband_text(args.socket, marker)
+
+        after_sessions = http_json(server_url, token, "GET", "/debug/sessions")
+        write_json(artifacts_dir / "after-selection-sessions.json", after_sessions)
+        session = (after_sessions.get("sessions") or [{}])[0]
+        if session.get("logicalSessionId") != "agent-tab":
+            raise AgentRestoreError(f"selected restore used wrong logical id: {session}")
+        if not session.get("incarnationId") or not session.get("pid"):
+            raise AgentRestoreError(f"selected restore missing daemon session identity: {session}")
+
+        report.update(
+            {
+                "ok": True,
+                "candidate": candidate,
+                "selection": selection,
+                "markerSnapshot": {
+                    "logicalSessionId": marker_snapshot.get("logicalSessionId"),
+                    "incarnationId": marker_snapshot.get("incarnationId"),
+                    "visibleText": marker_snapshot.get("visibleText"),
+                },
+                "restoredSession": session,
+            }
+        )
+        print("laband agent restore passed")
+        return 0
+    except Exception as exc:
+        report["error"] = str(exc)
+        print(f"laband agent restore failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        write_json(report_path, report)
+        terminate_process(debug_process)
+        if debug_stderr is not None:
+            debug_stderr.close()
+        try:
+            laband_request(args.socket, "terminateSession", sessionId="agent-tab")
+            laband_request(args.socket, "shutdownWhenIdle")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())

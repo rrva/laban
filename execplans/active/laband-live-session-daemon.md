@@ -87,7 +87,15 @@ running without flicker or sluggish input.
   incarnation and child pid.
 - [x] M5: support detach/reattach across app restart without killing the live
   PTY.
-- [ ] M6: restore Claude/Codex semantic resume on daemon loss while preserving
+- [x] (2026-05-25) M6: daemon-loss agent tabs now surface a
+  headless/debug restore picker instead of auto-running semantic resume in a
+  placeholder local shell. The picker reports candidate age, cwd and repo
+  warnings, defaults semantic restore unchecked, and selection launches a new
+  daemon-owned shell through the existing `$SHELL -l -i -c '<resume>; exec
+  $SHELL -l -i'` trampoline. `scripts/test-laband-agent-restore` verifies the
+  selected Claude restore command runs through a fake native `claude` binary
+  under a real `laband` process.
+- [x] M6: restore Claude/Codex semantic resume on daemon loss while preserving
   the existing restore picker workflow.
 - [ ] M7: multi-attach read-only observers plus a single input/resize lease.
 - [ ] M8: ship upgrade-safe launchd lifecycle and compatibility checks.
@@ -338,6 +346,13 @@ metadata exposure through `/debug/sessions`.
   Implication: Manual and smoke helpers now derive `.artifacts/runs/<run-id>/`
   and `.tmp/<run-id>/` from `LABAN_RUN_ID` or a generated per-run id, and the
   benchmark refuses laband socket paths that do not include a run-id directory.
+
+- Observation: After M6, the release benchmark can still find a stale release
+  `laband` binary if only `bench-keystroke-latency` is rebuilt after protocol
+  metadata changes.
+  Implication: M6 validation builds `laband` in release mode before the laband
+  transport benchmark and uses a fresh `.tmp/keystroke-latency-after-m6/`
+  socket path.
 
 ## Context and Orientation
 
@@ -736,6 +751,61 @@ Preserve the existing Claude/Codex semantic restore workflow:
 
 Do not install or modify Claude/Codex config in this milestone.
 
+Implemented in M6: `TabState` now carries an optional repository fingerprint
+captured from the tab cwd at persistence time. `AgentRestorePicker` builds
+Claude/Codex restore candidates from persisted agent metadata, computes
+session age, warns when the cwd is gone or the repo fingerprint no longer
+matches, and defaults candidates unchecked. In headless `laband` mode,
+restored agent tabs with no matching live daemon session stay pending instead
+of creating a fresh `/bin/cat` daemon session or auto-running resume in the
+local placeholder shell. The debug server exposes
+`GET /debug/persistence/restore-picker` and
+`POST /debug/persistence/restore-picker/select`; selecting a tab creates a
+daemon-owned session with the existing `RestoreShellInjection` login-shell
+trampoline and the daemon logical session id equal to the durable tab id.
+
+Validation recorded on 2026-05-25:
+
+```sh
+rtk swift test --filter AgentRestorePickerTests
+# Executed 2 tests, with 0 failures.
+
+rtk swift test --filter RestorePlannerTests
+# Executed 14 tests, with 0 failures.
+
+rtk swift test --filter PersistenceRoundTripTests
+# Executed 19 tests, with 0 failures.
+
+rtk swift test --filter HeadlessRestoreInjectionTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandHeadlessBackendTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandControlProtocolTests
+# Executed 3 tests, with 0 failures.
+
+rtk swift build --product LabanApp
+# Build of product 'LabanApp' complete.
+
+rtk ./scripts/test-laband-agent-restore --socket .tmp/laband-m6-agent/laband.sock --artifacts .artifacts/runs/laband-m6-agent --temp-dir .tmp/laband-m6-agent
+# laband agent restore passed
+
+rtk swift build -c release --product bench-keystroke-latency
+# Build of product 'bench-keystroke-latency' complete.
+
+rtk swift build -c release --product laband
+# Build of product 'laband' complete.
+
+rtk .build/release/bench-keystroke-latency --transport in-process --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/in-process-160x48-m6.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.922 ms p95=1.119 ms p99=1.198 ms
+
+rtk .build/release/bench-keystroke-latency --transport laband --socket .tmp/keystroke-latency-after-m6/laband.sock --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/laband-160x48-m6.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.549 ms p95=0.700 ms p99=0.775 ms
+```
+
 ### M7: Multi-Attach And Lease
 
 Allow many clients to observe one session. Exactly one client holds the
@@ -850,6 +920,22 @@ Required user-visible acceptance after M6:
 4. Laban shows a low-friction restore picker with session age and cwd/repo
    warnings.
 5. Selecting the session resumes through the agent's native resume command.
+
+Create `scripts/test-laband-agent-restore` and
+`fixtures/debug-script-laband-agent-restore.scenario.json`. The script writes
+a persisted Claude tab with agent metadata, a missing cwd, and a stale repo
+fingerprint, starts a headless `LABAN_TERMINAL_BACKEND=laband` client against a
+fresh run-id-scoped daemon socket, asserts the restore picker exposes one
+unchecked candidate with cwd/repo warnings and a native
+`command claude --resume <id>` command, selects the candidate, and exits
+nonzero unless a daemon-owned session with logical id equal to the durable tab
+id prints the fake native Claude resume marker.
+
+Required command after M6:
+
+```sh
+rtk ./scripts/test-laband-agent-restore --socket .tmp/laband-m6-agent/laband.sock --artifacts .artifacts/runs/laband-m6-agent --temp-dir .tmp/laband-m6-agent
+```
 
 ## Idempotence and Recovery
 

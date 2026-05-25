@@ -85,6 +85,7 @@ public final class HeadlessDebugRuntime {
   var fixtureStepIndex: Int = 0
   var terminalSessionClient: TerminalSessionClient?
   var terminalClientSessionInfoById: [Session.ID: LabandSessionInfo] = [:]
+  var pendingAgentRestoreCandidatesByTab: [String: AgentRestoreCandidate] = [:]
   var labandProcess: Process?
   var ownsLabandProcess: Bool = false
   var labandSocketPath: String?
@@ -226,6 +227,7 @@ public final class HeadlessDebugRuntime {
       self.model.restoredSessionFactory = { sz, _ in
         try Self.makeSession(size: sz, mode: initialSessionMode, shellLaunch: shellLaunch)
       }
+      let restoreViaLabandPicker = terminalBackend == .laband
       self.model.restoredDeferredSessionFactory = { spec in
         // fixture sessions don't really "spawn"; deferred mode is
         // only meaningful for real shells. Historical transcript
@@ -239,12 +241,16 @@ public final class HeadlessDebugRuntime {
           session = try Session.makeDeferred(size: spec.size, cwd: spec.cwd)
         }
         if case .realShell = initialSessionMode {
-          // Production parity: a restored agent tab that was running at
-          // quit launches `$SHELL -l -i -c '<resume>; exec $SHELL -l -i'`.
-          let injection = RestoreLaunchPlanner.instruction(
-            for: spec,
-            activityChecker: ProcessTreeRestoreSessionActivityChecker()
-          ).spawnInjection
+          // In laband mode, a lost daemon means the live PTY is gone.
+          // Preserve the old semantic restore path as a picker instead of
+          // auto-running a resume command in this local placeholder session.
+          let injection =
+            restoreViaLabandPicker
+            ? nil
+            : RestoreLaunchPlanner.instruction(
+              for: spec,
+              activityChecker: ProcessTreeRestoreSessionActivityChecker()
+            ).spawnInjection
           _ = session.startSpawn(
             overrideCwd: spec.cwdFallbackApplied ? spec.cwd : nil,
             injection: injection)
@@ -271,8 +277,18 @@ public final class HeadlessDebugRuntime {
       // does the same so launch-time bugs (corrupt-rename, restore
       // failures, missing transcripts) reproduce here.
       if restorePersistedState, let restored = coordinator.load() {
+        if terminalBackend == .laband {
+          pendingAgentRestoreCandidatesByTab = Dictionary(
+            uniqueKeysWithValues: AgentRestorePicker.candidates(from: restored).map {
+              ($0.tabId, $0)
+            })
+        } else {
+          pendingAgentRestoreCandidatesByTab = [:]
+        }
         model.replaceTabs(from: restored)
-        Self.applyRestoreLaunchPlans(for: restored, model: model)
+        if terminalBackend != .laband {
+          Self.applyRestoreLaunchPlans(for: restored, model: model)
+        }
       }
       // Production parity: if restore left zero tabs (empty window or
       // every restore spawn threw), fall back to a fresh default tab
@@ -380,6 +396,15 @@ public final class HeadlessDebugRuntime {
     }
   }
 
+  func prepareAgentRestorePickerUnlocked(for state: WorkspaceState?) {
+    guard terminalBackend == .laband, let state else {
+      pendingAgentRestoreCandidatesByTab = [:]
+      return
+    }
+    pendingAgentRestoreCandidatesByTab = Dictionary(
+      uniqueKeysWithValues: AgentRestorePicker.candidates(from: state).map { ($0.tabId, $0) })
+  }
+
   private static func connectOrStartLaband(
     runId: String,
     artifactsURL: URL
@@ -452,7 +477,12 @@ public final class HeadlessDebugRuntime {
       existing.lifecycleState == .running
     {
       terminalClientSessionInfoById[tab.sessionId] = existing
+      pendingAgentRestoreCandidatesByTab.removeValue(forKey: tab.id)
       attachSnapshotRingIfAvailable(client: client, localSessionId: tab.sessionId)
+      return
+    }
+    if pendingAgentRestoreCandidatesByTab[tab.id] != nil {
+      appendEvent(EventEntry(kind: "agent.restore.picker.presented", tabId: tab.id))
       return
     }
     let size = model.terminalSize
@@ -499,7 +529,7 @@ public final class HeadlessDebugRuntime {
     terminalBackend == .laband ? tab.id : tab.sessionId
   }
 
-  private func attachSnapshotRingIfAvailable(
+  func attachSnapshotRingIfAvailable(
     client: TerminalSessionClient,
     localSessionId: Session.ID
   ) {

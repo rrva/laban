@@ -41,7 +41,7 @@ public enum PersistedProcessStatus: String, Codable, Equatable {
   case neverStarted
 }
 
-public enum AgentName: String, Codable, Equatable {
+public enum AgentName: String, Codable, Equatable, Sendable {
   case claude
   case codex
 }
@@ -126,6 +126,7 @@ public struct TabState: Codable, Equatable {
   public var transcriptPath: String?
   public var altBufferAtQuit: Bool?
   public var cwdFallbackApplied: Bool?
+  public var repoFingerprint: String?
   public var processStatus: PersistedProcessStatus?
   public var exitCode: Int?
   /// Shell process id observed when the workspace snapshot was written.
@@ -144,6 +145,7 @@ public struct TabState: Codable, Equatable {
     transcriptPath: String? = nil,
     altBufferAtQuit: Bool? = nil,
     cwdFallbackApplied: Bool? = nil,
+    repoFingerprint: String? = nil,
     processStatus: PersistedProcessStatus? = nil,
     exitCode: Int? = nil,
     shellPid: Int? = nil,
@@ -156,6 +158,7 @@ public struct TabState: Codable, Equatable {
     self.transcriptPath = transcriptPath
     self.altBufferAtQuit = altBufferAtQuit
     self.cwdFallbackApplied = cwdFallbackApplied
+    self.repoFingerprint = repoFingerprint
     self.processStatus = processStatus
     self.exitCode = exitCode
     self.shellPid = shellPid

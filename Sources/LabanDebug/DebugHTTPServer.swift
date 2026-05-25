@@ -177,6 +177,24 @@ public final class DebugHTTPServer {
       json(runtime.persistenceRelaunch())
     },
     DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/persistence/restore-picker",
+      category: "state",
+      summary:
+        "Return pending Claude/Codex semantic restore candidates after a laband daemon-loss restore."
+    ) { runtime, _, _ in
+      json(runtime.persistenceRestorePicker())
+    },
+    DebugHTTPRoute(
+      method: "POST",
+      path: "/debug/persistence/restore-picker/select",
+      category: "control",
+      summary:
+        "Launch selected Claude/Codex semantic restores through the native resume trampoline."
+    ) { runtime, request, _ in
+      json(runtime.persistenceRestoreSelection(request.body))
+    },
+    DebugHTTPRoute(
       method: "POST",
       path: "/debug/find/start",
       category: "control",
