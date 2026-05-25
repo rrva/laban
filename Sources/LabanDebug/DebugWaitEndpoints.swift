@@ -58,6 +58,12 @@ extension HeadlessDebugRuntime {
         condition.sessionId.flatMap { sessionId in
           model.tabs.first(where: { $0.sessionId == sessionId })?.id
         } ?? condition.tabId ?? model.activeTab?.id
+      if let id = tabId,
+        let tab = model.tabs.first(where: { $0.id == id }),
+        let snapshot = terminalClientSnapshotUnlocked(sessionId: tab.sessionId)
+      {
+        return snapshot.lifecycleState.rawValue == condition.status
+      }
       guard let id = tabId,
         let session = model.session(forTab: id),
         let snapshot = session.snapshot()
@@ -70,8 +76,11 @@ extension HeadlessDebugRuntime {
         ?? model.activeTab
       return tab?.title == condition.title
     case "textVisible":
-      guard let tab = waitTargetTabUnlocked(condition),
-        let session = model.session(forTab: tab.id),
+      guard let tab = waitTargetTabUnlocked(condition) else { return false }
+      if let snapshot = terminalClientSnapshotUnlocked(sessionId: tab.sessionId) {
+        return snapshot.visibleText.contains(condition.text ?? "")
+      }
+      guard let session = model.session(forTab: tab.id),
         let snapshot = session.snapshot()
       else { return false }
       defer { laban_snapshot_destroy(snapshot) }

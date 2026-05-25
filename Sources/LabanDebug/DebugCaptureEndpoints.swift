@@ -105,6 +105,7 @@ extension HeadlessDebugRuntime {
   public func shutdown(interrupted: Bool = true) {
     withRuntimeLock {
       _ = try? finishCaptureUnlocked(interrupted: interrupted)
+      shutdownTerminalClientUnlocked()
       model.closeAllSessions()
     }
   }

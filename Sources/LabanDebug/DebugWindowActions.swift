@@ -21,6 +21,24 @@ struct DebugWindowActions {
       cellWidth: runtime.cellWidth,
       cellHeight: runtime.cellHeight
     )
+    if let client = runtime.terminalSessionClient {
+      let size = runtime.model.terminalSize
+      for tab in runtime.model.tabs {
+        do {
+          try runtime.ensureTerminalClientSessionUnlocked(for: tab)
+          runtime.terminalClientSessionInfoById[tab.sessionId] =
+            try client.resize(sessionId: tab.sessionId, rows: Int(size.rows), cols: Int(size.cols))
+        } catch {
+          runtime.appendError(
+            kind: "laband.resize.failed",
+            message: String(describing: error),
+            sessionId: tab.sessionId,
+            tabId: tab.id
+          )
+          return jsonError("resizeWindow failed: \(error)")
+        }
+      }
+    }
     runtime.renderFrameUnlocked()
     runtime.appendEvent(
       EventEntry(kind: "window.resized", width: runtime.windowWidth, height: runtime.windowHeight)

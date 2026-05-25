@@ -11,6 +11,8 @@ final class MainWindowController: NSWindowController {
   /// model.
   private(set) var persistenceCoordinator: PersistenceCoordinator?
   private(set) var model: AppModel?
+  private(set) var terminalBackend: TerminalSessionBackend = .inProcess
+  private(set) var terminalSessionClient: TerminalSessionClient?
   /// Per-tab agent-session detector + JSONL mirror orchestrator. Kept
   /// alive on the window controller so the detector timers don't
   /// stop when AppDelegate's local refs go out of scope.
@@ -53,6 +55,9 @@ final class MainWindowController: NSWindowController {
     // a passthrough launch, so the shell starts unchanged.
     // See `ShellIntegrationOverlay` and `docs/product/spec.md` §7.
     let shellLaunch = Self.installShellIntegrationOverlay()
+    let terminalBackend = try TerminalSessionBackend.configured()
+    let terminalSessionClient: TerminalSessionClient? =
+      try Self.makeTerminalSessionClient(backend: terminalBackend)
 
     let model = try AppModel(
       initialSize: size,
@@ -232,6 +237,8 @@ final class MainWindowController: NSWindowController {
 
     let controller = MainWindowController(window: window)
     controller.model = model
+    controller.terminalBackend = terminalBackend
+    controller.terminalSessionClient = terminalSessionClient
 
     let autoChecker = UpdateAutoChecker(badge: updateBadge) { manifest in
       (NSApp.delegate as? AppDelegate)?.showAvailableUpdate(manifest)
@@ -336,6 +343,23 @@ final class MainWindowController: NSWindowController {
     } catch {
       AppLog.app.error("shell integration overlay install failed: \(String(describing: error))")
       return .passthrough
+    }
+  }
+
+  private static func makeTerminalSessionClient(
+    backend: TerminalSessionBackend
+  ) throws -> TerminalSessionClient? {
+    switch backend {
+    case .inProcess:
+      return InProcessTerminalSessionClient()
+    case .laband:
+      guard let socketPath = ProcessInfo.processInfo.environment["LABAN_LABAND_SOCKET"],
+        !socketPath.isEmpty
+      else {
+        throw TerminalSessionClientError.protocolError(
+          "LABAN_TERMINAL_BACKEND=laband requires LABAN_LABAND_SOCKET in M2")
+      }
+      return try LabandTerminalSessionClient(socketPath: socketPath)
     }
   }
 }

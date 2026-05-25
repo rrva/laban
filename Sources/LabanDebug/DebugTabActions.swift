@@ -8,7 +8,10 @@ struct DebugTabActions {
   }
 
   func newTab() -> DebugResponse {
-    do { try runtime.model.createTab() } catch {
+    do {
+      let tab = try runtime.model.createTab()
+      try runtime.ensureTerminalClientSessionUnlocked(for: tab)
+    } catch {
       return jsonError("createTab failed: \(error)")
     }
     runtime.renderFrameUnlocked()
@@ -19,6 +22,9 @@ struct DebugTabActions {
   func closeTab(_ request: TabTargetActionRequest) -> DebugResponse {
     guard let tabId = request.tabId else { return jsonError("closeTab requires tabId") }
     let closingSessionId = runtime.model.tabs.first(where: { $0.id == tabId })?.sessionId
+    if let closingSessionId {
+      runtime.terminateTerminalClientSessionUnlocked(sessionId: closingSessionId)
+    }
     do { try runtime.model.closeTab(tabId) } catch {
       return jsonError("closeTab failed: \(error)")
     }

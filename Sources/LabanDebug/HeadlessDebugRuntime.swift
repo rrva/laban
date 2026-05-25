@@ -51,6 +51,7 @@ public final class HeadlessDebugRuntime {
   public let runId: String
   var mode: String
   var sessionMode: HeadlessSessionMode
+  let terminalBackend: TerminalSessionBackend
   let artifactsURL: URL
   let fixtureRootURL: URL
   let deterministic: Bool
@@ -82,6 +83,11 @@ public final class HeadlessDebugRuntime {
   var fixtureURL: URL?
   var fixtureRunner: FixtureRunner?
   var fixtureStepIndex: Int = 0
+  var terminalSessionClient: TerminalSessionClient?
+  var terminalClientSessionInfoById: [Session.ID: LabandSessionInfo] = [:]
+  var labandProcess: Process?
+  var ownsLabandProcess: Bool = false
+  var labandSocketPath: String?
   var captureRecorder: CaptureRecorder?
   var lastCaptureManifestPath: String?
   var lastCaptureRunId: String?
@@ -135,6 +141,8 @@ public final class HeadlessDebugRuntime {
     self.mode = fixtureURL != nil ? "fixture" : "headless"
     let initialSessionMode: HeadlessSessionMode = fixtureURL != nil ? .fixture : sessionMode
     self.sessionMode = initialSessionMode
+    let configuredBackend = try TerminalSessionBackend.configured()
+    self.terminalBackend = fixtureURL == nil ? configuredBackend : .inProcess
 
     let fa = FontAtlas(pointSize: 14)
     let cs = fa.cellSize
@@ -300,6 +308,10 @@ public final class HeadlessDebugRuntime {
       captureSink: initialRecorder
     )
 
+    if terminalBackend == .laband {
+      try configureLabandBackendUnlocked()
+    }
+
     if let r = runner {
       try r.apply(to: model)
       self.fixtureURL = fixtureURL
@@ -319,6 +331,10 @@ public final class HeadlessDebugRuntime {
     }
 
     renderFrameUnlocked()
+  }
+
+  deinit {
+    shutdown(interrupted: true)
   }
 
   private static func makeSession(
@@ -349,6 +365,158 @@ public final class HeadlessDebugRuntime {
       (try? ShellIntegrationOverlay.install(
         shellPath: "/bin/sh", baseDirectory: base,
         environment: ProcessInfo.processInfo.environment)) ?? .passthrough
+  }
+
+  // MARK: - Terminal session client backend
+
+  private func configureLabandBackendUnlocked() throws {
+    let setup = try Self.connectOrStartLaband(runId: runId, artifactsURL: artifactsURL)
+    terminalSessionClient = setup.client
+    labandProcess = setup.process
+    ownsLabandProcess = setup.ownsProcess
+    labandSocketPath = setup.socketPath
+    for tab in model.tabs {
+      try ensureTerminalClientSessionUnlocked(for: tab)
+    }
+  }
+
+  private static func connectOrStartLaband(
+    runId: String,
+    artifactsURL: URL
+  ) throws -> (client: LabandTerminalSessionClient, process: Process?, ownsProcess: Bool, socketPath: String) {
+    let env = ProcessInfo.processInfo.environment
+    let socketPath = env["LABAN_LABAND_SOCKET"] ?? ".tmp/\(runId)/laband.sock"
+    if let client = try? LabandTerminalSessionClient(socketPath: socketPath) {
+      return (client, nil, false, socketPath)
+    }
+
+    let labandPath = env["LABAN_LABAND_BIN"] ?? ".build/debug/laband"
+    let executableURL: URL
+    if labandPath.hasPrefix("/") {
+      executableURL = URL(fileURLWithPath: labandPath)
+    } else {
+      executableURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(labandPath)
+    }
+    let journalURL = artifactsURL.appendingPathComponent("laband", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: URL(fileURLWithPath: socketPath).deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+      at: journalURL,
+      withIntermediateDirectories: true
+    )
+
+    let process = Process()
+    process.executableURL = executableURL
+    process.arguments = [
+      "--socket", socketPath,
+      "--journal", journalURL.path,
+    ]
+    process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let stdoutURL = artifactsURL.appendingPathComponent("laband.stdout.log")
+    let stderrURL = artifactsURL.appendingPathComponent("laband.stderr.log")
+    FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
+    FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+    process.standardOutput = try FileHandle(forWritingTo: stdoutURL)
+    process.standardError = try FileHandle(forWritingTo: stderrURL)
+    try process.run()
+
+    let deadline = Date().addingTimeInterval(5)
+    var lastError: Error?
+    while Date() < deadline {
+      if !process.isRunning {
+        throw TerminalSessionClientError.protocolError(
+          "laband exited before socket was ready; see \(stderrURL.path)")
+      }
+      do {
+        let client = try LabandTerminalSessionClient(socketPath: socketPath)
+        _ = try client.hello()
+        return (client, process, true, socketPath)
+      } catch {
+        lastError = error
+        usleep(50_000)
+      }
+    }
+    process.terminate()
+    throw TerminalSessionClientError.protocolError(
+      "timed out connecting to laband at \(socketPath): \(String(describing: lastError))")
+  }
+
+  func ensureTerminalClientSessionUnlocked(for tab: Tab) throws {
+    guard let client = terminalSessionClient else { return }
+    if terminalClientSessionInfoById[tab.sessionId] != nil { return }
+    let size = model.terminalSize
+    let info = try client.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/cat",
+        argv: ["/bin/cat"],
+        cwd: FileManager.default.currentDirectoryPath,
+        rows: Int(size.rows),
+        cols: Int(size.cols),
+        logicalSessionId: tab.sessionId
+      ))
+    terminalClientSessionInfoById[tab.sessionId] = info
+  }
+
+  func refreshTerminalClientSessionInfoUnlocked() {
+    guard let client = terminalSessionClient else { return }
+    do {
+      for info in try client.listSessions() {
+        terminalClientSessionInfoById[info.logicalSessionId] = info
+      }
+    } catch {
+      appendError(kind: "laband.listSessions.failed", message: String(describing: error))
+    }
+  }
+
+  func terminalClientSnapshotUnlocked(sessionId: Session.ID) -> LabandSnapshotResponse? {
+    guard let client = terminalSessionClient else { return nil }
+    do {
+      let snapshot = try client.snapshot(sessionId: sessionId)
+      return snapshot
+    } catch {
+      appendError(
+        kind: "laband.snapshot.failed",
+        message: String(describing: error),
+        sessionId: sessionId
+      )
+      return nil
+    }
+  }
+
+  func terminateTerminalClientSessionUnlocked(sessionId: Session.ID) {
+    guard let client = terminalSessionClient else { return }
+    do {
+      terminalClientSessionInfoById[sessionId] = try client.terminate(sessionId: sessionId)
+    } catch {
+      appendError(
+        kind: "laband.terminate.failed",
+        message: String(describing: error),
+        sessionId: sessionId
+      )
+    }
+  }
+
+  func shutdownTerminalClientUnlocked() {
+    guard let client = terminalSessionClient else { return }
+    for sessionId in Array(terminalClientSessionInfoById.keys) {
+      if terminalClientSessionInfoById[sessionId]?.lifecycleState == .running {
+        terminateTerminalClientSessionUnlocked(sessionId: sessionId)
+      }
+    }
+    if let laband = client as? LabandTerminalSessionClient {
+      try? laband.shutdownWhenIdle()
+      laband.close()
+    }
+    terminalSessionClient = nil
+    if ownsLabandProcess, let process = labandProcess, process.isRunning {
+      process.terminate()
+      process.waitUntilExit()
+    }
+    labandProcess = nil
+    ownsLabandProcess = false
   }
 
   // MARK: - Server ready notification

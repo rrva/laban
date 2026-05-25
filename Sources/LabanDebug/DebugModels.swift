@@ -193,6 +193,13 @@ struct SessionResponse: Encodable {
   var id: String
   var tabId: String
   var pid: Int?
+  var foregroundPid: Int?
+  var daemonProcessPid: Int?
+  var logicalSessionId: String?
+  var incarnationId: String?
+  var attachedClientCount: Int?
+  var leaseHolder: String?
+  var transportMode: String
   var status: String
   var exitStatus: Int?
   var rows: Int

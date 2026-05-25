@@ -188,6 +188,63 @@ def save_response(artifacts_dir, relative_path, response):
     return str(target)
 
 
+def json_path(value, path):
+    current = value
+    for raw_part in path.split("."):
+        part = raw_part
+        while part:
+            if "[" in part:
+                name, rest = part.split("[", 1)
+                if name:
+                    if not isinstance(current, dict) or name not in current:
+                        raise ScriptError(f"JSON path missing key {name!r} in {path}")
+                    current = current[name]
+                index_text, suffix = rest.split("]", 1)
+                if not isinstance(current, list):
+                    raise ScriptError(f"JSON path expected list at {raw_part!r} in {path}")
+                index = int(index_text)
+                if index >= len(current):
+                    raise ScriptError(f"JSON path index {index} out of range in {path}")
+                current = current[index]
+                part = suffix
+                if part.startswith("."):
+                    part = part[1:]
+            else:
+                if not isinstance(current, dict) or part not in current:
+                    raise ScriptError(f"JSON path missing key {part!r} in {path}")
+                current = current[part]
+                part = ""
+    return current
+
+
+def assert_json_expectations(response, expectations):
+    for expectation in expectations:
+        condition = expectation.get("whenEnvEquals")
+        if condition and os.environ.get(condition["name"]) != condition["value"]:
+            continue
+        path = expectation["path"]
+        value = json_path(response, path)
+        if "equals" in expectation and value != expectation["equals"]:
+            raise ScriptError(
+                f"expected {path} == {expectation['equals']!r}, got {value!r}"
+            )
+        if "equalsEnv" in expectation:
+            expected = os.environ.get(expectation["equalsEnv"])
+            if value != expected:
+                raise ScriptError(f"expected {path} == env {expectation['equalsEnv']!r}, got {value!r}")
+        if expectation.get("nonEmpty") and not value:
+            raise ScriptError(f"expected {path} to be non-empty, got {value!r}")
+        if "greaterThan" in expectation:
+            try:
+                ok = value > expectation["greaterThan"]
+            except TypeError as exc:
+                raise ScriptError(f"expected {path} to be comparable, got {value!r}") from exc
+            if not ok:
+                raise ScriptError(
+                    f"expected {path} > {expectation['greaterThan']!r}, got {value!r}"
+                )
+
+
 def execute_step(server_url, token, artifacts_dir, index, step):
     op = step.get("op")
     label = step.get("label") or op or f"step-{index}"
@@ -220,6 +277,7 @@ def execute_step(server_url, token, artifacts_dir, index, step):
 
     elif op == "get":
         response = http_json(server_url, token, "GET", step["path"])
+        assert_json_expectations(response, step.get("expectJson", []))
         if step.get("saveAs"):
             result["path"] = save_response(artifacts_dir, step["saveAs"], response)
         result["response"] = response
@@ -228,6 +286,7 @@ def execute_step(server_url, token, artifacts_dir, index, step):
         response = http_json(server_url, token, "POST", step["path"], step.get("body", {}))
         if step.get("expectOk") is not None and bool(response.get("ok")) != step["expectOk"]:
             raise ScriptError(f"expected ok={step['expectOk']} from {step['path']}: {response}")
+        assert_json_expectations(response, step.get("expectJson", []))
         if step.get("saveAs"):
             result["path"] = save_response(artifacts_dir, step["saveAs"], response)
         result["response"] = response
@@ -237,6 +296,7 @@ def execute_step(server_url, token, artifacts_dir, index, step):
         expect_ok = step.get("expectOk", True)
         if bool(response.get("ok")) != expect_ok:
             raise ScriptError(f"expected action ok={expect_ok}: {response}")
+        assert_json_expectations(response, step.get("expectJson", []))
         result["response"] = response
 
     elif op == "wait":
@@ -336,6 +396,8 @@ def main():
         agent_bin = Path(os.environ.get("LABAN_AGENT_BIN", repo_root / ".build/debug/laban-agent"))
         if not args.server and not args.no_build:
             run_command(["swift", "build", "--product", "laban-agent"], cwd=repo_root)
+            if os.environ.get("LABAN_TERMINAL_BACKEND") == "laband":
+                run_command(["swift", "build", "--product", "laband"], cwd=repo_root)
         if args.server:
             server_url = args.server
             server_token = os.environ.get("DEBUG_TOKEN")

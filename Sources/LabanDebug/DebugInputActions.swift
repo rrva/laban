@@ -14,7 +14,21 @@ struct DebugInputActions {
     let frameBefore = runtime.currentFrame
     let activeTab = runtime.model.activeTab
     let bytes = Array(text.utf8)
-    if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id) {
+    if let tab = runtime.model.activeTab, let client = runtime.terminalSessionClient {
+      do {
+        try runtime.ensureTerminalClientSessionUnlocked(for: tab)
+        try client.writeInput(sessionId: tab.sessionId, bytes: bytes)
+        runtime.appendTerminalLog(sessionId: tab.sessionId, direction: "input", bytes: bytes)
+      } catch {
+        runtime.appendError(
+          kind: "laband.writeInput.failed",
+          message: String(describing: error),
+          sessionId: tab.sessionId,
+          tabId: tab.id
+        )
+        return jsonError("typeText failed: \(error)")
+      }
+    } else if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id) {
       let deltaRows = session.scrollViewportToActiveBottom()
       appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
       session.write(bytes)
@@ -136,10 +150,15 @@ struct DebugInputActions {
   private func executeCommandKey(_ command: String, key: Key) {
     switch command {
     case "newTab":
-      _ = try? runtime.model.createTab()
+      if let tab = try? runtime.model.createTab() {
+        try? runtime.ensureTerminalClientSessionUnlocked(for: tab)
+      }
       runtime.renderFrameUnlocked()
     case "closeTab":
       if let tabId = runtime.model.activeTab?.id {
+        if let sessionId = runtime.model.activeTab?.sessionId {
+          runtime.terminateTerminalClientSessionUnlocked(sessionId: sessionId)
+        }
         try? runtime.model.closeTab(tabId)
         runtime.renderFrameUnlocked()
       }

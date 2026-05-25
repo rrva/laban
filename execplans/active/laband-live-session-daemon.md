@@ -43,7 +43,20 @@ running without flicker or sluggish input.
   echo in a daemon snapshot, verifies the child process parent is the daemon
   pid, terminates the session, and observes `listSessions` marking it
   terminated.
-- [ ] M2: add a versioned local client protocol and connect the app/headless
+- [x] (2026-05-25) Started M2 by adding the AppKit-free
+  `TerminalSessionClient` boundary in `LabanCore`, with
+  `InProcessTerminalSessionClient` and `LabandTerminalSessionClient`
+  implementations. The `LabandControlProtocolTests` coverage now drives the
+  daemon through `LabandTerminalSessionClient` instead of a test-local socket
+  client.
+- [x] (2026-05-25) M2: wired `LABAN_TERMINAL_BACKEND` through the AppKit
+  launch path and the headless debug runtime. Headless laband mode now starts
+  or connects to a run-id-scoped daemon, creates a remote `/bin/cat` session
+  using the tab session id as the logical session id, routes `typeText` and
+  resize through `TerminalSessionClient`, and exposes `transportMode`,
+  `logicalSessionId`, `incarnationId`, `daemonProcessPid`, attached-client
+  count, and lease holder fields from `/debug/sessions`.
+- [x] M2: add a versioned local client protocol and connect the app/headless
   harness through it for one session.
 - [ ] M3: move terminal snapshots to a low-latency shared-memory transport.
 - [ ] M4: persist session catalog and append-only lifecycle journal.
@@ -269,6 +282,13 @@ Review status: NOT REVIEWED after this research update.
   relative paths such as `.tmp/<run-id>/laband.sock` from the repository root,
   matching the worktree isolation contract while avoiding path-length failure.
 
+- Observation: A test cannot safely run `swift build --product laband` from
+  inside `swift test`; SwiftPM waits on the same build directory lock while the
+  parent test invocation waits for the test process.
+  Implication: The `LabanDebugTests` target depends on the `Laband` executable
+  target so the daemon binary is built before `LabandHeadlessBackendTests`
+  starts.
+
 ## Context and Orientation
 
 Current session ownership is in-process. `AppModel` creates `Session` objects
@@ -399,6 +419,36 @@ The test and script must assert `/debug/sessions.sessions[0].transportMode` is
 the selected backend. In `laband` mode they must also assert
 `daemonProcessPid > 0`, `logicalSessionId` is non-empty, and `incarnationId` is
 non-empty.
+
+Validation recorded on 2026-05-25:
+
+```sh
+rtk swift build --product laband
+# Build of product 'laband' complete.
+
+rtk swift build --product laban-agent
+# Build of product 'laban-agent' complete.
+
+rtk swift build --product LabanApp
+# Build of product 'LabanApp' complete.
+
+rtk swift test --filter LabandControlProtocolTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandHeadlessBackendTests
+# Executed 1 test, with 0 failures.
+
+LABAN_TERMINAL_BACKEND=in-process rtk ./scripts/run-debug-script fixtures/debug-script-laband-basic.scenario.json --artifacts .artifacts/runs/laband-m2-in-process --temp-dir .tmp/laband-m2-in-process
+# debug script passed
+
+LABAN_TERMINAL_BACKEND=laband LABAN_LABAND_SOCKET=.tmp/laband-m2/laband.sock rtk ./scripts/run-debug-script fixtures/debug-script-laband-basic.scenario.json --artifacts .artifacts/runs/laband-m2-laband --temp-dir .tmp/laband-m2-laband
+# debug script passed
+```
+
+The AppKit path parses the same backend flag and holds the selected
+`TerminalSessionClient`. Full AppKit rendering from daemon-owned snapshots
+remains intentionally deferred to M3, where the shared-memory snapshot ring
+replaces the copy-based debug/control transport.
 
 ### M3: Low-Latency Snapshot Ring
 

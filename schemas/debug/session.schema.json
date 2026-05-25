@@ -6,6 +6,7 @@
   "required": [
     "id",
     "tabId",
+    "transportMode",
     "status",
     "exitStatus",
     "rows",
@@ -32,8 +33,15 @@
     "pid": {"type": ["integer", "null"]},
     "status": {
       "type": "string",
-      "enum": ["starting", "running", "exited", "failed"]
+      "enum": ["starting", "running", "exited", "failed", "terminated", "dead"]
     },
+    "foregroundPid": {"type": ["integer", "null"]},
+    "daemonProcessPid": {"type": ["integer", "null"]},
+    "logicalSessionId": {"type": ["string", "null"]},
+    "incarnationId": {"type": ["string", "null"]},
+    "attachedClientCount": {"type": ["integer", "null"], "minimum": 0},
+    "leaseHolder": {"type": ["string", "null"]},
+    "transportMode": {"type": "string"},
     "exitStatus": {"type": ["integer", "null"]},
     "rows": {"type": "integer", "minimum": 1},
     "cols": {"type": "integer", "minimum": 1},

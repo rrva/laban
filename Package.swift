@@ -90,7 +90,7 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanDebugTests",
-      dependencies: ["LabanDebug"]
+      dependencies: ["LabanDebug", "Laband"]
     ),
     .testTarget(
       name: "LabandTests",

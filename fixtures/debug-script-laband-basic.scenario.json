@@ -1,0 +1,53 @@
+{
+  "name": "debug-script-laband-basic",
+  "description": "Drive one live terminal session through the selected M2 terminal backend.",
+  "deterministic": true,
+  "steps": [
+    {
+      "op": "discover",
+      "expectEndpoints": [
+        "GET /debug/sessions",
+        "POST /debug/actions",
+        "POST /debug/wait",
+        "POST /debug/snapshot"
+      ],
+      "expectActions": ["typeText"],
+      "expectWaitConditions": ["textVisible"]
+    },
+    {
+      "op": "action",
+      "label": "type marker",
+      "body": {"action": "typeText", "text": "laband-m2-echo\n"}
+    },
+    {
+      "op": "wait",
+      "label": "marker visible",
+      "timeoutMs": 5000,
+      "condition": {"kind": "textVisible", "text": "laband-m2-echo"}
+    },
+    {
+      "op": "get",
+      "label": "sessions expose selected backend",
+      "path": "/debug/sessions",
+      "saveAs": "debug-sessions.json",
+      "expectJson": [
+        {"path": "sessions[0].logicalSessionId", "nonEmpty": true},
+        {"path": "sessions[0].transportMode", "equalsEnv": "LABAN_TERMINAL_BACKEND"},
+        {
+          "path": "sessions[0].daemonProcessPid",
+          "greaterThan": 0,
+          "whenEnvEquals": {"name": "LABAN_TERMINAL_BACKEND", "value": "laband"}
+        },
+        {
+          "path": "sessions[0].incarnationId",
+          "nonEmpty": true,
+          "whenEnvEquals": {"name": "LABAN_TERMINAL_BACKEND", "value": "laband"}
+        }
+      ]
+    },
+    {
+      "op": "snapshot",
+      "label": "after-echo"
+    }
+  ]
+}

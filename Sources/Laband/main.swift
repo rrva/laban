@@ -137,6 +137,8 @@ private final class LabandDaemon {
       return (snapshot(request), false)
     case .resizeSession:
       return (resizeSession(request), false)
+    case .markRendered:
+      return (markRendered(request), false)
     case .terminateSession:
       return (terminateSession(request), false)
     case .shutdownWhenIdle:
@@ -358,6 +360,19 @@ private final class LabandDaemon {
     managed.session?.close()
     managed.session = nil
     managed.lifecycleState = .terminated
+    return LabandResponse(
+      requestId: request.requestId,
+      type: request.type,
+      ok: true,
+      session: sessionInfo(managed)
+    )
+  }
+
+  private func markRendered(_ request: LabandRequest) -> LabandResponse {
+    guard let managed = lookup(request) else {
+      return missingSession(request)
+    }
+    _ = managed.session?.markRendered()
     return LabandResponse(
       requestId: request.requestId,
       type: request.type,

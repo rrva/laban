@@ -11,6 +11,7 @@ public enum LabandRequestType: String, Codable, Sendable {
   case writeInput
   case snapshot
   case resizeSession
+  case markRendered
   case terminateSession
   case shutdownWhenIdle
 }

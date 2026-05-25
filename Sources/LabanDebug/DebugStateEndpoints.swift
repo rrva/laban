@@ -31,6 +31,7 @@ extension HeadlessDebugRuntime {
   public func sessions() -> DebugResponse {
     withRuntimeLock {
       syncSessionMetadataUnlocked()
+      refreshTerminalClientSessionInfoUnlocked()
 
       let list = model.tabs.enumerated().map { index, tab in
         sessionResponse(for: tab, index: index, includeGrid: false)
@@ -60,6 +61,7 @@ extension HeadlessDebugRuntime {
   public func session(id: String, query: [String: String]) -> DebugResponse {
     withRuntimeLock {
       syncSessionMetadataUnlocked()
+      refreshTerminalClientSessionInfoUnlocked()
 
       guard let match = model.tabs.enumerated().first(where: { $0.element.sessionId == id }) else {
         return jsonError("session not found: \(id)", status: 404)
@@ -110,6 +112,9 @@ extension HeadlessDebugRuntime {
   private func sessionResponse(for tab: Tab, index _: Int, includeGrid: Bool) -> SessionResponse {
     let metadata = tab.titleMetadata
     let sessionObj = model.session(forTab: tab.id)
+    let clientInfo = terminalClientSessionInfoById[tab.sessionId]
+    let clientSnapshot =
+      terminalSessionClient == nil ? nil : terminalClientSnapshotUnlocked(sessionId: tab.sessionId)
     var rows = 1
     var cols = 1
     var exitStatus: Int? = nil
@@ -118,7 +123,15 @@ extension HeadlessDebugRuntime {
     var dirty = false
     var grid: SessionGridResponse? = nil
 
-    if let session = sessionObj, let snapshot = session.snapshot() {
+    if let snapshot = clientSnapshot {
+      rows = max(snapshot.rows, 1)
+      cols = max(snapshot.cols, 1)
+      exitStatus = snapshot.exitStatus
+      dirty = snapshot.dirty
+      if includeGrid {
+        grid = sessionGridResponse(from: snapshot, maxCells: 2_000)
+      }
+    } else if let session = sessionObj, let snapshot = session.snapshot() {
       defer { laban_snapshot_destroy(snapshot) }
       rows = max(Int(snapshot.pointee.rows), 1)
       cols = max(Int(snapshot.pointee.cols), 1)
@@ -139,11 +152,21 @@ extension HeadlessDebugRuntime {
       viewportOffset = viewportState.viewportOffset
     }
 
-    let status = sessionObj != nil ? tab.status.debugString : "failed"
+    let status =
+      clientSnapshot?.lifecycleState.rawValue
+      ?? (sessionObj != nil ? tab.status.debugString : "failed")
+    let transportMode = terminalSessionClient?.transportMode ?? terminalBackend.rawValue
     return SessionResponse(
       id: tab.sessionId,
       tabId: tab.id,
-      pid: nil,
+      pid: clientInfo?.childPid,
+      foregroundPid: clientInfo?.foregroundPid,
+      daemonProcessPid: clientInfo?.daemonProcessPid,
+      logicalSessionId: clientInfo?.logicalSessionId ?? tab.sessionId,
+      incarnationId: clientInfo?.incarnationId,
+      attachedClientCount: clientInfo?.attachedClientCount,
+      leaseHolder: clientInfo?.leaseHolder,
+      transportMode: transportMode,
       status: status,
       exitStatus: exitStatus,
       rows: rows,
@@ -170,6 +193,38 @@ extension HeadlessDebugRuntime {
       focusReporting: focusReporting,
       dirty: dirty,
       grid: grid
+    )
+  }
+
+  private func sessionGridResponse(
+    from snapshot: LabandSnapshotResponse,
+    maxCells: Int
+  ) -> SessionGridResponse {
+    var result: [SessionGridCellResponse] = []
+    result.reserveCapacity(min(snapshot.cells.count, maxCells))
+    var truncated = false
+    for cell in snapshot.cells where !cell.text.isEmpty {
+      if result.count >= maxCells {
+        truncated = true
+        break
+      }
+      result.append(
+        SessionGridCellResponse(
+          row: cell.row,
+          col: cell.col,
+          text: cell.text,
+          foreground: DebugFrameCommandSerializer.rgbaArray(cell.foregroundRGBA),
+          background: DebugFrameCommandSerializer.rgbaArray(cell.backgroundRGBA),
+          attributes: TextAttributes(rawValue: cell.flags).intersection(.renderableMask).names,
+          wide: "narrow",
+          hyperlink: nil
+        ))
+    }
+    return SessionGridResponse(
+      rows: snapshot.rows,
+      cols: snapshot.cols,
+      cells: result,
+      truncated: truncated
     )
   }
 
