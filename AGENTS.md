@@ -67,6 +67,7 @@ execplans/                             Active and completed ExecPlans.
 - `docs/adr/0002-pty-launch-uses-openpty-constrained-fork.md` — PTY launch uses parent-side `openpty` and a constrained fork child, not `forkpty` or pure `posix_spawn`.
 - `docs/adr/0003-terminal-find-uses-laban-side-scan.md` — terminal find scans Laban snapshots and extracted scrollback until libghostty-vt exposes C search bindings.
 - `docs/adr/0004-advance-libghostty-vt-pin.md` — libghostty-vt pin advances to Ghostty `46d54ed6`; new upstream APIs stay behind Laban's existing C boundary unless product scope justifies them.
+- `docs/adr/0005-laband-owns-live-session-pty-lifecycle.md` — `laband` owns live PTY/session lifecycle while preserving ADR 0002's `openpty`/fork/process-group invariants.
 
 Write a new ADR when a change establishes durable architectural policy, reverses a previously settled decision, or sets an adapter boundary. Number it sequentially in `docs/adr/`, follow the existing file's structure (Status, Context, Decision, Consequences, Applies To New Code), and add a one-line entry here with the path and summary.
 

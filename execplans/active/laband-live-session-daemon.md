@@ -32,10 +32,17 @@ running without flicker or sluggish input.
 - [x] (2026-05-24) Addressed the second fresh review pass by making the
   remaining milestone acceptance checks name exact test files, scripts,
   commands, and snapshot-ring ABI fields.
-- [ ] Draft ADR 0005 for changing PTY ownership from the app process to
-  `laband`. This is a hard prerequisite before M1 implementation starts.
-- [ ] M1: create a real `laband` executable that can own one PTY session in
-  headless/dev mode.
+- [x] (2026-05-25) Drafted and accepted
+  `docs/adr/0005-laband-owns-live-session-pty-lifecycle.md`, and indexed it
+  from `AGENTS.md`. This satisfies the hard prerequisite before M1
+  implementation starts.
+- [x] (2026-05-25) M1: created a real `laband` executable that owns one
+  PTY-backed `LabanCore.Session` in dev/test mode over the length-prefixed
+  JSON control socket. `Tests/LabandTests/LabandControlProtocolTests.swift`
+  launches `.build/debug/laband`, creates `/bin/cat`, writes `x`, observes the
+  echo in a daemon snapshot, verifies the child process parent is the daemon
+  pid, terminates the session, and observes `listSessions` marking it
+  terminated.
 - [ ] M2: add a versioned local client protocol and connect the app/headless
   harness through it for one session.
 - [ ] M3: move terminal snapshots to a low-latency shared-memory transport.
@@ -255,6 +262,13 @@ Review status: NOT REVIEWED after this research update.
   Implication: `Tools/KeystrokeLatencyBench/main.swift` now treats any failed
   measured echo as a benchmark failure.
 
+- Observation: AF_UNIX socket path length is evaluated against the literal
+  path passed to `bind(2)` and `connect(2)`. In this deep worktree, an absolute
+  `.tmp/<run-id>/laband.sock` path exceeded the Darwin limit.
+  Implication: Dev/test `laband` commands should keep using run-id-scoped
+  relative paths such as `.tmp/<run-id>/laband.sock` from the repository root,
+  matching the worktree isolation contract while avoiding path-length failure.
+
 ## Context and Orientation
 
 Current session ownership is in-process. `AppModel` creates `Session` objects
@@ -327,6 +341,16 @@ Acceptance for M1:
 rtk swift build --product laband
 rtk .build/debug/laband --socket .tmp/laband-m1/laband.sock --journal .artifacts/runs/laband-m1
 rtk swift test --filter LabandControlProtocolTests
+```
+
+Validation recorded on 2026-05-25:
+
+```sh
+rtk swift build --product laband
+# Build of product 'laband' complete.
+
+rtk swift test --filter LabandControlProtocolTests
+# Executed 1 test, with 0 failures.
 ```
 
 Create `Tests/LabandTests/LabandControlProtocolTests.swift`. The test launches
