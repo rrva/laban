@@ -15,6 +15,8 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     var foregroundPid: Int?
     var session: Session?
     var runner: SessionRunner?
+    var leaseHolder: String?
+    var leaseHistory: [LabandLeaseHistoryEntry] = []
 
     init(
       logicalSessionId: String,
@@ -179,6 +181,19 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     _ = managed.session?.markRendered()
   }
 
+  public func transferLease(sessionId: String, holderClientId: String) throws -> LabandSessionInfo {
+    guard let managed = lookup(sessionId) else {
+      throw TerminalSessionClientError.sessionNotFound(sessionId)
+    }
+    managed.leaseHolder = holderClientId
+    managed.leaseHistory.append(
+      LabandLeaseHistoryEntry(
+        leaseHolder: holderClientId,
+        grantedAtMonoNs: DispatchTime.now().uptimeNanoseconds
+      ))
+    return sessionInfo(managed)
+  }
+
   public func terminate(sessionId: String) throws -> LabandSessionInfo {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)
@@ -217,7 +232,8 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
       cols: managed.cols,
       lifecycleState: managed.lifecycleState,
       attachedClientCount: 0,
-      leaseHolder: nil,
+      leaseHolder: managed.leaseHolder,
+      leaseHistory: managed.leaseHistory,
       transportMode: transportMode
     )
   }

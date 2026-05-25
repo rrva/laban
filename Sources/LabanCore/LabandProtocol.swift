@@ -13,6 +13,7 @@ public enum LabandRequestType: String, Codable, Sendable {
   case attachSnapshotRing
   case resizeSession
   case markRendered
+  case transferLease
   case terminateSession
   case shutdownWhenIdle
 }
@@ -40,6 +41,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
   public var sessionId: String?
   public var text: String?
   public var bytesBase64: String?
+  public var leaseHolder: String?
 
   public init(
     protocolVersion: Int = LabandProtocolVersion.current,
@@ -54,7 +56,8 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     logicalSessionId: String? = nil,
     sessionId: String? = nil,
     text: String? = nil,
-    bytesBase64: String? = nil
+    bytesBase64: String? = nil,
+    leaseHolder: String? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.requestId = requestId
@@ -69,6 +72,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     self.sessionId = sessionId
     self.text = text
     self.bytesBase64 = bytesBase64
+    self.leaseHolder = leaseHolder
   }
 }
 
@@ -96,6 +100,16 @@ public struct LabandHelloResponse: Codable, Equatable, Sendable {
   }
 }
 
+public struct LabandLeaseHistoryEntry: Codable, Equatable, Sendable {
+  public var leaseHolder: String
+  public var grantedAtMonoNs: UInt64
+
+  public init(leaseHolder: String, grantedAtMonoNs: UInt64) {
+    self.leaseHolder = leaseHolder
+    self.grantedAtMonoNs = grantedAtMonoNs
+  }
+}
+
 public struct LabandSessionInfo: Codable, Equatable, Sendable {
   public var logicalSessionId: String
   public var incarnationId: String
@@ -110,6 +124,7 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
   public var lifecycleState: LabandLifecycleState
   public var attachedClientCount: Int
   public var leaseHolder: String?
+  public var leaseHistory: [LabandLeaseHistoryEntry]
   public var transportMode: String
 
   public init(
@@ -126,6 +141,7 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
     lifecycleState: LabandLifecycleState,
     attachedClientCount: Int,
     leaseHolder: String?,
+    leaseHistory: [LabandLeaseHistoryEntry] = [],
     transportMode: String
   ) {
     self.logicalSessionId = logicalSessionId
@@ -141,6 +157,7 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
     self.lifecycleState = lifecycleState
     self.attachedClientCount = attachedClientCount
     self.leaseHolder = leaseHolder
+    self.leaseHistory = leaseHistory
     self.transportMode = transportMode
   }
 }

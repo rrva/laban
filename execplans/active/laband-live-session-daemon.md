@@ -71,7 +71,13 @@ running without flicker or sluggish input.
   journal fallback. These paths now come from `LABAN_RUN_ID`, explicit
   `LABAN_ARTIFACTS`/`LABAN_TMP`, or a generated per-run id.
 - [x] M3: move terminal snapshots to a low-latency shared-memory transport.
-- [ ] M4: persist session catalog and append-only lifecycle journal.
+- [x] (2026-05-25) M4: added an append-only `lifecycle.jsonl` under the
+  run-id-scoped `--journal` directory. `laband` now syncs session-created,
+  lease-transfer, terminate-requested, and session-terminated records before
+  acknowledging those lifecycle operations, replays terminated/dead session
+  catalog entries on restart, and exposes minimal lease history through
+  `listSessions`.
+- [x] M4: persist session catalog and append-only lifecycle journal.
 - [ ] M5: support detach/reattach across app restart without killing the live
   PTY.
 - [ ] M6: restore Claude/Codex semantic resume on daemon loss while preserving
@@ -651,6 +657,25 @@ asserts `listSessions` reconstructs the same logical session id, incarnation
 id, exit state, agent metadata when present, and lease history. The journal file
 must be append-only during the test: record offsets only increase, and
 checkpoint or rotation records never rewrite earlier lifecycle records.
+
+Validation recorded on 2026-05-25:
+
+```sh
+rtk swift test --filter LabandJournalTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandControlProtocolTests
+# Executed 2 tests, with 0 failures.
+
+rtk swift test --filter LabandHeadlessBackendTests
+# Executed 1 test, with 0 failures.
+
+rtk swift build --product LabanApp
+# Build of product 'LabanApp' complete.
+
+LABAN_TERMINAL_BACKEND=laband LABAN_LABAND_SOCKET=.tmp/laband-m4-debug/laband.sock rtk ./scripts/run-debug-script fixtures/debug-script-laband-basic.scenario.json --artifacts .artifacts/runs/laband-m4-debug --temp-dir .tmp/laband-m4-debug
+# debug script passed
+```
 
 ### M5: Detach/Reattach
 

@@ -160,6 +160,21 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     )
   }
 
+  public func transferLease(sessionId: String, holderClientId: String) throws -> LabandSessionInfo {
+    let response = try send(
+      LabandRequest(
+        requestId: UUID().uuidString,
+        type: .transferLease,
+        sessionId: sessionId,
+        leaseHolder: holderClientId
+      )
+    )
+    guard let session = response.session else {
+      throw TerminalSessionClientError.protocolError("transferLease response missing session")
+    }
+    return session
+  }
+
   public func terminate(sessionId: String) throws -> LabandSessionInfo {
     _ = lock.withLock {
       ringReaders.removeValue(forKey: sessionId)

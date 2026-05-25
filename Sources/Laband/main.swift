@@ -71,6 +71,94 @@ private extension NSLock {
   }
 }
 
+private enum LabandJournalEvent: String, Codable {
+  case sessionCreated
+  case leaseTransferred
+  case terminateRequested
+  case sessionTerminated
+}
+
+private struct LabandJournalRecord: Codable {
+  var version: Int
+  var offset: UInt64
+  var monoNs: UInt64
+  var event: LabandJournalEvent
+  var logicalSessionId: String
+  var incarnationId: String
+  var childPid: Int?
+  var foregroundPid: Int?
+  var cwd: String
+  var commandDisplayName: String
+  var title: String
+  var rows: Int
+  var cols: Int
+  var lifecycleState: LabandLifecycleState
+  var leaseHolder: String?
+}
+
+private final class LabandLifecycleJournal {
+  let filePath: String
+
+  private let fd: Int32
+  private let lock = NSLock()
+  private let encoder = JSONEncoder()
+  private let decoder = JSONDecoder()
+
+  init(directory: String) throws {
+    try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+    self.filePath = URL(fileURLWithPath: directory)
+      .appendingPathComponent("lifecycle.jsonl").path
+    fd = Darwin.open(filePath, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR)
+    guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    encoder.outputFormatting = [.sortedKeys]
+  }
+
+  deinit {
+    Darwin.close(fd)
+  }
+
+  func replayRecords() -> [LabandJournalRecord] {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
+      let text = String(data: data, encoding: .utf8)
+    else { return [] }
+    var records: [LabandJournalRecord] = []
+    for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+      if let data = String(line).data(using: .utf8),
+        let record = try? decoder.decode(LabandJournalRecord.self, from: data)
+      {
+        records.append(record)
+      }
+    }
+    return records
+  }
+
+  func append(_ record: LabandJournalRecord) throws {
+    try lock.withLock {
+      var writable = record
+      let offset = Darwin.lseek(fd, 0, SEEK_END)
+      guard offset >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+      writable.offset = UInt64(offset)
+      let payload = try encoder.encode(writable) + Data([0x0A])
+      var written = 0
+      while written < payload.count {
+        let count = payload.count - written
+        let n = payload.withUnsafeBytes { raw -> Int in
+          guard let base = raw.baseAddress else { return -1 }
+          return Darwin.write(fd, base.advanced(by: written), count)
+        }
+        if n < 0 {
+          if errno == EINTR { continue }
+          throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        written += n
+      }
+      guard Darwin.fsync(fd) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+      }
+    }
+  }
+}
+
 private final class ManagedLabandSession {
   private let lock = NSLock()
   let logicalSessionId: String
@@ -86,6 +174,8 @@ private final class ManagedLabandSession {
   var session: Session?
   var runner: SessionRunner?
   var ringWriter: LabandSnapshotRingWriter?
+  var leaseHolder: String?
+  var leaseHistory: [LabandLeaseHistoryEntry] = []
   private var inputSequence: UInt64 = 0
 
   init(
@@ -96,7 +186,12 @@ private final class ManagedLabandSession {
     rows: Int,
     cols: Int,
     title: String,
-    session: Session
+    session: Session?,
+    lifecycleState: LabandLifecycleState = .running,
+    childPid: Int? = nil,
+    foregroundPid: Int? = nil,
+    leaseHolder: String? = nil,
+    leaseHistory: [LabandLeaseHistoryEntry] = []
   ) {
     self.logicalSessionId = logicalSessionId
     self.incarnationId = incarnationId
@@ -105,7 +200,12 @@ private final class ManagedLabandSession {
     self.rows = rows
     self.cols = cols
     self.title = title
+    self.lifecycleState = lifecycleState
+    self.childPid = childPid
+    self.foregroundPid = foregroundPid
     self.session = session
+    self.leaseHolder = leaseHolder
+    self.leaseHistory = leaseHistory
   }
 
   func recordInput() -> UInt64 {
@@ -136,12 +236,15 @@ private final class ManagedLabandSession {
 
 private final class LabandDaemon {
   private let journalPath: String
+  private let journal: LabandLifecycleJournal
   private let lock = NSLock()
   private var sessions: [String: ManagedLabandSession] = [:]
   var onShutdown: (() -> Void)?
 
-  init(journalPath: String) {
+  init(journalPath: String) throws {
     self.journalPath = journalPath
+    self.journal = try LabandLifecycleJournal(directory: journalPath)
+    replayJournal()
   }
 
   func handle(_ request: LabandRequest) -> (LabandResponse, Bool) {
@@ -174,6 +277,8 @@ private final class LabandDaemon {
       return (resizeSession(request), false)
     case .markRendered:
       return (markRendered(request), false)
+    case .transferLease:
+      return (transferLease(request), false)
     case .terminateSession:
       return (terminateSession(request), false)
     case .shutdownWhenIdle:
@@ -194,6 +299,8 @@ private final class LabandDaemon {
           "control-json/v1",
           "copy-snapshot/v1",
           "snapshot-ring/v1",
+          "lifecycle-journal/v1",
+          "lease-transfer/v1",
           "single-writer/v1",
         ]
       )
@@ -244,6 +351,18 @@ private final class LabandDaemon {
       })
       managed.runner?.start()
       refreshProcessMetadata(managed)
+      do {
+        try appendJournal(event: .sessionCreated, managed: managed)
+      } catch {
+        managed.runner?.stop()
+        managed.session?.close()
+        return .error(
+          requestId: request.requestId,
+          type: request.type,
+          code: "journalAppendFailed",
+          message: String(describing: error)
+        )
+      }
       let info = sessionInfo(managed)
       lock.withLock {
         sessions[logicalSessionId] = managed
@@ -428,12 +547,32 @@ private final class LabandDaemon {
       return missingSession(request)
     }
     refreshProcessMetadata(managed)
+    do {
+      try appendJournal(event: .terminateRequested, managed: managed)
+    } catch {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "journalAppendFailed",
+        message: String(describing: error)
+      )
+    }
     managed.runner?.stop()
     managed.runner = nil
     managed.session?.close()
     managed.session = nil
     managed.ringWriter = nil
     managed.lifecycleState = .terminated
+    do {
+      try appendJournal(event: .sessionTerminated, managed: managed)
+    } catch {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "journalAppendFailed",
+        message: String(describing: error)
+      )
+    }
     return LabandResponse(
       requestId: request.requestId,
       type: request.type,
@@ -447,6 +586,44 @@ private final class LabandDaemon {
       return missingSession(request)
     }
     _ = managed.session?.markRendered()
+    return LabandResponse(
+      requestId: request.requestId,
+      type: request.type,
+      ok: true,
+      session: sessionInfo(managed)
+    )
+  }
+
+  private func transferLease(_ request: LabandRequest) -> LabandResponse {
+    guard let managed = lookup(request) else {
+      return missingSession(request)
+    }
+    guard let holder = request.leaseHolder, !holder.isEmpty else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "missingLeaseHolder",
+        message: "transferLease requires leaseHolder"
+      )
+    }
+    let entry = LabandLeaseHistoryEntry(
+      leaseHolder: holder,
+      grantedAtMonoNs: LabandSnapshotRingLayout.monotonicNanoseconds()
+    )
+    managed.leaseHolder = holder
+    managed.leaseHistory.append(entry)
+    do {
+      try appendJournal(event: .leaseTransferred, managed: managed)
+    } catch {
+      managed.leaseHistory.removeLast()
+      managed.leaseHolder = managed.leaseHistory.last?.leaseHolder
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "journalAppendFailed",
+        message: String(describing: error)
+      )
+    }
     return LabandResponse(
       requestId: request.requestId,
       type: request.type,
@@ -492,6 +669,66 @@ private final class LabandDaemon {
     managed.foregroundPid = metadata.foregroundPid
   }
 
+  private func replayJournal() {
+    var restored: [String: ManagedLabandSession] = [:]
+    for record in journal.replayRecords() {
+      switch record.event {
+      case .sessionCreated:
+        restored[record.logicalSessionId] = ManagedLabandSession(
+          logicalSessionId: record.logicalSessionId,
+          incarnationId: record.incarnationId,
+          commandDisplayName: record.commandDisplayName,
+          cwd: record.cwd,
+          rows: record.rows,
+          cols: record.cols,
+          title: record.title,
+          session: nil,
+          lifecycleState: record.lifecycleState == .running ? .dead : record.lifecycleState,
+          childPid: record.childPid,
+          foregroundPid: record.foregroundPid,
+          leaseHolder: record.leaseHolder
+        )
+      case .leaseTransferred:
+        guard let managed = restored[record.logicalSessionId],
+          let holder = record.leaseHolder
+        else { continue }
+        managed.leaseHolder = holder
+        managed.leaseHistory.append(
+          LabandLeaseHistoryEntry(leaseHolder: holder, grantedAtMonoNs: record.monoNs))
+      case .terminateRequested, .sessionTerminated:
+        guard let managed = restored[record.logicalSessionId] else { continue }
+        managed.lifecycleState = record.lifecycleState
+        managed.session = nil
+        managed.runner = nil
+        managed.ringWriter = nil
+        managed.childPid = record.childPid ?? managed.childPid
+        managed.foregroundPid = record.foregroundPid ?? managed.foregroundPid
+      }
+    }
+    sessions = restored
+  }
+
+  private func appendJournal(event: LabandJournalEvent, managed: ManagedLabandSession) throws {
+    try journal.append(
+      LabandJournalRecord(
+        version: 1,
+        offset: 0,
+        monoNs: LabandSnapshotRingLayout.monotonicNanoseconds(),
+        event: event,
+        logicalSessionId: managed.logicalSessionId,
+        incarnationId: managed.incarnationId,
+        childPid: managed.childPid,
+        foregroundPid: managed.foregroundPid,
+        cwd: managed.cwd,
+        commandDisplayName: managed.commandDisplayName,
+        title: managed.title,
+        rows: managed.rows,
+        cols: managed.cols,
+        lifecycleState: managed.lifecycleState,
+        leaseHolder: managed.leaseHolder
+      ))
+  }
+
   private func sessionInfo(_ managed: ManagedLabandSession) -> LabandSessionInfo {
     LabandSessionInfo(
       logicalSessionId: managed.logicalSessionId,
@@ -506,7 +743,8 @@ private final class LabandDaemon {
       cols: managed.cols,
       lifecycleState: managed.lifecycleState,
       attachedClientCount: 0,
-      leaseHolder: nil,
+      leaseHolder: managed.leaseHolder,
+      leaseHistory: managed.leaseHistory,
       transportMode: "control-json"
     )
   }
@@ -790,7 +1028,7 @@ struct LabandMain {
         atPath: args.journalPath,
         withIntermediateDirectories: true
       )
-      let daemon = LabandDaemon(journalPath: args.journalPath)
+      let daemon = try LabandDaemon(journalPath: args.journalPath)
       let server = UnixSocketServer(socketPath: args.socketPath, daemon: daemon)
       try server.run()
       unlink(args.socketPath)

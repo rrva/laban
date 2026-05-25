@@ -78,6 +78,7 @@ public protocol TerminalSessionClient: AnyObject {
   func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment
   func snapshot(sessionId: String) throws -> LabandSnapshotResponse
   func markRendered(sessionId: String) throws
+  func transferLease(sessionId: String, holderClientId: String) throws -> LabandSessionInfo
   func terminate(sessionId: String) throws -> LabandSessionInfo
 }
 
