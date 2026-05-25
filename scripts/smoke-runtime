@@ -21,8 +21,9 @@ AGENT_BIN=".build/debug/laban-agent"
 APP_BIN=".build/laban/Laban.app/Contents/MacOS/LabanApp"
 PLIST=".build/laban/Laban.app/Contents/Info.plist"
 EXPECTED_APP="laban-app: smoke ok"
-AGENT_ARTIFACTS=".artifacts/runs/smoke-runtime"
-AGENT_TMP=".tmp/smoke-runtime"
+RUN_ID="${LABAN_RUN_ID:-smoke-runtime-$(date +%Y%m%d-%H%M%S)-$$}"
+AGENT_ARTIFACTS="${LABAN_ARTIFACTS:-.artifacts/runs/$RUN_ID}"
+AGENT_TMP="${LABAN_TMP:-.tmp/$RUN_ID}"
 
 # 1. Headless fixture run: exits 0, produces screenshot, finds expected text.
 rm -rf "$AGENT_ARTIFACTS" "$AGENT_TMP"

@@ -2,8 +2,9 @@
 set -euo pipefail
 
 FIXTURE="${1:-fixtures/colored-boxes.fixture.json}"
-ARTIFACTS="${LABAN_ARTIFACTS:-.artifacts/runs/manual-debug}"
-TMP="${LABAN_TMP:-.tmp/manual-debug}"
+RUN_ID="${LABAN_RUN_ID:-manual-debug-$(date +%Y%m%d-%H%M%S)-$$}"
+ARTIFACTS="${LABAN_ARTIFACTS:-.artifacts/runs/$RUN_ID}"
+TMP="${LABAN_TMP:-.tmp/$RUN_ID}"
 ADDRESS="${LABAN_DEBUG_ADDRESS:-127.0.0.1:0}"
 
 swift run laban-agent -- \

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "laband_snapshot_ring.h"
 
 /* Smoke functions from Milestone 1 */
 const char *laban_terminal_core_smoke_version(void);

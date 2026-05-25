@@ -72,6 +72,51 @@ final class LabandControlProtocolTests: XCTestCase {
     launchedDaemon = nil
   }
 
+  func testSnapshotRingPublishesCoherentEchoedCells() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let runId = "laband-ring-\(UUID().uuidString)"
+    let socketPath = ".tmp/\(runId)/laband.sock"
+    let journalPath = ".artifacts/runs/\(runId)/laband"
+    let daemon = try launchDaemon(root: root, socketPath: socketPath, journalPath: journalPath)
+    launchedDaemon = daemon
+
+    let client = try waitForClient(root: root, socketPath: socketPath)
+    defer { client.close() }
+
+    let hello = try client.hello()
+    XCTAssertTrue(hello.capabilities.contains("snapshot-ring/v1"))
+
+    let session = try client.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/cat",
+        argv: ["/bin/cat"],
+        cwd: root.path,
+        rows: 24,
+        cols: 80
+      )
+    )
+    let attachment = try client.attachSnapshotRing(sessionId: session.logicalSessionId)
+    XCTAssertEqual(attachment.headerBytes, Int(LabandSnapshotRingLayout.fileHeaderBytes))
+    XCTAssertEqual(attachment.slotHeaderBytes, Int(LabandSnapshotRingLayout.slotHeaderBytes))
+    XCTAssertEqual(attachment.cellBytes, Int(LabandSnapshotRingLayout.cellBytes))
+    XCTAssertGreaterThanOrEqual(attachment.slotCount, LabandSnapshotRingLayout.minimumSlotCount)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: attachment.path))
+
+    let reader = try client.snapshotRingReader(sessionId: session.logicalSessionId)
+    try client.writeInput(sessionId: session.logicalSessionId, bytes: Array("ring-ok".utf8))
+    let snapshot = try waitForRingSnapshotText(reader: reader, contains: "ring-ok")
+    XCTAssertEqual(snapshot.logicalSessionId, session.logicalSessionId)
+    XCTAssertEqual(snapshot.incarnationId, session.incarnationId)
+    XCTAssertEqual(snapshot.cells.first?.text, "r")
+    XCTAssertTrue(snapshot.visibleText.contains("ring-ok"))
+
+    _ = try client.terminate(sessionId: session.logicalSessionId)
+    try client.shutdownWhenIdle()
+    daemon.waitUntilExit()
+    XCTAssertEqual(daemon.terminationStatus, 0)
+    launchedDaemon = nil
+  }
+
   private func launchDaemon(root: URL, socketPath: String, journalPath: String) throws -> Process {
     let executable = root.appendingPathComponent(".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
@@ -130,6 +175,25 @@ final class LabandControlProtocolTests: XCTestCase {
       usleep(50_000)
     }
     XCTFail("snapshot never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
+    throw POSIXError(.ETIMEDOUT)
+  }
+
+  private func waitForRingSnapshotText(
+    reader: LabandSnapshotRingReader,
+    contains needle: String
+  ) throws -> LabandSnapshotResponse {
+    let deadline = Date().addingTimeInterval(5)
+    var lastSnapshot: LabandSnapshotResponse?
+    while Date() < deadline {
+      if let snapshot = try? reader.latestSnapshot() {
+        lastSnapshot = snapshot
+        if snapshot.visibleText.contains(needle) {
+          return snapshot
+        }
+      }
+      usleep(50_000)
+    }
+    XCTFail("snapshot ring never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
     throw POSIXError(.ETIMEDOUT)
   }
 

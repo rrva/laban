@@ -72,6 +72,7 @@ private extension NSLock {
 }
 
 private final class ManagedLabandSession {
+  private let lock = NSLock()
   let logicalSessionId: String
   let incarnationId: String
   let commandDisplayName: String
@@ -84,6 +85,8 @@ private final class ManagedLabandSession {
   var foregroundPid: Int?
   var session: Session?
   var runner: SessionRunner?
+  var ringWriter: LabandSnapshotRingWriter?
+  private var inputSequence: UInt64 = 0
 
   init(
     logicalSessionId: String,
@@ -104,12 +107,42 @@ private final class ManagedLabandSession {
     self.title = title
     self.session = session
   }
+
+  func recordInput() -> UInt64 {
+    lock.withLock {
+      inputSequence &+= 1
+      if inputSequence == 0 { inputSequence = 1 }
+      return inputSequence
+    }
+  }
+
+  func currentInputSequence() -> UInt64 {
+    lock.withLock { inputSequence }
+  }
+
+  func publishSnapshot(ptyDrainMonoNs: UInt64 = LabandSnapshotRingLayout.monotonicNanoseconds()) {
+    guard let ringWriter, lifecycleState == .running, let session, let snapshot = session.snapshot()
+    else { return }
+    defer { laban_snapshot_destroy(snapshot) }
+    let inputSeq = currentInputSequence()
+    try? ringWriter.publish(
+      snapshot: UnsafePointer(snapshot),
+      inputSeqApplied: inputSeq,
+      echoAckSeq: inputSeq,
+      ptyDrainMonoNs: ptyDrainMonoNs
+    )
+  }
 }
 
 private final class LabandDaemon {
+  private let journalPath: String
   private let lock = NSLock()
   private var sessions: [String: ManagedLabandSession] = [:]
   var onShutdown: (() -> Void)?
+
+  init(journalPath: String) {
+    self.journalPath = journalPath
+  }
 
   func handle(_ request: LabandRequest) -> (LabandResponse, Bool) {
     guard request.protocolVersion == LabandProtocolVersion.current else {
@@ -135,6 +168,8 @@ private final class LabandDaemon {
       return (writeInput(request), false)
     case .snapshot:
       return (snapshot(request), false)
+    case .attachSnapshotRing:
+      return (attachSnapshotRing(request), false)
     case .resizeSession:
       return (resizeSession(request), false)
     case .markRendered:
@@ -158,6 +193,7 @@ private final class LabandDaemon {
         capabilities: [
           "control-json/v1",
           "copy-snapshot/v1",
+          "snapshot-ring/v1",
           "single-writer/v1",
         ]
       )
@@ -203,7 +239,9 @@ private final class LabandDaemon {
         title: commandDisplayName,
         session: session
       )
-      managed.runner = session.makeRunner(onDirty: {})
+      managed.runner = session.makeRunner(onDirty: { [weak managed] in
+        managed?.publishSnapshot()
+      })
       managed.runner?.start()
       refreshProcessMetadata(managed)
       let info = sessionInfo(managed)
@@ -277,6 +315,7 @@ private final class LabandDaemon {
         message: "writeInput requires text or bytesBase64"
       )
     }
+    _ = managed.recordInput()
     let wrote = session.write(bytes)
     guard wrote >= 0 else {
       return .error(
@@ -292,6 +331,39 @@ private final class LabandDaemon {
       ok: true,
       session: sessionInfo(managed)
     )
+  }
+
+  private func attachSnapshotRing(_ request: LabandRequest) -> LabandResponse {
+    guard let managed = lookup(request) else {
+      return missingSession(request)
+    }
+    guard managed.lifecycleState == .running, managed.session != nil else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "sessionNotRunning",
+        message: "session is not running"
+      )
+    }
+    do {
+      let writer = try ensureSnapshotRing(managed)
+      managed.publishSnapshot()
+      return LabandResponse(
+        requestId: request.requestId,
+        type: request.type,
+        ok: true,
+        session: sessionInfo(managed),
+        snapshotRing: writer.attachment
+      )
+    } catch {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "snapshotRingFailed",
+        message: String(describing: error),
+        retryable: true
+      )
+    }
   }
 
   private func snapshot(_ request: LabandRequest) -> LabandResponse {
@@ -342,6 +414,7 @@ private final class LabandDaemon {
     }
     managed.rows = rows
     managed.cols = cols
+    managed.publishSnapshot()
     return LabandResponse(
       requestId: request.requestId,
       type: request.type,
@@ -359,6 +432,7 @@ private final class LabandDaemon {
     managed.runner = nil
     managed.session?.close()
     managed.session = nil
+    managed.ringWriter = nil
     managed.lifecycleState = .terminated
     return LabandResponse(
       requestId: request.requestId,
@@ -472,6 +546,32 @@ private final class LabandDaemon {
       visibleText: visible,
       cells: cells
     )
+  }
+
+  private func ensureSnapshotRing(_ managed: ManagedLabandSession) throws -> LabandSnapshotRingWriter {
+    if let writer = managed.ringWriter {
+      return writer
+    }
+    let maxRows = max(managed.rows, 128)
+    let maxCols = max(managed.cols, 512)
+    let ringsDir = URL(fileURLWithPath: journalPath).appendingPathComponent(
+      "snapshot-rings", isDirectory: true)
+    let name =
+      "\(hexHash(managed.logicalSessionId))-\(hexHash(managed.incarnationId)).lbndss"
+    let path = ringsDir.appendingPathComponent(name).path
+    let writer = try LabandSnapshotRingWriter(
+      path: path,
+      logicalSessionId: managed.logicalSessionId,
+      incarnationId: managed.incarnationId,
+      maxRows: maxRows,
+      maxCols: maxCols
+    )
+    managed.ringWriter = writer
+    return writer
+  }
+
+  private func hexHash(_ value: String) -> String {
+    String(format: "%016llx", LabandSnapshotRingLayout.stableHash(value))
   }
 
   private func snapshotCells(_ snapshot: LabanSnapshot) -> [LabandSnapshotCell] {
@@ -690,7 +790,7 @@ struct LabandMain {
         atPath: args.journalPath,
         withIntermediateDirectories: true
       )
-      let daemon = LabandDaemon()
+      let daemon = LabandDaemon(journalPath: args.journalPath)
       let server = UnixSocketServer(socketPath: args.socketPath, daemon: daemon)
       try server.run()
       unlink(args.socketPath)

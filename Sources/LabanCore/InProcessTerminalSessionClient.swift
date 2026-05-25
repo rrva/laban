@@ -144,6 +144,11 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     return sessionInfo(managed)
   }
 
+  public func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment {
+    throw TerminalSessionClientError.protocolError(
+      "snapshot rings are only available for laband sessions")
+  }
+
   public func snapshot(sessionId: String) throws -> LabandSnapshotResponse {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)

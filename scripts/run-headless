@@ -2,8 +2,9 @@
 set -euo pipefail
 
 FIXTURE="${1:-fixtures/colored-boxes.fixture.json}"
-ARTIFACTS=".artifacts/runs/manual"
-TMP=".tmp/manual"
+RUN_ID="${LABAN_RUN_ID:-manual-headless-$(date +%Y%m%d-%H%M%S)-$$}"
+ARTIFACTS="${LABAN_ARTIFACTS:-.artifacts/runs/$RUN_ID}"
+TMP="${LABAN_TMP:-.tmp/$RUN_ID}"
 
 swift run laban-agent -- \
   --headless \

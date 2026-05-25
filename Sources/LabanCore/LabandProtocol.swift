@@ -10,6 +10,7 @@ public enum LabandRequestType: String, Codable, Sendable {
   case listSessions
   case writeInput
   case snapshot
+  case attachSnapshotRing
   case resizeSession
   case markRendered
   case terminateSession
@@ -225,6 +226,7 @@ public struct LabandResponse: Codable, Equatable, Sendable {
   public var session: LabandSessionInfo?
   public var sessions: [LabandSessionInfo]?
   public var snapshot: LabandSnapshotResponse?
+  public var snapshotRing: LabandSnapshotRingAttachment?
 
   public init(
     protocolVersion: Int = LabandProtocolVersion.current,
@@ -235,7 +237,8 @@ public struct LabandResponse: Codable, Equatable, Sendable {
     hello: LabandHelloResponse? = nil,
     session: LabandSessionInfo? = nil,
     sessions: [LabandSessionInfo]? = nil,
-    snapshot: LabandSnapshotResponse? = nil
+    snapshot: LabandSnapshotResponse? = nil,
+    snapshotRing: LabandSnapshotRingAttachment? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.requestId = requestId
@@ -246,6 +249,7 @@ public struct LabandResponse: Codable, Equatable, Sendable {
     self.session = session
     self.sessions = sessions
     self.snapshot = snapshot
+    self.snapshotRing = snapshotRing
   }
 
   public static func error(

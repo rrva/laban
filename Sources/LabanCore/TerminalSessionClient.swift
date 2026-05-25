@@ -75,6 +75,7 @@ public protocol TerminalSessionClient: AnyObject {
   func listSessions() throws -> [LabandSessionInfo]
   func writeInput(sessionId: String, bytes: [UInt8]) throws
   func resize(sessionId: String, rows: Int, cols: Int) throws -> LabandSessionInfo
+  func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment
   func snapshot(sessionId: String) throws -> LabandSnapshotResponse
   func markRendered(sessionId: String) throws
   func terminate(sessionId: String) throws -> LabandSessionInfo

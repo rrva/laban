@@ -58,7 +58,19 @@ running without flicker or sluggish input.
   count, and lease holder fields from `/debug/sessions`.
 - [x] M2: add a versioned local client protocol and connect the app/headless
   harness through it for one session.
-- [ ] M3: move terminal snapshots to a low-latency shared-memory transport.
+- [x] (2026-05-25) M3: added the normative
+  `LBNDSS01` snapshot-ring ABI in Swift and C, `attachSnapshotRing` control
+  negotiation, daemon-side mmap ring publication from the PTY reader path,
+  client-side coherent ring sampling, direct ring echo sampling in
+  `bench-keystroke-latency`, and ring coverage in
+  `LabandControlProtocolTests`. The fresh-state M3 review gate passed after
+  the run-id path-scope fix.
+- [x] (2026-05-25) Addressed the first M3 review gate block by removing fixed
+  reusable dev/test artifact and temp defaults from `scripts/run-debug`,
+  `scripts/run-headless`, `scripts/smoke-runtime`, and the benchmark's laband
+  journal fallback. These paths now come from `LABAN_RUN_ID`, explicit
+  `LABAN_ARTIFACTS`/`LABAN_TMP`, or a generated per-run id.
+- [x] M3: move terminal snapshots to a low-latency shared-memory transport.
 - [ ] M4: persist session catalog and append-only lifecycle journal.
 - [ ] M5: support detach/reattach across app restart without killing the live
   PTY.
@@ -263,6 +275,16 @@ until the gate passes.
 
 Review status: NOT REVIEWED after this research update.
 
+Review update on 2026-05-25: first M3 review pass was BLOCKED because
+`scripts/run-debug`, `scripts/run-headless`, `scripts/smoke-runtime`, and the
+benchmark laband journal fallback still used fixed reusable dev/test paths.
+Those defaults were removed and a fresh re-review was requested.
+
+Review update on 2026-05-25: fresh M3 re-review passed with no findings. The
+reviewer confirmed ADR 0005 indexing, benchmark transport/echo verification,
+real headless `laband` process use, run-id-scoped dev/test paths, and daemon
+metadata exposure through `/debug/sessions`.
+
 ## Surprises & Discoveries
 
 - Observation: The first review found the original M3 acceptance could not
@@ -288,6 +310,21 @@ Review status: NOT REVIEWED after this research update.
   Implication: The `LabanDebugTests` target depends on the `Laband` executable
   target so the daemon binary is built before `LabandHeadlessBackendTests`
   starts.
+
+- Observation: The first M3 benchmark attempt read the mmap ring by expanding
+  it into the JSON-shaped `LabandSnapshotResponse` on every poll, which spent
+  roughly 2 ms allocating cell arrays and visible text for an 80x24 grid.
+  Implication: The hot benchmark path now uses a direct coherent cell sampler
+  from the ring for echo verification, matching the intended shared-memory
+  rendering model where clients sample structured memory instead of rebuilding
+  debug JSON.
+
+- Observation: The first M3 review pass found old manual helper scripts still
+  used fixed reusable artifact/temp directories even though the new daemon and
+  benchmark paths were run-id scoped.
+  Implication: Manual and smoke helpers now derive `.artifacts/runs/<run-id>/`
+  and `.tmp/<run-id>/` from `LABAN_RUN_ID` or a generated per-run id, and the
+  benchmark refuses laband socket paths that do not include a run-id directory.
 
 ## Context and Orientation
 
@@ -552,6 +589,37 @@ Acceptance: the daemon-mode command starts or connects to a real `laband`
 process, drives the same `/bin/cat` workload through the real client protocol,
 and reports `verifiedEcho=500/500`. Local `laband` overhead over the
 in-process raw total is less than 0.5 ms p50 and less than 2 ms p95 at 160x48.
+
+Validation recorded on 2026-05-25:
+
+```sh
+rtk swift build -c release --product laband
+# Build of product 'laband' complete.
+
+rtk swift build -c release --product bench-keystroke-latency
+# Build of product 'bench-keystroke-latency' complete.
+
+rtk .build/release/bench-keystroke-latency --transport in-process --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/in-process-160x48.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.870 ms p95=0.983 ms p99=1.048 ms
+
+rtk .build/release/bench-keystroke-latency --transport laband --socket .tmp/keystroke-latency-after/laband.sock --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/laband-160x48.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.499 ms p95=0.638 ms p99=0.656 ms
+```
+
+Focused regression checks:
+
+```sh
+rtk swift test --filter LabandControlProtocolTests
+# Executed 2 tests, with 0 failures.
+
+rtk swift test --filter LabandHeadlessBackendTests
+# Executed 1 test, with 0 failures.
+
+LABAN_TERMINAL_BACKEND=laband LABAN_LABAND_SOCKET=.tmp/laband-m3-debug/laband.sock rtk ./scripts/run-debug-script fixtures/debug-script-laband-basic.scenario.json --artifacts .artifacts/runs/laband-m3-debug --temp-dir .tmp/laband-m3-debug
+# debug script passed
+```
 
 ### M4: Durable Catalog And Journal
 

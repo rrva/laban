@@ -9,6 +9,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   private let lock = NSLock()
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
+  private var ringReaders: [String: LabandSnapshotRingReader] = [:]
 
   public init(socketPath: String) throws {
     self.socketPath = socketPath
@@ -21,6 +22,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
 
   public func close() {
     lock.withLock {
+      ringReaders.removeAll()
       if fd >= 0 {
         Darwin.close(fd)
         fd = -1
@@ -90,7 +92,40 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     return session
   }
 
+  public func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment {
+    let response = try send(
+      LabandRequest(
+        requestId: UUID().uuidString,
+        type: .attachSnapshotRing,
+        sessionId: sessionId
+      )
+    )
+    guard let attachment = response.snapshotRing else {
+      throw TerminalSessionClientError.protocolError("attachSnapshotRing response missing payload")
+    }
+    let session = response.session
+    let logicalSessionId = session?.logicalSessionId ?? sessionId
+    let incarnationId = session?.incarnationId ?? ""
+    let reader = try LabandSnapshotRingReader(
+      attachment: attachment,
+      logicalSessionId: logicalSessionId,
+      incarnationId: incarnationId
+    )
+    lock.withLock {
+      ringReaders[sessionId] = reader
+    }
+    return attachment
+  }
+
   public func snapshot(sessionId: String) throws -> LabandSnapshotResponse {
+    if let ringSnapshot = try readRingSnapshot(sessionId: sessionId) {
+      return ringSnapshot
+    }
+    if (try? attachSnapshotRing(sessionId: sessionId)) != nil,
+      let ringSnapshot = try readRingSnapshot(sessionId: sessionId)
+    {
+      return ringSnapshot
+    }
     let response = try send(
       LabandRequest(
         requestId: UUID().uuidString,
@@ -104,6 +139,17 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     return snapshot
   }
 
+  public func snapshotRingReader(sessionId: String) throws -> LabandSnapshotRingReader {
+    if let reader = lock.withLock({ ringReaders[sessionId] }) {
+      return reader
+    }
+    _ = try attachSnapshotRing(sessionId: sessionId)
+    guard let reader = lock.withLock({ ringReaders[sessionId] }) else {
+      throw TerminalSessionClientError.protocolError("snapshot ring reader was not attached")
+    }
+    return reader
+  }
+
   public func markRendered(sessionId: String) throws {
     _ = try send(
       LabandRequest(
@@ -115,6 +161,9 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   }
 
   public func terminate(sessionId: String) throws -> LabandSessionInfo {
+    _ = lock.withLock {
+      ringReaders.removeValue(forKey: sessionId)
+    }
     let response = try send(
       LabandRequest(
         requestId: UUID().uuidString,
@@ -126,6 +175,15 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       throw TerminalSessionClientError.protocolError("terminateSession response missing session")
     }
     return session
+  }
+
+  private func readRingSnapshot(sessionId: String) throws -> LabandSnapshotResponse? {
+    guard let reader = lock.withLock({ ringReaders[sessionId] }) else { return nil }
+    do {
+      return try reader.latestSnapshot()
+    } catch LabandSnapshotRingError.noCompletedSnapshot {
+      return nil
+    }
   }
 
   public func shutdownWhenIdle() throws {

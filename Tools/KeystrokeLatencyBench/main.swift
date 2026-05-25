@@ -1,3 +1,4 @@
+import Darwin
 import CoreGraphics
 import Foundation
 import LabanCore
@@ -6,6 +7,11 @@ import LabanTerminalCore
 
 private let outputSettleQuietMs = 12.0
 
+private enum Transport: String, Codable {
+  case inProcess = "in-process"
+  case laband
+}
+
 private struct Options {
   var samples = 200
   var warmup = 30
@@ -13,6 +19,8 @@ private struct Options {
   var rows = 36
   var jsonPath: String?
   var displayHz = 120.0
+  var transport: Transport = .inProcess
+  var socketPath: String?
 
   static func parse(_ args: [String]) throws -> Options {
     var options = Options()
@@ -47,6 +55,14 @@ private struct Options {
         options.displayHz = try Double(value()) ?? {
           throw BenchError.message("--display-hz must be a number")
         }()
+      case "--transport":
+        let raw = try value()
+        guard let transport = Transport(rawValue: raw) else {
+          throw BenchError.message("--transport must be in-process or laband")
+        }
+        options.transport = transport
+      case "--socket":
+        options.socketPath = try value()
       case "--help", "-h":
         print(
           """
@@ -58,6 +74,8 @@ private struct Options {
             --cols N          terminal columns (default: 120)
             --rows N          terminal rows (default: 36)
             --display-hz HZ   display cadence estimate (default: 120)
+            --transport MODE  in-process or laband (default: in-process)
+            --socket PATH     laband socket path for --transport laband
             --json PATH       write machine-readable results
           """)
         exit(0)
@@ -72,6 +90,9 @@ private struct Options {
       throw BenchError.message("--cols and --rows must be > 0")
     }
     guard options.displayHz > 0 else { throw BenchError.message("--display-hz must be > 0") }
+    if options.transport == .laband, options.socketPath == nil {
+      throw BenchError.message("--transport laband requires --socket")
+    }
     return options
   }
 }
@@ -147,6 +168,7 @@ private struct Summary: Codable {
 
 private struct Report: Codable {
   var name: String
+  var transport: Transport
   var date: String
   var samples: Int
   var warmup: Int
@@ -299,7 +321,7 @@ private func writeReport(_ report: Report, to path: String) throws {
   try data.write(to: url, options: .atomic)
 }
 
-private func run(options: Options) throws -> Report {
+private func runInProcess(options: Options) throws -> Report {
   let fontAtlas = FontAtlas(pointSize: 14)
   let cellSize = fontAtlas.cellSize
   let cellWidth = max(1, Int(cellSize.width))
@@ -453,6 +475,7 @@ private func run(options: Options) throws -> Report {
 
   return Report(
     name: "bench-keystroke-latency",
+    transport: options.transport,
     date: ISO8601DateFormatter().string(from: Date()),
     samples: options.samples,
     warmup: options.warmup,
@@ -466,11 +489,344 @@ private func run(options: Options) throws -> Report {
   )
 }
 
+private final class OwnedLabandDaemon {
+  let process: Process?
+
+  init(process: Process?) {
+    self.process = process
+  }
+
+  func stop(client: LabandTerminalSessionClient?) {
+    if let client, process != nil {
+      try? client.shutdownWhenIdle()
+      client.close()
+    } else {
+      client?.close()
+    }
+    guard let process, process.isRunning else { return }
+    process.terminate()
+    process.waitUntilExit()
+  }
+}
+
+private func run(options: Options) throws -> Report {
+  switch options.transport {
+  case .inProcess:
+    return try runInProcess(options: options)
+  case .laband:
+    return try runLaband(options: options)
+  }
+}
+
+private func runLaband(options: Options) throws -> Report {
+  guard let socketPath = options.socketPath else {
+    throw BenchError.message("--transport laband requires --socket")
+  }
+  let fontAtlas = FontAtlas(pointSize: 14)
+  let cellSize = fontAtlas.cellSize
+  let cellWidth = max(1, Int(cellSize.width))
+  let cellHeight = max(1, Int(cellSize.height))
+  let sidebarWidth = 200
+  let surfaceWidth = sidebarWidth + options.cols * cellWidth
+  let surfaceHeight = options.rows * cellHeight
+  let surface = BitmapSurface(width: surfaceWidth, height: surfaceHeight)
+  let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+
+  let daemon = try ensureLabandDaemon(socketPath: socketPath)
+  var client: LabandTerminalSessionClient?
+  do {
+    client = try waitForLabandClient(socketPath: socketPath, timeoutMs: 5_000)
+    guard let client else { throw BenchError.message("failed to connect to laband") }
+    let session = try client.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/cat",
+        argv: ["/bin/cat"],
+        cwd: FileManager.default.currentDirectoryPath,
+        rows: options.rows,
+        cols: options.cols
+      ))
+    defer {
+      _ = try? client.terminate(sessionId: session.logicalSessionId)
+      daemon.stop(client: client)
+    }
+
+    _ = try client.attachSnapshotRing(sessionId: session.logicalSessionId)
+    let reader = try client.snapshotRingReader(sessionId: session.logicalSessionId)
+    _ = try? reader.latestSnapshot()
+
+    let letters = Array("abcdefghijklmnopqrstuvwxyz".unicodeScalars)
+    let total = options.warmup + options.samples
+    var measured: [Sample] = []
+    measured.reserveCapacity(options.samples)
+    let displayMeanWaitMs = 1000.0 / options.displayHz / 2.0
+
+    for index in 0..<total {
+      let scalar = letters[index % letters.count]
+      let text = String(scalar)
+      let t0 = nowNs()
+      let keyStart = t0
+      try client.writeInput(sessionId: session.logicalSessionId, bytes: Array(text.utf8))
+      let keyEnd = nowNs()
+      let waited = try waitForLabandEcho(
+        reader: reader,
+        sampleIndex: index,
+        cols: options.cols,
+        rows: options.rows,
+        expected: scalar,
+        timeoutMs: 1_000
+      )
+      let rendered = renderLabandCellFrame(
+        cell: waited.cell,
+        renderer: renderer,
+        sidebarWidth: sidebarWidth,
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        rows: options.rows,
+        cols: options.cols
+      )
+      let tRendered = nowNs()
+      let rawTotalMs = ms(tRendered &- t0)
+      let appCommitMs = rawTotalMs + outputSettleQuietMs
+      let sample = Sample(
+        keyWriteMs: ms(keyEnd &- keyStart),
+        ptyDrainMs: ms(waited.observedAt &- keyEnd),
+        syncMs: 0,
+        makeFrameMs: rendered.makeFrameMs,
+        snapshotMs: waited.snapshotMs,
+        commandExtractionMs: rendered.makeFrameMs,
+        renderMs: rendered.renderMs,
+        rawTotalMs: rawTotalMs,
+        estimatedCurrentAppCommitMs: appCommitMs,
+        estimatedPhotonMeanMs: appCommitMs + displayMeanWaitMs,
+        commandCount: rendered.commandCount,
+        verifiedEcho: true
+      )
+      if index >= options.warmup {
+        measured.append(sample)
+      }
+    }
+
+    return makeReport(options: options, measured: measured, displayMeanWaitMs: displayMeanWaitMs)
+  } catch {
+    daemon.stop(client: client)
+    throw error
+  }
+}
+
+private func makeReport(
+  options: Options,
+  measured: [Sample],
+  displayMeanWaitMs: Double
+) -> Report {
+  let stages: [(String, (Sample) -> Double)] = [
+    ("keyWriteMs", { $0.keyWriteMs }),
+    ("ptyDrainMs", { $0.ptyDrainMs }),
+    ("syncMs", { $0.syncMs }),
+    ("makeFrameMs", { $0.makeFrameMs }),
+    ("snapshotMs", { $0.snapshotMs }),
+    ("commandExtractionMs", { $0.commandExtractionMs }),
+    ("renderMs", { $0.renderMs }),
+    ("rawTotalMs", { $0.rawTotalMs }),
+    ("estimatedCurrentAppCommitMs", { $0.estimatedCurrentAppCommitMs }),
+    ("estimatedPhotonMeanMs", { $0.estimatedPhotonMeanMs }),
+  ]
+  var summaries: [String: Summary] = [:]
+  for (name, pick) in stages {
+    summaries[name] = summarize(measured.map(pick))
+  }
+
+  return Report(
+    name: "bench-keystroke-latency",
+    transport: options.transport,
+    date: ISO8601DateFormatter().string(from: Date()),
+    samples: options.samples,
+    warmup: options.warmup,
+    cols: options.cols,
+    rows: options.rows,
+    displayHz: options.displayHz,
+    outputSettleQuietMs: outputSettleQuietMs,
+    displayMeanWaitMs: displayMeanWaitMs,
+    stages: summaries,
+    rawSamples: measured
+  )
+}
+
+private func renderLabandCellFrame(
+  cell: LabandSnapshotRingCellRead,
+  renderer: SoftwareRenderer,
+  sidebarWidth: Int,
+  cellWidth: Int,
+  cellHeight: Int,
+  rows: Int,
+  cols: Int
+) -> (makeFrameMs: Double, renderMs: Double, commandCount: Int) {
+  let makeStart = nowNs()
+  let cw = CGFloat(cellWidth)
+  let ch = CGFloat(cellHeight)
+  var commands: [FrameCommand] = [
+    .rect(
+      CGRect(
+        x: CGFloat(sidebarWidth),
+        y: 0,
+        width: CGFloat(cols * cellWidth),
+        height: CGFloat(rows * cellHeight)
+      ),
+      color: 0x000000ff,
+      source: .terminal
+    )
+  ]
+  commands.reserveCapacity(3)
+  if !cell.text.isEmpty {
+    commands.append(
+      .glyphRun(
+        origin: CGPoint(x: CGFloat(sidebarWidth + cell.col * cellWidth), y: CGFloat(cell.row + 1) * ch),
+        text: cell.text,
+        foreground: cell.foregroundRGBA,
+        background: cell.backgroundRGBA,
+        attributes: TextAttributes(rawValue: cell.flags),
+        source: .terminal
+      ))
+  }
+  commands.append(
+    .cursor(
+      CGRect(
+        x: CGFloat(sidebarWidth + cell.col * cellWidth),
+        y: CGFloat(cell.row * cellHeight),
+        width: cw,
+        height: ch
+      ),
+      color: 0xffffffff
+    ))
+  let makeEnd = nowNs()
+  let renderStart = nowNs()
+  renderer.render(commands)
+  let renderEnd = nowNs()
+  return (ms(makeEnd &- makeStart), ms(renderEnd &- renderStart), commands.count)
+}
+
+private func waitForLabandEcho(
+  reader: LabandSnapshotRingReader,
+  sampleIndex: Int,
+  cols: Int,
+  rows: Int,
+  expected: UnicodeScalar,
+  timeoutMs: Int
+) throws -> (cell: LabandSnapshotRingCellRead, snapshotMs: Double, observedAt: UInt64) {
+  let deadline = nowNs() + UInt64(timeoutMs) * 1_000_000
+  let row = sampleIndex / cols
+  let col = sampleIndex % cols
+  while nowNs() < deadline {
+    let snapshotStart = nowNs()
+    if let cell = try? reader.cell(row: row, col: col) {
+      let snapshotEnd = nowNs()
+      if cell.rows == rows, cell.cols == cols, cell.text.unicodeScalars.first == expected {
+        return (cell, ms(snapshotEnd &- snapshotStart), snapshotEnd)
+      }
+    }
+    usleep(100)
+  }
+  throw BenchError.message("timed out waiting for laband PTY echo at sample \(sampleIndex)")
+}
+
+private func echoVerified(
+  snapshot: LabandSnapshotResponse,
+  sampleIndex: Int,
+  cols: Int,
+  rows: Int,
+  expected: UnicodeScalar
+) -> Bool {
+  guard snapshot.rows == rows, snapshot.cols == cols else { return false }
+  guard sampleIndex >= 0, sampleIndex < min(cols * rows, snapshot.cells.count) else {
+    return false
+  }
+  return snapshot.cells[sampleIndex].text.unicodeScalars.first == expected
+}
+
+private func ensureLabandDaemon(socketPath: String) throws -> OwnedLabandDaemon {
+  if let client = try? LabandTerminalSessionClient(socketPath: socketPath) {
+    _ = try? client.hello()
+    client.close()
+    return OwnedLabandDaemon(process: nil)
+  }
+
+  let binary = try labandBinaryPath()
+  try FileManager.default.createDirectory(
+    at: URL(fileURLWithPath: socketPath).deletingLastPathComponent(),
+    withIntermediateDirectories: true
+  )
+  unlink(socketPath)
+  let journalPath = try journalPathForSocket(socketPath)
+  try FileManager.default.createDirectory(
+    atPath: journalPath,
+    withIntermediateDirectories: true
+  )
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: binary)
+  process.arguments = ["--socket", socketPath, "--journal", journalPath]
+  try process.run()
+  _ = try waitForLabandClient(socketPath: socketPath, timeoutMs: 5_000)
+  return OwnedLabandDaemon(process: process)
+}
+
+private func waitForLabandClient(socketPath: String, timeoutMs: Int) throws -> LabandTerminalSessionClient {
+  let deadline = nowNs() + UInt64(timeoutMs) * 1_000_000
+  var lastError: Error?
+  while nowNs() < deadline {
+    do {
+      let client = try LabandTerminalSessionClient(socketPath: socketPath)
+      _ = try client.hello()
+      return client
+    } catch {
+      lastError = error
+      usleep(10_000)
+    }
+  }
+  throw BenchError.message("timed out connecting to laband: \(String(describing: lastError))")
+}
+
+private func journalPathForSocket(_ socketPath: String) throws -> String {
+  let components = socketPath.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+  guard components.count >= 3 else {
+    throw BenchError.message(
+      "--socket must be run-id scoped, for example .tmp/<run-id>/laband.sock")
+  }
+  let runId = components[components.count - 2]
+  guard runId != ".tmp", runId != "tmp", runId != ".", runId != ".." else {
+    throw BenchError.message(
+      "--socket must include a run id under .tmp/<run-id>/laband.sock")
+  }
+  return ".artifacts/runs/\(runId)/laband"
+}
+
+private func labandBinaryPath() throws -> String {
+  let candidates = [
+    ".build/release/laband",
+    ".build/debug/laband",
+  ]
+  for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+    return candidate
+  }
+  let build = Process()
+  build.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+  build.arguments = ["swift", "build", "-c", "release", "--product", "laband"]
+  try build.run()
+  build.waitUntilExit()
+  guard build.terminationStatus == 0 else {
+    throw BenchError.message("failed to build laband helper")
+  }
+  guard FileManager.default.isExecutableFile(atPath: ".build/release/laband") else {
+    throw BenchError.message("laband helper was not built at .build/release/laband")
+  }
+  return ".build/release/laband"
+}
+
 do {
   let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
   let report = try run(options: options)
   print("bench-keystroke-latency")
-  print("  samples=\(report.samples) warmup=\(report.warmup) grid=\(report.cols)x\(report.rows)")
+  print(
+    "  transport=\(report.transport.rawValue) samples=\(report.samples) warmup=\(report.warmup) grid=\(report.cols)x\(report.rows)"
+  )
   print(
     String(
       format:
