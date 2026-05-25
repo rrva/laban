@@ -360,6 +360,27 @@ def terminate_started_server(process, stderr_file):
         stderr_file.close()
 
 
+def cleanup_laband_debug_sessions(server_url, token):
+    try:
+        response = http_json(server_url, token, "GET", "/debug/sessions")
+    except ScriptError:
+        return
+    for session in response.get("sessions", []):
+        tab_id = session.get("tabId")
+        if not tab_id:
+            continue
+        try:
+            http_json(
+                server_url,
+                token,
+                "POST",
+                "/debug/actions",
+                {"action": "closeTab", "tabId": tab_id},
+            )
+        except ScriptError:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run a Laban debug JSON scenario.")
     parser.add_argument("scenario", help="Path to a debug script scenario JSON file.")
@@ -391,6 +412,8 @@ def main():
 
     process = None
     stderr_file = None
+    server_url = None
+    server_token = None
     exit_code = 1
     try:
         agent_bin = Path(os.environ.get("LABAN_AGENT_BIN", repo_root / ".build/debug/laban-agent"))
@@ -431,6 +454,14 @@ def main():
         report["error"] = str(exc)
         print(f"debug script failed: {exc}", file=sys.stderr)
     finally:
+        if (
+            process is not None
+            and server_url
+            and server_token
+            and os.environ.get("LABAN_TERMINAL_BACKEND") == "laband"
+            and not scenario.get("preserveLabandOnExit", False)
+        ):
+            cleanup_laband_debug_sessions(server_url, server_token)
         terminate_started_server(process, stderr_file)
         write_json(report_path, report)
         print(f"report: {report_path}")

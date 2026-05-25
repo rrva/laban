@@ -176,6 +176,7 @@ private final class ManagedLabandSession {
   var ringWriter: LabandSnapshotRingWriter?
   var leaseHolder: String?
   var leaseHistory: [LabandLeaseHistoryEntry] = []
+  private var attachedClientIds: Set<String> = []
   private var inputSequence: UInt64 = 0
 
   init(
@@ -218,6 +219,30 @@ private final class ManagedLabandSession {
 
   func currentInputSequence() -> UInt64 {
     lock.withLock { inputSequence }
+  }
+
+  func attachClient(_ clientId: String?) {
+    guard let clientId, !clientId.isEmpty else { return }
+    lock.withLock {
+      _ = attachedClientIds.insert(clientId)
+    }
+  }
+
+  func detachClient(_ clientId: String?) {
+    guard let clientId, !clientId.isEmpty else { return }
+    lock.withLock {
+      _ = attachedClientIds.remove(clientId)
+    }
+  }
+
+  func detachAllClients() {
+    lock.withLock {
+      attachedClientIds.removeAll()
+    }
+  }
+
+  func attachedClientCount() -> Int {
+    lock.withLock { attachedClientIds.count }
   }
 
   func publishSnapshot(ptyDrainMonoNs: UInt64 = LabandSnapshotRingLayout.monotonicNanoseconds()) {
@@ -263,6 +288,10 @@ private final class LabandDaemon {
     switch request.type {
     case .hello:
       return (hello(request), false)
+    case .attachSession:
+      return (attachSession(request), false)
+    case .detachSession:
+      return (detachSession(request), false)
     case .createSession:
       return (createSession(request), false)
     case .listSessions:
@@ -299,6 +328,7 @@ private final class LabandDaemon {
           "control-json/v1",
           "copy-snapshot/v1",
           "snapshot-ring/v1",
+          "client-attach/v1",
           "lifecycle-journal/v1",
           "lease-transfer/v1",
           "single-writer/v1",
@@ -346,6 +376,7 @@ private final class LabandDaemon {
         title: commandDisplayName,
         session: session
       )
+      managed.attachClient(request.clientId)
       managed.runner = session.makeRunner(onDirty: { [weak managed] in
         managed?.publishSnapshot()
       })
@@ -381,6 +412,32 @@ private final class LabandDaemon {
         message: String(describing: error)
       )
     }
+  }
+
+  private func attachSession(_ request: LabandRequest) -> LabandResponse {
+    guard let managed = lookup(request) else {
+      return missingSession(request)
+    }
+    managed.attachClient(request.clientId)
+    return LabandResponse(
+      requestId: request.requestId,
+      type: request.type,
+      ok: true,
+      session: sessionInfo(managed)
+    )
+  }
+
+  private func detachSession(_ request: LabandRequest) -> LabandResponse {
+    guard let managed = lookup(request) else {
+      return missingSession(request)
+    }
+    managed.detachClient(request.clientId)
+    return LabandResponse(
+      requestId: request.requestId,
+      type: request.type,
+      ok: true,
+      session: sessionInfo(managed)
+    )
   }
 
   private func listSessions(_ request: LabandRequest) -> LabandResponse {
@@ -465,6 +522,7 @@ private final class LabandDaemon {
       )
     }
     do {
+      managed.attachClient(request.clientId)
       let writer = try ensureSnapshotRing(managed)
       managed.publishSnapshot()
       return LabandResponse(
@@ -562,6 +620,7 @@ private final class LabandDaemon {
     managed.session?.close()
     managed.session = nil
     managed.ringWriter = nil
+    managed.detachAllClients()
     managed.lifecycleState = .terminated
     do {
       try appendJournal(event: .sessionTerminated, managed: managed)
@@ -742,7 +801,7 @@ private final class LabandDaemon {
       rows: managed.rows,
       cols: managed.cols,
       lifecycleState: managed.lifecycleState,
-      attachedClientCount: 0,
+      attachedClientCount: managed.attachedClientCount(),
       leaseHolder: managed.leaseHolder,
       leaseHistory: managed.leaseHistory,
       transportMode: "control-json"

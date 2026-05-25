@@ -447,24 +447,80 @@ public final class HeadlessDebugRuntime {
   func ensureTerminalClientSessionUnlocked(for tab: Tab) throws {
     guard let client = terminalSessionClient else { return }
     if terminalClientSessionInfoById[tab.sessionId] != nil { return }
+    let remoteSessionId = terminalClientLogicalSessionId(for: tab)
+    if let existing = try? client.attachSession(logicalSessionId: remoteSessionId),
+      existing.lifecycleState == .running
+    {
+      terminalClientSessionInfoById[tab.sessionId] = existing
+      attachSnapshotRingIfAvailable(client: client, localSessionId: tab.sessionId)
+      return
+    }
     let size = model.terminalSize
+    let launch = Self.labandLaunchRequest(
+      size: size,
+      logicalSessionId: remoteSessionId
+    )
     let info = try client.createSession(
-      TerminalSessionLaunchRequest(
-        executable: "/bin/cat",
-        argv: ["/bin/cat"],
+      launch)
+    terminalClientSessionInfoById[tab.sessionId] = info
+    attachSnapshotRingIfAvailable(client: client, localSessionId: tab.sessionId)
+  }
+
+  private static func labandLaunchRequest(
+    size: LabanTerminalSize,
+    logicalSessionId: String
+  ) -> TerminalSessionLaunchRequest {
+    let env = ProcessInfo.processInfo.environment
+    if let command = env["LABAN_LABAND_SESSION_COMMAND"], !command.isEmpty {
+      return TerminalSessionLaunchRequest(
+        executable: "/bin/sh",
+        argv: ["/bin/sh", "-lc", command],
         cwd: FileManager.default.currentDirectoryPath,
         rows: Int(size.rows),
         cols: Int(size.cols),
-        logicalSessionId: tab.sessionId
-      ))
-    terminalClientSessionInfoById[tab.sessionId] = info
+        logicalSessionId: logicalSessionId
+      )
+    }
+    return TerminalSessionLaunchRequest(
+      executable: "/bin/cat",
+      argv: ["/bin/cat"],
+      cwd: FileManager.default.currentDirectoryPath,
+      rows: Int(size.rows),
+      cols: Int(size.cols),
+      logicalSessionId: logicalSessionId
+    )
+  }
+
+  func terminalClientRemoteSessionId(for localSessionId: Session.ID) -> String {
+    terminalClientSessionInfoById[localSessionId]?.logicalSessionId ?? localSessionId
+  }
+
+  private func terminalClientLogicalSessionId(for tab: Tab) -> String {
+    terminalBackend == .laband ? tab.id : tab.sessionId
+  }
+
+  private func attachSnapshotRingIfAvailable(
+    client: TerminalSessionClient,
+    localSessionId: Session.ID
+  ) {
+    guard let laband = client as? LabandTerminalSessionClient else { return }
+    let remoteSessionId = terminalClientRemoteSessionId(for: localSessionId)
+    _ = try? laband.attachSnapshotRing(sessionId: remoteSessionId)
+    if let refreshed = try? laband.attachSession(logicalSessionId: remoteSessionId) {
+      terminalClientSessionInfoById[localSessionId] = refreshed
+    }
   }
 
   func refreshTerminalClientSessionInfoUnlocked() {
     guard let client = terminalSessionClient else { return }
     do {
+      let localSessionIdByLogicalId = Dictionary(
+        uniqueKeysWithValues: model.tabs.map {
+          (terminalClientLogicalSessionId(for: $0), $0.sessionId)
+        })
       for info in try client.listSessions() {
-        terminalClientSessionInfoById[info.logicalSessionId] = info
+        let localSessionId = localSessionIdByLogicalId[info.logicalSessionId] ?? info.logicalSessionId
+        terminalClientSessionInfoById[localSessionId] = info
       }
     } catch {
       appendError(kind: "laband.listSessions.failed", message: String(describing: error))
@@ -474,7 +530,7 @@ public final class HeadlessDebugRuntime {
   func terminalClientSnapshotUnlocked(sessionId: Session.ID) -> LabandSnapshotResponse? {
     guard let client = terminalSessionClient else { return nil }
     do {
-      let snapshot = try client.snapshot(sessionId: sessionId)
+      let snapshot = try client.snapshot(sessionId: terminalClientRemoteSessionId(for: sessionId))
       return snapshot
     } catch {
       appendError(
@@ -489,7 +545,8 @@ public final class HeadlessDebugRuntime {
   func terminateTerminalClientSessionUnlocked(sessionId: Session.ID) {
     guard let client = terminalSessionClient else { return }
     do {
-      terminalClientSessionInfoById[sessionId] = try client.terminate(sessionId: sessionId)
+      terminalClientSessionInfoById[sessionId] = try client.terminate(
+        sessionId: terminalClientRemoteSessionId(for: sessionId))
     } catch {
       appendError(
         kind: "laband.terminate.failed",
@@ -499,21 +556,44 @@ public final class HeadlessDebugRuntime {
     }
   }
 
-  func shutdownTerminalClientUnlocked() {
+  func shutdownTerminalClientUnlocked(terminateRemoteSessions: Bool = false) {
     guard let client = terminalSessionClient else { return }
-    for sessionId in Array(terminalClientSessionInfoById.keys) {
-      if terminalClientSessionInfoById[sessionId]?.lifecycleState == .running {
-        terminateTerminalClientSessionUnlocked(sessionId: sessionId)
-      }
-    }
+    var shouldStopOwnedLaband = false
     if let laband = client as? LabandTerminalSessionClient {
-      try? laband.shutdownWhenIdle()
+      if terminateRemoteSessions {
+        for sessionId in Array(terminalClientSessionInfoById.keys) {
+          if terminalClientSessionInfoById[sessionId]?.lifecycleState == .running {
+            terminateTerminalClientSessionUnlocked(sessionId: sessionId)
+          }
+        }
+      }
+      let hasRunningSession = terminalClientSessionInfoById.values.contains {
+        $0.lifecycleState == .running
+      }
+      shouldStopOwnedLaband = terminateRemoteSessions || !hasRunningSession
+      if shouldStopOwnedLaband && ownsLabandProcess {
+        try? laband.shutdownWhenIdle()
+      }
       laband.close()
+    } else {
+      for sessionId in Array(terminalClientSessionInfoById.keys) {
+        if terminalClientSessionInfoById[sessionId]?.lifecycleState == .running {
+          terminateTerminalClientSessionUnlocked(sessionId: sessionId)
+        }
+      }
     }
     terminalSessionClient = nil
     if ownsLabandProcess, let process = labandProcess, process.isRunning {
-      process.terminate()
-      process.waitUntilExit()
+      if shouldStopOwnedLaband {
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning && Date() < deadline {
+          usleep(50_000)
+        }
+        if process.isRunning {
+          process.terminate()
+          process.waitUntilExit()
+        }
+      }
     }
     labandProcess = nil
     ownsLabandProcess = false

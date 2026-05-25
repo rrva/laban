@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+from pathlib import Path
+import select
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+
+SESSION_COMMAND = "i=0; while true; do echo laband-m5-tick-$i; i=$((i+1)); sleep 1; done"
+
+
+class ReattachError(Exception):
+    pass
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_command(cmd, cwd):
+    result = subprocess.run(cmd, cwd=cwd, text=True)
+    if result.returncode != 0:
+        raise ReattachError(f"command failed with exit {result.returncode}: {' '.join(cmd)}")
+
+
+def scoped_path(repo_root, value, allowed_prefix):
+    path = Path(value)
+    resolved = path if path.is_absolute() else repo_root / path
+    allowed = repo_root / allowed_prefix
+    try:
+        resolved.relative_to(allowed)
+    except ValueError as exc:
+        raise ReattachError(f"path must be under {allowed_prefix}: {value}") from exc
+    return resolved
+
+
+def read_readiness(process, timeout_seconds, stderr_path):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise ReattachError(
+                f"debug server exited before readiness; see stderr at {stderr_path}"
+            )
+        readable, _, _ = select.select([process.stdout], [], [], 0.1)
+        if not readable:
+            continue
+        line = process.stdout.readline()
+        if not line:
+            continue
+        try:
+            readiness = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ReattachError(f"readiness line was not JSON: {line.strip()}") from exc
+        if not readiness.get("debugServer") or not readiness.get("debugToken"):
+            raise ReattachError(f"readiness JSON missing debug fields: {line.strip()}")
+        return readiness
+    raise ReattachError(f"timed out waiting for debug readiness; see stderr at {stderr_path}")
+
+
+def start_debug_client(repo_root, socket_path, artifacts_dir, temp_dir, persistence_dir):
+    stderr_path = artifacts_dir / "debug-server.stderr.log"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    stderr_file = stderr_path.open("w", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "LABAN_TERMINAL_BACKEND": "laband",
+            "LABAN_LABAND_SOCKET": str(socket_path),
+            "LABAN_LABAND_BIN": str(repo_root / ".build/debug/laband"),
+            "LABAN_LABAND_SESSION_COMMAND": SESSION_COMMAND,
+        }
+    )
+    process = subprocess.Popen(
+        [
+            str(repo_root / ".build/debug/laban-agent"),
+            "--headless",
+            "--debug-server=127.0.0.1:0",
+            "--deterministic",
+            f"--artifacts={artifacts_dir}",
+            f"--temp-dir={temp_dir}",
+            f"--persistence-dir={persistence_dir}",
+        ],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=stderr_file,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        readiness = read_readiness(process, 10, stderr_path)
+    except Exception:
+        terminate_process(process)
+        stderr_file.close()
+        raise
+    return process, stderr_file, readiness
+
+
+def terminate_process(process):
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def http_json(server_url, token, method, path, body=None):
+    data = None
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        server_url.rstrip("/") + path, data=data, headers=headers, method=method
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise ReattachError(f"{method} {path} returned HTTP {exc.code}: {raw}") from exc
+    except urllib.error.URLError as exc:
+        raise ReattachError(f"{method} {path} failed: {exc}") from exc
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ReattachError(f"{method} {path} did not return JSON: {exc}") from exc
+
+
+def laband_request(socket_path, request_type, **fields):
+    request = {
+        "protocolVersion": 1,
+        "requestId": str(uuid.uuid4()),
+        "type": request_type,
+    }
+    request.update(fields)
+    payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(10)
+        sock.connect(str(socket_path))
+        sock.sendall(struct.pack("<I", len(payload)) + payload)
+        header = recv_exact(sock, 4)
+        length = struct.unpack("<I", header)[0]
+        if length <= 0 or length > 16 * 1024 * 1024:
+            raise ReattachError(f"invalid laband frame length: {length}")
+        response = json.loads(recv_exact(sock, length).decode("utf-8"))
+    if not response.get("ok"):
+        raise ReattachError(f"laband {request_type} failed: {response}")
+    return response
+
+
+def recv_exact(sock, count):
+    chunks = []
+    remaining = count
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ReattachError("laband socket closed while reading frame")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def wait_for_socket(socket_path, timeout_seconds=5):
+    deadline = time.monotonic() + timeout_seconds
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            return laband_request(socket_path, "hello")
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise ReattachError(f"timed out waiting for laband socket: {last_error}")
+
+
+def wait_for_daemon_session(socket_path, logical_session_id, attached_count, timeout_seconds=5):
+    deadline = time.monotonic() + timeout_seconds
+    last = None
+    while time.monotonic() < deadline:
+        response = laband_request(socket_path, "listSessions")
+        sessions = response.get("sessions", [])
+        matches = [s for s in sessions if s.get("logicalSessionId") == logical_session_id]
+        if matches:
+            last = matches[0]
+            if last.get("attachedClientCount") == attached_count:
+                return last
+        time.sleep(0.05)
+    raise ReattachError(
+        f"{logical_session_id} did not reach attachedClientCount={attached_count}; last={last}"
+    )
+
+
+def first_session(response):
+    sessions = response.get("sessions") or []
+    if not sessions:
+        raise ReattachError(f"debug response had no sessions: {response}")
+    return sessions[0]
+
+
+def assert_same_session(before, detached, after):
+    keys = ["logicalSessionId", "incarnationId", "pid"]
+    for key in keys:
+        if before.get(key) != after.get(key):
+            raise ReattachError(f"{key} changed across reattach: {before.get(key)} -> {after.get(key)}")
+    if before.get("logicalSessionId") != detached.get("logicalSessionId"):
+        raise ReattachError("daemon detached state reported the wrong logical session")
+    if detached.get("attachedClientCount") != 0:
+        raise ReattachError(f"expected detached attachedClientCount=0, got {detached}")
+    if before.get("attachedClientCount") != 1 or after.get("attachedClientCount") != 1:
+        raise ReattachError(
+            f"expected attached counts 1 -> 0 -> 1, got {before.get('attachedClientCount')} -> {detached.get('attachedClientCount')} -> {after.get('attachedClientCount')}"
+        )
+
+
+def wait_text(server_url, token, text):
+    response = http_json(
+        server_url,
+        token,
+        "POST",
+        "/debug/wait",
+        {"timeoutMs": 5000, "condition": {"kind": "textVisible", "text": text}},
+    )
+    if response.get("ok") is not True:
+        raise ReattachError(f"text wait failed for {text!r}: {response}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Verify laband live session detach and reattach.")
+    parser.add_argument("--socket", required=True, help="Scoped laband socket path under .tmp/.")
+    parser.add_argument("--artifacts", required=True, help="Artifact directory under .artifacts/runs/.")
+    parser.add_argument("--temp-dir", required=True, help="Temporary directory under .tmp/.")
+    parser.add_argument("--no-build", action="store_true", help="Skip building laband and laban-agent.")
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    socket_path = scoped_path(repo_root, args.socket, ".tmp")
+    artifacts_dir = scoped_path(repo_root, args.artifacts, ".artifacts/runs")
+    temp_dir = scoped_path(repo_root, args.temp_dir, ".tmp")
+    persistence_dir = temp_dir / "workspace-persistence"
+    report_path = artifacts_dir / "laband-reattach-report.json"
+
+    report = {
+        "ok": False,
+        "socket": str(socket_path),
+        "artifacts": str(artifacts_dir),
+        "tempDir": str(temp_dir),
+    }
+
+    daemon = None
+    first = None
+    first_stderr = None
+    second = None
+    second_stderr = None
+    exit_code = 1
+    try:
+        shutil.rmtree(artifacts_dir, ignore_errors=True)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        if not args.no_build:
+            run_command(["swift", "build", "--product", "laband", "--product", "laban-agent"], cwd=repo_root)
+
+        daemon_stdout = (artifacts_dir / "laband.stdout.log").open("w", encoding="utf-8")
+        daemon_stderr = (artifacts_dir / "laband.stderr.log").open("w", encoding="utf-8")
+        daemon = subprocess.Popen(
+            [
+                str(repo_root / ".build/debug/laband"),
+                "--socket",
+                str(socket_path),
+                "--journal",
+                str(artifacts_dir / "laband"),
+            ],
+            cwd=repo_root,
+            stdout=daemon_stdout,
+            stderr=daemon_stderr,
+            text=True,
+        )
+        wait_for_socket(socket_path)
+
+        first, first_stderr, first_ready = start_debug_client(
+            repo_root,
+            socket_path,
+            artifacts_dir / "client-1",
+            temp_dir / "client-1",
+            persistence_dir,
+        )
+        first_url = first_ready["debugServer"]
+        first_token = first_ready["debugToken"]
+        first_sessions = http_json(first_url, first_token, "GET", "/debug/sessions")
+        before = first_session(first_sessions)
+        write_json(artifacts_dir / "before-sessions.json", first_sessions)
+
+        wait_text(first_url, first_token, "laband-m5-tick-0")
+
+        terminate_process(first)
+        first = None
+        if first_stderr is not None:
+            first_stderr.close()
+            first_stderr = None
+
+        detached = wait_for_daemon_session(socket_path, before["logicalSessionId"], 0)
+        write_json(artifacts_dir / "detached-session.json", detached)
+
+        second, second_stderr, second_ready = start_debug_client(
+            repo_root,
+            socket_path,
+            artifacts_dir / "client-2",
+            temp_dir / "client-2",
+            persistence_dir,
+        )
+        second_url = second_ready["debugServer"]
+        second_token = second_ready["debugToken"]
+        second_sessions = http_json(second_url, second_token, "GET", "/debug/sessions")
+        after = first_session(second_sessions)
+        write_json(artifacts_dir / "after-sessions.json", second_sessions)
+        assert_same_session(before, detached, after)
+
+        wait_text(second_url, second_token, "laband-m5-tick-2")
+        final_sessions = http_json(second_url, second_token, "GET", "/debug/sessions")
+        write_json(artifacts_dir / "final-sessions.json", final_sessions)
+
+        laband_request(socket_path, "terminateSession", sessionId=before["logicalSessionId"])
+        laband_request(socket_path, "shutdownWhenIdle")
+        daemon.wait(timeout=5)
+        daemon = None
+
+        report.update(
+            {
+                "ok": True,
+                "logicalSessionId": before["logicalSessionId"],
+                "incarnationId": before.get("incarnationId"),
+                "childPid": before.get("pid"),
+                "attachedCounts": [
+                    before.get("attachedClientCount"),
+                    detached.get("attachedClientCount"),
+                    after.get("attachedClientCount"),
+                ],
+                "artifactsWritten": [
+                    str(artifacts_dir / "before-sessions.json"),
+                    str(artifacts_dir / "detached-session.json"),
+                    str(artifacts_dir / "after-sessions.json"),
+                    str(artifacts_dir / "final-sessions.json"),
+                ],
+            }
+        )
+        exit_code = 0
+    except ReattachError as exc:
+        report["error"] = str(exc)
+        print(f"laband reattach failed: {exc}", file=sys.stderr)
+    finally:
+        terminate_process(first)
+        terminate_process(second)
+        if first_stderr is not None:
+            first_stderr.close()
+        if second_stderr is not None:
+            second_stderr.close()
+        if daemon is not None:
+            terminate_process(daemon)
+        write_json(report_path, report)
+        print(f"report: {report_path}")
+
+    if exit_code == 0:
+        print("laband reattach passed")
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

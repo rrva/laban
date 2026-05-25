@@ -78,7 +78,14 @@ running without flicker or sluggish input.
   catalog entries on restart, and exposes minimal lease history through
   `listSessions`.
 - [x] M4: persist session catalog and append-only lifecycle journal.
-- [ ] M5: support detach/reattach across app restart without killing the live
+- [x] (2026-05-25) M5: debug/headless clients now detach from live
+  `laband` sessions on app shutdown while Close Tab remains destructive.
+  Laband sessions track unique attached client ids, `/debug/sessions` reports
+  attached counts, workspace restore reuses the durable tab id as the daemon
+  logical session id, and `scripts/test-laband-reattach` verifies a restarted
+  client reattaches to the same running shell command with the same
+  incarnation and child pid.
+- [x] M5: support detach/reattach across app restart without killing the live
   PTY.
 - [ ] M6: restore Claude/Codex semantic resume on daemon loss while preserving
   the existing restore picker workflow.
@@ -685,6 +692,37 @@ for matching live sessions, and reattaches. Extra orphaned live sessions show a
 small recovery picker with cwd, title, process, agent, and age.
 
 Close Tab remains destructive and calls `terminateSession`.
+
+Implemented in M5: `LabandTerminalSessionClient` now carries a unique client id
+and sends attach/detach control requests. `laband` stores attached client ids
+per managed session and reports their count. The debug/headless runtime uses
+the stable tab id as the daemon logical session id for laband sessions, so
+workspace restore can reattach even though the transient local `Session.id`
+changes on relaunch. Normal debug-runtime shutdown flushes persistence and
+detaches; explicit close-tab and test cleanup paths still call
+`terminateSession`.
+
+Validation recorded on 2026-05-25:
+
+```sh
+rtk swift test --filter LabandControlProtocolTests
+# Executed 3 tests, with 0 failures.
+
+rtk swift test --filter LabandJournalTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandHeadlessBackendTests
+# Executed 1 test, with 0 failures.
+
+rtk swift build --product LabanApp
+# Build of product 'LabanApp' complete.
+
+LABAN_TERMINAL_BACKEND=laband LABAN_LABAND_SOCKET=.tmp/laband-m5-debug/laband.sock rtk ./scripts/run-debug-script fixtures/debug-script-laband-basic.scenario.json --artifacts .artifacts/runs/laband-m5-debug --temp-dir .tmp/laband-m5-debug --no-build
+# debug script passed
+
+rtk ./scripts/test-laband-reattach --socket .tmp/laband-m5/laband.sock --artifacts .artifacts/runs/laband-m5 --temp-dir .tmp/laband-m5
+# laband reattach passed; attachedClientCount 1 -> 0 -> 1, same logical session id, same incarnation id, same child pid.
+```
 
 ### M6: Agent Restore Fallback
 

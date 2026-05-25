@@ -73,6 +73,8 @@ public protocol TerminalSessionClient: AnyObject {
   @discardableResult
   func createSession(_ request: TerminalSessionLaunchRequest) throws -> LabandSessionInfo
   func listSessions() throws -> [LabandSessionInfo]
+  func attachSession(logicalSessionId: String) throws -> LabandSessionInfo
+  func detachSession(sessionId: String) throws -> LabandSessionInfo
   func writeInput(sessionId: String, bytes: [UInt8]) throws
   func resize(sessionId: String, rows: Int, cols: Int) throws -> LabandSessionInfo
   func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment

@@ -9,7 +9,9 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   private let lock = NSLock()
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
+  private let clientId = UUID().uuidString
   private var ringReaders: [String: LabandSnapshotRingReader] = [:]
+  private var attachedSessionIds: Set<String> = []
 
   public init(socketPath: String) throws {
     self.socketPath = socketPath
@@ -21,7 +23,12 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   }
 
   public func close() {
+    let sessions = lock.withLock { Array(attachedSessionIds) }
+    for sessionId in sessions {
+      _ = try? detachSession(sessionId: sessionId)
+    }
     lock.withLock {
+      attachedSessionIds.removeAll()
       ringReaders.removeAll()
       if fd >= 0 {
         Darwin.close(fd)
@@ -44,6 +51,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       LabandRequest(
         requestId: UUID().uuidString,
         type: .createSession,
+        clientId: clientId,
         executable: request.executable,
         argv: request.argv,
         cwd: request.cwd,
@@ -56,12 +64,52 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     guard let session = response.session else {
       throw TerminalSessionClientError.protocolError("createSession response missing session")
     }
+    lock.withLock {
+      _ = attachedSessionIds.insert(session.logicalSessionId)
+    }
     return session
   }
 
   public func listSessions() throws -> [LabandSessionInfo] {
     let response = try send(LabandRequest(requestId: UUID().uuidString, type: .listSessions))
     return response.sessions ?? []
+  }
+
+  public func attachSession(logicalSessionId: String) throws -> LabandSessionInfo {
+    let response = try send(
+      LabandRequest(
+        requestId: UUID().uuidString,
+        type: .attachSession,
+        clientId: clientId,
+        logicalSessionId: logicalSessionId
+      )
+    )
+    guard let session = response.session else {
+      throw TerminalSessionClientError.protocolError("attachSession response missing session")
+    }
+    lock.withLock {
+      _ = attachedSessionIds.insert(session.logicalSessionId)
+    }
+    return session
+  }
+
+  public func detachSession(sessionId: String) throws -> LabandSessionInfo {
+    let response = try send(
+      LabandRequest(
+        requestId: UUID().uuidString,
+        type: .detachSession,
+        clientId: clientId,
+        sessionId: sessionId
+      )
+    )
+    guard let session = response.session else {
+      throw TerminalSessionClientError.protocolError("detachSession response missing session")
+    }
+    lock.withLock {
+      attachedSessionIds.remove(session.logicalSessionId)
+      _ = ringReaders.removeValue(forKey: session.logicalSessionId)
+    }
+    return session
   }
 
   public func writeInput(sessionId: String, bytes: [UInt8]) throws {
@@ -97,6 +145,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       LabandRequest(
         requestId: UUID().uuidString,
         type: .attachSnapshotRing,
+        clientId: clientId,
         sessionId: sessionId
       )
     )
@@ -113,6 +162,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     )
     lock.withLock {
       ringReaders[sessionId] = reader
+      _ = attachedSessionIds.insert(logicalSessionId)
     }
     return attachment
   }
@@ -176,13 +226,15 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   }
 
   public func terminate(sessionId: String) throws -> LabandSessionInfo {
-    _ = lock.withLock {
-      ringReaders.removeValue(forKey: sessionId)
+    lock.withLock {
+      attachedSessionIds.remove(sessionId)
+      _ = ringReaders.removeValue(forKey: sessionId)
     }
     let response = try send(
       LabandRequest(
         requestId: UUID().uuidString,
         type: .terminateSession,
+        clientId: clientId,
         sessionId: sessionId
       )
     )

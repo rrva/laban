@@ -1,0 +1,41 @@
+{
+  "name": "debug-script-laband-reattach",
+  "description": "M5 live laband session reattach markers used by scripts/test-laband-reattach.",
+  "deterministic": true,
+  "reattach": {
+    "sessionCommand": "i=0; while true; do echo laband-m5-tick-$i; i=$((i+1)); sleep 1; done",
+    "beforeText": "laband-m5-tick-0",
+    "afterText": "laband-m5-tick-2",
+    "expectedAttachedCounts": [1, 0, 1]
+  },
+  "steps": [
+    {
+      "op": "discover",
+      "expectEndpoints": [
+        "GET /debug/sessions",
+        "POST /debug/actions",
+        "POST /debug/wait"
+      ],
+      "expectWaitConditions": ["textVisible"]
+    },
+    {
+      "op": "wait",
+      "label": "long-running command output visible",
+      "timeoutMs": 5000,
+      "condition": {"kind": "textVisible", "text": "laband-m5-tick-0"}
+    },
+    {
+      "op": "get",
+      "label": "session attached",
+      "path": "/debug/sessions",
+      "saveAs": "debug-sessions-before-detach.json",
+      "expectJson": [
+        {"path": "sessions[0].logicalSessionId", "nonEmpty": true},
+        {"path": "sessions[0].transportMode", "equals": "laband"},
+        {"path": "sessions[0].attachedClientCount", "equals": 1},
+        {"path": "sessions[0].incarnationId", "nonEmpty": true},
+        {"path": "sessions[0].pid", "greaterThan": 0}
+      ]
+    }
+  ]
+}

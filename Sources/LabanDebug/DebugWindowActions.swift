@@ -27,7 +27,11 @@ struct DebugWindowActions {
         do {
           try runtime.ensureTerminalClientSessionUnlocked(for: tab)
           runtime.terminalClientSessionInfoById[tab.sessionId] =
-            try client.resize(sessionId: tab.sessionId, rows: Int(size.rows), cols: Int(size.cols))
+            try client.resize(
+              sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+              rows: Int(size.rows),
+              cols: Int(size.cols)
+            )
         } catch {
           runtime.appendError(
             kind: "laband.resize.failed",

@@ -1,4 +1,5 @@
 import Foundation
+import LabanCore
 
 extension HeadlessDebugRuntime {
   public func captureStatus() -> DebugResponse {
@@ -102,11 +103,19 @@ extension HeadlessDebugRuntime {
     }
   }
 
-  public func shutdown(interrupted: Bool = true) {
+  public func shutdown(interrupted: Bool = true, terminateRemoteSessions: Bool = false) {
     withRuntimeLock {
       _ = try? finishCaptureUnlocked(interrupted: interrupted)
-      shutdownTerminalClientUnlocked()
-      model.closeAllSessions()
+      let detachingLiveLaband =
+        terminalSessionClient is LabandTerminalSessionClient && !terminateRemoteSessions
+      if detachingLiveLaband {
+        persistenceCoordinator?.flushSync()
+        persistenceCoordinator?.detach()
+      }
+      shutdownTerminalClientUnlocked(terminateRemoteSessions: terminateRemoteSessions)
+      if !detachingLiveLaband {
+        model.closeAllSessions()
+      }
     }
   }
 

@@ -6,6 +6,8 @@ public enum LabandProtocolVersion {
 
 public enum LabandRequestType: String, Codable, Sendable {
   case hello
+  case attachSession
+  case detachSession
   case createSession
   case listSessions
   case writeInput
@@ -29,6 +31,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
   public var protocolVersion: Int
   public var requestId: String
   public var type: LabandRequestType
+  public var clientId: String?
 
   public var executable: String?
   public var argv: [String]?
@@ -47,6 +50,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     protocolVersion: Int = LabandProtocolVersion.current,
     requestId: String,
     type: LabandRequestType,
+    clientId: String? = nil,
     executable: String? = nil,
     argv: [String]? = nil,
     cwd: String? = nil,
@@ -62,6 +66,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     self.protocolVersion = protocolVersion
     self.requestId = requestId
     self.type = type
+    self.clientId = clientId
     self.executable = executable
     self.argv = argv
     self.cwd = cwd

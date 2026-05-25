@@ -117,6 +117,54 @@ final class LabandControlProtocolTests: XCTestCase {
     launchedDaemon = nil
   }
 
+  func testClientAttachLifecycleUpdatesAttachedCount() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let runId = "laband-attach-\(UUID().uuidString)"
+    let socketPath = ".tmp/\(runId)/laband.sock"
+    let journalPath = ".artifacts/runs/\(runId)/laband"
+    let daemon = try launchDaemon(root: root, socketPath: socketPath, journalPath: journalPath)
+    launchedDaemon = daemon
+
+    let first = try waitForClient(root: root, socketPath: socketPath)
+    let session = try first.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/cat",
+        argv: ["/bin/cat"],
+        cwd: root.path,
+        rows: 24,
+        cols: 80,
+        logicalSessionId: "m5-\(UUID().uuidString)"
+      )
+    )
+    XCTAssertEqual(session.attachedClientCount, 1)
+    let logicalSessionId = session.logicalSessionId
+    let incarnationId = session.incarnationId
+    let childPid = session.childPid
+    first.close()
+
+    let second = try waitForClient(root: root, socketPath: socketPath)
+    defer { second.close() }
+    let detached = try waitForSessionInfo(
+      client: second,
+      logicalSessionId: logicalSessionId,
+      attachedClientCount: 0
+    )
+    XCTAssertEqual(detached.incarnationId, incarnationId)
+    XCTAssertEqual(detached.childPid, childPid)
+    XCTAssertEqual(detached.lifecycleState, .running)
+
+    let reattached = try second.attachSession(logicalSessionId: logicalSessionId)
+    XCTAssertEqual(reattached.attachedClientCount, 1)
+    XCTAssertEqual(reattached.incarnationId, incarnationId)
+    XCTAssertEqual(reattached.childPid, childPid)
+
+    _ = try second.terminate(sessionId: logicalSessionId)
+    try second.shutdownWhenIdle()
+    daemon.waitUntilExit()
+    XCTAssertEqual(daemon.terminationStatus, 0)
+    launchedDaemon = nil
+  }
+
   private func launchDaemon(root: URL, socketPath: String, journalPath: String) throws -> Process {
     let executable = root.appendingPathComponent(".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
@@ -194,6 +242,30 @@ final class LabandControlProtocolTests: XCTestCase {
       usleep(50_000)
     }
     XCTFail("snapshot ring never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
+    throw POSIXError(.ETIMEDOUT)
+  }
+
+  private func waitForSessionInfo(
+    client: LabandTerminalSessionClient,
+    logicalSessionId: String,
+    attachedClientCount: Int
+  ) throws -> LabandSessionInfo {
+    let deadline = Date().addingTimeInterval(5)
+    var last: LabandSessionInfo?
+    while Date() < deadline {
+      if let info = try client.listSessions().first(where: {
+        $0.logicalSessionId == logicalSessionId
+      }) {
+        last = info
+        if info.attachedClientCount == attachedClientCount {
+          return info
+        }
+      }
+      usleep(50_000)
+    }
+    XCTFail(
+      "session \(logicalSessionId) never reached attachedClientCount=\(attachedClientCount); last=\(String(describing: last))"
+    )
     throw POSIXError(.ETIMEDOUT)
   }
 

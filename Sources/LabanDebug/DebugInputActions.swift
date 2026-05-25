@@ -17,7 +17,10 @@ struct DebugInputActions {
     if let tab = runtime.model.activeTab, let client = runtime.terminalSessionClient {
       do {
         try runtime.ensureTerminalClientSessionUnlocked(for: tab)
-        try client.writeInput(sessionId: tab.sessionId, bytes: bytes)
+        try client.writeInput(
+          sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+          bytes: bytes
+        )
         runtime.appendTerminalLog(sessionId: tab.sessionId, direction: "input", bytes: bytes)
       } catch {
         runtime.appendError(

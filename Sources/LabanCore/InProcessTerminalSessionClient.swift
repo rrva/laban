@@ -116,6 +116,20 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     }
   }
 
+  public func attachSession(logicalSessionId: String) throws -> LabandSessionInfo {
+    guard let managed = lookup(logicalSessionId) else {
+      throw TerminalSessionClientError.sessionNotFound(logicalSessionId)
+    }
+    return sessionInfo(managed)
+  }
+
+  public func detachSession(sessionId: String) throws -> LabandSessionInfo {
+    guard let managed = lookup(sessionId) else {
+      throw TerminalSessionClientError.sessionNotFound(sessionId)
+    }
+    return sessionInfo(managed)
+  }
+
   public func writeInput(sessionId: String, bytes: [UInt8]) throws {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)

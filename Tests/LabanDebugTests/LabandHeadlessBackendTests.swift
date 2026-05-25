@@ -23,7 +23,7 @@ final class LabandHeadlessBackendTests: XCTestCase {
     ]) {
       let runtime = try makeRuntime(runId: "laband-headless-laband")
       defer {
-        runtime.shutdown()
+        runtime.shutdown(terminateRemoteSessions: true)
         try? FileManager.default.removeItem(
           at: URL(fileURLWithPath: socketPath).deletingLastPathComponent())
       }
