@@ -111,6 +111,11 @@ running without flicker or sluggish input.
   `laband --product --xpc-service <name>` expose the same Codable control
   protocol over XPC.
 - [x] M8: ship upgrade-safe launchd lifecycle and compatibility checks.
+- [x] (2026-05-26) Product-bundle AppKit restore smoke passed after commit
+  `54c78ff`: a fresh `.build/laban/Laban.app` was opened, ran two tabs
+  (Codex in this session and `top` under zsh), quit with Cmd-Q, and reopened
+  with `open -n .build/laban/Laban.app`; both tabs reattached through
+  `laband` instead of recreating local shells.
 
 ## M0 Baseline
 
@@ -758,6 +763,16 @@ LABAN_TERMINAL_BACKEND=laband LABAN_LABAND_SOCKET=.tmp/laband-m5-debug/laband.so
 rtk ./scripts/test-laband-reattach --socket .tmp/laband-m5/laband.sock --artifacts .artifacts/runs/laband-m5 --temp-dir .tmp/laband-m5
 # laband reattach passed; attachedClientCount 1 -> 0 -> 1, same logical session id, same incarnation id, same child pid.
 ```
+
+Additional product-bundle validation recorded on 2026-05-26 after commit
+`54c78ff App restores must reattach daemon tabs`: build
+`.build/laban/Laban.app`, open it with `open -n .build/laban/Laban.app`,
+start two real AppKit tabs (Codex in the first tab and `top` under zsh in the
+second), quit with Cmd-Q, then reopen the same bundle with `open -n`. Expected
+and observed result: both tabs are still present and backed by the same live
+`laband` sessions; the `top` tab does not fall back to a fresh zsh. This
+explicitly covers the product AppKit restore path that the 2026-05-25
+headless/debug validation did not exercise.
 
 ### M6: Agent Restore Fallback
 
