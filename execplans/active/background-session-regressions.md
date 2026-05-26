@@ -458,8 +458,17 @@ func refreshTabMetadata(into model: AppModel, tabs: [Tab])
   single shape: libghostty produces state in the daemon, the
   parsed-state-over-IPC schema does not carry it, and the app's renderer
   improvises a fallback that fails silently. This is a recurring
-  bug-class, not a coincidence — worth treating as an architectural
-  signal in a future design pass.
+  bug-class, not a coincidence.
+  **Decision:** Documented as the load-bearing motivation for
+  `docs/adr/0006-three-tier-session-architecture.md` (Three-Tier Session
+  Architecture, accepted 2026-05-26). Under the layered architecture
+  introduced by ADR 0006, M1/M2/M3 become the regression contract for
+  `laband`'s multi-client serving mode specifically; the new
+  single-client mode (laband forwards the byte ring and the app parses
+  in-process) cannot produce regressions of this class because there is
+  no parsed-state serialization between libghostty and the renderer.
+  Phase 1 of the migration is scoped in
+  `execplans/active/labpty-extraction.md`.
 
 ## Review Gate
 
