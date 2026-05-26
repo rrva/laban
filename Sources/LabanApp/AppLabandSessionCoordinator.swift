@@ -173,6 +173,35 @@ final class AppLabandSessionCoordinator {
     infoByLocalSessionId.removeValue(forKey: tab.sessionId)
   }
 
+  /// Terminate any daemon-side sessions that no tab references.
+  ///
+  /// Call this after `ensureSessions` so every tab has either reattached or
+  /// created its session. Anything remaining in `listSessions()` with a
+  /// `logicalSessionId` not in our known set is a leftover from an earlier
+  /// app launch the workspace forgot about (typical when Restore-on-Launch
+  /// is off), and would otherwise accumulate in the daemon forever.
+  func sweepOrphanedSessions() {
+    let knownIds = Set(infoByTabId.values.map(\.logicalSessionId))
+    let allSessions: [LabandSessionInfo]
+    do {
+      allSessions = try client.listSessions()
+    } catch {
+      AppLog.app.error(
+        "laband listSessions failed during orphan sweep: \(String(describing: error))")
+      return
+    }
+    for session in allSessions
+    where session.lifecycleState == .running && !knownIds.contains(session.logicalSessionId) {
+      do {
+        _ = try client.terminate(sessionId: session.logicalSessionId)
+      } catch {
+        AppLog.app.error(
+          "laband orphan sweep failed for \(session.logicalSessionId): \(String(describing: error))"
+        )
+      }
+    }
+  }
+
   func detach() {
     removeThemeChangeObserver()
     stopSnapshotGenerationMonitor()

@@ -179,6 +179,11 @@ final class MainWindowController: NSWindowController {
       _ = try? model.createTab()
     }
     try labandCoordinator?.ensureSessions(for: model.tabs, size: model.terminalSize)
+    // After the legitimate tabs have attached or created their daemon
+    // sessions, sweep anything else still in laband. With
+    // Restore-on-Launch off the workspace forgets earlier tab ids, so
+    // without this the daemon would accumulate live shells forever.
+    labandCoordinator?.sweepOrphanedSessions()
 
     let termView = TerminalBitmapView(
       model: model,

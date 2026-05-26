@@ -95,6 +95,108 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
     process.waitUntilExit()
   }
 
+  func testSweepOrphanedSessionsTerminatesDaemonSessionsNotInKnownTabs() throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-app-sweep-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    let seedClient = try waitForClient(socketPath: socketPath)
+    let kept = try seedClient.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/sh",
+        argv: ["/bin/sh", "-lc", "sleep 60"],
+        cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+        rows: 24,
+        cols: 80,
+        logicalSessionId: "kept-tab"
+      ))
+    let orphan = try seedClient.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/sh",
+        argv: ["/bin/sh", "-lc", "sleep 60"],
+        cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+        rows: 24,
+        cols: 80,
+        logicalSessionId: "orphan"
+      ))
+    _ = try seedClient.detachSession(sessionId: kept.logicalSessionId)
+    _ = try seedClient.detachSession(sessionId: orphan.logicalSessionId)
+    seedClient.close()
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    model.replaceTabs(
+      from: WorkspaceState(
+        windows: [
+          WindowState(
+            id: "main-window",
+            selectedTabId: "kept-tab",
+            tabs: [
+              TabState(
+                id: "kept-tab",
+                cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+                launchCommand: "sh",
+                lastActiveAt: Date())
+            ])
+        ]))
+
+    let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    let coordinator = AppLabandSessionCoordinator(
+      client: coordinatorClient,
+      shellLaunch: .passthrough,
+      cwdByTabId: ["kept-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+    )
+    defer { coordinator.detach() }
+
+    let tab = try XCTUnwrap(model.tabs.first)
+    let attached = try coordinator.ensureSession(for: tab, size: size)
+    XCTAssertEqual(attached.logicalSessionId, "kept-tab")
+
+    coordinator.sweepOrphanedSessions()
+
+    let verifyClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    defer { verifyClient.close() }
+    let sessions = try verifyClient.listSessions()
+    let keptAfter = sessions.first { $0.logicalSessionId == "kept-tab" }
+    let orphanAfter = sessions.first { $0.logicalSessionId == "orphan" }
+    XCTAssertEqual(
+      keptAfter?.lifecycleState, .running,
+      "the tab's session must remain running after sweep")
+    XCTAssertNotEqual(
+      orphanAfter?.lifecycleState, .running,
+      "the orphan session must no longer be running after sweep")
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: "kept-tab")
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
   func testRestoredAppTabReappliesCurrentThemeToExistingDaemonSession() throws {
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
