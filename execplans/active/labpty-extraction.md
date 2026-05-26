@@ -101,11 +101,57 @@ rather than coding past it.
    live session's byte ring. The catalog need not survive `labpty`'s own
    restart in Phase 1 (that is Phase 3's problem).
 
-6. **ADR 0002 PTY launch invariants move with the PTY into `labpty`.**
+6. **`labpty` is kept as thin and boring as possible.** Every line of
+   `labpty` code is a line that can have a bug, and every `labpty` bug
+   forces the one upgrade/restart that still kills live sessions until
+   Phase 3 fd-handoff lands. The whole point of putting `labpty` below
+   `laband` is to make the bottom process so small and stable that we
+   almost never need to touch it. The mode test is: **can `laband` or
+   the app do this without `labpty`?** If yes, the feature goes there,
+   because `laband` is allowed to change often (its restart now
+   preserves children). A feature earns its place in `labpty` only by
+   being (a) required to keep the PTY alive (drain output, accept
+   input, resize, signal, terminate), (b) required to preserve an ADR
+   invariant (notably ADR 0002 launch), or (c) required so `laband`
+   can rediscover sessions after restart (`listSessions`, the
+   byte-ring shm path). Concretely this rules out of Phase 1: an
+   `attachSession` RPC, wake-pipe SCM_RIGHTS, per-reader slot table
+   writes, opaque-snapshot cache, metadata ring, input ring, deadline
+   enforcement, daemon-global counters, reader → labpty heartbeats,
+   stale-reader sweeps, latency-forensics CI gating. Each is welcome
+   to land in a later phase against a measurement that shows it's
+   needed; this plan records the rationale for keeping them out in
+   the Decision Log. See `execplans/active/labpty-protocol-design.md`
+   principle 0 for the same constraint stated as a protocol axiom.
+
+7. **ADR 0002 PTY launch invariants move with the PTY into `labpty`.**
    Parent-side `openpty`, initial winsize before child runs, constrained
    fork child branch, parent-only master fd, teardown via process-group
    escalation. Every existing test that proves these for `laband` must be
    reformulated to prove them for `labpty`.
+
+8. **Every non-syscall decision in `labpty` is covered by a model, a
+   bounded proof, a property test, or a fuzzer.** This is the
+   verification bar that makes principle 7's "boring" stick: `labpty`
+   is small enough to verify exhaustively, and features that would
+   make exhaustive verification unreasonable belong in `laband` by
+   default. Concretely:
+   - Syscalls (`openpty`, `fork`, `execve`, `read`, `write`,
+     `kevent`, `kill`, `killpg`, `mmap`, `shm_open`, `ftruncate`,
+     `close`) are tested through their observable effects (child
+     process appears, byte ring fills, etc.), not modeled.
+   - Non-syscall logic — the JSON parser, the request dispatcher,
+     the byte-ring writer's wrap math, the session-registry hash
+     table, the foreground-process polling cadence gate, the
+     producer-alive heartbeat timer — each needs property tests or
+     bounded-input fuzzing. The Validation section names specific
+     tools and harnesses (`Tools/LabptyProtocolFuzz`,
+     `Tests/LabptyTests/ByteRingPropertyTests`, etc.).
+   - When a proposed Phase 1 feature would defeat this bar
+     (because its state space is too large or its inputs are too
+     open), the feature is moved to `laband` or to a later phase.
+     The labpty-protocol-design doc's principle 0 already drove
+     several such deferrals.
 
 ## Progress
 
@@ -113,20 +159,25 @@ rather than coding past it.
   `execplans/active/labpty-protocol-design.md`. Phase 1 subset documented
   in this plan's `Interfaces and Dependencies` section.
 - [ ] M1: New `labpty` executable that owns PTYs and exposes the Phase 1
-  control RPCs (`hello`, `openSession`, `listSessions`, `attachSession`,
-  `resizeSession`, `signalSession`, `terminateSession`, `writeInput`,
-  `ping`) over a run-id-scoped Unix socket. No byte ring yet; the
-  master drain discards bytes into a tiny buffer just to keep the
-  child unblocked. ADR 0002 launch invariants preserved inside
-  `labpty`. Unit-test coverage for open/list/resize/signal/terminate
-  and `child_pid` alive/dead.
+  control RPCs (`hello`, `openSession`, `listSessions`, `resizeSession`,
+  `signalSession`, `terminateSession`, `writeInput`, `ping`) over a
+  run-id-scoped Unix socket. **No `attachSession` RPC in Phase 1**:
+  the byte-ring shm path is returned on every `LabptySessionDescriptor`
+  by `openSession` and `listSessions`, so readers need no separate
+  attach step. No byte ring yet in M1; the master drain discards bytes
+  into a tiny buffer just to keep the child unblocked. ADR 0002 launch
+  invariants preserved inside `labpty`. Unit-test coverage for
+  open/list/resize/signal/terminate and `child_pid` alive/dead.
 - [ ] M2: Output byte ring `LBPTY-BR-01` implemented as a lock-free
   single-producer multi-reader shared-memory ring with a monotonic
-  `write_offset` counter and 100 ms producer-alive heartbeat (subset of
-  the layout in `execplans/active/labpty-protocol-design.md`). `labpty`
-  drains the master into the ring. `attachSession` returns the shm path
-  for that ring. **No master fd is sent over the socket in Phase 1.**
-  Independent writer/reader tests in `Tests/LabptyTests/`.
+  `output_write_offset`, a `output_wrap_count`, and a 100 ms
+  producer-alive heartbeat (the Phase 1 subset of the layout in
+  `execplans/active/labpty-protocol-design.md`; only these three
+  counters are populated, others stay zero at their reserved offsets).
+  `labpty` drains the master into the ring. **Readers poll the ring**
+  — there is no wake-pipe mechanism, no SCM_RIGHTS, and no per-reader
+  slot-table writes by `labpty` in Phase 1. Independent writer/reader
+  tests in `Tests/LabptyTests/`.
 - [ ] M3: Parser-only `laband` session path. Confirms that the existing
   `Session.fixture(size:)` + `session.feedOutput(_:)` combination is the
   correct basis (the C ABI already exposes
@@ -137,12 +188,13 @@ rather than coding past it.
   PTY today.
 - [ ] M4: Refactor `Sources/Laband/main.swift` so `ManagedLabandSession`
   no longer opens PTYs directly. `laband.createSession` calls
-  `labpty.openSession`; `laband` opens the byte ring via `labpty
-  .attachSession`; `laband` runs a ring-reader loop that calls
-  `session.feedOutput(_:)` on a parser-only `LabanCore.Session` and
-  publishes the existing `LabandSnapshotRingWriter`. `laband
-  .resize/signal/terminate` route to `labpty`. `laband.writeInput`
-  routes to `labpty.writeInput`. App-facing
+  `labpty.openSession`, which returns a descriptor with the byte-ring
+  shm path. `laband` opens the byte ring read-only and runs a
+  polling ring-reader loop (recommended starting tick: 4 ms) that
+  calls `session.feedOutput(_:)` on a parser-only `LabanCore.Session`
+  and publishes the existing `LabandSnapshotRingWriter`.
+  `laband.resize/signal/terminate` route to `labpty`.
+  `laband.writeInput` routes to `labpty.writeInput`. App-facing
   `LabandTerminalSessionClient` is unchanged.
 - [ ] M5: `laband` restart survival. Acceptance test launches `labpty`
   and `laband`, creates a session, writes/reads some bytes, kills
@@ -279,46 +331,126 @@ behaviors.
 
 Add the Phase 1 protocol and ring types to `LabanCore`:
 
-- `Sources/LabanCore/LabptyProtocol.swift` (new). Declares
-  `LabptyRequest`, `LabptyResponse`, the request/response payloads for
-  the eight Phase 1 RPCs (`hello`, `openSession`, `listSessions`,
-  `attachSession`, `resizeSession`, `signalSession`, `terminateSession`,
-  `writeInput`), and the error-code enum. JSON-Codable. See `Interfaces
-  and Dependencies` for the concrete shapes.
+- `Sources/LabanCore/LabptyProtocol.swift` (new). Plain Swift
+  structs for the eight Phase 1 RPCs (`hello`, `openSession`,
+  `listSessions`, `resizeSession`, `signalSession`,
+  `terminateSession`, `writeInput`, `ping`) plus the
+  `LabptyOpCode` and `LabptyErrorCode` enums. **Not** `Codable`:
+  the wire is length-prefixed binary frames (`LBPTY-CT-01`), not
+  JSON; the structs have explicit `encode(into: inout Data)` and
+  `decode(from: ...) throws` methods that pack/unpack the byte
+  layout per the design doc's "Common shape rules". See
+  `Interfaces and Dependencies` for the concrete shapes. **No
+  `attachSession`** in Phase 1 (see Decision Log).
+- `Sources/LabanCore/LabptyFraming.swift` (new). The 16-byte
+  `labpty_frame_header` encode/decode plus bounds-checking helpers
+  (`readUInt32(from: cursor) throws`, `readBoundedBytes(...)`,
+  etc.). Used by `LabptyTerminalSessionClient` and by the
+  per-RPC encode/decode methods. Mirrors `labpty_frame.c` on the
+  C side; the two implementations are tested against a shared
+  golden corpus.
 - `Sources/LabanCore/LabptyByteRingLayout.swift` (new). Declares the
   `LBPTY-BR-01` file-header offsets and constants. **No seqlock-slot
   pattern.** A monotonic `output_write_offset` plus a power-of-two
   capacity is the entire synchronization. Counters block sits between
   file header and the ring payload.
 - `Sources/LabanCore/LabptyTerminalSessionClient.swift` (new). Thin
-  client that opens a Unix socket, sends length-prefixed JSON, parses
-  responses. No SCM_RIGHTS in Phase 1 (see Decision Log).
+  client that opens a Unix socket, encodes Phase 1 request structs
+  through `LabptyFraming` into the `LBPTY-CT-01` binary frame
+  format, writes the frame, reads back the response frame, decodes
+  it. No SCM_RIGHTS in Phase 1 (see Decision Log).
 
 Unit tests in `Tests/LabptyTests/` (new):
 
-- `testLabptyProtocolRoundTrip` — Codable round-trip for each
+- `testLabptyProtocolRoundTrip` — encode/decode round-trip for each
   request/response shape.
 - `testByteRingHeaderConstants` — header offsets and sizes are stable;
   capacity must be a power of two; magic bytes are `b"LBPTY-BR"`.
 
 ### M1 — `labpty` executable and ADR 0002 PTY ownership
 
-Add a new SwiftPM executable target `Labpty` (sibling of `Laband` in
-`Package.swift`).
+Add a new SwiftPM C executable target `Labpty` (sibling of
+`LabanTerminalCore` in `Package.swift`; see Decision Log entry on
+language choice). The Swift wrapper that `laband` uses to call
+`labpty` (`LabptyTerminalSessionClient`) stays in Swift under
+`Sources/LabanCore/`; only the daemon binary is C.
 
-Files:
+Files (all C unless noted):
 
-- `Sources/Labpty/main.swift` (new). Process entry; argument parsing
-  (`--socket <path>` and `--shm-dir <path>`); Unix-socket listener; RPC
-  dispatch; main event loop.
-- `Sources/Labpty/LabptySessionRegistry.swift` (new). In-memory map
-  `ptyHandle → (LabanCore.Session, child_pid, byte_ring_writer, attach
-  count, rows, cols, openedAtMonoNs)`. The catalog. Provides the queries
-  `listSessions`, `find(ptyHandle:)`, `insert`, `remove`. Phase 1
-  catalog is in-memory only; an optional run-scoped file at
-  `.artifacts/runs/<run-id>/labpty/catalog.json` is written for
-  diagnostics (it is **not** read on startup — `labpty` restart is not
-  survivable in Phase 1).
+- `Sources/Labpty/main.c` (new). Process entry; argument parsing
+  (`--socket <path>` and `--shm-dir <path>`); Unix-socket listener
+  via `socket(2)` + `bind(2)` + `listen(2)` + `accept(2)`; RPC
+  dispatch; single-threaded `kqueue` event loop.
+- `Sources/Labpty/labpty_registry.c` + `.h` (new). In-memory
+  catalog. Each entry is a plain struct: `{ uint64_t pty_handle;
+  pid_t child_pid; int master_fd; labpty_byte_ring_writer_t *writer;
+  uint32_t rows; uint32_t cols; uint64_t opened_at_mono_ns; char
+  logical_session_id[256]; }` plus the foreground-process metadata
+  fields (`pid_t fg_pid; char fg_process[256]; char fg_command[1024];
+  char fg_cwd[1024]; ...`). The catalog is an open-addressing hash
+  table keyed by `pty_handle` (the u64 value is already its own
+  hash; identity function suffices); Phase 1 caps it at 64 sessions
+  per daemon process, which is well above any realistic interactive
+  workload. The next-handle counter is a u64 monotonic; new
+  `openSession` calls atomically increment and use the returned
+  value. No `LabanCore.Session` is stored; per the Decision Log,
+  `labpty` calls `openpty`+constrained-fork+exec directly and owns
+  raw master fds. No `attach count` field — Phase 1 `labpty` does
+  not track readers. Phase 1 catalog is in-memory only; an optional
+  run-scoped file at `.artifacts/runs/<run-id>/labpty/catalog.json`
+  is written for diagnostics (it is **not** read on startup —
+  `labpty` restart is not survivable in Phase 1).
+- `Sources/Labpty/labpty_frame.c` + `.h` (new). The 24-byte
+  `labpty_frame_header_wire` decoder/encoder plus bounds-checking
+  helpers (`labpty_read_u32(const uint8_t **cursor, const uint8_t
+  *end, uint32_t *out)` etc.). Returns `LABPTY_OK` or
+  `LABPTY_E_TRUNCATED` / `LABPTY_E_OVERSIZE`. Pure function over
+  a buffer — no syscalls, no allocations. This file is the
+  primary fuzz target (`Tools/LabptyProtocolFuzz/`; see
+  Verification bar) because it's the only place untrusted bytes
+  enter `labpty`.
+- `Sources/Labpty/labpty_protocol.c` + `.h` (new). Per-op decoders
+  built on `labpty_frame.c`'s primitives. One function per op
+  (`labpty_decode_open_session(const uint8_t *body, size_t
+  body_len, struct labpty_open_session_req *out)` etc.) plus the
+  symmetric encoders for responses. The closed Phase 1 schema (8
+  ops) gives 8 decoders + 8 encoders, each ~20-30 LoC. No
+  variable-length lookahead, no recursive structures, no
+  Turing-complete syntax — just bounded reads against the
+  remaining frame budget.
+- `Sources/Labpty/labpty_byte_ring.c` + `.h` (new). The C
+  implementation of the byte-ring writer (atomic store-release on
+  `output_write_offset`, memcpy with at-most-one wrap-split). Used
+  inside `labpty`. The Swift-side `LabptyByteRingReader` is the
+  consumer-side counterpart used by `laband`; the two pieces talk
+  through the shared-memory file alone, no symbol coupling.
+- `Sources/Labpty/labpty_pty.c` + `.h` (new). The carved-out
+  ADR 0002 launch: parent-side `openpty`, initial winsize, fork,
+  constrained child, exec. Either reuses internals of
+  `Sources/LabanTerminalCore/session_lifecycle.c` (via a new C
+  entry point exposed from `LabanTerminalCore`'s header) or
+  re-implements the launch inline. The Decision Log entry on
+  "labpty calls openpty+fork directly" recommends the former path:
+  expose `laban_pty_open(rows, cols, argv, envp, cwd, &master_fd,
+  &child_pid)` from `Sources/LabanTerminalCore/` and call it from
+  `labpty_pty.c`. This keeps the launch code in exactly one place,
+  preserves ADR 0002 invariants, and makes `labpty` itself
+  smaller.
+- `Sources/Labpty/include/labpty_internal.h` (new). Internal types
+  used across `labpty`'s C sources. Not exported.
+
+Files outside `Sources/Labpty/` (Swift, unchanged language):
+
+- `Sources/LabanCore/LabptyProtocol.swift` — plain (non-Codable)
+  request/response struct shapes for the Swift client side (see
+  "Interfaces and Dependencies"). The protocol on the wire is the
+  binary `LBPTY-CT-01` frame format; both Swift and C sides have
+  their own encoder/decoder, tested against a shared golden
+  corpus to prevent drift.
+- `Sources/LabanCore/LabptyTerminalSessionClient.swift` — `laband`'s
+  client of `labpty`. Stays Swift; this is `laband`-side code.
+- `Sources/LabanCore/LabptyByteRingReader.swift` — Swift consumer
+  for the shared-memory byte ring. Stays Swift; used by `laband`.
 
 PTY ownership and launch:
 
@@ -344,16 +476,17 @@ PTY ownership and launch:
   is one way to call it if `labpty` keeps a `Session` per master; a
   thin C helper that reads the same fields without a `Session`
   works equally well. Either path populates
-  `LabptySessionDescriptor.foreground*` on every `listSessions` and
-  `attachSession` response. This is the source the tab-title fix
+  `LabptySessionDescriptor.foreground*` on every `openSession` and
+  `listSessions` response. This is the source the tab-title fix
   added in `Sources/LabanApp/AppLabandSessionCoordinator.swift` will
   consume after M4 — `laband`'s own parser-only
   `Session.processMetadata()` returns `nil` (no PTY), so `labpty`'s
   poll is the only source.
-- The master drain in M1 is a simple call to `Session.feedOutput`-style
-  internal poll (existing `laban_session_poll_blocking` works) but
-  bytes are discarded; the parser still runs so the child sees normal
-  PTY backpressure semantics. M2 wires the drain into the ring.
+- The master drain in M1 is `labpty`'s own kqueue-driven `read(2)`
+  loop on each master fd. Bytes are discarded into a small scratch
+  buffer in M1 (just enough to keep the child from blocking on PTY
+  output backpressure). M2 wires the drain into the byte-ring
+  writer.
 
 Tests in `Tests/LabptyTests/`:
 
@@ -381,35 +514,28 @@ Implement the Phase 1 subset of the byte ring in `LabanCore`:
   writer. Owns the shm region; writes monotonic `output_write_offset`.
   `write(_ bytes: UnsafeBufferPointer<UInt8>)` does memcpy with at most
   one wrap-split, then `atomic_store_explicit(&offset, new,
-  memory_order_release)`. Updates `output_bytes_written_total`,
-  `output_writes_total`, `output_wrap_count`,
-  `producer_alive_mono_ns`.
+  memory_order_release)`. Updates exactly three counters in Phase 1:
+  `output_bytes_written_total` (= `output_write_offset`),
+  `output_wrap_count` (on a wrap), `producer_alive_mono_ns` (on each
+  event-loop tick capped at 100 ms cadence). All other counter slots
+  are zero at their reserved offsets, for Phase 2 to populate.
 - `Sources/LabanCore/LabptyByteRingReader.swift` (new). Lock-free
   reader. Maintains its own `last_seen_offset`. `readSince(_ last:
   UInt64) -> (bytes: [UInt8], newOffset: UInt64, overflowed: Bool)`.
   Reports `overflowed=true` when `current - last > capacity` (the
-  writer lapped the reader; this is a signal to drop to a clean state,
-  not an error).
-
-Counters and heartbeat live in a 128-byte block between the file header
-and the ring payload, sized to two cache lines (hot and cold). Phase 1
-subset of counters:
-
-```
-hot:  output_write_offset / output_bytes_written_total (one counter,
-                                                       same value)
-      output_writes_total
-      output_wrap_count
-      producer_alive_mono_ns
-cold: attached_consumer_count
-      ring_overflow_observed_total
-      master_read_calls_total
-      master_read_eagain_total
-```
+  writer lapped the reader). Recovery follows the in-ring "replay
+  from current window" path in
+  `execplans/active/labpty-protocol-design.md` (no opaque-snapshot
+  fast path in Phase 1).
 
 `producer_alive_mono_ns` is updated by `labpty` on every event-loop
 tick capped at 100 ms cadence. Stale by >300 ms is a "labpty hung"
-signal to readers.
+signal to readers — one u64 load per reader poll tick.
+
+Phase 1 explicitly does **not** ship: wake pipes, per-reader slot table
+writes, SCM_RIGHTS at any RPC, attached-consumer tracking, daemon-global
+counters, or `attachSession`. The protocol-design doc's Phase 1 thin
+surface section enumerates the full exclusion list with rationale.
 
 Wire the writer into `labpty`'s master drain: each chunk read from the
 PTY master goes into `Session.feedOutput`-equivalent (still owned by
@@ -418,22 +544,26 @@ PTY only to avoid blocking the child, and to keep the existing capture
 hooks working; it does **not** publish parsed snapshots) **and** into
 the byte-ring writer.
 
-> **Open design tension.** Does `labpty` keep a `LabanCore.Session`
-> per PTY just for the drain mechanics, or does it drop libghostty
-> entirely and call `read(2)` itself? The simpler answer for Phase 1
-> is "drop libghostty; `labpty` is a byte-mover." The reason to keep
-> it is that the existing `SessionRunner` + `laban_session_poll_blocking`
-> path is debugged and the PTY-byte capture callbacks
-> (`laban_session_capture_*`) are useful for diagnostics. The Phase 1
-> decision (see Decision Log) is to keep `LabanCore.Session` in
-> `labpty` for the drain only, with the parser side unused — this
-> minimizes new C code, preserves capture hooks, and keeps fixture
-> mode irrelevant. Phase 3's `labpty` will likely shed libghostty
-> entirely.
+> **Resolved design tension.** Per the surface-minimalism Decision
+> Log entry, Phase 1 `labpty` does not wrap each PTY in a
+> `LabanCore.Session`. It calls `openpty` + constrained fork + exec
+> directly (preferred path: a new minimal C entry point
+> `laban_pty_open(...)` carved out of `Session.realShell`'s C
+> internals), registers each master fd with its own kqueue, and
+> calls `read(2)` directly into the byte-ring writer. The libghostty
+> parser is **not** instantiated in `labpty`; the per-PTY state is
+> a master fd, a child pid, and a byte-ring writer. This keeps
+> `labpty` boring and avoids carrying a parser per session whose
+> output nobody reads. Phase 1 loses the convenience of
+> `laban_session_capture_*` hooks inside `labpty`; if capture is
+> needed for `labpty`-side diagnostics later, add a focused PTY-byte
+> tee primitive rather than wrapping the whole `Session` lifecycle.
 
-Update `attachSession` to return the byte-ring shm path in the JSON
-response. **The response does not include a master fd.** Phase 1's
-`attachSession` is a metadata RPC, not an fd-handoff RPC.
+`openSession` and `listSessions` both include the byte-ring shm path
+in every `LabptySessionDescriptor` they return. **No response carries
+a master fd.** **No response carries SCM_RIGHTS ancillary data.** No
+separate `attachSession` RPC is needed for readers to discover the
+ring path; the descriptor is sufficient.
 
 Tests in `Tests/LabptyTests/`:
 
@@ -743,115 +873,183 @@ If a test leaves processes running (a hung `labpty` or `laband`),
 
 ### `LabptyProtocol` (new — `Sources/LabanCore/LabptyProtocol.swift`)
 
-The Phase 1 subset of `execplans/active/labpty-protocol-design.md`. JSON
-over length-prefixed Unix `SOCK_STREAM`. Capability negotiation at
-`hello`; sequence numbers and deadlines on every request.
+The Phase 1 subset of `execplans/active/labpty-protocol-design.md`.
+Length-prefixed binary frames (`LBPTY-CT-01`) over Unix
+`SOCK_STREAM`. Each frame: 16-byte header
+(`frame_len`/`op`/`code`/`seq`) followed by an op-specific payload.
+Capability negotiation lives in the `hello` payload; sequence numbers
+live in the frame header. No JSON anywhere on the wire; no deadlines
+in Phase 1.
+
+Swift-side structs are plain (not `Codable`): each carries an
+`encode(into: inout Data)` and a `decode(from: inout Data.Iterator)
+throws` method that produce / consume the binary layout. The Swift
+encoder/decoder is tested against the same golden corpus as the C
+side under `Tests/LabptyTests/` so the two implementations cannot
+drift.
+
+Op codes are a frozen `u16` enum. New ops in later phases get new
+codes; codes are never reused.
 
 ```swift
-public struct LabptyHelloRequest: Codable, Sendable {
-  public var clientId: String?
+public enum LabptyOpCode: UInt16 {
+  case hello            = 0x0001
+  case openSession      = 0x0002
+  case listSessions     = 0x0003
+  case resizeSession    = 0x0004
+  case signalSession    = 0x0005
+  case terminateSession = 0x0006
+  case writeInput       = 0x0007
+  case ping             = 0x0008
+  // 0x0009..0x00FF reserved Phase 2 (input ring, attachSession,
+  //                                    publishOpaqueSnapshot, etc.)
+  case response         = 0xFFFF  // sentinel; valid only in response frames
 }
 
-public struct LabptyHelloResponse: Codable, Sendable {
-  public var protocolVersion: Int
-  public var capabilities: [String]
-  // Phase 1 capabilities: "byte-ring/v1", "writeInput-control/v1",
-  // "session-id-pinning/v1", "heartbeat-shm/v1"
-}
+public struct LabptyFrameHeader: Sendable {
+  public static let expectedMagic: [UInt8] = [0x4C, 0x50, 0x43, 0x54]  // "LPCT"
+  public static let currentAbiMajor: UInt16 = 1
+  public static let currentAbiMinor: UInt16 = 0
+  public static let wireBytes = 24
 
-public struct LabptyOpenSessionRequest: Codable, Sendable {
-  public var argv: [String]
-  public var envp: [String: String]?
-  public var cwd: String
-  public var rows: Int
-  public var cols: Int
-  public var logicalSessionId: String?
-}
-
-public struct LabptySessionDescriptor: Codable, Sendable {
-  public var ptyHandle: String
-  public var logicalSessionId: String?
-  public var childPid: Int
-  public var rows: Int
-  public var cols: Int
-  public var alive: Bool
-  public var openedAtMonoNs: UInt64
-  public var byteRingShmPath: String
-  /// Foreground-process metadata polled by `labpty` from the PTY's
-  /// `tcgetpgrp` + libproc. `nil` when nothing useful is known yet.
-  /// `laband` forwards these into `LabandSessionInfo.foreground*`
-  /// fields, which the app's `TabMetadataSynchronizer` consumes for
-  /// tab titles. Without this carry-over, the tab-title fix in
-  /// `Sources/LabanApp/AppLabandSessionCoordinator.swift` regresses
-  /// because `laband`'s parser-only `Session.processMetadata()`
-  /// returns `nil` (it has no PTY).
-  public var foregroundPid: Int?
-  public var foregroundProcess: String?
-  public var foregroundCommand: String?
-  public var foregroundArguments: [String]?
-  public var foregroundCwd: String?
-}
-
-public struct LabptyAttachRequest: Codable, Sendable {
-  public var ptyHandle: String
-}
-
-public struct LabptyAttachResponse: Codable, Sendable {
-  public var session: LabptySessionDescriptor
-  // byteRingShmPath is on the descriptor.
-  // NO master_fd. SCM_RIGHTS is not used in Phase 1.
-}
-
-public struct LabptyListSessionsResponse: Codable, Sendable {
-  public var sessions: [LabptySessionDescriptor]
-}
-
-public struct LabptyResizeRequest: Codable, Sendable {
-  public var ptyHandle: String
-  public var rows: Int
-  public var cols: Int
-}
-
-public struct LabptySignalRequest: Codable, Sendable {
-  public var ptyHandle: String
-  public var signal: Int
-}
-
-public struct LabptyTerminateRequest: Codable, Sendable {
-  public var ptyHandle: String
-  public var gracePeriodMs: Int?
-}
-
-public struct LabptyWriteInputRequest: Codable, Sendable {
-  public var ptyHandle: String
-  /// Raw input bytes, base64-encoded for JSON safety. Bounded to 64 KiB
-  /// per request; clients chunk larger payloads (e.g., paste).
-  public var bytesBase64: String
-  public var leaseToken: String?
-}
-
-public enum LabptyErrorCode: String, Codable, Sendable {
-  case ok
-  case sessionNotFound
-  case sessionIdInUse
-  case ptyOpenFailed
-  case ringMapFailed
-  case deadlineExceeded
-  case capabilityRequired
-  case versionMismatch
-  case permissionDenied
-  case payloadTooLarge
-  case internalError
-  case shuttingDown
+  // Field order matches the wire byte order, one-to-one. The encoder
+  // and decoder iterate these in declaration order, reading/writing
+  // each through `LabptyFraming.readU16`/`readU32` etc. — never via
+  // a `withUnsafeBytes(&header) { ... }` aliasing trick. See
+  // "No struct memcpy" in the design doc.
+  public var magic: (UInt8, UInt8, UInt8, UInt8)  // ('L','P','C','T')
+  public var abiMajor: UInt16  // pinned at hello; must match expectedMagic
+  public var abiMinor: UInt16  // additive; decoder accepts ≥ currentAbiMinor
+  public var frameLen: UInt32  // total bytes incl. header; ≤ 128 KiB
+  public var op: UInt16        // request: LabptyOpCode.rawValue; response: 0xFFFF
+  public var code: UInt16      // request: 0; response: LabptyErrorCode.rawValue
+  public var seq: UInt64       // monotonic per client; echoed in response
 }
 ```
 
-Phase 1 input is base64-in-JSON. The rationale (see Decision Log) is
-that keystroke throughput is bounded by user typing; the base64 overhead
-is invisible against the JSON+socket round-trip cost. Phase 2 may
-upgrade to a binary length-prefixed frame or to the
-`LBPTY-IR-01` shared-memory input ring if measurement shows
-perceptible keystroke latency.
+Request payload structs are plain Swift, **not `Codable`**. Each has
+matching `encode(into: inout Data)` and `static func
+decode(from bytes: UnsafeRawBufferPointer) throws ->
+(value: Self, bytesConsumed: Int)`.
+
+```swift
+public struct LabptyHelloRequest: Sendable {
+  public var protocolMajor: UInt32   // pinned by the response
+  public var clientId: String        // ≤ 256 bytes; empty allowed
+  public var capabilities: [String]  // Phase 1: byte-ring/v1,
+                                     //   write-input-rpc/v1,
+                                     //   session-id-pinning/v1,
+                                     //   heartbeat-shm/v1
+}
+
+public struct LabptyHelloResponse: Sendable {
+  public var protocolMajor: UInt32     // agreed-upon
+  public var protocolMinor: UInt32
+  public var serverCapabilities: [String]
+}
+
+public struct LabptyOpenSessionRequest: Sendable {
+  public var argv: [String]           // ≤ 4096 entries
+  public var envp: [(String, String)] // ≤ 4096 entries; ordered
+  public var cwd: String
+  public var rows: UInt32
+  public var cols: UInt32
+  public var logicalSessionId: String // empty = let labpty assign
+}
+
+public struct LabptySessionDescriptor: Sendable {
+  public var ptyHandle: UInt64        // u64 on the wire; monotonic counter
+                                      //   assigned by labpty at openSession
+  public var logicalSessionId: String // ≤ 256 bytes
+  public var childPid: Int32
+  public var rows: UInt32
+  public var cols: UInt32
+  public var alive: Bool              // u8 on the wire
+  public var openedAtMonoNs: UInt64
+  public var byteRingShmPath: String  // ≤ 1024 bytes
+  /// Foreground-process metadata polled by `labpty` from the PTY's
+  /// `tcgetpgrp` + libproc. Empty strings mean "nothing useful yet"
+  /// (a binary protocol can't carry `Optional` cheaply; the convention
+  /// is "empty string is absence"). `laband` forwards these into
+  /// `LabandSessionInfo.foreground*` fields, which the app's
+  /// `TabMetadataSynchronizer` consumes for tab titles. Without this
+  /// carry-over, the tab-title fix in
+  /// `Sources/LabanApp/AppLabandSessionCoordinator.swift` regresses
+  /// because `laband`'s parser-only `Session.processMetadata()`
+  /// returns `nil` (it has no PTY).
+  public var foregroundPid: Int32        // -1 = unknown
+  public var foregroundProcess: String   // ≤ 1024 bytes; empty = unknown
+  public var foregroundCommand: String   // ≤ 1024 bytes
+  public var foregroundArguments: [String]  // counted array; ≤ 16 entries
+                                            //   to keep the descriptor small
+  public var foregroundCwd: String       // ≤ 1024 bytes
+}
+
+// No LabptyAttachRequest / LabptyAttachResponse in Phase 1.
+// Readers learn the byte-ring shm path from the descriptor returned
+// by openSession (for the creator) or listSessions (for any other
+// reader). Phase 2 may introduce attachSession when wake-pipe
+// SCM_RIGHTS or a per-reader registration point is justified.
+
+public struct LabptyListSessionsResponse: Sendable {
+  public var sessions: [LabptySessionDescriptor]   // counted; ≤ 64 in Phase 1
+}
+
+public struct LabptyResizeRequest: Sendable {
+  public var ptyHandle: UInt64
+  public var rows: UInt32
+  public var cols: UInt32
+}
+
+public struct LabptySignalRequest: Sendable {
+  public var ptyHandle: UInt64
+  public var signal: Int32
+}
+
+public struct LabptyTerminateRequest: Sendable {
+  public var ptyHandle: UInt64
+  // No grace-period field in Phase 1: labpty hard-codes 200 ms.
+  // Adding configurability later is an additive u32 at the tail of
+  // this struct.
+}
+
+public struct LabptyWriteInputRequest: Sendable {
+  public var ptyHandle: UInt64
+  /// Raw input bytes. ≤ 64 KiB per request; clients chunk larger
+  /// payloads (e.g., paste). No base64: the binary frame carries
+  /// the bytes directly. The encoder writes `bytes` after the
+  /// `pty_handle` field; the decoder derives the length from
+  /// `frame_len - 24 (header) - 8 (pty_handle)`. No inner
+  /// length-prefix.
+  public var bytes: Data
+}
+
+public enum LabptyErrorCode: UInt16, Sendable {
+  case ok               = 0x0000
+  case sessionNotFound  = 0x0001
+  case sessionIdInUse   = 0x0002
+  case ptyOpenFailed    = 0x0003
+  case ringMapFailed    = 0x0004
+  case capabilityRequired = 0x0005
+  case versionMismatch  = 0x0006
+  case permissionDenied = 0x0007
+  case payloadTooLarge  = 0x0008
+  case truncatedFrame   = 0x0009
+  case oversizeFrame    = 0x000A
+  case internalError    = 0x000B
+  case shuttingDown     = 0x000C
+  // No `deadlineExceeded` in Phase 1 — labpty does not enforce
+  // deadlines; the code slot is reserved at the next available
+  // value when Phase 2 lands `deadline-enforcement/v1`.
+}
+```
+
+Phase 1 input carries raw bytes inside the `writeInput` frame payload
+(no base64). Frames are length-prefixed and bounded by `MAX_FRAME`
+(default 128 KiB); a 64 KiB input chunk plus 64 bytes of header and
+length prefixes fits comfortably. Phase 2 may upgrade to the
+`LBPTY-IR-01` shared-memory input ring if measurement shows the
+control-RPC hop adds perceptible keystroke latency.
 
 ### `LabptyByteRingLayout` (new — `Sources/LabanCore/LabptyByteRingLayout.swift`)
 
@@ -934,8 +1132,10 @@ for Phase 2 to fill in.
 ### `LabptyTerminalSessionClient` (new)
 
 Located in `Sources/LabanCore/LabptyTerminalSessionClient.swift`.
-Mirrors `LabandTerminalSessionClient` in shape: open a socket, send
-JSON, parse responses. Used **only** by `laband` in Phase 1; `LabanApp`
+Mirrors `LabandTerminalSessionClient` in shape: open a Unix socket,
+encode a Phase 1 request struct through `LabptyFraming` into the
+`LBPTY-CT-01` binary frame format, write, read back the response
+frame, decode it. Used **only** by `laband` in Phase 1; `LabanApp`
 must not import this type (enforced by the Review Gate).
 
 ### `Sources/Labpty/main.swift` (new)
@@ -948,11 +1148,24 @@ backed by a file under `--shm-dir`.
 
 PTY ownership notes (preserves ADR 0002 inside `labpty`):
 
-- `Session.realShell(...)` performs the parent-side `openpty` + child
-  fork inside `LabanTerminalCore`. `labpty` calls it directly; ADR
-  0002 invariants are inherited mechanically.
-- `Session.close()` performs the master-close + pgrp escalation
-  teardown. `labpty.terminateSession` calls it.
+- The preferred Phase 1 path is a new minimal C entry point
+  `laban_pty_open(rows, cols, argv, envp, cwd, &master_fd, &child_pid)`
+  carved out of `Sources/LabanTerminalCore/session_lifecycle.c` that
+  performs only the ADR 0002 launch and returns the master fd and
+  child pid without instantiating a libghostty session. `labpty`
+  calls this, registers `master_fd` with its own kqueue, drains it
+  into the byte-ring writer.
+- The fallback is to call `Session.realShell(...)` from `labpty`
+  internals, extract the master fd via a new
+  `laban_session_master_fd(session) -> int` accessor, and never call
+  `laban_session_poll` / `poll_blocking` on that session (`labpty`
+  must own the master via raw `read(2)` because `SessionRunner` is
+  per-session-threaded and would break `labpty`'s single-threaded
+  event-loop discipline). This fallback carries a parser per session
+  whose output nobody reads.
+- Teardown is `close(master_fd)` plus the existing
+  process-group-escalation logic from `session_lifecycle.c`; if the
+  fallback path is taken, `Session.close()` already does both.
 
 ### `Session.parserOnly` (optional — `Sources/LabanCore/Session+ParserOnly.swift`)
 
@@ -988,6 +1201,103 @@ call sites.
 
 ## Decision Log
 
+- Decision: `labpty` is implemented in C, not Swift.
+  Rationale: `labpty`'s work is `openpty`, `fork`, `execve`, `read`,
+  `write`, `kqueue`/`kevent`, `mmap`/`shm_open`, atomics on shm
+  regions, and `killpg` on process groups — exactly what C is built
+  for. The repo already has `Sources/LabanTerminalCore/` as a SwiftPM
+  C target with public headers; `labpty` is a sibling. Swift gives
+  us collections, optionals, and `throws` ergonomics that `labpty`
+  doesn't materially benefit from, in exchange for runtime/ARC/
+  Foundation surface that costs binary size and audit complexity.
+  Smaller binary, smaller dependency closure, fewer Swift-runtime
+  traps to reason about during a `labpty` upgrade. Hand-rolling
+  small amounts of C (frame decoder, hash table, kqueue glue) is
+  acceptable surface against the verification bar; pulling in
+  Swift's runtime is not. The Swift-side pieces that talk to
+  `labpty` (`LabptyTerminalSessionClient`, `LabptyByteRingReader`,
+  `LabptyProtocol` Swift structs) stay Swift because they live in
+  `laband`'s universe; the contract between the two languages is
+  the binary wire format plus the shm layout, both fixed in this
+  plan.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: Every non-syscall decision in `labpty` is covered by a
+  property test or a fuzzer; "model" and "bounded proof" stay
+  aspirational.
+  Rationale: This is the operational reading of architectural
+  invariant #8. In practice property tests do the bulk of the work
+  (byte-ring writer arithmetic, session-registry hash-table
+  invariants, dispatch-table completeness, producer-alive cadence
+  with a virtualized clock); the fuzzer is targeted at exactly one
+  surface — the frame decoder in `labpty_frame.c` — because that's
+  the only place open-shape input from a Unix socket enters
+  `labpty`. The bar's real value is the rejection criterion it gives
+  future contributors: a patch to `labpty` needs property or fuzz
+  coverage; if that's unreasonable, the patch belongs in `laband`.
+  This pressure preserves thinness over time.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: Control plane is length-prefixed binary frames
+  (`LBPTY-CT-01`), not JSON.
+  Rationale: JSON was the earlier choice on ergonomics +
+  bounded-rate grounds. The C-implementation decision plus the
+  verification bar inverted that calculus. A JSON parser in C is
+  the most exposed surface in `labpty` and a mandatory fuzz
+  target, ~300 LoC at minimum even for the closed Phase 1 schema;
+  a binary frame decoder is ~80 LoC, trivially fuzzable (one
+  bounds check per length-prefix), and lets `writeInput` carry
+  raw bytes without base64 (saving ~33% bandwidth per keystroke
+  plus an encode/decode hop). The human-debug ergonomics argument
+  JSON used to win on is preserved through a separate
+  `Tools/LabptyDump` Swift CLI shim (~50 LoC, one-time cost,
+  never on the hot path). `LabandProtocol` Codable reuse was the
+  third JSON argument; it dissolved when `labpty` became C.
+  Phase 1 ships no JSON parser anywhere in `labpty`.
+  Date/Author: 2026-05-26 / binary-protocol switch iteration.
+
+- Decision: Phase 1 readers poll the byte ring; wake pipes via
+  SCM_RIGHTS land in Phase 2. The promotion trigger is **single-
+  client byte-ring mode**, not anything that happens in Phase 1.
+  Rationale: The "polling tick is invisible inside `laband`'s
+  ~16 ms snapshot publish cadence" argument that justifies Phase
+  1 polling holds only because `laband` is the sole reader in
+  Phase 1 and `laband`'s own publish cadence dominates the wake
+  budget. In Phase 2 single-client byte-ring mode the app reads
+  `labpty`'s ring directly with no `laband` buffering between
+  PTY and renderer; at that point the 4 ms poll tick becomes
+  user-visible against a 16 ms display frame, and wake pipes
+  start earning their `labpty`-side surface. Until that mode
+  ships, polling is correct. Phase 1 implementers should not
+  preempt the trigger by adding wake pipes "in case Phase 2 wants
+  them"; the protocol's frozen-able ABI already reserves the
+  per-reader slot table offsets, so adding wake pipes later is a
+  pure extension.
+  Date/Author: 2026-05-26 / advisor reconciliation iteration.
+
+- Decision: `labpty` is kept as thin and boring as possible. Every
+  feature must earn its place in `labpty` against principle 0 of
+  `execplans/active/labpty-protocol-design.md`.
+  Rationale: Until Phase 3 fd-handoff lands, every `labpty` bug
+  forces the one upgrade/restart that still kills live sessions. The
+  whole point of putting `labpty` below `laband` is to make the
+  bottom process so small and boring that we almost never need to
+  touch it. The mode test is: can `laband` or the app do this
+  without `labpty`? If yes, the feature lives there. This decision
+  drove the Phase 1 deferral of `attachSession`, wake pipes,
+  per-reader slot table writes, opaque-snapshot cache, metadata
+  ring, input ring, deadline enforcement, daemon-global counters,
+  and reader-staleness sweep — all of which are documented as Phase
+  2+ in the protocol-design doc but were earlier proposed for Phase
+  1. The cost paid for the deferrals is a 4 ms reader-poll tick
+  (invisible inside `laband`'s ~16 ms snapshot publish), no
+  per-RPC deadline rejection (clients enforce via socket timeout),
+  and no labpty-side reader tracking (overflow is the only failure
+  mode, handled by in-ring "replay from current window"). The
+  benefit is a `labpty` Phase 1 implementation small enough to
+  audit line-by-line.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
 - Decision: `labpty` is the sole steady-state reader/writer of every
   PTY master fd. `laband` consumes the byte ring; `laband` does not
   hold a master fd in normal operation.
@@ -1016,16 +1326,22 @@ call sites.
   survival.
   Date/Author: 2026-05-26 / Phase 1 author.
 
-- Decision: Phase 1 input is a JSON `writeInput` control RPC with
-  base64 bytes; Phase 2 may upgrade to a shared-memory input ring.
-  Rationale: The shared-memory `LBPTY-IR-01` design in
-  `execplans/active/labpty-protocol-design.md` is the right
-  long-term shape, but it adds non-trivial implementation (SPSC
-  ring, eventfd/kqueue wakes, counters, backpressure) for a path
-  whose Phase 1 latency budget is dominated by the existing
-  app↔laband JSON socket. Measure first in Phase 2; only build the
-  input ring if the measurement shows perceptible cost.
-  Date/Author: 2026-05-26 / Phase 1 author.
+- Decision: Phase 1 input is a `writeInput` control RPC carrying
+  raw bytes inside the binary frame payload (no base64); Phase 2
+  may upgrade to a shared-memory input ring (`LBPTY-IR-01`).
+  Rationale: The shared-memory input ring is the right long-term
+  shape, but it adds non-trivial implementation (SPSC ring,
+  pipe-based wakes, counters, backpressure, and a write-lease
+  primitive) for a path whose Phase 1 latency budget is dominated
+  by the app↔laband Unix-socket round-trip. Measure first in Phase
+  2; only build the input ring if the measurement shows
+  perceptible cost. The earlier draft of this decision specified
+  base64-in-JSON for the Phase 1 RPC; the binary-protocol switch
+  (recorded above) lets the bytes go on the wire as-is, saving
+  ~33% bandwidth per keystroke and removing the base64 encode/
+  decode hop on each end.
+  Date/Author: 2026-05-26 / superseded by the binary-protocol
+  decision; rewritten in the binary-protocol switch iteration.
 
 - Decision: Phase 1 byte ring is the lock-free monotonic
   write-offset design from `execplans/active/labpty-protocol-design.md`,
@@ -1166,10 +1482,33 @@ without judgment.
 - [ ] `git grep -n 'laban_session_poll_blocking' Sources/Laband/`
   returns zero hits. (Master-drain loop moved into `labpty`.)
 - [ ] `git grep -nE 'SCM_RIGHTS|sendmsg|cmsghdr' Sources/Laband/
-  Sources/LabanCore/LabptyTerminalSessionClient.swift` returns zero
-  hits. (No master-fd handoff in Phase 1's normal attach path. Any
-  hit must be in code paths clearly labeled "Phase 3" or "labpty
-  self-upgrade".)
+  Sources/LabanCore/Labpty*.swift Sources/Labpty/` returns zero hits.
+  (Phase 1 has no SCM_RIGHTS anywhere — no master-fd handoff, no
+  wake-pipe handoff. Any future Phase 3 self-upgrade code lives in
+  files clearly labeled as such and is not reachable from Phase 1
+  code paths.)
+- [ ] `git grep -nE 'attachSession|LabptyAttach' Sources/Labpty/
+  Sources/LabanCore/Labpty*.swift Sources/Laband/main.swift` returns
+  zero hits in Phase 1. (No `attachSession` RPC; readers learn the
+  byte-ring shm path from `LabptySessionDescriptor` returned by
+  `openSession`/`listSessions`.)
+- [ ] `git grep -n 'wake_pending\|wakePipe\|wake_pipe' Sources/Labpty/
+  Sources/LabanCore/Labpty*.swift` returns zero hits in Phase 1.
+  (Readers poll; `labpty` has no wake mechanism.)
+- [ ] `git grep -nE 'json|JSON|jansson|cJSON|jsmn' Sources/Labpty/`
+  returns zero hits. (Wire is binary; no JSON parser dependency.)
+- [ ] `git grep -nE 'memcpy\([^,]*,[^,]*frame.*header|memcpy\([^,]*,[^,]*[Hh]eader.*frame'
+  Sources/Labpty/` returns zero hits. (The frame header is read
+  field by field through bounded helpers, never memcpy'd. See
+  "No struct memcpy" in `labpty-protocol-design.md`.)
+- [ ] `git grep -nE 'char\s+pty_handle\s*\[' Sources/Labpty/
+  Sources/LabanCore/Labpty*.swift` returns zero hits.
+  (`pty_handle` is a `u64` on the wire and in memory, not a string.)
+- [ ] The labpty binary contains the `Tools/LabptyProtocolFuzz` corpus
+  harness invoked via `swift run LabptyProtocolFuzz --corpus
+  fixtures/labpty-fuzz/` and exits 0 after one minute of
+  fuzzing on the provided corpus. (The decoder is the primary
+  fuzz target.)
 - [ ] `git grep -n 'LabptyTerminalSessionClient' Sources/LabanApp/`
   returns zero hits. (The app does not depend on labpty in Phase 1.)
 - [ ] `git grep -n 'LabptyTerminalSessionClient' Sources/Laband/`

@@ -18,11 +18,32 @@ whether their proposed change preserves the invariant.
 ## Design principles
 
 These are the axioms. Every concrete decision below traces to one of
-them.
+them. Principle 0 is the load-bearing one; the others apply *within*
+the surface 0 lets through.
+
+0. **Surface minimalism is the architectural goal, not a stretch
+   target.** Every line of `labpty` code is a line that can have a bug,
+   and every `labpty` bug forces the one upgrade or restart that still
+   kills live sessions until Phase 3 fd-handoff lands. The whole point
+   of putting `labpty` below `laband` is to make the bottom process so
+   small and boring that we almost never need to touch it. The mode
+   test for every feature is: **"Can `laband` or the app do this
+   without `labpty`?"** If yes, the feature goes there. Features earn
+   their place in `labpty` only by being (a) required to keep the PTY
+   alive (drain output, accept input, resize, signal, terminate), (b)
+   required to preserve an ADR invariant (ADR 0002 launch), or (c)
+   required so `laband` can rediscover sessions after restart
+   (`listSessions`, the byte ring shm path). Everything else —
+   recovery policy, multi-attach lease, snapshot caching, rich
+   observability, latency-forensics tagging — belongs in `laband`,
+   which is allowed to change often *because* `labpty` exists.
 
 1. **Latency is measured, not estimated.** Every hot-path operation
    carries timestamps at multiple stages. A latency regression must be
    diagnosable from production counters without attaching a profiler.
+   *Phase 1 application: only the minimum counters needed to debug "is
+   labpty alive and are bytes moving" land in shm; richer per-read
+   timestamping is Phase 2's `metadata-ring/v1`.*
 2. **Predictable tail latency over peak throughput.** A protocol that
    runs at 5 µs p50 and 50 µs p99.9 beats one at 1 µs p50 and 5 ms
    p99.9. Tail spikes are designed out: no allocations on hot paths, no
@@ -35,11 +56,24 @@ them.
    The kernel already serializes the producer's writes to the PTY
    master; mirror that single-writer discipline in our ring. Readers
    are lock-free.
-5. **Schema is fixed-offset binary on the hot path, JSON on the control
-   plane.** Fixed offsets let the compiler emit `load` instructions
-   directly against memory-mapped regions. JSON survives on the control
-   plane because the rate is bounded by user action (open / resize /
-   terminate happen once per minute at most).
+5. **Schema is fixed-offset binary on both planes.** Hot path: shm
+   ring with atomic offsets. Control plane: length-prefixed binary
+   frames over Unix `SOCK_STREAM`. JSON was the earlier choice (rate
+   is bounded by user action; ergonomics matter) but lost on the
+   day `labpty` was committed to C: a JSON parser in C is the single
+   most exposed surface a fuzzer would have to cover, and at ~300
+   LoC for a closed-schema parser the cost outweighs the human-`jq`
+   benefit. Binary frames are ~80 LoC of bounded decoder, a trivial
+   fuzz target, and need no base64 for `writeInput` bytes. Human
+   debugging happens through a separate `Tools/LabptyDump` shim that
+   pretty-prints captured frames. **The binary protocol is a chance
+   to make the protocol smaller, not a chance to translate the JSON
+   one byte-for-byte: every decoder byte is now `labpty` code,
+   subject to the verification bar.** Concrete trims below: `u64`
+   pty handles (not 64-byte strings), flat NUL-separated argv/envp
+   buffers (not arrays of length-prefixed strings), `writeInput`
+   payload-bytes implicit from frame length (no inner length
+   prefix), no configurable terminate grace period.
 6. **Versioning happens once, at handshake, never per message.** After
    `hello`, both sides know the schema. No version field on any
    subsequent message.
@@ -47,30 +81,136 @@ them.
    capability flags negotiated at handshake. Old clients refuse what
    they don't understand; new clients fall back when capabilities are
    missing.
-8. **Every operation has a timeout, every error has a code.** Infinite
-   hangs and exception-driven control flow are forbidden.
-9. **Heartbeats both directions.** Peer death is detected in
-   milliseconds, not minutes. Stale connections are reaped explicitly.
+8. **Every operation has a typed error code.** Infinite hangs and
+   exception-driven control flow are forbidden. *Phase 1 application:
+   deadlines are advisory — clients may include `deadline_ns` and
+   enforce locally by tearing down the socket; `labpty` does not check
+   deadlines itself until measurement justifies the syscall.*
+9. **Heartbeat from `labpty` to readers via shm.** Peer death is
+   detected in hundreds of milliseconds, not minutes. *Phase 1
+   application: only the producer-alive heartbeat ships; reader →
+   labpty heartbeat is Phase 2 (`labpty` does not track readers in
+   Phase 1).*
 10. **Observability is in-band, not optional.** Per-session counters
     live in shared memory, sampled by anyone with read access. No
-    log-scraping required.
+    log-scraping required. *Phase 1 application: the per-session ring
+    header carries the minimum counters
+    (`output_bytes_written_total`, `output_wrap_count`,
+    `producer_alive_mono_ns`). Daemon-global counters and per-read
+    latency tags are Phase 2.*
 11. **No daemon-side allocation on the hot path.** Buffers are
     preallocated at session open. Read/write/ring/wake — zero
     allocations after warm-up.
 12. **The ABI must be frozen-able.** Every layout choice anticipates a
     later `freeze` event after which fields cannot move or change
-    meaning, only be added at the end.
+    meaning, only be added at the end. Phase 1 reserves Phase 2 regions
+    at their final offsets even when it does not populate them, so
+    Phase 2 is a pure addition.
+
+## Phase 1 thin surface
+
+Surface principle 0 makes the Phase 1 / Phase 2 / Phase 3 split
+explicit. This section enumerates the smallest credible surface; the
+rest of the document elaborates the *eventual* shape that Phase 2+
+moves toward. A fresh implementer of Phase 1 should be able to read
+this section and `execplans/active/labpty-extraction.md` and skip the
+"Phase 2" subsections of everything below.
+
+**Phase 1 RPCs** (eight):
+
+- `hello` — version + capability negotiation.
+- `openSession` — fork+exec a child with a fresh PTY; return
+  descriptor (`ptyHandle`, `childPid`, `rows`, `cols`,
+  `byteRingShmPath`, foreground-process metadata).
+- `listSessions` — return descriptors for every live session.
+  Includes the byte-ring shm path so callers can read directly; no
+  separate "attach" step.
+- `resizeSession` — `TIOCSWINSZ` on the master.
+- `signalSession` — `killpg` to the child's process group.
+- `terminateSession` — graceful shutdown.
+- `writeInput` — bounded raw byte chunk (≤ 64 KiB); `labpty` writes to master.
+- `ping` — control-plane heartbeat / connection liveness.
+
+**Phase 1 shared memory** (one shm file per session):
+
+- File header carrying magic, abi version, capacities, and offsets.
+- The output byte ring (default 8 MiB, lock-free monotonic
+  write-offset).
+- Three counters: `output_bytes_written_total`,
+  `output_wrap_count`, `producer_alive_mono_ns`. Everything else is
+  reserved space whose offsets are pinned for Phase 2.
+
+**Phase 1 transports:**
+
+- Length-prefixed binary frames (`LBPTY-CT-01`) over Unix
+  `SOCK_STREAM` for control RPCs. ~80 LoC of bounded decoder in C;
+  trivially fuzzable; no JSON anywhere on the wire.
+- Output byte ring in shm for the data plane.
+- Input via the `writeInput` control RPC, raw bytes in the frame
+  payload. No shared-memory input ring.
+- **No SCM_RIGHTS anywhere.** No PTY master fd handoff (forbidden by
+  the single-custodian invariant); no wake-pipe fd handoff (readers
+  poll the ring).
+
+**Phase 1 reader model:**
+
+`laband` (and any other reader) opens the byte ring read-only, samples
+`output_write_offset` on a poll tick (4 ms is the recommended starting
+interval; tune later), reads new bytes, feeds them into its own
+parser. `labpty` does not know readers exist; there is no per-reader
+slot table populated, no wake registry, no consumer-alive tracking.
+Phase 2 introduces wake pipes and per-reader state if and only if
+measurements show the polling tick is a perceptible source of
+latency.
+
+**Phase 1 control-plane semantics:**
+
+- Request envelope: `{seq, op, payload}`. No `v` (negotiated at
+  `hello` only). No `deadline_ns` enforcement (clients may include
+  it; `labpty` ignores).
+- Response envelope: `{seq, ok, code?, payload?}`.
+- One outstanding request at a time per connection (no pipelining
+  required in Phase 1; the protocol shape allows it later).
+
+**What is deliberately NOT in Phase 1:**
+
+- `attachSession` RPC (no per-reader state to register; `listSessions`
+  is sufficient for discovery).
+- SCM_RIGHTS on any RPC (master fd never crosses a process boundary
+  in normal operation; wake-pipe fd handoff is Phase 2 if polling
+  proves insufficient).
+- Shared-memory input ring (`LBPTY-IR-01`).
+- Per-reader slot table writes by `labpty`. The slot-table offsets
+  are reserved in the file header for ABI stability, but `labpty`
+  does not write to those bytes and readers do not read them.
+- Wake mechanism. Readers poll.
+- `publishOpaqueSnapshot` and the snapshot-cache shm region.
+- Metadata ring (`LBPTY-MR-01`).
+- Daemon-global counters file
+  (`labpty_daemon_counters/{run_id}`).
+- Deadline enforcement in `labpty`.
+- Reader → `labpty` heartbeat slots; stale-reader sweep; per-reader
+  `consumer_alive_mono_ns`.
+- Latency-forensics benchmarks gating CI on absolute microseconds.
+
+Each of these earns its place in a later Phase by a deliberate
+decision, recorded in a Decision Log entry, against an observed need
+that `laband` could not solve from above. The Decision Log entries
+near the end of this document already record the Phase 1 deferrals
+explicitly.
 
 ## Transport map
 
 | Concern | Transport | Why |
 | --- | --- | --- |
-| Control RPC (open, attach, list, resize, signal, terminate, writeInput, publishOpaqueSnapshot, ping, hello) | Length-prefixed JSON over Unix `SOCK_STREAM` | Bounded rate. Ergonomics matter. Reuses the existing `LabandProtocol` codec discipline. |
+| Control RPC (hello, openSession, listSessions, resizeSession, signalSession, terminateSession, writeInput, ping) | Length-prefixed **binary frames** over Unix `SOCK_STREAM` (`LBPTY-CT-01` framing, see "Control-plane protocol" below) | Bounded rate. C-side decoder is ~80 LoC and trivially fuzzable. Binary lets `writeInput` carry raw bytes without base64. Human-readable debugging happens through `Tools/LabptyDump`, not on the wire. |
 | Output bytes (PTY → readers) | Single-producer multi-consumer shared-memory ring (`LBPTY-BR-01`) | Hot path. Hundreds to thousands of writes per second per active session. Zero IPC overhead per byte. |
-| Input bytes (writer → PTY), Phase 1 | `writeInput` control RPC on the same Unix socket, bytes base64-encoded in JSON, bounded to 64 KiB per call | Keystroke and paste throughput is bounded by user action. Avoids the cost of building a real shared-memory input path before measurements justify it. **Phase 1's invariant: laband, not the app, calls this RPC.** Multi-attach write conflicts are resolved by laband's existing client-level lease, not by a labpty primitive. |
+| Input bytes (writer → PTY), Phase 1 | `writeInput` control RPC on the same Unix socket, bytes carried directly in the binary frame payload (no base64), bounded to 64 KiB per call | Keystroke and paste throughput is bounded by user action. Avoids the cost of building a real shared-memory input path before measurements justify it. **Phase 1's invariant: laband, not the app, calls this RPC.** Multi-attach write conflicts are resolved by laband's existing client-level lease, not by a labpty primitive. |
 | Input bytes (writer → PTY), Phase 2 | Single-producer single-consumer shared-memory ring (`LBPTY-IR-01`) per session, with pipe-based wakeup | Lower-rate hot path. SPSC ring matches the output path's discipline. **Predicated on a labpty-level write-lease primitive (`multi-attach-write-lease/v1`); not shippable without it because direct ring writes have no way to arbitrate among multiple writers.** |
-| Reader wakeups | Pipe write-end handed to labpty at `attachSession` via SCM_RIGHTS; labpty writes one byte per coalesced batch | macOS does not have `eventfd`. `EVFILT_USER` is a per-process construct and cannot be triggered from another process. A pipe is the simplest cross-process wake primitive available on Darwin, well-understood, and avoids the Mach-port complexity of `mach_semaphore_t`. This is the only SCM_RIGHTS use in Phase 1 — it sends a pipe write-end, not a PTY master. |
-| Heartbeats | Shared-memory timestamp fields, sampled by readers | No kernel call to check "is the other side alive". |
+| Reader readiness, Phase 1 | Readers poll the byte ring's `output_write_offset`. Recommended tick: 4 ms (250 Hz). `labpty` does nothing — no per-reader registry, no fd handoff. | Polling for a `laband`-attached reader is dominated by `laband`'s own ~16 ms snapshot publish cadence; the polling tick is invisible at the system level. Costs `labpty` zero state and zero code; matches surface principle 0. |
+| Reader readiness, Phase 2 | Pipe write-end handed to labpty via SCM_RIGHTS at attach time; labpty writes one byte per coalesced batch | Lands when measurements show the Phase 1 polling tick is a perceptible latency source — primarily a Phase 2 / single-client-byte-ring-mode concern, not a Phase 1 concern. Documented under "Wakeup discipline (Phase 2)" below. |
+| Heartbeats, `labpty` → readers | Shared-memory timestamp `producer_alive_mono_ns`, updated on each event-loop tick capped at 100 ms cadence | No kernel call to check "is the other side alive". One u64 store per tick on labpty; one u64 load per reader poll. |
+| Heartbeats, reader → `labpty` (Phase 2) | Reserved field in the per-reader slot table | Phase 1 `labpty` does not know readers exist, so this primitive is meaningless until the per-reader slot table is populated in Phase 2. |
 | Per-session counters | Shared-memory counters block at fixed offset of the byte ring | Anyone with the shm path can sample. No RPC needed. |
 | Self-upgrade fd handoff (`labpty` itself) | LISTEN_FDS-style env + a status pipe, plus SCM_RIGHTS handoff of PTY master fds between old and new `labpty` instances | **Phase 3 only**; the only design where a PTY master fd legitimately crosses a process boundary. Out of scope for Phase 1; documented here for foresight. |
 
@@ -167,52 +307,63 @@ regions simply do not exist in a Phase 1 file.
 
 ### Global counters block (128 bytes, offset 128)
 
-One cache line of process-wide-per-session counters. Each counter is u64,
-atomic, sampled by readers without locks. **No per-reader state lives
-here.** That's why the block fits in 128 bytes; the per-reader storage
-(wake-pending, consumer-alive heartbeat, last-seen offset for diagnostic
-sampling) is in the separate per-reader slot table at offset 256.
-
-Hot counters (offset 128, first half cache line):
+One cache line of process-wide-per-session counters. Each counter is
+u64, atomic, sampled by readers without locks. **No per-reader state
+lives here.**
 
 ```
-Offset  Name
-------  -------------------------------------
-128     output_bytes_written_total     ← write-side hot
-136     output_writes_total
-144     output_wrap_count              ← wrap detection
-152     output_wake_notifications_total
-160     producer_alive_mono_ns         ← labpty's monotonic heartbeat
+Offset  Name                            Phase  Notes
+------  ------------------------------  -----  -------------------------
+128     output_bytes_written_total      1      = output_write_offset
+136     output_writes_total             2      reserved zero in Phase 1
+144     output_wrap_count               1      writer increments on wrap
+152     output_wake_notifications_total 2      reserved zero in Phase 1
+160     producer_alive_mono_ns          1      labpty's heartbeat
 168     reserved (padding to 192)
-```
-
-Cold counters (offset 192, second half cache line):
-
-```
-192     input_bytes_consumed_total     ← Phase 2; labpty reads from input ring
-200     input_writes_blocked_total     ← Phase 2
-208     master_read_calls_total
-216     master_read_eagain_total
-224     ring_overflow_observed_total   ← reader-incremented (informational)
-232     attached_consumer_count        ← labpty maintains as slots fill/free
-240     last_attach_mono_ns
+192     input_bytes_consumed_total      2      input ring; reserved zero
+200     input_writes_blocked_total      2      reserved zero
+208     master_read_calls_total         2      reserved zero
+216     master_read_eagain_total        2      reserved zero
+224     ring_overflow_observed_total    2      reader-incremented; zero
+232     attached_consumer_count         2      Phase 1 labpty does not
+                                               track readers; zero
+240     last_attach_mono_ns             2      reserved zero
 248     reserved (padding to 256)
 ```
 
-`producer_alive_mono_ns` is the heartbeat. labpty updates it at 100 ms
-cadence on its main loop tick. A reader that sees this field stale by
->300 ms can assume labpty is dead or hung and trigger reconnect /
-escalation. Same primitive as a market-data feed-staleness check.
+Phase 1 `labpty` populates exactly three fields:
+`output_bytes_written_total` (the write offset; the load-bearing
+counter), `output_wrap_count` (incremented when the writer laps), and
+`producer_alive_mono_ns` (one u64 store per event-loop tick capped at
+100 ms cadence). The cold counters' offsets are pinned for Phase 2 so
+adding them is a pure extension; until Phase 2 wires them they stay
+zero.
 
-Why no `output_read_total`: readers are multiple and lock-free; we don't
-serialize their reads through a single counter. Each reader maintains its
-own watermark in its own address space (and a diagnostic mirror in its
-own per-reader slot — see below).
+`producer_alive_mono_ns` is the heartbeat. A reader that sees this
+field stale by >300 ms can assume `labpty` is dead or hung and trigger
+reconnect / escalation. Same primitive as a market-data
+feed-staleness check.
 
-### Per-reader slot table (offset 256, 64 bytes × 8 = 512 bytes)
+Why no `output_read_total`: readers are multiple and lock-free; we
+don't serialize their reads through a single counter. Each reader
+maintains its own watermark in its own address space.
 
-Eight cache-line-aligned slots. `labpty` allocates a slot at
-`attachSession` and clears it on detach. Each slot:
+### Per-reader slot table (offset 256, 64 bytes × 8 = 512 bytes) — Phase 2
+
+> **Phase 2 design.** Phase 1 `labpty` does not write to this region.
+> Phase 1 readers do not read from it. The region exists at offset 256
+> with 512 bytes of zeroed shm so that Phase 2's per-reader state lands
+> at a frozen offset; without the reservation, adding it would shift
+> the output ring offset and break ABI stability.
+>
+> The motivation for the per-reader table is the Phase 2 wake-pipe
+> mechanism. Phase 1 readers poll the ring directly; there is no slot
+> to claim, no wake-pending flag to manage, no consumer-alive
+> heartbeat to update. Phase 2 introduces all three together when
+> wake-pipe latency wins justify the surface.
+
+Eight cache-line-aligned slots. In Phase 2, `labpty` would allocate a
+slot at `attachSession` and clear it on detach. Each slot:
 
 ```
 Offset within slot  Size  Name
@@ -226,26 +377,16 @@ Offset within slot  Size  Name
 40                 24     reserved (padding to 64)
 ```
 
-`occupied` is the slot-claim CAS target. `labpty` finds the first free
-slot, atomically CASes `0 → 1`, fills the other fields, returns the
-slot index in the attach response. On detach (`terminateSession` of the
-reader's attach, control socket close, or sweep due to stale
-`consumer_alive_mono_ns`), `labpty` clears the slot back to zero.
-
-`wake_pending` is the edge-triggered signal coalescer (see "Wakeup
-discipline"): `labpty` sets it before writing the pipe; the reader
-clears it after draining. The reader's pipe read-end fd lives outside
-this file (the reader holds it; `labpty` holds the matched write-end fd
-received via SCM_RIGHTS at attach time).
-
-`last_seen_offset` is **not** consulted by the producer for correctness;
-the byte-ring's correctness depends only on `output_write_offset`. The
-slot's `last_seen_offset` exists so a diagnostic tool can sample which
-readers are lagging without bothering labpty.
-
-This layout is what makes the advisor's "128 bytes is not enough for 8
-readers" finding land safely: per-reader state was always going to need
-~512 bytes, and it now has its own region with a frozen offset.
+In Phase 2: `occupied` is the slot-claim CAS target. `wake_pending` is
+the edge-triggered signal coalescer (see "Wakeup discipline (Phase
+2)"): `labpty` sets it before writing the pipe; the reader clears it
+after draining. The reader's pipe read-end fd lives outside this file
+(the reader holds it; `labpty` holds the matched write-end fd received
+via SCM_RIGHTS at attach time). `last_seen_offset` is **not** consulted
+by the producer for correctness; the byte-ring's correctness depends
+only on `output_write_offset`. The slot's `last_seen_offset` exists so
+a diagnostic tool can sample which readers are lagging without
+bothering `labpty`.
 
 ### Output ring (offset 256 + input_ring_capacity)
 
@@ -407,6 +548,31 @@ input-direction fields).
 
 ## Wakeup discipline
 
+### Phase 1: readers poll
+
+`labpty` does not signal readers. Readers (just `laband` in Phase 1)
+poll the byte ring's `output_write_offset` on a tick. Recommended
+starting interval is 4 ms (250 Hz); a slower tick is acceptable for
+sessions whose output is dominated by human typing, and `laband` is
+free to vary the tick rate per session based on its own renderer
+cadence.
+
+This costs `labpty` zero code and zero per-reader state. The latency
+penalty (mean 2 ms, worst case 4 ms before the reader notices new
+bytes) is invisible inside `laband`'s own snapshot publish cadence
+(~16 ms at 60 Hz). Phase 1's headline acceptance does not depend on
+sub-millisecond reader wake.
+
+Phase 2 may add wake pipes (next subsection) if measurements show the
+polling tick produces user-visible lag in single-client byte-ring mode
+(where the app talks to `labpty` directly rather than through
+`laband`).
+
+### Phase 2: per-reader wake pipes
+
+> **Phase 2 design.** Phase 1 `labpty` does not implement this
+> section. Phase 1 readers do not pass wake pipes at attach.
+
 One wake notification per drained batch from the PTY master, not per
 byte. Algo-trader rationale: scheduler wakeups are the single most
 expensive operation in this design at ~1–5 µs each. Coalescing across
@@ -466,86 +632,221 @@ RPC required. The flag lives in the reader's per-reader slot (see
 
 ## Control-plane protocol
 
-Length-prefixed JSON over `SOCK_STREAM` Unix sockets. Each message:
+Length-prefixed binary frames (`LBPTY-CT-01`) over `SOCK_STREAM` Unix
+sockets. The framing is identical in both directions and identical
+for every op:
 
-```
-+-----------+--------------------+
-| u32 LE    | JSON payload bytes |
-| length    |                    |
-+-----------+--------------------+
-```
-
-Why JSON survives here:
-- Rate is bounded by user action (open / resize / signal / terminate
-  fire at most a handful of times per minute per session).
-- The ergonomic and tooling benefits of JSON outweigh the per-message
-  overhead at this rate.
-- The existing `LabandProtocol` codec is identical in shape; reuse the
-  serialization discipline.
-
-What we steal from the trading playbook anyway:
-
-- **Every request has a u64 client sequence number.** Responses echo
-  it. Pipelining is allowed; out-of-order responses are matched by
-  sequence.
-- **Every request has a deadline_mono_ns field.** If the daemon can't
-  start processing before this deadline, it returns a `deadlineExceeded`
-  error rather than processing late. Trading systems do this so
-  late-arriving orders don't get filled at stale prices; we do it so
-  a hung daemon doesn't return success for a request the user
-  abandoned 10 seconds ago.
-- **Errors are typed with codes, not strings.** Strings are
-  supplementary, never load-bearing.
-
-### Request schema
-
-Two shapes: the `hello` envelope, which negotiates the protocol version
-and capabilities, and the post-`hello` envelope used by every other
-operation.
-
-**`hello` request envelope** (the only request that carries a version
-field):
-
-```jsonc
-{
-  "v": 1,                 // protocol major; only valid on hello
-  "capabilities": [ ... ],// strings the client offers
-  "seq": 0,               // u64, monotonic; hello is seq 0 by convention
-  "deadline_ns": 1234567, // monotonic ns; daemon's clock is the reference
-  "op": "hello",
-  "payload": { /* hello-specific */ }
-}
+```c
+// All fields little-endian. Total header size: 24 bytes.
+// Field order matches the wire byte order exactly; the C struct is
+// documentation, NOT a memcpy target — see "No struct memcpy" below.
+struct labpty_frame_header_wire {
+  uint8_t  magic[4];    // "LPCT" (0x4C 0x50 0x43 0x54); rejects garbage and
+                        //   misdirected connections at the framing layer
+  uint16_t abi_major;   // 1 in Phase 1; bump only for breaking changes
+  uint16_t abi_minor;   // 0 in Phase 1; bump for additive changes
+  uint32_t frame_len;   // total bytes including this header; ≤ MAX_FRAME (128 KiB)
+  uint16_t op;          // request: labpty_op enum; response: 0xFFFF
+  uint16_t code;        // request: 0; response: labpty_error_code enum (0 = ok)
+  uint64_t seq;         // request: monotonic per client; response: echoes request seq
+};
+// followed by frame_len - 24 bytes of op-specific payload.
 ```
 
-**Post-hello request envelope** (every other op). No `v` field; the
-version is pinned by the successful `hello` response and is part of
-the connection's implicit state for its lifetime.
+A receiver reads exactly 24 bytes, validates magic / `abi_major` /
+`abi_minor ≥ this implementation's known minor` / `frame_len ≤ MAX_FRAME`
+/ `frame_len ≥ 24`, then reads `frame_len - 24` payload bytes into a
+preallocated scratch buffer. No additional state machine, no streaming
+parser. The payload decode for each op is documented under "Operations"
+below; every variable-length field is preceded by a `u32` length that
+the decoder bounds-checks against the remaining frame budget.
 
-```jsonc
-{
-  "seq": 12345,           // u64, monotonic per client
-  "deadline_ns": 1234567, // monotonic ns; daemon's clock is the reference
-  "op": "openSession",    // operation tag
-  "payload": { /* op-specific */ }
-}
+### No struct memcpy
+
+The `labpty_frame_header_wire` declaration above is **documentation of
+the wire byte order**, not a C struct anyone reads as `*(struct
+*)buf`. C struct padding/alignment varies across compilers, settings,
+and ABI revisions; relying on the in-memory layout matching the wire
+layout is exactly the class of bug that a thinness-disciplined daemon
+must rule out at the design level. Every field is read individually
+through bounds-checked primitive helpers:
+
+```c
+labpty_status_t labpty_read_u8 (const uint8_t **cur, const uint8_t *end, uint8_t  *out);
+labpty_status_t labpty_read_u16(const uint8_t **cur, const uint8_t *end, uint16_t *out);
+labpty_status_t labpty_read_u32(const uint8_t **cur, const uint8_t *end, uint32_t *out);
+labpty_status_t labpty_read_u64(const uint8_t **cur, const uint8_t *end, uint64_t *out);
+labpty_status_t labpty_read_bytes(const uint8_t **cur, const uint8_t *end, size_t n, const uint8_t **out);
 ```
 
-A `v` field in a post-`hello` request is a hard error (`code:
-"versionMismatch"`); a missing `v` in `hello` is also a hard error.
-This makes the principle "versioning happens once at hello" structural
-rather than advisory.
+Each helper checks `cur + sizeof(T) ≤ end`, advances `*cur` on
+success, returns `LABPTY_E_TRUNCATED` on failure. Decoders compose
+helpers; they never alias raw struct memory. The fuzz target
+(`Tools/LabptyProtocolFuzz`) covers exactly these helpers and the
+per-op composers built from them.
 
-### Response schema (shared envelope)
+### Per-field bounds
 
-```jsonc
-{
-  "seq": 12345,           // echoes request seq
-  "ok": true,             // or false
-  "code": "ok",           // enumerated error code if !ok
-  "message": "...",       // human-readable supplement, never parsed
-  "payload": { /* op-specific */ }
-}
-```
+Every variable-length field has a per-field cap enforced before any
+allocation. Frame-level `MAX_FRAME` is the outer bound; the inner
+caps are what each per-op decoder checks:
+
+| Field | Cap | Notes |
+| --- | --- | --- |
+| Frame total | 128 KiB | `MAX_FRAME` constant |
+| `argv_count` | 64 entries | Per `openSession`; real shells never approach this |
+| Single `argv` entry | 4096 bytes | UTF-8 |
+| `envp_count` | 256 entries | Pairs; macOS default envp is ~30 entries |
+| Single `envp` key | 256 bytes | |
+| Single `envp` value | 4096 bytes | |
+| `cwd` | 4096 bytes | `PATH_MAX` on macOS is 1024 but allow generous slack |
+| `logical_session_id` | 256 bytes | |
+| `byte_ring_shm_path` | 1024 bytes | |
+| `writeInput` bytes | 64 KiB | + frame header + pty_handle ≈ 64 KiB + 32 |
+| Foreground process strings | 1024 bytes each | 4 string fields × 1024 bytes |
+| `foreground_arguments` count | 16 entries | Sidebar display only |
+| Single `foreground_arguments` entry | 256 bytes | |
+| `client_id` | 256 bytes | `hello` payload |
+| `capabilities` per entry | 64 bytes | Tokens like `byte-ring/v1` |
+| `capabilities` count | 64 entries | Both directions |
+| `LabptySessionDescriptor` count in `listSessions` response | 64 | Matches the per-daemon session cap |
+
+Any decoder that observes a length-prefix exceeding the relevant cap
+returns `LABPTY_E_OVERSIZE` and the connection closes.
+
+### Pipelining
+
+Phase 1 has no pipelining: a client sends one request and waits for
+the response before sending the next. The frame header carries `seq`
+so Phase 2+ can introduce pipelining without an ABI bump; until then
+the daemon may process requests serially per connection and clients
+match responses to requests by socket position.
+
+**Why not JSON.** The original design picked JSON for the control
+plane on ergonomics grounds. The C-implementation decision changed
+that calculus: a JSON parser in C is the single most-exposed surface
+in `labpty`, ~300 LoC at minimum, and a mandatory fuzz target. The
+binary frame decoder is ~80 LoC, trivially fuzzable (one bounds check
+per length-prefix against remaining frame bytes), and lets
+`writeInput` carry raw bytes without a base64 hop. Human-readable
+debugging is preserved through `Tools/LabptyDump`, a Swift CLI that
+connects to a `labpty` socket and pretty-prints the captured frames —
+~50 LoC, one-time cost, never on the hot path. The Decision Log
+records the reversal explicitly.
+
+### Common shape rules
+
+- Every length prefix is a `u32` little-endian byte count, **never**
+  a UTF-8 character count.
+- Strings are UTF-8, not null-terminated; the `u32` length includes
+  exactly the byte count.
+- The `pty_handle` is a `u64` assigned monotonically by `labpty` at
+  `openSession` time. It is opaque to clients and unique within the
+  daemon's lifetime. No string handles, no UUIDs — a 64-bit counter
+  fits the only requirement (uniqueness across active sessions) and
+  saves 56 bytes per RPC over the earlier 64-byte string design.
+- `u32`/`u64` integers are little-endian (Apple Silicon native; the
+  doc commits to little-endian as the only supported byte order).
+- Booleans are `u8` (0 or 1; any other value is `internalError`).
+- Counts (`argv_count`, `envp_count`) are `u32`. Each fits trivially
+  in 32 bits; capping is enforced by the per-frame `MAX_FRAME`
+  budget plus per-op sanity limits (e.g., argv ≤ 4096 entries).
+- The receiver always validates: `sum(known fields) ≤ frame_len - 24`
+  (24 being the fixed header bytes). Any field whose length-prefix
+  would push the cursor past the frame body returns
+  `LABPTY_E_TRUNCATED` and the connection closes.
+- `argv` and `envp` are **counted arrays of length-prefixed strings**,
+  not flat NUL-separated buffers. Each entry's bytes are exactly its
+  declared length, no NUL scanning required. `labpty` walks the
+  array once at decode, validating each entry against its
+  per-field cap, NUL-terminates each entry in place, and assembles
+  a `char *const argv[]` and `char *const envp[]` pointing into a
+  **daemon-lifetime `mmap`'d scratch arena**.
+
+  The arena is allocated once at `labpty` startup:
+
+  ```c
+  // 2 MiB; demand-paged so RSS stays at the largest openSession used.
+  arena = mmap(NULL, OPENSESSION_ARENA_BYTES,
+               PROT_READ | PROT_WRITE,
+               MAP_ANON | MAP_PRIVATE, -1, 0);
+  ```
+
+  Per RPC, the dispatcher resets the cursor to 0, decodes the
+  argv/envp/cwd into the arena (bounds-checked at each step against
+  remaining arena bytes), calls `openpty` + `fork`, and waits on a
+  self-pipe for the child to signal "execve started" (one byte
+  written by the child immediately before `execve`). The wait
+  bounds the next dispatcher invocation: the arena cannot be
+  overwritten while the child is still reading from it. The wait
+  cap is 100 ms; on timeout the dispatcher returns
+  `LABPTY_E_PTY_OPEN_FAILED` and kills the still-forked child.
+
+  This pattern earns its place against the verification bar:
+
+  - One allocation in `labpty`'s lifetime (at boot), zero per RPC.
+  - The arena pointer is constant; no allocator state churns.
+  - The serialization is structural (single-threaded daemon + wait
+    for child confirmation), not a lock.
+  - `MAX_FRAME` plus the per-field caps below bound the arena's
+    worst-case use to ~1.4 MiB; the 2 MiB reservation is twice
+    headroom.
+
+  Per-field caps for `openSession`:
+
+  | Field | Cap |
+  | --- | --- |
+  | `argv_count` | 64 entries |
+  | Single `argv` entry | 4096 bytes |
+  | `envp_count` | 256 entries |
+  | Single `envp` key | 256 bytes |
+  | Single `envp` value | 4096 bytes |
+  | `cwd` | 4096 bytes |
+  | `logical_session_id` | 256 bytes |
+
+  Worst-case arena consumption: 64 × 4096 (argv) + 256 × (256 +
+  4096) (envp) + 4096 (cwd) + 256 (logical_session_id) + pointer
+  tables ≈ 1.4 MiB. Comfortable headroom under the 2 MiB
+  reservation.
+
+  If a decoded `openSession` exceeds the arena (because some
+  combination of fields plus pointer tables crosses the
+  reservation), the dispatcher returns `LABPTY_E_OVERSIZE`. The
+  client retries with smaller inputs; no real shell launch has
+  ever produced an argv near these caps.
+
+### Versioning, sequence numbers, deadlines
+
+- **Versioning happens once, at `hello`, never per message** (principle
+  6). The `hello` request payload carries a `u32 protocol_major`; the
+  successful `hello` response pins it for the connection lifetime. No
+  subsequent request carries a version field, structurally — the frame
+  header has no slot for one.
+- **`seq` is in the frame header** for every request and response. The
+  client picks a monotonic u64; the daemon echoes. Phase 1 does not
+  pipeline (one outstanding RPC at a time per connection), but the
+  field is there so Phase 2+ pipelining costs nothing on the wire.
+- **No `deadline_ns` field in Phase 1.** Clients enforce deadlines by
+  tearing down the socket. The transport doesn't carry deadlines until
+  `deadline-enforcement/v1` lands.
+
+### Response shape
+
+A response is a frame with `op = 0xFFFF` and `code` set to the
+appropriate `labpty_error_code`. The payload, when present, is
+op-specific (e.g., a `listSessions` response carries the session
+descriptor list).
+
+### Response schema
+
+A response is a frame whose header sets `op = 0xFFFF` and `code` to a
+`labpty_error_code` (0 = ok, others = enumerated errors). The payload
+bytes are op-specific; ok responses carry the result struct (e.g.,
+`LabptySessionDescriptor` for `openSession`), error responses carry no
+payload (the error code is sufficient — there is no free-form
+`message` string on the wire, because every byte of decoder code is
+under the verification bar and "free-form string" multiplies the
+state space without earning anything).
 
 ### Operations
 
@@ -559,25 +860,35 @@ descriptor with `ptyHandle`, `childPid`, `byteRingPath`,
 overrides, cwd, initial rows/cols, optional `logicalSessionId` (caller's
 preferred identifier; collisions return `sessionIdInUse`).
 
-`attachSession` — attach to an existing session. Returns a session
-descriptor with the byte-ring shm path, output ring capacity, the
-opaque-snapshot-cache path (if any), and the per-reader slot index the
-caller has been assigned. The caller **must** include the write end of
-its wake pipe as SCM_RIGHTS ancillary data on this request; `labpty`
-stores that fd in the allocated slot. **`attachSession` does not send a
-PTY master fd to the caller in any mode.** The master stays with
-`labpty`; readers consume bytes through the shared-memory ring and
-signal input through `writeInput` (or, in a future phase gated on
-`multi-attach-write-lease/v1`, through the input ring).
+`attachSession` — **Phase 2.** Registers a wake pipe and (in a later
+Phase) claims a per-reader slot in the per-reader slot table. Phase 1
+does not have this RPC: readers learn the byte-ring shm path from the
+descriptors returned by `listSessions` (or by `openSession` for the
+creator) and read directly. Phase 1 `labpty` does not track who is
+reading; principle 0 says state we don't need belongs in `laband`, not
+`labpty`. In every Phase, `attachSession` **does not send a PTY master
+fd to the caller**; the master stays with `labpty` and readers consume
+bytes through the shared-memory ring.
 
 `writeInput` — write a chunk of input bytes to the session's PTY
-master. Payload includes `ptyHandle` and `bytes` (base64-encoded for
-JSON safety, bounded to 64 KiB per call). In Phase 1 this is the sole
-input mechanism. `labpty` performs the `write(2)` to the master under
-its own lock, ensuring no interleaving across concurrent callers.
-Multi-attach write-conflict resolution is the caller's concern (e.g.,
-`laband`'s client-level lease); `labpty` accepts whatever bytes the
-control-socket holder sends.
+master. Payload (after the 24-byte frame header):
+
+```
+u64 pty_handle        // assigned by labpty at openSession
+u8  bytes[frame_len - 24 (header) - 8 (pty_handle)]
+                      // raw input bytes; no encoding.
+                      // Length is implicit from frame_len; no inner length-prefix.
+                      // Capped at 64 KiB by the per-op decoder.
+```
+
+In Phase 1 this is the sole input mechanism. `labpty` performs the
+`write(2)` to the master under its own lock, ensuring no interleaving
+across concurrent callers. Multi-attach write-conflict resolution is
+the caller's concern (e.g., `laband`'s client-level lease); `labpty`
+accepts whatever bytes the control-socket holder sends. Saving the
+inner length-prefix and switching `pty_handle` from a 64-byte string
+to a `u64` reduces the per-keystroke overhead from ~100 bytes
+(JSON-with-base64) to 32 bytes (header + pty_handle).
 
 `listSessions` — returns all known sessions with their descriptors and
 current alive/dead status. Bounded response size (max 1024 sessions per
@@ -590,9 +901,13 @@ the session descriptor and atomically in the counters block.
 `killpg`. Useful for `SIGINT` / `SIGKILL`.
 
 `terminateSession` — graceful shutdown: send `SIGHUP` to pgrp, wait up
-to `gracePeriod` ms (default 200), then `SIGKILL`. Closes the master,
-frees the ring. Catalog entry is marked dead but retained for one
-generation for forensic queries.
+200 ms (hard-coded; not client-configurable in Phase 1), then
+`SIGKILL`. Closes the master, frees the ring. Catalog entry is marked
+dead but retained for one generation for forensic queries. The
+trimmed `terminateSession` payload is just `u64 pty_handle` — no
+grace-period field. Configurable grace would add a u32 plus the
+decode/clamp logic; the verification bar makes its absence worth
+more than its presence.
 
 `publishOpaqueSnapshot` — **Phase 2.** Stores an opaque blob (the most
 recent parsed snapshot the active client emitted) in the snapshot-cache
@@ -610,24 +925,38 @@ the shm-based heartbeat is not available.
 
 ### Error codes
 
-Enumerated. No new codes added without an ABI minor bump:
+Enumerated `u16` values; the wire's `code` field carries the raw
+value. No new codes added without an ABI minor bump.
 
 ```
-ok                       // not actually an error, present in responses
-sessionNotFound
-sessionIdInUse
-ptyOpenFailed
-ringMapFailed
-deadlineExceeded
-capabilityRequired
-versionMismatch
-permissionDenied
-internalError            // bug, includes message for diagnostics
-shuttingDown
+ok                       0x0000  // not an error; present on ok responses
+sessionNotFound          0x0001
+sessionIdInUse           0x0002
+ptyOpenFailed            0x0003
+ringMapFailed            0x0004
+capabilityRequired       0x0005
+versionMismatch          0x0006
+permissionDenied         0x0007
+payloadTooLarge          0x0008
+truncatedFrame           0x0009
+oversizeFrame            0x000A
+internalError            0x000B  // bug; the daemon logs the detail
+shuttingDown             0x000C
+// deadlineExceeded reserved for Phase 2 deadline-enforcement
 ```
 
-`internalError` is the only one that carries a stack-trace-y message.
-The others are precise.
+**No diagnostic message is carried on the wire**, in any response. An
+earlier draft of this doc said `internalError` would include a
+"stack-trace-y" string; that contradicted the principle "every byte
+of decoder code earns its place." Free-form string fields are exactly
+what the verification bar argues against: open input shape, variable
+length, only present on some responses, requires a length-prefix
+decoder that must be fuzz-covered. The clean alternative is what
+`labpty` does: on `internalError`, the daemon writes the detail to
+its log (stderr in dev, syslog/console in production via a Phase 2
+log routing decision) and the client gets only the code. The code is
+sufficient for the client's recovery logic; the human investigator
+reads the daemon log.
 
 ## Capability negotiation
 
@@ -635,41 +964,44 @@ Capabilities are short string tokens with explicit versions. Both sides
 exchange their supported set at `hello`; the effective set is the
 intersection.
 
-Capabilities shipped in Phase 1:
+Capabilities shipped in Phase 1 (deliberately small, per principle 0):
 
 ```
 byte-ring/v1                  // output ring with the layout in this doc
-write-input-rpc/v1            // writeInput control RPC (base64 JSON)
-wake-pipe-scm/v1              // pipe write-end via SCM_RIGHTS at attach
+write-input-rpc/v1            // writeInput control RPC, raw bytes in frame
 heartbeat-shm/v1              // producer_alive_mono_ns in counters block
 session-id-pinning/v1         // accepts client-supplied logicalSessionId
-deadline-enforcement/v1       // honors deadline_ns
 ```
 
-Optional in Phase 1 (depends on whether the implementation lands them):
+Reserved for later phases (deliberately **not** Phase 1; each requires
+its own justification against principle 0 when promoted):
 
 ```
-opaque-snapshot-cache/v1      // publishOpaqueSnapshot + cache region
-                              // — recommended; speeds overflow recovery
-                              //   for laband-as-reader
-```
+wake-pipe-scm/v1              // pipe write-end via SCM_RIGHTS at attach.
+                              // Phase 2; only when polling tick proves
+                              //   to be a perceptible latency source.
 
-Reserved for later phases (deliberately **not** Phase 1):
+opaque-snapshot-cache/v1      // publishOpaqueSnapshot + cache region.
+                              // Phase 2; speeds overflow recovery for
+                              //   laband-as-reader. The Phase 1
+                              //   "replay from current window" path
+                              //   works without it.
 
-```
 input-ring/v1                 // SPSC input ring + pipe wake.
-                              // Requires multi-attach-write-lease/v1
-                              // because direct ring writes have no way
-                              // to arbitrate among multiple writers.
-                              // Phase 2.
+                              // Phase 2; requires
+                              //   multi-attach-write-lease/v1.
 
 multi-attach-write-lease/v1   // labpty-level write lease primitive.
-                              // Necessary prerequisite for input-ring/v1.
-                              // Phase 2.
+                              // Phase 2; prerequisite for input-ring/v1.
 
 metadata-ring/v1              // per-read latency tags for post-mortems.
-                              // Phase 2; the layout reserves header
-                              //   slots so adding it is additive.
+                              // Phase 2; layout already reserves slots.
+
+deadline-enforcement/v1       // labpty checks request deadline_ns.
+                              // Phase 2 if measurement shows a hung
+                              //   labpty actually completes work past
+                              //   the client's give-up window often
+                              //   enough to matter; Phase 1 ignores.
 
 fd-handoff/v1                 // labpty self-upgrade: PTY master fds
                               // pass between old and new labpty via
@@ -682,62 +1014,76 @@ shared-snapshot-ring/v1       // bridge to the existing LBNDSS01 ring
 ```
 
 Any capability not in the negotiated intersection is treated as missing;
-clients fall back gracefully (the Phase 1 fallback for `input-ring/v1`
-is `write-input-rpc/v1`; the Phase 1 fallback for
-`opaque-snapshot-cache/v1` is the in-ring "replay from current window"
-recovery described under "Overflow recovery").
+clients fall back gracefully. Phase 1 fallbacks:
 
-Two capabilities from earlier drafts of this document were removed
-deliberately, not by oversight:
+- For `input-ring/v1` → `write-input-rpc/v1`.
+- For `opaque-snapshot-cache/v1` → in-ring "replay from current window"
+  (see "Overflow recovery").
+- For `wake-pipe-scm/v1` → 4 ms polling tick on `output_write_offset`.
+- For `deadline-enforcement/v1` → client-side socket timeout / teardown.
+
+Two capabilities that earlier drafts of this document listed in Phase 1
+were removed deliberately:
 
 - `scm-rights-attach/v1` (the old "master fd via SCM_RIGHTS in
   attachSession"). Removed for the architectural reason in
   `execplans/active/labpty-extraction.md`: `labpty` is the sole
-  steady-state reader/writer of every PTY master. SCM_RIGHTS in Phase 1
-  exists only for the wake-pipe write end (`wake-pipe-scm/v1`).
+  steady-state reader/writer of every PTY master. The wake-pipe SCM_RIGHTS
+  use was the only remaining justification for SCM_RIGHTS in Phase 1;
+  with polling replacing wake pipes, Phase 1 has no SCM_RIGHTS at all.
 - `input-ring/v1` as a Phase 1 capability. Direct shared-memory input
   has no safe semantics without an arbitrating write-lease primitive
   on the labpty side, and that primitive is its own design problem.
-  Phase 1 keeps input on the control RPC where laband's existing
-  client-level lease already arbitrates among multiple attached
-  clients.
 
 ## Heartbeat and liveness
 
 **labpty → readers:** `producer_alive_mono_ns` in the counters block,
 updated at 100 ms cadence from labpty's main event loop. Readers check
-on each wake (~free, just a load). Stale by >300 ms ⇒ labpty hung; the
-reader emits a diagnostic and reconnects.
+on each poll tick (~free, just a u64 load). Stale by >300 ms ⇒ labpty
+hung; the reader emits a diagnostic and reconnects. This is Phase 1.
 
-**Readers → labpty:** Each attached reader holds a `consumer_alive_mono_ns`
-slot in the counters block, updated at 1 Hz (slower because there are
-more readers). labpty sweeps stale slots every 5 s; readers stale by
->10 s have their wake registrations dropped (the master stays open;
-output keeps draining into the ring; only the wake stops).
+**Readers → labpty:** Phase 2 design only. Phase 1 `labpty` does not
+track readers; it has no reader-staleness sweep, no per-reader
+heartbeat slot, no detach-on-stale behavior. The PTY master stays
+open and bytes keep draining into the ring regardless of whether
+readers are consuming them. If readers stop reading, the ring
+eventually wraps and the readers' next poll observes the overflow —
+the overflow-recovery section handles that without `labpty` needing to
+know readers exist.
 
-This is the trader's feed-staleness detector applied to terminal byte
-streams. The numbers are conservative — terminals are not microsecond
-sensitive — but the discipline is the same.
+This asymmetry is a deliberate consequence of principle 0: readers can
+notice labpty stalls cheaply (one u64 load per poll tick), but labpty
+noticing reader stalls would require state and code that earn nothing
+for Phase 1's headline acceptance.
 
 ## Timeouts and deadlines
 
-| Operation | Default deadline | Notes |
+Phase 1 `labpty` does **not** enforce deadlines. Clients may include
+`deadline_ns` in a request envelope; `labpty` ignores it. The client
+enforces its own deadline by closing the socket if the daemon hasn't
+responded by then.
+
+The numbers below are *client-side* deadline guidance — what a
+well-behaved client should pick for its own socket timeout. They do
+not appear in `labpty`'s code in Phase 1.
+
+| Operation | Client-side guidance | Notes |
 | --- | --- | --- |
 | `hello` | 1000 ms | First contact; OS scheduling jitter dominates |
-| `openSession` | 500 ms | `posix_spawn` is the bottleneck |
-| `attachSession` | 100 ms | Should be sub-ms in practice |
-| `listSessions` | 50 ms |  |
+| `openSession` | 500 ms | fork+exec is the bottleneck |
+| `listSessions` | 50 ms | All in-memory |
 | `resizeSession` | 50 ms |  |
 | `signalSession` | 50 ms |  |
-| `terminateSession` | gracePeriod + 200 ms | grace is user-supplied |
-| `publishOpaqueSnapshot` | 50 ms |  |
+| `terminateSession` | 400 ms | 200 ms grace + 200 ms reap budget; grace is daemon-fixed in Phase 1 |
+| `writeInput` | 100 ms | Master `write(2)` may block briefly under back-pressure |
 | `ping` | 50 ms |  |
-| Wake notification → reader observes new offset | 10 ms | Else reader considers labpty unresponsive |
+| Reader observes new `output_write_offset` after byte arrival | ≤ poll tick (4 ms recommended) | Phase 1 polling cadence; Phase 2 may add wake pipes |
 
-Deadlines are advisory in the response sense (daemon returns
-`deadlineExceeded` if it can't service in time) and hard in the
-client sense (client gives up after deadline regardless of daemon
-state).
+Phase 2 may promote `deadline-enforcement/v1` if measurement shows
+`labpty` actually completes work past the client's give-up window
+often enough to matter. Until then, ignoring deadlines saves one
+`clock_gettime` syscall per RPC and removes a code path that has to
+be tested.
 
 ## Backpressure
 
@@ -764,49 +1110,57 @@ attached readers before the ring is freed.
 
 ## Observability
 
-Counters live in the per-session counters block (above). Additionally,
-the daemon exposes a process-global counters block at a well-known shm
-path:
+Phase 1: the three per-session counters in the byte-ring shm header
+(`output_bytes_written_total`, `output_wrap_count`,
+`producer_alive_mono_ns`) plus the binary-frame responses to
+`listSessions` and `ping` cover everything needed to answer "is this
+daemon healthy and are bytes moving for each session." Debugging
+proceeds by reading the ring header(s) and calling `listSessions` /
+`ping` via `Tools/LabptyDump` (the human-readable shim that connects
+to a `labpty` socket, sends a frame, and pretty-prints the response).
+
+Phase 2 adds a daemon-global counters block at a well-known shm path:
 
 ```
-labpty_daemon_counters/{run_id}
+labpty_daemon_counters/{run_id}                          Phase 2
 +---------+-------------------------------+
 | u64     | sessions_opened_total         |
 | u64     | sessions_terminated_total     |
-| u64     | attach_calls_total            |
 | u64     | rpc_calls_total               |
 | u64     | rpc_errors_total              |
-| u64     | rpc_deadline_exceeded_total   |
 | u64     | uptime_mono_ns                |
 | ...     |                               |
 +---------+-------------------------------+
 ```
 
-This is what an algo-trader's monitoring would scrape every 10 seconds.
-No structured logging is required to know "is this daemon healthy".
+This is what richer monitoring scrapes every 10 seconds once the
+daemon has earned that surface; until then, the per-session counters
+plus the control-plane responses suffice for the headline use case
+(laband restart preserves children).
 
-Diagnostic dumps (full session catalog, lease state, recent error log)
-are accessed via the `ping` op extended with capability flags. The
-hot-path counters are always available; the heavyweight dumps are gated.
+Diagnostic dumps (full session catalog, recent error log) are
+accessed via `listSessions` and structured logs. Heavyweight dump
+operations are deferred until they earn a place against principle 0.
 
 ## Execution model
 
-Single-threaded event loop per labpty process. One kqueue (macOS)
-watches:
+Single-threaded event loop per `labpty` process. Phase 1 surface is
+deliberately spare. One kqueue (macOS) watches:
 
 - All PTY master fds (one per session), `EVFILT_READ`.
 - All client control sockets, `EVFILT_READ` (for inbound RPCs).
 - A self-pipe for control-plane shutdown signaling, `EVFILT_READ`.
 
-Wake-pipe writes to readers are outbound; `labpty` queues one
-non-blocking `write(2)` per ready reader after each ring publish.
-These are not kqueue-watched on the labpty side; the receiving
-process's kqueue handles them.
+There are no outbound reader-wake writes in Phase 1; readers poll the
+byte ring. There is no input-ring drain in Phase 1; input arrives via
+the `writeInput` control RPC and is written to the master inline.
 
-Phase 2 (input ring) will add a `EVFILT_READ` registration per
-session's input-ring wake pipe so labpty can drain client-written
-input bytes promptly. Phase 1 has no input-ring wakes because input
-arrives as a control-RPC `writeInput`.
+Phase 2 additions to the event loop, when they land, are:
+
+- Outbound non-blocking writes to per-reader wake pipes after each ring
+  publish (gated on `wake-pipe-scm/v1`).
+- `EVFILT_READ` registration on each input ring's wake pipe (gated on
+  `input-ring/v1` plus `multi-attach-write-lease/v1`).
 
 Why single-threaded:
 
@@ -846,7 +1200,7 @@ latency":
 
 ## Sequence diagrams
 
-### Steady-state output flow
+### Steady-state output flow (Phase 1: polling)
 
 ```
 PTY master           labpty event loop          ring                consumer
@@ -856,54 +1210,72 @@ PTY master           labpty event loop          ring                consumer
    |<-- bytes copied ------|                     |                     |
    |                       |--memcpy to ring---->|                     |
    |                       |--release store wo-->|                     |
-   |                       |--write(wake_pipe,1) |---byte on pipe----->|
-   |                       |  if !wake_pending   |  (reader's kqueue   |
-   |                       |  set wake_pending=1 |   EVFILT_READ wakes)|
+   |                       |                     |                     |
+   |                       |  (no signal sent;   |                     |
+   |                       |   reader polls)     |                     |
+   |                       |                     |  ...(≤ poll tick)...|
+   |                       |                     |                     |--poll tick (4 ms)
    |                       |                     |                     |--acquire load wo
    |                       |                     |                     |--memcpy out
-   |                       |                     |                     |--read(wake_pipe)
-   |                       |                     |                     |  drain pending bytes
-   |                       |                     |                     |--store wake_pending=0
+   |                       |                     |                     |--update reader's
+   |                       |                     |                     |  own last_seen_offset
 ```
 
-**Design budgets** (not CI thresholds):
+**Design budgets**:
 
-- p50 ~5 µs from PTY ready to consumer holding bytes.
-- p99 ~50 µs. Most of the variance comes from the pipe write +
-  scheduler pickup, neither of which we control.
+- Mean wake latency: 2 ms (half the 4 ms poll tick), p99: 4 ms +
+  scheduler jitter.
+- Once the reader has bytes, the `memcpy` cost is sub-microsecond.
 
-These are targets to design *toward*, not absolute numbers a build can
-fail on. Production macOS scheduling jitter, contention from unrelated
-processes, and the `pipe(2)` write path itself produce occasional
-outliers in the hundreds of microseconds on a busy machine. See
-"Validation strategy" for how CI actually gates on this.
+These are deliberately above the wake-pipe budget Phase 2 would buy.
+The Phase 1 budget is "imperceptible inside `laband`'s ~16 ms
+snapshot publish cadence"; sub-millisecond wake is a Phase 2 concern.
 
-### Attach sequence
+### Steady-state output flow (Phase 2: wake pipes)
+
+Documented under "Wakeup discipline (Phase 2)" above. The sequence
+diagram from earlier drafts of this document (with
+`write(wake_pipe, 1)` and `read(wake_pipe)`) describes that Phase 2
+flow. Phase 1 implementers should ignore it.
+
+### `openSession` / `listSessions` sequence
 
 ```
 client                                          labpty
-  |---pipe(&fds[]); fds[0]=read, fds[1]=write
-  |   register fds[0] with own kqueue on EVFILT_READ
-  |---attachSession(ptyHandle, SCM_RIGHTS=fds[1])->|
-  |                                                |--receive write fd
-  |                                                |--claim slot in
-  |                                                |  per-reader table
-  |                                                |--store write fd in slot
-  |                                                |--build descriptor
-  |<--attach response w/ slot index, byte-ring----|
-  |   path, output capacity, optional snapshot
-  |   cache path. NO master fd.
+  |---openSession(argv, envp, cwd, rows, cols)---->|
+  |                                                |--openpty + fork + exec
+  |                                                |  (ADR 0002 invariants)
+  |                                                |--create byte-ring shm file
+  |                                                |--write file header
+  |                                                |--register master fd with
+  |                                                |  own kqueue
+  |                                                |--insert into in-memory
+  |                                                |  session catalog
+  |<--openSession response w/ ptyHandle,---------|
+  |   child_pid, rows, cols, byte-ring shm
+  |   path, foreground-process metadata.
+  |   NO master fd. NO SCM_RIGHTS.
   |---open(byteRingPath, O_RDONLY, mmap)
   |---validate header (magic, abi_major, capacity)
   |---store last_seen_offset = current_write_offset
   |---read producer_alive_mono_ns; verify fresh
-  |---close(fds[1])  // labpty has its own dup; we don't need ours
   |---ready
+
+A laband-as-client coming up after a restart uses:
+  |---listSessions------------------------------->|
+  |<--list of descriptors-------------------------|
+  |   (same fields as openSession; one per live
+  |    session known to labpty)
+  |---for each: open(byteRingPath), validate, ready
 ```
 
-**Design budget:** p50 ~200 µs (one socket roundtrip + one `mmap`).
-Treated as a design target; CI does not gate on absolute microseconds
-here either.
+**Design budgets** (Phase 1; advisory, not gating):
+
+- `openSession`: ~200 µs (fork+exec dominates).
+- `listSessions`: <1 ms for ~100 sessions.
+- `mmap` open on a Phase 1 file: ~50 µs.
+
+Reads of the byte ring after attach are pure shm; no syscall per byte.
 
 ## What this design does *not* try to do
 
@@ -942,25 +1314,40 @@ jitter on shared CI hardware makes absolute thresholds flaky and
 discredits the suite).
 
 **Functional invariants** (each gates the build on exact-match
-behavior):
+behavior). Phase 1 only — Phase 2 adds more as it lands:
 
 | Invariant | Test |
 | --- | --- |
 | Power-of-two output capacity enforced | `testRingCapacityMustBePowerOfTwo` |
-| Header magic and abi version checked on attach | `testAttachRejectsBadMagic` |
-| Reader-slot table is 8 × 64 bytes at offset 256 | `testReaderSlotTableLayout` |
+| Header magic and abi version checked on open | `testReaderRejectsBadMagic` |
+| Reader-slot table region exists at offset 256 with 512 zero bytes (reserved for Phase 2) | `testReaderSlotTableReservedZero` |
 | Producer alive heartbeat advances ≥ 50 ms in 150 ms | `testProducerAliveIncrements` |
 | Consumer detects wrap and recovers per "Overflow recovery" | `testConsumerDetectsRingWrap` |
-| Wake coalesces; bursty writes produce fewer wakes than publishes | `testWakeCoalescing` |
-| Deadline rejected at daemon when exceeded | `testDeadlineExceededRejected` |
+| `output_wrap_count` increments on writer lap | `testWrapCountIncrements` |
 | Sequence number echo | `testSequenceNumberEcho` |
-| `attachSession` **does not** return a master fd, never, in any code path | `testAttachReturnsNoMasterFd` |
-| `attachSession` does accept and store a wake-pipe write fd | `testAttachAcceptsWakePipe` |
-| Cross-uid attach fails with `permissionDenied` | `testAttachRejectsCrossUid` |
-| `v` field rejected on post-`hello` requests | `testVersionFieldOnlyOnHello` |
+| **No RPC returns a master fd or any other PTY fd** | `testNoRpcReturnsMasterFd` |
+| **No RPC returns or accepts any SCM_RIGHTS ancillary data in Phase 1** | `testPhase1HasNoScmRights` |
+| `listSessions` returns the byte-ring shm path for every live session | `testListSessionsCarriesByteRingPath` |
+| Cross-uid connect fails with `permissionDenied` | `testConnectRejectsCrossUid` |
+| Frame magic `"LPCT"` checked on every frame; mismatch closes connection | `testFrameMagicRequired` |
+| `abi_major` mismatch closes connection; `abi_minor` newer-than-implementation accepted | `testAbiMajorRejectsMismatch`, `testAbiMinorTolerant` |
+| Frame `op = 0xFFFF` rejected when sent from client (response code only) | `testClientCannotSendResponseOp` |
+| Version pinned at `hello`; subsequent requests carry no version slot | `testVersionPinnedAtHello` |
+| No deadline field in the Phase 1 frame header (no place to send one) | `testFrameHeaderHasNoDeadlineSlot` |
+| Frame decoder rejects `frame_len > MAX_FRAME` without read-past-buffer | `testFrameDecoderRejectsOversizeFrame` |
+| Frame decoder rejects truncated payloads (length-prefix exceeds remaining frame budget) | `testFrameDecoderRejectsTruncatedPayload` |
+| Frame decoder is closed under fuzz: arbitrary bytes never crash or read past buffer | `testFrameDecoderFuzz` (libFuzzer corpus harness; the primary fuzz target) |
+| `pty_handle` is a `u64`; no string handle types reachable | `testPtyHandleIsU64` (grep + decode test) |
+| `argv`/`envp` counted-array decoder rejects entry exceeding per-field cap | `testArgvRejectsOversize`, `testEnvpRejectsOversize` |
+| `writeInput` payload size derived from `frame_len`; no inner length prefix | `testWriteInputPayloadFromFrameLen` |
+| `terminateSession` payload is exactly 8 bytes after the header | `testTerminatePayloadShape` |
+| Every per-op decoder rejects bytes that would alias the in-memory C struct layout (no `memcpy(&hdr, buf, 24)` regression) | `testNoStructMemcpyRegression` (`git grep -nE 'memcpy\(.*&.*,.*frame'` returns zero hits in `Sources/Labpty/`) |
+| `attachSession` op is **not** registered in Phase 1 (or returns `versionMismatch`) | `testAttachSessionUnimplementedInPhase1` |
 | Hot-path allocation profile is bounded | `testHotPathAllocationCount` (sample-mode) |
 | `labpty` restart kills children (Phase 3 will lift this) | `testLabptyExitClosesMaster` |
 | `laband` restart preserves children | `testLabandRestartPreservesChildViaLabpty` (in `Tests/LabandTests/`) |
+| Foreground process metadata flows from `labpty` into the `LabptySessionDescriptor` returned by `listSessions` | `testListSessionsCarriesForegroundProcessMetadata` |
+| `labpty` does not write to per-reader slot table region in Phase 1 (region stays zero through normal operation) | `testReaderSlotTableStaysZeroInPhase1` |
 
 **Latency tracking** (does not gate the build by default):
 
@@ -983,6 +1370,36 @@ against a rolling 30-day baseline**:
   validating a candidate implementation on local hardware. It is
   not enabled in shared CI.
 
+**Verification ladder.** Beyond property tests and the frame-decoder
+fuzzer, the verification bar in architectural invariant #8 (see
+`execplans/active/labpty-extraction.md`) admits stronger tools as
+they become useful:
+
+- **Phase 1 floor:** property tests + libFuzzer on the frame
+  decoder. The base level every patch to `labpty` must satisfy.
+- **Aspirational rung 1: CBMC.** Bounded model checking on the
+  frame decoder, byte-ring writer arithmetic, and session-registry
+  hash table. CBMC unrolls loops and proves bounds across the
+  unrolled depth; for our bounded-input code (every loop's bound
+  is a wire-supplied length or a compile-time constant), the
+  unroll depth is finite and the proof is realistic. Worth one
+  spike to evaluate; not a Phase 1 acceptance gate.
+- **Aspirational rung 2: Frama-C / ACSL annotations.** Inline
+  contracts on the helper primitives (`labpty_read_u32` and
+  friends) that a static analyzer checks. Useful if the codebase
+  has more than ~1000 lines of C in `labpty`; Phase 1 should land
+  closer to 500 lines, at which point the eyeball is competitive.
+- **Aspirational rung 3: differential property testing across the
+  Swift and C decoders.** Generate a random valid frame; encode it
+  via the Swift `LabptyFraming` encoder; decode it via the C
+  `labpty_frame.c` decoder (and the inverse direction). Identity
+  must hold. Catches drift between the two implementations the
+  binary protocol leaves split across language boundaries.
+
+The ladder is documented here so a future maintainer who wants to
+strengthen the bar has a concrete next rung to climb, not a vague
+"add more tests."
+
 ## Open questions
 
 Defer to implementation experience:
@@ -1003,14 +1420,18 @@ These are tracked in the Phase 1 ExecPlan's M0 milestone.
 
 ## Why this is worth the discipline
 
-The naive design — JSON over Unix socket for everything, allocate per
-message, no heartbeat, no counters — would work. It would also produce
-a daemon whose tail latency is dominated by GC pauses (Swift's ARC), JSON
-parse spikes, and unbounded buffer growth under load. It would be
-*indistinguishable from working* until a user's busy build session
-saturated the control plane and the daemon stopped responding to
-keystrokes for 300 ms. That's the failure mode algo traders see in
-naive feed handlers, and it's the failure mode labpty must not have.
+The naive design — Swift-shaped daemon with one socket per session,
+allocate per message, no heartbeat, no counters, JSON on every hop —
+would work. It would also produce a daemon whose tail latency is
+dominated by ARC, parse spikes on open-shape input, and unbounded
+buffer growth under load. It would be *indistinguishable from working*
+until a user's busy build session saturated the control plane and the
+daemon stopped responding to keystrokes for 300 ms. That's the
+failure mode algo traders see in naive feed handlers, and it's the
+failure mode `labpty` must not have. The Phase 1 design — C
+implementation, binary frame protocol, polling readers, fixed-offset
+shm, three counters, no GC, no ARC, no JSON parser — is what bounds
+that risk.
 
 The disciplines above buy a daemon whose worst-case behavior is bounded
 and observable. The cost is roughly 600 lines of carefully-written
@@ -1023,19 +1444,110 @@ is the entire point of putting `labpty` below `laband`.
 Load-bearing design decisions that survived review. Each entry records
 why an alternative was considered and rejected.
 
-- Decision: `attachSession` does not return a PTY master fd. SCM_RIGHTS
-  in Phase 1 carries only the reader's wake-pipe write end.
+- Decision: Surface minimalism (principle 0) is the architectural
+  constraint that decides Phase 1 / Phase 2 / Phase 3 for every
+  feature in this document. `labpty` is the only process whose own
+  upgrade still kills live sessions until Phase 3 fd-handoff lands,
+  so every feature that lives in `labpty` carries an upgrade-restart
+  cost we pay every time we touch the code. Phase 1's surface is the
+  smallest credible set required for the headline acceptance test:
+  open a PTY, drain it into a byte ring, accept input via an RPC,
+  resize / signal / terminate, expose enough metadata for `laband`
+  restart to rediscover sessions, and a producer-alive heartbeat.
+  Everything else — `attachSession`, wake pipes, per-reader slot
+  table, snapshot cache, metadata ring, input ring, deadline
+  enforcement, daemon-global counters, latency-forensics CI gating
+  — was moved to Phase 2+ in this iteration, even where the
+  long-term design still wants it.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: Phase 1 readers poll the byte ring; no wake mechanism in
+  `labpty`. No SCM_RIGHTS in Phase 1.
+  Rationale: An earlier draft had `labpty` accept a wake-pipe write
+  fd via SCM_RIGHTS at `attachSession`, maintain a per-reader slot
+  table, and write one byte per coalesced ring publish to signal
+  readers. That bought ~3 ms of wake latency over a 4 ms polling
+  tick — which is invisible inside `laband`'s ~16 ms snapshot publish
+  cadence. The Phase 1 cost was a per-reader registry, a wake-pending
+  flag protocol, SCM_RIGHTS plumbing, and stale-reader sweep logic.
+  None of it is required for the headline acceptance test (`laband`
+  restart preserves the same child PID). Polling delivers the same
+  outcome at zero `labpty` state and zero `labpty` code. Phase 2 may
+  add the wake-pipe mechanism if measurements in single-client
+  byte-ring mode (app talks to `labpty` directly) show the polling
+  tick is a perceptible latency source.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: Phase 1 does not have an `attachSession` RPC.
+  Rationale: Once polling replaces wake pipes (preceding decision),
+  there is no per-reader state for `attachSession` to register —
+  `labpty` learns nothing it didn't already know. `listSessions`
+  returns the byte-ring shm path on every descriptor, which is what
+  `laband` and any other reader actually need to start consuming.
+  Eliminating the RPC removes about 100 lines of `labpty` code plus
+  one round-trip from every reader's startup path. Phase 2 may
+  reintroduce `attachSession` if/when the wake-pipe mechanism lands
+  and needs a registration point.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: Phase 1 `labpty` does not enforce request deadlines.
+  Rationale: A deadline check is a `clock_gettime` syscall on every
+  RPC plus a code path that has to be tested. Phase 1 RPC rate is
+  bounded by user action (open/resize/terminate happen seconds
+  apart; `writeInput` rate is bounded by typing speed). The Phase 1
+  failure modes a deadline catches — `labpty` hangs while processing
+  an RPC — are caught more cheaply by the client's own socket
+  timeout. Clients may still include `deadline_ns` in the request
+  envelope as forward-compat; `labpty` ignores it. Phase 2 may
+  promote `deadline-enforcement/v1` if measurement justifies the
+  syscall cost.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: Phase 1 `labpty` populates only three shm counters
+  (`output_bytes_written_total`, `output_wrap_count`,
+  `producer_alive_mono_ns`). All other counter slots are reserved
+  at their final offsets and stay zero.
+  Rationale: The three populated counters are exactly what's needed
+  to answer "is `labpty` alive and are bytes moving for this
+  session." Master-side counters
+  (`master_read_calls_total`/`master_read_eagain_total`),
+  attached-consumer counters, input-side counters, wake-notification
+  counters all become useful when Phase 2 starts caring about reader
+  registration, input ring backpressure, and wake coalescing. Each
+  costs a u64 store somewhere on a hot path; bundling them with their
+  feature reduces the chance of an unused counter accumulating wrong
+  values nobody notices.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: Phase 1 does not ship the daemon-global counters file
+  (`labpty_daemon_counters/{run_id}`).
+  Rationale: Per-session counters in each ring's shm header plus the
+  control-plane responses to `listSessions` and `ping` cover Phase
+  1's observability needs. A daemon-global counters file adds a
+  separate shm artifact, an opening / mapping path, and counter-update
+  code on every RPC. The features it would observe — RPC rate, RPC
+  error rate, daemon uptime — are interesting once `labpty` is in
+  steady production use; Phase 1 is still proving the headline
+  acceptance.
+  Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: No PTY master fd ever crosses a process boundary in
+  normal operation; Phase 1 uses no SCM_RIGHTS at all.
   Rationale: Two processes blocked in `read(2)` on the same PTY master
   fd race for individual bytes; POSIX makes no per-byte fairness or
-  atomicity guarantee. Two writers interleave. The previous draft of
-  this doc handed the master fd out at attach time, which would have
+  atomicity guarantee. Two writers interleave. An early draft of this
+  doc handed the master fd out at `attachSession`, which would have
   let any client read or write the same master as `labpty` and split
-  the byte stream non-deterministically. The fix is to make `labpty`
-  the sole custodian and route input through `writeInput`. The
-  `fd-handoff/v1` capability remains reserved for Phase 3 labpty
-  self-upgrade, which is the only legitimate scenario for a PTY master
-  fd to cross a process boundary.
-  Date/Author: 2026-05-26 / review iteration.
+  the byte stream non-deterministically. A later draft reduced
+  SCM_RIGHTS to wake-pipe write fds only. The thinness review
+  iteration removed SCM_RIGHTS from Phase 1 entirely by replacing
+  wake pipes with polling. The `fd-handoff/v1` capability remains
+  reserved for Phase 3 `labpty` self-upgrade, which is the only
+  legitimate scenario for a PTY master fd to cross a process
+  boundary, and that handoff goes between `labpty` instances, never
+  to a client.
+  Date/Author: 2026-05-26 / superseded then re-confirmed across
+  successive review iterations.
 
 - Decision: Per-reader state lives in a separate 8-slot × 64-byte
   table at offset 256, not in the 128-byte counters block.
@@ -1059,8 +1571,10 @@ why an alternative was considered and rejected.
   implementation picks one of the two Darwin primitives.
   Date/Author: 2026-05-26 / review iteration.
 
-- Decision: Reader wake primitive is a self-pipe with the write end
-  passed to `labpty` via SCM_RIGHTS at attach time.
+- Decision: Phase 2's reader wake primitive (when it lands) is a
+  self-pipe with the write end passed to `labpty` via SCM_RIGHTS at
+  attach time. Phase 1 has no wake primitive — readers poll (see
+  "Phase 1 readers poll").
   Rationale: `eventfd` does not exist on Darwin. `EVFILT_USER` is a
   per-process kqueue construct and cannot be triggered cross-process;
   earlier drafts treated it like a passable equivalent to `eventfd`,
@@ -1069,9 +1583,11 @@ why an alternative was considered and rejected.
   speed advantage at the rates this protocol sees. A pipe is the
   simplest, well-understood, cross-process wake primitive available
   on Darwin; the ~1 µs `write(1)` cost plus scheduler pickup is
-  dominated by jitter that no Darwin primitive avoids. This is the
-  only Phase 1 use of SCM_RIGHTS.
-  Date/Author: 2026-05-26 / review iteration.
+  dominated by jitter that no Darwin primitive avoids. The Phase 2
+  decision is settled in case it's needed; the thinness review
+  deferred actually shipping it because polling achieves the same
+  user-visible behavior at zero `labpty` cost.
+  Date/Author: 2026-05-26 / settled cross-iteration.
 
 - Decision: Overflow recovery is tiered (fresh snapshot → in-ring
   replay → controlled failure), not solely "request opaque snapshot."
@@ -1113,13 +1629,35 @@ why an alternative was considered and rejected.
   opt-in for local hardware validation.
   Date/Author: 2026-05-26 / review iteration.
 
-- Decision: The `v` field is only valid in `hello` requests; all other
-  requests omit it.
-  Rationale: The design principle is "versioning happens once at
-  handshake, never per message." An earlier draft showed `v` in the
-  shared request envelope, contradicting the principle. The fix
-  splits the envelope into a `hello`-specific shape that carries `v`
-  + `capabilities` and a post-`hello` shape that does not; a `v`
-  field in any other op is `versionMismatch`. This makes the
-  invariant structural rather than advisory.
-  Date/Author: 2026-05-26 / review iteration.
+- Decision: Version negotiation happens in the `hello` payload only;
+  the binary frame header has no version slot.
+  Rationale: An earlier draft (JSON-based) showed `v` in the shared
+  request envelope, contradicting the principle "versioning happens
+  once at handshake, never per message." The binary-frame rewrite
+  removes the slot entirely from the wire — the `labpty_frame_header`
+  carries `frame_len`, `op`, `code`, `seq` and nothing else. Version
+  is carried only inside the `hello` payload itself. This makes the
+  invariant structural at the wire level: there is no place to send
+  a per-message version field, so the question of accepting one
+  doesn't arise.
+  Date/Author: 2026-05-26 / settled across review iterations
+  (renewed in the binary-frame switch).
+
+- Decision: Control plane is length-prefixed binary frames
+  (`LBPTY-CT-01`), not JSON.
+  Rationale: The earlier design picked JSON for the control plane on
+  ergonomics + bounded-rate grounds. The decision to implement
+  `labpty` in C plus the verification bar (every non-syscall decision
+  has a property test or fuzzer) inverted the cost: a JSON parser in
+  C is the single most-exposed surface in `labpty` and a mandatory
+  fuzz target, ~300 LoC at minimum for a closed schema. A binary
+  frame decoder is ~80 LoC, trivially fuzzable (one bounds check per
+  length prefix), and lets `writeInput` carry raw bytes without
+  base64 (avoiding ~33% bandwidth overhead per keystroke and an
+  encode/decode hop on each end). The human-debug ergonomics
+  argument JSON used to win on is preserved through a separate
+  `Tools/LabptyDump` Swift shim — ~50 LoC, one-time cost, never on
+  the hot path. `LabandProtocol` reuse was the third JSON argument;
+  it dissolved when `labpty` became C (Swift `Codable` doesn't help
+  a C daemon).
+  Date/Author: 2026-05-26 / binary-protocol switch iteration.
