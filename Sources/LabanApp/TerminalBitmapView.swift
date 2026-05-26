@@ -31,6 +31,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private let cellHeight: Int
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
   private let surfaceController: TerminalSurfaceController
+  private let labandCoordinator: AppLabandSessionCoordinator?
   // Vsync-aligned tick.
   // - macOS 14+: CADisplayLink with a `preferredFrameRateRange` so a
   //   ProMotion panel can drop to a low rate when the terminal is idle and
@@ -217,7 +218,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     sidebarFontAtlas: FontAtlas,
     cellWidth: Int,
     cellHeight: Int,
-    urlOpener: any ExternalURLOpening = NSWorkspace.shared
+    urlOpener: any ExternalURLOpening = NSWorkspace.shared,
+    labandCoordinator: AppLabandSessionCoordinator? = nil
   ) {
     self.model = model
     self.urlOpener = urlOpener
@@ -225,6 +227,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     self.sidebarFontAtlas = sidebarFontAtlas
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
+    self.labandCoordinator = labandCoordinator
     self.sidebarCellWidth = Int(sidebarFontAtlas.cellSize.width)
     self.sidebarCellHeight = Int(sidebarFontAtlas.cellSize.height)
     self.surfaceController = TerminalSurfaceController(
@@ -815,7 +818,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     self.scrollAnimating = scrollAnimating
 
-    let terminalDirty = activeTerminalDirty || session.renderDirty()
+    let remoteSnapshot: LabandSnapshotResponse?
+    if let labandCoordinator {
+      do {
+        remoteSnapshot = try labandCoordinator.snapshot(for: activeTab, size: model.terminalSize)
+        activeTerminalDirty = activeTerminalDirty || (remoteSnapshot?.dirty ?? false)
+      } catch {
+        remoteSnapshot = nil
+        AppLog.app.error("laband snapshot failed: \(String(describing: error))")
+      }
+    } else {
+      remoteSnapshot = nil
+    }
+
+    let terminalDirty = activeTerminalDirty || (remoteSnapshot == nil && session.renderDirty())
 
     let syncGate = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: terminalDirty,
@@ -888,8 +904,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale)
     )
-    guard
-      let surfaceFrame = surfaceController.makeFrame(
+    let surfaceFrame: TerminalSurfaceFrame?
+    if let remoteSnapshot {
+      surfaceFrame = surfaceController.makeFrame(
+        request,
+        remoteSnapshot: remoteSnapshot,
+        sessionId: session.id)
+    } else {
+      surfaceFrame = surfaceController.makeFrame(
         request,
         snapshotCommandsHook: { snapshot, commands in
           self.frameProbe?.record(
@@ -900,7 +922,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
             surfaceHeight: self.backend.surfaceHeight,
             surfaceScale: Double(self.backend.surfaceScale))
         })
-    else { return }
+    }
+    guard let surfaceFrame else { return }
 
     lastRows = surfaceFrame.rows ?? lastRows
     let snapshotCursorBlinking = surfaceFrame.cursorBlinking
@@ -941,7 +964,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       needsDisplay = true
     }
 
-    session.markRendered()
+    if let labandCoordinator {
+      labandCoordinator.markRendered(tab: activeTab)
+    } else {
+      session.markRendered()
+    }
     renderInvalidated = false
     lastRenderedActiveTabId = activeTab.id
     syncFindChip()
@@ -1140,8 +1167,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     syncSelectionStateToActiveTab()
     persistSelectionStateForCurrentTab()
     let tab = try model.createTab()
+    try labandCoordinator?.ensureSession(for: tab, size: model.terminalSize)
     restoreSelectionState(for: tab.id)
     return tab
+  }
+
+  private func closeTabAndRemoteSession(_ tabId: Tab.ID) throws {
+    if let tab = model.tabs.first(where: { $0.id == tabId }) {
+      labandCoordinator?.terminate(tab: tab)
+    }
+    try model.closeTab(tabId)
   }
 
   private func clearAllSelectionState() {
@@ -1272,6 +1307,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     model.resize(
       viewportWidth: termW, viewportHeight: termH,
       cellWidth: cellWidth, cellHeight: cellHeight)
+    labandCoordinator?.resize(tabs: model.tabs, size: model.terminalSize)
 
     // Render synchronously inside the resize event during live drag so the
     // new drawable commits with the new grid dimensions in the same event
@@ -1405,8 +1441,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func sendKeyEvent(_ event: KeyEvent) {
-    guard let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId)
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
     else { return }
     let inputFollowDeltaRows: Int
     if event.action != .release {
@@ -1415,8 +1451,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     } else {
       inputFollowDeltaRows = 0
     }
-    let sent = session.sendKeyCapturingBytes(event)
-    let bytes = sent.result == 0 ? sent.bytes : []
+    let bytes: [UInt8]
+    if let labandCoordinator {
+      bytes = session.encodeKey(event) ?? []
+      if !bytes.isEmpty {
+        do {
+          try labandCoordinator.write(bytes, to: activeTab, size: model.terminalSize)
+        } catch {
+          AppLog.app.error("laband key input failed: \(String(describing: error))")
+        }
+      }
+    } else {
+      let sent = session.sendKeyCapturingBytes(event)
+      bytes = sent.result == 0 ? sent.bytes : []
+    }
     recordInput(
       kind: "key",
       route: "terminal",
@@ -1431,12 +1479,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   private func sendBytes(_ bytes: [UInt8]) {
-    guard let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId)
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
     else { return }
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
-    session.write(bytes)
+    if let labandCoordinator {
+      do {
+        try labandCoordinator.write(bytes, to: activeTab, size: model.terminalSize)
+      } catch {
+        AppLog.app.error("laband text input failed: \(String(describing: error))")
+      }
+    } else {
+      session.write(bytes)
+    }
     recordInput(
       kind: "text",
       route: "terminal",
@@ -1819,6 +1875,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
     let sent = session.writePasteCapturingBytes(sanitized)
+    if let labandCoordinator, let activeTab = model.activeTab, !sent.bytes.isEmpty {
+      try? labandCoordinator.write(sent.bytes, to: activeTab, size: model.terminalSize)
+    }
     EventLog.shared.log(
       "paste",
       [
@@ -1841,6 +1900,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
     let event = KeyEvent(action: .press, key: .v, modifiers: .control)
     let sent = session.sendKeyCapturingBytes(event)
+    if let labandCoordinator, let activeTab = model.activeTab, !sent.bytes.isEmpty {
+      try? labandCoordinator.write(sent.bytes, to: activeTab, size: model.terminalSize)
+    }
     EventLog.shared.log(
       "paste.image.forwarded",
       [
@@ -1873,6 +1935,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
     let sent = session.writePasteCapturingBytes(text)
+    if let labandCoordinator, !sent.bytes.isEmpty {
+      try? labandCoordinator.write(sent.bytes, to: activeTab, size: model.terminalSize)
+    }
     EventLog.shared.log(
       "drop.files",
       [
@@ -2147,7 +2212,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         renderInvalidated = true
       case .closeTab(let id):
         do {
-          try model.closeTab(id)
+          try closeTabAndRemoteSession(id)
           pruneClosedTabState(id)
         } catch AppError.lastTabClosed {
           pruneClosedTabState(id)
@@ -2776,7 +2841,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   @objc func closeTab(_ sender: Any?) {
     guard let tabId = model.activeTab?.id else { return }
     do {
-      try model.closeTab(tabId)
+      try closeTabAndRemoteSession(tabId)
       pruneClosedTabState(tabId)
     } catch AppError.lastTabClosed {
       pruneClosedTabState(tabId)

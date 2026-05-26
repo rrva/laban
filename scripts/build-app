@@ -63,7 +63,7 @@ prefix_map_flags=" \
   -Xcc -ffile-prefix-map=${repo_root}=."
 
 # shellcheck disable=SC2086
-swift build -c "$build_config" --product LabanApp $prefix_map_flags
+swift build -c "$build_config" --product LabanApp --product laband $prefix_map_flags
 
 app_bundle=".build/laban/Laban.app"
 bundle_dir="${app_bundle}/Contents"
@@ -72,6 +72,7 @@ mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 # shellcheck disable=SC2086
 bin=$(swift build -c "$build_config" --product LabanApp --show-bin-path $prefix_map_flags)
 cp -f "$bin/LabanApp" "${bundle_dir}/MacOS/LabanApp"
+cp -f "$bin/laband" "${bundle_dir}/MacOS/laband"
 
 # Copy app icon into bundle
 icon="Sources/LabanApp/Resources/AppIcon.icns"
@@ -132,6 +133,7 @@ else
   # at the per-object .o files under /Users/<name>/.../.build/...). Function
   # symbols stay so crash reports still symbolicate.
   strip -S "${bundle_dir}/MacOS/LabanApp"
+  strip -S "${bundle_dir}/MacOS/laband"
 fi
 
 # SwiftPM's auto-generated `Bundle.module` accessors and native dependencies can
@@ -140,35 +142,36 @@ fi
 # NULs before signing. Skipped for --profile builds because the same scrub
 # zeroes N_OSO debug-map paths that Instruments needs.
 if [ "$profile_build" = 0 ]; then
-python3 - "${bundle_dir}/MacOS/LabanApp" <<'PY'
+python3 - "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband" <<'PY'
 import re, sys
-path = sys.argv[1]
-with open(path, "rb") as f:
-    data = f.read()
 patterns = [
     re.compile(rb"/Users/[^\x00]*"),
     re.compile(rb"/private/var/folders/[^\x00]*"),
 ]
-new = data
-for pattern in patterns:
-    new = pattern.sub(lambda m: b"\x00" * len(m.group(0)), new)
-if new != data:
-    with open(path, "wb") as f:
-        f.write(new)
+for path in sys.argv[1:]:
+    with open(path, "rb") as f:
+        data = f.read()
+    new = data
+    for pattern in patterns:
+        new = pattern.sub(lambda m: b"\x00" * len(m.group(0)), new)
+    if new != data:
+        with open(path, "wb") as f:
+            f.write(new)
 PY
 
 # Final guard: refuse to produce a .app that still mentions a home
 # directory or a hard-coded developer identity. New regressions get
 # caught here before the bundle is signed or zipped.
 verify_clean() {
-  bin_path="${bundle_dir}/MacOS/LabanApp"
-  matches=$(LC_ALL=C strings -a "$bin_path" |
-    grep -E '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
-  if [ -n "$matches" ]; then
-    printf 'build-app failed: identifying strings remain in %s:\n' "$bin_path" >&2
-    printf '%s\n' "$matches" | head -20 >&2
-    exit 1
-  fi
+  for bin_path in "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband"; do
+    matches=$(LC_ALL=C strings -a "$bin_path" |
+      grep -E '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
+    if [ -n "$matches" ]; then
+      printf 'build-app failed: identifying strings remain in %s:\n' "$bin_path" >&2
+      printf '%s\n' "$matches" | head -20 >&2
+      exit 1
+    fi
+  done
 }
 verify_clean
 fi
@@ -187,10 +190,14 @@ verify_signature() {
 if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
   printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1; output may not launch)\n'
 elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
+  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laband"
+  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/LabanApp"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "$app_bundle"
   verify_signature
   printf 'build-app: codesigned with %s\n' "$LABAN_CODESIGN_IDENTITY"
 else
+  codesign --force --sign - "${bundle_dir}/MacOS/laband"
+  codesign --force --sign - "${bundle_dir}/MacOS/LabanApp"
   codesign --force --sign - "$app_bundle"
   verify_signature
   printf 'build-app: codesigned ad-hoc\n'

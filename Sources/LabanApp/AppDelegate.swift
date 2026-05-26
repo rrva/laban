@@ -110,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if RestoreOnLaunchSettings.isEnabled {
       windowController?.agentObserverHost?.flushAll()
     }
+    windowController?.detachTerminalSessions()
     EventLog.shared.log("app.quit")
   }
 

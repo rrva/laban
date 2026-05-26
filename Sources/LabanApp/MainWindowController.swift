@@ -13,6 +13,7 @@ final class MainWindowController: NSWindowController {
   private(set) var model: AppModel?
   private(set) var terminalBackend: TerminalSessionBackend = .inProcess
   private(set) var terminalSessionClient: TerminalSessionClient?
+  private(set) var labandCoordinator: AppLabandSessionCoordinator?
   /// Per-tab agent-session detector + JSONL mirror orchestrator. Kept
   /// alive on the window controller so the detector timers don't
   /// stop when AppDelegate's local refs go out of scope.
@@ -55,17 +56,25 @@ final class MainWindowController: NSWindowController {
     // a passthrough launch, so the shell starts unchanged.
     // See `ShellIntegrationOverlay` and `docs/product/spec.md` §7.
     let shellLaunch = Self.installShellIntegrationOverlay()
-    let terminalBackend = try TerminalSessionBackend.configured()
-    let terminalSessionClient: TerminalSessionClient? =
-      try Self.makeTerminalSessionClient(backend: terminalBackend)
+    let terminalBackend = try Self.configuredAppTerminalBackend()
+    let restoredCwdByTabId = Self.restoredCwdByTabId(from: restoredState)
+    let labandCoordinator = try Self.makeLabandCoordinator(
+      backend: terminalBackend,
+      shellLaunch: shellLaunch,
+      cwdByTabId: restoredCwdByTabId)
 
     let model = try AppModel(
       initialSize: size,
       sessionFactory: {
-        try Session.realShell(
-          size: $0,
-          environment: shellLaunch.environmentOverrides,
-          launchArgv: shellLaunch.argv)
+        switch terminalBackend {
+        case .inProcess:
+          return try Session.realShell(
+            size: $0,
+            environment: shellLaunch.environmentOverrides,
+            launchArgv: shellLaunch.argv)
+        case .laband:
+          return try Session.fixture(size: $0)
+        }
       }
     )
     let isPersistenceEnabled = {
@@ -95,6 +104,9 @@ final class MainWindowController: NSWindowController {
     // pivot data only; automatic restore must not paint old output
     // or replay generic terminal commands into a live terminal.
     model.restoredDeferredSessionFactory = { spec in
+      if terminalBackend == .laband {
+        return try Session.fixture(size: spec.size)
+      }
       let session = try Session.makeDeferred(
         size: spec.size, cwd: spec.cwd, environment: shellLaunch.environmentOverrides)
       // Agent tabs that were running at quit launch the shell with the
@@ -132,7 +144,10 @@ final class MainWindowController: NSWindowController {
     // Simple fallback for restored tabs that don't have a deferred
     // factory (used by headless tests that swap the factory out).
     model.restoredSessionFactory = { size, cwd in
-      try Session.realShell(
+      if terminalBackend == .laband {
+        return try Session.fixture(size: size)
+      }
+      return try Session.realShell(
         size: size, cwd: cwd,
         environment: shellLaunch.environmentOverrides,
         launchArgv: shellLaunch.argv)
@@ -161,13 +176,15 @@ final class MainWindowController: NSWindowController {
     if model.tabs.isEmpty {
       _ = try? model.createTab()
     }
+    try labandCoordinator?.ensureSessions(for: model.tabs, size: model.terminalSize)
 
     let termView = TerminalBitmapView(
       model: model,
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas,
       cellWidth: cellW,
-      cellHeight: cellH
+      cellHeight: cellH,
+      labandCoordinator: labandCoordinator
     )
     termView.frame = NSRect(x: 0, y: 0, width: viewW, height: viewH)
 
@@ -238,7 +255,8 @@ final class MainWindowController: NSWindowController {
     let controller = MainWindowController(window: window)
     controller.model = model
     controller.terminalBackend = terminalBackend
-    controller.terminalSessionClient = terminalSessionClient
+    controller.terminalSessionClient = labandCoordinator?.terminalClient
+    controller.labandCoordinator = labandCoordinator
 
     let autoChecker = UpdateAutoChecker(badge: updateBadge) { manifest in
       (NSApp.delegate as? AppDelegate)?.showAvailableUpdate(manifest)
@@ -346,20 +364,126 @@ final class MainWindowController: NSWindowController {
     }
   }
 
-  private static func makeTerminalSessionClient(
-    backend: TerminalSessionBackend
-  ) throws -> TerminalSessionClient? {
-    switch backend {
-    case .inProcess:
-      return InProcessTerminalSessionClient()
-    case .laband:
-      guard let socketPath = ProcessInfo.processInfo.environment["LABAN_LABAND_SOCKET"],
-        !socketPath.isEmpty
-      else {
-        throw TerminalSessionClientError.protocolError(
-          "LABAN_TERMINAL_BACKEND=laband requires LABAN_LABAND_SOCKET in M2")
-      }
-      return try LabandTerminalSessionClient(socketPath: socketPath)
+  func detachTerminalSessions() {
+    labandCoordinator?.detach()
+  }
+
+  private static func configuredAppTerminalBackend() throws -> TerminalSessionBackend {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["LABAN_TERMINAL_BACKEND"] != nil {
+      return try TerminalSessionBackend.configured(environment: environment)
     }
+    if environment["LABAN_DISABLE_PRODUCT_LABAND"] == "1" {
+      return .inProcess
+    }
+    return bundledLabandExecutableURL() == nil ? .inProcess : .laband
+  }
+
+  private static func makeLabandCoordinator(
+    backend: TerminalSessionBackend,
+    shellLaunch: ShellIntegrationLaunch,
+    cwdByTabId: [Tab.ID: String]
+  ) throws -> AppLabandSessionCoordinator? {
+    guard backend == .laband else { return nil }
+    let setup = try connectOrStartLaband()
+    return AppLabandSessionCoordinator(
+      client: setup.client,
+      shellLaunch: shellLaunch,
+      cwdByTabId: cwdByTabId,
+      labandProcess: setup.process
+    )
+  }
+
+  private static func connectOrStartLaband() throws -> (
+    client: LabandTerminalSessionClient, process: Process?
+  ) {
+    let environment = ProcessInfo.processInfo.environment
+    let paths = LabandProductPaths.default()
+    try paths.createDirectories()
+    let socketPath =
+      environment["LABAN_LABAND_SOCKET"].flatMap { $0.isEmpty ? nil : $0 }
+      ?? paths.labandDirectoryURL.appendingPathComponent("laband.sock").path
+
+    if let client = try? LabandTerminalSessionClient(socketPath: socketPath) {
+      _ = try client.hello()
+      return (client, nil)
+    }
+
+    guard let executableURL = labandExecutableURL() else {
+      throw TerminalSessionClientError.protocolError(
+        "laband backend requested but no laband executable is available")
+    }
+
+    try FileManager.default.createDirectory(
+      at: URL(fileURLWithPath: socketPath).deletingLastPathComponent(),
+      withIntermediateDirectories: true)
+
+    let stdoutURL = paths.logDirectoryURL.appendingPathComponent("stdout.log")
+    let stderrURL = paths.logDirectoryURL.appendingPathComponent("stderr.log")
+    FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
+    FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+
+    let process = Process()
+    process.executableURL = executableURL
+    process.arguments = [
+      "--socket", socketPath,
+      "--journal", paths.journalDirectoryURL.path,
+    ]
+    process.standardOutput = try FileHandle(forWritingTo: stdoutURL)
+    process.standardError = try FileHandle(forWritingTo: stderrURL)
+    try process.run()
+
+    let deadline = Date().addingTimeInterval(5)
+    var lastError: Error?
+    while Date() < deadline {
+      if !process.isRunning {
+        throw TerminalSessionClientError.protocolError(
+          "laband exited before socket was ready; see \(stderrURL.path)")
+      }
+      do {
+        let client = try LabandTerminalSessionClient(socketPath: socketPath)
+        _ = try client.hello()
+        return (client, process)
+      } catch {
+        lastError = error
+        usleep(50_000)
+      }
+    }
+
+    process.terminate()
+    throw TerminalSessionClientError.protocolError(
+      "timed out connecting to laband at \(socketPath): \(String(describing: lastError))")
+  }
+
+  private static func labandExecutableURL() -> URL? {
+    if let raw = ProcessInfo.processInfo.environment["LABAN_LABAND_BIN"], !raw.isEmpty {
+      let url: URL
+      if raw.hasPrefix("/") {
+        url = URL(fileURLWithPath: raw)
+      } else {
+        url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+          .appendingPathComponent(raw)
+      }
+      return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+    if let bundled = bundledLabandExecutableURL() {
+      return bundled
+    }
+    let devURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent(".build/debug/laband")
+    return FileManager.default.isExecutableFile(atPath: devURL.path) ? devURL : nil
+  }
+
+  private static func bundledLabandExecutableURL() -> URL? {
+    let url = Bundle.main.bundleURL
+      .appendingPathComponent("Contents", isDirectory: true)
+      .appendingPathComponent("MacOS", isDirectory: true)
+      .appendingPathComponent("laband", isDirectory: false)
+    return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+  }
+
+  private static func restoredCwdByTabId(from state: WorkspaceState?) -> [Tab.ID: String] {
+    guard let state, let window = state.windows.first else { return [:] }
+    return Dictionary(uniqueKeysWithValues: window.tabs.map { ($0.id, $0.cwd) })
   }
 }

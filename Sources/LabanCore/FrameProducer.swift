@@ -397,6 +397,209 @@ public struct FrameProducer {
     return cmds
   }
 
+  public func commands(
+    from snapshot: LabandSnapshotResponse,
+    selection: TerminalSelection? = nil,
+    cursorBlinkVisible: Bool = true
+  ) -> [FrameCommand] {
+    let rows = max(snapshot.rows, 0)
+    let cols = max(snapshot.cols, 0)
+    let cw = CGFloat(cellWidth)
+    let ch = CGFloat(cellHeight)
+    let defaultBg = snapshot.cells.first?.backgroundRGBA ?? Theme.current.bg0
+
+    var cmds: [FrameCommand] = []
+    cmds.reserveCapacity(rows * 2 + 4)
+    cmds.append(
+      .rect(
+        CGRect(x: originX, y: originY, width: CGFloat(cols) * cw, height: CGFloat(rows) * ch),
+        color: defaultBg,
+        source: .terminal
+      ))
+
+    guard rows > 0, cols > 0 else {
+      appendRemoteExitBanner(snapshot, cols: cols, cellHeight: ch, commands: &cmds)
+      return cmds
+    }
+
+    let fullGrid = snapshot.cells.count >= rows * cols
+    func cellAt(row: Int, col: Int) -> LabandSnapshotCell? {
+      if fullGrid {
+        let index = row * cols + col
+        guard index < snapshot.cells.count else { return nil }
+        let cell = snapshot.cells[index]
+        if cell.row == row && cell.col == col { return cell }
+      }
+      return snapshot.cells.first { $0.row == row && $0.col == col }
+    }
+
+    for row in 0..<rows {
+      let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
+      var bgStart: Int? = nil
+      var bgColor: UInt32 = 0
+
+      for col in 0..<cols {
+        let cellBg = cellAt(row: row, col: col)?.backgroundRGBA ?? defaultBg
+        if bgStart == nil {
+          if cellBg != defaultBg {
+            bgStart = col
+            bgColor = cellBg
+          }
+        } else if cellBg != bgColor || cellBg == defaultBg {
+          let runCols = col - bgStart!
+          cmds.append(
+            .rect(
+              CGRect(
+                x: originX + CGFloat(bgStart!) * cw,
+                y: cellY,
+                width: CGFloat(runCols) * cw,
+                height: ch),
+              color: bgColor,
+              source: .terminal
+            ))
+          bgStart = cellBg != defaultBg ? col : nil
+          bgColor = cellBg
+        }
+      }
+      if let start = bgStart {
+        cmds.append(
+          .rect(
+            CGRect(
+              x: originX + CGFloat(start) * cw,
+              y: cellY,
+              width: CGFloat(cols - start) * cw,
+              height: ch),
+            color: bgColor,
+            source: .terminal
+          ))
+      }
+    }
+
+    if let sel = selection {
+      for rect in sel.cgRects(
+        rows: rows,
+        cols: cols,
+        cellWidth: cw,
+        cellHeight: ch,
+        originX: originX,
+        originY: originY
+      ) {
+        cmds.append(
+          .selection(
+            CGRect(
+              x: rect.origin.x,
+              y: rect.origin.y + contentYOffset,
+              width: rect.width,
+              height: rect.height),
+            color: Theme.current.selectionBg))
+      }
+    }
+
+    for row in 0..<rows {
+      let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
+      var runStart: Int? = nil
+      var runFg: UInt32 = 0
+      var runBg: UInt32 = 0
+      var runAttrs: TextAttributes = []
+      var runText = ""
+
+      func flushRun() {
+        guard let start = runStart, !runText.isEmpty else {
+          runStart = nil
+          runText = ""
+          return
+        }
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: originX + CGFloat(start) * cw, y: cellY),
+            text: runText,
+            foreground: runFg,
+            background: runBg,
+            attributes: runAttrs,
+            source: .terminal
+          ))
+        runStart = nil
+        runText = ""
+      }
+
+      for col in 0..<cols {
+        guard let cell = cellAt(row: row, col: col), !cell.text.isEmpty else {
+          flushRun()
+          continue
+        }
+        let attrs = TextAttributes(rawValue: cell.flags).intersection(.renderableMask)
+        if runStart == nil {
+          runStart = col
+          runFg = cell.foregroundRGBA
+          runBg = cell.backgroundRGBA
+          runAttrs = attrs
+          runText = cell.text
+        } else if cell.foregroundRGBA == runFg && cell.backgroundRGBA == runBg && attrs == runAttrs
+        {
+          runText += cell.text
+        } else {
+          flushRun()
+          runStart = col
+          runFg = cell.foregroundRGBA
+          runBg = cell.backgroundRGBA
+          runAttrs = attrs
+          runText = cell.text
+        }
+      }
+      flushRun()
+    }
+
+    if snapshot.cursorVisible,
+      cursorBlinkVisible,
+      snapshot.cursorRow >= 0,
+      snapshot.cursorCol >= 0,
+      snapshot.cursorRow < rows,
+      snapshot.cursorCol < cols
+    {
+      let rect = CGRect(
+        x: originX + CGFloat(snapshot.cursorCol) * cw,
+        y: originY + CGFloat(rows - 1 - snapshot.cursorRow) * ch + contentYOffset,
+        width: cw,
+        height: ch
+      )
+      cmds.append(.cursor(rect, color: Theme.current.cursor))
+    }
+
+    appendRemoteExitBanner(snapshot, cols: cols, cellHeight: ch, commands: &cmds)
+    return cmds
+  }
+
+  private func appendRemoteExitBanner(
+    _ snapshot: LabandSnapshotResponse,
+    cols: Int,
+    cellHeight: CGFloat,
+    commands: inout [FrameCommand]
+  ) {
+    guard snapshot.lifecycleState != .running else { return }
+    let width = CGFloat(max(cols, 1)) * CGFloat(cellWidth)
+    commands.append(
+      .rect(
+        CGRect(x: originX, y: originY, width: width, height: cellHeight),
+        color: Theme.current.bg1,
+        source: .terminal
+      ))
+    let text: String
+    if let exitStatus = snapshot.exitStatus {
+      text = "Process exited \(exitStatus)"
+    } else {
+      text = "Process \(snapshot.lifecycleState.rawValue)"
+    }
+    commands.append(
+      .glyphRun(
+        origin: CGPoint(x: originX + 4, y: originY + 2),
+        text: text,
+        foreground: Theme.current.dim0,
+        background: Theme.current.bg1,
+        attributes: [],
+        source: .terminal
+      ))
+  }
+
   public static func cursorRects(style: Int, cellRect: CGRect) -> [CGRect] {
     let thickness = max(CGFloat(1), ceil(min(cellRect.width, cellRect.height) * 0.16))
     switch style {

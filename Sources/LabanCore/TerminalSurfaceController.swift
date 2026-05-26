@@ -440,6 +440,80 @@ public final class TerminalSurfaceController {
     )
   }
 
+  public func makeFrame(
+    _ request: TerminalSurfaceFrameRequest,
+    remoteSnapshot snapshot: LabandSnapshotResponse,
+    sessionId: Session.ID
+  ) -> TerminalSurfaceFrame? {
+    guard let activeTab = model.activeTab else {
+      if request.requireActiveSnapshot { return nil }
+      return TerminalSurfaceFrame(
+        frame: request.frame,
+        tabId: nil,
+        sessionId: nil,
+        commands: [],
+        rows: nil,
+        cols: nil,
+        cursorBlinking: false,
+        gridOriginY: 0,
+        damage: .full
+      )
+    }
+
+    var commands = sidebarCommands(
+      activeTabId: activeTab.id,
+      viewportHeight: request.viewportHeight,
+      topInset: request.sidebarTopInset,
+      hoveredTabId: request.hoveredSidebarTabId
+    )
+
+    let rows = max(snapshot.rows, 1)
+    let cols = max(snapshot.cols, 1)
+    let gridOriginY = Self.terminalGridOriginY(
+      viewportHeight: request.viewportHeight,
+      rows: rows,
+      cellHeight: CGFloat(cellHeight),
+      insets: request.insets)
+    let defaultBg = snapshot.cells.first?.backgroundRGBA ?? Theme.current.bg0
+
+    if request.includeTerminalAreaBackground {
+      let terminalAreaWidth = max(0, request.viewportWidth - sidebarWidth)
+      commands.append(
+        .rect(
+          CGRect(x: sidebarWidth, y: 0, width: terminalAreaWidth, height: request.viewportHeight),
+          color: defaultBg,
+          source: .terminal
+        ))
+    }
+
+    let producer = FrameProducer(
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      originX: sidebarWidth + request.insets.left,
+      originY: gridOriginY,
+      contentYOffset: request.contentYOffset
+    )
+    commands += producer.commands(
+      from: snapshot,
+      selection: request.selection,
+      cursorBlinkVisible: request.cursorBlinkVisible
+    )
+    recordFrameCommands(request, commands: commands)
+
+    return TerminalSurfaceFrame(
+      frame: request.frame,
+      tabId: activeTab.id,
+      sessionId: sessionId,
+      commands: commands,
+      rows: rows,
+      cols: cols,
+      cursorBlinking: snapshot.cursorVisible,
+      gridOriginY: gridOriginY,
+      damage: .full,
+      snapshotMs: 0
+    )
+  }
+
   public func sidebarCommands(
     activeTabId: Tab.ID?,
     viewportHeight: CGFloat,
