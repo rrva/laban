@@ -10,11 +10,17 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
   private let clientId = UUID().uuidString
+  public var clientIdentifier: String { clientId }
+  private let autoRenewLeases: Bool
   private var ringReaders: [String: LabandSnapshotRingReader] = [:]
   private var attachedSessionIds: Set<String> = []
+  private var leasesBySession: [String: LabandLeaseInfo] = [:]
+  private let leaseRenewalQueue = DispatchQueue(label: "laband-lease-renewal")
+  private var leaseRenewalTimer: DispatchSourceTimer?
 
-  public init(socketPath: String) throws {
+  public init(socketPath: String, autoRenewLeases: Bool = true) throws {
     self.socketPath = socketPath
+    self.autoRenewLeases = autoRenewLeases
     self.fd = try Self.connect(socketPath: socketPath)
   }
 
@@ -30,6 +36,9 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     lock.withLock {
       attachedSessionIds.removeAll()
       ringReaders.removeAll()
+      leasesBySession.removeAll()
+      leaseRenewalTimer?.cancel()
+      leaseRenewalTimer = nil
       if fd >= 0 {
         Darwin.close(fd)
         fd = -1
@@ -67,12 +76,15 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     lock.withLock {
       _ = attachedSessionIds.insert(session.logicalSessionId)
     }
+    updateLeaseCache(from: session)
     return session
   }
 
   public func listSessions() throws -> [LabandSessionInfo] {
     let response = try send(LabandRequest(requestId: UUID().uuidString, type: .listSessions))
-    return response.sessions ?? []
+    let sessions = response.sessions ?? []
+    for session in sessions { updateLeaseCache(from: session) }
+    return sessions
   }
 
   public func attachSession(logicalSessionId: String) throws -> LabandSessionInfo {
@@ -90,6 +102,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     lock.withLock {
       _ = attachedSessionIds.insert(session.logicalSessionId)
     }
+    updateLeaseCache(from: session)
     return session
   }
 
@@ -109,34 +122,45 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       attachedSessionIds.remove(session.logicalSessionId)
       _ = ringReaders.removeValue(forKey: session.logicalSessionId)
     }
+    updateLeaseCache(from: session)
     return session
   }
 
   public func writeInput(sessionId: String, bytes: [UInt8]) throws {
     guard !bytes.isEmpty else { return }
-    _ = try send(
+    let lease = currentLease(sessionId: sessionId)
+    let response = try send(
       LabandRequest(
         requestId: UUID().uuidString,
         type: .writeInput,
+        clientId: clientId,
         sessionId: sessionId,
-        bytesBase64: Data(bytes).base64EncodedString()
+        bytesBase64: Data(bytes).base64EncodedString(),
+        leaseId: lease?.leaseId,
+        leaseEpoch: lease?.epoch
       )
     )
+    if let session = response.session { updateLeaseCache(from: session) }
   }
 
   public func resize(sessionId: String, rows: Int, cols: Int) throws -> LabandSessionInfo {
+    let lease = currentLease(sessionId: sessionId)
     let response = try send(
       LabandRequest(
         requestId: UUID().uuidString,
         type: .resizeSession,
+        clientId: clientId,
         rows: rows,
         cols: cols,
-        sessionId: sessionId
+        sessionId: sessionId,
+        leaseId: lease?.leaseId,
+        leaseEpoch: lease?.epoch
       )
     )
     guard let session = response.session else {
       throw TerminalSessionClientError.protocolError("resizeSession response missing session")
     }
+    updateLeaseCache(from: session)
     return session
   }
 
@@ -164,6 +188,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       ringReaders[sessionId] = reader
       _ = attachedSessionIds.insert(logicalSessionId)
     }
+    if let session { updateLeaseCache(from: session) }
     return attachment
   }
 
@@ -215,6 +240,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
       LabandRequest(
         requestId: UUID().uuidString,
         type: .transferLease,
+        clientId: clientId,
         sessionId: sessionId,
         leaseHolder: holderClientId
       )
@@ -222,6 +248,29 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     guard let session = response.session else {
       throw TerminalSessionClientError.protocolError("transferLease response missing session")
     }
+    updateLeaseCache(from: session)
+    return session
+  }
+
+  @discardableResult
+  public func renewLease(sessionId: String) throws -> LabandSessionInfo {
+    guard let lease = currentLease(sessionId: sessionId) else {
+      throw TerminalSessionClientError.protocolError("no local lease for \(sessionId)")
+    }
+    let response = try send(
+      LabandRequest(
+        requestId: UUID().uuidString,
+        type: .renewLease,
+        clientId: clientId,
+        sessionId: sessionId,
+        leaseId: lease.leaseId,
+        leaseEpoch: lease.epoch
+      )
+    )
+    guard let session = response.session else {
+      throw TerminalSessionClientError.protocolError("renewLease response missing session")
+    }
+    updateLeaseCache(from: session)
     return session
   }
 
@@ -241,7 +290,12 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     guard let session = response.session else {
       throw TerminalSessionClientError.protocolError("terminateSession response missing session")
     }
+    updateLeaseCache(from: session)
     return session
+  }
+
+  public func currentLease(sessionId: String) -> LabandLeaseInfo? {
+    lock.withLock { leasesBySession[sessionId] }
   }
 
   private func readRingSnapshot(sessionId: String) throws -> LabandSnapshotResponse? {
@@ -272,9 +326,55 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     }
   }
 
+  private func updateLeaseCache(from session: LabandSessionInfo) {
+    lock.withLock {
+      if let lease = session.lease, lease.holderClientId == clientId {
+        leasesBySession[session.logicalSessionId] = lease
+      } else {
+        leasesBySession.removeValue(forKey: session.logicalSessionId)
+      }
+    }
+    configureLeaseRenewalTimer()
+  }
+
+  private func configureLeaseRenewalTimer() {
+    guard autoRenewLeases else { return }
+    lock.withLock {
+      if leasesBySession.isEmpty {
+        leaseRenewalTimer?.cancel()
+        leaseRenewalTimer = nil
+        return
+      }
+      guard leaseRenewalTimer == nil else { return }
+      let timer = DispatchSource.makeTimerSource(queue: leaseRenewalQueue)
+      timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
+      timer.setEventHandler { [weak self] in
+        self?.renewOwnedLeasesIfNeeded()
+      }
+      leaseRenewalTimer = timer
+      timer.resume()
+    }
+  }
+
+  private func renewOwnedLeasesIfNeeded() {
+    let leases = lock.withLock { Array(leasesBySession.values) }
+    let now = DispatchTime.now().uptimeNanoseconds
+    for lease in leases {
+      let ttl = lease.expiresAtMonoNs > lease.grantedAtMonoNs
+        ? lease.expiresAtMonoNs - lease.grantedAtMonoNs
+        : 0
+      let renewMargin = max(ttl / 3, 1_000_000_000)
+      if lease.expiresAtMonoNs <= now + renewMargin {
+        _ = try? renewLease(sessionId: lease.sessionId)
+      }
+    }
+  }
+
   private static func connect(socketPath: String) throws -> Int32 {
     let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = Array(socketPath.utf8CString)

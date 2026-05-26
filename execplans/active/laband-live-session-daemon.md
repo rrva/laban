@@ -97,7 +97,13 @@ running without flicker or sluggish input.
   under a real `laband` process.
 - [x] M6: restore Claude/Codex semantic resume on daemon loss while preserving
   the existing restore picker workflow.
-- [ ] M7: multi-attach read-only observers plus a single input/resize lease.
+- [x] (2026-05-26) M7: `laband` sessions now have tokenized input/control
+  leases with `leaseId`, holder client id, `epoch`, grant time, and expiry
+  time. `writeInput` and `resizeSession` require the current lease token,
+  observers can still attach and read snapshots, lease grant/revoke/transfer
+  is journaled, and `LabandTerminalSessionClient` carries the holder's lease
+  token automatically while exposing explicit transfer/renew helpers.
+- [x] M7: multi-attach read-only observers plus a single input/resize lease.
 - [ ] M8: ship upgrade-safe launchd lifecycle and compatibility checks.
 
 ## M0 Baseline
@@ -835,6 +841,51 @@ is denied writes with a stale `leaseId`/`epoch`, then lets client B's lease
 expire and verifies client A can acquire a new lease. `/debug/sessions` must
 report `attachedClientCount == 2` during the dual-attach phase and the current
 lease holder client id after each transfer.
+
+Implemented in M7: `LabandRequest` carries `leaseId` and `leaseEpoch`, and
+`LabandSessionInfo` carries a full `LabandLeaseInfo` alongside the existing
+`leaseHolder` compatibility field. A session creator gets the initial lease.
+Attached observers can read snapshots without a lease, but `writeInput` and
+`resizeSession` are denied unless the request includes the current lease id and
+epoch from the holder client. `transferLease` creates a new lease id and epoch,
+expired leases are revoked before the next lease-sensitive operation or catalog
+response, and the lifecycle journal records `leaseGranted`, `leaseTransferred`,
+and `leaseRevoked` events. `/debug/sessions` now exposes `leaseId`,
+`leaseEpoch`, and `leaseExpiresAtMonoNs` in addition to `leaseHolder`, sourced
+from the same daemon session info verified by `LabandLeaseTests`.
+
+Validation recorded on 2026-05-26:
+
+```sh
+rtk swift build --product laband
+# Build of product 'laband' complete.
+
+rtk swift test --filter LabandLeaseTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandControlProtocolTests
+# Executed 3 tests, with 0 failures.
+
+rtk swift test --filter LabandJournalTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandHeadlessBackendTests
+# Executed 1 test, with 0 failures.
+
+rtk swift build -c release --product bench-keystroke-latency
+# Build of product 'bench-keystroke-latency' complete.
+
+rtk swift build -c release --product laband
+# Build of product 'laband' complete.
+
+rtk .build/release/bench-keystroke-latency --transport in-process --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/in-process-160x48-m7.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.883 ms p95=1.029 ms p99=1.128 ms
+
+rtk .build/release/bench-keystroke-latency --transport laband --socket .tmp/keystroke-latency-after-m7/laband.sock --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/laband-160x48-m7.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.524 ms p95=0.670 ms p99=0.698 ms
+```
 
 ### M8: Product Lifecycle And Upgrade
 

@@ -44,10 +44,10 @@ final class LabandJournalTests: XCTestCase {
 
     let leased = try client.transferLease(
       sessionId: session.logicalSessionId,
-      holderClientId: "journal-client-a"
+      holderClientId: client.clientIdentifier
     )
-    XCTAssertEqual(leased.leaseHolder, "journal-client-a")
-    XCTAssertEqual(leased.leaseHistory.map(\.leaseHolder), ["journal-client-a"])
+    XCTAssertEqual(leased.leaseHolder, client.clientIdentifier)
+    XCTAssertEqual(leased.leaseHistory.last?.leaseHolder, client.clientIdentifier)
 
     let terminated = try client.terminate(sessionId: session.logicalSessionId)
     XCTAssertEqual(terminated.lifecycleState, .terminated)
@@ -79,8 +79,8 @@ final class LabandJournalTests: XCTestCase {
     XCTAssertEqual(replayed.lifecycleState, .terminated)
     XCTAssertEqual(replayed.childPid, childPid)
     XCTAssertEqual(replayed.cwd, root.path)
-    XCTAssertEqual(replayed.leaseHolder, "journal-client-a")
-    XCTAssertEqual(replayed.leaseHistory.map(\.leaseHolder), ["journal-client-a"])
+    XCTAssertEqual(replayed.leaseHolder, client.clientIdentifier)
+    XCTAssertEqual(replayed.leaseHistory.last?.leaseHolder, client.clientIdentifier)
 
     try restarted.shutdownWhenIdle()
     daemon.waitUntilExit()

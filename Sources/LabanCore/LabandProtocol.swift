@@ -16,6 +16,7 @@ public enum LabandRequestType: String, Codable, Sendable {
   case resizeSession
   case markRendered
   case transferLease
+  case renewLease
   case terminateSession
   case shutdownWhenIdle
 }
@@ -45,6 +46,8 @@ public struct LabandRequest: Codable, Equatable, Sendable {
   public var text: String?
   public var bytesBase64: String?
   public var leaseHolder: String?
+  public var leaseId: String?
+  public var leaseEpoch: UInt64?
 
   public init(
     protocolVersion: Int = LabandProtocolVersion.current,
@@ -61,7 +64,9 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     sessionId: String? = nil,
     text: String? = nil,
     bytesBase64: String? = nil,
-    leaseHolder: String? = nil
+    leaseHolder: String? = nil,
+    leaseId: String? = nil,
+    leaseEpoch: UInt64? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.requestId = requestId
@@ -78,6 +83,8 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     self.text = text
     self.bytesBase64 = bytesBase64
     self.leaseHolder = leaseHolder
+    self.leaseId = leaseId
+    self.leaseEpoch = leaseEpoch
   }
 }
 
@@ -108,10 +115,47 @@ public struct LabandHelloResponse: Codable, Equatable, Sendable {
 public struct LabandLeaseHistoryEntry: Codable, Equatable, Sendable {
   public var leaseHolder: String
   public var grantedAtMonoNs: UInt64
+  public var leaseId: String?
+  public var epoch: UInt64?
+  public var expiresAtMonoNs: UInt64?
 
-  public init(leaseHolder: String, grantedAtMonoNs: UInt64) {
+  public init(
+    leaseHolder: String,
+    grantedAtMonoNs: UInt64,
+    leaseId: String? = nil,
+    epoch: UInt64? = nil,
+    expiresAtMonoNs: UInt64? = nil
+  ) {
     self.leaseHolder = leaseHolder
     self.grantedAtMonoNs = grantedAtMonoNs
+    self.leaseId = leaseId
+    self.epoch = epoch
+    self.expiresAtMonoNs = expiresAtMonoNs
+  }
+}
+
+public struct LabandLeaseInfo: Codable, Equatable, Sendable {
+  public var leaseId: String
+  public var sessionId: String
+  public var holderClientId: String
+  public var epoch: UInt64
+  public var grantedAtMonoNs: UInt64
+  public var expiresAtMonoNs: UInt64
+
+  public init(
+    leaseId: String,
+    sessionId: String,
+    holderClientId: String,
+    epoch: UInt64,
+    grantedAtMonoNs: UInt64,
+    expiresAtMonoNs: UInt64
+  ) {
+    self.leaseId = leaseId
+    self.sessionId = sessionId
+    self.holderClientId = holderClientId
+    self.epoch = epoch
+    self.grantedAtMonoNs = grantedAtMonoNs
+    self.expiresAtMonoNs = expiresAtMonoNs
   }
 }
 
@@ -129,6 +173,7 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
   public var lifecycleState: LabandLifecycleState
   public var attachedClientCount: Int
   public var leaseHolder: String?
+  public var lease: LabandLeaseInfo?
   public var leaseHistory: [LabandLeaseHistoryEntry]
   public var transportMode: String
 
@@ -146,6 +191,7 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
     lifecycleState: LabandLifecycleState,
     attachedClientCount: Int,
     leaseHolder: String?,
+    lease: LabandLeaseInfo? = nil,
     leaseHistory: [LabandLeaseHistoryEntry] = [],
     transportMode: String
   ) {
@@ -162,6 +208,7 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
     self.lifecycleState = lifecycleState
     self.attachedClientCount = attachedClientCount
     self.leaseHolder = leaseHolder
+    self.lease = lease
     self.leaseHistory = leaseHistory
     self.transportMode = transportMode
   }

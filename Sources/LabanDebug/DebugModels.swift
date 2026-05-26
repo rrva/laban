@@ -199,6 +199,9 @@ struct SessionResponse: Encodable {
   var incarnationId: String?
   var attachedClientCount: Int?
   var leaseHolder: String?
+  var leaseId: String?
+  var leaseEpoch: UInt64?
+  var leaseExpiresAtMonoNs: UInt64?
   var transportMode: String
   var status: String
   var exitStatus: Int?
