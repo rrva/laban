@@ -43,6 +43,19 @@ tmp_zip="${zip_path}.tmp"
 
 mkdir -p "$release_dir"
 
+# Wipe the SwiftPM build cache before a release build by default.
+# Releases are rare, the cache-staleness failure mode is hard to
+# distinguish from a successful build at the script level, and we have
+# at least one shipping example where a stale cache silently produced
+# a binary whose optimizer dead-stripped a UI parameter because it
+# inherited a pre-refactor module signature. The full clean costs
+# ~30-60s and is the only reliable way to keep that class of bug out
+# of a release. Set LABAN_SKIP_CLEAN_BUILD=1 to opt out.
+if [ "${LABAN_SKIP_CLEAN_BUILD:-0}" != "1" ]; then
+  printf 'package-zip: wiping .build for a clean release build\n'
+  rm -rf .build
+fi
+
 rm -rf "$app_bundle"
 LABAN_SKIP_CODESIGN=${LABAN_SKIP_CODESIGN:-0} ./scripts/build-app
 
@@ -50,6 +63,19 @@ LABAN_SKIP_CODESIGN=${LABAN_SKIP_CODESIGN:-0} ./scripts/build-app
   printf 'package-zip failed: missing %s\n' "$app_bundle" >&2
   exit 1
 }
+
+# Defense in depth against build-app handing us a partial bundle.
+# build-app already asserts the binaries exist after its own cp; this
+# is the package-zip-level check that nothing destructive happens
+# between build-app returning and zip creation.
+for product in LabanApp laband; do
+  dest="${app_bundle}/Contents/MacOS/${product}"
+  if [ ! -s "$dest" ] || [ ! -x "$dest" ]; then
+    printf 'package-zip failed: %s missing, empty, or non-executable\n' \
+      "$dest" >&2
+    exit 1
+  fi
+done
 
 plutil -lint "$plist" >/dev/null
 if ! codesign --verify --verbose=4 "$app_bundle" >/dev/null 2>&1; then

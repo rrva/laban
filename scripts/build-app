@@ -71,8 +71,43 @@ mkdir -p "${bundle_dir}/MacOS" "${bundle_dir}/Resources"
 
 # shellcheck disable=SC2086
 bin=$(swift build -c "$build_config" --product LabanApp --show-bin-path $prefix_map_flags)
+
+# Assert both products actually built. `swift build` has at times exited
+# 0 while leaving one product unlinked (partial cache hits, planner races,
+# stale incremental state inheriting an older module signature). Without
+# this guard the next `cp` would print a one-line "No such file or
+# directory" error and any tooling that swallows stderr (or any operator
+# who skims the tail) could mistake a partial build for a successful one.
+# A real example shipped: a release build silently dead-stripped
+# `terminalBackendMenu` because the cache held a pre-refactor signature
+# and `swift build` linked from cache without recompiling MenuCommands.
+missing=""
+for product in LabanApp laband; do
+  if [ ! -x "$bin/$product" ]; then
+    missing="${missing} $bin/$product"
+  fi
+done
+if [ -n "$missing" ]; then
+  printf 'build-app failed: swift build exited 0 but produced no binary for:%s\n' \
+    "$missing" >&2
+  printf 'build-app failed: rerun with --verbose, or `rm -rf .build` to recover\n' >&2
+  exit 1
+fi
+
 cp -f "$bin/LabanApp" "${bundle_dir}/MacOS/LabanApp"
 cp -f "$bin/laband" "${bundle_dir}/MacOS/laband"
+
+# Post-cp sanity: the destinations must be present, non-empty, and
+# executable. Catches a stale or zero-byte source the existence check
+# above couldn't, and any cp that silently no-ops.
+for product in LabanApp laband; do
+  dest="${bundle_dir}/MacOS/${product}"
+  if [ ! -s "$dest" ] || [ ! -x "$dest" ]; then
+    printf 'build-app failed: %s missing, empty, or non-executable\n' \
+      "$dest" >&2
+    exit 1
+  fi
+done
 
 # Copy app icon into bundle
 icon="Sources/LabanApp/Resources/AppIcon.icns"
