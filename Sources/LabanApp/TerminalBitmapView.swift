@@ -442,6 +442,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard window != nil else {
       syncActiveSessionFocus(windowFocused: false)
       stopDisplayLink()
+      labandCoordinator?.stopSnapshotGenerationMonitor()
       resizeBackgroundReset?.cancel()
       resizeBackgroundReset = nil
       resizeBackgroundView = nil
@@ -462,7 +463,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
     window?.makeFirstResponder(self)
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
+    startLabandSnapshotGenerationMonitor()
     scheduleResizeAutomationIfRequested()
+  }
+
+  private func startLabandSnapshotGenerationMonitor() {
+    labandCoordinator?.startSnapshotGenerationMonitor {
+      [weak self, displayKickCoalescer] _, now in
+      displayKickCoalescer.requestFrameAdvance(now: now) {
+        self?.advanceFrame()
+      }
+    }
   }
 
   private func installWindowFocusObservers(for window: NSWindow) {
@@ -673,6 +684,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   deinit {
     stopDisplayLink()
+    labandCoordinator?.stopSnapshotGenerationMonitor()
     removeWindowFocusObservers()
     resizeBackgroundReset?.cancel()
     if let view = resizeBackgroundView,

@@ -290,6 +290,63 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
     process.waitUntilExit()
   }
 
+  func testSnapshotGenerationMonitorWakesAfterDaemonOutput() throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-app-generation-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let coordinatorClient = try waitForClient(socketPath: socketPath)
+    let coordinator = AppLabandSessionCoordinator(
+      client: coordinatorClient,
+      shellLaunch: .passthrough,
+      cwdByTabId: [:]
+    )
+    defer { coordinator.detach() }
+
+    let tab = try XCTUnwrap(model.tabs.first)
+    _ = try coordinator.ensureSession(for: tab, size: size)
+    let woke = expectation(description: "daemon snapshot generation advanced")
+    coordinator.startSnapshotGenerationMonitor { logicalSessionId, _ in
+      XCTAssertEqual(logicalSessionId, tab.id)
+      woke.fulfill()
+    }
+
+    try coordinator.write(Array("g".utf8), to: tab, size: size)
+    wait(for: [woke], timeout: 2)
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: tab.id)
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
   private func waitForClient(socketPath: String) throws -> LabandTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?

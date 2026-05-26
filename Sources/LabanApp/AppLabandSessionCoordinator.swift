@@ -13,6 +13,7 @@ final class AppLabandSessionCoordinator {
   private var infoByLocalSessionId: [Session.ID: LabandSessionInfo] = [:]
   private var labandProcess: Process?
   private var themeChangeObserver: NSObjectProtocol?
+  private var snapshotGenerationMonitor: LabandSnapshotGenerationMonitor?
 
   init(
     client: LabandTerminalSessionClient,
@@ -38,10 +39,31 @@ final class AppLabandSessionCoordinator {
 
   deinit {
     removeThemeChangeObserver()
+    snapshotGenerationMonitor?.stop()
   }
 
   var transportMode: String { client.transportMode }
   var terminalClient: TerminalSessionClient { client }
+
+  func startSnapshotGenerationMonitor(
+    onGenerationAdvance: @escaping LabandSnapshotGenerationMonitor.WakeHandler
+  ) {
+    snapshotGenerationMonitor?.stop()
+    let monitor = LabandSnapshotGenerationMonitor(
+      generationProvider: { [weak self] logicalSessionId in
+        self?.client.snapshotRingGeneration(sessionId: logicalSessionId)
+      },
+      wakeHandler: onGenerationAdvance)
+    snapshotGenerationMonitor = monitor
+    for logicalSessionId in Set(infoByTabId.values.map(\.logicalSessionId)) {
+      monitor.track(sessionId: logicalSessionId)
+    }
+  }
+
+  func stopSnapshotGenerationMonitor() {
+    snapshotGenerationMonitor?.stop()
+    snapshotGenerationMonitor = nil
+  }
 
   func ensureSessions(for tabs: [Tab], size: LabanTerminalSize) throws {
     for tab in tabs {
@@ -125,12 +147,17 @@ final class AppLabandSessionCoordinator {
   }
 
   func terminate(tab: Tab) {
+    var logicalSessionId = sessionInfo(for: tab)?.logicalSessionId
     do {
       let info = try ensureSession(for: tab, size: fallbackSize())
+      logicalSessionId = info.logicalSessionId
       let terminated = try client.terminate(sessionId: info.logicalSessionId)
       store(terminated, for: tab)
     } catch {
       AppLog.app.error("laband terminate failed for tab \(tab.id): \(String(describing: error))")
+    }
+    if let logicalSessionId {
+      snapshotGenerationMonitor?.untrack(sessionId: logicalSessionId)
     }
     infoByTabId.removeValue(forKey: tab.id)
     infoByLocalSessionId.removeValue(forKey: tab.sessionId)
@@ -138,6 +165,7 @@ final class AppLabandSessionCoordinator {
 
   func detach() {
     removeThemeChangeObserver()
+    stopSnapshotGenerationMonitor()
     client.close()
     infoByTabId.removeAll()
     infoByLocalSessionId.removeAll()
@@ -159,6 +187,7 @@ final class AppLabandSessionCoordinator {
 
   private func attachSnapshotRing(for logicalSessionId: String) {
     _ = try? client.attachSnapshotRing(sessionId: logicalSessionId)
+    snapshotGenerationMonitor?.track(sessionId: logicalSessionId)
   }
 
   private func applyCurrentThemeToKnownSessions() {

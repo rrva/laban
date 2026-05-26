@@ -245,6 +245,10 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     return reader
   }
 
+  public func snapshotRingGeneration(sessionId: String) -> UInt64? {
+    lock.withLock { ringReaders[sessionId]?.generation() }
+  }
+
   public func markRendered(sessionId: String) throws {
     _ = try send(
       LabandRequest(
