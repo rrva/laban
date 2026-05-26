@@ -227,4 +227,23 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     XCTAssertEqual(damage, .partial(yRanges: [DirtyYRange(y: 15, height: 10)]))
   }
+
+  func testRemoteDirtyRangesMapTopDownRowsToBottomUpYRanges() {
+    let damage = TerminalSurfaceController.damage(
+      rows: 5,
+      dirtyRanges: [
+        LabandSnapshotDirtyRange(startRow: 1, endRow: 3),
+        LabandSnapshotDirtyRange(startRow: 4, endRow: 5),
+      ],
+      forceFull: false,
+      cellHeight: 6,
+      originY: 10)
+
+    XCTAssertEqual(
+      damage,
+      .partial(yRanges: [
+        DirtyYRange(y: 22, height: 12),
+        DirtyYRange(y: 10, height: 6),
+      ]))
+  }
 }

@@ -99,6 +99,53 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     XCTAssertNil(maxHoldReached.hold)
   }
 
+  func testRemoteSnapshotPublishTimeDoesNotRestartSettleWindowAtPollTime() throws {
+    let now = Date(timeIntervalSinceReferenceDate: 1_000)
+    let snapshot = LabandSnapshotResponse(
+      logicalSessionId: "session-1",
+      incarnationId: "incarnation-1",
+      rows: 1,
+      cols: 1,
+      cursorRow: 0,
+      cursorCol: 0,
+      cursorVisible: true,
+      title: "",
+      lifecycleState: .running,
+      exitStatus: nil,
+      dirty: true,
+      visibleText: "x",
+      cells: [])
+    let frame = LabandSnapshotFrame(
+      generation: 1,
+      snapshotPublishMonoNs: 1_000_000_000,
+      snapshot: snapshot)
+
+    let dirtyAt = try XCTUnwrap(
+      frame.snapshotPublishedAt(now: now, nowMonoNs: 1_010_000_000))
+    let decision = TerminalRenderGate.outputSettleDecision(
+      terminalDirty: true,
+      sessionId: "session-1",
+      lastDirtyAt: dirtyAt,
+      now: now,
+      hold: nil,
+      quiet: 0.012,
+      maxHold: 0.025)
+    XCTAssertTrue(decision.shouldDefer)
+    XCTAssertEqual(decision.wakeAfter ?? 0, 0.002, accuracy: 0.000_001)
+
+    let quietEnoughDirtyAt = try XCTUnwrap(
+      frame.snapshotPublishedAt(now: now, nowMonoNs: 1_013_000_000))
+    let quietEnough = TerminalRenderGate.outputSettleDecision(
+      terminalDirty: true,
+      sessionId: "session-1",
+      lastDirtyAt: quietEnoughDirtyAt,
+      now: now,
+      hold: nil,
+      quiet: 0.012,
+      maxHold: 0.025)
+    XCTAssertFalse(quietEnough.shouldDefer)
+  }
+
   func testDirtySynchronizedOutputDoesNotAdvanceRenderedFrame() throws {
     let oldRenderer = getenv("LABAN_RENDERER").map { String(cString: $0) }
     setenv("LABAN_RENDERER", "software", 1)

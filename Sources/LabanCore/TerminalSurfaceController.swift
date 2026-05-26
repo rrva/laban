@@ -443,7 +443,8 @@ public final class TerminalSurfaceController {
   public func makeFrame(
     _ request: TerminalSurfaceFrameRequest,
     remoteSnapshot snapshot: LabandSnapshotResponse,
-    sessionId: Session.ID
+    sessionId: Session.ID,
+    dirtyRanges: [LabandSnapshotDirtyRange]? = nil
   ) -> TerminalSurfaceFrame? {
     guard let activeTab = model.activeTab else {
       if request.requireActiveSnapshot { return nil }
@@ -500,6 +501,13 @@ public final class TerminalSurfaceController {
     )
     recordFrameCommands(request, commands: commands)
 
+    let damage = Self.damage(
+      rows: rows,
+      dirtyRanges: dirtyRanges,
+      forceFull: request.forceFullDamage,
+      cellHeight: CGFloat(cellHeight),
+      originY: gridOriginY)
+
     return TerminalSurfaceFrame(
       frame: request.frame,
       tabId: activeTab.id,
@@ -509,7 +517,7 @@ public final class TerminalSurfaceController {
       cols: cols,
       cursorBlinking: snapshot.cursorVisible,
       gridOriginY: gridOriginY,
-      damage: .full,
+      damage: damage,
       snapshotMs: 0
     )
   }
@@ -570,6 +578,29 @@ public final class TerminalSurfaceController {
       }
     }
     return .partial(yRanges: ranges)
+  }
+
+  public static func damage(
+    rows: Int,
+    dirtyRanges: [LabandSnapshotDirtyRange]?,
+    forceFull: Bool,
+    cellHeight: CGFloat,
+    originY: CGFloat
+  ) -> RenderDamage {
+    if forceFull { return .full }
+    guard rows > 0, let dirtyRanges, !dirtyRanges.isEmpty else { return .full }
+
+    var ranges: [DirtyYRange] = []
+    ranges.reserveCapacity(dirtyRanges.count)
+    for dirtyRange in dirtyRanges {
+      let start = max(0, min(rows, dirtyRange.startRow))
+      let end = max(0, min(rows, dirtyRange.endRow))
+      guard start < end else { continue }
+      let yBottom = originY + CGFloat(rows - end) * cellHeight
+      let height = CGFloat(end - start) * cellHeight
+      ranges.append(DirtyYRange(y: yBottom, height: height))
+    }
+    return ranges.isEmpty ? .full : .partial(yRanges: ranges)
   }
 
   private func recordFrameCommands(

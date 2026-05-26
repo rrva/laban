@@ -100,13 +100,23 @@ final class AppLabandSessionCoordinator {
   }
 
   func snapshot(for tab: Tab, size: LabanTerminalSize) throws -> LabandSnapshotResponse {
+    try snapshotFrame(for: tab, size: size).snapshot
+  }
+
+  func snapshotGeneration(for tab: Tab, size: LabanTerminalSize) throws -> UInt64? {
     let info = try ensureSession(for: tab, size: size)
-    return try client.snapshot(sessionId: info.logicalSessionId)
+    return client.snapshotRingGeneration(sessionId: info.logicalSessionId)
+  }
+
+  func snapshotFrame(for tab: Tab, size: LabanTerminalSize) throws -> LabandSnapshotFrame {
+    let info = try ensureSession(for: tab, size: size)
+    return try client.snapshotFrame(sessionId: info.logicalSessionId)
   }
 
   func write(_ bytes: [UInt8], to tab: Tab, size: LabanTerminalSize) throws {
     guard !bytes.isEmpty else { return }
     let info = try ensureSession(for: tab, size: size)
+    snapshotGenerationMonitor?.boost(sessionId: info.logicalSessionId)
     try client.writeInput(sessionId: info.logicalSessionId, bytes: bytes)
     if let refreshed = try? client.attachSession(logicalSessionId: info.logicalSessionId) {
       store(refreshed, for: tab)

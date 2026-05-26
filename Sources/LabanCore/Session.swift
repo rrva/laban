@@ -62,6 +62,7 @@ public final class Session {
   public let id: ID
   private var handle: OpaquePointer?
   public private(set) var isClosed = false
+  private let fixtureMode: Bool
   private let callbackState: SessionCallbackState
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
   private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
@@ -115,6 +116,7 @@ public final class Session {
   public init(config: inout LabanLaunchConfig, size: LabanTerminalSize) throws {
     let id = UUID().uuidString
     self.id = id
+    self.fixtureMode = config.fixture_mode != 0
     self.callbackState = SessionCallbackState(sessionId: id)
     var h: OpaquePointer?
     guard laban_session_create(&config, size, &h) == 0, let h else {
@@ -380,7 +382,7 @@ public final class Session {
   /// caller is responsible for `start()`ing the runner and for calling
   /// `stop()` before this session is `close()`d.
   public func makeRunner(onDirty: @escaping @Sendable () -> Void) -> SessionRunner? {
-    guard !isClosed, let h = handle else { return nil }
+    guard !fixtureMode, !isClosed, let h = handle else { return nil }
     return SessionRunner(handle: h, onDirty: onDirty)
   }
 

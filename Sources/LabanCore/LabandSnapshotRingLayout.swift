@@ -264,6 +264,47 @@ extension NSLock {
   }
 }
 
+public struct LabandSnapshotDirtyRange: Equatable, Sendable {
+  public var startRow: Int
+  public var endRow: Int
+
+  public init(startRow: Int, endRow: Int) {
+    self.startRow = startRow
+    self.endRow = endRow
+  }
+}
+
+public struct LabandSnapshotFrame: Equatable, Sendable {
+  public var generation: UInt64?
+  public var dirtyRanges: [LabandSnapshotDirtyRange]?
+  public var ptyDrainMonoNs: UInt64?
+  public var snapshotPublishMonoNs: UInt64?
+  public var snapshot: LabandSnapshotResponse
+
+  public init(
+    generation: UInt64?,
+    dirtyRanges: [LabandSnapshotDirtyRange]? = nil,
+    ptyDrainMonoNs: UInt64? = nil,
+    snapshotPublishMonoNs: UInt64? = nil,
+    snapshot: LabandSnapshotResponse
+  ) {
+    self.generation = generation
+    self.dirtyRanges = dirtyRanges
+    self.ptyDrainMonoNs = ptyDrainMonoNs
+    self.snapshotPublishMonoNs = snapshotPublishMonoNs
+    self.snapshot = snapshot
+  }
+
+  public func snapshotPublishedAt(
+    now: Date = Date(),
+    nowMonoNs: UInt64 = LabandSnapshotRingLayout.monotonicNanoseconds()
+  ) -> Date? {
+    guard let snapshotPublishMonoNs, snapshotPublishMonoNs > 0 else { return nil }
+    let elapsedNs = nowMonoNs >= snapshotPublishMonoNs ? nowMonoNs - snapshotPublishMonoNs : 0
+    return now.addingTimeInterval(-Double(elapsedNs) / 1_000_000_000)
+  }
+}
+
 public final class LabandSnapshotRingWriter {
   public let attachment: LabandSnapshotRingAttachment
 
@@ -562,7 +603,7 @@ public final class LabandSnapshotRingReader {
     Darwin.close(fd)
   }
 
-  public func latestSnapshot() throws -> LabandSnapshotResponse {
+  public func latestSnapshotFrame() throws -> LabandSnapshotFrame {
     let header = UnsafeRawPointer(pointer)
     let writerGeneration = header.loadU64(
       LabandSnapshotRingLayout.FileHeaderOffset.writerGeneration)
@@ -575,7 +616,16 @@ public final class LabandSnapshotRingReader {
       }
     }
     guard let best else { throw LabandSnapshotRingError.noCompletedSnapshot }
-    return best.snapshot
+    return LabandSnapshotFrame(
+      generation: best.generation,
+      dirtyRanges: best.dirtyRanges,
+      ptyDrainMonoNs: best.ptyDrainMonoNs,
+      snapshotPublishMonoNs: best.snapshotPublishMonoNs,
+      snapshot: best.snapshot)
+  }
+
+  public func latestSnapshot() throws -> LabandSnapshotResponse {
+    try latestSnapshotFrame().snapshot
   }
 
   public func generation() -> UInt64 {
@@ -651,6 +701,9 @@ public final class LabandSnapshotRingReader {
 
   private struct SlotRead {
     var generation: UInt64
+    var dirtyRanges: [LabandSnapshotDirtyRange]?
+    var ptyDrainMonoNs: UInt64?
+    var snapshotPublishMonoNs: UInt64?
     var snapshot: LabandSnapshotResponse
   }
 
@@ -665,10 +718,43 @@ public final class LabandSnapshotRingReader {
     guard generation > 0, rows > 0, cols > 0, rows <= maxRows, cols <= maxCols else {
       return nil
     }
+    let ptyDrainMonoNs = nonzero(
+      slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.ptyDrainMonoNs))
+    let snapshotPublishMonoNs = nonzero(
+      slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.snapshotPublishMonoNs))
+    let dirtyRanges = readDirtyRanges(slot: slot, rows: rows)
     let snapshot = readSnapshot(slot: slot, rows: rows, cols: cols)
     let after = slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
     guard before == after, after % 2 == 0 else { return nil }
-    return SlotRead(generation: generation, snapshot: snapshot)
+    return SlotRead(
+      generation: generation,
+      dirtyRanges: dirtyRanges,
+      ptyDrainMonoNs: ptyDrainMonoNs,
+      snapshotPublishMonoNs: snapshotPublishMonoNs,
+      snapshot: snapshot)
+  }
+
+  private func nonzero(_ value: UInt64) -> UInt64? {
+    value == 0 ? nil : value
+  }
+
+  private func readDirtyRanges(
+    slot: UnsafeRawPointer,
+    rows: Int
+  ) -> [LabandSnapshotDirtyRange]? {
+    let count = Int(slot.loadU16(LabandSnapshotRingLayout.SlotHeaderOffset.dirtyRangeCount))
+    guard rows > 0, count > 0 else { return nil }
+    var ranges: [LabandSnapshotDirtyRange] = []
+    ranges.reserveCapacity(min(count, rows))
+    let rangesBase = slot.advanced(by: Int(LabandSnapshotRingLayout.slotHeaderBytes))
+    for index in 0..<min(count, rows) {
+      let offset = index * 4
+      let start = Int(rangesBase.loadU16(offset))
+      let end = Int(rangesBase.loadU16(offset + 2))
+      guard start >= 0, start < end, end <= rows else { return nil }
+      ranges.append(LabandSnapshotDirtyRange(startRow: start, endRow: end))
+    }
+    return ranges.isEmpty ? nil : ranges
   }
 
   private func readCell(slotIndex: Int, row: Int, col: Int) -> LabandSnapshotRingCellRead? {

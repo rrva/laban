@@ -6,22 +6,29 @@ final class LabandSnapshotGenerationMonitor: @unchecked Sendable {
 
   private let generationProvider: GenerationProvider
   private let wakeHandler: WakeHandler
-  private let interval: DispatchTimeInterval
+  private let idleInterval: DispatchTimeInterval
+  private let activeInterval: DispatchTimeInterval
+  private let activeDuration: TimeInterval
   private let queue: DispatchQueue
   private let lock = NSLock()
   private var generationsBySessionId: [String: UInt64] = [:]
+  private var activeUntil: Date?
   private var timer: DispatchSourceTimer?
   private var stopped = false
 
   init(
     interval: DispatchTimeInterval = .milliseconds(8),
+    activeInterval: DispatchTimeInterval = .milliseconds(2),
+    activeDuration: TimeInterval = 0.150,
     queue: DispatchQueue = DispatchQueue(
       label: "laban.laband.snapshot-generation-monitor",
       qos: .userInteractive),
     generationProvider: @escaping GenerationProvider,
     wakeHandler: @escaping WakeHandler
   ) {
-    self.interval = interval
+    self.idleInterval = interval
+    self.activeInterval = activeInterval
+    self.activeDuration = activeDuration
     self.queue = queue
     self.generationProvider = generationProvider
     self.wakeHandler = wakeHandler
@@ -47,6 +54,24 @@ final class LabandSnapshotGenerationMonitor: @unchecked Sendable {
     if shouldStart {
       startTimerIfNeeded()
     }
+  }
+
+  func boost(sessionId: String) {
+    guard !sessionId.isEmpty else { return }
+    let source: DispatchSourceTimer?
+    let boostedUntil = Date().addingTimeInterval(activeDuration)
+    lock.lock()
+    guard !stopped, generationsBySessionId[sessionId] != nil else {
+      lock.unlock()
+      return
+    }
+    if activeUntil.map({ $0 < boostedUntil }) ?? true {
+      activeUntil = boostedUntil
+    }
+    source = timer
+    lock.unlock()
+
+    source?.schedule(deadline: .now() + activeInterval, leeway: .milliseconds(1))
   }
 
   func untrack(sessionId: String) {
@@ -79,7 +104,6 @@ final class LabandSnapshotGenerationMonitor: @unchecked Sendable {
     source.setEventHandler { [weak self] in
       self?.poll()
     }
-    source.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(1))
 
     lock.lock()
     guard !stopped, timer == nil, !generationsBySessionId.isEmpty else {
@@ -89,6 +113,7 @@ final class LabandSnapshotGenerationMonitor: @unchecked Sendable {
     }
     timer = source
     lock.unlock()
+    source.schedule(deadline: .now() + idleInterval, leeway: .milliseconds(1))
     source.resume()
   }
 
@@ -99,6 +124,7 @@ final class LabandSnapshotGenerationMonitor: @unchecked Sendable {
     lock.unlock()
     guard shouldPoll else { return }
 
+    let now = Date()
     for sessionId in sessionIds {
       guard let generation = generationProvider(sessionId) else { continue }
 
@@ -107,14 +133,35 @@ final class LabandSnapshotGenerationMonitor: @unchecked Sendable {
       if let previous = generationsBySessionId[sessionId] {
         if generation > previous {
           generationsBySessionId[sessionId] = generation
+          let boostedUntil = now.addingTimeInterval(activeDuration)
+          if activeUntil.map({ $0 < boostedUntil }) ?? true {
+            activeUntil = boostedUntil
+          }
           shouldWake = true
         }
       }
       lock.unlock()
 
       if shouldWake {
-        wakeHandler(sessionId, Date())
+        wakeHandler(sessionId, now)
       }
     }
+    scheduleNextTimer()
+  }
+
+  private func scheduleNextTimer() {
+    let source: DispatchSourceTimer?
+    let interval: DispatchTimeInterval
+    lock.lock()
+    guard !stopped, !generationsBySessionId.isEmpty, let timer else {
+      lock.unlock()
+      return
+    }
+    let active = activeUntil.map { $0 > Date() } ?? false
+    source = timer
+    interval = active ? activeInterval : idleInterval
+    lock.unlock()
+
+    source?.schedule(deadline: .now() + interval, leeway: .milliseconds(1))
   }
 }

@@ -193,13 +193,17 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   }
 
   public func snapshot(sessionId: String) throws -> LabandSnapshotResponse {
-    if let ringSnapshot = try readRingSnapshot(sessionId: sessionId) {
-      return ringSnapshot
+    try snapshotFrame(sessionId: sessionId).snapshot
+  }
+
+  public func snapshotFrame(sessionId: String) throws -> LabandSnapshotFrame {
+    if let ringFrame = try readRingSnapshotFrame(sessionId: sessionId) {
+      return ringFrame
     }
     if (try? attachSnapshotRing(sessionId: sessionId)) != nil,
-      let ringSnapshot = try readRingSnapshot(sessionId: sessionId)
+      let ringFrame = try readRingSnapshotFrame(sessionId: sessionId)
     {
-      return ringSnapshot
+      return ringFrame
     }
     let response = try send(
       LabandRequest(
@@ -211,7 +215,7 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     guard let snapshot = response.snapshot else {
       throw TerminalSessionClientError.protocolError("snapshot response missing payload")
     }
-    return snapshot
+    return LabandSnapshotFrame(generation: nil, snapshot: snapshot)
   }
 
   public func scrollViewport(sessionId: String, deltaRows: Int) throws -> LabandSessionInfo {
@@ -347,10 +351,10 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     lock.withLock { leasesBySession[sessionId] }
   }
 
-  private func readRingSnapshot(sessionId: String) throws -> LabandSnapshotResponse? {
+  private func readRingSnapshotFrame(sessionId: String) throws -> LabandSnapshotFrame? {
     guard let reader = lock.withLock({ ringReaders[sessionId] }) else { return nil }
     do {
-      return try reader.latestSnapshot()
+      return try reader.latestSnapshotFrame()
     } catch LabandSnapshotRingError.noCompletedSnapshot {
       return nil
     }

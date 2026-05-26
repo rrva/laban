@@ -110,6 +110,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var renderInvalidated = true
   private var themeChangeObserver: NSObjectProtocol?
   private var lastRenderedActiveTabId: Tab.ID?
+  private var remoteSnapshotRenderTracker = RemoteSnapshotRenderTracker()
   private var scrollResidualPx: CGFloat = 0
 
   /// Last cols value applied to libghostty. Used to detect when a reflow
@@ -783,7 +784,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if sync.modelChanged {
       renderInvalidated = true
     }
-    var activeTerminalDirty = sync.activeTerminalDirty
+    let usingRemoteSessions = labandCoordinator != nil
+    var activeTerminalDirty = usingRemoteSessions ? false : sync.activeTerminalDirty
 
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)
@@ -867,26 +869,45 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     self.scrollAnimating = scrollAnimating
 
-    let remoteSnapshot: LabandSnapshotResponse?
+    var remoteFrame: LabandSnapshotFrame?
     if let labandCoordinator {
       do {
-        remoteSnapshot = try labandCoordinator.snapshot(for: activeTab, size: model.terminalSize)
-        activeTerminalDirty = activeTerminalDirty || (remoteSnapshot?.dirty ?? false)
+        let remoteGeneration = try labandCoordinator.snapshotGeneration(
+          for: activeTab,
+          size: model.terminalSize)
+        activeTerminalDirty =
+          activeTerminalDirty
+          || remoteSnapshotRenderTracker.terminalDirty(
+            tabId: activeTab.id,
+            generation: remoteGeneration,
+            fallbackDirty: true)
+        if activeTerminalDirty {
+          remoteFrame = try labandCoordinator.snapshotFrame(
+            for: activeTab,
+            size: model.terminalSize)
+          activeTerminalDirty =
+            activeTerminalDirty
+            || remoteSnapshotRenderTracker.terminalDirty(
+              tabId: activeTab.id,
+              generation: remoteFrame?.generation,
+              fallbackDirty: remoteFrame?.snapshot.dirty ?? false)
+        }
       } catch {
-        remoteSnapshot = nil
+        remoteFrame = nil
         AppLog.app.error("laband snapshot failed: \(String(describing: error))")
       }
     } else {
-      remoteSnapshot = nil
+      remoteFrame = nil
     }
 
-    let terminalDirty = activeTerminalDirty || (remoteSnapshot == nil && session.renderDirty())
+    let terminalDirty = activeTerminalDirty || (!usingRemoteSessions && session.renderDirty())
 
+    let gateNow = Date()
     let syncGate = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: terminalDirty,
       synchronizedOutputActive: session.synchronizedOutputActive,
       sessionId: session.id,
-      now: Date(),
+      now: gateNow,
       hold: synchronizedOutputHold)
     synchronizedOutputHold = syncGate.hold
     if syncGate.shouldResetMode {
@@ -907,8 +928,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let settleGate = TerminalRenderGate.outputSettleDecision(
         terminalDirty: terminalDirty,
         sessionId: session.id,
-        lastDirtyAt: displayKickCoalescer.latestDirtyAt(),
-        now: Date(),
+        lastDirtyAt: remoteFrame?.snapshotPublishedAt(now: gateNow)
+          ?? displayKickCoalescer.latestDirtyAt(),
+        now: gateNow,
         hold: outputSettleHold)
       outputSettleHold = settleGate.hold
       if settleGate.shouldDefer {
@@ -953,12 +975,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale)
     )
+    if remoteFrame == nil, let labandCoordinator {
+      do {
+        remoteFrame = try labandCoordinator.snapshotFrame(for: activeTab, size: model.terminalSize)
+      } catch {
+        AppLog.app.error("laband snapshot failed: \(String(describing: error))")
+        return
+      }
+    }
     let surfaceFrame: TerminalSurfaceFrame?
-    if let remoteSnapshot {
+    if let remoteFrame {
       surfaceFrame = surfaceController.makeFrame(
         request,
-        remoteSnapshot: remoteSnapshot,
-        sessionId: session.id)
+        remoteSnapshot: remoteFrame.snapshot,
+        sessionId: session.id,
+        dirtyRanges: remoteFrame.dirtyRanges)
     } else {
       surfaceFrame = surfaceController.makeFrame(
         request,
@@ -1015,6 +1046,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     if let labandCoordinator {
       labandCoordinator.markRendered(tab: activeTab)
+      remoteSnapshotRenderTracker.markRendered(
+        tabId: activeTab.id,
+        generation: remoteFrame?.generation)
+      session.markRendered()
     } else {
       session.markRendered()
     }
@@ -1225,6 +1260,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if let tab = model.tabs.first(where: { $0.id == tabId }) {
       labandCoordinator?.terminate(tab: tab)
     }
+    remoteSnapshotRenderTracker.clear(tabId: tabId)
     try model.closeTab(tabId)
   }
 

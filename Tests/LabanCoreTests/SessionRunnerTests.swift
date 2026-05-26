@@ -14,29 +14,22 @@ final class SessionRunnerTests: XCTestCase {
     return try Session(config: &config, size: size)
   }
 
-  func testRunnerStartStopOnFixtureSession() throws {
+  private func makeSleepingRealSession() throws -> Session {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    return try Session.realShell(size: size, launchArgv: ["/bin/sleep", "0.2"])
+  }
+
+  func testFixtureSessionDoesNotCreateRunner() throws {
     let session = try makeFixtureSession()
-    let calls = OSAllocatedUnfairLock(initialState: 0)
-    guard
-      let runner = session.makeRunner(onDirty: {
-        calls.withLock { $0 += 1 }
-      })
-    else {
-      XCTFail("makeRunner returned nil for an open fixture session")
-      return
-    }
-    runner.start()
-    // Fixture mode: poll_blocking short-circuits, so the loop spins checking
-    // shouldStop. Give it a few iterations, then stop.
-    Thread.sleep(forTimeInterval: 0.05)
-    runner.stop()
-    XCTAssertEqual(
-      calls.withLock { $0 }, 0,
-      "fixture sessions never produce bytes, so onDirty must not fire")
+    defer { session.close() }
+    XCTAssertNil(session.makeRunner(onDirty: {}))
   }
 
   func testRunnerStopIsIdempotent() throws {
-    let session = try makeFixtureSession()
+    let session = try makeSleepingRealSession()
+    defer { session.close() }
     guard let runner = session.makeRunner(onDirty: {}) else {
       XCTFail("makeRunner returned nil")
       return
@@ -52,7 +45,8 @@ final class SessionRunnerTests: XCTestCase {
   }
 
   func testRunnerStopBeforeStartIsSafe() throws {
-    let session = try makeFixtureSession()
+    let session = try makeSleepingRealSession()
+    defer { session.close() }
     guard let runner = session.makeRunner(onDirty: {}) else {
       XCTFail("makeRunner returned nil")
       return

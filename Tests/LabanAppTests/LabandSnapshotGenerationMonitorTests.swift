@@ -39,6 +39,26 @@ final class LabandSnapshotGenerationMonitorTests: XCTestCase {
 
     wait(for: [woke], timeout: 1)
   }
+
+  func testBoostPollsBeforeIdleInterval() {
+    let state = LockedGenerationState(["session": 1])
+    let woke = expectation(description: "boosted generation advance wakes")
+    let monitor = LabandSnapshotGenerationMonitor(
+      interval: .milliseconds(250),
+      activeInterval: .milliseconds(5),
+      generationProvider: { state.generation(for: $0) },
+      wakeHandler: { sessionId, _ in
+        XCTAssertEqual(sessionId, "session")
+        woke.fulfill()
+      })
+    defer { monitor.stop() }
+
+    monitor.track(sessionId: "session")
+    state.setGeneration(2, for: "session")
+    monitor.boost(sessionId: "session")
+
+    wait(for: [woke], timeout: 0.1)
+  }
 }
 
 private final class LockedGenerationState: @unchecked Sendable {

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import LabanCore
 import LabanRenderer
@@ -342,6 +343,126 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
     _ = try? cleanupClient.terminate(sessionId: tab.id)
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
+  func testUnchangedBackgroundSnapshotDoesNotAdvanceRenderedFrame() throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+
+    let oldRenderer = getenv("LABAN_RENDERER").map { String(cString: $0) }
+    setenv("LABAN_RENDERER", "software", 1)
+    defer {
+      if let oldRenderer {
+        setenv("LABAN_RENDERER", oldRenderer, 1)
+      } else {
+        unsetenv("LABAN_RENDERER")
+      }
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-app-render-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    model.replaceTabs(
+      from: WorkspaceState(
+        windows: [
+          WindowState(
+            id: "main-window",
+            selectedTabId: "render-tab",
+            tabs: [
+              TabState(
+                id: "render-tab",
+                cwd: root.path,
+                launchCommand: "cat",
+                lastActiveAt: Date())
+            ])
+        ]))
+
+    let coordinatorClient = try waitForClient(socketPath: socketPath)
+    let coordinator = AppLabandSessionCoordinator(
+      client: coordinatorClient,
+      shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
+      cwdByTabId: ["render-tab": root.path]
+    )
+    defer { coordinator.detach() }
+
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let sidebarFontAtlas = FontAtlas(pointSize: 11)
+    let cellSize = fontAtlas.cellSize
+    let cellWidth = Int(cellSize.width)
+    let cellHeight = Int(cellSize.height)
+    let insets = TerminalBitmapView.contentInsets
+    let viewWidth =
+      SidebarLayout.defaultWidth + insets.left + CGFloat(size.cols) * CGFloat(cellWidth)
+      + insets.right
+    let viewHeight = insets.top + CGFloat(size.rows) * CGFloat(cellHeight) + insets.bottom
+    let view = TerminalBitmapView(
+      model: model,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      labandCoordinator: coordinator
+    )
+    view.frame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
+
+    let tab = try XCTUnwrap(model.tabs.first)
+    _ = try coordinator.ensureSession(for: tab, size: size)
+    try coordinator.write(Array("steady".utf8), to: tab, size: size)
+    _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "steady")
+
+    view.advanceFrame()
+    let baselineFrame = view.renderedFrameCountForTests
+    XCTAssertGreaterThan(baselineFrame, 0)
+
+    view.advanceFrame()
+    XCTAssertEqual(
+      view.renderedFrameCountForTests,
+      baselineFrame,
+      "unchanged background snapshot generation must not force another rendered frame")
+
+    try coordinator.write(Array("!".utf8), to: tab, size: size)
+    _ = try waitForSnapshotText(coordinator: coordinator, tab: tab, size: size, text: "steady!")
+
+    let expectedFrame = baselineFrame + 1
+    let deadline = Date().addingTimeInterval(1)
+    while view.renderedFrameCountForTests < expectedFrame && Date() < deadline {
+      view.advanceFrame()
+      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.005))
+    }
+    XCTAssertEqual(
+      view.renderedFrameCountForTests,
+      expectedFrame,
+      "new background snapshot generation must render")
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: "render-tab")
     _ = try? cleanupClient.shutdownWhenIdle()
     cleanupClient.close()
     process.waitUntilExit()
