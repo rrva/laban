@@ -408,7 +408,9 @@ public final class HeadlessDebugRuntime {
   private static func connectOrStartLaband(
     runId: String,
     artifactsURL: URL
-  ) throws -> (client: LabandTerminalSessionClient, process: Process?, ownsProcess: Bool, socketPath: String) {
+  ) throws -> (
+    client: LabandTerminalSessionClient, process: Process?, ownsProcess: Bool, socketPath: String
+  ) {
     let env = ProcessInfo.processInfo.environment
     let socketPath = env["LABAN_LABAND_SOCKET"] ?? ".tmp/\(runId)/laband.sock"
     if let client = try? LabandTerminalSessionClient(socketPath: socketPath) {
@@ -549,7 +551,8 @@ public final class HeadlessDebugRuntime {
           (terminalClientLogicalSessionId(for: $0), $0.sessionId)
         })
       for info in try client.listSessions() {
-        let localSessionId = localSessionIdByLogicalId[info.logicalSessionId] ?? info.logicalSessionId
+        let localSessionId =
+          localSessionIdByLogicalId[info.logicalSessionId] ?? info.logicalSessionId
         terminalClientSessionInfoById[localSessionId] = info
       }
     } catch {

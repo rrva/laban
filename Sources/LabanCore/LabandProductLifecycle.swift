@@ -112,7 +112,8 @@ public struct LabandUpgradePromptModel: Codable, Equatable, Sendable {
 }
 
 public enum LabandLifecycleDecision: Equatable, Sendable {
-  case connect(protocolVersion: Int, compatibility: LabandProtocolCompatibilityStatus, capabilities: [String])
+  case connect(
+    protocolVersion: Int, compatibility: LabandProtocolCompatibilityStatus, capabilities: [String])
   case restartIdleHelper(reason: String)
   case promptBeforeUpgrade(LabandUpgradePromptModel)
 }
@@ -145,7 +146,8 @@ public struct LabandLifecyclePolicy: Equatable, Sendable {
     }
     if liveSessions.isEmpty {
       return .restartIdleHelper(
-        reason: "laband protocol \(hello.protocolVersion) is incompatible and no live sessions exist"
+        reason:
+          "laband protocol \(hello.protocolVersion) is incompatible and no live sessions exist"
       )
     }
     return .promptBeforeUpgrade(
@@ -200,8 +202,10 @@ public struct LabandProductPaths: Equatable, Sendable {
 
   public init(applicationSupportURL: URL) {
     self.applicationSupportURL = applicationSupportURL
-    self.labandDirectoryURL = applicationSupportURL.appendingPathComponent("laband", isDirectory: true)
-    self.journalDirectoryURL = labandDirectoryURL.appendingPathComponent("journal", isDirectory: true)
+    self.labandDirectoryURL = applicationSupportURL.appendingPathComponent(
+      "laband", isDirectory: true)
+    self.journalDirectoryURL = labandDirectoryURL.appendingPathComponent(
+      "journal", isDirectory: true)
     self.logDirectoryURL = labandDirectoryURL.appendingPathComponent("logs", isDirectory: true)
   }
 

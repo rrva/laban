@@ -253,8 +253,8 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
   }
 }
 
-private extension NSLock {
-  func withLock<T>(_ body: () throws -> T) rethrows -> T {
+extension NSLock {
+  fileprivate func withLock<T>(_ body: () throws -> T) rethrows -> T {
     lock()
     defer { unlock() }
     return try body()

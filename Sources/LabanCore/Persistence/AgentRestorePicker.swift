@@ -98,7 +98,8 @@ public enum AgentRestorePicker {
     else { return nil }
 
     let persistedCwd = agent.cwd ?? tab.cwd
-    let launchCwd = cwdExists(persistedCwd)
+    let launchCwd =
+      cwdExists(persistedCwd)
       ? persistedCwd
       : FileManager.default.homeDirectoryForCurrentUser.path
     let context = AgentLaunchContext(
@@ -121,7 +122,8 @@ public enum AgentRestorePicker {
       warnings.append(
         AgentRestoreWarning(
           code: .repoFingerprintMismatch,
-          message: "The repository at the saved working directory no longer matches the saved tab."))
+          message: "The repository at the saved working directory no longer matches the saved tab.")
+      )
     }
 
     return AgentRestoreCandidate(

@@ -31,7 +31,8 @@ struct DebugInputActions {
         )
         return jsonError("typeText failed: \(error)")
       }
-    } else if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id) {
+    } else if let tab = runtime.model.activeTab, let session = runtime.model.session(forTab: tab.id)
+    {
       let deltaRows = session.scrollViewportToActiveBottom()
       appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
       session.write(bytes)

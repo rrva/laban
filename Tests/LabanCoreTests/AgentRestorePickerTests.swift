@@ -23,7 +23,7 @@ final class AgentRestorePickerTests: XCTestCase {
                 jsonlPath: "/mirror/session.jsonl",
                 wasRunningAtQuit: true,
                 argv: ["claude", "--model", "sonnet"],
-                cwd: "/repo")),
+                cwd: "/repo"))
           ])
       ])
 

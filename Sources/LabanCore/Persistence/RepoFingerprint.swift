@@ -20,7 +20,8 @@ public enum RepoFingerprint {
           for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("gitdir:") else { continue }
-            let target = trimmed
+            let target =
+              trimmed
               .dropFirst("gitdir:".count)
               .trimmingCharacters(in: .whitespaces)
             let absolute: String

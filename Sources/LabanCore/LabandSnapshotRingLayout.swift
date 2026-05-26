@@ -220,44 +220,44 @@ public struct LabandSnapshotRingCellRead: Equatable, Sendable {
   }
 }
 
-private extension UnsafeRawPointer {
-  func loadU8(_ offset: Int) -> UInt8 {
+extension UnsafeRawPointer {
+  fileprivate func loadU8(_ offset: Int) -> UInt8 {
     load(fromByteOffset: offset, as: UInt8.self)
   }
 
-  func loadU16(_ offset: Int) -> UInt16 {
+  fileprivate func loadU16(_ offset: Int) -> UInt16 {
     UInt16(littleEndian: load(fromByteOffset: offset, as: UInt16.self))
   }
 
-  func loadU32(_ offset: Int) -> UInt32 {
+  fileprivate func loadU32(_ offset: Int) -> UInt32 {
     UInt32(littleEndian: load(fromByteOffset: offset, as: UInt32.self))
   }
 
-  func loadU64(_ offset: Int) -> UInt64 {
+  fileprivate func loadU64(_ offset: Int) -> UInt64 {
     UInt64(littleEndian: load(fromByteOffset: offset, as: UInt64.self))
   }
 }
 
-private extension UnsafeMutableRawPointer {
-  func storeU8(_ value: UInt8, _ offset: Int) {
+extension UnsafeMutableRawPointer {
+  fileprivate func storeU8(_ value: UInt8, _ offset: Int) {
     storeBytes(of: value, toByteOffset: offset, as: UInt8.self)
   }
 
-  func storeU16(_ value: UInt16, _ offset: Int) {
+  fileprivate func storeU16(_ value: UInt16, _ offset: Int) {
     storeBytes(of: value.littleEndian, toByteOffset: offset, as: UInt16.self)
   }
 
-  func storeU32(_ value: UInt32, _ offset: Int) {
+  fileprivate func storeU32(_ value: UInt32, _ offset: Int) {
     storeBytes(of: value.littleEndian, toByteOffset: offset, as: UInt32.self)
   }
 
-  func storeU64(_ value: UInt64, _ offset: Int) {
+  fileprivate func storeU64(_ value: UInt64, _ offset: Int) {
     storeBytes(of: value.littleEndian, toByteOffset: offset, as: UInt64.self)
   }
 }
 
-private extension NSLock {
-  func withLock<T>(_ body: () throws -> T) rethrows -> T {
+extension NSLock {
+  fileprivate func withLock<T>(_ body: () throws -> T) rethrows -> T {
     lock()
     defer { unlock() }
     return try body()
@@ -374,7 +374,9 @@ public final class LabandSnapshotRingWriter {
       let seqlockComplete = generation &* 2
       slot.storeU64(seqlockComplete | 1, LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
 
-      memset(slot.advanced(by: Int(LabandSnapshotRingLayout.slotHeaderBytes)), 0, slotStride - Int(LabandSnapshotRingLayout.slotHeaderBytes))
+      memset(
+        slot.advanced(by: Int(LabandSnapshotRingLayout.slotHeaderBytes)), 0,
+        slotStride - Int(LabandSnapshotRingLayout.slotHeaderBytes))
 
       let stringBytes = writeCells(slot: slot, snapshot: snap, rows: rows, cols: cols)
       let dirtyCount = writeDirtyRanges(slot: slot, snapshot: snap, rows: rows)
@@ -409,14 +411,22 @@ public final class LabandSnapshotRingWriter {
     for (index, byte) in LabandSnapshotRingLayout.magic.utf8.enumerated() {
       pointer.storeU8(byte, LabandSnapshotRingLayout.FileHeaderOffset.magic + index)
     }
-    pointer.storeU16(LabandSnapshotRingLayout.abiVersion, LabandSnapshotRingLayout.FileHeaderOffset.abiVersion)
-    pointer.storeU16(LabandSnapshotRingLayout.fileHeaderBytes, LabandSnapshotRingLayout.FileHeaderOffset.headerBytes)
-    pointer.storeU16(LabandSnapshotRingLayout.slotHeaderBytes, LabandSnapshotRingLayout.FileHeaderOffset.slotHeaderBytes)
-    pointer.storeU16(LabandSnapshotRingLayout.cellBytes, LabandSnapshotRingLayout.FileHeaderOffset.cellBytes)
+    pointer.storeU16(
+      LabandSnapshotRingLayout.abiVersion, LabandSnapshotRingLayout.FileHeaderOffset.abiVersion)
+    pointer.storeU16(
+      LabandSnapshotRingLayout.fileHeaderBytes,
+      LabandSnapshotRingLayout.FileHeaderOffset.headerBytes)
+    pointer.storeU16(
+      LabandSnapshotRingLayout.slotHeaderBytes,
+      LabandSnapshotRingLayout.FileHeaderOffset.slotHeaderBytes)
+    pointer.storeU16(
+      LabandSnapshotRingLayout.cellBytes, LabandSnapshotRingLayout.FileHeaderOffset.cellBytes)
     pointer.storeU16(UInt16(slotCount), LabandSnapshotRingLayout.FileHeaderOffset.slotCount)
     pointer.storeU16(UInt16(maxRows), LabandSnapshotRingLayout.FileHeaderOffset.maxRows)
     pointer.storeU16(UInt16(maxCols), LabandSnapshotRingLayout.FileHeaderOffset.maxCols)
-    pointer.storeU32(LabandSnapshotRingLayout.byteOrderMarker, LabandSnapshotRingLayout.FileHeaderOffset.byteOrderMarker)
+    pointer.storeU32(
+      LabandSnapshotRingLayout.byteOrderMarker,
+      LabandSnapshotRingLayout.FileHeaderOffset.byteOrderMarker)
     pointer.storeU32(UInt32(slotStride), LabandSnapshotRingLayout.FileHeaderOffset.slotStride)
     pointer.storeU64(sessionHash, LabandSnapshotRingLayout.FileHeaderOffset.sessionIdHash)
     pointer.storeU64(incarnationHash, LabandSnapshotRingLayout.FileHeaderOffset.incarnationIdHash)
@@ -431,7 +441,9 @@ public final class LabandSnapshotRingWriter {
     return flags
   }
 
-  private func writeDirtyRanges(slot: UnsafeMutableRawPointer, snapshot: LabanSnapshot, rows: Int) -> Int {
+  private func writeDirtyRanges(slot: UnsafeMutableRawPointer, snapshot: LabanSnapshot, rows: Int)
+    -> Int
+  {
     let rangesOffset = Int(LabandSnapshotRingLayout.slotHeaderBytes)
     guard let dirtyRows = snapshot.dirty_rows, Int(snapshot.dirty_row_count) >= rows else {
       slot.storeU16(0, rangesOffset)
@@ -468,7 +480,8 @@ public final class LabandSnapshotRingWriter {
     guard let cells = snapshot.cells else { return 0 }
     let cellsBase = slot.advanced(
       by: LabandSnapshotRingLayout.cellsOffset(maxRows: maxRows))
-    let stringsBaseOffset = LabandSnapshotRingLayout.stringTableOffset(maxRows: maxRows, maxCols: maxCols)
+    let stringsBaseOffset = LabandSnapshotRingLayout.stringTableOffset(
+      maxRows: maxRows, maxCols: maxCols)
     let stringsBase = slot.advanced(by: stringsBaseOffset)
     var stringUsed = 0
     let cellBytes = Int(LabandSnapshotRingLayout.cellBytes)
@@ -551,7 +564,8 @@ public final class LabandSnapshotRingReader {
 
   public func latestSnapshot() throws -> LabandSnapshotResponse {
     let header = UnsafeRawPointer(pointer)
-    let writerGeneration = header.loadU64(LabandSnapshotRingLayout.FileHeaderOffset.writerGeneration)
+    let writerGeneration = header.loadU64(
+      LabandSnapshotRingLayout.FileHeaderOffset.writerGeneration)
     guard writerGeneration > 0 else { throw LabandSnapshotRingError.noCompletedSnapshot }
 
     var best: SlotRead?
@@ -585,39 +599,49 @@ public final class LabandSnapshotRingReader {
     pointer: UnsafeRawPointer,
     attachment: LabandSnapshotRingAttachment
   ) throws {
-    let magicBytes = (0..<8).map { pointer.loadU8(LabandSnapshotRingLayout.FileHeaderOffset.magic + $0) }
+    let magicBytes = (0..<8).map {
+      pointer.loadU8(LabandSnapshotRingLayout.FileHeaderOffset.magic + $0)
+    }
     guard String(bytes: magicBytes, encoding: .utf8) == LabandSnapshotRingLayout.magic else {
       throw LabandSnapshotRingError.incompatibleHeader("bad magic")
     }
-    guard pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.abiVersion)
-      == LabandSnapshotRingLayout.abiVersion
+    guard
+      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.abiVersion)
+        == LabandSnapshotRingLayout.abiVersion
     else {
       throw LabandSnapshotRingError.incompatibleHeader("unsupported ABI version")
     }
-    guard pointer.loadU32(LabandSnapshotRingLayout.FileHeaderOffset.byteOrderMarker)
-      == LabandSnapshotRingLayout.byteOrderMarker
+    guard
+      pointer.loadU32(LabandSnapshotRingLayout.FileHeaderOffset.byteOrderMarker)
+        == LabandSnapshotRingLayout.byteOrderMarker
     else {
       throw LabandSnapshotRingError.incompatibleHeader("byte order marker mismatch")
     }
-    guard pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.headerBytes)
-      >= LabandSnapshotRingLayout.fileHeaderBytes
+    guard
+      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.headerBytes)
+        >= LabandSnapshotRingLayout.fileHeaderBytes
     else {
       throw LabandSnapshotRingError.incompatibleHeader("file header too small")
     }
-    guard pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.slotHeaderBytes)
-      >= LabandSnapshotRingLayout.slotHeaderBytes
+    guard
+      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.slotHeaderBytes)
+        >= LabandSnapshotRingLayout.slotHeaderBytes
     else {
       throw LabandSnapshotRingError.incompatibleHeader("slot header too small")
     }
-    guard pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.cellBytes)
-      >= LabandSnapshotRingLayout.cellBytes
+    guard
+      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.cellBytes)
+        >= LabandSnapshotRingLayout.cellBytes
     else {
       throw LabandSnapshotRingError.incompatibleHeader("cell record too small")
     }
-    guard pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.slotCount)
-      == UInt16(attachment.slotCount),
-      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.maxRows) == UInt16(attachment.maxRows),
-      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.maxCols) == UInt16(attachment.maxCols),
+    guard
+      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.slotCount)
+        == UInt16(attachment.slotCount),
+      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.maxRows)
+        == UInt16(attachment.maxRows),
+      pointer.loadU16(LabandSnapshotRingLayout.FileHeaderOffset.maxCols)
+        == UInt16(attachment.maxCols),
       pointer.loadU32(LabandSnapshotRingLayout.FileHeaderOffset.slotStride)
         == UInt32(attachment.slotStride)
     else {
@@ -704,7 +728,8 @@ public final class LabandSnapshotRingReader {
       var rowText = ""
       for col in 0..<cols {
         let cell = cellsBase.advanced(by: (row * maxCols + col) * cellBytes)
-        let text = readCellText(cell: cell, stringsBase: stringsBase, stringTableBytes: stringTableBytes)
+        let text = readCellText(
+          cell: cell, stringsBase: stringsBase, stringTableBytes: stringTableBytes)
         cells.append(
           LabandSnapshotCell(
             row: row,

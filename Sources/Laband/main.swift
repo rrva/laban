@@ -88,8 +88,8 @@ private struct LabandArguments {
   }
 }
 
-private extension NSLock {
-  func withLock<T>(_ body: () throws -> T) rethrows -> T {
+extension NSLock {
+  fileprivate func withLock<T>(_ body: () throws -> T) rethrows -> T {
     lock()
     defer { unlock() }
     return try body()
@@ -136,7 +136,8 @@ private final class LabandLifecycleJournal {
 
   init(directory: String) throws {
     try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-    self.filePath = URL(fileURLWithPath: directory)
+    self.filePath =
+      URL(fileURLWithPath: directory)
       .appendingPathComponent("lifecycle.jsonl").path
     fd = Darwin.open(filePath, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR)
     guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -1124,7 +1125,9 @@ private final class LabandDaemon {
     )
   }
 
-  private func ensureSnapshotRing(_ managed: ManagedLabandSession) throws -> LabandSnapshotRingWriter {
+  private func ensureSnapshotRing(_ managed: ManagedLabandSession) throws
+    -> LabandSnapshotRingWriter
+  {
     if let writer = managed.ringWriter {
       return writer
     }
@@ -1300,7 +1303,8 @@ private final class UnixSocketServer {
   private func readFrame(fd: Int32) throws -> Data? {
     guard let header = readExact(fd: fd, count: 4) else { return nil }
     let bytes = [UInt8](header)
-    let length = UInt32(bytes[0])
+    let length =
+      UInt32(bytes[0])
       | (UInt32(bytes[1]) << 8)
       | (UInt32(bytes[2]) << 16)
       | (UInt32(bytes[3]) << 24)

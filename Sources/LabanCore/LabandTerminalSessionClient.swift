@@ -360,7 +360,8 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     let leases = lock.withLock { Array(leasesBySession.values) }
     let now = DispatchTime.now().uptimeNanoseconds
     for lease in leases {
-      let ttl = lease.expiresAtMonoNs > lease.grantedAtMonoNs
+      let ttl =
+        lease.expiresAtMonoNs > lease.grantedAtMonoNs
         ? lease.expiresAtMonoNs - lease.grantedAtMonoNs
         : 0
       let renewMargin = max(ttl / 3, 1_000_000_000)
@@ -460,8 +461,8 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
   }
 }
 
-private extension NSLock {
-  func withLock<T>(_ body: () throws -> T) rethrows -> T {
+extension NSLock {
+  fileprivate func withLock<T>(_ body: () throws -> T) rethrows -> T {
     lock()
     defer { unlock() }
     return try body()

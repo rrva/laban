@@ -241,7 +241,8 @@ final class LabandControlProtocolTests: XCTestCase {
       }
       usleep(50_000)
     }
-    XCTFail("snapshot ring never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
+    XCTFail(
+      "snapshot ring never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
     throw POSIXError(.ETIMEDOUT)
   }
 
