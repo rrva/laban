@@ -931,7 +931,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         lastDirtyAt: remoteFrame?.snapshotPublishedAt(now: gateNow)
           ?? displayKickCoalescer.latestDirtyAt(),
         now: gateNow,
-        hold: outputSettleHold)
+        hold: outputSettleHold,
+        quiet: TerminalRenderGate.settleQuietSeconds(
+          remoteDirtyRanges: remoteFrame?.dirtyRanges))
       outputSettleHold = settleGate.hold
       if settleGate.shouldDefer {
         scheduleOutputSettleWake(

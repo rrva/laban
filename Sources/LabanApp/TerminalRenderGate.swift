@@ -26,7 +26,17 @@ enum TerminalRenderGate {
 
   static let synchronizedOutputMaxHoldSeconds: TimeInterval = 1.0
   static let outputSettleQuietSeconds: TimeInterval = 0.012
+  static let remoteSnapshotOutputSettleQuietSeconds: TimeInterval = 0.008
   static let outputSettleMaxHoldSeconds: TimeInterval = 0.025
+
+  static func settleQuietSeconds(
+    remoteDirtyRanges: [LabandSnapshotDirtyRange]?
+  ) -> TimeInterval {
+    guard let remoteDirtyRanges, !remoteDirtyRanges.isEmpty else {
+      return outputSettleQuietSeconds
+    }
+    return remoteSnapshotOutputSettleQuietSeconds
+  }
 
   static func synchronizedOutputDecision(
     terminalDirty: Bool,

@@ -114,6 +114,9 @@ final class AppKeystrokeLatencyBench: XCTestCase {
       view: view,
       visibleText: {
         (try? coordinator.snapshot(for: tab, size: size).visibleText) ?? ""
+      },
+      stageSnapshot: {
+        try? coordinator.snapshotFrame(for: tab, size: size)
       })
 
     let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
@@ -129,12 +132,21 @@ final class AppKeystrokeLatencyBench: XCTestCase {
     samples: Int,
     warmup: Int,
     view: TerminalBitmapView,
-    visibleText: () -> String
+    visibleText: () -> String,
+    stageSnapshot: (() -> LabandSnapshotFrame?)? = nil
   ) throws -> BenchReport {
     let total = samples + warmup
     let letters = Array("abcdefghijklmnopqrstuvwxyz")
     var measured: [Double] = []
     measured.reserveCapacity(samples)
+    var publishSamples: [Double] = []
+    publishSamples.reserveCapacity(samples)
+    var frameSamples: [Double] = []
+    frameSamples.reserveCapacity(samples)
+    var returnSamples: [Double] = []
+    returnSamples.reserveCapacity(samples)
+    var dirtyRowsSamples: [Double] = []
+    dirtyRowsSamples.reserveCapacity(samples)
     var expected = ""
 
     view.advanceFrame()
@@ -142,16 +154,43 @@ final class AppKeystrokeLatencyBench: XCTestCase {
       let text = String(letters[index % letters.count])
       expected += text
       let beforeFrame = view.renderedFrameCountForTests
+      let startMonoNs = LabandSnapshotRingLayout.monotonicNanoseconds()
       let start = ContinuousClock.now
       view.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+      let inputReturnElapsed = ContinuousClock.now - start
+      var firstFrameElapsed: Double?
+      var snapshotPublishElapsed: Double?
       let deadline = Date().addingTimeInterval(2)
       while Date() < deadline {
+        if firstFrameElapsed == nil, view.renderedFrameCountForTests > beforeFrame {
+          let frameElapsed = ContinuousClock.now - start
+          firstFrameElapsed = Double(frameElapsed.components.attoseconds) / 1e15
+        }
+        let frame = stageSnapshot?()
+        let currentVisibleText = frame?.snapshot.visibleText ?? visibleText()
+        if snapshotPublishElapsed == nil,
+          let publishNs = frame?.snapshotPublishMonoNs,
+          publishNs >= startMonoNs,
+          currentVisibleText.contains(expected)
+        {
+          snapshotPublishElapsed = Double(publishNs - startMonoNs) / 1_000_000.0
+        }
         if view.renderedFrameCountForTests > beforeFrame,
-          visibleText().contains(expected)
+          currentVisibleText.contains(expected)
         {
           let elapsed = ContinuousClock.now - start
           if index >= warmup {
             measured.append(Double(elapsed.components.attoseconds) / 1e15)
+            returnSamples.append(Double(inputReturnElapsed.components.attoseconds) / 1e15)
+            if let firstFrameElapsed { frameSamples.append(firstFrameElapsed) }
+            if let snapshotPublishElapsed { publishSamples.append(snapshotPublishElapsed) }
+            if let dirtyRanges = frame?.dirtyRanges {
+              dirtyRowsSamples.append(
+                Double(
+                  dirtyRanges.reduce(0) { total, range in
+                    total + max(0, range.endRow - range.startRow)
+                  }))
+            }
           }
           break
         }
@@ -162,7 +201,14 @@ final class AppKeystrokeLatencyBench: XCTestCase {
       }
     }
 
-    return BenchReport(name: name, samples: measured, verified: measured.count)
+    return BenchReport(
+      name: name,
+      samples: measured,
+      verified: measured.count,
+      inputReturnSamples: returnSamples,
+      snapshotPublishSamples: publishSamples,
+      firstFrameSamples: frameSamples,
+      dirtyRowsSamples: dirtyRowsSamples)
   }
 
   private func makeView(
@@ -202,6 +248,24 @@ final class AppKeystrokeLatencyBench: XCTestCase {
           report.p95,
           report.p99,
           report.max))
+      if !report.inputReturnSamples.isEmpty {
+        print(
+          String(
+            format:
+              "app-keystroke-stages %@ return-p95=%.2fms publish-p95=%.2fms first-frame-p95=%.2fms",
+            report.name,
+            report.inputReturnP95,
+            report.snapshotPublishP95,
+            report.firstFrameP95))
+        if !report.dirtyRowsSamples.isEmpty {
+          print(
+            String(
+              format: "app-keystroke-dirty %@ rows-p50=%.0f rows-p95=%.0f",
+              report.name,
+              report.dirtyRowsP50,
+              report.dirtyRowsP95))
+        }
+      }
     }
   }
 
@@ -260,6 +324,10 @@ private struct BenchReport {
   var name: String
   var samples: [Double]
   var verified: Int
+  var inputReturnSamples: [Double] = []
+  var snapshotPublishSamples: [Double] = []
+  var firstFrameSamples: [Double] = []
+  var dirtyRowsSamples: [Double] = []
 
   var mean: Double {
     samples.reduce(0, +) / Double(Swift.max(samples.count, 1))
@@ -269,10 +337,19 @@ private struct BenchReport {
   var p95: Double { percentile(0.95) }
   var p99: Double { percentile(0.99) }
   var max: Double { samples.max() ?? 0 }
+  var inputReturnP95: Double { percentile(inputReturnSamples, 0.95) }
+  var snapshotPublishP95: Double { percentile(snapshotPublishSamples, 0.95) }
+  var firstFrameP95: Double { percentile(firstFrameSamples, 0.95) }
+  var dirtyRowsP50: Double { percentile(dirtyRowsSamples, 0.50) }
+  var dirtyRowsP95: Double { percentile(dirtyRowsSamples, 0.95) }
 
   private func percentile(_ q: Double) -> Double {
-    guard !samples.isEmpty else { return 0 }
-    let sorted = samples.sorted()
+    percentile(samples, q)
+  }
+
+  private func percentile(_ values: [Double], _ q: Double) -> Double {
+    guard !values.isEmpty else { return 0 }
+    let sorted = values.sorted()
     let index = min(sorted.count - 1, Int(Double(sorted.count - 1) * q))
     return sorted[index]
   }

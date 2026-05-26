@@ -99,6 +99,20 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     XCTAssertNil(maxHoldReached.hold)
   }
 
+  func testOutputSettleQuietWindowIsShorterForRemoteSnapshotRanges() {
+    XCTAssertEqual(
+      TerminalRenderGate.settleQuietSeconds(
+        remoteDirtyRanges: [LabandSnapshotDirtyRange(startRow: 2, endRow: 3)]),
+      TerminalRenderGate.remoteSnapshotOutputSettleQuietSeconds)
+    XCTAssertEqual(
+      TerminalRenderGate.settleQuietSeconds(
+        remoteDirtyRanges: [LabandSnapshotDirtyRange(startRow: 2, endRow: 8)]),
+      TerminalRenderGate.remoteSnapshotOutputSettleQuietSeconds)
+    XCTAssertEqual(
+      TerminalRenderGate.settleQuietSeconds(remoteDirtyRanges: nil),
+      TerminalRenderGate.outputSettleQuietSeconds)
+  }
+
   func testRemoteSnapshotPublishTimeDoesNotRestartSettleWindowAtPollTime() throws {
     let now = Date(timeIntervalSinceReferenceDate: 1_000)
     let snapshot = LabandSnapshotResponse(
