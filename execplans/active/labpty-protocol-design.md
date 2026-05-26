@@ -1198,6 +1198,106 @@ latency":
 - **No retain/release on the hot path.** Use unmanaged pointers where
   the lifetime is clear (the shm mapping outlives every call).
 
+## Coding rules for `labpty`
+
+`labpty` is operationally a soft-realtime, kernel-adjacent C daemon
+with long-running stakes (its bugs cost user terminal sessions
+between Phase 1 ship and Phase 3 fd-handoff). It is **not**
+safety-critical in the avionics / automotive sense, so DO-178C
+traceability, MC/DC coverage, and tool qualification are explicitly
+out of scope (see "Deliberately out of scope" below). What `labpty`
+*does* borrow from the safety-critical playbook is the subset that
+delivers small, predictable, audit-friendly code at single-digit
+percent of the certification cost.
+
+The canonical reference is NASA JPL's *Power of Ten* (Gerard
+Holzmann's ten rules for safety-critical C). Each rule is mapped
+below to its enforcement mechanism in `labpty`.
+
+### Power of Ten compliance
+
+| Rule | Status | Enforcement |
+| --- | --- | --- |
+| 1. Restrict control flow to very simple constructs. No `goto`, `setjmp`, `longjmp`, recursion. | **Enforced** | Review Gate greps in `Sources/Labpty/`: `\bgoto\b`, `setjmp`, `longjmp` return zero hits. Recursion is checked by a CI script that finds direct or single-hop self-calls in the labpty source. |
+| 2. Give all loops a fixed upper bound, checkable by a static analyzer. | **Enforced** | Frame decoder reads exactly `frame_len` bytes; ring writer is one memcpy with at most one wrap-split; registry hash table walks a fixed-size open-addressing table; dispatch is a switch on a closed enum. clang static analyzer flags any loop whose upper bound isn't an integer constant or a previously-validated input field. |
+| 3. Do not use dynamic memory allocation after initialization. | **Enforced** | One `mmap` at boot for the openSession scratch arena. Per-session byte-ring shm files created at `openSession`, destroyed at `terminateSession`. **No `malloc`/`calloc`/`realloc` calls in the hot path.** Review Gate grep: `git grep -nE '\b(malloc\|calloc\|realloc)\(' Sources/Labpty/` returns zero hits, or every hit is in a session-lifecycle (open/terminate) path explicitly labeled as such. |
+| 4. No function longer than 60 lines of code (a single printable page). | **Enforced** | Review Gate CI step: a small AWK script over `Sources/Labpty/*.c` counts lines per function (between matching braces), flags any function > 60 lines. Exceptions documented inline with a `// LABPTY: long-function-allowed: <reason>` marker. |
+| 5. Average ≥ 2 assertions per function. | **Enforced** | Assertions are bounded checks of "this cannot happen by construction": precondition assertions on inputs the caller is supposed to have validated, postcondition assertions on outputs other functions will rely on, invariant assertions on data structures. Built with `NDEBUG` *off* in dev and CI. The Review Gate CI step counts `assert(` lines and function definitions; ratio must be ≥ 2. |
+| 6. Restrict the scope of data to the smallest possible. | **Enforced** | No `extern` globals outside the daemon-lifetime singletons (the scratch arena pointer, the session registry, the global counters block). File-static helpers preferred over header-visible exports. Reviewed at PR time. |
+| 7. Check the return value of all non-void functions. | **Enforced** | clang static analyzer's `core.uninitialized.UndefReturn` plus `-Wunused-result` catches missed returns. Helper functions that return error codes are marked `__attribute__((warn_unused_result))`. |
+| 8. Limit preprocessor use to header guards and simple constants. | **Enforced** | No `#define` for code. Constants use `static const`. Opcodes are an `enum`, not `#define`. Conditional compilation is allowed only for platform-detection (`__APPLE__`) at the top of files. Reviewed at PR time. |
+| 9. Restrict pointer use. No more than one level of dereference. Function pointers banned except in the request dispatch table. | **Enforced** | Review Gate grep: `git grep -nE '\([^)]*\*[^)]*\*[^)]*\)' Sources/Labpty/` finds suspicious `**` declarations (with manual triage). Function pointers banned except inside `labpty_dispatch_table[]`, an array of (`op`, `handler`) tuples that is the only function-pointer-typed value in the codebase. |
+| 10. Compile with all warnings; check the code daily with a static analyzer. | **Enforced** | `swift build` of the labpty C target uses `-Wall -Wextra -Wpedantic -Werror`. CI runs `clang --analyze` over `Sources/Labpty/*.c` on every PR and fails on any new finding. This is the *floor*, not aspirational — the verification ladder (CBMC, Frama-C, differential Swift/C decoder) adds layers above. |
+
+### Additional rules beyond Power of Ten
+
+These cover realtime / operational concerns the Power of Ten doesn't
+specifically address but matter for `labpty`'s actual classification
+as a long-running soft-realtime daemon:
+
+- **`mlockall(MCL_CURRENT | MCL_FUTURE)` at boot.** Prevents the
+  scratch arena, the per-session byte rings, and the labpty code
+  pages from being swapped or paged out. One syscall at startup;
+  removes a category of tail-latency surprises (major faults on
+  hot-path memory) that principle 2 says we're trying to avoid.
+
+- **Pre-touch the scratch arena.** After `mmap`, `memset(arena, 0,
+  ARENA_BYTES)` once at boot. Demand-paged pages would otherwise
+  fault on first use during the first `openSession`, producing a
+  visible latency cliff. The pre-touch makes the worst-case latency
+  of the first `openSession` equal to that of the hundredth.
+
+- **Validate inputs even from trusted sources.** Same-uid peer
+  credential authorization is necessary but not sufficient: a
+  malicious or buggy `laband` could send malformed frames. Every
+  byte received over the control socket is treated as untrusted;
+  the bounded decoders run before any state mutation. The same
+  applies to any future `labpty`-side reading of the byte ring
+  (Phase 1 doesn't read its own ring, but Phase 3 fd-handoff might).
+
+- **External liveness supervision.** Phase 3 task: a sibling
+  supervisor (`launchd` `KeepAlive`, or a dedicated watchdog
+  process) restarts `labpty` if it stops responding to `ping` for
+  >5 seconds. Phase 1 can defer this — `laband`'s next user-action
+  timeout will surface a hung labpty within ~10 seconds — but it
+  is explicitly listed here so a future contributor doesn't
+  rediscover the gap.
+
+- **Coding rules CI step.** A single CI job runs the Power of Ten
+  grep checks plus the function-length and assertion-density
+  counters. Reports per-file deviations. Gates the build on first
+  pass; subsequent enforcement strictness is iterative.
+
+### Deliberately out of scope
+
+These conventions are standard in genuinely safety-critical code
+but are excessive for `labpty`'s operational stakes. They are
+listed so a future reviewer doesn't conclude they were forgotten:
+
+- **DO-178C traceability matrix** (requirements ↔ code ↔ tests).
+  Certification-grade overhead; no certifying authority is
+  involved.
+- **MC/DC coverage gate.** Branch coverage at ~90% (via
+  `llvm-cov` over the labpty C target) is sufficient for
+  `labpty`'s scope; MC/DC is for control flow where a single
+  condition's flip can cost lives, not for a custodian daemon.
+- **Tool qualification** for CBMC / Frama-C / clang static
+  analyzer. Their results are used as evidence in code review,
+  not as certified-correct proofs.
+- **CRC on shm data.** ECC RAM covers most silent corruption; the
+  byte ring is in-process memory between `labpty` and `laband` on
+  the same machine, not a hostile boundary. Magic + ABI version on
+  the file header is the wire-level integrity check.
+- **Hard-realtime scheduling primitives.** macOS's
+  `THREAD_TIME_CONSTRAINT_POLICY` is for sub-millisecond audio
+  pipelines; `labpty`'s latency budget is ~10 ms user-perceptible,
+  not deadline-driven.
+- **Full WCET analysis** (aiT, OTAWA). The histogram-vs-baseline
+  mechanism in the Validation strategy is the operational
+  approximation; an upper-bound proof would be excessive.
+- **`SCHED_FIFO` priority** (Linux). Same reasoning as above; not
+  available on macOS in the Linux sense anyway.
+
 ## Sequence diagrams
 
 ### Steady-state output flow (Phase 1: polling)

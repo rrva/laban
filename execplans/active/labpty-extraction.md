@@ -1222,6 +1222,29 @@ call sites.
   plan.
   Date/Author: 2026-05-26 / thinness review iteration.
 
+- Decision: `labpty` adopts NASA JPL's *Power of Ten* rules as its
+  coding-rule baseline, plus a small set of soft-realtime additions
+  (`mlockall`, scratch-arena pre-touch, external liveness
+  supervision in Phase 3). Certification-grade conventions
+  (DO-178C traceability, MC/DC coverage, tool qualification,
+  CRC on shm data, hard-realtime scheduling) are explicitly out
+  of scope.
+  Rationale: `labpty` is soft-realtime, kernel-adjacent C with
+  operational stakes (its bugs cost user terminal sessions between
+  Phase 1 ship and Phase 3 fd-handoff), but not safety-critical in
+  the avionics or automotive sense. The Power of Ten subset
+  delivers small, predictable, audit-friendly code at
+  single-digit percent of the certification cost — bounded loops,
+  no dynamic allocation after init, function-length caps, ≥ 2
+  assertions per function, no recursion, no `goto`/`setjmp`/
+  `longjmp`, restricted preprocessor, mandatory static analysis.
+  These map cleanly onto Review Gate greps and a small CI script,
+  so the bar is enforceable mechanically. The full Power of Ten
+  mapping plus the deliberate exclusions live in the "Coding
+  rules for labpty" section of
+  `execplans/active/labpty-protocol-design.md`.
+  Date/Author: 2026-05-26 / coding-rules iteration.
+
 - Decision: Every non-syscall decision in `labpty` is covered by a
   property test or a fuzzer; "model" and "bounded proof" stay
   aspirational.
@@ -1509,6 +1532,53 @@ without judgment.
   fixtures/labpty-fuzz/` and exits 0 after one minute of
   fuzzing on the provided corpus. (The decoder is the primary
   fuzz target.)
+
+### Power of Ten coding rules
+
+Each item targets one of NASA JPL's *Power of Ten* rules for
+safety-critical C, mapped onto `labpty` by the "Coding rules for
+`labpty`" section of `execplans/active/labpty-protocol-design.md`.
+
+- [ ] `git grep -nE '\bgoto\b' Sources/Labpty/` returns zero hits.
+- [ ] `git grep -nE '\bsetjmp\b|\blongjmp\b' Sources/Labpty/` returns
+  zero hits.
+- [ ] Recursion check: for every function `f` defined in
+  `Sources/Labpty/*.c`, `git grep -n "\b$f\s*(" Sources/Labpty/`
+  shows no calls of `f` from `f`'s own body. (Single-hop self-call;
+  deeper recursion is impractical to grep but unlikely in 500 lines
+  of C.)
+- [ ] `git grep -nE '\b(malloc|calloc|realloc)\(' Sources/Labpty/`
+  returns zero hits, or every hit is annotated with a
+  `// LABPTY: session-lifecycle-allocation: <reason>` comment in
+  the surrounding code (session open/terminate, not the hot path).
+- [ ] Function-length check: the CI script in
+  `Tools/LabptyCodingRules/check_function_length.sh` finds no
+  function in `Sources/Labpty/*.c` exceeding 60 lines (between
+  matching braces), unless marked
+  `// LABPTY: long-function-allowed: <reason>`.
+- [ ] Assertion-density check: the CI script in
+  `Tools/LabptyCodingRules/check_assertion_density.sh` reports
+  `assert(`-line count divided by function-definition count ≥ 2.0
+  across `Sources/Labpty/*.c`.
+- [ ] `swift build` of the `labpty` C target uses
+  `-Wall -Wextra -Wpedantic -Werror`. (Inspect `Package.swift`'s
+  `cSettings` for the Labpty target.)
+- [ ] `clang --analyze` over `Sources/Labpty/*.c` produces zero
+  findings on a clean tree.
+- [ ] `git grep -nE '#define\s+\w+\(' Sources/Labpty/` returns zero
+  hits. (No function-style macros; `static const` and `enum` are
+  the allowed constant-defining mechanisms.)
+- [ ] Function-pointer audit: `git grep -nE '\(\s*\*\s*\w+\s*\)\s*\(' Sources/Labpty/`
+  produces hits only inside the `labpty_dispatch_table[]`
+  definition; everywhere else, function pointers are absent.
+- [ ] `git grep -nE '__attribute__\(\(\s*warn_unused_result\s*\)\)' Sources/Labpty/`
+  returns at least one hit per error-returning helper header.
+- [ ] `mlockall(MCL_CURRENT | MCL_FUTURE)` appears exactly once in
+  `Sources/Labpty/main.c`, called at startup before the event loop
+  begins.
+- [ ] The scratch arena is pre-touched at boot: `memset(arena, 0,
+  ARENA_BYTES)` appears in `Sources/Labpty/main.c` after the
+  `mmap` call and before the event loop begins.
 - [ ] `git grep -n 'LabptyTerminalSessionClient' Sources/LabanApp/`
   returns zero hits. (The app does not depend on labpty in Phase 1.)
 - [ ] `git grep -n 'LabptyTerminalSessionClient' Sources/Laband/`
