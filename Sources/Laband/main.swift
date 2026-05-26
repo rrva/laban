@@ -357,6 +357,8 @@ private final class LabandDaemon {
       return (snapshot(request), false)
     case .attachSnapshotRing:
       return (attachSnapshotRing(request), false)
+    case .applyTheme:
+      return (applyTheme(request), false)
     case .resizeSession:
       return (resizeSession(request), false)
     case .markRendered:
@@ -388,6 +390,7 @@ private final class LabandDaemon {
           "product-launch-agent/v1",
           "protocol-negotiation/v1",
           "copy-snapshot/v1",
+          "theme-palette/v1",
           "snapshot-ring/v1",
           "client-attach/v1",
           "lifecycle-journal/v1",
@@ -599,6 +602,62 @@ private final class LabandDaemon {
         message: "failed to write input to PTY"
       )
     }
+    return LabandResponse(
+      requestId: request.requestId,
+      type: request.type,
+      ok: true,
+      session: sessionInfo(managed)
+    )
+  }
+
+  private func applyTheme(_ request: LabandRequest) -> LabandResponse {
+    guard let managed = lookup(request) else {
+      return missingSession(request)
+    }
+    guard managed.lifecycleState == .running, let session = managed.session else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "sessionNotRunning",
+        message: "session is not running"
+      )
+    }
+    guard let bytesBase64 = request.bytesBase64,
+      let data = Data(base64Encoded: bytesBase64)
+    else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "invalidBase64",
+        message: "applyTheme requires valid bytesBase64"
+      )
+    }
+
+    switch request.colorScheme {
+    case "dark":
+      _ = session.setColorScheme(.dark)
+    case "light":
+      _ = session.setColorScheme(.light)
+    case nil:
+      break
+    default:
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "invalidColorScheme",
+        message: "colorScheme must be dark or light"
+      )
+    }
+
+    guard session.feedOutput(Array(data)) >= 0 else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "themeApplyFailed",
+        message: "failed to apply theme palette"
+      )
+    }
+    managed.publishSnapshot()
     return LabandResponse(
       requestId: request.requestId,
       type: request.type,

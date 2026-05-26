@@ -41,10 +41,17 @@ final class TerminalBackendSettingsTests: XCTestCase {
 
     let laband = try TerminalBackendSettings.resolve(
       environment: [:],
-      arguments: ["LabanApp", "--terminal-backend", "daemon"],
+      arguments: ["LabanApp", "--terminal-backend", "background"],
       defaults: defaults,
       automaticBackend: .inProcess)
     XCTAssertEqual(laband.backend, .laband)
+
+    let backgroundAlias = try TerminalBackendSettings.resolve(
+      environment: [:],
+      arguments: ["LabanApp", "--background-sessions"],
+      defaults: defaults,
+      automaticBackend: .inProcess)
+    XCTAssertEqual(backgroundAlias.backend, .laband)
   }
 
   func testEnvironmentBackendOverridesPersistedDefault() throws {
@@ -117,6 +124,8 @@ final class TerminalBackendSettingsTests: XCTestCase {
 
     let item = controller.makeMenuItem()
     let submenu = try XCTUnwrap(item.submenu)
+    XCTAssertEqual(submenu.items[0].title, "Local Sessions")
+    XCTAssertEqual(submenu.items[1].title, "Background Sessions")
     XCTAssertEqual(submenu.items[0].state, .on)
     XCTAssertEqual(submenu.items[1].state, .off)
 

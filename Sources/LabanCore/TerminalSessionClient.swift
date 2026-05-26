@@ -31,7 +31,8 @@ public enum TerminalSessionBackend: String, Equatable, Sendable {
     switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
     case "in-process", "inprocess", "local", "local-sessions":
       return .inProcess
-    case "laband", "daemon", "daemon-sessions":
+    case "laband", "daemon", "daemon-sessions", "background", "background-sessions",
+      "persistent", "persistent-sessions":
       return .laband
     default:
       throw TerminalSessionClientError.protocolError(

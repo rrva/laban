@@ -10,10 +10,11 @@ func usage() -> String {
                                leaving future persistence writes enabled.
     --no-persistence           Disable workspace, transcript, and agent
                                persistence for this process.
-    --terminal-backend <name>   Use in-process/local or laband sessions for
+    --terminal-backend <name>   Use in-process/local or background sessions for
                                this launch. Also accepts --terminal-backend=name.
     --local-sessions           Alias for --terminal-backend in-process.
-    --laband-sessions          Alias for --terminal-backend laband.
+    --background-sessions      Alias for --terminal-backend background.
+    --laband-sessions          Compatibility alias for --background-sessions.
     --smoke                    Print a startup smoke line and exit.
     --help, -h                 Show this help.
   """

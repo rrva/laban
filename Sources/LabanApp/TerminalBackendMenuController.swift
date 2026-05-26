@@ -13,7 +13,7 @@ final class TerminalBackendMenuController: NSObject {
   private var activeBackend: TerminalSessionBackend = .inProcess
   private var launchSource: TerminalBackendLaunchSource = .automatic
   private var localItem: NSMenuItem?
-  private var labandItem: NSMenuItem?
+  private var backgroundItem: NSMenuItem?
 
   init(
     defaults: UserDefaults = .standard,
@@ -42,13 +42,13 @@ final class TerminalBackendMenuController: NSObject {
     submenu.addItem(local)
     localItem = local
 
-    let laband = NSMenuItem(
-      title: "laband Sessions",
+    let background = NSMenuItem(
+      title: "Background Sessions",
       action: #selector(selectLaband(_:)),
       keyEquivalent: "")
-    laband.target = self
-    submenu.addItem(laband)
-    labandItem = laband
+    background.target = self
+    submenu.addItem(background)
+    backgroundItem = background
 
     syncMenuState()
     return parent
@@ -73,7 +73,7 @@ final class TerminalBackendMenuController: NSObject {
   private func syncMenuState() {
     let selected = TerminalBackendSettings.persisted(defaults: defaults) ?? activeBackend
     localItem?.state = selected == .inProcess ? .on : .off
-    labandItem?.state = selected == .laband ? .on : .off
+    backgroundItem?.state = selected == .laband ? .on : .off
   }
 
   private static func showRestartPrompt(
@@ -81,7 +81,7 @@ final class TerminalBackendMenuController: NSObject {
     activeBackend: TerminalSessionBackend,
     source: TerminalBackendLaunchSource
   ) {
-    let selectedName = selectedBackend == .laband ? "laband" : "local"
+    let selectedName = selectedBackend == .laband ? "background" : "local"
     let alert = NSAlert()
     alert.messageText = "Restart Laban to use \(selectedName) sessions?"
     if source.isOverride {

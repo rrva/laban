@@ -67,13 +67,13 @@ enum TerminalBackendSettings {
       switch arg {
       case "--local-sessions":
         return .inProcess
-      case "--laband-sessions":
+      case "--background-sessions", "--laband-sessions":
         return .laband
       case "--terminal-backend":
         let valueIndex = index + 1
         guard valueIndex < arguments.count else {
           throw TerminalSessionClientError.protocolError(
-            "--terminal-backend requires in-process or laband")
+            "--terminal-backend requires in-process/local or background/laband")
         }
         return try TerminalSessionBackend.parse(arguments[valueIndex])
       default:

@@ -1,14 +1,17 @@
 import Foundation
 import LabanCore
+import LabanRenderer
 import LabanTerminalCore
 
 final class AppLabandSessionCoordinator {
   private let client: LabandTerminalSessionClient
   private let shellLaunch: ShellIntegrationLaunch
   private let cwdByTabId: [Tab.ID: String]
+  private let supportsThemeApplication: Bool
   private var infoByTabId: [Tab.ID: LabandSessionInfo] = [:]
   private var infoByLocalSessionId: [Session.ID: LabandSessionInfo] = [:]
   private var labandProcess: Process?
+  private var themeChangeObserver: NSObjectProtocol?
 
   init(
     client: LabandTerminalSessionClient,
@@ -20,6 +23,19 @@ final class AppLabandSessionCoordinator {
     self.shellLaunch = shellLaunch
     self.cwdByTabId = cwdByTabId
     self.labandProcess = labandProcess
+    self.supportsThemeApplication =
+      (try? client.hello().capabilities.contains("theme-palette/v1")) ?? false
+    self.themeChangeObserver = NotificationCenter.default.addObserver(
+      forName: Theme.didChangeNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.applyCurrentThemeToKnownSessions()
+    }
+  }
+
+  deinit {
+    removeThemeChangeObserver()
   }
 
   var transportMode: String { client.transportMode }
@@ -43,6 +59,7 @@ final class AppLabandSessionCoordinator {
       let controlled = try ensureControlLease(attached)
       store(controlled, for: tab)
       attachSnapshotRing(for: controlled.logicalSessionId)
+      applyCurrentTheme(to: controlled.logicalSessionId)
       return controlled
     }
 
@@ -50,6 +67,7 @@ final class AppLabandSessionCoordinator {
     let created = try client.createSession(request)
     store(created, for: tab)
     attachSnapshotRing(for: created.logicalSessionId)
+    applyCurrentTheme(to: created.logicalSessionId)
     return created
   }
 
@@ -105,6 +123,7 @@ final class AppLabandSessionCoordinator {
   }
 
   func detach() {
+    removeThemeChangeObserver()
     client.close()
     infoByTabId.removeAll()
     infoByLocalSessionId.removeAll()
@@ -126,6 +145,35 @@ final class AppLabandSessionCoordinator {
 
   private func attachSnapshotRing(for logicalSessionId: String) {
     _ = try? client.attachSnapshotRing(sessionId: logicalSessionId)
+  }
+
+  private func applyCurrentThemeToKnownSessions() {
+    let logicalSessionIds = Set(infoByTabId.values.map(\.logicalSessionId))
+    for logicalSessionId in logicalSessionIds {
+      applyCurrentTheme(to: logicalSessionId)
+    }
+  }
+
+  private func applyCurrentTheme(to logicalSessionId: String) {
+    guard supportsThemeApplication else { return }
+    let theme = Theme.current
+    let colorScheme: TerminalColorScheme = theme.isDark ? .dark : .light
+    do {
+      try client.applyTheme(
+        sessionId: logicalSessionId,
+        paletteBytes: ThemePaletteInjector.paletteBytes(for: theme),
+        colorScheme: colorScheme)
+    } catch {
+      AppLog.app.error(
+        "laband theme apply failed for \(logicalSessionId): \(String(describing: error))")
+    }
+  }
+
+  private func removeThemeChangeObserver() {
+    if let themeChangeObserver {
+      NotificationCenter.default.removeObserver(themeChangeObserver)
+      self.themeChangeObserver = nil
+    }
   }
 
   private func launchRequest(

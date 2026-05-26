@@ -11,6 +11,7 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
 
   private static let darkKey = "LabanThemeDark"
   private static let lightKey = "LabanThemeLight"
+  private static let currentKey = "LabanThemeCurrent"
   private static let followsKey = "LabanThemeFollowsSystem"
 
   /// Stable order shown in the menu. Item tag is the index here.
@@ -33,6 +34,12 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     }
     if d.object(forKey: Self.followsKey) != nil {
       Theme.followsSystemAppearance = d.bool(forKey: Self.followsKey)
+    }
+    if !Theme.followsSystemAppearance,
+      let currentName = d.string(forKey: Self.currentKey),
+      let theme = themes.first(where: { $0.name == currentName })
+    {
+      Theme.apply(theme)
     }
   }
 
@@ -78,12 +85,8 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     } else {
       Theme.lightVariant = theme
     }
-    // Override followsSystemAppearance so the manual pick wins immediately
-    // even when the system is showing the other appearance.
-    let saved = Theme.followsSystemAppearance
     Theme.followsSystemAppearance = false
     Theme.apply(theme)
-    Theme.followsSystemAppearance = saved
     persist()
   }
 
@@ -122,6 +125,7 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     let d = UserDefaults.standard
     d.set(Theme.darkVariant.name, forKey: Self.darkKey)
     d.set(Theme.lightVariant.name, forKey: Self.lightKey)
+    d.set(Theme.current.name, forKey: Self.currentKey)
     d.set(Theme.followsSystemAppearance, forKey: Self.followsKey)
   }
 }

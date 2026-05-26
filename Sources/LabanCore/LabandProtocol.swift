@@ -14,6 +14,7 @@ public enum LabandRequestType: String, Codable, Sendable {
   case writeInput
   case snapshot
   case attachSnapshotRing
+  case applyTheme
   case resizeSession
   case markRendered
   case transferLease
@@ -46,6 +47,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
   public var sessionId: String?
   public var text: String?
   public var bytesBase64: String?
+  public var colorScheme: String?
   public var leaseHolder: String?
   public var leaseId: String?
   public var leaseEpoch: UInt64?
@@ -65,6 +67,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     sessionId: String? = nil,
     text: String? = nil,
     bytesBase64: String? = nil,
+    colorScheme: String? = nil,
     leaseHolder: String? = nil,
     leaseId: String? = nil,
     leaseEpoch: UInt64? = nil
@@ -83,6 +86,7 @@ public struct LabandRequest: Codable, Equatable, Sendable {
     self.sessionId = sessionId
     self.text = text
     self.bytesBase64 = bytesBase64
+    self.colorScheme = colorScheme
     self.leaseHolder = leaseHolder
     self.leaseId = leaseId
     self.leaseEpoch = leaseEpoch

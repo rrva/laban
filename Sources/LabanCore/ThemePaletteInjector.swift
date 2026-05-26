@@ -1,14 +1,14 @@
 import Foundation
 import LabanRenderer
 
-enum ThemePaletteInjector {
-  static func injectCurrentTheme(into session: Session) {
+public enum ThemePaletteInjector {
+  public static func injectCurrentTheme(into session: Session) {
     let theme = Theme.current
     session.setColorScheme(theme.isDark ? .dark : .light)
     session.feedOutput(paletteBytes(for: theme))
   }
 
-  static func paletteBytes(for theme: ThemeData) -> [UInt8] {
+  public static func paletteBytes(for theme: ThemeData) -> [UInt8] {
     var bytes: [UInt8] = []
     for (index, color) in theme.ansi16.enumerated() {
       bytes += oscSequence(4, index: index, rgba: color)

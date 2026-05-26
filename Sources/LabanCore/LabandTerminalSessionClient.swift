@@ -235,6 +235,31 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     )
   }
 
+  public func applyTheme(
+    sessionId: String,
+    paletteBytes: [UInt8],
+    colorScheme: TerminalColorScheme
+  ) throws {
+    guard !paletteBytes.isEmpty else { return }
+    let colorSchemeName: String
+    switch colorScheme {
+    case .dark:
+      colorSchemeName = "dark"
+    case .light:
+      colorSchemeName = "light"
+    }
+    _ = try send(
+      LabandRequest(
+        requestId: UUID().uuidString,
+        type: .applyTheme,
+        clientId: clientId,
+        sessionId: sessionId,
+        bytesBase64: Data(paletteBytes).base64EncodedString(),
+        colorScheme: colorSchemeName
+      )
+    )
+  }
+
   public func transferLease(sessionId: String, holderClientId: String) throws -> LabandSessionInfo {
     let response = try send(
       LabandRequest(

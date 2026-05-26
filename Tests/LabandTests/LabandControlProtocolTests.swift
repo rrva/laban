@@ -72,6 +72,53 @@ final class LabandControlProtocolTests: XCTestCase {
     launchedDaemon = nil
   }
 
+  func testThemeApplyUpdatesDaemonSessionPalette() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let runId = "laband-theme-\(UUID().uuidString)"
+    let socketPath = ".tmp/\(runId)/laband.sock"
+    let journalPath = ".artifacts/runs/\(runId)/laband"
+    let daemon = try launchDaemon(root: root, socketPath: socketPath, journalPath: journalPath)
+    launchedDaemon = daemon
+
+    let client = try waitForClient(root: root, socketPath: socketPath)
+    defer { client.close() }
+
+    let hello = try client.hello()
+    XCTAssertTrue(hello.capabilities.contains("theme-palette/v1"))
+
+    let session = try client.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/cat",
+        argv: ["/bin/cat"],
+        cwd: root.path,
+        rows: 24,
+        cols: 80
+      )
+    )
+    try client.writeInput(sessionId: session.logicalSessionId, bytes: Array("t".utf8))
+    _ = try waitForSnapshotText(
+      client: client,
+      sessionId: session.logicalSessionId,
+      contains: "t"
+    )
+
+    try client.applyTheme(
+      sessionId: session.logicalSessionId,
+      paletteBytes: Array("\u{1B}]10;#112233\u{07}\u{1B}]11;#445566\u{07}".utf8),
+      colorScheme: .dark)
+
+    let snapshot = try client.snapshot(sessionId: session.logicalSessionId)
+    let themedCell = try XCTUnwrap(snapshot.cells.first { $0.text == "t" })
+    XCTAssertEqual(themedCell.foregroundRGBA, 0x1122_33FF)
+    XCTAssertEqual(themedCell.backgroundRGBA, 0x4455_66FF)
+
+    _ = try client.terminate(sessionId: session.logicalSessionId)
+    try client.shutdownWhenIdle()
+    daemon.waitUntilExit()
+    XCTAssertEqual(daemon.terminationStatus, 0)
+    launchedDaemon = nil
+  }
+
   func testSnapshotRingPublishesCoherentEchoedCells() throws {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let runId = "laband-ring-\(UUID().uuidString)"
