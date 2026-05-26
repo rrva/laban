@@ -192,6 +192,14 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
   public var lease: LabandLeaseInfo?
   public var leaseHistory: [LabandLeaseHistoryEntry]
   public var transportMode: String
+  /// Human-readable foreground-process metadata polled by the daemon. These
+  /// optional fields let the app sidebar show the live `claude` / `vim` /
+  /// `make` etc. command instead of just "Tab N". Optional for backwards
+  /// compatibility with pre-2026-05 daemons that don't emit them.
+  public var foregroundProcess: String?
+  public var foregroundCommand: String?
+  public var foregroundArguments: [String]?
+  public var foregroundCwd: String?
 
   public init(
     logicalSessionId: String,
@@ -209,7 +217,11 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
     leaseHolder: String?,
     lease: LabandLeaseInfo? = nil,
     leaseHistory: [LabandLeaseHistoryEntry] = [],
-    transportMode: String
+    transportMode: String,
+    foregroundProcess: String? = nil,
+    foregroundCommand: String? = nil,
+    foregroundArguments: [String]? = nil,
+    foregroundCwd: String? = nil
   ) {
     self.logicalSessionId = logicalSessionId
     self.incarnationId = incarnationId
@@ -227,6 +239,10 @@ public struct LabandSessionInfo: Codable, Equatable, Sendable {
     self.lease = lease
     self.leaseHistory = leaseHistory
     self.transportMode = transportMode
+    self.foregroundProcess = foregroundProcess
+    self.foregroundCommand = foregroundCommand
+    self.foregroundArguments = foregroundArguments
+    self.foregroundCwd = foregroundCwd
   }
 }
 
@@ -269,6 +285,15 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
   public var dirty: Bool
   public var visibleText: String
   public var cells: [LabandSnapshotCell]
+  /// Default background color the daemon (libghostty) reports for unstyled
+  /// cells. Optional for forwards/backwards compatibility: pre-2026-05 daemons
+  /// don't send the field and snapshot-ring reads can't synthesize it without
+  /// an ABI bump. Consumers MUST treat `nil` and `0` as "unknown" and fall
+  /// back to the theme's default terminal background — never to
+  /// `cells.first?.backgroundRGBA`, which can itself be 0 (transparent black)
+  /// and leaks the layer-backed view's underlying color through as a black
+  /// border.
+  public var defaultBackgroundRGBA: UInt32?
 
   public init(
     logicalSessionId: String,
@@ -283,7 +308,8 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
     exitStatus: Int?,
     dirty: Bool,
     visibleText: String,
-    cells: [LabandSnapshotCell]
+    cells: [LabandSnapshotCell],
+    defaultBackgroundRGBA: UInt32? = nil
   ) {
     self.logicalSessionId = logicalSessionId
     self.incarnationId = incarnationId
@@ -298,6 +324,7 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
     self.dirty = dirty
     self.visibleText = visibleText
     self.cells = cells
+    self.defaultBackgroundRGBA = defaultBackgroundRGBA
   }
 }
 

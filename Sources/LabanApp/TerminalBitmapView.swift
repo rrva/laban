@@ -985,6 +985,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         return
       }
     }
+    // Pull title + foreground-process metadata back from the daemon so the
+    // sidebar shows real per-tab info ("claude", "vim", repo cwd, ...) in
+    // background-session mode. Throttled inside the coordinator; safe to
+    // call every frame.
+    labandCoordinator?.refreshTabMetadata(for: model.tabs, into: model)
     let surfaceFrame: TerminalSurfaceFrame?
     if let remoteFrame {
       surfaceFrame = surfaceController.makeFrame(

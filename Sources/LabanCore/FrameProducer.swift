@@ -406,7 +406,15 @@ public struct FrameProducer {
     let cols = max(snapshot.cols, 0)
     let cw = CGFloat(cellWidth)
     let ch = CGFloat(cellHeight)
-    let defaultBg = snapshot.cells.first?.backgroundRGBA ?? Theme.current.bg0
+    // Prefer the daemon's libghostty-supplied default. Treat nil and a literal
+    // zero as "unknown" and fall back to the theme. Never use
+    // `cells.first?.backgroundRGBA` here — it can be 0 (transparent black) on
+    // an unstyled first cell and used to leak the underlying view color
+    // through as a black border between the sidebar and the terminal area.
+    let defaultBg: UInt32 = {
+      if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
+      return Theme.current.bg0
+    }()
 
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(rows * 2 + 4)
@@ -525,6 +533,31 @@ public struct FrameProducer {
       for col in 0..<cols {
         guard let cell = cellAt(row: row, col: col), !cell.text.isEmpty else {
           flushRun()
+          continue
+        }
+        // Block elements (U+2580..U+259F) and fixed-format geometric triangles
+        // (U+25E2..U+25E5) leave hairline gaps when rendered through the
+        // font, because the loaded glyph's metrics don't exactly fill the
+        // terminal cell. The local FrameProducer overload bypasses the font
+        // for those scalars and emits procedural integer-aligned `.rect`
+        // commands; the remote overload must do the same so the Claude
+        // crab mascot and other block-art tiles render seam-free in
+        // background-session mode.
+        if cell.text.unicodeScalars.count == 1,
+          let scalar = cell.text.unicodeScalars.first,
+          BoxDrawing.isProceduralCellElement(scalar)
+        {
+          flushRun()
+          let cellX = originX + CGFloat(col) * cw
+          for filled in BoxDrawing.proceduralCellElementRects(
+            scalar,
+            at: CGPoint(x: cellX, y: cellY),
+            cellWidth: cw,
+            cellHeight: ch,
+            foreground: cell.foregroundRGBA
+          ) {
+            cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
+          }
           continue
         }
         let attrs = TextAttributes(rawValue: cell.flags).intersection(.renderableMask)

@@ -14,6 +14,11 @@ final class AppLabandSessionCoordinator {
   private var labandProcess: Process?
   private var themeChangeObserver: NSObjectProtocol?
   private var snapshotGenerationMonitor: LabandSnapshotGenerationMonitor?
+  /// Last time `refreshTabMetadata` actually queried the daemon. The render
+  /// loop calls in every frame; this gate keeps us below 4 Hz so we don't
+  /// pin the control-protocol socket on a busy redraw.
+  private var lastTabMetadataRefreshAt: Date?
+  private var lastAppliedTitleByTab: [Tab.ID: String] = [:]
 
   init(
     client: LabandTerminalSessionClient,
@@ -200,6 +205,76 @@ final class AppLabandSessionCoordinator {
         )
       }
     }
+  }
+
+  /// Push the latest daemon-side title and foreground-process metadata for
+  /// every tab into the app model. The local `Session` in laband mode is a
+  /// fixture with no PTY, so the model's normal `syncProcessMetadata` /
+  /// `syncTitle` paths can never produce useful data — without this call
+  /// the sidebar shows only "Tab N" forever.
+  ///
+  /// Throttled to roughly 4 Hz so it can be called every frame without
+  /// pinning the control-protocol socket. `applyProcessMetadata` and
+  /// `updateTerminalTitle` are themselves idempotent for unchanged
+  /// metadata, so the AppModel only changes when there is real news.
+  func refreshTabMetadata(for tabs: [Tab], into model: AppModel, now: Date = Date()) {
+    if let last = lastTabMetadataRefreshAt, now.timeIntervalSince(last) < 0.25 {
+      return
+    }
+    lastTabMetadataRefreshAt = now
+    let infos: [LabandSessionInfo]
+    do {
+      infos = try client.listSessions()
+    } catch {
+      AppLog.app.error(
+        "laband listSessions failed during tab metadata refresh: \(String(describing: error))")
+      return
+    }
+    let infoById = Dictionary(uniqueKeysWithValues: infos.map { ($0.logicalSessionId, $0) })
+    for tab in tabs {
+      guard let info = infoById[tab.id] else { continue }
+      // Cache the fresh info so other paths (sessionInfo, terminate) read
+      // current metadata too.
+      store(info, for: tab)
+      applyTitle(info.title, forTab: tab.id, into: model)
+      applyProcessMetadata(from: info, forTab: tab.id, into: model, now: now)
+    }
+  }
+
+  private func applyTitle(_ title: String, forTab tabId: Tab.ID, into model: AppModel) {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    if lastAppliedTitleByTab[tabId] == trimmed { return }
+    do {
+      try model.updateTerminalTitle(trimmed, forTab: tabId)
+      lastAppliedTitleByTab[tabId] = trimmed
+    } catch {
+      // Tab may have been closed between listSessions and this call.
+      AppLog.app.error(
+        "laband title update failed for \(tabId): \(String(describing: error))")
+    }
+  }
+
+  private func applyProcessMetadata(
+    from info: LabandSessionInfo,
+    forTab tabId: Tab.ID,
+    into model: AppModel,
+    now: Date
+  ) {
+    // The daemon emits these as optional fields — if it has nothing
+    // useful yet, skip the apply (which would otherwise blank out a
+    // good prior value via empty strings).
+    guard info.foregroundCommand != nil || info.foregroundProcess != nil
+    else { return }
+    let synthesized = Session.ProcessMetadata(
+      childPid: info.childPid,
+      foregroundPid: info.foregroundPid,
+      foregroundProcess: info.foregroundProcess ?? "",
+      foregroundCommand: info.foregroundCommand ?? "",
+      foregroundArguments: info.foregroundArguments,
+      cwd: info.foregroundCwd ?? info.cwd
+    )
+    _ = model.applyProcessMetadata(synthesized, forTab: tabId, now: now)
   }
 
   func detach() {

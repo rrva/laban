@@ -202,6 +202,19 @@ private final class ManagedLabandSession {
   var title: String
   var childPid: Int?
   var foregroundPid: Int?
+  /// Human-readable foreground-process metadata polled from the daemon-side
+  /// libghostty session. Mirrors `Session.ProcessMetadata`. Not persisted to
+  /// the journal because it is derived from the live foreground PID and is
+  /// cheap to re-derive after replay.
+  var foregroundProcess: String?
+  var foregroundCommand: String?
+  var foregroundArguments: [String]?
+  var foregroundCwd: String?
+  /// Monotonic timestamp (ns) of the last successful foreground-process poll.
+  /// Used to throttle sysctl/proc-table calls — the catalog refresh fires on
+  /// every `sessionInfo()` read, but the actual poll happens at most once per
+  /// `foregroundProcessPollIntervalNs`.
+  var lastForegroundProcessPollMonoNs: UInt64 = 0
   var session: Session?
   var runner: SessionRunner?
   var ringWriter: LabandSnapshotRingWriter?
@@ -223,6 +236,10 @@ private final class ManagedLabandSession {
     lifecycleState: LabandLifecycleState = .running,
     childPid: Int? = nil,
     foregroundPid: Int? = nil,
+    foregroundProcess: String? = nil,
+    foregroundCommand: String? = nil,
+    foregroundArguments: [String]? = nil,
+    foregroundCwd: String? = nil,
     lease: LabandLeaseInfo? = nil,
     leaseHistory: [LabandLeaseHistoryEntry] = []
   ) {
@@ -236,6 +253,10 @@ private final class ManagedLabandSession {
     self.lifecycleState = lifecycleState
     self.childPid = childPid
     self.foregroundPid = foregroundPid
+    self.foregroundProcess = foregroundProcess
+    self.foregroundCommand = foregroundCommand
+    self.foregroundArguments = foregroundArguments
+    self.foregroundCwd = foregroundCwd
     self.session = session
     self.lease = lease
     self.leaseHistory = leaseHistory
@@ -1067,11 +1088,32 @@ private final class LabandDaemon {
     )
   }
 
+  /// Once per second is enough — foreground command transitions (zsh ↔ vim
+  /// ↔ claude) are user-visible and a 1s detection lag is imperceptible
+  /// alongside human reaction time. Tighter intervals would burn sysctl
+  /// calls when `listSessions` is polled at 4 Hz by every attached client.
+  private static let foregroundProcessPollIntervalNs: UInt64 = 1_000_000_000
+
   private func refreshProcessMetadata(_ managed: ManagedLabandSession) {
-    guard managed.lifecycleState == .running, let metadata = managed.session?.processMetadata()
-    else { return }
+    guard managed.lifecycleState == .running, let session = managed.session else { return }
+    let now = LabandSnapshotRingLayout.monotonicNanoseconds()
+    if managed.lastForegroundProcessPollMonoNs != 0,
+      now &- managed.lastForegroundProcessPollMonoNs < Self.foregroundProcessPollIntervalNs
+    {
+      return
+    }
+    guard let metadata = session.processMetadata() else { return }
+    managed.lastForegroundProcessPollMonoNs = now
     managed.childPid = metadata.childPid
     managed.foregroundPid = metadata.foregroundPid
+    // Forward the human-readable strings too — without them the app's sidebar
+    // can only show "Tab N" in background-session mode because the local
+    // fixture `Session` has no PTY to inspect. None of these are persisted to
+    // the journal; they re-derive on the next snapshot poll after a restart.
+    managed.foregroundProcess = metadata.foregroundProcess
+    managed.foregroundCommand = metadata.foregroundCommand
+    managed.foregroundArguments = metadata.foregroundArguments
+    managed.foregroundCwd = metadata.cwd
   }
 
   private func replayJournal() {
@@ -1170,6 +1212,10 @@ private final class LabandDaemon {
 
   private func sessionInfo(_ managed: ManagedLabandSession) -> LabandSessionInfo {
     revokeExpiredLeaseForCatalog(managed)
+    // Refresh foreground-process metadata on every catalog read so the app
+    // sees an up-to-date `foregroundCommand` (claude / vim / make / ...)
+    // without needing a separate poll cycle.
+    refreshProcessMetadata(managed)
     return LabandSessionInfo(
       logicalSessionId: managed.logicalSessionId,
       incarnationId: managed.incarnationId,
@@ -1186,7 +1232,11 @@ private final class LabandDaemon {
       leaseHolder: managed.leaseHolder,
       lease: managed.lease,
       leaseHistory: managed.leaseHistory,
-      transportMode: "control-json"
+      transportMode: "control-json",
+      foregroundProcess: managed.foregroundProcess,
+      foregroundCommand: managed.foregroundCommand,
+      foregroundArguments: managed.foregroundArguments,
+      foregroundCwd: managed.foregroundCwd
     )
   }
 
@@ -1223,7 +1273,12 @@ private final class LabandDaemon {
       exitStatus: snapshot.status == 0 ? nil : Int(snapshot.exit_status),
       dirty: snapshot.dirty != 0,
       visibleText: visible,
-      cells: cells
+      cells: cells,
+      // Forward libghostty's authoritative default-background color so the
+      // renderer never has to improvise from `cells.first?.backgroundRGBA`,
+      // which can be 0 (transparent black) on empty/unstyled cells and leaks
+      // the layer-backed view's underlying color through as a black border.
+      defaultBackgroundRGBA: snapshot.default_background_rgba
     )
   }
 

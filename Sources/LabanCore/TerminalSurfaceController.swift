@@ -475,7 +475,14 @@ public final class TerminalSurfaceController {
       rows: rows,
       cellHeight: CGFloat(cellHeight),
       insets: request.insets)
-    let defaultBg = snapshot.cells.first?.backgroundRGBA ?? Theme.current.bg0
+    // Prefer the daemon's libghostty-supplied default-background color.
+    // Treat nil and 0 as "unknown" and fall back to the theme — `cells.first
+    // ?.backgroundRGBA` can be 0 (transparent black) and would leak the
+    // layer-backed view's underlying color through as a black border.
+    let defaultBg: UInt32 = {
+      if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
+      return Theme.current.bg0
+    }()
 
     if request.includeTerminalAreaBackground {
       let terminalAreaWidth = max(0, request.viewportWidth - sidebarWidth)

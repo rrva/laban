@@ -975,8 +975,14 @@ public final class AppModel {
     return changed
   }
 
+  /// Apply foreground-process metadata to a tab directly, bypassing the
+  /// `Session.processMetadata()` poll. Used by the background-session
+  /// coordinator (`AppLabandSessionCoordinator`) which receives metadata
+  /// over the daemon control protocol — its local `Session` is a fixture
+  /// with no PTY handle so the normal `syncProcessMetadata` path would
+  /// always see nil.
   @discardableResult
-  func applyProcessMetadata(
+  public func applyProcessMetadata(
     _ metadata: Session.ProcessMetadata,
     forTab tabId: Tab.ID,
     now: Date = Date()
