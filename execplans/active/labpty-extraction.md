@@ -114,11 +114,12 @@ rather than coding past it.
   in this plan's `Interfaces and Dependencies` section.
 - [ ] M1: New `labpty` executable that owns PTYs and exposes the Phase 1
   control RPCs (`hello`, `openSession`, `listSessions`, `attachSession`,
-  `resizeSession`, `signalSession`, `terminateSession`, `writeInput`) over
-  a run-id-scoped Unix socket. No byte ring yet; the master drain
-  discards bytes into a tiny buffer just to keep the child unblocked.
-  ADR 0002 launch invariants preserved inside `labpty`. Unit-test coverage
-  for open/list/resize/signal/terminate and `child_pid` alive/dead.
+  `resizeSession`, `signalSession`, `terminateSession`, `writeInput`,
+  `ping`) over a run-id-scoped Unix socket. No byte ring yet; the
+  master drain discards bytes into a tiny buffer just to keep the
+  child unblocked. ADR 0002 launch invariants preserved inside
+  `labpty`. Unit-test coverage for open/list/resize/signal/terminate
+  and `child_pid` alive/dead.
 - [ ] M2: Output byte ring `LBPTY-BR-01` implemented as a lock-free
   single-producer multi-reader shared-memory ring with a monotonic
   `write_offset` counter and 100 ms producer-alive heartbeat (subset of
@@ -321,23 +322,32 @@ Files:
 
 PTY ownership and launch:
 
-- `labpty` opens PTYs via `LabanCore.Session.realShell(...)` — the
-  same call `laband` makes today. This automatically inherits the ADR
-  0002 invariants implemented inside `Sources/LabanTerminalCore/
-  session_lifecycle.c`: parent-side `openpty` at line 379, initial
-  winsize via `term`/`ws` structs applied before child startup at line
-  408, constrained fork child branch, parent-only master fd retained on
-  `s->pty_fd` at line 431, teardown via process-group escalation.
-  **`labpty` is the process that holds `s->pty_fd`.** No code in
-  `labpty` ever sends that fd to another process in Phase 1.
-- `labpty` polls foreground-process metadata via the existing
-  `Session.processMetadata()` method (which calls `tcgetpgrp` on the
-  master and reads libproc) on the same cadence the current `laband`
-  does (~1 Hz; see `Sources/Laband/main.swift:refreshProcessMetadata`).
-  Those fields populate `LabptySessionDescriptor.foreground*` on every
-  `listSessions` and `attachSession` response. This is the source the
-  tab-title fix added in `Sources/LabanApp/AppLabandSessionCoordinator
-  .swift` will consume after M4 — `laband`'s own parser-only
+- `labpty` performs the ADR 0002 launch directly (parent-side
+  `openpty`, initial winsize before child startup, constrained fork
+  child branch, parent-only master fd retained, teardown via
+  process-group escalation). The reference implementation already
+  lives inside `Sources/LabanTerminalCore/session_lifecycle.c` (lines
+  377-431 plus the destroy path); `labpty` either reuses that code
+  via a new minimal C entry point `laban_pty_open(rows, cols, argv,
+  envp, cwd, &master_fd, &child_pid)` that performs only the launch
+  (recommended), or wraps `Session.realShell` and never touches its
+  parser side (acceptable fallback — see Decision Log). Each master
+  fd is registered with `labpty`'s single-threaded kqueue on
+  `EVFILT_READ`. **`labpty` is the only process that holds the
+  master fd.** No code in `labpty` ever sends that fd to another
+  process in Phase 1.
+- `labpty` polls foreground-process metadata via the same primitives
+  the current `laban_session_process_metadata` C function uses
+  (`tcgetpgrp` on the master, `proc_name`/`proc_pidpath`/
+  `proc_pidinfo` from libproc) at ~1 Hz. The Swift wrapper
+  `Session.processMetadata()` (`Sources/LabanCore/Session.swift:534`)
+  is one way to call it if `labpty` keeps a `Session` per master; a
+  thin C helper that reads the same fields without a `Session`
+  works equally well. Either path populates
+  `LabptySessionDescriptor.foreground*` on every `listSessions` and
+  `attachSession` response. This is the source the tab-title fix
+  added in `Sources/LabanApp/AppLabandSessionCoordinator.swift` will
+  consume after M4 — `laband`'s own parser-only
   `Session.processMetadata()` returns `nil` (no PTY), so `labpty`'s
   poll is the only source.
 - The master drain in M1 is a simple call to `Session.feedOutput`-style
@@ -1042,19 +1052,37 @@ call sites.
   `labpty` restart survival (Phase 3 does, via fd handoff).
   Date/Author: 2026-05-26 / Phase 1 author.
 
-- Decision: `labpty` keeps a `LabanCore.Session` per PTY purely for
-  the master-drain mechanics (it uses `laban_session_poll_blocking`
-  internally). It does not publish snapshots, parse for clients, or
-  feed itself with `feedOutput`.
-  Rationale: The existing drain loop is debugged, supports the PTY
-  capture hooks used by tests, and saves writing a fresh `read(2)`
-  loop with the same backpressure semantics. The libghostty session
-  inside `labpty` produces parsed state that nobody reads; this is
-  wasted CPU but trivial in absolute terms, and the alternative
-  (`labpty` calls `read(2)` directly, bypassing libghostty) shifts
-  more C surface around than Phase 1 wants to disturb. Phase 3 may
-  remove libghostty from `labpty` entirely.
-  Date/Author: 2026-05-26 / Phase 1 author.
+- Decision: `labpty` calls `openpty` + constrained fork + `execve`
+  directly and registers each master fd with its own single-threaded
+  kqueue event loop. It does **not** wrap each PTY in a
+  `LabanCore.Session` and does **not** use
+  `laban_session_poll_blocking` / `SessionRunner` for the drain.
+  Rationale: An earlier draft of this plan kept a
+  `LabanCore.Session` per PTY for "drain mechanics," intending to
+  reuse the debugged `Session.realShell` launch and the
+  `SessionRunner` drain thread. That conflicts with the protocol
+  design's single-threaded event-loop discipline
+  (`execplans/active/labpty-protocol-design.md` Execution model):
+  `SessionRunner` is per-session-threaded by construction
+  (`Sources/LabanCore/SessionRunner.swift`), which would force
+  per-session locks in `labpty` and break the no-locks-on-hot-path
+  axiom. The architecturally consistent choice is for `labpty` to
+  own raw master fds and register them all with one kqueue.
+  Implementation can pick between (a) a new minimal C entry point
+  `laban_pty_open(rows, cols, argv, envp, cwd, &master_fd, &child_pid)`
+  that performs only the ADR 0002 launch (parent-side `openpty`,
+  initial winsize before child, constrained fork child branch,
+  parent-only master fd retained, teardown via process-group
+  escalation) without constructing a libghostty session, or (b)
+  reusing `Session.realShell` internally and extracting the master
+  fd via a new `laban_session_master_fd(session) -> int` accessor
+  while never calling `laban_session_poll`/`poll_blocking` on that
+  session. Option (a) is cleaner and is the recommended path; option
+  (b) is acceptable if the focused C extraction proves more
+  intrusive than expected. Either way the ADR 0002 invariants are
+  preserved.
+  Date/Author: 2026-05-26 / review iteration after protocol-design
+  alignment.
 
 - Decision: Phase 1 does not amend ADR 0006.
   Rationale: ADR 0006's body is consistent with this plan ("laband
