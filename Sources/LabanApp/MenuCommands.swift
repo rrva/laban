@@ -3,7 +3,8 @@ import AppKit
 enum MenuCommands {
   static func setupMenuBar(
     themeMenu: ThemeMenuController,
-    restoreOnLaunchMenu: RestoreOnLaunchMenuController
+    restoreOnLaunchMenu: RestoreOnLaunchMenuController,
+    terminalBackendMenu: TerminalBackendMenuController
   ) {
     let mainMenu = NSMenu()
 
@@ -128,6 +129,8 @@ enum MenuCommands {
     let workspaceMenu = NSMenu(title: "Workspace")
     workspaceItem.submenu = workspaceMenu
     workspaceMenu.addItem(restoreOnLaunchMenu.makeMenuItem())
+    workspaceMenu.addItem(NSMenuItem.separator())
+    workspaceMenu.addItem(terminalBackendMenu.makeMenuItem())
 
     // Tab-select menu — Cmd+1…9
     let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")

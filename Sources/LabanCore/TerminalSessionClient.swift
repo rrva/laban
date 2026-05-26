@@ -27,15 +27,23 @@ public enum TerminalSessionBackend: String, Equatable, Sendable {
   case inProcess = "in-process"
   case laband
 
+  public static func parse(_ raw: String) throws -> TerminalSessionBackend {
+    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "in-process", "inprocess", "local", "local-sessions":
+      return .inProcess
+    case "laband", "daemon", "daemon-sessions":
+      return .laband
+    default:
+      throw TerminalSessionClientError.protocolError(
+        "unsupported terminal backend '\(raw)'")
+    }
+  }
+
   public static func configured(
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) throws -> TerminalSessionBackend {
     let raw = environment["LABAN_TERMINAL_BACKEND"] ?? TerminalSessionBackend.inProcess.rawValue
-    guard let backend = TerminalSessionBackend(rawValue: raw) else {
-      throw TerminalSessionClientError.protocolError(
-        "unsupported LABAN_TERMINAL_BACKEND '\(raw)'")
-    }
-    return backend
+    return try parse(raw)
   }
 }
 

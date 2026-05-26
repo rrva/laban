@@ -24,7 +24,8 @@ final class MainWindowController: NSWindowController {
 
   static func makeAndShow(
     restoring restoredState: WorkspaceState? = nil,
-    persistenceSyncEnabled: Bool = true
+    persistenceSyncEnabled: Bool = true,
+    terminalBackendSelection: TerminalBackendLaunchConfiguration? = nil
   ) throws
     -> MainWindowController
   {
@@ -56,7 +57,8 @@ final class MainWindowController: NSWindowController {
     // a passthrough launch, so the shell starts unchanged.
     // See `ShellIntegrationOverlay` and `docs/product/spec.md` §7.
     let shellLaunch = Self.installShellIntegrationOverlay()
-    let terminalBackend = try Self.configuredAppTerminalBackend()
+    let backendSelection = try terminalBackendSelection ?? Self.configuredAppTerminalBackend()
+    let terminalBackend = backendSelection.backend
     let restoredCwdByTabId = Self.restoredCwdByTabId(from: restoredState)
     let labandCoordinator = try Self.makeLabandCoordinator(
       backend: terminalBackend,
@@ -368,15 +370,16 @@ final class MainWindowController: NSWindowController {
     labandCoordinator?.detach()
   }
 
-  private static func configuredAppTerminalBackend() throws -> TerminalSessionBackend {
-    let environment = ProcessInfo.processInfo.environment
-    if environment["LABAN_TERMINAL_BACKEND"] != nil {
-      return try TerminalSessionBackend.configured(environment: environment)
-    }
-    if environment["LABAN_DISABLE_PRODUCT_LABAND"] == "1" {
-      return .inProcess
-    }
-    return bundledLabandExecutableURL() == nil ? .inProcess : .laband
+  static func configuredAppTerminalBackend(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    arguments: [String] = CommandLine.arguments,
+    defaults: UserDefaults = .standard
+  ) throws -> TerminalBackendLaunchConfiguration {
+    try TerminalBackendSettings.resolve(
+      environment: environment,
+      arguments: arguments,
+      defaults: defaults,
+      automaticBackend: bundledLabandExecutableURL() == nil ? .inProcess : .laband)
   }
 
   private static func makeLabandCoordinator(

@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
   private let restoreOnLaunchMenuController = RestoreOnLaunchMenuController()
+  private let terminalBackendMenuController = TerminalBackendMenuController()
   private var updateCheckInFlight = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -27,9 +28,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // would overwrite that user-provided palette shortly after zsh starts.
     themeMenuController.loadPersistedChoices()
     Self.applyTheme(for: NSApp.effectiveAppearance)
+    let terminalBackendSelection: TerminalBackendLaunchConfiguration
+    do {
+      terminalBackendSelection = try MainWindowController.configuredAppTerminalBackend()
+    } catch {
+      showStartupFailure(error)
+      return
+    }
+    terminalBackendMenuController.configure(
+      activeBackend: terminalBackendSelection.backend,
+      launchSource: terminalBackendSelection.source)
     MenuCommands.setupMenuBar(
       themeMenu: themeMenuController,
-      restoreOnLaunchMenu: restoreOnLaunchMenuController
+      restoreOnLaunchMenu: restoreOnLaunchMenuController,
+      terminalBackendMenu: terminalBackendMenuController
     )
 
     // Decide whether to restore on this launch:
@@ -65,14 +77,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     do {
       windowController = try MainWindowController.makeAndShow(
         restoring: restoredState,
-        persistenceSyncEnabled: persistenceSyncEnabled)
+        persistenceSyncEnabled: persistenceSyncEnabled,
+        terminalBackendSelection: terminalBackendSelection)
     } catch {
-      let alert = NSAlert()
-      alert.messageText = "Laban failed to start"
-      alert.informativeText = "\(error)"
-      alert.addButton(withTitle: "Quit")
-      alert.runModal()
-      NSApp.terminate(nil)
+      showStartupFailure(error)
+      return
     }
     NSApp.activate(ignoringOtherApps: true)
 
@@ -91,6 +100,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+  private func showStartupFailure(_ error: Error) {
+    let alert = NSAlert()
+    alert.messageText = "Laban failed to start"
+    alert.informativeText = "\(error)"
+    alert.addButton(withTitle: "Quit")
+    alert.runModal()
+    NSApp.terminate(nil)
+  }
 
   func applicationWillTerminate(_ notification: Notification) {
     // Take one final synchronous detector sample before workspace
