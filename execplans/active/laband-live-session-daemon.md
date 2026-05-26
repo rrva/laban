@@ -966,6 +966,9 @@ rtk swift test --filter LabandUpgradePromptTests
 LABAN_PRODUCT_LABAND_TESTS=1 rtk swift test --filter LabandProductLaunchAgentTests
 # Executed 1 test, with 0 failures.
 
+rtk swift test --filter LabandProductLaunchAgentTests
+# Executed 1 test, with 1 test skipped and 0 failures.
+
 rtk swift test --filter LabandControlProtocolTests
 # Executed 3 tests, with 0 failures.
 
