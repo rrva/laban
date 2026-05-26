@@ -188,6 +188,19 @@ public final class InProcessTerminalSessionClient: TerminalSessionClient {
     return snapshot
   }
 
+  public func scrollViewport(sessionId: String, deltaRows: Int) throws -> LabandSessionInfo {
+    guard let managed = lookup(sessionId) else {
+      throw TerminalSessionClientError.sessionNotFound(sessionId)
+    }
+    guard managed.lifecycleState == .running, let session = managed.session else {
+      throw TerminalSessionClientError.sessionNotRunning(sessionId)
+    }
+    guard session.scrollViewport(deltaRows: deltaRows) == 0 else {
+      throw TerminalSessionClientError.protocolError("scrollViewport failed for \(sessionId)")
+    }
+    return sessionInfo(managed)
+  }
+
   public func markRendered(sessionId: String) throws {
     guard let managed = lookup(sessionId) else {
       throw TerminalSessionClientError.sessionNotFound(sessionId)

@@ -8,6 +8,7 @@ final class AppLabandSessionCoordinator {
   private let shellLaunch: ShellIntegrationLaunch
   private let cwdByTabId: [Tab.ID: String]
   private let supportsThemeApplication: Bool
+  private let supportsViewportScroll: Bool
   private var infoByTabId: [Tab.ID: LabandSessionInfo] = [:]
   private var infoByLocalSessionId: [Session.ID: LabandSessionInfo] = [:]
   private var labandProcess: Process?
@@ -23,8 +24,9 @@ final class AppLabandSessionCoordinator {
     self.shellLaunch = shellLaunch
     self.cwdByTabId = cwdByTabId
     self.labandProcess = labandProcess
-    self.supportsThemeApplication =
-      (try? client.hello().capabilities.contains("theme-palette/v1")) ?? false
+    let capabilities = (try? client.hello().capabilities) ?? []
+    self.supportsThemeApplication = capabilities.contains("theme-palette/v1")
+    self.supportsViewportScroll = capabilities.contains("viewport-scroll/v1")
     self.themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification,
       object: nil,
@@ -103,6 +105,18 @@ final class AppLabandSessionCoordinator {
         AppLog.app.error("laband resize failed for tab \(tab.id): \(String(describing: error))")
       }
     }
+  }
+
+  @discardableResult
+  func scrollViewport(tab: Tab, size: LabanTerminalSize, deltaRows: Int) throws -> Bool {
+    guard supportsViewportScroll, deltaRows != 0 else { return false }
+    let info = try ensureSession(for: tab, size: size)
+    let scrolled = try client.scrollViewport(
+      sessionId: info.logicalSessionId,
+      deltaRows: deltaRows
+    )
+    store(scrolled, for: tab)
+    return true
   }
 
   func markRendered(tab: Tab) {

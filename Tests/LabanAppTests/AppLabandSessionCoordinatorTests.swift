@@ -198,6 +198,98 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
     process.waitUntilExit()
   }
 
+  func testRestoredAppTabScrollsExistingDaemonSessionScrollback() throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-app-scroll-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    let seedClient = try waitForClient(socketPath: socketPath)
+    let seed = try seedClient.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/sh",
+        argv: [
+          "/bin/sh", "-lc",
+          "i=1; while [ $i -le 30 ]; do printf 'line-%02d\\n' \"$i\"; i=$((i+1)); done; sleep 60",
+        ],
+        cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+        rows: 5,
+        cols: 40,
+        logicalSessionId: "scroll-tab"
+      ))
+    _ = try waitForSnapshotText(
+      client: seedClient,
+      sessionId: seed.logicalSessionId,
+      text: "line-30")
+    _ = try seedClient.detachSession(sessionId: seed.logicalSessionId)
+    seedClient.close()
+
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 40
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    model.replaceTabs(
+      from: WorkspaceState(
+        windows: [
+          WindowState(
+            id: "main-window",
+            selectedTabId: "scroll-tab",
+            tabs: [
+              TabState(
+                id: "scroll-tab",
+                cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+                launchCommand: "scroll",
+                lastActiveAt: Date())
+            ])
+        ]))
+
+    let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    let coordinator = AppLabandSessionCoordinator(
+      client: coordinatorClient,
+      shellLaunch: .passthrough,
+      cwdByTabId: ["scroll-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+    )
+    defer { coordinator.detach() }
+
+    let tab = try XCTUnwrap(model.tabs.first)
+    _ = try coordinator.ensureSession(for: tab, size: size)
+    try coordinator.scrollViewport(tab: tab, size: size, deltaRows: -20)
+
+    let older = try waitForSnapshotText(
+      coordinator: coordinator,
+      tab: tab,
+      size: size,
+      text: "line-10")
+    XCTAssertFalse(older.visibleText.contains("line-30"))
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: "scroll-tab")
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
   private func waitForClient(socketPath: String) throws -> LabandTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?

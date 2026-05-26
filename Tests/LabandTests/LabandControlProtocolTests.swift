@@ -119,6 +119,52 @@ final class LabandControlProtocolTests: XCTestCase {
     launchedDaemon = nil
   }
 
+  func testScrollViewportMovesDaemonSessionScrollback() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let runId = "laband-scroll-\(UUID().uuidString)"
+    let socketPath = ".tmp/\(runId)/laband.sock"
+    let journalPath = ".artifacts/runs/\(runId)/laband"
+    let daemon = try launchDaemon(root: root, socketPath: socketPath, journalPath: journalPath)
+    launchedDaemon = daemon
+
+    let client = try waitForClient(root: root, socketPath: socketPath)
+    defer { client.close() }
+
+    let session = try client.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/sh",
+        argv: [
+          "/bin/sh", "-lc",
+          "i=1; while [ $i -le 30 ]; do printf 'line-%02d\\n' \"$i\"; i=$((i+1)); done; sleep 60",
+        ],
+        cwd: root.path,
+        rows: 5,
+        cols: 40
+      )
+    )
+
+    let bottom = try waitForSnapshotText(
+      client: client,
+      sessionId: session.logicalSessionId,
+      contains: "line-30"
+    )
+    XCTAssertFalse(bottom.visibleText.contains("line-10"))
+
+    _ = try client.scrollViewport(sessionId: session.logicalSessionId, deltaRows: -20)
+    let older = try waitForSnapshotText(
+      client: client,
+      sessionId: session.logicalSessionId,
+      contains: "line-10"
+    )
+    XCTAssertFalse(older.visibleText.contains("line-30"))
+
+    _ = try client.terminate(sessionId: session.logicalSessionId)
+    try client.shutdownWhenIdle()
+    daemon.waitUntilExit()
+    XCTAssertEqual(daemon.terminationStatus, 0)
+    launchedDaemon = nil
+  }
+
   func testSnapshotRingPublishesCoherentEchoedCells() throws {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let runId = "laband-ring-\(UUID().uuidString)"

@@ -359,6 +359,8 @@ private final class LabandDaemon {
       return (attachSnapshotRing(request), false)
     case .applyTheme:
       return (applyTheme(request), false)
+    case .scrollViewport:
+      return (scrollViewport(request), false)
     case .resizeSession:
       return (resizeSession(request), false)
     case .markRendered:
@@ -391,6 +393,7 @@ private final class LabandDaemon {
           "protocol-negotiation/v1",
           "copy-snapshot/v1",
           "theme-palette/v1",
+          "viewport-scroll/v1",
           "snapshot-ring/v1",
           "client-attach/v1",
           "lifecycle-journal/v1",
@@ -655,6 +658,46 @@ private final class LabandDaemon {
         type: request.type,
         code: "themeApplyFailed",
         message: "failed to apply theme palette"
+      )
+    }
+    managed.publishSnapshot()
+    return LabandResponse(
+      requestId: request.requestId,
+      type: request.type,
+      ok: true,
+      session: sessionInfo(managed)
+    )
+  }
+
+  private func scrollViewport(_ request: LabandRequest) -> LabandResponse {
+    guard let managed = lookup(request) else {
+      return missingSession(request)
+    }
+    guard managed.lifecycleState == .running, let session = managed.session else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "sessionNotRunning",
+        message: "session is not running"
+      )
+    }
+    if let denial = validateLease(request, managed: managed) {
+      return denial
+    }
+    guard let deltaRows = request.deltaRows else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "missingDeltaRows",
+        message: "scrollViewport requires deltaRows"
+      )
+    }
+    guard session.scrollViewport(deltaRows: deltaRows) == 0 else {
+      return .error(
+        requestId: request.requestId,
+        type: request.type,
+        code: "scrollViewportFailed",
+        message: "failed to scroll viewport"
       )
     }
     managed.publishSnapshot()

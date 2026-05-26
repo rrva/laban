@@ -214,6 +214,26 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     return snapshot
   }
 
+  public func scrollViewport(sessionId: String, deltaRows: Int) throws -> LabandSessionInfo {
+    let lease = currentLease(sessionId: sessionId)
+    let response = try send(
+      LabandRequest(
+        requestId: UUID().uuidString,
+        type: .scrollViewport,
+        clientId: clientId,
+        sessionId: sessionId,
+        deltaRows: deltaRows,
+        leaseId: lease?.leaseId,
+        leaseEpoch: lease?.epoch
+      )
+    )
+    guard let session = response.session else {
+      throw TerminalSessionClientError.protocolError("scrollViewport response missing session")
+    }
+    updateLeaseCache(from: session)
+    return session
+  }
+
   public func snapshotRingReader(sessionId: String) throws -> LabandSnapshotRingReader {
     if let reader = lock.withLock({ ringReaders[sessionId] }) {
       return reader

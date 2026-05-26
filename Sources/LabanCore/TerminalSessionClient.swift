@@ -88,6 +88,7 @@ public protocol TerminalSessionClient: AnyObject {
   func resize(sessionId: String, rows: Int, cols: Int) throws -> LabandSessionInfo
   func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment
   func snapshot(sessionId: String) throws -> LabandSnapshotResponse
+  func scrollViewport(sessionId: String, deltaRows: Int) throws -> LabandSessionInfo
   func markRendered(sessionId: String) throws
   func transferLease(sessionId: String, holderClientId: String) throws -> LabandSessionInfo
   func terminate(sessionId: String) throws -> LabandSessionInfo

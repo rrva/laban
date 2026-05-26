@@ -595,6 +595,39 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
   }
 
+  private func scrollViewport(
+    deltaRows: Int,
+    tab: Tab,
+    session: Session,
+    desiredAppliedRows: Int? = nil,
+    resetOnClamp: Bool = false
+  ) {
+    if let labandCoordinator {
+      do {
+        let didScroll = try labandCoordinator.scrollViewport(
+          tab: tab,
+          size: model.terminalSize,
+          deltaRows: deltaRows
+        )
+        if didScroll {
+          appliedScrollRows = desiredAppliedRows ?? (appliedScrollRows + deltaRows)
+        }
+      } catch {
+        AppLog.app.error("laband scrollback failed: \(String(describing: error))")
+      }
+      return
+    }
+
+    session.scrollViewport(deltaRows: deltaRows)
+    if let desiredAppliedRows {
+      syncSmoothScrollState(
+        session: session,
+        desiredAppliedRows: desiredAppliedRows,
+        resetOnClamp: resetOnClamp
+      )
+    }
+  }
+
   private func applyTransientResizeBackground() {
     guard let view = window?.contentView?.superview else { return }
     if resizeBackgroundView !== view {
@@ -806,8 +839,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       let desiredApplied = Int(displayedScrollRows.rounded(.toNearestOrAwayFromZero))
       let delta = desiredApplied - appliedScrollRows
       if delta != 0 {
-        session.scrollViewport(deltaRows: delta)
-        syncSmoothScrollState(session: session, desiredAppliedRows: desiredApplied)
+        scrollViewport(
+          deltaRows: delta,
+          tab: activeTab,
+          session: session,
+          desiredAppliedRows: desiredApplied
+        )
       }
 
       renderInvalidated = true
@@ -1960,8 +1997,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func scrollWheel(with event: NSEvent) {
     guard
-      let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId)
+      let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
     else {
       return
     }
@@ -2031,8 +2068,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       if isPrecise || isSmallClick {
         let delta = Int(targetScrollRows.rounded(.toNearestOrAwayFromZero)) - appliedScrollRows
         if delta != 0 {
-          session.scrollViewport(deltaRows: delta)
-          syncSmoothScrollState(
+          scrollViewport(
+            deltaRows: delta,
+            tab: activeTab,
             session: session,
             desiredAppliedRows: appliedScrollRows + delta,
             resetOnClamp: true
@@ -2798,8 +2836,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         appliedRows: appliedScrollRows
       )
     else { return }
-    session.scrollViewport(deltaRows: dragAutoscrollDirection)
-    syncSmoothScrollState(
+    scrollViewport(
+      deltaRows: dragAutoscrollDirection,
+      tab: activeTab,
       session: session,
       desiredAppliedRows: appliedScrollRows + dragAutoscrollDirection,
       resetOnClamp: true
