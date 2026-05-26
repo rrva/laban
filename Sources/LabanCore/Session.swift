@@ -533,6 +533,18 @@ public final class Session {
 
   public func processMetadata() -> ProcessMetadata? {
     guard !isClosed, let h = handle else { return nil }
+    // Fixture sessions have no PTY and no foreground process. The C path
+    // still returns success with empty pid/process/command and `launch_cwd`
+    // as the cwd, which produces a non-nil `ProcessMetadata` whose derived
+    // `ProcessIdentity` is nil. In laband (background-session) mode that
+    // empty identity clobbers the daemon-supplied identity installed by
+    // `AppLabandSessionCoordinator.refreshTabMetadata` every time the
+    // surface controller polls the local session, which made the tab
+    // title flip-flop ~4 Hz between "~" and "~\nzsh". Returning nil here
+    // short-circuits the `guard let metadata = session.processMetadata()`
+    // in `TabMetadataSynchronizer.syncSurfaceMetadata`, leaving the
+    // daemon as the sole authority for foreground-process metadata.
+    if fixtureMode { return nil }
     var childPid: Int32 = -1
     var foregroundPid: Int32 = -1
 

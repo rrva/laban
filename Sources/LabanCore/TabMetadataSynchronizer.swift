@@ -6,6 +6,46 @@ import Foundation
 /// This type owns the bookkeeping that decides whether a terminal title still
 /// belongs to the current foreground process and when process metadata may be
 /// polled again.
+/// The three signals `TabMetadataSynchronizer.syncSurfaceMetadata` applies on
+/// every cycle. Built from a local `Session` for in-process tabs, or
+/// synthesized from a `LabandSessionInfo` for laband-backed tabs. Holding
+/// the shape in one place is what keeps the two writer paths from drifting:
+/// both feed the same apply method with the same struct and inherit one
+/// canonical policy. The bug this consolidation fixes: with two writers
+/// operating on the same `TabMetadataSynchronizer` instance, the local
+/// fixture's empty `processMetadata` was clobbering the daemon-supplied
+/// identity every other frame, flip-flopping the tab title between "~" and
+/// "~\nzsh" at 4 Hz.
+public struct TabSurfaceSignals {
+  /// `nil` means "no process-metadata update this cycle" (caller is
+  /// throttled or has nothing to say). Non-nil flows through
+  /// `applyProcessMetadata`, where the existing identity-change policy
+  /// also clears the terminal title when the foreground process changes.
+  public var processMetadata: Session.ProcessMetadata?
+  /// Matches the `consumeTitle()` contract: `dirty=true` carries a
+  /// candidate raw title to apply (`nil` raw clears). `dirty=false` is
+  /// "no title update this cycle." Idempotent re-applies are safe — the
+  /// inner `syncTitle` compares before/after and reports modelChanged
+  /// only on real changes.
+  public var titleDirty: Bool
+  public var titleRaw: String?
+  /// `.running` means "no exit-state update" — non-running transitions
+  /// the tab status exactly once.
+  public var exitState: TabStatus
+
+  public init(
+    processMetadata: Session.ProcessMetadata? = nil,
+    titleDirty: Bool = false,
+    titleRaw: String? = nil,
+    exitState: TabStatus = .running
+  ) {
+    self.processMetadata = processMetadata
+    self.titleDirty = titleDirty
+    self.titleRaw = titleRaw
+    self.exitState = exitState
+  }
+}
+
 final class TabMetadataSynchronizer {
   typealias BranchResolved = @Sendable (_ branch: String?, _ tabId: Tab.ID, _ cwd: String) -> Void
 
@@ -181,13 +221,12 @@ final class TabMetadataSynchronizer {
   @discardableResult
   func syncExitState(forTab tabId: Tab.ID, from session: Session, tabs: inout [Tab]) -> Bool {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-    return syncExitState(at: idx, from: session, tabs: &tabs)
+    return applyExitState(session.exitState(), at: idx, tabs: &tabs)
   }
 
   @discardableResult
-  private func syncExitState(at idx: Int, from session: Session, tabs: inout [Tab]) -> Bool {
+  private func applyExitState(_ state: TabStatus, at idx: Int, tabs: inout [Tab]) -> Bool {
     guard tabs[idx].status == .running else { return false }
-    let state = session.exitState()
     guard state != .running else { return false }
     tabs[idx].status = state
     tabs[idx].titleMetadata.activityState = .exited
@@ -244,40 +283,72 @@ final class TabMetadataSynchronizer {
     tabs: inout [Tab],
     onBranchResolved: @escaping BranchResolved
   ) -> SurfaceMetadataSyncResult {
+    let throttled: Bool
+    if let last = lastProcessMetadataSyncAtByTab[tabId],
+      now.timeIntervalSince(last) < processMetadataSyncInterval
+    {
+      throttled = true
+    } else {
+      throttled = false
+      lastProcessMetadataSyncAtByTab[tabId] = now
+    }
+    let (titleDirty, titleRaw) = session.consumeTitle()
+    let signals = TabSurfaceSignals(
+      processMetadata: throttled ? nil : session.processMetadata(),
+      titleDirty: titleDirty,
+      titleRaw: titleRaw,
+      exitState: session.exitState()
+    )
+    return syncSurfaceMetadata(
+      forTab: tabId,
+      at: idx,
+      signals: signals,
+      now: now,
+      tabs: &tabs,
+      onBranchResolved: onBranchResolved
+    )
+  }
+
+  /// Canonical surface-metadata apply. Both the local-session writer (via
+  /// the `from session:` wrapper above) and the laband coordinator
+  /// (`AppLabandSessionCoordinator.refreshTabMetadata`) funnel through
+  /// here so neither path can develop its own slightly-different write
+  /// policy.
+  func syncSurfaceMetadata(
+    forTab tabId: Tab.ID,
+    at idx: Int,
+    signals: TabSurfaceSignals,
+    now: Date,
+    tabs: inout [Tab],
+    onBranchResolved: @escaping BranchResolved
+  ) -> SurfaceMetadataSyncResult {
     guard tabs.indices.contains(idx), tabs[idx].id == tabId else {
       return SurfaceMetadataSyncResult()
     }
 
     var result = SurfaceMetadataSyncResult()
-    if let last = lastProcessMetadataSyncAtByTab[tabId],
-      now.timeIntervalSince(last) < processMetadataSyncInterval
+    if let metadata = signals.processMetadata,
+      applyProcessMetadata(
+        metadata,
+        forTab: tabId,
+        at: idx,
+        now: now,
+        tabs: &tabs,
+        onBranchResolved: onBranchResolved
+      )
     {
-      // Keep the existing throttle behavior: process metadata is skipped, but
-      // title and exit state still sync every frame.
-    } else {
-      lastProcessMetadataSyncAtByTab[tabId] = now
-      if let metadata = session.processMetadata(),
-        applyProcessMetadata(
-          metadata,
-          forTab: tabId,
-          at: idx,
-          now: now,
-          tabs: &tabs,
-          onBranchResolved: onBranchResolved
-        )
-      {
-        result.modelChanged = true
-        result.processMetadataChanged = true
-      }
+      result.modelChanged = true
+      result.processMetadataChanged = true
     }
 
-    let (titleDirty, rawTitle) = session.consumeTitle()
-    if titleDirty, syncTitle(raw: rawTitle, forTab: tabId, at: idx, tabs: &tabs) {
+    if signals.titleDirty,
+      syncTitle(raw: signals.titleRaw, forTab: tabId, at: idx, tabs: &tabs)
+    {
       result.modelChanged = true
       result.titleChangedTab = tabs[idx]
     }
 
-    if syncExitState(at: idx, from: session, tabs: &tabs) {
+    if applyExitState(signals.exitState, at: idx, tabs: &tabs) {
       result.modelChanged = true
     }
 

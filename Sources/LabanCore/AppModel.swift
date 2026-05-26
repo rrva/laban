@@ -1029,32 +1029,89 @@ public final class AppModel {
     now: Date,
     recordTitleChanges: Bool
   ) -> AppModelSurfaceMetadataSyncResult {
+    runSurfaceMetadataSync(
+      forTab: tabId,
+      tabIndex: tabIndex,
+      sessionId: session.id,
+      now: now,
+      recordTitleChanges: recordTitleChanges,
+      sync: { idx, onBranchResolved in
+        metadataSync.syncSurfaceMetadata(
+          forTab: tabId,
+          at: idx,
+          from: session,
+          now: now,
+          tabs: &_tabs,
+          onBranchResolved: onBranchResolved
+        )
+      }
+    )
+  }
+
+  /// Signals-based surface-metadata sync. Used by the laband coordinator
+  /// to feed daemon-sourced title/process metadata through the same apply
+  /// path as the local-session writer, so both can't write conflicting
+  /// data into `TabMetadataSynchronizer`. Returns `true` when the model
+  /// changed; the coordinator doesn't need the full capture-event detail.
+  @discardableResult
+  public func applySurfaceSignals(
+    _ signals: TabSurfaceSignals,
+    forTab tabId: Tab.ID,
+    now: Date = Date()
+  ) -> Bool {
+    runSurfaceMetadataSync(
+      forTab: tabId,
+      tabIndex: -1,
+      sessionId: "",
+      now: now,
+      recordTitleChanges: false,
+      sync: { idx, onBranchResolved in
+        metadataSync.syncSurfaceMetadata(
+          forTab: tabId,
+          at: idx,
+          signals: signals,
+          now: now,
+          tabs: &_tabs,
+          onBranchResolved: onBranchResolved
+        )
+      }
+    ).modelChanged
+  }
+
+  private func runSurfaceMetadataSync(
+    forTab tabId: Tab.ID,
+    tabIndex: Int,
+    sessionId: Session.ID,
+    now: Date,
+    recordTitleChanges: Bool,
+    sync: (
+      _ idx: Int,
+      _ onBranchResolved: @escaping TabMetadataSynchronizer.BranchResolved
+    ) -> TabMetadataSynchronizer.SurfaceMetadataSyncResult
+  ) -> AppModelSurfaceMetadataSyncResult {
     var shouldNotifyWorkspaceMutation = false
     let result = withModelLock {
-      guard
-        let idx = tabIndexUnlocked(forTab: tabId, sessionId: session.id, preferredIndex: tabIndex)
-      else {
+      let idxLookup: Int? =
+        sessionId.isEmpty
+        ? _tabs.firstIndex(where: { $0.id == tabId })
+        : tabIndexUnlocked(forTab: tabId, sessionId: sessionId, preferredIndex: tabIndex)
+      guard let idx = idxLookup else {
         return AppModelSurfaceMetadataSyncResult(modelChanged: false, titleChangeEvent: nil)
       }
 
       let priorCwd = _tabs[idx].titleMetadata.workspace.cwd
-      let sync = metadataSync.syncSurfaceMetadata(
-        forTab: tabId,
-        at: idx,
-        from: session,
-        now: now,
-        tabs: &_tabs,
-        onBranchResolved: { [weak self] branch, tabId, cwd in
-          self?.applyResolvedBranch(branch, forTab: tabId, cwd: cwd)
-        }
-      )
+      let onBranchResolved: TabMetadataSynchronizer.BranchResolved = {
+        [weak self] branch, tabId, cwd in
+        self?.applyResolvedBranch(branch, forTab: tabId, cwd: cwd)
+      }
+      let syncResult = sync(idx, onBranchResolved)
 
-      if sync.processMetadataChanged {
+      if syncResult.processMetadataChanged {
         shouldNotifyWorkspaceMutation = priorCwd != _tabs[idx].titleMetadata.workspace.cwd
       }
 
       let event: CaptureTimelineEvent?
-      if recordTitleChanges, let updated = sync.titleChangedTab {
+      if recordTitleChanges, let updated = syncResult.titleChangedTab {
         var titleEvent = CaptureTimelineEvent(
           kind: .appState,
           tabId: updated.id,
@@ -1067,7 +1124,7 @@ public final class AppModel {
       }
 
       return AppModelSurfaceMetadataSyncResult(
-        modelChanged: sync.modelChanged,
+        modelChanged: syncResult.modelChanged,
         titleChangeEvent: event
       )
     }

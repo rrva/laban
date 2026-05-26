@@ -18,7 +18,6 @@ final class AppLabandSessionCoordinator {
   /// loop calls in every frame; this gate keeps us below 4 Hz so we don't
   /// pin the control-protocol socket on a busy redraw.
   private var lastTabMetadataRefreshAt: Date?
-  private var lastAppliedTitleByTab: [Tab.ID: String] = [:]
 
   init(
     client: LabandTerminalSessionClient,
@@ -209,14 +208,22 @@ final class AppLabandSessionCoordinator {
 
   /// Push the latest daemon-side title and foreground-process metadata for
   /// every tab into the app model. The local `Session` in laband mode is a
-  /// fixture with no PTY, so the model's normal `syncProcessMetadata` /
-  /// `syncTitle` paths can never produce useful data — without this call
-  /// the sidebar shows only "Tab N" forever.
+  /// fixture with no PTY, so the model's normal surface-metadata sync path
+  /// can never produce useful data from it — without this call the sidebar
+  /// shows only "Tab N" forever.
+  ///
+  /// Funnels through `AppModel.applySurfaceSignals`, the same engine the
+  /// local-session writer uses (`TabMetadataSynchronizer.syncSurfaceMetadata`).
+  /// Sharing the apply policy is what prevents the two writers from
+  /// disagreeing — previously this path called `updateTerminalTitle` +
+  /// `applyProcessMetadata` directly while the surface controller's path
+  /// re-ran `syncSurfaceMetadata` on the fixture, and the two raced into
+  /// the synchronizer's identity-change bookkeeping at 4 Hz.
   ///
   /// Throttled to roughly 4 Hz so it can be called every frame without
-  /// pinning the control-protocol socket. `applyProcessMetadata` and
-  /// `updateTerminalTitle` are themselves idempotent for unchanged
-  /// metadata, so the AppModel only changes when there is real news.
+  /// pinning the control-protocol socket. The apply engine is itself
+  /// idempotent for unchanged inputs, so the AppModel only changes when
+  /// there is real news.
   func refreshTabMetadata(for tabs: [Tab], into model: AppModel, now: Date = Date()) {
     if let last = lastTabMetadataRefreshAt, now.timeIntervalSince(last) < 0.25 {
       return
@@ -236,45 +243,38 @@ final class AppLabandSessionCoordinator {
       // Cache the fresh info so other paths (sessionInfo, terminate) read
       // current metadata too.
       store(info, for: tab)
-      applyTitle(info.title, forTab: tab.id, into: model)
-      applyProcessMetadata(from: info, forTab: tab.id, into: model, now: now)
+      let signals = surfaceSignals(from: info)
+      _ = model.applySurfaceSignals(signals, forTab: tab.id, now: now)
     }
   }
 
-  private func applyTitle(_ title: String, forTab tabId: Tab.ID, into model: AppModel) {
-    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    if lastAppliedTitleByTab[tabId] == trimmed { return }
-    do {
-      try model.updateTerminalTitle(trimmed, forTab: tabId)
-      lastAppliedTitleByTab[tabId] = trimmed
-    } catch {
-      // Tab may have been closed between listSessions and this call.
-      AppLog.app.error(
-        "laband title update failed for \(tabId): \(String(describing: error))")
-    }
-  }
-
-  private func applyProcessMetadata(
-    from info: LabandSessionInfo,
-    forTab tabId: Tab.ID,
-    into model: AppModel,
-    now: Date
-  ) {
-    // The daemon emits these as optional fields — if it has nothing
-    // useful yet, skip the apply (which would otherwise blank out a
-    // good prior value via empty strings).
-    guard info.foregroundCommand != nil || info.foregroundProcess != nil
-    else { return }
-    let synthesized = Session.ProcessMetadata(
-      childPid: info.childPid,
-      foregroundPid: info.foregroundPid,
-      foregroundProcess: info.foregroundProcess ?? "",
-      foregroundCommand: info.foregroundCommand ?? "",
-      foregroundArguments: info.foregroundArguments,
-      cwd: info.foregroundCwd ?? info.cwd
+  /// Build the shared `TabSurfaceSignals` from a `LabandSessionInfo`. The
+  /// daemon's `info.title` is already the libghostty-supplied OSC 2 title
+  /// (or `commandDisplayName` fallback when libghostty hasn't reported
+  /// one); empty trims drop out of the apply because `titleDirty=false`.
+  /// `processMetadata` stays `nil` when the daemon has nothing useful so
+  /// the synchronizer's identity-change policy doesn't blank out the
+  /// existing foreground entry.
+  private func surfaceSignals(from info: LabandSessionInfo) -> TabSurfaceSignals {
+    let trimmedTitle = info.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let titleDirty = !trimmedTitle.isEmpty
+    let processMetadata: Session.ProcessMetadata? = {
+      guard info.foregroundCommand != nil || info.foregroundProcess != nil else { return nil }
+      return Session.ProcessMetadata(
+        childPid: info.childPid,
+        foregroundPid: info.foregroundPid,
+        foregroundProcess: info.foregroundProcess ?? "",
+        foregroundCommand: info.foregroundCommand ?? "",
+        foregroundArguments: info.foregroundArguments,
+        cwd: info.foregroundCwd ?? info.cwd
+      )
+    }()
+    return TabSurfaceSignals(
+      processMetadata: processMetadata,
+      titleDirty: titleDirty,
+      titleRaw: titleDirty ? trimmedTitle : nil,
+      exitState: .running
     )
-    _ = model.applyProcessMetadata(synthesized, forTab: tabId, now: now)
   }
 
   func detach() {
