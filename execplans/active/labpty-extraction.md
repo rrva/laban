@@ -342,8 +342,9 @@ Add the Phase 1 protocol and ring types to `LabanCore`:
   layout per the design doc's "Common shape rules". See
   `Interfaces and Dependencies` for the concrete shapes. **No
   `attachSession`** in Phase 1 (see Decision Log).
-- `Sources/LabanCore/LabptyFraming.swift` (new). The 16-byte
-  `labpty_frame_header` encode/decode plus bounds-checking helpers
+- `Sources/LabanCore/LabptyFraming.swift` (new). The 24-byte
+  `labpty_frame_header` encode/decode (magic + abi_major + abi_minor
+  + frame_len + op + code + seq) plus bounds-checking helpers
   (`readUInt32(from: cursor) throws`, `readBoundedBytes(...)`,
   etc.). Used by `LabptyTerminalSessionClient` and by the
   per-RPC encode/decode methods. Mirrors `labpty_frame.c` on the
@@ -385,9 +386,9 @@ Files (all C unless noted):
   catalog. Each entry is a plain struct: `{ uint64_t pty_handle;
   pid_t child_pid; int master_fd; labpty_byte_ring_writer_t *writer;
   uint32_t rows; uint32_t cols; uint64_t opened_at_mono_ns; char
-  logical_session_id[256]; }` plus the foreground-process metadata
-  fields (`pid_t fg_pid; char fg_process[256]; char fg_command[1024];
-  char fg_cwd[1024]; ...`). The catalog is an open-addressing hash
+  logical_session_id[256]; pid_t foreground_pid; pid_t foreground_pgid;
+  }`. **No foreground-process strings, no libproc, no string
+  truncation logic.** The catalog is an open-addressing hash
   table keyed by `pty_handle` (the u64 value is already its own
   hash; identity function suffices); Phase 1 caps it at 64 sessions
   per daemon process, which is well above any realistic interactive
@@ -468,20 +469,25 @@ PTY ownership and launch:
   `EVFILT_READ`. **`labpty` is the only process that holds the
   master fd.** No code in `labpty` ever sends that fd to another
   process in Phase 1.
-- `labpty` polls foreground-process metadata via the same primitives
-  the current `laban_session_process_metadata` C function uses
-  (`tcgetpgrp` on the master, `proc_name`/`proc_pidpath`/
-  `proc_pidinfo` from libproc) at ~1 Hz. The Swift wrapper
-  `Session.processMetadata()` (`Sources/LabanCore/Session.swift:534`)
-  is one way to call it if `labpty` keeps a `Session` per master; a
-  thin C helper that reads the same fields without a `Session`
-  works equally well. Either path populates
-  `LabptySessionDescriptor.foreground*` on every `openSession` and
-  `listSessions` response. This is the source the tab-title fix
-  added in `Sources/LabanApp/AppLabandSessionCoordinator.swift` will
-  consume after M4 — `laband`'s own parser-only
-  `Session.processMetadata()` returns `nil` (no PTY), so `labpty`'s
-  poll is the only source.
+- `labpty` polls **only** the foreground pid and pgid for each
+  session: `tcgetpgrp(master_fd)` returns the foreground pgid;
+  `getpgid` (or a second `tcgetpgrp` call) confirms a foreground
+  pid in the same group. These two `int32` values populate
+  `LabptySessionDescriptor.foregroundPid` and
+  `LabptySessionDescriptor.foregroundPgid` on every `openSession`
+  and `listSessions` response. `labpty` does **not** call
+  `proc_name`, `proc_pidpath`, `proc_pidinfo`, or any other libproc
+  function; the daemon does not link libproc. `laband` resolves
+  the executable name, command path, argv, and cwd itself by
+  calling its existing libproc-backed helper
+  (`laban_session_process_metadata` in
+  `Sources/LabanTerminalCore/process_metadata.c`) against the
+  labpty-supplied pids. The Phase 1 tab-title contract:
+  `LabandSessionInfo.foreground*` fields, consumed by
+  `Sources/LabanApp/AppLabandSessionCoordinator.swift`, are
+  populated by `laband`'s own libproc resolution against
+  labpty-supplied pids — same data path as pre-`labpty`, just
+  with the pids sourced from a different process.
 - The master drain in M1 is `labpty`'s own kqueue-driven `read(2)`
   loop on each master fd. Bytes are discarded into a small scratch
   buffer in M1 (just enough to keep the child from blocking on PTY
@@ -538,11 +544,9 @@ counters, or `attachSession`. The protocol-design doc's Phase 1 thin
 surface section enumerates the full exclusion list with rationale.
 
 Wire the writer into `labpty`'s master drain: each chunk read from the
-PTY master goes into `Session.feedOutput`-equivalent (still owned by
-`labpty`'s libghostty session — `labpty` keeps a libghostty session per
-PTY only to avoid blocking the child, and to keep the existing capture
-hooks working; it does **not** publish parsed snapshots) **and** into
-the byte-ring writer.
+PTY master via `read(2)` goes directly into the byte-ring writer. No
+libghostty session, no parser, no `feedOutput` — see the resolved
+design tension below.
 
 > **Resolved design tension.** Per the surface-minimalism Decision
 > Log entry, Phase 1 `labpty` does not wrap each PTY in a
@@ -875,11 +879,12 @@ If a test leaves processes running (a hung `labpty` or `laband`),
 
 The Phase 1 subset of `execplans/active/labpty-protocol-design.md`.
 Length-prefixed binary frames (`LBPTY-CT-01`) over Unix
-`SOCK_STREAM`. Each frame: 16-byte header
-(`frame_len`/`op`/`code`/`seq`) followed by an op-specific payload.
-Capability negotiation lives in the `hello` payload; sequence numbers
-live in the frame header. No JSON anywhere on the wire; no deadlines
-in Phase 1.
+`SOCK_STREAM`. Each frame: 24-byte header (magic `"LPCT"` +
+`abi_major` + `abi_minor` + `frame_len` + `op` + `code` + `seq`)
+followed by an op-specific payload. Capability negotiation lives in
+the `hello` payload; subsequent frames must carry the negotiated
+`abi_major` but cannot renegotiate. No JSON anywhere on the wire;
+no deadline field in Phase 1 (closed schema has no slot for one).
 
 Swift-side structs are plain (not `Codable`): each carries an
 `encode(into: inout Data)` and a `decode(from: inout Data.Iterator)
@@ -967,22 +972,24 @@ public struct LabptySessionDescriptor: Sendable {
   public var alive: Bool              // u8 on the wire
   public var openedAtMonoNs: UInt64
   public var byteRingShmPath: String  // ≤ 1024 bytes
-  /// Foreground-process metadata polled by `labpty` from the PTY's
-  /// `tcgetpgrp` + libproc. Empty strings mean "nothing useful yet"
-  /// (a binary protocol can't carry `Optional` cheaply; the convention
-  /// is "empty string is absence"). `laband` forwards these into
-  /// `LabandSessionInfo.foreground*` fields, which the app's
-  /// `TabMetadataSynchronizer` consumes for tab titles. Without this
-  /// carry-over, the tab-title fix in
-  /// `Sources/LabanApp/AppLabandSessionCoordinator.swift` regresses
-  /// because `laband`'s parser-only `Session.processMetadata()`
-  /// returns `nil` (it has no PTY).
+  /// Foreground PIDs polled by `labpty` from the PTY's
+  /// `tcgetpgrp(master_fd)` and `getpgid(foreground_pid)`. Two
+  /// `int32` fields, total 8 bytes. -1 = unknown. `laband`
+  /// resolves the executable name, command path, argv, and cwd
+  /// itself via `proc_name`/`proc_pidpath`/`proc_pidinfo` on
+  /// these pids (laband and labpty are same-uid, so libproc
+  /// works). This keeps `labpty` free of libproc string
+  /// extraction, truncation rules, and the descriptor bloat
+  /// that 4×1024-byte strings × 64 sessions would push into
+  /// every `listSessions` response. The tab-title fix in
+  /// `Sources/LabanApp/AppLabandSessionCoordinator.swift`
+  /// consumes `LabandSessionInfo.foreground*` strings
+  /// unchanged; `laband` is already the place where libproc
+  /// resolution happened pre-`labpty` (see
+  /// `Sources/LabanCore/Session.swift:534
+  /// laban_session_process_metadata` for the existing path).
   public var foregroundPid: Int32        // -1 = unknown
-  public var foregroundProcess: String   // ≤ 1024 bytes; empty = unknown
-  public var foregroundCommand: String   // ≤ 1024 bytes
-  public var foregroundArguments: [String]  // counted array; ≤ 16 entries
-                                            //   to keep the descriptor small
-  public var foregroundCwd: String       // ≤ 1024 bytes
+  public var foregroundPgid: Int32       // -1 = unknown
 }
 
 // No LabptyAttachRequest / LabptyAttachResponse in Phase 1.
@@ -1138,13 +1145,14 @@ encode a Phase 1 request struct through `LabptyFraming` into the
 frame, decode it. Used **only** by `laband` in Phase 1; `LabanApp`
 must not import this type (enforced by the Review Gate).
 
-### `Sources/Labpty/main.swift` (new)
+### `Sources/Labpty/main.c` (new)
 
 Process entry. Argument parsing for `--socket`, `--shm-dir`, optional
-`--run-id`. Unix-socket listener. Single-threaded event loop dispatching
-RPCs and per-session master-drain ticks. Each session is added to the
-in-memory `LabptySessionRegistry` and gets a `LabptyByteRingWriter`
-backed by a file under `--shm-dir`.
+`--run-id`. Unix-socket listener via `socket(2)` + `bind(2)` +
+`listen(2)` + `accept(2)`. Single-threaded `kqueue` event loop
+dispatching RPCs and per-session master-drain ticks. Each session is
+added to the in-memory `labpty_registry` and gets a
+`labpty_byte_ring_writer` backed by a file under `--shm-dir`.
 
 PTY ownership notes (preserves ADR 0002 inside `labpty`):
 
@@ -1188,14 +1196,24 @@ call sites.
 
 ### Module dependencies
 
-- `Labpty` (new executable) depends on `LabanTerminalCore` and
-  `LabanCore`.
-- `LabanCore` gains `LabptyProtocol.swift`, `LabptyByteRingLayout.swift`,
-  `LabptyByteRingWriter.swift`, `LabptyByteRingReader.swift`,
+- `Labpty` (new C executable) depends on `LabanTerminalCore` **only**
+  (the C target, for the `laban_pty_open` entry point and the
+  process-group teardown helper). It does **not** depend on
+  Swift `LabanCore`. The daemon binary links libc, libSystem,
+  `LabanTerminalCore`, and nothing else. This is what makes the
+  C / thinness decision actually thin: a Swift-runtime dependency
+  would pull in ARC, Foundation surface, and a much larger audit
+  closure.
+- `LabanCore` (Swift, runs in laband/LabanApp/LabanDebug) gains
+  `LabptyProtocol.swift`, `LabptyFraming.swift`,
+  `LabptyByteRingLayout.swift`, `LabptyByteRingReader.swift`,
   `LabptyTerminalSessionClient.swift`, and (optionally)
-  `Session+ParserOnly.swift`.
+  `Session+ParserOnly.swift`. The Swift-side byte-ring **reader**
+  lives here; the C-side byte-ring **writer** lives in
+  `Sources/Labpty/labpty_byte_ring.c`. The two communicate through
+  the shm file alone, no symbol coupling.
 - `Laband` gains a `LabptyTerminalSessionClient` field used during
-  session open/attach/resize/signal/terminate/writeInput.
+  session open/resize/signal/terminate/writeInput.
 - `LabanApp` **does not** depend on `Labpty*` types in Phase 1. The
   Review Gate enforces this with a grep.
 
@@ -1221,6 +1239,30 @@ call sites.
   the binary wire format plus the shm layout, both fixed in this
   plan.
   Date/Author: 2026-05-26 / thinness review iteration.
+
+- Decision: `labpty` reports foreground **pid + pgid only**; `laband`
+  resolves the executable name, command path, argv, and cwd via
+  its own libproc helper.
+  Rationale: An earlier draft of this plan had `labpty` populate
+  four 1024-byte foreground-process strings (process, command, cwd)
+  plus a 16-entry counted array of foreground arguments on every
+  `LabptySessionDescriptor`. That pulled libproc, string-truncation
+  rules, and ~5 KiB of per-session descriptor bloat into `labpty` —
+  exactly the kind of feature that grows the custodian without
+  earning kernel-resource ownership. The thinness audit (principle
+  0) flagged it as a candidate for moving up the stack. `labpty`'s
+  irreducible foreground role is the `tcgetpgrp(master_fd)` +
+  `getpgid` calls that *only* the master-fd holder can make; once
+  those return a pid, anyone same-uid (notably `laband`) can resolve
+  the rest via libproc against that pid. The two `int32` fields fit
+  in 8 bytes per descriptor, `labpty` no longer links libproc, and
+  `laband` already has the libproc resolution code from before
+  `labpty` existed (`Sources/LabanTerminalCore/process_metadata.c`).
+  The tab-title contract
+  (`Sources/LabanApp/AppLabandSessionCoordinator.swift`) consumes
+  `LabandSessionInfo.foreground*` strings unchanged; only the
+  source of those strings moves from labpty back into laband.
+  Date/Author: 2026-05-26 / cleanup-pass iteration.
 
 - Decision: `labpty` adopts NASA JPL's *Power of Ten* rules as its
   coding-rule baseline, plus a small set of soft-realtime additions
@@ -1579,6 +1621,12 @@ safety-critical C, mapped onto `labpty` by the "Coding rules for
 - [ ] The scratch arena is pre-touched at boot: `memset(arena, 0,
   ARENA_BYTES)` appears in `Sources/Labpty/main.c` after the
   `mmap` call and before the event loop begins.
+- [ ] `git grep -nE 'proc_name|proc_pidpath|proc_pidinfo|libproc'
+  Sources/Labpty/` returns zero hits. (`labpty` reports only
+  pid/pgid; libproc resolution stays in `laband`.)
+- [ ] `git grep -nE 'foregroundProcess|foregroundCommand|foregroundArguments|foregroundCwd'
+  Sources/LabanCore/LabptyProtocol.swift Sources/Labpty/` returns
+  zero hits. (No foreground-process strings on the wire.)
 - [ ] `git grep -n 'LabptyTerminalSessionClient' Sources/LabanApp/`
   returns zero hits. (The app does not depend on labpty in Phase 1.)
 - [ ] `git grep -n 'LabptyTerminalSessionClient' Sources/Laband/`

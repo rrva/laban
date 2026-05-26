@@ -70,10 +70,13 @@ the surface 0 lets through.
    to make the protocol smaller, not a chance to translate the JSON
    one byte-for-byte: every decoder byte is now `labpty` code,
    subject to the verification bar.** Concrete trims below: `u64`
-   pty handles (not 64-byte strings), flat NUL-separated argv/envp
-   buffers (not arrays of length-prefixed strings), `writeInput`
-   payload-bytes implicit from frame length (no inner length
-   prefix), no configurable terminate grace period.
+   pty handles (not 64-byte strings), `argv`/`envp` as counted
+   arrays of length-prefixed strings (decoded into a daemon-lifetime
+   `mmap`'d scratch arena), `writeInput` payload-bytes implicit
+   from frame length (no inner length prefix), no configurable
+   terminate grace period, no foreground-process strings on the
+   wire (labpty returns only `foreground_pid` and `foreground_pgid`;
+   laband resolves names/paths via its own libproc call).
 6. **Versioning happens once, at handshake, never per message.** After
    `hello`, both sides know the schema. No version field on any
    subsequent message.
@@ -121,7 +124,7 @@ this section and `execplans/active/labpty-extraction.md` and skip the
 - `hello` — version + capability negotiation.
 - `openSession` — fork+exec a child with a fresh PTY; return
   descriptor (`ptyHandle`, `childPid`, `rows`, `cols`,
-  `byteRingShmPath`, foreground-process metadata).
+  `byteRingShmPath`, `foregroundPid`, `foregroundPgid`).
 - `listSessions` — return descriptors for every live session.
   Includes the byte-ring shm path so callers can read directly; no
   separate "attach" step.
@@ -586,9 +589,9 @@ Decision Log):
 - Reader creates a pipe via `pipe(&fds[0])`. Sets the read end
   non-blocking and `O_CLOEXEC`.
 - Reader includes the **write end** of the pipe as SCM_RIGHTS
-  ancillary data on the `attachSession` request. (This is the only
-  use of SCM_RIGHTS in Phase 1; it carries a pipe write fd, not a
-  PTY master fd.)
+  ancillary data on the (Phase 2) `attachSession` request — a pipe
+  write fd, never a PTY master fd. Phase 1 has no SCM_RIGHTS anywhere;
+  this section describes the Phase 2 design.
 - `labpty` receives the write end, stores it in the per-session
   per-reader slot it just allocated, marks the slot occupied. The
   reader's view of "my fd is in slot N" comes back in the
@@ -703,13 +706,24 @@ caps are what each per-op decoder checks:
 | `logical_session_id` | 256 bytes | |
 | `byte_ring_shm_path` | 1024 bytes | |
 | `writeInput` bytes | 64 KiB | + frame header + pty_handle ≈ 64 KiB + 32 |
-| Foreground process strings | 1024 bytes each | 4 string fields × 1024 bytes |
-| `foreground_arguments` count | 16 entries | Sidebar display only |
-| Single `foreground_arguments` entry | 256 bytes | |
 | `client_id` | 256 bytes | `hello` payload |
 | `capabilities` per entry | 64 bytes | Tokens like `byte-ring/v1` |
 | `capabilities` count | 64 entries | Both directions |
 | `LabptySessionDescriptor` count in `listSessions` response | 64 | Matches the per-daemon session cap |
+
+No foreground-process strings on the wire. `labpty` reports only
+`foreground_pid` (`int32`) and `foreground_pgid` (`int32`) on every
+descriptor — one `tcgetpgrp` + one `getpgid` per session per
+catalog read. `laband` resolves the rest (executable name, command
+path, argv, cwd) on its own side via `proc_name`/`proc_pidpath`/
+`proc_pidinfo` against those pids. This keeps `labpty` free of
+libproc string-extraction code, truncation rules, and the
+descriptor-bloat that ~5 KiB of foreground strings × 64 sessions
+would push into every `listSessions` response. The tab-title fix
+(`Sources/LabanApp/AppLabandSessionCoordinator.swift`) consumes
+`LabandSessionInfo.foreground*` strings unchanged; `laband` is
+already the place where libproc resolution happened pre-`labpty`,
+and the post-`labpty` flow keeps it there.
 
 Any decoder that observes a length-prefix exceeding the relevant cap
 returns `LABPTY_E_OVERSIZE` and the connection closes.
@@ -817,18 +831,28 @@ records the reversal explicitly.
 
 ### Versioning, sequence numbers, deadlines
 
-- **Versioning happens once, at `hello`, never per message** (principle
-  6). The `hello` request payload carries a `u32 protocol_major`; the
-  successful `hello` response pins it for the connection lifetime. No
-  subsequent request carries a version field, structurally — the frame
-  header has no slot for one.
+- **Version negotiation happens at `hello`, never per message**
+  (principle 6). The `hello` request payload carries the client's
+  proposed `protocol_major` and `protocol_minor`; the successful
+  `hello` response pins those for the connection lifetime. The
+  frame header *does* carry `abi_major` + `abi_minor` on every
+  frame, but as **identification, not negotiation**: a stray
+  packet, a misdirected connection, or a frame from a wrong-version
+  peer is rejected at the framing layer. The version chosen for the
+  connection is the one in the `hello` exchange; subsequent frames
+  must carry that same `abi_major` (mismatch closes the connection).
 - **`seq` is in the frame header** for every request and response. The
   client picks a monotonic u64; the daemon echoes. Phase 1 does not
   pipeline (one outstanding RPC at a time per connection), but the
   field is there so Phase 2+ pipelining costs nothing on the wire.
-- **No `deadline_ns` field in Phase 1.** Clients enforce deadlines by
-  tearing down the socket. The transport doesn't carry deadlines until
-  `deadline-enforcement/v1` lands.
+- **No `deadline_ns` field anywhere in Phase 1.** The closed binary
+  schema has no slot for one and no provision for trailing optional
+  fields; "clients may include it and labpty ignores it" is not a
+  meaningful contract in a fixed-shape protocol. Clients enforce
+  deadlines client-side by closing the socket. The wire gains a
+  `deadline_ns` field only when `deadline-enforcement/v1` lands in
+  Phase 2 — at which point the frame header takes an ABI minor
+  bump.
 
 ### Response shape
 
@@ -1087,26 +1111,36 @@ be tested.
 
 ## Backpressure
 
-**Output direction:** None at the kernel level. labpty drains the master
-as fast as it can. If readers fall behind and the ring wraps, the bytes
-they missed are lost from their perspective; they must recover via the
-opaque snapshot. This is the right model: terminals are
-display-current-state, not replay-history. The byte ring is sized
-generously enough (8 MiB default) that wraps shouldn't happen in
-practice.
+**Output direction (Phase 1):** None at the kernel level. labpty
+drains the master as fast as it can. If readers fall behind and the
+ring wraps, the bytes they missed are lost from their perspective;
+they recover via the in-ring "replay from current window" path in
+"Overflow recovery." Phase 2's `opaque-snapshot-cache/v1` adds a
+faster recovery path; Phase 1 has only the in-ring fallback. The
+byte ring is sized generously enough (8 MiB default) that wraps
+shouldn't happen in practice.
 
-**Input direction:** Bounded by the input ring's capacity. If the kernel
-buffer for the PTY master write blocks, labpty stops draining the input
-ring. The ring fills. The client sees `input_writes_blocked_total`
-incrementing and either applies its own pacing or accepts that further
-writes will be rejected. This is the algo-trader rate-limit model: tell
-the producer to slow down rather than letting buffers grow without
-bound.
+**Input direction (Phase 1):** The `writeInput` control RPC is
+synchronous from the caller's perspective: `labpty` performs the
+`write(2)` to the PTY master under its own lock before responding
+ok. If the kernel buffer is full, `labpty`'s `write(2)` blocks
+briefly; the caller experiences this as a longer RPC. There is no
+shared-memory input ring in Phase 1, no `input_writes_blocked_total`
+counter populated, and no async backpressure signal — bounded only
+by the caller's own willingness to keep sending RPCs.
 
-**Shutdown:** `terminateSession` is a producer drain operation. labpty
-keeps draining the ring while killing the child gracefully, so any
-final output (exit codes, last line of output) makes it through to
-attached readers before the ring is freed.
+**Input direction (Phase 2):** Bounded by the `LBPTY-IR-01` input
+ring's capacity. If the kernel buffer for the PTY master write
+blocks, `labpty` stops draining the input ring; the client sees
+`input_writes_blocked_total` incrementing and applies its own
+pacing. This is the algo-trader rate-limit model: tell the producer
+to slow down rather than letting buffers grow without bound. Lands
+only after `multi-attach-write-lease/v1` is settled.
+
+**Shutdown:** `terminateSession` is a producer drain operation.
+`labpty` keeps draining the PTY master into the byte ring while
+killing the child gracefully, so any final output (exit codes, last
+line of output) reaches attached readers before the ring is freed.
 
 ## Observability
 
@@ -1352,8 +1386,9 @@ client                                          labpty
   |                                                |--insert into in-memory
   |                                                |  session catalog
   |<--openSession response w/ ptyHandle,---------|
-  |   child_pid, rows, cols, byte-ring shm
-  |   path, foreground-process metadata.
+  |   child_pid, rows, cols, byte-ring shm path,
+  |   foreground_pid, foreground_pgid.
+  |   NO foreground-process strings (laband resolves).
   |   NO master fd. NO SCM_RIGHTS.
   |---open(byteRingPath, O_RDONLY, mmap)
   |---validate header (magic, abi_major, capacity)
@@ -1446,7 +1481,8 @@ behavior). Phase 1 only — Phase 2 adds more as it lands:
 | Hot-path allocation profile is bounded | `testHotPathAllocationCount` (sample-mode) |
 | `labpty` restart kills children (Phase 3 will lift this) | `testLabptyExitClosesMaster` |
 | `laband` restart preserves children | `testLabandRestartPreservesChildViaLabpty` (in `Tests/LabandTests/`) |
-| Foreground process metadata flows from `labpty` into the `LabptySessionDescriptor` returned by `listSessions` | `testListSessionsCarriesForegroundProcessMetadata` |
+| `LabptySessionDescriptor` carries `foreground_pid` + `foreground_pgid` (`int32` each, -1 = unknown) and **no foreground-process strings** | `testDescriptorCarriesForegroundPids`, `testDescriptorHasNoForegroundStrings` |
+| `labpty` does not link libproc, does not call `proc_name`/`proc_pidpath`/`proc_pidinfo` | `git grep -nE 'proc_name\|proc_pidpath\|proc_pidinfo\|libproc' Sources/Labpty/` returns zero hits |
 | `labpty` does not write to per-reader slot table region in Phase 1 (region stays zero through normal operation) | `testReaderSlotTableStaysZeroInPhase1` |
 
 **Latency tracking** (does not gate the build by default):
@@ -1507,16 +1543,18 @@ Defer to implementation experience:
 - **Counters block alignment under macOS shared memory.** Ensure
   64-byte alignment by `shm_open` + `ftruncate` + `mmap` of an
   appropriately rounded size, with the header pinned at offset 0.
-- **Multi-reader writeable counter scheme.** The `consumer_alive_mono_ns`
-  per-reader slots: how many to preallocate (proposal: 8), and what
-  happens if a 9th reader attaches (proposal: reject with
-  `attachLimitExceeded`).
-- **Endianness.** Apple Silicon is little-endian; document as the only
-  supported endianness for the wire and shm. No conversion routines.
-- **Snapshot cache size.** One blob? Last N blobs? Time-based eviction?
-  Probably one for Phase 1, ring of last 4 in Phase 2 for diagnostics.
+- **Multi-reader per-reader slot table size for Phase 2.** The
+  `consumer_alive_mono_ns` slots: 8 preallocated is the current
+  proposal; a 9th attach returns `attachLimitExceeded`. Verify
+  the cap against early multi-attach use cases before Phase 2 ships.
 
-These are tracked in the Phase 1 ExecPlan's M0 milestone.
+Resolved-but-listed-for-future-readers (do not treat as open):
+
+- **Endianness:** little-endian. Settled at principle 12 / "Common
+  shape rules"; macOS is the only target.
+- **Snapshot cache size:** Phase 2 ships one blob per session.
+  Phase 3 may revisit with a ring of last N blobs for forensic
+  diagnostics. Not Phase 1.
 
 ## Why this is worth the discipline
 
@@ -1729,19 +1767,27 @@ why an alternative was considered and rejected.
   opt-in for local hardware validation.
   Date/Author: 2026-05-26 / review iteration.
 
-- Decision: Version negotiation happens in the `hello` payload only;
-  the binary frame header has no version slot.
-  Rationale: An earlier draft (JSON-based) showed `v` in the shared
-  request envelope, contradicting the principle "versioning happens
-  once at handshake, never per message." The binary-frame rewrite
-  removes the slot entirely from the wire — the `labpty_frame_header`
-  carries `frame_len`, `op`, `code`, `seq` and nothing else. Version
-  is carried only inside the `hello` payload itself. This makes the
-  invariant structural at the wire level: there is no place to send
-  a per-message version field, so the question of accepting one
-  doesn't arise.
+- Decision: Version *negotiation* happens at `hello`; version
+  *identification* (`abi_major` + `abi_minor`) is in every frame
+  header.
+  Rationale: An earlier draft (JSON-based) showed a per-request
+  `v` field used for negotiation, which contradicted the principle
+  "versioning happens once at handshake." A subsequent binary
+  draft removed the slot entirely, which over-corrected: a stray
+  packet or a misdirected connection then had no framing-layer
+  defense. The current shape splits the two concerns. `hello`
+  negotiates which `protocol_major`/`protocol_minor` the
+  connection uses; subsequent frames must carry that same
+  `abi_major` in their header (mismatch closes the connection)
+  but cannot renegotiate — the field is identification, not
+  negotiation. Cost: 4 bytes (`abi_major` + `abi_minor`) per
+  frame, negligible at RPC rates. Benefit: every frame
+  self-identifies as `labpty` traffic at the right ABI level,
+  catching bit-flips, misdirected sockets, and version skew at
+  the framing layer.
   Date/Author: 2026-05-26 / settled across review iterations
-  (renewed in the binary-frame switch).
+  (refined in the cleanup-pass iteration to distinguish
+  identification from negotiation).
 
 - Decision: Control plane is length-prefixed binary frames
   (`LBPTY-CT-01`), not JSON.
