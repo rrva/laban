@@ -41,6 +41,7 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     {
       Theme.apply(theme)
     }
+    applyAppAppearanceChoice()
   }
 
   /// Builds the items shown under View → Theme. Caller installs them into
@@ -87,6 +88,7 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     }
     Theme.followsSystemAppearance = false
     Theme.apply(theme)
+    applyAppAppearanceChoice()
     persist()
   }
 
@@ -98,6 +100,7 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
         == .darkAqua
       Theme.applyForAppearance(isDark: isDark)
     }
+    applyAppAppearanceChoice()
     persist()
   }
 
@@ -127,5 +130,13 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     d.set(Theme.lightVariant.name, forKey: Self.lightKey)
     d.set(Theme.current.name, forKey: Self.currentKey)
     d.set(Theme.followsSystemAppearance, forKey: Self.followsKey)
+  }
+
+  private func applyAppAppearanceChoice() {
+    guard !Theme.followsSystemAppearance else {
+      NSApp.appearance = nil
+      return
+    }
+    NSApp.appearance = NSAppearance(named: Theme.current.isDark ? .darkAqua : .aqua)
   }
 }
