@@ -296,25 +296,25 @@ A separate fresh-state review agent must verify these checks before M3 is
 considered complete. The executing agent must not mark this ExecPlan complete
 until the gate passes.
 
-- [ ] `docs/adr/0005-*.md` exists, `AGENTS.md` indexes it, and the ADR states
+- [x] `docs/adr/0005-*.md` exists, `AGENTS.md` indexes it, and the ADR states
   that `laband` owns the process running `LabanTerminalCore` while preserving
   ADR 0002's `openpty`/fork/process-group invariants.
-- [ ] `bench-keystroke-latency` supports both `--transport in-process` and
+- [x] `bench-keystroke-latency` supports both `--transport in-process` and
   `--transport laband --socket <path>`; the M3 acceptance command measures the
   daemon path, not just the original in-process baseline.
-- [ ] `bench-keystroke-latency` exits nonzero unless stdout contains
+- [x] `bench-keystroke-latency` exits nonzero unless stdout contains
   `verifiedEcho=<samples>/<samples>`.
-- [ ] Headless/debug mode starts or connects to a real `laband` process for
+- [x] Headless/debug mode starts or connects to a real `laband` process for
   attach/detach/restore lifecycle tests; no test-only fake daemon claims
   lifecycle coverage.
-- [ ] Dev/test sockets, journals, pid files, artifacts, and temp dirs are all
+- [x] Dev/test sockets, journals, pid files, artifacts, and temp dirs are all
   under explicit run-id paths such as `.tmp/<run-id>/` or
   `.artifacts/runs/<run-id>/`; there are no fixed global dev sockets.
-- [ ] `/debug/sessions` or its successor exposes enough daemon metadata to
+- [x] `/debug/sessions` or its successor exposes enough daemon metadata to
   prove live session id, incarnation id, process pid, lease holder, attached
   client count, and transport mode.
 
-Review status: NOT REVIEWED after this research update.
+Review status: PASSED on 2026-05-25 after fresh M3 re-review.
 
 Review update on 2026-05-25: first M3 review pass was BLOCKED because
 `scripts/run-debug`, `scripts/run-headless`, `scripts/smoke-runtime`, and the
