@@ -2,6 +2,7 @@ import Foundation
 
 public enum LabandProtocolVersion {
   public static let current = 1
+  public static let minimumCompatible = 1
 }
 
 public enum LabandRequestType: String, Codable, Sendable {
@@ -102,11 +103,18 @@ public struct LabandErrorResponse: Codable, Equatable, Sendable {
 
 public struct LabandHelloResponse: Codable, Equatable, Sendable {
   public var protocolVersion: Int
+  public var minimumProtocolVersion: Int?
   public var buildVersion: String
   public var capabilities: [String]
 
-  public init(protocolVersion: Int, buildVersion: String, capabilities: [String]) {
+  public init(
+    protocolVersion: Int,
+    minimumProtocolVersion: Int? = LabandProtocolVersion.minimumCompatible,
+    buildVersion: String,
+    capabilities: [String]
+  ) {
     self.protocolVersion = protocolVersion
+    self.minimumProtocolVersion = minimumProtocolVersion
     self.buildVersion = buildVersion
     self.capabilities = capabilities
   }

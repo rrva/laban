@@ -104,7 +104,13 @@ running without flicker or sluggish input.
   is journaled, and `LabandTerminalSessionClient` carries the holder's lease
   token automatically while exposing explicit transfer/renew helpers.
 - [x] M7: multi-attach read-only observers plus a single input/resize lease.
-- [ ] M8: ship upgrade-safe launchd lifecycle and compatibility checks.
+- [x] (2026-05-26) M8: product lifecycle policy now performs version
+  negotiation before session reads, refuses idle restart when live sessions
+  exist, exposes a default-continue upgrade prompt policy, emits a product
+  LaunchAgent/XPC configuration using Application Support paths, and lets
+  `laband --product --xpc-service <name>` expose the same Codable control
+  protocol over XPC.
+- [x] M8: ship upgrade-safe launchd lifecycle and compatibility checks.
 
 ## M0 Baseline
 
@@ -222,6 +228,14 @@ input/resize lease.
   Rationale: Sessions must survive app UI exit and upgrade. Worktree isolation
   forbids fixed global dev sockets and ports.
   Date/Author: 2026-05-24 / Design grilling.
+
+- Decision: The M8 XPC endpoint uses `Data` payloads containing the existing
+  `LabandRequest` and `LabandResponse` JSON objects rather than introducing a
+  second Objective-C-shaped message model.
+  Rationale: The control protocol already has version, request id, error, and
+  capability fields. Reusing it keeps socket and XPC compatibility checks on
+  one schema while avoiding XPC object-graph constraints for Swift structs.
+  Date/Author: 2026-05-26 / M8 implementation.
 
 - Decision: Close Tab terminates the session. App quit/window close detaches.
   Rationale: This preserves the shipped MVP close-tab semantics while adding
@@ -922,6 +936,63 @@ sessions exist. The third command is opt-in and may install/remove the per-user
 LaunchAgent in a disposable test label; it must be skipped unless
 `LABAN_PRODUCT_LABAND_TESTS=1` is set.
 
+Implemented in M8: `LabandProtocolVersion` now declares a compatible protocol
+floor, `LabandHelloResponse` advertises that floor, and `laband` accepts any
+request version in the supported range. Product-mode `laband` can start with
+`--product --xpc-service <mach-service>`; the XPC listener accepts a `Data`
+payload containing the same Codable control request used by the Unix socket
+transport and returns a `Data` payload containing `LabandResponse`.
+
+`Sources/LabanCore/LabandProductLifecycle.swift` contains the AppKit-free
+policy surface: protocol negotiation, live-session summaries, idle-only helper
+restart decisions, product Application Support paths, LaunchAgent plist
+generation with `MachServices`, and a lifecycle controller that calls
+`hello()` before reading sessions. `Sources/LabanApp/LabandUpgradePromptPolicy.swift`
+turns the policy prompt into app presentation data and keeps "Continue with
+Current Helper" as the default action whenever live sessions exist.
+`Sources/LabanApp/LabandServiceManagementInstaller.swift` is the narrow
+ServiceManagement boundary that registers or unregisters the bundled
+LaunchAgent plist in product packaging.
+
+Validation recorded on 2026-05-26:
+
+```sh
+rtk swift test --filter LabandLifecycleTests
+# Executed 5 tests, with 0 failures.
+
+rtk swift test --filter LabandUpgradePromptTests
+# Executed 3 tests, with 0 failures.
+
+LABAN_PRODUCT_LABAND_TESTS=1 rtk swift test --filter LabandProductLaunchAgentTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandControlProtocolTests
+# Executed 3 tests, with 0 failures.
+
+rtk swift test --filter LabandLeaseTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandJournalTests
+# Executed 1 test, with 0 failures.
+
+rtk swift test --filter LabandHeadlessBackendTests
+# Executed 1 test, with 0 failures.
+
+rtk swift build -c release --product bench-keystroke-latency
+# Build of product 'bench-keystroke-latency' complete.
+
+rtk swift build -c release --product laband
+# Build of product 'laband' complete.
+
+rtk .build/release/bench-keystroke-latency --transport in-process --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/in-process-160x48-m8.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.853 ms p95=0.993 ms p99=1.647 ms
+
+rtk .build/release/bench-keystroke-latency --transport laband --socket .tmp/keystroke-latency-after-m8/laband.sock --samples 500 --warmup 50 --cols 160 --rows 48 --json .artifacts/runs/keystroke-latency-after/laband-160x48-m8.json
+# verifiedEcho=500/500
+# rawTotalMs p50=0.516 ms p95=0.648 ms p99=0.677 ms
+```
+
 ## Validation and Acceptance
 
 Every milestone must rerun the relevant part of M0 and record before/after
@@ -1000,5 +1071,4 @@ unrelated user sessions.
 
 - Whether the 12 ms output-settle gate should stay for all PTY output or be
   bypassed for simple local echo after `laband` introduces immutable snapshots.
-- Exact XPC message schema and capability negotiation names.
 - Exact product retention limit for closed-session transcripts.

@@ -7,6 +7,7 @@ private enum LabandMainError: Error, CustomStringConvertible {
   case missingValue(String)
   case missingSocket
   case missingJournal
+  case missingEndpoint
   case socketPathTooLong(String)
   case socketCall(String, Int32)
   case invalidFrameLength(UInt32)
@@ -19,6 +20,8 @@ private enum LabandMainError: Error, CustomStringConvertible {
       return "missing required --socket"
     case .missingJournal:
       return "missing required --journal"
+    case .missingEndpoint:
+      return "missing required --socket or --xpc-service"
     case .socketPathTooLong(let path):
       return "socket path is too long for AF_UNIX: \(path)"
     case .socketCall(let call, let errnoValue):
@@ -30,16 +33,22 @@ private enum LabandMainError: Error, CustomStringConvertible {
 }
 
 private struct LabandArguments {
-  var socketPath: String
+  var socketPath: String?
   var journalPath: String
+  var xpcServiceName: String?
+  var productMode: Bool
 
   static func parse(_ args: [String]) throws -> LabandArguments {
     var socketPath: String?
     var journalPath: String?
+    var xpcServiceName: String?
+    var productMode = false
     var index = 1
     while index < args.count {
       let arg = args[index]
       switch arg {
+      case "--product":
+        productMode = true
       case "--socket":
         index += 1
         guard index < args.count else { throw LabandMainError.missingValue(arg) }
@@ -48,8 +57,15 @@ private struct LabandArguments {
         index += 1
         guard index < args.count else { throw LabandMainError.missingValue(arg) }
         journalPath = args[index]
+      case "--xpc-service":
+        index += 1
+        guard index < args.count else { throw LabandMainError.missingValue(arg) }
+        xpcServiceName = args[index]
       case "--help", "-h":
-        print("usage: laband --socket .tmp/<run-id>/laband.sock --journal .artifacts/runs/<run-id>/laband")
+        print(
+          "usage: laband --socket .tmp/<run-id>/laband.sock --journal .artifacts/runs/<run-id>/laband"
+        )
+        print("   or: laband --product --xpc-service <mach-service>")
         exit(0)
       default:
         fputs("laband: unknown argument \(arg)\n", stderr)
@@ -57,9 +73,18 @@ private struct LabandArguments {
       }
       index += 1
     }
-    guard let socketPath else { throw LabandMainError.missingSocket }
+    if productMode, journalPath == nil {
+      journalPath = LabandProductPaths.default().journalDirectoryURL.path
+    }
+    if !productMode, socketPath == nil { throw LabandMainError.missingSocket }
     guard let journalPath else { throw LabandMainError.missingJournal }
-    return LabandArguments(socketPath: socketPath, journalPath: journalPath)
+    if socketPath == nil, xpcServiceName == nil { throw LabandMainError.missingEndpoint }
+    return LabandArguments(
+      socketPath: socketPath,
+      journalPath: journalPath,
+      xpcServiceName: xpcServiceName,
+      productMode: productMode
+    )
   }
 }
 
@@ -299,13 +324,16 @@ private final class LabandDaemon {
   }
 
   func handle(_ request: LabandRequest) -> (LabandResponse, Bool) {
-    guard request.protocolVersion == LabandProtocolVersion.current else {
+    guard request.protocolVersion >= LabandProtocolVersion.minimumCompatible,
+      request.protocolVersion <= LabandProtocolVersion.current
+    else {
       return (
         .error(
           requestId: request.requestId,
           type: request.type,
           code: "protocolVersionUnsupported",
-          message: "protocolVersion \(request.protocolVersion) is not supported"
+          message:
+            "protocolVersion \(request.protocolVersion) is not supported; supported range is \(LabandProtocolVersion.minimumCompatible)...\(LabandProtocolVersion.current)"
         ),
         false
       )
@@ -351,9 +379,13 @@ private final class LabandDaemon {
       ok: true,
       hello: LabandHelloResponse(
         protocolVersion: LabandProtocolVersion.current,
+        minimumProtocolVersion: LabandProtocolVersion.minimumCompatible,
         buildVersion: "dev",
         capabilities: [
           "control-json/v1",
+          "xpc-control/v1",
+          "product-launch-agent/v1",
+          "protocol-negotiation/v1",
           "copy-snapshot/v1",
           "snapshot-ring/v1",
           "client-attach/v1",
@@ -1169,7 +1201,6 @@ private final class UnixSocketServer {
 
   func run() throws {
     listenFD = try bindUnixSocket(path: socketPath)
-    daemon.onShutdown = { [weak self] in self?.stop() }
     while true {
       let fd = Darwin.accept(listenFD, nil, nil)
       if fd < 0 {
@@ -1324,6 +1355,66 @@ private final class UnixSocketServer {
   }
 }
 
+private final class LabandXPCControlService: NSObject, LabandXPCControlProtocol {
+  private let daemon: LabandDaemon
+  private let decoder = JSONDecoder()
+  private let encoder = JSONEncoder()
+
+  init(daemon: LabandDaemon) {
+    self.daemon = daemon
+    self.encoder.outputFormatting = [.sortedKeys]
+  }
+
+  func sendRequest(_ requestData: Data, withReply reply: @escaping (Data) -> Void) {
+    do {
+      let request = try decoder.decode(LabandRequest.self, from: requestData)
+      let (response, shouldShutdown) = daemon.handle(request)
+      reply(try encoder.encode(response))
+      if shouldShutdown {
+        daemon.onShutdown?()
+      }
+    } catch {
+      let fallback = LabandResponse.error(
+        requestId: "unknown",
+        type: .hello,
+        code: "protocolError",
+        message: String(describing: error)
+      )
+      reply((try? encoder.encode(fallback)) ?? Data())
+    }
+  }
+}
+
+private final class LabandXPCListener: NSObject, NSXPCListenerDelegate {
+  private let listener: NSXPCListener
+  private let service: LabandXPCControlService
+
+  init(serviceName: String, daemon: LabandDaemon) {
+    self.listener = NSXPCListener(machServiceName: serviceName)
+    self.service = LabandXPCControlService(daemon: daemon)
+    super.init()
+    self.listener.delegate = self
+  }
+
+  func resume() {
+    listener.resume()
+  }
+
+  func invalidate() {
+    listener.invalidate()
+  }
+
+  func listener(
+    _: NSXPCListener,
+    shouldAcceptNewConnection connection: NSXPCConnection
+  ) -> Bool {
+    connection.exportedInterface = NSXPCInterface(with: LabandXPCControlProtocol.self)
+    connection.exportedObject = service
+    connection.resume()
+    return true
+  }
+}
+
 @main
 struct LabandMain {
   static func main() {
@@ -1335,9 +1426,24 @@ struct LabandMain {
         withIntermediateDirectories: true
       )
       let daemon = try LabandDaemon(journalPath: args.journalPath)
-      let server = UnixSocketServer(socketPath: args.socketPath, daemon: daemon)
-      try server.run()
-      unlink(args.socketPath)
+      let xpcListener = args.xpcServiceName.map {
+        LabandXPCListener(serviceName: $0, daemon: daemon)
+      }
+      let server = args.socketPath.map { UnixSocketServer(socketPath: $0, daemon: daemon) }
+      daemon.onShutdown = {
+        server?.stop()
+        xpcListener?.invalidate()
+        CFRunLoopStop(CFRunLoopGetMain())
+      }
+      xpcListener?.resume()
+      if let server {
+        try server.run()
+        if let socketPath = args.socketPath {
+          unlink(socketPath)
+        }
+      } else {
+        RunLoop.current.run()
+      }
     } catch {
       fputs("laband: \(error)\n", stderr)
       exit(1)
