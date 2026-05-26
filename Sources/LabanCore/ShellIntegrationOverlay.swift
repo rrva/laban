@@ -75,7 +75,7 @@ public enum ShellIntegrationOverlay {
   /// already drives the `atPrompt` phase). Guarded against re-sourcing.
   public static let zshHookScript = """
     # Laban OSC 133 shell integration (zsh). Auto-generated; do not edit.
-    if [[ -n "${LABAN_SHELL_INTEGRATION-}" ]]; then
+    if (( ${+functions[_laban_osc133_precmd]} )); then
       return 0 2>/dev/null
     fi
     export LABAN_SHELL_INTEGRATION=1
@@ -118,7 +118,7 @@ public enum ShellIntegrationOverlay {
   /// against re-sourcing.
   public static let bashHookScript = """
     # Laban OSC 133 shell integration (bash). Auto-generated; do not edit.
-    if [ -n "${LABAN_SHELL_INTEGRATION-}" ]; then
+    if declare -F _laban_osc133_prompt >/dev/null 2>&1; then
       return 0 2>/dev/null
     fi
     export LABAN_SHELL_INTEGRATION=1
@@ -142,7 +142,7 @@ public enum ShellIntegrationOverlay {
   /// against re-loading.
   public static let fishHookScript = """
     # Laban OSC 133 shell integration (fish). Auto-generated; do not edit.
-    if not set -q LABAN_SHELL_INTEGRATION
+    if not functions -q _laban_osc133_prompt
         set -gx LABAN_SHELL_INTEGRATION 1
         function _laban_osc133_prompt --on-event fish_prompt
             printf '\\033]133;A\\007'

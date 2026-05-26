@@ -154,6 +154,10 @@ final class ShellIntegrationOverlayTests: XCTestCase {
     var env = launch.environmentOverrides
     env["HOME"] = home.path
     env["TERM"] = "xterm-256color"
+    // A parent Laban shell exports this marker. The overlay must still install
+    // hooks in child shells instead of treating inherited state as already
+    // installed in the new process.
+    env["LABAN_SHELL_INTEGRATION"] = "1"
 
     let session = try Session.realShell(
       size: size24x80, environment: env, launchArgv: interactiveArgv ?? launch.argv)
