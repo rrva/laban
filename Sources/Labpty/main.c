@@ -220,6 +220,13 @@ static int listen_unix_socket(const char *path) {
         errno = saved_errno;
         return -1;
     }
+    /* `chmod(path, ...)` not `fchmod(fd, ...)`: on Darwin fchmod on an
+     * AF_UNIX socket fd returns EINVAL — the socket fd has no vnode of
+     * its own, only the path does. This leaves a tiny (<1ms) window
+     * after bind where the socket file is mode 0700 (from `umask(0077)`
+     * around bind) before we narrow it to 0600. Same-uid only; AF_UNIX
+     * connect already requires write permission, and 0700 grants that
+     * to the same uid only. Informational, not exploitable. */
     if (chmod(path, 0600) != 0) {
         close(fd);
         unlink(path);
@@ -362,15 +369,19 @@ static labpty_status_t handle_signal(labpty_daemon_t *daemon, const uint8_t *pay
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
-    for (int attempt = 0; attempt < 50; attempt++) {
-        if (killpg(session->child_pid, request.signo) == 0) {
-            *out_len = encode_descriptor_payload(session, out, cap);
-            return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
+    /* Try the child's process group first; if it has already been torn
+     * down (ESRCH) or POSIX rejects the call because no member of the
+     * group is eligible (EPERM), fall back to signalling the immediate
+     * child by pid. Mirrors signal_child_process_group in
+     * labpty_registry.c — no retry loop, because the millisecond-scale
+     * race the prior loop papered over was inside the single-threaded
+     * event loop and serialised every subsequent signal request. */
+    if (killpg(session->child_pid, request.signo) != 0) {
+        if ((errno != ESRCH && errno != EPERM)
+                || kill(session->child_pid, request.signo) != 0) {
+            return LABPTY_E_INTERNAL;
         }
-        if (errno != ESRCH) return LABPTY_E_INTERNAL;
-        usleep(1000);
     }
-    if (kill(session->child_pid, request.signo) != 0) return LABPTY_E_INTERNAL;
     *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }

@@ -40,7 +40,13 @@ static int valid_output_capacity(uint64_t capacity) {
 
 static void signal_child_process_group(pid_t child_pid, int signo) {
     assert(child_pid > 0);
-    if (killpg(child_pid, signo) != 0 && errno == ESRCH) {
+    /* ESRCH: the child's process group has already been torn down.
+     * EPERM: POSIX `killpg` rejected the call because no member of the
+     * group is eligible (e.g., the child re-parented its pgrp). In
+     * both cases the child itself may still be reachable by pid, so
+     * fall back. Other errno values (EINVAL on a bogus signo) aren't
+     * recoverable; the caller already accepts a best-effort signal. */
+    if (killpg(child_pid, signo) != 0 && (errno == ESRCH || errno == EPERM)) {
         kill(child_pid, signo);
     }
 }
