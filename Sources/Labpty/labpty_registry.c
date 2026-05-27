@@ -113,6 +113,26 @@ static labpty_session_t *labpty_registry_find_logical(labpty_registry_t *registr
     return NULL;
 }
 
+static int is_reclaimable_dead_session(const labpty_session_t *session) {
+    assert(session != NULL);
+    return session->used && !session->alive && session->child_pid <= 0 && !session->close_pending;
+}
+
+static int reclaim_dead_session(labpty_session_t *session) {
+    assert(session != NULL);
+    if (!is_reclaimable_dead_session(session)) return 0;
+    labpty_session_close(session);
+    return 1;
+}
+
+static int reclaim_one_dead_session(labpty_registry_t *registry) {
+    assert(registry != NULL);
+    for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
+        if (reclaim_dead_session(&registry->sessions[i])) return 1;
+    }
+    return 0;
+}
+
 labpty_status_t labpty_registry_open(
     labpty_registry_t *registry,
     const labpty_open_request_t *request,
@@ -122,8 +142,11 @@ labpty_status_t labpty_registry_open(
     assert(request != NULL);
     assert(out != NULL);
     *out = NULL;
-    if (labpty_registry_find_logical(registry, request->logical_id)) return LABPTY_E_SESSION_ID_IN_USE;
+    labpty_registry_reap(registry);
+    labpty_session_t *existing = labpty_registry_find_logical(registry, request->logical_id);
+    if (existing && !reclaim_dead_session(existing)) return LABPTY_E_SESSION_ID_IN_USE;
     labpty_session_t *slot = free_slot(registry);
+    if (!slot && reclaim_one_dead_session(registry)) slot = free_slot(registry);
     if (!slot) return LABPTY_E_PAYLOAD_TOO_LARGE;
     uint64_t handle = registry->next_handle++;
     char logical_id[LABPTY_LOGICAL_ID_BYTES + 1];

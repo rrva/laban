@@ -261,6 +261,67 @@ final class LabptyDaemonTests: XCTestCase {
     try waitForPathGone(ringPath)
   }
 
+  func testNaturalExitAllowsLogicalSessionIdReuse() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let first = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sh", "-c", "exit 0"],
+        logicalSessionId: "reuse-natural-exit"))
+    try waitForDead(pid: pid_t(first.childPid))
+    try waitForSessionAliveState(
+      client: client,
+      handle: first.ptyHandle,
+      alive: false)
+
+    let second = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "30"],
+        logicalSessionId: "reuse-natural-exit"))
+
+    XCTAssertNotEqual(second.ptyHandle, first.ptyHandle)
+    XCTAssertTrue(second.alive)
+    _ = try client.terminate(handle: second.ptyHandle)
+  }
+
+  func testNaturalExitedSessionsAreReclaimedUnderSlotPressure() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    var handles: [UInt64] = []
+
+    for index in 0..<LabptyProtocolLimits.maxSessionDescriptorCount {
+      let descriptor = try client.openSession(
+        LabptyOpenSessionRequest(
+          rows: 24,
+          cols: 80,
+          argv: ["/bin/sh", "-c", "exit 0"],
+          logicalSessionId: "natural-exit-\(index)"))
+      handles.append(descriptor.ptyHandle)
+      try waitForDead(pid: pid_t(descriptor.childPid))
+    }
+    for handle in handles {
+      try waitForSessionAliveState(client: client, handle: handle, alive: false)
+    }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "30"],
+        logicalSessionId: "after-natural-exits"))
+
+    XCTAssertTrue(descriptor.alive)
+    XCTAssertFalse(handles.contains(descriptor.ptyHandle))
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
   func testStalledClientDoesNotBlockSessionDraining() throws {
     let harness = try launchHarness()
     let active = try waitForClient(socketPath: harness.socketPath)
@@ -760,6 +821,23 @@ final class LabptyDaemonTests: XCTestCase {
       usleep(20_000)
     }
     XCTFail("process \(process.processIdentifier) was still running")
+  }
+
+  private func waitForSessionAliveState(
+    client: LabptyTerminalSessionClient,
+    handle: UInt64,
+    alive: Bool
+  ) throws {
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+      if let descriptor = try client.listLabptySessions().first(where: { $0.ptyHandle == handle }),
+        descriptor.alive == alive
+      {
+        return
+      }
+      usleep(20_000)
+    }
+    XCTFail("session \(handle) did not reach alive=\(alive)")
   }
 
   private func waitForSocketClosed(fd: Int32) throws {
