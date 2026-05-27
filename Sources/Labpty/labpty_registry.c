@@ -32,6 +32,33 @@ static labpty_status_t make_ring_path(
     return LABPTY_OK;
 }
 
+static void signal_child_process_group(pid_t child_pid, int signo) {
+    assert(child_pid > 0);
+    if (killpg(child_pid, signo) != 0 && errno == ESRCH) {
+        kill(child_pid, signo);
+    }
+}
+
+static int wait_for_child_exit(pid_t child_pid) {
+    assert(child_pid > 0);
+    for (int i = 0; i < 20; i++) {
+        int status = 0;
+        pid_t got = waitpid(child_pid, &status, WNOHANG);
+        if (got == child_pid || (got < 0 && errno != EINTR)) return 1;
+        usleep(10000);
+    }
+    int status = 0;
+    pid_t got = waitpid(child_pid, &status, WNOHANG);
+    if (got == child_pid || (got < 0 && errno != EINTR)) return 1;
+    signal_child_process_group(child_pid, SIGKILL);
+    for (int i = 0; i < 50; i++) {
+        got = waitpid(child_pid, &status, WNOHANG);
+        if (got == child_pid || (got < 0 && errno != EINTR)) return 1;
+        usleep(10000);
+    }
+    return 0;
+}
+
 void labpty_registry_init(labpty_registry_t *registry, const char *shm_dir) {
     assert(registry != NULL);
     assert(shm_dir != NULL);
@@ -97,8 +124,7 @@ labpty_status_t labpty_registry_open(
     uint64_t cap = request->output_capacity ? request->output_capacity : LABPTY_DEFAULT_OUTPUT_CAPACITY;
     status = labpty_byte_ring_create(ring_path, cap, slot->logical_id, &slot->ring);
     if (status != LABPTY_OK) {
-        close(master_fd);
-        memset(slot, 0, sizeof(*slot));
+        labpty_session_close(slot);
         return status;
     }
     *out = slot;
@@ -108,24 +134,14 @@ labpty_status_t labpty_registry_open(
 void labpty_session_close(labpty_session_t *session) {
     assert(session != NULL);
     assert(session->master_fd >= -1);
-    if (session->alive && session->child_pid > 0) killpg(session->child_pid, SIGHUP);
+    int reaped = 1;
+    if (session->alive && session->child_pid > 0) signal_child_process_group(session->child_pid, SIGHUP);
     if (session->master_fd >= 0) close(session->master_fd);
-    if (session->child_pid > 0) {
-        for (int i = 0; i < 20; i++) {
-            int status = 0;
-            pid_t got = waitpid(session->child_pid, &status, WNOHANG);
-            if (got == session->child_pid) break;
-            usleep(10000);
-        }
-        int status = 0;
-        if (waitpid(session->child_pid, &status, WNOHANG) == 0) {
-            killpg(session->child_pid, SIGKILL);
-            waitpid(session->child_pid, &status, 0);
-        }
-    }
+    if (session->child_pid > 0) reaped = wait_for_child_exit(session->child_pid);
     session->master_fd = -1;
     session->alive = 0;
     labpty_byte_ring_close(&session->ring);
+    if (reaped) session->used = 0;
 }
 
 void labpty_registry_reap(labpty_registry_t *registry) {
@@ -140,6 +156,8 @@ void labpty_registry_reap(labpty_registry_t *registry) {
             if (s->master_fd >= 0) close(s->master_fd);
             s->master_fd = -1;
             s->alive = 0;
+            labpty_byte_ring_close(&s->ring);
+            s->used = 0;
         }
     }
 }

@@ -169,9 +169,15 @@ labpty_status_t labpty_encode_hello_response(uint8_t *out, size_t cap, size_t *o
     if (status != LABPTY_OK) return status;
     if ((status = labpty_write_u16(&writer, 0)) != LABPTY_OK) return status;
     if ((status = labpty_write_u64(&writer, labpty_mono_ns())) != LABPTY_OK) return status;
-    if ((status = labpty_write_u32(&writer, 4)) != LABPTY_OK) return status;
-    const char *caps[4] = {"byte-ring/v1", "write-input-rpc/v1", "heartbeat-shm/v1", "session-id-pinning/v1"};
-    for (int i = 0; i < 4; i++) {
+    const char *const caps[] = {
+        "byte-ring/v1",
+        "write-input-rpc/v1",
+        "heartbeat-shm/v1",
+        "session-id-pinning/v1",
+    };
+    size_t cap_count = sizeof(caps) / sizeof(caps[0]);
+    if ((status = labpty_write_u32(&writer, (uint32_t)cap_count)) != LABPTY_OK) return status;
+    for (size_t i = 0; i < cap_count; i++) {
         if ((status = write_string(&writer, caps[i])) != LABPTY_OK) return status;
     }
     *out_len = (size_t)(writer.cur - out);

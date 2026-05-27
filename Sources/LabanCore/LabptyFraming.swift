@@ -60,6 +60,7 @@ public enum LabptyErrorCode: UInt16, Equatable, Sendable {
   case oversizeFrame = 0x000A
   case internalError = 0x000B
   case shuttingDown = 0x000C
+  case unknownOperation = 0x000D
 }
 
 public struct LabptyFrameHeader: Equatable, Sendable {

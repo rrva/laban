@@ -94,6 +94,101 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try client.terminate(handle: descriptor.ptyHandle)
   }
 
+  func testTerminateReleasesSlotsAndRingFilesForReuse() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    for index in 0...LabptyProtocolLimits.maxSessionDescriptorCount {
+      let descriptor = try client.openSession(
+        LabptyOpenSessionRequest(
+          rows: 24,
+          cols: 80,
+          argv: ["/bin/sleep", "30"],
+          logicalSessionId: "reuse-\(index)"))
+      let ringPath = descriptor.byteRingShmPath
+      XCTAssertTrue(FileManager.default.fileExists(atPath: ringPath))
+
+      _ = try client.terminate(handle: descriptor.ptyHandle)
+      try waitForDead(pid: pid_t(descriptor.childPid))
+      try waitForPathGone(ringPath)
+    }
+  }
+
+  func testInvalidRingCapacityDoesNotKillDaemon() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let badCapacities = [
+      UInt64(LabptyByteRingLayout.minimumOutputRingCapacity - 1),
+      UInt64(LabptyByteRingLayout.maximumOutputRingCapacity) + 1,
+    ]
+    for (index, capacity) in badCapacities.enumerated() {
+      XCTAssertThrowsError(
+        try client.openSession(
+          LabptyOpenSessionRequest(
+            rows: 24,
+            cols: 80,
+            outputRingCapacity: capacity,
+            argv: ["/bin/sleep", "30"],
+            logicalSessionId: "bad-capacity-\(index)")))
+      XCTAssertTrue(harness.process.isRunning)
+    }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "30"],
+        logicalSessionId: "after-bad-capacity"))
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
+  func testStalledClientIsDisconnectedWithoutBlockingDaemon() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    let raw = try connectRaw(socketPath: harness.socketPath)
+    defer { Darwin.close(raw) }
+    try setReceiveTimeout(fd: raw, milliseconds: 100)
+
+    var byte: UInt8 = LabptyFrameHeader.magic[0]
+    XCTAssertEqual(Darwin.write(raw, &byte, 1), 1)
+    try waitForSocketClosed(fd: raw)
+
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    _ = try client.hello()
+  }
+
+  func testSocketPathIsOwnerOnly() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    let attrs = try FileManager.default.attributesOfItem(atPath: harness.socketPath)
+    let permissions = try XCTUnwrap(attrs[.posixPermissions] as? NSNumber)
+    XCTAssertEqual(permissions.intValue & 0o777, 0o600)
+  }
+
+  func testShutdownSignalTerminatesSessionsAndUnlinksArtifacts() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "30"],
+        logicalSessionId: "shutdown-cleanup"))
+    let ringPath = descriptor.byteRingShmPath
+    XCTAssertTrue(FileManager.default.fileExists(atPath: ringPath))
+
+    XCTAssertEqual(Darwin.kill(pid_t(harness.process.processIdentifier), SIGTERM), 0)
+    try waitForProcessExit(harness.process)
+    try waitForDead(pid: pid_t(descriptor.childPid))
+    try waitForPathGone(harness.socketPath)
+    try waitForPathGone(ringPath)
+  }
+
   func testByteRingHeaderAndCapacity() throws {
     let url = try temporaryRingURL()
     let writer = try LabptyByteRingWriter(
@@ -195,6 +290,7 @@ final class LabptyDaemonTests: XCTestCase {
   private struct Harness {
     let socketPath: String
     let shmDir: String
+    let process: Process
   }
 
   private func launchHarness() throws -> Harness {
@@ -219,7 +315,7 @@ final class LabptyDaemonTests: XCTestCase {
     process.standardError = Pipe()
     try process.run()
     launched.append(process)
-    return Harness(socketPath: socketPath, shmDir: shmDir)
+    return Harness(socketPath: socketPath, shmDir: shmDir, process: process)
   }
 
   private func waitForClient(socketPath: String) throws -> LabptyTerminalSessionClient {
@@ -239,6 +335,17 @@ final class LabptyDaemonTests: XCTestCase {
     throw POSIXError(.ETIMEDOUT)
   }
 
+  private func waitForSocketFile(socketPath: String) throws {
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      if FileManager.default.fileExists(atPath: socketPath) {
+        return
+      }
+      usleep(50_000)
+    }
+    throw POSIXError(.ETIMEDOUT)
+  }
+
   private func waitForDead(pid: pid_t) throws {
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
@@ -248,6 +355,90 @@ final class LabptyDaemonTests: XCTestCase {
       usleep(50_000)
     }
     XCTFail("pid \(pid) was still alive")
+  }
+
+  private func waitForPathGone(_ path: String) throws {
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+      if !FileManager.default.fileExists(atPath: path) {
+        return
+      }
+      usleep(20_000)
+    }
+    XCTFail("path \(path) still existed")
+  }
+
+  private func waitForProcessExit(_ process: Process) throws {
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      if !process.isRunning {
+        return
+      }
+      usleep(20_000)
+    }
+    XCTFail("process \(process.processIdentifier) was still running")
+  }
+
+  private func waitForSocketClosed(fd: Int32) throws {
+    let deadline = Date().addingTimeInterval(2)
+    var byte: UInt8 = 0
+    while Date() < deadline {
+      let n = Darwin.read(fd, &byte, 1)
+      if n == 0 {
+        return
+      }
+      if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+        usleep(20_000)
+        continue
+      }
+      if n < 0 {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+      }
+    }
+    XCTFail("stalled socket was not closed")
+  }
+
+  private func connectRaw(socketPath: String) throws -> Int32 {
+    let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(socketPath.utf8CString)
+    guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+      Darwin.close(fd)
+      throw POSIXError(.ENAMETOOLONG)
+    }
+    withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
+      for index in 0..<pathBytes.count {
+        ptr.advanced(by: index).pointee = pathBytes[index]
+      }
+    }
+    let result = withUnsafePointer(to: &addr) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+        Darwin.connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    guard result == 0 else {
+      let err = errno
+      Darwin.close(fd)
+      throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
+    }
+    return fd
+  }
+
+  private func setReceiveTimeout(fd: Int32, milliseconds: Int) throws {
+    var timeout = timeval(tv_sec: milliseconds / 1000, tv_usec: Int32((milliseconds % 1000) * 1000))
+    let result = setsockopt(
+      fd,
+      SOL_SOCKET,
+      SO_RCVTIMEO,
+      &timeout,
+      socklen_t(MemoryLayout<timeval>.size))
+    guard result == 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
   }
 
   private func waitForOutput(reader: LabptyByteRingReader, contains needle: String) throws -> String {

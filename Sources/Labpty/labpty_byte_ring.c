@@ -17,8 +17,6 @@ static uint64_t unix_ns(void) {
 }
 
 static bool is_power_of_two(uint64_t value) {
-    assert(value <= LABPTY_MAX_OUTPUT_CAPACITY);
-    assert(value == 0 || (value & (value - 1)) == 0 || true);
     return value > 0 && (value & (value - 1)) == 0;
 }
 
@@ -86,20 +84,32 @@ labpty_status_t labpty_byte_ring_create(
     assert(path != NULL);
     assert(logical_id != NULL);
     assert(out != NULL);
+    memset(out, 0, sizeof(*out));
+    out->fd = -1;
+    snprintf(out->path, sizeof(out->path), "%s", path);
     if (!is_power_of_two(output_capacity)) return LABPTY_E_PAYLOAD_TOO_LARGE;
     if (output_capacity < LABPTY_MIN_OUTPUT_CAPACITY) return LABPTY_E_PAYLOAD_TOO_LARGE;
     if (output_capacity > LABPTY_MAX_OUTPUT_CAPACITY) return LABPTY_E_PAYLOAD_TOO_LARGE;
-    memset(out, 0, sizeof(*out));
     out->fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
     if (out->fd < 0) return LABPTY_E_RING_MAP_FAILED;
     out->output_capacity = output_capacity;
     out->output_ring_offset = LABPTY_INPUT_RING_OFFSET;
     out->map_len = (size_t)(out->output_ring_offset + output_capacity);
-    if (ftruncate(out->fd, (off_t)out->map_len) != 0) return LABPTY_E_RING_MAP_FAILED;
+    if (ftruncate(out->fd, (off_t)out->map_len) != 0) {
+        close(out->fd);
+        out->fd = -1;
+        unlink(out->path);
+        return LABPTY_E_RING_MAP_FAILED;
+    }
     out->map = mmap(NULL, out->map_len, PROT_READ | PROT_WRITE, MAP_SHARED, out->fd, 0);
-    if (out->map == MAP_FAILED) return LABPTY_E_RING_MAP_FAILED;
+    if (out->map == MAP_FAILED) {
+        out->map = NULL;
+        close(out->fd);
+        out->fd = -1;
+        unlink(out->path);
+        return LABPTY_E_RING_MAP_FAILED;
+    }
     memset(out->map, 0, out->map_len);
-    snprintf(out->path, sizeof(out->path), "%s", path);
     initialize_header(out, logical_id);
     labpty_byte_ring_heartbeat(out);
     return LABPTY_OK;
@@ -109,7 +119,8 @@ void labpty_byte_ring_close(labpty_byte_ring_writer_t *writer) {
     assert(writer != NULL);
     assert(writer->fd >= -1);
     if (writer->map && writer->map != MAP_FAILED) munmap(writer->map, writer->map_len);
-    if (writer->fd >= 0) close(writer->fd);
+    if (writer->fd >= 0 && writer->path[0]) close(writer->fd);
+    if (writer->path[0]) unlink(writer->path);
     writer->map = NULL;
     writer->fd = -1;
 }

@@ -63,6 +63,7 @@ typedef enum {
     LABPTY_E_OVERSIZE_FRAME = 0x000A,
     LABPTY_E_INTERNAL = 0x000B,
     LABPTY_E_SHUTTING_DOWN = 0x000C,
+    LABPTY_E_UNKNOWN_OP = 0x000D,
 } labpty_status_t;
 
 typedef enum {
@@ -79,5 +80,15 @@ typedef enum {
 
 static const uint8_t labpty_frame_magic[4] = {'L', 'P', 'C', 'T'};
 static const uint8_t labpty_ring_magic[8] = {'L', 'B', 'P', 'T', 'Y', '-', 'B', 'R'};
+
+/* Keep these mirrored with Sources/LabanCore/LabptyByteRingLayout.swift. */
+_Static_assert(LABPTY_HEADER_BYTES == 128, "Swift byte-ring header size mirror changed");
+_Static_assert(LABPTY_COUNTERS_OFFSET == 128, "Swift byte-ring counters offset mirror changed");
+_Static_assert(LABPTY_READER_SLOT_OFFSET == 256, "Swift byte-ring reader slot offset mirror changed");
+_Static_assert(LABPTY_READER_SLOT_BYTES == 64, "Swift byte-ring reader slot size mirror changed");
+_Static_assert(LABPTY_READER_SLOT_COUNT == 8, "Swift byte-ring reader slot count mirror changed");
+_Static_assert(LABPTY_INPUT_RING_OFFSET == 768, "Swift byte-ring input ring offset mirror changed");
+_Static_assert(LABPTY_MIN_OUTPUT_CAPACITY == 256 * 1024, "Swift byte-ring minimum capacity mirror changed");
+_Static_assert(LABPTY_MAX_OUTPUT_CAPACITY == 64 * 1024 * 1024, "Swift byte-ring maximum capacity mirror changed");
 
 #endif

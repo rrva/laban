@@ -61,24 +61,42 @@ public final class LabptyByteRingReader {
 
   public func outputWriteOffset() -> UInt64 {
     let bytes = map.assumingMemoryBound(to: UInt8.self)
-    return Self.loadUInt64(bytes, offset: Int(LabptyByteRingLayout.outputBytesWrittenTotalOffset))
+    return Self.loadAlignedUInt64(bytes, offset: Int(LabptyByteRingLayout.outputBytesWrittenTotalOffset))
   }
 
   public func outputWrapCount() -> UInt64 {
     let bytes = map.assumingMemoryBound(to: UInt8.self)
-    return Self.loadUInt64(bytes, offset: Int(LabptyByteRingLayout.outputWrapCountOffset))
+    return Self.loadAlignedUInt64(bytes, offset: Int(LabptyByteRingLayout.outputWrapCountOffset))
   }
 
   public func producerAliveMonoNs() -> UInt64 {
     let bytes = map.assumingMemoryBound(to: UInt8.self)
-    return Self.loadUInt64(bytes, offset: Int(LabptyByteRingLayout.producerAliveMonoNsOffset))
+    return Self.loadAlignedUInt64(bytes, offset: Int(LabptyByteRingLayout.producerAliveMonoNsOffset))
   }
 
   public func readSince(_ lastOffset: UInt64) -> LabptyByteRingReadResult {
+    var result = readStableRangeSince(lastOffset)
+    for _ in 0..<3 {
+      let confirmed = outputWriteOffset()
+      if confirmed == result.newOffset {
+        return result
+      }
+      result = readStableRangeSince(lastOffset)
+    }
+    return result
+  }
+
+  private func readStableRangeSince(_ lastOffset: UInt64) -> LabptyByteRingReadResult {
     let current = outputWriteOffset()
     guard current > lastOffset else {
       return LabptyByteRingReadResult(bytes: Data(), newOffset: current, overflowed: false)
     }
+    return readRange(startOffset: lastOffset, currentOffset: current)
+  }
+
+  private func readRange(startOffset lastOffset: UInt64, currentOffset current: UInt64)
+    -> LabptyByteRingReadResult
+  {
     let available = current - lastOffset
     let overflowed = available > outputRingCapacity
     let start = overflowed ? current - outputRingCapacity : lastOffset
@@ -108,5 +126,11 @@ public final class LabptyByteRingReader {
       value |= UInt64(bytes[offset + index]) << UInt64(index * 8)
     }
     return value
+  }
+
+  private static func loadAlignedUInt64(_ bytes: UnsafePointer<UInt8>, offset: Int) -> UInt64 {
+    bytes.advanced(by: offset).withMemoryRebound(to: UInt64.self, capacity: 1) { pointer in
+      UInt64(littleEndian: pointer.pointee)
+    }
   }
 }
