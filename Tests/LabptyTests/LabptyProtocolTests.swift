@@ -51,6 +51,70 @@ final class LabptyProtocolTests: XCTestCase {
     XCTAssertEqual(try LabptyPingResponse.decode(from: ping.encode()), ping)
   }
 
+  func testFixedShapePayloadDecodersTolerateTrailingAdditiveBytes() throws {
+    let additiveTail = Data([0xA5, 0x5A, 0xC3, 0x3C])
+    func payloadWithTail(_ payload: Data) -> Data {
+      var payload = payload
+      payload.append(additiveTail)
+      return payload
+    }
+
+    let hello = LabptyHelloRequest(
+      clientId: "test-client",
+      capabilities: LabptyCapabilities.phase1)
+    XCTAssertEqual(try LabptyHelloRequest.decode(from: payloadWithTail(try hello.encode())), hello)
+
+    let helloResponse = LabptyHelloResponse(
+      capabilities: LabptyCapabilities.phase1,
+      daemonMonoNs: 0x0102_0304_0506_0708)
+    XCTAssertEqual(
+      try LabptyHelloResponse.decode(from: payloadWithTail(try helloResponse.encode())),
+      helloResponse)
+
+    let open = LabptyOpenSessionRequest(
+      rows: 30,
+      cols: 120,
+      argv: ["/bin/sh", "-c", "printf STARTED"],
+      envp: ["TERM=xterm-256color"],
+      cwd: "/tmp",
+      logicalSessionId: "logical-1")
+    XCTAssertEqual(try LabptyOpenSessionRequest.decode(from: payloadWithTail(try open.encode())), open)
+
+    let descriptor = LabptySessionDescriptor(
+      ptyHandle: 42,
+      childPid: 1234,
+      foregroundPid: 1234,
+      foregroundPgid: 1234,
+      rows: 30,
+      cols: 120,
+      alive: true,
+      logicalSessionId: "logical-1",
+      byteRingShmPath: "/tmp/labpty-ring",
+      outputRingCapacity: UInt64(LabptyByteRingLayout.defaultOutputRingCapacity))
+    XCTAssertEqual(
+      try LabptySessionDescriptor.decode(from: payloadWithTail(try descriptor.encode())),
+      descriptor)
+
+    let list = LabptyListSessionsResponse(sessions: [descriptor])
+    XCTAssertEqual(
+      try LabptyListSessionsResponse.decode(from: payloadWithTail(try list.encode())),
+      list)
+
+    let resize = LabptyResizeSessionRequest(ptyHandle: 42, rows: 40, cols: 132)
+    XCTAssertEqual(try LabptyResizeSessionRequest.decode(from: payloadWithTail(resize.encode())), resize)
+
+    let signal = LabptySignalSessionRequest(ptyHandle: 42, signal: 2)
+    XCTAssertEqual(try LabptySignalSessionRequest.decode(from: payloadWithTail(signal.encode())), signal)
+
+    let terminate = LabptyTerminateSessionRequest(ptyHandle: 42)
+    XCTAssertEqual(
+      try LabptyTerminateSessionRequest.decode(from: payloadWithTail(terminate.encode())),
+      terminate)
+
+    let ping = LabptyPingResponse(daemonMonoNs: 999)
+    XCTAssertEqual(try LabptyPingResponse.decode(from: payloadWithTail(ping.encode())), ping)
+  }
+
   func testFrameRoundTrip() throws {
     let payload = try LabptyWriteInputRequest(ptyHandle: 7, bytes: Data([1, 2, 3])).encode()
     let encoded = try LabptyFraming.encodeRequest(

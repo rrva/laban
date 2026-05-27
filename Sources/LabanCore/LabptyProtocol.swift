@@ -68,7 +68,6 @@ public struct LabptyHelloRequest: Equatable, Sendable {
       maxCount: LabptyProtocolLimits.maxCapabilityCount,
       maxBytesPerEntry: LabptyProtocolLimits.maxCapabilityBytes,
       field: "capabilities")
-    try reader.requireExhausted()
     return LabptyHelloRequest(
       protocolMajor: major,
       protocolMinor: minor,
@@ -113,7 +112,6 @@ public struct LabptyHelloResponse: Equatable, Sendable {
       maxCount: LabptyProtocolLimits.maxCapabilityCount,
       maxBytesPerEntry: LabptyProtocolLimits.maxCapabilityBytes,
       field: "capabilities")
-    try reader.requireExhausted()
     return LabptyHelloResponse(
       protocolMajor: major,
       protocolMinor: minor,
@@ -180,7 +178,6 @@ public struct LabptyOpenSessionRequest: Equatable, Sendable {
     let logicalSessionId = try reader.readString(
       maxBytes: LabptyProtocolLimits.maxLogicalSessionIdBytes,
       field: "logical_session_id")
-    try reader.requireExhausted()
     return LabptyOpenSessionRequest(
       rows: rows,
       cols: cols,
@@ -249,9 +246,7 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
 
   public static func decode(from payload: Data) throws -> LabptySessionDescriptor {
     var reader = LabptyPayloadReader(payload)
-    let descriptor = try decode(from: &reader)
-    try reader.requireExhausted()
-    return descriptor
+    return try decode(from: &reader)
   }
 
   static func decode(from reader: inout LabptyPayloadReader) throws -> LabptySessionDescriptor {
@@ -315,7 +310,6 @@ public struct LabptyListSessionsResponse: Equatable, Sendable {
     for _ in 0..<count {
       sessions.append(try LabptySessionDescriptor.decode(from: &reader))
     }
-    try reader.requireExhausted()
     return LabptyListSessionsResponse(sessions: sessions)
   }
 }
@@ -345,7 +339,6 @@ public struct LabptyResizeSessionRequest: Equatable, Sendable {
       ptyHandle: try reader.readUInt64(),
       rows: try reader.readUInt32(),
       cols: try reader.readUInt32())
-    try reader.requireExhausted()
     return request
   }
 }
@@ -371,7 +364,6 @@ public struct LabptySignalSessionRequest: Equatable, Sendable {
     let request = LabptySignalSessionRequest(
       ptyHandle: try reader.readUInt64(),
       signal: try reader.readInt32())
-    try reader.requireExhausted()
     return request
   }
 }
@@ -391,9 +383,7 @@ public struct LabptyTerminateSessionRequest: Equatable, Sendable {
 
   public static func decode(from payload: Data) throws -> LabptyTerminateSessionRequest {
     var reader = LabptyPayloadReader(payload)
-    let request = LabptyTerminateSessionRequest(ptyHandle: try reader.readUInt64())
-    try reader.requireExhausted()
-    return request
+    return LabptyTerminateSessionRequest(ptyHandle: try reader.readUInt64())
   }
 }
 
@@ -441,16 +431,6 @@ public struct LabptyPingResponse: Equatable, Sendable {
 
   public static func decode(from payload: Data) throws -> LabptyPingResponse {
     var reader = LabptyPayloadReader(payload)
-    let response = LabptyPingResponse(daemonMonoNs: try reader.readUInt64())
-    try reader.requireExhausted()
-    return response
-  }
-}
-
-extension LabptyPayloadReader {
-  public func requireExhausted() throws {
-    guard remainingCount == 0 else {
-      throw LabptyProtocolError.truncatedFrame
-    }
+    return LabptyPingResponse(daemonMonoNs: try reader.readUInt64())
   }
 }
