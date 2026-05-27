@@ -5,6 +5,7 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   public let transportMode = "labpty"
 
   private let socketPath: String
+  private let rpcTimeoutMilliseconds: Int
   private var fd: Int32
   private let clientId = UUID().uuidString
   private var nextSequence: UInt64 = 1
@@ -15,6 +16,7 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
 
   public init(socketPath: String, rpcTimeoutMilliseconds: Int = 2_000) throws {
     self.socketPath = socketPath
+    self.rpcTimeoutMilliseconds = rpcTimeoutMilliseconds
     fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
   }
 
@@ -117,25 +119,16 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   public func detachSession(sessionId: String) throws -> LabandSessionInfo {
-    guard let handle = handlesBySessionId[sessionId],
-      let descriptor = descriptorsByHandle[handle]
-    else {
-      throw TerminalSessionClientError.sessionNotFound(sessionId)
-    }
-    return labandInfo(from: descriptor)
+    return try labandInfo(from: descriptorForSessionId(sessionId))
   }
 
   public func writeInput(sessionId: String, bytes: [UInt8]) throws {
-    guard let handle = handlesBySessionId[sessionId] else {
-      throw TerminalSessionClientError.sessionNotFound(sessionId)
-    }
+    let handle = try handleForSessionId(sessionId)
     try writeInput(handle: handle, bytes: bytes)
   }
 
   public func resize(sessionId: String, rows: Int, cols: Int) throws -> LabandSessionInfo {
-    guard let handle = handlesBySessionId[sessionId] else {
-      throw TerminalSessionClientError.sessionNotFound(sessionId)
-    }
+    let handle = try handleForSessionId(sessionId)
     return try labandInfo(from: resize(handle: handle, rows: rows, cols: cols))
   }
 
@@ -160,9 +153,7 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   public func terminate(sessionId: String) throws -> LabandSessionInfo {
-    guard let handle = handlesBySessionId[sessionId] else {
-      throw TerminalSessionClientError.sessionNotFound(sessionId)
-    }
+    let handle = try handleForSessionId(sessionId)
     return try labandInfo(from: terminate(handle: handle))
   }
 
@@ -221,33 +212,36 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     payload: Data,
     decode: (Data) throws -> T
   ) throws -> T {
-      guard fd >= 0 else {
-        throw TerminalSessionClientError.protocolError("socket is closed")
-      }
-      let sequence = nextSequence
-      nextSequence += 1
-      do {
-        try writeAll(LabptyFraming.encodeRequest(operation: operation, sequence: sequence, payload: payload))
-      } catch {
-        closeLocked()
-        throw error
-      }
-      let response: LabptyFrame
-      do {
-        response = try LabptyFraming.decode(try readFrame())
-      } catch {
-        closeLocked()
-        throw error
-      }
-      guard response.header.sequence == sequence else {
-        closeLocked()
-        throw TerminalSessionClientError.protocolError("labpty response sequence mismatch")
-      }
-      guard response.header.responseCode == .ok else {
-        throw TerminalSessionClientError.protocolError(
-          "labpty error \(response.header.codeRaw)")
-      }
-      return try decode(response.payload)
+    try ensureConnectedLocked()
+    let sequence = nextSequence
+    nextSequence += 1
+    do {
+      try writeAll(LabptyFraming.encodeRequest(operation: operation, sequence: sequence, payload: payload))
+    } catch {
+      closeLocked()
+      throw error
+    }
+    let response: LabptyFrame
+    do {
+      response = try LabptyFraming.decode(try readFrame())
+    } catch {
+      closeLocked()
+      throw error
+    }
+    guard response.header.sequence == sequence else {
+      closeLocked()
+      throw TerminalSessionClientError.protocolError("labpty response sequence mismatch")
+    }
+    guard response.header.responseCode == .ok else {
+      throw TerminalSessionClientError.protocolError(
+        "labpty error \(response.header.codeRaw)")
+    }
+    return try decode(response.payload)
+  }
+
+  private func ensureConnectedLocked() throws {
+    if fd >= 0 { return }
+    fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
   }
 
   private func closeLocked() {
@@ -258,6 +252,35 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     handlesBySessionId.removeAll()
     descriptorsByHandle.removeAll()
     negotiatedCapabilities = nil
+  }
+
+  private func cachedDescriptor(forSessionId sessionId: String) -> LabptySessionDescriptor? {
+    lock.withLock {
+      guard let handle = handlesBySessionId[sessionId] else { return nil }
+      return descriptorsByHandle[handle]
+    }
+  }
+
+  private func handleForSessionId(_ sessionId: String) throws -> UInt64 {
+    if let handle = lock.withLock({ handlesBySessionId[sessionId] }) {
+      return handle
+    }
+    _ = try listLabptySessions()
+    if let handle = lock.withLock({ handlesBySessionId[sessionId] }) {
+      return handle
+    }
+    throw TerminalSessionClientError.sessionNotFound(sessionId)
+  }
+
+  private func descriptorForSessionId(_ sessionId: String) throws -> LabptySessionDescriptor {
+    if let descriptor = cachedDescriptor(forSessionId: sessionId) {
+      return descriptor
+    }
+    _ = try listLabptySessions()
+    if let descriptor = cachedDescriptor(forSessionId: sessionId) {
+      return descriptor
+    }
+    throw TerminalSessionClientError.sessionNotFound(sessionId)
   }
 
   private func remember(_ descriptor: LabptySessionDescriptor) {

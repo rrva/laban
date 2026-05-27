@@ -66,6 +66,49 @@ final class LabptyProtocolTests: XCTestCase {
     XCTAssertEqual(try LabptyWriteInputRequest.decode(from: decoded.payload).bytes, Data([1, 2, 3]))
   }
 
+  func testFrameHeaderGoldenBytes() throws {
+    let encoded = try LabptyFraming.encodeRequest(
+      operation: .hello,
+      sequence: 0x0102_0304_0506_0708,
+      payload: Data([0xAA, 0xBB]))
+
+    XCTAssertEqual(
+      [UInt8](encoded),
+      [
+        0x4C, 0x50, 0x43, 0x54,  // LPCT
+        0x01, 0x00,  // ABI major
+        0x00, 0x00,  // ABI minor
+        0x1A, 0x00, 0x00, 0x00,  // 24-byte header + 2-byte payload
+        0x01, 0x00,  // hello
+        0x00, 0x00,  // ok
+        0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+        0xAA, 0xBB,
+      ])
+  }
+
+  func testHelloPayloadGoldenBytes() throws {
+    XCTAssertEqual(
+      [UInt8](try LabptyHelloRequest(clientId: "c", capabilities: []).encode()),
+      [
+        0x01, 0x00,
+        0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x63,
+        0x00, 0x00, 0x00, 0x00,
+      ])
+
+    XCTAssertEqual(
+      [UInt8](
+        try LabptyHelloResponse(
+          capabilities: [],
+          daemonMonoNs: 0x0102_0304_0506_0708).encode()),
+      [
+        0x01, 0x00,
+        0x00, 0x00,
+        0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+        0x00, 0x00, 0x00, 0x00,
+      ])
+  }
+
   func testSequenceNumberEcho() throws {
     let response = try LabptyFraming.encodeResponse(
       sequence: 88,

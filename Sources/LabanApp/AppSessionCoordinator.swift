@@ -16,6 +16,8 @@ final class AppSessionCoordinator {
   private var infoByLocalSessionId: [Session.ID: LabandSessionInfo] = [:]
   private var labptyDescriptorByTabId: [Tab.ID: LabptySessionDescriptor] = [:]
   private var labptyFeedByTabId: [Tab.ID: LabptyParserFeed] = [:]
+  private let labptyStateLock = NSLock()
+  private var labptyDegradedTabIds: Set<Tab.ID> = []
   private var ownedProcess: Process?
   private var themeChangeObserver: NSObjectProtocol?
   private var snapshotGenerationMonitor: LabandSnapshotGenerationMonitor?
@@ -379,12 +381,16 @@ final class AppSessionCoordinator {
     }
     stopLabptyFeed(for: tab)
     let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    let tabId = tab.id
     let feed = LabptyParserFeed(
       ptyHandle: descriptor.ptyHandle,
       reader: reader,
       session: session,
       onDirty: { [weak self] sessionId in
         self?.onSessionDirty?(sessionId)
+      },
+      onOverflow: { [weak self] in
+        self?.markLabptyOutputDegraded(for: tabId)
       })
     labptyFeedByTabId[tab.id] = feed
     feed.start()
@@ -393,6 +399,7 @@ final class AppSessionCoordinator {
   private func stopLabptyFeed(for tab: Tab) {
     labptyFeedByTabId.removeValue(forKey: tab.id)?.stop()
     labptyDescriptorByTabId.removeValue(forKey: tab.id)
+    clearLabptyOutputDegraded(for: tab.id)
   }
 
   private func refreshLabptyTabMetadata(
@@ -413,12 +420,17 @@ final class AppSessionCoordinator {
     for tab in tabs {
       guard let descriptor = descriptorById[tab.id] else { continue }
       storeLabpty(descriptor, for: tab)
-      let signals = surfaceSignals(from: labptyInfo(from: descriptor))
+      let signals = surfaceSignals(
+        from: labptyInfo(from: descriptor),
+        labptyOutputDegraded: isLabptyOutputDegraded(for: tab.id))
       _ = model.applySurfaceSignals(signals, forTab: tab.id, now: now)
     }
   }
 
-  private func surfaceSignals(from info: LabandSessionInfo) -> TabSurfaceSignals {
+  private func surfaceSignals(
+    from info: LabandSessionInfo,
+    labptyOutputDegraded: Bool = false
+  ) -> TabSurfaceSignals {
     let trimmedTitle = info.title.trimmingCharacters(in: .whitespacesAndNewlines)
     let titleDirty = !trimmedTitle.isEmpty
     let processMetadata: Session.ProcessMetadata? = {
@@ -436,7 +448,8 @@ final class AppSessionCoordinator {
       processMetadata: processMetadata,
       titleDirty: titleDirty,
       titleRaw: titleDirty ? trimmedTitle : nil,
-      exitState: info.lifecycleState == .running ? .running : .exited(code: 0)
+      exitState: info.lifecycleState == .running ? .running : .exited(code: 0),
+      agentStatus: labptyOutputDegraded ? Self.labptyOutputDegradedStatus : nil
     )
   }
 
@@ -505,6 +518,30 @@ final class AppSessionCoordinator {
   private func removeCachedInfo(for tab: Tab) {
     infoByTabId.removeValue(forKey: tab.id)
     infoByLocalSessionId.removeValue(forKey: tab.sessionId)
+    clearLabptyOutputDegraded(for: tab.id)
+  }
+
+  private static let labptyOutputDegradedStatus = TabAgentStatus(
+    indicatorColor: "#f59e0b",
+    statusText: "output skipped",
+    statusTextColor: "#f59e0b")
+
+  private func markLabptyOutputDegraded(for tabId: Tab.ID) {
+    _ = labptyStateLock.withLock {
+      labptyDegradedTabIds.insert(tabId)
+    }
+  }
+
+  private func clearLabptyOutputDegraded(for tabId: Tab.ID) {
+    _ = labptyStateLock.withLock {
+      labptyDegradedTabIds.remove(tabId)
+    }
+  }
+
+  private func isLabptyOutputDegraded(for tabId: Tab.ID) -> Bool {
+    labptyStateLock.withLock {
+      labptyDegradedTabIds.contains(tabId)
+    }
   }
 
   private func attachSnapshotRing(for logicalSessionId: String) {
@@ -588,6 +625,7 @@ private final class LabptyParserFeed {
   private let reader: LabptyByteRingReader
   private let session: Session
   private let onDirty: @Sendable (Session.ID) -> Void
+  private let onOverflow: @Sendable () -> Void
   private let queue: DispatchQueue
   private let timer: DispatchSourceTimer
   private let lock = NSLock()
@@ -598,12 +636,14 @@ private final class LabptyParserFeed {
     ptyHandle: UInt64,
     reader: LabptyByteRingReader,
     session: Session,
-    onDirty: @escaping @Sendable (Session.ID) -> Void
+    onDirty: @escaping @Sendable (Session.ID) -> Void,
+    onOverflow: @escaping @Sendable () -> Void
   ) {
     self.ptyHandle = ptyHandle
     self.reader = reader
     self.session = session
     self.onDirty = onDirty
+    self.onOverflow = onOverflow
     self.queue = DispatchQueue(label: "com.laban.labpty.parser.\(ptyHandle)", qos: .userInteractive)
     self.timer = DispatchSource.makeTimerSource(queue: queue)
   }
@@ -638,6 +678,7 @@ private final class LabptyParserFeed {
     if result.overflowed {
       AppLog.app.error(
         "labpty byte ring overflow for pty handle \(self.ptyHandle); resetting parser continuity")
+      onOverflow()
       _ = session.feedOutput([0x1B, 0x63])
     }
     _ = session.feedOutput(Array(result.bytes))

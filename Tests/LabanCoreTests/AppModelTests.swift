@@ -281,6 +281,24 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusText, "background")
   }
 
+  func testSurfaceSignalsCanMarkTransportDegradation() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+
+    let changed = model.applySurfaceSignals(
+      TabSurfaceSignals(
+        agentStatus: TabAgentStatus(
+          indicatorColor: "#f59e0b",
+          statusText: "output skipped",
+          statusTextColor: "#f59e0b")),
+      forTab: tabId)
+
+    XCTAssertTrue(changed)
+    XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.indicatorColor, "#f59e0b")
+    XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusText, "output skipped")
+    XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusTextColor, "#f59e0b")
+  }
+
   func testActiveBellDoesNotSetAttention() throws {
     let model = try makeModel()
     let tab = try XCTUnwrap(model.activeTab)

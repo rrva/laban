@@ -6,7 +6,7 @@ import Foundation
 /// This type owns the bookkeeping that decides whether a terminal title still
 /// belongs to the current foreground process and when process metadata may be
 /// polled again.
-/// The three signals `TabMetadataSynchronizer.syncSurfaceMetadata` applies on
+/// The signals `TabMetadataSynchronizer.syncSurfaceMetadata` applies on
 /// every cycle. Built from a local `Session` for in-process tabs, or
 /// synthesized from a `LabandSessionInfo` for laband-backed tabs. Holding
 /// the shape in one place is what keeps the two writer paths from drifting:
@@ -32,17 +32,23 @@ public struct TabSurfaceSignals {
   /// `.running` means "no exit-state update" — non-running transitions
   /// the tab status exactly once.
   public var exitState: TabStatus
+  /// `nil` means "leave agent status alone." Non-nil is an explicit
+  /// surface-owned status, used for transport degradation that is not
+  /// emitted by the child process itself.
+  public var agentStatus: TabAgentStatus?
 
   public init(
     processMetadata: Session.ProcessMetadata? = nil,
     titleDirty: Bool = false,
     titleRaw: String? = nil,
-    exitState: TabStatus = .running
+    exitState: TabStatus = .running,
+    agentStatus: TabAgentStatus? = nil
   ) {
     self.processMetadata = processMetadata
     self.titleDirty = titleDirty
     self.titleRaw = titleRaw
     self.exitState = exitState
+    self.agentStatus = agentStatus
   }
 }
 
@@ -349,6 +355,13 @@ final class TabMetadataSynchronizer {
     }
 
     if applyExitState(signals.exitState, at: idx, tabs: &tabs) {
+      result.modelChanged = true
+    }
+
+    if let agentStatus = signals.agentStatus,
+      tabs[idx].titleMetadata.agentStatus != agentStatus
+    {
+      tabs[idx].titleMetadata.agentStatus = agentStatus
       result.modelChanged = true
     }
 

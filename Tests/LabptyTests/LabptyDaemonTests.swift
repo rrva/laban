@@ -94,6 +94,27 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try client.terminate(handle: descriptor.ptyHandle)
   }
 
+  func testWriteBySessionIdReconnectsAfterControlSocketClose() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/cat"],
+        logicalSessionId: "reconnect-write"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    client.close()
+    try client.writeInput(sessionId: "reconnect-write", bytes: Array("after-reconnect\n".utf8))
+
+    let output = try waitForOutput(reader: reader, contains: "after-reconnect")
+    XCTAssertTrue(output.contains("after-reconnect"))
+    _ = try client.terminate(sessionId: "reconnect-write")
+  }
+
   func testTerminateReleasesSlotsAndRingFilesForReuse() throws {
     let harness = try launchHarness()
     let client = try waitForClient(socketPath: harness.socketPath)
