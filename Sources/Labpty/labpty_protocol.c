@@ -2,8 +2,12 @@
 
 static uint64_t labpty_mono_ns(void) {
     struct timespec ts;
-    assert(clock_gettime(CLOCK_MONOTONIC, &ts) == 0);
-    assert(ts.tv_nsec >= 0);
+    /* Don't wrap clock_gettime in assert(): under -DNDEBUG the assert
+     * expression isn't evaluated, the call never runs, and `ts` stays
+     * uninitialized. SwiftPM's release config doesn't pass -DNDEBUG
+     * today but the hazard is latent — match main.c::monotonic_ns's
+     * defensive `if`+0 pattern instead. */
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
     return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
 }
 

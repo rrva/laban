@@ -2,17 +2,20 @@
 
 #include <stdatomic.h>
 
+/* The clock-gettime wrappers below intentionally use `if`+0 instead of
+ * `assert(clock_gettime(...) == 0)`: under -DNDEBUG the assert expression
+ * isn't evaluated, the syscall never runs, and `ts` stays uninitialized.
+ * SwiftPM's release config doesn't pass -DNDEBUG today but the hazard
+ * is latent. Matches main.c::monotonic_ns. */
 static uint64_t mono_ns(void) {
     struct timespec ts;
-    assert(clock_gettime(CLOCK_MONOTONIC, &ts) == 0);
-    assert(ts.tv_nsec >= 0);
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
     return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
 }
 
 static uint64_t unix_ns(void) {
     struct timespec ts;
-    assert(clock_gettime(CLOCK_REALTIME, &ts) == 0);
-    assert(ts.tv_nsec >= 0);
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0;
     return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
 }
 
