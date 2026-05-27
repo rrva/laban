@@ -148,8 +148,8 @@ Surface principle 0 makes the Phase 1 / Phase 2 / Phase 3 split
 explicit. This section enumerates the smallest credible surface; the
 rest of the document elaborates the *eventual* shape that Phase 2+
 moves toward. A fresh implementer of Phase 1 should be able to read
-this section and `execplans/active/labpty-extraction.md` and skip the
-"Phase 2" subsections of everything below.
+this section and `execplans/active/labpty-and-app-direct.md` and
+skip the "Phase 2" subsections of everything below.
 
 **Phase 1 RPCs** (eight):
 
@@ -259,12 +259,13 @@ socket.
 ### What does **not** cross the socket in normal attach
 
 - **PTY master fds.** Per the architectural invariant of
-  `execplans/active/labpty-extraction.md`, `labpty` is the sole
+  `execplans/active/labpty-and-app-direct.md`, `labpty` is the sole
   steady-state reader and writer of every PTY master it opens. No
-  client (`laband`, `LabanApp`, diagnostic tool) receives a duplicated
-  master fd in the response to `attachSession`. Two readers on the
-  same PTY master split bytes non-deterministically; two writers
-  interleave. The only safe shape is one custodian, and the protocol
+  client (`LabanApp`, future readers, diagnostic tool) receives a
+  duplicated master fd in the response to `attachSession`. Two
+  readers on the same PTY master split bytes non-deterministically;
+  two writers interleave. The only safe shape is one custodian,
+  and the protocol
   enforces that by simply never handing the fd out.
 
 - The diagnostic and Phase 3 self-upgrade paths each have explicit,
@@ -753,8 +754,13 @@ keeps `labpty` free of libproc string-extraction code, truncation
 rules, and the descriptor-bloat that ~5 KiB of foreground strings ×
 64 sessions would push into every `listSessions` response. The
 client's tab-title path consumes the resolved strings unchanged;
-the libproc call lives in `LabanApp` (using the existing helper at
-`Sources/LabanTerminalCore/process_metadata.c`).
+the libproc call lives in `LabanApp` via the existing public Swift
+facade `LibprocIntrospector`
+(`Sources/LabanCore/Persistence/AgentSessionDetector.swift:547`),
+which is pid-based. The C entry point in
+`Sources/LabanTerminalCore/process_metadata.c` takes a
+`LabanSession *` and stays the Detached-mode resolver; Background
+mode uses the Swift facade.
 
 Any decoder that observes a length-prefix exceeding the relevant cap
 returns `LABPTY_E_OVERSIZE` and the connection closes.
@@ -1082,7 +1088,7 @@ were removed deliberately:
 
 - `scm-rights-attach/v1` (the old "master fd via SCM_RIGHTS in
   attachSession"). Removed for the architectural reason in
-  `execplans/active/labpty-extraction.md`: `labpty` is the sole
+  `execplans/active/labpty-and-app-direct.md`: `labpty` is the sole
   steady-state reader/writer of every PTY master. The wake-pipe SCM_RIGHTS
   use was the only remaining justification for SCM_RIGHTS in Phase 1;
   with polling replacing wake pipes, Phase 1 has no SCM_RIGHTS at all.
@@ -1539,8 +1545,8 @@ against a rolling 30-day baseline**:
   not enabled in shared CI.
 
 **Verification ladder.** Beyond property tests and the frame-decoder
-fuzzer, the verification bar in architectural invariant #8 (see
-`execplans/active/labpty-extraction.md`) admits stronger tools as
+fuzzer, the verification bar in architectural invariant #7 of
+`execplans/active/labpty-and-app-direct.md` admits stronger tools as
 they become useful:
 
 - **Phase 1 floor:** property tests + libFuzzer on the frame

@@ -19,10 +19,29 @@ modes.
 | **Background sessions** | Process keeps running across `LabanApp` restart and upgrade. App is needed to render; long absences may lose scrollback past the byte-ring window. | `labpty` byte ring (this plan's new path) |
 | **Detached sessions** | Process keeps running *and* its terminal state is fully maintained without the app: complete scrollback, multi-client viewing possible. | `laband` (existing path, kept as-is) |
 
-CLI and environment match the menu:
-`--session-mode {local|background|detached}` and
-`LABAN_SESSION_MODE=local|background|detached`. The default for new
-sessions is **Background**.
+CLI and environment extend `TerminalBackendSettings`'s existing
+surface; no new `--session-mode` flag or `LABAN_SESSION_MODE` env
+var (those were briefly proposed and dropped during pre-flight to
+avoid churning today's working surface).
+
+```
+--terminal-backend <value>   # canonical: in-process | labpty | laband
+                             # aliases: local|local-sessions → in-process
+                             #          background|background-sessions → labpty
+                             #          detached|detached-sessions|daemon|daemon-sessions → laband
+--local-sessions             # short form, in-process
+--background-sessions        # short form, labpty (REASSIGNED from laband)
+--detached-sessions          # short form, laband (NEW)
+--laband-sessions            # short form, laband (back-compat alias)
+LABAN_TERMINAL_BACKEND=<value>   # same values and aliases as --terminal-backend
+```
+
+The default for new sessions is **labpty** (the Background mode).
+Reassigning `--background-sessions` from `.laband` to `.labpty` is
+the one breaking change to today's command-line; the
+UserDefaults migration in the Pre-flight Findings keeps users who
+had "Background Sessions" selected on `.laband` (now Detached) so
+saved menu intent does not silently switch daemons.
 
 `laband` is retained intact. Its future is undecided; exposing the
 three modes to users makes it possible to learn from real usage whether
@@ -231,15 +250,21 @@ than coding past it.
   Background session, writes/reads, terminates `LabanApp`, restarts
   it, reattaches via `labpty.listSessions`, writes more, observes new
   output from the **same** `child_pid`.
-- [ ] M7: Three-mode selection UI and CLI. The `Workspace → Terminal
-  Sessions` menu exposes Local / Background / Detached. The
-  `--session-mode {local|background|detached}` CLI switch and
-  `LABAN_SESSION_MODE` env var match. The session coordinator routes
+- [ ] M7: Three-mode selection UI and CLI. The `Terminal Sessions`
+  menu gains a `Detached Sessions` item alongside today's `Local
+  Sessions` and `Background Sessions` (the latter reassigned from
+  `.laband` to `.labpty`). The existing `--terminal-backend` flag,
+  per-mode shortcut flags, and `LABAN_TERMINAL_BACKEND` env var
+  accept the new canonical `labpty` value and re-pointed
+  `background-sessions` alias; a new `--detached-sessions` flag
+  joins the existing surface. The session coordinator routes
   through `InProcessTerminalSessionClient`,
   `LabptyTerminalSessionClient`, or `LabandTerminalSessionClient`
-  based on the mode. Workspace restore remembers each session's mode
-  and reattaches through the same path. Default for new sessions is
-  Background. No `laband` deletion.
+  based on the mode. Workspace restore remembers each session's
+  mode and reattaches through the same path. Default for new
+  sessions is `.labpty` (Background). One-time UserDefaults
+  migration keeps users who had `.laband` selected pre-upgrade on
+  `.laband` (now Detached). No `laband` deletion.
 
 ## Context and Orientation
 
@@ -288,11 +313,20 @@ Background-mode path without removing anything.
   `Sources/LabanCore/Session.swift:407`. The parser-only mode is
   `Session.fixture(size:)` (PTY-less); M3 wraps this as
   `Session.parserOnly(size:)` for call-site readability.
-- `Sources/LabanTerminalCore/process_metadata.c` — libproc-backed
-  helper that resolves a pid to executable name / argv / cwd. Used by
-  `LabanApp`'s tab-title path. `labpty` does **not** link libproc; it
-  reports only `foreground_pid` and `foreground_pgid`. `LabanApp`
-  resolves the rest via this helper.
+- `Sources/LabanCore/Persistence/AgentSessionDetector.swift:547` —
+  `public struct LibprocIntrospector` is the pid-based Swift libproc
+  facade (already used by `RestoreLaunchPlanner` and
+  `AgentSessionDetector`). It resolves a pid to executable name,
+  path, argv, cwd, and open-fd info via `proc_pidpath`,
+  `proc_pidinfo`, and `proc_pidfdinfo`. `LabanApp` reuses this for
+  Background-mode foreground-process resolution.
+  `Sources/LabanTerminalCore/process_metadata.c`'s C entry point
+  takes a `LabanSession *` (it derives pgid from the session's PTY
+  fd internally) and is the Detached-mode resolver; **do not** use
+  it directly from Background-mode Swift, since Background mode
+  does not have a `LabanSession *` against the labpty-owned PTY.
+  `labpty` itself does not link libproc and reports only
+  `foreground_pid` and `foreground_pgid`.
 
 ### Worktree isolation
 
@@ -408,28 +442,35 @@ This refines the Decision Log entry "User-facing mode names are
 Local / Background / Detached" — the names stand, but the migration
 work is real and M7-scoped.
 
-### TerminalSessionClient protocol assumes cells, not bytes
+### TerminalSessionClient protocol: keep as-is, dispatch at call sites
 
-The existing `TerminalSessionClient` protocol has
-`attachSnapshotRing(sessionId:)` returning a
-`LabandSnapshotRingAttachment` (the `LBNDSS01` cells ring). The new
-`LabptyTerminalSessionClient` cannot implement this — `labpty`
-publishes a byte ring, not a cells ring. Two options for M3:
+The existing `TerminalSessionClient` protocol at
+`Sources/LabanCore/TerminalSessionClient.swift:79-95` is shaped
+around the laband-mediated path: `attachSnapshotRing` returns a
+`LabandSnapshotRingAttachment` (cells ring); `scrollViewport`,
+`markRendered`, and `transferLease` assume the cell-ring +
+lease-arbitration model. `LabptyTerminalSessionClient` (byte-ring
+transport, in-process parser, single writer) cannot implement
+these meaningfully.
 
-- **Option A (recommended):** Generalize the protocol. Replace
-  `attachSnapshotRing` with two methods: `attachCellRing(...)`
-  (implemented by `LabandTerminalSessionClient` only) and
-  `attachByteRing(...)` (implemented by `LabptyTerminalSessionClient`
-  only). Callers branch on `transportMode`. Or add a single
-  `attachOutputTransport(...)` that returns an enum-typed handle.
-- **Option B:** Keep the protocol as-is; `LabptyTerminalSessionClient`
-  throws `protocolError("byte-ring transport; cells not available")`
-  for `attachSnapshotRing`, and `LabanApp` callers learn to take
-  a different branch when the mode is Background.
+**M3 decision: Option B. Keep the protocol as-is.**
+`LabptyTerminalSessionClient` conforms to `TerminalSessionClient`
+and throws `TerminalSessionClientError.protocolError("not supported
+for labpty transport")` for the four operations that do not fit
+byte-ring semantics: `attachSnapshotRing`, `scrollViewport`,
+`markRendered`, `transferLease`. The coordinator
+(`AppSessionCoordinator`, renamed in M3 from
+`AppLabandSessionCoordinator`) already needs to branch on
+`sessionMode` for output-transport setup (cell-ring vs byte-ring +
+in-process parser); the four additional conditional dispatches
+cost little and stay local to the coordinator.
 
-Option A is cleaner but a bigger refactor. Option B is what the
-plan implicitly assumed. **Pick before M3 starts**; recording it as
-a Decision Log entry is fine.
+Recorded in the Decision Log below. The cleaner alternative
+(Option A: split the protocol into common + mode-specific
+extensions, or lift output-transport setup out of the protocol
+entirely) is a welcome later cleanup if dispatch-by-mode proves
+ugly; doing it as part of M3 would couple the working
+Detached-mode path to the same refactor and multiply risk.
 
 ### M4 bench surface
 
@@ -577,12 +618,13 @@ Tests in `Tests/LabptyTests/`:
 - `testByteRingWrapDetection`
 - `testProducerAliveHeartbeat`
 
-### M3 — `LabanApp` as `labpty` client
+### M3 — `LabanApp` as `labpty` client (Background-mode path)
 
-This is the milestone where `LabanApp` switches paths. After M3
-finishes, a session created through the new path works end-to-end
-even with `laband` running unchanged in the tree (M7 deletes
-`laband`; M3 just stops using it).
+This is the milestone where `LabanApp` gains the labpty-backed
+Background-mode path. After M3 finishes, a session created in
+Background mode works end-to-end without involving `laband`; the
+existing `laband` codepath stays intact and continues to back
+Detached-mode sessions.
 
 Refactor in `Sources/LabanApp/`:
 
@@ -607,11 +649,15 @@ Refactor in `Sources/LabanApp/`:
 - Resize / signal / terminate: route to
   `labptyClient.resizeSession`, `signalSession`, `terminateSession`.
   The local parser also receives `resize(size:)` so its grid matches.
-- Foreground process metadata: `LabanApp` calls libproc directly
-  against `descriptor.foregroundPid`/`foregroundPgid`. The helper
-  code in `Sources/LabanTerminalCore/process_metadata.c` is unchanged;
-  the call site moves from `laband` back to `LabanApp` (where it
-  lived pre-`laband`).
+- Foreground process metadata: `LabanApp` resolves
+  `descriptor.foregroundPid` via `LibprocIntrospector` from
+  `Sources/LabanCore/Persistence/AgentSessionDetector.swift:547`
+  (the same Swift type `RestoreLaunchPlanner` and
+  `AgentSessionDetector` already use). The C entry point in
+  `Sources/LabanTerminalCore/process_metadata.c` is **not** reused
+  here because its public signature takes a `LabanSession *` rooted
+  in the PTY fd, which Background mode doesn't have; the
+  Swift-side pid-based facade is the right entry point.
 
 Optional ergonomic helper:
 
@@ -756,20 +802,33 @@ sessions keep the mode they were created with for their lifetime
 (no mid-session migration in this plan; that is a future ExecPlan if
 it is ever wanted).
 
-**CLI / environment** — `LabanApp` and `--headless` mode both accept:
+**CLI / environment** — extend the existing `TerminalBackendSettings`
+surface (defined in `Sources/LabanApp/TerminalBackendSettings.swift`).
+Both `LabanApp` and `--headless` mode parse:
 
 ```
---session-mode {local|background|detached}        # per-launch default
+--terminal-backend <value>   # canonical: in-process | labpty | laband
+                             # aliases: local|local-sessions → in-process
+                             #          background|background-sessions → labpty
+                             #          detached|detached-sessions|daemon|daemon-sessions → laband
+--local-sessions             # short form, in-process (UNCHANGED meaning)
+--background-sessions        # short form, labpty (REASSIGNED — was laband)
+--detached-sessions          # short form, laband (NEW)
+--laband-sessions            # short form, laband (back-compat alias, unchanged)
+LABAN_TERMINAL_BACKEND=<value>   # same values and aliases
 ```
 
-```
-LABAN_SESSION_MODE=local|background|detached      # environment override
-```
+Precedence, low to high (preserved from today's
+`TerminalBackendSettings.resolve(...)`): automatic default →
+persisted `LabanTerminalSessionBackend` UserDefaults → legacy
+`LABAN_DISABLE_PRODUCT_LABAND` flag → `LABAN_TERMINAL_BACKEND` env →
+CLI flag → in-app menu selection. Workspace restore remembers each
+session's mode in the per-session state file and replays the same
+mode on relaunch.
 
-Precedence, low to high: built-in default (`background`) → env var →
-CLI flag → menu selection inside the running app. Workspace restore
-remembers each session's mode in the per-session state file and
-replays the same mode on relaunch.
+The default for new sessions is `.labpty` (the Background mode);
+the existing automatic-default branch in `TerminalBackendSettings`
+is changed from `.inProcess` to `.labpty`.
 
 **Routing inside `LabanApp`** — `AppSessionCoordinator` (renamed
 from `AppLabandSessionCoordinator` in M3) gains a `sessionMode`
@@ -815,10 +874,12 @@ the 2026-05-27 pre-flight; see "Pre-flight Findings" above):
 - `Sources/LabanApp/AppLabandSessionCoordinator.swift` — rename to
   `Sources/LabanApp/AppSessionCoordinator.swift`; gain a
   `sessionMode: TerminalSessionBackend` field and three-way
-  routing; resolve the `TerminalSessionClient` protocol decision
-  flagged in the pre-flight findings ("Option A" generalize the
-  protocol, or "Option B" mode-specific branches at the call site)
-  before this edit.
+  routing. Per the Pre-flight Findings, `LabptyTerminalSessionClient`
+  conforms to `TerminalSessionClient` but throws
+  `protocolError("not supported for labpty transport")` for
+  `attachSnapshotRing`, `scrollViewport`, `markRendered`, and
+  `transferLease`; the coordinator branches on `sessionMode` at
+  these call sites.
 - Workspace persistence: each persisted session record gains a
   `sessionMode` field. Locate the existing persistence module via
   `grep -rn 'TabState\|WorkspacePersistence\|persistSession'
@@ -843,8 +904,12 @@ the 2026-05-27 pre-flight; see "Pre-flight Findings" above):
   Open sessions in all three modes, save workspace, restore, assert
   each session reattaches via its original mode.
 - `Tests/LabanAppTests/SessionModeCLITests.swift` (new). Verify
-  precedence: built-in default `background` → env var → `--session-mode`
-  flag → menu override.
+  the precedence chain
+  `TerminalBackendSettings.resolve(...)` already implements
+  (automatic → persisted UserDefaults → legacy disable flag →
+  `LABAN_TERMINAL_BACKEND` env → CLI flag) plus the in-app menu
+  selection persisting to UserDefaults. The new canonical
+  automatic default is `.labpty`.
 
 **Documentation:**
 
@@ -887,10 +952,14 @@ swift test --filter LabanAppTests.LabanAppRestartSurvivalTests
 ./scripts/test-labanapp-survives-restart
 
 # Per-mode launch examples (CLI / env).
-LabanApp --session-mode local
-LabanApp --session-mode background
-LabanApp --session-mode detached
-LABAN_SESSION_MODE=background LabanApp
+LabanApp --terminal-backend in-process       # Local mode
+LabanApp --terminal-backend labpty           # Background mode
+LabanApp --terminal-backend laband           # Detached mode
+LabanApp --local-sessions                    # short form, Local
+LabanApp --background-sessions               # short form, Background (labpty)
+LabanApp --detached-sessions                 # short form, Detached (laband)
+LABAN_TERMINAL_BACKEND=labpty LabanApp       # env, Background
+LABAN_TERMINAL_BACKEND=detached LabanApp     # env, Detached (alias)
 ```
 
 Expected transcript for `testLabanAppRestartPreservesChildViaLabpty`:
@@ -943,19 +1012,33 @@ to the pre-pivot baseline closed.
 
 **M7:** All three modes are reachable and routable.
 
-- Menu inspection: `Workspace → Terminal Sessions` shows the three
-  items `Local sessions`, `Background sessions`, `Detached sessions`,
-  with `Background sessions` checked by default.
-- `LabanApp --session-mode local|background|detached` accepts each
-  value; passing any other value exits nonzero with a usage error
-  naming the three accepted values.
-- `LABAN_SESSION_MODE` respected by both AppKit and headless mode.
+- Menu inspection: `Terminal Sessions` shows the three items
+  `Local Sessions`, `Background Sessions`, `Detached Sessions`,
+  with `Background Sessions` checked by default. Verified through
+  the headless menu-introspection endpoint, not host-global
+  `defaults read`.
+- `LabanApp --terminal-backend {in-process|labpty|laband}` accepts
+  each canonical value plus aliases (`local`, `background`,
+  `detached`, etc.); passing any unknown value exits nonzero with
+  a usage error naming the accepted set.
+- `LABAN_TERMINAL_BACKEND` respected by both AppKit and headless
+  mode with the same value set.
+- Per-mode shortcut flags `--local-sessions`,
+  `--background-sessions`, `--detached-sessions`, and
+  `--laband-sessions` route as documented.
 - `SessionModeRoutingTests`, `SessionModePersistenceTests`,
   `SessionModeCLITests` all pass.
-- Per-mode smoke: `--session-mode local` opens a session with no
-  daemon running; `--session-mode background` causes a `labpty`
-  process to appear; `--session-mode detached` causes a `laband`
-  process to appear. Three separate `pgrep -f` checks confirm.
+- Per-mode smoke (using run-id-scoped sockets that the test
+  harness owns; no global `pgrep`): Local mode opens a session
+  with no labpty/laband process started under
+  `.tmp/<run-id>/`; Background mode produces a session visible
+  through `labpty.listSessions` on the run-id-scoped socket;
+  Detached mode produces a session visible through
+  `laband.listSessions` on the run-id-scoped socket.
+- UserDefaults migration: an isolated-defaults test with
+  `LabanTerminalSessionBackend = "laband"` seeded pre-launch
+  still routes to the laband-backed Detached path after the
+  upgrade.
 
 ## Idempotence and Recovery
 
@@ -1040,11 +1123,12 @@ Capabilities negotiated at `hello` (Phase 1 set):
   shm ring rather than a master fd.
 - `LabptyTerminalSessionClient` for control operations on Background
   sessions.
-- libproc resolution against `labpty`-reported foreground pids. The
-  helper code (`Sources/LabanTerminalCore/process_metadata.c`)
-  already exists; Background mode calls it against
-  `LabptySessionDescriptor.foregroundPid` rather than receiving
-  resolved strings from `laband`.
+- libproc resolution against `labpty`-reported foreground pids via
+  `LibprocIntrospector`
+  (`Sources/LabanCore/Persistence/AgentSessionDetector.swift:547`),
+  the existing public pid-based Swift facade. Background mode
+  calls it with `LabptySessionDescriptor.foregroundPid` rather
+  than receiving resolved strings from `laband`.
 - Per-session lifecycle journaling for Background sessions inside
   `LabanApp` (Detached sessions continue to be journaled by `laband`
   itself).
@@ -1076,6 +1160,71 @@ Capabilities negotiated at `hello` (Phase 1 set):
   is preserved optionality and a comparison surface for measuring
   which futures matter.
   Date/Author: 2026-05-27 / user reversal of pivot iteration.
+
+- Decision: M3 keeps `TerminalSessionClient` as-is;
+  `LabptyTerminalSessionClient` throws `protocolError` for the
+  operations that don't fit byte-ring transport. (Option B over
+  Option A.)
+  Rationale: The existing `TerminalSessionClient` protocol at
+  `Sources/LabanCore/TerminalSessionClient.swift:79-95` is shaped
+  around the laband-mediated path: `attachSnapshotRing` returns
+  `LabandSnapshotRingAttachment` (cells ring); `scrollViewport`,
+  `markRendered`, and `transferLease` assume cell-ring +
+  lease-arbitration model. `LabptyTerminalSessionClient` cannot
+  implement these meaningfully under byte-ring transport. Option A
+  (split the protocol into common + mode-specific extensions, or
+  lift output-transport setup out of the protocol entirely) is
+  cleaner but couples M3 with a refactor of the working
+  Detached-mode path; Option B contains the change to the new
+  `LabptyTerminalSessionClient` plus a few conditional dispatches
+  in `AppSessionCoordinator` (which already branches on
+  `sessionMode` for output-transport setup). Additive change beats
+  coupled refactor while the new path is being proven. Option A
+  is welcome in a later plan if dispatch-by-mode call sites
+  become ugly.
+  Date/Author: 2026-05-27 / Codex review reconciliation.
+
+- Decision: CLI / env surface extends `TerminalBackendSettings`'s
+  existing flags and env var; no new `--session-mode` flag or
+  `LABAN_SESSION_MODE` env var.
+  Rationale: An earlier draft of this plan proposed a new
+  `--session-mode` flag and `LABAN_SESSION_MODE` env var. The
+  Pre-flight Findings turned up that
+  `Sources/LabanApp/TerminalBackendSettings.swift` already
+  resolves through a full precedence chain over `--terminal-backend`,
+  per-mode shortcut flags (`--local-sessions`,
+  `--background-sessions`, `--laband-sessions`), and
+  `LABAN_TERMINAL_BACKEND`. Adding a parallel
+  `--session-mode`/`LABAN_SESSION_MODE` surface would churn the
+  working code, add a layer to the precedence chain, and force
+  users to learn two ways to express the same intent. Extending
+  the existing surface: add `--detached-sessions`, repoint
+  `--background-sessions` (and the `background` /
+  `background-sessions` aliases) from `.laband` to `.labpty`,
+  keep `--laband-sessions` as an explicit back-compat alias, and
+  let `--terminal-backend` accept `labpty` as a canonical value.
+  Net cost is one breaking change to the meaning of
+  `--background-sessions`; the alternative was churn across the
+  entire CLI/env surface.
+  Date/Author: 2026-05-27 / Codex review reconciliation.
+
+- Decision: Background-mode libproc resolution uses
+  `LibprocIntrospector`
+  (`Sources/LabanCore/Persistence/AgentSessionDetector.swift:547`),
+  not the C entry point in
+  `Sources/LabanTerminalCore/process_metadata.c`.
+  Rationale: An earlier draft claimed Background mode could call
+  the existing C helper against `LabptySessionDescriptor.foregroundPid`.
+  Codex's pre-implementation review caught this: the C public API
+  takes a `LabanSession *` (it derives pgid from the session's PTY
+  fd internally), and Background mode does not have a
+  `LabanSession *` rooted in the labpty-owned PTY. The right
+  reuse target is `LibprocIntrospector`, a public pid-based Swift
+  facade already used by `RestoreLaunchPlanner` and
+  `AgentSessionDetector`. It exposes `proc_pidpath`,
+  `proc_pidinfo`, and `proc_pidfdinfo` against a raw pid, which
+  is exactly what Background mode needs.
+  Date/Author: 2026-05-27 / Codex review reconciliation.
 
 - Decision: `labpty` is implemented in C, not Swift.
   Rationale: `labpty`'s work is `openpty`, `fork`, `execve`, `read`,
@@ -1119,9 +1268,14 @@ Capabilities negotiated at `hello` (Phase 1 set):
   holder can make; once those return a pid, anyone same-uid
   (notably `LabanApp`) can resolve the rest via libproc against
   that pid. The two `int32` fields fit in 8 bytes per descriptor,
-  `labpty` no longer links libproc, and `LabanApp` already has the
-  libproc resolution code (`Sources/LabanTerminalCore/process_metadata.c`)
-  from its pre-`laband` Tier 1 era.
+  `labpty` no longer links libproc, and `LabanApp` already has a
+  public pid-based libproc facade — `LibprocIntrospector` at
+  `Sources/LabanCore/Persistence/AgentSessionDetector.swift:547`,
+  already used by `RestoreLaunchPlanner` and `AgentSessionDetector`.
+  (The C entry point in
+  `Sources/LabanTerminalCore/process_metadata.c` takes a
+  `LabanSession *` and is the Detached-mode resolver; Background
+  mode uses the Swift facade.)
   Date/Author: 2026-05-27.
 
 - Decision: `labpty` adopts NASA JPL's *Power of Ten* rules as its
@@ -1320,42 +1474,76 @@ without judgment.
 
 ### Three-mode selection (M7)
 
+All daemon-existence checks below are gated on **run-id-scoped
+socket paths**, not global process names, to comply with
+`docs/process/worktree-isolation.md`: the harness records the
+labpty and laband PIDs it started and looks for those PIDs (or
+their `--socket` argv, which always contains `.tmp/<run-id>/`)
+rather than `pgrep -f labpty` / `pgrep -f laband` against the
+host. Tests that pre-launch their own daemons keep the PID
+references for direct `kill(pid, 0)` checks.
+
 - [ ] `Workspace → Terminal Sessions` menu contains exactly three
-  items in this order: `Local sessions`, `Background sessions`,
-  `Detached sessions`. The default-checked item is
-  `Background sessions`. (Inspect via `defaults read` of the menu
-  state file, or via the headless menu-introspection endpoint.)
+  items in this order: `Local Sessions`, `Background Sessions`,
+  `Detached Sessions`. The default-checked item is
+  `Background Sessions`. (Inspect via the headless
+  menu-introspection endpoint exposed by `HeadlessDebugRuntime`;
+  do not rely on global `defaults read`.)
 - [ ] The internal names `labpty` and `laband` do **not** appear in
   any user-facing menu title, tooltip, or product-doc string.
   Verification: `git grep -nE '\b(labpty|laband)\b'
-  Sources/LabanApp/MainMenu* docs/product/` returns zero hits in
-  user-visible strings (hits inside source comments or
-  configuration paths are acceptable).
-- [ ] `LabanApp --session-mode local` opens a session with no
-  `labpty` and no `laband` process running. Verification:
-  `pgrep -f labpty` and `pgrep -f laband` both return empty after
-  the smoke session opens.
-- [ ] `LabanApp --session-mode background` causes a `labpty` process
-  to appear. Verification: `pgrep -f labpty` is non-empty after
-  the smoke session opens.
-- [ ] `LabanApp --session-mode detached` causes a `laband` process
-  to appear. Verification: `pgrep -f laband` is non-empty after
-  the smoke session opens.
-- [ ] `LabanApp --session-mode invalidvalue` exits nonzero with
-  stderr naming the three accepted values.
-- [ ] `LABAN_SESSION_MODE=background LabanApp` (without `--session-mode`)
-  produces the same behavior as `LabanApp --session-mode background`.
-- [ ] `SessionModeRoutingTests`, `SessionModePersistenceTests`, and
-  `SessionModeCLITests` all pass.
+  Sources/LabanApp/TerminalBackendMenuController.swift
+  Sources/LabanApp/MenuCommands.swift docs/product/` returns zero
+  hits in user-visible strings (hits inside source comments or
+  configuration paths are acceptable; identifiers like
+  `LabandTerminalSessionClient` in source are also fine — the
+  rule is about menu/tooltip/doc strings the user reads).
+- [ ] `LabanApp --terminal-backend in-process` opens a session
+  with neither daemon needed. Verification: the test harness
+  starts no labpty/laband binaries beforehand; after the smoke
+  session opens, the harness checks its tracked daemon-PIDs
+  (none should exist) and confirms no labpty/laband process was
+  started under the run-id-scoped `.tmp/<run-id>/` socket
+  directory.
+- [ ] `LabanApp --terminal-backend labpty` causes the
+  harness-launched `labpty` (or a LabanApp-spawned `labpty`
+  under the run-id-scoped socket) to receive an `openSession`
+  RPC. Verification: the harness reads
+  `labpty.listSessions` against its known run-id-scoped socket
+  and observes a non-empty session list.
+- [ ] `LabanApp --terminal-backend laband` causes
+  laband-side session creation. Verification: the harness reads
+  `laband.listSessions` against its known run-id-scoped socket
+  and observes a non-empty session list.
+- [ ] `LabanApp --terminal-backend invalidvalue` exits nonzero
+  with stderr naming the accepted values
+  (`in-process`/`labpty`/`laband` plus aliases).
+- [ ] `LABAN_TERMINAL_BACKEND=labpty LabanApp` (without the CLI
+  flag) produces the same routing as
+  `LabanApp --terminal-backend labpty`. Verified by the same
+  list-sessions check against the run-id-scoped socket.
+- [ ] `LABAN_TERMINAL_BACKEND=background LabanApp` (alias) also
+  routes to `.labpty`, per the new `parse(_:)` aliases.
+- [ ] **UserDefaults migration:** seed
+  `LabanTerminalSessionBackend = "laband"` in the test's
+  isolated `UserDefaults` suite, launch `LabanApp`, open a
+  session, observe it goes to the laband-backed Detached path
+  (the user's intent is preserved). The test must use an
+  isolated defaults suite (`UserDefaults(suiteName:)`), not
+  `.standard`.
+- [ ] `SessionModeRoutingTests`, `SessionModePersistenceTests`,
+  and `SessionModeCLITests` all pass.
 
 ### Cleanup
 
-- [ ] No `labpty`, `laband`, or `LabanApp` test processes remain
-  after the test suite exits (`pgrep -f '/labpty --socket .tmp/'`,
-  `pgrep -f '/laband --socket .tmp/'`, and `pgrep -f LabanApp`
-  return empty).
-- [ ] No leftover shm files under `.tmp/<run-id>/labpty/` after tests
-  pass.
+- [ ] No `labpty`, `laband`, or `LabanApp` processes that the test
+  harness started remain after the test suite exits. The harness
+  tracks PIDs it launched and asserts they exited; **no global
+  `pgrep` calls** (compliance with worktree isolation —
+  unrelated user processes must not be inspected). The
+  per-test `tearDown` is the right place.
+- [ ] No leftover shm files under `.tmp/<run-id>/labpty/` after
+  tests pass.
 
 Review status: NOT REVIEWED
 
