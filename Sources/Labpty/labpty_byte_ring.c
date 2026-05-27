@@ -55,26 +55,53 @@ static void store_u64_plain(uint8_t *base, uint64_t offset, uint64_t value) {
     for (int i = 0; i < 8; i++) base[offset + (uint64_t)i] = (uint8_t)((value >> (i * 8)) & 0xFF);
 }
 
+/* Header field offsets, in bytes from the start of the mapping. The
+ * Swift reader rediscovers most of these dynamically from the
+ * header_bytes / counters_offset / reader_slot_* fields (commit
+ * bef1e97), so the byte positions below are the daemon's source of
+ * truth for the wire layout. Keep these mirrored with
+ * Sources/LabanCore/LabptyByteRingLayout.swift's outputBytesWrittenTotalOffset
+ * et al for the counters region (which starts at byte 128). */
+enum {
+    BR_OFF_MAGIC                  = 0,    /* 8 bytes: "LBPTY-BR" */
+    BR_OFF_ABI_MAJOR              = 8,    /* u32 */
+    BR_OFF_ABI_MINOR              = 12,   /* u32 */
+    BR_OFF_HEADER_BYTES           = 16,   /* u32 */
+    BR_OFF_COUNTERS_OFFSET        = 20,   /* u32 */
+    BR_OFF_READER_SLOT_OFFSET     = 24,   /* u32 */
+    BR_OFF_READER_SLOT_BYTES      = 28,   /* u32 */
+    BR_OFF_READER_SLOT_COUNT      = 32,   /* u32 */
+    BR_OFF_INPUT_RING_OFFSET      = 40,   /* u64 */
+    BR_OFF_INPUT_RING_CAPACITY    = 48,   /* u64 (always 0 in Phase 1) */
+    BR_OFF_OUTPUT_RING_OFFSET     = 56,   /* u64 */
+    BR_OFF_OUTPUT_RING_CAPACITY   = 64,   /* u64 */
+    BR_OFF_METADATA_RING_OFFSET   = 72,   /* u64 */
+    BR_OFF_METADATA_RING_CAPACITY = 80,   /* u64 (always 0 in Phase 1) */
+    BR_OFF_SESSION_HASH           = 88,   /* u64 (fnv1a64 of logical_id) */
+    BR_OFF_PRODUCER_PID           = 96,   /* u32 */
+    BR_OFF_CREATED_AT_UNIX_NS     = 104,  /* u64 */
+};
+
 static void initialize_header(labpty_byte_ring_writer_t *writer, const char *logical_id) {
     assert(writer != NULL);
     assert(writer->map != NULL);
-    memcpy(writer->map, labpty_ring_magic, 8);
-    store_u32_plain(writer->map, 8, 1);
-    store_u32_plain(writer->map, 12, 0);
-    store_u32_plain(writer->map, 16, LABPTY_HEADER_BYTES);
-    store_u32_plain(writer->map, 20, LABPTY_COUNTERS_OFFSET);
-    store_u32_plain(writer->map, 24, LABPTY_READER_SLOT_OFFSET);
-    store_u32_plain(writer->map, 28, LABPTY_READER_SLOT_BYTES);
-    store_u32_plain(writer->map, 32, LABPTY_READER_SLOT_COUNT);
-    store_u64_plain(writer->map, 40, LABPTY_INPUT_RING_OFFSET);
-    store_u64_plain(writer->map, 48, 0);
-    store_u64_plain(writer->map, 56, writer->output_ring_offset);
-    store_u64_plain(writer->map, 64, writer->output_capacity);
-    store_u64_plain(writer->map, 72, writer->output_ring_offset + writer->output_capacity);
-    store_u64_plain(writer->map, 80, 0);
-    store_u64_plain(writer->map, 88, fnv1a64(logical_id));
-    store_u32_plain(writer->map, 96, (uint32_t)getpid());
-    store_u64_plain(writer->map, 104, unix_ns());
+    memcpy(writer->map + BR_OFF_MAGIC, labpty_ring_magic, 8);
+    store_u32_plain(writer->map, BR_OFF_ABI_MAJOR,              1);
+    store_u32_plain(writer->map, BR_OFF_ABI_MINOR,              0);
+    store_u32_plain(writer->map, BR_OFF_HEADER_BYTES,           LABPTY_HEADER_BYTES);
+    store_u32_plain(writer->map, BR_OFF_COUNTERS_OFFSET,        LABPTY_COUNTERS_OFFSET);
+    store_u32_plain(writer->map, BR_OFF_READER_SLOT_OFFSET,     LABPTY_READER_SLOT_OFFSET);
+    store_u32_plain(writer->map, BR_OFF_READER_SLOT_BYTES,      LABPTY_READER_SLOT_BYTES);
+    store_u32_plain(writer->map, BR_OFF_READER_SLOT_COUNT,      LABPTY_READER_SLOT_COUNT);
+    store_u64_plain(writer->map, BR_OFF_INPUT_RING_OFFSET,      LABPTY_INPUT_RING_OFFSET);
+    store_u64_plain(writer->map, BR_OFF_INPUT_RING_CAPACITY,    0);
+    store_u64_plain(writer->map, BR_OFF_OUTPUT_RING_OFFSET,     writer->output_ring_offset);
+    store_u64_plain(writer->map, BR_OFF_OUTPUT_RING_CAPACITY,   writer->output_capacity);
+    store_u64_plain(writer->map, BR_OFF_METADATA_RING_OFFSET,   writer->output_ring_offset + writer->output_capacity);
+    store_u64_plain(writer->map, BR_OFF_METADATA_RING_CAPACITY, 0);
+    store_u64_plain(writer->map, BR_OFF_SESSION_HASH,           fnv1a64(logical_id));
+    store_u32_plain(writer->map, BR_OFF_PRODUCER_PID,           (uint32_t)getpid());
+    store_u64_plain(writer->map, BR_OFF_CREATED_AT_UNIX_NS,     unix_ns());
 }
 
 labpty_status_t labpty_byte_ring_create(
