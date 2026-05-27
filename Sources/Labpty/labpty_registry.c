@@ -92,7 +92,10 @@ void labpty_registry_init(labpty_registry_t *registry, const char *shm_dir) {
 
 labpty_session_t *labpty_registry_find(labpty_registry_t *registry, uint64_t handle) {
     assert(registry != NULL);
-    assert(handle > 0);
+    /* handle is client-controlled; handle == 0 (or any unmatched value)
+     * must return NULL, not abort the daemon. Real handles start at 1
+     * (next_handle initializes to 1), so the loop naturally returns NULL
+     * for 0 since no slot ever holds that value. */
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         if (registry->sessions[i].used && registry->sessions[i].handle == handle) return &registry->sessions[i];
     }
