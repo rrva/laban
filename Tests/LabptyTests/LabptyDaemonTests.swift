@@ -279,6 +279,43 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try reattached.terminate(handle: descriptor.ptyHandle)
   }
 
+  func testDaemonCanRestartAfterCrashWhileChildIgnoresHangup() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: [
+          "/bin/sh",
+          "-c",
+          "trap '' HUP; (trap '' HUP; exec /bin/sleep 30 </dev/null >/dev/null 2>/dev/null) & echo survivor:$!; wait",
+        ],
+        logicalSessionId: "restart-after-crash"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    let output = try waitForOutput(reader: reader, contains: "survivor:")
+    let survivorLine = try XCTUnwrap(output.split(whereSeparator: \.isNewline).first {
+      $0.hasPrefix("survivor:")
+    })
+    let survivorPid = try XCTUnwrap(pid_t(String(survivorLine.dropFirst("survivor:".count))))
+    defer {
+      _ = Darwin.kill(survivorPid, SIGKILL)
+      _ = Darwin.kill(-pid_t(descriptor.childPid), SIGKILL)
+      try? waitForDead(pid: pid_t(descriptor.childPid))
+    }
+
+    XCTAssertEqual(Darwin.kill(pid_t(harness.process.processIdentifier), SIGKILL), 0)
+    try waitForProcessExit(harness.process)
+
+    let replacement = try launchReplacementHarness(
+      socketPath: harness.socketPath,
+      shmDir: harness.shmDir)
+    let replacementClient = try waitForClient(socketPath: replacement.socketPath)
+    defer { replacementClient.close() }
+    _ = try replacementClient.hello()
+  }
+
   func testShortLivedSessionPreservesOutputUntilTerminate() throws {
     let harness = try launchHarness()
     let client = try waitForClient(socketPath: harness.socketPath)
@@ -801,6 +838,32 @@ final class LabptyDaemonTests: XCTestCase {
       at: root.appendingPathComponent(shmDir),
       withIntermediateDirectories: true)
     let socketPath = "\(tempRoot)/s.sock"
+    let process = try launchHarnessProcess(
+      root: root,
+      socketPath: socketPath,
+      shmDir: shmDir,
+      inheritHighFileDescriptors: inheritHighFileDescriptors)
+    launched.append(process)
+    return Harness(socketPath: socketPath, shmDir: shmDir, process: process)
+  }
+
+  private func launchReplacementHarness(socketPath: String, shmDir: String) throws -> Harness {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let process = try launchHarnessProcess(
+      root: root,
+      socketPath: socketPath,
+      shmDir: shmDir,
+      inheritHighFileDescriptors: false)
+    launched.append(process)
+    return Harness(socketPath: socketPath, shmDir: shmDir, process: process)
+  }
+
+  private func launchHarnessProcess(
+    root: URL,
+    socketPath: String,
+    shmDir: String,
+    inheritHighFileDescriptors: Bool
+  ) throws -> Process {
     let executable = root.appendingPathComponent(".build/debug/labpty")
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
       throw XCTSkip("build labpty first: swift build --product labpty")
@@ -824,8 +887,7 @@ final class LabptyDaemonTests: XCTestCase {
     process.standardOutput = Pipe()
     process.standardError = Pipe()
     try process.run()
-    launched.append(process)
-    return Harness(socketPath: socketPath, shmDir: shmDir, process: process)
+    return process
   }
 
   private func requireHighInheritedFDLimit() throws {

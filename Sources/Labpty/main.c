@@ -101,6 +101,13 @@ static int set_nonblock(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+static int set_cloexec(int fd) {
+    assert(fd >= 0);
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
 static int socket_path_is_stale(const char *path, int *out_stale) {
     assert(path != NULL);
     assert(out_stale != NULL);
@@ -121,6 +128,10 @@ static int socket_path_is_stale(const char *path, int *out_stale) {
 
     int probe = socket(AF_UNIX, SOCK_STREAM, 0);
     if (probe < 0) return -1;
+    if (set_cloexec(probe) != 0) {
+        close(probe);
+        return -1;
+    }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -161,6 +172,11 @@ static int listen_unix_socket(const char *path) {
     assert(path[0] != '\0');
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+    assert(fd >= 0);
+    if (set_cloexec(fd) != 0) {
+        close(fd);
+        return -1;
+    }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -212,13 +228,14 @@ static int listen_unix_socket(const char *path) {
     return fd;
 }
 
-static void configure_client_fd(int fd) {
+static int configure_client_fd(int fd) {
     assert(fd >= 0);
+    if (set_cloexec(fd) != 0) return -1;
 #ifdef SO_NOSIGPIPE
     int one = 1;
     (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
-    set_nonblock(fd);
+    return set_nonblock(fd);
 }
 
 static void client_release(labpty_client_t *client) {
@@ -242,7 +259,10 @@ static void add_client(labpty_daemon_t *daemon) {
     assert(daemon->listen_fd >= 0);
     int fd = accept(daemon->listen_fd, NULL, NULL);
     if (fd < 0) return;
-    configure_client_fd(fd);
+    if (configure_client_fd(fd) != 0) {
+        close(fd);
+        return;
+    }
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use) {
@@ -675,7 +695,11 @@ int main(int argc, char **argv) {
     labpty_registry_init(&daemon.registry, shm_dir);
     daemon.listen_fd = listen_unix_socket(socket_path);
     if (daemon.listen_fd < 0) { perror("labpty listen"); return 1; }
-    set_nonblock(daemon.listen_fd);
+    if (set_nonblock(daemon.listen_fd) != 0) {
+        perror("labpty nonblock");
+        cleanup_daemon(&daemon, socket_path);
+        return 1;
+    }
     int loop_status = event_loop(&daemon);
     cleanup_daemon(&daemon, socket_path);
     return loop_status == 0 ? 0 : 1;
