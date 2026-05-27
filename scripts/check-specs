@@ -1,0 +1,85 @@
+#!/usr/bin/env sh
+# Run TLC on every TLA+ model-checker config under specs/labpty and assert
+# the expected outcome. Positive configs (named MC, MC_<Variant>, etc.)
+# must verify; negative-control configs (Pre*, *Torn) must produce a
+# counter-example. The negative-control assertion is the regression test
+# for past bugs — if a Pre-fix module silently starts passing, the
+# bug-shape it documented is no longer reproducible from the model and
+# someone has accidentally fixed the wrong thing in the spec.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+specs_dir="$repo_root/specs/labpty"
+TLA_JAR="${TLA_JAR:-/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar}"
+
+if [ ! -f "$TLA_JAR" ]; then
+  printf 'check-specs: tla2tools.jar not found at %s\n' "$TLA_JAR" >&2
+  printf '  set TLA_JAR=/path/to/tla2tools.jar or install the TLA+ Toolbox:\n' >&2
+  printf '  https://github.com/tlaplus/tlaplus/releases\n' >&2
+  exit 1
+fi
+
+if ! command -v java >/dev/null 2>&1; then
+  printf 'check-specs: java is required to run TLC\n' >&2
+  exit 1
+fi
+
+cd "$specs_dir"
+tmpout=$(mktemp)
+trap 'rm -f "$tmpout"' EXIT
+
+failures=0
+
+run_tlc() {
+  cfg=$1
+  module=$2
+  expected=$3
+  printf '  %-32s %-28s expect=%s ... ' "$cfg" "$module" "$expected"
+  if java -XX:+UseParallelGC -cp "$TLA_JAR" tlc2.TLC \
+       -workers auto -deadlock -config "$cfg" "$module" >"$tmpout" 2>&1; then
+    actual=pass
+  else
+    actual=fail
+  fi
+  if [ "$actual" = "$expected" ]; then
+    printf 'OK\n'
+    return 0
+  fi
+  printf 'MISMATCH: got %s\n' "$actual"
+  printf '%s\n' '----- TLC output (last 40 lines) -----'
+  tail -n 40 "$tmpout"
+  printf '%s\n' '--------------------------------------'
+  failures=$((failures + 1))
+  return 0
+}
+
+printf 'check-specs: running TLC over specs/labpty\n'
+
+# Positive configs — must verify (every safety invariant and liveness
+# property holds across the full reachable state space).
+run_tlc MC.cfg                       MC                       pass
+run_tlc MC_Larger.cfg                MC                       pass
+run_tlc MC_ByteRing.cfg              MC_ByteRing              pass
+run_tlc MC_ByteRing_Larger.cfg       MC_ByteRing              pass
+run_tlc MC_ControlChannel.cfg        MC_ControlChannel        pass
+run_tlc MC_Startup.cfg               MC_Startup               pass
+
+# Negative-control configs — must FAIL with a counter-example. Each one
+# pins the shape of a past bug or an unsafe parameter choice. If a config
+# here silently starts passing, the bug-shape is gone and the regression
+# value is lost; the model needs inspection (usually someone "simplified"
+# the spec by removing the pathological behaviour, or relaxed the
+# parameter boundary).
+run_tlc MC_PreF2.cfg                 MC_PreF2                 fail
+run_tlc MC_PreSlotReclaim.cfg        MC_PreSlotReclaim        fail
+run_tlc MC_ByteRingTorn.cfg          MC_ByteRingTorn          fail
+run_tlc MC_ByteRing_Boundary.cfg     MC_ByteRing              fail
+run_tlc MC_ControlChannelPreFix.cfg  MC_ControlChannelPreFix  fail
+run_tlc MC_StartupPreFix.cfg         MC_StartupPreFix         fail
+
+if [ "$failures" -gt 0 ]; then
+  printf 'check-specs: %d config(s) had the wrong outcome\n' "$failures" >&2
+  exit 1
+fi
+
+printf 'check-specs passed\n'

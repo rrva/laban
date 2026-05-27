@@ -133,6 +133,10 @@ void labpty_byte_ring_close(labpty_byte_ring_writer_t *writer) {
     writer->fd = -1;
 }
 
+/* Modelled by specs/labpty/LabptyByteRing.tla::WriteCells + WritePublish.
+ * NoTornRead and WindowDoesNotContainFutureWrites hold whenever the
+ * readable window leaves a margin of at least MaxWriteSize bytes;
+ * MC_ByteRing_Boundary.cfg pins the torn-read counter-example at margin = 1. */
 labpty_status_t labpty_byte_ring_write(labpty_byte_ring_writer_t *writer, const uint8_t *bytes, size_t len) {
     assert(writer != NULL);
     assert(bytes != NULL || len == 0);

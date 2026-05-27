@@ -119,6 +119,9 @@ static labpty_session_t *labpty_registry_find_logical(labpty_registry_t *registr
     return NULL;
 }
 
+/* Modelled by specs/labpty/LabptyLifecycle.tla::DeadLeak and ReclaimDeadLeak
+ * (commit 5420964). Pre-5420964 the dead-leak state was absorbing; the
+ * companion LabptyLifecyclePreSlotReclaim.tla pins that counter-example. */
 static int is_reclaimable_dead_session(const labpty_session_t *session) {
     assert(session != NULL);
     return session->used && !session->alive && session->child_pid <= 0 && !session->close_pending;
@@ -139,6 +142,11 @@ static int reclaim_one_dead_session(labpty_registry_t *registry) {
     return 0;
 }
 
+/* Modelled by specs/labpty/LabptyLifecycle.tla::OpenSession (free-slot
+ * path) and ::ReclaimDeadLeak (the reclaim_dead_session +
+ * reclaim_one_dead_session calls below). The two-stage reclaim — same
+ * logical_id first, then any dead slot — keeps long-lived daemons from
+ * exhausting their slot pool. */
 labpty_status_t labpty_registry_open(
     labpty_registry_t *registry,
     const labpty_open_request_t *request,
@@ -188,6 +196,9 @@ labpty_status_t labpty_registry_open(
     return LABPTY_OK;
 }
 
+/* Modelled by specs/labpty/LabptyLifecycle.tla::TerminateFast (when the
+ * child reaps inside wait_for_child_exit) and ::TerminateSlow (when it
+ * doesn't, leaving close_pending=1 for ReapTick to finish — the F2 fix). */
 void labpty_session_close(labpty_session_t *session) {
     assert(session != NULL);
     assert(session->master_fd >= -1);
@@ -215,6 +226,8 @@ void labpty_session_close(labpty_session_t *session) {
     }
 }
 
+/* Modelled by specs/labpty/LabptyLifecycle.tla::ReapTick. The close_pending
+ * branch is the F2 fix that LabptyLifecyclePreF2 demonstrates the absence of. */
 void labpty_registry_reap(labpty_registry_t *registry) {
     assert(registry != NULL);
     assert(registry->next_handle > 0);

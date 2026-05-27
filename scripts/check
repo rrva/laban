@@ -34,6 +34,15 @@ git diff --check
 ./scripts/check-docs
 ./scripts/check-debug-contract
 
+# TLA+ model-checker run. Skipped when tla2tools.jar is absent so the
+# script stays usable on dev machines without the TLA+ Toolbox; CI sets
+# TLA_JAR explicitly, so a missing jar there is a hard failure.
+if [ -f "${TLA_JAR:-/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar}" ]; then
+  ./scripts/check-specs
+else
+  printf 'check: skipping check-specs (tla2tools.jar not found; install TLA+ Toolbox)\n'
+fi
+
 if [ -f Package.swift ]; then
   ./scripts/lint
   ./scripts/fetch-libghostty-vt

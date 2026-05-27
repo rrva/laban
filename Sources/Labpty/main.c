@@ -108,6 +108,8 @@ static int set_cloexec(int fd) {
     return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
+/* Encodes the SocketIsLive predicate in specs/labpty/LabptyStartup.tla:
+ * "the entry at the path resolves to a live, bound listening daemon". */
 static int socket_path_is_stale(const char *path, int *out_stale) {
     assert(path != NULL);
     assert(out_stale != NULL);
@@ -167,6 +169,10 @@ static int bind_unix_socket_private(int fd, const struct sockaddr_un *addr) {
     return status;
 }
 
+/* Modelled by specs/labpty/LabptyStartup.tla::Listen_Fixed. The
+ * probe → bind → stale-unlink retry sequence is the b5e7819 fix; the
+ * companion MC_StartupPreFix.cfg with UnconditionalUnlink=TRUE pins the
+ * stranded-daemon counter-example without it. */
 static int listen_unix_socket(const char *path) {
     assert(path != NULL);
     assert(path[0] != '\0');
@@ -254,6 +260,7 @@ static void client_reset_after_response(labpty_client_t *client) {
     client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
 }
 
+/* Modelled by specs/labpty/LabptyControlChannel.tla::Accept. */
 static void add_client(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     assert(daemon->listen_fd >= 0);
@@ -500,6 +507,10 @@ static int client_pump_read(labpty_daemon_t *daemon, labpty_client_t *client) {
     return client_process_full_frame(daemon, client);
 }
 
+/* Modelled by specs/labpty/LabptyControlChannel.tla::WriteComplete. The
+ * `established = client->negotiated` line below is the 2aac41a fix; the
+ * companion MC_ControlChannelPreFix.cfg with EstablishOnAnyRoundTrip=TRUE
+ * pins the slowloris counter-example without it. */
 static int client_pump_write(labpty_client_t *client) {
     assert(client != NULL);
     while (client->write_sent < client->write_total) {
@@ -624,6 +635,9 @@ static void tick_heartbeats(labpty_daemon_t *daemon) {
     }
 }
 
+/* Modelled by specs/labpty/LabptyControlChannel.tla::Expire. The
+ * established-but-no-pending-frame skip below is what fairness on Expire
+ * relies on to reclaim un-negotiated idle slots. */
 static void expire_stalled_clients(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     uint64_t now = monotonic_ns();
