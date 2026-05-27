@@ -358,6 +358,75 @@ final class LabptyDaemonTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
+  // Regression for ADR 0007's "additive-only" promise: an OLD labpty must
+  // accept trailing bytes appended by a NEWER client to every fixed-shape
+  // request decoder. Without that tolerance, any future field added to
+  // hello/open/resize/signal/terminate would force users to upgrade
+  // labpty in lockstep — exactly what the rock-solid-forever contract
+  // forbids. Strict-exhaust regressions here would silently force daemon
+  // upgrades, so this test pins the contract end-to-end through the
+  // wire format.
+  func testFixedShapeRequestsTolerateTrailingAdditiveBytes() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    let raw = try connectRaw(socketPath: harness.socketPath)
+    defer { Darwin.close(raw) }
+
+    let extra = Data(repeating: 0xAB, count: 16)
+
+    let helloPayload = try LabptyHelloRequest(clientId: "additive-hello").encode() + extra
+    let helloFrame = try LabptyFraming.encodeRequest(
+      operation: .hello, sequence: 1, payload: helloPayload)
+    try writeAllRaw(fd: raw, data: helloFrame)
+    let helloResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(helloResponse.header.sequence, 1)
+    XCTAssertEqual(helloResponse.header.responseCode, .ok)
+
+    let openPayload =
+      try LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "30"],
+        logicalSessionId: "additive-open").encode() + extra
+    let openFrame = try LabptyFraming.encodeRequest(
+      operation: .openSession, sequence: 2, payload: openPayload)
+    try writeAllRaw(fd: raw, data: openFrame)
+    let openResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(openResponse.header.sequence, 2)
+    XCTAssertEqual(openResponse.header.responseCode, .ok)
+    let descriptor = try LabptySessionDescriptor.decode(from: openResponse.payload)
+
+    let resizePayload =
+      LabptyResizeSessionRequest(ptyHandle: descriptor.ptyHandle, rows: 30, cols: 100).encode()
+      + extra
+    let resizeFrame = try LabptyFraming.encodeRequest(
+      operation: .resizeSession, sequence: 3, payload: resizePayload)
+    try writeAllRaw(fd: raw, data: resizeFrame)
+    let resizeResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(resizeResponse.header.sequence, 3)
+    XCTAssertEqual(resizeResponse.header.responseCode, .ok)
+
+    let signalPayload =
+      LabptySignalSessionRequest(ptyHandle: descriptor.ptyHandle, signal: 0).encode() + extra
+    let signalFrame = try LabptyFraming.encodeRequest(
+      operation: .signalSession, sequence: 4, payload: signalPayload)
+    try writeAllRaw(fd: raw, data: signalFrame)
+    let signalResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(signalResponse.header.sequence, 4)
+    XCTAssertEqual(signalResponse.header.responseCode, .ok)
+
+    let terminatePayload =
+      LabptyTerminateSessionRequest(ptyHandle: descriptor.ptyHandle).encode() + extra
+    let terminateFrame = try LabptyFraming.encodeRequest(
+      operation: .terminateSession, sequence: 5, payload: terminatePayload)
+    try writeAllRaw(fd: raw, data: terminateFrame)
+    let terminateResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(terminateResponse.header.sequence, 5)
+    XCTAssertEqual(terminateResponse.header.responseCode, .ok)
+
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   func testShutdownSignalTerminatesSessionsAndUnlinksArtifacts() throws {
     let harness = try launchHarness()
     let client = try waitForClient(socketPath: harness.socketPath)

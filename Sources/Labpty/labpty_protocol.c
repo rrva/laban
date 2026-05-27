@@ -124,7 +124,12 @@ labpty_status_t labpty_decode_open_request(
     if ((status = read_string(&reader, LABPTY_CWD_BYTES, out->cwd, sizeof(out->cwd))) != LABPTY_OK) return status;
     status = read_string(&reader, LABPTY_LOGICAL_ID_BYTES, out->logical_id, sizeof(out->logical_id));
     if (status != LABPTY_OK) return status;
-    return reader.cur == reader.end ? LABPTY_OK : LABPTY_E_TRUNCATED_FRAME;
+    /* Trailing bytes are forward-compatible additive fields per ADR 0007.
+     * A future LabanApp/laband may append new optional fields to this
+     * request; an OLD labpty (this code) must accept and ignore them so
+     * long-lived sessions survive client upgrades. The same rationale
+     * applies to the other fixed-shape request decoders below. */
+    return LABPTY_OK;
 }
 
 labpty_status_t labpty_decode_resize_request(
@@ -140,7 +145,9 @@ labpty_status_t labpty_decode_resize_request(
     if ((status = labpty_read_u32(&reader, &out->rows)) != LABPTY_OK) return status;
     if ((status = labpty_read_u32(&reader, &out->cols)) != LABPTY_OK) return status;
     if ((status = validate_winsize(out->rows, out->cols)) != LABPTY_OK) return status;
-    return reader.cur == reader.end ? LABPTY_OK : LABPTY_E_TRUNCATED_FRAME;
+    /* Trailing bytes are tolerated for additive evolution (see ADR 0007
+     * note in labpty_decode_open_request). */
+    return LABPTY_OK;
 }
 
 labpty_status_t labpty_decode_signal_request(
@@ -154,7 +161,9 @@ labpty_status_t labpty_decode_signal_request(
     labpty_status_t status = labpty_read_u64(&reader, &out->handle);
     if (status != LABPTY_OK) return status;
     if ((status = labpty_read_i32(&reader, &out->signo)) != LABPTY_OK) return status;
-    return reader.cur == reader.end ? LABPTY_OK : LABPTY_E_TRUNCATED_FRAME;
+    /* Trailing bytes are tolerated for additive evolution (see ADR 0007
+     * note in labpty_decode_open_request). */
+    return LABPTY_OK;
 }
 
 labpty_status_t labpty_decode_handle_request(
@@ -167,7 +176,9 @@ labpty_status_t labpty_decode_handle_request(
     labpty_reader_t reader = { .cur = payload, .end = payload + len };
     labpty_status_t status = labpty_read_u64(&reader, &out->handle);
     if (status != LABPTY_OK) return status;
-    return reader.cur == reader.end ? LABPTY_OK : LABPTY_E_TRUNCATED_FRAME;
+    /* Trailing bytes are tolerated for additive evolution (see ADR 0007
+     * note in labpty_decode_open_request). */
+    return LABPTY_OK;
 }
 
 labpty_status_t labpty_decode_write_input_request(
@@ -208,7 +219,11 @@ labpty_status_t labpty_decode_hello_request(
         status = read_string(&reader, 64, out->capabilities[i], sizeof(out->capabilities[i]));
         if (status != LABPTY_OK) return status;
     }
-    return reader.cur == reader.end ? LABPTY_OK : LABPTY_E_TRUNCATED_FRAME;
+    /* Trailing bytes are tolerated for additive evolution (see ADR 0007
+     * note in labpty_decode_open_request). Hello especially must remain
+     * future-additive: a new client field appended after capabilities
+     * would otherwise break every existing labpty deployment. */
+    return LABPTY_OK;
 }
 
 static const char *const labpty_required_capabilities[] = {
