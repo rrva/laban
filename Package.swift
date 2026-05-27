@@ -66,7 +66,7 @@ let package = Package(
       name: "Labpty",
       dependencies: ["LabanTerminalCore"],
       cSettings: [
-        .unsafeFlags(["-Wall", "-Wextra", "-Wpedantic"])
+        .unsafeFlags(["-Wall", "-Wextra", "-Wpedantic", "-Werror"])
       ]
     ),
     .executableTarget(

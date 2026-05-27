@@ -153,6 +153,122 @@ static void init_sane_termios(struct termios *tio) {
     tio->c_cc[VTIME] = 0;
 }
 
+int laban_pty_open(
+    int rows,
+    int cols,
+    const char *const *argv,
+    const char *const *envp,
+    const char *cwd,
+    int *out_master_fd,
+    pid_t *out_child_pid
+) {
+    if (out_master_fd) *out_master_fd = -1;
+    if (out_child_pid) *out_child_pid = -1;
+    if (!out_master_fd || !out_child_pid) return -1;
+
+    const char *exe = NULL;
+    if (argv && argv[0] && argv[0][0]) {
+        exe = argv[0];
+    } else {
+        exe = getenv("SHELL");
+        if (!exe || !exe[0]) {
+            struct passwd *pw = getpwuid(getuid());
+            if (pw && pw->pw_shell && pw->pw_shell[0]) exe = pw->pw_shell;
+        }
+        if (!exe || !exe[0]) exe = "/bin/sh";
+    }
+    if (access(exe, X_OK) != 0) return -1;
+
+    char login_arg[256];
+    char *default_argv[] = { login_arg, NULL };
+    char *const *spawn_argv = NULL;
+    if (argv && argv[0] && argv[0][0]) {
+        spawn_argv = (char *const *)argv;
+    } else {
+        const char *base = strrchr(exe, '/');
+        base = base ? base + 1 : exe;
+        snprintf(login_arg, sizeof(login_arg), "-%s", base);
+        spawn_argv = default_argv;
+    }
+
+    const char *launch_cwd = NULL;
+    if (cwd && cwd[0]) {
+        launch_cwd = cwd;
+    } else {
+        launch_cwd = getenv("HOME");
+        if (!launch_cwd || !launch_cwd[0]) {
+            struct passwd *pw = getpwuid(getuid());
+            if (pw && pw->pw_dir) launch_cwd = pw->pw_dir;
+        }
+    }
+
+    char **spawn_env = build_spawn_env(envp);
+    if (!spawn_env) return -1;
+
+    uint16_t safe_rows = (uint16_t)(rows > 0 ? rows : 24);
+    uint16_t safe_cols = (uint16_t)(cols > 0 ? cols : 80);
+    struct winsize ws = {
+        .ws_row = safe_rows,
+        .ws_col = safe_cols,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    struct termios term;
+    init_sane_termios(&term);
+
+    int pty_fd = -1;
+    int slave_fd = -1;
+    if (openpty(&pty_fd, &slave_fd, NULL, &term, &ws) < 0) {
+        free(spawn_env);
+        return -1;
+    }
+
+    if (set_cloexec(pty_fd) < 0 || set_cloexec(slave_fd) < 0) {
+        close(slave_fd);
+        close(pty_fd);
+        free(spawn_env);
+        return -1;
+    }
+
+    pid_t child = fork();
+    if (child < 0) {
+        close(slave_fd);
+        close(pty_fd);
+        free(spawn_env);
+        return -1;
+    }
+    if (child == 0) {
+        struct sigaction sa = {0};
+        sa.sa_handler = SIG_DFL;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPIPE, &sa, NULL);
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGQUIT, &sa, NULL);
+        sigaction(SIGTSTP, &sa, NULL);
+        close(pty_fd);
+        if (setsid() < 0) _exit(127);
+        if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) _exit(127);
+        if (dup2(slave_fd, STDIN_FILENO) < 0) _exit(127);
+        if (dup2(slave_fd, STDOUT_FILENO) < 0) _exit(127);
+        if (dup2(slave_fd, STDERR_FILENO) < 0) _exit(127);
+        if (slave_fd > STDERR_FILENO) close(slave_fd);
+        if (launch_cwd && launch_cwd[0] && chdir(launch_cwd) != 0) {
+            _exit(127);
+        }
+        execve(exe, spawn_argv, spawn_env);
+        _exit(127);
+    }
+    close(slave_fd);
+    free(spawn_env);
+
+    int flags = fcntl(pty_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(pty_fd, F_SETFL, flags | O_NONBLOCK);
+
+    *out_master_fd = pty_fd;
+    *out_child_pid = child;
+    return 0;
+}
+
 static void free_ghostty_resources(LabanSession *s) {
     ghostty_render_state_row_cells_free(s->row_cells);
     ghostty_render_state_row_iterator_free(s->row_iter);

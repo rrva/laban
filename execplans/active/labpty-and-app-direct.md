@@ -215,17 +215,22 @@ than coding past it.
   `LBPTY-BR-01` byte-ring layout declared. Round-trip unit tests
   cover every shape. Verified 2026-05-27 with
   `swift test --filter LabptyTests` (10 tests, 0 failures).
-- [ ] M1: New C executable `labpty`. Owns PTY masters; exposes the
+- [x] M1: New C executable `labpty`. Owns PTY masters; exposes the
   Phase 1 RPCs over a run-id-scoped Unix socket. ADR 0002 launch
   invariants preserved inside `labpty`. Master drain in M1 discards
   bytes into a small scratch buffer (the byte ring lands in M2).
   Unit-test coverage for open/list/resize/signal/terminate and
-  `child_pid` alive/dead.
-- [ ] M2: Output byte ring `LBPTY-BR-01` implemented as a lock-free
+  `child_pid` alive/dead. Verified 2026-05-27 with
+  `swift build --product labpty`, `swift test --filter LabptyTests`,
+  and the new Power-of-Ten helper scripts.
+- [x] M2: Output byte ring `LBPTY-BR-01` implemented as a lock-free
   single-producer multi-reader shared-memory ring (monotonic
   `output_write_offset`, `output_wrap_count`, 100 ms producer-alive
   heartbeat). `labpty` drains masters into the ring. Readers poll.
-  Independent writer/reader tests in `Tests/LabptyTests/`.
+  Independent writer/reader tests in `Tests/LabptyTests/`. Verified
+  2026-05-27 with `swift test --filter LabptyTests` including
+  `testByteRingWrapDetection`, `testProducerAliveHeartbeat`, and
+  `testHighVolumeOutputIsNotSplitOrLost`.
 - [ ] M3: `LabanApp` gains a `labpty` client path alongside the
   existing `laband` client. `LabptyTerminalSessionClient` drives session
   control and `LabptyByteRingReader` consumes output; the parser is

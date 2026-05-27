@@ -1,0 +1,83 @@
+#ifndef LABPTY_INTERNAL_H
+#define LABPTY_INTERNAL_H
+
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "LabanTerminalCore.h"
+
+enum {
+    LABPTY_MAX_FRAME = 128 * 1024,
+    LABPTY_FRAME_HEADER_BYTES = 24,
+    LABPTY_MAX_SESSIONS = 64,
+    LABPTY_MAX_CLIENTS = 8,
+    LABPTY_ARGV_MAX = 64,
+    LABPTY_ARG_BYTES = 4096,
+    LABPTY_ENVP_MAX = 256,
+    LABPTY_ENV_BYTES = 4352,
+    LABPTY_CWD_BYTES = 4096,
+    LABPTY_LOGICAL_ID_BYTES = 256,
+    LABPTY_PATH_BYTES = 1024,
+    LABPTY_READ_BUFFER_BYTES = 4096,
+    LABPTY_DEFAULT_OUTPUT_CAPACITY = 8 * 1024 * 1024,
+    LABPTY_MIN_OUTPUT_CAPACITY = 256 * 1024,
+    LABPTY_MAX_OUTPUT_CAPACITY = 64 * 1024 * 1024,
+    LABPTY_READER_SLOT_BYTES = 64,
+    LABPTY_READER_SLOT_COUNT = 8,
+    LABPTY_HEADER_BYTES = 128,
+    LABPTY_COUNTERS_OFFSET = 128,
+    LABPTY_READER_SLOT_OFFSET = 256,
+    LABPTY_INPUT_RING_OFFSET = 768,
+};
+
+typedef enum {
+    LABPTY_OK = 0,
+    LABPTY_E_SESSION_NOT_FOUND = 0x0001,
+    LABPTY_E_SESSION_ID_IN_USE = 0x0002,
+    LABPTY_E_PTY_OPEN_FAILED = 0x0003,
+    LABPTY_E_RING_MAP_FAILED = 0x0004,
+    LABPTY_E_CAPABILITY_REQUIRED = 0x0005,
+    LABPTY_E_VERSION_MISMATCH = 0x0006,
+    LABPTY_E_PERMISSION_DENIED = 0x0007,
+    LABPTY_E_PAYLOAD_TOO_LARGE = 0x0008,
+    LABPTY_E_TRUNCATED_FRAME = 0x0009,
+    LABPTY_E_OVERSIZE_FRAME = 0x000A,
+    LABPTY_E_INTERNAL = 0x000B,
+    LABPTY_E_SHUTTING_DOWN = 0x000C,
+} labpty_status_t;
+
+typedef enum {
+    LABPTY_OP_HELLO = 0x0001,
+    LABPTY_OP_OPEN_SESSION = 0x0002,
+    LABPTY_OP_LIST_SESSIONS = 0x0003,
+    LABPTY_OP_RESIZE_SESSION = 0x0004,
+    LABPTY_OP_SIGNAL_SESSION = 0x0005,
+    LABPTY_OP_TERMINATE_SESSION = 0x0006,
+    LABPTY_OP_WRITE_INPUT = 0x0007,
+    LABPTY_OP_PING = 0x0008,
+    LABPTY_OP_RESPONSE = 0xFFFF,
+} labpty_op_t;
+
+static const uint8_t labpty_frame_magic[4] = {'L', 'P', 'C', 'T'};
+static const uint8_t labpty_ring_magic[8] = {'L', 'B', 'P', 'T', 'Y', '-', 'B', 'R'};
+
+#endif

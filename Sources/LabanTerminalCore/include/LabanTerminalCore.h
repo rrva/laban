@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 #include "laband_snapshot_ring.h"
 
 /* Smoke functions from Milestone 1 */
@@ -168,6 +169,28 @@ int laban_session_start_spawn(LabanSession *session, const char *override_cwd);
  */
 int laban_session_start_spawn_argv(LabanSession *session, const char *override_cwd,
                                    const char *exe, const char *const *argv);
+
+/*
+ * Opens a PTY and launches a child process without constructing a
+ * libghostty terminal session. This is the ADR 0002 launch primitive
+ * shared by app-local sessions, laband, and labpty:
+ * parent-side openpty, initial winsize before fork, constrained fork
+ * child branch, parent-only master fd.
+ *
+ * `argv` is NULL-terminated; when argv is NULL or argv[0] is empty, the
+ * user's shell is launched as a login shell. `envp` is a NULL-terminated
+ * override list merged with the inherited environment. Returns 0 on success
+ * and stores the nonblocking master fd plus child pid in the out parameters.
+ */
+int laban_pty_open(
+    int rows,
+    int cols,
+    const char *const *argv,
+    const char *const *envp,
+    const char *cwd,
+    int *out_master_fd,
+    pid_t *out_child_pid
+);
 
 /*
  * Drop PTY output from a deferred-spawn restore until the first input
