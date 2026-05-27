@@ -265,11 +265,12 @@ Background-mode path without removing anything.
   in-process Tier 1 client. Used by Local mode; intact.
 - `Sources/LabanApp/AppLabandSessionCoordinator.swift` — `LabanApp`'s
   session lifecycle. M3 generalizes it: the class is renamed to
-  `AppSessionCoordinator` (or similar — drop the `Laband` infix) and
-  gains a `mode` field that selects between the three transport
-  clients. The existing `laband` path becomes the Detached-mode
-  branch; the new `labpty` path becomes the Background-mode branch;
-  the existing in-process path becomes the Local-mode branch.
+  `AppSessionCoordinator` (drop the `Laband` infix; the class is no
+  longer laband-specific) and gains a `mode: TerminalSessionBackend`
+  field that selects between the three transport clients. The
+  existing `laband` path becomes the Detached-mode branch; the new
+  `labpty` path becomes the Background-mode branch; the existing
+  in-process path becomes the Local-mode branch.
 
 ### Where the PTY launch and parser-only paths already exist
 
@@ -309,6 +310,142 @@ verification ladder) lives in
 `execplans/active/labpty-protocol-design.md`. That document is
 authoritative on every shape and rule; this plan defers to it for
 detail and reproduces only what's needed for narrative.
+
+## Pre-flight Findings (2026-05-27)
+
+A pre-handoff survey of the existing tree turned up infrastructure
+that materially shapes M3, M4, and M7. **Do not start M3 or later
+work without reconciling these.** M0–M2 are unaffected.
+
+### What already exists in 2-mode shape
+
+`LabanApp` already ships a mode-selection layer for two modes
+(`inProcess` and `laband`). M7 is **not** building this from scratch;
+it extends what's there to a third mode.
+
+- `Sources/LabanCore/TerminalSessionClient.swift` declares
+  `TerminalSessionBackend` (currently `case inProcess = "in-process"`,
+  `case laband`) and the `TerminalSessionClient` protocol that
+  abstracts session lifecycle across backends. `parse(_:)` already
+  accepts a generous alias set including `"local-sessions"`,
+  `"background-sessions"`, `"daemon-sessions"`, `"persistent"`. The
+  third case (`labpty`) lands here.
+- `Sources/LabanApp/TerminalBackendSettings.swift` resolves the
+  active backend through a precedence chain: command-line flag
+  (`--local-sessions`, `--background-sessions`, `--laband-sessions`,
+  `--terminal-backend <value>`), env var
+  (`LABAN_TERMINAL_BACKEND`), legacy disable flag, persisted
+  `UserDefaults` key `LabanTerminalSessionBackend`, automatic
+  default. Reuse this precedence; add the third option to each
+  layer.
+- `Sources/LabanApp/TerminalBackendMenuController.swift` builds the
+  `Terminal Sessions` submenu, today with `Local Sessions` and
+  `Background Sessions` items, a restart-prompt UX for changes, and
+  override-detection for command-line/env overrides. Add the third
+  item here.
+- `Sources/LabanApp/MenuCommands.swift` wires the
+  `TerminalBackendMenuController` into the main menu bar.
+- `Sources/LabanApp/AppLabandSessionCoordinator.swift` is the
+  per-session coordinator. M3's "rename to `AppSessionCoordinator`
+  and add `mode` field" lands here.
+- `Tools/KeystrokeLatencyBench/main.swift` exposes
+  `--transport {in-process|laband}` and `--socket PATH`. M4 extends
+  this with a third transport value, not a new `--mode` flag.
+
+### What does not exist and M0–M7 must create
+
+- `Sources/Labpty/` — entire C executable target. Expected.
+- `Sources/LabanCore/Labpty*.swift` — the M0 protocol/framing/byte-
+  ring types and the M3 `LabptyTerminalSessionClient`. Expected.
+- `Tools/LabptyProtocolFuzz/` — the protocol-design doc names this
+  as the primary fuzz target; it does not exist. Codex creates it
+  in M1 alongside the frame decoder.
+- `Tools/LabptyDump/` — the Decision Log mentions this as a
+  human-readable shim for the binary protocol; it does not exist.
+  Defer to a follow-up unless `LabanApp` development needs it
+  during M3.
+- `Tools/LabptyCodingRules/check_function_length.sh` and
+  `check_assertion_density.sh` — named in the Review Gate; do not
+  exist. Codex writes them in M1 against the patterns in
+  `scripts/check-*` (existing examples:
+  `scripts/check-debug-contract`, `scripts/check-dependencies`,
+  `scripts/check-boundaries`).
+
+### Naming-and-migration tension to resolve before M3
+
+The current menu uses **"Background Sessions"** to mean `laband`.
+This plan's mode naming reassigns **"Background sessions"** to mean
+`labpty` (the new, faster path), and reassigns the existing
+`laband`-backed mode to **"Detached sessions"**.
+
+Consequences for M7:
+
+1. **`TerminalSessionBackend` aliases need re-pointing.** The current
+   `parse(_:)` maps `"background-sessions"` and `"persistent"` to
+   `.laband`. After M7, `"background-sessions"` must map to the new
+   `.labpty` case; the `.laband` case keeps `"detached"`,
+   `"detached-sessions"`, `"daemon"`, `"daemon-sessions"`, plus the
+   raw value `"laband"` for back-compat.
+2. **Persisted `UserDefaults` value `"laband"` must migrate.** A
+   user on the current build who selected "Background Sessions"
+   has `LabanTerminalSessionBackend = "laband"` in their defaults.
+   On first launch under the new build, their stored intent
+   ("the daemon-backed mode") is now Detached, not Background.
+   The migration: if the raw stored value parses to `.laband`,
+   keep it on `.laband` (which is now Detached). No user-visible
+   silent switch.
+3. **Legacy CLI flag `--background-sessions`** must remap to
+   `.labpty` (the new Background mode), and a new
+   `--detached-sessions` flag is added for `.laband`. The
+   `--laband-sessions` flag stays for explicit back-compat.
+4. **Env var `LABAN_TERMINAL_BACKEND`** accepts the additional
+   value `labpty` (canonical) plus the alias `background` and its
+   neighbors. No env-var rename; `LABAN_SESSION_MODE` was the
+   plan's initial proposal but the existing variable serves and
+   churning it is unnecessary.
+
+This refines the Decision Log entry "User-facing mode names are
+Local / Background / Detached" — the names stand, but the migration
+work is real and M7-scoped.
+
+### TerminalSessionClient protocol assumes cells, not bytes
+
+The existing `TerminalSessionClient` protocol has
+`attachSnapshotRing(sessionId:)` returning a
+`LabandSnapshotRingAttachment` (the `LBNDSS01` cells ring). The new
+`LabptyTerminalSessionClient` cannot implement this — `labpty`
+publishes a byte ring, not a cells ring. Two options for M3:
+
+- **Option A (recommended):** Generalize the protocol. Replace
+  `attachSnapshotRing` with two methods: `attachCellRing(...)`
+  (implemented by `LabandTerminalSessionClient` only) and
+  `attachByteRing(...)` (implemented by `LabptyTerminalSessionClient`
+  only). Callers branch on `transportMode`. Or add a single
+  `attachOutputTransport(...)` that returns an enum-typed handle.
+- **Option B:** Keep the protocol as-is; `LabptyTerminalSessionClient`
+  throws `protocolError("byte-ring transport; cells not available")`
+  for `attachSnapshotRing`, and `LabanApp` callers learn to take
+  a different branch when the mode is Background.
+
+Option A is cleaner but a bigger refactor. Option B is what the
+plan implicitly assumed. **Pick before M3 starts**; recording it as
+a Decision Log entry is fine.
+
+### M4 bench surface
+
+`Tools/KeystrokeLatencyBench/main.swift` already has the option
+parser for `--transport in-process|laband` and `--socket PATH`. M4
+extends with a third value (`labpty`) and a second socket
+(`--labpty-socket PATH`). The bench's verifiedEcho gating
+(non-zero exit unless `verifiedEcho=N/N`) is the right model and
+should stay.
+
+The output artifact path
+`.artifacts/runs/<run-id>/bench/keystroke-latency-comparison.json`
+is what the plan named, but verify against the actual artifact
+naming convention `bench-keystroke-latency` produces today (look
+at `.artifacts/runs/keystroke-latency-after-m8/` from the laband
+plan's M8 run for the existing shape).
 
 ## Plan of Work
 
@@ -450,9 +587,9 @@ even with `laband` running unchanged in the tree (M7 deletes
 Refactor in `Sources/LabanApp/`:
 
 - Rename `AppLabandSessionCoordinator.swift` to
-  `AppSessionCoordinator.swift` (or similar — drop the `Laband`
-  infix). The class is the only owner of per-session lifecycle in the
-  app process.
+  `AppSessionCoordinator.swift` (drop the `Laband` infix; the class
+  is no longer laband-specific). The class is the only owner of
+  per-session lifecycle in the app process.
 - The coordinator now holds a `LabptyTerminalSessionClient` (control
   channel), a per-session parser-only `Session` (via
   `Session.parserOnly(size:)` from `Sources/LabanCore/`), and a
@@ -492,25 +629,36 @@ Tests in `Tests/LabanAppTests/`:
 
 ### M4 — Keystroke latency bench
 
-Extend `Tools/KeystrokeLatencyBench`:
+Extend `Tools/KeystrokeLatencyBench/main.swift`. The existing parser
+accepts `--transport {in-process|laband}` and `--socket PATH`; M4
+adds a third value:
 
-- Existing `--mode laband` (pre-pivot): drives keystrokes through
-  `LabandTerminalSessionClient.writeInput`; reads cells from
-  `LBNDSS01`. Stays available until M7 deletes `laband`.
-- New `--mode app-direct-writeInput` (this plan's default mode):
-  drives keystrokes through `LabptyTerminalSessionClient.writeInput`;
-  reads cells in-process from the parser.
+- Existing `--transport in-process`: keeps current behavior (Local
+  mode reference).
+- Existing `--transport laband` with `--socket <laband socket>`:
+  Detached-mode reference; stays as the comparison baseline.
+- New `--transport labpty` with `--labpty-socket <labpty socket>`:
+  drives keystrokes through `LabptyTerminalSessionClient.writeInput`
+  and samples cells from an in-process parser fed by the labpty
+  byte ring.
 
-New script `scripts/bench-keystroke-latency`:
+The bench's existing `verifiedEcho=N/N` exit-code gating stays as-is
+(nonzero exit on any failed sample). Path-length and run-id-scoping
+rules from `scripts/run-debug` and `scripts/run-headless` apply.
 
-- Runs both modes against an identical workload on a quiet local
-  machine (NOT shared CI — macOS scheduler jitter under unrelated
-  load makes absolute thresholds flaky).
-- Produces a unified histogram comparison artifact at
-  `.artifacts/runs/<run-id>/bench/keystroke-latency-comparison.json`.
+New helper script `scripts/bench-keystroke-latency` (parallels
+`scripts/test-laband-reattach`):
+
+- Runs all three transports against an identical workload on a quiet
+  local machine (NOT shared CI — macOS scheduler jitter makes
+  absolute thresholds flaky).
+- Produces a unified histogram comparison artifact under
+  `.artifacts/runs/<run-id>/bench/` (verify the exact filename
+  against the existing `keystroke-latency-after-mN/` pattern from
+  the laband plan's M8 run).
 - Decision criterion baked into the script's exit code: p50 of
-  App-direct within 1.5× of `laband` baseline, p99 within 2×. Miss
-  either gate ⇒ M5 ships.
+  `--transport labpty` within 1.5× of `--transport in-process`
+  baseline, p99 within 2×. Miss either gate ⇒ M5 ships.
 
 Acceptance: bench artifact exists; Decision Log entry records the
 measured ratios and the M5 ship/skip outcome.
@@ -641,19 +789,42 @@ Mode-specific lifecycles are isolated: a `labpty` daemon outage
 affects only Background sessions; a `laband` daemon outage affects
 only Detached sessions; Local sessions are independent of both.
 
-**Files touched:**
+**Files touched** (all confirmed to exist in the current tree as of
+the 2026-05-27 pre-flight; see "Pre-flight Findings" above):
 
-- `Sources/LabanApp/AppSessionCoordinator.swift` — gains the
-  `sessionMode` field and the three-way routing.
-- `Sources/LabanApp/MainMenu.swift` (or wherever the Workspace menu
-  is defined) — adds the three-item submenu under Workspace →
-  Terminal Sessions.
-- `Sources/LabanApp/LabanCommandLineOptions.swift` (or the existing
-  command-line parser) — adds `--session-mode` parsing and validation.
-- `Sources/LabanApp/AppLaunchEnvironment.swift` (or equivalent) —
-  reads `LABAN_SESSION_MODE` and seeds the launch default.
-- `Sources/LabanApp/WorkspacePersistence.swift` (or equivalent) —
-  serializes per-session mode into the workspace state file.
+- `Sources/LabanCore/TerminalSessionClient.swift` — add a third
+  `TerminalSessionBackend` case `case labpty = "labpty"`; rework
+  `parse(_:)` aliases per the naming-and-migration tension in the
+  pre-flight findings (`"background-sessions"` now maps to `.labpty`;
+  `.laband` keeps `"laband"`, `"detached"`, `"detached-sessions"`,
+  `"daemon"`, `"daemon-sessions"`).
+- `Sources/LabanApp/TerminalBackendSettings.swift` — extend
+  `commandLineBackend(arguments:)` to recognize `--detached-sessions`
+  (maps to `.laband`); the existing `--background-sessions` now maps
+  to `.labpty`; `--laband-sessions` stays as an explicit alias for
+  `.laband` (back-compat). Add the defaults-migration entry point
+  the pre-flight findings describe.
+- `Sources/LabanApp/TerminalBackendMenuController.swift` — add a
+  third menu item `Detached Sessions` with `@objc selectDetached(_:)`
+  invoking `select(.laband)`; rename `selectLaband` to
+  `selectBackground` and have it invoke `select(.labpty)`. Update
+  the `syncMenuState` checkmark logic to handle three items. Update
+  the restart-prompt copy.
+- `Sources/LabanApp/MenuCommands.swift` — no functional change; the
+  controller wires the three-item submenu into the same menu slot.
+- `Sources/LabanApp/AppLabandSessionCoordinator.swift` — rename to
+  `Sources/LabanApp/AppSessionCoordinator.swift`; gain a
+  `sessionMode: TerminalSessionBackend` field and three-way
+  routing; resolve the `TerminalSessionClient` protocol decision
+  flagged in the pre-flight findings ("Option A" generalize the
+  protocol, or "Option B" mode-specific branches at the call site)
+  before this edit.
+- Workspace persistence: each persisted session record gains a
+  `sessionMode` field. Locate the existing persistence module via
+  `grep -rn 'TabState\|WorkspacePersistence\|persistSession'
+  Sources/LabanApp/` if the path isn't obvious; the laband plan's
+  M5 work added the durable tab-id field there, so the file is
+  already in flux.
 
 **Tests:**
 
