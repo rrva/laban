@@ -92,7 +92,7 @@ labpty_status_t labpty_byte_ring_create(
     if (!is_power_of_two(output_capacity)) return LABPTY_E_PAYLOAD_TOO_LARGE;
     if (output_capacity < LABPTY_MIN_OUTPUT_CAPACITY) return LABPTY_E_PAYLOAD_TOO_LARGE;
     if (output_capacity > LABPTY_MAX_OUTPUT_CAPACITY) return LABPTY_E_PAYLOAD_TOO_LARGE;
-    out->fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    out->fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (out->fd < 0) return LABPTY_E_RING_MAP_FAILED;
     out->output_capacity = output_capacity;
     out->output_ring_offset = LABPTY_INPUT_RING_OFFSET;
