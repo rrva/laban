@@ -25,6 +25,26 @@
 
 #include "LabanTerminalCore.h"
 
+/* Apple-shipped clang ships <ptrcheck.h> as part of the toolchain. When
+ * -fbounds-safety is enabled, the macros below (__sized_by, __counted_by,
+ * __single) expand to attributes that statically check buffer bounds at
+ * call sites and emit runtime traps on violation; when disabled (the
+ * default for our SwiftPM build) they expand to nothing, so the
+ * annotations are zero-cost documentation. Falls back to empty defines
+ * if the header is somehow missing. */
+#if __has_include(<ptrcheck.h>)
+#include <ptrcheck.h>
+#endif
+#ifndef __sized_by
+#define __sized_by(N)
+#endif
+#ifndef __counted_by
+#define __counted_by(N)
+#endif
+#ifndef __single
+#define __single
+#endif
+
 enum {
     LABPTY_MAX_FRAME = 128 * 1024,
     LABPTY_FRAME_HEADER_BYTES = 24,

@@ -34,7 +34,11 @@ typedef struct {
 
 typedef struct {
     uint64_t handle;
-    const uint8_t *bytes;
+    /* The `bytes` pointer addresses exactly `len` bytes of the request
+     * frame buffer; -fbounds-safety statically checks every access via
+     * the __counted_by relationship. With the extension disabled the
+     * annotation is a no-op (zero-cost documentation). */
+    const uint8_t *bytes __counted_by(len);
     size_t len;
 } labpty_write_input_request_t;
 
@@ -60,49 +64,56 @@ typedef struct {
     uint64_t input_capacity;
 } labpty_descriptor_view_t;
 
+/* The decoder signatures below sit at the daemon's trust boundary —
+ * every byte they consume came in from a client socket. The
+ * `payload __sized_by(len)` annotation says "this pointer addresses
+ * exactly `len` bytes": -fbounds-safety statically checks every read
+ * inside the function body and at every call site; with the extension
+ * disabled the annotation expands to nothing. Pointer-to-single output
+ * arguments carry `__single` for symmetry. */
 labpty_status_t labpty_decode_open_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_open_request_t *out
+    labpty_open_request_t *out __single
 );
 
 labpty_status_t labpty_decode_resize_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_resize_request_t *out
+    labpty_resize_request_t *out __single
 );
 
 labpty_status_t labpty_decode_signal_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_signal_request_t *out
+    labpty_signal_request_t *out __single
 );
 
 labpty_status_t labpty_decode_handle_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_handle_request_t *out
+    labpty_handle_request_t *out __single
 );
 
 labpty_status_t labpty_decode_write_input_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_write_input_request_t *out
+    labpty_write_input_request_t *out __single
 );
 
 labpty_status_t labpty_decode_hello_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_hello_request_t *out
+    labpty_hello_request_t *out __single
 );
 
-labpty_status_t labpty_negotiate_hello(const labpty_hello_request_t *request);
+labpty_status_t labpty_negotiate_hello(const labpty_hello_request_t *request __single);
 
-labpty_status_t labpty_encode_hello_response(uint8_t *out, size_t cap, size_t *out_len);
-labpty_status_t labpty_encode_ping_response(uint8_t *out, size_t cap, size_t *out_len);
+labpty_status_t labpty_encode_hello_response(uint8_t *out __sized_by(cap), size_t cap, size_t *out_len __single);
+labpty_status_t labpty_encode_ping_response(uint8_t *out __sized_by(cap), size_t cap, size_t *out_len __single);
 labpty_status_t labpty_encode_descriptor(
-    labpty_writer_t *writer,
-    const labpty_descriptor_view_t *descriptor
+    labpty_writer_t *writer __single,
+    const labpty_descriptor_view_t *descriptor __single
 );
 
 #endif

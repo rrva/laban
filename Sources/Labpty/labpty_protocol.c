@@ -104,9 +104,9 @@ static labpty_status_t validate_winsize(uint32_t rows, uint32_t cols) {
 }
 
 labpty_status_t labpty_decode_open_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_open_request_t *out
+    labpty_open_request_t *out __single
 ) {
     assert(payload != NULL || len == 0);
     assert(out != NULL);
@@ -128,9 +128,9 @@ labpty_status_t labpty_decode_open_request(
 }
 
 labpty_status_t labpty_decode_resize_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_resize_request_t *out
+    labpty_resize_request_t *out __single
 ) {
     assert(payload != NULL || len == 0);
     assert(out != NULL);
@@ -144,9 +144,9 @@ labpty_status_t labpty_decode_resize_request(
 }
 
 labpty_status_t labpty_decode_signal_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_signal_request_t *out
+    labpty_signal_request_t *out __single
 ) {
     assert(payload != NULL || len == 0);
     assert(out != NULL);
@@ -158,9 +158,9 @@ labpty_status_t labpty_decode_signal_request(
 }
 
 labpty_status_t labpty_decode_handle_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_handle_request_t *out
+    labpty_handle_request_t *out __single
 ) {
     assert(payload != NULL || len == 0);
     assert(out != NULL);
@@ -171,9 +171,9 @@ labpty_status_t labpty_decode_handle_request(
 }
 
 labpty_status_t labpty_decode_write_input_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_write_input_request_t *out
+    labpty_write_input_request_t *out __single
 ) {
     assert(payload != NULL || len == 0);
     assert(out != NULL);
@@ -188,9 +188,9 @@ labpty_status_t labpty_decode_write_input_request(
 }
 
 labpty_status_t labpty_decode_hello_request(
-    const uint8_t *payload,
+    const uint8_t *payload __sized_by(len),
     size_t len,
-    labpty_hello_request_t *out
+    labpty_hello_request_t *out __single
 ) {
     assert(payload != NULL || len == 0);
     assert(out != NULL);
@@ -218,7 +218,7 @@ static const char *const labpty_required_capabilities[] = {
     "session-id-pinning/v1",
 };
 
-labpty_status_t labpty_negotiate_hello(const labpty_hello_request_t *request) {
+labpty_status_t labpty_negotiate_hello(const labpty_hello_request_t *request __single) {
     assert(request != NULL);
     if (request->protocol_major != 1) return LABPTY_E_VERSION_MISMATCH;
     size_t required = sizeof(labpty_required_capabilities) / sizeof(labpty_required_capabilities[0]);
@@ -235,7 +235,7 @@ labpty_status_t labpty_negotiate_hello(const labpty_hello_request_t *request) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_encode_hello_response(uint8_t *out, size_t cap, size_t *out_len) {
+labpty_status_t labpty_encode_hello_response(uint8_t *out __sized_by(cap), size_t cap, size_t *out_len __single) {
     assert(out != NULL);
     assert(out_len != NULL);
     labpty_writer_t writer = { .cur = out, .end = out + cap };
@@ -258,7 +258,7 @@ labpty_status_t labpty_encode_hello_response(uint8_t *out, size_t cap, size_t *o
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_encode_ping_response(uint8_t *out, size_t cap, size_t *out_len) {
+labpty_status_t labpty_encode_ping_response(uint8_t *out __sized_by(cap), size_t cap, size_t *out_len __single) {
     assert(out != NULL);
     assert(out_len != NULL);
     labpty_writer_t writer = { .cur = out, .end = out + cap };
@@ -269,8 +269,8 @@ labpty_status_t labpty_encode_ping_response(uint8_t *out, size_t cap, size_t *ou
 }
 
 labpty_status_t labpty_encode_descriptor(
-    labpty_writer_t *writer,
-    const labpty_descriptor_view_t *descriptor
+    labpty_writer_t *writer __single,
+    const labpty_descriptor_view_t *descriptor __single
 ) {
     assert(writer != NULL);
     assert(descriptor != NULL);

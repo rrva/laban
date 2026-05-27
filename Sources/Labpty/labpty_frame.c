@@ -14,7 +14,7 @@ static labpty_status_t require_write(labpty_writer_t *writer, size_t n) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_read_u8(labpty_reader_t *reader, uint8_t *out) {
+labpty_status_t labpty_read_u8(labpty_reader_t *reader __single, uint8_t *out __single) {
     assert(out != NULL);
     assert(reader != NULL);
     if (require_read(reader, 1) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -23,7 +23,7 @@ labpty_status_t labpty_read_u8(labpty_reader_t *reader, uint8_t *out) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_read_u16(labpty_reader_t *reader, uint16_t *out) {
+labpty_status_t labpty_read_u16(labpty_reader_t *reader __single, uint16_t *out __single) {
     assert(out != NULL);
     assert(reader != NULL);
     if (require_read(reader, 2) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -35,7 +35,7 @@ labpty_status_t labpty_read_u16(labpty_reader_t *reader, uint16_t *out) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_read_u32(labpty_reader_t *reader, uint32_t *out) {
+labpty_status_t labpty_read_u32(labpty_reader_t *reader __single, uint32_t *out __single) {
     assert(out != NULL);
     assert(reader != NULL);
     if (require_read(reader, 4) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -45,7 +45,7 @@ labpty_status_t labpty_read_u32(labpty_reader_t *reader, uint32_t *out) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_read_u64(labpty_reader_t *reader, uint64_t *out) {
+labpty_status_t labpty_read_u64(labpty_reader_t *reader __single, uint64_t *out __single) {
     assert(out != NULL);
     assert(reader != NULL);
     if (require_read(reader, 8) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -56,7 +56,7 @@ labpty_status_t labpty_read_u64(labpty_reader_t *reader, uint64_t *out) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_read_i32(labpty_reader_t *reader, int32_t *out) {
+labpty_status_t labpty_read_i32(labpty_reader_t *reader __single, int32_t *out __single) {
     uint32_t raw = 0;
     assert(out != NULL);
     assert(reader != NULL);
@@ -66,7 +66,7 @@ labpty_status_t labpty_read_i32(labpty_reader_t *reader, int32_t *out) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_read_bytes(labpty_reader_t *reader, size_t n, const uint8_t **out) {
+labpty_status_t labpty_read_bytes(labpty_reader_t *reader __single, size_t n, const uint8_t **out __single) {
     assert(out != NULL);
     assert(reader != NULL);
     if (require_read(reader, n) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -75,7 +75,7 @@ labpty_status_t labpty_read_bytes(labpty_reader_t *reader, size_t n, const uint8
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_write_u8(labpty_writer_t *writer, uint8_t value) {
+labpty_status_t labpty_write_u8(labpty_writer_t *writer __single, uint8_t value) {
     assert(writer != NULL);
     assert(writer->cur <= writer->end);
     if (require_write(writer, 1) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -84,7 +84,7 @@ labpty_status_t labpty_write_u8(labpty_writer_t *writer, uint8_t value) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_write_u16(labpty_writer_t *writer, uint16_t value) {
+labpty_status_t labpty_write_u16(labpty_writer_t *writer __single, uint16_t value) {
     assert(writer != NULL);
     assert(writer->cur <= writer->end);
     if (require_write(writer, 2) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -94,7 +94,7 @@ labpty_status_t labpty_write_u16(labpty_writer_t *writer, uint16_t value) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_write_u32(labpty_writer_t *writer, uint32_t value) {
+labpty_status_t labpty_write_u32(labpty_writer_t *writer __single, uint32_t value) {
     assert(writer != NULL);
     assert(writer->cur <= writer->end);
     if (require_write(writer, 4) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -103,7 +103,7 @@ labpty_status_t labpty_write_u32(labpty_writer_t *writer, uint32_t value) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_write_u64(labpty_writer_t *writer, uint64_t value) {
+labpty_status_t labpty_write_u64(labpty_writer_t *writer __single, uint64_t value) {
     assert(writer != NULL);
     assert(writer->cur <= writer->end);
     if (require_write(writer, 8) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -112,13 +112,13 @@ labpty_status_t labpty_write_u64(labpty_writer_t *writer, uint64_t value) {
     return LABPTY_OK;
 }
 
-labpty_status_t labpty_write_i32(labpty_writer_t *writer, int32_t value) {
+labpty_status_t labpty_write_i32(labpty_writer_t *writer __single, int32_t value) {
     assert(writer != NULL);
     assert(writer->cur <= writer->end);
     return labpty_write_u32(writer, (uint32_t)value);
 }
 
-labpty_status_t labpty_write_bytes(labpty_writer_t *writer, const uint8_t *bytes, size_t n) {
+labpty_status_t labpty_write_bytes(labpty_writer_t *writer __single, const uint8_t *bytes __sized_by(n), size_t n) {
     assert(writer != NULL);
     assert(bytes != NULL || n == 0);
     if (require_write(writer, n) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
@@ -128,9 +128,9 @@ labpty_status_t labpty_write_bytes(labpty_writer_t *writer, const uint8_t *bytes
 }
 
 labpty_status_t labpty_decode_header(
-    const uint8_t *bytes,
+    const uint8_t *bytes __sized_by(len),
     size_t len,
-    labpty_frame_header_t *out
+    labpty_frame_header_t *out __single
 ) {
     assert(bytes != NULL);
     assert(out != NULL);
@@ -152,9 +152,9 @@ labpty_status_t labpty_decode_header(
 }
 
 labpty_status_t labpty_encode_header(
-    uint8_t *bytes,
+    uint8_t *bytes __sized_by(len),
     size_t len,
-    const labpty_frame_header_t *header
+    const labpty_frame_header_t *header __single
 ) {
     assert(bytes != NULL);
     assert(header != NULL);
