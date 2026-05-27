@@ -208,12 +208,13 @@ than coding past it.
 
 ## Progress
 
-- [ ] M0: Wire-protocol and ring layouts added to `LabanCore`. Eight
+- [x] M0: Wire-protocol and ring layouts added to `LabanCore`. Eight
   Phase 1 RPC shapes (`hello`, `openSession`, `listSessions`,
   `resizeSession`, `signalSession`, `terminateSession`, `writeInput`,
   `ping`) encode/decode through a 24-byte `LBPTY-CT-01` binary frame.
   `LBPTY-BR-01` byte-ring layout declared. Round-trip unit tests
-  cover every shape.
+  cover every shape. Verified 2026-05-27 with
+  `swift test --filter LabptyTests` (10 tests, 0 failures).
 - [ ] M1: New C executable `labpty`. Owns PTY masters; exposes the
   Phase 1 RPCs over a run-id-scoped Unix socket. ADR 0002 launch
   invariants preserved inside `labpty`. Master drain in M1 discards
