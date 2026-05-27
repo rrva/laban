@@ -544,7 +544,6 @@ int main(int argc, char **argv) {
     if (mkdir(shm_dir, 0700) != 0 && errno != EEXIST) { perror("labpty shm dir"); return 1; }
     labpty_daemon_t daemon;
     memset(&daemon, 0, sizeof(daemon));
-    daemon.listen_fd = -1;
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) daemon.clients[i].fd = -1;
     labpty_registry_init(&daemon.registry, shm_dir);
     daemon.listen_fd = listen_unix_socket(socket_path);

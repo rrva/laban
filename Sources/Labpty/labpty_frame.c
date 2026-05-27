@@ -27,7 +27,10 @@ labpty_status_t labpty_read_u16(labpty_reader_t *reader, uint16_t *out) {
     assert(out != NULL);
     assert(reader != NULL);
     if (require_read(reader, 2) != LABPTY_OK) return LABPTY_E_TRUNCATED_FRAME;
-    *out = (uint16_t)reader->cur[0] | ((uint16_t)reader->cur[1] << 8);
+    /* The shift promotes uint16_t to int (per C integer-promotion rules)
+     * and the OR result is therefore int; cast back to silence
+     * -Wimplicit-int-conversion. The masked value always fits in uint16_t. */
+    *out = (uint16_t)((uint16_t)reader->cur[0] | ((uint16_t)reader->cur[1] << 8));
     reader->cur += 2;
     return LABPTY_OK;
 }

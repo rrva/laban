@@ -22,9 +22,11 @@ static bool is_power_of_two(uint64_t value) {
 
 static uint64_t fnv1a64(const char *value) {
     assert(value != NULL);
-    assert(value[0] == '\0' || value[0] != '\0');
     uint64_t hash = 0xcbf29ce484222325ull;
-    for (size_t i = 0; value[i] != '\0' && i < LABPTY_LOGICAL_ID_BYTES; i++) {
+    /* Bound the index check first so a caller passing a non-NUL-terminated
+     * buffer (theoretically impossible since logical_id is snprintf'd into
+     * a fixed-size buffer, but defensive) cannot read past LABPTY_LOGICAL_ID_BYTES. */
+    for (size_t i = 0; i < LABPTY_LOGICAL_ID_BYTES && value[i] != '\0'; i++) {
         hash ^= (uint8_t)value[i];
         hash *= 0x100000001b3ull;
     }

@@ -182,7 +182,7 @@ labpty_status_t labpty_decode_write_input_request(
     labpty_status_t status = labpty_read_u64(&reader, &out->handle);
     if (status != LABPTY_OK) return status;
     out->len = (size_t)(reader.end - reader.cur);
-    if (out->len > 64 * 1024) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    if (out->len > (size_t)64 * 1024) return LABPTY_E_PAYLOAD_TOO_LARGE;
     out->bytes = reader.cur;
     return LABPTY_OK;
 }

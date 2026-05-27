@@ -29,7 +29,6 @@ typedef struct {
 
 void labpty_registry_init(labpty_registry_t *registry, const char *shm_dir);
 labpty_session_t *labpty_registry_find(labpty_registry_t *registry, uint64_t handle);
-labpty_session_t *labpty_registry_find_logical(labpty_registry_t *registry, const char *logical_id);
 labpty_status_t labpty_registry_open(
     labpty_registry_t *registry,
     const labpty_open_request_t *request,

@@ -102,7 +102,7 @@ labpty_session_t *labpty_registry_find(labpty_registry_t *registry, uint64_t han
     return NULL;
 }
 
-labpty_session_t *labpty_registry_find_logical(labpty_registry_t *registry, const char *logical_id) {
+static labpty_session_t *labpty_registry_find_logical(labpty_registry_t *registry, const char *logical_id) {
     assert(registry != NULL);
     assert(logical_id != NULL);
     if (!logical_id[0]) return NULL;
