@@ -115,6 +115,36 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try client.terminate(sessionId: "reconnect-write")
   }
 
+  func testSessionIdWriteRefreshesStaleHandleCache() throws {
+    let harness = try launchHarness()
+    let staleClient = try waitForClient(socketPath: harness.socketPath)
+    defer { staleClient.close() }
+    let manager = try waitForClient(socketPath: harness.socketPath)
+    defer { manager.close() }
+
+    let first = try staleClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/cat"],
+        logicalSessionId: "stale-handle-write"))
+    _ = try manager.terminate(handle: first.ptyHandle)
+    try waitForDead(pid: pid_t(first.childPid))
+
+    let second = try manager.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/cat"],
+        logicalSessionId: "stale-handle-write"))
+    let reader = try LabptyByteRingReader(path: second.byteRingShmPath)
+
+    try staleClient.writeInput(sessionId: "stale-handle-write", bytes: Array("after-reuse\n".utf8))
+    let output = try waitForOutput(reader: reader, contains: "after-reuse")
+    XCTAssertTrue(output.contains("after-reuse"))
+    _ = try staleClient.terminate(sessionId: "stale-handle-write")
+  }
+
   func testTerminateReleasesSlotsAndRingFilesForReuse() throws {
     let harness = try launchHarness()
     let client = try waitForClient(socketPath: harness.socketPath)

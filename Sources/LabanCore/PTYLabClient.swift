@@ -123,13 +123,16 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   public func writeInput(sessionId: String, bytes: [UInt8]) throws {
-    let handle = try handleForSessionId(sessionId)
-    try writeInput(handle: handle, bytes: bytes)
+    guard !bytes.isEmpty else { return }
+    try withFreshHandleRetry(sessionId: sessionId) { handle in
+      try writeInput(handle: handle, bytes: bytes)
+    }
   }
 
   public func resize(sessionId: String, rows: Int, cols: Int) throws -> LabandSessionInfo {
-    let handle = try handleForSessionId(sessionId)
-    return try labandInfo(from: resize(handle: handle, rows: rows, cols: cols))
+    try labandInfo(from: withFreshHandleRetry(sessionId: sessionId) { handle in
+      try resize(handle: handle, rows: rows, cols: cols)
+    })
   }
 
   public func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment {
@@ -153,8 +156,9 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   public func terminate(sessionId: String) throws -> LabandSessionInfo {
-    let handle = try handleForSessionId(sessionId)
-    return try labandInfo(from: terminate(handle: handle))
+    try labandInfo(from: withFreshHandleRetry(sessionId: sessionId) { handle in
+      try terminate(handle: handle)
+    })
   }
 
   private func unsupported<T>() -> T {
@@ -234,7 +238,7 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     }
     guard response.header.responseCode == .ok else {
       throw TerminalSessionClientError.protocolError(
-        "labpty error \(response.header.codeRaw)")
+        Self.labptyErrorMessage(codeRaw: response.header.codeRaw))
     }
     return try decode(response.payload)
   }
@@ -283,6 +287,37 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     throw TerminalSessionClientError.sessionNotFound(sessionId)
   }
 
+  private func withFreshHandleRetry<T>(
+    sessionId: String,
+    _ operation: (UInt64) throws -> T
+  ) throws -> T {
+    let handle = try handleForSessionId(sessionId)
+    do {
+      return try operation(handle)
+    } catch {
+      guard isLabptySessionNotFound(error) else { throw error }
+      forgetSessionId(sessionId)
+      let freshHandle = try handleForSessionId(sessionId)
+      guard freshHandle != handle else { throw error }
+      return try operation(freshHandle)
+    }
+  }
+
+  private func isLabptySessionNotFound(_ error: Error) -> Bool {
+    guard case TerminalSessionClientError.protocolError(let message) = error else {
+      return false
+    }
+    return message == Self.labptyErrorMessage(codeRaw: LabptyErrorCode.sessionNotFound.rawValue)
+  }
+
+  private func forgetSessionId(_ sessionId: String) {
+    lock.withLock {
+      if let handle = handlesBySessionId.removeValue(forKey: sessionId) {
+        descriptorsByHandle.removeValue(forKey: handle)
+      }
+    }
+  }
+
   private func remember(_ descriptor: LabptySessionDescriptor) {
     lock.withLock {
       handlesBySessionId[descriptor.logicalSessionId] = descriptor.ptyHandle
@@ -316,6 +351,10 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
       return [executable]
     }
     return []
+  }
+
+  private static func labptyErrorMessage(codeRaw: UInt16) -> String {
+    "labpty error \(codeRaw)"
   }
 
   private static func connect(socketPath: String, timeoutMilliseconds: Int) throws -> Int32 {
