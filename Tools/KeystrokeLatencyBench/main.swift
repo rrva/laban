@@ -22,6 +22,7 @@ private struct Options {
   var displayHz = 120.0
   var transport: Transport = .inProcess
   var socketPath: String?
+  var labptySocketPath: String?
 
   static func parse(_ args: [String]) throws -> Options {
     var options = Options()
@@ -59,11 +60,13 @@ private struct Options {
       case "--transport":
         let raw = try value()
         guard let transport = Transport(rawValue: raw) else {
-          throw BenchError.message("--transport must be in-process or laband")
+          throw BenchError.message("--transport must be in-process, labpty, or laband")
         }
         options.transport = transport
       case "--socket":
         options.socketPath = try value()
+      case "--labpty-socket":
+        options.labptySocketPath = try value()
       case "--help", "-h":
         print(
           """
@@ -75,8 +78,10 @@ private struct Options {
             --cols N          terminal columns (default: 120)
             --rows N          terminal rows (default: 36)
             --display-hz HZ   display cadence estimate (default: 120)
-            --transport MODE  in-process or laband (default: in-process)
+            --transport MODE  in-process, labpty, or laband (default: in-process)
             --socket PATH     laband socket path for --transport laband
+            --labpty-socket PATH
+                              labpty socket path for --transport labpty
             --json PATH       write machine-readable results
           """)
         exit(0)
@@ -93,6 +98,9 @@ private struct Options {
     guard options.displayHz > 0 else { throw BenchError.message("--display-hz must be > 0") }
     if options.transport == .laband, options.socketPath == nil {
       throw BenchError.message("--transport laband requires --socket")
+    }
+    if options.transport == .labpty, options.labptySocketPath == nil {
+      throw BenchError.message("--transport labpty requires --labpty-socket")
     }
     return options
   }
@@ -510,6 +518,21 @@ private final class OwnedLabandDaemon {
   }
 }
 
+private final class OwnedLabptyDaemon {
+  let process: Process?
+
+  init(process: Process?) {
+    self.process = process
+  }
+
+  func stop(client: LabptyTerminalSessionClient?) {
+    client?.close()
+    guard let process, process.isRunning else { return }
+    process.terminate()
+    process.waitUntilExit()
+  }
+}
+
 private func run(options: Options) throws -> Report {
   switch options.transport {
   case .inProcess:
@@ -517,7 +540,157 @@ private func run(options: Options) throws -> Report {
   case .laband:
     return try runLaband(options: options)
   case .labpty:
-    throw BenchError.message("--transport labpty is added in the labpty bench milestone")
+    return try runLabpty(options: options)
+  }
+}
+
+private func runLabpty(options: Options) throws -> Report {
+  guard let socketPath = options.labptySocketPath else {
+    throw BenchError.message("--transport labpty requires --labpty-socket")
+  }
+  let fontAtlas = FontAtlas(pointSize: 14)
+  let cellSize = fontAtlas.cellSize
+  let cellWidth = max(1, Int(cellSize.width))
+  let cellHeight = max(1, Int(cellSize.height))
+  let terminalSize = makeSize(
+    cols: options.cols, rows: options.rows, cellWidth: cellWidth, cellHeight: cellHeight)
+  let model = try AppModel(initialSize: terminalSize) { size in
+    try Session.parserOnly(size: size)
+  }
+  defer { model.closeAllSessions() }
+  guard let tab = model.activeTab, let parserSession = model.session(forTab: tab.id) else {
+    throw BenchError.message("missing initial parser session")
+  }
+
+  let sidebarWidth = 200
+  let surfaceWidth = sidebarWidth + options.cols * cellWidth
+  let surfaceHeight = options.rows * cellHeight
+  let surface = BitmapSurface(width: surfaceWidth, height: surfaceHeight)
+  let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+  let controller = TerminalSurfaceController(
+    model: model,
+    cellWidth: cellWidth,
+    cellHeight: cellHeight,
+    sidebarWidth: CGFloat(sidebarWidth),
+    sidebarCellWidth: cellSize.width,
+    sidebarCellHeight: cellSize.height
+  )
+
+  func renderFrame(frame: Int) -> (
+    syncMs: Double, makeFrameMs: Double, snapshotMs: Double, commandExtractionMs: Double,
+    renderMs: Double, commandCount: Int
+  ) {
+    let syncStart = nowNs()
+    _ = controller.syncSessions(
+      captureFrame: frame,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false
+    )
+    let syncEnd = nowNs()
+
+    let makeStart = nowNs()
+    let terminalFrame = controller.makeFrame(
+      TerminalSurfaceFrameRequest(
+        frame: frame,
+        viewportWidth: CGFloat(surfaceWidth),
+        viewportHeight: CGFloat(surfaceHeight),
+        cursorBlinkVisible: true,
+        includeTerminalAreaBackground: true,
+        requireActiveSnapshot: true,
+        forceFullDamage: true,
+        surfaceWidth: surface.width,
+        surfaceHeight: surface.height,
+        surfaceScale: Double(surface.scale)
+      ))
+    let makeEnd = nowNs()
+
+    let renderStart = nowNs()
+    renderer.render(terminalFrame?.commands ?? [])
+    let renderEnd = nowNs()
+    _ = parserSession.markRendered()
+
+    let makeFrameMs = ms(makeEnd &- makeStart)
+    let snapshotMs = terminalFrame?.snapshotMs ?? 0
+    return (
+      syncMs: ms(syncEnd &- syncStart),
+      makeFrameMs: makeFrameMs,
+      snapshotMs: snapshotMs,
+      commandExtractionMs: max(0, makeFrameMs - snapshotMs),
+      renderMs: ms(renderEnd &- renderStart),
+      commandCount: terminalFrame?.commands.count ?? 0
+    )
+  }
+
+  let daemon = try ensureLabptyDaemon(socketPath: socketPath)
+  var client: LabptyTerminalSessionClient?
+  do {
+    client = try waitForLabptyClient(socketPath: socketPath, timeoutMs: 5_000)
+    guard let client else { throw BenchError.message("failed to connect to labpty") }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: UInt32(options.rows),
+        cols: UInt32(options.cols),
+        argv: ["/bin/cat"],
+        cwd: FileManager.default.currentDirectoryPath,
+        logicalSessionId: tab.id))
+    defer {
+      _ = try? client.terminate(handle: descriptor.ptyHandle)
+      daemon.stop(client: client)
+    }
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    var lastOffset: UInt64 = 0
+    _ = renderFrame(frame: 0)
+
+    let letters = Array("abcdefghijklmnopqrstuvwxyz".unicodeScalars)
+    let total = options.warmup + options.samples
+    var measured: [Sample] = []
+    measured.reserveCapacity(options.samples)
+    let displayMeanWaitMs = 1000.0 / options.displayHz / 2.0
+
+    for index in 0..<total {
+      let scalar = letters[index % letters.count]
+      let text = String(scalar)
+      let t0 = nowNs()
+      let keyStart = t0
+      try client.writeInput(handle: descriptor.ptyHandle, bytes: Array(text.utf8))
+      let keyEnd = nowNs()
+      let waited = try waitForLabptyEcho(
+        reader: reader,
+        session: parserSession,
+        lastOffset: &lastOffset,
+        sampleIndex: index,
+        cols: options.cols,
+        rows: options.rows,
+        expected: scalar,
+        timeoutMs: 1_000)
+      let rendered = renderFrame(frame: index + 1)
+      let tRendered = nowNs()
+      let rawTotalMs = ms(tRendered &- t0)
+      let appCommitMs = rawTotalMs + outputSettleQuietMs
+      let sample = Sample(
+        keyWriteMs: ms(keyEnd &- keyStart),
+        ptyDrainMs: ms(waited.observedAt &- keyEnd),
+        syncMs: rendered.syncMs,
+        makeFrameMs: rendered.makeFrameMs,
+        snapshotMs: waited.snapshotMs + rendered.snapshotMs,
+        commandExtractionMs: rendered.commandExtractionMs,
+        renderMs: rendered.renderMs,
+        rawTotalMs: rawTotalMs,
+        estimatedCurrentAppCommitMs: appCommitMs,
+        estimatedPhotonMeanMs: appCommitMs + displayMeanWaitMs,
+        commandCount: rendered.commandCount,
+        verifiedEcho: true
+      )
+      if index >= options.warmup {
+        measured.append(sample)
+      }
+    }
+    return makeReport(options: options, measured: measured, displayMeanWaitMs: displayMeanWaitMs)
+  } catch {
+    daemon.stop(client: client)
+    throw error
   }
 }
 
@@ -731,6 +904,43 @@ private func waitForLabandEcho(
   throw BenchError.message("timed out waiting for laband PTY echo at sample \(sampleIndex)")
 }
 
+private func waitForLabptyEcho(
+  reader: LabptyByteRingReader,
+  session: Session,
+  lastOffset: inout UInt64,
+  sampleIndex: Int,
+  cols: Int,
+  rows: Int,
+  expected: UnicodeScalar,
+  timeoutMs: Int
+) throws -> (observedAt: UInt64, snapshotMs: Double) {
+  let deadline = nowNs() + UInt64(timeoutMs) * 1_000_000
+  var observedAt = nowNs()
+  var snapshotMs = 0.0
+  while nowNs() < deadline {
+    let result = reader.readSince(lastOffset)
+    lastOffset = result.newOffset
+    if !result.bytes.isEmpty {
+      _ = session.feedOutput(Array(result.bytes))
+      observedAt = nowNs()
+    }
+    let snapshotStart = nowNs()
+    if echoVerified(
+      session: session,
+      sampleIndex: sampleIndex,
+      cols: cols,
+      rows: rows,
+      expected: expected)
+    {
+      snapshotMs = ms(nowNs() &- snapshotStart)
+      return (observedAt, snapshotMs)
+    }
+    snapshotMs = ms(nowNs() &- snapshotStart)
+    usleep(100)
+  }
+  throw BenchError.message("timed out waiting for labpty PTY echo at sample \(sampleIndex)")
+}
+
 private func echoVerified(
   snapshot: LabandSnapshotResponse,
   sampleIndex: Int,
@@ -771,6 +981,32 @@ private func ensureLabandDaemon(socketPath: String) throws -> OwnedLabandDaemon 
   return OwnedLabandDaemon(process: process)
 }
 
+private func ensureLabptyDaemon(socketPath: String) throws -> OwnedLabptyDaemon {
+  if let client = try? LabptyTerminalSessionClient(socketPath: socketPath) {
+    _ = try? client.hello()
+    client.close()
+    return OwnedLabptyDaemon(process: nil)
+  }
+
+  let binary = try labptyBinaryPath()
+  try FileManager.default.createDirectory(
+    at: URL(fileURLWithPath: socketPath).deletingLastPathComponent(),
+    withIntermediateDirectories: true
+  )
+  unlink(socketPath)
+  let shmPath = try labptyShmPathForSocket(socketPath)
+  try FileManager.default.createDirectory(
+    atPath: shmPath,
+    withIntermediateDirectories: true
+  )
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: binary)
+  process.arguments = ["--socket", socketPath, "--shm-dir", shmPath]
+  try process.run()
+  _ = try waitForLabptyClient(socketPath: socketPath, timeoutMs: 5_000)
+  return OwnedLabptyDaemon(process: process)
+}
+
 private func waitForLabandClient(socketPath: String, timeoutMs: Int) throws -> LabandTerminalSessionClient {
   let deadline = nowNs() + UInt64(timeoutMs) * 1_000_000
   var lastError: Error?
@@ -787,6 +1023,22 @@ private func waitForLabandClient(socketPath: String, timeoutMs: Int) throws -> L
   throw BenchError.message("timed out connecting to laband: \(String(describing: lastError))")
 }
 
+private func waitForLabptyClient(socketPath: String, timeoutMs: Int) throws -> LabptyTerminalSessionClient {
+  let deadline = nowNs() + UInt64(timeoutMs) * 1_000_000
+  var lastError: Error?
+  while nowNs() < deadline {
+    do {
+      let client = try LabptyTerminalSessionClient(socketPath: socketPath)
+      _ = try client.hello()
+      return client
+    } catch {
+      lastError = error
+      usleep(10_000)
+    }
+  }
+  throw BenchError.message("timed out connecting to labpty: \(String(describing: lastError))")
+}
+
 private func journalPathForSocket(_ socketPath: String) throws -> String {
   let components = socketPath.split(separator: "/").map(String.init).filter { !$0.isEmpty }
   guard components.count >= 3 else {
@@ -799,6 +1051,17 @@ private func journalPathForSocket(_ socketPath: String) throws -> String {
       "--socket must include a run id under .tmp/<run-id>/laband.sock")
   }
   return ".artifacts/runs/\(runId)/laband"
+}
+
+private func labptyShmPathForSocket(_ socketPath: String) throws -> String {
+  let socketURL = URL(fileURLWithPath: socketPath)
+  let parent = socketURL.deletingLastPathComponent()
+  let runId = parent.lastPathComponent
+  guard !runId.isEmpty, runId != ".tmp", runId != "tmp", runId != ".", runId != ".." else {
+    throw BenchError.message(
+      "--labpty-socket must include a run id under .tmp/<run-id>/labpty.sock")
+  }
+  return parent.appendingPathComponent("labpty-shm", isDirectory: true).path
 }
 
 private func labandBinaryPath() throws -> String {
@@ -821,6 +1084,28 @@ private func labandBinaryPath() throws -> String {
     throw BenchError.message("laband helper was not built at .build/release/laband")
   }
   return ".build/release/laband"
+}
+
+private func labptyBinaryPath() throws -> String {
+  let candidates = [
+    ".build/release/labpty",
+    ".build/debug/labpty",
+  ]
+  for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+    return candidate
+  }
+  let build = Process()
+  build.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+  build.arguments = ["swift", "build", "-c", "release", "--product", "labpty"]
+  try build.run()
+  build.waitUntilExit()
+  guard build.terminationStatus == 0 else {
+    throw BenchError.message("failed to build labpty helper")
+  }
+  guard FileManager.default.isExecutableFile(atPath: ".build/release/labpty") else {
+    throw BenchError.message("labpty helper was not built at .build/release/labpty")
+  }
+  return ".build/release/labpty"
 }
 
 do {

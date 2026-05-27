@@ -242,18 +242,17 @@ than coding past it.
   `swift test --filter LabanAppTests.testAppDirectSessionEndToEnd`,
   `swift test --filter AppSessionCoordinatorTests`, and
   `swift test --filter LabptyTests`.
-- [ ] M4: `Tools/KeystrokeLatencyBench` extended to compare two
+- [x] M4: `Tools/KeystrokeLatencyBench` extended to compare two
   configurations on the same quiet hardware: (a) Detached-mode
   `laband` path, (b) Background-mode `labpty` + App-direct +
   `writeInput` RPC. Histogram artifacts in
   `.artifacts/runs/<run-id>/bench/`. Decision recorded in this plan's
-  Decision Log whether M5 ships.
-- [ ] M5 (conditional on M4): `LBPTY-IR-01` single-writer SPSC input
-  ring for Background mode. `LabanApp` migrates input from
-  `writeInput` to the ring; `labpty` drains the ring into the master
-  fd. Acceptance: M4 bench reruns and the new histogram closes the
-  gap against the pre-`laband` Tier 1 baseline (now reachable via the
-  Local-mode bench column).
+  Decision Log whether M5 ships. Verified 2026-05-27 with
+  `LABAN_RUN_ID=labpty-m4 scripts/bench-keystroke-latency`; artifact:
+  `.artifacts/runs/labpty-m4/bench/keystroke-latency-comparison.json`.
+- [x] M5 (skipped by M4 decision): `LBPTY-IR-01` single-writer SPSC
+  input ring for Background mode. M4 measured `writeInput` RPC within
+  the configured latency gate, so no input ring shipped in this plan.
 - [ ] M6: `LabanApp` restart survival acceptance for Background mode.
   Test launches `labpty`, brings up `LabanApp` headless, opens a
   Background session, writes/reads, terminates `LabanApp`, restarts
@@ -1192,6 +1191,23 @@ Capabilities negotiated at `hello` (Phase 1 set):
   is welcome in a later plan if dispatch-by-mode call sites
   become ugly.
   Date/Author: 2026-05-27 / Codex review reconciliation.
+
+- Decision: M4 `writeInput` RPC is good enough; skip the conditional
+  M5 input ring.
+  Rationale: `scripts/bench-keystroke-latency` now compares
+  `in-process`, `labpty`, and `laband` on the same run-id-scoped
+  workload and writes a combined artifact under
+  `.artifacts/runs/<run-id>/bench/`. The 2026-05-27 run
+  (`LABAN_RUN_ID=labpty-m4`, 80 samples, 20 warmups, 120x36 grid)
+  recorded
+  `.artifacts/runs/labpty-m4/bench/keystroke-latency-comparison.json`.
+  On `estimatedPhotonMeanMs`, `labpty` measured 1.005x the
+  in-process p50 and 1.005x the in-process p99, with
+  `verifiedEcho=80/80` for every transport. That is inside the M4
+  gate (p50 <= 1.5x, p99 <= 2.0x), so the extra shared-memory
+  input ring would add `labpty` surface without a measured product
+  payoff.
+  Date/Author: 2026-05-27 / Codex M4 bench.
 
 - Decision: CLI / env surface extends `TerminalBackendSettings`'s
   existing flags and env var; no new `--session-mode` flag or

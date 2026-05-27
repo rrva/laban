@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RUN_ID="${LABAN_RUN_ID:-keystroke-latency-$(date +%Y%m%d-%H%M%S)}"
+SAMPLES="${LABAN_BENCH_SAMPLES:-80}"
+WARMUP="${LABAN_BENCH_WARMUP:-20}"
+COLS="${LABAN_BENCH_COLS:-120}"
+ROWS="${LABAN_BENCH_ROWS:-36}"
+DISPLAY_HZ="${LABAN_BENCH_DISPLAY_HZ:-120}"
+
+TMP_DIR=".tmp/$RUN_ID"
+BENCH_DIR=".artifacts/runs/$RUN_ID/bench"
+mkdir -p "$TMP_DIR" "$BENCH_DIR"
+
+swift build --product laband --product labpty --product bench-keystroke-latency
+
+BENCH=".build/debug/bench-keystroke-latency"
+COMMON=(
+  --samples "$SAMPLES"
+  --warmup "$WARMUP"
+  --cols "$COLS"
+  --rows "$ROWS"
+  --display-hz "$DISPLAY_HZ"
+)
+
+IN_PROCESS_JSON="$BENCH_DIR/in-process.json"
+LABPTY_JSON="$BENCH_DIR/labpty.json"
+LABAND_JSON="$BENCH_DIR/laband.json"
+COMPARISON_JSON="$BENCH_DIR/keystroke-latency-comparison.json"
+
+"$BENCH" "${COMMON[@]}" \
+  --transport in-process \
+  --json "$IN_PROCESS_JSON"
+
+"$BENCH" "${COMMON[@]}" \
+  --transport labpty \
+  --labpty-socket "$TMP_DIR/labpty.sock" \
+  --json "$LABPTY_JSON"
+
+"$BENCH" "${COMMON[@]}" \
+  --transport laband \
+  --socket "$TMP_DIR/laband.sock" \
+  --json "$LABAND_JSON"
+
+python3 - "$COMPARISON_JSON" "$IN_PROCESS_JSON" "$LABPTY_JSON" "$LABAND_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+comparison_path = Path(sys.argv[1])
+reports = {}
+for path in map(Path, sys.argv[2:]):
+    report = json.loads(path.read_text())
+    reports[report["transport"]] = report
+
+metric = "estimatedPhotonMeanMs"
+in_process = reports["in-process"]["stages"][metric]
+labpty = reports["labpty"]["stages"][metric]
+laband = reports["laband"]["stages"][metric]
+
+ratios = {
+    "metric": metric,
+    "labpty_to_in_process_p50": labpty["p50"] / in_process["p50"],
+    "labpty_to_in_process_p99": labpty["p99"] / in_process["p99"],
+    "laband_to_in_process_p50": laband["p50"] / in_process["p50"],
+    "laband_to_in_process_p99": laband["p99"] / in_process["p99"],
+}
+gates = {
+    "labpty_p50_within_1_5x_in_process": ratios["labpty_to_in_process_p50"] <= 1.5,
+    "labpty_p99_within_2x_in_process": ratios["labpty_to_in_process_p99"] <= 2.0,
+}
+comparison = {
+    "name": "keystroke-latency-comparison",
+    "metric": metric,
+    "reports": reports,
+    "ratios": ratios,
+    "gates": gates,
+    "m5Required": not all(gates.values()),
+}
+comparison_path.write_text(json.dumps(comparison, indent=2, sort_keys=True) + "\n")
+print(f"comparison={comparison_path}")
+print(
+    "labpty/in-process "
+    f"p50={ratios['labpty_to_in_process_p50']:.3f} "
+    f"p99={ratios['labpty_to_in_process_p99']:.3f}"
+)
+if comparison["m5Required"]:
+    print("m5Required=true")
+    sys.exit(2)
+print("m5Required=false")
+PY
