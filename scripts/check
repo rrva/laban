@@ -33,6 +33,7 @@ git diff --check
 ./scripts/check-boundaries
 ./scripts/check-docs
 ./scripts/check-debug-contract
+./scripts/check-fd-hygiene
 
 # TLA+ model-checker run. Skipped when tla2tools.jar is absent so the
 # script stays usable on dev machines without the TLA+ Toolbox; CI sets
