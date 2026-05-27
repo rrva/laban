@@ -231,14 +231,17 @@ than coding past it.
   2026-05-27 with `swift test --filter LabptyTests` including
   `testByteRingWrapDetection`, `testProducerAliveHeartbeat`, and
   `testHighVolumeOutputIsNotSplitOrLost`.
-- [ ] M3: `LabanApp` gains a `labpty` client path alongside the
+- [x] M3: `LabanApp` gains a `labpty` client path alongside the
   existing `laband` client. `LabptyTerminalSessionClient` drives session
   control and `LabptyByteRingReader` consumes output; the parser is
   `Session.parserOnly(size:)` running in `LabanApp`'s process. The
   Background-mode coordinator routes through this path. The `laband`
   client path stays intact for Detached mode. End-to-end smoke test:
   open a session in Background mode, type, see the cell update; no
-  `laband` process running.
+  `laband` process running. Verified 2026-05-27 with
+  `swift test --filter LabanAppTests.testAppDirectSessionEndToEnd`,
+  `swift test --filter AppSessionCoordinatorTests`, and
+  `swift test --filter LabptyTests`.
 - [ ] M4: `Tools/KeystrokeLatencyBench` extended to compare two
   configurations on the same quiet hardware: (a) Detached-mode
   `laband` path, (b) Background-mode `labpty` + App-direct +

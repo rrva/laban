@@ -25,12 +25,15 @@ public enum TerminalSessionClientError: Error, CustomStringConvertible {
 
 public enum TerminalSessionBackend: String, Equatable, Sendable {
   case inProcess = "in-process"
+  case labpty
   case laband
 
   public static func parse(_ raw: String) throws -> TerminalSessionBackend {
     switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
     case "in-process", "inprocess", "local", "local-sessions":
       return .inProcess
+    case "labpty", "app-direct", "app-direct-sessions":
+      return .labpty
     case "laband", "daemon", "daemon-sessions", "background", "background-sessions",
       "persistent", "persistent-sessions":
       return .laband

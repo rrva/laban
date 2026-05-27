@@ -93,12 +93,12 @@ final class AppKeystrokeLatencyBench: XCTestCase {
     size.cols = 200
     let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
     let client = try Self.waitForClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: client,
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
       cwdByTabId: [:])
     defer { coordinator.detach() }
-    let view = makeView(model: model, size: size, labandCoordinator: coordinator)
+    let view = makeView(model: model, size: size, sessionCoordinator: coordinator)
     guard let tab = model.activeTab else { throw BenchError.missingSession }
     _ = try coordinator.ensureSession(for: tab, size: size)
     coordinator.startSnapshotGenerationMonitor { _, _ in
@@ -214,7 +214,7 @@ final class AppKeystrokeLatencyBench: XCTestCase {
   private func makeView(
     model: AppModel,
     size: LabanTerminalSize,
-    labandCoordinator: AppLabandSessionCoordinator? = nil
+    sessionCoordinator: AppSessionCoordinator? = nil
   ) -> TerminalBitmapView {
     let fontAtlas = FontAtlas(pointSize: 14)
     let sidebarFontAtlas = FontAtlas(pointSize: 11)
@@ -230,7 +230,7 @@ final class AppKeystrokeLatencyBench: XCTestCase {
       sidebarFontAtlas: sidebarFontAtlas,
       cellWidth: Int(cellSize.width),
       cellHeight: Int(cellSize.height),
-      labandCoordinator: labandCoordinator)
+      sessionCoordinator: sessionCoordinator)
     view.frame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
     return view
   }

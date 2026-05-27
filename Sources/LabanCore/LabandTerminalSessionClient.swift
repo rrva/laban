@@ -106,6 +106,10 @@ public final class LabandTerminalSessionClient: TerminalSessionClient {
     return session
   }
 
+  public func lookupSession(logicalSessionId: String) throws -> LabandSessionInfo {
+    try attachSession(logicalSessionId: logicalSessionId)
+  }
+
   public func detachSession(sessionId: String) throws -> LabandSessionInfo {
     let response = try send(
       LabandRequest(

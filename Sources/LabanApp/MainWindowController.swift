@@ -13,7 +13,7 @@ final class MainWindowController: NSWindowController {
   private(set) var model: AppModel?
   private(set) var terminalBackend: TerminalSessionBackend = .inProcess
   private(set) var terminalSessionClient: TerminalSessionClient?
-  private(set) var labandCoordinator: AppLabandSessionCoordinator?
+  private(set) var sessionCoordinator: AppSessionCoordinator?
   /// Per-tab agent-session detector + JSONL mirror orchestrator. Kept
   /// alive on the window controller so the detector timers don't
   /// stop when AppDelegate's local refs go out of scope.
@@ -60,7 +60,7 @@ final class MainWindowController: NSWindowController {
     let backendSelection = try terminalBackendSelection ?? Self.configuredAppTerminalBackend()
     let terminalBackend = backendSelection.backend
     let restoredCwdByTabId = Self.restoredCwdByTabId(from: restoredState)
-    let labandCoordinator = try Self.makeLabandCoordinator(
+    let sessionCoordinator = try Self.makeSessionCoordinator(
       backend: terminalBackend,
       shellLaunch: shellLaunch,
       cwdByTabId: restoredCwdByTabId)
@@ -76,6 +76,8 @@ final class MainWindowController: NSWindowController {
             launchArgv: shellLaunch.argv)
         case .laband:
           return try Session.fixture(size: $0)
+        case .labpty:
+          return try Session.parserOnly(size: $0)
         }
       }
     )
@@ -106,7 +108,7 @@ final class MainWindowController: NSWindowController {
     // pivot data only; automatic restore must not paint old output
     // or replay generic terminal commands into a live terminal.
     model.restoredDeferredSessionFactory = { spec in
-      if terminalBackend == .laband {
+      if terminalBackend == .laband || terminalBackend == .labpty {
         return try Session.fixture(size: spec.size)
       }
       let session = try Session.makeDeferred(
@@ -146,13 +148,15 @@ final class MainWindowController: NSWindowController {
     // Simple fallback for restored tabs that don't have a deferred
     // factory (used by headless tests that swap the factory out).
     model.restoredSessionFactory = { size, cwd in
-      if terminalBackend == .laband {
-        return try Session.fixture(size: size)
+      switch terminalBackend {
+      case .laband, .labpty:
+        return try Session.parserOnly(size: size)
+      case .inProcess:
+        return try Session.realShell(
+          size: size, cwd: cwd,
+          environment: shellLaunch.environmentOverrides,
+          launchArgv: shellLaunch.argv)
       }
-      return try Session.realShell(
-        size: size, cwd: cwd,
-        environment: shellLaunch.environmentOverrides,
-        launchArgv: shellLaunch.argv)
     }
 
     // The default tab created by AppModel.init() needs its writer
@@ -178,12 +182,15 @@ final class MainWindowController: NSWindowController {
     if model.tabs.isEmpty {
       _ = try? model.createTab()
     }
-    try labandCoordinator?.ensureSessions(for: model.tabs, size: model.terminalSize)
+    sessionCoordinator?.onSessionDirty = { [weak model] sessionId in
+      model?.onSessionDirty?(sessionId)
+    }
+    try sessionCoordinator?.ensureSessions(for: model.tabs, in: model, size: model.terminalSize)
     // After the legitimate tabs have attached or created their daemon
     // sessions, sweep anything else still in laband. With
     // Restore-on-Launch off the workspace forgets earlier tab ids, so
     // without this the daemon would accumulate live shells forever.
-    labandCoordinator?.sweepOrphanedSessions()
+    sessionCoordinator?.sweepOrphanedSessions()
 
     let termView = TerminalBitmapView(
       model: model,
@@ -191,7 +198,7 @@ final class MainWindowController: NSWindowController {
       sidebarFontAtlas: sidebarFontAtlas,
       cellWidth: cellW,
       cellHeight: cellH,
-      labandCoordinator: labandCoordinator
+      sessionCoordinator: sessionCoordinator
     )
     termView.frame = NSRect(x: 0, y: 0, width: viewW, height: viewH)
 
@@ -262,8 +269,8 @@ final class MainWindowController: NSWindowController {
     let controller = MainWindowController(window: window)
     controller.model = model
     controller.terminalBackend = terminalBackend
-    controller.terminalSessionClient = labandCoordinator?.terminalClient
-    controller.labandCoordinator = labandCoordinator
+    controller.terminalSessionClient = sessionCoordinator?.terminalClient
+    controller.sessionCoordinator = sessionCoordinator
 
     let autoChecker = UpdateAutoChecker(badge: updateBadge) { manifest in
       (NSApp.delegate as? AppDelegate)?.showAvailableUpdate(manifest)
@@ -306,7 +313,7 @@ final class MainWindowController: NSWindowController {
       for (tab, session) in model.allSessions() {
         observerHost.attach(session: session, tabId: tab.id)
       }
-      if let restoredState, !restoredState.windows.isEmpty {
+      if terminalBackend == .inProcess, let restoredState, !restoredState.windows.isEmpty {
         Self.applyRestoreLaunchPlans(
           for: restoredState, model: model)
       }
@@ -372,7 +379,7 @@ final class MainWindowController: NSWindowController {
   }
 
   func detachTerminalSessions() {
-    labandCoordinator?.detach()
+    sessionCoordinator?.detach()
   }
 
   static func configuredAppTerminalBackend(
@@ -387,19 +394,99 @@ final class MainWindowController: NSWindowController {
       automaticBackend: bundledLabandExecutableURL() == nil ? .inProcess : .laband)
   }
 
-  private static func makeLabandCoordinator(
+  private static func makeSessionCoordinator(
     backend: TerminalSessionBackend,
     shellLaunch: ShellIntegrationLaunch,
     cwdByTabId: [Tab.ID: String]
-  ) throws -> AppLabandSessionCoordinator? {
-    guard backend == .laband else { return nil }
-    let setup = try connectOrStartLaband()
-    return AppLabandSessionCoordinator(
-      client: setup.client,
-      shellLaunch: shellLaunch,
-      cwdByTabId: cwdByTabId,
-      labandProcess: setup.process
-    )
+  ) throws -> AppSessionCoordinator? {
+    switch backend {
+    case .inProcess:
+      return nil
+    case .laband:
+      let setup = try connectOrStartLaband()
+      return AppSessionCoordinator(
+        client: setup.client,
+        shellLaunch: shellLaunch,
+        cwdByTabId: cwdByTabId,
+        labandProcess: setup.process
+      )
+    case .labpty:
+      let setup = try connectOrStartLabpty()
+      return AppSessionCoordinator(
+        labptyClient: setup.client,
+        shellLaunch: shellLaunch,
+        cwdByTabId: cwdByTabId,
+        labptyProcess: setup.process
+      )
+    }
+  }
+
+  private static func connectOrStartLabpty() throws -> (
+    client: LabptyTerminalSessionClient, process: Process?
+  ) {
+    let environment = ProcessInfo.processInfo.environment
+    let baseURL = PersistenceStore.defaultBaseURL().appendingPathComponent("labpty", isDirectory: true)
+    let logURL = baseURL.appendingPathComponent("logs", isDirectory: true)
+    let shmURL =
+      environment["LABAN_LABPTY_SHM_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+      ?? baseURL.appendingPathComponent("shm", isDirectory: true)
+    let socketPath =
+      environment["LABAN_LABPTY_SOCKET"].flatMap { $0.isEmpty ? nil : $0 }
+      ?? baseURL.appendingPathComponent("labpty.sock").path
+
+    if let client = try? LabptyTerminalSessionClient(socketPath: socketPath) {
+      _ = try client.hello()
+      return (client, nil)
+    }
+
+    guard let executableURL = labptyExecutableURL() else {
+      throw TerminalSessionClientError.protocolError(
+        "labpty backend requested but no labpty executable is available")
+    }
+
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: logURL, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: shmURL, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: URL(fileURLWithPath: socketPath).deletingLastPathComponent(),
+      withIntermediateDirectories: true)
+
+    let stdoutURL = logURL.appendingPathComponent("stdout.log")
+    let stderrURL = logURL.appendingPathComponent("stderr.log")
+    FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
+    FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+
+    let process = Process()
+    process.executableURL = executableURL
+    process.arguments = [
+      "--socket", socketPath,
+      "--shm-dir", shmURL.path,
+    ]
+    process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    process.standardOutput = try FileHandle(forWritingTo: stdoutURL)
+    process.standardError = try FileHandle(forWritingTo: stderrURL)
+    try process.run()
+
+    let deadline = Date().addingTimeInterval(5)
+    var lastError: Error?
+    while Date() < deadline {
+      if !process.isRunning {
+        throw TerminalSessionClientError.protocolError(
+          "labpty exited before socket was ready; see \(stderrURL.path)")
+      }
+      do {
+        let client = try LabptyTerminalSessionClient(socketPath: socketPath)
+        _ = try client.hello()
+        return (client, process)
+      } catch {
+        lastError = error
+        usleep(50_000)
+      }
+    }
+
+    process.terminate()
+    throw TerminalSessionClientError.protocolError(
+      "timed out connecting to labpty at \(socketPath): \(String(describing: lastError))")
   }
 
   private static func connectOrStartLaband() throws -> (
@@ -479,6 +566,29 @@ final class MainWindowController: NSWindowController {
     }
     let devURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
       .appendingPathComponent(".build/debug/laband")
+    return FileManager.default.isExecutableFile(atPath: devURL.path) ? devURL : nil
+  }
+
+  private static func labptyExecutableURL() -> URL? {
+    if let raw = ProcessInfo.processInfo.environment["LABAN_LABPTY_BIN"], !raw.isEmpty {
+      let url: URL
+      if raw.hasPrefix("/") {
+        url = URL(fileURLWithPath: raw)
+      } else {
+        url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+          .appendingPathComponent(raw)
+      }
+      return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+    let bundled = Bundle.main.bundleURL
+      .appendingPathComponent("Contents", isDirectory: true)
+      .appendingPathComponent("MacOS", isDirectory: true)
+      .appendingPathComponent("labpty", isDirectory: false)
+    if FileManager.default.isExecutableFile(atPath: bundled.path) {
+      return bundled
+    }
+    let devURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent(".build/debug/labpty")
     return FileManager.default.isExecutableFile(atPath: devURL.path) ? devURL : nil
   }
 

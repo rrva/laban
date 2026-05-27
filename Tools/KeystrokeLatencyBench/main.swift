@@ -10,6 +10,7 @@ private let outputSettleQuietMs = 12.0
 private enum Transport: String, Codable {
   case inProcess = "in-process"
   case laband
+  case labpty
 }
 
 private struct Options {
@@ -515,6 +516,8 @@ private func run(options: Options) throws -> Report {
     return try runInProcess(options: options)
   case .laband:
     return try runLaband(options: options)
+  case .labpty:
+    throw BenchError.message("--transport labpty is added in the labpty bench milestone")
   }
 }
 

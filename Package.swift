@@ -110,7 +110,7 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanAppTests",
-      dependencies: ["LabanApp", "Laband"],
+      dependencies: ["LabanApp", "Laband", "Labpty"],
       exclude: ["Fixtures"]
     ),
   ]

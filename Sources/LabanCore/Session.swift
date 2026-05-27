@@ -538,7 +538,7 @@ public final class Session {
     // as the cwd, which produces a non-nil `ProcessMetadata` whose derived
     // `ProcessIdentity` is nil. In laband (background-session) mode that
     // empty identity clobbers the daemon-supplied identity installed by
-    // `AppLabandSessionCoordinator.refreshTabMetadata` every time the
+    // `AppSessionCoordinator.refreshTabMetadata` every time the
     // surface controller polls the local session, which made the tab
     // title flip-flop ~4 Hz between "~" and "~\nzsh". Returning nil here
     // short-circuits the `guard let metadata = session.processMetadata()`

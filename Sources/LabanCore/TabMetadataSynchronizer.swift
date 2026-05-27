@@ -311,7 +311,7 @@ final class TabMetadataSynchronizer {
 
   /// Canonical surface-metadata apply. Both the local-session writer (via
   /// the `from session:` wrapper above) and the laband coordinator
-  /// (`AppLabandSessionCoordinator.refreshTabMetadata`) funnel through
+  /// (`AppSessionCoordinator.refreshTabMetadata`) funnel through
   /// here so neither path can develop its own slightly-different write
   /// policy.
   func syncSurfaceMetadata(

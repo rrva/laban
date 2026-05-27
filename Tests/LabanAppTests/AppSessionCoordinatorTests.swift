@@ -7,7 +7,7 @@ import XCTest
 
 @testable import LabanApp
 
-final class AppLabandSessionCoordinatorTests: XCTestCase {
+final class AppSessionCoordinatorTests: XCTestCase {
   func testRestoredAppTabAttachesExistingDaemonSession() throws {
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
@@ -68,7 +68,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
         ]))
 
     let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
       cwdByTabId: ["top-tab": FileManager.default.homeDirectoryForCurrentUser.path]
@@ -165,7 +165,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
         ]))
 
     let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
       cwdByTabId: ["kept-tab": FileManager.default.homeDirectoryForCurrentUser.path]
@@ -276,7 +276,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
         ]))
 
     let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
       cwdByTabId: ["theme-tab": FileManager.default.homeDirectoryForCurrentUser.path]
@@ -368,7 +368,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
         ]))
 
     let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
       cwdByTabId: ["scroll-tab": FileManager.default.homeDirectoryForCurrentUser.path]
@@ -425,7 +425,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
     size.cols = 80
     let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
     let coordinatorClient = try waitForClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
       cwdByTabId: [:]
@@ -507,7 +507,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
         ]))
 
     let coordinatorClient = try waitForClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: ShellIntegrationLaunch(argv: ["/bin/cat"]),
       cwdByTabId: ["render-tab": root.path]
@@ -530,7 +530,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
       sidebarFontAtlas: sidebarFontAtlas,
       cellWidth: cellWidth,
       cellHeight: cellHeight,
-      labandCoordinator: coordinator
+      sessionCoordinator: coordinator
     )
     view.frame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
 
@@ -633,7 +633,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
         ]))
 
     let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
-    let coordinator = AppLabandSessionCoordinator(
+    let coordinator = AppSessionCoordinator(
       client: coordinatorClient,
       shellLaunch: .passthrough,
       cwdByTabId: ["meta-tab": FileManager.default.homeDirectoryForCurrentUser.path]
@@ -687,7 +687,7 @@ final class AppLabandSessionCoordinatorTests: XCTestCase {
   }
 
   private func waitForSnapshotText(
-    coordinator: AppLabandSessionCoordinator,
+    coordinator: AppSessionCoordinator,
     tab: Tab,
     size: LabanTerminalSize,
     text: String
