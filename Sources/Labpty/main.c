@@ -178,7 +178,6 @@ static int listen_unix_socket(const char *path) {
     assert(path[0] != '\0');
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
-    assert(fd >= 0);
     if (set_cloexec(fd) != 0) {
         close(fd);
         return -1;
@@ -628,7 +627,6 @@ static void service_poll_watch(labpty_daemon_t *daemon, const labpty_poll_set_t 
 
 static void tick_heartbeats(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
-    assert(daemon->listen_fd >= 0);
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &daemon->registry.sessions[i];
         if (s->used && s->alive) labpty_byte_ring_heartbeat(&s->ring);
