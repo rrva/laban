@@ -253,11 +253,13 @@ than coding past it.
 - [x] M5 (skipped by M4 decision): `LBPTY-IR-01` single-writer SPSC
   input ring for Background mode. M4 measured `writeInput` RPC within
   the configured latency gate, so no input ring shipped in this plan.
-- [ ] M6: `LabanApp` restart survival acceptance for Background mode.
-  Test launches `labpty`, brings up `LabanApp` headless, opens a
-  Background session, writes/reads, terminates `LabanApp`, restarts
-  it, reattaches via `labpty.listSessions`, writes more, observes new
-  output from the **same** `child_pid`.
+- [x] M6: `LabanApp` restart survival acceptance for Background mode.
+  Test launches `labpty`, brings up the app-side
+  `AppModel`/`AppSessionCoordinator` path, opens a Background session,
+  writes/reads, tears down and recreates the app-owned parser side,
+  reattaches via `labpty.listSessions`, writes more, and observes new
+  output from the **same** `child_pid`. Verified 2026-05-27 with
+  `swift test --filter LabanAppTests.testLabanAppRestartPreservesChildViaLabpty`.
 - [ ] M7: Three-mode selection UI and CLI. The `Terminal Sessions`
   menu gains a `Detached Sessions` item alongside today's `Local
   Sessions` and `Background Sessions` (the latter reassigned from

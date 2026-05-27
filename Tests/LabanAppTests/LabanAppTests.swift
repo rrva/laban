@@ -60,6 +60,68 @@ final class LabanAppTests: XCTestCase {
     XCTAssertTrue(text.contains("got ping"))
   }
 
+  func testLabanAppRestartPreservesChildViaLabpty() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-restart")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let tabId = "restart-tab"
+    let command = [
+      "/bin/sh", "-c",
+      "printf READY; while IFS= read -r x; do echo \"got $x\"; done",
+    ]
+
+    let firstModel = try parserModel(tabId: tabId, size: size)
+    let firstTab = try XCTUnwrap(firstModel.activeTab)
+    let firstSession = try XCTUnwrap(firstModel.session(forTab: firstTab.id))
+    let firstCoordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    let firstInfo = try firstCoordinator.ensureSession(
+      for: firstTab,
+      session: firstSession,
+      size: size)
+    let childPid = try XCTUnwrap(firstInfo.childPid)
+    _ = try waitForLocalSnapshotText(model: firstModel, tab: firstTab, text: "READY")
+    try firstCoordinator.write(Array("one\n".utf8), to: firstTab, session: firstSession, size: size)
+    _ = try waitForLocalSnapshotText(model: firstModel, tab: firstTab, text: "got one")
+    firstCoordinator.detach()
+    firstModel.closeAllSessions()
+
+    let secondModel = try parserModel(tabId: tabId, size: size)
+    let secondTab = try XCTUnwrap(secondModel.activeTab)
+    let secondSession = try XCTUnwrap(secondModel.session(forTab: secondTab.id))
+    let secondCoordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      secondCoordinator.terminate(tab: secondTab)
+      secondCoordinator.detach()
+      secondModel.closeAllSessions()
+    }
+
+    let secondInfo = try secondCoordinator.ensureSession(
+      for: secondTab,
+      session: secondSession,
+      size: size)
+    XCTAssertEqual(secondInfo.childPid, childPid)
+    try secondCoordinator.write(Array("two\n".utf8), to: secondTab, session: secondSession, size: size)
+    let text = try waitForLocalSnapshotText(model: secondModel, tab: secondTab, text: "got two")
+    XCTAssertTrue(text.contains("READY"))
+    XCTAssertTrue(text.contains("got one"))
+    XCTAssertTrue(text.contains("got two"))
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?
@@ -74,6 +136,48 @@ final class LabanAppTests: XCTestCase {
       }
     }
     throw XCTSkip("timed out waiting for labpty: \(String(describing: lastError))")
+  }
+
+  private func startLabptyDaemon(prefix: String) throws -> (
+    root: URL, socketPath: String, process: Process
+  ) {
+    let labptyURL = URL(fileURLWithPath: ".build/debug/labpty")
+    guard FileManager.default.isExecutableFile(atPath: labptyURL.path) else {
+      throw XCTSkip("labpty binary is not built")
+    }
+    let root = URL(
+      fileURLWithPath: ".tmp/\(prefix)-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let shmURL = root.appendingPathComponent("shm", isDirectory: true)
+    try FileManager.default.createDirectory(at: shmURL, withIntermediateDirectories: true)
+    let process = Process()
+    process.executableURL = labptyURL
+    process.arguments = ["--socket", socketPath, "--shm-dir", shmURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    _ = try waitForLabptyClient(socketPath: socketPath)
+    return (root, socketPath, process)
+  }
+
+  private func parserModel(tabId: String, size: LabanTerminalSize) throws -> AppModel {
+    let model = try AppModel(initialSize: size) { try Session.parserOnly(size: $0) }
+    model.replaceTabs(
+      from: WorkspaceState(
+        windows: [
+          WindowState(
+            id: "main-window",
+            selectedTabId: tabId,
+            tabs: [
+              TabState(
+                id: tabId,
+                cwd: FileManager.default.currentDirectoryPath,
+                launchCommand: "/bin/sh",
+                lastActiveAt: Date())
+            ])
+        ]))
+    return model
   }
 
   private func waitForLocalSnapshotText(
