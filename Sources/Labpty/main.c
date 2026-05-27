@@ -85,6 +85,61 @@ static int set_nonblock(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+static int socket_path_is_stale(const char *path, int *out_stale) {
+    assert(path != NULL);
+    assert(out_stale != NULL);
+    *out_stale = 0;
+
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        if (errno == ENOENT) {
+            *out_stale = 1;
+            return 0;
+        }
+        return -1;
+    }
+    if (!S_ISSOCK(st.st_mode)) {
+        errno = EEXIST;
+        return -1;
+    }
+
+    int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (probe < 0) return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        close(probe);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    int connected = connect(probe, (struct sockaddr *)&addr, sizeof(addr));
+    int saved_errno = connected == 0 ? 0 : errno;
+    close(probe);
+    if (connected == 0) {
+        errno = EADDRINUSE;
+        return 0;
+    }
+    if (saved_errno == ECONNREFUSED || saved_errno == ENOENT) {
+        *out_stale = 1;
+        return 0;
+    }
+    errno = saved_errno;
+    return -1;
+}
+
+static int bind_unix_socket_private(int fd, const struct sockaddr_un *addr) {
+    assert(fd >= 0);
+    assert(addr != NULL);
+    mode_t old_umask = umask(0077);
+    int status = bind(fd, (const struct sockaddr *)addr, sizeof(*addr));
+    int saved_errno = status == 0 ? 0 : errno;
+    umask(old_umask);
+    if (status != 0) errno = saved_errno;
+    return status;
+}
+
 static int listen_unix_socket(const char *path) {
     assert(path != NULL);
     assert(path[0] != '\0');
@@ -98,12 +153,34 @@ static int listen_unix_socket(const char *path) {
         return -1;
     }
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
-    unlink(path);
-    mode_t old_umask = umask(0077);
-    int bind_status = bind(fd, (struct sockaddr *)&addr, sizeof(addr));
-    umask(old_umask);
+    int bind_status = bind_unix_socket_private(fd, &addr);
     if (bind_status != 0) {
+        if (errno != EADDRINUSE) {
+            int saved_errno = errno;
+            close(fd);
+            errno = saved_errno;
+            return -1;
+        }
+        int stale = 0;
+        int stale_status = socket_path_is_stale(path, &stale);
+        if (stale_status != 0 || !stale) {
+            int saved_errno = stale_status != 0 ? errno : EADDRINUSE;
+            close(fd);
+            errno = saved_errno;
+            return -1;
+        }
+        if (unlink(path) != 0 && errno != ENOENT) {
+            int saved_errno = errno;
+            close(fd);
+            errno = saved_errno;
+            return -1;
+        }
+        bind_status = bind_unix_socket_private(fd, &addr);
+    }
+    if (bind_status != 0) {
+        int saved_errno = errno;
         close(fd);
+        errno = saved_errno;
         return -1;
     }
     if (chmod(path, 0600) != 0) {

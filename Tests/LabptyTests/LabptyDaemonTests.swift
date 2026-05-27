@@ -190,6 +190,41 @@ final class LabptyDaemonTests: XCTestCase {
     XCTAssertEqual(permissions.intValue & 0o777, 0o600)
   }
 
+  func testSecondDaemonCannotStealLiveSocket() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/cat"],
+        logicalSessionId: "socket-steal"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let process = Process()
+    process.currentDirectoryURL = root
+    process.executableURL = root.appendingPathComponent(".build/debug/labpty")
+    process.arguments = ["--socket", harness.socketPath, "--shm-dir", harness.shmDir]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    try process.run()
+    launched.append(process)
+    try waitForProcessExit(process)
+    XCTAssertNotEqual(process.terminationStatus, 0)
+
+    let reattached = try waitForClient(socketPath: harness.socketPath)
+    defer { reattached.close() }
+    let listed = try reattached.listLabptySessions()
+    XCTAssertTrue(listed.contains { $0.ptyHandle == descriptor.ptyHandle && $0.alive })
+
+    try reattached.writeInput(handle: descriptor.ptyHandle, bytes: Array("still-attached\n".utf8))
+    let output = try waitForOutput(reader: reader, contains: "still-attached")
+    XCTAssertTrue(output.contains("still-attached"))
+    _ = try reattached.terminate(handle: descriptor.ptyHandle)
+  }
+
   func testShortLivedSessionPreservesOutputUntilTerminate() throws {
     let harness = try launchHarness()
     let client = try waitForClient(socketPath: harness.socketPath)
