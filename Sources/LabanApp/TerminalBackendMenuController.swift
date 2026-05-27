@@ -14,6 +14,7 @@ final class TerminalBackendMenuController: NSObject {
   private var launchSource: TerminalBackendLaunchSource = .automatic
   private var localItem: NSMenuItem?
   private var backgroundItem: NSMenuItem?
+  private var detachedItem: NSMenuItem?
 
   init(
     defaults: UserDefaults = .standard,
@@ -44,11 +45,19 @@ final class TerminalBackendMenuController: NSObject {
 
     let background = NSMenuItem(
       title: "Background Sessions",
-      action: #selector(selectLaband(_:)),
+      action: #selector(selectBackground(_:)),
       keyEquivalent: "")
     background.target = self
     submenu.addItem(background)
     backgroundItem = background
+
+    let detached = NSMenuItem(
+      title: "Detached Sessions",
+      action: #selector(selectDetached(_:)),
+      keyEquivalent: "")
+    detached.target = self
+    submenu.addItem(detached)
+    detachedItem = detached
 
     syncMenuState()
     return parent
@@ -58,7 +67,11 @@ final class TerminalBackendMenuController: NSObject {
     select(.inProcess)
   }
 
-  @objc func selectLaband(_ sender: Any?) {
+  @objc func selectBackground(_ sender: Any?) {
+    select(.labpty)
+  }
+
+  @objc func selectDetached(_ sender: Any?) {
     select(.laband)
   }
 
@@ -73,7 +86,8 @@ final class TerminalBackendMenuController: NSObject {
   private func syncMenuState() {
     let selected = TerminalBackendSettings.persisted(defaults: defaults) ?? activeBackend
     localItem?.state = selected == .inProcess ? .on : .off
-    backgroundItem?.state = selected == .laband ? .on : .off
+    backgroundItem?.state = selected == .labpty ? .on : .off
+    detachedItem?.state = selected == .laband ? .on : .off
   }
 
   private static func showRestartPrompt(
@@ -81,7 +95,15 @@ final class TerminalBackendMenuController: NSObject {
     activeBackend: TerminalSessionBackend,
     source: TerminalBackendLaunchSource
   ) {
-    let selectedName = selectedBackend == .laband ? "background" : "local"
+    let selectedName: String
+    switch selectedBackend {
+    case .inProcess:
+      selectedName = "local"
+    case .labpty:
+      selectedName = "background"
+    case .laband:
+      selectedName = "detached"
+    }
     let alert = NSAlert()
     alert.messageText = "Restart Laban to use \(selectedName) sessions?"
     if source.isOverride {

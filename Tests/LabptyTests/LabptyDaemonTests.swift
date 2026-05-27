@@ -6,6 +6,7 @@ import XCTest
 
 final class LabptyDaemonTests: XCTestCase {
   private var launched: [Process] = []
+  private var tempRoots: [URL] = []
 
   override func tearDown() {
     for process in launched where process.isRunning {
@@ -13,6 +14,10 @@ final class LabptyDaemonTests: XCTestCase {
       process.waitUntilExit()
     }
     launched.removeAll()
+    for root in tempRoots {
+      try? FileManager.default.removeItem(at: root)
+    }
+    tempRoots.removeAll()
     super.tearDown()
   }
 
@@ -197,6 +202,7 @@ final class LabptyDaemonTests: XCTestCase {
     let runId = "labpty-\(UUID().uuidString)"
     let tempRoot = ".tmp/\(runId)"
     let shmDir = "\(tempRoot)/shm"
+    tempRoots.append(root.appendingPathComponent(tempRoot, isDirectory: true))
     try FileManager.default.createDirectory(
       at: root.appendingPathComponent(shmDir),
       withIntermediateDirectories: true)
@@ -264,8 +270,10 @@ final class LabptyDaemonTests: XCTestCase {
 
   private func temporaryRingURL() throws -> URL {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    let dir = root.appendingPathComponent(".tmp").appendingPathComponent("labpty-ring-tests")
+    let dir = root.appendingPathComponent(".tmp")
+      .appendingPathComponent("labpty-ring-tests-\(UUID().uuidString)", isDirectory: true)
+    tempRoots.append(dir)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    return dir.appendingPathComponent("\(UUID().uuidString).br")
+    return dir.appendingPathComponent("ring.br")
   }
 }

@@ -269,7 +269,9 @@ final class MainWindowController: NSWindowController {
     let controller = MainWindowController(window: window)
     controller.model = model
     controller.terminalBackend = terminalBackend
-    controller.terminalSessionClient = sessionCoordinator?.terminalClient
+    controller.terminalSessionClient =
+      sessionCoordinator?.terminalClient
+      ?? (terminalBackend == .inProcess ? InProcessTerminalSessionClient() : nil)
     controller.sessionCoordinator = sessionCoordinator
 
     let autoChecker = UpdateAutoChecker(badge: updateBadge) { manifest in
@@ -391,7 +393,17 @@ final class MainWindowController: NSWindowController {
       environment: environment,
       arguments: arguments,
       defaults: defaults,
-      automaticBackend: bundledLabandExecutableURL() == nil ? .inProcess : .laband)
+      automaticBackend: automaticTerminalBackend())
+  }
+
+  private static func automaticTerminalBackend() -> TerminalSessionBackend {
+    if labptyExecutableURL() != nil {
+      return .labpty
+    }
+    if labandExecutableURL() != nil {
+      return .laband
+    }
+    return .inProcess
   }
 
   private static func makeSessionCoordinator(

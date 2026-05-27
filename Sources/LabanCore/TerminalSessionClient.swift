@@ -28,18 +28,21 @@ public enum TerminalSessionBackend: String, Equatable, Sendable {
   case labpty
   case laband
 
+  public static let acceptedValuesDescription =
+    "in-process/local/local-sessions, labpty/background/background-sessions, laband/detached/detached-sessions/daemon/daemon-sessions"
+
   public static func parse(_ raw: String) throws -> TerminalSessionBackend {
     switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
     case "in-process", "inprocess", "local", "local-sessions":
       return .inProcess
-    case "labpty", "app-direct", "app-direct-sessions":
+    case "labpty", "background", "background-sessions", "app-direct", "app-direct-sessions":
       return .labpty
-    case "laband", "daemon", "daemon-sessions", "background", "background-sessions",
+    case "laband", "detached", "detached-sessions", "daemon", "daemon-sessions",
       "persistent", "persistent-sessions":
       return .laband
     default:
       throw TerminalSessionClientError.protocolError(
-        "unsupported terminal backend '\(raw)'")
+        "unsupported terminal backend '\(raw)'; accepted values: \(acceptedValuesDescription)")
     }
   }
 

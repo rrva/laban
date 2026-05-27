@@ -260,7 +260,7 @@ than coding past it.
   reattaches via `labpty.listSessions`, writes more, and observes new
   output from the **same** `child_pid`. Verified 2026-05-27 with
   `swift test --filter LabanAppTests.testLabanAppRestartPreservesChildViaLabpty`.
-- [ ] M7: Three-mode selection UI and CLI. The `Terminal Sessions`
+- [x] M7: Three-mode selection UI and CLI. The `Terminal Sessions`
   menu gains a `Detached Sessions` item alongside today's `Local
   Sessions` and `Background Sessions` (the latter reassigned from
   `.laband` to `.labpty`). The existing `--terminal-backend` flag,
@@ -274,7 +274,13 @@ than coding past it.
   mode and reattaches through the same path. Default for new
   sessions is `.labpty` (Background). One-time UserDefaults
   migration keeps users who had `.laband` selected pre-upgrade on
-  `.laband` (now Detached). No `laband` deletion.
+  `.laband` (now Detached). No `laband` deletion. Verified
+  2026-05-27 with `swift test --filter
+  LabanAppTests.SessionModeRoutingTests`,
+  `LabanAppTests.SessionModePersistenceTests`,
+  `LabanAppTests.SessionModeCLITests`, `./scripts/build-app`,
+  `./scripts/test-labanapp-survives-restart`, and a fresh-state
+  Review Gate subagent pass.
 
 ## Context and Orientation
 
@@ -1572,8 +1578,14 @@ references for direct `kill(pid, 0)` checks.
 - [ ] No leftover shm files under `.tmp/<run-id>/labpty/` after
   tests pass.
 
-Review status: NOT REVIEWED
+Review status: PASSED 2026-05-27
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- Fresh-state Review Gate subagent reported PASS for M7 mechanical
+  checks: labpty build, Labpty tests, app-direct and restart tests,
+  SessionModeRouting/Persistence/CLI tests, `./scripts/build-app`,
+  app bundle contents (`LabanApp`, `laband`, `labpty`), review
+  greps, coding-rule scripts, clang static analyzer, and cleanup
+  checks. Restart transcript evidence included matching child PIDs
+  before/after restart and both pre/post-restart writes observed.

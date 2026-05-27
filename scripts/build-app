@@ -63,7 +63,7 @@ prefix_map_flags=" \
   -Xcc -ffile-prefix-map=${repo_root}=."
 
 # shellcheck disable=SC2086
-swift build -c "$build_config" --product LabanApp --product laband $prefix_map_flags
+swift build -c "$build_config" --product LabanApp --product laband --product labpty $prefix_map_flags
 
 app_bundle=".build/laban/Laban.app"
 bundle_dir="${app_bundle}/Contents"
@@ -82,7 +82,7 @@ bin=$(swift build -c "$build_config" --product LabanApp --show-bin-path $prefix_
 # `terminalBackendMenu` because the cache held a pre-refactor signature
 # and `swift build` linked from cache without recompiling MenuCommands.
 missing=""
-for product in LabanApp laband; do
+for product in LabanApp laband labpty; do
   if [ ! -x "$bin/$product" ]; then
     missing="${missing} $bin/$product"
   fi
@@ -96,11 +96,12 @@ fi
 
 cp -f "$bin/LabanApp" "${bundle_dir}/MacOS/LabanApp"
 cp -f "$bin/laband" "${bundle_dir}/MacOS/laband"
+cp -f "$bin/labpty" "${bundle_dir}/MacOS/labpty"
 
 # Post-cp sanity: the destinations must be present, non-empty, and
 # executable. Catches a stale or zero-byte source the existence check
 # above couldn't, and any cp that silently no-ops.
-for product in LabanApp laband; do
+for product in LabanApp laband labpty; do
   dest="${bundle_dir}/MacOS/${product}"
   if [ ! -s "$dest" ] || [ ! -x "$dest" ]; then
     printf 'build-app failed: %s missing, empty, or non-executable\n' \
@@ -169,6 +170,7 @@ else
   # symbols stay so crash reports still symbolicate.
   strip -S "${bundle_dir}/MacOS/LabanApp"
   strip -S "${bundle_dir}/MacOS/laband"
+  strip -S "${bundle_dir}/MacOS/labpty"
 fi
 
 # SwiftPM's auto-generated `Bundle.module` accessors and native dependencies can
@@ -177,7 +179,7 @@ fi
 # NULs before signing. Skipped for --profile builds because the same scrub
 # zeroes N_OSO debug-map paths that Instruments needs.
 if [ "$profile_build" = 0 ]; then
-python3 - "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband" <<'PY'
+python3 - "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty" <<'PY'
 import re, sys
 patterns = [
     re.compile(rb"/Users/[^\x00]*"),
@@ -198,7 +200,7 @@ PY
 # directory or a hard-coded developer identity. New regressions get
 # caught here before the bundle is signed or zipped.
 verify_clean() {
-  for bin_path in "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband"; do
+  for bin_path in "${bundle_dir}/MacOS/LabanApp" "${bundle_dir}/MacOS/laband" "${bundle_dir}/MacOS/labpty"; do
     matches=$(LC_ALL=C strings -a "$bin_path" |
       grep -E '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
     if [ -n "$matches" ]; then
@@ -226,12 +228,14 @@ if [ "${LABAN_SKIP_CODESIGN:-0}" = "1" ]; then
   printf 'build-app: codesign skipped (LABAN_SKIP_CODESIGN=1; output may not launch)\n'
 elif [ -n "${LABAN_CODESIGN_IDENTITY:-}" ]; then
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/laband"
+  codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/labpty"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "${bundle_dir}/MacOS/LabanApp"
   codesign --force --sign "$LABAN_CODESIGN_IDENTITY" "$app_bundle"
   verify_signature
   printf 'build-app: codesigned with %s\n' "$LABAN_CODESIGN_IDENTITY"
 else
   codesign --force --sign - "${bundle_dir}/MacOS/laband"
+  codesign --force --sign - "${bundle_dir}/MacOS/labpty"
   codesign --force --sign - "${bundle_dir}/MacOS/LabanApp"
   codesign --force --sign - "$app_bundle"
   verify_signature

@@ -39,19 +39,33 @@ final class TerminalBackendSettingsTests: XCTestCase {
       automaticBackend: .laband)
     XCTAssertEqual(local.backend, .inProcess)
 
-    let laband = try TerminalBackendSettings.resolve(
+    let background = try TerminalBackendSettings.resolve(
       environment: [:],
       arguments: ["LabanApp", "--terminal-backend", "background"],
       defaults: defaults,
       automaticBackend: .inProcess)
-    XCTAssertEqual(laband.backend, .laband)
+    XCTAssertEqual(background.backend, .labpty)
 
     let backgroundAlias = try TerminalBackendSettings.resolve(
       environment: [:],
       arguments: ["LabanApp", "--background-sessions"],
       defaults: defaults,
       automaticBackend: .inProcess)
-    XCTAssertEqual(backgroundAlias.backend, .laband)
+    XCTAssertEqual(backgroundAlias.backend, .labpty)
+
+    let detached = try TerminalBackendSettings.resolve(
+      environment: [:],
+      arguments: ["LabanApp", "--terminal-backend", "detached"],
+      defaults: defaults,
+      automaticBackend: .inProcess)
+    XCTAssertEqual(detached.backend, .laband)
+
+    let detachedAlias = try TerminalBackendSettings.resolve(
+      environment: [:],
+      arguments: ["LabanApp", "--detached-sessions"],
+      defaults: defaults,
+      automaticBackend: .inProcess)
+    XCTAssertEqual(detachedAlias.backend, .laband)
   }
 
   func testEnvironmentBackendOverridesPersistedDefault() throws {
@@ -59,12 +73,12 @@ final class TerminalBackendSettingsTests: XCTestCase {
     TerminalBackendSettings.set(.inProcess, defaults: defaults)
 
     let resolved = try TerminalBackendSettings.resolve(
-      environment: ["LABAN_TERMINAL_BACKEND": "laband"],
+      environment: ["LABAN_TERMINAL_BACKEND": "background"],
       arguments: ["LabanApp"],
       defaults: defaults,
       automaticBackend: .inProcess)
 
-    XCTAssertEqual(resolved.backend, .laband)
+    XCTAssertEqual(resolved.backend, .labpty)
     XCTAssertEqual(resolved.source, .environment)
   }
 
@@ -89,9 +103,9 @@ final class TerminalBackendSettingsTests: XCTestCase {
       environment: [:],
       arguments: ["LabanApp"],
       defaults: defaults,
-      automaticBackend: .laband)
+      automaticBackend: .labpty)
 
-    XCTAssertEqual(resolved.backend, .laband)
+    XCTAssertEqual(resolved.backend, .labpty)
     XCTAssertEqual(resolved.source, .automatic)
   }
 
@@ -126,14 +140,27 @@ final class TerminalBackendSettingsTests: XCTestCase {
     let submenu = try XCTUnwrap(item.submenu)
     XCTAssertEqual(submenu.items[0].title, "Local Sessions")
     XCTAssertEqual(submenu.items[1].title, "Background Sessions")
+    XCTAssertEqual(submenu.items[2].title, "Detached Sessions")
     XCTAssertEqual(submenu.items[0].state, .on)
     XCTAssertEqual(submenu.items[1].state, .off)
+    XCTAssertEqual(submenu.items[2].state, .off)
 
-    controller.selectLaband(nil)
+    controller.selectBackground(nil)
+
+    XCTAssertEqual(TerminalBackendSettings.persisted(defaults: defaults), .labpty)
+    XCTAssertEqual(submenu.items[0].state, .off)
+    XCTAssertEqual(submenu.items[1].state, .on)
+    XCTAssertEqual(submenu.items[2].state, .off)
+    XCTAssertEqual(promptedSelected, .labpty)
+    XCTAssertEqual(promptedActive, .inProcess)
+    XCTAssertEqual(promptedSource, .automatic)
+
+    controller.selectDetached(nil)
 
     XCTAssertEqual(TerminalBackendSettings.persisted(defaults: defaults), .laband)
     XCTAssertEqual(submenu.items[0].state, .off)
-    XCTAssertEqual(submenu.items[1].state, .on)
+    XCTAssertEqual(submenu.items[1].state, .off)
+    XCTAssertEqual(submenu.items[2].state, .on)
     XCTAssertEqual(promptedSelected, .laband)
     XCTAssertEqual(promptedActive, .inProcess)
     XCTAssertEqual(promptedSource, .automatic)

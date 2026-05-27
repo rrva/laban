@@ -120,6 +120,9 @@ final class LabanAppTests: XCTestCase {
     XCTAssertTrue(text.contains("READY"))
     XCTAssertTrue(text.contains("got one"))
     XCTAssertTrue(text.contains("got two"))
+    print(
+      "[labpty-restart] child_pid before=\(childPid) after=\(secondInfo.childPid ?? -1) wroteBefore='got one' wroteAfter='got two'"
+    )
   }
 
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
