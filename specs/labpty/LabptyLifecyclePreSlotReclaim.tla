@@ -1,39 +1,14 @@
--------------------------- MODULE LabptyLifecycle --------------------------
+-------------------- MODULE LabptyLifecyclePreSlotReclaim --------------------
 (****************************************************************************
- Labpty session-registry lifecycle, modelled for TLC.
+ Negative-control variant of LabptyLifecycle for commit 5420964.
 
- What this spec covers
-   The state machine of a single labpty session slot across all interleavings
-   of (open, terminate-fast, terminate-slow, child-dies-naturally, reap-tick).
-   It mirrors the abstract structure of `labpty_session_t` and the routines
-   in `Sources/Labpty/labpty_registry.c`:
-
-     - used           : 1 while the slot is allocated to a logical session
-     - alive          : 1 while the session can serve client RPCs
-     - child          : "none" | "running" | "zombie" — child process state
-     - close_pending  : 1 when labpty_session_close ran but the child outlived
-                        the SIGKILL wait, deferring slot cleanup to reap
-
- Why TLA+ here
-   The daemon is single-threaded server-side, so shared-memory races are out
-   of scope; sanitizers already proved them absent. What remains, and what
-   TLA+ excels at, is exhaustive checking of the *temporal interleaving* of
-   external events with daemon ticks. Specifically:
-
-     - Safety: does the (used, alive, child, close_pending) tuple ever reach
-       an inconsistent state under any interleaving?
-     - Liveness: does every close_pending eventually transition to ~used,
-       given fair scheduling of the reap tick? This is the property that F2
-       added — TLC proves it holds here. The companion LabptyLifecyclePreF2
-       module demonstrates that, without the F2 fix, TLC finds the exact
-       slot-leak counterexample.
-     - Liveness: does every dead-leak slot — used=1 ∧ alive=0 ∧ child=none ∧
-       close_pending=0, reached via natural child exit on a slot whose client
-       never terminated — eventually become reusable, given fair scheduling
-       of the open-time reclaim path? This is the property that commit
-       5420964 added. The companion LabptyLifecyclePreSlotReclaim module
-       demonstrates that, without the reclamation, the dead-leak state is
-       absorbing and TLC finds the unbounded slot-leak counterexample.
+ Same shape as the post-F2 version (close_pending leak is fixed), but with
+ NO ReclaimDeadLeak action — modelling labpty as it stood between the F2
+ fix and commit 5420964. A slot that reaches the dead-leak state via
+ ChildDiesNaturally followed by ReapTick (close_pending=0 branch) cannot
+ leave it: used=1 stays set, free_slot returns NULL once MaxSessions such
+ slots accumulate, and the daemon refuses every subsequent open. TLC
+ finds the counterexample to DeadLeakNotPermanent.
  ****************************************************************************)
 
 EXTENDS Naturals, FiniteSets
@@ -97,23 +72,6 @@ TerminateSlow(slot) ==
             SessionRecord(1, 0, "running", 1, sessions[slot].handle) ]
     /\ UNCHANGED next_handle
 
-\* ReclaimDeadLeak: commit 5420964. labpty_registry_open scans for
-\* dead-leak slots and calls labpty_session_close on them; with
-\* child_pid <= 0 and alive = 0 already, that call's only net effect
-\* is to close the ring and clear `used`. We model that net effect
-\* directly: a dead-leak slot returns to the empty state, available
-\* for any future OpenSession. The real C code increments next_handle
-\* on the subsequent open of a freshly-emptied slot; that's already
-\* covered by OpenSession's own next_handle' = next_handle + 1, so
-\* ReclaimDeadLeak leaves next_handle alone.
-ReclaimDeadLeak(slot) ==
-    /\ sessions[slot].used = 1
-    /\ sessions[slot].alive = 0
-    /\ sessions[slot].child = "none"
-    /\ sessions[slot].close_pending = 0
-    /\ sessions' = [ sessions EXCEPT ![slot] = EmptySlot ]
-    /\ UNCHANGED next_handle
-
 \* labpty_registry_reap: zombie children are reaped. F2 fix: if the slot
 \* is close_pending, finish the cleanup; otherwise mark child gone and
 \* alive=0 but keep the slot used (the "outlive child exit" semantic).
@@ -140,13 +98,11 @@ Next ==
     \/ \E s \in Slots : ChildDiesNaturally(s)
     \/ \E s \in Slots : TerminateFast(s)
     \/ \E s \in Slots : TerminateSlow(s)
-    \/ \E s \in Slots : ReclaimDeadLeak(s)
     \/ (ReapTickEnabled /\ ReapTick)
 
 Fairness ==
     /\ WF_vars(ReapTick /\ ReapTickEnabled)
     /\ \A s \in Slots : WF_vars(ChildDeathUnderKill(s))
-    /\ \A s \in Slots : WF_vars(ReclaimDeadLeak(s))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -187,11 +143,10 @@ EventualReapOfZombie ==
     \A s \in Slots :
         [] (sessions[s].child = "zombie" ~> sessions[s].child # "zombie")
 
-\* The dead-leak state — used=1 with alive=0, child=none, close_pending=0 —
-\* is reached when a child exits naturally without the client ever sending
-\* terminate. Pre-5420964 this was a permanent leak: free_slot returned
-\* NULL once MaxSessions such slots accumulated. With ReclaimDeadLeak
-\* under fair scheduling, the slot is freed.
+\* The dead-leak state (used=1 ∧ alive=0 ∧ child=none ∧ close_pending=0)
+\* is reached via ChildDiesNaturally + ReapTick on a slot whose client
+\* never sent terminate. Without the 5420964 reclamation, the slot is
+\* stuck there: TLC produces a counterexample to this leads-to property.
 DeadLeak(s) ==
     /\ sessions[s].used = 1
     /\ sessions[s].alive = 0
