@@ -1,12 +1,42 @@
 # labpty Protocol Design
 
 Design notes for the wire protocol and shared-memory layouts owned by
-`labpty`, the kernel-resource custodian introduced in ADR 0006. This is a
-working specification — not yet a `docs/reference/` artifact — that the
-Phase 1 ExecPlan (`execplans/active/labpty-extraction.md`) implements.
-Once `labpty` ships and the protocol has survived its first real load,
-this document graduates to `docs/reference/labpty-protocol.md` and the
-ABI gets frozen.
+`labpty`, the kernel-resource custodian introduced in ADR 0006. This is
+a working specification — not yet a `docs/reference/` artifact — that
+`execplans/active/labpty-and-app-direct.md` implements. Once `labpty`
+ships and the protocol has survived its first real load, this document
+graduates to `docs/reference/labpty-protocol.md` and the ABI gets
+frozen.
+
+## Who consumes `labpty`'s surfaces
+
+`labpty`'s only client in the planned default ("Background sessions")
+is `LabanApp`. The active plan also retains the existing
+`laband`-mediated path as a third selectable mode ("Detached sessions"),
+but Detached sessions don't go through `labpty` — `laband` owns its
+own PTYs directly, as it does today. So in steady state:
+
+- **Background mode**: `LabanApp` ↔ `labpty` ↔ child PTY. `LabanApp`
+  runs the parser in-process and reads bytes from `labpty`'s byte
+  ring. This is the path the rest of this document describes.
+- **Detached mode**: `LabanApp` ↔ `laband` ↔ child PTY. `labpty` is
+  not involved. Out of scope for this document.
+- **Local mode**: `LabanApp` ↔ child PTY directly. Also out of scope.
+
+Sections below sometimes refer to `laband` for historical reasons (an
+earlier draft of the implementation plan made `laband` a `labpty`
+client). Where a section names `laband` as "the labpty client," read
+"`LabanApp`." Where a section discusses
+`multi-attach-write-lease/v1` as a prerequisite for `input-ring/v1`,
+note that the active plan's M5 ships the **single-writer flavor**
+without the lease (one app, one writer; the lease is deferred until a
+multi-writer scenario is concrete). The "Phase 2 single-client
+byte-ring mode" repeatedly named below as a future trigger for wake
+pipes is **the current Background-mode default**, not a future
+state — but the wake-pipe deferral still stands (polling delivers the
+same outcome at zero `labpty` state). A graduation pass to
+`docs/reference/labpty-protocol.md` will sweep the residual
+historical phrasing.
 
 This design is written with the disciplines an algorithmic trading firm
 would apply to a low-latency local IPC: every operation has a latency
@@ -25,18 +55,20 @@ the surface 0 lets through.
    target.** Every line of `labpty` code is a line that can have a bug,
    and every `labpty` bug forces the one upgrade or restart that still
    kills live sessions until Phase 3 fd-handoff lands. The whole point
-   of putting `labpty` below `laband` is to make the bottom process so
+   of putting `labpty` *underneath* its client (`LabanApp` in Background
+   mode; any future labpty client) is to make the bottom process so
    small and boring that we almost never need to touch it. The mode
-   test for every feature is: **"Can `laband` or the app do this
-   without `labpty`?"** If yes, the feature goes there. Features earn
-   their place in `labpty` only by being (a) required to keep the PTY
-   alive (drain output, accept input, resize, signal, terminate), (b)
-   required to preserve an ADR invariant (ADR 0002 launch), or (c)
-   required so `laband` can rediscover sessions after restart
-   (`listSessions`, the byte ring shm path). Everything else —
-   recovery policy, multi-attach lease, snapshot caching, rich
-   observability, latency-forensics tagging — belongs in `laband`,
-   which is allowed to change often *because* `labpty` exists.
+   test for every feature is: **"Can the client do this without
+   `labpty`?"** If yes, the feature lives in the client. Features
+   earn their place in `labpty` only by being (a) required to keep
+   the PTY alive (drain output, accept input, resize, signal,
+   terminate), (b) required to preserve an ADR invariant (ADR 0002
+   launch), or (c) required so the client can rediscover sessions
+   after restart (`listSessions`, the byte ring shm path). Everything
+   else — recovery policy, multi-attach lease, snapshot caching,
+   rich observability, latency-forensics tagging — belongs in the
+   client, which is allowed to change often *because* `labpty`
+   exists.
 
 1. **Latency is measured, not estimated.** Every hot-path operation
    carries timestamps at multiple stages. A latency regression must be
@@ -76,7 +108,7 @@ the surface 0 lets through.
    from frame length (no inner length prefix), no configurable
    terminate grace period, no foreground-process strings on the
    wire (labpty returns only `foreground_pid` and `foreground_pgid`;
-   laband resolves names/paths via its own libproc call).
+   the client resolves names/paths via its own libproc call).
 6. **Versioning happens once, at handshake, never per message.** After
    `hello`, both sides know the schema. No version field on any
    subsequent message.
@@ -157,14 +189,15 @@ this section and `execplans/active/labpty-extraction.md` and skip the
 
 **Phase 1 reader model:**
 
-`laband` (and any other reader) opens the byte ring read-only, samples
-`output_write_offset` on a poll tick (4 ms is the recommended starting
-interval; tune later), reads new bytes, feeds them into its own
-parser. `labpty` does not know readers exist; there is no per-reader
-slot table populated, no wake registry, no consumer-alive tracking.
-Phase 2 introduces wake pipes and per-reader state if and only if
-measurements show the polling tick is a perceptible source of
-latency.
+`LabanApp` (the Background-mode client, and the only reader by default;
+any future reader would behave the same way) opens the byte ring
+read-only, samples `output_write_offset` on a poll tick (4 ms is the
+recommended starting interval; tune later), reads new bytes, feeds
+them into its own parser. `labpty` does not know readers exist; there
+is no per-reader slot table populated, no wake registry, no
+consumer-alive tracking. Phase 2 introduces wake pipes and per-reader
+state if and only if measurements show the polling tick is a
+perceptible source of latency.
 
 **Phase 1 control-plane semantics:**
 
@@ -198,7 +231,7 @@ latency.
 
 Each of these earns its place in a later Phase by a deliberate
 decision, recorded in a Decision Log entry, against an observed need
-that `laband` could not solve from above. The Decision Log entries
+that the client could not solve from above. The Decision Log entries
 near the end of this document already record the Phase 1 deferrals
 explicitly.
 
@@ -208,9 +241,9 @@ explicitly.
 | --- | --- | --- |
 | Control RPC (hello, openSession, listSessions, resizeSession, signalSession, terminateSession, writeInput, ping) | Length-prefixed **binary frames** over Unix `SOCK_STREAM` (`LBPTY-CT-01` framing, see "Control-plane protocol" below) | Bounded rate. C-side decoder is ~80 LoC and trivially fuzzable. Binary lets `writeInput` carry raw bytes without base64. Human-readable debugging happens through `Tools/LabptyDump`, not on the wire. |
 | Output bytes (PTY → readers) | Single-producer multi-consumer shared-memory ring (`LBPTY-BR-01`) | Hot path. Hundreds to thousands of writes per second per active session. Zero IPC overhead per byte. |
-| Input bytes (writer → PTY), Phase 1 | `writeInput` control RPC on the same Unix socket, bytes carried directly in the binary frame payload (no base64), bounded to 64 KiB per call | Keystroke and paste throughput is bounded by user action. Avoids the cost of building a real shared-memory input path before measurements justify it. **Phase 1's invariant: laband, not the app, calls this RPC.** Multi-attach write conflicts are resolved by laband's existing client-level lease, not by a labpty primitive. |
-| Input bytes (writer → PTY), Phase 2 | Single-producer single-consumer shared-memory ring (`LBPTY-IR-01`) per session, with pipe-based wakeup | Lower-rate hot path. SPSC ring matches the output path's discipline. **Predicated on a labpty-level write-lease primitive (`multi-attach-write-lease/v1`); not shippable without it because direct ring writes have no way to arbitrate among multiple writers.** |
-| Reader readiness, Phase 1 | Readers poll the byte ring's `output_write_offset`. Recommended tick: 4 ms (250 Hz). `labpty` does nothing — no per-reader registry, no fd handoff. | Polling for a `laband`-attached reader is dominated by `laband`'s own ~16 ms snapshot publish cadence; the polling tick is invisible at the system level. Costs `labpty` zero state and zero code; matches surface principle 0. |
+| Input bytes (writer → PTY), Phase 1 | `writeInput` control RPC on the same Unix socket, bytes carried directly in the binary frame payload (no base64), bounded to 64 KiB per call | Keystroke and paste throughput is bounded by user action. Avoids the cost of building a real shared-memory input path before measurements justify it. **Phase 1's writer is `LabanApp` (one writer per session by construction).** Multi-writer arbitration is not a Phase 1 concern. |
+| Input bytes (writer → PTY), Phase 2 | Single-producer single-consumer shared-memory ring (`LBPTY-IR-01`) per session, with pipe-based wakeup | Lower-rate hot path. SPSC ring matches the output path's discipline. The active plan's M5 ships the **single-writer flavor** without `multi-attach-write-lease/v1`; a future multi-writer scenario would re-introduce the lease prerequisite. |
+| Reader readiness, Phase 1 | Readers poll the byte ring's `output_write_offset`. Recommended tick: 4 ms (250 Hz). `labpty` does nothing — no per-reader registry, no fd handoff. | Polling for a `LabanApp`-attached reader is dominated by `LabanApp`'s own render-frame cadence (~16 ms at 60 Hz); the polling tick is invisible at the system level. Costs `labpty` zero state and zero code; matches surface principle 0. |
 | Reader readiness, Phase 2 | Pipe write-end handed to labpty via SCM_RIGHTS at attach time; labpty writes one byte per coalesced batch | Lands when measurements show the Phase 1 polling tick is a perceptible latency source — primarily a Phase 2 / single-client-byte-ring-mode concern, not a Phase 1 concern. Documented under "Wakeup discipline (Phase 2)" below. |
 | Heartbeats, `labpty` → readers | Shared-memory timestamp `producer_alive_mono_ns`, updated on each event-loop tick capped at 100 ms cadence | No kernel call to check "is the other side alive". One u64 store per tick on labpty; one u64 load per reader poll. |
 | Heartbeats, reader → `labpty` (Phase 2) | Reserved field in the per-reader slot table | Phase 1 `labpty` does not know readers exist, so this primitive is meaningless until the per-reader slot table is populated in Phase 2. |
@@ -268,11 +301,11 @@ the full Phase 2 layout: ~8.06 MiB. Capacities are configurable at
 `openSession` within hard limits (max 64 MiB output, min 256 KiB).
 
 `MAX_READERS = 8`. Rationale: covers the worst plausible attached set
-(`laband` parser + a couple of casting clients + a diagnostic tool +
-headroom) without wasting cache. A ninth `attachSession` returns
-`attachLimitExceeded`. Sized as a frozen ABI constant so the slot-table
-offset never moves; raising the cap is an `abi_minor` event that adds
-slots beyond the existing eight.
+(`LabanApp` parser + a couple of casting clients + a diagnostic tool
++ headroom) without wasting cache. A ninth `attachSession` returns
+`attachLimitExceeded`. Sized as a frozen ABI constant so the
+slot-table offset never moves; raising the cap is an `abi_minor`
+event that adds slots beyond the existing eight.
 
 ### File header (128 bytes, offset 0)
 
@@ -450,9 +483,10 @@ recently published one, not the primary recovery path.
    `output_offset_at_publish` is within `output_ring_capacity` of
    `current`): the reader loads the snapshot, sets
    `last_seen_offset = snapshot.output_offset_at_publish`, and
-   continues forward from there. This is the fastest path and the
-   common case for laband-as-reader because laband publishes its own
-   snapshots on every render frame.
+   continues forward from there. This is the fastest path for any
+   reader that publishes its own snapshots on every render frame
+   (`LabanApp` in Background mode is the planned default reader; the
+   parser-as-publisher pattern works for any future client too).
 
 2. **Otherwise, replay-from-current-window**: the reader sets
    `last_seen_offset = current - (output_ring_capacity -
@@ -478,9 +512,9 @@ recently published one, not the primary recovery path.
    overflow. The error is surfaced to the user.
 
 In all three branches the reader increments
-`ring_overflow_observed_total` before resuming. `laband` additionally
-notes the overflow in its lifecycle journal so post-mortem analysis can
-correlate dropped output with frame rendering.
+`ring_overflow_observed_total` before resuming. `LabanApp` additionally
+notes the overflow in its per-session lifecycle journal so post-mortem
+analysis can correlate dropped output with frame rendering.
 
 No retry loop is needed because the producer never invalidates already-
 written bytes — it only wraps over them when it laps the reader, which
@@ -553,23 +587,21 @@ input-direction fields).
 
 ### Phase 1: readers poll
 
-`labpty` does not signal readers. Readers (just `laband` in Phase 1)
-poll the byte ring's `output_write_offset` on a tick. Recommended
-starting interval is 4 ms (250 Hz); a slower tick is acceptable for
-sessions whose output is dominated by human typing, and `laband` is
-free to vary the tick rate per session based on its own renderer
-cadence.
+`labpty` does not signal readers. Readers (just `LabanApp` in
+Background mode) poll the byte ring's `output_write_offset` on a
+tick. Recommended starting interval is 4 ms (250 Hz); a slower tick
+is acceptable for sessions whose output is dominated by human typing,
+and the reader is free to vary the tick rate per session based on
+its own render cadence.
 
 This costs `labpty` zero code and zero per-reader state. The latency
 penalty (mean 2 ms, worst case 4 ms before the reader notices new
-bytes) is invisible inside `laband`'s own snapshot publish cadence
-(~16 ms at 60 Hz). Phase 1's headline acceptance does not depend on
-sub-millisecond reader wake.
+bytes) is invisible inside `LabanApp`'s render-frame cadence (~16 ms
+at 60 Hz). The headline acceptance (`LabanApp` restart preserves
+children) does not depend on sub-millisecond reader wake.
 
 Phase 2 may add wake pipes (next subsection) if measurements show the
-polling tick produces user-visible lag in single-client byte-ring mode
-(where the app talks to `labpty` directly rather than through
-`laband`).
+polling tick produces user-visible lag.
 
 ### Phase 2: per-reader wake pipes
 
@@ -714,16 +746,15 @@ caps are what each per-op decoder checks:
 No foreground-process strings on the wire. `labpty` reports only
 `foreground_pid` (`int32`) and `foreground_pgid` (`int32`) on every
 descriptor — one `tcgetpgrp` + one `getpgid` per session per
-catalog read. `laband` resolves the rest (executable name, command
-path, argv, cwd) on its own side via `proc_name`/`proc_pidpath`/
-`proc_pidinfo` against those pids. This keeps `labpty` free of
-libproc string-extraction code, truncation rules, and the
-descriptor-bloat that ~5 KiB of foreground strings × 64 sessions
-would push into every `listSessions` response. The tab-title fix
-(`Sources/LabanApp/AppLabandSessionCoordinator.swift`) consumes
-`LabandSessionInfo.foreground*` strings unchanged; `laband` is
-already the place where libproc resolution happened pre-`labpty`,
-and the post-`labpty` flow keeps it there.
+catalog read. The client (`LabanApp` in Background mode) resolves
+the rest (executable name, command path, argv, cwd) via
+`proc_name`/`proc_pidpath`/`proc_pidinfo` against those pids. This
+keeps `labpty` free of libproc string-extraction code, truncation
+rules, and the descriptor-bloat that ~5 KiB of foreground strings ×
+64 sessions would push into every `listSessions` response. The
+client's tab-title path consumes the resolved strings unchanged;
+the libproc call lives in `LabanApp` (using the existing helper at
+`Sources/LabanTerminalCore/process_metadata.c`).
 
 Any decoder that observes a length-prefix exceeding the relevant cap
 returns `LABPTY_E_OVERSIZE` and the connection closes.
@@ -889,8 +920,8 @@ Phase) claims a per-reader slot in the per-reader slot table. Phase 1
 does not have this RPC: readers learn the byte-ring shm path from the
 descriptors returned by `listSessions` (or by `openSession` for the
 creator) and read directly. Phase 1 `labpty` does not track who is
-reading; principle 0 says state we don't need belongs in `laband`, not
-`labpty`. In every Phase, `attachSession` **does not send a PTY master
+reading; principle 0 says state we don't need belongs in the client,
+not `labpty`. In every Phase, `attachSession` **does not send a PTY master
 fd to the caller**; the master stays with `labpty` and readers consume
 bytes through the shared-memory ring.
 
@@ -907,12 +938,11 @@ u8  bytes[frame_len - 24 (header) - 8 (pty_handle)]
 
 In Phase 1 this is the sole input mechanism. `labpty` performs the
 `write(2)` to the master under its own lock, ensuring no interleaving
-across concurrent callers. Multi-attach write-conflict resolution is
-the caller's concern (e.g., `laband`'s client-level lease); `labpty`
-accepts whatever bytes the control-socket holder sends. Saving the
-inner length-prefix and switching `pty_handle` from a 64-byte string
-to a `u64` reduces the per-keystroke overhead from ~100 bytes
-(JSON-with-base64) to 32 bytes (header + pty_handle).
+across concurrent callers. Phase 1's writer is `LabanApp` (one writer
+per session by construction); multi-writer arbitration is not a Phase
+1 concern. Saving the inner length-prefix and switching `pty_handle`
+from a 64-byte string to a `u64` reduces the per-keystroke overhead
+from ~100 bytes (JSON-with-base64) to 32 bytes (header + pty_handle).
 
 `listSessions` — returns all known sessions with their descriptors and
 current alive/dead status. Bounded response size (max 1024 sessions per
@@ -938,9 +968,10 @@ recent parsed snapshot the active client emitted) in the snapshot-cache
 shm region. `labpty` never parses it. A fresh attach can read it for
 instant display before catching up via byte-ring replay. Phase 1's
 overflow recovery uses the unconditional in-ring replay strategy (see
-"Overflow recovery"); the snapshot cache only optimizes the latency of
-that recovery for the common laband-as-reader case, so it's optional
-and gated on the `opaque-snapshot-cache/v1` capability.
+"Overflow recovery"); the snapshot cache only optimizes the latency
+of that recovery for the common parser-as-reader case (e.g.,
+`LabanApp` in Background mode), so it's optional and gated on the
+`opaque-snapshot-cache/v1` capability.
 
 `ping` — control-plane heartbeat. Returns daemon mono ns. Used by
 control-channel clients that don't have the shm counters mapped (e.g.,
@@ -1007,9 +1038,9 @@ wake-pipe-scm/v1              // pipe write-end via SCM_RIGHTS at attach.
 
 opaque-snapshot-cache/v1      // publishOpaqueSnapshot + cache region.
                               // Phase 2; speeds overflow recovery for
-                              //   laband-as-reader. The Phase 1
-                              //   "replay from current window" path
-                              //   works without it.
+                              //   parser-as-reader (LabanApp). The
+                              //   Phase 1 "replay from current
+                              //   window" path works without it.
 
 input-ring/v1                 // SPSC input ring + pipe wake.
                               // Phase 2; requires
@@ -1170,7 +1201,7 @@ labpty_daemon_counters/{run_id}                          Phase 2
 This is what richer monitoring scrapes every 10 seconds once the
 daemon has earned that surface; until then, the per-session counters
 plus the control-plane responses suffice for the headline use case
-(laband restart preserves children).
+(`LabanApp` restart preserves children).
 
 Diagnostic dumps (full session catalog, recent error log) are
 accessed via `listSessions` and structured logs. Heavyweight dump
@@ -1283,16 +1314,17 @@ as a long-running soft-realtime daemon:
 
 - **Validate inputs even from trusted sources.** Same-uid peer
   credential authorization is necessary but not sufficient: a
-  malicious or buggy `laband` could send malformed frames. Every
-  byte received over the control socket is treated as untrusted;
-  the bounded decoders run before any state mutation. The same
-  applies to any future `labpty`-side reading of the byte ring
-  (Phase 1 doesn't read its own ring, but Phase 3 fd-handoff might).
+  malicious or buggy client (`LabanApp`, or any future labpty
+  client) could send malformed frames. Every byte received over the
+  control socket is treated as untrusted; the bounded decoders run
+  before any state mutation. The same applies to any future
+  `labpty`-side reading of the byte ring (Phase 1 doesn't read its
+  own ring, but Phase 3 fd-handoff might).
 
 - **External liveness supervision.** Phase 3 task: a sibling
   supervisor (`launchd` `KeepAlive`, or a dedicated watchdog
   process) restarts `labpty` if it stops responding to `ping` for
-  >5 seconds. Phase 1 can defer this — `laband`'s next user-action
+  >5 seconds. Phase 1 can defer this — `LabanApp`'s next user-action
   timeout will surface a hung labpty within ~10 seconds — but it
   is explicitly listed here so a future contributor doesn't
   rediscover the gap.
@@ -1319,7 +1351,7 @@ listed so a future reviewer doesn't conclude they were forgotten:
   analyzer. Their results are used as evidence in code review,
   not as certified-correct proofs.
 - **CRC on shm data.** ECC RAM covers most silent corruption; the
-  byte ring is in-process memory between `labpty` and `laband` on
+  byte ring is in-process memory between `labpty` and `LabanApp` on
   the same machine, not a hostile boundary. Magic + ABI version on
   the file header is the wire-level integrity check.
 - **Hard-realtime scheduling primitives.** macOS's
@@ -1362,8 +1394,8 @@ PTY master           labpty event loop          ring                consumer
 - Once the reader has bytes, the `memcpy` cost is sub-microsecond.
 
 These are deliberately above the wake-pipe budget Phase 2 would buy.
-The Phase 1 budget is "imperceptible inside `laband`'s ~16 ms
-snapshot publish cadence"; sub-millisecond wake is a Phase 2 concern.
+The Phase 1 budget is "imperceptible inside `LabanApp`'s ~16 ms
+render-frame cadence"; sub-millisecond wake is a Phase 2 concern.
 
 ### Steady-state output flow (Phase 2: wake pipes)
 
@@ -1388,7 +1420,7 @@ client                                          labpty
   |<--openSession response w/ ptyHandle,---------|
   |   child_pid, rows, cols, byte-ring shm path,
   |   foreground_pid, foreground_pgid.
-  |   NO foreground-process strings (laband resolves).
+  |   NO foreground-process strings (client resolves).
   |   NO master fd. NO SCM_RIGHTS.
   |---open(byteRingPath, O_RDONLY, mmap)
   |---validate header (magic, abi_major, capacity)
@@ -1480,7 +1512,7 @@ behavior). Phase 1 only — Phase 2 adds more as it lands:
 | `attachSession` op is **not** registered in Phase 1 (or returns `versionMismatch`) | `testAttachSessionUnimplementedInPhase1` |
 | Hot-path allocation profile is bounded | `testHotPathAllocationCount` (sample-mode) |
 | `labpty` restart kills children (Phase 3 will lift this) | `testLabptyExitClosesMaster` |
-| `laband` restart preserves children | `testLabandRestartPreservesChildViaLabpty` (in `Tests/LabandTests/`) |
+| `LabanApp` restart preserves children | `testLabanAppRestartPreservesChildViaLabpty` (in `Tests/LabanAppTests/`) |
 | `LabptySessionDescriptor` carries `foreground_pid` + `foreground_pgid` (`int32` each, -1 = unknown) and **no foreground-process strings** | `testDescriptorCarriesForegroundPids`, `testDescriptorHasNoForegroundStrings` |
 | `labpty` does not link libproc, does not call `proc_name`/`proc_pidpath`/`proc_pidinfo` | `git grep -nE 'proc_name\|proc_pidpath\|proc_pidinfo\|libproc' Sources/Labpty/` returns zero hits |
 | `labpty` does not write to per-reader slot table region in Phase 1 (region stays zero through normal operation) | `testReaderSlotTableStaysZeroInPhase1` |
@@ -1575,7 +1607,7 @@ The disciplines above buy a daemon whose worst-case behavior is bounded
 and observable. The cost is roughly 600 lines of carefully-written
 code versus 200 lines of careless code, plus a couple of weeks of
 implementation. The benefit is that the protocol can be frozen — which
-is the entire point of putting `labpty` below `laband`.
+is the entire point of putting `labpty` underneath its client.
 
 ## Decision Log
 
@@ -1590,7 +1622,7 @@ why an alternative was considered and rejected.
   cost we pay every time we touch the code. Phase 1's surface is the
   smallest credible set required for the headline acceptance test:
   open a PTY, drain it into a byte ring, accept input via an RPC,
-  resize / signal / terminate, expose enough metadata for `laband`
+  resize / signal / terminate, expose enough metadata for client
   restart to rediscover sessions, and a producer-alive heartbeat.
   Everything else — `attachSession`, wake pipes, per-reader slot
   table, snapshot cache, metadata ring, input ring, deadline
@@ -1605,15 +1637,14 @@ why an alternative was considered and rejected.
   fd via SCM_RIGHTS at `attachSession`, maintain a per-reader slot
   table, and write one byte per coalesced ring publish to signal
   readers. That bought ~3 ms of wake latency over a 4 ms polling
-  tick — which is invisible inside `laband`'s ~16 ms snapshot publish
-  cadence. The Phase 1 cost was a per-reader registry, a wake-pending
-  flag protocol, SCM_RIGHTS plumbing, and stale-reader sweep logic.
-  None of it is required for the headline acceptance test (`laband`
-  restart preserves the same child PID). Polling delivers the same
-  outcome at zero `labpty` state and zero `labpty` code. Phase 2 may
-  add the wake-pipe mechanism if measurements in single-client
-  byte-ring mode (app talks to `labpty` directly) show the polling
-  tick is a perceptible latency source.
+  tick — which is invisible inside `LabanApp`'s render-frame cadence
+  (~16 ms at 60 Hz). The Phase 1 cost was a per-reader registry, a
+  wake-pending flag protocol, SCM_RIGHTS plumbing, and stale-reader
+  sweep logic. None of it is required for the headline acceptance
+  (`LabanApp` restart preserves the same child PID). Polling delivers
+  the same outcome at zero `labpty` state and zero `labpty` code.
+  Phase 2 may add the wake-pipe mechanism if measurements show the
+  polling tick is a perceptible latency source.
   Date/Author: 2026-05-26 / thinness review iteration.
 
 - Decision: Phase 1 does not have an `attachSession` RPC.
@@ -1621,11 +1652,11 @@ why an alternative was considered and rejected.
   there is no per-reader state for `attachSession` to register —
   `labpty` learns nothing it didn't already know. `listSessions`
   returns the byte-ring shm path on every descriptor, which is what
-  `laband` and any other reader actually need to start consuming.
-  Eliminating the RPC removes about 100 lines of `labpty` code plus
-  one round-trip from every reader's startup path. Phase 2 may
-  reintroduce `attachSession` if/when the wake-pipe mechanism lands
-  and needs a registration point.
+  `LabanApp` (and any future reader) actually needs to start
+  consuming. Eliminating the RPC removes about 100 lines of `labpty`
+  code plus one round-trip from every reader's startup path. Phase 2
+  may reintroduce `attachSession` if/when the wake-pipe mechanism
+  lands and needs a registration point.
   Date/Author: 2026-05-26 / thinness review iteration.
 
 - Decision: Phase 1 `labpty` does not enforce request deadlines.
@@ -1730,15 +1761,15 @@ why an alternative was considered and rejected.
 - Decision: Overflow recovery is tiered (fresh snapshot → in-ring
   replay → controlled failure), not solely "request opaque snapshot."
   Rationale: `labpty` does not parse VT state and cannot synthesize a
-  snapshot on demand. The opaque snapshot cache is populated only when
-  some parsing client (`laband` in Phase 1) has recently called
-  `publishOpaqueSnapshot`. A cold-attached or long-idle session may
-  have no cached snapshot, in which case the recovery must work from
-  the ring alone. The chosen strategy replays the most recent
-  `(capacity - safety_margin)` bytes through the parser, accepting a
-  brief stale render until the next prompt redraw. The opaque
-  snapshot remains an optimization for the common laband-as-reader
-  case, not a precondition for correctness.
+  snapshot on demand. The opaque snapshot cache is populated only
+  when some parsing client (`LabanApp` in Background mode) has
+  recently called `publishOpaqueSnapshot`. A cold-attached or
+  long-idle session may have no cached snapshot, in which case the
+  recovery must work from the ring alone. The chosen strategy
+  replays the most recent `(capacity - safety_margin)` bytes through
+  the parser, accepting a brief stale render until the next prompt
+  redraw. The opaque snapshot remains an optimization for the common
+  parser-as-reader case, not a precondition for correctness.
   Date/Author: 2026-05-26 / review iteration.
 
 - Decision: `input-ring/v1` and `multi-attach-write-lease/v1` are
@@ -1746,12 +1777,13 @@ why an alternative was considered and rejected.
   Rationale: Direct shared-memory input writes from multiple clients
   have no safe semantics without an arbitrating write-lease primitive
   on the `labpty` side. Designing and validating that lease is a
-  separate problem from PTY custody. Phase 1 routes all input through
-  the `writeInput` control RPC where `laband`'s existing client-level
-  lease already arbitrates among multiple attached clients. The
-  shared-memory input ring can ship in Phase 2 once a labpty-level
-  lease primitive exists and keystroke latency measurements justify
-  the additional complexity.
+  separate problem from PTY custody. Phase 1 ships single-writer
+  Background mode (one `LabanApp`, one writer per session); multi-
+  writer arbitration is not needed. The active plan's M5 ships the
+  single-writer flavor of `input-ring/v1` without the lease. A
+  future multi-writer scenario (e.g., a labpty client letting a
+  second observer also write input) re-introduces the lease
+  prerequisite.
   Date/Author: 2026-05-26 / review iteration.
 
 - Decision: Microsecond latency targets are design budgets, not CI

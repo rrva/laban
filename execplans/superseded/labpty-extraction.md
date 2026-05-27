@@ -1,5 +1,21 @@
 # Extract `labpty` from `laband`
 
+> **SUPERSEDED — 2026-05-27.** Superseded by
+> `execplans/active/labpty-and-app-direct.md`. This plan framed
+> `labpty` as a refactor target *inside* the existing `laband`-mediated
+> path: `laband` would become a `labpty` client, continuing to publish
+> parsed cells through the `LBNDSS01` ring to `LabanApp`. The new plan
+> drops that refactor: `LabanApp` consumes `labpty`'s byte ring
+> directly through an in-process `libghostty-vt` parser for sessions
+> in the new "Background" mode, while `laband` is **retained intact**
+> as the basis of a third "Detached" mode. The architectural
+> invariants for `labpty` itself, the protocol surface, the
+> Power-of-Ten coding rules, and most of the M0–M2 milestones in this
+> plan carried forward verbatim into the new plan. The new plan's M7
+> is a three-mode selection UI (`Local` / `Background` / `Detached`),
+> not a `laband` deletion. Preserved here so the Decision Log and
+> design rationale that informed the pivot remain reachable.
+
 This ExecPlan is a living document maintained in accordance with `PLANS.md`.
 Keep `Progress` and `Validation and Acceptance` current as work proceeds. A
 fresh contributor should be able to read only this file plus the current
