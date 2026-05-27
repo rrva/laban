@@ -16,6 +16,9 @@ public final class LabptyByteRingReader {
   private let fd: Int32
   private let map: UnsafeMutableRawPointer
   private let mapLength: Int
+  private let outputBytesWrittenTotalOffset: UInt64
+  private let outputWrapCountOffset: UInt64
+  private let producerAliveMonoNsOffset: UInt64
 
   public init(path: String) throws {
     self.path = path
@@ -51,17 +54,27 @@ public final class LabptyByteRingReader {
       Darwin.close(fd)
       throw TerminalSessionClientError.protocolError("unsupported labpty byte ring ABI")
     }
-    let headerBytes = LabptyByteRingReader.loadUInt32(bytes, offset: 16)
-    guard headerBytes == LabptyByteRingLayout.headerBytes else {
+    let headerBytes = UInt64(LabptyByteRingReader.loadUInt32(bytes, offset: 16))
+    guard headerBytes >= UInt64(LabptyByteRingLayout.headerBytes),
+      headerBytes <= UInt64(mapLength)
+    else {
       munmap(map, mapLength)
       Darwin.close(fd)
       throw TerminalSessionClientError.protocolError("unsupported labpty byte ring header")
     }
+    let countersOffset = UInt64(LabptyByteRingReader.loadUInt32(bytes, offset: 20))
+    let readerSlotOffset = UInt64(LabptyByteRingReader.loadUInt32(bytes, offset: 24))
+    let readerSlotBytes = UInt64(LabptyByteRingReader.loadUInt32(bytes, offset: 28))
+    let readerSlotCount = UInt64(LabptyByteRingReader.loadUInt32(bytes, offset: 32))
     guard
-      LabptyByteRingReader.loadUInt32(bytes, offset: 20) == LabptyByteRingLayout.countersOffset,
-      LabptyByteRingReader.loadUInt32(bytes, offset: 24) == LabptyByteRingLayout.readerSlotOffset,
-      LabptyByteRingReader.loadUInt32(bytes, offset: 28) == LabptyByteRingLayout.readerSlotBytes,
-      LabptyByteRingReader.loadUInt32(bytes, offset: 32) == LabptyByteRingLayout.readerSlotCount
+      countersOffset >= headerBytes,
+      LabptyByteRingReader.validateSpan(
+        offset: countersOffset,
+        count: UInt64(LabptyByteRingLayout.countersBytes),
+        mapLength: UInt64(mapLength)),
+      readerSlotOffset >= countersOffset + UInt64(LabptyByteRingLayout.countersBytes),
+      readerSlotBytes >= UInt64(LabptyByteRingLayout.readerSlotBytes),
+      readerSlotCount >= UInt64(LabptyByteRingLayout.readerSlotCount)
     else {
       munmap(map, mapLength)
       Darwin.close(fd)
@@ -72,10 +85,13 @@ public final class LabptyByteRingReader {
     let ringOffset = LabptyByteRingReader.loadUInt64(bytes, offset: 56)
     let ringCapacity = LabptyByteRingReader.loadUInt64(bytes, offset: 64)
     let metadataRingOffset = LabptyByteRingReader.loadUInt64(bytes, offset: 72)
-    guard inputRingOffset == LabptyByteRingLayout.inputRingOffset,
-      inputRingCapacity == LabptyByteRingLayout.phase1InputRingCapacity,
+    let readerSlotSpan = readerSlotBytes * readerSlotCount
+    guard readerSlotCount == 0 || readerSlotBytes <= UInt64.max / readerSlotCount,
+      inputRingOffset >= readerSlotOffset + readerSlotSpan,
+      inputRingCapacity <= UInt64.max - inputRingOffset,
       ringOffset == inputRingOffset + inputRingCapacity,
-      metadataRingOffset == ringOffset + ringCapacity
+      ringCapacity <= UInt64.max - ringOffset,
+      metadataRingOffset >= ringOffset + ringCapacity
     else {
       munmap(map, mapLength)
       Darwin.close(fd)
@@ -96,6 +112,9 @@ public final class LabptyByteRingReader {
     outputRingOffset = ringOffset
     outputRingCapacity = ringCapacity
     readableOutputWindow = LabptyByteRingLayout.readableOutputWindow(for: ringCapacity)
+    outputBytesWrittenTotalOffset = countersOffset
+    outputWrapCountOffset = countersOffset + 16
+    producerAliveMonoNsOffset = countersOffset + 32
   }
 
   deinit {
@@ -105,17 +124,17 @@ public final class LabptyByteRingReader {
 
   public func outputWriteOffset() -> UInt64 {
     let bytes = map.assumingMemoryBound(to: UInt8.self)
-    return Self.loadAlignedUInt64(bytes, offset: Int(LabptyByteRingLayout.outputBytesWrittenTotalOffset))
+    return Self.loadAlignedUInt64(bytes, offset: Int(outputBytesWrittenTotalOffset))
   }
 
   public func outputWrapCount() -> UInt64 {
     let bytes = map.assumingMemoryBound(to: UInt8.self)
-    return Self.loadAlignedUInt64(bytes, offset: Int(LabptyByteRingLayout.outputWrapCountOffset))
+    return Self.loadAlignedUInt64(bytes, offset: Int(outputWrapCountOffset))
   }
 
   public func producerAliveMonoNs() -> UInt64 {
     let bytes = map.assumingMemoryBound(to: UInt8.self)
-    return Self.loadAlignedUInt64(bytes, offset: Int(LabptyByteRingLayout.producerAliveMonoNsOffset))
+    return Self.loadAlignedUInt64(bytes, offset: Int(producerAliveMonoNsOffset))
   }
 
   public func readSince(_ lastOffset: UInt64) -> LabptyByteRingReadResult {

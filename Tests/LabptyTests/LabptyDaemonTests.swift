@@ -495,6 +495,66 @@ final class LabptyDaemonTests: XCTestCase {
     XCTAssertEqual(reader.outputRingCapacity, UInt64(LabptyByteRingLayout.minimumOutputRingCapacity))
   }
 
+  func testByteRingReaderToleratesAdditiveHeaderLayout() throws {
+    let url = try temporaryRingURL()
+    let payload = Data("future-compatible-output".utf8)
+    let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
+    do {
+      let writer = try LabptyByteRingWriter(
+        path: url.path,
+        outputRingCapacity: capacity,
+        logicalSessionId: "future-header")
+      writer.write(payload)
+    }
+
+    let headerBytes: UInt32 = 192
+    let countersOffset: UInt32 = 256
+    let readerSlotOffset: UInt32 = 384
+    let readerSlotBytes: UInt32 = 96
+    let readerSlotCount = LabptyByteRingLayout.readerSlotCount
+    let inputRingOffset = UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
+    let outputRingOffset = inputRingOffset
+    let oldOutputRingOffset = LabptyByteRingLayout.inputRingOffset
+    let newFileLength = outputRingOffset + capacity
+    let handle = try FileHandle(forUpdating: url)
+    defer { try? handle.close() }
+    try handle.truncate(atOffset: newFileLength)
+    try copyBytes(
+      handle: handle,
+      from: oldOutputRingOffset,
+      to: outputRingOffset,
+      count: UInt64(payload.count))
+    try copyBytes(
+      handle: handle,
+      from: LabptyByteRingLayout.outputBytesWrittenTotalOffset,
+      to: UInt64(countersOffset),
+      count: 8)
+    try copyBytes(
+      handle: handle,
+      from: LabptyByteRingLayout.outputWrapCountOffset,
+      to: UInt64(countersOffset + 16),
+      count: 8)
+    try copyBytes(
+      handle: handle,
+      from: LabptyByteRingLayout.producerAliveMonoNsOffset,
+      to: UInt64(countersOffset + 32),
+      count: 8)
+    try patchUInt32(handle: handle, offset: 16, value: headerBytes)
+    try patchUInt32(handle: handle, offset: 20, value: countersOffset)
+    try patchUInt32(handle: handle, offset: 24, value: readerSlotOffset)
+    try patchUInt32(handle: handle, offset: 28, value: readerSlotBytes)
+    try patchUInt64(handle: handle, offset: 40, value: inputRingOffset)
+    try patchUInt64(handle: handle, offset: 56, value: outputRingOffset)
+    try patchUInt64(handle: handle, offset: 72, value: newFileLength)
+
+    let reader = try LabptyByteRingReader(path: url.path)
+    let result = reader.readSince(0)
+
+    XCTAssertEqual(reader.outputRingOffset, outputRingOffset)
+    XCTAssertEqual(result.bytes, payload)
+    XCTAssertFalse(result.overflowed)
+  }
+
   func testByteRingRoundTripSmall() throws {
     let url = try temporaryRingURL()
     let writer = try LabptyByteRingWriter(
@@ -848,6 +908,10 @@ final class LabptyDaemonTests: XCTestCase {
   private func patchUInt32(url: URL, offset: UInt64, value: UInt32) throws {
     let handle = try FileHandle(forWritingTo: url)
     defer { try? handle.close() }
+    try patchUInt32(handle: handle, offset: offset, value: value)
+  }
+
+  private func patchUInt32(handle: FileHandle, offset: UInt64, value: UInt32) throws {
     try handle.seek(toOffset: offset)
     try handle.write(contentsOf: Data([
       UInt8(value & 0xFF),
@@ -855,5 +919,23 @@ final class LabptyDaemonTests: XCTestCase {
       UInt8((value >> 16) & 0xFF),
       UInt8((value >> 24) & 0xFF),
     ]))
+  }
+
+  private func patchUInt64(handle: FileHandle, offset: UInt64, value: UInt64) throws {
+    try handle.seek(toOffset: offset)
+    var bytes = Data()
+    bytes.reserveCapacity(8)
+    for index in 0..<8 {
+      bytes.append(UInt8((value >> UInt64(index * 8)) & 0xFF))
+    }
+    try handle.write(contentsOf: bytes)
+  }
+
+  private func copyBytes(handle: FileHandle, from: UInt64, to: UInt64, count: UInt64) throws {
+    try handle.seek(toOffset: from)
+    let data = try handle.read(upToCount: Int(count)) ?? Data()
+    XCTAssertEqual(UInt64(data.count), count)
+    try handle.seek(toOffset: to)
+    try handle.write(contentsOf: data)
   }
 }
