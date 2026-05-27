@@ -5,6 +5,7 @@ import XCTest
 @testable import LabanCore
 
 final class LabptyDaemonTests: XCTestCase {
+  private let highInheritedFDCount = 1100
   private var launched: [Process] = []
   private var tempRoots: [URL] = []
 
@@ -40,6 +41,26 @@ final class LabptyDaemonTests: XCTestCase {
 
     _ = try client.terminate(handle: descriptor.ptyHandle)
     try waitForDead(pid: pid_t(descriptor.childPid))
+  }
+
+  func testDaemonToleratesHighInheritedFileDescriptors() throws {
+    try requireHighInheritedFDLimit()
+    let harness = try launchHarness(inheritHighFileDescriptors: true)
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/cat"],
+        logicalSessionId: "high-inherited-fd"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    try client.writeInput(handle: descriptor.ptyHandle, bytes: Array("high-fd-ok\n".utf8))
+    let output = try waitForOutput(reader: reader, contains: "high-fd-ok")
+    XCTAssertTrue(output.contains("high-fd-ok"))
+    _ = try client.terminate(handle: descriptor.ptyHandle)
   }
 
   func testSignalSendsToProcessGroup() throws {
@@ -770,7 +791,7 @@ final class LabptyDaemonTests: XCTestCase {
     let process: Process
   }
 
-  private func launchHarness() throws -> Harness {
+  private func launchHarness(inheritHighFileDescriptors: Bool = false) throws -> Harness {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let runId = "labpty-\(UUID().uuidString)"
     let tempRoot = ".tmp/\(runId)"
@@ -786,13 +807,48 @@ final class LabptyDaemonTests: XCTestCase {
     }
     let process = Process()
     process.currentDirectoryURL = root
-    process.executableURL = executable
-    process.arguments = ["--socket", socketPath, "--shm-dir", shmDir]
+    if inheritHighFileDescriptors {
+      process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+      process.arguments = [
+        "-c",
+        highInheritedFDLaunchScript(),
+        "labpty-high-fd",
+        executable.path,
+        socketPath,
+        shmDir,
+      ]
+    } else {
+      process.executableURL = executable
+      process.arguments = ["--socket", socketPath, "--shm-dir", shmDir]
+    }
     process.standardOutput = Pipe()
     process.standardError = Pipe()
     try process.run()
     launched.append(process)
     return Harness(socketPath: socketPath, shmDir: shmDir, process: process)
+  }
+
+  private func requireHighInheritedFDLimit() throws {
+    var limit = rlimit()
+    guard Darwin.getrlimit(RLIMIT_NOFILE, &limit) == 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    guard limit.rlim_cur > rlim_t(highInheritedFDCount + 16) else {
+      throw XCTSkip("RLIMIT_NOFILE is too low to exercise high inherited fds")
+    }
+  }
+
+  private func highInheritedFDLaunchScript() -> String {
+    """
+    typeset -a labpty_fds
+    integer i=0
+    while (( i < \(highInheritedFDCount) )); do
+      exec {fd}</dev/null || exit 70
+      labpty_fds+=($fd)
+      (( i++ ))
+    done
+    exec "$1" --socket "$2" --shm-dir "$3"
+    """
   }
 
   private func waitForClient(socketPath: String) throws -> LabptyTerminalSessionClient {

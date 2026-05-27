@@ -1,5 +1,15 @@
 #include "labpty_registry.h"
 
+#include <poll.h>
+
+#define LABPTY_MAX_POLL_WATCHES (1 + LABPTY_MAX_CLIENTS + LABPTY_MAX_SESSIONS)
+
+typedef enum {
+    LABPTY_POLL_LISTENER = 1,
+    LABPTY_POLL_CLIENT = 2,
+    LABPTY_POLL_SESSION = 3,
+} labpty_poll_kind_t;
+
 typedef struct {
     int fd;
     int in_use;
@@ -27,6 +37,13 @@ typedef struct {
     labpty_hello_request_t hello_request;
     uint8_t read_buffer[LABPTY_READ_BUFFER_BYTES];
 } labpty_daemon_t;
+
+typedef struct {
+    struct pollfd fds[LABPTY_MAX_POLL_WATCHES];
+    labpty_poll_kind_t kinds[LABPTY_MAX_POLL_WATCHES];
+    int indexes[LABPTY_MAX_POLL_WATCHES];
+    nfds_t count;
+} labpty_poll_set_t;
 
 static const uint64_t LABPTY_IO_IDLE_TIMEOUT_NS = 250000000ull;
 static volatile sig_atomic_t shutdown_requested = 0;
@@ -79,7 +96,6 @@ static int parse_args(int argc, char **argv, char *socket_path, char *shm_dir) {
 
 static int set_nonblock(int fd) {
     assert(fd >= 0);
-    assert(fd < FD_SETSIZE);
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -226,11 +242,6 @@ static void add_client(labpty_daemon_t *daemon) {
     assert(daemon->listen_fd >= 0);
     int fd = accept(daemon->listen_fd, NULL, NULL);
     if (fd < 0) return;
-    if (fd >= FD_SETSIZE) {
-        fprintf(stderr, "labpty: refused client fd %d (>= FD_SETSIZE %d)\n", fd, FD_SETSIZE);
-        close(fd);
-        return;
-    }
     configure_client_fd(fd);
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
@@ -506,32 +517,82 @@ static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
     }
 }
 
-static int build_fd_set(labpty_daemon_t *daemon, fd_set *rfds, fd_set *wfds) {
+static void add_poll_watch(labpty_poll_set_t *poll_set, int fd, short events, labpty_poll_kind_t kind, int index) {
+    assert(poll_set != NULL);
+    assert(fd >= 0);
+    assert(poll_set->count < LABPTY_MAX_POLL_WATCHES);
+    nfds_t slot = poll_set->count++;
+    poll_set->fds[slot].fd = fd;
+    poll_set->fds[slot].events = events;
+    poll_set->fds[slot].revents = 0;
+    poll_set->kinds[slot] = kind;
+    poll_set->indexes[slot] = index;
+}
+
+static void build_poll_set(labpty_daemon_t *daemon, labpty_poll_set_t *poll_set) {
     assert(daemon != NULL);
-    assert(rfds != NULL);
-    assert(wfds != NULL);
-    FD_ZERO(rfds);
-    FD_ZERO(wfds);
-    FD_SET(daemon->listen_fd, rfds);
-    int max_fd = daemon->listen_fd;
+    assert(poll_set != NULL);
+    poll_set->count = 0;
+    add_poll_watch(poll_set, daemon->listen_fd, POLLIN, LABPTY_POLL_LISTENER, -1);
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use) continue;
-        if (client->write_total > client->write_sent) {
-            FD_SET(client->fd, wfds);
-        } else {
-            FD_SET(client->fd, rfds);
-        }
-        if (client->fd > max_fd) max_fd = client->fd;
+        short events = client->write_total > client->write_sent ? POLLOUT : POLLIN;
+        add_poll_watch(poll_set, client->fd, events, LABPTY_POLL_CLIENT, i);
     }
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &daemon->registry.sessions[i];
         if (s->used && s->master_fd >= 0) {
-            FD_SET(s->master_fd, rfds);
-            if (s->master_fd > max_fd) max_fd = s->master_fd;
+            add_poll_watch(poll_set, s->master_fd, POLLIN, LABPTY_POLL_SESSION, i);
         }
     }
-    return max_fd;
+}
+
+static int poll_revents_readable(short revents) {
+    return (revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0;
+}
+
+static int poll_revents_faulted(short revents) {
+    return (revents & (POLLHUP | POLLERR | POLLNVAL)) != 0;
+}
+
+static int service_client_poll(labpty_daemon_t *daemon, int index, short revents) {
+    assert(daemon != NULL);
+    assert(index >= 0);
+    assert(index < LABPTY_MAX_CLIENTS);
+    labpty_client_t *client = &daemon->clients[index];
+    if (!client->in_use) return 0;
+    int writing = client->write_total > client->write_sent;
+    if (writing && (revents & POLLOUT)) {
+        return client_pump_write(client);
+    }
+    if (!writing && poll_revents_readable(revents)) {
+        return client_pump_read(daemon, client);
+    }
+    return poll_revents_faulted(revents) ? -1 : 0;
+}
+
+static void service_poll_watch(labpty_daemon_t *daemon, const labpty_poll_set_t *poll_set, nfds_t slot) {
+    assert(daemon != NULL);
+    assert(poll_set != NULL);
+    assert(slot < poll_set->count);
+    short revents = poll_set->fds[slot].revents;
+    if (revents == 0) return;
+    if (poll_set->kinds[slot] == LABPTY_POLL_LISTENER) {
+        if (revents & POLLIN) add_client(daemon);
+        return;
+    }
+    int index = poll_set->indexes[slot];
+    if (poll_set->kinds[slot] == LABPTY_POLL_CLIENT) {
+        if (service_client_poll(daemon, index, revents) < 0) client_release(&daemon->clients[index]);
+        return;
+    }
+    if (poll_set->kinds[slot] == LABPTY_POLL_SESSION && poll_revents_readable(revents)) {
+        assert(index >= 0);
+        assert(index < LABPTY_MAX_SESSIONS);
+        labpty_session_t *s = &daemon->registry.sessions[index];
+        if (s->used && s->master_fd >= 0) drain_session(daemon, s);
+    }
 }
 
 static void tick_heartbeats(labpty_daemon_t *daemon) {
@@ -563,35 +624,16 @@ static int event_loop(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     assert(daemon->listen_fd >= 0);
     while (!shutdown_requested) {
-        fd_set rfds;
-        fd_set wfds;
-        int max_fd = build_fd_set(daemon, &rfds, &wfds);
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
-        int ready = select(max_fd + 1, &rfds, &wfds, NULL, &tv);
+        labpty_poll_set_t poll_set;
+        build_poll_set(daemon, &poll_set);
+        int ready = poll(poll_set.fds, poll_set.count, 100);
         if (ready < 0 && errno == EINTR) continue;
         if (ready < 0) {
-            perror("labpty select");
+            perror("labpty poll");
             return -1;
         }
-        if (FD_ISSET(daemon->listen_fd, &rfds)) add_client(daemon);
-        for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
-            labpty_client_t *client = &daemon->clients[i];
-            if (!client->in_use) continue;
-            if (FD_ISSET(client->fd, &rfds)) {
-                if (client_pump_read(daemon, client) < 0) {
-                    client_release(client);
-                    continue;
-                }
-            }
-            if (client->in_use && FD_ISSET(client->fd, &wfds)) {
-                if (client_pump_write(client) < 0) {
-                    client_release(client);
-                }
-            }
-        }
-        for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
-            labpty_session_t *s = &daemon->registry.sessions[i];
-            if (s->used && s->master_fd >= 0 && FD_ISSET(s->master_fd, &rfds)) drain_session(daemon, s);
+        for (nfds_t i = 0; i < poll_set.count; i++) {
+            service_poll_watch(daemon, &poll_set, i);
         }
         tick_heartbeats(daemon);
         labpty_registry_reap(&daemon->registry);
