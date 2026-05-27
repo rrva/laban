@@ -18,6 +18,7 @@ public enum LabptyByteRingLayout {
   public static let minimumOutputRingCapacity = 256 * 1024
   public static let maximumOutputRingCapacity = 64 * 1024 * 1024
   public static let phase1MetadataRingCapacity: UInt64 = 0
+  public static let outputReadSafetyMarginBytes = 64 * 1024
 
   public static let outputBytesWrittenTotalOffset: UInt64 = 128
   public static let outputWrapCountOffset: UInt64 = 144
@@ -65,6 +66,11 @@ public enum LabptyByteRingLayout {
     isPowerOfTwo(capacity)
       && capacity >= UInt64(minimumOutputRingCapacity)
       && capacity <= UInt64(maximumOutputRingCapacity)
+  }
+
+  public static func readableOutputWindow(for capacity: UInt64) -> UInt64 {
+    let margin = min(UInt64(outputReadSafetyMarginBytes), capacity / 4)
+    return capacity - margin
   }
 
   public static func fnv1a64(_ string: String) -> UInt64 {

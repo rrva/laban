@@ -6,6 +6,9 @@
 #include <sys/types.h>
 #include "laband_snapshot_ring.h"
 
+uint64_t laban_atomic_load_u64_acquire(const void *slot);
+void laban_atomic_store_u64_release(void *slot, uint64_t value);
+
 /* Smoke functions from Milestone 1 */
 const char *laban_terminal_core_smoke_version(void);
 int laban_ghostty_vt_link_smoke(void);

@@ -137,14 +137,21 @@ labpty_status_t labpty_byte_ring_write(labpty_byte_ring_writer_t *writer, const 
     assert(writer != NULL);
     assert(bytes != NULL || len == 0);
     if (!writer->map || writer->output_capacity == 0) return LABPTY_E_RING_MAP_FAILED;
-    uint64_t start = writer->output_offset;
-    uint64_t pos = start & (writer->output_capacity - 1);
+    size_t retained = len;
+    const uint8_t *source = bytes;
+    if ((uint64_t)retained > writer->output_capacity) {
+        retained = (size_t)writer->output_capacity;
+        source = bytes + (len - retained);
+    }
+    uint64_t next_offset = writer->output_offset + (uint64_t)len;
+    uint64_t retained_start = next_offset - (uint64_t)retained;
+    uint64_t pos = retained_start & (writer->output_capacity - 1);
     uint8_t *ring = writer->map + writer->output_ring_offset;
-    size_t first = len;
-    if (pos + len > writer->output_capacity) first = (size_t)(writer->output_capacity - pos);
-    if (first > 0) memcpy(ring + pos, bytes, first);
-    if (len > first) memcpy(ring, bytes + first, len - first);
-    writer->output_offset += (uint64_t)len;
+    size_t first = retained;
+    if (pos + retained > writer->output_capacity) first = (size_t)(writer->output_capacity - pos);
+    if (first > 0) memcpy(ring + pos, source, first);
+    if (retained > first) memcpy(ring, source + first, retained - first);
+    writer->output_offset = next_offset;
     uint64_t wraps = writer->output_offset / writer->output_capacity;
     store_u64(writer->map, 128, writer->output_offset);
     store_u64(writer->map, 144, wraps);

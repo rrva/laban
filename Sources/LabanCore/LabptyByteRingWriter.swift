@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanTerminalCore
 
 public final class LabptyByteRingWriter {
   public let path: String
@@ -60,13 +61,17 @@ public final class LabptyByteRingWriter {
   private func write(_ bytes: UnsafePointer<UInt8>, count: Int) {
     guard count > 0 else { return }
     let ring = map.assumingMemoryBound(to: UInt8.self).advanced(by: Int(outputRingOffset))
-    let startIndex = Int(outputOffset & (outputRingCapacity - 1))
-    let first = min(count, Int(outputRingCapacity) - startIndex)
-    memcpy(ring.advanced(by: startIndex), bytes, first)
-    if count > first {
-      memcpy(ring, bytes.advanced(by: first), count - first)
+    let retained = min(count, Int(outputRingCapacity))
+    let source = bytes.advanced(by: count - retained)
+    let nextOffset = outputOffset + UInt64(count)
+    let retainedStart = nextOffset - UInt64(retained)
+    let startIndex = Int(retainedStart & (outputRingCapacity - 1))
+    let first = min(retained, Int(outputRingCapacity) - startIndex)
+    memcpy(ring.advanced(by: startIndex), source, first)
+    if retained > first {
+      memcpy(ring, source.advanced(by: first), retained - first)
     }
-    outputOffset += UInt64(count)
+    outputOffset = nextOffset
     storeUInt64(outputOffset, offset: Int(LabptyByteRingLayout.outputBytesWrittenTotalOffset))
     storeUInt64(
       outputOffset / outputRingCapacity,
@@ -107,9 +112,7 @@ public final class LabptyByteRingWriter {
 
   private func storeUInt64(_ value: UInt64, offset: Int) {
     let bytes = map.assumingMemoryBound(to: UInt8.self)
-    for index in 0..<8 {
-      bytes[offset + index] = UInt8((value >> UInt64(index * 8)) & 0xFF)
-    }
+    laban_atomic_store_u64_release(UnsafeMutableRawPointer(bytes.advanced(by: offset)), value)
   }
 
   private func monotonicNanoseconds() -> UInt64 {

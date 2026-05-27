@@ -6,14 +6,16 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
 
   private let socketPath: String
   private var fd: Int32
+  private let clientId = UUID().uuidString
   private var nextSequence: UInt64 = 1
   private let lock = NSLock()
   private var handlesBySessionId: [String: UInt64] = [:]
   private var descriptorsByHandle: [UInt64: LabptySessionDescriptor] = [:]
+  private var negotiatedCapabilities: Set<String>?
 
-  public init(socketPath: String) throws {
+  public init(socketPath: String, rpcTimeoutMilliseconds: Int = 2_000) throws {
     self.socketPath = socketPath
-    fd = try Self.connect(socketPath: socketPath)
+    fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
   }
 
   deinit {
@@ -22,18 +24,14 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
 
   public func close() {
     lock.withLock {
-      if fd >= 0 {
-        Darwin.close(fd)
-        fd = -1
-      }
-      handlesBySessionId.removeAll()
-      descriptorsByHandle.removeAll()
+      closeLocked()
     }
   }
 
   public func hello() throws -> LabptyHelloResponse {
-    let payload = try LabptyHelloRequest(clientId: UUID().uuidString).encode()
-    return try send(operation: .hello, payload: payload, decode: LabptyHelloResponse.decode)
+    try lock.withLock {
+      try helloLocked()
+    }
   }
 
   public func openSession(_ request: LabptyOpenSessionRequest) throws -> LabptySessionDescriptor {
@@ -188,14 +186,61 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     decode: (Data) throws -> T
   ) throws -> T {
     try lock.withLock {
+      if operation != .hello && negotiatedCapabilities == nil {
+        _ = try helloLocked()
+      }
+      return try sendLocked(operation: operation, payload: payload, decode: decode)
+    }
+  }
+
+  private func helloLocked() throws -> LabptyHelloResponse {
+    let payload = try LabptyHelloRequest(clientId: clientId).encode()
+    let response: LabptyHelloResponse = try sendLocked(
+      operation: .hello,
+      payload: payload,
+      decode: LabptyHelloResponse.decode)
+    try validateHello(response)
+    negotiatedCapabilities = Set(response.capabilities)
+    return response
+  }
+
+  private func validateHello(_ response: LabptyHelloResponse) throws {
+    guard response.protocolMajor == LabptyFrameHeader.abiMajor else {
+      throw LabptyProtocolError.versionMismatch
+    }
+    let capabilities = Set(response.capabilities)
+    let missing = LabptyCapabilities.phase1.filter { !capabilities.contains($0) }
+    guard missing.isEmpty else {
+      throw TerminalSessionClientError.protocolError(
+        "labpty missing required capabilities: \(missing.sorted().joined(separator: ","))")
+    }
+  }
+
+  private func sendLocked<T>(
+    operation: LabptyOperation,
+    payload: Data,
+    decode: (Data) throws -> T
+  ) throws -> T {
       guard fd >= 0 else {
         throw TerminalSessionClientError.protocolError("socket is closed")
       }
       let sequence = nextSequence
       nextSequence += 1
-      try writeAll(LabptyFraming.encodeRequest(operation: operation, sequence: sequence, payload: payload))
-      let response = try LabptyFraming.decode(try readFrame())
+      do {
+        try writeAll(LabptyFraming.encodeRequest(operation: operation, sequence: sequence, payload: payload))
+      } catch {
+        closeLocked()
+        throw error
+      }
+      let response: LabptyFrame
+      do {
+        response = try LabptyFraming.decode(try readFrame())
+      } catch {
+        closeLocked()
+        throw error
+      }
       guard response.header.sequence == sequence else {
+        closeLocked()
         throw TerminalSessionClientError.protocolError("labpty response sequence mismatch")
       }
       guard response.header.responseCode == .ok else {
@@ -203,7 +248,16 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
           "labpty error \(response.header.codeRaw)")
       }
       return try decode(response.payload)
+  }
+
+  private func closeLocked() {
+    if fd >= 0 {
+      Darwin.close(fd)
+      fd = -1
     }
+    handlesBySessionId.removeAll()
+    descriptorsByHandle.removeAll()
+    negotiatedCapabilities = nil
   }
 
   private func remember(_ descriptor: LabptySessionDescriptor) {
@@ -241,11 +295,13 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     return []
   }
 
-  private static func connect(socketPath: String) throws -> Int32 {
+  private static func connect(socketPath: String, timeoutMilliseconds: Int) throws -> Int32 {
     let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     var one: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+    try setTimeout(fd: fd, option: SO_RCVTIMEO, milliseconds: timeoutMilliseconds)
+    try setTimeout(fd: fd, option: SO_SNDTIMEO, milliseconds: timeoutMilliseconds)
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = Array(socketPath.utf8CString)
@@ -271,6 +327,24 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     return fd
   }
 
+  private static func setTimeout(fd: Int32, option: Int32, milliseconds: Int) throws {
+    let clamped = max(1, milliseconds)
+    var timeout = timeval(
+      tv_sec: clamped / 1000,
+      tv_usec: Int32((clamped % 1000) * 1000))
+    let result = setsockopt(
+      fd,
+      SOL_SOCKET,
+      option,
+      &timeout,
+      socklen_t(MemoryLayout<timeval>.size))
+    guard result == 0 else {
+      let err = errno
+      Darwin.close(fd)
+      throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
+    }
+  }
+
   private func readFrame() throws -> Data {
     let header = try readExact(count: LabptyFrameHeader.headerByteCount)
     let headerBytes = [UInt8](header)
@@ -282,6 +356,9 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     )
     guard totalLength >= LabptyFrameHeader.headerByteCount else {
       throw LabptyProtocolError.truncatedFrame
+    }
+    guard totalLength <= LabptyFrameHeader.maxFrameBytes else {
+      throw LabptyProtocolError.oversizeFrame
     }
     let payload = try readExact(count: totalLength - LabptyFrameHeader.headerByteCount)
     return header + payload

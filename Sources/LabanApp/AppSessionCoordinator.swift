@@ -635,6 +635,11 @@ private final class LabptyParserFeed {
     let result = reader.readSince(lastOffset)
     lastOffset = result.newOffset
     guard !result.bytes.isEmpty else { return }
+    if result.overflowed {
+      AppLog.app.error(
+        "labpty byte ring overflow for pty handle \(self.ptyHandle); resetting parser continuity")
+      _ = session.feedOutput([0x1B, 0x63])
+    }
     _ = session.feedOutput(Array(result.bytes))
     onDirty(session.id)
   }

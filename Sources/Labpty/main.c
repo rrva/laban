@@ -9,6 +9,7 @@ typedef struct {
      * sit fully idle while reading byte-ring output directly) from
      * never-said-hello slowloris attackers. */
     int established;
+    int negotiated;
     size_t read_have;
     labpty_frame_header_t header;
     uint8_t read_buf[LABPTY_MAX_FRAME];
@@ -315,7 +316,12 @@ static labpty_status_t dispatch_frame(labpty_daemon_t *daemon, labpty_client_t *
     uint8_t *out = client->write_buf + LABPTY_FRAME_HEADER_BYTES;
     size_t cap = LABPTY_MAX_FRAME - LABPTY_FRAME_HEADER_BYTES;
     *out_len = 0;
-    if (header.op == LABPTY_OP_HELLO) return handle_hello(daemon, payload, len, out, cap, out_len);
+    if (header.op == LABPTY_OP_HELLO) {
+        labpty_status_t status = handle_hello(daemon, payload, len, out, cap, out_len);
+        if (status == LABPTY_OK) client->negotiated = 1;
+        return status;
+    }
+    if (!client->negotiated) return LABPTY_E_CAPABILITY_REQUIRED;
     if (header.op == LABPTY_OP_OPEN_SESSION) return handle_open(daemon, payload, len, out, cap, out_len);
     if (header.op == LABPTY_OP_LIST_SESSIONS) {
         *out_len = encode_list_payload(&daemon->registry, out, cap);

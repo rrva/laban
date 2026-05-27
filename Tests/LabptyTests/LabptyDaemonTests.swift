@@ -262,6 +262,30 @@ final class LabptyDaemonTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
+  func testNonHelloRequestBeforeHelloIsRejected() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    let raw = try connectRaw(socketPath: harness.socketPath)
+    defer { Darwin.close(raw) }
+
+    let listFrame = try LabptyFraming.encodeRequest(
+      operation: .listSessions, sequence: 7, payload: Data())
+    try writeAllRaw(fd: raw, data: listFrame)
+    let rejected = try readFrameRaw(fd: raw)
+    XCTAssertEqual(rejected.header.sequence, 7)
+    XCTAssertEqual(rejected.header.responseCode, .capabilityRequired)
+
+    let helloFrame = try LabptyFraming.encodeRequest(
+      operation: .hello,
+      sequence: 8,
+      payload: try LabptyHelloRequest(clientId: "after-reject").encode())
+    try writeAllRaw(fd: raw, data: helloFrame)
+    let accepted = try readFrameRaw(fd: raw)
+    XCTAssertEqual(accepted.header.sequence, 8)
+    XCTAssertEqual(accepted.header.responseCode, .ok)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   func testShutdownSignalTerminatesSessionsAndUnlinksArtifacts() throws {
     let harness = try launchHarness()
     let client = try waitForClient(socketPath: harness.socketPath)
@@ -315,14 +339,44 @@ final class LabptyDaemonTests: XCTestCase {
     let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
     let writer = try LabptyByteRingWriter(path: url.path, outputRingCapacity: capacity)
     let reader = try LabptyByteRingReader(path: url.path)
-    let payload = Data(repeating: 0x41, count: Int(capacity * 2 + 32))
+    var payload = Data()
+    payload.reserveCapacity(Int(capacity * 2 + 32))
+    for index in 0..<Int(capacity * 2 + 32) {
+      payload.append(UInt8(index & 0xFF))
+    }
 
     writer.write(payload)
     let result = reader.readSince(0)
 
     XCTAssertTrue(result.overflowed)
-    XCTAssertEqual(result.bytes.count, Int(capacity))
+    let expectedCount = Int(LabptyByteRingLayout.readableOutputWindow(for: capacity))
+    XCTAssertEqual(result.bytes.count, expectedCount)
+    XCTAssertEqual(result.bytes, Data(payload.suffix(expectedCount)))
     XCTAssertEqual(result.newOffset, UInt64(payload.count))
+  }
+
+  func testByteRingReaderRejectsUnsupportedAbiMajor() throws {
+    let url = try temporaryRingURL()
+    do {
+      _ = try LabptyByteRingWriter(
+        path: url.path,
+        outputRingCapacity: UInt64(LabptyByteRingLayout.minimumOutputRingCapacity))
+    }
+    try patchUInt32(url: url, offset: 8, value: 99)
+
+    XCTAssertThrowsError(try LabptyByteRingReader(path: url.path))
+  }
+
+  func testByteRingReaderRejectsOutputSpanPastEndOfFile() throws {
+    let url = try temporaryRingURL()
+    do {
+      _ = try LabptyByteRingWriter(
+        path: url.path,
+        outputRingCapacity: UInt64(LabptyByteRingLayout.minimumOutputRingCapacity))
+    }
+    XCTAssertEqual(Darwin.truncate(url.path, off_t(LabptyByteRingLayout.inputRingOffset + 1024)), 0)
+
+    XCTAssertThrowsError(try LabptyByteRingReader(path: url.path))
   }
 
   func testProducerAliveHeartbeat() throws {
@@ -613,5 +667,17 @@ final class LabptyDaemonTests: XCTestCase {
     tempRoots.append(dir)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir.appendingPathComponent("ring.br")
+  }
+
+  private func patchUInt32(url: URL, offset: UInt64, value: UInt32) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.seek(toOffset: offset)
+    try handle.write(contentsOf: Data([
+      UInt8(value & 0xFF),
+      UInt8((value >> 8) & 0xFF),
+      UInt8((value >> 16) & 0xFF),
+      UInt8((value >> 24) & 0xFF),
+    ]))
   }
 }

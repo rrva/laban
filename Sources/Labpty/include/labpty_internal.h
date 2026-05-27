@@ -61,6 +61,7 @@ enum {
     LABPTY_DEFAULT_OUTPUT_CAPACITY = 8 * 1024 * 1024,
     LABPTY_MIN_OUTPUT_CAPACITY = 256 * 1024,
     LABPTY_MAX_OUTPUT_CAPACITY = 64 * 1024 * 1024,
+    LABPTY_OUTPUT_READ_SAFETY_MARGIN_BYTES = 64 * 1024,
     LABPTY_READER_SLOT_BYTES = 64,
     LABPTY_READER_SLOT_COUNT = 8,
     LABPTY_HEADER_BYTES = 128,
@@ -110,5 +111,6 @@ _Static_assert(LABPTY_READER_SLOT_COUNT == 8, "Swift byte-ring reader slot count
 _Static_assert(LABPTY_INPUT_RING_OFFSET == 768, "Swift byte-ring input ring offset mirror changed");
 _Static_assert(LABPTY_MIN_OUTPUT_CAPACITY == 256 * 1024, "Swift byte-ring minimum capacity mirror changed");
 _Static_assert(LABPTY_MAX_OUTPUT_CAPACITY == 64 * 1024 * 1024, "Swift byte-ring maximum capacity mirror changed");
+_Static_assert(LABPTY_OUTPUT_READ_SAFETY_MARGIN_BYTES == 64 * 1024, "Swift byte-ring read safety margin mirror changed");
 
 #endif

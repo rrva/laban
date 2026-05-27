@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanTerminalCore
 
 public struct LabptyByteRingReadResult: Equatable, Sendable {
   public var bytes: Data
@@ -11,6 +12,7 @@ public final class LabptyByteRingReader {
   public let path: String
   public let outputRingOffset: UInt64
   public let outputRingCapacity: UInt64
+  public let readableOutputWindow: UInt64
   private let fd: Int32
   private let map: UnsafeMutableRawPointer
   private let mapLength: Int
@@ -26,6 +28,10 @@ public final class LabptyByteRingReader {
       Darwin.close(fd)
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
+    guard statBuffer.st_size >= off_t(LabptyByteRingLayout.headerBytes) else {
+      Darwin.close(fd)
+      throw TerminalSessionClientError.protocolError("labpty byte ring file is too small")
+    }
     mapLength = Int(statBuffer.st_size)
     let mapped = mmap(nil, mapLength, PROT_READ, MAP_SHARED, fd, 0)
     guard mapped != MAP_FAILED else {
@@ -39,19 +45,57 @@ public final class LabptyByteRingReader {
       Darwin.close(fd)
       throw TerminalSessionClientError.protocolError("invalid labpty byte ring magic")
     }
+    let abiMajor = LabptyByteRingReader.loadUInt32(bytes, offset: 8)
+    guard abiMajor == LabptyByteRingLayout.abiMajor else {
+      munmap(map, mapLength)
+      Darwin.close(fd)
+      throw TerminalSessionClientError.protocolError("unsupported labpty byte ring ABI")
+    }
     let headerBytes = LabptyByteRingReader.loadUInt32(bytes, offset: 16)
     guard headerBytes == LabptyByteRingLayout.headerBytes else {
       munmap(map, mapLength)
       Darwin.close(fd)
       throw TerminalSessionClientError.protocolError("unsupported labpty byte ring header")
     }
-    outputRingOffset = LabptyByteRingReader.loadUInt64(bytes, offset: 56)
-    outputRingCapacity = LabptyByteRingReader.loadUInt64(bytes, offset: 64)
-    guard LabptyByteRingLayout.validateOutputCapacity(outputRingCapacity) else {
+    guard
+      LabptyByteRingReader.loadUInt32(bytes, offset: 20) == LabptyByteRingLayout.countersOffset,
+      LabptyByteRingReader.loadUInt32(bytes, offset: 24) == LabptyByteRingLayout.readerSlotOffset,
+      LabptyByteRingReader.loadUInt32(bytes, offset: 28) == LabptyByteRingLayout.readerSlotBytes,
+      LabptyByteRingReader.loadUInt32(bytes, offset: 32) == LabptyByteRingLayout.readerSlotCount
+    else {
+      munmap(map, mapLength)
+      Darwin.close(fd)
+      throw TerminalSessionClientError.protocolError("unsupported labpty byte ring layout")
+    }
+    let inputRingOffset = LabptyByteRingReader.loadUInt64(bytes, offset: 40)
+    let inputRingCapacity = LabptyByteRingReader.loadUInt64(bytes, offset: 48)
+    let ringOffset = LabptyByteRingReader.loadUInt64(bytes, offset: 56)
+    let ringCapacity = LabptyByteRingReader.loadUInt64(bytes, offset: 64)
+    let metadataRingOffset = LabptyByteRingReader.loadUInt64(bytes, offset: 72)
+    guard inputRingOffset == LabptyByteRingLayout.inputRingOffset,
+      inputRingCapacity == LabptyByteRingLayout.phase1InputRingCapacity,
+      ringOffset == inputRingOffset + inputRingCapacity,
+      metadataRingOffset == ringOffset + ringCapacity
+    else {
+      munmap(map, mapLength)
+      Darwin.close(fd)
+      throw TerminalSessionClientError.protocolError("unsupported labpty byte ring offsets")
+    }
+    guard LabptyByteRingLayout.validateOutputCapacity(ringCapacity) else {
       munmap(map, mapLength)
       Darwin.close(fd)
       throw TerminalSessionClientError.protocolError("invalid labpty byte ring capacity")
     }
+    guard LabptyByteRingReader.validateSpan(
+      offset: ringOffset, count: ringCapacity, mapLength: UInt64(mapLength))
+    else {
+      munmap(map, mapLength)
+      Darwin.close(fd)
+      throw TerminalSessionClientError.protocolError("labpty byte ring span exceeds file length")
+    }
+    outputRingOffset = ringOffset
+    outputRingCapacity = ringCapacity
+    readableOutputWindow = LabptyByteRingLayout.readableOutputWindow(for: ringCapacity)
   }
 
   deinit {
@@ -81,6 +125,11 @@ public final class LabptyByteRingReader {
       if confirmed == result.newOffset {
         return result
       }
+      if confirmed > result.newOffset
+        && confirmed - result.newOffset <= outputRingCapacity - readableOutputWindow
+      {
+        return result
+      }
       result = readStableRangeSince(lastOffset)
     }
     return result
@@ -98,8 +147,8 @@ public final class LabptyByteRingReader {
     -> LabptyByteRingReadResult
   {
     let available = current - lastOffset
-    let overflowed = available > outputRingCapacity
-    let start = overflowed ? current - outputRingCapacity : lastOffset
+    let overflowed = available > readableOutputWindow
+    let start = overflowed ? current - readableOutputWindow : lastOffset
     let count = Int(current - start)
     let ring = map.assumingMemoryBound(to: UInt8.self).advanced(by: Int(outputRingOffset))
     let startIndex = Int(start & (outputRingCapacity - 1))
@@ -129,8 +178,10 @@ public final class LabptyByteRingReader {
   }
 
   private static func loadAlignedUInt64(_ bytes: UnsafePointer<UInt8>, offset: Int) -> UInt64 {
-    bytes.advanced(by: offset).withMemoryRebound(to: UInt64.self, capacity: 1) { pointer in
-      UInt64(littleEndian: pointer.pointee)
-    }
+    laban_atomic_load_u64_acquire(UnsafeRawPointer(bytes.advanced(by: offset)))
+  }
+
+  private static func validateSpan(offset: UInt64, count: UInt64, mapLength: UInt64) -> Bool {
+    offset <= mapLength && count <= mapLength - offset
   }
 }
