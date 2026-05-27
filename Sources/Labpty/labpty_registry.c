@@ -32,6 +32,12 @@ static labpty_status_t make_ring_path(
     return LABPTY_OK;
 }
 
+static int valid_output_capacity(uint64_t capacity) {
+    return capacity >= LABPTY_MIN_OUTPUT_CAPACITY &&
+           capacity <= LABPTY_MAX_OUTPUT_CAPACITY &&
+           (capacity & (capacity - 1)) == 0;
+}
+
 static void signal_child_process_group(pid_t child_pid, int signo) {
     assert(child_pid > 0);
     if (killpg(child_pid, signo) != 0 && errno == ESRCH) {
@@ -148,6 +154,8 @@ labpty_status_t labpty_registry_open(
     labpty_session_t *slot = free_slot(registry);
     if (!slot && reclaim_one_dead_session(registry)) slot = free_slot(registry);
     if (!slot) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    uint64_t cap = request->output_capacity ? request->output_capacity : LABPTY_DEFAULT_OUTPUT_CAPACITY;
+    if (!valid_output_capacity(cap)) return LABPTY_E_PAYLOAD_TOO_LARGE;
     uint64_t handle = registry->next_handle++;
     char logical_id[LABPTY_LOGICAL_ID_BYTES + 1];
     char ring_path[LABPTY_PATH_BYTES + 1];
@@ -171,7 +179,6 @@ labpty_status_t labpty_registry_open(
     slot->rows = request->rows;
     slot->cols = request->cols;
     snprintf(slot->logical_id, sizeof(slot->logical_id), "%s", logical_id);
-    uint64_t cap = request->output_capacity ? request->output_capacity : LABPTY_DEFAULT_OUTPUT_CAPACITY;
     status = labpty_byte_ring_create(ring_path, cap, slot->logical_id, &slot->ring);
     if (status != LABPTY_OK) {
         labpty_session_close(slot);

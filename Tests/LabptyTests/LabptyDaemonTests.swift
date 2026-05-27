@@ -146,15 +146,18 @@ final class LabptyDaemonTests: XCTestCase {
       UInt64(LabptyByteRingLayout.maximumOutputRingCapacity) + 1,
     ]
     for (index, capacity) in badCapacities.enumerated() {
+      let markerPath = "\(harness.shmDir)/bad-capacity-\(index).marker"
       XCTAssertThrowsError(
         try client.openSession(
           LabptyOpenSessionRequest(
             rows: 24,
             cols: 80,
             outputRingCapacity: capacity,
-            argv: ["/bin/sleep", "30"],
+            argv: ["/bin/sh", "-c", "touch \"\(markerPath)\"; sleep 30"],
             logicalSessionId: "bad-capacity-\(index)")))
       XCTAssertTrue(harness.process.isRunning)
+      usleep(100_000)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: markerPath))
     }
 
     let descriptor = try client.openSession(
