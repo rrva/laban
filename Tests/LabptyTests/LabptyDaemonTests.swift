@@ -283,6 +283,57 @@ final class LabptyDaemonTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
+  func testRejectedPreHelloClientsDoNotExhaustControlSlots() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    var rejectedFds: [Int32] = []
+    defer {
+      for fd in rejectedFds {
+        Darwin.close(fd)
+      }
+    }
+
+    for index in 0..<8 {
+      let fd = try connectRaw(socketPath: harness.socketPath)
+      rejectedFds.append(fd)
+      try setReceiveTimeout(fd: fd, milliseconds: 500)
+      let payload = try LabptyHelloRequest(
+        clientId: "missing-caps-\(index)",
+        capabilities: []
+      ).encode()
+      let frame = try LabptyFraming.encodeRequest(
+        operation: .hello,
+        sequence: UInt64(index + 1),
+        payload: payload)
+      try writeAllRaw(fd: fd, data: frame)
+      let response = try readFrameRaw(fd: fd)
+      XCTAssertEqual(response.header.responseCode, .capabilityRequired)
+    }
+
+    let deadline = Date().addingTimeInterval(2)
+    var connectedClient: LabptyTerminalSessionClient?
+    var lastError: Error?
+    while Date() < deadline {
+      do {
+        let client = try LabptyTerminalSessionClient(
+          socketPath: harness.socketPath,
+          rpcTimeoutMilliseconds: 200)
+        _ = try client.hello()
+        connectedClient = client
+        break
+      } catch {
+        lastError = error
+        usleep(50_000)
+      }
+    }
+    let client = try XCTUnwrap(
+      connectedClient,
+      "rejected pre-hello clients kept all control slots busy: \(String(describing: lastError))")
+    defer { client.close() }
+    XCTAssertNoThrow(try client.listLabptySessions())
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   func testNonHelloRequestBeforeHelloIsRejected() throws {
     let harness = try launchHarness()
     try waitForSocketFile(socketPath: harness.socketPath)

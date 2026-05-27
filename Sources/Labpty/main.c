@@ -406,9 +406,11 @@ static int client_pump_write(labpty_client_t *client) {
         return -1;
     }
     client_reset_after_response(client);
-    /* A round-trip just completed; this client is now established and
-     * exempt from the silent-slowloris deadline check. */
-    client->established = 1;
+    /* Only negotiated clients may sit idle while reading byte-ring output
+     * directly. A rejected pre-hello client has completed a round-trip, but
+     * it is still unauthenticated protocol noise and must not consume one of
+     * the finite control slots forever. */
+    client->established = client->negotiated;
     return 0;
 }
 
