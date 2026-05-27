@@ -7,6 +7,11 @@
 typedef struct {
     uint8_t used;
     uint8_t alive;
+    /* Set when labpty_session_close ran but wait_for_child_exit timed out
+     * (child still alive after SIGKILL + ~500ms). The slot stays `used`
+     * so labpty_registry_reap can finish the cleanup when the child is
+     * eventually reaped; without this flag the slot would leak forever. */
+    uint8_t close_pending;
     uint64_t handle;
     pid_t child_pid;
     int master_fd;

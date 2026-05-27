@@ -109,6 +109,12 @@ labpty_status_t labpty_byte_ring_create(
         unlink(out->path);
         return LABPTY_E_RING_MAP_FAILED;
     }
+    /* Pin the ring in RAM so the writer never page-faults under load.
+     * Best-effort — mlock can fail with ENOMEM if the system limit
+     * (RLIMIT_MEMLOCK) is reached. The ring still works without it, just
+     * with potentially higher tail latency. munmap implicitly munlocks,
+     * so labpty_byte_ring_close needs no paired call. */
+    (void)mlock(out->map, out->map_len);
     memset(out->map, 0, out->map_len);
     initialize_header(out, logical_id);
     labpty_byte_ring_heartbeat(out);

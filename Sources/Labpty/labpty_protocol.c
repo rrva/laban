@@ -40,7 +40,13 @@ static labpty_status_t write_string(labpty_writer_t *writer, const char *value) 
     return labpty_write_bytes(writer, (const uint8_t *)value, len);
 }
 
-static labpty_status_t read_string_array(
+/* envp-specific decoder. The entry stride is hard-coded to
+ * LABPTY_ENV_BYTES + 1 so the function is intentionally NOT generic over
+ * any other string-array layout (argv uses smaller entries via
+ * read_argv_array). If you need another string-array type, add a new
+ * decoder rather than parameterizing this one — a stride mismatch here
+ * would silently corrupt the next field of the open request. */
+static labpty_status_t read_envp_array(
     labpty_reader_t *reader,
     uint32_t max_count,
     uint32_t max_bytes,
@@ -82,9 +88,18 @@ static labpty_status_t read_argv_array(labpty_reader_t *reader, labpty_open_requ
     return LABPTY_OK;
 }
 
+/* The hardware limit is 0xFFFF per dimension (TIOCSWINSZ uses unsigned
+ * short) but realistic terminals stay well below this. Capping at 4096
+ * blocks pathological values that could starve renderers or trip OOM in
+ * snapshot consumers downstream while leaving plenty of slack for tiled
+ * 8K-display layouts. */
+enum {
+    LABPTY_MAX_WINSIZE_DIMENSION = 4096,
+};
+
 static labpty_status_t validate_winsize(uint32_t rows, uint32_t cols) {
-    if (rows < 1 || rows > 0xFFFFu) return LABPTY_E_PAYLOAD_TOO_LARGE;
-    if (cols < 1 || cols > 0xFFFFu) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    if (rows < 1 || rows > LABPTY_MAX_WINSIZE_DIMENSION) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    if (cols < 1 || cols > LABPTY_MAX_WINSIZE_DIMENSION) return LABPTY_E_PAYLOAD_TOO_LARGE;
     return LABPTY_OK;
 }
 
@@ -103,7 +118,7 @@ labpty_status_t labpty_decode_open_request(
     if ((status = validate_winsize(out->rows, out->cols)) != LABPTY_OK) return status;
     if ((status = labpty_read_u64(&reader, &out->output_capacity)) != LABPTY_OK) return status;
     if ((status = read_argv_array(&reader, out)) != LABPTY_OK) return status;
-    status = read_string_array(&reader, LABPTY_ENVP_MAX, LABPTY_ENV_BYTES,
+    status = read_envp_array(&reader, LABPTY_ENVP_MAX, LABPTY_ENV_BYTES,
         out->envp, out->envp_ptrs, &out->envp_count);
     if (status != LABPTY_OK) return status;
     if ((status = read_string(&reader, LABPTY_CWD_BYTES, out->cwd, sizeof(out->cwd))) != LABPTY_OK) return status;

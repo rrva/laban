@@ -444,7 +444,53 @@ final class LabptyAdversarialTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
-  // MARK: - Slowloris
+  // MARK: - Silent slowloris (F1 regression)
+
+  func testSilentSlowlorisSocketsAreReclaimed() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    // Connect exactly LABPTY_MAX_CLIENTS sockets but send NO bytes — the
+    // earlier expire path exempted clients with empty buffers, letting
+    // them hold all eight slots forever.
+    var silent: [Int32] = []
+    for _ in 0..<8 {
+      let fd = try connectRaw(socketPath: harness.socketPath)
+      silent.append(fd)
+    }
+    defer { for fd in silent { Darwin.close(fd) } }
+
+    // Idle deadline is 250 ms; 1 s gives expire two ticks to fire.
+    Thread.sleep(forTimeInterval: 1.0)
+
+    // A fresh well-behaved client must now claim a slot.
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    XCTAssertNoThrow(try client.hello())
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  // MARK: - Winsize cap (F7 regression)
+
+  func testResizeBeyondCapIsRejected() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "30"],
+        logicalSessionId: "winsize-cap"))
+    // 8000 > the new 4096 cap; 4096 itself succeeds.
+    XCTAssertThrowsError(
+      try client.resize(handle: descriptor.ptyHandle, rows: 8000, cols: 80))
+    XCTAssertNoThrow(
+      try client.resize(handle: descriptor.ptyHandle, rows: 4096, cols: 80))
+    XCTAssertTrue(harness.process.isRunning)
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
+  // MARK: - Slowloris with one written byte
 
   func testSlowlorisSocketsAreReclaimedByExpireTick() throws {
     let harness = try launchHarness()

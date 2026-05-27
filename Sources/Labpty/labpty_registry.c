@@ -174,7 +174,15 @@ void labpty_session_close(labpty_session_t *session) {
         if (reaped) session->child_pid = 0;
     }
     labpty_byte_ring_close(&session->ring);
-    if (reaped) session->used = 0;
+    if (reaped) {
+        session->used = 0;
+        session->close_pending = 0;
+    } else {
+        /* Child outlived our SIGKILL deadline. Leave used=1 so the
+         * registry slot persists; labpty_registry_reap will finish the
+         * cleanup when the OS finally hands us the zombie. */
+        session->close_pending = 1;
+    }
 }
 
 void labpty_registry_reap(labpty_registry_t *registry) {
@@ -188,6 +196,12 @@ void labpty_registry_reap(labpty_registry_t *registry) {
         if (got == s->child_pid || (got < 0 && errno == ECHILD)) {
             s->child_pid = 0;
             s->alive = 0;
+            if (s->close_pending) {
+                /* labpty_session_close already closed the ring; just
+                 * release the slot now that the child is finally gone. */
+                s->close_pending = 0;
+                s->used = 0;
+            }
         }
     }
 }

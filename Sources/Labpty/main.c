@@ -4,6 +4,11 @@ typedef struct {
     int fd;
     int in_use;
     int header_parsed;
+    /* Set once the client has completed at least one request/response
+     * round-trip. Distinguishes legitimate long-lived clients (which may
+     * sit fully idle while reading byte-ring output directly) from
+     * never-said-hello slowloris attackers. */
+    int established;
     size_t read_have;
     labpty_frame_header_t header;
     uint8_t read_buf[LABPTY_MAX_FRAME];
@@ -144,6 +149,7 @@ static void add_client(labpty_daemon_t *daemon) {
     int fd = accept(daemon->listen_fd, NULL, NULL);
     if (fd < 0) return;
     if (fd >= FD_SETSIZE) {
+        fprintf(stderr, "labpty: refused client fd %d (>= FD_SETSIZE %d)\n", fd, FD_SETSIZE);
         close(fd);
         return;
     }
@@ -158,6 +164,9 @@ static void add_client(labpty_daemon_t *daemon) {
             return;
         }
     }
+    /* All LABPTY_MAX_CLIENTS slots in use; the client sees connect() ok
+     * followed by EOF on first read. This is routine under load (stress
+     * runs see thousands per minute) so it is intentionally unlogged. */
     close(fd);
 }
 
@@ -267,6 +276,8 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
 
+static const uint64_t LABPTY_WRITE_INPUT_BUDGET_NS = 100000000ull;  /* 100 ms */
+
 static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payload, size_t len) {
     assert(daemon != NULL);
     labpty_write_input_request_t request;
@@ -274,12 +285,17 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
+    /* Wall-clock budget so a slow consumer downstream can't wedge the
+     * single-threaded event loop while we drain accept/expire/reap.
+     * Client sees LABPTY_E_INTERNAL and can retry. */
+    uint64_t deadline = monotonic_ns() + LABPTY_WRITE_INPUT_BUDGET_NS;
     size_t sent = 0;
     while (sent < request.len) {
         ssize_t n = write(session->master_fd, request.bytes + sent, request.len - sent);
         if (n > 0) { sent += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (monotonic_ns() >= deadline) return LABPTY_E_INTERNAL;
             usleep(1000);
             continue;
         }
@@ -384,6 +400,9 @@ static int client_pump_write(labpty_client_t *client) {
         return -1;
     }
     client_reset_after_response(client);
+    /* A round-trip just completed; this client is now established and
+     * exempt from the silent-slowloris deadline check. */
+    client->established = 1;
     return 0;
 }
 
@@ -445,8 +464,13 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use) continue;
-        if (client->read_have == 0 && client->write_total == 0) continue;
-        if (now >= client->deadline_ns) client_release(client);
+        if (now < client->deadline_ns) continue;
+        /* Established clients (at least one successful round-trip) may sit
+         * idle while reading byte-ring output directly — don't expire
+         * them unless they have a half-sent frame in flight. */
+        int has_pending_frame = client->read_have > 0 || client->write_total > 0;
+        if (client->established && !has_pending_frame) continue;
+        client_release(client);
     }
 }
 
@@ -513,7 +537,10 @@ int main(int argc, char **argv) {
     char shm_dir[LABPTY_PATH_BYTES + 1];
     if (parse_args(argc, argv, socket_path, shm_dir) != 0) { usage(); return 64; }
     if (install_signal_handlers() != 0) { perror("labpty signal"); return 1; }
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) perror("labpty mlockall");
+    /* macOS does not implement mlockall (ENOSYS), and the daemon's
+     * latency-critical pages are the byte rings — those are pinned
+     * per-region in labpty_byte_ring_create. The mlockall call that used
+     * to live here was dead code on every supported build. */
     if (mkdir(shm_dir, 0700) != 0 && errno != EEXIST) { perror("labpty shm dir"); return 1; }
     labpty_daemon_t daemon;
     memset(&daemon, 0, sizeof(daemon));
