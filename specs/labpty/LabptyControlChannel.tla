@@ -49,9 +49,15 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS
     Clients,                  \* finite set of client slot IDs (~ LABPTY_MAX_CLIENTS)
     MaxFramesPerClient,       \* per-slot frame-cycle bound for TLC finiteness
-    EstablishOnAnyRoundTrip   \* BOOLEAN; TRUE = pre-2aac41a bug, FALSE = fix
+    EstablishOnAnyRoundTrip,  \* BOOLEAN; TRUE = pre-2aac41a bug, FALSE = fix
+    ExpireIgnoresMidFrame     \* BOOLEAN; TRUE = hypothetical regression where
+                              \* expire_stalled_clients drops its
+                              \* `|| has_pending_frame` branch and lets
+                              \* established slots leak when stuck mid-frame.
+                              \* FALSE = matches current C behaviour.
 
 ASSUME EstablishOnAnyRoundTrip \in BOOLEAN
+ASSUME ExpireIgnoresMidFrame   \in BOOLEAN
 ASSUME MaxFramesPerClient \in 1..10
 
 VARIABLES clients
@@ -133,13 +139,19 @@ WriteComplete(c) ==
             ![c].frames_issued = clients[c].frames_issued + 1 ]
 
 \* Expire: expire_stalled_clients reclaims the slot when the slowloris
-\* deadline elapses, the slot is unestablished, and no read/write is in
-\* flight. Modelled as enabled iff the slot is idle, in_use, and
-\* established = 0. The event-loop's WF_vars commitment is below.
+\* deadline has elapsed. The C condition is
+\*   skip iff (established AND NOT has_pending_frame)  -> exempts the
+\*   established-byte-ring-reader case, kills everything else.
+\* Equivalently the action is enabled when the slot is un-negotiated
+\* (any state) OR when an established slot is stuck mid-frame
+\* (state in {reading, writing}). The `~ExpireIgnoresMidFrame` guard
+\* on the second branch lets the spec model the hypothetical regression
+\* where the `|| has_pending_frame` half of the C check is removed.
 Expire(c) ==
     /\ clients[c].in_use = 1
-    /\ clients[c].state = "idle"
-    /\ clients[c].established = 0
+    /\ \/ clients[c].established = 0
+       \/ /\ ~ExpireIgnoresMidFrame
+          /\ clients[c].state \in {"reading", "writing"}
     /\ clients' = [ clients EXCEPT ![c] = EmptyClient ]
 
 \* Disconnect: client closes the socket (read returns EOF, write fails).
@@ -220,5 +232,19 @@ UnnegotiatedIdleIsNotPermanent ==
                 \/ clients[c].state # "idle"
                 \/ clients[c].negotiated = 1)
         )
+
+\* No slot stays parked in a mid-frame state forever. The C event loop's
+\* slowloris check kills stuck mid-frame clients regardless of
+\* negotiation status. Under fair Expire and ExpireIgnoresMidFrame =
+\* FALSE this holds: a slot at reading or writing has Expire enabled
+\* and eventually fires. Under ExpireIgnoresMidFrame = TRUE (the
+\* hypothetical regression where the `|| has_pending_frame` branch is
+\* dropped), an established slot stuck at reading is exempt from
+\* Expire, no dispatch action is forced to fire, and TLC produces a
+\* counter-example showing the slot is parked forever.
+StuckMidFrameIsNotPermanent ==
+    \A c \in Clients :
+        [] (clients[c].state \in {"reading", "writing"}
+            ~> clients[c].state \notin {"reading", "writing"})
 
 =============================================================================

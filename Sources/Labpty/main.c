@@ -635,9 +635,14 @@ static void tick_heartbeats(labpty_daemon_t *daemon) {
     }
 }
 
-/* Modelled by specs/labpty/LabptyControlChannel.tla::Expire. The
- * established-but-no-pending-frame skip below is what fairness on Expire
- * relies on to reclaim un-negotiated idle slots. */
+/* Modelled by specs/labpty/LabptyControlChannel.tla::Expire. Both branches
+ * of the OR matter: the `!established` branch reclaims un-negotiated
+ * idle clients (UnnegotiatedIdleIsNotPermanent, the 2aac41a property);
+ * the `has_pending_frame` branch reclaims established clients stuck
+ * mid-frame (StuckMidFrameIsNotPermanent). The companion
+ * MC_ControlChannelMidFrameLeak.cfg pins the latter property by
+ * setting ExpireIgnoresMidFrame=TRUE — a guard against future
+ * "simplifications" that drop the half-sent-frame branch below. */
 static void expire_stalled_clients(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     uint64_t now = monotonic_ns();

@@ -74,8 +74,9 @@ run_tlc MC_PreF2.cfg                 MC_PreF2                 fail
 run_tlc MC_PreSlotReclaim.cfg        MC_PreSlotReclaim        fail
 run_tlc MC_ByteRingTorn.cfg          MC_ByteRingTorn          fail
 run_tlc MC_ByteRing_Boundary.cfg     MC_ByteRing              fail
-run_tlc MC_ControlChannelPreFix.cfg  MC_ControlChannelPreFix  fail
-run_tlc MC_StartupPreFix.cfg         MC_StartupPreFix         fail
+run_tlc MC_ControlChannelPreFix.cfg       MC_ControlChannelPreFix       fail
+run_tlc MC_ControlChannelMidFrameLeak.cfg MC_ControlChannelMidFrameLeak fail
+run_tlc MC_StartupPreFix.cfg              MC_StartupPreFix              fail
 
 if [ "$failures" -gt 0 ]; then
   printf 'check-specs: %d config(s) had the wrong outcome\n' "$failures" >&2
