@@ -39,6 +39,14 @@ typedef struct {
 } labpty_write_input_request_t;
 
 typedef struct {
+    uint16_t protocol_major;
+    uint16_t protocol_minor;
+    char client_id[LABPTY_LOGICAL_ID_BYTES + 1];
+    uint32_t capability_count;
+    char capabilities[64][65];
+} labpty_hello_request_t;
+
+typedef struct {
     uint64_t handle;
     int32_t child_pid;
     int32_t foreground_pid;
@@ -81,6 +89,14 @@ labpty_status_t labpty_decode_write_input_request(
     size_t len,
     labpty_write_input_request_t *out
 );
+
+labpty_status_t labpty_decode_hello_request(
+    const uint8_t *payload,
+    size_t len,
+    labpty_hello_request_t *out
+);
+
+labpty_status_t labpty_negotiate_hello(const labpty_hello_request_t *request);
 
 labpty_status_t labpty_encode_hello_response(uint8_t *out, size_t cap, size_t *out_len);
 labpty_status_t labpty_encode_ping_response(uint8_t *out, size_t cap, size_t *out_len);

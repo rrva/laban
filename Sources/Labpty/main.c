@@ -1,12 +1,24 @@
 #include "labpty_registry.h"
 
 typedef struct {
+    int fd;
+    int in_use;
+    int header_parsed;
+    size_t read_have;
+    labpty_frame_header_t header;
+    uint8_t read_buf[LABPTY_MAX_FRAME];
+    size_t write_total;
+    size_t write_sent;
+    uint8_t write_buf[LABPTY_MAX_FRAME];
+    uint64_t deadline_ns;
+} labpty_client_t;
+
+typedef struct {
     int listen_fd;
-    int clients[LABPTY_MAX_CLIENTS];
+    labpty_client_t clients[LABPTY_MAX_CLIENTS];
     labpty_registry_t registry;
     labpty_open_request_t open_request;
-    uint8_t frame[LABPTY_MAX_FRAME];
-    uint8_t response[LABPTY_MAX_FRAME];
+    labpty_hello_request_t hello_request;
     uint8_t read_buffer[LABPTY_READ_BUFFER_BYTES];
 } labpty_daemon_t;
 
@@ -101,87 +113,29 @@ static int listen_unix_socket(const char *path) {
     return fd;
 }
 
-static int configure_client_fd(int fd) {
+static void configure_client_fd(int fd) {
     assert(fd >= 0);
-    struct timeval timeout = { .tv_sec = 0, .tv_usec = 250000 };
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) return -1;
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) return -1;
 #ifdef SO_NOSIGPIPE
     int one = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) != 0) return -1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
-    return 0;
+    set_nonblock(fd);
 }
 
-static ssize_t read_exact(int fd, uint8_t *buf, size_t len) {
-    assert(fd >= 0);
-    assert(buf != NULL || len == 0);
-    size_t got = 0;
-    uint64_t deadline = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
-    while (got < len) {
-        ssize_t n = read(fd, buf + got, len - got);
-        if (n == 0) return 0;
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (monotonic_ns() >= deadline) return -1;
-            usleep(1000);
-            continue;
-        }
-        if (n < 0) return -1;
-        got += (size_t)n;
-        deadline = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
-    }
-    return (ssize_t)got;
+static void client_release(labpty_client_t *client) {
+    assert(client != NULL);
+    if (client->fd >= 0) close(client->fd);
+    memset(client, 0, sizeof(*client));
+    client->fd = -1;
 }
 
-static int write_exact(int fd, const uint8_t *buf, size_t len) {
-    assert(fd >= 0);
-    assert(buf != NULL || len == 0);
-    size_t sent = 0;
-    uint64_t deadline = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
-    while (sent < len) {
-        ssize_t n = write(fd, buf + sent, len - sent);
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (monotonic_ns() >= deadline) return -1;
-            usleep(1000);
-            continue;
-        }
-        if (n <= 0) return -1;
-        sent += (size_t)n;
-        deadline = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
-    }
-    return 0;
-}
-
-static int send_response(int fd, labpty_frame_header_t request, labpty_status_t code, const uint8_t *payload, size_t len) {
-    assert(fd >= 0);
-    assert(len <= LABPTY_MAX_FRAME - LABPTY_FRAME_HEADER_BYTES);
-    uint8_t header[LABPTY_FRAME_HEADER_BYTES];
-    labpty_frame_header_t response = {
-        .abi_major = 1,
-        .abi_minor = 0,
-        .frame_len = (uint32_t)(LABPTY_FRAME_HEADER_BYTES + len),
-        .op = LABPTY_OP_RESPONSE,
-        .code = (uint16_t)code,
-        .seq = request.seq,
-    };
-    if (labpty_encode_header(header, sizeof(header), &response) != LABPTY_OK) return -1;
-    if (write_exact(fd, header, sizeof(header)) != 0) return -1;
-    return len == 0 ? 0 : write_exact(fd, payload, len);
-}
-
-static int read_frame(int fd, uint8_t *buffer, labpty_frame_header_t *header) {
-    assert(fd >= 0);
-    assert(buffer != NULL);
-    ssize_t n = read_exact(fd, buffer, LABPTY_FRAME_HEADER_BYTES);
-    if (n <= 0) return (int)n;
-    labpty_status_t status = labpty_decode_header(buffer, LABPTY_FRAME_HEADER_BYTES, header);
-    if (status != LABPTY_OK) return -1;
-    size_t body_len = (size_t)header->frame_len - LABPTY_FRAME_HEADER_BYTES;
-    if (body_len == 0) return 1;
-    n = read_exact(fd, buffer + LABPTY_FRAME_HEADER_BYTES, body_len);
-    return n <= 0 ? (int)n : 1;
+static void client_reset_after_response(labpty_client_t *client) {
+    assert(client != NULL);
+    client->read_have = 0;
+    client->header_parsed = 0;
+    client->write_total = 0;
+    client->write_sent = 0;
+    client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
 }
 
 static void add_client(labpty_daemon_t *daemon) {
@@ -189,13 +143,18 @@ static void add_client(labpty_daemon_t *daemon) {
     assert(daemon->listen_fd >= 0);
     int fd = accept(daemon->listen_fd, NULL, NULL);
     if (fd < 0) return;
-    if (fd >= FD_SETSIZE || configure_client_fd(fd) != 0) {
+    if (fd >= FD_SETSIZE) {
         close(fd);
         return;
     }
+    configure_client_fd(fd);
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
-        if (daemon->clients[i] < 0) {
-            daemon->clients[i] = fd;
+        labpty_client_t *client = &daemon->clients[i];
+        if (!client->in_use) {
+            memset(client, 0, sizeof(*client));
+            client->fd = fd;
+            client->in_use = 1;
+            client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
             return;
         }
     }
@@ -236,7 +195,16 @@ static size_t encode_list_payload(labpty_registry_t *registry, uint8_t *out, siz
     return (size_t)(writer.cur - out);
 }
 
-static labpty_status_t handle_open(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, size_t *out_len) {
+static labpty_status_t handle_hello(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
+    assert(daemon != NULL);
+    labpty_status_t status = labpty_decode_hello_request(payload, len, &daemon->hello_request);
+    if (status != LABPTY_OK) return status;
+    status = labpty_negotiate_hello(&daemon->hello_request);
+    if (status != LABPTY_OK) return status;
+    return labpty_encode_hello_response(out, cap, out_len);
+}
+
+static labpty_status_t handle_open(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
     assert(daemon != NULL);
     assert(out_len != NULL);
     labpty_status_t status = labpty_decode_open_request(payload, len, &daemon->open_request);
@@ -244,11 +212,11 @@ static labpty_status_t handle_open(labpty_daemon_t *daemon, const uint8_t *paylo
     labpty_session_t *session = NULL;
     status = labpty_registry_open(&daemon->registry, &daemon->open_request, &session);
     if (status != LABPTY_OK) return status;
-    *out_len = encode_descriptor_payload(session, daemon->response, LABPTY_MAX_FRAME);
+    *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
 
-static labpty_status_t handle_resize(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, size_t *out_len) {
+static labpty_status_t handle_resize(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
     assert(daemon != NULL);
     labpty_resize_request_t request;
     labpty_status_t status = labpty_decode_resize_request(payload, len, &request);
@@ -259,11 +227,11 @@ static labpty_status_t handle_resize(labpty_daemon_t *daemon, const uint8_t *pay
     if (ioctl(session->master_fd, TIOCSWINSZ, &ws) != 0) return LABPTY_E_INTERNAL;
     session->rows = request.rows;
     session->cols = request.cols;
-    *out_len = encode_descriptor_payload(session, daemon->response, LABPTY_MAX_FRAME);
+    *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
 
-static labpty_status_t handle_signal(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, size_t *out_len) {
+static labpty_status_t handle_signal(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
     assert(daemon != NULL);
     labpty_signal_request_t request;
     labpty_status_t status = labpty_decode_signal_request(payload, len, &request);
@@ -272,18 +240,18 @@ static labpty_status_t handle_signal(labpty_daemon_t *daemon, const uint8_t *pay
     if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
     for (int attempt = 0; attempt < 50; attempt++) {
         if (killpg(session->child_pid, request.signo) == 0) {
-            *out_len = encode_descriptor_payload(session, daemon->response, LABPTY_MAX_FRAME);
+            *out_len = encode_descriptor_payload(session, out, cap);
             return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
         }
         if (errno != ESRCH) return LABPTY_E_INTERNAL;
         usleep(1000);
     }
     if (kill(session->child_pid, request.signo) != 0) return LABPTY_E_INTERNAL;
-    *out_len = encode_descriptor_payload(session, daemon->response, LABPTY_MAX_FRAME);
+    *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
 
-static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, size_t *out_len) {
+static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
     assert(daemon != NULL);
     labpty_handle_request_t request;
     labpty_status_t status = labpty_decode_handle_request(payload, len, &request);
@@ -295,7 +263,7 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
     descriptor.foreground_pid = -1;
     descriptor.foreground_pgid = -1;
     descriptor.alive = 0;
-    *out_len = encode_descriptor_view_payload(&descriptor, daemon->response, LABPTY_MAX_FRAME);
+    *out_len = encode_descriptor_view_payload(&descriptor, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
 
@@ -306,75 +274,158 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
-    if (write_exact(session->master_fd, request.bytes, request.len) != 0) return LABPTY_E_INTERNAL;
+    size_t sent = 0;
+    while (sent < request.len) {
+        ssize_t n = write(session->master_fd, request.bytes + sent, request.len - sent);
+        if (n > 0) { sent += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            usleep(1000);
+            continue;
+        }
+        return LABPTY_E_INTERNAL;
+    }
     return LABPTY_OK;
 }
 
-static labpty_status_t dispatch(labpty_daemon_t *daemon, labpty_frame_header_t header, size_t *out_len) {
+static labpty_status_t dispatch_frame(labpty_daemon_t *daemon, labpty_client_t *client, size_t *out_len) {
     assert(daemon != NULL);
+    assert(client != NULL);
     assert(out_len != NULL);
-    const uint8_t *payload = daemon->frame + LABPTY_FRAME_HEADER_BYTES;
+    const uint8_t *frame = client->read_buf;
+    labpty_frame_header_t header = client->header;
+    const uint8_t *payload = frame + LABPTY_FRAME_HEADER_BYTES;
     size_t len = (size_t)header.frame_len - LABPTY_FRAME_HEADER_BYTES;
+    uint8_t *out = client->write_buf + LABPTY_FRAME_HEADER_BYTES;
+    size_t cap = LABPTY_MAX_FRAME - LABPTY_FRAME_HEADER_BYTES;
     *out_len = 0;
-    if (header.op == LABPTY_OP_HELLO) return labpty_encode_hello_response(daemon->response, LABPTY_MAX_FRAME, out_len);
-    if (header.op == LABPTY_OP_OPEN_SESSION) return handle_open(daemon, payload, len, out_len);
+    if (header.op == LABPTY_OP_HELLO) return handle_hello(daemon, payload, len, out, cap, out_len);
+    if (header.op == LABPTY_OP_OPEN_SESSION) return handle_open(daemon, payload, len, out, cap, out_len);
     if (header.op == LABPTY_OP_LIST_SESSIONS) {
-        *out_len = encode_list_payload(&daemon->registry, daemon->response, LABPTY_MAX_FRAME);
+        *out_len = encode_list_payload(&daemon->registry, out, cap);
         return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
     }
-    if (header.op == LABPTY_OP_RESIZE_SESSION) return handle_resize(daemon, payload, len, out_len);
-    if (header.op == LABPTY_OP_SIGNAL_SESSION) return handle_signal(daemon, payload, len, out_len);
-    if (header.op == LABPTY_OP_TERMINATE_SESSION) return handle_terminate(daemon, payload, len, out_len);
+    if (header.op == LABPTY_OP_RESIZE_SESSION) return handle_resize(daemon, payload, len, out, cap, out_len);
+    if (header.op == LABPTY_OP_SIGNAL_SESSION) return handle_signal(daemon, payload, len, out, cap, out_len);
+    if (header.op == LABPTY_OP_TERMINATE_SESSION) return handle_terminate(daemon, payload, len, out, cap, out_len);
     if (header.op == LABPTY_OP_WRITE_INPUT) return handle_write(daemon, payload, len);
-    if (header.op == LABPTY_OP_PING) return labpty_encode_ping_response(daemon->response, LABPTY_MAX_FRAME, out_len);
+    if (header.op == LABPTY_OP_PING) return labpty_encode_ping_response(out, cap, out_len);
     return LABPTY_E_UNKNOWN_OP;
 }
 
-static void handle_client(labpty_daemon_t *daemon, int index) {
+static int stage_response(labpty_client_t *client, labpty_frame_header_t request, labpty_status_t code, size_t payload_len) {
+    assert(client != NULL);
+    if (payload_len > LABPTY_MAX_FRAME - LABPTY_FRAME_HEADER_BYTES) return -1;
+    labpty_frame_header_t header = {
+        .abi_major = 1,
+        .abi_minor = 0,
+        .frame_len = (uint32_t)(LABPTY_FRAME_HEADER_BYTES + payload_len),
+        .op = LABPTY_OP_RESPONSE,
+        .code = (uint16_t)code,
+        .seq = request.seq,
+    };
+    if (labpty_encode_header(client->write_buf, LABPTY_FRAME_HEADER_BYTES, &header) != LABPTY_OK) return -1;
+    client->write_total = LABPTY_FRAME_HEADER_BYTES + payload_len;
+    client->write_sent = 0;
+    return 0;
+}
+
+static int client_process_full_frame(labpty_daemon_t *daemon, labpty_client_t *client) {
     assert(daemon != NULL);
-    assert(index >= 0 && index < LABPTY_MAX_CLIENTS);
-    int fd = daemon->clients[index];
-    labpty_frame_header_t header;
-    int r = read_frame(fd, daemon->frame, &header);
-    if (r <= 0 || header.op == LABPTY_OP_RESPONSE) {
-        close(fd);
-        daemon->clients[index] = -1;
-        return;
-    }
+    assert(client != NULL);
+    labpty_frame_header_t request_header = client->header;
+    if (request_header.op == LABPTY_OP_RESPONSE) return -1;
     size_t response_len = 0;
-    labpty_status_t status = dispatch(daemon, header, &response_len);
-    if (send_response(fd, header, status, daemon->response, response_len) != 0) {
-        close(fd);
-        daemon->clients[index] = -1;
+    labpty_status_t status = dispatch_frame(daemon, client, &response_len);
+    if (stage_response(client, request_header, status, response_len) != 0) return -1;
+    client->read_have = 0;
+    client->header_parsed = 0;
+    return 0;
+}
+
+static int client_pump_read(labpty_daemon_t *daemon, labpty_client_t *client) {
+    assert(daemon != NULL);
+    assert(client != NULL);
+    if (client->write_total > client->write_sent) return 0;
+    size_t need = client->header_parsed ? client->header.frame_len : LABPTY_FRAME_HEADER_BYTES;
+    while (client->read_have < need) {
+        ssize_t n = read(client->fd, client->read_buf + client->read_have, need - client->read_have);
+        if (n > 0) {
+            client->read_have += (size_t)n;
+            client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
+            if (!client->header_parsed && client->read_have >= LABPTY_FRAME_HEADER_BYTES) {
+                if (labpty_decode_header(client->read_buf, LABPTY_FRAME_HEADER_BYTES, &client->header) != LABPTY_OK) return -1;
+                if (client->header.frame_len < LABPTY_FRAME_HEADER_BYTES) return -1;
+                if (client->header.frame_len > LABPTY_MAX_FRAME) return -1;
+                client->header_parsed = 1;
+                need = client->header.frame_len;
+            }
+            continue;
+        }
+        if (n == 0) return -1;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        return -1;
     }
+    return client_process_full_frame(daemon, client);
+}
+
+static int client_pump_write(labpty_client_t *client) {
+    assert(client != NULL);
+    while (client->write_sent < client->write_total) {
+        ssize_t n = write(client->fd, client->write_buf + client->write_sent, client->write_total - client->write_sent);
+        if (n > 0) {
+            client->write_sent += (size_t)n;
+            client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+        return -1;
+    }
+    client_reset_after_response(client);
+    return 0;
 }
 
 static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
     assert(daemon != NULL);
     assert(session != NULL);
+    assert(session->master_fd >= 0);
     ssize_t n = read(session->master_fd, daemon->read_buffer, sizeof(daemon->read_buffer));
     if (n > 0) {
         labpty_byte_ring_write(&session->ring, daemon->read_buffer, (size_t)n);
-    } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+        return;
+    }
+    if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
         close(session->master_fd);
         session->master_fd = -1;
-        session->alive = 0;
     }
 }
 
-static int build_fd_set(labpty_daemon_t *daemon, fd_set *fds) {
+static int build_fd_set(labpty_daemon_t *daemon, fd_set *rfds, fd_set *wfds) {
     assert(daemon != NULL);
-    assert(fds != NULL);
-    FD_ZERO(fds);
-    FD_SET(daemon->listen_fd, fds);
+    assert(rfds != NULL);
+    assert(wfds != NULL);
+    FD_ZERO(rfds);
+    FD_ZERO(wfds);
+    FD_SET(daemon->listen_fd, rfds);
     int max_fd = daemon->listen_fd;
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
-        int fd = daemon->clients[i];
-        if (fd >= 0) { FD_SET(fd, fds); if (fd > max_fd) max_fd = fd; }
+        labpty_client_t *client = &daemon->clients[i];
+        if (!client->in_use) continue;
+        if (client->write_total > client->write_sent) {
+            FD_SET(client->fd, wfds);
+        } else {
+            FD_SET(client->fd, rfds);
+        }
+        if (client->fd > max_fd) max_fd = client->fd;
     }
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &daemon->registry.sessions[i];
-        if (s->used && s->alive && s->master_fd >= 0) { FD_SET(s->master_fd, fds); if (s->master_fd > max_fd) max_fd = s->master_fd; }
+        if (s->used && s->master_fd >= 0) {
+            FD_SET(s->master_fd, rfds);
+            if (s->master_fd > max_fd) max_fd = s->master_fd;
+        }
     }
     return max_fd;
 }
@@ -388,29 +439,54 @@ static void tick_heartbeats(labpty_daemon_t *daemon) {
     }
 }
 
+static void expire_stalled_clients(labpty_daemon_t *daemon) {
+    assert(daemon != NULL);
+    uint64_t now = monotonic_ns();
+    for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
+        labpty_client_t *client = &daemon->clients[i];
+        if (!client->in_use) continue;
+        if (client->read_have == 0 && client->write_total == 0) continue;
+        if (now >= client->deadline_ns) client_release(client);
+    }
+}
+
 static int event_loop(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     assert(daemon->listen_fd >= 0);
     while (!shutdown_requested) {
-        fd_set fds;
-        int max_fd = build_fd_set(daemon, &fds);
+        fd_set rfds;
+        fd_set wfds;
+        int max_fd = build_fd_set(daemon, &rfds, &wfds);
         struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
-        int ready = select(max_fd + 1, &fds, NULL, NULL, &tv);
+        int ready = select(max_fd + 1, &rfds, &wfds, NULL, &tv);
         if (ready < 0 && errno == EINTR) continue;
         if (ready < 0) {
             perror("labpty select");
             return -1;
         }
-        if (FD_ISSET(daemon->listen_fd, &fds)) add_client(daemon);
+        if (FD_ISSET(daemon->listen_fd, &rfds)) add_client(daemon);
         for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
-            if (daemon->clients[i] >= 0 && FD_ISSET(daemon->clients[i], &fds)) handle_client(daemon, i);
+            labpty_client_t *client = &daemon->clients[i];
+            if (!client->in_use) continue;
+            if (FD_ISSET(client->fd, &rfds)) {
+                if (client_pump_read(daemon, client) < 0) {
+                    client_release(client);
+                    continue;
+                }
+            }
+            if (client->in_use && FD_ISSET(client->fd, &wfds)) {
+                if (client_pump_write(client) < 0) {
+                    client_release(client);
+                }
+            }
         }
         for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
             labpty_session_t *s = &daemon->registry.sessions[i];
-            if (s->used && s->alive && s->master_fd >= 0 && FD_ISSET(s->master_fd, &fds)) drain_session(daemon, s);
+            if (s->used && s->master_fd >= 0 && FD_ISSET(s->master_fd, &rfds)) drain_session(daemon, s);
         }
         tick_heartbeats(daemon);
         labpty_registry_reap(&daemon->registry);
+        expire_stalled_clients(daemon);
     }
     return 0;
 }
@@ -418,10 +494,8 @@ static int event_loop(labpty_daemon_t *daemon) {
 static void cleanup_daemon(labpty_daemon_t *daemon, const char *socket_path) {
     assert(daemon != NULL);
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
-        if (daemon->clients[i] >= 0) {
-            close(daemon->clients[i]);
-            daemon->clients[i] = -1;
-        }
+        labpty_client_t *client = &daemon->clients[i];
+        if (client->in_use) client_release(client);
     }
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &daemon->registry.sessions[i];
@@ -444,7 +518,7 @@ int main(int argc, char **argv) {
     labpty_daemon_t daemon;
     memset(&daemon, 0, sizeof(daemon));
     daemon.listen_fd = -1;
-    for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) daemon.clients[i] = -1;
+    for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) daemon.clients[i].fd = -1;
     labpty_registry_init(&daemon.registry, shm_dir);
     daemon.listen_fd = listen_unix_socket(socket_path);
     if (daemon.listen_fd < 0) { perror("labpty listen"); return 1; }

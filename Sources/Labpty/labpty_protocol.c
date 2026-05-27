@@ -22,7 +22,10 @@ static labpty_status_t read_string(
     const uint8_t *bytes = NULL;
     status = labpty_read_bytes(reader, len, &bytes);
     if (status != LABPTY_OK) return status;
-    if (len > 0) memcpy(out, bytes, len);
+    if (len > 0) {
+        if (memchr(bytes, 0, len) != NULL) return LABPTY_E_PAYLOAD_TOO_LARGE;
+        memcpy(out, bytes, len);
+    }
     out[len] = '\0';
     return LABPTY_OK;
 }
@@ -79,6 +82,12 @@ static labpty_status_t read_argv_array(labpty_reader_t *reader, labpty_open_requ
     return LABPTY_OK;
 }
 
+static labpty_status_t validate_winsize(uint32_t rows, uint32_t cols) {
+    if (rows < 1 || rows > 0xFFFFu) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    if (cols < 1 || cols > 0xFFFFu) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    return LABPTY_OK;
+}
+
 labpty_status_t labpty_decode_open_request(
     const uint8_t *payload,
     size_t len,
@@ -91,6 +100,7 @@ labpty_status_t labpty_decode_open_request(
     labpty_status_t status = labpty_read_u32(&reader, &out->rows);
     if (status != LABPTY_OK) return status;
     if ((status = labpty_read_u32(&reader, &out->cols)) != LABPTY_OK) return status;
+    if ((status = validate_winsize(out->rows, out->cols)) != LABPTY_OK) return status;
     if ((status = labpty_read_u64(&reader, &out->output_capacity)) != LABPTY_OK) return status;
     if ((status = read_argv_array(&reader, out)) != LABPTY_OK) return status;
     status = read_string_array(&reader, LABPTY_ENVP_MAX, LABPTY_ENV_BYTES,
@@ -114,6 +124,7 @@ labpty_status_t labpty_decode_resize_request(
     if (status != LABPTY_OK) return status;
     if ((status = labpty_read_u32(&reader, &out->rows)) != LABPTY_OK) return status;
     if ((status = labpty_read_u32(&reader, &out->cols)) != LABPTY_OK) return status;
+    if ((status = validate_winsize(out->rows, out->cols)) != LABPTY_OK) return status;
     return reader.cur == reader.end ? LABPTY_OK : LABPTY_E_TRUNCATED_FRAME;
 }
 
@@ -158,6 +169,54 @@ labpty_status_t labpty_decode_write_input_request(
     out->len = (size_t)(reader.end - reader.cur);
     if (out->len > 64 * 1024) return LABPTY_E_PAYLOAD_TOO_LARGE;
     out->bytes = reader.cur;
+    return LABPTY_OK;
+}
+
+labpty_status_t labpty_decode_hello_request(
+    const uint8_t *payload,
+    size_t len,
+    labpty_hello_request_t *out
+) {
+    assert(payload != NULL || len == 0);
+    assert(out != NULL);
+    memset(out, 0, sizeof(*out));
+    labpty_reader_t reader = { .cur = payload, .end = payload + len };
+    labpty_status_t status = labpty_read_u16(&reader, &out->protocol_major);
+    if (status != LABPTY_OK) return status;
+    if ((status = labpty_read_u16(&reader, &out->protocol_minor)) != LABPTY_OK) return status;
+    if ((status = read_string(&reader, LABPTY_LOGICAL_ID_BYTES, out->client_id, sizeof(out->client_id))) != LABPTY_OK) return status;
+    uint32_t cap_count = 0;
+    if ((status = labpty_read_u32(&reader, &cap_count)) != LABPTY_OK) return status;
+    if (cap_count > 64) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    out->capability_count = cap_count;
+    for (uint32_t i = 0; i < cap_count; i++) {
+        status = read_string(&reader, 64, out->capabilities[i], sizeof(out->capabilities[i]));
+        if (status != LABPTY_OK) return status;
+    }
+    return reader.cur == reader.end ? LABPTY_OK : LABPTY_E_TRUNCATED_FRAME;
+}
+
+static const char *const labpty_required_capabilities[] = {
+    "byte-ring/v1",
+    "write-input-rpc/v1",
+    "heartbeat-shm/v1",
+    "session-id-pinning/v1",
+};
+
+labpty_status_t labpty_negotiate_hello(const labpty_hello_request_t *request) {
+    assert(request != NULL);
+    if (request->protocol_major != 1) return LABPTY_E_VERSION_MISMATCH;
+    size_t required = sizeof(labpty_required_capabilities) / sizeof(labpty_required_capabilities[0]);
+    for (size_t i = 0; i < required; i++) {
+        int found = 0;
+        for (uint32_t j = 0; j < request->capability_count; j++) {
+            if (strcmp(labpty_required_capabilities[i], request->capabilities[j]) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return LABPTY_E_CAPABILITY_REQUIRED;
+    }
     return LABPTY_OK;
 }
 

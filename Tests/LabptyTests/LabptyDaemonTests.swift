@@ -169,6 +169,99 @@ final class LabptyDaemonTests: XCTestCase {
     XCTAssertEqual(permissions.intValue & 0o777, 0o600)
   }
 
+  func testShortLivedSessionPreservesOutputUntilTerminate() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sh", "-c", "printf quick-output; exit 0"],
+        logicalSessionId: "short-lived-drain"))
+    let ringPath = descriptor.byteRingShmPath
+
+    try waitForDead(pid: pid_t(descriptor.childPid))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: ringPath))
+
+    let reader = try LabptyByteRingReader(path: ringPath)
+    let output = try waitForOutput(reader: reader, contains: "quick-output")
+    XCTAssertTrue(output.contains("quick-output"))
+
+    var sawDead = false
+    let listDeadline = Date().addingTimeInterval(2)
+    while Date() < listDeadline {
+      let listed = try client.listLabptySessions()
+      if listed.contains(where: { $0.ptyHandle == descriptor.ptyHandle && !$0.alive }) {
+        sawDead = true
+        break
+      }
+      usleep(50_000)
+    }
+    XCTAssertTrue(sawDead, "dead session must remain listed until terminate")
+
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+    try waitForPathGone(ringPath)
+  }
+
+  func testStalledClientDoesNotBlockSessionDraining() throws {
+    let harness = try launchHarness()
+    let active = try waitForClient(socketPath: harness.socketPath)
+    defer { active.close() }
+    let descriptor = try active.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sh", "-c", "printf phase-one; sleep 1; printf phase-two"],
+        logicalSessionId: "stall-test"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    try waitForSocketFile(socketPath: harness.socketPath)
+    let stalled = try connectRaw(socketPath: harness.socketPath)
+    defer { Darwin.close(stalled) }
+    var byte: UInt8 = LabptyFrameHeader.magic[0]
+    XCTAssertEqual(Darwin.write(stalled, &byte, 1), 1)
+
+    _ = try waitForOutput(reader: reader, contains: "phase-two")
+    _ = try active.terminate(handle: descriptor.ptyHandle)
+  }
+
+  func testOpenRejectsInvalidWinsize() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let invalid: [(UInt32, UInt32)] = [(0, 80), (24, 0), (24, 100_000), (100_000, 80)]
+    for (index, dim) in invalid.enumerated() {
+      XCTAssertThrowsError(
+        try client.openSession(
+          LabptyOpenSessionRequest(
+            rows: dim.0,
+            cols: dim.1,
+            argv: ["/bin/sleep", "30"],
+            logicalSessionId: "bad-winsize-\(index)")))
+      XCTAssertTrue(harness.process.isRunning)
+    }
+  }
+
+  func testHelloRequiresPhase1Capabilities() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    let raw = try connectRaw(socketPath: harness.socketPath)
+    defer { Darwin.close(raw) }
+
+    let payload = try LabptyHelloRequest(
+      clientId: "missing-caps", capabilities: []).encode()
+    let frame = try LabptyFraming.encodeRequest(
+      operation: .hello, sequence: 1, payload: payload)
+    try writeAllRaw(fd: raw, data: frame)
+    let response = try readFrameRaw(fd: raw)
+    XCTAssertEqual(response.header.operationRaw, LabptyFrameHeader.responseOperation)
+    XCTAssertNotEqual(response.header.responseCode, .ok)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   func testShutdownSignalTerminatesSessionsAndUnlinksArtifacts() throws {
     let harness = try launchHarness()
     let client = try waitForClient(socketPath: harness.socketPath)
@@ -426,6 +519,60 @@ final class LabptyDaemonTests: XCTestCase {
       throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
     }
     return fd
+  }
+
+  private func writeAllRaw(fd: Int32, data: Data) throws {
+    var offset = 0
+    while offset < data.count {
+      let n = data.withUnsafeBytes { raw -> Int in
+        guard let base = raw.baseAddress else { return -1 }
+        return Darwin.write(fd, base.advanced(by: offset), data.count - offset)
+      }
+      if n < 0 {
+        if errno == EINTR { continue }
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+      }
+      offset += n
+    }
+  }
+
+  private func readExactRaw(fd: Int32, count: Int) throws -> Data {
+    var data = Data(count: count)
+    var offset = 0
+    let deadline = Date().addingTimeInterval(2)
+    while offset < count {
+      let n = data.withUnsafeMutableBytes { raw -> Int in
+        guard let base = raw.baseAddress else { return -1 }
+        return Darwin.read(fd, base.advanced(by: offset), count - offset)
+      }
+      if n == 0 { throw POSIXError(.ECONNRESET) }
+      if n < 0 {
+        if errno == EINTR { continue }
+        if errno == EAGAIN || errno == EWOULDBLOCK {
+          if Date() > deadline { throw POSIXError(.ETIMEDOUT) }
+          usleep(10_000)
+          continue
+        }
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+      }
+      offset += n
+    }
+    return data
+  }
+
+  private func readFrameRaw(fd: Int32) throws -> LabptyFrame {
+    let header = try readExactRaw(fd: fd, count: LabptyFrameHeader.headerByteCount)
+    let headerBytes = [UInt8](header)
+    let totalLength = Int(
+      UInt32(headerBytes[8])
+        | (UInt32(headerBytes[9]) << 8)
+        | (UInt32(headerBytes[10]) << 16)
+        | (UInt32(headerBytes[11]) << 24))
+    guard totalLength >= LabptyFrameHeader.headerByteCount else {
+      throw LabptyProtocolError.truncatedFrame
+    }
+    let body = try readExactRaw(fd: fd, count: totalLength - LabptyFrameHeader.headerByteCount)
+    return try LabptyFraming.decode(header + body)
   }
 
   private func setReceiveTimeout(fd: Int32, milliseconds: Int) throws {
