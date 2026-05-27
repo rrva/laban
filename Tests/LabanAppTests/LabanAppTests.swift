@@ -125,6 +125,68 @@ final class LabanAppTests: XCTestCase {
     )
   }
 
+  func testLabptyOrphanSweepPreservesUnknownLiveSessions() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-sweep")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    let seedClient = try waitForLabptyClient(socketPath: socketPath)
+    let kept = try seedClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "60"],
+        logicalSessionId: "kept-tab"))
+    let orphan = try seedClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "60"],
+        logicalSessionId: "unknown-live-tab"))
+    seedClient.close()
+    defer {
+      let cleanupClient = try? waitForLabptyClient(socketPath: socketPath)
+      _ = try? cleanupClient?.terminate(handle: kept.ptyHandle)
+      _ = try? cleanupClient?.terminate(handle: orphan.ptyHandle)
+      cleanupClient?.close()
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let model = try parserModel(tabId: "kept-tab", size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: .passthrough,
+      cwdByTabId: ["kept-tab": FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    let attached = try coordinator.ensureSession(for: tab, session: session, size: size)
+    XCTAssertEqual(attached.logicalSessionId, "kept-tab")
+
+    coordinator.sweepOrphanedSessions()
+
+    let verifyClient = try waitForLabptyClient(socketPath: socketPath)
+    defer { verifyClient.close() }
+    let sessions = try verifyClient.listLabptySessions()
+    XCTAssertTrue(
+      sessions.contains { $0.logicalSessionId == "kept-tab" && $0.alive },
+      "the restored tab's labpty session must remain running")
+    XCTAssertTrue(
+      sessions.contains { $0.logicalSessionId == "unknown-live-tab" && $0.alive },
+      "unknown labpty sessions must survive app-side orphan sweeps")
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?

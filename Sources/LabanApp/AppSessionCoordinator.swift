@@ -232,6 +232,7 @@ final class AppSessionCoordinator {
   }
 
   func sweepOrphanedSessions() {
+    guard mode == .laband else { return }
     let knownIds = Set(infoByTabId.values.map(\.logicalSessionId))
     guard let client = terminalClient else { return }
     let allSessions: [LabandSessionInfo]
