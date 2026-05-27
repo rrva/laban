@@ -252,13 +252,10 @@ void labpty_registry_reap(labpty_registry_t *registry) {
 labpty_descriptor_view_t labpty_session_descriptor(labpty_session_t *session) {
     assert(session != NULL);
     assert(session->used != 0);
-    int32_t fg_pgid = -1;
-    if (session->alive && session->master_fd >= 0) fg_pgid = (int32_t)tcgetpgrp(session->master_fd);
+    /* No tcgetpgrp(master_fd) call here — see comment on labpty_descriptor_view_t. */
     labpty_descriptor_view_t view = {
         .handle = session->handle,
         .child_pid = (int32_t)session->child_pid,
-        .foreground_pid = fg_pgid,
-        .foreground_pgid = fg_pgid,
         .rows = session->rows,
         .cols = session->cols,
         .alive = session->alive,

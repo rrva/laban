@@ -455,7 +455,11 @@ final class AppSessionCoordinator {
   }
 
   private func labptyInfo(from descriptor: LabptySessionDescriptor) -> LabandSessionInfo {
-    let pid = descriptor.foregroundPid > 0 ? descriptor.foregroundPid : descriptor.childPid
+    // labpty's descriptor only carries childPid; the real foreground
+    // process (e.g. the user's current command inside their shell) is
+    // resolved by processMetadata via libproc, which walks the child's
+    // pgrp tree and picks the right pid.
+    let pid = descriptor.childPid
     let metadata = processMetadata(pid: pid, childPid: descriptor.childPid)
     let commandDisplayName =
       metadata.foregroundProcess?.isEmpty == false ? metadata.foregroundProcess! : "Background Session"

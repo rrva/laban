@@ -53,8 +53,13 @@ typedef struct {
 typedef struct {
     uint64_t handle;
     int32_t child_pid;
-    int32_t foreground_pid;
-    int32_t foreground_pgid;
+    /* labpty deliberately does not carry foreground-process metadata.
+     * Darwin's TIOCGPGRP requires `isctty(p, tp)` — the daemon, holding
+     * only the master fd, has never claimed the PTY as its controlling
+     * terminal, so any tcgetpgrp(master_fd) call here would return
+     * ENOTTY. Consumers that need the foreground process derive it from
+     * the child pid through libproc (see Sources/LabanTerminalCore/
+     * process_metadata.c). */
     uint32_t rows;
     uint32_t cols;
     uint8_t alive;

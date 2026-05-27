@@ -330,7 +330,11 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
       logicalSessionId: descriptor.logicalSessionId,
       incarnationId: String(descriptor.ptyHandle),
       childPid: Int(descriptor.childPid),
-      foregroundPid: descriptor.foregroundPid >= 0 ? Int(descriptor.foregroundPid) : nil,
+      // labpty no longer carries a foreground pid in its descriptor; fall
+      // back to the child pid so callers that only have a labpty descriptor
+      // still see a meaningful "running as" value. LabanApp paths that
+      // need the actual foreground process resolve it via libproc.
+      foregroundPid: descriptor.childPid > 0 ? Int(descriptor.childPid) : nil,
       daemonProcessPid: -1,
       cwd: "",
       commandDisplayName: "labpty",

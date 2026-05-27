@@ -190,10 +190,14 @@ public struct LabptyOpenSessionRequest: Equatable, Sendable {
 }
 
 public struct LabptySessionDescriptor: Equatable, Sendable {
+  // labpty deliberately does not carry foreground-process metadata.
+  // Darwin's TIOCGPGRP requires `isctty(p, tp)` — the daemon, holding
+  // only the master fd, has never claimed the PTY as its controlling
+  // terminal, so any tcgetpgrp(master_fd) call there would return
+  // ENOTTY. Consumers that need the foreground process derive it from
+  // the child pid through libproc (see LabanTerminalCore/process_metadata.c).
   public var ptyHandle: UInt64
   public var childPid: Int32
-  public var foregroundPid: Int32
-  public var foregroundPgid: Int32
   public var rows: UInt32
   public var cols: UInt32
   public var alive: Bool
@@ -205,8 +209,6 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
   public init(
     ptyHandle: UInt64,
     childPid: Int32,
-    foregroundPid: Int32,
-    foregroundPgid: Int32,
     rows: UInt32,
     cols: UInt32,
     alive: Bool,
@@ -217,8 +219,6 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
   ) {
     self.ptyHandle = ptyHandle
     self.childPid = childPid
-    self.foregroundPid = foregroundPid
-    self.foregroundPgid = foregroundPgid
     self.rows = rows
     self.cols = cols
     self.alive = alive
@@ -232,8 +232,6 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
     var writer = LabptyPayloadWriter()
     writer.appendUInt64(ptyHandle)
     writer.appendInt32(childPid)
-    writer.appendInt32(foregroundPid)
-    writer.appendInt32(foregroundPgid)
     writer.appendUInt32(rows)
     writer.appendUInt32(cols)
     writer.appendBool(alive)
@@ -252,8 +250,6 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
   static func decode(from reader: inout LabptyPayloadReader) throws -> LabptySessionDescriptor {
     let ptyHandle = try reader.readUInt64()
     let childPid = try reader.readInt32()
-    let foregroundPid = try reader.readInt32()
-    let foregroundPgid = try reader.readInt32()
     let rows = try reader.readUInt32()
     let cols = try reader.readUInt32()
     let alive = try reader.readBool()
@@ -268,8 +264,6 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
     return LabptySessionDescriptor(
       ptyHandle: ptyHandle,
       childPid: childPid,
-      foregroundPid: foregroundPid,
-      foregroundPgid: foregroundPgid,
       rows: rows,
       cols: cols,
       alive: alive,

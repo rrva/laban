@@ -384,8 +384,6 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
     if (!session) return LABPTY_E_SESSION_NOT_FOUND;
     labpty_descriptor_view_t descriptor = labpty_session_descriptor(session);
     labpty_session_close(session);
-    descriptor.foreground_pid = -1;
-    descriptor.foreground_pgid = -1;
     descriptor.alive = 0;
     *out_len = encode_descriptor_view_payload(&descriptor, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;

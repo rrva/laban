@@ -296,8 +296,6 @@ labpty_status_t labpty_encode_descriptor(
     labpty_status_t status = labpty_write_u64(writer, descriptor->handle);
     if (status != LABPTY_OK) return status;
     if ((status = labpty_write_i32(writer, descriptor->child_pid)) != LABPTY_OK) return status;
-    if ((status = labpty_write_i32(writer, descriptor->foreground_pid)) != LABPTY_OK) return status;
-    if ((status = labpty_write_i32(writer, descriptor->foreground_pgid)) != LABPTY_OK) return status;
     if ((status = labpty_write_u32(writer, descriptor->rows)) != LABPTY_OK) return status;
     if ((status = labpty_write_u32(writer, descriptor->cols)) != LABPTY_OK) return status;
     if ((status = labpty_write_u8(writer, descriptor->alive)) != LABPTY_OK) return status;

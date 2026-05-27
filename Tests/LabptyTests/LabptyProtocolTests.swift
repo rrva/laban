@@ -22,8 +22,6 @@ final class LabptyProtocolTests: XCTestCase {
     let descriptor = LabptySessionDescriptor(
       ptyHandle: 42,
       childPid: 1234,
-      foregroundPid: 1234,
-      foregroundPgid: 1234,
       rows: 30,
       cols: 120,
       alive: true,
@@ -83,8 +81,6 @@ final class LabptyProtocolTests: XCTestCase {
     let descriptor = LabptySessionDescriptor(
       ptyHandle: 42,
       childPid: 1234,
-      foregroundPid: 1234,
-      foregroundPgid: 1234,
       rows: 30,
       cols: 120,
       alive: true,
