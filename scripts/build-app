@@ -62,8 +62,16 @@ prefix_map_flags=" \
   -Xcc -fdebug-prefix-map=${repo_root}=. \
   -Xcc -ffile-prefix-map=${repo_root}=."
 
-# shellcheck disable=SC2086
-swift build -c "$build_config" --product LabanApp --product laband --product labpty $prefix_map_flags
+# SwiftPM's `--product` option is last-wins on a single command line
+# (Swift 6.3.2): `--product LabanApp --product laband --product labpty`
+# only builds labpty and silently skips the other two, which then trips
+# the bin-path existence check below with a confusing "produced no
+# binary" message. Three separate invocations share the incremental
+# cache, so the only cost is running the planner three times.
+for product in LabanApp laband labpty; do
+  # shellcheck disable=SC2086
+  swift build -c "$build_config" --product "$product" $prefix_map_flags
+done
 
 app_bundle=".build/laban/Laban.app"
 bundle_dir="${app_bundle}/Contents"
