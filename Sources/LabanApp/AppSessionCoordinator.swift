@@ -255,6 +255,60 @@ final class AppSessionCoordinator {
     }
   }
 
+  /// Live labpty sessions that are not bound to any current tab. labpty
+  /// is the upgrade-proof tier, so unlike the laband `sweepOrphanedSessions`
+  /// these are not leaks to terminate: a session with no matching tab is
+  /// almost always this user's own shell from a launch whose
+  /// `workspace.json` was lost or desynced (a Shift-archive wipe, a crash
+  /// before save). The policy is detect-and-offer-to-adopt. Returns []
+  /// outside labpty mode.
+  func unclaimedLabptySessions(knownTabIds: Set<Tab.ID>) -> [LabptySessionDescriptor] {
+    guard mode == .labpty, let labptyClient else { return [] }
+    let descriptors: [LabptySessionDescriptor]
+    do {
+      descriptors = try labptyClient.listLabptySessions()
+    } catch {
+      AppLog.app.error(
+        "labpty listSessions failed during orphan detection: \(String(describing: error))")
+      return []
+    }
+    return descriptors.filter { $0.alive && !knownTabIds.contains($0.logicalSessionId) }
+  }
+
+  /// Reattach each unclaimed labpty session by giving it a restored tab
+  /// whose id equals the descriptor's `logicalSessionId`. That id match
+  /// makes `ensureLabptyDescriptor` bind to the existing PTY instead of
+  /// opening a new one, so no shell is respawned. cwd is recovered from
+  /// the live child via libproc for the tab's workspace label; the
+  /// persisted launch command is cosmetic because the shell already runs.
+  @discardableResult
+  func adoptLabptySessions(
+    _ descriptors: [LabptySessionDescriptor],
+    in model: AppModel,
+    size: LabanTerminalSize
+  ) -> [Tab] {
+    guard mode == .labpty else { return [] }
+    var adopted: [Tab] = []
+    for descriptor in descriptors {
+      let cwd =
+        processIntrospector.currentWorkingDirectory(of: pid_t(descriptor.childPid))
+        ?? FileManager.default.homeDirectoryForCurrentUser.path
+      do {
+        let tab = try model.createRestoredTab(
+          id: descriptor.logicalSessionId,
+          cwd: cwd,
+          launchCommand: shellLaunch.argv?.joined(separator: " ") ?? "",
+          isActive: false)
+        _ = try ensureSession(for: tab, session: model.session(forTab: tab.id), size: size)
+        adopted.append(tab)
+      } catch {
+        AppLog.app.error(
+          "labpty adopt failed for \(descriptor.logicalSessionId): \(String(describing: error))")
+      }
+    }
+    return adopted
+  }
+
   func refreshTabMetadata(for tabs: [Tab], into model: AppModel, now: Date = Date()) {
     if let last = lastTabMetadataRefreshAt, now.timeIntervalSince(last) < 0.25 {
       return

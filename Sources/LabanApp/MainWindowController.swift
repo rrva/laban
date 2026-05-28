@@ -192,6 +192,16 @@ final class MainWindowController: NSWindowController {
     // without this the daemon would accumulate live shells forever.
     sessionCoordinator?.sweepOrphanedSessions()
 
+    // labpty is the upgrade-proof tier: a live session with no matching
+    // tab is almost always this user's own shell from a launch whose
+    // workspace.json was lost (a Shift-archive wipe, a crash before
+    // save). Surface those rather than silently dropping them, and offer
+    // to adopt them back as tabs. Done before the terminal view is built
+    // so adopted tabs render in the first frame.
+    if terminalBackend == .labpty {
+      Self.promptToAdoptUnclaimedLabptySessions(coordinator: sessionCoordinator, model: model)
+    }
+
     let termView = TerminalBitmapView(
       model: model,
       fontAtlas: fontAtlas,
@@ -345,6 +355,41 @@ final class MainWindowController: NSWindowController {
     }
 
     return controller
+  }
+
+  /// Launch-time recovery for the labpty tier. If the daemon is holding
+  /// live sessions that no restored tab claims, ask the user whether to
+  /// adopt them back as tabs. Adopt-only by design: there is no owner
+  /// affinity in the labpty descriptor yet, so a concurrent second
+  /// instance's sessions would also look unclaimed — adopting is
+  /// non-destructive, terminating would not be. No-op when nothing is
+  /// unclaimed (the normal reattach-by-id path leaves zero orphans).
+  private static func promptToAdoptUnclaimedLabptySessions(
+    coordinator: AppSessionCoordinator?,
+    model: AppModel
+  ) {
+    guard let coordinator else { return }
+    let unclaimed = coordinator.unclaimedLabptySessions(knownTabIds: Set(model.tabs.map(\.id)))
+    guard !unclaimed.isEmpty else { return }
+
+    AppLog.app.notice("labpty desync: \(unclaimed.count) unclaimed live session(s) at launch")
+    let alert = NSAlert()
+    alert.messageText =
+      unclaimed.count == 1
+      ? "A background terminal session has no tab"
+      : "\(unclaimed.count) background terminal sessions have no tabs"
+    alert.informativeText =
+      "Laban found live shell session(s) from a previous run that aren't open in this "
+      + "window. Adopt them to reopen them as tabs, or ignore to leave them running in "
+      + "the background."
+    alert.addButton(withTitle: "Adopt")  // .alertFirstButtonReturn
+    alert.addButton(withTitle: "Ignore")  // .alertSecondButtonReturn
+    guard alert.runModal() == .alertFirstButtonReturn else {
+      AppLog.app.notice("labpty desync: ignored \(unclaimed.count) unclaimed session(s)")
+      return
+    }
+    let adopted = coordinator.adoptLabptySessions(unclaimed, in: model, size: model.terminalSize)
+    AppLog.app.notice("labpty desync: adopted \(adopted.count) session(s) as tabs")
   }
 
   /// Post-spawn restore step for the `.prefillPrompt` case only:
