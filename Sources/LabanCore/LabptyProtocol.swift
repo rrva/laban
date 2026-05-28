@@ -205,6 +205,10 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
   public var byteRingShmPath: String
   public var outputRingCapacity: UInt64
   public var inputRingCapacity: UInt64
+  /// Number of client connections the daemon currently has attached to
+  /// this session. Zero means no live owner — the signal that a session
+  /// is an adoptable orphan rather than one a running instance holds.
+  public var connectedClients: UInt32
 
   public init(
     ptyHandle: UInt64,
@@ -215,7 +219,8 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
     logicalSessionId: String,
     byteRingShmPath: String,
     outputRingCapacity: UInt64,
-    inputRingCapacity: UInt64 = 0
+    inputRingCapacity: UInt64 = 0,
+    connectedClients: UInt32 = 0
   ) {
     self.ptyHandle = ptyHandle
     self.childPid = childPid
@@ -226,6 +231,7 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
     self.byteRingShmPath = byteRingShmPath
     self.outputRingCapacity = outputRingCapacity
     self.inputRingCapacity = inputRingCapacity
+    self.connectedClients = connectedClients
   }
 
   public func encode() throws -> Data {
@@ -239,6 +245,7 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
     try writer.appendString(byteRingShmPath)
     writer.appendUInt64(outputRingCapacity)
     writer.appendUInt64(inputRingCapacity)
+    writer.appendUInt32(connectedClients)
     return writer.data
   }
 
@@ -261,6 +268,7 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
       field: "byte_ring_shm_path")
     let outputRingCapacity = try reader.readUInt64()
     let inputRingCapacity = try reader.readUInt64()
+    let connectedClients = try reader.readUInt32()
     return LabptySessionDescriptor(
       ptyHandle: ptyHandle,
       childPid: childPid,
@@ -270,7 +278,8 @@ public struct LabptySessionDescriptor: Equatable, Sendable {
       logicalSessionId: logicalSessionId,
       byteRingShmPath: byteRingShmPath,
       outputRingCapacity: outputRingCapacity,
-      inputRingCapacity: inputRingCapacity)
+      inputRingCapacity: inputRingCapacity,
+      connectedClients: connectedClients)
   }
 }
 

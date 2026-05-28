@@ -118,6 +118,38 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     return descriptor
   }
 
+  /// Claim an already-open session this connection did not create (the
+  /// reattach-after-restart and adopt-orphan flows), so the daemon counts
+  /// this connection in the session's `connectedClients`. Idempotent.
+  @discardableResult
+  public func attachLabptySession(handle: UInt64) throws -> LabptySessionDescriptor {
+    let descriptor: LabptySessionDescriptor = try send(
+      operation: .attachSession,
+      payload: handlePayload(handle),
+      decode: LabptySessionDescriptor.decode)
+    remember(descriptor)
+    return descriptor
+  }
+
+  /// Release a session claim without terminating the session, dropping
+  /// this connection from `connectedClients`. Used when a tab closes but
+  /// the underlying shell should keep running. Idempotent.
+  @discardableResult
+  public func detachLabptySession(handle: UInt64) throws -> LabptySessionDescriptor {
+    let descriptor: LabptySessionDescriptor = try send(
+      operation: .detachSession,
+      payload: handlePayload(handle),
+      decode: LabptySessionDescriptor.decode)
+    remember(descriptor)
+    return descriptor
+  }
+
+  private func handlePayload(_ handle: UInt64) -> Data {
+    var writer = LabptyPayloadWriter()
+    writer.appendUInt64(handle)
+    return writer.data
+  }
+
   @discardableResult
   public func createSession(_ request: TerminalSessionLaunchRequest) throws -> LabandSessionInfo {
     let descriptor = try openSession(

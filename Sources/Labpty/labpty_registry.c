@@ -361,6 +361,7 @@ labpty_descriptor_view_t labpty_session_descriptor(labpty_session_t *session) {
         .ring_path = session->ring.path,
         .output_capacity = session->ring.output_capacity,
         .input_capacity = 0,
+        .connected_clients = (uint32_t)__builtin_popcount(session->attached_clients),
     };
     return view;
 }

@@ -43,6 +43,85 @@ final class LabptyDaemonTests: XCTestCase {
     try waitForDead(pid: pid_t(descriptor.childPid))
   }
 
+  func testConnectedClientsCountTracksAttachAndDisconnect() throws {
+    let harness = try launchHarness()
+    let clientA = try waitForClient(socketPath: harness.socketPath)
+    defer { clientA.close() }
+
+    // The opener is implicitly attached, so the descriptor it gets back
+    // already reports one connected client.
+    let opened = try clientA.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/sleep", "60"], logicalSessionId: "counter"))
+    let handle = opened.ptyHandle
+    XCTAssertEqual(opened.connectedClients, 1)
+    XCTAssertEqual(try connectedCount(clientA, handle: handle), 1)
+
+    // A second connection attaches: the count rises to 2, visible to A.
+    let clientB = try waitForClient(socketPath: harness.socketPath)
+    let afterAttach = try clientB.attachLabptySession(handle: handle)
+    XCTAssertEqual(afterAttach.connectedClients, 2)
+    XCTAssertEqual(try connectedCount(clientA, handle: handle), 2)
+
+    // B drops its socket. The daemon only learns on its next poll cycle,
+    // so poll-until the count falls back to 1 rather than asserting now.
+    clientB.close()
+    try waitForConnectedCount(clientA, handle: handle, expected: 1)
+
+    // A detaches without terminating: count hits 0 but the shell lives on
+    // — this is exactly the "adoptable orphan" signal (alive, zero owners).
+    let afterDetach = try clientA.detachLabptySession(handle: handle)
+    XCTAssertEqual(afterDetach.connectedClients, 0)
+    let listed = try clientA.listLabptySessions().first { $0.ptyHandle == handle }
+    XCTAssertEqual(listed?.alive, true)
+    XCTAssertEqual(listed?.connectedClients, 0)
+
+    _ = try clientA.terminate(handle: handle)
+  }
+
+  func testEstablishedIdleClientStaysCounted() throws {
+    let harness = try launchHarness()
+    let owner = try waitForClient(socketPath: harness.socketPath)
+    defer { owner.close() }
+    let opened = try owner.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/sleep", "60"], logicalSessionId: "idle-counter"))
+
+    // `owner` is established (hello + open). A live tab reads output over
+    // the byte ring, not the control socket, so the socket sits idle for
+    // long stretches. Idle well past LABPTY_IO_IDLE_TIMEOUT_NS (250ms): if
+    // the daemon reaped established-idle clients, the count would
+    // false-drop to 0 on a live session and break orphan detection.
+    usleep(700_000)
+
+    let observer = try waitForClient(socketPath: harness.socketPath)
+    defer { observer.close() }
+    XCTAssertEqual(
+      try connectedCount(observer, handle: opened.ptyHandle), 1,
+      "an established but idle owner must stay counted")
+
+    _ = try owner.terminate(handle: opened.ptyHandle)
+  }
+
+  private func connectedCount(
+    _ client: LabptyTerminalSessionClient, handle: UInt64
+  ) throws -> UInt32 {
+    try client.listLabptySessions().first { $0.ptyHandle == handle }?.connectedClients ?? 0
+  }
+
+  private func waitForConnectedCount(
+    _ client: LabptyTerminalSessionClient, handle: UInt64, expected: UInt32
+  ) throws {
+    let deadline = Date().addingTimeInterval(2)
+    var last: UInt32 = .max
+    while Date() < deadline {
+      last = try connectedCount(client, handle: handle)
+      if last == expected { return }
+      usleep(20_000)
+    }
+    XCTFail("connectedClients for \(handle) settled at \(last), expected \(expected)")
+  }
+
   func testDaemonToleratesHighInheritedFileDescriptors() throws {
     try requireHighInheritedFDLimit()
     let harness = try launchHarness(inheritHighFileDescriptors: true)

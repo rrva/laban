@@ -415,10 +415,20 @@ final class AppSessionCoordinator {
     guard let labptyClient else {
       throw TerminalSessionClientError.sessionNotFound(tab.id)
     }
-    let descriptor =
-      try labptyClient.listLabptySessions().first {
-        $0.logicalSessionId == tab.id && $0.alive
-      } ?? labptyClient.openSession(labptyOpenRequest(for: tab, size: size))
+    let existing = try labptyClient.listLabptySessions().first {
+      $0.logicalSessionId == tab.id && $0.alive
+    }
+    let descriptor: LabptySessionDescriptor
+    if let existing {
+      // Reattaching to a session this process did not open (restart
+      // reconnect or an adopted orphan): claim it so the daemon counts
+      // this connection in `connectedClients`. openSession auto-attaches
+      // its opener, so only the reattach branch needs an explicit claim.
+      // Fall back to the listed descriptor if the claim races a teardown.
+      descriptor = (try? labptyClient.attachLabptySession(handle: existing.ptyHandle)) ?? existing
+    } else {
+      descriptor = try labptyClient.openSession(labptyOpenRequest(for: tab, size: size))
+    }
     storeLabpty(descriptor, for: tab)
     if let session {
       try startLabptyFeed(descriptor: descriptor, tab: tab, session: session)
@@ -529,7 +539,7 @@ final class AppSessionCoordinator {
       rows: Int(descriptor.rows),
       cols: Int(descriptor.cols),
       lifecycleState: descriptor.alive ? .running : .exited,
-      attachedClientCount: descriptor.alive ? 1 : 0,
+      attachedClientCount: Int(descriptor.connectedClients),
       leaseHolder: nil,
       transportMode: transportMode,
       foregroundProcess: metadata.foregroundProcess,

@@ -14,15 +14,17 @@ by TLC. `scripts/check-specs` runs every config and is wired into
 | `LabptyByteRing.tla` | `Sources/Labpty/labpty_byte_ring.c` single-producer / single-consumer ring with safety margin. | `NoTornRead`, `WindowDoesNotContainFutureWrites`. |
 | `LabptyControlChannel.tla` | `Sources/Labpty/main.c` per-connection state machine (`labpty_client_t` slots, hello negotiation, slowloris reaper). | `EstablishedImpliesNegotiated` and `UnnegotiatedIdleIsNotPermanent` (commit 2aac41a fix). |
 | `LabptyStartup.tla` | `Sources/Labpty/main.c::listen_unix_socket` multi-daemon race on the `--socket` path. | `ServingDaemonOwnsPath`, `AtMostOneServing` (commit b5e7819 fix). |
+| `LabptyAttachment.tla` | `Sources/Labpty/main.c` per-session connected-client mask (`attached_clients`, `ATTACH`/`DETACH`, opener auto-attach, `client_release` scrub). | `AttachmentImpliesInUse` — no mask retains a departed client, so the count never overcounts an owner (ADR 0010). |
 
 Each module is paired with one or more `MC_*.tla` / `MC_*.cfg` harnesses
 that constrain the state space for TLC. Configs come in two shapes:
 
 - **Positive** (`MC.cfg`, `MC_Larger.cfg`, `MC_ControlChannel.cfg`,
-  `MC_Startup.cfg`, `MC_ByteRing.cfg`, `MC_ByteRing_Larger.cfg`): the
-  fix is in. TLC verifies the spec.
+  `MC_Attachment.cfg`, `MC_Startup.cfg`, `MC_ByteRing.cfg`,
+  `MC_ByteRing_Larger.cfg`): the fix is in. TLC verifies the spec.
 - **Negative-control** (`MC_PreF2.cfg`, `MC_PreSlotReclaim.cfg`,
-  `MC_ControlChannelPreFix.cfg`, `MC_StartupPreFix.cfg`,
+  `MC_ControlChannelPreFix.cfg`, `MC_AttachmentPreFix.cfg`,
+  `MC_StartupPreFix.cfg`,
   `MC_ByteRingTorn.cfg`, `MC_ByteRing_Boundary.cfg`): the fix is not in
   (or a parameter is set unsafely). TLC is **required to find a
   counter-example**. The negative configs are permanent regression
@@ -38,6 +40,7 @@ Update a spec when you change the state machine it models. In practice:
 | `labpty_registry.c` actions on session slots | `LabptyLifecycle.tla` |
 | `labpty_byte_ring.c` write/read or layout fields | `LabptyByteRing.tla` |
 | `main.c::labpty_client_t` fields, transitions, or expire policy | `LabptyControlChannel.tla` |
+| `main.c` session attachment (`attached_clients`, attach/detach, `client_release` scrub) | `LabptyAttachment.tla` |
 | `main.c::listen_unix_socket` startup sequence | `LabptyStartup.tla` |
 
 The C symbols modelled by each spec carry a `// Modelled by specs/...`

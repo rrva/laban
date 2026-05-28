@@ -62,6 +62,7 @@ run_tlc MC_Larger.cfg                MC                       pass
 run_tlc MC_ByteRing.cfg              MC_ByteRing              pass
 run_tlc MC_ByteRing_Larger.cfg       MC_ByteRing              pass
 run_tlc MC_ControlChannel.cfg        MC_ControlChannel        pass
+run_tlc MC_Attachment.cfg            MC_Attachment            pass
 run_tlc MC_Startup.cfg               MC_Startup               pass
 
 # Negative-control configs — must FAIL with a counter-example. Each one
@@ -76,6 +77,7 @@ run_tlc MC_ByteRingTorn.cfg          MC_ByteRingTorn          fail
 run_tlc MC_ByteRing_Boundary.cfg     MC_ByteRing              fail
 run_tlc MC_ControlChannelPreFix.cfg       MC_ControlChannelPreFix       fail
 run_tlc MC_ControlChannelMidFrameLeak.cfg MC_ControlChannelMidFrameLeak fail
+run_tlc MC_AttachmentPreFix.cfg           MC_AttachmentPreFix           fail
 run_tlc MC_StartupPreFix.cfg              MC_StartupPreFix              fail
 run_tlc MC_StartupCleanupTOCTOU.cfg       MC_StartupCleanupTOCTOU       fail
 

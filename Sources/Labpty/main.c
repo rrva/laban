@@ -292,8 +292,27 @@ static int configure_client_fd(int fd) {
     return set_nonblock(fd);
 }
 
-static void client_release(labpty_client_t *client) {
+static int client_index(const labpty_daemon_t *daemon, const labpty_client_t *client) {
+    assert(daemon != NULL);
     assert(client != NULL);
+    return (int)(client - daemon->clients);
+}
+
+static void client_release(labpty_daemon_t *daemon, labpty_client_t *client) {
+    assert(daemon != NULL);
+    assert(client != NULL);
+    /* Scrub this connection's attachment bit from every session so the
+     * connected-client count drops the instant the socket goes away.
+     * Output is read on a separate byte-ring fd, so a socket disconnect
+     * is the daemon's only signal that this client is gone. Every
+     * teardown path (poll fault, idle/frame expiry, shutdown) funnels
+     * through here, which is why no per-session counter has to be
+     * decremented anywhere else. Modelled by
+     * specs/labpty/LabptyAttachment.tla::Disconnect. */
+    uint8_t bit = (uint8_t)(1u << client_index(daemon, client));
+    for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
+        daemon->registry.sessions[i].attached_clients &= (uint8_t)~bit;
+    }
     if (client->fd >= 0) close(client->fd);
     memset(client, 0, sizeof(*client));
     client->fd = -1;
@@ -390,14 +409,48 @@ static labpty_status_t handle_hello(labpty_daemon_t *daemon, const uint8_t *payl
     return labpty_encode_hello_response(out, cap, out_len);
 }
 
-static labpty_status_t handle_open(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
+static labpty_status_t handle_open(labpty_daemon_t *daemon, labpty_client_t *client, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
     assert(daemon != NULL);
+    assert(client != NULL);
     assert(out_len != NULL);
     labpty_status_t status = labpty_decode_open_request(payload, len, &daemon->open_request);
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = NULL;
     status = labpty_registry_open(&daemon->registry, &daemon->open_request, &session);
     if (status != LABPTY_OK) return status;
+    /* The opening connection is implicitly attached to its new session. */
+    session->attached_clients |= (uint8_t)(1u << client_index(daemon, client));
+    *out_len = encode_descriptor_payload(session, out, cap);
+    return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
+}
+
+/* ATTACH/DETACH let a connection claim or release an already-open
+ * session it did not create — the reattach-after-restart and adopt-orphan
+ * flows. Idempotent: attaching twice from one connection is a single bit,
+ * detaching when not attached is a no-op. Both return the descriptor so
+ * the caller observes the updated connected-client count. */
+static labpty_status_t handle_attach(labpty_daemon_t *daemon, labpty_client_t *client, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
+    assert(daemon != NULL);
+    assert(client != NULL);
+    labpty_handle_request_t request;
+    labpty_status_t status = labpty_decode_handle_request(payload, len, &request);
+    if (status != LABPTY_OK) return status;
+    labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
+    if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
+    session->attached_clients |= (uint8_t)(1u << client_index(daemon, client));
+    *out_len = encode_descriptor_payload(session, out, cap);
+    return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
+}
+
+static labpty_status_t handle_detach(labpty_daemon_t *daemon, labpty_client_t *client, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
+    assert(daemon != NULL);
+    assert(client != NULL);
+    labpty_handle_request_t request;
+    labpty_status_t status = labpty_decode_handle_request(payload, len, &request);
+    if (status != LABPTY_OK) return status;
+    labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
+    if (!session) return LABPTY_E_SESSION_NOT_FOUND;
+    session->attached_clients &= (uint8_t)~(1u << client_index(daemon, client));
     *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
@@ -607,7 +660,7 @@ static labpty_status_t dispatch_frame(labpty_daemon_t *daemon, labpty_client_t *
         return status;
     }
     if (!client->negotiated) return LABPTY_E_CAPABILITY_REQUIRED;
-    if (header.op == LABPTY_OP_OPEN_SESSION) return handle_open(daemon, payload, len, out, cap, out_len);
+    if (header.op == LABPTY_OP_OPEN_SESSION) return handle_open(daemon, client, payload, len, out, cap, out_len);
     if (header.op == LABPTY_OP_LIST_SESSIONS) {
         *out_len = encode_list_payload(&daemon->registry, out, cap);
         return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
@@ -617,6 +670,8 @@ static labpty_status_t dispatch_frame(labpty_daemon_t *daemon, labpty_client_t *
     if (header.op == LABPTY_OP_TERMINATE_SESSION) return handle_terminate(daemon, payload, len, out, cap, out_len);
     if (header.op == LABPTY_OP_WRITE_INPUT) return handle_write(daemon, payload, len);
     if (header.op == LABPTY_OP_PING) return labpty_encode_ping_response(out, cap, out_len);
+    if (header.op == LABPTY_OP_ATTACH_SESSION) return handle_attach(daemon, client, payload, len, out, cap, out_len);
+    if (header.op == LABPTY_OP_DETACH_SESSION) return handle_detach(daemon, client, payload, len, out, cap, out_len);
     return LABPTY_E_UNKNOWN_OP;
 }
 
@@ -793,7 +848,7 @@ static void service_poll_watch(labpty_daemon_t *daemon, const labpty_poll_set_t 
     }
     int index = poll_set->indexes[slot];
     if (poll_set->kinds[slot] == LABPTY_POLL_CLIENT) {
-        if (service_client_poll(daemon, index, revents) < 0) client_release(&daemon->clients[index]);
+        if (service_client_poll(daemon, index, revents) < 0) client_release(daemon, &daemon->clients[index]);
         return;
     }
     if (poll_set->kinds[slot] == LABPTY_POLL_SESSION && poll_revents_readable(revents)) {
@@ -839,7 +894,7 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
          * and is not refreshed by subsequent bytes, so a trickle attacker
          * that keeps `deadline_ns` moving forward still expires here. */
         if (client->frame_deadline_ns != 0 && now >= client->frame_deadline_ns) {
-            client_release(client);
+            client_release(daemon, client);
             continue;
         }
         if (now < client->deadline_ns) continue;
@@ -848,7 +903,7 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
          * them unless they have a half-sent frame in flight. */
         int has_pending_frame = client->read_have > 0 || client->write_total > 0;
         if (client->established && !has_pending_frame) continue;
-        client_release(client);
+        client_release(daemon, client);
     }
 }
 
@@ -878,7 +933,7 @@ static void cleanup_daemon(labpty_daemon_t *daemon, const char *socket_path) {
     assert(daemon != NULL);
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
-        if (client->in_use) client_release(client);
+        if (client->in_use) client_release(daemon, client);
     }
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &daemon->registry.sessions[i];

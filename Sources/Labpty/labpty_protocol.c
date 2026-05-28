@@ -382,5 +382,6 @@ labpty_status_t labpty_encode_descriptor(
     if ((status = write_string(writer, descriptor->logical_id)) != LABPTY_OK) return status;
     if ((status = write_string(writer, descriptor->ring_path)) != LABPTY_OK) return status;
     if ((status = labpty_write_u64(writer, descriptor->output_capacity)) != LABPTY_OK) return status;
-    return labpty_write_u64(writer, descriptor->input_capacity);
+    if ((status = labpty_write_u64(writer, descriptor->input_capacity)) != LABPTY_OK) return status;
+    return labpty_write_u32(writer, descriptor->connected_clients);
 }

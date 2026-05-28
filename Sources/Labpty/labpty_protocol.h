@@ -67,6 +67,9 @@ typedef struct {
     const char *ring_path;
     uint64_t output_capacity;
     uint64_t input_capacity;
+    /* Number of client connections currently attached to the session:
+     * popcount of the registry slot's attached-clients bitmask. */
+    uint32_t connected_clients;
 } labpty_descriptor_view_t;
 
 /* The decoder signatures below sit at the daemon's trust boundary —

@@ -39,6 +39,14 @@ typedef struct {
     uint64_t canonical_pending_estimate;
     uint32_t rows;
     uint32_t cols;
+    /* Bitmask of client slots (0..LABPTY_MAX_CLIENTS-1) currently
+     * attached to this session. popcount is the connected-client count
+     * surfaced in the descriptor. Set on openSession (the opener) and the
+     * ATTACH op; cleared on DETACH and on client disconnect, where
+     * client_release scrubs the departing client's bit from every
+     * session. A freshly opened slot starts at 0 via memset, so a reused
+     * slot never inherits a prior session's attachments. */
+    uint8_t attached_clients;
     char logical_id[LABPTY_LOGICAL_ID_BYTES + 1];
     labpty_byte_ring_writer_t ring;
 } labpty_session_t;

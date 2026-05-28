@@ -44,6 +44,8 @@ public enum LabptyOperation: UInt16, CaseIterable, Sendable {
   case terminateSession = 0x0006
   case writeInput = 0x0007
   case ping = 0x0008
+  case attachSession = 0x0009
+  case detachSession = 0x000A
 }
 
 public enum LabptyErrorCode: UInt16, Equatable, Sendable {
