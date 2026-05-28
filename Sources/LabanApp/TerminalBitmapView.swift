@@ -1978,7 +1978,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
-    let sent = session.writePasteCapturingBytes(sanitized)
+    // For labpty / laband backends the local Session is fixture-mode (no
+    // PTY in this process — the daemon owns it). writePasteCapturingBytes
+    // would feed the encoded paste into the fixture VT, which renders the
+    // paste content into the local grid at the cursor — visible as paste
+    // digits leaking into adjacent UI rows. The daemon's PTY echo (if any)
+    // arrives via the byte ring like every other output byte; that path is
+    // the only one the local VT should receive paste-shaped input from.
+    let sent: Session.CapturedPasteWrite
+    if sessionCoordinator?.terminalClient != nil {
+      sent = session.encodePaste(sanitized)
+    } else {
+      sent = session.writePasteCapturingBytes(sanitized)
+    }
     if let sessionCoordinator, let activeTab = model.activeTab, !sent.bytes.isEmpty {
       try? sessionCoordinator.write(
         sent.bytes,
@@ -2046,7 +2058,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard !text.isEmpty else { return }
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
-    let sent = session.writePasteCapturingBytes(text)
+    // Same backend split as the clipboard paste path: remote backends
+    // (labpty / laband) must not have the encoded bytes fed into the
+    // local fixture VT — only the daemon's PTY-echo via byte ring
+    // should reach the local grid.
+    let sent: Session.CapturedPasteWrite
+    if sessionCoordinator?.terminalClient != nil {
+      sent = session.encodePaste(text)
+    } else {
+      sent = session.writePasteCapturingBytes(text)
+    }
     if let sessionCoordinator, !sent.bytes.isEmpty {
       try? sessionCoordinator.write(
         sent.bytes,

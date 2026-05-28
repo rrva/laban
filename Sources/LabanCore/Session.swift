@@ -939,6 +939,51 @@ public final class Session {
     return PasteWriteResult(bracketed: raw.bracketed != 0, bytesWritten: raw.bytes_written)
   }
 
+  /// Encode `text` as the terminal's paste byte sequence (bracketed
+  /// if DECSET 2004 is active, raw otherwise) and return the bytes
+  /// **without** writing them to this session's PTY or fixture VT.
+  /// Use this when the bytes are destined for a remote PTY owner
+  /// (labpty / laband daemon): the local Session in those backends
+  /// is fixture-mode purely for rendering, and feeding the paste
+  /// into it would inject the paste content into the rendered grid
+  /// at the cursor (visible as paste digits leaking into adjacent
+  /// rows of the UI). The remote daemon's PTY echo, if any, comes
+  /// back via the byte ring and gets fed through `feedOutput` like
+  /// every other PTY output byte.
+  public func encodePaste(_ text: String) -> CapturedPasteWrite {
+    guard !isClosed, let h = handle else { return CapturedPasteWrite(result: nil, bytes: []) }
+    let bytes = Array(text.utf8)
+    if bytes.isEmpty {
+      return CapturedPasteWrite(
+        result: PasteWriteResult(bracketed: bracketedPasteEnabled(), bytesWritten: 0),
+        bytes: []
+      )
+    }
+
+    var out = [UInt8](repeating: 0, count: bytes.count + 16)
+    let outCapacity = out.count
+    var outLen: size_t = 0
+    var bracketed: Int32 = 0
+    let rc = bytes.withUnsafeBytes { inputBuf in
+      out.withUnsafeMutableBytes { outBuf in
+        laban_session_encode_paste(
+          h,
+          inputBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+          bytes.count,
+          outBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+          outCapacity,
+          &outLen,
+          &bracketed
+        )
+      }
+    }
+    guard rc == 0 else { return CapturedPasteWrite(result: nil, bytes: []) }
+    return CapturedPasteWrite(
+      result: PasteWriteResult(bracketed: bracketed != 0, bytesWritten: outLen),
+      bytes: Array(out.prefix(Int(outLen)))
+    )
+  }
+
   public func writePasteCapturingBytes(_ text: String) -> CapturedPasteWrite {
     guard !isClosed, let h = handle else { return CapturedPasteWrite(result: nil, bytes: []) }
     let bytes = Array(text.utf8)
