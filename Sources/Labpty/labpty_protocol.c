@@ -34,6 +34,69 @@ static labpty_status_t read_string(
     return LABPTY_OK;
 }
 
+/* Defensive UTF-8 validator for protocol text fields that are echoed
+ * back to Swift clients (logical_id in descriptors, client_id in
+ * hello). Swift's LabptyPayloadReader.readString refuses non-UTF-8,
+ * so a raw same-uid client could otherwise stuff a single 0xFF byte
+ * into a session's logical_id and poison every subsequent
+ * listLabptySessions() call on the first-party client. Rejected non-
+ * NUL bytes already include the NUL guard in read_string above; this
+ * adds the structural UTF-8 check on top. */
+static int valid_utf8(const uint8_t *s, size_t n) {
+    size_t i = 0;
+    assert(s != NULL || n == 0);
+    while (i < n) {
+        uint8_t c = s[i];
+        if (c <= 0x7fu) {
+            i += 1;
+            continue;
+        }
+        if ((c & 0xe0u) == 0xc0u) {
+            if (c < 0xc2u || i + 1 >= n) return 0;
+            if ((s[i + 1] & 0xc0u) != 0x80u) return 0;
+            i += 2;
+            continue;
+        }
+        if ((c & 0xf0u) == 0xe0u) {
+            if (i + 2 >= n) return 0;
+            if ((s[i + 1] & 0xc0u) != 0x80u) return 0;
+            if ((s[i + 2] & 0xc0u) != 0x80u) return 0;
+            /* Reject overlong (c==0xe0 with low continuation) and
+             * surrogate range (c==0xed with high continuation). */
+            if (c == 0xe0u && s[i + 1] < 0xa0u) return 0;
+            if (c == 0xedu && s[i + 1] >= 0xa0u) return 0;
+            i += 3;
+            continue;
+        }
+        if ((c & 0xf8u) == 0xf0u) {
+            if (c > 0xf4u) return 0;
+            if (i + 3 >= n) return 0;
+            if ((s[i + 1] & 0xc0u) != 0x80u) return 0;
+            if ((s[i + 2] & 0xc0u) != 0x80u) return 0;
+            if ((s[i + 3] & 0xc0u) != 0x80u) return 0;
+            if (c == 0xf0u && s[i + 1] < 0x90u) return 0;
+            if (c == 0xf4u && s[i + 1] >= 0x90u) return 0;
+            i += 4;
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static labpty_status_t read_utf8_string(
+    labpty_reader_t *reader,
+    uint32_t max_bytes,
+    char *out,
+    size_t out_cap
+) {
+    labpty_status_t status = read_string(reader, max_bytes, out, out_cap);
+    if (status != LABPTY_OK) return status;
+    size_t len = strlen(out);
+    if (!valid_utf8((const uint8_t *)out, len)) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    return LABPTY_OK;
+}
+
 static labpty_status_t write_string(labpty_writer_t *writer, const char *value) {
     assert(writer != NULL);
     assert(value != NULL);
@@ -126,7 +189,11 @@ labpty_status_t labpty_decode_open_request(
         out->envp, out->envp_ptrs, &out->envp_count);
     if (status != LABPTY_OK) return status;
     if ((status = read_string(&reader, LABPTY_CWD_BYTES, out->cwd, sizeof(out->cwd))) != LABPTY_OK) return status;
-    status = read_string(&reader, LABPTY_LOGICAL_ID_BYTES, out->logical_id, sizeof(out->logical_id));
+    /* logical_id is echoed back to every Swift client via
+     * listLabptySessions; LabptyPayloadReader.readString refuses non-
+     * UTF-8 input and would otherwise throw on the entire list
+     * response. */
+    status = read_utf8_string(&reader, LABPTY_LOGICAL_ID_BYTES, out->logical_id, sizeof(out->logical_id));
     if (status != LABPTY_OK) return status;
     /* Trailing bytes are forward-compatible additive fields per ADR 0007.
      * A future LabanApp/laband may append new optional fields to this
@@ -192,13 +259,24 @@ labpty_status_t labpty_decode_write_input_request(
 ) {
     assert(payload != NULL || len == 0);
     assert(out != NULL);
-    if (len < 8) return LABPTY_E_TRUNCATED_FRAME;
+    if (len < 12) return LABPTY_E_TRUNCATED_FRAME;
     labpty_reader_t reader = { .cur = payload, .end = payload + len };
     labpty_status_t status = labpty_read_u64(&reader, &out->handle);
     if (status != LABPTY_OK) return status;
-    out->len = (size_t)(reader.end - reader.cur);
-    if (out->len > (size_t)64 * 1024) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    /* Explicit input_len prefix lets the operation grow additive
+     * trailing fields without those bytes being silently typed into
+     * the PTY. The previous shape (handle followed by remaining-of-
+     * payload bytes) closed off ADR 0007's additive-evolution path
+     * for this op specifically. */
+    uint32_t input_len = 0;
+    status = labpty_read_u32(&reader, &input_len);
+    if (status != LABPTY_OK) return status;
+    if (input_len > (uint32_t)(64 * 1024)) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    if ((size_t)(reader.end - reader.cur) < input_len) return LABPTY_E_TRUNCATED_FRAME;
+    out->len = (size_t)input_len;
     out->bytes = reader.cur;
+    /* Trailing bytes past out->bytes are tolerated for additive
+     * evolution (see ADR 0007 note in labpty_decode_open_request). */
     return LABPTY_OK;
 }
 
@@ -214,7 +292,9 @@ labpty_status_t labpty_decode_hello_request(
     labpty_status_t status = labpty_read_u16(&reader, &out->protocol_major);
     if (status != LABPTY_OK) return status;
     if ((status = labpty_read_u16(&reader, &out->protocol_minor)) != LABPTY_OK) return status;
-    if ((status = read_string(&reader, LABPTY_LOGICAL_ID_BYTES, out->client_id, sizeof(out->client_id))) != LABPTY_OK) return status;
+    /* Symmetric with logical_id: client_id is text that observability
+     * paths may surface to Swift, so reject non-UTF-8 up front. */
+    if ((status = read_utf8_string(&reader, LABPTY_LOGICAL_ID_BYTES, out->client_id, sizeof(out->client_id))) != LABPTY_OK) return status;
     uint32_t cap_count = 0;
     if ((status = labpty_read_u32(&reader, &cap_count)) != LABPTY_OK) return status;
     if (cap_count > 64) return LABPTY_E_PAYLOAD_TOO_LARGE;

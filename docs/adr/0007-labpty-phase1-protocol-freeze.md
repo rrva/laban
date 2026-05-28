@@ -48,6 +48,16 @@ Phase 1 freezes the following contract:
 - Byte-ring overflow is not silent. The reader returns retained bytes plus an
   overflow flag; the app resets parser continuity and marks the tab as
   degraded so the user can see that output was skipped.
+- Every Phase 1 request and response payload must be additively evolvable:
+  decoders MUST tolerate unknown trailing bytes. Two specific shapes
+  enforce this for the payloads that were not naturally trailer-safe:
+  - `writeInput` requests carry an explicit `u32 input_len` between the
+    handle and the byte payload, so future fields appended after the
+    bytes are ignored instead of being typed into the PTY.
+  - `listSessions` responses are a `u32 count` followed by per-record
+    `u32 record_len` + `byte[record_len]`. Each record contains the
+    Phase 1 descriptor encoding; trailing bytes inside a record are
+    additive fields and ignored by old decoders.
 
 Anything not listed above is not a Phase 1 `labpty` guarantee. In particular,
 attach-by-fd, per-reader slots, opaque snapshot cache publishing, durable

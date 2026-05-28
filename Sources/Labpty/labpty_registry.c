@@ -215,9 +215,13 @@ labpty_status_t labpty_registry_open(
     return LABPTY_OK;
 }
 
-/* Modelled by specs/labpty/LabptyLifecycle.tla::TerminateFast (when the
- * child reaps inside wait_for_child_exit) and ::TerminateSlow (when it
- * doesn't, leaving close_pending=1 for ReapTick to finish — the F2 fix). */
+/* Synchronous full-close path. Used at daemon shutdown
+ * (cleanup_daemon) and from the open failure path where there's no
+ * surrounding reap loop to finish the work. Modelled by
+ * specs/labpty/LabptyLifecycle.tla::TerminateFast (when the child
+ * reaps inside wait_for_child_exit) and ::TerminateSlow (when it
+ * doesn't, leaving close_pending=1 for ReapTick to finish — the F2
+ * fix). */
 void labpty_session_close(labpty_session_t *session) {
     assert(session != NULL);
     assert(session->master_fd >= -1);
@@ -241,6 +245,8 @@ void labpty_session_close(labpty_session_t *session) {
     if (reaped) {
         session->used = 0;
         session->close_pending = 0;
+        session->sigkill_sent = 0;
+        session->terminate_deadline_ns = 0;
     } else {
         /* Child outlived our SIGKILL deadline. Leave used=1 so the
          * registry slot persists; labpty_registry_reap will finish the
@@ -249,23 +255,92 @@ void labpty_session_close(labpty_session_t *session) {
     }
 }
 
+/* Window between SIGHUP-on-request and SIGKILL escalation in
+ * labpty_registry_reap. Wide enough that well-behaved children
+ * (which exit on SIGHUP within microseconds) are reaped on the next
+ * event-loop tick without ever being SIGKILLed; tight enough that
+ * a HUP-ignoring child doesn't sit in the registry for long. */
+#define LABPTY_TERMINATE_HUP_BUDGET_NS 200000000ull  /* 200 ms */
+
+void labpty_session_request_close(labpty_session_t *session, uint64_t now_ns) {
+    assert(session != NULL);
+    assert(session->master_fd >= -1);
+    if (session->alive && session->child_pid > 0) {
+        signal_child_process_group(session->child_pid, SIGHUP);
+    }
+    /* Drain the master once so any output the child emitted after the
+     * client decided to terminate still lands in the byte ring; then
+     * close the daemon-side fds. The ring stays open under
+     * close_pending so labpty_registry_reap can publish a final
+     * heartbeat and close it atomically with slot release. */
+    drain_master_into_ring(session);
+    if (session->slave_inspect_fd >= 0) {
+        close(session->slave_inspect_fd);
+        session->slave_inspect_fd = -1;
+    }
+    if (session->master_fd >= 0) {
+        close(session->master_fd);
+        session->master_fd = -1;
+    }
+    session->alive = 0;
+    if (session->child_pid > 0) {
+        session->close_pending = 1;
+        session->sigkill_sent = 0;
+        session->terminate_deadline_ns = now_ns + LABPTY_TERMINATE_HUP_BUDGET_NS;
+    } else {
+        /* Child already gone; collapse the slot in place. */
+        labpty_byte_ring_close(&session->ring);
+        session->close_pending = 0;
+        session->sigkill_sent = 0;
+        session->terminate_deadline_ns = 0;
+        session->used = 0;
+    }
+}
+
+static uint64_t reap_monotonic_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
+}
+
 /* Modelled by specs/labpty/LabptyLifecycle.tla::ReapTick. The close_pending
- * branch is the F2 fix that LabptyLifecyclePreF2 demonstrates the absence of. */
+ * branch is the F2 fix that LabptyLifecyclePreF2 demonstrates the absence of.
+ * The SIGKILL escalation inside this function is the loop-non-blocking part
+ * of the async-terminate fix: handle_terminate returns immediately with
+ * close_pending=1 and a deadline; this tick promotes to SIGKILL once the
+ * deadline elapses, then WNOHANG-reaps. */
 void labpty_registry_reap(labpty_registry_t *registry) {
     assert(registry != NULL);
     assert(registry->next_handle > 0);
+    uint64_t now = reap_monotonic_ns();
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &registry->sessions[i];
-        if (!s->used || s->child_pid <= 0) continue;
+        if (!s->used) continue;
+        if (s->close_pending && !s->sigkill_sent && s->child_pid > 0 &&
+            s->terminate_deadline_ns != 0 && now >= s->terminate_deadline_ns) {
+            signal_child_process_group(s->child_pid, SIGKILL);
+            s->sigkill_sent = 1;
+        }
+        if (s->child_pid <= 0) {
+            if (s->close_pending) {
+                labpty_byte_ring_close(&s->ring);
+                s->close_pending = 0;
+                s->sigkill_sent = 0;
+                s->terminate_deadline_ns = 0;
+                s->used = 0;
+            }
+            continue;
+        }
         int status = 0;
         pid_t got = waitpid(s->child_pid, &status, WNOHANG);
         if (got == s->child_pid || (got < 0 && errno == ECHILD)) {
             s->child_pid = 0;
             s->alive = 0;
             if (s->close_pending) {
-                /* labpty_session_close already closed the ring; just
-                 * release the slot now that the child is finally gone. */
+                labpty_byte_ring_close(&s->ring);
                 s->close_pending = 0;
+                s->sigkill_sent = 0;
+                s->terminate_deadline_ns = 0;
                 s->used = 0;
             }
         }

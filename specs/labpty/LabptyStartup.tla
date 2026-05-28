@@ -42,9 +42,15 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS
     Daemons,             \* finite set of daemon process IDs (~ 2 is enough)
     MaxLifecycles,       \* per-daemon Listen-count bound for TLC finiteness
-    UnconditionalUnlink  \* BOOLEAN; TRUE = pre-b5e7819 bug, FALSE = fix
+    UnconditionalUnlink, \* BOOLEAN; TRUE = pre-b5e7819 bug, FALSE = fix
+    InodeValidatedCleanup \* BOOLEAN; FALSE = pre-cleanup-TOCTOU bug
+                          \* (cleanup_daemon unconditionally unlinked the
+                          \* path); TRUE = post-fix (cleanup_daemon
+                          \* lstats the path and unlinks only if the
+                          \* on-disk inode matches what we bound).
 
-ASSUME UnconditionalUnlink \in BOOLEAN
+ASSUME UnconditionalUnlink   \in BOOLEAN
+ASSUME InodeValidatedCleanup \in BOOLEAN
 ASSUME MaxLifecycles \in 1..5
 
 VARIABLES
@@ -55,7 +61,10 @@ VARIABLES
 
 vars == << daemons, dir_entry, bound, lifecycles >>
 
-DaemonStates == { "init", "listening", "dead" }
+\* "closing" sits between "listening" and "dead": the in-kernel bind
+\* has been dropped (CloseListen) but the directory entry on disk
+\* hasn't been removed yet (UnlinkPath has not fired).
+DaemonStates == { "init", "listening", "closing", "dead" }
 DirEntries   == Daemons \cup { "none" }
 
 TypeOK ==
@@ -133,7 +142,40 @@ Listen(d) ==
 \* Other lifecycle actions - identical between variants.
 \* ----------------------------------------------------------------------
 
-\* Stop: graceful shutdown - cleanup_daemon unlinks the path.
+\* Graceful shutdown happens in two steps in the C code:
+\* (1) close(listen_fd): the kernel drops our bind, so SocketIsLive
+\*     for this daemon becomes FALSE immediately, even though the
+\*     directory entry still points at our (now-stale) socket file.
+\* (2) unlink(socket_path): the directory entry goes away.
+\* The gap between these two operations is the TOCTOU window that
+\* lets a successor daemon probe the path as stale, unlink+rebind,
+\* and then have us clobber its fresh socket in step (2). Modelling
+\* Stop as a single atomic transition hides the bug; splitting into
+\* CloseListen + UnlinkPath exposes it for TLC.
+CloseListen(d) ==
+    /\ daemons[d] = "listening"
+    /\ bound[d] = TRUE
+    /\ daemons' = [ daemons EXCEPT ![d] = "closing" ]
+    /\ bound'   = [ bound   EXCEPT ![d] = FALSE ]
+    /\ UNCHANGED << dir_entry, lifecycles >>
+
+\* The unlink at cleanup_daemon. InodeValidatedCleanup = TRUE models
+\* the post-fix behaviour: we check whether the path still resolves
+\* to our socket before removing it. dir_entry # d means a successor
+\* unlinked and rebound; we skip the unlink. InodeValidatedCleanup =
+\* FALSE removes unconditionally, which is the cleanup-TOCTOU bug.
+UnlinkPath(d) ==
+    /\ daemons[d] = "closing"
+    /\ daemons'   = [ daemons EXCEPT ![d] = "dead" ]
+    /\ dir_entry' =
+            IF InodeValidatedCleanup /\ dir_entry # d THEN dir_entry
+            ELSE IF dir_entry = d THEN "none"
+            ELSE "none"
+    /\ UNCHANGED << bound, lifecycles >>
+
+\* Legacy single-step Stop used by the original startup spec callers;
+\* still emitted by Crash-then-Stop sequences where there is no
+\* in-process cleanup to split.
 Stop(d) ==
     /\ daemons[d] = "listening"
     /\ daemons'   = [ daemons EXCEPT ![d] = "dead" ]
@@ -150,7 +192,8 @@ Crash(d) ==
     /\ UNCHANGED << dir_entry, lifecycles >>
 
 \* Restart: a dead daemon can return to init so TLC explores multi-cycle
-\* interleavings within the MaxLifecycles bound.
+\* interleavings within the MaxLifecycles bound. A daemon stuck in
+\* "closing" must complete its UnlinkPath before it can Restart.
 Restart(d) ==
     /\ daemons[d] = "dead"
     /\ lifecycles[d] < MaxLifecycles
@@ -159,6 +202,8 @@ Restart(d) ==
 
 Next ==
     \/ \E d \in Daemons : Listen(d)
+    \/ \E d \in Daemons : CloseListen(d)
+    \/ \E d \in Daemons : UnlinkPath(d)
     \/ \E d \in Daemons : Stop(d)
     \/ \E d \in Daemons : Crash(d)
     \/ \E d \in Daemons : Restart(d)
@@ -184,8 +229,10 @@ AtMostOneServing ==
     Cardinality({ d \in Daemons :
         daemons[d] = "listening" /\ bound[d] = TRUE }) <= 1
 
-\* A bound fd implies the owning daemon is currently listening. Crash
-\* and Stop both clear `bound`, so this should always hold.
+\* A bound fd implies the owning daemon is currently listening. Crash,
+\* Stop, and CloseListen all clear `bound`, so this should always
+\* hold (CloseListen transitions the daemon to "closing" in the same
+\* atomic step).
 BoundImpliesListening ==
     \A d \in Daemons : bound[d] = TRUE => daemons[d] = "listening"
 

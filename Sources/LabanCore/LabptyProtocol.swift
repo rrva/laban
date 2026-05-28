@@ -288,7 +288,13 @@ public struct LabptyListSessionsResponse: Equatable, Sendable {
     var writer = LabptyPayloadWriter()
     writer.appendUInt32(UInt32(sessions.count))
     for session in sessions {
-      writer.appendBytes(try session.encode())
+      // Each descriptor is length-delimited so future fields can be
+      // appended to a record without breaking the surrounding list
+      // shape (ADR 0007). Encoders that append additive trailers
+      // include them in the record_len they advertise.
+      let descriptor = try session.encode()
+      writer.appendUInt32(UInt32(descriptor.count))
+      writer.appendBytes(descriptor)
     }
     return writer.data
   }
@@ -302,7 +308,16 @@ public struct LabptyListSessionsResponse: Equatable, Sendable {
     var sessions: [LabptySessionDescriptor] = []
     sessions.reserveCapacity(count)
     for _ in 0..<count {
-      sessions.append(try LabptySessionDescriptor.decode(from: &reader))
+      let recordLength = Int(try reader.readUInt32())
+      guard recordLength <= reader.remainingCount else {
+        throw LabptyProtocolError.truncatedFrame
+      }
+      let recordBytes = try reader.readBytes(count: recordLength)
+      var recordReader = LabptyPayloadReader(recordBytes)
+      // Trailing bytes inside a record are tolerated as additive
+      // fields per ADR 0007; we read what we know about and ignore
+      // the rest of the record.
+      sessions.append(try LabptySessionDescriptor.decode(from: &recordReader))
     }
     return LabptyListSessionsResponse(sessions: sessions)
   }
@@ -396,6 +411,11 @@ public struct LabptyWriteInputRequest: Equatable, Sendable {
     }
     var writer = LabptyPayloadWriter()
     writer.appendUInt64(ptyHandle)
+    // Explicit length prefix gates the additive trailer per ADR
+    // 0007: a future caller may append optional metadata fields
+    // after the byte payload and the daemon will ignore them
+    // instead of typing them into the PTY.
+    writer.appendUInt32(UInt32(bytes.count))
     writer.appendBytes(bytes)
     return writer.data
   }
@@ -403,9 +423,14 @@ public struct LabptyWriteInputRequest: Equatable, Sendable {
   public static func decode(from payload: Data) throws -> LabptyWriteInputRequest {
     var reader = LabptyPayloadReader(payload)
     let ptyHandle = try reader.readUInt64()
-    let bytes = try reader.readRemainingBytes(
-      maxBytes: LabptyProtocolLimits.maxWriteInputBytes,
-      field: "write_input")
+    let declaredLength = Int(try reader.readUInt32())
+    guard declaredLength <= LabptyProtocolLimits.maxWriteInputBytes else {
+      throw LabptyProtocolError.payloadTooLarge("write_input")
+    }
+    guard declaredLength <= reader.remainingCount else {
+      throw LabptyProtocolError.truncatedFrame
+    }
+    let bytes = try reader.readBytes(count: declaredLength)
     return LabptyWriteInputRequest(ptyHandle: ptyHandle, bytes: bytes)
   }
 }

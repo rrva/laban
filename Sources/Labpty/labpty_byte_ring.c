@@ -2,6 +2,60 @@
 
 #include <stdatomic.h>
 
+/* Open the ring backing file in a way that cannot follow a symlink and
+ * cannot clobber a foreign file. The path is predictable
+ * (`labpty-N.br` under a shm dir that may persist across daemon
+ * restarts), so a naïve O_CREAT|O_TRUNC follows symlinks and a same-
+ * uid attacker can pre-stage a link that truncates an arbitrary target
+ * the next time the daemon hands out handle N.
+ *
+ * Strategy: O_EXCL|O_NOFOLLOW first. On EEXIST, lstat the path: if it
+ * is a regular file owned by us (a stale ring left by a previous
+ * daemon instance), unlink and retry once with the same flags; if it
+ * is anything else, fail loudly. */
+static int open_ring_backing(const char *path) {
+    assert(path != NULL);
+    int fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd >= 0) return fd;
+    if (errno != EEXIST) return -1;
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    if (!S_ISREG(st.st_mode)) {
+        errno = EEXIST;
+        return -1;
+    }
+    if (st.st_uid != geteuid()) {
+        errno = EACCES;
+        return -1;
+    }
+    if (unlink(path) != 0) return -1;
+    return open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+}
+
+/* Reserve real backing-store extents for the ring up front. On a full
+ * APFS volume `ftruncate` happily creates a sparse file, and the first
+ * write fault into the mapping then takes a SIGBUS that crashes the
+ * daemon (taking every live session with it). F_PREALLOCATE forces
+ * the allocation to fail eagerly instead, so we return
+ * LABPTY_E_RING_MAP_FAILED to the caller. Tries contiguous extents
+ * first for fewer fragmentation seams; falls back to any-fit. Darwin
+ * does not implement posix_fallocate, hence the fcntl path. */
+static int preallocate_ring_file(int fd, size_t len) {
+    assert(fd >= 0);
+    assert(len > 0);
+    fstore_t store;
+    memset(&store, 0, sizeof(store));
+    store.fst_flags = F_ALLOCATECONTIG;
+    store.fst_posmode = F_PEOFPOSMODE;
+    store.fst_offset = 0;
+    store.fst_length = (off_t)len;
+    if (fcntl(fd, F_PREALLOCATE, &store) != 0) {
+        store.fst_flags = F_ALLOCATEALL;
+        if (fcntl(fd, F_PREALLOCATE, &store) != 0) return -1;
+    }
+    return ftruncate(fd, (off_t)len);
+}
+
 /* The clock-gettime wrappers below intentionally use `if`+0 instead of
  * `assert(clock_gettime(...) == 0)`: under -DNDEBUG the assert expression
  * isn't evaluated, the syscall never runs, and `ts` stays uninitialized.
@@ -122,12 +176,12 @@ labpty_status_t labpty_byte_ring_create(
     if (!is_power_of_two(output_capacity)) return LABPTY_E_PAYLOAD_TOO_LARGE;
     if (output_capacity < LABPTY_MIN_OUTPUT_CAPACITY) return LABPTY_E_PAYLOAD_TOO_LARGE;
     if (output_capacity > LABPTY_MAX_OUTPUT_CAPACITY) return LABPTY_E_PAYLOAD_TOO_LARGE;
-    out->fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    out->fd = open_ring_backing(path);
     if (out->fd < 0) return LABPTY_E_RING_MAP_FAILED;
     out->output_capacity = output_capacity;
     out->output_ring_offset = LABPTY_INPUT_RING_OFFSET;
     out->map_len = (size_t)(out->output_ring_offset + output_capacity);
-    if (ftruncate(out->fd, (off_t)out->map_len) != 0) {
+    if (preallocate_ring_file(out->fd, out->map_len) != 0) {
         close(out->fd);
         out->fd = -1;
         unlink(out->path);
@@ -147,7 +201,16 @@ labpty_status_t labpty_byte_ring_create(
      * with potentially higher tail latency. munmap implicitly munlocks,
      * so labpty_byte_ring_close needs no paired call. */
     (void)mlock(out->map, out->map_len);
-    memset(out->map, 0, out->map_len);
+    /* The ring's output region pages are zero-initialised by the kernel
+     * (open(O_CREAT|O_EXCL) yields a fresh file, and preallocate
+     * extends with zero-filled extents on APFS) so we don't memset the
+     * whole map. Touching the entire ring here used to be the SIGBUS
+     * site on a full disk; the preallocate above moves that failure to
+     * an EOS at create-time instead. We still explicitly zero the
+     * header region so initialize_header writes don't race with stale
+     * speculation on prior contents — defensive, since the file is
+     * fresh. */
+    memset(out->map, 0, LABPTY_INPUT_RING_OFFSET);
     initialize_header(out, logical_id);
     labpty_byte_ring_heartbeat(out);
     return LABPTY_OK;

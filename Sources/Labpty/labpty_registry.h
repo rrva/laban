@@ -7,11 +7,19 @@
 typedef struct {
     uint8_t used;
     uint8_t alive;
-    /* Set when labpty_session_close ran but wait_for_child_exit timed out
-     * (child still alive after SIGKILL + ~500ms). The slot stays `used`
-     * so labpty_registry_reap can finish the cleanup when the child is
-     * eventually reaped; without this flag the slot would leak forever. */
+    /* Set while a session is in the asynchronous teardown window: the
+     * client called terminate, the daemon dispatched SIGHUP, but the
+     * child has not yet been reaped. labpty_registry_reap escalates
+     * to SIGKILL after `terminate_deadline_ns` and finalises slot
+     * cleanup once waitpid returns the zombie. */
     uint8_t close_pending;
+    /* Set after labpty_registry_reap has escalated the close to
+     * SIGKILL so we don't re-issue it on every tick. */
+    uint8_t sigkill_sent;
+    /* Absolute deadline (monotonic_ns) at which a still-running
+     * close_pending child gets escalated to SIGKILL. Zero when no
+     * close is in flight. */
+    uint64_t terminate_deadline_ns;
     uint64_t handle;
     pid_t child_pid;
     int master_fd;
@@ -50,6 +58,15 @@ labpty_status_t labpty_registry_open(
 );
 void labpty_registry_reap(labpty_registry_t *registry);
 void labpty_session_close(labpty_session_t *session);
+/* Asynchronous termination request: dispatches SIGHUP to the child
+ * process group, tears down the master/inspect fds, arms the
+ * close_pending machinery, and returns immediately. The slot stays
+ * `used` (with `alive` = 0) until labpty_registry_reap finalises it
+ * — either by reaping the child or by escalating to SIGKILL after
+ * `terminate_deadline_ns`. Cannot be used during daemon shutdown
+ * because no further reap ticks will run; cleanup_daemon uses
+ * labpty_session_close for the synchronous path. */
+void labpty_session_request_close(labpty_session_t *session, uint64_t now_ns);
 labpty_descriptor_view_t labpty_session_descriptor(labpty_session_t *session);
 
 #endif

@@ -237,8 +237,75 @@ final class LabptyProtocolTests: XCTestCase {
   func testWriteInputPayloadFromFrameLen() throws {
     let payload = try LabptyWriteInputRequest(ptyHandle: 42, bytes: Data("abc".utf8)).encode()
 
-    XCTAssertEqual(payload.count, 8 + 3)
+    // u64 handle + u32 input_len + bytes — the input_len prefix
+    // gates the additive trailer per ADR 0007.
+    XCTAssertEqual(payload.count, 8 + 4 + 3)
     XCTAssertEqual(try LabptyWriteInputRequest.decode(from: payload).bytes, Data("abc".utf8))
+  }
+
+  func testListSessionsRecordIgnoresAdditiveTrailer() throws {
+    // Two real descriptors back-to-back. The first carries a
+    // hypothetical future trailer inside its record_len; the
+    // decoder must read only the known descriptor bytes and skip
+    // the trailer, leaving the second descriptor's framing intact.
+    let first = LabptySessionDescriptor(
+      ptyHandle: 1,
+      childPid: 100,
+      rows: 24,
+      cols: 80,
+      alive: true,
+      logicalSessionId: "a",
+      byteRingShmPath: "/tmp/a.br",
+      outputRingCapacity: 4096,
+      inputRingCapacity: 4096)
+    let second = LabptySessionDescriptor(
+      ptyHandle: 2,
+      childPid: 101,
+      rows: 24,
+      cols: 80,
+      alive: true,
+      logicalSessionId: "b",
+      byteRingShmPath: "/tmp/b.br",
+      outputRingCapacity: 4096,
+      inputRingCapacity: 4096)
+
+    var payload = LabptyPayloadWriter()
+    payload.appendUInt32(2)
+
+    let firstRecord = try first.encode()
+    var firstFuture = LabptyPayloadWriter()
+    firstFuture.appendUInt64(0xfeed_face_cafe_beef)
+    let firstAugmented = firstRecord + firstFuture.data
+    payload.appendUInt32(UInt32(firstAugmented.count))
+    payload.appendBytes(firstAugmented)
+
+    let secondRecord = try second.encode()
+    payload.appendUInt32(UInt32(secondRecord.count))
+    payload.appendBytes(secondRecord)
+
+    let decoded = try LabptyListSessionsResponse.decode(from: payload.data)
+    XCTAssertEqual(decoded.sessions.map(\.ptyHandle), [1, 2])
+    XCTAssertEqual(decoded.sessions[0].logicalSessionId, "a")
+    XCTAssertEqual(decoded.sessions[1].logicalSessionId, "b")
+  }
+
+  func testWriteInputDecoderIgnoresAdditiveTail() throws {
+    // Encode a normal request, then append a hypothetical future
+    // field (a u32 + a 4-byte tag) after the payload. The decoder
+    // must reconstruct the original byte payload and drop the
+    // trailer — the property that makes WRITE_INPUT additive.
+    let original = try LabptyWriteInputRequest(
+      ptyHandle: 99, bytes: Data("typed\n".utf8)).encode()
+
+    var future = original
+    var trailer = LabptyPayloadWriter()
+    trailer.appendUInt32(4)
+    trailer.appendBytes(Data("META".utf8))
+    future.append(trailer.data)
+
+    let decoded = try LabptyWriteInputRequest.decode(from: future)
+    XCTAssertEqual(decoded.ptyHandle, 99)
+    XCTAssertEqual(decoded.bytes, Data("typed\n".utf8))
   }
 
   func testTerminatePayloadShape() {

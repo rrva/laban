@@ -27,10 +27,26 @@ typedef struct {
     size_t write_sent;
     uint8_t write_buf[LABPTY_MAX_FRAME];
     uint64_t deadline_ns;
+    /* Absolute wall-clock deadline for the in-flight request frame,
+     * set on the first byte and never bumped by subsequent bytes.
+     * Defends against trickle slowloris: a client that drips one byte
+     * just before every idle deadline keeps `deadline_ns` moving
+     * forward, but `frame_deadline_ns` is fixed at frame-start and
+     * eventually catches the slot. 0 when no frame is in flight. */
+    uint64_t frame_deadline_ns;
 } labpty_client_t;
 
 typedef struct {
     int listen_fd;
+    /* Identity of the socket file we successfully bound at startup,
+     * captured immediately after bind. cleanup_daemon's final unlink
+     * compares against this so we don't clobber a successor daemon's
+     * socket if one bound at the same path between our close(listen_fd)
+     * and our unlink — the LabptyStartup.tla gap that becomes visible
+     * once Stop is no longer atomic on the wire. */
+    dev_t socket_dev;
+    ino_t socket_ino;
+    int socket_identity_known;
     labpty_client_t clients[LABPTY_MAX_CLIENTS];
     labpty_registry_t registry;
     labpty_open_request_t open_request;
@@ -46,6 +62,12 @@ typedef struct {
 } labpty_poll_set_t;
 
 static const uint64_t LABPTY_IO_IDLE_TIMEOUT_NS = 250000000ull;
+/* Maximum wall-clock time we'll wait for a single request frame to
+ * arrive in full, measured from the first byte. Two seconds is well
+ * above any legitimate round-trip on a local UNIX socket and below the
+ * Swift client's default rpcTimeoutMilliseconds (2000ms) so the daemon
+ * reclaims its slot before the client times out and retries. */
+static const uint64_t LABPTY_FRAME_TOTAL_TIMEOUT_NS = 2000000000ull;
 static volatile sig_atomic_t shutdown_requested = 0;
 
 static void usage(void) {
@@ -75,6 +97,26 @@ static int install_signal_handlers(void) {
     if (sigaction(SIGTERM, &shutdown, NULL) != 0) return -1;
     if (sigaction(SIGINT, &shutdown, NULL) != 0) return -1;
     return 0;
+}
+
+/* Refuse to use a pre-existing shm_dir whose mode or ownership opens
+ * the door to foreign-uid symlink-staging attacks against the
+ * predictable `labpty-N.br` paths. The companion fix is
+ * O_EXCL|O_NOFOLLOW in open_ring_backing, which already defeats the
+ * same-uid case; this validator catches the cross-uid case where the
+ * dir is owned by someone else, or world-writable so any user can
+ * drop a symlink in it. We tolerate world-readable (0o755) since
+ * that's the umask default and read-only access doesn't help an
+ * attacker — what we reject is any group/other write bit. */
+static int labpty_private_dir_ok(const char *path) {
+    assert(path != NULL);
+    assert(path[0] != '\0');
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0;
+    if (!S_ISDIR(st.st_mode)) return 0;
+    if (st.st_uid != geteuid()) return 0;
+    if ((st.st_mode & 0022) != 0) return 0;
+    return 1;
 }
 
 static int parse_args(int argc, char **argv, char *socket_path, char *shm_dir) {
@@ -263,6 +305,7 @@ static void client_reset_after_response(labpty_client_t *client) {
     client->header_parsed = 0;
     client->write_total = 0;
     client->write_sent = 0;
+    client->frame_deadline_ns = 0;
     client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
 }
 
@@ -318,7 +361,19 @@ static size_t encode_list_payload(labpty_registry_t *registry, uint8_t *out, siz
         labpty_session_t *s = &registry->sessions[i];
         if (!s->used) continue;
         labpty_descriptor_view_t descriptor = labpty_session_descriptor(s);
+        /* Each record is length-delimited so future descriptor
+         * extensions can be appended without breaking decoders of
+         * the surrounding list shape (ADR 0007). The length is a
+         * u32 prefix that covers the existing descriptor bytes
+         * plus any future trailer the daemon chooses to append. */
+        if ((writer.end - writer.cur) < 4) return 0;
+        uint8_t *record_len_ptr = writer.cur;
+        if (labpty_write_u32(&writer, 0) != LABPTY_OK) return 0;
+        uint8_t *record_start = writer.cur;
         if (labpty_encode_descriptor(&writer, &descriptor) != LABPTY_OK) return 0;
+        uint32_t record_len = (uint32_t)(writer.cur - record_start);
+        labpty_writer_t record_len_writer = { .cur = record_len_ptr, .end = record_len_ptr + 4 };
+        labpty_write_u32(&record_len_writer, record_len);
         count++;
     }
     labpty_writer_t count_writer = { .cur = count_ptr, .end = count_ptr + 4 };
@@ -393,8 +448,30 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session) return LABPTY_E_SESSION_NOT_FOUND;
+    /* Already mid-teardown — the previous terminate's reap tick is
+     * what eventually frees this slot, not a fresh request_close.
+     * Return SESSION_NOT_FOUND so callers don't loop on double-
+     * terminate; both racing terminators see the slot as gone. */
+    if (session->close_pending) return LABPTY_E_SESSION_NOT_FOUND;
     labpty_descriptor_view_t descriptor = labpty_session_descriptor(session);
-    labpty_session_close(session);
+    if (session->alive) {
+        /* The hot path: dispatch SIGHUP, defer reap to the next
+         * event-loop tick. Returns immediately so the single-threaded
+         * loop is free to service other clients while a HUP-ignoring
+         * child waits out the SIGKILL budget. */
+        labpty_session_request_close(session, monotonic_ns());
+    } else if (session->child_pid <= 0) {
+        /* Dead-leak slot: child already exited naturally and
+         * labpty_registry_reap left used=1 with the ring still open
+         * so output could still be drained from the byte ring.
+         * Finish the cleanup synchronously now that the client has
+         * acknowledged the death by calling terminate; the work is
+         * just labpty_byte_ring_close, no syscalls that can block
+         * the event loop. */
+        labpty_byte_ring_close(&session->ring);
+        session->used = 0;
+        session->alive = 0;
+    }
     descriptor.alive = 0;
     *out_len = encode_descriptor_view_payload(&descriptor, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
@@ -581,8 +658,16 @@ static int client_pump_read(labpty_daemon_t *daemon, labpty_client_t *client) {
     while (client->read_have < need) {
         ssize_t n = read(client->fd, client->read_buf + client->read_have, need - client->read_have);
         if (n > 0) {
+            uint64_t now = monotonic_ns();
+            /* First byte of a new frame: arm the absolute frame deadline.
+             * Subsequent bytes within the same frame must not bump it,
+             * otherwise a trickle attacker would keep pushing the
+             * deadline forward and hold the slot indefinitely. */
+            if (client->read_have == 0) {
+                client->frame_deadline_ns = now + LABPTY_FRAME_TOTAL_TIMEOUT_NS;
+            }
             client->read_have += (size_t)n;
-            client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
+            client->deadline_ns = now + LABPTY_IO_IDLE_TIMEOUT_NS;
             if (!client->header_parsed && client->read_have >= LABPTY_FRAME_HEADER_BYTES) {
                 if (labpty_decode_header(client->read_buf, LABPTY_FRAME_HEADER_BYTES, &client->header) != LABPTY_OK) return -1;
                 if (client->header.frame_len < LABPTY_FRAME_HEADER_BYTES) return -1;
@@ -734,13 +819,29 @@ static void tick_heartbeats(labpty_daemon_t *daemon) {
  * mid-frame (StuckMidFrameIsNotPermanent). The companion
  * MC_ControlChannelMidFrameLeak.cfg pins the latter property by
  * setting ExpireIgnoresMidFrame=TRUE — a guard against future
- * "simplifications" that drop the half-sent-frame branch below. */
+ * "simplifications" that drop the half-sent-frame branch below.
+ *
+ * The `frame_deadline_ns` branch defends against a trickle attacker
+ * that the abstract TLA+ model does not see: TLC treats Expire as
+ * eligible to fire any tick while a slot is mid-frame, but the
+ * C implementation only fires it once `deadline_ns` has elapsed, and
+ * a one-byte-every-200ms drip refreshes `deadline_ns` forever.
+ * Pinned by testTrickleFrameCannotOccupyAllClientSlotsForever in
+ * Tests/LabptyTests/LabptyAdversarialTests.swift. */
 static void expire_stalled_clients(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     uint64_t now = monotonic_ns();
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use) continue;
+        /* Absolute frame-arrival deadline takes precedence over the
+         * per-read idle deadline: it is set on the first byte of a frame
+         * and is not refreshed by subsequent bytes, so a trickle attacker
+         * that keeps `deadline_ns` moving forward still expires here. */
+        if (client->frame_deadline_ns != 0 && now >= client->frame_deadline_ns) {
+            client_release(client);
+            continue;
+        }
         if (now < client->deadline_ns) continue;
         /* Established clients (at least one successful round-trip) may sit
          * idle while reading byte-ring output directly — don't expire
@@ -787,7 +888,25 @@ static void cleanup_daemon(labpty_daemon_t *daemon, const char *socket_path) {
         close(daemon->listen_fd);
         daemon->listen_fd = -1;
     }
-    if (socket_path && socket_path[0]) unlink(socket_path);
+    /* Only unlink the socket path if the file on disk is still the
+     * inode we bound. Otherwise a successor daemon may have already
+     * unlinked-and-rebound after probing our path as stale (we just
+     * closed listen_fd above, so SocketIsLive would now report
+     * stale), and removing the path here would strand the successor.
+     * The TOCTOU window between lstat and unlink is one syscall, so
+     * not fully race-free, but the worst-case foreign-inode unlink
+     * still requires another daemon to win the race twice.
+     * Modelled by specs/labpty/LabptyStartup.tla::UnlinkPath; the
+     * companion MC_StartupCleanupTOCTOU.cfg with
+     * InodeValidatedCleanup=FALSE pins the strand counter-example. */
+    if (socket_path && socket_path[0] && daemon->socket_identity_known) {
+        struct stat st;
+        if (lstat(socket_path, &st) == 0 &&
+            st.st_dev == daemon->socket_dev &&
+            st.st_ino == daemon->socket_ino) {
+            unlink(socket_path);
+        }
+    }
 }
 
 int main(int argc, char **argv) {
@@ -800,12 +919,24 @@ int main(int argc, char **argv) {
      * per-region in labpty_byte_ring_create. The mlockall call that used
      * to live here was dead code on every supported build. */
     if (mkdir(shm_dir, 0700) != 0 && errno != EEXIST) { perror("labpty shm dir"); return 1; }
+    if (!labpty_private_dir_ok(shm_dir)) {
+        fprintf(stderr, "labpty: refusing non-private shm dir: %s\n", shm_dir);
+        return 1;
+    }
     labpty_daemon_t daemon;
     memset(&daemon, 0, sizeof(daemon));
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) daemon.clients[i].fd = -1;
     labpty_registry_init(&daemon.registry, shm_dir);
     daemon.listen_fd = listen_unix_socket(socket_path);
     if (daemon.listen_fd < 0) { perror("labpty listen"); return 1; }
+    {
+        struct stat st;
+        if (lstat(socket_path, &st) == 0 && S_ISSOCK(st.st_mode)) {
+            daemon.socket_dev = st.st_dev;
+            daemon.socket_ino = st.st_ino;
+            daemon.socket_identity_known = 1;
+        }
+    }
     if (set_nonblock(daemon.listen_fd) != 0) {
         perror("labpty nonblock");
         cleanup_daemon(&daemon, socket_path);

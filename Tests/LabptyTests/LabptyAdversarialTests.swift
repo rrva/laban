@@ -519,6 +519,231 @@ final class LabptyAdversarialTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
+  // MARK: - Trickle slowloris (absolute frame deadline)
+
+  /// `expire_stalled_clients` reclaims silent or one-byte-then-quiet
+  /// slots via the 250ms idle deadline — but a *trickle* attacker that
+  /// sends one byte every ~200ms keeps `deadline_ns` moving forward
+  /// indefinitely. `Sources/Labpty/main.c::client_pump_read` arms an
+  /// absolute `frame_deadline_ns` on the first byte of a frame and
+  /// `expire_stalled_clients` honours it regardless of idle bumps.
+  /// Without that absolute deadline, 8 raw sockets could hold all
+  /// LABPTY_MAX_CLIENTS slots forever and starve every Swift client.
+  func testTrickleFrameCannotOccupyAllClientSlotsForever() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+
+    var fds: [Int32] = []
+    defer { for fd in fds { Darwin.close(fd) } }
+
+    // Open all 8 control slots with the first magic byte of a request
+    // frame — that arms the absolute frame deadline on the daemon.
+    for _ in 0..<8 {
+      let fd = try connectRaw(socketPath: harness.socketPath)
+      fds.append(fd)
+      var byte: UInt8 = LabptyFrameHeader.magic[0]
+      _ = Darwin.write(fd, &byte, 1)
+    }
+
+    // Drip one byte every 200ms (under the 250ms idle deadline) for
+    // 1.5s — the idle deadline keeps getting refreshed, so the
+    // pre-fix daemon would never reclaim these slots. Stay below the
+    // 24-byte header size so the daemon doesn't parse a header and
+    // reject for a non-magic-mismatch reason.
+    let stop = Date().addingTimeInterval(1.5)
+    while Date() < stop {
+      for fd in fds {
+        var byte: UInt8 = LabptyFrameHeader.magic[0]
+        _ = Darwin.write(fd, &byte, 1)
+      }
+      usleep(200_000)
+    }
+
+    // The absolute frame deadline is 2s from the first byte. Wait
+    // long enough for it to fire plus an expire tick.
+    Thread.sleep(forTimeInterval: 1.5)
+
+    // A fresh well-behaved client must now claim a slot — proof that
+    // the trickle sockets were reclaimed.
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    XCTAssertNoThrow(try client.hello())
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  // MARK: - Terminate is non-blocking on the event loop
+
+  /// Previously `handle_terminate` -> `labpty_session_close` ran a
+  /// synchronous waitpid loop that could block the single-threaded
+  /// event loop for up to ~700 ms while a HUP-ignoring child sat
+  /// through the SIGKILL window. Async terminate splits the request
+  /// (SIGHUP + arm deadline) from the reap (SIGKILL escalation +
+  /// WNOHANG reap, both inside `labpty_registry_reap`), so other
+  /// clients keep getting served while the dying child waits out the
+  /// budget.
+  func testTerminateOfHupIgnoringChildDoesNotBlockOtherControlRPCs() throws {
+    let harness = try launchHarness()
+    let killer = try waitForClient(socketPath: harness.socketPath)
+    defer { killer.close() }
+    let observer = try waitForClient(socketPath: harness.socketPath)
+    defer { observer.close() }
+
+    let victim = try killer.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sh", "-c", "trap '' HUP; sleep 30"],
+        logicalSessionId: "slow-terminate"))
+
+    let terminateGroup = DispatchGroup()
+    terminateGroup.enter()
+    DispatchQueue.global().async {
+      defer { terminateGroup.leave() }
+      _ = try? killer.terminate(handle: victim.ptyHandle)
+    }
+
+    // Give the terminate RPC a head start so it's the in-flight
+    // request when the observer's listLabptySessions arrives.
+    usleep(20_000)
+
+    // Observer's RPC must complete promptly. Pre-fix this could
+    // wait up to ~700 ms because the synchronous terminate held the
+    // event loop. We allow a generous 250 ms — well below the old
+    // ceiling, well above any reasonable RTT plus reap-tick budget.
+    let start = Date()
+    XCTAssertNoThrow(try observer.listLabptySessions())
+    let elapsed = Date().timeIntervalSince(start)
+    XCTAssertLessThan(
+      elapsed, 0.250,
+      "observer RPC took \(elapsed)s; terminate of a HUP-ignoring child should not block the event loop")
+
+    // The terminate itself must finish within the SIGKILL budget plus
+    // a comfortable margin.
+    XCTAssertEqual(
+      terminateGroup.wait(timeout: .now() + .seconds(3)),
+      .success,
+      "terminate of HUP-ignoring child did not complete within 3 s")
+
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  // MARK: - Ring symlink hardening
+
+  /// `labpty_byte_ring_create` previously opened the predictable
+  /// `labpty-N.br` path with `O_RDWR|O_CREAT|O_TRUNC` — `open(2)`
+  /// follows symlinks, so a same-uid attacker who pre-staged a
+  /// symlink at the predictable next-handle path could trick the
+  /// daemon into truncating an arbitrary writable file owned by the
+  /// user when the next session opened. `open_ring_backing` now uses
+  /// `O_EXCL|O_NOFOLLOW` and refuses any pre-existing non-regular
+  /// path. The ring file is the daemon's data, not the symlink
+  /// target's.
+  func testPreexistingRingSymlinkIsRefusedAndDoesNotClobberTarget() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+
+    // The first session opens with handle = 1 (registry next_handle
+    // initializes to 1). Pre-stage a symlink at that exact path
+    // pointing at a sentinel file we own. If the open follows the
+    // link the daemon will truncate the sentinel.
+    let shmDirURL = URL(fileURLWithPath: harness.shmDir)
+    let target = shmDirURL.deletingLastPathComponent()
+      .appendingPathComponent("do-not-clobber-\(UUID().uuidString).txt")
+    let sentinel = "sentinel-payload-must-survive"
+    try Data(sentinel.utf8).write(to: target)
+
+    let attackPath = shmDirURL.appendingPathComponent("labpty-1.br").path
+    let attackPathCString = (attackPath as NSString).utf8String!
+    let targetPathCString = (target.path as NSString).utf8String!
+    XCTAssertEqual(symlink(targetPathCString, attackPathCString), 0)
+
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    XCTAssertThrowsError(
+      try client.openSession(
+        LabptyOpenSessionRequest(
+          rows: 24,
+          cols: 80,
+          argv: ["/bin/sleep", "1"],
+          logicalSessionId: "symlink-attack")),
+      "openSession must fail when the ring path is a symlink to a foreign target")
+
+    // The sentinel must be untouched; otherwise the daemon followed
+    // the symlink and clobbered it.
+    let postContents = try String(contentsOf: target, encoding: .utf8)
+    XCTAssertEqual(postContents, sentinel)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  // MARK: - UTF-8 validation for descriptor strings
+
+  /// `labpty_protocol.c::read_string` accepts any non-NUL bytes, but
+  /// Swift's `LabptyPayloadReader.readString` decodes UTF-8 strictly.
+  /// Without daemon-side UTF-8 validation a raw same-uid client could
+  /// open a session with a non-UTF-8 `logical_id` (e.g. a single
+  /// 0xFF byte); every subsequent `listLabptySessions` from the
+  /// first-party Swift client would then throw `invalidUTF8` on the
+  /// whole response, breaking the only first-party catalog reader
+  /// until the bad session was terminated.
+  func testInvalidUTF8LogicalIdIsRejectedAndCannotPoisonListSessions() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+
+    let fd = try connectRaw(socketPath: harness.socketPath)
+    defer { Darwin.close(fd) }
+
+    // Negotiate the connection so the daemon will dispatch our open.
+    let helloPayload = try LabptyHelloRequest(clientId: "utf8-rejector").encode()
+    try writeAllRaw(
+      fd: fd,
+      data: try LabptyFraming.encodeRequest(
+        operation: .hello, sequence: 1, payload: helloPayload))
+    let helloResp = try readFrameRaw(fd: fd)
+    XCTAssertEqual(helloResp.header.responseCode, .ok)
+
+    // Hand-build an open_session payload with a non-UTF-8 logical_id.
+    // We can't go through LabptyOpenSessionRequest.encode because the
+    // Swift String would enforce UTF-8 before the daemon ever sees
+    // the bytes — the wire format is what we need to exercise.
+    var open = [UInt8]()
+    open.appendUInt32(24)   // rows
+    open.appendUInt32(80)   // cols
+    open.appendUInt64(UInt64(LabptyByteRingLayout.defaultOutputRingCapacity))
+    // argv ["/bin/sleep", "1"]
+    open.appendUInt32(2)
+    let argv0 = Array("/bin/sleep".utf8)
+    open.appendUInt32(UInt32(argv0.count))
+    open.append(contentsOf: argv0)
+    let argv1 = Array("1".utf8)
+    open.appendUInt32(UInt32(argv1.count))
+    open.append(contentsOf: argv1)
+    // envp empty
+    open.appendUInt32(0)
+    // cwd empty
+    open.appendUInt32(0)
+    // logical_id = single 0xFF byte: no NUL (clears the existing
+    // memchr guard), but not a valid UTF-8 sequence.
+    open.appendUInt32(1)
+    open.append(0xff)
+
+    try writeAllRaw(
+      fd: fd,
+      data: try LabptyFraming.encodeRequest(
+        operation: .openSession, sequence: 2, payload: Data(open)))
+    let openResp = try readFrameRaw(fd: fd)
+    XCTAssertNotEqual(
+      openResp.header.responseCode, .ok,
+      "non-UTF-8 logical_id must be rejected before reaching the registry")
+
+    // The session catalog stayed clean; a normal Swift client can
+    // still listLabptySessions without tripping invalidUTF8.
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    XCTAssertNoThrow(try client.listLabptySessions())
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   // MARK: - writeInput backpressure semantics
 
   /// `Sources/Labpty/main.c::handle_write` writes the full payload to
