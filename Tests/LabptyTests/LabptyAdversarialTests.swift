@@ -519,6 +519,137 @@ final class LabptyAdversarialTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
+  // MARK: - writeInput backpressure semantics
+
+  /// `Sources/Labpty/main.c::handle_write` writes the full payload to
+  /// the PTY master under a 100 ms wall-clock budget and returns
+  /// `LABPTY_OK` once `write(2)` has returned `request.len` bytes. The
+  /// Phase 1 protocol design (`execplans/active/labpty-protocol-design.md`
+  /// §"Backpressure") promises that `writeInput` is synchronous and
+  /// that returning ok means the bytes reached the master.
+  ///
+  /// Under canonical-mode backpressure that contract leaks: when the
+  /// slave's canonical line buffer fills (MAX_CANON, ~1 KiB on macOS,
+  /// with `IMAXBEL` set in `init_sane_termios`), the line discipline
+  /// silently **drops** further bytes — but the master `write(2)`
+  /// still returns the full count, so `handle_write` reports
+  /// `LABPTY_OK`. The caller sees success; the child sees ~1 KiB.
+  /// Echoes flow back to the master read side, where labpty drains
+  /// them into the byte ring — that ring is the only signal a caller
+  /// has that bytes actually reached the slave.
+  ///
+  /// This test pins the property a year-horizon caller needs: when
+  /// `writeInput` returns ok, the slave must have observed the full
+  /// payload. Today it fails (echoed ≈ MAX_CANON of 65536), which is
+  /// the correct, loud surface for the bug. Fixing it likely means
+  /// having `handle_write` poll the slave-side queue with a deadline,
+  /// or returning a delivered-count to the client. Either way, this
+  /// test should drive the change — do not soften the assertion to
+  /// match current behavior without an ADR.
+  ///
+  /// Secondary properties pinned here:
+  /// - the daemon survives the abuse (no event-loop wedge, no crash);
+  /// - subsequent RPCs on the same control connection still work.
+  func testWriteInputOkPromisesDeliveryAndDaemonSurvivesBackpressure() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "60"],
+        logicalSessionId: "writeinput-backpressure"))
+    defer { _ = try? client.terminate(handle: descriptor.ptyHandle) }
+
+    // 64 KiB — the Phase 1 writeInput payload ceiling
+    // (`LabptyProtocolLimits.maxWriteInputBytes`). The child never
+    // reads stdin, so any bytes the line discipline rejects are gone.
+    let payloadByte: UInt8 = 0x41  // 'A' — printable, ICANON+ECHO echoes 1:1
+    let payload = [UInt8](repeating: payloadByte, count: 64 * 1024)
+
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    var writeError: Error?
+    do {
+      try client.writeInput(handle: descriptor.ptyHandle, bytes: payload)
+    } catch {
+      writeError = error
+    }
+
+    XCTAssertTrue(
+      harness.process.isRunning, "daemon must survive backpressure on writeInput")
+
+    let result = drainEchoes(
+      reader: reader, expecting: payloadByte, maxWait: 1.5)
+
+    if writeError == nil {
+      // Daemon reported success. The Phase 1 contract says synchronous
+      // ok means the bytes reached the master; in practice a caller
+      // can only verify "reached the slave" via the echo stream. If
+      // ICANON drops bytes past MAX_CANON, this fails LOUDLY.
+      XCTAssertGreaterThanOrEqual(
+        result.matchingCount, payload.count - 256,
+        "writeInput returned ok but only \(result.matchingCount) of "
+          + "\(payload.count) payload bytes were observed at the slave "
+          + "(total ring bytes=\(result.totalCount)). Phase 1 contract "
+          + "says ok ⇒ delivered; canonical-mode line discipline (MAX_CANON, "
+          + "IMAXBEL) is silently dropping the tail. Fix `handle_write` to "
+          + "either honor delivery to the slave queue or surface a partial-"
+          + "delivery error code; do not relax this assertion.")
+    } else {
+      // Daemon reported an error. Then the operation must NOT have
+      // committed a prefix that the caller will see on the next retry
+      // (i.e. atomic semantics under failure). If echoes > 0, the
+      // partial write is observable and a retry would duplicate.
+      XCTAssertEqual(
+        result.matchingCount, 0,
+        "writeInput failed (\(writeError!)) but \(result.matchingCount) "
+          + "payload bytes already reached the slave — non-atomic semantics; "
+          + "a caller-side retry would duplicate the prefix. Either fix "
+          + "`handle_write` to commit all-or-nothing, or document the partial-"
+          + "delivery contract in ADR 0007 and update this test.")
+    }
+
+    // Daemon stays responsive after the abuse.
+    XCTAssertNoThrow(try client.listLabptySessions())
+  }
+
+  private struct EchoDrain {
+    var totalCount: Int
+    var matchingCount: Int
+  }
+
+  /// Drains the byte ring until it stops growing for ~250 ms or
+  /// `maxWait` elapses. Returns the total byte count plus the count of
+  /// bytes equal to `expecting`. The total tells us whether labpty is
+  /// still producing echoes; the matching count tells us how many of
+  /// our payload bytes the line discipline actually accepted.
+  private func drainEchoes(
+    reader: LabptyByteRingReader,
+    expecting: UInt8,
+    maxWait: TimeInterval
+  ) -> EchoDrain {
+    let deadline = Date().addingTimeInterval(maxWait)
+    var offset: UInt64 = 0
+    var data = Data()
+    var lastGrowth = Date()
+    while Date() < deadline {
+      let result = reader.readSince(offset)
+      offset = result.newOffset
+      if !result.bytes.isEmpty {
+        data.append(result.bytes)
+        lastGrowth = Date()
+      } else if Date().timeIntervalSince(lastGrowth) > 0.25 {
+        break
+      }
+      usleep(10_000)
+    }
+    let matching = data.reduce(0) { $0 + ($1 == expecting ? 1 : 0) }
+    return EchoDrain(totalCount: data.count, matchingCount: matching)
+  }
+
   // MARK: - Harness (shared style with LabptyDaemonTests)
 
   private struct Harness {
