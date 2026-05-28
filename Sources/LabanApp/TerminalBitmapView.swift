@@ -182,6 +182,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private weak var resizeBackgroundView: NSView?
   private var normalResizeBackgroundColor: CGColor?
   private var normalResizeBackgroundWantsLayer: Bool?
+
+  /// Hook for the overlay scroll indicator (sibling view in the window
+  /// containerView). Called every frame from `advanceFrame` with the active
+  /// session's viewport state, or `nil` when there is no active tab.
+  var onViewportChanged: ((_ viewportOffset: Int, _ totalRows: Int, _ viewportRows: Int) -> Void)?
+  var onViewportUnavailable: (() -> Void)?
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
@@ -805,7 +811,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)
-    else { return }
+    else {
+      onViewportUnavailable?()
+      return
+    }
 
     let suffix = captureRecorder == nil ? "" : " — capturing"
     let windowTitle = model.windowTitle + suffix
@@ -1080,6 +1089,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = false
     lastRenderedActiveTabId = activeTab.id
     syncFindChip()
+
+    if let vs = session.viewportState() {
+      onViewportChanged?(vs.viewportOffset, vs.totalRows, vs.viewportRows)
+    } else {
+      onViewportUnavailable?()
+    }
   }
 
   // MARK: - Drawing
