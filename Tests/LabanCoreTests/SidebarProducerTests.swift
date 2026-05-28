@@ -169,6 +169,56 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertTrue(texts.contains("✕"), "close glyph must appear on hover")
   }
 
+  /// The whole point of the right-edge slot redesign: the indicator dot and
+  /// the close-X anchor at the same x, so hovering swaps the glyph without
+  /// shifting layout. If these drift apart, the user sees the row reflow
+  /// every time the cursor enters or leaves.
+  func testIndicatorAndCloseGlyphShareRightEdgeSlot() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: true, sessionId: "s")
+    tab.titleMetadata.agentStatus = TabAgentStatus(indicatorColor: "#00ff00")
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+
+    let dotX = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
+      .compactMap { cmd -> CGFloat? in
+        if case .glyphRun(let origin, let text, _, _, _, _, _, _, _) = cmd,
+          text == "●"
+        { return origin.x }
+        return nil
+      }.first
+    let xX = p.commands(
+      tabs: [tab], activeTabId: tab.id, height: 600, hoveredTabId: tab.id
+    )
+    .compactMap { cmd -> CGFloat? in
+      if case .glyphRun(let origin, let text, _, _, _, _, _, _, _) = cmd,
+        text == "✕"
+      { return origin.x }
+      return nil
+    }.first
+
+    XCTAssertNotNil(dotX, "expected indicator dot")
+    XCTAssertNotNil(xX, "expected close glyph on hover")
+    XCTAssertEqual(dotX ?? -1, xX ?? -2, accuracy: 0.001)
+  }
+
+  /// Hover replaces the indicator instead of rendering alongside it.
+  /// Otherwise close-on-hover would visually crowd the indicator and the
+  /// indicator's color would compete with the close affordance.
+  func testHoverHidesIndicator() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: true, sessionId: "s")
+    tab.titleMetadata.agentStatus = TabAgentStatus(indicatorColor: "#00ff00")
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(
+      tabs: [tab], activeTabId: tab.id, height: 600, hoveredTabId: tab.id)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+    XCTAssertTrue(texts.contains("✕"), "close glyph must render on hover")
+    XCTAssertFalse(
+      texts.contains("●"),
+      "indicator must not render alongside the close glyph — they share the slot")
+  }
+
   func testHitTestOutsideSidebar() {
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let result = p.hitTest(at: CGPoint(x: 250, y: 300), tabs: [], height: 600)

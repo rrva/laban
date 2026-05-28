@@ -52,10 +52,12 @@ public struct SidebarProducer {
   /// background rect still fills the full column so the reserved strip
   /// inherits the sidebar color rather than exposing the window beneath.
   ///
-  /// `hoveredTabId` controls visibility of the per-tab close glyph: it
-  /// renders only when the cursor is over the tab. The click region for
-  /// closing is region-based (always live in `hitTest`), so the affordance
-  /// is just visually quieter — discoverable but unobtrusive.
+  /// `hoveredTabId` swaps the right-edge slot between status indicator and
+  /// close glyph: the slot anchors at `slotX` regardless of state, so
+  /// nothing shifts position when the cursor enters or leaves a row. When
+  /// the tab is hovered the X wins the slot; otherwise the indicator (agent
+  /// dot, shell phase, attention badge) renders there. Click region is
+  /// scoped to the slot so selecting a tab body still works.
   public func commands(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
@@ -111,18 +113,18 @@ public struct SidebarProducer {
       let labelX: CGFloat = 12
       let exited = tab.status != .running
       let labelFg = exited ? Theme.current.dim0 : fg
-      // Close button lives in the top-right of the row, aligned with the
-      // title baseline. Hit area is restricted to the actual glyph extent
-      // so clicks elsewhere on the right edge still select the tab.
-      let closeGlyphX = sidebarWidth - 18
-      let badgeX = closeGlyphX - 16
+      // Right-edge slot: status indicator and the hover-revealed close glyph
+      // share one anchor x. The slot never moves between hover states, so
+      // the title column doesn't have an "indented" gap when the X is
+      // absent — the indicator simply sits where the X would be.
+      let slotX = sidebarWidth - 18
       let indexText = "\(tab.position)"
       let indexX = labelX
       let titleX = labelX + 3 * cellWidth
-      let titleMaxScalars = max(1, Int(floor((badgeX - titleX - 4) / cellWidth)))
-      // Info lines align with the title after the quiet shortcut gutter.
-      // Subtract the right-edge padding for the close X.
-      let infoMaxScalars = max(1, Int(floor((closeGlyphX - titleX - 4) / cellWidth)))
+      let titleMaxScalars = max(1, Int(floor((slotX - titleX - 4) / cellWidth)))
+      // Info lines use the same right edge — title and info both end at the
+      // single shared slot so widths don't drift line-to-line.
+      let infoMaxScalars = titleMaxScalars
       let resolved = TabTitleResolver.resolve(
         tab.titleMetadata,
         fallbackPosition: tab.position,
@@ -165,7 +167,8 @@ public struct SidebarProducer {
           source: .sidebar
         ))
 
-      // Top-right indicator, by specificity:
+      // Right-edge indicator, by specificity (only when the tab is not
+      // hovered — the close X takes the slot on hover):
       //  1. OSC 21337 agent dot — an agent explicitly reported a status.
       //  2. OSC 133 shell phase — a command failed (red) or is running
       //     (blue). This complements the bell badge: the bell says "output
@@ -174,38 +177,47 @@ public struct SidebarProducer {
       //  3. Legacy red attention badge — "something happened in this tab".
       let meta = tab.titleMetadata
       let agentStatus = meta.agentStatus
-      if let hex = agentStatus.indicatorColor,
-        let color = Self.parseHexColor(hex)
-      {
-        cmds.append(
-          .glyphRun(
-            origin: CGPoint(x: badgeX, y: titleY),
-            text: "●",
-            foreground: color,
-            background: bg,
-            attributes: [],
-            source: .sidebar
-          ))
-      } else if let shellColor = Self.shellPhaseIndicatorColor(meta) {
-        cmds.append(
-          .glyphRun(
-            origin: CGPoint(x: badgeX, y: titleY),
-            text: "●",
-            foreground: shellColor,
-            background: bg,
-            attributes: [],
-            source: .sidebar
-          ))
-      } else if let badge = resolved.statusBadge {
-        cmds.append(
-          .glyphRun(
-            origin: CGPoint(x: badgeX, y: titleY),
-            text: badge,
-            foreground: Theme.current.red,
-            background: bg,
-            attributes: [],
-            source: .sidebar
-          ))
+      // The right-edge slot shows the close X iff the cursor is on this
+      // row AND this row isn't the drag source (drag suppresses the X to
+      // avoid accidental close mid-gesture). Otherwise the slot belongs
+      // to the indicator — including while dragging, where the X is
+      // hidden and the indicator stays visible (the drag overlay dims it
+      // along with the rest of the row).
+      let showCloseX = (hoveredTabId == tab.id) && !isDragging
+      if !showCloseX {
+        if let hex = agentStatus.indicatorColor,
+          let color = Self.parseHexColor(hex)
+        {
+          cmds.append(
+            .glyphRun(
+              origin: CGPoint(x: slotX, y: titleY),
+              text: "●",
+              foreground: color,
+              background: bg,
+              attributes: [],
+              source: .sidebar
+            ))
+        } else if let shellColor = Self.shellPhaseIndicatorColor(meta) {
+          cmds.append(
+            .glyphRun(
+              origin: CGPoint(x: slotX, y: titleY),
+              text: "●",
+              foreground: shellColor,
+              background: bg,
+              attributes: [],
+              source: .sidebar
+            ))
+        } else if let badge = resolved.statusBadge {
+          cmds.append(
+            .glyphRun(
+              origin: CGPoint(x: slotX, y: titleY),
+              text: badge,
+              foreground: Theme.current.red,
+              background: bg,
+              attributes: [],
+              source: .sidebar
+            ))
+        }
       }
 
       // Build the info-line stack. When an agent has pushed a status
@@ -236,14 +248,16 @@ public struct SidebarProducer {
           ))
       }
 
-      // Close glyph: rendered only when this tab is hovered. Heavy `✕`
-      // gives a beefier hit target than the previous `×` without needing
-      // a separate font size. Click region is region-based (see hitTest)
-      // so the affordance still works even when the glyph isn't shown.
-      if hoveredTabId == tab.id, !isDragging {
+      // Close glyph: rendered only when this tab is hovered AND not the
+      // active drag source, taking over the right-edge slot the indicator
+      // otherwise owns. Heavy `✕` gives a beefier hit target than `×`
+      // without needing a separate font size. Hit region is scoped to the
+      // slot in hitTest. Drag suppression prevents an accidental close
+      // when the user is already mid-gesture on the row.
+      if showCloseX {
         cmds.append(
           .glyphRun(
-            origin: CGPoint(x: closeGlyphX, y: titleY),
+            origin: CGPoint(x: slotX, y: titleY),
             text: "✕",
             foreground: Theme.current.dim0,
             background: bg,
@@ -357,12 +371,13 @@ public struct SidebarProducer {
     for (i, tab) in tabs.enumerated() {
       let tabY = height - CGFloat(i + 1) * rowHeight - topInset
       guard point.y >= tabY, point.y < tabY + rowHeight else { continue }
-      // Close-X box: upper half of the row on the right edge. Centering
-      // moves the title vertically depending on how many info lines are
-      // drawn, but the title (and the X glyph) always sits in the upper
-      // half — this matches without recomputing per-tab line layout.
+      // Close-X box covers the right-edge slot — the same slot the status
+      // indicator occupies when not hovered. Scope is tight enough that a
+      // click on the trailing edge of the title still selects, while the
+      // slot itself (dot or X) closes the tab. Upper half only, so the
+      // lower info lines remain select targets along their full width.
       let closeBoxBottom = tabY + rowHeight / 2
-      if point.x >= sidebarWidth - 28, point.y >= closeBoxBottom {
+      if point.x >= sidebarWidth - 22, point.y >= closeBoxBottom {
         return .closeTab(tab.id)
       }
       return .selectTab(tab.id)
