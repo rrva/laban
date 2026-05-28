@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/scroll-indicator-state.schema.json",
+  "title": "Debug Scroll Indicator State",
+  "type": "object",
+  "required": ["available"],
+  "additionalProperties": false,
+  "properties": {
+    "available": {"type": "boolean"},
+    "input": {
+      "type": ["object", "null"],
+      "required": ["viewportOffset", "totalRows", "viewportRows", "isHoverEdge"],
+      "additionalProperties": false,
+      "properties": {
+        "viewportOffset": {"type": "integer"},
+        "totalRows": {"type": "integer", "minimum": 0},
+        "viewportRows": {"type": "integer", "minimum": 0},
+        "isHoverEdge": {"type": "boolean"}
+      }
+    },
+    "output": {
+      "type": ["object", "null"],
+      "required": [
+        "shouldHold", "thumbFraction", "thumbOffsetFraction", "pillVisible", "pillText"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "shouldHold": {"type": "boolean"},
+        "thumbFraction": {"type": "number", "minimum": 0, "maximum": 1},
+        "thumbOffsetFraction": {"type": "number", "minimum": 0, "maximum": 1},
+        "pillVisible": {"type": "boolean"},
+        "pillText": {"type": "string"}
+      }
+    }
+  }
+}

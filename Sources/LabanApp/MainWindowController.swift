@@ -235,6 +235,23 @@ final class MainWindowController: NSWindowController {
         height: UpdateBadgeView.preferredHeight))
     updateBadge.autoresizingMask = [.maxXMargin, .maxYMargin]
     containerView.addSubview(updateBadge)
+
+    // Overlay scroll indicator: invisible when the viewport is at the live
+    // bottom, fades in when the user scrolls back into history. Sibling of
+    // termView (same z-order pattern as updateBadge) so the Metal layer
+    // compositing stays untouched.
+    let scrollIndicator = TerminalScrollIndicatorView(
+      frame: NSRect(x: 0, y: 0, width: viewW, height: viewH))
+    scrollIndicator.autoresizingMask = [.width, .height]
+    containerView.addSubview(scrollIndicator)
+    termView.onViewportChanged = { [weak scrollIndicator] offset, total, vp in
+      scrollIndicator?.applyViewport(
+        viewportOffset: offset, totalRows: total, viewportRows: vp)
+    }
+    termView.onViewportUnavailable = { [weak scrollIndicator] in
+      scrollIndicator?.reset()
+    }
+
     window.contentView = containerView
     window.center()
     window.makeKeyAndOrderFront(nil)
@@ -437,7 +454,8 @@ final class MainWindowController: NSWindowController {
     client: LabptyTerminalSessionClient, process: Process?
   ) {
     let environment = ProcessInfo.processInfo.environment
-    let baseURL = PersistenceStore.defaultBaseURL().appendingPathComponent("labpty", isDirectory: true)
+    let baseURL = PersistenceStore.defaultBaseURL().appendingPathComponent(
+      "labpty", isDirectory: true)
     let logURL = baseURL.appendingPathComponent("logs", isDirectory: true)
     let shmURL =
       environment["LABAN_LABPTY_SHM_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }

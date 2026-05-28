@@ -245,6 +245,17 @@ public final class DebugHTTPServer {
       json(runtime.shellIntegrationState(query: request.query))
     },
     DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/scroll-indicator/state",
+      category: "state",
+      summary:
+        "Return overlay scroll indicator input/output (shouldHold, pill text, thumb geometry) for the active or named session. Accepts hover=true to simulate the right-edge hover-reveal.",
+      queryParameters: ["sessionID", "sessionId", "hover"],
+      responseSchema: "schemas/debug/scroll-indicator-state.schema.json"
+    ) { runtime, request, _ in
+      json(runtime.scrollIndicatorState(query: request.query))
+    },
+    DebugHTTPRoute(
       method: "POST",
       path: "/debug/wait",
       category: "control",
