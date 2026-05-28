@@ -85,6 +85,11 @@ typedef enum {
     LABPTY_E_INTERNAL = 0x000B,
     LABPTY_E_SHUTTING_DOWN = 0x000C,
     LABPTY_E_UNKNOWN_OP = 0x000D,
+    /* Cooked-mode write rejected because the slave's line discipline
+     * cannot atomically absorb the payload (rawQ + canQ + payload would
+     * exceed MAX_INPUT/MAX_CANON). Externally atomic: no byte reached
+     * the master. See docs/adr/0008. */
+    LABPTY_E_INPUT_BACKPRESSURE = 0x000E,
 } labpty_status_t;
 
 typedef enum {

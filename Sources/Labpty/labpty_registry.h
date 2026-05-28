@@ -15,6 +15,20 @@ typedef struct {
     uint64_t handle;
     pid_t child_pid;
     int master_fd;
+    /* Inspection-only fd on the slave side: opened with O_RDONLY|O_NOCTTY
+     * via ptsname(master_fd) so handle_write can query tcgetattr,
+     * FIONREAD, and fpathconf(_PC_MAX_CANON/_PC_MAX_INPUT) before
+     * committing a cooked-mode write. Never read from. -1 if the
+     * preflight machinery is unavailable; in that case writes use the
+     * pre-ADR-0008 best-effort path. See docs/adr/0008. */
+    int slave_inspect_fd;
+    /* Estimated bytes accepted by writeInput since the last canonical
+     * delimiter (\n / VEOL / VEOF) we saw in our own payloads. These
+     * bytes sit in the slave's raw queue waiting for a delimiter to
+     * promote them into the canonical queue. Counts against MAX_INPUT
+     * along with FIONREAD on the slave. Reset to "bytes after last
+     * delimiter in the just-accepted payload" on every accepted write. */
+    uint64_t canonical_pending_estimate;
     uint32_t rows;
     uint32_t cols;
     char logical_id[LABPTY_LOGICAL_ID_BYTES + 1];

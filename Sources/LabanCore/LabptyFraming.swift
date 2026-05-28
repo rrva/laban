@@ -61,6 +61,10 @@ public enum LabptyErrorCode: UInt16, Equatable, Sendable {
   case internalError = 0x000B
   case shuttingDown = 0x000C
   case unknownOperation = 0x000D
+  /// Cooked-mode write rejected because the slave's line discipline
+  /// cannot atomically absorb the payload. Externally atomic: no byte
+  /// reached the master. See docs/adr/0008.
+  case inputBackpressure = 0x000E
 }
 
 public struct LabptyFrameHeader: Equatable, Sendable {

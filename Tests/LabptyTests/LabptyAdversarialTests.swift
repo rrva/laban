@@ -616,6 +616,56 @@ final class LabptyAdversarialTests: XCTestCase {
     XCTAssertNoThrow(try client.listLabptySessions())
   }
 
+  /// Companion to the preceding test. After ADR 0008, an oversized
+  /// canonical-mode write is rejected with a typed `inputBackpressure`
+  /// error before any byte reaches the master — `Sources/Labpty/main.c::
+  /// handle_write` runs a preflight admission check against
+  /// MAX_INPUT/MAX_CANON. This test pins the typed-error surface so a
+  /// future "let's just rename the code" refactor cannot quietly fold
+  /// backpressure back into a generic internal error and re-introduce
+  /// the ambiguity callers had before the ADR.
+  func testWriteInputBackpressureSurfacesTypedError() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: ["/bin/sleep", "60"],
+        logicalSessionId: "writeinput-backpressure-typed"))
+    defer { _ = try? client.terminate(handle: descriptor.ptyHandle) }
+
+    let payload = [UInt8](repeating: 0x42, count: 64 * 1024)
+
+    do {
+      try client.writeInput(handle: descriptor.ptyHandle, bytes: payload)
+      XCTFail("expected LabptyResponseError(.inputBackpressure), got ok")
+    } catch let error as LabptyResponseError {
+      XCTAssertEqual(
+        error.code, .inputBackpressure,
+        "writeInput must reject oversized canonical-mode payloads with the "
+          + "typed .inputBackpressure code (ADR 0008). Got code=\(error.code) "
+          + "rawCode=\(error.rawCode) message=\(error.message). Generic "
+          + "internalError flattening means future callers cannot distinguish "
+          + "backpressure from a real daemon fault.")
+    } catch {
+      XCTFail(
+        "expected LabptyResponseError, got \(type(of: error)): \(error). "
+          + "Non-OK responses must surface as the typed LabptyResponseError "
+          + "so callers can pattern-match on code.")
+    }
+
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    let result = drainEchoes(reader: reader, expecting: 0x42, maxWait: 0.5)
+    XCTAssertEqual(
+      result.matchingCount, 0,
+      "backpressure rejection must be externally atomic: no payload byte "
+        + "may reach the slave. Found \(result.matchingCount) echoed.")
+    XCTAssertNoThrow(try client.listLabptySessions())
+  }
+
   private struct EchoDrain {
     var totalCount: Int
     var matchingCount: Int

@@ -1,6 +1,30 @@
 import Darwin
 import Foundation
 
+/// Typed daemon response error. Callers can pattern-match on `code` to
+/// react to specific failure modes (e.g. `.inputBackpressure` to retry
+/// with a smaller chunk or wait for the child to drain input) without
+/// scraping the message. See docs/adr/0008.
+public struct LabptyResponseError: Error, Equatable, CustomStringConvertible {
+  public let code: LabptyErrorCode
+  public let rawCode: UInt16
+  public let message: String
+
+  public init(code: LabptyErrorCode, message: String) {
+    self.code = code
+    self.rawCode = code.rawValue
+    self.message = message
+  }
+
+  public init(rawCode: UInt16, message: String) {
+    self.code = LabptyErrorCode(rawValue: rawCode) ?? .internalError
+    self.rawCode = rawCode
+    self.message = message
+  }
+
+  public var description: String { message }
+}
+
 public final class LabptyTerminalSessionClient: TerminalSessionClient {
   public let transportMode = "labpty"
 
@@ -237,8 +261,9 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
       throw TerminalSessionClientError.protocolError("labpty response sequence mismatch")
     }
     guard response.header.responseCode == .ok else {
-      throw TerminalSessionClientError.protocolError(
-        Self.labptyErrorMessage(codeRaw: response.header.codeRaw))
+      throw LabptyResponseError(
+        rawCode: response.header.codeRaw,
+        message: Self.labptyErrorMessage(codeRaw: response.header.codeRaw))
     }
     return try decode(response.payload)
   }
@@ -304,10 +329,13 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   private func isLabptySessionNotFound(_ error: Error) -> Bool {
-    guard case TerminalSessionClientError.protocolError(let message) = error else {
-      return false
+    if let response = error as? LabptyResponseError {
+      return response.code == .sessionNotFound
     }
-    return message == Self.labptyErrorMessage(codeRaw: LabptyErrorCode.sessionNotFound.rawValue)
+    if case TerminalSessionClientError.protocolError(let message) = error {
+      return message == Self.labptyErrorMessage(codeRaw: LabptyErrorCode.sessionNotFound.rawValue)
+    }
+    return false
   }
 
   private func forgetSessionId(_ sessionId: String) {

@@ -402,6 +402,28 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
 
 static const uint64_t LABPTY_WRITE_INPUT_BUDGET_NS = 100000000ull;  /* 100 ms */
 
+/* Conservative slack against MAX_INPUT / MAX_CANON. Reserves headroom
+ * for in-flight bytes the line discipline may have already consumed
+ * from the master but not yet drained out the canonical queue, and for
+ * minor termios quirks (IUTF8 expanding multibyte characters, etc). */
+#define LABPTY_BACKPRESSURE_SAFETY_MARGIN 64
+
+/* Returns 1 when the byte is a canonical-mode line delimiter under the
+ * given termios: \n is unconditional, VEOL/VEOL2/VEOF are configurable
+ * but treated as delimiters when set to a non-_POSIX_VDISABLE value. */
+static int is_canonical_delimiter(uint8_t byte, const struct termios *tio) {
+    if (byte == (uint8_t)'\n') return 1;
+    cc_t veol = tio->c_cc[VEOL];
+    if (veol != (cc_t)_POSIX_VDISABLE && byte == (uint8_t)veol) return 1;
+#ifdef VEOL2
+    cc_t veol2 = tio->c_cc[VEOL2];
+    if (veol2 != (cc_t)_POSIX_VDISABLE && byte == (uint8_t)veol2) return 1;
+#endif
+    cc_t veof = tio->c_cc[VEOF];
+    if (veof != (cc_t)_POSIX_VDISABLE && byte == (uint8_t)veof) return 1;
+    return 0;
+}
+
 static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payload, size_t len) {
     assert(daemon != NULL);
     labpty_write_input_request_t request;
@@ -409,6 +431,48 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
+
+    /* Preflight admission check (ADR 0008). Under ICANON the slave's
+     * line discipline silently drops bytes once (rawQ + canQ) reaches
+     * MAX_INPUT, and a single canonical line silently truncates past
+     * MAX_CANON. write(2) on the master still reports the full count.
+     * Without this check we'd return LABPTY_OK for bytes the child
+     * will never see — the bug the regression in
+     * Tests/LabptyTests/LabptyAdversarialTests.swift pins. We can't
+     * make the write succeed for an oversized cooked payload, but we
+     * can refuse it atomically: no byte reaches the master, the caller
+     * gets a typed error and can chunk/retry. Raw-mode writes (no
+     * ICANON) are unaffected. If the inspection fd is unavailable we
+     * skip preflight; that's a graceful degradation rather than a hard
+     * failure. */
+    int icanon = 0;
+    struct termios tio;
+    if (session->slave_inspect_fd >= 0 &&
+        tcgetattr(session->slave_inspect_fd, &tio) == 0 &&
+        (tio.c_lflag & ICANON)) {
+        icanon = 1;
+        long max_canon = fpathconf(session->slave_inspect_fd, _PC_MAX_CANON);
+        if (max_canon <= 0) max_canon = 1024;
+        long max_input = fpathconf(session->slave_inspect_fd, _PC_MAX_INPUT);
+        if (max_input <= 0) max_input = 1024;
+        int pending_raw = 0;
+        if (ioctl(session->slave_inspect_fd, FIONREAD, &pending_raw) != 0 || pending_raw < 0) {
+            pending_raw = 0;
+        }
+        uint64_t pending_canq = (uint64_t)pending_raw;
+        uint64_t pending_rawq = session->canonical_pending_estimate;
+        uint64_t margin = LABPTY_BACKPRESSURE_SAFETY_MARGIN;
+        uint64_t limit_input = (uint64_t)max_input > margin ? (uint64_t)max_input - margin : 0;
+        uint64_t limit_canon = (uint64_t)max_canon > margin ? (uint64_t)max_canon - margin : 0;
+        uint64_t used_input = pending_canq + pending_rawq;
+        uint64_t headroom_input = limit_input > used_input ? limit_input - used_input : 0;
+        uint64_t headroom_canon = limit_canon > pending_rawq ? limit_canon - pending_rawq : 0;
+        uint64_t admissible = headroom_input < headroom_canon ? headroom_input : headroom_canon;
+        if ((uint64_t)request.len > admissible) {
+            return LABPTY_E_INPUT_BACKPRESSURE;
+        }
+    }
+
     /* Wall-clock budget so a slow consumer downstream can't wedge the
      * single-threaded event loop while we drain accept/expire/reap.
      * Client sees LABPTY_E_INTERNAL and can retry. */
@@ -424,6 +488,27 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
             continue;
         }
         return LABPTY_E_INTERNAL;
+    }
+
+    /* Update canonical_pending_estimate using the just-accepted payload.
+     * Bytes after the last delimiter sit in the raw queue waiting for
+     * the next delimiter; everything up to and including the last
+     * delimiter has already been promoted to the canonical queue, where
+     * FIONREAD will see it on subsequent calls. */
+    if (icanon) {
+        size_t after_last_delim = request.len;
+        for (size_t i = request.len; i > 0; i--) {
+            if (is_canonical_delimiter(request.bytes[i - 1], &tio)) {
+                after_last_delim = request.len - i;
+                session->canonical_pending_estimate = after_last_delim;
+                goto estimate_updated;
+            }
+        }
+        session->canonical_pending_estimate += request.len;
+    estimate_updated:
+        ;
+    } else {
+        session->canonical_pending_estimate = 0;
     }
     return LABPTY_OK;
 }

@@ -184,12 +184,25 @@ labpty_status_t labpty_registry_open(
         return LABPTY_E_PTY_OPEN_FAILED;
     }
     set_nonblocking(master_fd);
+    /* Open a second slave-side fd on the same pty for inspection only:
+     * tcgetattr / FIONREAD / fpathconf in handle_write's preflight. The
+     * child already holds its own slave fds (dup'd to stdio); ours is
+     * passive, O_NOCTTY to avoid claiming the controlling tty. If this
+     * fails the daemon degrades gracefully — handle_write skips the
+     * preflight and the pre-ADR-0008 best-effort write loop runs. */
+    int slave_inspect_fd = -1;
+    char ptsname_buf[LABPTY_PATH_BYTES + 1];
+    if (ptsname_r(master_fd, ptsname_buf, sizeof(ptsname_buf)) == 0) {
+        slave_inspect_fd = open(ptsname_buf, O_RDONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    }
     memset(slot, 0, sizeof(*slot));
     slot->used = 1;
     slot->alive = 1;
     slot->handle = handle;
     slot->child_pid = child_pid;
     slot->master_fd = master_fd;
+    slot->slave_inspect_fd = slave_inspect_fd;
+    slot->canonical_pending_estimate = 0;
     slot->rows = request->rows;
     slot->cols = request->cols;
     snprintf(slot->logical_id, sizeof(slot->logical_id), "%s", logical_id);
@@ -210,6 +223,10 @@ void labpty_session_close(labpty_session_t *session) {
     assert(session->master_fd >= -1);
     if (session->alive && session->child_pid > 0) signal_child_process_group(session->child_pid, SIGHUP);
     drain_master_into_ring(session);
+    if (session->slave_inspect_fd >= 0) {
+        close(session->slave_inspect_fd);
+        session->slave_inspect_fd = -1;
+    }
     if (session->master_fd >= 0) {
         close(session->master_fd);
         session->master_fd = -1;
