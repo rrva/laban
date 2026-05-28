@@ -83,7 +83,9 @@ public struct SidebarProducer {
           ))
       }
 
-      let labelX: CGFloat = isActive ? 12 : 10
+      // Keep the label column at a constant x so title text doesn't shift
+      // when the active-state stripe (rendered above) appears or disappears.
+      let labelX: CGFloat = 12
       let exited = tab.status != .running
       let labelFg = exited ? Theme.current.dim0 : fg
       // Close button lives in the top-right of the row, aligned with the
