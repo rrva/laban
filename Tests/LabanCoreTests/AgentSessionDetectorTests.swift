@@ -114,6 +114,14 @@ final class AgentSessionDetectorTests: XCTestCase {
     XCTAssertEqual(mock.environmentCalls[301] ?? 0, 0)
   }
 
+  /// Claude Code closes its `.jsonl` while idle, so `openVnodePaths`
+  /// only sees the file during writes. The detector must re-acquire
+  /// the session id through `newestClaudeSessionLog` in the cwd
+  /// while the fd is closed — but only after a prior observation has
+  /// established that this shell's descendant actually owned the
+  /// jsonl. The seen-jsonl gate (added to keep sibling tabs from
+  /// stealing each other's sessions) preserves this in-session
+  /// recovery path.
   func testFindAgentFallsBackToNewestClaudeJSONLForProcessCwd() throws {
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-claude-detect-\(UUID().uuidString)", isDirectory: true)
@@ -139,14 +147,25 @@ final class AgentSessionDetectorTests: XCTestCase {
     defer { unsetenv("CLAUDE_CONFIG_DIR") }
     let resolvedNewPath = try XCTUnwrap(ClaudeSessionLogLocator.newestSessionLog(cwd: cwd))
 
+    // First sample: claude has the .jsonl open. Detector latches on
+    // via openVnodes and records the path as ours.
     let mock = MockIntrospector(
       children: [350: [(351, "claude")]],
-      openVnodes: [351: []],
+      openVnodes: [351: [resolvedNewPath]],
       arguments: [351: ["claude", "--chrome"]],
       cwds: [351: cwd])
     let detector = AgentSessionDetector(
       tabId: "t", shellPid: 350, introspector: mock)
+    XCTAssertEqual(
+      detector.findAgent(in: detector.collectDescendants(of: 350, depth: 0))?.sessionId,
+      newId,
+      "first sample must capture the session via the open .jsonl fd")
 
+    // Second sample: claude has closed its .jsonl while idle. The
+    // open-vnode path is empty, so findAgent falls back to the cwd's
+    // newest log. The seen-jsonl gate lets the prior observation
+    // through.
+    mock.openVnodes = [351: []]
     let agent = detector.findAgent(in: detector.collectDescendants(of: 350, depth: 0))
     XCTAssertEqual(agent?.name, .claude)
     XCTAssertEqual(agent?.sessionId, newId)
@@ -155,6 +174,12 @@ final class AgentSessionDetectorTests: XCTestCase {
     XCTAssertEqual(agent?.cwd, cwd)
   }
 
+  /// After a Claude descendant exits the detector still needs to
+  /// surface its session id so the next launch can `--resume` it.
+  /// The shell-cwd fallback recovers from the now-orphan jsonl, but
+  /// only after a live observation has marked that jsonl as
+  /// belonging to this detector's shell tree (so sibling tabs in the
+  /// same repo cannot inherit it).
   func testDetectFallsBackToRecentClaudeJSONLForShellCwdWithoutLiveAgent() throws {
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-claude-shell-fallback-\(UUID().uuidString)", isDirectory: true)
@@ -184,18 +209,31 @@ final class AgentSessionDetectorTests: XCTestCase {
 
     setenv("CLAUDE_CONFIG_DIR", base.path, 1)
     defer { unsetenv("CLAUDE_CONFIG_DIR") }
+    let resolvedRecentPath = try XCTUnwrap(ClaudeSessionLogLocator.newestSessionLog(cwd: cwd))
 
+    // First sample: claude is alive and holds the recent .jsonl. The
+    // detector latches via openVnodes and learns this jsonl belongs
+    // to this shell tree.
     let mock = MockIntrospector(
-      children: [800: []],
-      openVnodes: [:],
+      children: [800: [(801, "claude")]],
+      openVnodes: [801: [resolvedRecentPath]],
       environments: [800: ["TERM": "xterm-256color", "ANTHROPIC_API_KEY": "secret"]],
-      cwds: [800: cwd])
+      cwds: [800: cwd, 801: cwd])
     let detector = AgentSessionDetector(
       tabId: "t",
       shellPid: 800,
       recentSessionCutoff: Date(timeIntervalSince1970: 100),
       introspector: mock)
+    XCTAssertEqual(
+      detector.detect()?.sessionId,
+      recentId,
+      "first sample must capture the session via the open .jsonl fd")
 
+    // Second sample: claude has exited. The shell-cwd fallback picks
+    // the recent jsonl back up because the detector already knows it
+    // belonged to this shell.
+    mock.children = [800: []]
+    mock.openVnodes = [:]
     let agent = detector.detect()
     XCTAssertEqual(agent?.name, .claude)
     XCTAssertEqual(agent?.sessionId, recentId)
@@ -226,18 +264,26 @@ final class AgentSessionDetectorTests: XCTestCase {
 
     setenv("CLAUDE_CONFIG_DIR", base.path, 1)
     defer { unsetenv("CLAUDE_CONFIG_DIR") }
+    let resolvedFirstPath = try XCTUnwrap(ClaudeSessionLogLocator.newestSessionLog(cwd: cwd))
 
+    // Seed the seen-jsonl set with a live observation so the shell-cwd
+    // fallback is allowed to resolve this jsonl post-exit.
     let mock = MockIntrospector(
-      children: [820: []],
-      openVnodes: [:],
-      cwds: [820: cwd])
+      children: [820: [(821, "claude")]],
+      openVnodes: [821: [resolvedFirstPath]],
+      cwds: [820: cwd, 821: cwd])
     let detector = AgentSessionDetector(
       tabId: "t",
       shellPid: 820,
       recentSessionCutoff: Date(timeIntervalSince1970: 100),
       sessionLogLookupCacheInterval: 60,
       introspector: mock)
+    XCTAssertEqual(detector.detect()?.sessionId, firstId)
 
+    // Claude exits. Subsequent samples must rely on the shell-cwd
+    // fallback. We exercise it directly to verify the lookup cache.
+    mock.children = [820: []]
+    mock.openVnodes = [:]
     let first = detector.findRecentClaudeSessionForShellCwd()
     XCTAssertEqual(first?.sessionId, firstId)
 
@@ -259,30 +305,39 @@ final class AgentSessionDetectorTests: XCTestCase {
       .appendingPathComponent("laban-claude-observe-cache-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: base) }
     let cwd = "/Users/x/project"
+    let project =
+      base
+      .appendingPathComponent("projects", isDirectory: true)
+      .appendingPathComponent(
+        ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
+    let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0022"
+    let logURL = project.appendingPathComponent("\(sessionId).jsonl")
 
     setenv("CLAUDE_CONFIG_DIR", base.path, 1)
     defer { unsetenv("CLAUDE_CONFIG_DIR") }
 
+    // Seed the seen-jsonl set via an openVnodes observation. The
+    // matcher is regex-only, so the file does not need to exist yet.
     let mock = MockIntrospector(
-      children: [830: []],
-      openVnodes: [:],
-      cwds: [830: cwd])
+      children: [830: [(831, "claude")]],
+      openVnodes: [831: [logURL.path]],
+      cwds: [830: cwd, 831: cwd])
     let detector = AgentSessionDetector(
       tabId: "t",
       shellPid: 830,
       recentSessionCutoff: Date(timeIntervalSince1970: 100),
       sessionLogLookupCacheInterval: 60,
       introspector: mock)
-    XCTAssertNil(detector.detect(), "first sample should cache the missing project directory")
+    XCTAssertEqual(detector.detect()?.sessionId, sessionId)
 
-    let project =
-      base
-      .appendingPathComponent("projects", isDirectory: true)
-      .appendingPathComponent(
-        ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
+    // Claude exits before the project directory is created on disk.
+    // The shell-cwd fallback fails (no file yet), caching the miss.
+    mock.children = [830: []]
+    mock.openVnodes = [:]
+    XCTAssertNil(detector.detect(), "fallback should cache the missing project directory")
+
+    // The user starts claude again and it materializes the file.
     try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-    let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef0022"
-    let logURL = project.appendingPathComponent("\(sessionId).jsonl")
     try Data("fresh\n".utf8).write(to: logURL)
     try FileManager.default.setAttributes(
       [.modificationDate: Date(timeIntervalSince1970: 200)], ofItemAtPath: logURL.path)
@@ -409,6 +464,120 @@ final class AgentSessionDetectorTests: XCTestCase {
     XCTAssertEqual(recorder.observations.last??.sessionId, sessionId)
     XCTAssertEqual(recorder.observations.last??.wasRunningAtQuit, false)
     XCTAssertEqual(recorder.observations.last??.jsonlPath, jsonlPath)
+  }
+
+  /// Two tabs in the same repo had distinct Claude sessions. Tab A's
+  /// claude is alive; tab B's claude has exited (or its jsonl fd is
+  /// closed). The cwd-newest fallback used to pick whichever jsonl
+  /// was most recently modified — invariably tab A's, because A is
+  /// still writing — and would re-attribute tab A's session to tab B.
+  /// At restore both tabs prefilled `claude --resume <A's id>` and
+  /// collapsed into the same conversation. The detector must instead
+  /// refuse to inherit a sibling's session: tab B's detector has no
+  /// direct evidence it ever hosted that jsonl, so the fallback
+  /// returns nil and tab B persists without a borrowed sessionId.
+  func testDetectDoesNotInheritSiblingTabClaudeSessionViaCwdFallback() throws {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "laban-claude-cross-tab-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let cwd = "/Users/x/shared-project"
+    let project = base
+      .appendingPathComponent("projects", isDirectory: true)
+      .appendingPathComponent(
+        ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+    let sessionA = "0fa31a8c-1234-5678-9abc-deadbeef00a0"
+    let sessionAURL = project.appendingPathComponent("\(sessionA).jsonl")
+    try Data("alive\n".utf8).write(to: sessionAURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 200)],
+      ofItemAtPath: sessionAURL.path)
+
+    setenv("CLAUDE_CONFIG_DIR", base.path, 1)
+    defer { unsetenv("CLAUDE_CONFIG_DIR") }
+
+    // Tab A: live claude descendant holding sessionA's jsonl open.
+    let mockA = MockIntrospector(
+      children: [800: [(801, "claude")]],
+      openVnodes: [801: [sessionAURL.path]],
+      cwds: [801: cwd])
+    let detectorA = AgentSessionDetector(
+      tabId: "A",
+      shellPid: 800,
+      recentSessionCutoff: Date(timeIntervalSince1970: 100),
+      introspector: mockA)
+    XCTAssertEqual(detectorA.detect()?.sessionId, sessionA)
+
+    // Tab B: same cwd, no live claude descendant, never observed any
+    // jsonl as its own. Without the seen-jsonl gate, B's detector
+    // returns sessionA via the cwd-newest fallback because A's jsonl
+    // is the only — and therefore newest — log in that project.
+    let mockB = MockIntrospector(
+      children: [810: []],
+      openVnodes: [:],
+      cwds: [810: cwd])
+    let detectorB = AgentSessionDetector(
+      tabId: "B",
+      shellPid: 810,
+      recentSessionCutoff: Date(timeIntervalSince1970: 100),
+      introspector: mockB)
+
+    XCTAssertNil(
+      detectorB.detect(),
+      "tab B's detector must not inherit tab A's sessionId via the shared cwd fallback")
+  }
+
+  /// Companion to the cross-tab test above: when a detector HAS
+  /// previously observed a jsonl through its own descendant's open
+  /// fd, the fallback still works after the descendant exits or
+  /// closes the file — that's the legitimate "claude just closed its
+  /// .jsonl while idle" recovery path. Without this, the seen-jsonl
+  /// gate would over-correct and break in-session continuity.
+  func testDetectRecoversOwnSessionAfterDescendantExitsViaSeenJsonlSet() throws {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "laban-claude-own-recover-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let cwd = "/Users/x/own-project"
+    let project = base
+      .appendingPathComponent("projects", isDirectory: true)
+      .appendingPathComponent(
+        ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+    let sessionId = "0fa31a8c-1234-5678-9abc-deadbeef00b0"
+    let logURL = project.appendingPathComponent("\(sessionId).jsonl")
+    try Data("own\n".utf8).write(to: logURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 200)],
+      ofItemAtPath: logURL.path)
+
+    setenv("CLAUDE_CONFIG_DIR", base.path, 1)
+    defer { unsetenv("CLAUDE_CONFIG_DIR") }
+
+    let mock = MockIntrospector(
+      children: [820: [(821, "claude")]],
+      openVnodes: [821: [logURL.path]],
+      cwds: [821: cwd, 820: cwd])
+    let detector = AgentSessionDetector(
+      tabId: "owner",
+      shellPid: 820,
+      recentSessionCutoff: Date(timeIntervalSince1970: 100),
+      introspector: mock)
+
+    XCTAssertEqual(detector.detect()?.sessionId, sessionId)
+
+    // Claude exits. The next sample has no descendant and no open
+    // vnode — but the detector knows it previously saw this jsonl
+    // owned by this shell, so the shell-cwd fallback may re-confirm
+    // the session id.
+    mock.children = [820: []]
+    mock.openVnodes = [:]
+    let recovered = detector.detect()
+    XCTAssertEqual(recovered?.sessionId, sessionId)
+    XCTAssertEqual(recovered?.wasRunningAtQuit, false)
   }
 
   func testFinalObserveDoesNotDemoteKnownLiveAgentOnSingleMiss() {

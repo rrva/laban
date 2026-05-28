@@ -72,6 +72,7 @@ execplans/                             Active and completed ExecPlans.
 - `docs/adr/0006-three-tier-session-architecture.md` — three coexisting session tiers (in-process, `laband` multi-client serving, `labpty` upgrade-proof); PTY ownership and VT interpretation split into separate processes with `laband` mode-switched between byte-ring pass-through and authoritative snapshot publishing.
 - `docs/adr/0007-labpty-phase1-protocol-freeze.md` — `labpty` Phase 1 freezes the app-direct frame, hello, byte-ring, reconnect, and overflow-degraded-state contracts.
 - `docs/adr/0008-labpty-write-input-backpressure-contract.md` — `writeInput` is externally atomic under canonical backpressure: daemon preflight-admits against MAX_INPUT/MAX_CANON and returns `LABPTY_E_INPUT_BACKPRESSURE` rather than silently dropping bytes past the line-discipline limit.
+- `docs/adr/0009-agent-session-detector-requires-direct-jsonl-evidence.md` — `AgentSessionDetector` attributes a Claude session id to a tab only from direct openVnodes evidence; cwd-newest fallbacks gate on a per-detector seen-jsonl set so sibling tabs in the same repo cannot inherit each other's sessions.
 
 Write a new ADR when a change establishes durable architectural policy, reverses a previously settled decision, or sets an adapter boundary. Number it sequentially in `docs/adr/`, follow the existing file's structure (Status, Context, Decision, Consequences, Applies To New Code), and add a one-line entry here with the path and summary.
 

@@ -72,6 +72,14 @@ public final class AgentSessionDetector {
   private var timer: DispatchSourceTimer?
   private let lock = NSLock()
 
+  /// JSONL paths this detector has direct evidence its shell's
+  /// descendant owned — populated only when `findAgent` matches a
+  /// `.jsonl` through `openVnodePaths(of:)`. The two cwd-newest
+  /// fallbacks consult this set so a tab can never inherit a
+  /// sibling tab's Claude session just because they share a project
+  /// directory.
+  private var seenAgentJsonlPaths: Set<String> = []
+
   private struct ClaudeSessionLogLookupKey: Hashable {
     var cwd: String
     var modifiedAfter: Date?
@@ -218,18 +226,44 @@ public final class AgentSessionDetector {
 
       for path in introspector.openVnodePaths(of: entry.pid) where path.hasSuffix(".jsonl") {
         if let sessionId = support.extractSessionId(path) {
+          rememberAgentJsonl(path)
           return agentInfo(sessionId: sessionId, jsonlPath: path, cwd: nil)
         }
       }
       if support.name == .claude,
         let cwd = introspector.currentWorkingDirectory(of: entry.pid),
         let path = newestClaudeSessionLog(cwd: cwd),
+        hasSeenAgentJsonl(path),
         let sessionId = support.extractSessionId(path)
       {
         return agentInfo(sessionId: sessionId, jsonlPath: path, cwd: cwd)
       }
     }
     return nil
+  }
+
+  private func rememberAgentJsonl(_ path: String) {
+    let canonical = Self.canonicalize(path)
+    lock.lock()
+    seenAgentJsonlPaths.insert(canonical)
+    lock.unlock()
+  }
+
+  private func hasSeenAgentJsonl(_ path: String) -> Bool {
+    let canonical = Self.canonicalize(path)
+    lock.lock()
+    defer { lock.unlock() }
+    return seenAgentJsonlPaths.contains(canonical)
+  }
+
+  /// Macos returns `/var/...` from one API and `/private/var/...`
+  /// from another for the same file — those are equal on disk but
+  /// not as strings. The seen-jsonl gate compares paths, so
+  /// `openVnodePaths` (libproc) and `newestClaudeSessionLog`
+  /// (FileManager) must canonicalize to the same form before
+  /// comparison.
+  private static func canonicalize(_ path: String) -> String {
+    URL(fileURLWithPath: path).resolvingSymlinksInPath().path
   }
 
   private static func shouldInspectInvocationName(forExecutableBasename basename: String) -> Bool {
@@ -277,6 +311,7 @@ public final class AgentSessionDetector {
     guard let support = AgentRegistry.entry(for: .claude),
       let cwd = introspector.currentWorkingDirectory(of: shellPid),
       let path = newestClaudeSessionLog(cwd: cwd, modifiedAfter: recentSessionCutoff),
+      hasSeenAgentJsonl(path),
       let sessionId = support.extractSessionId(path)
     else { return nil }
 
