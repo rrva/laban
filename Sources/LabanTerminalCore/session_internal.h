@@ -160,6 +160,12 @@ struct LabanSession {
      * transition before the next rendered frame sees it. */
     int last_snapshot_active_screen;
     int last_rendered_active_screen;
+    uint8_t *last_snapshot_dirty_rows;
+    size_t last_snapshot_dirty_row_count;
+    size_t last_snapshot_dirty_row_cap;
+    int last_snapshot_dirty_rows_valid;
+    uint64_t dirty_generation;
+    uint64_t last_snapshot_dirty_generation;
 
     int capture_fd;      /* file descriptor for PTY-byte capture; -1 if inactive */
     LabanCaptureBytesCallback capture_callback;
@@ -250,6 +256,7 @@ void laban_emit_capture_bytes(
 void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len);
+void laban_session_note_terminal_dirty(LabanSession *s);
 int laban_write_pty_bytes(
     LabanSession *s,
     const uint8_t *bytes,

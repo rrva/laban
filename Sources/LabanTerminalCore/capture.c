@@ -31,6 +31,15 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
     laban_scan_tab_status(s, bytes, len);
     laban_scan_osc133(s, bytes, len);
     ghostty_terminal_vt_write(s->terminal, bytes, len);
+    laban_session_note_terminal_dirty(s);
+}
+
+void laban_session_note_terminal_dirty(LabanSession *s) {
+    if (!s) return;
+    s->dirty_generation++;
+    if (s->dirty_generation == 0) {
+        s->dirty_generation = 1;
+    }
 }
 
 int laban_session_capture_start(LabanSession *s, const char *path) {
@@ -92,4 +101,3 @@ int laban_session_alt_buffer_active(LabanSession *s) {
     if (r != GHOSTTY_SUCCESS) return 0;
     return active == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? 1 : 0;
 }
-

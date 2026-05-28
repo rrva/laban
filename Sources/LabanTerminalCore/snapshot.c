@@ -128,6 +128,42 @@ static uint32_t resolve_style_color_rgba(
     }
 }
 
+static int store_last_snapshot_dirty_rows(
+    LabanSession *s,
+    const uint8_t *dirty_rows,
+    size_t row_count
+) {
+    if (!s || (!dirty_rows && row_count > 0)) return -1;
+    if (row_count > s->last_snapshot_dirty_row_cap) {
+        uint8_t *new_rows = realloc(s->last_snapshot_dirty_rows, row_count);
+        if (!new_rows) return -1;
+        s->last_snapshot_dirty_rows = new_rows;
+        s->last_snapshot_dirty_row_cap = row_count;
+    }
+    if (row_count > 0) {
+        memcpy(s->last_snapshot_dirty_rows, dirty_rows, row_count);
+    }
+    s->last_snapshot_dirty_row_count = row_count;
+    s->last_snapshot_dirty_rows_valid = 1;
+    s->last_snapshot_dirty_generation = s->dirty_generation;
+    return 0;
+}
+
+static int clear_all_render_dirty_rows(LabanSession *session) {
+    ghostty_render_state_get(session->render_state,
+        GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &session->row_iter);
+
+    bool row_clean = false;
+    while (ghostty_render_state_row_iterator_next(session->row_iter)) {
+        if (ghostty_render_state_row_set(session->row_iter,
+                GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &row_clean)
+                != GHOSTTY_SUCCESS) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     if (out_snapshot) *out_snapshot = NULL;
     if (!s || !out_snapshot) return -1;
@@ -206,33 +242,35 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     while (!snapshot_error && row_idx < rows &&
            ghostty_render_state_row_iterator_next(s->row_iter)) {
         /* Populate the pre-allocated cells container and get the raw row in
-         * one libghostty call. The raw row gives us row-level hints used to
-         * skip common no-hyperlink work and to report renderer damage. */
+         * one libghostty call. Renderer damage must come from render-state
+         * row dirtiness: ghostty_render_state_update consumes terminal row
+         * dirtiness before copying the raw row, so GHOSTTY_ROW_DATA_DIRTY on
+         * the raw row is already stale by this point. */
         GhosttyRow raw_row = 0;
+        bool row_dirty = false;
         {
             const GhosttyRenderStateRowData keys[] = {
                 GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
                 GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+                GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY,
             };
-            void *values[] = { &s->row_cells, &raw_row };
-            if (ghostty_render_state_row_get_multi(s->row_iter, 2, keys, values, NULL)
+            void *values[] = { &s->row_cells, &raw_row, &row_dirty };
+            if (ghostty_render_state_row_get_multi(s->row_iter, 3, keys, values, NULL)
                     != GHOSTTY_SUCCESS) {
                 snapshot_error = 1;
                 break;
             }
         }
-
-        bool row_has_hyperlink = false;
-        bool row_dirty = false;
-        const GhosttyRowData row_keys[] = {
-            GHOSTTY_ROW_DATA_HYPERLINK,
-            GHOSTTY_ROW_DATA_DIRTY,
-        };
-        void *row_values[] = { &row_has_hyperlink, &row_dirty };
-        if (ghostty_row_get_multi(raw_row, 2, row_keys, row_values, NULL)
-                == GHOSTTY_SUCCESS && dirty_rows) {
+        if (dirty_rows) {
             dirty_rows[row_idx] = row_dirty ? 1 : 0;
         }
+
+        bool row_has_hyperlink = false;
+        const GhosttyRowData row_keys[] = {
+            GHOSTTY_ROW_DATA_HYPERLINK,
+        };
+        void *row_values[] = { &row_has_hyperlink };
+        (void)ghostty_row_get_multi(raw_row, 1, row_keys, row_values, NULL);
 
         static const GhosttyRenderStateRowCellsData cell_keys[] = {
             GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
@@ -558,6 +596,16 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         }
     }
 
+    if (store_last_snapshot_dirty_rows(s, dirty_rows, dirty_rows ? (size_t)rows : 0) != 0) {
+        snap->utf8_storage = utf8_storage;
+        snap->cells = cells;
+        snap->hyperlink_uris = (const char *const *)hyperlink_uris;
+        snap->hyperlink_count = hyperlink_count;
+        snap->dirty_rows = dirty_rows;
+        laban_snapshot_destroy(snap);
+        return -1;
+    }
+
     snap->dirty_rows      = dirty_rows;
     snap->dirty_row_count = dirty_rows ? (size_t)rows : 0;
 
@@ -596,20 +644,52 @@ int laban_session_mark_rendered(LabanSession *session) {
     if (!session) return -1;
     SESSION_LOCK(session);
 
-    /* Clear global dirty state. */
-    GhosttyRenderStateDirty clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
-    ghostty_render_state_set(session->render_state,
-        GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean);
+    GhosttyRenderStateDirty next_dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
 
-    /* Clear row-level dirty flags by iterating all rows. */
-    ghostty_render_state_get(session->render_state,
-        GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &session->row_iter);
+    if (!session->last_snapshot_dirty_rows_valid) {
+        if (clear_all_render_dirty_rows(session) != 0) return -1;
+    } else if (session->dirty_generation != session->last_snapshot_dirty_generation) {
+        next_dirty = GHOSTTY_RENDER_STATE_DIRTY_PARTIAL;
+    } else {
+        ghostty_render_state_get(session->render_state,
+            GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &session->row_iter);
 
-    bool row_clean = false;
-    while (ghostty_render_state_row_iterator_next(session->row_iter)) {
-        ghostty_render_state_row_set(session->row_iter,
-            GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &row_clean);
+        bool row_clean = false;
+        bool any_remaining_dirty = false;
+        size_t row_idx = 0;
+        while (ghostty_render_state_row_iterator_next(session->row_iter)) {
+            bool row_dirty = false;
+            if (ghostty_render_state_row_get(session->row_iter,
+                    GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &row_dirty)
+                    != GHOSTTY_SUCCESS) {
+                return -1;
+            }
+            if (row_idx < session->last_snapshot_dirty_row_count &&
+                session->last_snapshot_dirty_rows[row_idx] != 0) {
+                if (ghostty_render_state_row_set(session->row_iter,
+                        GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &row_clean)
+                        != GHOSTTY_SUCCESS) {
+                    return -1;
+                }
+                row_dirty = false;
+            }
+            if (row_dirty) {
+                any_remaining_dirty = true;
+            }
+            row_idx++;
+        }
+
+        if (row_idx != session->last_snapshot_dirty_row_count) {
+            any_remaining_dirty = true;
+        }
+        if (any_remaining_dirty) {
+            next_dirty = GHOSTTY_RENDER_STATE_DIRTY_PARTIAL;
+        }
     }
+
+    ghostty_render_state_set(session->render_state,
+        GHOSTTY_RENDER_STATE_OPTION_DIRTY, &next_dirty);
+    session->last_snapshot_dirty_rows_valid = 0;
 
     /* Commit the active screen the most recent snapshot observed as the one
      * now on the renderer's persistent target. The next snapshot compares
@@ -656,6 +736,7 @@ int laban_session_scroll_viewport(LabanSession *s, int delta_rows) {
     GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
     ghostty_render_state_set(s->render_state,
         GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty);
+    laban_session_note_terminal_dirty(s);
     return 0;
 }
 

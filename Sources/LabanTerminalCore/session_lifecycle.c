@@ -277,6 +277,11 @@ static void free_ghostty_resources(LabanSession *s) {
     if (s->key_encoder) ghostty_key_encoder_free(s->key_encoder);
     if (s->key_event) ghostty_key_event_free(s->key_event);
     ghostty_terminal_free(s->terminal);
+    free(s->last_snapshot_dirty_rows);
+    s->last_snapshot_dirty_rows = NULL;
+    s->last_snapshot_dirty_row_count = 0;
+    s->last_snapshot_dirty_row_cap = 0;
+    s->last_snapshot_dirty_rows_valid = 0;
     free(s->response_buf);
     s->response_buf = NULL;
     s->response_len = 0;
@@ -755,6 +760,7 @@ int laban_session_resize(LabanSession *s, LabanTerminalSize size) {
         GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
         ghostty_render_state_set(s->render_state,
             GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty);
+        laban_session_note_terminal_dirty(s);
     }
     s->cols        = cols;
     s->rows        = rows;
@@ -801,6 +807,7 @@ int laban_session_replay_pty_output(LabanSession *s, const uint8_t *bytes, size_
     if (!bytes) return -1;
     SESSION_LOCK(s);
     ghostty_terminal_vt_write(s->terminal, bytes, len);
+    laban_session_note_terminal_dirty(s);
     return 0;
 }
 

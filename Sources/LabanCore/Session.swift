@@ -446,7 +446,7 @@ public final class Session {
     return dirty != 0
   }
 
-  /// Mark the session as fully rendered (clears global and row dirty flags).
+  /// Mark the most recent snapshot as rendered, preserving later row dirties.
   /// Returns -1 on C failure, 0 on success.
   @discardableResult
   public func markRendered() -> Int32 {

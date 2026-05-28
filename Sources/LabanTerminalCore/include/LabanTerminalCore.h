@@ -258,7 +258,7 @@ int laban_session_feed_output(LabanSession *session, const uint8_t *bytes, size_
 int laban_session_snapshot(LabanSession *session, LabanSnapshot **out_snapshot);
 void laban_snapshot_destroy(LabanSnapshot *snapshot);
 
-/* Dirty lifecycle: lightweight query and render-marking without snapshot allocation. */
+/* Dirty lifecycle: lightweight query and snapshot-backed render marking. */
 int laban_session_render_dirty(LabanSession *session, int *out_dirty);
 int laban_session_mark_rendered(LabanSession *session);
 
