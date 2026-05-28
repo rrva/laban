@@ -56,6 +56,85 @@ final class CrossBackendBitmapTests: XCTestCase {
     tempRoots.removeAll()
   }
 
+  private struct LabandHarness {
+    let socketPath: String
+    let process: Process
+  }
+
+  private func launchLabandHarness() throws -> LabandHarness {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let executable = root.appendingPathComponent(".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+      throw XCTSkip("build laband first: swift build --product laband")
+    }
+    let runId = "laband-xb-\(UUID().uuidString)"
+    let tempRoot = root.appendingPathComponent(".tmp/\(runId)", isDirectory: true)
+    tempRoots.append(tempRoot)
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    let socketPath = "\(tempRoot.path)/s.sock"
+    let journalPath = "\(tempRoot.path)/journal"
+    try FileManager.default.createDirectory(
+      atPath: journalPath, withIntermediateDirectories: true, attributes: nil)
+
+    let process = Process()
+    process.currentDirectoryURL = root
+    process.executableURL = executable
+    process.arguments = ["--socket", socketPath, "--journal", journalPath]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    try process.run()
+    launchedProcesses.append(process)
+    return LabandHarness(socketPath: socketPath, process: process)
+  }
+
+  private func waitForLabandClient(socketPath: String) throws -> LabandTerminalSessionClient {
+    let deadline = Date().addingTimeInterval(5)
+    var lastError: Error?
+    while Date() < deadline {
+      if FileManager.default.fileExists(atPath: socketPath) {
+        do {
+          return try LabandTerminalSessionClient(socketPath: socketPath)
+        } catch {
+          lastError = error
+        }
+      }
+      usleep(50_000)
+    }
+    if let lastError { throw lastError }
+    throw POSIXError(.ETIMEDOUT)
+  }
+
+  private func waitForLabandSnapshotContains(
+    client: LabandTerminalSessionClient,
+    sessionId: String,
+    _ needle: String,
+    timeout: TimeInterval = 10
+  ) throws -> LabandSnapshotResponse {
+    let deadline = Date().addingTimeInterval(timeout)
+    var lastSnapshot: LabandSnapshotResponse?
+    while Date() < deadline {
+      let snapshot = try client.snapshot(sessionId: sessionId)
+      lastSnapshot = snapshot
+      if snapshot.visibleText.contains(needle) { return snapshot }
+      usleep(20_000)
+    }
+    XCTFail("laband snapshot never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
+    throw POSIXError(.ETIMEDOUT)
+  }
+
+  private func renderLabandBitmap(snapshot: LabandSnapshotResponse, rows: Int, cols: Int)
+    -> BitmapSurface
+  {
+    let producer = FrameProducer(
+      cellWidth: 8, cellHeight: 16, originX: 0, originY: 0)
+    let commands = producer.commands(from: snapshot, cursorBlinkVisible: true)
+    let backend = SoftwareBackend(
+      fontAtlas: FontAtlas(),
+      pixelWidth: cols * 8, pixelHeight: rows * 16, scale: 1)
+    _ = backend.render(commands, damage: .full)
+    return backend.surface
+  }
+
   private func launchLabptyHarness() throws -> LabptyHarness {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let executable = root.appendingPathComponent(".build/debug/labpty")
@@ -166,7 +245,7 @@ final class CrossBackendBitmapTests: XCTestCase {
     let cellHeight = 16
     let producer = FrameProducer(
       cellWidth: cellWidth, cellHeight: cellHeight, originX: 0, originY: 0)
-    let commands = producer.commands(from: snap, cursorBlinkVisible: false)
+    let commands = producer.commands(from: snap, cursorBlinkVisible: true)
     let backend = SoftwareBackend(
       fontAtlas: FontAtlas(),
       pixelWidth: cols * cellWidth, pixelHeight: rows * cellHeight, scale: 1)
@@ -239,6 +318,189 @@ final class CrossBackendBitmapTests: XCTestCase {
     if !result.isIdentical {
       BitmapDiffHarness.saveFailureArtifacts(
         label: "cross-backend-printf",
+        expected: inProcessBitmap,
+        actual: labptyBitmap,
+        diff: result.diff,
+        file: #file, line: #line)
+    }
+  }
+
+  /// Three-backend parity: in-process, labpty, and laband all run
+  /// the same child program; their rendered bitmaps must be
+  /// pixel-identical. laband's snapshot protocol returns a
+  /// `LabandSnapshotResponse` (cells already in Swift), so its
+  /// render path goes through `FrameProducer.commands(from: Laband…)`
+  /// rather than the libghostty `LabanSnapshot` path that
+  /// in-process and labpty share. Any divergence between the two
+  /// FrameProducer overloads — different default backgrounds,
+  /// off-by-one on row direction, exit-banner-only-on-one-side —
+  /// shows up here as a visible diff.
+  func testInProcessAndLabandAndLabptyRenderIdenticallyForSameChild() throws {
+    let rows = 24
+    let cols = 80
+    let payload = "alpha\nbeta\ngamma\ndelta\nDONE\n"
+    let scriptArgv = ["/bin/sh", "-c", "printf '\(payload)'; sleep 60"]
+
+    var sizeStruct = LabanTerminalSize()
+    sizeStruct.rows = Int32(rows)
+    sizeStruct.cols = Int32(cols)
+
+    // --- in-process backend ---
+    let inProcess = try Session.realShell(size: sizeStruct, launchArgv: scriptArgv)
+    let runner = inProcess.makeRunner(onDirty: {})
+    runner?.start()
+    try waitForGridContains(session: inProcess, "DONE")
+    let inProcessBitmap = renderBitmap(session: inProcess, rows: rows, cols: cols)
+    runner?.stop()
+    inProcess.close()
+
+    // --- labpty backend ---
+    let labptyHarness = try launchLabptyHarness()
+    let labptyClient = try waitForClient(socketPath: labptyHarness.socketPath)
+    defer { labptyClient.close() }
+    let labptyDescriptor = try labptyClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: UInt32(rows), cols: UInt32(cols),
+        argv: scriptArgv, logicalSessionId: "tri-labpty"))
+    let labptyReader = try LabptyByteRingReader(path: labptyDescriptor.byteRingShmPath)
+    let labptyBytes = try waitForOutputBytes(reader: labptyReader, contains: "DONE")
+    let labptyLocal = try Session.fixture(size: sizeStruct)
+    defer { labptyLocal.close() }
+    XCTAssertEqual(labptyLocal.feedOutput(labptyBytes), 0)
+    let labptyBitmap = renderBitmap(session: labptyLocal, rows: rows, cols: cols)
+
+    // --- laband backend ---
+    let labandHarness = try launchLabandHarness()
+    let labandClient = try waitForLabandClient(socketPath: labandHarness.socketPath)
+    defer { labandClient.close() }
+    _ = try labandClient.hello()
+    let labandSession = try labandClient.createSession(
+      TerminalSessionLaunchRequest(
+        executable: scriptArgv[0],
+        argv: scriptArgv,
+        cwd: FileManager.default.currentDirectoryPath,
+        rows: rows, cols: cols))
+    let labandSnapshot = try waitForLabandSnapshotContains(
+      client: labandClient,
+      sessionId: labandSession.logicalSessionId,
+      "DONE")
+    let labandBitmap = renderLabandBitmap(snapshot: labandSnapshot, rows: rows, cols: cols)
+
+    // --- compare every pair ---
+    func assertMatch(_ a: BitmapSurface, _ b: BitmapSurface, label: String) {
+      guard let result = BitmapDiff.compare(a, b) else {
+        XCTFail("\(label): bitmap dimensions differ")
+        return
+      }
+      if !result.isIdentical {
+        BitmapDiffHarness.saveFailureArtifacts(
+          label: label, expected: a, actual: b, diff: result.diff,
+          file: #file, line: #line)
+      }
+    }
+    assertMatch(inProcessBitmap, labptyBitmap, label: "tri-inprocess-vs-labpty")
+    assertMatch(inProcessBitmap, labandBitmap, label: "tri-inprocess-vs-laband")
+    assertMatch(labptyBitmap, labandBitmap, label: "tri-labpty-vs-laband")
+  }
+
+  /// Cross-backend paste contract: sending the same paste through
+  /// the backend-appropriate API must produce identical rendered
+  /// output. The buggy labpty path (the one that shipped before
+  /// `12cc18d`) called `writePasteCapturingBytes` on the fixture-
+  /// mode local Session, which fed the encoded paste directly into
+  /// the local VT — visible as duplicated lines in the local grid
+  /// that the in-process backend never produced. The fixed path
+  /// calls `encodePaste` (encode-only, no VT write) and forwards
+  /// the bytes to the daemon via `writeInput`; the daemon's PTY
+  /// echo arrives back through the byte ring like any other output.
+  /// If the two backends still produce identical bitmaps with this
+  /// flow, the contract holds; if they diverge, the regression has
+  /// returned.
+  func testPasteThroughCorrectAPIsRendersIdentically() throws {
+    let rows = 24
+    let cols = 80
+    // /bin/cat echoes whatever we write to its PTY back out. With
+    // the default termios (ICANON | ECHO), both backends produce
+    // "hello\r\nhello\r\n" for a "hello\n" write — one from the
+    // kernel's ECHO of the input, one from cat reading the line
+    // and writing it back. The doubling is fine; what matters is
+    // that the two backends produce the *same* bytes.
+    let scriptArgv = ["/bin/cat"]
+    let pasteText = "hello\n"
+
+    var sizeStruct = LabanTerminalSize()
+    sizeStruct.rows = Int32(rows)
+    sizeStruct.cols = Int32(cols)
+
+    // --- in-process backend ---
+    let inProcess = try Session.realShell(size: sizeStruct, launchArgv: scriptArgv)
+    let runner = inProcess.makeRunner(onDirty: {})
+    runner?.start()
+    // writePasteCapturingBytes is the right API for in-process:
+    // fixture_mode == 0 in C, so it writes to the PTY master; cat
+    // echoes back.
+    _ = inProcess.writePasteCapturingBytes(pasteText)
+    try waitForGridContains(session: inProcess, "hello")
+    // Give the second echo a moment to land too, otherwise the
+    // snapshots can race between "one hello" and "two hellos".
+    let inProcessTarget = "hello\nhello"
+    try waitForGridContains(session: inProcess, inProcessTarget, timeout: 5)
+    let inProcessBitmap = renderBitmap(session: inProcess, rows: rows, cols: cols)
+    runner?.stop()
+    inProcess.close()
+
+    // --- labpty backend ---
+    let harness = try launchLabptyHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: UInt32(rows),
+        cols: UInt32(cols),
+        argv: scriptArgv,
+        logicalSessionId: "paste-cross-backend"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    let labptyLocal = try Session.fixture(size: sizeStruct)
+    defer { labptyLocal.close() }
+    // encodePaste is the right API for labpty: encode-only, the
+    // bytes get forwarded to the daemon via writeInput. If a
+    // future refactor accidentally uses writePasteCapturingBytes
+    // here, the local fixture VT will gain a phantom paste-content
+    // line and the bitmaps will diverge.
+    let encoded = labptyLocal.encodePaste(pasteText)
+    XCTAssertFalse(encoded.bytes.isEmpty, "encodePaste returned no bytes for non-empty input")
+    try client.writeInput(handle: descriptor.ptyHandle, bytes: encoded.bytes)
+
+    // Pull bytes from the byte ring until we have both echoes
+    // ("hello\r\nhello\r\n"). Two passes through waitForOutputBytes
+    // would re-read from offset 0; instead collect cumulatively.
+    var collected = Data()
+    var offset: UInt64 = 0
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      let result = reader.readSince(offset)
+      offset = result.newOffset
+      collected.append(result.bytes)
+      if let text = String(data: collected, encoding: .utf8),
+        text.components(separatedBy: "hello").count >= 3
+      {
+        // 2x "hello" means 3 components when split.
+        break
+      }
+      usleep(10_000)
+    }
+    XCTAssertEqual(labptyLocal.feedOutput([UInt8](collected)), 0)
+    let labptyBitmap = renderBitmap(session: labptyLocal, rows: rows, cols: cols)
+
+    // --- compare ---
+    guard let result = BitmapDiff.compare(inProcessBitmap, labptyBitmap) else {
+      XCTFail("bitmap dimensions differ")
+      return
+    }
+    if !result.isIdentical {
+      BitmapDiffHarness.saveFailureArtifacts(
+        label: "cross-backend-paste",
         expected: inProcessBitmap,
         actual: labptyBitmap,
         diff: result.diff,

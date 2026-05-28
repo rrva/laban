@@ -96,7 +96,7 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanCoreTests",
-      dependencies: ["LabanCore", "LabanTerminalCore", "LabanRenderer", "Labpty"],
+      dependencies: ["LabanCore", "LabanTerminalCore", "LabanRenderer", "Labpty", "Laband"],
       resources: [.copy("Fixtures")]
     ),
     .testTarget(
