@@ -78,9 +78,44 @@ struct DebugClipboardActions {
       } else {
         let deltaRows = session.scrollViewportToActiveBottom()
         appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
-        let sent = session.writePasteCapturingBytes(sanitized)
-        result = sent.result
-        encodedBytes = sent.bytes
+        // Dispatch by backend, mirroring DebugInputActions.typeText.
+        // For laband (PTY in a daemon), the local Session is fixture-
+        // mode purely as a render target — writePasteCapturingBytes
+        // would feed the encoded paste into the fixture VT instead of
+        // sending it to the daemon's child, so the paste would
+        // visually appear in the local grid but never reach the
+        // shell. Same shape as the live-app bug fixed in 12cc18d.
+        // The fix here uses encodePaste (encode-only, no VT write)
+        // and forwards via the terminal session client. For in-
+        // process (real PTY in this process), writePasteCapturingBytes
+        // still does the right thing — its fixture_mode == 0 branch
+        // writes to the PTY master, and the child's echo arrives back
+        // through libghostty's pump.
+        let captured: Session.CapturedPasteWrite
+        if let client = runtime.terminalSessionClient {
+          captured = session.encodePaste(sanitized)
+          if !captured.bytes.isEmpty {
+            do {
+              try runtime.ensureTerminalClientSessionUnlocked(for: tab)
+              try client.writeInput(
+                sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+                bytes: captured.bytes
+              )
+            } catch {
+              runtime.appendError(
+                kind: "laband.writeInput.failed",
+                message: String(describing: error),
+                sessionId: tab.sessionId,
+                tabId: tab.id
+              )
+              return jsonError("paste failed: \(error)")
+            }
+          }
+        } else {
+          captured = session.writePasteCapturingBytes(sanitized)
+        }
+        result = captured.result
+        encodedBytes = captured.bytes
       }
       runtime.lastPasteText = sanitized
       runtime.lastPasteUsedBracketedPaste = result?.bracketed
