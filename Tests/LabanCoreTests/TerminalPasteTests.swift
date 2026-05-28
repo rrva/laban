@@ -78,6 +78,38 @@ final class TerminalPasteTests: XCTestCase {
       "encodePaste leaked paste content into the local grid: \(grid)")
   }
 
+  /// When DECSET 2004 is *not* active, encodePaste must return the
+  /// raw bytes unchanged (no `ESC[200~ … ESC[201~` wrapper). This is
+  /// the safe-shell case where the caller already sanitised the
+  /// paste and just wants the encoded form to forward to a remote
+  /// PTY.
+  func testEncodePasteReturnsRawBytesWhenBracketedPasteDisabled() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    let sent = session.encodePaste("hello")
+    XCTAssertEqual(sent.result?.bracketed, false)
+    XCTAssertEqual(String(bytes: sent.bytes, encoding: .utf8), "hello")
+  }
+
+  /// An empty paste must short-circuit: no encoding, no bytes
+  /// produced, no spurious side effects on the local Session.
+  func testEncodePasteReturnsEmptyForEmptyText() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    _ = session.write(Array("\u{1b}[?2004h".utf8))
+    let sent = session.encodePaste("")
+    XCTAssertEqual(sent.result?.bytesWritten, 0)
+    XCTAssertEqual(sent.bytes.count, 0)
+  }
+
   /// Documents the inverse for the in-process backend: writePaste's
   /// fixture branch feeds the encoded bytes into the VT, so a fixture
   /// session DOES end up with the paste text in its grid. The live app
