@@ -21,6 +21,7 @@ let package = Package(
     .executable(name: "bench-pty-drain", targets: ["BenchPtyDrain"]),
     .executable(name: "bench-keystroke-latency", targets: ["BenchKeystrokeLatency"]),
     .executable(name: "labpty-dump", targets: ["LabptyDump"]),
+    .executable(name: "bench-labpty-hot-path", targets: ["BenchLabptyHotPath"]),
   ],
   targets: [
     .target(
@@ -89,6 +90,11 @@ let package = Package(
       name: "LabptyDump",
       dependencies: ["LabanCore"],
       path: "Tools/LabptyDump"
+    ),
+    .executableTarget(
+      name: "BenchLabptyHotPath",
+      dependencies: ["LabanCore", "LabanTerminalCore"],
+      path: "Tools/BenchLabptyHotPath"
     ),
     .testTarget(
       name: "LabanTerminalCoreTests",
