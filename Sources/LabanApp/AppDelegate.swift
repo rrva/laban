@@ -201,6 +201,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
+  /// Menu/selector entry for "Restart Laban". The relaunched LabanApp
+  /// reconnects to the already-running labpty daemon (which is not a
+  /// child of LabanApp), so sessions survive the restart.
+  @objc func restartApp(_ sender: Any?) {
+    Self.restartApp()
+  }
+
   /// Spawn a fresh instance of our own .app via `open -n` and quit the
   /// current one. `-n` forces a new instance because macOS otherwise
   /// just activates the existing one. There's a brief gap where the

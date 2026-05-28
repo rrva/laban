@@ -24,6 +24,16 @@ enum MenuCommands {
       keyEquivalent: ""
     )
     appMenu.addItem(NSMenuItem.separator())
+    // Quits LabanApp and relaunches the on-disk bundle. labpty runs in
+    // its own process and is not a child of LabanApp, so it survives
+    // the swap — the new instance reconnects to the existing socket.
+    let restartItem = NSMenuItem(
+      title: "Restart Laban",
+      action: #selector(AppDelegate.restartApp(_:)),
+      keyEquivalent: "r"
+    )
+    restartItem.keyEquivalentModifierMask = [.command, .shift, .option]
+    appMenu.addItem(restartItem)
     appMenu.addItem(
       withTitle: "Quit Laban",
       action: #selector(NSApplication.terminate(_:)),
