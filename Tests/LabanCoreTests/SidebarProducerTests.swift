@@ -399,4 +399,111 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertTrue(texts.contains("●"))
     XCTAssertFalse(texts.contains("•"))
   }
+
+  // MARK: - drag-reorder
+
+  func testDropSlotAboveFirstRowReturnsZero() {
+    let tabs = makeTabs(count: 3)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let slot = p.dropSlot(at: CGPoint(x: 50, y: h - 1), tabs: tabs, height: h)
+    XCTAssertEqual(slot, 0)
+  }
+
+  func testDropSlotMidpointBoundariesAreInclusiveTowardEarlierRow() {
+    let tabs = makeTabs(count: 3)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+
+    // Top half of row 0 -> slot 0 (insert before row 0).
+    let topHalfY = h - 1
+    XCTAssertEqual(p.dropSlot(at: CGPoint(x: 50, y: topHalfY), tabs: tabs, height: h), 0)
+
+    // Bottom half of row 0 -> slot 1 (insert after row 0 / before row 1).
+    let row0Bottom = h - p.rowHeight
+    let bottomHalfY = row0Bottom + 1
+    XCTAssertEqual(p.dropSlot(at: CGPoint(x: 50, y: bottomHalfY), tabs: tabs, height: h), 1)
+  }
+
+  func testDropSlotBelowLastRowReturnsTabCount() {
+    let tabs = makeTabs(count: 3)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let slot = p.dropSlot(at: CGPoint(x: 50, y: 0), tabs: tabs, height: h)
+    XCTAssertEqual(slot, 3)
+  }
+
+  func testDropSlotEmptyTabsReturnsNil() {
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    XCTAssertNil(p.dropSlot(at: CGPoint(x: 50, y: 300), tabs: [], height: 600))
+  }
+
+  func testDropSlotRespectsTopInset() {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let inset: CGFloat = 28
+
+    // Inside the inset strip → still slot 0 (above the first row).
+    XCTAssertEqual(
+      p.dropSlot(
+        at: CGPoint(x: 50, y: h - inset / 2), tabs: tabs, height: h, topInset: inset),
+      0)
+  }
+
+  func testDragIndicatorDrawsAccentBarAtSlotBoundary() {
+    let tabs = makeTabs(count: 3)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let cmds = p.commands(
+      tabs: tabs, activeTabId: tabs[0].id, height: h,
+      dragIndicator: SidebarProducer.DragIndicator(slot: 2, draggingTabId: tabs[0].id))
+    let accent = cmds.compactMap { cmd -> CGRect? in
+      if case .rect(let r, let c, _) = cmd, c == Theme.current.blue, r.height < 4 {
+        return r
+      }
+      return nil
+    }
+    XCTAssertEqual(accent.count, 1, "exactly one drop-target accent bar")
+    XCTAssertEqual(accent.first!.width, p.sidebarWidth, accuracy: 0.5)
+  }
+
+  func testDragIndicatorSkipsAccentWhenDropWouldNotMove() {
+    let tabs = makeTabs(count: 3)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    // Dragging tab at index 1 — slot 1 and slot 2 would both re-insert
+    // it in place. The accent should be suppressed for both.
+    for slot in [1, 2] {
+      let cmds = p.commands(
+        tabs: tabs, activeTabId: tabs[0].id, height: h,
+        dragIndicator: SidebarProducer.DragIndicator(slot: slot, draggingTabId: tabs[1].id))
+      let accent = cmds.contains { cmd in
+        if case .rect(let r, let c, _) = cmd, c == Theme.current.blue, r.height < 4 {
+          return true
+        }
+        return false
+      }
+      XCTAssertFalse(accent, "slot \(slot) is a no-op move; no accent bar")
+    }
+  }
+
+  func testDragIndicatorDimsDraggingRow() {
+    let tabs = makeTabs(count: 2)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let cmds = p.commands(
+      tabs: tabs, activeTabId: tabs[0].id, height: h,
+      dragIndicator: SidebarProducer.DragIndicator(slot: 2, draggingTabId: tabs[0].id))
+    let overlay = cmds.contains { cmd in
+      if case .rect(let r, let c, _) = cmd,
+        (c & 0xFF) > 0, (c & 0xFF) < 0xFF,
+        r.width == p.sidebarWidth, r.height == p.rowHeight
+      {
+        return true
+      }
+      return false
+    }
+    XCTAssertTrue(overlay, "the dragging row gets a translucent dim overlay")
+  }
 }

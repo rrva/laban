@@ -7,6 +7,7 @@ public enum CaptureEventKind: String, Codable, Hashable, Sendable {
   case tabCreated = "tab.created"
   case tabSelected = "tab.selected"
   case tabClosed = "tab.closed"
+  case tabMoved = "tab.moved"
   case sessionCreated = "session.created"
   case sessionResized = "session.resized"
   case sessionExited = "session.exited"

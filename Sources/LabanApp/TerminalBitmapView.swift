@@ -97,6 +97,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// only affordances (close glyph). Updated from mouseMoved /
   /// mouseExited; nil when the cursor isn't inside any sidebar tab row.
   private var hoveredSidebarTabId: Tab.ID?
+
+  /// In-progress sidebar drag-reorder. Armed in `mouseDown` when the
+  /// hit lands on `.selectTab`; promoted to `activated = true` once the
+  /// cursor moves past `sidebarDragActivationDistance` from `origin`.
+  /// While activated, `currentSlot` carries the drop target so the
+  /// renderer can paint a placeholder bar and `mouseUp` can commit the
+  /// reorder. Cleared in `mouseUp` and on tab teardown.
+  private struct SidebarDragState {
+    let tabId: Tab.ID
+    let origin: NSPoint
+    var activated: Bool
+    var currentSlot: Int?
+  }
+  private var sidebarDragState: SidebarDragState?
+  private static let sidebarDragActivationDistance: CGFloat = 4
   private var hoverCursorStyle: TerminalHoverCursorStyle?
   private var findChip: TerminalFindChipView?
   private var lastFindNeedle: String = ""
@@ -968,6 +983,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right),
       sidebarTopInset: Self.titlebarReservedHeight,
       hoveredSidebarTabId: hoveredSidebarTabId,
+      sidebarDragIndicator: sidebarDragIndicator,
       contentYOffset: scrollContentYOffset,
       cursorBlinkVisible: cursorBlinkVisible,
       selection: currentTerminalSelection(sessionId: session.id),
@@ -1186,6 +1202,82 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
+  /// Sidebar drag-reorder snapshot consumed by the renderer to draw the
+  /// drop-target accent and dim the lifted row. Nil unless a drag has
+  /// passed the activation threshold.
+  var sidebarDragIndicator: SidebarProducer.DragIndicator? {
+    guard let state = sidebarDragState, state.activated, let slot = state.currentSlot else {
+      return nil
+    }
+    return SidebarProducer.DragIndicator(slot: slot, draggingTabId: state.tabId)
+  }
+
+  /// Advance the sidebar drag state in response to a mouseDragged event.
+  /// Returns true when the event was consumed by the drag — the caller
+  /// should bail out of its normal drag path. Activation is gated by
+  /// `sidebarDragActivationDistance` so a small jitter during a plain
+  /// click does not flip the gesture into a reorder. Once activated the
+  /// drag latches even if the cursor leaves the sidebar column: macOS
+  /// drag-reorder convention is that the originating control owns the
+  /// drag until mouseUp.
+  @discardableResult
+  private func updateSidebarDrag(at pt: NSPoint) -> Bool {
+    guard var state = sidebarDragState else { return false }
+    if !state.activated {
+      let dx = pt.x - state.origin.x
+      let dy = pt.y - state.origin.y
+      if (dx * dx + dy * dy).squareRoot() < Self.sidebarDragActivationDistance {
+        return true
+      }
+      state.activated = true
+    }
+    let sp = SidebarProducer(
+      sidebarWidth: sidebarWidth,
+      cellWidth: CGFloat(sidebarCellWidth),
+      cellHeight: CGFloat(sidebarCellHeight)
+    )
+    state.currentSlot = sp.dropSlot(
+      at: pt, tabs: model.tabs, height: bounds.height,
+      topInset: Self.titlebarReservedHeight)
+    sidebarDragState = state
+    renderInvalidated = true
+    return true
+  }
+
+  /// Commit an in-progress sidebar drag on mouseUp. Returns true when
+  /// the up event was consumed by the drag (whether or not the reorder
+  /// actually moved a tab) so the caller can skip the normal mouseUp
+  /// path. A non-activated drag is just a click-to-select and falls
+  /// through (returns false) so existing semantics survive.
+  private func commitSidebarDragIfActive(at pt: NSPoint) -> Bool {
+    guard let state = sidebarDragState else { return false }
+    sidebarDragState = nil
+    guard state.activated else { return false }
+    let sp = SidebarProducer(
+      sidebarWidth: sidebarWidth,
+      cellWidth: CGFloat(sidebarCellWidth),
+      cellHeight: CGFloat(sidebarCellHeight)
+    )
+    let slot =
+      sp.dropSlot(
+        at: pt, tabs: model.tabs, height: bounds.height,
+        topInset: Self.titlebarReservedHeight) ?? state.currentSlot
+    if let slot {
+      // `dropSlot` returns an insertion index in [0, count]; AppModel
+      // works in [0, count-1]. When the drop is past the last row, the
+      // dragged tab itself contributes to the count, so the post-move
+      // index is `slot - 1`. We clamp; AppModel will too.
+      let removed = model.tabs.firstIndex(where: { $0.id == state.tabId })
+      let targetIndex: Int = {
+        if let removed, slot > removed { return slot - 1 }
+        return slot
+      }()
+      _ = try? model.moveTab(state.tabId, to: targetIndex)
+    }
+    renderInvalidated = true
+    return true
+  }
+
   private func persistSelectionStateForCurrentTab() {
     guard let tabId = activeSelectionTabId else { return }
     if let anchor = selectionAnchor, selectionFocus != nil {
@@ -1364,6 +1456,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     selectionsByTab.removeValue(forKey: tabId)
     if hoveredSidebarTabId == tabId {
       hoveredSidebarTabId = nil
+    }
+    if sidebarDragState?.tabId == tabId {
+      sidebarDragState = nil
     }
     if activeSelectionTabId == tabId {
       selectionAnchor = nil
@@ -2347,6 +2442,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         renderInvalidated = true
       case .selectTab(let id):
         selectTabPreservingSelection(id)
+        // Arm the drag tracker. We do not activate until the cursor
+        // moves past `sidebarDragActivationDistance`, so a plain
+        // click-to-select still feels instant.
+        sidebarDragState = SidebarDragState(
+          tabId: id, origin: pt, activated: false, currentSlot: nil)
         renderInvalidated = true
       case .closeTab(let id):
         do {
@@ -2421,6 +2521,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func mouseDragged(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
+    if updateSidebarDrag(at: pt) {
+      return
+    }
     if mouseDownConsumedByChrome {
       return
     }
@@ -2497,6 +2600,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
   override func mouseUp(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
+    if commitSidebarDragIfActive(at: pt) {
+      mouseDownConsumedByChrome = false
+      return
+    }
     if mouseDownConsumedByChrome {
       mouseDownConsumedByChrome = false
       return

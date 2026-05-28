@@ -847,6 +847,35 @@ public final class AppModel {
     notifyWorkspaceMutation()
   }
 
+  /// Move `tabId` to `newIndex` (0-based, clamped to `[0, count - 1]`).
+  /// Tab identity, active selection, and per-tab state survive — only the
+  /// array order and the rendered 1-based `position` change. A no-op move
+  /// (same index, or unknown id) returns false and does NOT fire the
+  /// workspace-mutation callback. `AppError.tabNotFound` is thrown for
+  /// unknown ids so callers can distinguish a stale drag from a real
+  /// reorder.
+  @discardableResult
+  public func moveTab(_ tabId: Tab.ID, to newIndex: Int) throws -> Bool {
+    let moved: Bool = try withModelLock {
+      guard let fromIdx = _tabs.firstIndex(where: { $0.id == tabId }) else {
+        throw AppError.tabNotFound
+      }
+      let lastIdx = _tabs.count - 1
+      let clamped = max(0, min(newIndex, lastIdx))
+      if clamped == fromIdx { return false }
+      let tab = _tabs.remove(at: fromIdx)
+      _tabs.insert(tab, at: clamped)
+      for i in _tabs.indices {
+        _tabs[i].position = i + 1
+        resolveTitle(at: i)
+      }
+      recordTab(.tabMoved, tabId: tab.id, sessionId: tab.sessionId)
+      return true
+    }
+    if moved { notifyWorkspaceMutation() }
+    return moved
+  }
+
   public func updateTitle(_ title: String, forTab tabId: Tab.ID) throws {
     try updateTerminalTitle(title, forTab: tabId)
   }

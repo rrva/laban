@@ -27,6 +27,8 @@ extension HeadlessDebugRuntime {
       return DebugTabActions(runtime: self).clearTabTitle(request)
     case .setTabMetadata(let request):
       return DebugTabActions(runtime: self).setTabMetadata(request)
+    case .moveTab(let request):
+      return DebugTabActions(runtime: self).moveTab(request)
     case .resizeWindow(let request):
       return DebugWindowActions(runtime: self).resizeWindow(request)
     case .advanceFrames(let request):

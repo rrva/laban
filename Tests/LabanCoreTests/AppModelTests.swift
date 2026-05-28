@@ -45,6 +45,17 @@ private func pumpMainQueue(timeout: TimeInterval = 1.0) {
   XCTWaiter().wait(for: [pumped], timeout: timeout)
 }
 
+private final class WorkspaceMutationCounter {
+  private(set) var count = 0
+  init(model: AppModel) {
+    let prior = model.onWorkspaceMutation
+    model.onWorkspaceMutation = { [weak self] in
+      self?.count += 1
+      prior?()
+    }
+  }
+}
+
 final class AppModelTests: XCTestCase {
 
   func testInitialModelHasOneActiveTabAndSession() throws {
@@ -127,6 +138,91 @@ final class AppModelTests: XCTestCase {
     }
     XCTAssertTrue(model.tabs.isEmpty, "tabs cleared after last close")
     XCTAssertTrue(originalSessionRef.isClosed, "original session must be destroyed")
+  }
+
+  func testMoveTabForwardPreservesIdentityAndRenumbers() throws {
+    let model = try makeModel()
+    try model.createTab()
+    try model.createTab()
+    let ids = model.tabs.map(\.id)
+    let mutations = WorkspaceMutationCounter(model: model)
+
+    let moved = try model.moveTab(ids[0], to: 2)
+
+    XCTAssertTrue(moved)
+    XCTAssertEqual(model.tabs.map(\.id), [ids[1], ids[2], ids[0]])
+    XCTAssertEqual(model.tabs.map(\.position), [1, 2, 3])
+    XCTAssertEqual(model.activeTab?.id, ids[2], "active tab survives reorder")
+    XCTAssertEqual(mutations.count, 1)
+  }
+
+  func testMoveTabBackwardPreservesIdentityAndRenumbers() throws {
+    let model = try makeModel()
+    try model.createTab()
+    try model.createTab()
+    let ids = model.tabs.map(\.id)
+
+    let moved = try model.moveTab(ids[2], to: 0)
+
+    XCTAssertTrue(moved)
+    XCTAssertEqual(model.tabs.map(\.id), [ids[2], ids[0], ids[1]])
+    XCTAssertEqual(model.tabs.map(\.position), [1, 2, 3])
+    XCTAssertEqual(model.activeTab?.id, ids[2])
+  }
+
+  func testMoveTabSameIndexIsNoOp() throws {
+    let model = try makeModel()
+    try model.createTab()
+    let ids = model.tabs.map(\.id)
+    let mutations = WorkspaceMutationCounter(model: model)
+
+    let moved = try model.moveTab(ids[1], to: 1)
+
+    XCTAssertFalse(moved)
+    XCTAssertEqual(model.tabs.map(\.id), ids)
+    XCTAssertEqual(mutations.count, 0, "no workspace mutation when order is unchanged")
+  }
+
+  func testMoveTabClampsOutOfRangeIndex() throws {
+    let model = try makeModel()
+    try model.createTab()
+    try model.createTab()
+    let ids = model.tabs.map(\.id)
+
+    // Way past the end → clamped to last index.
+    let movedHigh = try model.moveTab(ids[0], to: 99)
+    XCTAssertTrue(movedHigh)
+    XCTAssertEqual(model.tabs.map(\.id), [ids[1], ids[2], ids[0]])
+
+    // Negative → clamped to 0.
+    let movedLow = try model.moveTab(ids[0], to: -5)
+    XCTAssertTrue(movedLow)
+    XCTAssertEqual(model.tabs.map(\.id), [ids[0], ids[1], ids[2]])
+  }
+
+  func testMoveTabUnknownIdThrows() throws {
+    let model = try makeModel()
+    try model.createTab()
+    XCTAssertThrowsError(try model.moveTab("missing-\(UUID().uuidString)", to: 0)) { error in
+      XCTAssertEqual(error as? AppError, AppError.tabNotFound)
+    }
+  }
+
+  func testMoveTabIsReflectedInPersistenceSnapshot() throws {
+    let model = try makeModel()
+    try model.createTab()
+    try model.createTab()
+    let ids = model.tabs.map(\.id)
+
+    _ = try model.moveTab(ids[0], to: 2)
+
+    let snapshot = model.snapshotForPersistence(windowId: "window-1")
+    XCTAssertEqual(
+      snapshot.windows.first?.tabs.map(\.id),
+      [ids[1], ids[2], ids[0]],
+      "snapshot order must match the in-memory tab order after reorder"
+    )
+    XCTAssertEqual(snapshot.windows.first?.selectedTabId, ids[2])
   }
 
   func testCloseAllSessionsClosesEverySessionAndClearsTabs() throws {

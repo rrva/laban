@@ -74,6 +74,7 @@ public struct TerminalSurfaceFrameRequest {
   public var insets: TerminalSurfaceInsets
   public var sidebarTopInset: CGFloat
   public var hoveredSidebarTabId: Tab.ID?
+  public var sidebarDragIndicator: SidebarProducer.DragIndicator?
   public var contentYOffset: CGFloat
   public var cursorBlinkVisible: Bool
   public var selection: TerminalSelection?
@@ -92,6 +93,7 @@ public struct TerminalSurfaceFrameRequest {
     insets: TerminalSurfaceInsets = .zero,
     sidebarTopInset: CGFloat = 0,
     hoveredSidebarTabId: Tab.ID? = nil,
+    sidebarDragIndicator: SidebarProducer.DragIndicator? = nil,
     contentYOffset: CGFloat = 0,
     cursorBlinkVisible: Bool = true,
     selection: TerminalSelection? = nil,
@@ -109,6 +111,7 @@ public struct TerminalSurfaceFrameRequest {
     self.insets = insets
     self.sidebarTopInset = sidebarTopInset
     self.hoveredSidebarTabId = hoveredSidebarTabId
+    self.sidebarDragIndicator = sidebarDragIndicator
     self.contentYOffset = contentYOffset
     self.cursorBlinkVisible = cursorBlinkVisible
     self.selection = selection
@@ -330,7 +333,8 @@ public final class TerminalSurfaceController {
       activeTabId: activeTab.id,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
-      hoveredTabId: request.hoveredSidebarTabId
+      hoveredTabId: request.hoveredSidebarTabId,
+      dragIndicator: request.sidebarDragIndicator
     )
 
     guard let session = model.session(forTab: activeTab.id) else {
@@ -465,7 +469,8 @@ public final class TerminalSurfaceController {
       activeTabId: activeTab.id,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
-      hoveredTabId: request.hoveredSidebarTabId
+      hoveredTabId: request.hoveredSidebarTabId,
+      dragIndicator: request.sidebarDragIndicator
     )
 
     let rows = max(snapshot.rows, 1)
@@ -533,7 +538,8 @@ public final class TerminalSurfaceController {
     activeTabId: Tab.ID?,
     viewportHeight: CGFloat,
     topInset: CGFloat = 0,
-    hoveredTabId: Tab.ID? = nil
+    hoveredTabId: Tab.ID? = nil,
+    dragIndicator: SidebarProducer.DragIndicator? = nil
   ) -> [FrameCommand] {
     SidebarProducer(
       sidebarWidth: sidebarWidth,
@@ -544,7 +550,8 @@ public final class TerminalSurfaceController {
       activeTabId: activeTabId,
       height: viewportHeight,
       topInset: topInset,
-      hoveredTabId: hoveredTabId)
+      hoveredTabId: hoveredTabId,
+      dragIndicator: dragIndicator)
   }
 
   public static func terminalGridOriginY(

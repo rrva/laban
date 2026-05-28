@@ -361,6 +361,67 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(tabs.count, 2)
   }
 
+  func testRuntimeMoveTabActionReordersTabs() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-movetab"
+    )
+
+    // Spawn two extra tabs so the workspace has three.
+    _ = runtime.applyAction(#"{"action":"newTab"}"#.data(using: .utf8)!)
+    _ = runtime.applyAction(#"{"action":"newTab"}"#.data(using: .utf8)!)
+
+    let beforeState = runtime.state()
+    let beforeObj = try JSONSerialization.jsonObject(with: beforeState.body) as! [String: Any]
+    let beforeTabs = beforeObj["tabs"] as! [[String: Any]]
+    XCTAssertEqual(beforeTabs.count, 3)
+    let originalIds = beforeTabs.map { $0["id"] as! String }
+    let originalActive = beforeObj["activeTabId"] as? String
+
+    let movePayload = """
+      {"action":"moveTab","tabId":"\(originalIds[0])","toIndex":2}
+      """.data(using: .utf8)!
+    let moveResult = runtime.applyAction(movePayload)
+    XCTAssertEqual(moveResult.status, 200)
+    let moveObj = try JSONSerialization.jsonObject(with: moveResult.body) as! [String: Any]
+    XCTAssertEqual(moveObj["ok"] as? Bool, true)
+
+    let afterState = runtime.state()
+    let afterObj = try JSONSerialization.jsonObject(with: afterState.body) as! [String: Any]
+    let afterTabs = afterObj["tabs"] as! [[String: Any]]
+    let afterIds = afterTabs.map { $0["id"] as! String }
+    XCTAssertEqual(afterIds, [originalIds[1], originalIds[2], originalIds[0]])
+    XCTAssertEqual(
+      afterObj["activeTabId"] as? String, originalActive,
+      "active tab identity must survive a moveTab")
+  }
+
+  func testRuntimeMoveTabMissingFieldReturnsError() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-movetab-missing"
+    )
+
+    let payload = #"{"action":"moveTab","tabId":"only-tab"}"#.data(using: .utf8)!
+    let result = runtime.applyAction(payload)
+    let obj = try JSONSerialization.jsonObject(with: result.body) as! [String: Any]
+    XCTAssertNotNil(obj["error"], "missing toIndex must produce an error response")
+  }
+
   func testRuntimeAdvanceFramesRendersEachRequestedFrame() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")

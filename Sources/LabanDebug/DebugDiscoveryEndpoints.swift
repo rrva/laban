@@ -5,6 +5,9 @@ enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(name: "newTab", summary: "Create and select a new tab."),
     DebugDiscoveryControl(name: "closeTab", summary: "Close a tab by id or the active tab."),
     DebugDiscoveryControl(name: "selectTab", summary: "Select a tab by tabId."),
+    DebugDiscoveryControl(
+      name: "moveTab",
+      summary: "Reorder a tab by id to a new zero-based index (clamped to the tab range)."),
     DebugDiscoveryControl(name: "resizeWindow", summary: "Resize the headless window surface."),
     DebugDiscoveryControl(name: "typeText", summary: "Send text through terminal input."),
     DebugDiscoveryControl(name: "feedOutput", summary: "Inject fixture terminal output bytes."),

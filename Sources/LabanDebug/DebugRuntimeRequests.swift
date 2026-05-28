@@ -13,6 +13,7 @@ enum DebugAction: Decodable {
   case freezeTabTitle(TabTitleActionRequest)
   case clearTabTitle(TabTargetActionRequest)
   case setTabMetadata(TabMetadataActionRequest)
+  case moveTab(MoveTabActionRequest)
   case resizeWindow(ResizeWindowActionRequest)
   case typeText(TextActionRequest)
   case feedOutput(TextActionRequest)
@@ -53,6 +54,8 @@ enum DebugAction: Decodable {
       self = .clearTabTitle(try TabTargetActionRequest(from: decoder))
     case "setTabMetadata":
       self = .setTabMetadata(try TabMetadataActionRequest(from: decoder))
+    case "moveTab":
+      self = .moveTab(try MoveTabActionRequest(from: decoder))
     case "resizeWindow":
       self = .resizeWindow(try ResizeWindowActionRequest(from: decoder))
     case "typeText":
@@ -93,6 +96,11 @@ enum DebugAction: Decodable {
 
 struct TabTargetActionRequest: Decodable {
   var tabId: String?
+}
+
+struct MoveTabActionRequest: Decodable {
+  var tabId: String?
+  var toIndex: Int?
 }
 
 struct TabTitleActionRequest: Decodable {

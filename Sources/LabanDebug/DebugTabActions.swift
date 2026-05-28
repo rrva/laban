@@ -44,6 +44,22 @@ struct DebugTabActions {
     return runtime.actionResult(ok: true)
   }
 
+  func moveTab(_ request: MoveTabActionRequest) -> DebugResponse {
+    guard let tabId = request.tabId else { return jsonError("moveTab requires tabId") }
+    guard let toIndex = request.toIndex else { return jsonError("moveTab requires toIndex") }
+    let moved: Bool
+    do {
+      moved = try runtime.model.moveTab(tabId, to: toIndex)
+    } catch {
+      return jsonError("moveTab failed: \(error)")
+    }
+    runtime.renderFrameUnlocked()
+    if moved {
+      runtime.appendEvent(EventEntry(kind: "tab.moved", tabId: tabId))
+    }
+    return runtime.actionResult(ok: true)
+  }
+
   func setTabTitle(_ request: TabTitleActionRequest) -> DebugResponse {
     let targetTabId = request.tabId ?? runtime.model.activeTab?.id
     guard let tabId = targetTabId else { return jsonError("setTabTitle requires an active tab") }

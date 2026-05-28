@@ -31,6 +31,21 @@ public struct SidebarProducer {
     case none
   }
 
+  /// Visual state for an in-progress drag-reorder. `slot` is the
+  /// insertion index in `[0, tabs.count]` where dropping would land the
+  /// dragged row; `draggingTabId` is the row that should render in its
+  /// "being dragged" appearance (dimmed). When the slot would simply
+  /// re-insert the dragged tab into its current position the producer
+  /// skips the accent bar — a no-op move shouldn't paint a drop target.
+  public struct DragIndicator: Equatable {
+    public var slot: Int
+    public var draggingTabId: Tab.ID
+    public init(slot: Int, draggingTabId: Tab.ID) {
+      self.slot = slot
+      self.draggingTabId = draggingTabId
+    }
+  }
+
   /// `topInset` reserves vertical space at the top of the sidebar column —
   /// used by the AppKit shell to keep the first tab clear of the window
   /// traffic lights when running with a transparent full-size titlebar. The
@@ -43,7 +58,8 @@ public struct SidebarProducer {
   /// is just visually quieter — discoverable but unobtrusive.
   public func commands(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
-    hoveredTabId: Tab.ID? = nil
+    hoveredTabId: Tab.ID? = nil,
+    dragIndicator: DragIndicator? = nil
   ) -> [FrameCommand] {
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(tabs.count * 7 + 6)
@@ -60,10 +76,17 @@ public struct SidebarProducer {
     // shell renders it as a titlebar accessory next to the traffic
     // lights so the sidebar is purely tab rows. Tabs start at the top.
 
+    // Index of the row currently being dragged (if any). Used to dim
+    // its visual without disturbing other rows.
+    let draggingIndex: Int? = dragIndicator.flatMap { ind in
+      tabs.firstIndex(where: { $0.id == ind.draggingTabId })
+    }
+
     // Tab rows
     for (i, tab) in tabs.enumerated() {
       let tabY = height - CGFloat(i + 1) * rowHeight - topInset
       let isActive = tab.id == activeTabId
+      let isDragging = (draggingIndex == i)
       let bg = isActive ? Theme.current.bg2 : Theme.current.bg1
       let fg = isActive ? Theme.current.fg1 : Theme.current.fg0
 
@@ -217,7 +240,7 @@ public struct SidebarProducer {
       // gives a beefier hit target than the previous `×` without needing
       // a separate font size. Click region is region-based (see hitTest)
       // so the affordance still works even when the glyph isn't shown.
-      if hoveredTabId == tab.id {
+      if hoveredTabId == tab.id, !isDragging {
         cmds.append(
           .glyphRun(
             origin: CGPoint(x: closeGlyphX, y: titleY),
@@ -228,9 +251,100 @@ public struct SidebarProducer {
             source: .sidebar
           ))
       }
+
+      // Dim the row that the user is currently dragging so it reads as
+      // "lifted". Drawn after the title text so it tints everything in
+      // the row uniformly.
+      if isDragging {
+        cmds.append(
+          .rect(
+            CGRect(x: 0, y: tabY, width: sidebarWidth, height: rowHeight),
+            color: Self.dragSourceOverlayColor,
+            source: .sidebar
+          ))
+      }
+    }
+
+    // Drop-target accent. Drawn last so it sits on top of every row.
+    // The slot range is `[0, tabs.count]`; a value equal to the dragging
+    // index or `draggingIndex + 1` would re-insert the row in place, so
+    // we suppress the bar to avoid a misleading drop hint.
+    if let ind = dragIndicator,
+      let accentY = dropAccentY(
+        slot: ind.slot,
+        tabCount: tabs.count,
+        height: height,
+        topInset: topInset,
+        draggingIndex: draggingIndex
+      )
+    {
+      cmds.append(
+        .rect(
+          CGRect(x: 0, y: accentY, width: sidebarWidth, height: 2),
+          color: Theme.current.blue,
+          source: .sidebar
+        ))
     }
 
     return cmds
+  }
+
+  /// 0xRRGGBBAA — a low-alpha black overlay used to dim the row that the
+  /// user is dragging. Tuned to read as "lifted" on both light and dark
+  /// themes without losing the underlying label.
+  private static let dragSourceOverlayColor: UInt32 = 0x0000_0066
+
+  /// Compute the y-position (CG bottom-origin) of the drop-target accent
+  /// bar for `slot`. Returns nil when no accent should be drawn — either
+  /// because the slot is out of range or because the drop would land the
+  /// row in its existing position.
+  private func dropAccentY(
+    slot: Int,
+    tabCount: Int,
+    height: CGFloat,
+    topInset: CGFloat,
+    draggingIndex: Int?
+  ) -> CGFloat? {
+    guard slot >= 0, slot <= tabCount else { return nil }
+    if let dragIdx = draggingIndex, slot == dragIdx || slot == dragIdx + 1 {
+      return nil
+    }
+    // Top of the row currently at index `slot` (or bottom of the last
+    // row when `slot == tabCount`). Two pixels tall, centered on the
+    // boundary, clamped to the visible column.
+    let topOfSlot = height - CGFloat(slot) * rowHeight - topInset
+    return max(0, topOfSlot - 1)
+  }
+
+  /// Insertion index in `[0, tabs.count]` for a drag-and-drop release at
+  /// `point` (CG coordinates, y=0 at bottom). Each row is split at its
+  /// vertical midpoint: a release on the top half lands the dragged tab
+  /// before that row, the bottom half lands it after. Above the first
+  /// row → 0; below the last row → `tabs.count`. Returns nil only when
+  /// `tabs` is empty, so callers always have a valid target while a
+  /// drag is live.
+  ///
+  /// `point.x` is intentionally NOT bounded to the sidebar: a drag that
+  /// strays out of the column still resolves to a slot, which matches
+  /// the macOS convention that a drag is "owned" by the originating
+  /// view until release.
+  public func dropSlot(
+    at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0
+  ) -> Int? {
+    guard !tabs.isEmpty else { return nil }
+    let firstTabTop = height - topInset
+    if point.y >= firstTabTop { return 0 }
+    let lastTabBottom = firstTabTop - CGFloat(tabs.count) * rowHeight
+    if point.y < lastTabBottom { return tabs.count }
+    for i in tabs.indices {
+      let tabTop = firstTabTop - CGFloat(i) * rowHeight
+      let tabBottom = tabTop - rowHeight
+      if point.y >= tabBottom, point.y < tabTop {
+        let midpoint = tabBottom + rowHeight / 2
+        return point.y >= midpoint ? i : i + 1
+      }
+    }
+    return tabs.count
   }
 
   // CG coordinates (y=0 at bottom). The "+" button is a titlebar
