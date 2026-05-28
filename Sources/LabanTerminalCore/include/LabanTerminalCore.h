@@ -467,6 +467,13 @@ typedef struct {
     int viewport_offset;
     int viewport_rows;
     int mouse_tracking;
+    /* 1 when the alternate screen buffer is active (vim/htop/less and full-
+     * screen TUIs), 0 otherwise. */
+    int alt_screen;
+    /* 1 when alternate scroll mode (DEC private 1007) is set. Only meaningful
+     * while alt_screen is 1 and mouse_tracking is 0: the wheel then drives the
+     * app's cursor keys instead of Laban's (absent) alt-screen scrollback. */
+    int alt_scroll;
 } LabanViewportState;
 
 int laban_session_scroll_viewport(LabanSession *session, int delta_rows);

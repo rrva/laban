@@ -49,4 +49,31 @@ final class TerminalMouseInputTests: XCTestCase {
     XCTAssertNil(TerminalMouseInput.trackedTerminalButton(.none, matching: .left))
     XCTAssertNil(TerminalMouseInput.trackedTerminalButton(.left, matching: .right))
   }
+
+  // MARK: - Left-press routing (shift-free selection under mouse tracking)
+
+  func testLeftPressWithoutTrackingSelectsLocally() {
+    XCTAssertEqual(
+      TerminalMouseInput.leftMouseDownDisposition(mouseTracking: false, shiftHeld: false),
+      .localSelection
+    )
+  }
+
+  func testLeftPressUnderTrackingDefersToDistinguishClickFromDrag() {
+    XCTAssertEqual(
+      TerminalMouseInput.leftMouseDownDisposition(mouseTracking: true, shiftHeld: false),
+      .deferUnderTracking
+    )
+  }
+
+  func testShiftAlwaysForcesLocalSelectionEvenUnderTracking() {
+    XCTAssertEqual(
+      TerminalMouseInput.leftMouseDownDisposition(mouseTracking: true, shiftHeld: true),
+      .localSelection
+    )
+    XCTAssertEqual(
+      TerminalMouseInput.leftMouseDownDisposition(mouseTracking: false, shiftHeld: true),
+      .localSelection
+    )
+  }
 }

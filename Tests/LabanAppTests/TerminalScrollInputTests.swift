@@ -78,6 +78,36 @@ final class TerminalScrollInputTests: XCTestCase {
     XCTAssertEqual(direction, .down)
   }
 
+  // MARK: - Alternate scroll mode (DEC private 1007)
+
+  func testAltScrollKeysNoMotionProducesNoKeys() {
+    XCTAssertNil(TerminalScrollInput.altScrollKeys(rowsDelta: 0))
+  }
+
+  func testAltScrollKeysScrollingTowardHistoryEmitsUpArrows() {
+    // `decide` yields negative rows for visually-up scrolling toward older
+    // content; in less/vim Up is "scroll back".
+    let keys = TerminalScrollInput.altScrollKeys(rowsDelta: -3)
+    XCTAssertEqual(keys?.key, .up)
+    XCTAssertEqual(keys?.count, 3)
+  }
+
+  func testAltScrollKeysScrollingTowardBottomEmitsDownArrows() {
+    let keys = TerminalScrollInput.altScrollKeys(rowsDelta: 2)
+    XCTAssertEqual(keys?.key, .down)
+    XCTAssertEqual(keys?.count, 2)
+  }
+
+  func testAltScrollKeysCountIsBoundedByMaxKeys() {
+    let keys = TerminalScrollInput.altScrollKeys(rowsDelta: -500, maxKeys: 64)
+    XCTAssertEqual(keys?.key, .up)
+    XCTAssertEqual(keys?.count, 64)
+  }
+
+  func testAltScrollKeysNonPositiveMaxProducesNoKeys() {
+    XCTAssertNil(TerminalScrollInput.altScrollKeys(rowsDelta: -3, maxKeys: 0))
+  }
+
   func testAppliedRowsFromViewportUsesBottomAsZeroAndOlderHistoryAsNegative() {
     XCTAssertEqual(
       TerminalScrollInput.appliedRowsFromViewport(

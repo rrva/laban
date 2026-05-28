@@ -1309,6 +1309,13 @@ public struct ViewportState {
   public let viewportOffset: Int
   public let viewportRows: Int
   public let mouseTracking: Bool
+  /// Alternate screen buffer active (full-screen TUI). Laban has no scrollback
+  /// to scroll here, so the wheel only does something useful when the app opts
+  /// into reporting or alternate scroll mode.
+  public let altScreen: Bool
+  /// Alternate scroll mode (DEC private 1007). When set and `mouseTracking` is
+  /// off, wheel input drives the app's cursor keys instead of native scroll.
+  public let altScroll: Bool
 
   init(from raw: LabanViewportState) {
     totalRows = Int(raw.total_rows)
@@ -1316,6 +1323,8 @@ public struct ViewportState {
     viewportOffset = Int(raw.viewport_offset)
     viewportRows = Int(raw.viewport_rows)
     mouseTracking = raw.mouse_tracking != 0
+    altScreen = raw.alt_screen != 0
+    altScroll = raw.alt_scroll != 0
   }
 
   public static func scrollDeltaToActiveBottom(

@@ -765,5 +765,15 @@ int laban_session_viewport_state(LabanSession *s, LabanViewportState *out_state)
         out_state->mouse_tracking = mt ? 1 : 0;
     }
 
+    GhosttyTerminalScreen active = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+    if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &active)
+            == GHOSTTY_SUCCESS) {
+        out_state->alt_screen = active == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? 1 : 0;
+    }
+
+    int alt_scroll = 0;
+    (void)laban_session_mode_active_locked(s, GHOSTTY_MODE_ALT_SCROLL, &alt_scroll);
+    out_state->alt_scroll = alt_scroll;
+
     return 0;
 }

@@ -60,6 +60,26 @@ enum TerminalScrollInput {
     return nil
   }
 
+  enum AltScrollKey {
+    case up
+    case down
+  }
+
+  /// Translate a resolved row delta into alternate-scroll-mode (DEC private
+  /// 1007) cursor-key presses. `decide` yields negative rows for visually-up
+  /// scrolling toward older content, which maps to Up-arrow presses — the key
+  /// `less`, `man`, and `vim` read as "scroll back" on the alternate screen.
+  /// `maxKeys` bounds a fast trackpad fling so it cannot flood the PTY with
+  /// hundreds of synthesized keystrokes in a single event.
+  static func altScrollKeys(
+    rowsDelta: Int,
+    maxKeys: Int = 64
+  ) -> (key: AltScrollKey, count: Int)? {
+    guard rowsDelta != 0, maxKeys > 0 else { return nil }
+    let count = min(abs(rowsDelta), maxKeys)
+    return rowsDelta < 0 ? (.up, count) : (.down, count)
+  }
+
   static func appliedRowsFromViewport(
     viewportOffset: Int,
     totalRows: Int,

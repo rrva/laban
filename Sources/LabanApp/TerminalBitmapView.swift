@@ -64,6 +64,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
   private var pendingHyperlinkClick: PendingHyperlinkClick?
   private static let hyperlinkClickDragTolerance: CGFloat = 3
+  /// A left press withheld from a mouse-tracking app until we know whether it
+  /// is a click or the start of a drag-selection. A drag past
+  /// `hyperlinkClickDragTolerance` becomes a native selection (selecting
+  /// without holding Shift); a release with no drag is forwarded to the app as
+  /// a press+release click so click-to-act features keep working.
+  private struct PendingTrackingClick {
+    var downPoint: NSPoint
+    var pressModifiers: Int
+  }
+  private var pendingTrackingClick: PendingTrackingClick?
   /// True while the current mouseDown→mouseUp pair was consumed by
   /// window chrome (sidebar tab actions or the reserved titlebar strip).
   /// Without this, the paired mouseUp would treat the just-restored or
@@ -2256,6 +2266,46 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
 
+    if vs.altScreen && vs.altScroll && !localSelectionMouseGestureActive {
+      // Alternate scroll mode (DEC private 1007): the app is on the alternate
+      // screen, which has no scrollback for the wheel to move, so translate
+      // wheel motion into cursor-key presses the app scrolls with (this is how
+      // less/man/vim consume the wheel without enabling mouse reporting).
+      // Reuse `decide` so trackpad feel and sub-cell residual carry match
+      // native scrolling, and let the key encoder pick ESC O A vs ESC [ A from
+      // the app's DECCKM state.
+      let decision = TerminalScrollInput.decide(
+        event: TerminalScrollInput.Event(
+          deltaY: event.deltaY,
+          scrollingDeltaY: event.scrollingDeltaY,
+          hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
+        ),
+        residualPx: scrollResidualPx,
+        cellHeightPx: CGFloat(cellHeight)
+      )
+      scrollResidualPx = decision.newResidualPx
+      guard let keys = TerminalScrollInput.altScrollKeys(rowsDelta: decision.rowsDelta)
+      else {
+        return
+      }
+      let key: Key = keys.key == .up ? .arrowUp : .arrowDown
+      var bytes: [UInt8] = []
+      for _ in 0..<keys.count {
+        let sent = session.sendKeyCapturingBytes(KeyEvent(action: .press, key: key))
+        if sent.result == 0 { bytes.append(contentsOf: sent.bytes) }
+      }
+      recordInput(
+        kind: "scroll",
+        route: "terminal",
+        command: "altScroll",
+        encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes),
+        deltaRows: decision.rowsDelta
+      )
+      renderInvalidated = true
+      return
+    }
+
     let decision = TerminalScrollInput.decide(
       event: TerminalScrollInput.Event(
         deltaY: event.deltaY,
@@ -2494,43 +2544,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     localSelectionMouseGestureActive = false
 
-    // Check if mouse tracking is active.
-    if let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId),
-      let vs = session.viewportState(),
-      vs.mouseTracking
-    {
+    let mouseTracking: Bool = {
+      guard let tabId = model.activeTab?.id,
+        let vs = model.session(forTab: tabId)?.viewportState()
+      else { return false }
+      return vs.mouseTracking
+    }()
+    switch TerminalMouseInput.leftMouseDownDisposition(
+      mouseTracking: mouseTracking,
+      shiftHeld: event.modifierFlags.contains(.shift)
+    ) {
+    case .deferUnderTracking:
+      // The app has mouse tracking on. Withhold the press until mouseDragged or
+      // mouseUp decides click vs drag: a drag becomes a native selection (the
+      // shift-free selection path), a bare click is forwarded on release.
+      // Don't claim trackedMouseButton here — the click path forwards its own
+      // press+release and the drag path is local, so neither needs it, and a
+      // stale .left would survive into the next gesture.
       cancelSelectionDragForMouseTracking()
-      trackedMouseButton = .left
-      let geom = terminalMouseGeometry(at: pt)
-      let pressEvent = MouseEvent(
-        action: .press,
-        button: .left,
-        x: geom.x, y: geom.y,
-        screenWidth: geom.screenWidth,
-        screenHeight: geom.screenHeight,
-        cellWidth: cellWidth,
-        cellHeight: cellHeight,
-        modifiers: event.labanModifiers
-      )
-      let sent = session.sendMouseCapturingBytes(pressEvent)
-      let bytes = sent.result == 0 ? sent.bytes : []
-      recordInput(
-        kind: "mouse",
-        route: "terminal",
-        command: "mouseDown",
-        encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
-        encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
-      )
-      renderInvalidated = true
-      return
+      pendingTrackingClick = PendingTrackingClick(
+        downPoint: pt, pressModifiers: event.labanModifiers)
+    case .localSelection:
+      // Focus stays nil until a drag actually happens, so a click without drag
+      // clears any prior selection instead of leaving a one-cell highlight
+      // behind. Double-click selects the word under the cursor; triple-click
+      // selects the entire row.
+      beginSelection(at: pt, clickCount: event.clickCount)
     }
-
-    // Fall back to selection. Focus stays nil until a drag actually happens,
-    // so a click without drag clears any prior selection instead of leaving a
-    // one-cell highlight behind. Double-click selects the word under the
-    // cursor; triple-click selects the entire row.
-    beginSelection(at: pt, clickCount: event.clickCount)
     renderInvalidated = true
   }
 
@@ -2547,6 +2587,34 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         return
       }
       pendingHyperlinkClick = nil
+      beginSelection(at: pending.downPoint, clickCount: 1)
+      lastDragPoint = pt
+      extendSelection(to: pt)
+      updateDragAutoscroll(at: pt)
+      if let anchor = selectionAnchor, let focus = selectionFocus {
+        recordInput(
+          kind: "selection",
+          route: "terminal",
+          command: "updateSelection",
+          anchor: (row: anchor.row, col: anchor.col),
+          focus: (row: focus.row, col: focus.col)
+        )
+      }
+      renderInvalidated = true
+      return
+    }
+
+    if let pending = pendingTrackingClick {
+      // A press withheld from a mouse-tracking app. Once the pointer moves past
+      // the click tolerance it is a drag-selection, not a click: take it over
+      // locally so text selects without the Shift bypass. Below the tolerance
+      // it stays a candidate click for mouseUp to forward.
+      guard Self.pointDistance(pending.downPoint, pt) > Self.hyperlinkClickDragTolerance
+      else {
+        return
+      }
+      pendingTrackingClick = nil
+      localSelectionMouseGestureActive = true
       beginSelection(at: pending.downPoint, clickCount: 1)
       lastDragPoint = pt
       extendSelection(to: pt)
@@ -2613,6 +2681,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     renderInvalidated = true
   }
 
+  /// Forward a withheld left press to the active mouse-tracking app as a
+  /// press+release click. `downPoint`/`upPoint` are usually the same cell for a
+  /// click, but each is encoded at its own position so a tiny within-tolerance
+  /// jitter still reports a coherent press and release.
+  private func forwardDeferredTrackingClick(
+    downPoint: NSPoint,
+    upPoint: NSPoint,
+    pressModifiers: Int,
+    releaseModifiers: Int
+  ) {
+    guard let tabId = model.activeTab?.id,
+      let session = model.session(forTab: tabId),
+      let vs = session.viewportState(),
+      vs.mouseTracking
+    else {
+      return
+    }
+    let pressGeom = terminalMouseGeometry(at: downPoint)
+    let pressEvent = MouseEvent(
+      action: .press, button: .left,
+      x: pressGeom.x, y: pressGeom.y,
+      screenWidth: pressGeom.screenWidth, screenHeight: pressGeom.screenHeight,
+      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: pressModifiers)
+    let pressSent = session.sendMouseCapturingBytes(pressEvent)
+    let releaseGeom = terminalMouseGeometry(at: upPoint)
+    let releaseEvent = MouseEvent(
+      action: .release, button: .left,
+      x: releaseGeom.x, y: releaseGeom.y,
+      screenWidth: releaseGeom.screenWidth, screenHeight: releaseGeom.screenHeight,
+      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: releaseModifiers)
+    let releaseSent = session.sendMouseCapturingBytes(releaseEvent)
+    var bytes: [UInt8] = []
+    if pressSent.result == 0 { bytes.append(contentsOf: pressSent.bytes) }
+    if releaseSent.result == 0 { bytes.append(contentsOf: releaseSent.bytes) }
+    recordInput(
+      kind: "mouse",
+      route: "terminal",
+      command: "mouseClick",
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
+    )
+  }
+
   override func mouseUp(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
     if commitSidebarDragIfActive(at: pt) {
@@ -2636,6 +2747,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         route: "appCommand",
         text: pending.uri,
         command: "openHyperlink")
+      renderInvalidated = true
+      return
+    }
+
+    if let pending = pendingTrackingClick {
+      // The withheld press never became a drag, so it was a click after all.
+      // Forward press+release together now so the mouse-tracking app's
+      // click-to-act behavior still fires (we delayed it only long enough to
+      // rule out a drag-selection).
+      pendingTrackingClick = nil
+      forwardDeferredTrackingClick(
+        downPoint: pending.downPoint,
+        upPoint: pt,
+        pressModifiers: pending.pressModifiers,
+        releaseModifiers: event.labanModifiers)
+      trackedMouseButton = .none
       renderInvalidated = true
       return
     }

@@ -28,7 +28,8 @@ struct DebugMouseActions {
     let terminalPoint = runtime.terminalMousePosition(x: x, y: y)
     let isUp = deltaY > 0
 
-    if let viewportState = session.viewportState(), viewportState.mouseTracking {
+    let viewportState = session.viewportState()
+    if viewportState?.mouseTracking == true {
       return sendTrackedWheel(
         isUp: isUp,
         terminalPoint: terminalPoint,
@@ -36,9 +37,56 @@ struct DebugMouseActions {
         tab: tab,
         session: session
       )
+    } else if viewportState?.altScreen == true, viewportState?.altScroll == true {
+      // Alternate scroll mode (DEC private 1007): the alternate screen has no
+      // scrollback, so a notch drives the app's cursor keys instead. Mirrors
+      // TerminalBitmapView.scrollWheel so headless runs match the real app.
+      return sendAltScrollWheel(
+        isUp: isUp, frameBefore: frameBefore, tab: tab, session: session)
     } else {
       return scrollWheel(isUp: isUp, frameBefore: frameBefore, tab: tab, session: session)
     }
+  }
+
+  private func sendAltScrollWheel(
+    isUp: Bool,
+    frameBefore: Int,
+    tab: Tab,
+    session: Session
+  ) -> DebugResponse {
+    // One wheel notch maps to one cursor-key press; Up scrolls toward earlier
+    // content, matching less/man/vim on the alternate screen. The key encoder
+    // picks ESC O A vs ESC [ A from the app's DECCKM state.
+    let key: Key = isUp ? .arrowUp : .arrowDown
+    let sent = session.sendKeyCapturingBytes(KeyEvent(action: .press, key: key))
+    let encoded = sent.result == 0 ? sent.bytes : []
+    if !encoded.isEmpty {
+      runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: encoded)
+    }
+    runtime.appendInputEnvelope(
+      InputEventEnvelope(
+        inputId: UUID().uuidString,
+        source: "debug",
+        kind: "scroll",
+        route: "terminal",
+        frameBefore: frameBefore,
+        tabId: tab.id,
+        sessionId: session.id,
+        command: "altScroll",
+        encodedHex: encoded.isEmpty
+          ? nil
+          : encoded.map { String(format: "%02x", $0) }.joined(),
+        encodedLength: encoded.isEmpty ? nil : encoded.count
+      ))
+    runtime.appendEvent(
+      EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "altScroll"))
+    runtime.renderFrameUnlocked()
+    return jsonEncode(
+      MouseActionResult(
+        ok: sent.result == 0, frame: runtime.currentFrame,
+        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        mouseTracking: false, sent: sent.result == 0
+      ))
   }
 
   func click(_ request: ClickActionRequest) -> DebugResponse {
