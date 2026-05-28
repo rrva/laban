@@ -53,12 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     //      --no-persistence is present, start fresh without loading
     //      workspace.json. The on-disk state is not archived; this is
     //      a launch-time escape hatch.
-    //   3. Otherwise, if Shift is held at launch AND this launch is not
-    //      a self-issued restart (`--restart`), archive any prior
+    //   3. Otherwise, if Shift is held at launch, archive any prior
     //      `workspace.json` to `workspace.json.previous` and start fresh.
-    //      The restart shortcut is ⌘⇧⌥R; without the `--restart` guard
-    //      that Shift would be indistinguishable from a manual Shift-launch
-    //      and silently wipe the workspace.
+    //      The restart shortcut is ⌘⌥R (no Shift) precisely so a
+    //      self-issued restart can never be mistaken for this manual
+    //      Shift-to-skip-restore and silently wipe the workspace.
     //   4. Otherwise, load via `PersistenceCoordinator.load()` which
     //      enforces the same toggle gate as save and routes through
     //      `PersistenceStore`. A corrupt file is moved aside; nil means
@@ -70,9 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       restoredState = nil
     } else if PersistenceRestoreLaunchFlag.disablesPersistenceRestore() {
       restoredState = nil
-    } else if NSEvent.modifierFlags.contains(.shift)
-      && !PersistenceRestoreLaunchFlag.isAppRestart()
-    {
+    } else if NSEvent.modifierFlags.contains(.shift) {
       try? bootstrapCoordinator.store.archiveCurrent()
       restoredState = nil
     } else {
@@ -218,20 +215,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// just activates the existing one. There's a brief gap where the
   /// window isn't visible — acceptable for an explicit user action.
   ///
-  /// `--args --restart` is forwarded to the spawned process so its
-  /// launch-time Shift check can distinguish a self-issued restart from
-  /// a user-initiated Shift-launch. The ⌘⇧⌥R shortcut holds Shift past
-  /// the new process's `applicationDidFinishLaunching`, and without
-  /// this signal the workspace-archive escape hatch would fire on every
-  /// restart and silently wipe `workspace.json`.
+  /// No flags are forwarded: the restart shortcut is ⌘⌥R (no Shift), so
+  /// the successor can never trip the Shift-to-skip-restore archive
+  /// hatch and there is nothing to signal across the relaunch.
   static func restartApp() {
     let bundleURL = Bundle.main.bundleURL
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    task.arguments = [
-      "-n", bundleURL.path,
-      "--args", PersistenceRestoreLaunchFlag.restartArgument,
-    ]
+    task.arguments = ["-n", bundleURL.path]
     do {
       try task.run()
       NSApp.terminate(nil)

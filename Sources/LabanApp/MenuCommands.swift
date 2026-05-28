@@ -32,7 +32,7 @@ enum MenuCommands {
       action: #selector(AppDelegate.restartApp(_:)),
       keyEquivalent: "r"
     )
-    restartItem.keyEquivalentModifierMask = [.command, .shift, .option]
+    restartItem.keyEquivalentModifierMask = [.command, .option]
     appMenu.addItem(restartItem)
     appMenu.addItem(
       withTitle: "Quit Laban",
