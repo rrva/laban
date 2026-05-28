@@ -11,42 +11,45 @@ import LabanTerminalCore
 ///
 /// Modes:
 ///
-/// - `daemon-drain`         end-to-end. Spawn labpty, open a session whose
-///                          child writes a fixed payload via `cat`, drain
-///                          the byte ring from a consumer thread using
-///                          `LabptyByteRingReader.readSince`. Reports
-///                          producer throughput (MiB/s based on the writer
-///                          offset) and consumer per-read latency
-///                          percentiles. The only mode that exercises the
-///                          compiled C in the labpty daemon.
+/// - `daemon-drain`         end-to-end. Spawn labpty, open one or more
+///                          sessions whose child writes a fixed payload,
+///                          drain each byte ring from a per-session
+///                          consumer thread using `LabptyByteRingReader`.
+///                          Reports aggregate producer throughput (MiB/s)
+///                          and consumer per-read latency percentiles.
+///                          The only mode that exercises the compiled C
+///                          in the labpty daemon.
 ///
 /// - `daemon-drain-noread`  producer-only end-to-end. Same daemon and
-///                          session as `daemon-drain` but the consumer
-///                          only samples `outputWriteOffset()` on a coarse
-///                          cadence — no `readSince()`, no payload copy.
-///                          Isolates the producer (kernel read + byte
-///                          ring write + heartbeat) from any consumer-
-///                          side memcpy cost.
+///                          sessions but consumers only sample
+///                          `outputWriteOffset()` — no `readSince()`, no
+///                          payload copy. Isolates the producer (kernel
+///                          read + byte-ring write + heartbeat) from any
+///                          consumer-side memcpy cost.
 ///
 /// - `ring-write`           writer microbench against the Swift
-///                          `LabptyByteRingWriter`. Loop calling
-///                          `write` with a 4 KiB chunk until the payload
-///                          is consumed. No kernel, no IPC, no daemon.
-///                          NOTE: this is the Swift reimplementation of
+///                          `LabptyByteRingWriter`. No kernel, no IPC,
+///                          no daemon. NOTE: this is the Swift reimpl of
 ///                          the ring writer, not labpty's C. Useful as a
-///                          floor measurement and to check that the
-///                          mirrored layout has not regressed — it is not
-///                          a substitute for `daemon-drain`.
+///                          floor measurement; not a substitute for
+///                          `daemon-drain`.
+///
+/// Flags:
+///   --sessions N           parallel session count for daemon modes (default 1)
+///   --producer cat|zero    child command emitting the payload (default cat).
+///                          `zero` runs `dd if=/dev/zero bs=64k count=512`.
+///   --top-outliers N       print the N slowest consumer reads per iter
+///                          for daemon-drain (default 0)
 ///
 /// Usage:
-///   bench-labpty-hot-path                      # runs all modes
-///   bench-labpty-hot-path daemon-drain         # one mode
-///   bench-labpty-hot-path ring-write daemon-drain
+///   bench-labpty-hot-path                                # all modes, defaults
+///   bench-labpty-hot-path daemon-drain                   # one mode
+///   bench-labpty-hot-path --sessions 8 daemon-drain
+///   bench-labpty-hot-path --producer zero daemon-drain
 ///
 /// The daemon modes expect `.build/{debug,release}/labpty` to exist.
 /// Build it first with `swift build --product labpty` (release for a
-/// meaningful number). The bench picks the release binary when present,
-/// debug otherwise, and warns when running against the debug build.
+/// meaningful number).
 
 private let payloadBytes = 32 * 1024 * 1024  // 32 MiB
 private let iterations = 5
@@ -60,14 +63,66 @@ enum Mode: String, CaseIterable {
   case ringWrite = "ring-write"
 }
 
+enum Producer: String {
+  case cat
+  case zero
+}
+
+struct Options {
+  var sessions: Int = 1
+  var producer: Producer = .cat
+  var topOutliers: Int = 0
+  var modes: [Mode] = Mode.allCases
+}
+
+private func parseOptions(_ args: [String]) throws -> Options {
+  var options = Options()
+  var modesSpecified = false
+  var i = 0
+  while i < args.count {
+    let arg = args[i]
+    switch arg {
+    case "--sessions":
+      guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
+        throw BenchError("--sessions requires a positive integer")
+      }
+      options.sessions = value
+      i += 2
+    case "--producer":
+      guard i + 1 < args.count, let value = Producer(rawValue: args[i + 1]) else {
+        throw BenchError("--producer must be cat or zero")
+      }
+      options.producer = value
+      i += 2
+    case "--top-outliers":
+      guard i + 1 < args.count, let value = Int(args[i + 1]), value >= 0 else {
+        throw BenchError("--top-outliers requires a non-negative integer")
+      }
+      options.topOutliers = value
+      i += 2
+    default:
+      guard let mode = Mode(rawValue: arg) else {
+        let valid = Mode.allCases.map(\.rawValue).joined(separator: ", ")
+        throw BenchError("unknown argument: \(arg). valid modes: \(valid)")
+      }
+      if !modesSpecified {
+        options.modes = []
+        modesSpecified = true
+      }
+      options.modes.append(mode)
+      i += 1
+    }
+  }
+  return options
+}
+
 private struct Sample {
   var producerBytes: UInt64
   var producerWallNs: UInt64
   /// Consumer per-read latencies (ns). Empty for noread / ring-write modes.
+  /// Concatenated across all sessions in a multi-session iter.
   var consumerReadNs: [UInt64]
-  /// Total bytes the consumer actually copied. May differ from
-  /// `producerBytes` when the ring overflows (we count the writer's
-  /// advancing offset as the producer measurement).
+  /// Total bytes the consumer actually copied across all sessions.
   var consumerBytes: UInt64
   var overflowed: Bool
 }
@@ -84,7 +139,7 @@ private func makePayloadFile() throws -> URL {
   }
   // A deterministic mix of printable bytes and newlines. The labpty
   // producer doesn't parse — any bytes are fine — but this keeps the
-  // payload reproducible across runs and across machines.
+  // payload reproducible across runs and machines.
   let line: [UInt8] = Array(
     "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ \n".utf8)
   var data = Data(capacity: payloadBytes)
@@ -96,6 +151,24 @@ private func makePayloadFile() throws -> URL {
   }
   try data.write(to: url)
   return url
+}
+
+private func childArgv(producer: Producer, payload: URL) -> [String] {
+  switch producer {
+  case .cat:
+    // `cat <payload>` reads a 32 MiB file and writes it to the PTY. The
+    // PTY's line discipline translates \n -> \r\n so the consumer sees
+    // slightly more than 32 MiB.
+    return ["/bin/sh", "-c", "exec cat \(payload.path)"]
+  case .zero:
+    // dd writing 64 KiB chunks of zero to the PTY. No newlines → no CRLF
+    // expansion → exact 32 MiB through the ring. Larger child-side write
+    // chunks isolate the labpty drain from `cat`'s per-line overhead.
+    let totalBytes = payloadBytes
+    let blockSize = 65536
+    let count = totalBytes / blockSize
+    return ["/bin/sh", "-c", "exec dd if=/dev/zero bs=\(blockSize) count=\(count) 2>/dev/null"]
+  }
 }
 
 private struct Harness {
@@ -142,14 +215,10 @@ private func launchLabpty() throws -> Harness {
   let process = Process()
   process.executableURL = located.url
   process.arguments = ["--socket", socketPath, "--shm-dir", shmDir.path]
-  // Silence the daemon's stderr; otherwise SIGTERM-on-shutdown leaks noise
-  // into the bench output. Errors that matter would show up via socket
-  // disconnect before we get to print summary lines.
   process.standardOutput = Pipe()
   process.standardError = Pipe()
   try process.run()
 
-  // Wait for the listening socket to appear so the first connect doesn't race.
   let deadline = Date().addingTimeInterval(5)
   while Date() < deadline {
     if FileManager.default.fileExists(atPath: socketPath) { break }
@@ -192,40 +261,30 @@ private final class AtomicFlag {
   func isSet() -> Bool { OSAtomicAdd32(0, &raw) != 0 }
 }
 
-/// Spawn labpty, open a session that emits the payload, drain the byte ring
-/// to completion. When `readPayload` is true the consumer copies bytes out
-/// of the ring (the realistic case); when false the consumer only samples
-/// the writer offset (producer-only measurement).
-private func runDaemonDrain(payload: URL, readPayload: Bool) throws -> Sample {
-  let harness = try launchLabpty()
-  defer { shutdown(harness) }
-  let client = try LabptyTerminalSessionClient(socketPath: harness.socketPath, rpcTimeoutMilliseconds: 5_000)
-  defer { client.close() }
-  _ = try client.hello()
+private struct SessionResult {
+  var producerBytes: UInt64
+  var consumerBytes: UInt64
+  var consumerReadNs: [UInt64]
+  var overflowed: Bool
+}
 
-  let descriptor = try client.openSession(
-    LabptyOpenSessionRequest(
-      rows: 50,
-      cols: 200,
-      outputRingCapacity: outputRingCapacity,
-      argv: ["/bin/sh", "-c", "exec cat \(payload.path)"],
-      logicalSessionId: "bench-\(UUID().uuidString)"))
-
-  let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
-
+/// Drains one already-opened session until its writer offset reaches the
+/// expected payload size and stays quiet for a stall threshold. When
+/// `readPayload` is false, only the writer offset is sampled.
+private func drainSession(
+  reader: LabptyByteRingReader,
+  expectedBytes: UInt64,
+  readPayload: Bool
+) -> SessionResult {
   let startNs = clockMonotonicNs()
   var lastProgressNs = startNs
   var offset: UInt64 = 0
   var consumerBytes: UInt64 = 0
   var overflowed = false
-  var consumerReadNs: [UInt64] = []
+  var readNs: [UInt64] = []
   if readPayload {
-    consumerReadNs.reserveCapacity(4096)
+    readNs.reserveCapacity(4096)
   }
-
-  // Drain until the writer offset has reached at least the payload size and
-  // we've stopped seeing new bytes for >= 50 ms (the producer is done and
-  // the consumer has caught up).
   let stallThresholdNs: UInt64 = 50_000_000
   let maxRunNs: UInt64 = 30_000_000_000  // 30s safety
   while true {
@@ -237,7 +296,7 @@ private func runDaemonDrain(payload: URL, readPayload: Bool) throws -> Sample {
       let t0 = clockMonotonicNs()
       let result = reader.readSince(offset)
       let t1 = clockMonotonicNs()
-      consumerReadNs.append(t1 &- t0)
+      readNs.append(t1 &- t0)
       if result.overflowed { overflowed = true }
       consumerBytes += UInt64(result.bytes.count)
       offset = result.newOffset
@@ -245,35 +304,112 @@ private func runDaemonDrain(payload: URL, readPayload: Bool) throws -> Sample {
       offset = writerOffset
     }
 
-    let producerDone = offset >= UInt64(payloadBytes)
+    let producerDone = offset >= expectedBytes
     let quiet = nowNs &- lastProgressNs > stallThresholdNs
     if producerDone && quiet { break }
     if nowNs &- startNs > maxRunNs { break }
 
     if readPayload {
-      // Modest sleep to amortize Mach calls but stay below typical PTY
-      // chunk pacing.
       usleep(200)
     } else {
-      // Coarser sample cadence — we're trying not to perturb the producer.
       usleep(2_000)
     }
   }
+  return SessionResult(
+    producerBytes: offset,
+    consumerBytes: consumerBytes,
+    consumerReadNs: readNs,
+    overflowed: overflowed)
+}
+
+/// Spawn labpty, open `sessions` parallel sessions each running the
+/// `producer` command, drain them concurrently. Wall time is end-to-end
+/// (longest session). Producer/consumer bytes are summed across sessions.
+private func runDaemonDrain(
+  payload: URL,
+  options: Options,
+  readPayload: Bool
+) throws -> Sample {
+  let harness = try launchLabpty()
+  defer { shutdown(harness) }
+  let client = try LabptyTerminalSessionClient(
+    socketPath: harness.socketPath, rpcTimeoutMilliseconds: 5_000)
+  defer { client.close() }
+  _ = try client.hello()
+
+  // Open all sessions first, then start the consumer threads, so the
+  // wall-clock measurement starts the moment the first byte could be
+  // produced.
+  var descriptors: [LabptySessionDescriptor] = []
+  var readers: [LabptyByteRingReader] = []
+  descriptors.reserveCapacity(options.sessions)
+  readers.reserveCapacity(options.sessions)
+  for slot in 0..<options.sessions {
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 50,
+        cols: 200,
+        outputRingCapacity: outputRingCapacity,
+        argv: childArgv(producer: options.producer, payload: payload),
+        logicalSessionId: "bench-\(slot)-\(UUID().uuidString)"))
+    descriptors.append(descriptor)
+    readers.append(try LabptyByteRingReader(path: descriptor.byteRingShmPath))
+  }
+
+  // Per-session result slots, written by exactly one thread each.
+  var results: [SessionResult] = Array(
+    repeating: SessionResult(
+      producerBytes: 0, consumerBytes: 0, consumerReadNs: [], overflowed: false),
+    count: options.sessions)
+  let resultsLock = NSLock()
+  let expectedBytes: UInt64 = {
+    switch options.producer {
+    case .cat:
+      // CRLF expansion adds ~1 byte per newline. We don't know the exact
+      // count without scanning the payload, so use a slightly low
+      // threshold and let the stall detector handle the tail.
+      return UInt64(payloadBytes)
+    case .zero:
+      return UInt64(payloadBytes)
+    }
+  }()
+
+  let group = DispatchGroup()
+  let startNs = clockMonotonicNs()
+  for slot in 0..<options.sessions {
+    group.enter()
+    let reader = readers[slot]
+    DispatchQueue.global(qos: .userInitiated).async {
+      let result = drainSession(
+        reader: reader, expectedBytes: expectedBytes, readPayload: readPayload)
+      resultsLock.withLock {
+        results[slot] = result
+      }
+      group.leave()
+    }
+  }
+  group.wait()
   let endNs = clockMonotonicNs()
 
-  _ = try? client.terminate(handle: descriptor.ptyHandle)
+  for descriptor in descriptors {
+    _ = try? client.terminate(handle: descriptor.ptyHandle)
+  }
+
+  let totalProducerBytes = results.reduce(UInt64(0)) { $0 &+ $1.producerBytes }
+  let totalConsumerBytes = results.reduce(UInt64(0)) { $0 &+ $1.consumerBytes }
+  let mergedReads = results.flatMap { $0.consumerReadNs }
+  let overflowed = results.contains { $0.overflowed }
 
   return Sample(
-    producerBytes: offset,
+    producerBytes: totalProducerBytes,
     producerWallNs: endNs &- startNs,
-    consumerReadNs: consumerReadNs,
-    consumerBytes: consumerBytes,
+    consumerReadNs: mergedReads,
+    consumerBytes: totalConsumerBytes,
     overflowed: overflowed)
 }
 
 /// Pure Swift writer microbench. Allocates a `LabptyByteRingWriter`,
-/// writes the payload in 4 KiB chunks (the same chunk size labpty's
-/// daemon uses when it forwards a PTY read), measures wall time.
+/// writes the payload in 4 KiB chunks, measures wall time.
 private func runRingWrite() throws -> Sample {
   let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("bench-labpty-ring-\(UUID().uuidString)", isDirectory: true)
@@ -286,8 +422,6 @@ private func runRingWrite() throws -> Sample {
     outputRingCapacity: outputRingCapacity,
     logicalSessionId: "bench-ring-write")
 
-  // One reusable chunk of the right shape. The writer copies the bytes,
-  // so the chunk contents only matter for cache realism.
   var chunk = [UInt8](repeating: 0, count: ringWriteChunkBytes)
   for i in 0..<ringWriteChunkBytes {
     chunk[i] = UInt8((i * 31 + 7) & 0x7F)
@@ -313,10 +447,10 @@ private func runRingWrite() throws -> Sample {
     overflowed: false)
 }
 
-private func runOnce(mode: Mode, payload: URL) throws -> Sample {
+private func runOnce(mode: Mode, payload: URL, options: Options) throws -> Sample {
   switch mode {
-  case .daemonDrain: return try runDaemonDrain(payload: payload, readPayload: true)
-  case .daemonDrainNoRead: return try runDaemonDrain(payload: payload, readPayload: false)
+  case .daemonDrain: return try runDaemonDrain(payload: payload, options: options, readPayload: true)
+  case .daemonDrainNoRead: return try runDaemonDrain(payload: payload, options: options, readPayload: false)
   case .ringWrite: return try runRingWrite()
   }
 }
@@ -328,7 +462,7 @@ private func percentileNs(_ xs: [UInt64], _ q: Double) -> UInt64 {
   return sorted[i]
 }
 
-private func summarize(mode: Mode, samples: [Sample]) {
+private func summarize(mode: Mode, samples: [Sample], options: Options) {
   let walls = samples.map { Double($0.producerWallNs) / 1_000_000.0 }
   let meanWallMs = walls.reduce(0, +) / Double(walls.count)
   let avgBytes = samples.map { Double($0.producerBytes) }.reduce(0, +) / Double(samples.count)
@@ -337,8 +471,9 @@ private func summarize(mode: Mode, samples: [Sample]) {
 
   var line = String(
     format:
-      "SUMMARY[%@]  iters=%d  wall_mean=%.1f ms  throughput=%.1f MiB/s  overflows=%d/%d",
-    mode.rawValue, samples.count, meanWallMs, mbps, overflows, samples.count)
+      "SUMMARY[%@]  iters=%d  sessions=%d  producer=%@  wall_mean=%.1f ms  throughput=%.1f MiB/s  overflows=%d/%d",
+    mode.rawValue, samples.count, options.sessions, options.producer.rawValue,
+    meanWallMs, mbps, overflows, samples.count)
 
   let allConsumerNs = samples.flatMap { $0.consumerReadNs }
   if !allConsumerNs.isEmpty {
@@ -353,16 +488,24 @@ private func summarize(mode: Mode, samples: [Sample]) {
       allConsumerNs.count, p50, p95, p99, p999, maxUs)
   }
   print(line)
+
+  if options.topOutliers > 0 && !allConsumerNs.isEmpty {
+    let sorted = allConsumerNs.sorted(by: >)
+    let top = Array(sorted.prefix(options.topOutliers))
+    let formatted = top.map { String(format: "%.1fµs", Double($0) / 1000.0) }.joined(separator: ", ")
+    print("  top-\(options.topOutliers) outliers: \(formatted)")
+  }
 }
 
-private func runMode(_ mode: Mode, payload: URL) {
+private func runMode(_ mode: Mode, payload: URL, options: Options) {
   print(
     "bench-labpty-hot-path[\(mode.rawValue)]: payload=\(payloadBytes) B, "
       + "ring_capacity=\(outputRingCapacity) B, "
+      + "sessions=\(options.sessions), producer=\(options.producer.rawValue), "
       + "iter=\(iterations) (after \(warmup) warmup)")
   for _ in 0..<warmup {
     do {
-      _ = try runOnce(mode: mode, payload: payload)
+      _ = try runOnce(mode: mode, payload: payload, options: options)
     } catch {
       FileHandle.standardError.write(Data("bench[\(mode.rawValue)] warmup failed: \(error)\n".utf8))
       return
@@ -371,12 +514,13 @@ private func runMode(_ mode: Mode, payload: URL) {
   var samples: [Sample] = []
   for i in 0..<iterations {
     do {
-      let s = try runOnce(mode: mode, payload: payload)
+      let s = try runOnce(mode: mode, payload: payload, options: options)
       samples.append(s)
       let mbps = Double(s.producerBytes) / (Double(s.producerWallNs) / 1e9) / (1024.0 * 1024.0)
       let extra: String
       if !s.consumerReadNs.isEmpty {
-        extra = String(format: "  reads=%d  consumer_bytes=%llu", s.consumerReadNs.count, s.consumerBytes)
+        extra = String(
+          format: "  reads=%d  consumer_bytes=%llu", s.consumerReadNs.count, s.consumerBytes)
       } else {
         extra = ""
       }
@@ -395,7 +539,7 @@ private func runMode(_ mode: Mode, payload: URL) {
       return
     }
   }
-  summarize(mode: mode, samples: samples)
+  summarize(mode: mode, samples: samples, options: options)
   print("---")
 }
 
@@ -413,20 +557,17 @@ do {
   exit(1)
 }
 
-let args = CommandLine.arguments.dropFirst()
-let modes: [Mode]
-if args.isEmpty {
-  modes = Mode.allCases
-} else {
-  modes = args.compactMap { Mode(rawValue: $0) }
-  if modes.count != args.count {
-    let valid = Mode.allCases.map(\.rawValue).joined(separator: ", ")
-    FileHandle.standardError.write(
-      Data("bench-labpty-hot-path: unknown mode. valid: \(valid)\n".utf8))
-    exit(2)
-  }
+let options: Options
+do {
+  options = try parseOptions(Array(CommandLine.arguments.dropFirst()))
+} catch let error as BenchError {
+  FileHandle.standardError.write(Data("bench-labpty-hot-path: \(error.description)\n".utf8))
+  exit(2)
+} catch {
+  FileHandle.standardError.write(Data("bench-labpty-hot-path: \(error)\n".utf8))
+  exit(2)
 }
 
-for mode in modes {
-  runMode(mode, payload: payload)
+for mode in options.modes {
+  runMode(mode, payload: payload, options: options)
 }
