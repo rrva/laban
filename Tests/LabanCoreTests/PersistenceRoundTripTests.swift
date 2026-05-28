@@ -139,6 +139,26 @@ final class PersistenceRoundTripTests: XCTestCase {
     XCTAssertFalse(PersistenceRestoreLaunchFlag.isPresent(in: ["LabanApp", "--smoke"]))
   }
 
+  func testRestartFlagParsing() {
+    XCTAssertTrue(
+      PersistenceRestoreLaunchFlag.isAppRestart(
+        in: ["LabanApp", PersistenceRestoreLaunchFlag.restartArgument]))
+    XCTAssertFalse(PersistenceRestoreLaunchFlag.isAppRestart(in: ["LabanApp"]))
+    XCTAssertFalse(
+      PersistenceRestoreLaunchFlag.isAppRestart(in: ["LabanApp", "--smoke"]))
+    XCTAssertTrue(
+      PersistenceRestoreLaunchFlag.isAppRestart(
+        in: ["LabanApp", "--smoke", PersistenceRestoreLaunchFlag.restartArgument]))
+    // Restart and persistence-disable flags share a namespace; assert
+    // they don't accidentally satisfy each other's predicates.
+    XCTAssertFalse(
+      PersistenceRestoreLaunchFlag.disablesPersistenceRestore(
+        in: ["LabanApp", PersistenceRestoreLaunchFlag.restartArgument]))
+    XCTAssertFalse(
+      PersistenceRestoreLaunchFlag.disablesPersistenceSync(
+        in: ["LabanApp", PersistenceRestoreLaunchFlag.restartArgument]))
+  }
+
   func testWorkspaceStateRoundTripPreservesAgentInfo() throws {
     // Schema includes M2 fields; round-trip them with
     // wasRunningAtQuit: false to catch any divergence between the
