@@ -112,9 +112,16 @@ toggle; the byte counts below were measured from this artifact.
   tier-aware encode+forward, which `HeadlessFocusRoutingTests` exercises over the laband
   backend. Satisfies the AGENTS.md headless-parity rule for focus.
 - [ ] M7 [P2] OSC 9;4 progress reports surface a tab/Dock busy affordance.
-- [ ] M8 [investigate] Does terminal identity (TERM_PROGRAM / versioned XTVERSION)
-  gate Claude Code's wheel-scroll? Idle A/B capture to confirm; advertise identity
-  regardless as correct hygiene.
+- [x] (2026-05-29) M8 [investigate] CLOSED — resolved by M0 + M2; terminal identity
+  ruled out. The original "Claude Code scrolls in iTerm2 but not Laban" symptom was not
+  an identity gate: M0 found Laban never delivered mouse to the daemon PTY at all (so no
+  wheel ever reached the app), and the `/tmp/mousediag.py` A/B showed Laban already
+  inherits `TERM_PROGRAM=iTerm.app`, so identity could not have been the differentiator.
+  With M0 (wheel reaches the app — `less --mouse` confirmed Laban's bytes scroll a real
+  TUI) and M2 (Shift+wheel always scrolls Laban's own scrollback) both shipped, the
+  user-visible scrollback symptom is resolved whether or not Claude Code binds the wheel.
+  No identity advertisement change made; revisit only if a concrete app is found to gate
+  behavior on `TERM_PROGRAM`/XTVERSION.
 
 ## Context and Orientation
 
