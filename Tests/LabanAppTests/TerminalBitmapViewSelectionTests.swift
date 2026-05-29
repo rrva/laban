@@ -370,6 +370,47 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "a click under mouse tracking must clear the existing local selection")
   }
 
+  func testShiftWheelScrollsLocalScrollbackUnderMouseTracking() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    // Produce scrollback above the small viewport.
+    for i in 1...40 { _ = session.write(Array("line \(i)\r\n".utf8)) }
+    session.poll()
+    enableMouseTracking(in: session)
+    harness.view.advanceFrame()
+
+    // Plain wheel under mouse tracking is forwarded to the app (not local scroll).
+    XCTAssertFalse(
+      wheelMovedViewport(in: harness, session: session, shift: false),
+      "plain wheel under mouse tracking must forward to the app, not scroll Laban scrollback")
+
+    // Shift+wheel is the escape hatch: it scrolls Laban's own scrollback even
+    // while the app holds the mouse.
+    XCTAssertTrue(
+      wheelMovedViewport(in: harness, session: session, shift: true),
+      "Shift+wheel must scroll Laban's scrollback even while the app tracks the mouse")
+  }
+
+  /// Feeds wheel notches (both directions, so the test is sign-agnostic) and
+  /// reports whether Laban's own viewport offset moved.
+  private func wheelMovedViewport(in harness: Harness, session: Session, shift: Bool) -> Bool {
+    let base = session.viewportState()?.viewportOffset ?? 0
+    for delta in [CGFloat(3), CGFloat(-3)] {
+      for _ in 0..<3 {
+        harness.view.scrollWheel(
+          with: TestScrollWheelEvent(
+            locationInWindow: point(row: 2, col: 0, in: harness),
+            deltaY: delta,
+            modifierFlags: shift ? .shift : []))
+      }
+      if session.viewportState()?.viewportOffset != base { return true }
+    }
+    return false
+  }
+
   private struct Harness {
     var model: AppModel
     var view: TerminalBitmapView

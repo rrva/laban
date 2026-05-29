@@ -2271,7 +2271,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
 
     guard let vs = session.viewportState() else { return }
 
-    if vs.mouseTracking && !localSelectionMouseGestureActive {
+    // Shift+wheel is the universal escape hatch (iTerm2/Terminal.app/kitty) to
+    // Laban's own scrollback even while a fullscreen app holds the mouse: skip
+    // both the mouse-forward and alt-scroll branches so it falls through to the
+    // local scrollback path below.
+    let shiftScrollOverride = event.modifierFlags.contains(.shift)
+
+    if vs.mouseTracking && !localSelectionMouseGestureActive && !shiftScrollOverride {
       // Mouse tracking active: encode wheel as press+release. Use legacy
       // deltaY for notched wheels and precise scrollingDeltaY for trackpads.
       let direction = TerminalScrollInput.mouseTrackingWheelDirection(
@@ -2307,7 +2313,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
 
-    if vs.altScreen && vs.altScroll && !localSelectionMouseGestureActive {
+    if vs.altScreen && vs.altScroll && !localSelectionMouseGestureActive && !shiftScrollOverride {
       // Alternate scroll mode (DEC private 1007): the app is on the alternate
       // screen, which has no scrollback for the wheel to move, so translate
       // wheel motion into cursor-key presses the app scrolls with (this is how

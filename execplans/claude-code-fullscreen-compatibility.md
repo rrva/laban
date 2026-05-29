@@ -67,8 +67,15 @@ toggle; the byte counts below were measured from this artifact.
   `TerminalBitmapViewSelectionTests.testClickClearsSelectionWhenMouseTrackingIsActive`;
   all 19 selection + mouse-input tests pass (incl. multi-tab persistence and
   shift-under-tracking); non-shift drag still selects natively via `mouseDragged`.
-- [ ] M2 [P2, optional] Shift+wheel scrolls Laban's OWN scrollback as an escape hatch
-  (nice-to-have once M0 makes plain wheel reach the app).
+- [x] (2026-05-29) M2 [P2] Shift+wheel scrolls Laban's OWN scrollback as an escape hatch.
+  DONE. `scrollWheel` now skips both the mouse-forward and alt-scroll (1007) branches
+  when Shift is held, falling through to the local scrollback path — the universal
+  iTerm2/Terminal.app/kitty convention. Plain-wheel behavior is unchanged (still
+  forwards), so M0's native-scroll path is preserved; `docs/product/mvp.md:243-245`
+  updated to document the Shift exception. Verified by new red/green
+  `TerminalBitmapViewSelectionTests.testShiftWheelScrollsLocalScrollbackUnderMouseTracking`
+  (mutation-checked): under mouse tracking, plain wheel forwards (no local scroll) and
+  Shift+wheel moves Laban's viewport.
 - [ ] ~~M2b~~ SUPERSEDED by M0. With mouse forwarding fixed, plain wheel reaches the
   app and the app scrolls (iTerm2 behavior); Laban no longer needs to scroll its own
   scrollback under mouse tracking, so the `mvp.md` contract edit is unnecessary.

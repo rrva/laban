@@ -242,7 +242,9 @@ Mouse input in terminal content is delivered according to terminal mode.
 
 If terminal mouse tracking is active, pointer and wheel events are encoded
 through libghostty's mouse encoder for the terminal app. If mouse tracking is
-not active, wheel events scroll scrollback.
+not active, wheel events scroll scrollback. Holding Shift always scrolls Laban's
+own scrollback, even while a fullscreen app holds the mouse — the universal
+terminal escape hatch (iTerm2/Terminal.app/kitty).
 
 Wheel/debug scrollback is required. A visible scroll indicator is preferred,
 but a visible draggable scrollbar is optional for the first scaffold.
