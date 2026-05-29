@@ -164,7 +164,20 @@ labpty_status_t labpty_registry_open(
     *out = NULL;
     labpty_registry_reap(registry);
     labpty_session_t *existing = labpty_registry_find_logical(registry, request->logical_id);
-    if (existing && !reclaim_dead_session(existing)) return LABPTY_E_SESSION_ID_IN_USE;
+    if (existing) {
+        /* A live session genuinely owns the id; reject the duplicate. */
+        if (existing->alive) return LABPTY_E_SESSION_ID_IN_USE;
+        /* Otherwise the id is bound to a session already on its way out — a
+         * reclaimable dead leak, or one still inside its async close window
+         * (close_pending) whose child the WNOHANG reap above has not caught
+         * yet. A client reopening a logical_id it just terminated must not
+         * lose this race with the reap tick, so finish the prior teardown
+         * synchronously (labpty_session_close SIGKILL-escalates the child
+         * and reaps it) and reuse the freed slot. If the child somehow
+         * outlives even SIGKILL the slot stays used and we still reject. */
+        labpty_session_close(existing);
+        if (existing->used) return LABPTY_E_SESSION_ID_IN_USE;
+    }
     labpty_session_t *slot = free_slot(registry);
     if (!slot && reclaim_one_dead_session(registry)) slot = free_slot(registry);
     if (!slot) return LABPTY_E_PAYLOAD_TOO_LARGE;
