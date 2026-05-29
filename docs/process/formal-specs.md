@@ -112,7 +112,8 @@ sweep finishes in well under a minute.
 decoders memory-safe and contract-correct on untrusted input. Every byte
 they consume comes from a client socket, so this is the daemon's trust
 boundary. CBMC explores **all** inputs up to a small length bound and
-discharges, for `labpty_frame.c` and `labpty_protocol.c`:
+discharges, for `labpty_frame.c`, `labpty_protocol.c` and the byte-ring
+writer in `labpty_byte_ring.c`:
 
 - no out-of-bounds read or write, no invalid/NULL pointer, no use of a
   freed or dead object (`--bounds-check --pointer-check
@@ -158,6 +159,16 @@ large fixed output aggregates (open's ~1.4 MB struct; hello's
 `capabilities[64][65]`) make the BMC formula intractable at a useful
 unwind. They stay compilable so the drift smoke catches signature changes,
 and can be run on demand with a long timeout.
+
+The byte-ring writer has its own pair: `ring_proof.c::proof_byte_ring_write`
+proves the wraparound write arithmetic (the `& (capacity-1)` split and the
+over-capacity clamp) stays in bounds for any prior `output_offset` and a
+small power-of-two capacity family, and `ring_negctl.c` pins the clamp. CBMC
+owns only this **sequential index math**; the **cross-process ordering**
+(`NoTornRead`, `WindowDoesNotContainFutureWrites`) stays with
+`LabptyByteRing.tla`, because neither CBMC nor any sequential analysis models
+the shared-memory release/acquire faithfully — the proof models the atomic
+release store as a plain in-bounds store for exactly that reason.
 
 ### Running it
 

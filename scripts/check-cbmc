@@ -33,7 +33,7 @@ if ! command -v cbmc >/dev/null 2>&1; then
   printf 'check-cbmc: cbmc not found; running compile-only drift smoke\n'
   printf '  install cbmc to run the proofs (brew install cbmc)\n'
   cc=${CC:-cc}
-  for harness in frame_proof.c frame_negctl.c; do
+  for harness in frame_proof.c frame_negctl.c ring_proof.c ring_negctl.c; do
     printf '  compile %-18s ... ' "$harness"
     if "$cc" -std=c11 -Wall -Wextra \
          -I "$repo_root/Sources/Labpty" -I "$proofs_dir/stubs" \
@@ -107,6 +107,11 @@ run_cbmc frame_proof.c  proof_decode_signal     12  pass
 run_cbmc frame_proof.c  proof_decode_handle     12  pass
 run_cbmc frame_proof.c  proof_decode_write_input 12 pass
 
+# Byte-ring WRITE index arithmetic: wraparound split + over-capacity clamp
+# stay in bounds for ANY prior output_offset. The cross-process ordering
+# (NoTornRead) is owned by specs/labpty/LabptyByteRing.tla, not CBMC.
+run_cbmc ring_proof.c   proof_byte_ring_write     4 pass
+
 # proof_decode_hello and proof_decode_open are intentionally NOT gated.
 # Both decoders read input exclusively through primitives already proven
 # above — labpty_read_u32/u64, labpty_read_bytes/require_read, read_string
@@ -125,6 +130,7 @@ run_cbmc frame_proof.c  proof_decode_write_input 12 pass
 # Negative controls — must find a counter-example.
 run_cbmc frame_negctl.c negctl_decode_header    12  fail
 run_cbmc frame_negctl.c negctl_valid_utf8        8  fail
+run_cbmc ring_negctl.c  negctl_byte_ring_write_no_clamp 4 fail
 
 if [ "$failures" -ne 0 ]; then
   printf 'check-cbmc: %d harness(es) did not match expectation\n' "$failures" >&2

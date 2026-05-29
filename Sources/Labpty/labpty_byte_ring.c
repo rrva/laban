@@ -229,7 +229,11 @@ void labpty_byte_ring_close(labpty_byte_ring_writer_t *writer) {
 /* Modelled by specs/labpty/LabptyByteRing.tla::WriteCells + WritePublish.
  * NoTornRead and WindowDoesNotContainFutureWrites hold whenever the
  * readable window leaves a margin of at least MaxWriteSize bytes;
- * MC_ByteRing_Boundary.cfg pins the torn-read counter-example at margin = 1. */
+ * MC_ByteRing_Boundary.cfg pins the torn-read counter-example at margin = 1.
+ * The TLA model owns the cross-process ORDERING; the SEQUENTIAL wraparound
+ * index arithmetic below (the & (capacity-1) split and over-capacity clamp)
+ * is proven in-bounds by proofs/labpty/ring_proof.c::proof_byte_ring_write,
+ * with the clamp pinned by ring_negctl.c::negctl_byte_ring_write_no_clamp. */
 labpty_status_t labpty_byte_ring_write(labpty_byte_ring_writer_t *writer, const uint8_t *bytes, size_t len) {
     assert(writer != NULL);
     assert(bytes != NULL || len == 0);
