@@ -12,6 +12,11 @@
 #                                 corpus once, then exit. Deterministic; this
 #                                 is the form scripts/check runs, and the
 #                                 fallback when no fuzzing engine is installed.
+#   scripts/fuzz-labpty --check-msan
+#                                 same replay under MemorySanitizer (catches
+#                                 uninitialized reads ASan misses). MSan is
+#                                 Linux-only; self-skips on macOS where no
+#                                 clang supports -fsanitize=memory.
 #
 # Engine policy: AFL++ is the strategic runner (actively maintained).
 # libFuzzer is in maintenance mode upstream but its harness ABI is the
@@ -32,8 +37,9 @@ mode=campaign
 secs=60
 case "${1:-}" in
   --check) mode=check ;;
+  --check-msan) mode=msan ;;
   "") : ;;
-  *[!0-9]*) printf 'fuzz-labpty: invalid argument %s (expected --check or seconds)\n' "$1" >&2; exit 2 ;;
+  *[!0-9]*) printf 'fuzz-labpty: invalid argument %s (expected --check, --check-msan or seconds)\n' "$1" >&2; exit 2 ;;
   *) secs=$1 ;;
 esac
 
@@ -56,6 +62,38 @@ run_replay() {
   "$tmpdir/replay" "$corpus"/*
   printf 'fuzz-labpty: corpus replay clean (no sanitizer findings)\n'
 }
+
+run_replay_msan() {
+  # MemorySanitizer is Linux-only — apple clang and brew LLVM both reject
+  # -fsanitize=memory for arm64-apple-darwin. Probe with a real link; if no
+  # clang supports it (every macOS dev box), skip cleanly so this stays safe
+  # to call from scripts/check. On Linux/CI it builds and runs.
+  msan_cc=""
+  for cand in "${CC:-cc}" /opt/homebrew/opt/llvm/bin/clang clang; do
+    command -v "$cand" >/dev/null 2>&1 || [ -x "$cand" ] || continue
+    if printf 'int main(void){return 0;}\n' | "$cand" -fsanitize=memory -xc - -o "$tmpdir/msan_probe" >/dev/null 2>&1; then
+      msan_cc="$cand"; break
+    fi
+  done
+  if [ -z "$msan_cc" ]; then
+    printf 'fuzz-labpty: MemorySanitizer unsupported on this target (Linux-only); skipping MSan replay\n'
+    return 0
+  fi
+  printf 'fuzz-labpty: building MSan replay harness (%s)\n' "$msan_cc"
+  # shellcheck disable=SC2086
+  "$msan_cc" -std=c11 -g -O1 -fsanitize=memory -fsanitize-memory-track-origins=2 \
+     -fno-omit-frame-pointer -fno-sanitize-recover=all -DLABPTY_FUZZ_STANDALONE $incs \
+     "$harness" $decoders -o "$tmpdir/msan_replay"
+  count=$(ls -1 "$corpus" | wc -l | tr -d ' ')
+  printf 'fuzz-labpty: replaying %s seed(s) under MemorySanitizer\n' "$count"
+  "$tmpdir/msan_replay" "$corpus"/*
+  printf 'fuzz-labpty: MSan corpus replay clean (no uninitialized-read findings)\n'
+}
+
+if [ "$mode" = msan ]; then
+  run_replay_msan
+  exit 0
+fi
 
 if [ "$mode" = check ]; then
   run_replay

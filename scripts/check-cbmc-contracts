@@ -17,11 +17,13 @@
 # only covers the fixed 8-iteration little-endian read loops; the input
 # length itself is unbounded via the function contract's __CPROVER_is_fresh.
 #
-# Decoders whose own loops use early `return` on the error path
-# (valid_utf8, decode_open, decode_hello) are NOT contracted here: CBMC loop
-# contracts do not cleanly support early `return`, and rewriting those loops
-# to single-exit is a behaviour-touching change. They stay covered by the
-# bounded proofs in check-cbmc and by the fuzzer at full size.
+# valid_utf8 carries a loop contract (it was made single-exit with break, so
+# its loop is abstracted rather than unwound) and is proven unbounded over n.
+# decode_open and decode_hello are still NOT contracted: their array loops
+# call read_string and write 2-D fixed aggregates, needing a read_string
+# contract plus loop invariants/assigns over those arrays — a larger effort.
+# They stay covered by the bounded proofs in check-cbmc and by the fuzzer at
+# full size.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -84,6 +86,7 @@ prove labpty_decode_resize_request
 prove labpty_decode_signal_request
 prove labpty_decode_handle_request
 prove labpty_decode_write_input_request
+prove valid_utf8
 
 if [ "$failures" -ne 0 ]; then
   printf 'check-cbmc-contracts: %d contract proof(s) failed\n' "$failures" >&2

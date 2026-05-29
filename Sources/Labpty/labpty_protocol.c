@@ -44,49 +44,64 @@ static labpty_status_t read_string(
  * listLabptySessions() call on the first-party client. Rejected non-
  * NUL bytes already include the NUL guard in read_string above; this
  * adds the structural UTF-8 check on top. */
-/* Proven by proofs/labpty/frame_proof.c::proof_valid_utf8 — the
- * multi-byte lookahead reads stay in bounds. The i+k>=n guards are
- * pinned by frame_negctl.c::negctl_valid_utf8. */
-static int valid_utf8(const uint8_t *s, size_t n) {
+/* Proven by proofs/labpty/frame_proof.c::proof_valid_utf8 (bounded) and,
+ * unbounded over n, by the loop contract below via scripts/check-cbmc-contracts.
+ * The i+k>=n lookahead guards are pinned by frame_negctl.c::negctl_valid_utf8.
+ *
+ * Single-exit by construction: the malformed-input paths set result=0 and
+ * `break` rather than `return`, because CBMC loop contracts support break/goto
+ * exits but not early `return`. Behaviour is identical to a per-branch
+ * `return 0` — result starts at 1 and is only cleared on the exact paths that
+ * previously returned 0. */
+static int valid_utf8(const uint8_t *s, size_t n)
+    LABPTY_REQUIRES(__CPROVER_is_fresh(s, n))
+    LABPTY_ENSURES(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
+{
     size_t i = 0;
+    int result = 1;
     assert(s != NULL || n == 0);
-    while (i < n) {
+    while (i < n)
+        LABPTY_LOOP_ASSIGNS(i, result)
+        LABPTY_LOOP_INVARIANT(i <= n)
+        LABPTY_DECREASES(n - i)
+    {
         uint8_t c = s[i];
         if (c <= 0x7fu) {
             i += 1;
             continue;
         }
         if ((c & 0xe0u) == 0xc0u) {
-            if (c < 0xc2u || i + 1 >= n) return 0;
-            if ((s[i + 1] & 0xc0u) != 0x80u) return 0;
+            if (c < 0xc2u || i + 1 >= n) { result = 0; break; }
+            if ((s[i + 1] & 0xc0u) != 0x80u) { result = 0; break; }
             i += 2;
             continue;
         }
         if ((c & 0xf0u) == 0xe0u) {
-            if (i + 2 >= n) return 0;
-            if ((s[i + 1] & 0xc0u) != 0x80u) return 0;
-            if ((s[i + 2] & 0xc0u) != 0x80u) return 0;
+            if (i + 2 >= n) { result = 0; break; }
+            if ((s[i + 1] & 0xc0u) != 0x80u) { result = 0; break; }
+            if ((s[i + 2] & 0xc0u) != 0x80u) { result = 0; break; }
             /* Reject overlong (c==0xe0 with low continuation) and
              * surrogate range (c==0xed with high continuation). */
-            if (c == 0xe0u && s[i + 1] < 0xa0u) return 0;
-            if (c == 0xedu && s[i + 1] >= 0xa0u) return 0;
+            if (c == 0xe0u && s[i + 1] < 0xa0u) { result = 0; break; }
+            if (c == 0xedu && s[i + 1] >= 0xa0u) { result = 0; break; }
             i += 3;
             continue;
         }
         if ((c & 0xf8u) == 0xf0u) {
-            if (c > 0xf4u) return 0;
-            if (i + 3 >= n) return 0;
-            if ((s[i + 1] & 0xc0u) != 0x80u) return 0;
-            if ((s[i + 2] & 0xc0u) != 0x80u) return 0;
-            if ((s[i + 3] & 0xc0u) != 0x80u) return 0;
-            if (c == 0xf0u && s[i + 1] < 0x90u) return 0;
-            if (c == 0xf4u && s[i + 1] >= 0x90u) return 0;
+            if (c > 0xf4u) { result = 0; break; }
+            if (i + 3 >= n) { result = 0; break; }
+            if ((s[i + 1] & 0xc0u) != 0x80u) { result = 0; break; }
+            if ((s[i + 2] & 0xc0u) != 0x80u) { result = 0; break; }
+            if ((s[i + 3] & 0xc0u) != 0x80u) { result = 0; break; }
+            if (c == 0xf0u && s[i + 1] < 0x90u) { result = 0; break; }
+            if (c == 0xf4u && s[i + 1] >= 0x90u) { result = 0; break; }
             i += 4;
             continue;
         }
-        return 0;
+        result = 0;
+        break;
     }
-    return 1;
+    return result;
 }
 
 static labpty_status_t read_utf8_string(

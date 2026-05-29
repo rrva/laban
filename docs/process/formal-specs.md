@@ -227,17 +227,22 @@ little-endian read loops, which are bounded by construction.
 
 Contracted (unbounded): `labpty_decode_header`, `labpty_decode_resize_request`,
 `labpty_decode_signal_request`, `labpty_decode_handle_request`,
-`labpty_decode_write_input_request`.
+`labpty_decode_write_input_request`, and `valid_utf8`. The first five are
+loop-free (only the fixed 8-iteration read loop, covered by the small
+`--unwind`); `valid_utf8` carries a **loop contract** (`i <= n`,
+`decreases n - i`) after being made single-exit — its malformed-input paths
+set a result flag and `break` instead of an early `return`, because CBMC loop
+contracts support `break`/`goto` exits but not `return`. That refactor is
+behaviour-preserving, checked by a 100M-input exhaustive differential against
+the original logic plus the existing `LabptyTests`.
 
-**Not contracted** — `valid_utf8`, `labpty_decode_open_request`,
-`labpty_decode_hello_request`. Their own loops use early `return` on the
-error path, and CBMC loop contracts do not cleanly support early `return`
-(only `break`/`goto` exits); contracting them would mean refactoring the
-loops to single-exit, a behaviour-touching change. They stay covered by
-the bounded proofs above and by the fuzzer at full input size. The next
-step for them is modular: give `read_string` / `labpty_read_bytes` a
-contract and `--replace-call-with-contract` them, after the loops are made
-single-exit.
+**Not contracted** — `labpty_decode_open_request`, `labpty_decode_hello_request`.
+Their array loops call `read_string` and fill 2-D fixed aggregates, so an
+unbounded proof needs a `read_string` cursor contract plus loop
+invariants/`assigns` over those arrays — a larger effort. They stay covered by
+the bounded proofs above and by the fuzzer at full input size. The path
+forward is modular: make the loops single-exit, give `read_string` /
+`labpty_read_bytes` a contract, and `--replace-call-with-contract` them.
 
 `scripts/check-cbmc-contracts` is wired into `scripts/check` and self-skips
 when `cbmc`/`goto-cc` are absent.
@@ -270,6 +275,11 @@ tool. `make_seeds.py` generates the committed seed corpus under `corpus/`
   This is the form wired into `scripts/check`, and the fallback when no
   fuzzing engine is installed. It doubles as a drift guard: a decoder
   signature change breaks the build here.
+- `scripts/fuzz-labpty --check-msan` replays the corpus under
+  MemorySanitizer (uninitialized reads ASan misses). MSan is Linux-only —
+  `-fsanitize=memory` is rejected on `arm64-apple-darwin` by every clang —
+  so it self-skips on macOS and runs in Linux CI. Also wired into
+  `scripts/check`.
 
 A real campaign belongs on Linux/CI (AFL++'s macOS support is the weak
 spot). Locally, `--check` always runs because it needs only the system

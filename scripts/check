@@ -59,6 +59,9 @@ fi
 # scripts/fuzz-labpty. A real fuzzing campaign is a manual/CI step:
 # `scripts/fuzz-labpty [seconds]`.
 ./scripts/fuzz-labpty --check
+# Same replay under MemorySanitizer (uninitialized reads). MSan is
+# Linux-only, so this self-skips on macOS and runs in Linux CI.
+./scripts/fuzz-labpty --check-msan
 
 if [ -f Package.swift ]; then
   ./scripts/lint
