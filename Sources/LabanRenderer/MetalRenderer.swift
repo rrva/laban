@@ -706,6 +706,36 @@ public final class MetalRenderer: RendererBackend {
   /// Returns true if the content render pass actually executed (false when
   /// `damage == .partial([])` or encoder construction failed). The caller
   /// uses this to mark sample-buffer slot 0/1 as valid.
+  /// The colour a full-redraw clear should use: the terminal's default
+  /// background (from the background rect the FrameProducer always emits), so a
+  /// full redraw never flashes black under a themed terminal. Falls back to the
+  /// first rect's colour, then to black.
+  static func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
+    var rgba: UInt32?
+    for case let .rect(_, color, source) in commands where source == .terminal {
+      rgba = color
+      break
+    }
+    if rgba == nil {
+      for case let .rect(_, color, _) in commands {
+        rgba = color
+        break
+      }
+    }
+    guard let c = rgba else {
+      return MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+    }
+    return MTLClearColor(
+      red: Double((c >> 24) & 0xFF) / 255.0,
+      green: Double((c >> 16) & 0xFF) / 255.0,
+      blue: Double((c >> 8) & 0xFF) / 255.0,
+      alpha: Double(c & 0xFF) / 255.0)
+  }
+
+  private func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
+    Self.fullRedrawClearColor(commands)
+  }
+
   @discardableResult
   private func encodeContentPass(
     commands: [FrameCommand],
@@ -732,7 +762,12 @@ public final class MetalRenderer: RendererBackend {
     switch damage {
     case .full:
       attach.loadAction = .clear
-      attach.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+      // Clear to the terminal's own default background, not black. A full redraw
+      // happens on resizes and on alternate-screen swaps (e.g. quitting btop and
+      // starting top); clearing to black there flashes black under a themed
+      // terminal wherever the draw does not immediately cover. The FrameProducer
+      // always emits a terminal-area background rect, so reuse its colour.
+      attach.clearColor = fullRedrawClearColor(commands)
     case .partial(let yRanges):
       attach.loadAction = .load  // preserve clean rows from previous frame
       scissor = scissorRectFromYRanges(
