@@ -181,3 +181,36 @@ machine without CBMC. CI installs `cbmc`, so the real proofs run there.
 
 Key decoder symbols carry a `// Proven by proofs/labpty/...` anchor
 comment, mirroring the TLA+ `// Modelled by specs/...` anchors.
+
+### Fuzzing the decoders (dynamic complement)
+
+CBMC is exhaustive but only up to a small input bound. The
+`proofs/labpty/fuzz/` harness covers the other half: it runs the **real**
+decoders at **full input size** under AddressSanitizer + UBSan — the
+large-payload paths that are intractable for bounded model checking
+(open's argv/envp arrays, hello's capability list, 64 KB write-input).
+This is dynamic testing, not a proof, but it closes CBMC's bound and the
+two together harden the whole trust boundary.
+
+`fuzz_decoders.c` defines the libFuzzer ABI entry point
+`LLVMFuzzerTestOneInput`, which AFL++, libFuzzer, Honggfuzz and Centipede
+all consume — so the harness is engine-portable and outlives any single
+tool. `make_seeds.py` generates the committed seed corpus under `corpus/`
+(input layout: a selector byte then the op payload).
+
+`scripts/fuzz-labpty` drives it:
+
+- `scripts/fuzz-labpty [seconds]` runs a campaign, **preferring AFL++**
+  (the actively maintained engine), then libFuzzer (in upstream
+  maintenance mode, but a drop-in via the shared ABI). Discovered inputs
+  and crashes go to the gitignored `findings/`; the committed seeds stay
+  curated.
+- `scripts/fuzz-labpty --check` builds the harness under ASan/UBSan and
+  replays the seed corpus once — deterministic and engine-independent.
+  This is the form wired into `scripts/check`, and the fallback when no
+  fuzzing engine is installed. It doubles as a drift guard: a decoder
+  signature change breaks the build here.
+
+A real campaign belongs on Linux/CI (AFL++'s macOS support is the weak
+spot). Locally, `--check` always runs because it needs only the system
+`cc` with ASan/UBSan.

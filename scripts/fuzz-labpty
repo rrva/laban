@@ -1,0 +1,111 @@
+#!/usr/bin/env sh
+# Fuzz the labpty wire-format decoders (proofs/labpty/fuzz/fuzz_decoders.c)
+# — the dynamic complement to the CBMC proofs in proofs/labpty. CBMC proves
+# the decoders safe exhaustively up to a small bound; this exercises them
+# at full size under AddressSanitizer + UBSan.
+#
+# Usage:
+#   scripts/fuzz-labpty           run a 60s campaign (AFL++ preferred, then
+#                                 libFuzzer)
+#   scripts/fuzz-labpty 300       run a 300s campaign
+#   scripts/fuzz-labpty --check   build under ASan/UBSan and replay the seed
+#                                 corpus once, then exit. Deterministic; this
+#                                 is the form scripts/check runs, and the
+#                                 fallback when no fuzzing engine is installed.
+#
+# Engine policy: AFL++ is the strategic runner (actively maintained).
+# libFuzzer is in maintenance mode upstream but its harness ABI is the
+# lingua franca, so it stays a drop-in until AFL++/Centipede is wired in.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+fuzz_dir="proofs/labpty/fuzz"
+harness="$fuzz_dir/fuzz_decoders.c"
+corpus="$fuzz_dir/corpus"      # curated seeds, committed, read-only here
+findings="$fuzz_dir/findings"  # campaign output + discovered inputs (gitignored)
+decoders="Sources/Labpty/labpty_frame.c Sources/Labpty/labpty_protocol.c"
+incs="-I Sources/Labpty -I Sources/Labpty/include -I Sources/LabanTerminalCore/include"
+
+mode=campaign
+secs=60
+case "${1:-}" in
+  --check) mode=check ;;
+  "") : ;;
+  *[!0-9]*) printf 'fuzz-labpty: invalid argument %s (expected --check or seconds)\n' "$1" >&2; exit 2 ;;
+  *) secs=$1 ;;
+esac
+
+# Materialise the seed corpus if absent.
+if [ ! -d "$corpus" ] || [ -z "$(ls -A "$corpus" 2>/dev/null)" ]; then
+  python3 "$fuzz_dir/make_seeds.py"
+fi
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+run_replay() {
+  printf 'fuzz-labpty: building ASan/UBSan replay harness\n'
+  # shellcheck disable=SC2086
+  cc -std=c11 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
+     -DLABPTY_FUZZ_STANDALONE $incs \
+     "$harness" $decoders -o "$tmpdir/replay"
+  count=$(ls -1 "$corpus" | wc -l | tr -d ' ')
+  printf 'fuzz-labpty: replaying %s seed(s) through the decoders\n' "$count"
+  "$tmpdir/replay" "$corpus"/*
+  printf 'fuzz-labpty: corpus replay clean (no sanitizer findings)\n'
+}
+
+if [ "$mode" = check ]; then
+  run_replay
+  exit 0
+fi
+
+# Campaign mode: AFL++ first.
+if command -v afl-fuzz >/dev/null 2>&1 && command -v afl-clang-fast >/dev/null 2>&1; then
+  printf 'fuzz-labpty: AFL++ campaign for %ss\n' "$secs"
+  # shellcheck disable=SC2086
+  AFL_USE_ASAN=1 AFL_USE_UBSAN=1 afl-clang-fast -std=c11 -g -O1 $incs \
+     "$harness" $decoders -o "$tmpdir/afl_fuzzer"
+  mkdir -p "$findings"
+  to=$(command -v gtimeout || command -v timeout || true)
+  if [ -n "$to" ]; then
+    AFL_USE_ASAN=1 "$to" "$secs" afl-fuzz -i "$corpus" -o "$findings" -- "$tmpdir/afl_fuzzer" || true
+  else
+    printf 'fuzz-labpty: no timeout(1); run manually:\n  afl-fuzz -i %s -o %s -- <built binary>\n' "$corpus" "$findings"
+    AFL_USE_ASAN=1 afl-fuzz -i "$corpus" -o "$findings" -- "$tmpdir/afl_fuzzer"
+  fi
+  exit 0
+fi
+
+# libFuzzer fallback. Probe with a real link test (apple clang here, or
+# brew LLVM), since -fsanitize=fuzzer needs the runtime at link time.
+probe='int LLVMFuzzerTestOneInput(const unsigned char*d,unsigned long s){(void)d;(void)s;return 0;}'
+fuzz_cc=""
+for cand in cc /opt/homebrew/opt/llvm/bin/clang; do
+  command -v "$cand" >/dev/null 2>&1 || [ -x "$cand" ] || continue
+  if printf '%s\n' "$probe" | "$cand" -fsanitize=fuzzer -xc - -o "$tmpdir/probe" >/dev/null 2>&1; then
+    fuzz_cc="$cand"
+    break
+  fi
+done
+
+if [ -n "$fuzz_cc" ]; then
+  printf 'fuzz-labpty: libFuzzer campaign (%s) for %ss\n' "$fuzz_cc" "$secs"
+  # shellcheck disable=SC2086
+  "$fuzz_cc" -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all \
+     $incs "$harness" $decoders -o "$tmpdir/libfuzzer"
+  # First dir is the writable working corpus (discovered inputs land
+  # there); the seed dir is passed read-only after it. Crashes are written
+  # under findings/ via artifact_prefix so the committed seeds stay clean.
+  mkdir -p "$findings/corpus"
+  "$tmpdir/libfuzzer" -max_total_time="$secs" -print_final_stats=1 \
+     -artifact_prefix="$findings/" "$findings/corpus" "$corpus"
+  exit 0
+fi
+
+printf 'fuzz-labpty: no fuzzing engine found.\n'
+printf 'fuzz-labpty: install AFL++ (brew install afl++) for campaigns;\n'
+printf 'fuzz-labpty: falling back to deterministic corpus replay.\n'
+run_replay
