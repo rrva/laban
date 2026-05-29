@@ -2255,6 +2255,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       )
       let sent = session.sendMouseCapturingBytes(me)
       let bytes = sent.result == 0 ? sent.bytes : []
+      forwardEncodedMouseToDaemon(bytes, session: session)
       recordInput(
         kind: "mouse",
         route: "terminal",
@@ -2667,6 +2668,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       )
       let sent = session.sendMouseCapturingBytes(motionEvent)
       let bytes = sent.result == 0 ? sent.bytes : []
+      forwardEncodedMouseToDaemon(bytes, session: session)
       recordInput(
         kind: "mouse",
         route: "terminal",
@@ -2715,6 +2717,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     var bytes: [UInt8] = []
     if pressSent.result == 0 { bytes.append(contentsOf: pressSent.bytes) }
     if releaseSent.result == 0 { bytes.append(contentsOf: releaseSent.bytes) }
+    forwardEncodedMouseToDaemon(bytes, session: session)
     recordInput(
       kind: "mouse",
       route: "terminal",
@@ -2801,6 +2804,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       )
       let sent = session.sendMouseCapturingBytes(releaseEvent)
       let bytes = sent.result == 0 ? sent.bytes : []
+      forwardEncodedMouseToDaemon(bytes, session: session)
       recordInput(
         kind: "mouse",
         route: "terminal",
@@ -2842,7 +2846,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      _ = session.sendMouseCapturingBytes(pressEvent)
+      let sent = session.sendMouseCapturingBytes(pressEvent)
+      forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
       renderInvalidated = true
     }
   }
@@ -2874,7 +2879,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      _ = session.sendMouseCapturingBytes(motionEvent)
+      let sent = session.sendMouseCapturingBytes(motionEvent)
+      forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
       renderInvalidated = true
     }
   }
@@ -2905,11 +2911,30 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
         cellHeight: cellHeight,
         modifiers: event.labanModifiers
       )
-      _ = session.sendMouseCapturingBytes(releaseEvent)
+      let sent = session.sendMouseCapturingBytes(releaseEvent)
+      forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
       if trackedMouseButton == .right { trackedMouseButton = .none }
       renderInvalidated = true
     }
     if trackedMouseButton == .right { trackedMouseButton = .none }
+  }
+
+  /// On the daemon-backed (labpty/laband) tier the local Session is fixture-mode,
+  /// so `sendMouseCapturingBytes` only encodes — the bytes must reach the daemon's
+  /// PTY the same way keystrokes and paste do, or no terminal app ever sees the
+  /// mouse. No-op on the in-process tier (where `sendMouseCapturingBytes` already
+  /// wrote locally) and when there is nothing to deliver.
+  private func forwardEncodedMouseToDaemon(_ bytes: [UInt8], session: Session) {
+    guard !bytes.isEmpty,
+      let sessionCoordinator,
+      sessionCoordinator.terminalClient != nil,
+      let activeTab = model.activeTab
+    else { return }
+    try? sessionCoordinator.write(
+      bytes,
+      to: activeTab,
+      session: session,
+      size: model.terminalSize)
   }
 
   private func selectionGeometry() -> TerminalSelectionInput.GridGeometry {

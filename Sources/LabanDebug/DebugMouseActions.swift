@@ -143,6 +143,7 @@ struct DebugMouseActions {
     let sent = session.sendMouseCapturingBytes(mouseEvent)
     let encoded = sent.bytes
     if !encoded.isEmpty {
+      forwardEncodedInputToDaemon(encoded, tab: tab, session: session)
       runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: encoded)
     }
     runtime.appendInputEnvelope(
@@ -276,6 +277,7 @@ struct DebugMouseActions {
       : Session.CapturedMouseWrite(result: -1, bytes: [])
     let encoded = pressSent.bytes + releaseSent.bytes
     if !encoded.isEmpty {
+      forwardEncodedInputToDaemon(encoded, tab: tab, session: session)
       runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: encoded)
     }
     runtime.appendInputEnvelope(
@@ -303,6 +305,26 @@ struct DebugMouseActions {
         activeTabId: tab.id, activeSessionId: tab.sessionId,
         mouseTracking: true, sent: sent
       ))
+  }
+
+  /// On the remote (labpty/laband) tier `sendMouseCapturingBytes` only encodes —
+  /// the bytes must reach the daemon PTY via the terminal client, mirroring
+  /// `DebugInputActions.typeText`. No-op in-process (no client; the encode path
+  /// already wrote locally) and when there is nothing to deliver.
+  private func forwardEncodedInputToDaemon(_ bytes: [UInt8], tab: Tab, session: Session) {
+    guard !bytes.isEmpty, let client = runtime.terminalSessionClient else { return }
+    do {
+      try runtime.ensureTerminalClientSessionUnlocked(for: tab)
+      try client.writeInput(
+        sessionId: runtime.terminalClientRemoteSessionId(for: session.id),
+        bytes: bytes)
+    } catch {
+      runtime.appendError(
+        kind: "terminalClient.writeInput.failed",
+        message: String(describing: error),
+        sessionId: session.id,
+        tabId: tab.id)
+    }
   }
 
   private func setClickSelection(
