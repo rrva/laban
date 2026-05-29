@@ -49,6 +49,11 @@ fi
 # drift smoke (see scripts/check-cbmc), so it is safe to call always.
 ./scripts/check-cbmc
 
+# CBMC contract proofs (DFCC): prove the loop-free decoders memory-safe
+# UNBOUNDED — for every input length, not just up to the check-cbmc bound.
+# Self-skips when cbmc/goto-cc are absent.
+./scripts/check-cbmc-contracts
+
 # Replay the labpty fuzz seed corpus through the decoders under
 # ASan/UBSan — the deterministic, engine-independent form of
 # scripts/fuzz-labpty. A real fuzzing campaign is a manual/CI step:

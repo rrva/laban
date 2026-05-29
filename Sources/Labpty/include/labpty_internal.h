@@ -45,6 +45,8 @@
 #define __single
 #endif
 
+#include "labpty_contracts.h"
+
 enum {
     LABPTY_MAX_FRAME = 128 * 1024,
     LABPTY_FRAME_HEADER_BYTES = 24,

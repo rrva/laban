@@ -1,0 +1,92 @@
+#!/usr/bin/env sh
+# CBMC contract proofs (DFCC) for the labpty wire-format decoders.
+#
+# Where scripts/check-cbmc proves the decoders safe EXHAUSTIVELY UP TO A
+# SMALL INPUT BOUND, these proofs use CBMC code contracts + dynamic frame
+# condition checking (DFCC) to prove them UNBOUNDED — memory-safe for
+# EVERY input length, not just up to ~26 bytes — and to pin the value
+# contracts the daemon relies on (frame_len in range, winsize in range,
+# write-input length capped).
+#
+# Contracts live as zero-cost __CPROVER_* annotations on the real decoders
+# (gated by -DLABPTY_CONTRACTS via Sources/Labpty/include/labpty_contracts.h),
+# so the proof binds to production code and normal builds are unaffected.
+#
+# Pipeline per function: goto-cc -> goto-instrument --dfcc main
+# --enforce-contract <fn> --apply-loop-contracts -> cbmc. The small --unwind
+# only covers the fixed 8-iteration little-endian read loops; the input
+# length itself is unbounded via the function contract's __CPROVER_is_fresh.
+#
+# Decoders whose own loops use early `return` on the error path
+# (valid_utf8, decode_open, decode_hello) are NOT contracted here: CBMC loop
+# contracts do not cleanly support early `return`, and rewriting those loops
+# to single-exit is a behaviour-touching change. They stay covered by the
+# bounded proofs in check-cbmc and by the fuzzer at full size.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+if ! command -v cbmc >/dev/null 2>&1 || ! command -v goto-cc >/dev/null 2>&1 \
+   || ! command -v goto-instrument >/dev/null 2>&1; then
+  printf 'check-cbmc-contracts: cbmc/goto-cc/goto-instrument not found; skipping\n'
+  printf '  install cbmc to run the contract proofs (brew install cbmc)\n'
+  exit 0
+fi
+
+S="$repo_root/Sources/Labpty"
+STUB="$repo_root/proofs/labpty/stubs"
+HARNESS="$repo_root/proofs/labpty/contracts/contract_harness.c"
+SRCS="Sources/Labpty/labpty_frame.c Sources/Labpty/labpty_protocol.c"
+
+tmpdir=$(mktemp -d)
+tmpout=$(mktemp)
+trap 'rm -rf "$tmpdir" "$tmpout"' EXIT
+
+# goto-cc resolves relative -I paths from an unexpected base; use absolute
+# paths and compile each TU separately, then link (multi-file compile in one
+# goto-cc invocation drops the include path).
+printf 'check-cbmc-contracts: compiling goto model (-DLABPTY_CONTRACTS)\n'
+goto-cc -DLABPTY_CONTRACTS -I "$S" -I "$STUB" -c "$HARNESS" -o "$tmpdir/harness.goto" 2>"$tmpout" \
+  || { printf 'goto-cc failed:\n'; cat "$tmpout"; exit 1; }
+for src in $SRCS; do
+  base=$(basename "$src" .c)
+  goto-cc -DLABPTY_CONTRACTS -I "$S" -I "$STUB" -c "$src" -o "$tmpdir/$base.goto" 2>"$tmpout" \
+    || { printf 'goto-cc failed on %s:\n' "$src"; cat "$tmpout"; exit 1; }
+done
+goto-cc "$tmpdir/harness.goto" "$tmpdir/labpty_frame.goto" "$tmpdir/labpty_protocol.goto" \
+  -o "$tmpdir/lab.goto" 2>"$tmpout" || { printf 'goto-cc link failed:\n'; cat "$tmpout"; exit 1; }
+
+CHECKS="--bounds-check --pointer-check --pointer-primitive-check \
+--signed-overflow-check --pointer-overflow-check --undefined-shift-check --div-by-zero-check"
+
+failures=0
+
+prove() {
+  fn=$1
+  printf '  %-34s (unbounded) ... ' "$fn"
+  if ! goto-instrument --dfcc main --enforce-contract "$fn" --apply-loop-contracts \
+       "$tmpdir/lab.goto" "$tmpdir/$fn.goto" >"$tmpout" 2>&1; then
+    printf 'INSTRUMENT FAILED\n'; tail -n 20 "$tmpout"; failures=$((failures + 1)); return 0
+  fi
+  # shellcheck disable=SC2086
+  cbmc "$tmpdir/$fn.goto" $CHECKS --unwind 16 >"$tmpout" 2>&1
+  if grep -q 'VERIFICATION SUCCESSFUL' "$tmpout"; then
+    printf 'OK\n'
+  else
+    printf 'FAILED\n'; tail -n 25 "$tmpout"; failures=$((failures + 1))
+  fi
+}
+
+printf 'check-cbmc-contracts: enforcing decoder contracts\n'
+prove labpty_decode_header
+prove labpty_decode_resize_request
+prove labpty_decode_signal_request
+prove labpty_decode_handle_request
+prove labpty_decode_write_input_request
+
+if [ "$failures" -ne 0 ]; then
+  printf 'check-cbmc-contracts: %d contract proof(s) failed\n' "$failures" >&2
+  exit 1
+fi
+printf 'check-cbmc-contracts: all decoder contracts verified (unbounded over input length)\n'

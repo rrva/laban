@@ -135,7 +135,15 @@ labpty_status_t labpty_decode_header(
     const uint8_t *bytes __sized_by(len),
     size_t len,
     labpty_frame_header_t *out __single
-) {
+)
+    LABPTY_REQUIRES(__CPROVER_is_fresh(bytes, len))
+    LABPTY_REQUIRES(__CPROVER_is_fresh(out, sizeof(*out)))
+    LABPTY_ASSIGNS(*out)
+    LABPTY_ENSURES(__CPROVER_return_value == LABPTY_OK ==>
+                   (out->frame_len >= LABPTY_FRAME_HEADER_BYTES &&
+                    out->frame_len <= LABPTY_MAX_FRAME &&
+                    out->abi_major == 1))
+{
     assert(bytes != NULL);
     assert(out != NULL);
     if (len < LABPTY_FRAME_HEADER_BYTES) return LABPTY_E_TRUNCATED_FRAME;

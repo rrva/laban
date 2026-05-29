@@ -182,6 +182,55 @@ machine without CBMC. CI installs `cbmc`, so the real proofs run there.
 Key decoder symbols carry a `// Proven by proofs/labpty/...` anchor
 comment, mirroring the TLA+ `// Modelled by specs/...` anchors.
 
+### Unbounded proofs via contracts (DFCC)
+
+The bounded harnesses above are exhaustive only up to a small `--unwind`.
+`scripts/check-cbmc-contracts` removes that bound for the loop-free
+decoders using CBMC **code contracts** and **dynamic frame condition
+checking (DFCC)**: it proves them memory-safe and contract-correct for
+**every input length**, not just up to ~26 bytes.
+
+The contracts are zero-cost `__CPROVER_*` annotations written directly on
+the real decoders — gated by `-DLABPTY_CONTRACTS` through
+`Sources/Labpty/include/labpty_contracts.h`, exactly like the
+`-fbounds-safety` `__sized_by` annotations next to them. With the macro
+disabled (every normal build, the bounded proofs, the fuzzer) they expand
+to nothing, so the proof binds to production code without changing it. For
+example `labpty_decode_header` carries:
+
+```c
+LABPTY_REQUIRES(__CPROVER_is_fresh(bytes, len))
+LABPTY_REQUIRES(__CPROVER_is_fresh(out, sizeof(*out)))
+LABPTY_ASSIGNS(*out)
+LABPTY_ENSURES(__CPROVER_return_value == LABPTY_OK ==>
+               (out->frame_len >= LABPTY_FRAME_HEADER_BYTES &&
+                out->frame_len <= LABPTY_MAX_FRAME && out->abi_major == 1))
+```
+
+`__CPROVER_is_fresh(bytes, len)` says "for an arbitrary, unbounded `len`,
+treat `bytes` as a fresh readable object of exactly that size" — so the
+proof covers all lengths at once. The pipeline is `goto-cc` →
+`goto-instrument --dfcc main --enforce-contract <fn> --apply-loop-contracts`
+→ `cbmc`; the small `--unwind` only covers the fixed 8-iteration
+little-endian read loops, which are bounded by construction.
+
+Contracted (unbounded): `labpty_decode_header`, `labpty_decode_resize_request`,
+`labpty_decode_signal_request`, `labpty_decode_handle_request`,
+`labpty_decode_write_input_request`.
+
+**Not contracted** — `valid_utf8`, `labpty_decode_open_request`,
+`labpty_decode_hello_request`. Their own loops use early `return` on the
+error path, and CBMC loop contracts do not cleanly support early `return`
+(only `break`/`goto` exits); contracting them would mean refactoring the
+loops to single-exit, a behaviour-touching change. They stay covered by
+the bounded proofs above and by the fuzzer at full input size. The next
+step for them is modular: give `read_string` / `labpty_read_bytes` a
+contract and `--replace-call-with-contract` them, after the loops are made
+single-exit.
+
+`scripts/check-cbmc-contracts` is wired into `scripts/check` and self-skips
+when `cbmc`/`goto-cc` are absent.
+
 ### Fuzzing the decoders (dynamic complement)
 
 CBMC is exhaustive but only up to a small input bound. The

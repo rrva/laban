@@ -212,7 +212,14 @@ labpty_status_t labpty_decode_resize_request(
     const uint8_t *payload __sized_by(len),
     size_t len,
     labpty_resize_request_t *out __single
-) {
+)
+    LABPTY_REQUIRES(__CPROVER_is_fresh(payload, len))
+    LABPTY_REQUIRES(__CPROVER_is_fresh(out, sizeof(*out)))
+    LABPTY_ASSIGNS(*out)
+    LABPTY_ENSURES(__CPROVER_return_value == LABPTY_OK ==>
+                   (out->rows >= 1 && out->rows <= 4096 &&
+                    out->cols >= 1 && out->cols <= 4096))
+{
     assert(payload != NULL || len == 0);
     assert(out != NULL);
     labpty_reader_t reader = { .cur = payload, .end = payload + len };
@@ -230,7 +237,11 @@ labpty_status_t labpty_decode_signal_request(
     const uint8_t *payload __sized_by(len),
     size_t len,
     labpty_signal_request_t *out __single
-) {
+)
+    LABPTY_REQUIRES(__CPROVER_is_fresh(payload, len))
+    LABPTY_REQUIRES(__CPROVER_is_fresh(out, sizeof(*out)))
+    LABPTY_ASSIGNS(*out)
+{
     assert(payload != NULL || len == 0);
     assert(out != NULL);
     labpty_reader_t reader = { .cur = payload, .end = payload + len };
@@ -246,7 +257,11 @@ labpty_status_t labpty_decode_handle_request(
     const uint8_t *payload __sized_by(len),
     size_t len,
     labpty_handle_request_t *out __single
-) {
+)
+    LABPTY_REQUIRES(__CPROVER_is_fresh(payload, len))
+    LABPTY_REQUIRES(__CPROVER_is_fresh(out, sizeof(*out)))
+    LABPTY_ASSIGNS(*out)
+{
     assert(payload != NULL || len == 0);
     assert(out != NULL);
     labpty_reader_t reader = { .cur = payload, .end = payload + len };
@@ -264,7 +279,12 @@ labpty_status_t labpty_decode_write_input_request(
     const uint8_t *payload __sized_by(len),
     size_t len,
     labpty_write_input_request_t *out __single
-) {
+)
+    LABPTY_REQUIRES(__CPROVER_is_fresh(payload, len))
+    LABPTY_REQUIRES(__CPROVER_is_fresh(out, sizeof(*out)))
+    LABPTY_ASSIGNS(*out)
+    LABPTY_ENSURES(__CPROVER_return_value == LABPTY_OK ==> out->len <= 64u * 1024u)
+{
     assert(payload != NULL || len == 0);
     assert(out != NULL);
     if (len < 12) return LABPTY_E_TRUNCATED_FRAME;
