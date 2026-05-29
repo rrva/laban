@@ -2563,6 +2563,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       // press+release and the drag path is local, so neither needs it, and a
       // stale .left would survive into the next gesture.
       cancelSelectionDragForMouseTracking()
+      // A press under mouse tracking dismisses any existing local selection, the
+      // same way a bare click does without tracking. cancelSelectionDragForMouseTracking
+      // only resets drag state, so the committed selection must be cleared here
+      // (scoped to the active tab) or it stays painted after the click is
+      // forwarded to the app — and would resurrect from the per-tab cache on a
+      // tab switch.
+      if selectionAnchor != nil || selectionFocus != nil {
+        syncSelectionStateToActiveTab()
+        selectionAnchor = nil
+        selectionFocus = nil
+        selectionOriginCell = nil
+        persistSelectionStateForCurrentTab()
+        recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+      }
       pendingTrackingClick = PendingTrackingClick(
         downPoint: pt, pressModifiers: event.labanModifiers)
     case .localSelection:

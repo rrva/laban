@@ -56,8 +56,17 @@ toggle; the byte counts below were measured from this artifact.
   `HeadlessMouseRoutingTests.testHeadlessMouseWheelReachesChildOverLabandBackend`
   passes and fails when the forward is removed (mutation-checked); paste-routing
   regression still green.
-- [ ] M1 [P1] Click clears a committed selection under mouse tracking (depends on M0
-  for the click to actually reach the app).
+- [x] (2026-05-29) M1 [P1] Click clears a committed selection under mouse tracking.
+  DONE. After b71ea98 reworked the handlers (deferred clicks), a press under tracking
+  hits `mouseDown`'s `.deferUnderTracking` case, which set `pendingTrackingClick`
+  without clearing the committed selection (and `mouseUp`'s `pendingTrackingClick`
+  branch forwarded the click but never cleared it), so the highlight stayed painted.
+  Fixed by clearing the active-tab selection there (scoped: `syncSelectionStateToActiveTab`
+  → null fields → `persistSelectionStateForCurrentTab` → record `clearSelection`).
+  Verified by new red/green test
+  `TerminalBitmapViewSelectionTests.testClickClearsSelectionWhenMouseTrackingIsActive`;
+  all 19 selection + mouse-input tests pass (incl. multi-tab persistence and
+  shift-under-tracking); non-shift drag still selects natively via `mouseDragged`.
 - [ ] M2 [P2, optional] Shift+wheel scrolls Laban's OWN scrollback as an escape hatch
   (nice-to-have once M0 makes plain wheel reach the app).
 - [ ] ~~M2b~~ SUPERSEDED by M0. With mouse forwarding fixed, plain wheel reaches the

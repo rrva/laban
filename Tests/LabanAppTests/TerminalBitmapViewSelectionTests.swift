@@ -345,6 +345,31 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testClickClearsSelectionWhenMouseTrackingIsActive() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    // Commit a selection while the app is not tracking the mouse.
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    // The app turns on mouse tracking (a fullscreen TUI like Claude Code). A
+    // bare click must still dismiss the leftover selection instead of leaving it
+    // painted while the click is forwarded to the app.
+    enableMouseTracking(in: session)
+    clickCell(row: 0, col: 8, in: harness)
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "a click under mouse tracking must clear the existing local selection")
+  }
+
   private struct Harness {
     var model: AppModel
     var view: TerminalBitmapView
@@ -425,6 +450,12 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       with: mouseEvent(type: .leftMouseDragged, at: end, modifierFlags: .shift))
     harness.view.mouseUp(
       with: mouseEvent(type: .leftMouseUp, at: end, modifierFlags: .shift))
+  }
+
+  private func clickCell(row: Int, col: Int, in harness: Harness) {
+    let point = point(row: row, col: col, in: harness)
+    harness.view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: point))
+    harness.view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: point))
   }
 
   private func shiftClickCell(row: Int, col: Int, in harness: Harness) {
