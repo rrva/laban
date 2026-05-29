@@ -954,9 +954,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let terminalDirty = activeTerminalDirty || (!usingRemoteSessions && session.renderDirty())
 
     let gateNow = Date()
+    // On the daemon (laband) tier the local Session is fixture-mode and never
+    // sees the program's BSU/ESU, so synchronized-output state must come from the
+    // published snapshot's flag — otherwise the gate is inert and clients show
+    // half-drawn frames. In-process keeps reading the live VT.
+    let synchronizedOutputActive: Bool
+    if let remoteFrame {
+      synchronizedOutputActive = remoteFrame.snapshot.synchronizedOutput ?? false
+    } else {
+      synchronizedOutputActive = session.synchronizedOutputActive
+    }
     let syncGate = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: terminalDirty,
-      synchronizedOutputActive: session.synchronizedOutputActive,
+      synchronizedOutputActive: synchronizedOutputActive,
       sessionId: session.id,
       now: gateNow,
       hold: synchronizedOutputHold)

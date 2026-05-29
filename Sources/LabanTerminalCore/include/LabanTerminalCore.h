@@ -119,6 +119,10 @@ typedef struct {
     int exit_status;
     int mouse_tracking;
     int focus_reporting;
+    /* DEC private mode 2026 (synchronized output) active: viewers should hold
+       presentation of this snapshot until the program ends the synchronized
+       update, so multi-client (laband) clients don't show half-drawn frames. */
+    int synchronized_output;
     int dirty;
     uint32_t default_foreground_rgba;
     uint32_t default_background_rgba;

@@ -294,6 +294,12 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
   /// and leaks the layer-backed view's underlying color through as a black
   /// border.
   public var defaultBackgroundRGBA: UInt32?
+  /// DEC private mode 2026 (synchronized output) active for this snapshot. The
+  /// daemon stamps it into the ring so multi-client (laband) viewers hold
+  /// presentation until the program ends the synchronized update, instead of
+  /// showing a half-drawn frame. Optional for forwards/backwards compatibility:
+  /// readers treat `nil` as "not synchronized".
+  public var synchronizedOutput: Bool?
 
   public init(
     logicalSessionId: String,
@@ -309,7 +315,8 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
     dirty: Bool,
     visibleText: String,
     cells: [LabandSnapshotCell],
-    defaultBackgroundRGBA: UInt32? = nil
+    defaultBackgroundRGBA: UInt32? = nil,
+    synchronizedOutput: Bool? = nil
   ) {
     self.logicalSessionId = logicalSessionId
     self.incarnationId = incarnationId
@@ -325,6 +332,7 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
     self.visibleText = visibleText
     self.cells = cells
     self.defaultBackgroundRGBA = defaultBackgroundRGBA
+    self.synchronizedOutput = synchronizedOutput
   }
 }
 

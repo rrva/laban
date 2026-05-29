@@ -479,6 +479,9 @@ public final class LabandSnapshotRingWriter {
     var flags: UInt32 = 0
     if snapshot.cursor_visible != 0 { flags |= LabandSnapshotRingLayout.SlotFlag.cursorVisible }
     if snapshot.cursor_blinking != 0 { flags |= LabandSnapshotRingLayout.SlotFlag.cursorBlink }
+    if snapshot.synchronized_output != 0 {
+      flags |= LabandSnapshotRingLayout.SlotFlag.synchronizedOutput
+    }
     return flags
   }
 
@@ -845,7 +848,8 @@ public final class LabandSnapshotRingReader {
       exitStatus: nil,
       dirty: true,
       visibleText: visibleRows.joined(separator: "\n"),
-      cells: cells
+      cells: cells,
+      synchronizedOutput: (flags & LabandSnapshotRingLayout.SlotFlag.synchronizedOutput) != 0
     )
   }
 

@@ -81,7 +81,19 @@ toggle; the byte counts below were measured from this artifact.
   Verified by new red/green test
   `HeadlessFocusRoutingTests.testHeadlessFocusInReachesChildOverLabandBackend`
   (mutation-checked); mouse + paste routing still green; app builds.
-- [ ] M4 [P1] Synchronized output (mode 2026) coalesces on the laband snapshot tier.
+- [x] (2026-05-29) M4 [P1] Synchronized output (mode 2026) coalesces on the laband
+  snapshot tier. DONE. In-process already honored 2026 via `TerminalRenderGate`, but the
+  daemon's published snapshots never carried the state (`slotFlags` only stamped
+  cursor flags) and the app's gate read the fixture session's always-false flag, so
+  every mid-BSU frame tore. Stamp-the-bit fix (daemon keeps publishing; the app's 1s
+  watchdog bounds the hold): `LabanSnapshot.synchronized_output` set in `snapshot.c`
+  from `GHOSTTY_MODE_SYNC_OUTPUT` → `slotFlags` stamps the reserved `SlotFlag.synchronizedOutput`
+  bit → `readSnapshot` decodes it into `LabandSnapshotResponse.synchronizedOutput` →
+  `TerminalBitmapView` feeds `remoteFrame.snapshot.synchronizedOutput` into the gate
+  when a remote frame is present. Verified by new red/green
+  `LabandSnapshotSyncOutputRingTests.testSynchronizedOutputFlagCrossesTheRing`
+  (mutation-checked); in-process sync gate, laband control protocol, and headless
+  routing suites all green (16 tests); app builds.
 - [ ] M5 [P2] Regression test pinning kitty-keyboard Shift+Enter encoding.
 - [x] (2026-05-29) M6 [P2] Headless/autonomous coverage for focus reporting. DONE as
   part of M3: added a headless `windowFocus` action (`DebugWindowActions.windowFocus`,

@@ -563,6 +563,9 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     int focus_reporting = 0;
     (void)laban_session_mode_active_locked(s, GHOSTTY_MODE_FOCUS_EVENT, &focus_reporting);
     snap->focus_reporting        = focus_reporting;
+    int synchronized_output = 0;
+    (void)laban_session_mode_active_locked(s, GHOSTTY_MODE_SYNC_OUTPUT, &synchronized_output);
+    snap->synchronized_output    = synchronized_output;
     snap->dirty                  = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
     snap->default_foreground_rgba = default_fg;
     snap->default_background_rgba = default_bg;
