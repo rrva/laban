@@ -1,0 +1,133 @@
+#!/usr/bin/env sh
+# Run CBMC (bounded model checking) over the labpty wire-format decoders
+# under proofs/labpty and assert the expected outcome.
+#
+# Positive harnesses (proof_* in frame_proof.c) must verify: for every
+# input up to the per-harness length bound the decoders stay memory-safe,
+# free of undefined behaviour, and honour their value contracts.
+#
+# Negative-control harnesses (negctl_* in frame_negctl.c) must FAIL:
+# CBMC is required to find a counter-example. They reintroduce one removed
+# guard each and prove the checker can still see that class of bug. If a
+# negative control silently starts verifying, the bug-shape it documents
+# is gone and someone has weakened the proof — the same discipline the
+# specs/labpty MC_*PreFix configs enforce for the TLA+ models.
+#
+# When cbmc is not installed the script degrades to a compile-only drift
+# smoke: it compiles every harness against the current decoder source so
+# a signature/type change cannot silently rot the proof. CI installs cbmc
+# (brew install cbmc) so the real proofs run there.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+proofs_dir="$repo_root/proofs/labpty"
+cd "$repo_root"
+
+tmpout=$(mktemp)
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpout" "$tmpdir"' EXIT
+
+failures=0
+
+if ! command -v cbmc >/dev/null 2>&1; then
+  printf 'check-cbmc: cbmc not found; running compile-only drift smoke\n'
+  printf '  install cbmc to run the proofs (brew install cbmc)\n'
+  cc=${CC:-cc}
+  for harness in frame_proof.c frame_negctl.c; do
+    printf '  compile %-18s ... ' "$harness"
+    if "$cc" -std=c11 -Wall -Wextra \
+         -I "$repo_root/Sources/Labpty" -I "$proofs_dir/stubs" \
+         -c "$proofs_dir/$harness" -o "$tmpdir/${harness%.c}.o" 2>"$tmpout"; then
+      printf 'OK\n'
+    else
+      printf 'FAILED\n'
+      cat "$tmpout"
+      failures=$((failures + 1))
+    fi
+  done
+  [ "$failures" -eq 0 ] || exit 1
+  printf 'check-cbmc: drift smoke passed (proofs not run — cbmc absent)\n'
+  exit 0
+fi
+
+# Memory-safety + undefined-behaviour checks applied to every harness.
+# Deliberately excluded: --unsigned-overflow-check and --conversion-check.
+# The decoders reinterpret fixed-width little-endian words by design —
+# defined modular arithmetic when assembling u16/u32/u64, and the
+# u32<->i32 reinterpret of the signal number (labpty_read_i32). Genuine
+# narrowing is instead guarded in-code (the len > UINT32_MAX check in
+# write_string, the masking in labpty_read_u16). Bounds, pointer,
+# signed-overflow, pointer-overflow, shift and div-by-zero remain on and
+# cover all memory safety plus the true-UB classes.
+CHECKS="--bounds-check --pointer-check --pointer-primitive-check \
+--signed-overflow-check --pointer-overflow-check \
+--undefined-shift-check --div-by-zero-check"
+
+run_cbmc() {
+  harness=$1
+  fn=$2
+  unwind=$3
+  expected=$4
+  printf '  %-16s %-24s unwind=%-3s expect=%-5s ... ' \
+    "$harness" "$fn" "$unwind" "$expected"
+  set +e
+  # shellcheck disable=SC2086
+  cbmc "$proofs_dir/$harness" -DLABPTY_CBMC \
+    -I "$repo_root/Sources/Labpty" -I "$proofs_dir/stubs" \
+    --function "$fn" --unwind "$unwind" --unwinding-assertions \
+    $CHECKS --drop-unused-functions >"$tmpout" 2>&1
+  set -e
+  if grep -q 'VERIFICATION SUCCESSFUL' "$tmpout"; then
+    actual=pass
+  elif grep -q 'VERIFICATION FAILED' "$tmpout"; then
+    actual=fail
+  else
+    actual=error
+  fi
+  if [ "$actual" = "$expected" ]; then
+    printf 'OK\n'
+    return 0
+  fi
+  printf 'MISMATCH: got %s\n' "$actual"
+  printf '%s\n' '----- CBMC output (last 40 lines) -----'
+  tail -n 40 "$tmpout"
+  printf '%s\n' '---------------------------------------'
+  failures=$((failures + 1))
+  return 0
+}
+
+printf 'check-cbmc: running CBMC over proofs/labpty\n'
+
+# Positive proofs — must verify.
+run_cbmc frame_proof.c  proof_valid_utf8         8  pass
+run_cbmc frame_proof.c  proof_read_string       16  pass
+run_cbmc frame_proof.c  proof_decode_header     12  pass
+run_cbmc frame_proof.c  proof_decode_resize     12  pass
+run_cbmc frame_proof.c  proof_decode_signal     12  pass
+run_cbmc frame_proof.c  proof_decode_handle     12  pass
+run_cbmc frame_proof.c  proof_decode_write_input 12 pass
+
+# proof_decode_hello and proof_decode_open are intentionally NOT gated.
+# Both decoders read input exclusively through primitives already proven
+# above — labpty_read_u32/u64, labpty_read_bytes/require_read, read_string
+# (proof_read_string) and valid_utf8 (proof_valid_utf8) — and add only
+# array-loop iteration bounded by explicit `> max_count` guards. Their
+# large fixed output aggregates (open's ~1.4 MB struct; hello's
+# capabilities[64][65]) make the BMC formula intractable at a useful
+# unwind, with no new primitive to cover. The proof_decode_open /
+# proof_decode_hello entry points remain in frame_proof.c (the drift
+# smoke compiles them, so a signature change is still caught) and can be
+# run on demand with a long timeout, e.g.:
+#   cbmc proofs/labpty/frame_proof.c -DLABPTY_CBMC -I Sources/Labpty \
+#     -I proofs/labpty/stubs --function proof_decode_hello --unwind 8 \
+#     --unwinding-assertions $CHECKS --drop-unused-functions
+
+# Negative controls — must find a counter-example.
+run_cbmc frame_negctl.c negctl_decode_header    12  fail
+run_cbmc frame_negctl.c negctl_valid_utf8        8  fail
+
+if [ "$failures" -ne 0 ]; then
+  printf 'check-cbmc: %d harness(es) did not match expectation\n' "$failures" >&2
+  exit 1
+fi
+printf 'check-cbmc: all proofs verified and negative controls refuted\n'

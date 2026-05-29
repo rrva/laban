@@ -11,6 +11,8 @@ static uint64_t labpty_mono_ns(void) {
     return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
 }
 
+/* Proven by proofs/labpty/frame_proof.c::proof_read_string — no
+ * out-of-bounds write; result NUL-terminated within out_cap. */
 static labpty_status_t read_string(
     labpty_reader_t *reader,
     uint32_t max_bytes,
@@ -42,6 +44,9 @@ static labpty_status_t read_string(
  * listLabptySessions() call on the first-party client. Rejected non-
  * NUL bytes already include the NUL guard in read_string above; this
  * adds the structural UTF-8 check on top. */
+/* Proven by proofs/labpty/frame_proof.c::proof_valid_utf8 — the
+ * multi-byte lookahead reads stay in bounds. The i+k>=n guards are
+ * pinned by frame_negctl.c::negctl_valid_utf8. */
 static int valid_utf8(const uint8_t *s, size_t n) {
     size_t i = 0;
     assert(s != NULL || n == 0);
@@ -252,6 +257,9 @@ labpty_status_t labpty_decode_handle_request(
     return LABPTY_OK;
 }
 
+/* Proven by proofs/labpty/frame_proof.c::proof_decode_write_input — the
+ * decoded (bytes, len) slice is capped and lies entirely within the
+ * request buffer before it reaches the PTY write path. */
 labpty_status_t labpty_decode_write_input_request(
     const uint8_t *payload __sized_by(len),
     size_t len,

@@ -127,6 +127,10 @@ labpty_status_t labpty_write_bytes(labpty_writer_t *writer __single, const uint8
     return LABPTY_OK;
 }
 
+/* Proven by proofs/labpty/frame_proof.c::proof_decode_header — memory
+ * safety on untrusted input and frame_len in [FRAME_HEADER_BYTES,
+ * MAX_FRAME]. The load-bearing length guard is pinned by the
+ * frame_negctl.c::negctl_decode_header negative control. */
 labpty_status_t labpty_decode_header(
     const uint8_t *bytes __sized_by(len),
     size_t len,
