@@ -2165,19 +2165,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
     let event = KeyEvent(action: .press, key: .v, modifiers: .control)
-    let sent = session.sendKeyCapturingBytes(event)
-    if let sessionCoordinator, let activeTab = model.activeTab, !sent.bytes.isEmpty {
-      try? sessionCoordinator.write(
-        sent.bytes,
-        to: activeTab,
-        session: session,
-        size: model.terminalSize)
+
+    // Deliver the synthesized Ctrl+V exactly the way sendKeyEvent delivers a
+    // physical one. A laband/labpty session has no PTY in this process — the
+    // daemon owns it — so the local session's pty_fd is -1 and the send path
+    // (sendKeyCapturingBytes) encodes the keystroke but then returns zero bytes
+    // because it has nothing to write to. That silently dropped cmd+V image
+    // pastes while a real Ctrl+V kept working. The pure key encoder produces the
+    // 0x16 byte regardless of PTY ownership, and the coordinator forwards it to
+    // the daemon PTY, so Claude Code receives Ctrl+V and reads the clipboard image.
+    let bytes: [UInt8]
+    if let sessionCoordinator {
+      bytes = session.encodeKey(event) ?? []
+      if !bytes.isEmpty, let activeTab = model.activeTab {
+        try? sessionCoordinator.write(
+          bytes,
+          to: activeTab,
+          session: session,
+          size: model.terminalSize)
+      }
+    } else {
+      let sent = session.sendKeyCapturingBytes(event)
+      bytes = sent.result == 0 ? sent.bytes : []
     }
     EventLog.shared.log(
       "paste.image.forwarded",
       [
-        "encodedBytes": sent.bytes.count,
-        "result": Int(sent.result),
+        "encodedBytes": bytes.count,
       ])
     recordInput(
       kind: "key",
@@ -2185,8 +2199,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       key: "v",
       modifiers: ["control"],
       command: "pasteImage",
-      encodedHex: TerminalInputCaptureMetadata.encodedHex(sent.bytes),
-      encodedLength: TerminalInputCaptureMetadata.encodedLength(sent.bytes)
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
     )
     renderInvalidated = true
   }
