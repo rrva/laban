@@ -54,4 +54,31 @@ final class SessionKeyEncodingTests: XCTestCase {
     XCTAssertNotEqual(sent.result, 0)
     XCTAssertTrue(sent.bytes.isEmpty)
   }
+
+  // Regression: the forwarded cmd+V Ctrl+V must carry the unshifted codepoint.
+  // Claude Code enables the Kitty keyboard protocol, and in that mode the key
+  // encoder works from the codepoint rather than the key id — a synthesized
+  // event without it encodes to nothing, silently dropping the forwarded image
+  // paste. A physical Ctrl+V carries the codepoint (charactersIgnoringModifiers)
+  // and keeps working, which is why ctrl+V did but cmd+V did not.
+  func testKittyKeyboardModeNeedsUnshiftedCodepointForCtrlV() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    // Enable the Kitty keyboard protocol the way a TUI does: CSI > 1 u.
+    _ = session.feedOutput(Array("\u{1B}[>1u".utf8))
+
+    let withoutCodepoint = KeyEvent(action: .press, key: .v, modifiers: .control)
+    let withCodepoint = KeyEvent(
+      action: .press,
+      key: .v,
+      modifiers: .control,
+      unshiftedCodepoint: UInt32(UnicodeScalar("v").value))
+
+    XCTAssertTrue((session.encodeKey(withoutCodepoint) ?? []).isEmpty)
+    XCTAssertFalse((session.encodeKey(withCodepoint) ?? []).isEmpty)
+  }
 }

@@ -2164,15 +2164,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func forwardClipboardImagePasteToTerminal(session: Session) {
     let inputFollowDeltaRows = followActiveBottomBeforeTerminalInput(session: session)
     recordInputFollowBottom(deltaRows: inputFollowDeltaRows)
-    let event = KeyEvent(action: .press, key: .v, modifiers: .control)
+    // 'v' (U+0076) is the unshifted codepoint a physical Ctrl+V carries. The key
+    // encoder syncs from the live terminal, so when the foreground app enables
+    // the Kitty keyboard protocol (Claude Code does) it encodes from the
+    // codepoint rather than the key id — a synthesized event without it produces
+    // zero bytes. That dropped cmd+V image pastes while a physical Ctrl+V (whose
+    // codepoint comes from charactersIgnoringModifiers) kept working.
+    let event = KeyEvent(
+      action: .press,
+      key: .v,
+      modifiers: .control,
+      unshiftedCodepoint: UInt32(UnicodeScalar("v").value))
 
     // Deliver the synthesized Ctrl+V exactly the way sendKeyEvent delivers a
     // physical one. A laband/labpty session has no PTY in this process — the
     // daemon owns it — so the local session's pty_fd is -1 and the send path
     // (sendKeyCapturingBytes) encodes the keystroke but then returns zero bytes
-    // because it has nothing to write to. That silently dropped cmd+V image
-    // pastes while a real Ctrl+V kept working. The pure key encoder produces the
-    // 0x16 byte regardless of PTY ownership, and the coordinator forwards it to
+    // because it has nothing to write to. The pure key encoder produces the
+    // bytes regardless of PTY ownership, and the coordinator forwards them to
     // the daemon PTY, so Claude Code receives Ctrl+V and reads the clipboard image.
     let bytes: [UInt8]
     if let sessionCoordinator {
