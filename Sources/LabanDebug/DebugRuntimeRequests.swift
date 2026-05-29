@@ -30,6 +30,7 @@ enum DebugAction: Decodable {
   case mouseWheel(MouseWheelActionRequest)
   case click(ClickActionRequest)
   case key(DebugKeyActionRequest)
+  case windowFocus(WindowFocusActionRequest)
   case unsupported(String)
 
   private enum CodingKeys: String, CodingKey {
@@ -88,6 +89,8 @@ enum DebugAction: Decodable {
       self = .click(try ClickActionRequest(from: decoder))
     case "key":
       self = .key(try DebugKeyActionRequest(from: decoder))
+    case "windowFocus":
+      self = .windowFocus(try WindowFocusActionRequest(from: decoder))
     default:
       self = .unsupported(action)
     }
@@ -151,6 +154,13 @@ struct TextActionRequest: Decodable {
 
 struct AdvanceFramesActionRequest: Decodable {
   var count: Int?
+}
+
+/// Drives terminal focus reporting (DEC private mode 1004) from headless runs,
+/// mirroring the app's NSWindow key-state observers. `focused: true` reports
+/// focus-in (CSI I), `false` reports focus-out (CSI O).
+struct WindowFocusActionRequest: Decodable {
+  var focused: Bool?
 }
 
 struct DebugKeyActionRequest: Decodable {

@@ -536,16 +536,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)
     else { return }
-    reportFocus(to: session, focused: windowFocused)
+    reportFocus(to: session, tab: activeTab, focused: windowFocused)
   }
 
-  private func reportFocus(to session: Session, focused: Bool) {
+  private func reportFocus(to session: Session, tab: Tab, focused: Bool) {
     guard session.focusReportingEnabled else {
       lastReportedFocusBySession.removeValue(forKey: session.id)
       return
     }
     guard lastReportedFocusBySession[session.id] != focused else { return }
-    if session.sendFocus(focused: focused) == 0 {
+    let delivered: Bool
+    if let sessionCoordinator, sessionCoordinator.terminalClient != nil {
+      // Remote tier: the local Session is fixture-mode, so `sendFocus` only
+      // encodes and drops the bytes (same trap as paste/mouse). Encode the
+      // CSI I / CSI O and forward to the daemon's PTY so the app sees focus.
+      if let bytes = session.encodeFocus(focused: focused), !bytes.isEmpty {
+        delivered =
+          (try? sessionCoordinator.write(
+            bytes, to: tab, session: session, size: model.terminalSize)) != nil
+      } else {
+        delivered = false
+      }
+    } else {
+      delivered = session.sendFocus(focused: focused) == 0
+    }
+    if delivered {
       lastReportedFocusBySession[session.id] = focused
     }
   }
@@ -836,9 +851,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     let tabChanged = lastRenderedActiveTabId != activeTab.id
     if tabChanged,
       let outgoing = lastRenderedActiveTabId,
+      let outgoingTab = model.tabs.first(where: { $0.id == outgoing }),
       let outgoingSession = model.session(forTab: outgoing)
     {
-      reportFocus(to: outgoingSession, focused: false)
+      reportFocus(to: outgoingSession, tab: outgoingTab, focused: false)
     }
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
 

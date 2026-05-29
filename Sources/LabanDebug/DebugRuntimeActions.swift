@@ -33,6 +33,8 @@ extension HeadlessDebugRuntime {
       return DebugWindowActions(runtime: self).resizeWindow(request)
     case .advanceFrames(let request):
       return DebugWindowActions(runtime: self).advanceFrames(request)
+    case .windowFocus(let request):
+      return DebugWindowActions(runtime: self).windowFocus(request)
     case .typeText(let request):
       return DebugInputActions(runtime: self).typeText(request)
     case .feedOutput(let request):

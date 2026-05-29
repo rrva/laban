@@ -72,10 +72,22 @@ toggle; the byte counts below were measured from this artifact.
 - [ ] ~~M2b~~ SUPERSEDED by M0. With mouse forwarding fixed, plain wheel reaches the
   app and the app scrolls (iTerm2 behavior); Laban no longer needs to scroll its own
   scrollback under mouse tracking, so the `mvp.md` contract edit is unnecessary.
-- [ ] M3 [P1] Focus events (mode 1004) reach the daemon-backed (labpty/laband) PTY.
+- [x] (2026-05-29) M3 [P1] Focus events (mode 1004) reach the daemon-backed
+  (labpty/laband) PTY. DONE. `reportFocus` called `sendFocus`, which in fixture mode
+  (the daemon tier) only encodes and drops the bytes — so a focus-aware app never saw
+  CSI I / CSI O over the daemon. Fixed by branching on the tier in `reportFocus`
+  (`TerminalBitmapView`): on the remote tier `encodeFocus` + `sessionCoordinator.write`,
+  in-process keeps `sendFocus`; the tab-switch caller now resolves the outgoing `Tab`.
+  Verified by new red/green test
+  `HeadlessFocusRoutingTests.testHeadlessFocusInReachesChildOverLabandBackend`
+  (mutation-checked); mouse + paste routing still green; app builds.
 - [ ] M4 [P1] Synchronized output (mode 2026) coalesces on the laband snapshot tier.
 - [ ] M5 [P2] Regression test pinning kitty-keyboard Shift+Enter encoding.
-- [ ] M6 [P2] Headless/autonomous coverage for focus reporting (composes with M3).
+- [x] (2026-05-29) M6 [P2] Headless/autonomous coverage for focus reporting. DONE as
+  part of M3: added a headless `windowFocus` action (`DebugWindowActions.windowFocus`,
+  `DebugAction.windowFocus`) mirroring the app's NSWindow focus observers with the same
+  tier-aware encode+forward, which `HeadlessFocusRoutingTests` exercises over the laband
+  backend. Satisfies the AGENTS.md headless-parity rule for focus.
 - [ ] M7 [P2] OSC 9;4 progress reports surface a tab/Dock busy affordance.
 - [ ] M8 [investigate] Does terminal identity (TERM_PROGRAM / versioned XTVERSION)
   gate Claude Code's wheel-scroll? Idle A/B capture to confirm; advertise identity
