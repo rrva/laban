@@ -94,7 +94,11 @@ toggle; the byte counts below were measured from this artifact.
   `LabandSnapshotSyncOutputRingTests.testSynchronizedOutputFlagCrossesTheRing`
   (mutation-checked); in-process sync gate, laband control protocol, and headless
   routing suites all green (16 tests); app builds.
-- [ ] M5 [P2] Regression test pinning kitty-keyboard Shift+Enter encoding.
+- [x] (2026-05-29) M5 [P2] Regression test pinning kitty-keyboard Shift+Enter encoding.
+  DONE (test-only; the encoding already worked). Added
+  `LabanSessionKeyEncodingTests.testKittyShiftEnter`: with the kitty disambiguate flag
+  pushed (`CSI >1u`), Shift+Enter encodes `CSI 13;2u`, guarding against a regression to
+  a bare CR (which would submit the prompt instead of inserting a newline).
 - [x] (2026-05-29) M6 [P2] Headless/autonomous coverage for focus reporting. DONE as
   part of M3: added a headless `windowFocus` action (`DebugWindowActions.windowFocus`,
   `DebugAction.windowFocus`) mirroring the app's NSWindow focus observers with the same

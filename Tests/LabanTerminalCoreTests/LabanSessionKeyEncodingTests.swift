@@ -181,6 +181,28 @@ final class LabanSessionKeyEncodingTests: XCTestCase {
       [0x1B, 0x5B, 0x31, 0x32, 0x37, 0x3B, 0x32, 0x75])
   }
 
+  func testKittyShiftEnter() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("session creation failed")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    feedVT(session, "\u{1B}[>1u")  // Kitty keyboard: push disambiguate flag
+
+    var event = LabanKeyEvent()
+    event.action = LABAN_KEY_ACTION_PRESS
+    event.key = LABAN_KEY_ENTER
+    event.modifiers = 1  // LABAN_KEY_MOD_SHIFT
+
+    // ESC [ 1 3 ; 2 u  (13=Enter/CR, modifier 2=shift+1). Claude Code pushes the
+    // kitty disambiguate flag and relies on Shift+Enter inserting a newline; if
+    // this regressed to a bare CR (0x0D) it would submit the prompt instead.
+    XCTAssertEqual(
+      encodeKey(session, &event),
+      [0x1B, 0x5B, 0x31, 0x33, 0x3B, 0x32, 0x75])
+  }
+
   func testBackarrowModeChangesBackspaceEncoding() {
     guard let session = makeFixtureSession() else {
       XCTFail("session creation failed")
