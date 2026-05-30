@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Mutation-test the labpty trace-conformance bindings.
+
+scripts/check-trace proves the attachment and reuse traces conform to their TLA+
+models and that ONE hand-picked regression each (the -DLABPTY_TRACE_NEGCTL
+negative control) is rejected. That answers "does the check pass?" but not "does
+the check have teeth?". This script answers the second, the DO-178C way: it
+injects a fault into the daemon's real attachment/reuse code, rebuilds the
+trace harness against the mutated source, replays the emitted trace through TLC,
+and asserts the model now REJECTS it. A surviving mutant — one the replay still
+accepts — is a real gap: the emitter does not observe enough state, or the spec
+is too weak to constrain that code.
+
+This is a deep/adversarial check (a build + TLC run per mutant), not part of the
+fast `scripts/check`; run it manually or in deep CI. It self-skips when the
+TLA+ jar or java is absent.
+
+    scripts/check-trace-mutants
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(REPO)
+
+INCS = ["-I", "Sources/Labpty", "-I", "Sources/Labpty/include",
+        "-I", "Sources/LabanTerminalCore/include"]
+FRAME = ["Sources/Labpty/labpty_frame.c", "Sources/Labpty/labpty_protocol.c",
+         "Sources/Labpty/labpty_byte_ring.c"]
+CC = os.environ.get("CC", "cc")
+
+# Each mutant: a fault in the real code that the binding MUST catch. `replace`
+# is exact-string (applied to all occurrences); the harness exercises the
+# function that makes the fault observable.
+MUTANTS = [
+    # --- attachment (main.c, trace_attachment harness) ---
+    dict(kind="att", file="Sources/Labpty/main.c",
+         label="client_release keeps the departing bit (no scrub)",
+         old="attached_clients &= (uint8_t)~bit;",
+         new="attached_clients &= (uint8_t)bit;"),
+    dict(kind="att", file="Sources/Labpty/main.c",
+         label="attach/open clears the client bit instead of setting it",
+         old="attached_clients |= (uint8_t)(1u << client_index(daemon, client));",
+         new="attached_clients &= (uint8_t)~(1u << client_index(daemon, client));"),
+    dict(kind="att", file="Sources/Labpty/main.c",
+         label="detach sets the client bit instead of clearing it",
+         old="attached_clients &= (uint8_t)~(1u << client_index(daemon, client));",
+         new="attached_clients |= (uint8_t)(1u << client_index(daemon, client));"),
+    # --- reuse (labpty_registry.c, trace_reuse harness) ---
+    dict(kind="reuse", file="Sources/Labpty/labpty_registry.c",
+         label="terminate does not relinquish the logical_id",
+         old="session->logical_id[0] = '\\0';",
+         new="/* mutant: relinquish removed */;"),
+    dict(kind="reuse", file="Sources/Labpty/labpty_registry.c",
+         label="terminate keeps the session alive",
+         old="session->alive = 0;",
+         new="session->alive = 1;"),
+    dict(kind="reuse", file="Sources/Labpty/labpty_registry.c",
+         label="terminate does not arm close_pending",
+         old="session->close_pending = 1;",
+         new="session->close_pending = 0;"),
+]
+
+ATT = dict(harness="proofs/labpty/trace/trace_attachment.c",
+           units=FRAME + ["Sources/Labpty/labpty_registry.c"],
+           gen="scripts/gen-trace-tla.py", data="TraceData.tla",
+           cfg="MC_TraceAttachment.cfg", module="TraceAttachment",
+           specs=["LabptyAttachment.tla", "TraceAttachment.tla", "MC_TraceAttachment.cfg"])
+REUSE = dict(harness="proofs/labpty/trace/trace_reuse.c", units=FRAME,
+             gen="scripts/gen-reuse-tla.py", data="TraceReuseData.tla",
+             cfg="MC_TraceReuse.cfg", module="TraceReuse",
+             specs=["LabptyReuse.tla", "TraceReuse.tla", "MC_TraceReuse.cfg"])
+SEEDS = 6
+
+
+def tla_jar():
+    jar = os.environ.get(
+        "TLA_JAR", "/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar")
+    if not os.path.isfile(jar) or shutil.which("java") is None:
+        return None
+    return jar
+
+
+def run_mutant(m, jar, work):
+    cfgs = ATT if m["kind"] == "att" else REUSE
+    mdir = tempfile.mkdtemp(dir=work)
+    # Mutated copy of the one source file, picked up first via -I.
+    base = os.path.basename(m["file"])
+    src = open(m["file"]).read()
+    if m["old"] not in src:
+        return ("ERROR", "mutation target string not found")
+    mutated = src.replace(m["old"], m["new"])
+    if mutated == src:
+        return ("ERROR", "mutation did not change the source")
+    open(os.path.join(mdir, base), "w").write(mutated)
+
+    harness_bin = os.path.join(mdir, "harness")
+    build = [CC, "-O0", "-std=c11", "-w", "-I", mdir] + INCS + \
+        [cfgs["harness"]] + cfgs["units"] + ["-o", harness_bin]
+    r = subprocess.run(build, capture_output=True, text=True)
+    if r.returncode != 0:
+        return ("ERROR", "mutant build failed:\n" + r.stderr[-800:])
+
+    runs = []
+    for seed in range(1, SEEDS + 1):
+        nd = os.path.join(mdir, f"run-{seed}.ndjson")
+        shm = os.path.join(mdir, f"shm-{seed}")
+        os.makedirs(shm, exist_ok=True)
+        env = dict(os.environ, LABPTY_TRACE=nd, LABPTY_TRACE_SHMDIR=shm)
+        subprocess.run([harness_bin, str(seed)], env=env,
+                       capture_output=True)  # a broken mutant may abort; trace is still flushed
+        if os.path.isfile(nd) and os.path.getsize(nd) > 0:
+            runs.append(nd)
+    if not runs:
+        return ("ERROR", "no trace emitted")
+
+    data = os.path.join(work, "tla", cfgs["data"])
+    g = subprocess.run([sys.executable, cfgs["gen"], data] + runs,
+                       capture_output=True, text=True)
+    if g.returncode != 0:
+        return ("ERROR", "gen failed:\n" + g.stderr[-400:])
+
+    tlc = subprocess.run(
+        ["java", "-XX:+UseParallelGC", "-cp", jar, "tlc2.TLC", "-workers", "auto",
+         "-config", cfgs["cfg"], cfgs["module"]],
+        cwd=os.path.join(work, "tla"), capture_output=True, text=True)
+    # Non-zero (deadlock or invariant violation) == the fault was caught.
+    return ("CAUGHT" if tlc.returncode != 0 else "SURVIVED", "")
+
+
+def main():
+    jar = tla_jar()
+    if jar is None:
+        print("check-trace-mutants: tla2tools.jar or java absent; skipping "
+              "(mutation testing needs TLC)")
+        return 0
+    work = tempfile.mkdtemp(prefix="trace-mutants-")
+    os.makedirs(os.path.join(work, "tla"))
+    for cfgs in (ATT, REUSE):
+        for s in cfgs["specs"]:
+            shutil.copy(os.path.join("specs/labpty", s), os.path.join(work, "tla"))
+
+    print(f"check-trace-mutants: injecting {len(MUTANTS)} faults; each must be "
+          f"rejected by the trace replay")
+    survivors = 0
+    try:
+        for m in MUTANTS:
+            verdict, detail = run_mutant(m, jar, work)
+            mark = {"CAUGHT": "OK", "SURVIVED": "SURVIVED", "ERROR": "ERROR"}[verdict]
+            print(f"  [{m['kind']:5}] {m['label']:52} {mark}")
+            if verdict != "CAUGHT":
+                survivors += 1
+                if detail:
+                    print("    " + detail.replace("\n", "\n    "))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    if survivors:
+        print(f"check-trace-mutants: {survivors} mutant(s) SURVIVED — the trace "
+              f"binding has a gap (un-observed state or too-weak spec)", file=sys.stderr)
+        return 1
+    print(f"check-trace-mutants: all {len(MUTANTS)} injected faults caught — the "
+          f"trace bindings discriminate")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

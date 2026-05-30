@@ -51,7 +51,8 @@ def render_record(r):
     inuse = tla_set([c for c, v in enumerate(r["inUse"]) if v])
     alive = tla_set([s for s, v in enumerate(r["alive"]) if v])
     att = tla_attached(r["attached"])
-    return f"[inUse |-> {inuse}, alive |-> {alive}, attached |-> {att}]"
+    return (f'[action |-> "{r["action"]}", inUse |-> {inuse}, '
+            f"alive |-> {alive}, attached |-> {att}]")
 
 
 def main():

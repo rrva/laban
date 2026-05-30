@@ -45,8 +45,9 @@ def load(path):
 
 
 def render(r):
-    return ("[used |-> {u}, alive |-> {a}, cp |-> {c}, lid |-> {l}]").format(
-        u=seq_int(r["used"]), a=seq_int(r["alive"]),
+    return ('[action |-> "{act}", used |-> {u}, alive |-> {a}, '
+            "cp |-> {c}, lid |-> {l}]").format(
+        act=r["action"], u=seq_int(r["used"]), a=seq_int(r["alive"]),
         c=seq_int(r["cp"]), l=seq_str(r["lid"]))
 
 

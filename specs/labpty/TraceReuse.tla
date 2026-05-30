@@ -57,7 +57,14 @@ DaemonReap ==
             IF sessions[s].used = 1 /\ sessions[s].close_pending = 1
             THEN Empty ELSE sessions[s] ]
 
-Allowed == Next \/ DaemonReap
+\* The transition must be the SPECIFIC action the daemon labelled, not merely
+\* some enabled one — the discipline scripts/check-trace-mutants enforces on the
+\* attachment binding, carried here for parity.
+StepAction(rec) ==
+    CASE rec.action = "OpenSession" -> \E id \in Ids : OpenSession(id)
+      [] rec.action = "Terminate"   -> \E s \in Slots : Terminate(s)
+      [] rec.action = "DaemonReap"  -> DaemonReap
+      [] OTHER                      -> FALSE
 
 TInit ==
     /\ tk \in 1..Len(Traces)
@@ -69,7 +76,7 @@ TNext ==
        /\ ti' = ti + 1
        /\ tk' = tk
        /\ sessions' = Reconstruct(CurTrace[ti + 1])
-       /\ Allowed   \* the logged step is an OpenSession / Terminate / DaemonReap
+       /\ StepAction(CurTrace[ti + 1])   \* the labelled action, specifically
     \/ /\ ti = Len(CurTrace)
        /\ UNCHANGED tvars
 

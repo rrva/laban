@@ -43,6 +43,20 @@ ModelAlive(rec)    == [ s \in Sessions |-> IF s \in rec.alive THEN 1 ELSE 0 ]
 ModelAttached(rec) ==
     [ s \in Sessions |-> IF s \in DOMAIN rec.attached THEN rec.attached[s] ELSE {} ]
 
+\* The transition must be the SPECIFIC action the daemon labelled it, not merely
+\* some enabled action. Without this an attach that wrongly clears a bit looks
+\* like a valid Detach (both are always enabled for a connected client), so the
+\* binding could not tell attach from detach — a gap caught by
+\* scripts/check-trace-mutants.
+StepAction(rec) ==
+    CASE rec.action = "Connect"          -> \E c \in Clients : Connect(c)
+      [] rec.action = "Disconnect"       -> \E c \in Clients : Disconnect(c)
+      [] rec.action = "OpenSession"      -> \E c \in Clients, s \in Sessions : OpenSession(c, s)
+      [] rec.action = "Attach"           -> \E c \in Clients, s \in Sessions : Attach(c, s)
+      [] rec.action = "Detach"           -> \E c \in Clients, s \in Sessions : Detach(c, s)
+      [] rec.action = "TerminateSession" -> \E s \in Sessions : TerminateSession(s)
+      [] OTHER                           -> FALSE
+
 AtTrace(i) ==
     /\ inUse    = ModelInUse(CurTrace[i])
     /\ alive    = ModelAlive(CurTrace[i])
@@ -60,7 +74,7 @@ TNext ==
        /\ inUse'    = ModelInUse(CurTrace[ti + 1])
        /\ alive'    = ModelAlive(CurTrace[ti + 1])
        /\ attached' = ModelAttached(CurTrace[ti + 1])
-       /\ Next   \* the logged step must be a LabptyAttachment action
+       /\ StepAction(CurTrace[ti + 1])   \* the labelled action, specifically
     \/ /\ ti = Len(CurTrace)
        /\ UNCHANGED tvars
 
