@@ -1425,11 +1425,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func createTabPreservingSelection() throws -> Tab {
     syncSelectionStateToActiveTab()
     persistSelectionStateForCurrentTab()
+    let previousActiveTabId = model.activeTab?.id
     let tab = try model.createTab()
-    try sessionCoordinator?.ensureSession(
-      for: tab,
-      session: model.session(forTab: tab.id),
-      size: model.terminalSize)
+    do {
+      try sessionCoordinator?.ensureSession(
+        for: tab,
+        session: model.session(forTab: tab.id),
+        size: model.terminalSize)
+    } catch {
+      // Session creation is all-or-nothing (MVP Session Creation contract):
+      // if the remote PTY fails to bind, roll back the tab we just appended
+      // and restore the prior selection rather than stranding the user on a
+      // dead, input-rejecting tab. (H-4)
+      remoteSnapshotRenderTracker.clear(tabId: tab.id)
+      try? model.closeTab(tab.id)
+      if let previousActiveTabId {
+        model.selectTab(previousActiveTabId)
+      }
+      throw error
+    }
     restoreSelectionState(for: tab.id)
     return tab
   }
