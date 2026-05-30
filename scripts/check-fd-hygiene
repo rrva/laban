@@ -13,7 +13,14 @@ require that a CLOEXEC token (`set_cloexec`, `configure_client_fd`,
 `FD_CLOEXEC`, or `O_CLOEXEC`) appears on the same line or within the
 next CONTEXT_LINES lines. Calls into wrapper functions whose name
 contains `_open`, `_socket`, etc. (e.g. laban_pty_open, listen_unix_socket)
-are skipped — those wrappers are responsible for their own CLOEXEC.
+are skipped via the word-boundary in SYSCALL_RE — those wrappers are
+responsible for their own CLOEXEC.
+
+Comments and string/char literals are blanked before matching (line
+numbers preserved) so a syscall name that appears only in prose or a
+log message is not a false positive — a red lint here otherwise aborts
+the whole `scripts/check` gate under `set -eu`. Run with `--selftest`
+to verify the stripper and matcher.
 """
 from __future__ import annotations
 
@@ -34,35 +41,105 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCAN_DIR = REPO_ROOT / "Sources" / "Labpty"
 
 
-def main() -> int:
+def blank_comments_and_literals(text: str) -> str:
+    """Replace C comments and string/char literal contents with spaces,
+    preserving every newline so reported line numbers stay accurate. Comment
+    markers (// /*) inside a string literal are correctly treated as string
+    content, not comments."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    state = "code"  # code | line | block | string | char
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if state == "code":
+            if c == "/" and nxt == "/":
+                out.append("  "); i += 2; state = "line"; continue
+            if c == "/" and nxt == "*":
+                out.append("  "); i += 2; state = "block"; continue
+            if c == '"':
+                out.append('"'); i += 1; state = "string"; continue
+            if c == "'":
+                out.append("'"); i += 1; state = "char"; continue
+            out.append(c); i += 1; continue
+        if state == "line":
+            if c == "\n":
+                out.append("\n"); i += 1; state = "code"; continue
+            out.append(" "); i += 1; continue
+        if state == "block":
+            if c == "*" and nxt == "/":
+                out.append("  "); i += 2; state = "code"; continue
+            out.append("\n" if c == "\n" else " "); i += 1; continue
+        # string or char literal: blank contents, honor escapes, keep newlines
+        if c == "\\":
+            out.append(" "); i += 1
+            if i < n:
+                out.append("\n" if text[i] == "\n" else " "); i += 1
+            continue
+        if (state == "string" and c == '"') or (state == "char" and c == "'"):
+            out.append(c); i += 1; state = "code"; continue
+        out.append("\n" if c == "\n" else " "); i += 1; continue
+    return "".join(out)
+
+
+def scan_text(text: str) -> list[tuple[int, str]]:
+    """Return [(lineno, original_line)] for fd-opening syscalls lacking a
+    nearby CLOEXEC token. Matching runs on the comment/literal-stripped
+    text; reported text is the original line."""
+    original = text.splitlines()
+    stripped = blank_comments_and_literals(text).splitlines()
+    violations: list[tuple[int, str]] = []
+    in_helper_def = False
+    for index, sline in enumerate(stripped, start=1):
+        s = sline.strip()
+        if re.match(r"static\s+int\s+(set_cloexec|set_nonblock)\s*\(", s):
+            in_helper_def = True
+            continue
+        if in_helper_def:
+            if s == "}":
+                in_helper_def = False
+            continue
+        if not SYSCALL_RE.search(sline):
+            continue
+        window = "\n".join(stripped[index - 1 : index - 1 + CONTEXT_LINES])
+        if CLOEXEC_RE.search(window):
+            continue
+        orig = original[index - 1] if index - 1 < len(original) else sline
+        violations.append((index, orig.rstrip()))
+    return violations
+
+
+def selftest() -> int:
+    clean = (
+        "/* open( in a block comment must be ignored */\n"
+        "// and open( in a line comment too\n"
+        'const char *p = "open(/not/a/syscall)";  /* string content ignored */\n'
+        "int fd = laban_pty_open(r, c, a, e, w, &m, &p);  // wrapper, word-boundary skip\n"
+        'snprintf(buf, n, "scheme://%s", host);  // // inside string is not a comment\n'
+    )
+    bad = (
+        "int fd = open(path, O_RDONLY);\n"
+        + "x();\n" * (CONTEXT_LINES + 2)
+    )
+    ok = True
+    if scan_text(clean):
+        print(f"selftest FAIL: clean sample flagged {scan_text(clean)}", file=sys.stderr)
+        ok = False
+    if not scan_text(bad):
+        print("selftest FAIL: real missing-O_CLOEXEC open( not flagged", file=sys.stderr)
+        ok = False
+    print("check-fd-hygiene selftest passed" if ok else "check-fd-hygiene selftest FAILED")
+    return 0 if ok else 1
+
+
+def main(argv: list[str]) -> int:
+    if "--selftest" in argv:
+        return selftest()
+
     violations: list[tuple[str, int, str]] = []
-
     for cfile in sorted(SCAN_DIR.glob("*.c")):
-        lines = cfile.read_text().splitlines()
-        in_helper_def = False
-        for index, line in enumerate(lines, start=1):
-            # Skip the body of the set_cloexec / set_nonblock helpers
-            # themselves — they're the implementation, not a caller.
-            stripped = line.strip()
-            if re.match(r"static\s+int\s+(set_cloexec|set_nonblock)\s*\(", stripped):
-                in_helper_def = True
-                continue
-            if in_helper_def:
-                if stripped == "}":
-                    in_helper_def = False
-                continue
-
-            match = SYSCALL_RE.search(line)
-            if not match:
-                continue
-
-            # Check the line itself and the next N lines for CLOEXEC.
-            window = "\n".join(lines[index - 1 : index - 1 + CONTEXT_LINES])
-            if CLOEXEC_RE.search(window):
-                continue
-
-            rel = cfile.relative_to(REPO_ROOT).as_posix()
-            violations.append((rel, index, line.rstrip()))
+        for lineno, text in scan_text(cfile.read_text()):
+            violations.append((cfile.relative_to(REPO_ROOT).as_posix(), lineno, text))
 
     if violations:
         print(
@@ -83,4 +160,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
