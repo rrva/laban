@@ -9,13 +9,16 @@
     "available": {"type": "boolean"},
     "input": {
       "type": ["object", "null"],
-      "required": ["viewportOffset", "totalRows", "viewportRows", "isHoverEdge"],
+      "required": [
+        "viewportOffset", "totalRows", "viewportRows", "isHoverEdge", "isAltScreen"
+      ],
       "additionalProperties": false,
       "properties": {
         "viewportOffset": {"type": "integer"},
         "totalRows": {"type": "integer", "minimum": 0},
         "viewportRows": {"type": "integer", "minimum": 0},
-        "isHoverEdge": {"type": "boolean"}
+        "isHoverEdge": {"type": "boolean"},
+        "isAltScreen": {"type": "boolean"}
       }
     },
     "output": {

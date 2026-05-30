@@ -30,7 +30,8 @@ extension HeadlessDebugRuntime {
         viewportOffset: vs.viewportOffset,
         totalRows: vs.totalRows,
         viewportRows: vs.viewportRows,
-        isHoverEdge: hover
+        isHoverEdge: hover,
+        isAltScreen: vs.altScreen
       )
       let output = TerminalScrollIndicator.decide(input)
       return jsonEncode(

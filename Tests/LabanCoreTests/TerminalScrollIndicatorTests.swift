@@ -17,6 +17,23 @@ final class TerminalScrollIndicatorTests: XCTestCase {
     XCTAssertEqual(out, .hidden)
   }
 
+  func testAltScreenProducesHiddenOutput() {
+    // A full-screen TUI (e.g. Claude Code's fullscreen renderer) owns the
+    // screen and its own scrollback. Even with a large scrollback total and an
+    // offset that reads as scrolled-back, the overlay must stay hidden.
+    let out = TerminalScrollIndicator.decide(
+      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: false,
+        isAltScreen: true))
+    XCTAssertEqual(out, .hidden)
+  }
+
+  func testAltScreenStaysHiddenEvenWhenHovering() {
+    let out = TerminalScrollIndicator.decide(
+      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: true,
+        isAltScreen: true))
+    XCTAssertEqual(out, .hidden)
+  }
+
   func testAtLiveBottomDoesNotHoldButThumbStillSized() {
     let out = TerminalScrollIndicator.decide(
       .init(viewportOffset: 976, totalRows: 1000, viewportRows: 24, isHoverEdge: false))

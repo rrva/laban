@@ -196,7 +196,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// Hook for the overlay scroll indicator (sibling view in the window
   /// containerView). Called every frame from `advanceFrame` with the active
   /// session's viewport state, or `nil` when there is no active tab.
-  var onViewportChanged: ((_ viewportOffset: Int, _ totalRows: Int, _ viewportRows: Int) -> Void)?
+  var onViewportChanged:
+    ((_ viewportOffset: Int, _ totalRows: Int, _ viewportRows: Int, _ isAltScreen: Bool) -> Void)?
   var onViewportUnavailable: (() -> Void)?
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
@@ -1127,7 +1128,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     syncFindChip()
 
     if let vs = session.viewportState() {
-      onViewportChanged?(vs.viewportOffset, vs.totalRows, vs.viewportRows)
+      onViewportChanged?(vs.viewportOffset, vs.totalRows, vs.viewportRows, vs.altScreen)
     } else {
       onViewportUnavailable?()
     }
