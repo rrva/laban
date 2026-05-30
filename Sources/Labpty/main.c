@@ -514,7 +514,11 @@ static labpty_status_t handle_resize(labpty_daemon_t *daemon, const uint8_t *pay
     labpty_status_t status = labpty_decode_resize_request(payload, len, &request);
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
-    if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
+    /* master_fd < 0 means the child hung up and drain_session closed it but
+     * the reap tick has not yet flipped alive; ioctl on -1 would EBADF →
+     * E_INTERNAL. Report the truthful SESSION_NOT_FOUND so the client's
+     * fresh-handle retry can recover. (L2) */
+    if (!session || !session->alive || session->master_fd < 0) return LABPTY_E_SESSION_NOT_FOUND;
     struct winsize ws = { .ws_row = (unsigned short)request.rows, .ws_col = (unsigned short)request.cols };
     if (ioctl(session->master_fd, TIOCSWINSZ, &ws) != 0) return LABPTY_E_INTERNAL;
     session->rows = request.rows;
@@ -617,7 +621,7 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
     labpty_status_t status = labpty_decode_write_input_request(payload, len, &request);
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
-    if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
+    if (!session || !session->alive || session->master_fd < 0) return LABPTY_E_SESSION_NOT_FOUND;
 
     /* Preflight admission check (ADR 0008). Under ICANON the slave's
      * line discipline silently drops bytes once (rawQ + canQ) reaches
