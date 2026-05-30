@@ -23,6 +23,20 @@ final class LabptyAdversarialTests: XCTestCase {
       Darwin.kill(pid_t(process.processIdentifier), SIGKILL)
       process.waitUntilExit()
     }
+    // Gate the observability hook (daemon commit d4177eb): an established
+    // client force-expired by the idle/frame deadline means the event loop
+    // stalled — the ECONNRESET-stall shape that commit 02cb0e6 fixed. If the
+    // daemon ever logs that marker during a test, fail here so the regression
+    // is self-catching instead of resurfacing as an unexplained client reset.
+    for process in launched {
+      guard let pipe = process.standardError as? Pipe,
+            let data = try? pipe.fileHandleForReading.readToEnd(),
+            let text = String(data: data, encoding: .utf8)
+      else { continue }
+      XCTAssertFalse(
+        text.contains("force-expiring established client"),
+        "daemon reported an event-loop stall (force-expiring established client): \(text)")
+    }
     launched.removeAll()
     for root in tempRoots {
       try? FileManager.default.removeItem(at: root)
