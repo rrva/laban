@@ -213,6 +213,11 @@ labpty_status_t labpty_byte_ring_create(
     memset(out->map, 0, LABPTY_INPUT_RING_OFFSET);
     initialize_header(out, logical_id);
     labpty_byte_ring_heartbeat(out);
+    /* MAP_SHARED keeps the file backing the mapping after the fd is closed,
+     * and the fd is unused past mmap — close it now so a live session holds
+     * one fewer descriptor. labpty_byte_ring_close still unlinks by path. (L6) */
+    close(out->fd);
+    out->fd = -1;
     return LABPTY_OK;
 }
 
