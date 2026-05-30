@@ -1107,6 +1107,22 @@ public final class AppModel {
     ).modelChanged
   }
 
+  /// Clears a tab's surface-owned agent status, but only when it still holds
+  /// the exact value the surface last set. The surface path uses this to retire
+  /// a transport-degradation badge ("output skipped") once the user has viewed
+  /// the tab, without clobbering an OSC 21337 status the child may have pushed
+  /// in the meantime — both share `titleMetadata.agentStatus`, so an
+  /// unconditional clear would wipe a legitimate process-reported status.
+  @discardableResult
+  public func clearAgentStatus(forTab tabId: Tab.ID, ifEquals expected: TabAgentStatus) -> Bool {
+    withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      guard _tabs[idx].titleMetadata.agentStatus == expected else { return false }
+      _tabs[idx].titleMetadata.agentStatus = TabAgentStatus()
+      return true
+    }
+  }
+
   private func runSurfaceMetadataSync(
     forTab tabId: Tab.ID,
     tabIndex: Int,

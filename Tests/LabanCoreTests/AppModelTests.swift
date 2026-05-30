@@ -395,6 +395,29 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusTextColor, "#f59e0b")
   }
 
+  func testClearAgentStatusOnlyRemovesTheMatchingBadge() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    let degraded = TabAgentStatus(
+      indicatorColor: "#f59e0b",
+      statusText: "output skipped",
+      statusTextColor: "#f59e0b")
+
+    _ = model.applySurfaceSignals(TabSurfaceSignals(agentStatus: degraded), forTab: tabId)
+    XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusText, "output skipped")
+
+    // A non-matching expected value must not clear it: this is what protects an
+    // OSC 21337 status that shares titleMetadata.agentStatus from being wiped.
+    XCTAssertFalse(
+      model.clearAgentStatus(
+        forTab: tabId, ifEquals: TabAgentStatus(statusText: "background")))
+    XCTAssertEqual(model.tabs[0].titleMetadata.agentStatus.statusText, "output skipped")
+
+    // The exact degraded badge clears back to empty.
+    XCTAssertTrue(model.clearAgentStatus(forTab: tabId, ifEquals: degraded))
+    XCTAssertTrue(model.tabs[0].titleMetadata.agentStatus.isEmpty)
+  }
+
   func testActiveBellDoesNotSetAttention() throws {
     let model = try makeModel()
     let tab = try XCTUnwrap(model.activeTab)

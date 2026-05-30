@@ -485,10 +485,28 @@ final class AppSessionCoordinator {
     for tab in tabs {
       guard let descriptor = descriptorById[tab.id] else { continue }
       storeLabpty(descriptor, for: tab)
+      // The "output skipped" badge is an attention notice: it exists so the
+      // user can SEE that output was dropped while they were looking elsewhere.
+      // Once this is the active (viewed) tab the notice has done its job, so
+      // retire the latch — mirroring how bell/unseen-output attention clears
+      // on selection. Without this the degraded flag is only ever dropped on
+      // stop/close, so the badge sticks to a live tab forever.
+      if tab.isActive {
+        clearLabptyOutputDegraded(for: tab.id)
+      }
+      let degraded = isLabptyOutputDegraded(for: tab.id)
       let signals = surfaceSignals(
         from: labptyInfo(from: descriptor),
-        labptyOutputDegraded: isLabptyOutputDegraded(for: tab.id))
+        labptyOutputDegraded: degraded)
       _ = model.applySurfaceSignals(signals, forTab: tab.id, now: now)
+      if !degraded {
+        // surfaceSignals sends a nil agentStatus when not degraded, and the
+        // synchronizer deliberately leaves a nil alone so a metadata poll can
+        // never wipe an OSC 21337 status. Clearing a retired degraded badge is
+        // therefore explicit, and scoped to the exact badge so it can never
+        // touch an OSC status that happens to share titleMetadata.agentStatus.
+        _ = model.clearAgentStatus(forTab: tab.id, ifEquals: Self.labptyOutputDegradedStatus)
+      }
     }
   }
 
