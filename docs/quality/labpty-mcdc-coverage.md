@@ -16,7 +16,7 @@ daemon code**: `main.c` handlers + the event loop, and `labpty_registry.c`.
 
 ```
 scripts/coverage-labpty            # build instrumented, run tests, print report
-scripts/coverage-labpty --check 18 # same, but fail if daemon MC/DC < 18% (ratchet)
+scripts/coverage-labpty --check 36 # same, but fail if daemon MC/DC < 36% (ratchet)
 ```
 
 Single matched toolchain (Apple clang 21 + `xcrun llvm-cov`, both do MC/DC
