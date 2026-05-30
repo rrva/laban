@@ -37,6 +37,14 @@ typedef struct {
      * along with FIONREAD on the slave. Reset to "bytes after last
      * delimiter in the just-accepted payload" on every accepted write. */
     uint64_t canonical_pending_estimate;
+    /* Unsent tail of a writeInput payload the master could not accept without
+     * blocking. handle_write stages it here and the event loop drains it to the
+     * master on POLLOUT, so the single-threaded loop never spins on a slow
+     * consumer. A second writeInput is refused (backpressure) while a tail is
+     * pending, bounding this to one in-flight payload per session. */
+    uint8_t pending_input[LABPTY_WRITE_INPUT_MAX];
+    size_t pending_input_total;
+    size_t pending_input_sent;
     uint32_t rows;
     uint32_t cols;
     /* Bitmask of client slots (0..LABPTY_MAX_CLIENTS-1) currently

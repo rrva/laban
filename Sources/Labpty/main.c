@@ -595,8 +595,6 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
 
-static const uint64_t LABPTY_WRITE_INPUT_BUDGET_NS = 100000000ull;  /* 100 ms */
-
 /* Conservative slack against MAX_INPUT / MAX_CANON. Reserves headroom
  * for in-flight bytes the line discipline may have already consumed
  * from the master but not yet drained out the canonical queue, and for
@@ -626,6 +624,10 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session || !session->alive || session->master_fd < 0) return LABPTY_E_SESSION_NOT_FOUND;
+    /* A prior payload still draining to a backed-up master means the consumer
+     * is behind; refuse new input atomically rather than growing an unbounded
+     * daemon-side queue. Bounds pending_input to one in-flight payload. */
+    if (session->pending_input_total > session->pending_input_sent) return LABPTY_E_INPUT_BACKPRESSURE;
 
     /* Preflight admission check (ADR 0008). Under ICANON the slave's
      * line discipline silently drops bytes once (rawQ + canQ) reaches
@@ -668,21 +670,26 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
         }
     }
 
-    /* Wall-clock budget so a slow consumer downstream can't wedge the
-     * single-threaded event loop while we drain accept/expire/reap.
-     * Client sees LABPTY_E_INTERNAL and can retry. */
-    uint64_t deadline = monotonic_ns() + LABPTY_WRITE_INPUT_BUDGET_NS;
+    /* Push as much as the master accepts right now without blocking. The
+     * preflight already admitted the whole payload, so the daemon owns its
+     * delivery: any unsent tail is staged on the session and the event loop
+     * drains it on POLLOUT (mirrors the client response path). The single-
+     * threaded loop NEVER spins on a slow consumer — the 100 ms blocking spin
+     * this replaced could starve every other client past its idle deadline and
+     * force-expire them (commit d4177eb's stall symptom, client-triggerable). */
     size_t sent = 0;
     while (sent < request.len) {
         ssize_t n = write(session->master_fd, request.bytes + sent, request.len - sent);
         if (n > 0) { sent += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (monotonic_ns() >= deadline) return LABPTY_E_INTERNAL;
-            usleep(1000);
-            continue;
-        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
         return LABPTY_E_INTERNAL;
+    }
+    if (sent < request.len) {
+        size_t tail = request.len - sent;
+        memcpy(session->pending_input, request.bytes + sent, tail);
+        session->pending_input_total = tail;
+        session->pending_input_sent = 0;
     }
 
     /* Update canonical_pending_estimate using the just-accepted payload.
@@ -831,6 +838,26 @@ static int client_pump_write(labpty_client_t *client) {
     return 0;
 }
 
+/* Drain a session's staged writeInput tail to the master, non-blocking. The
+ * event loop calls this on POLLOUT for a session with pending input. A hard
+ * write error drops the tail — the reap path tears the dead session down. */
+static void flush_pending_input(labpty_session_t *session) {
+    assert(session != NULL);
+    while (session->pending_input_sent < session->pending_input_total) {
+        ssize_t n = write(session->master_fd,
+                          session->pending_input + session->pending_input_sent,
+                          session->pending_input_total - session->pending_input_sent);
+        if (n > 0) { session->pending_input_sent += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; /* retry next POLLOUT */
+        session->pending_input_total = 0;
+        session->pending_input_sent = 0;
+        return;
+    }
+    session->pending_input_total = 0;
+    session->pending_input_sent = 0;
+}
+
 static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
     assert(daemon != NULL);
     assert(session != NULL);
@@ -872,7 +899,9 @@ static void build_poll_set(labpty_daemon_t *daemon, labpty_poll_set_t *poll_set)
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &daemon->registry.sessions[i];
         if (s->used && s->master_fd >= 0) {
-            add_poll_watch(poll_set, s->master_fd, POLLIN, LABPTY_POLL_SESSION, i);
+            short events = POLLIN;
+            if (s->pending_input_total > s->pending_input_sent) events |= POLLOUT;
+            add_poll_watch(poll_set, s->master_fd, events, LABPTY_POLL_SESSION, i);
         }
     }
 }
@@ -916,11 +945,13 @@ static void service_poll_watch(labpty_daemon_t *daemon, const labpty_poll_set_t 
         if (service_client_poll(daemon, index, revents) < 0) client_release(daemon, &daemon->clients[index]);
         return;
     }
-    if (poll_set->kinds[slot] == LABPTY_POLL_SESSION && poll_revents_readable(revents)) {
+    if (poll_set->kinds[slot] == LABPTY_POLL_SESSION) {
         assert(index >= 0);
         assert(index < LABPTY_MAX_SESSIONS);
         labpty_session_t *s = &daemon->registry.sessions[index];
-        if (s->used && s->master_fd >= 0) drain_session(daemon, s);
+        if (!s->used || s->master_fd < 0) return;
+        if (revents & POLLOUT) flush_pending_input(s);
+        if (poll_revents_readable(revents)) drain_session(daemon, s);
     }
 }
 
@@ -1070,7 +1101,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "labpty: refusing non-private shm dir: %s\n", shm_dir);
         return 1;
     }
-    labpty_daemon_t daemon;
+    /* static: the per-session pending-input buffers make this struct several MB
+     * — too large for the stack. The daemon is single-instance per process. */
+    static labpty_daemon_t daemon;
     memset(&daemon, 0, sizeof(daemon));
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) daemon.clients[i].fd = -1;
     labpty_registry_init(&daemon.registry, shm_dir);

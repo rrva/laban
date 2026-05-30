@@ -314,7 +314,7 @@ labpty_status_t labpty_decode_write_input_request(
     uint32_t input_len = 0;
     status = labpty_read_u32(&reader, &input_len);
     if (status != LABPTY_OK) return status;
-    if (input_len > (uint32_t)(64 * 1024)) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    if (input_len > (uint32_t)LABPTY_WRITE_INPUT_MAX) return LABPTY_E_PAYLOAD_TOO_LARGE;
     if ((size_t)(reader.end - reader.cur) < input_len) return LABPTY_E_TRUNCATED_FRAME;
     out->len = (size_t)input_len;
     out->bytes = reader.cur;

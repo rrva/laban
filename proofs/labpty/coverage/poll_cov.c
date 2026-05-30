@@ -154,8 +154,43 @@ static void cover_service_routing(void) {
     assert(d.clients[1].in_use == 1);  /* nothing ready -> nothing serviced */
 }
 
+/* A session with a staged writeInput tail: build_poll_set must arm POLLOUT for
+ * it, and the POLLOUT dispatch must flush that tail to THAT session's master. */
+static void cover_pending_input_flush(void) {
+    memset(&d, 0, sizeof(d));
+    int sv[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    labpty_session_t *s = &d.registry.sessions[3];
+    s->used = 1;
+    s->master_fd = sv[0];
+    const char msg[] = "queued-input";
+    memcpy(s->pending_input, msg, sizeof(msg) - 1);
+    s->pending_input_total = sizeof(msg) - 1;
+    s->pending_input_sent = 0;
+
+    labpty_poll_set_t ps;
+    build_poll_set(&d, &ps);
+    int serviced = 0;
+    for (nfds_t i = 0; i < ps.count; i++) {
+        if (ps.kinds[i] == LABPTY_POLL_SESSION && ps.indexes[i] == 3) {
+            assert(ps.fds[i].events & POLLOUT); /* pending input -> POLLOUT armed */
+            ps.fds[i].revents = POLLOUT;
+            service_poll_watch(&d, &ps, i);
+            serviced = 1;
+        }
+    }
+    assert(serviced);
+    assert(s->pending_input_total == 0); /* fully flushed */
+    uint8_t buf[64];
+    ssize_t n = read(sv[1], buf, sizeof(buf));
+    assert(n == (ssize_t)(sizeof(msg) - 1) && memcmp(buf, msg, (size_t)n) == 0);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 int main(void) {
     cover_build_poll_set();
     cover_service_routing();
+    cover_pending_input_flush();
     return 0;
 }

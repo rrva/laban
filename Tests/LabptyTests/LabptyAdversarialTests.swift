@@ -103,6 +103,63 @@ final class LabptyAdversarialTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
+  // MARK: - Slow-consumer writeInput must not wedge the event loop
+
+  func testSlowConsumerWriteInputDoesNotStarveOtherClients() throws {
+    let harness = try launchHarness()
+
+    // Client A drives a raw-mode, non-reading child: `stty raw` disables the
+    // canonical writeInput preflight and `sleep` never reads stdin, so the
+    // master's input buffer fills and writeInput hits the EAGAIN path. Pre-fix,
+    // each blocked write spun the single-threaded loop for up to 100 ms; the
+    // fix stages the unsent tail and drains it on POLLOUT, returning promptly.
+    let a = try waitForClient(socketPath: harness.socketPath)
+    defer { a.close() }
+    let session = try a.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80,
+        argv: ["/bin/sh", "-c", "stty raw; exec sleep 30"],
+        logicalSessionId: "slow-consumer"))
+    Thread.sleep(forTimeInterval: 0.2) // let the child apply stty raw
+
+    // Client B issues a steady stream of requests on a background queue. Pre-fix
+    // a B request in flight when the loop stalled past 250 ms was force-expired
+    // (the "force-expiring established client" path commit d4177eb logs); the
+    // fix keeps the loop responsive so every B request succeeds.
+    let b = try waitForClient(socketPath: harness.socketPath)
+    defer { b.close() }
+    XCTAssertNoThrow(try b.listLabptySessions()) // establish b
+
+    let stop = DispatchSemaphore(value: 0)
+    let done = DispatchSemaphore(value: 0)
+    let lock = NSLock()
+    var bErrors = 0, bOk = 0
+    DispatchQueue.global().async {
+      while stop.wait(timeout: .now()) == .timedOut {
+        do { _ = try b.listLabptySessions(); lock.lock(); bOk += 1; lock.unlock() }
+        catch { lock.lock(); bErrors += 1; lock.unlock() }
+        Thread.sleep(forTimeInterval: 0.01)
+      }
+      done.signal()
+    }
+
+    let payload = [UInt8](repeating: 0x41, count: 16 * 1024)
+    let start = Date()
+    for _ in 0..<20 {
+      // BACKPRESSURE/INTERNAL once the master is full is the expected, prompt
+      // outcome — what must never happen is a multi-second blocking burst.
+      try? a.writeInput(handle: session.ptyHandle, bytes: payload)
+    }
+    let burst = Date().timeIntervalSince(start)
+    stop.signal()
+    done.wait()
+
+    XCTAssertLessThan(burst, 1.0, "writeInput burst wedged the event loop for \(burst)s")
+    XCTAssertEqual(bErrors, 0, "a concurrent client was starved/force-expired during the burst")
+    XCTAssertGreaterThan(bOk, 0)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   // MARK: - Concurrent terminate race
 
   func testConcurrentTerminateOnSameHandleSurvives() throws {

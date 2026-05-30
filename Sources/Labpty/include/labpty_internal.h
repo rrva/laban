@@ -58,6 +58,10 @@ enum {
     LABPTY_ENV_BYTES = 4352,
     LABPTY_CWD_BYTES = 4096,
     LABPTY_LOGICAL_ID_BYTES = 256,
+    /* Max writeInput payload (decode_write_input_request rejects larger). Also
+     * sizes the per-session pending-input buffer that lets handle_write stage a
+     * slow consumer's tail and drain it on POLLOUT instead of blocking. */
+    LABPTY_WRITE_INPUT_MAX = 64 * 1024,
     LABPTY_PATH_BYTES = 1024,
     LABPTY_READ_BUFFER_BYTES = 4096,
     LABPTY_DEFAULT_OUTPUT_CAPACITY = 8 * 1024 * 1024,
