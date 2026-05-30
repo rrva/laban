@@ -1,53 +1,55 @@
 #!/usr/bin/env sh
-# Runtime trace conformance for the labpty attachment state machine: drive real
-# connect/open/attach/detach/disconnect/terminate sequences through the daemon's
-# actual code, capture the transitions the daemon emits (LABPTY_TRACE), and
-# replay them through specs/labpty/LabptyAttachment.tla with TLC. This binds the
-# "// Modelled by LabptyAttachment.tla" claim in Sources/Labpty/main.c to a
-# checked fact: every transition the daemon takes must be one the spec permits.
+# Runtime trace conformance for labpty: drive real operation sequences through
+# the daemon's actual code, capture the transitions it emits (LABPTY_TRACE), and
+# replay them through the TLA+ models with TLC. This binds the "// Modelled by"
+# claims in Sources/Labpty to checked facts: every transition the code takes
+# must be one the spec permits.
 #
-# Positive: the harness is run under many seeds, each driving a different random
-# walk over enabled operations. TLC replays ALL of them in one run (it picks a
-# trace nondeterministically), so conformance is checked across a fuzzed
-# behaviour space, not a single hand-picked path.
+# Two machines are bound:
+#   attachment  the per-session attached_clients bitmask, against
+#               LabptyAttachment.tla (the client_release scrub is load-bearing).
+#   reuse       the registry logical_id lifecycle where the SESSION_ID_IN_USE
+#               race lived, against LabptyReuse.tla (relinquish-at-terminate).
 #
-# Negative control: the same harness built with -DLABPTY_TRACE_NEGCTL skips the
-# client_release scrub (the TeardownSkipsAttachmentScrub regression that
-# MC_AttachmentPreFix.cfg models) and disconnects a still-attached client, so a
-# departed client's bit lingers and TLC MUST reject the trace. If the negative
-# control silently conforms, the trace pipeline has stopped catching the bug the
-# scrub funnel exists to prevent.
+# Each is run under many seeds, each a different random walk over enabled
+# operations; TLC replays ALL of a machine's traces in one run (it picks a trace
+# nondeterministically), so conformance is checked across a fuzzed behaviour
+# space, not a single path. For each machine a -DLABPTY_TRACE_NEGCTL build
+# reintroduces the removed guard (attachment: skip the scrub; reuse: keep the id
+# while close_pending) and TLC MUST reject its trace — the negative control
+# proving the pipeline still catches the bug the guard exists to prevent.
 #
 # When tla2tools.jar (or java) is absent the script degrades to a compile-only
-# drift smoke: it builds both harnesses so a signature change to the daemon's
-# attachment code or trace emitter cannot silently rot this proof. CI provides
-# TLA_JAR so the real replay runs there.
+# drift smoke: it builds every harness so a signature change to the daemon's
+# code or trace emitters cannot silently rot these proofs. CI provides TLA_JAR.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
-seeds=${LABPTY_TRACE_SEEDS:-64}
+att_seeds=${LABPTY_TRACE_SEEDS:-64}
+reuse_seeds=${LABPTY_TRACE_REUSE_SEEDS:-32}
 
-harness=proofs/labpty/trace/trace_attachment.c
-units="Sources/Labpty/labpty_frame.c Sources/Labpty/labpty_protocol.c \
-Sources/Labpty/labpty_registry.c Sources/Labpty/labpty_byte_ring.c"
 incs="-I Sources/Labpty -I Sources/Labpty/include -I Sources/LabanTerminalCore/include"
+frame="Sources/Labpty/labpty_frame.c Sources/Labpty/labpty_protocol.c Sources/Labpty/labpty_byte_ring.c"
+att_units="$frame Sources/Labpty/labpty_registry.c"   # trace_attachment.c #includes main.c
+reuse_units="$frame"                                  # trace_reuse.c #includes labpty_registry.c
 cc=${CC:-cc}
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 
-build_harness() {
-  out=$1
-  shift
+build() {
+  out=$1; src=$2; units=$3; shift 3
   # shellcheck disable=SC2086
-  "$cc" -O0 -std=c11 -Wall -Wextra "$@" $incs "$harness" $units -o "$out"
+  "$cc" -O0 -std=c11 -Wall -Wextra "$@" $incs "$src" $units -o "$out"
 }
 
-printf 'check-trace: building attachment trace harness (positive + negative control)\n'
-build_harness "$workdir/trace_pos"
-build_harness "$workdir/trace_neg" -DLABPTY_TRACE_NEGCTL
+printf 'check-trace: building attachment + reuse trace harnesses (positive + negative control)\n'
+build "$workdir/att_pos"   proofs/labpty/trace/trace_attachment.c "$att_units"
+build "$workdir/att_neg"   proofs/labpty/trace/trace_attachment.c "$att_units"   -DLABPTY_TRACE_NEGCTL
+build "$workdir/reuse_pos" proofs/labpty/trace/trace_reuse.c      "$reuse_units"
+build "$workdir/reuse_neg" proofs/labpty/trace/trace_reuse.c      "$reuse_units" -DLABPTY_TRACE_NEGCTL
 
 TLA_JAR="${TLA_JAR:-/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar}"
 if [ ! -f "$TLA_JAR" ] || ! command -v java >/dev/null 2>&1; then
@@ -59,57 +61,65 @@ fi
 tlawd="$workdir/tla"
 mkdir -p "$tlawd"
 cp specs/labpty/LabptyAttachment.tla specs/labpty/TraceAttachment.tla \
-   specs/labpty/MC_TraceAttachment.cfg "$tlawd/"
+   specs/labpty/MC_TraceAttachment.cfg specs/labpty/LabptyReuse.tla \
+   specs/labpty/TraceReuse.tla specs/labpty/MC_TraceReuse.cfg "$tlawd/"
 
-# Replay the TraceData currently in $tlawd through TLC. $1 label, $2 expected
-# outcome (pass|fail). A conformant trace replays clean; a divergent one
-# deadlocks (the conjoined Next blocks the bogus step) — run WITHOUT -deadlock
-# so that deadlock is reported.
+rc=0
+# Run TLC on the module currently set up in $tlawd. A conformant trace replays
+# clean; a divergent one deadlocks (the conjoined spec action blocks the bogus
+# step) — run WITHOUT -deadlock so that deadlock is reported.
 run_tlc() {
-  label=$1
-  expected=$2
-  printf '  %-28s expect=%s ... ' "$label" "$expected"
+  cfg=$1; module=$2; label=$3; expected=$4
+  printf '  %-34s expect=%s ... ' "$label" "$expected"
   if ( cd "$tlawd" && java -XX:+UseParallelGC -cp "$TLA_JAR" tlc2.TLC \
-         -workers auto -config MC_TraceAttachment.cfg TraceAttachment \
-         >"$tlawd/tlc.out" 2>&1 ); then
+         -workers auto -config "$cfg" "$module" >"$tlawd/tlc.out" 2>&1 ); then
     actual=pass
   else
     actual=fail
   fi
   if [ "$actual" = "$expected" ]; then
     printf 'OK\n'
-    return 0
+  else
+    printf 'MISMATCH: got %s\n' "$actual"
+    printf '%s\n' '----- TLC output (last 30 lines) -----'
+    tail -n 30 "$tlawd/tlc.out"
+    printf '%s\n' '--------------------------------------'
+    rc=1
   fi
-  printf 'MISMATCH: got %s\n' "$actual"
-  printf '%s\n' '----- TLC output (last 30 lines) -----'
-  tail -n 30 "$tlawd/tlc.out"
-  printf '%s\n' '--------------------------------------'
-  return 1
 }
 
-printf 'check-trace: driving %s random attachment scenarios through the daemon\n' "$seeds"
-posdir="$workdir/pos"
-mkdir -p "$posdir"
-seed=1
-while [ "$seed" -le "$seeds" ]; do
-  mkdir -p "$workdir/shm-$seed"
-  LABPTY_TRACE="$posdir/run-$seed.ndjson" LABPTY_TRACE_SHMDIR="$workdir/shm-$seed" \
-    "$workdir/trace_pos" "$seed"
-  seed=$((seed + 1))
-done
-python3 scripts/gen-trace-tla.py "$tlawd/TraceData.tla" "$posdir"/run-*.ndjson
+# Drive $1 seeds of harness $2 into $workdir/$3/, one NDJSON per seed.
+drive() {
+  count=$1; bin=$2; dir="$workdir/$3"
+  rm -rf "$dir"; mkdir -p "$dir"
+  s=1
+  while [ "$s" -le "$count" ]; do
+    mkdir -p "$workdir/shm-$3-$s"
+    LABPTY_TRACE="$dir/run-$s.ndjson" LABPTY_TRACE_SHMDIR="$workdir/shm-$3-$s" "$bin" "$s"
+    s=$((s + 1))
+  done
+}
 
-rc=0
-printf 'check-trace: replaying every scenario through LabptyAttachment with TLC\n'
-run_tlc "positive ($seeds seeds)" pass || rc=1
+printf 'check-trace: attachment — %s random scenarios + negative control\n' "$att_seeds"
+drive "$att_seeds" "$workdir/att_pos" attpos
+python3 scripts/gen-trace-tla.py "$tlawd/TraceData.tla" "$workdir"/attpos/run-*.ndjson
+run_tlc MC_TraceAttachment.cfg TraceAttachment "attachment positive ($att_seeds seeds)" pass
+mkdir -p "$workdir/shm-attneg"
+LABPTY_TRACE="$workdir/attneg.ndjson" LABPTY_TRACE_SHMDIR="$workdir/shm-attneg" "$workdir/att_neg"
+python3 scripts/gen-trace-tla.py "$tlawd/TraceData.tla" "$workdir/attneg.ndjson"
+run_tlc MC_TraceAttachment.cfg TraceAttachment "attachment negative control" fail
 
-mkdir -p "$workdir/shm-neg"
-LABPTY_TRACE="$workdir/neg.ndjson" LABPTY_TRACE_SHMDIR="$workdir/shm-neg" "$workdir/trace_neg"
-python3 scripts/gen-trace-tla.py "$tlawd/TraceData.tla" "$workdir/neg.ndjson"
-run_tlc "negative control" fail || rc=1
+printf 'check-trace: reuse — %s random scenarios + negative control\n' "$reuse_seeds"
+drive "$reuse_seeds" "$workdir/reuse_pos" reusepos
+python3 scripts/gen-reuse-tla.py "$tlawd/TraceReuseData.tla" "$workdir"/reusepos/run-*.ndjson
+run_tlc MC_TraceReuse.cfg TraceReuse "reuse positive ($reuse_seeds seeds)" pass
+mkdir -p "$workdir/shm-reuseneg"
+LABPTY_TRACE="$workdir/reuseneg.ndjson" LABPTY_TRACE_SHMDIR="$workdir/shm-reuseneg" "$workdir/reuse_neg"
+python3 scripts/gen-reuse-tla.py "$tlawd/TraceReuseData.tla" "$workdir/reuseneg.ndjson"
+run_tlc MC_TraceReuse.cfg TraceReuse "reuse negative control" fail
 
 if [ "$rc" -ne 0 ]; then
   printf 'check-trace: trace conformance FAILED\n' >&2
   exit 1
 fi
-printf 'check-trace: %s random scenarios conform to LabptyAttachment; negative control refuted\n' "$seeds"
+printf 'check-trace: attachment + reuse traces conform; both negative controls refuted\n'
