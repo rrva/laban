@@ -121,14 +121,16 @@ final class TerminalScrollIndicatorView: NSView {
   /// Called every frame from `TerminalBitmapView.advanceFrame`. Cheap noop
   /// when the viewport state hasn't changed.
   func applyViewport(
-    viewportOffset: Int, totalRows: Int, viewportRows: Int, isAltScreen: Bool
+    viewportOffset: Int, totalRows: Int, viewportRows: Int,
+    isAltScreen: Bool, isMouseTracking: Bool
   ) {
     let input = TerminalScrollIndicator.Input(
       viewportOffset: viewportOffset,
       totalRows: totalRows,
       viewportRows: viewportRows,
       isHoverEdge: isHoverEdge,
-      isAltScreen: isAltScreen
+      isAltScreen: isAltScreen,
+      isMouseTracking: isMouseTracking
     )
     if input == lastInput { return }
     apply(input: input)

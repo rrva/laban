@@ -10,7 +10,8 @@
     "input": {
       "type": ["object", "null"],
       "required": [
-        "viewportOffset", "totalRows", "viewportRows", "isHoverEdge", "isAltScreen"
+        "viewportOffset", "totalRows", "viewportRows", "isHoverEdge", "isAltScreen",
+        "isMouseTracking"
       ],
       "additionalProperties": false,
       "properties": {
@@ -18,7 +19,8 @@
         "totalRows": {"type": "integer", "minimum": 0},
         "viewportRows": {"type": "integer", "minimum": 0},
         "isHoverEdge": {"type": "boolean"},
-        "isAltScreen": {"type": "boolean"}
+        "isAltScreen": {"type": "boolean"},
+        "isMouseTracking": {"type": "boolean"}
       }
     },
     "output": {

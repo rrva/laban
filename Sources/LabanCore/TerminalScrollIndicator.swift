@@ -19,23 +19,31 @@ public enum TerminalScrollIndicator {
     public var viewportRows: Int
     public var isHoverEdge: Bool
     /// The terminal is on the alternate screen (a full-screen TUI such as
-    /// Claude Code's fullscreen renderer, `less`, or `vim`). Those apps own the
-    /// screen and manage their own scrollback, so Laban has no history of its
-    /// own for the overlay to point at — the indicator must stay hidden.
+    /// `less` or `vim`). Those apps own the screen and manage their own
+    /// scrollback, so Laban has no history of its own for the overlay to point
+    /// at — the indicator must stay hidden.
     public var isAltScreen: Bool
+    /// The focused app has mouse tracking on (Claude Code's fullscreen renderer
+    /// takes over the screen this way, often on the *primary* screen). Laban
+    /// then routes the wheel to the app as mouse events instead of moving its
+    /// own viewport, so the scrollback position the overlay would show is not
+    /// something the user can drive — stay hidden.
+    public var isMouseTracking: Bool
 
     public init(
       viewportOffset: Int,
       totalRows: Int,
       viewportRows: Int,
       isHoverEdge: Bool,
-      isAltScreen: Bool = false
+      isAltScreen: Bool = false,
+      isMouseTracking: Bool = false
     ) {
       self.viewportOffset = viewportOffset
       self.totalRows = totalRows
       self.viewportRows = viewportRows
       self.isHoverEdge = isHoverEdge
       self.isAltScreen = isAltScreen
+      self.isMouseTracking = isMouseTracking
     }
   }
 
@@ -94,11 +102,14 @@ public enum TerminalScrollIndicator {
   }
 
   public static func decide(_ input: Input) -> Output {
-    // The alternate screen has no Laban scrollback to navigate — the
-    // full-screen app owns the viewport and its own history. Stay hidden even
-    // when hovering the edge, so a stuck alt-screen offset can't pin the
-    // indicator on screen.
-    guard !input.isAltScreen else { return .hidden }
+    // When the focused app owns the wheel, there is no user-navigable Laban
+    // scrollback for the overlay to point at, so stay hidden even when hovering
+    // the edge. Two cases: the alternate screen (the app manages its own
+    // history) and mouse tracking (Laban forwards the wheel as mouse events
+    // rather than scrolling its viewport — Claude Code's fullscreen renderer
+    // does this on the primary screen, where a stuck offset would otherwise pin
+    // the indicator on permanently).
+    guard !input.isAltScreen, !input.isMouseTracking else { return .hidden }
     guard input.viewportRows > 0, input.totalRows > input.viewportRows else {
       return .hidden
     }

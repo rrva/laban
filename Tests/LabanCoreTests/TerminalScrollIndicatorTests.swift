@@ -34,6 +34,25 @@ final class TerminalScrollIndicatorTests: XCTestCase {
     XCTAssertEqual(out, .hidden)
   }
 
+  func testMouseTrackingProducesHiddenOutput() {
+    // Claude Code's fullscreen renderer runs under mouse tracking on the
+    // primary screen with scrollback above, so the viewport reads as
+    // scrolled-back. Laban forwards the wheel to the app as mouse events, so
+    // that scrollback isn't user-navigable — the overlay must stay hidden
+    // rather than pin on permanently.
+    let out = TerminalScrollIndicator.decide(
+      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: false,
+        isAltScreen: false, isMouseTracking: true))
+    XCTAssertEqual(out, .hidden)
+  }
+
+  func testMouseTrackingStaysHiddenEvenWhenHovering() {
+    let out = TerminalScrollIndicator.decide(
+      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: true,
+        isAltScreen: false, isMouseTracking: true))
+    XCTAssertEqual(out, .hidden)
+  }
+
   func testAtLiveBottomDoesNotHoldButThumbStillSized() {
     let out = TerminalScrollIndicator.decide(
       .init(viewportOffset: 976, totalRows: 1000, viewportRows: 24, isHoverEdge: false))

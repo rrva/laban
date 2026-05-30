@@ -254,11 +254,16 @@ final class MainWindowController: NSWindowController {
       frame: NSRect(x: 0, y: 0, width: viewW, height: viewH))
     scrollIndicator.autoresizingMask = [.width, .height]
     containerView.addSubview(scrollIndicator)
-    termView.onViewportChanged = { [weak scrollIndicator] offset, total, vp, altScreen in
+    termView.onViewportChanged = {
+      [weak scrollIndicator] offset, total, vp, altScreen, mouseTracking in
       scrollIndicator?.applyViewport(
-        viewportOffset: offset, totalRows: total, viewportRows: vp, isAltScreen: altScreen)
+        viewportOffset: offset, totalRows: total, viewportRows: vp,
+        isAltScreen: altScreen, isMouseTracking: mouseTracking)
     }
     termView.onViewportUnavailable = { [weak scrollIndicator] in
+      scrollIndicator?.reset()
+    }
+    termView.onActiveTabChanged = { [weak scrollIndicator] in
       scrollIndicator?.reset()
     }
 

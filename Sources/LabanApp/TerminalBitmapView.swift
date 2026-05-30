@@ -197,8 +197,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   /// containerView). Called every frame from `advanceFrame` with the active
   /// session's viewport state, or `nil` when there is no active tab.
   var onViewportChanged:
-    ((_ viewportOffset: Int, _ totalRows: Int, _ viewportRows: Int, _ isAltScreen: Bool) -> Void)?
+    (
+      (
+        _ viewportOffset: Int, _ totalRows: Int, _ viewportRows: Int,
+        _ isAltScreen: Bool, _ isMouseTracking: Bool
+      ) -> Void
+    )?
   var onViewportUnavailable: (() -> Void)?
+  /// Fired when the active tab changes, before the new tab's first viewport
+  /// sample. The overlay scroll indicator is a single sibling view shared by
+  /// every tab, so it must drop the outgoing tab's visible state here or it
+  /// flashes the previous tab's thumb for a beat when a new tab is selected.
+  var onActiveTabChanged: (() -> Void)?
   private var renderedFrameCount: Int = 0
   var renderedFrameCountForTests: Int { renderedFrameCount }
 
@@ -867,6 +877,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     if tabChanged {
       resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
       syncSelectionStateToActiveTab()
+      // Drop the shared overlay indicator's outgoing-tab state before the new
+      // tab's first viewport sample so it can't flash the previous thumb.
+      onActiveTabChanged?()
     }
 
     // Critically-damped PD controller. Drives `displayedScrollRows` toward
@@ -1128,7 +1141,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     syncFindChip()
 
     if let vs = session.viewportState() {
-      onViewportChanged?(vs.viewportOffset, vs.totalRows, vs.viewportRows, vs.altScreen)
+      onViewportChanged?(
+        vs.viewportOffset, vs.totalRows, vs.viewportRows, vs.altScreen, vs.mouseTracking)
     } else {
       onViewportUnavailable?()
     }
