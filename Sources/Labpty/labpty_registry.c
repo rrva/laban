@@ -163,26 +163,17 @@ labpty_status_t labpty_registry_open(
     assert(out != NULL);
     *out = NULL;
     labpty_registry_reap(registry);
+    /* Reject a live duplicate; reclaim a same-id dead-leak slot (a child that
+     * exited naturally on a session the client never terminated). A session
+     * the client DID terminate has already relinquished its logical_id in
+     * labpty_session_request_close, so it is not found here at all — that
+     * decoupling of id reuse from child reaping is what makes a rapid
+     * terminate->reopen of the same id race-free without blocking the
+     * single-threaded event loop. Modelled by specs/labpty/LabptyReuse.tla;
+     * the pre-fix "a terminated id stays held" shape is pinned by the
+     * MC_ReusePreFix.cfg negative control. */
     labpty_session_t *existing = labpty_registry_find_logical(registry, request->logical_id);
-    if (existing) {
-        /* A live session genuinely owns the id; reject the duplicate. */
-        if (existing->alive) return LABPTY_E_SESSION_ID_IN_USE;
-        /* Otherwise the id is bound to a session already on its way out — a
-         * reclaimable dead leak, or one still inside its async close window
-         * (close_pending) whose child the WNOHANG reap above has not caught
-         * yet. A client reopening a logical_id it just terminated must not
-         * lose this race with the reap tick, so finish the prior teardown
-         * synchronously (labpty_session_close SIGKILL-escalates the child
-         * and reaps it) and reuse the freed slot. If the child somehow
-         * outlives even SIGKILL the slot stays used and we still reject.
-         *
-         * Modelled by specs/labpty/LabptyReuse.tla::TerminatedIdIsReusable;
-         * the pre-fix "reject any same-id holder" shape is pinned by the
-         * MC_ReusePreFix.cfg negative control. LabptyLifecycle.tla has no
-         * logical_id, so it could not catch this — see formal-specs.md. */
-        labpty_session_close(existing);
-        if (existing->used) return LABPTY_E_SESSION_ID_IN_USE;
-    }
+    if (existing && !reclaim_dead_session(existing)) return LABPTY_E_SESSION_ID_IN_USE;
     labpty_session_t *slot = free_slot(registry);
     if (!slot && reclaim_one_dead_session(registry)) slot = free_slot(registry);
     if (!slot) return LABPTY_E_PAYLOAD_TOO_LARGE;
@@ -268,8 +259,11 @@ void labpty_session_close(labpty_session_t *session) {
     } else {
         /* Child outlived our SIGKILL deadline. Leave used=1 so the
          * registry slot persists; labpty_registry_reap will finish the
-         * cleanup when the OS finally hands us the zombie. */
+         * cleanup when the OS finally hands us the zombie. Relinquish the
+         * id like labpty_session_request_close so the slot never blocks
+         * reuse of its logical_id while it waits to reap. */
         session->close_pending = 1;
+        session->logical_id[0] = '\0';
     }
 }
 
@@ -305,6 +299,16 @@ void labpty_session_request_close(labpty_session_t *session, uint64_t now_ns) {
         session->close_pending = 1;
         session->sigkill_sent = 0;
         session->terminate_deadline_ns = now_ns + LABPTY_TERMINATE_HUP_BUDGET_NS;
+        /* Relinquish the logical_id the instant the client terminates,
+         * before the async reap finishes freeing this slot. A client
+         * reopening the same id then finds no holder (the slot reaps under
+         * no id on a later tick) and never races SESSION_ID_IN_USE — without
+         * the open path blocking the event loop waiting for the child.
+         * Modelled by specs/labpty/LabptyReuse.tla::NotAliveImpliesIdRelinquished;
+         * the pre-fix "keep the id while close_pending" shape is pinned by
+         * MC_ReusePreFix.cfg. LabptyLifecycle.tla has no logical_id, so it
+         * could not catch this — see formal-specs.md. */
+        session->logical_id[0] = '\0';
     } else {
         /* Child already gone; collapse the slot in place. */
         labpty_byte_ring_close(&session->ring);

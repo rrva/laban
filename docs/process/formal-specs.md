@@ -21,7 +21,7 @@ reasons about the C that parses bytes at the trust boundary. See
 | `LabptyControlChannel.tla` | `Sources/Labpty/main.c` per-connection state machine (`labpty_client_t` slots, hello negotiation, slowloris reaper). | `EstablishedImpliesNegotiated` and `UnnegotiatedIdleIsNotPermanent` (commit 2aac41a fix). |
 | `LabptyStartup.tla` | `Sources/Labpty/main.c::listen_unix_socket` multi-daemon race on the `--socket` path. | `ServingDaemonOwnsPath`, `AtMostOneServing` (commit b5e7819 fix). |
 | `LabptyAttachment.tla` | `Sources/Labpty/main.c` per-session connected-client mask (`attached_clients`, `ATTACH`/`DETACH`, opener auto-attach, `client_release` scrub). | `AttachmentImpliesInUse` — no mask retains a departed client, so the count never overcounts an owner (ADR 0010). |
-| `LabptyReuse.tla` | `Sources/Labpty/labpty_registry.c::labpty_registry_open` `logical_id` reuse rule. | `TerminatedIdIsReusable` — a logical_id held only by not-alive (closing) sessions is immediately reusable, not just eventually (commit 389df73 fix). `LabptyLifecycle.tla` has no `logical_id`, so it could not state this. |
+| `LabptyReuse.tla` | `Sources/Labpty/labpty_registry.c` `logical_id` reuse: `labpty_session_request_close` relinquishes the id at terminate; `labpty_registry_open` rejects only a still-held id. | `NotAliveImpliesIdRelinquished` (mechanism) and `TerminatedIdIsReusable` (contract) — a terminated logical_id is immediately reusable, not just eventually. `LabptyLifecycle.tla` has no `logical_id`, so it could not state this. |
 
 Each module is paired with one or more `MC_*.tla` / `MC_*.cfg` harnesses
 that constrain the state space for TLC. Configs come in two shapes:
@@ -46,7 +46,7 @@ Update a spec when you change the state machine it models. In practice:
 | You changed | Update |
 | --- | --- |
 | `labpty_registry.c` actions on session slots | `LabptyLifecycle.tla` |
-| `labpty_registry_open` `logical_id` reuse / duplicate-id rule | `LabptyReuse.tla` |
+| `labpty_registry.c` `logical_id` reuse (`request_close` relinquish / `open` duplicate rule) | `LabptyReuse.tla` |
 | `labpty_byte_ring.c` write/read or layout fields | `LabptyByteRing.tla` |
 | `main.c::labpty_client_t` fields, transitions, or expire policy | `LabptyControlChannel.tla` |
 | `main.c` session attachment (`attached_clients`, attach/detach, `client_release` scrub) | `LabptyAttachment.tla` |

@@ -1,6 +1,6 @@
 -------------------------- MODULE LabptyReuse --------------------------
 (****************************************************************************
- The logical_id reuse contract of labpty_registry_open.
+ The logical_id reuse contract of labpty_registry.c.
 
  Why this spec exists
    LabptyLifecycle.tla models the slot lifecycle but has NO logical_id, so
@@ -9,22 +9,27 @@
    reusable the instant the session goes not-alive. The integration test
    testRapidOpenTerminateSameLogicalIdSurvives hit exactly that gap: a client
    terminated a logical_id and immediately reopened it, racing the
-   asynchronous reap tick, and got SESSION_ID_IN_USE. Fix: commit 389df73 —
-   labpty_registry_open now drives a not-alive same-id session's teardown to
-   completion synchronously instead of waiting for the next reap tick.
+   asynchronous reap tick, and got SESSION_ID_IN_USE.
+
+   The fix decouples logical_id reuse from child reaping:
+   labpty_session_request_close RELINQUISHES the logical_id the moment the
+   client terminates (the slot keeps reaping under no id), so a reopen finds
+   no holder and never races the reap tick — and the open path never blocks
+   the single-threaded event loop waiting for a child to die. (An earlier fix
+   that blocked in open is commit 389df73; this is its non-blocking
+   successor.)
 
    This module adds the variable the old spec lacked (logical_id) and states
-   the property it could not express (TerminatedIdIsReusable). The Fixed
-   constant selects the open rule:
+   the property it could not express (TerminatedIdIsReusable) plus the
+   mechanism invariant (NotAliveImpliesIdRelinquished). The Fixed constant
+   selects terminate's behaviour:
 
-     Fixed = TRUE  : the 389df73 behaviour. open rejects only a genuinely
-                     ALIVE same-id holder and synchronously reclaims a
-                     not-alive one. The invariant holds.
-     Fixed = FALSE : the pre-fix behaviour. open rejects ANY same-id holder,
-                     including one still in its async close window. TLC finds
-                     the terminate->reopen rejection — the negative control
+     Fixed = TRUE  : terminate relinquishes the id. A terminated id is
+                     immediately reusable; no close_pending slot retains one.
+     Fixed = FALSE : terminate keeps the id while close_pending. TLC finds the
+                     terminate->reopen rejection — the negative control
                      (MC_ReusePreFix.cfg), pinning the bug-shape so it cannot
-                     silently come back.
+                     silently return.
 
    Note the bug is NOT a violation of eventual release: ReapTick still frees
    the slot. The property is about IMMEDIACY — reuse without waiting for a
@@ -35,7 +40,7 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS
     MaxSessions,   \* registry slots (LABPTY_MAX_SESSIONS = 64 in production)
     Ids,           \* logical_id domain a client may (re)use
-    Fixed          \* TRUE: open reclaims a not-alive same-id slot (389df73)
+    Fixed          \* TRUE: terminate relinquishes the id (the fix)
 
 VARIABLES sessions
 vars == << sessions >>
@@ -64,36 +69,29 @@ AnyHolder(id)      == \E s \in Slots : HoldsId(s, id)
 NotAliveHolder(id) == \E s \in Slots : HoldsId(s, id) /\ sessions[s].alive = 0
 HasFreeSlot        == \E s \in Slots : sessions[s].used = 0
 
-\* find_logical's reject rule. Fixed: only a genuinely ALIVE session blocks
-\* reuse. Pre-fix: ANY used slot holding the id blocks it, including one still
-\* inside its async close window — the bug.
-OpenBlocked(id) == IF Fixed THEN AliveHolder(id) ELSE AnyHolder(id)
-
-\* labpty_session_close on the not-alive same-id slot: SIGKILL-escalates and
-\* reaps, leaving the slot Empty. Only reachable under Fixed.
-WithSameIdReclaimed(id) ==
-    IF Fixed /\ NotAliveHolder(id)
-    THEN [ sessions EXCEPT
-             ![CHOOSE s \in Slots : HoldsId(s, id) /\ sessions[s].alive = 0] = Empty ]
-    ELSE sessions
+\* find_logical's reject rule (labpty_registry_open): a NEW open of id is
+\* rejected while any used slot still holds it. The fix never changes this
+\* rule — it removes the holder, by relinquishing the id at terminate.
+OpenBlocked(id) == AnyHolder(id)
 
 \* ---- actions -------------------------------------------------------------
 OpenSession(id) ==
     /\ id \in Ids
     /\ ~OpenBlocked(id)
-    /\ LET base == WithSameIdReclaimed(id) IN
-         \E fs \in Slots :
-            /\ base[fs].used = 0
-            /\ sessions' = [ base EXCEPT ![fs] = Rec(1, 1, "running", 0, id) ]
+    /\ \E fs \in Slots :
+         /\ sessions[fs].used = 0
+         /\ sessions' = [ sessions EXCEPT ![fs] = Rec(1, 1, "running", 0, id) ]
 
 \* terminate: enter the async close window. alive drops and close_pending
-\* arms, but the SIGHUP'd child has not exited yet, so the slot still holds
-\* the id — the exact state a rapid reopen collides with.
+\* arms. With the fix the logical_id is relinquished immediately (NoId) so it
+\* is reusable at once; pre-fix it is retained, so a rapid reopen collides.
 Terminate(slot) ==
     /\ sessions[slot].used = 1
     /\ sessions[slot].alive = 1
     /\ sessions' = [ sessions EXCEPT
-            ![slot].alive = 0, ![slot].close_pending = 1 ]
+            ![slot].alive = 0,
+            ![slot].close_pending = 1,
+            ![slot].logical_id = IF Fixed THEN NoId ELSE sessions[slot].logical_id ]
 
 ChildDies(slot) ==
     /\ sessions[slot].used = 1
@@ -101,8 +99,9 @@ ChildDies(slot) ==
     /\ sessions' = [ sessions EXCEPT ![slot].child = "zombie" ]
 
 \* reap tick: a close_pending child that has become a zombie is finalised,
-\* freeing the slot and its id. This is the EVENTUAL release the old spec
-\* proved — but it can lag a client's immediate reopen.
+\* freeing the slot. This is the EVENTUAL release the old spec proved — but it
+\* can lag a client's immediate reopen, which is why reuse must not depend on
+\* it.
 ReapTick ==
     /\ \E s \in Slots :
             sessions[s].used = 1 /\ sessions[s].close_pending = 1 /\ sessions[s].child = "zombie"
@@ -130,11 +129,18 @@ FreeSlotIsClean ==
 ClosePendingImpliesNotAlive ==
     \A s \in Slots : sessions[s].close_pending = 1 => sessions[s].alive = 0
 
-\* The property LabptyLifecycle could not state: a logical_id held only by
-\* not-alive sessions (terminated, still in their async close window) is
-\* immediately reusable — open of it is not blocked — when a slot is free.
-\* Fixed = TRUE satisfies it; pre-fix (Fixed = FALSE) violates it, which is
-\* the SESSION_ID_IN_USE bug commit 389df73 fixed.
+\* Mechanism: a terminated (close_pending) session has relinquished its
+\* logical_id, so no not-alive slot ever retains one. Fixed = TRUE holds it;
+\* pre-fix violates it (the close_pending slot keeps its id) — and that is the
+\* state the SESSION_ID_IN_USE bug needed.
+NotAliveImpliesIdRelinquished ==
+    \A s \in Slots :
+        (sessions[s].used = 1 /\ sessions[s].close_pending = 1)
+            => sessions[s].logical_id = NoId
+
+\* Contract: a logical_id held only by not-alive sessions is immediately
+\* reusable — open of it is not blocked — when a slot is free. Under the fix
+\* this holds because terminate leaves no such holder; pre-fix it is violated.
 TerminatedIdIsReusable ==
     \A id \in Ids :
         (NotAliveHolder(id) /\ ~AliveHolder(id) /\ HasFreeSlot) => ~OpenBlocked(id)
