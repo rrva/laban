@@ -90,6 +90,11 @@ static int install_signal_handlers(void) {
     ignore.sa_handler = SIG_IGN;
     sigemptyset(&ignore.sa_mask);
     if (sigaction(SIGPIPE, &ignore, NULL) != 0) return -1;
+    /* Survive a stray SIGHUP (controlling-terminal close in dev/CI, a
+     * group-wide signal): the daemon is meant to outlive its launcher
+     * (ADR 0006), so the default terminate-on-HUP would kill every live
+     * session. (L1) */
+    if (sigaction(SIGHUP, &ignore, NULL) != 0) return -1;
 
     struct sigaction shutdown = {0};
     shutdown.sa_handler = request_shutdown;
