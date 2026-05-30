@@ -335,6 +335,15 @@ accept/hello/dispatch/write/expire cycle), update both the harness
 `MC_Trace<machine>.cfg`, a generator (`scripts/gen-<machine>-tla.py`), and a
 `check-trace` stanza — `check-anchors` rule E enforces the last.
 
+**Is the conformance meaningful?** Conformance is a refinement (daemon ⊆ model);
+it says nothing about whether the seeds *exercise* the whole model.
+`scripts/check-model-coverage` is the inverse check — it drives each binding's
+seeds and asserts every model action appears at least once, so a transition the
+fuzzer never reaches (and so never checks) fails loudly instead of passing
+vacuously. It found `DispatchNonHelloNormal` — a negotiated client's second
+round-trip — unreached across every control seed until a deterministic prelude
+was added. Wired into `scripts/check`; fast (C runs + counting, no solver).
+
 ## Mutation adequacy (do the checks have teeth?)
 
 A green proof or conformance run shows the check **passes** — not that it would

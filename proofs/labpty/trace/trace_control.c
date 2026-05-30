@@ -212,6 +212,19 @@ static void run_random(uint32_t seed) {
     if (is_reading(&dstate.clients[0])) { const char *l = do_dispatch(0); emit(l); }
     if (is_writing(&dstate.clients[0])) do_writecomplete(0);
 
+    /* hello-OK, then a normal post-hello PING -> DispatchNonHelloNormal: the one
+     * dispatch the random walk almost never reaches, because a negotiated
+     * client must survive to a SECOND round-trip. Run on every seed so that
+     * transition (and negotiated=1/established=1) is always exercised — model
+     * coverage, not just conformance. */
+    do_accept(1);
+    do_startframe(1, KIND_HELLO_OK);
+    if (is_reading(&dstate.clients[1])) { const char *l = do_dispatch(1); emit(l); }
+    if (is_writing(&dstate.clients[1])) do_writecomplete(1);
+    do_startframe(1, KIND_PING);
+    if (is_reading(&dstate.clients[1])) { const char *l = do_dispatch(1); emit(l); }
+    if (is_writing(&dstate.clients[1])) do_writecomplete(1);
+
     for (int step = 0; step < SCN_STEPS; step++) {
         static act_t acts[SCN_CLIENTS * 5];
         int n = 0;

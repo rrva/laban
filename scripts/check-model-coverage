@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Model coverage for the labpty trace bindings — the inverse of conformance.
+
+scripts/check-trace proves every transition the daemon emits is a spec action
+(refinement: daemon ⊆ model). It says nothing about whether the fuzzed seeds
+actually EXERCISE the whole model. If the seeds never reach a model action, the
+conformance is vacuous there — a transition nobody ever checked.
+
+This drives each binding's harness over its seeds and asserts every model action
+appears at least once. A missing action is a real gap: the fuzzer cannot reach
+it, so add a seed or a deterministic prelude that does (this is exactly how
+DispatchNonHelloNormal — a negotiated client's second round-trip — was found
+unreached and fixed). Fast (C runs + counting, no solver). Key state
+combinations are reported as a sanity signal, not gated.
+
+    scripts/check-model-coverage
+"""
+import collections
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(REPO)
+
+INCS = ["-I", "Sources/Labpty", "-I", "Sources/Labpty/include",
+        "-I", "Sources/LabanTerminalCore/include"]
+FRAME = ["Sources/Labpty/labpty_frame.c", "Sources/Labpty/labpty_protocol.c",
+         "Sources/Labpty/labpty_byte_ring.c"]
+REG = ["Sources/Labpty/labpty_registry.c"]
+CC = os.environ.get("CC", "cc")
+
+BINDINGS = {
+    "attachment": dict(
+        harness="proofs/labpty/trace/trace_attachment.c", units=FRAME + REG, seeds=64,
+        actions=["Connect", "Disconnect", "OpenSession", "Attach", "Detach",
+                 "TerminateSession"]),
+    "reuse": dict(
+        harness="proofs/labpty/trace/trace_reuse.c", units=FRAME, seeds=32,
+        actions=["OpenSession", "Terminate", "DaemonReap"]),
+    "control": dict(
+        harness="proofs/labpty/trace/trace_control.c", units=FRAME + REG, seeds=24,
+        actions=["Accept", "StartFrame", "DispatchHello", "DispatchNonHelloBeforeHello",
+                 "DispatchNonHelloNormal", "WriteComplete", "Expire", "Disconnect"]),
+}
+
+
+def key_states(name, recs):
+    ks = collections.Counter()
+    for r in recs:
+        if name == "attachment":
+            for s in r.get("attached", []):
+                if len(s) >= 2:
+                    ks["session>=2 attached"] += 1
+        elif name == "control":
+            for c in r.get("clients", []):
+                if c["negotiated"]:
+                    ks["negotiated=1"] += 1
+                if c["established"]:
+                    ks["established=1"] += 1
+                if c["state"] in ("reading", "writing"):
+                    ks["mid-frame"] += 1
+    return ks
+
+
+def run_binding(name, cfg, work):
+    binpath = os.path.join(work, name)
+    build = [CC, "-O0", "-std=c11", "-w"] + INCS + [cfg["harness"]] + cfg["units"] + \
+        ["-o", binpath]
+    r = subprocess.run(build, capture_output=True, text=True)
+    if r.returncode != 0:
+        return ("ERROR", "build failed:\n" + r.stderr[-600:], collections.Counter(), {})
+
+    counts = collections.Counter()
+    recs = []
+    for seed in range(1, cfg["seeds"] + 1):
+        nd = os.path.join(work, f"{name}-{seed}.ndjson")
+        shm = os.path.join(work, f"shm-{name}-{seed}")
+        os.makedirs(shm, exist_ok=True)
+        env = dict(os.environ, LABPTY_TRACE=nd, LABPTY_TRACE_SHMDIR=shm)
+        subprocess.run([binpath, str(seed)], env=env, capture_output=True)
+        if os.path.isfile(nd):
+            for line in open(nd):
+                line = line.strip()
+                if line:
+                    rec = json.loads(line)
+                    recs.append(rec)
+                    counts[rec["action"]] += 1
+    missing = [a for a in cfg["actions"] if counts[a] == 0]
+    if not recs:
+        return ("ERROR", "no traces emitted", counts, {})
+    return ("GAP" if missing else "OK", missing, counts, key_states(name, recs))
+
+
+def main():
+    work = tempfile.mkdtemp(prefix="model-coverage-")
+    gaps = 0
+    print("check-model-coverage: every model action must appear in the fuzzed traces")
+    try:
+        for name, cfg in BINDINGS.items():
+            verdict, missing, counts, ks = run_binding(name, cfg, work)
+            reached = sum(1 for a in cfg["actions"] if counts[a] > 0)
+            print(f"  {name:11} {reached}/{len(cfg['actions'])} actions  "
+                  + "  ".join(f"{a}={counts[a]}" for a in cfg["actions"]))
+            if ks:
+                print(f"    key-states: {dict(ks)}")
+            if verdict == "ERROR":
+                print(f"    ERROR: {missing}")
+                gaps += 1
+            elif verdict == "GAP":
+                print(f"    VACUOUS — never exercised: {missing}")
+                gaps += 1
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    if gaps:
+        print("check-model-coverage: a model action is never exercised — the binding "
+              "is vacuous there; add a seed or prelude that reaches it", file=sys.stderr)
+        return 1
+    print("check-model-coverage: every model action in all bindings is exercised")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

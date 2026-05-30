@@ -63,6 +63,11 @@ fi
 # drift smoke when the TLA+ jar is absent (CI sets TLA_JAR).
 ./scripts/check-trace
 
+# Model coverage — the inverse of check-trace: assert the fuzzed seeds actually
+# exercise every model action, so a binding can't pass vacuously on a transition
+# nobody reaches. Fast (C runs + counting, no solver); no TLA+ jar needed.
+./scripts/check-model-coverage
+
 # Replay the labpty fuzz seed corpus through the decoders under
 # ASan/UBSan — the deterministic, engine-independent form of
 # scripts/fuzz-labpty. A real fuzzing campaign is a manual/CI step:
