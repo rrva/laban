@@ -1,0 +1,79 @@
+#!/usr/bin/env sh
+# MC/DC (Modified Condition/Decision Coverage) of the labpty DAEMON as
+# exercised by the real LabptyTests integration suite. MC/DC is the exacting
+# metric — it asks whether each boolean condition was shown to independently
+# flip a decision — and it stays low even when line coverage looks healthy.
+# CBMC already proves the decoders exhaustively, so the number that matters
+# here is the UN-PROVEN daemon code (main.c handlers, registry, dispatch).
+#
+# Usage:
+#   scripts/coverage-labpty            build instrumented, run tests, print
+#                                      the MC/DC report
+#   scripts/coverage-labpty --check N  same, but exit non-zero if the daemon
+#                                      MC/DC%% has regressed below N (a ratchet:
+#                                      coverage may only go up). CI floor.
+#
+# Apple clang 21 + xcrun llvm-cov both do MC/DC natively, so this is a single
+# matched toolchain. The daemon is SIGKILLed at test teardown, which skips the
+# normal profile flush, so it is built with -fprofile-continuous (counters are
+# page-aligned and synced live, surviving the kill).
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+floor=""
+case "${1:-}" in
+  --check) floor=${2:?"--check needs a floor percentage"} ;;
+  "") : ;;
+  *) printf 'coverage-labpty: unknown argument %s\n' "$1" >&2; exit 2 ;;
+esac
+
+prof="$(cc -print-resource-dir)/lib/darwin/libclang_rt.profile_osx.a"
+if [ ! -f "$prof" ]; then
+  printf 'coverage-labpty: profile runtime not found at %s\n' "$prof" >&2
+  exit 1
+fi
+
+covdir=$(mktemp -d)
+trap 'rm -rf "$covdir"' EXIT
+
+printf 'coverage-labpty: building test binary + MC/DC-instrumented daemon\n'
+swift build --build-tests >/dev/null 2>&1
+# Instrument the daemon LAST so --skip-build runs the tests against it. The
+# next ordinary build restores an un-instrumented binary, so the normal build
+# is never contaminated.
+swift build --product labpty \
+  -Xcc -fprofile-instr-generate -Xcc -fcoverage-mapping -Xcc -fcoverage-mcdc \
+  -Xcc -fprofile-continuous -Xlinker "$prof" >/dev/null 2>&1
+
+printf 'coverage-labpty: running LabptyTests against the instrumented daemon\n'
+LLVM_PROFILE_FILE="$covdir/labpty-%p.profraw" \
+  swift test --skip-build --filter LabptyTests >/dev/null 2>&1 || true
+n=$(ls "$covdir"/labpty-*.profraw 2>/dev/null | wc -l | tr -d ' ')
+if [ "$n" = 0 ]; then
+  printf 'coverage-labpty: no profile data collected (daemon not instrumented?)\n' >&2
+  exit 1
+fi
+xcrun llvm-profdata merge -sparse "$covdir"/labpty-*.profraw -o "$covdir/labpty.profdata"
+
+daemon="Sources/Labpty/main.c Sources/Labpty/labpty_registry.c"
+printf 'coverage-labpty: MC/DC over the un-proven daemon code (%s profiles)\n' "$n"
+# shellcheck disable=SC2086
+xcrun llvm-cov report .build/debug/labpty -instr-profile="$covdir/labpty.profdata" \
+  --show-mcdc-summary $daemon
+
+# The last column of the TOTAL row is the MC/DC percentage.
+# shellcheck disable=SC2086
+mcdc=$(xcrun llvm-cov report .build/debug/labpty -instr-profile="$covdir/labpty.profdata" \
+  --show-mcdc-summary $daemon | awk '/^TOTAL/ {gsub(/%/,"",$NF); print $NF}')
+printf 'coverage-labpty: daemon MC/DC = %s%%\n' "$mcdc"
+
+if [ -n "$floor" ]; then
+  # Ratchet: coverage may only go up. Regression if mcdc < floor.
+  if awk "BEGIN{exit !($mcdc < $floor)}"; then
+    printf 'coverage-labpty: REGRESSION — daemon MC/DC %s%% is below the %s%% floor\n' "$mcdc" "$floor" >&2
+    exit 1
+  fi
+  printf 'coverage-labpty: daemon MC/DC %s%% holds the %s%% floor\n' "$mcdc" "$floor"
+fi
