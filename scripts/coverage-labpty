@@ -55,17 +55,32 @@ if [ "$n" = 0 ]; then
   printf 'coverage-labpty: no profile data collected (daemon not instrumented?)\n' >&2
   exit 1
 fi
-xcrun llvm-profdata merge -sparse "$covdir"/labpty-*.profraw -o "$covdir/labpty.profdata"
+
+# Deterministic decision-function harnesses (proofs/labpty/coverage) drive the
+# MC/DC condition vectors the timing-dependent integration suite cannot reach
+# — NULL ids, dead-child states, buffer overflow. They #include the daemon .c
+# under test, so their profile merges with the integration profile and the
+# reported number is the UNION of integration + unit coverage.
+printf 'coverage-labpty: running deterministic decision-function harnesses\n'
+cc -O0 -fprofile-instr-generate -fcoverage-mapping -fcoverage-mcdc \
+   -I Sources/Labpty -I Sources/Labpty/include -I Sources/LabanTerminalCore/include \
+   proofs/labpty/coverage/registry_cov.c Sources/Labpty/labpty_byte_ring.c \
+   -o "$covdir/registry_cov"
+LLVM_PROFILE_FILE="$covdir/registry_cov.profraw" "$covdir/registry_cov"
+
+xcrun llvm-profdata merge -sparse \
+  "$covdir"/labpty-*.profraw "$covdir/registry_cov.profraw" -o "$covdir/labpty.profdata"
 
 daemon="Sources/Labpty/main.c Sources/Labpty/labpty_registry.c"
-printf 'coverage-labpty: MC/DC over the un-proven daemon code (%s profiles)\n' "$n"
+objects="-object $covdir/registry_cov"
+printf 'coverage-labpty: MC/DC over the un-proven daemon code (%s integration profiles + harnesses)\n' "$n"
 # shellcheck disable=SC2086
-xcrun llvm-cov report .build/debug/labpty -instr-profile="$covdir/labpty.profdata" \
+xcrun llvm-cov report .build/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \
   --show-mcdc-summary $daemon
 
 # The last column of the TOTAL row is the MC/DC percentage.
 # shellcheck disable=SC2086
-mcdc=$(xcrun llvm-cov report .build/debug/labpty -instr-profile="$covdir/labpty.profdata" \
+mcdc=$(xcrun llvm-cov report .build/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \
   --show-mcdc-summary $daemon | awk '/^TOTAL/ {gsub(/%/,"",$NF); print $NF}')
 printf 'coverage-labpty: daemon MC/DC = %s%%\n' "$mcdc"
 

@@ -25,27 +25,48 @@ natively). The daemon is `SIGKILL`ed at test teardown, so it is built with
 the kill. The instrumented binary is built last and the next ordinary build
 restores an un-instrumented one, so the normal build is never contaminated.
 
+## Why integration tests alone are the wrong instrument
+
+The first measurement was **integration-only** (the LabptyTests suite driving
+the real daemon): **18.4% daemon MC/DC**, and *non-deterministic* — it jittered
+18.4%↔19.2% run-to-run because timing decides which sessions get reaped and
+which deadlines fire. Worse, a large share of the missing conditions are
+**unreachable from any integration test**: defensive guards on pointers that
+are never null, `errno` fault branches (`EINTR`/`EAGAIN`/`POLLHUP`), `killpg`
+failure fallbacks, and `snprintf` overflow.
+
+So MC/DC is driven by **deterministic decision-function harnesses** in
+`proofs/labpty/coverage/` (the same `#include` pattern as the CBMC harnesses):
+each calls a daemon decision function directly with the exact condition vectors
+MC/DC requires, including the ones integration can't reach. The harness profile
+is merged with the integration profile (`llvm-cov -object`), so the reported
+number is the **union**. `registry_cov.c` alone took `registry.c` from 23% to
+44% by covering `valid_output_capacity`, `is_reclaimable_dead_session`,
+`make_logical_id` (incl. the NULL vector), `registry_find`, and `make_ring_path`
+to 100% / near-100% — deterministically.
+
 ## Baseline (2026-05-30, `main`)
 
-Un-proven daemon code, 52 daemon processes across the suite:
+Union of integration suite + `registry_cov.c` harness:
 
-| File | Line | Branch | **MC/DC** |
-| --- | --- | --- | --- |
-| `main.c` | 84.4% | 56.8% | **15.9%** |
-| `labpty_registry.c` | 85.5% | 55.1% | **23.3%** |
-| **daemon total** | 84.7% | 56.3% | **18.4%** |
-
-The gap between 85% line coverage and 18% MC/DC is the finding: most of the
-daemon's compound decisions (`a && b`, error-path disjunctions, the
-backpressure preflight, signal handling) are never tested for each condition's
-independent effect.
+| File | Line | Branch | **MC/DC** | Source of coverage |
+| --- | --- | --- | --- | --- |
+| `main.c` | 84% | 57% | **~17%** | integration only (harness TODO) |
+| `labpty_registry.c` | 87% | 61% | **~44%** | integration + `registry_cov.c` |
+| **daemon total** | 85% | 58% | **~26%** (≥24% floor) | union |
 
 ## Ratchet + target
 
-`scripts/coverage-labpty --check 18` is a one-way ratchet: coverage may only go
+`scripts/coverage-labpty --check 24` is a one-way ratchet: coverage may only go
 up. CI runs it as a floor so the suite can never regress below the recorded
-baseline. The target is to drive the un-proven daemon code toward **100%
-MC/DC** by adding targeted tests, raising the floor each time.
+baseline; raise the floor as each harness lands.
+
+The honest target is **100% of the *feasible* conditions**, not 100% of all
+conditions — a chunk are genuinely infeasible (defensive/fault-only) and should
+be documented as excluded (an avionics-style deviation record) rather than
+chased. The biggest remaining lever is a `main_cov.c` harness for the handlers,
+`is_canonical_delimiter`, dispatch, and the expiry logic (`main.c` is 82 of the
+125 conditions and still mostly integration-only).
 
 To find the specific untested conditions, run:
 
