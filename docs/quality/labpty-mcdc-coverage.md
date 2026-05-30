@@ -16,7 +16,7 @@ daemon code**: `main.c` handlers + the event loop, and `labpty_registry.c`.
 
 ```
 scripts/coverage-labpty            # build instrumented, run tests, print report
-scripts/coverage-labpty --check 36 # same, but fail if daemon MC/DC < 36% (ratchet)
+scripts/coverage-labpty --check 40 # same, but fail if daemon MC/DC < 40% (ratchet)
 ```
 
 Single matched toolchain (Apple clang 21 + `xcrun llvm-cov`, both do MC/DC
@@ -48,27 +48,34 @@ to 100% / near-100% — deterministically.
 ## Baseline (2026-05-30, `main`)
 
 Union of the integration suite + the deterministic harnesses. The integration
-suite alone was a jittery **18.4%**; the harnesses took it to a stable **38%**:
+suite alone was a jittery **18.4%**; the harnesses took it to a stable **42%**:
 
 | File | Line | Branch | **MC/DC** | Source of coverage |
 | --- | --- | --- | --- | --- |
-| `main.c` | 88% | 61% | **~37%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `handle_attach`/`detach`/`resize`) |
+| `main.c` | 90% | 65% | **~43%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `dispatch_frame`, the `handle_*` lookups, the `handle_write` ADR-0008 preflight via a real pty) |
 | `labpty_registry.c` | 86% | 59% | **~42%** | integration + `registry_cov.c` |
-| **daemon total** | 88% | 61% | **~38%** (≥36% floor) | union |
+| **daemon total** | 89% | 63% | **~42%** (≥40% floor) | union |
 
 ## Ratchet + target
 
-`scripts/coverage-labpty --check 36` is a one-way ratchet: coverage may only go
+`scripts/coverage-labpty --check 40` is a one-way ratchet: coverage may only go
 up. CI runs it as a floor so the suite can never regress below the recorded
 baseline; raise the floor as each harness lands.
 
 The honest target is **100% of the *feasible* conditions**, not 100% of all
 conditions — a chunk are genuinely infeasible (defensive null-guards, `errno`
 fault branches, `killpg` fallbacks) and should be documented as excluded (an
-avionics-style deviation record) rather than chased. Remaining levers, in
-`main.c` (still ~52 of the 125 conditions missing): `dispatch_frame`,
-`handle_open`'s failure paths, `handle_hello` negotiation, and the poll-dispatch
-helpers — all drivable deterministically by extending `main_cov.c`.
+avionics-style deviation record) rather than chased. What remains (~72 of 125) is now dominated by **genuinely infeasible**
+conditions: the `errno` fault branches in `client_pump_read`/`client_pump_write`/
+`drain_session`, the `fpathconf`/`FIONREAD` fallbacks and `EAGAIN` retry in
+`handle_write`, `killpg` fallbacks, and the shutdown/startup paths
+(`cleanup_daemon`, `listen_unix_socket`) that the SIGKILL test teardown never
+exercises. These need fault injection or are unreachable — the next step is a
+**deviation record** that lists them with reasons, turning the metric into
+"100% of feasible MC/DC, N excluded" and letting the floor sit at the real
+ceiling. A few hard-feasible conditions remain (the `wait_for_child_exit`
+SIGKILL-escalation loop, the reap state machine) drivable by extending
+`registry_cov.c` with a real forked child.
 
 To find the specific untested conditions, run:
 

@@ -15,6 +15,7 @@
 
 #include <assert.h>
 #include <termios.h>
+#include <util.h> /* openpty */
 
 /* Referenced by labpty_registry_open (a separate TU); never called here. */
 int laban_pty_open(int rows, int cols, const char *const *argv,
@@ -202,6 +203,68 @@ static void cover_poll_dispatch(void) {
     (void)service_client_poll(&cov_daemon, 0, POLLIN);   /* not in_use -> 0 */
 }
 
+static size_t build_write_payload(uint8_t *buf, size_t cap, uint64_t handle,
+                                  const uint8_t *data, size_t dlen) {
+    labpty_writer_t w = { buf, buf + cap };
+    labpty_write_u64(&w, handle);
+    labpty_write_u32(&w, (uint32_t)dlen);
+    if (dlen) labpty_write_bytes(&w, data, dlen);
+    return (size_t)(w.cur - buf);
+}
+
+/* handle_write's session lookup and the ADR-0008 canonical backpressure
+ * preflight. A real openpty pair gives the slave-inspect fd the preflight
+ * needs (tcgetattr/FIONREAD/fpathconf); backpressure is forced by pre-seeding
+ * canonical_pending_estimate rather than writing a huge payload. */
+static void cover_handle_write(void) {
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    cov_daemon.registry.next_handle = 1;
+    labpty_session_t *s = &cov_daemon.registry.sessions[0];
+    s->used = 1; s->alive = 1; s->handle = 100;
+    s->master_fd = -1; s->slave_inspect_fd = -1;
+    uint8_t pay[256];
+    size_t n;
+
+    n = build_write_payload(pay, sizeof(pay), 999, (const uint8_t *)"x", 1);
+    assert(handle_write(&cov_daemon, pay, n) == LABPTY_E_SESSION_NOT_FOUND); /* no session */
+    s->alive = 0;
+    n = build_write_payload(pay, sizeof(pay), 100, (const uint8_t *)"x", 1);
+    assert(handle_write(&cov_daemon, pay, n) == LABPTY_E_SESSION_NOT_FOUND); /* not alive */
+    s->alive = 1;
+
+    /* slave_inspect_fd < 0: preflight skipped, raw write to master_fd = -1
+     * fails -> INTERNAL (covers the master write-failure branch). */
+    n = build_write_payload(pay, sizeof(pay), 100, (const uint8_t *)"x", 1);
+    assert(handle_write(&cov_daemon, pay, n) == LABPTY_E_INTERNAL);
+
+    int master = -1, slave = -1;
+    if (openpty(&master, &slave, NULL, NULL, NULL) == 0) {
+        s->master_fd = master;
+        s->slave_inspect_fd = slave; /* default termios is canonical (ICANON) */
+
+        n = build_write_payload(pay, sizeof(pay), 100, (const uint8_t *)"hi", 2);
+        assert(handle_write(&cov_daemon, pay, n) == LABPTY_OK);              /* canonical, no delimiter */
+        n = build_write_payload(pay, sizeof(pay), 100, (const uint8_t *)"a\n", 2);
+        assert(handle_write(&cov_daemon, pay, n) == LABPTY_OK);              /* canonical, delimiter */
+
+        s->canonical_pending_estimate = 1000000; /* exceeds any limit -> admissible 0 */
+        n = build_write_payload(pay, sizeof(pay), 100, (const uint8_t *)"x", 1);
+        assert(handle_write(&cov_daemon, pay, n) == LABPTY_E_INPUT_BACKPRESSURE); /* over budget */
+        s->canonical_pending_estimate = 0;
+
+        struct termios raw;
+        if (tcgetattr(slave, &raw) == 0) {
+            raw.c_lflag &= (tcflag_t)~ICANON;
+            tcsetattr(slave, TCSANOW, &raw);
+            n = build_write_payload(pay, sizeof(pay), 100, (const uint8_t *)"r", 1);
+            assert(handle_write(&cov_daemon, pay, n) == LABPTY_OK);          /* raw: preflight skipped */
+        }
+        close(master);
+        close(slave);
+    }
+    s->master_fd = -1; s->slave_inspect_fd = -1;
+}
+
 int main(void) {
     cover_is_canonical_delimiter();
     cover_expire_stalled_clients();
@@ -209,5 +272,6 @@ int main(void) {
     cover_handlers();
     cover_dispatch_frame();
     cover_poll_dispatch();
+    cover_handle_write();
     return 0;
 }
