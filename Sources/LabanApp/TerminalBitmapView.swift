@@ -2078,13 +2078,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     else { return }
 
     let pasteboard = NSPasteboard.general
+    // Read the clipboard text BEFORE deciding to forward an image read.
+    // A mixed text+image clipboard (web selection, screenshot annotation,
+    // Figma) must paste its text; only an image-only clipboard (the .empty
+    // case below) forwards Ctrl+V so a TUI can read the image itself.
+    // (H-7: short-circuiting on hasImage here silently dropped the text.)
     let hasImage = TerminalClipboard.containsImage(pasteboard)
-    if hasImage,
-      TerminalClipboard.shouldForwardImagePasteToTerminal(for: activeTab)
-    {
-      forwardClipboardImagePasteToTerminal(session: session)
-      return
-    }
 
     let raw: String
     let rawBytes: Int
@@ -2176,11 +2175,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       sent = session.writePasteCapturingBytes(sanitized)
     }
     if let sessionCoordinator, let activeTab = model.activeTab, !sent.bytes.isEmpty {
-      try? sessionCoordinator.write(
-        sent.bytes,
-        to: activeTab,
-        session: session,
-        size: model.terminalSize)
+      do {
+        try sessionCoordinator.write(
+          sent.bytes,
+          to: activeTab,
+          session: session,
+          size: model.terminalSize)
+      } catch {
+        // Never silently drop a paste (H-3). On the labpty backend an
+        // oversized cooked-mode write is refused atomically with
+        // LABPTY_E_INPUT_BACKPRESSURE (ADR 0008); surface it so the loss is
+        // observable rather than vanishing with no log line.
+        AppLog.app.error("paste write failed: \(String(describing: error))")
+        EventLog.shared.log(
+          "paste.failed",
+          ["bytes": sent.bytes.count, "error": String(describing: error)])
+      }
     }
     EventLog.shared.log(
       "paste",
