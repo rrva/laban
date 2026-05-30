@@ -925,6 +925,115 @@ final class LabptyAdversarialTests: XCTestCase {
     return EchoDrain(totalCount: data.count, matchingCount: matching)
   }
 
+  // MARK: - Coverage-driven edge cases (drive daemon MC/DC up)
+
+  func testOpenWithEmptyLogicalIdGetsSyntheticId() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    // An empty logical id exercises make_logical_id's default branch
+    // (snprintf "labpty-<handle>") instead of the requested-id branch.
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/sleep", "30"], logicalSessionId: ""))
+    XCTAssertTrue(descriptor.logicalSessionId.hasPrefix("labpty-"),
+      "daemon must synthesize an id, got \(descriptor.logicalSessionId)")
+    _ = try? client.terminate(handle: descriptor.ptyHandle)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  func testInvalidOutputCapacityIsRejected() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    // Each value flips a distinct condition of valid_output_capacity
+    // (>= MIN && <= MAX && power-of-two) to false *independently*, which is
+    // what MC/DC requires: 300000 is in range but not a power of two (only it
+    // reaches and fails the power-of-two test); 1024 is a power of two below
+    // the 256 KiB minimum; 128 MiB is a power of two above the 64 MiB maximum.
+    for cap: UInt64 in [300_000, 1024, 128 * 1024 * 1024] {
+      XCTAssertThrowsError(
+        try client.openSession(LabptyOpenSessionRequest(
+          rows: 24, cols: 80, outputRingCapacity: cap,
+          argv: ["/bin/sleep", "30"], logicalSessionId: "badcap-\(cap)")),
+        "capacity \(cap) must be rejected")
+    }
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  func testSignalReachesLiveSessionThenErrorsAfterTerminate() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/sleep", "30"], logicalSessionId: "signal-target"))
+    // SIGCONT is harmless but drives handle_signal's live-session success
+    // path (session found, alive, killpg succeeds).
+    XCTAssertNoThrow(try client.signal(handle: descriptor.ptyHandle, signal: Int32(SIGCONT)))
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+    // A terminated session is no longer alive, so handle_signal's
+    // `!session->alive` guard must reject it rather than touch a dead slot.
+    XCTAssertThrowsError(try client.signal(handle: descriptor.ptyHandle, signal: Int32(SIGCONT)))
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  func testTerminateHupIgnoringChildEscalatesToSigkill() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    // A child that ignores SIGHUP forces the reap tick's SIGKILL-escalation
+    // path: labpty_registry_reap's deadline + sigkill_sent conditions.
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80,
+        argv: ["/bin/sh", "-c", "trap '' HUP; sleep 30"],
+        logicalSessionId: "hup-ignorer"))
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+    // SIGHUP is ignored; after the budget the reap escalates to SIGKILL and
+    // reaps. The child must end up dead and the daemon must survive.
+    try waitForDead(pid: pid_t(descriptor.childPid))
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  func testNaturalChildExitDeadLeakIsReclaimedOnReopen() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    // Open a child that exits on its own and do NOT terminate it: the reap
+    // tick folds the slot into a dead leak (used, !alive, child=none,
+    // close_pending=0). Reopening the same id must reclaim it through
+    // is_reclaimable_dead_session, not fail SESSION_ID_IN_USE.
+    let first = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/sh", "-c", "exit 0"],
+        logicalSessionId: "dead-leak"))
+    try waitForDead(pid: pid_t(first.childPid))
+    usleep(300_000) // let the reap tick fold the zombie into a dead leak
+    let second = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/sleep", "30"],
+        logicalSessionId: "dead-leak"))
+    XCTAssertNotEqual(second.ptyHandle, first.ptyHandle)
+    _ = try? client.terminate(handle: second.ptyHandle)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
+  func testWriteInputWithCanonicalNewlinesIsAccepted() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/cat"], logicalSessionId: "canon-write"))
+    // Newline-delimited bytes drive is_canonical_delimiter's '\n' branch and
+    // handle_write's canonical-pending accounting (ADR 0008 preflight).
+    XCTAssertNoThrow(try client.writeInput(
+      handle: descriptor.ptyHandle, bytes: [UInt8]("echo one\necho two\n".utf8)))
+    _ = try? client.terminate(handle: descriptor.ptyHandle)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   // MARK: - Harness (shared style with LabptyDaemonTests)
 
   private struct Harness {
