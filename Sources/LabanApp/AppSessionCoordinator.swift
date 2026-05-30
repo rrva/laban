@@ -17,7 +17,8 @@ final class AppSessionCoordinator {
   private var labptyDescriptorByTabId: [Tab.ID: LabptySessionDescriptor] = [:]
   private var labptyFeedByTabId: [Tab.ID: LabptyParserFeed] = [:]
   private let labptyStateLock = NSLock()
-  private var labptyDegradedTabIds: Set<Tab.ID> = []
+  private var labptyDegradation = LabptyOutputDegradation(
+    cooldown: AppSessionCoordinator.labptyOutputDegradedCooldown)
   private var ownedProcess: Process?
   private var themeChangeObserver: NSObjectProtocol?
   private var snapshotGenerationMonitor: LabandSnapshotGenerationMonitor?
@@ -482,19 +483,23 @@ final class AppSessionCoordinator {
       return
     }
     let descriptorById = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.logicalSessionId, $0) })
+    // Drop degraded stamps whose cooldown has fully elapsed so the map cannot
+    // accumulate entries for tabs that overflowed once and were never closed.
+    labptyStateLock.withLock { labptyDegradation.pruneExpired(now: now) }
     for tab in tabs {
       guard let descriptor = descriptorById[tab.id] else { continue }
       storeLabpty(descriptor, for: tab)
-      // The "output skipped" badge is an attention notice: it exists so the
-      // user can SEE that output was dropped while they were looking elsewhere.
-      // Once this is the active (viewed) tab the notice has done its job, so
-      // retire the latch — mirroring how bell/unseen-output attention clears
-      // on selection. Without this the degraded flag is only ever dropped on
-      // stop/close, so the badge sticks to a live tab forever.
+      // The "output skipped" badge is a live signal that bytes are being dropped
+      // right now — and for a short cooldown after the last drop — not a permanent
+      // record. An inactive tab therefore retires it on its own once drops stop
+      // (recency, via isLabptyOutputDegraded(now:)), and the active (viewed) tab
+      // retires it immediately, mirroring how bell/unseen-output attention clears
+      // on selection. Before this the latch only dropped on stop/close, so the
+      // badge stuck to a live tab forever.
       if tab.isActive {
         clearLabptyOutputDegraded(for: tab.id)
       }
-      let degraded = isLabptyOutputDegraded(for: tab.id)
+      let degraded = isLabptyOutputDegraded(for: tab.id, now: now)
       let signals = surfaceSignals(
         from: labptyInfo(from: descriptor),
         labptyOutputDegraded: degraded)
@@ -613,21 +618,30 @@ final class AppSessionCoordinator {
     statusText: "output skipped",
     statusTextColor: "#f59e0b")
 
+  /// How long the "output skipped" badge lingers after the last dropped-output
+  /// event before it self-clears on an inactive tab. The byte ring reports each
+  /// drop as a one-shot edge, so a recency window is what turns those edges into
+  /// a steady badge while a burst overruns and lets it fade once drops stop.
+  private static let labptyOutputDegradedCooldown: TimeInterval = 4
+
   private func markLabptyOutputDegraded(for tabId: Tab.ID) {
-    _ = labptyStateLock.withLock {
-      labptyDegradedTabIds.insert(tabId)
+    // The overflow edge fires on the byte-ring poll thread; stamp wall-clock time
+    // here and let the metadata poll compare it against its own `now`. Both use
+    // real `Date`, so the recency window is consistent across the two threads.
+    labptyStateLock.withLock {
+      labptyDegradation.recordSkip(tabId, at: Date())
     }
   }
 
   private func clearLabptyOutputDegraded(for tabId: Tab.ID) {
-    _ = labptyStateLock.withLock {
-      labptyDegradedTabIds.remove(tabId)
+    labptyStateLock.withLock {
+      labptyDegradation.clear(tabId)
     }
   }
 
-  private func isLabptyOutputDegraded(for tabId: Tab.ID) -> Bool {
+  private func isLabptyOutputDegraded(for tabId: Tab.ID, now: Date) -> Bool {
     labptyStateLock.withLock {
-      labptyDegradedTabIds.contains(tabId)
+      labptyDegradation.isDegraded(tabId, now: now)
     }
   }
 
