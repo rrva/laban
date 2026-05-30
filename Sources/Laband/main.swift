@@ -1058,6 +1058,22 @@ private final class LabandDaemon {
     try? appendJournal(event: .leaseRevoked, managed: managed)
   }
 
+  /// Detach every (session, client) pair a now-disconnected control
+  /// connection had attached, revoking any lease that client held. An abrupt
+  /// disconnect (crash / SIGKILL / force-quit) never sends detachSession, so
+  /// without this the per-session attachedClientCount leaks forever and a
+  /// reconnect with a fresh clientId inflates it further. (H-2)
+  func clientDisconnected(_ attachments: [(sessionKey: String, clientId: String)]) {
+    for attachment in attachments {
+      guard let managed = lock.withLock({ sessions[attachment.sessionKey] }) else { continue }
+      managed.detachClient(attachment.clientId)
+      if managed.lease?.holderClientId == attachment.clientId {
+        revokeLease(managed, now: LabandSnapshotRingLayout.monotonicNanoseconds())
+        try? appendJournal(event: .leaseRevoked, managed: managed)
+      }
+    }
+  }
+
   private func shutdownWhenIdle(_ request: LabandRequest) -> LabandResponse {
     let liveCount = lock.withLock {
       sessions.values.filter { $0.lifecycleState == .running && $0.session != nil }.count
@@ -1392,12 +1408,34 @@ private final class UnixSocketServer {
   }
 
   private func handleClient(fd: Int32) {
-    defer { Darwin.close(fd) }
+    // Track which (session, client) pairs this connection attached so an
+    // abrupt disconnect detaches them — the daemon otherwise never learns the
+    // client is gone and attachedClientCount leaks. (H-2)
+    var attachments: [String: String] = [:]
+    defer {
+      Darwin.close(fd)
+      if !attachments.isEmpty {
+        daemon.clientDisconnected(
+          attachments.map { (sessionKey: $0.key, clientId: $0.value) })
+      }
+    }
     while true {
       do {
         guard let frame = try readFrame(fd: fd) else { return }
         let request = try decoder.decode(LabandRequest.self, from: frame)
         let (response, shouldShutdown) = daemon.handle(request)
+        if response.ok, let clientId = request.clientId, !clientId.isEmpty,
+          let key = request.sessionId ?? request.logicalSessionId
+        {
+          switch request.type {
+          case .attachSession, .createSession:
+            attachments[key] = clientId
+          case .detachSession, .terminateSession:
+            attachments.removeValue(forKey: key)
+          default:
+            break
+          }
+        }
         try writeFrame(fd: fd, payload: encoder.encode(response))
         if shouldShutdown {
           daemon.onShutdown?()
