@@ -1,0 +1,94 @@
+#!/usr/bin/env sh
+# Runtime trace conformance for the labpty attachment state machine: drive a
+# real connect/open/attach/detach/disconnect/terminate sequence through the
+# daemon's actual code, capture the transitions the daemon emits (LABPTY_TRACE),
+# and replay them through specs/labpty/LabptyAttachment.tla with TLC. This binds
+# the "// Modelled by LabptyAttachment.tla" claim in Sources/Labpty/main.c to a
+# checked fact: every transition the daemon takes must be one the spec permits.
+#
+# Positive: the conformant trace must replay clean (every step a spec action).
+# Negative control: the same harness built with -DLABPTY_TRACE_NEGCTL skips the
+# client_release scrub (the TeardownSkipsAttachmentScrub regression that
+# MC_AttachmentPreFix.cfg models), so a departed client's bit lingers and TLC
+# MUST reject the trace. If the negative control silently conforms, the trace
+# pipeline has stopped catching the bug the scrub funnel exists to prevent.
+#
+# When tla2tools.jar (or java) is absent the script degrades to a compile-only
+# drift smoke: it builds both harnesses so a signature change to the daemon's
+# attachment code or trace emitter cannot silently rot this proof. CI provides
+# TLA_JAR so the real replay runs there.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+harness=proofs/labpty/trace/trace_attachment.c
+units="Sources/Labpty/labpty_frame.c Sources/Labpty/labpty_protocol.c \
+Sources/Labpty/labpty_registry.c Sources/Labpty/labpty_byte_ring.c"
+incs="-I Sources/Labpty -I Sources/Labpty/include -I Sources/LabanTerminalCore/include"
+cc=${CC:-cc}
+
+workdir=$(mktemp -d)
+trap 'rm -rf "$workdir"' EXIT
+
+build_harness() {
+  out=$1
+  shift
+  # shellcheck disable=SC2086
+  "$cc" -O0 -std=c11 -Wall -Wextra "$@" $incs "$harness" $units -o "$out"
+}
+
+printf 'check-trace: building attachment trace harness (positive + negative control)\n'
+build_harness "$workdir/trace_pos"
+build_harness "$workdir/trace_neg" -DLABPTY_TRACE_NEGCTL
+
+TLA_JAR="${TLA_JAR:-/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar}"
+if [ ! -f "$TLA_JAR" ] || ! command -v java >/dev/null 2>&1; then
+  printf 'check-trace: tla2tools.jar or java absent; ran compile-only drift smoke\n'
+  printf '  install the TLA+ Toolbox (or set TLA_JAR) to run the trace replay\n'
+  exit 0
+fi
+
+# Replay one harness's emitted trace through TLC. $1 binary, $2 expected
+# outcome (pass|fail). A conformant trace replays clean; a divergent one
+# deadlocks (the conjoined Next blocks the bogus step) — run WITHOUT -deadlock
+# so that deadlock is reported.
+replay() {
+  bin=$1
+  expected=$2
+  trace="$workdir/$(basename "$bin").ndjson"
+  rm -f "$trace"
+  LABPTY_TRACE="$trace" LABPTY_TRACE_SHMDIR="$workdir" "$bin"
+  rm -f "$workdir"/*.tla "$workdir"/*.cfg 2>/dev/null || true
+  cp specs/labpty/LabptyAttachment.tla specs/labpty/TraceAttachment.tla \
+     specs/labpty/MC_TraceAttachment.cfg "$workdir/"
+  python3 scripts/gen-trace-tla.py "$trace" "$workdir/TraceData.tla"
+  printf '  %-28s expect=%s ... ' "$(basename "$bin")" "$expected"
+  if ( cd "$workdir" && java -XX:+UseParallelGC -cp "$TLA_JAR" tlc2.TLC \
+         -workers auto -config MC_TraceAttachment.cfg TraceAttachment \
+         >"$workdir/tlc.out" 2>&1 ); then
+    actual=pass
+  else
+    actual=fail
+  fi
+  if [ "$actual" = "$expected" ]; then
+    printf 'OK\n'
+    return 0
+  fi
+  printf 'MISMATCH: got %s\n' "$actual"
+  printf '%s\n' '----- TLC output (last 30 lines) -----'
+  tail -n 30 "$workdir/tlc.out"
+  printf '%s\n' '--------------------------------------'
+  return 1
+}
+
+printf 'check-trace: replaying daemon attachment traces through TLC\n'
+rc=0
+replay "$workdir/trace_pos" pass || rc=1
+replay "$workdir/trace_neg" fail || rc=1
+
+if [ "$rc" -ne 0 ]; then
+  printf 'check-trace: trace conformance FAILED\n' >&2
+  exit 1
+fi
+printf 'check-trace: attachment trace conforms to LabptyAttachment; negative control refuted\n'

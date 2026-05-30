@@ -298,6 +298,49 @@ static int client_index(const labpty_daemon_t *daemon, const labpty_client_t *cl
     return (int)(client - daemon->clients);
 }
 
+/* Runtime trace conformance (the frontier that turns "// Modelled by" from a
+ * claim into a checked fact). When LABPTY_TRACE names a file, append one
+ * NDJSON record per attachment transition capturing the observable state the
+ * model abstracts: inUse[client] (slot occupied), alive[session] (slot used),
+ * and attached[session] (the bits of attached_clients, gated on `used` so a
+ * freed slot carries no phantom owner). scripts/check-trace replays the trace
+ * through specs/labpty/LabptyAttachment.tla, so a real daemon run and the
+ * deterministic proofs/labpty/trace harness both have every transition checked
+ * against the spec. Zero-cost (one cached getenv) when the var is unset. */
+static void labpty_trace_emit(const labpty_daemon_t *daemon, const char *action) {
+    static FILE *fp = NULL;
+    static int resolved = 0;
+    if (!resolved) {
+        const char *path = getenv("LABPTY_TRACE");
+        if (path != NULL && path[0] != '\0') fp = fopen(path, "a");
+        resolved = 1;
+    }
+    if (fp == NULL) return;
+    fprintf(fp, "{\"action\":\"%s\",\"inUse\":[", action);
+    for (int c = 0; c < LABPTY_MAX_CLIENTS; c++)
+        fprintf(fp, "%s%d", c ? "," : "", daemon->clients[c].in_use ? 1 : 0);
+    fprintf(fp, "],\"alive\":[");
+    for (int s = 0; s < LABPTY_MAX_SESSIONS; s++)
+        fprintf(fp, "%s%d", s ? "," : "", daemon->registry.sessions[s].used ? 1 : 0);
+    fprintf(fp, "],\"attached\":[");
+    for (int s = 0; s < LABPTY_MAX_SESSIONS; s++) {
+        const labpty_session_t *sess = &daemon->registry.sessions[s];
+        fprintf(fp, "%s[", s ? "," : "");
+        int first = 1;
+        if (sess->used) {
+            for (int c = 0; c < LABPTY_MAX_CLIENTS; c++) {
+                if (sess->attached_clients & (uint8_t)(1u << c)) {
+                    fprintf(fp, "%s%d", first ? "" : ",", c);
+                    first = 0;
+                }
+            }
+        }
+        fprintf(fp, "]");
+    }
+    fprintf(fp, "]}\n");
+    fflush(fp);
+}
+
 static void client_release(labpty_daemon_t *daemon, labpty_client_t *client) {
     assert(daemon != NULL);
     assert(client != NULL);
@@ -316,6 +359,7 @@ static void client_release(labpty_daemon_t *daemon, labpty_client_t *client) {
     if (client->fd >= 0) close(client->fd);
     memset(client, 0, sizeof(*client));
     client->fd = -1;
+    labpty_trace_emit(daemon, "Disconnect");
 }
 
 static void client_reset_after_response(labpty_client_t *client) {
@@ -345,6 +389,7 @@ static void add_client(labpty_daemon_t *daemon) {
             client->fd = fd;
             client->in_use = 1;
             client->deadline_ns = monotonic_ns() + LABPTY_IO_IDLE_TIMEOUT_NS;
+            labpty_trace_emit(daemon, "Connect");
             return;
         }
     }
@@ -420,6 +465,7 @@ static labpty_status_t handle_open(labpty_daemon_t *daemon, labpty_client_t *cli
     if (status != LABPTY_OK) return status;
     /* The opening connection is implicitly attached to its new session. */
     session->attached_clients |= (uint8_t)(1u << client_index(daemon, client));
+    labpty_trace_emit(daemon, "OpenSession");
     *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
@@ -438,6 +484,7 @@ static labpty_status_t handle_attach(labpty_daemon_t *daemon, labpty_client_t *c
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
     session->attached_clients |= (uint8_t)(1u << client_index(daemon, client));
+    labpty_trace_emit(daemon, "Attach");
     *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
@@ -451,6 +498,7 @@ static labpty_status_t handle_detach(labpty_daemon_t *daemon, labpty_client_t *c
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session) return LABPTY_E_SESSION_NOT_FOUND;
     session->attached_clients &= (uint8_t)~(1u << client_index(daemon, client));
+    labpty_trace_emit(daemon, "Detach");
     *out_len = encode_descriptor_payload(session, out, cap);
     return *out_len > 0 ? LABPTY_OK : LABPTY_E_INTERNAL;
 }
@@ -945,7 +993,12 @@ static int event_loop(labpty_daemon_t *daemon) {
             service_poll_watch(daemon, &poll_set, i);
         }
         tick_heartbeats(daemon);
+        int used_before = 0;
+        for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) used_before += daemon->registry.sessions[i].used;
         labpty_registry_reap(&daemon->registry);
+        int used_after = 0;
+        for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) used_after += daemon->registry.sessions[i].used;
+        if (used_after != used_before) labpty_trace_emit(daemon, "TerminateSession");
         expire_stalled_clients(daemon);
     }
     return 0;

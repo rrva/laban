@@ -57,6 +57,12 @@ fi
 # Self-skips when cbmc/goto-cc are absent.
 ./scripts/check-cbmc-contracts
 
+# Runtime trace conformance: drive the daemon's real attachment code, capture
+# the transitions it emits, and replay them through LabptyAttachment.tla with
+# TLC — binding "// Modelled by" to a checked fact. Self-skips to a compile-only
+# drift smoke when the TLA+ jar is absent (CI sets TLA_JAR).
+./scripts/check-trace
+
 # Replay the labpty fuzz seed corpus through the decoders under
 # ASan/UBSan — the deterministic, engine-independent form of
 # scripts/fuzz-labpty. A real fuzzing campaign is a manual/CI step:

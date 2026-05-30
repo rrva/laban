@@ -66,6 +66,20 @@ for p in proofs/labpty/*_proof.c proofs/labpty/*_negctl.c; do
     || err "proof harness $base is not run by check-cbmc"
 done
 
+# E. The runtime trace-conformance layer must be wired into check-trace: a
+#    Trace*.tla spec or proofs/labpty/trace harness that check-trace never runs
+#    is an un-checked claim, the same drift rules B and D guard for TLC/CBMC.
+for spec in specs/labpty/Trace*.tla; do
+  [ -e "$spec" ] || continue
+  name=$(basename "$spec" .tla)
+  grep -q "$name" scripts/check-trace || err "trace spec ${name}.tla is not run by check-trace"
+done
+for h in proofs/labpty/trace/*.c; do
+  [ -e "$h" ] || continue
+  base=$(basename "$h")
+  grep -q "$base" scripts/check-trace || err "trace harness $base is not run by check-trace"
+done
+
 if [ "$fail" -ne 0 ]; then
   printf 'check-anchors: labpty formal layer has dangling anchors or unwired checks\n' >&2
   exit 1
