@@ -63,6 +63,32 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testTabSwitchDiscardsImeMarkedText() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let first = try XCTUnwrap(harness.model.activeTab)
+    harness.view.newTab(nil)
+    harness.view.advanceFrame()
+    XCTAssertNotEqual(harness.model.activeTab?.id, first.id)
+
+    // Begin an IME composition on the (now active) second tab.
+    harness.view.setMarkedText(
+      "か",
+      selectedRange: NSRange(location: 1, length: 0),
+      replacementRange: NSRange(location: NSNotFound, length: 0))
+    XCTAssertTrue(harness.view.hasMarkedText(), "precondition: composition is marked")
+
+    // Switching tabs must abandon the composition rather than leak it onto
+    // the newly selected tab (which would force later keystrokes down the
+    // native-text path and commit into the wrong session). (M-3)
+    let item = NSMenuItem(title: "Tab 1", action: nil, keyEquivalent: "")
+    item.tag = 1
+    harness.view.selectTabByIndex(item)
+
+    XCTAssertFalse(harness.view.hasMarkedText(), "tab switch must discard marked IME text")
+  }
+
   func testColumnChangingResizeClearsCachedInactiveSelections() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

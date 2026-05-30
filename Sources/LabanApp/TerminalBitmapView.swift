@@ -1394,6 +1394,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private func selectTabPreservingSelection(_ tabId: Tab.ID) {
     syncSelectionStateToActiveTab()
     guard model.activeTab?.id != tabId else { return }
+    // Abandon any in-flight IME composition before leaving this tab. One
+    // view hosts every tab, so AppKit never auto-discards marked text on a
+    // tab switch; a leaked composition would force later keystrokes down
+    // the native-text path and commit into the wrong session. (M-3)
+    discardMarkedComposition()
     persistSelectionStateForCurrentTab()
     model.selectTab(tabId)
     restoreSelectionState(for: model.activeTab?.id)
@@ -1586,7 +1591,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     lastAppliedCols = cols
     model.resize(
       viewportWidth: termW, viewportHeight: termH,
-      cellWidth: cellWidth, cellHeight: cellHeight)
+      cellWidth: cellWidth, cellHeight: cellHeight,
+      deferFindRescan: inLiveResize)
     sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalSize)
 
     // Render synchronously inside the resize event during live drag so the
@@ -1614,6 +1620,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   // MARK: - Responder
 
   override var acceptsFirstResponder: Bool { true }
+
+  override func resignFirstResponder() -> Bool {
+    discardMarkedComposition()
+    return super.resignFirstResponder()
+  }
+
+  override func viewDidEndLiveResize() {
+    super.viewDidEndLiveResize()
+    // The full scrollback find rescan was deferred during the drag (H-5);
+    // run it once now that the size has settled.
+    model.refreshActiveFindsAfterResize()
+    renderInvalidated = true
+  }
 
   override func keyDown(with event: NSEvent) {
     // Stamp the keystroke so the next render's GPU completion handler can
@@ -1677,6 +1696,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   }
 
   func unmarkText() { markedText = NSAttributedString(string: "") }
+
+  /// Finalize/abandon any in-flight IME composition. Safe to call when
+  /// there is no marked text. Used on tab switch and on losing first
+  /// responder, where AppKit does not auto-discard because one view hosts
+  /// every tab. (M-3)
+  private func discardMarkedComposition() {
+    guard hasMarkedText() else { return }
+    inputContext?.discardMarkedText()
+    unmarkText()
+  }
   func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
   func markedRange() -> NSRange {
     markedText.length > 0

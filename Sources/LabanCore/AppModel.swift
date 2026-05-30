@@ -27,6 +27,9 @@ public final class AppModel {
   private let sessionRegistry = SessionRegistry()
   private var findStateBySession: [Session.ID: TerminalFindState] = [:]
   private var findFullSearchCacheBySession: [Session.ID: FindFullSearchCache] = [:]
+  // Sessions whose active find needs a full scrollback rescan deferred from a
+  // live resize drag; flushed by refreshActiveFindsAfterResize on settle. (H-5)
+  private var pendingFindRescanSessions: Set<Session.ID> = []
   private let metadataSync = TabMetadataSynchronizer()
   private var currentSize: LabanTerminalSize
   private let sessionFactory: (LabanTerminalSize) throws -> Session
@@ -416,6 +419,19 @@ public final class AppModel {
       findStateBySession[sessionID] = state
       scrollSelectedFindMatchIntoViewUnlocked(sessionID: sessionID)
       return findStateBySession[sessionID] ?? state
+    }
+  }
+
+  /// Run the full scrollback find rescan deferred from a live resize drag
+  /// (see `resize(deferFindRescan:)`). Called once on resize-settle. (H-5)
+  public func refreshActiveFindsAfterResize() {
+    withModelLock {
+      let pending = pendingFindRescanSessions
+      pendingFindRescanSessions.removeAll()
+      for sessionID in pending where findStateBySession[sessionID]?.isActive == true {
+        findFullSearchCacheBySession.removeValue(forKey: sessionID)
+        _ = refreshFindFullUnlocked(sessionID: sessionID)
+      }
     }
   }
 
@@ -1275,7 +1291,10 @@ public final class AppModel {
     _ = session.startCapture(path: fileURL.path)
   }
 
-  public func resize(viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int) {
+  public func resize(
+    viewportWidth: Int, viewportHeight: Int, cellWidth: Int, cellHeight: Int,
+    deferFindRescan: Bool = false
+  ) {
     withModelLock {
       let safeCellWidth = max(1, cellWidth)
       let safeCellHeight = max(1, cellHeight)
@@ -1303,7 +1322,16 @@ public final class AppModel {
           captureSink?.record(event)
           if findStateBySession[session.id]?.isActive == true {
             findFullSearchCacheBySession.removeValue(forKey: session.id)
-            _ = refreshFindFullUnlocked(sessionID: session.id)
+            if deferFindRescan {
+              // During a live resize drag, defer the O(scrollback) full find
+              // rescan to resize-settle (refreshActiveFindsAfterResize). The
+              // per-frame visible-highlight recompute still keeps what's on
+              // screen correct, so each pixel nudge no longer formats the
+              // whole scrollback on the main thread. (H-5)
+              pendingFindRescanSessions.insert(session.id)
+            } else {
+              _ = refreshFindFullUnlocked(sessionID: session.id)
+            }
           }
         }
       }
