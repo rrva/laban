@@ -56,7 +56,7 @@ suite alone was a jittery **18.4%**; the harnesses took it to a stable **47%**:
 
 | File | Line | Branch | **MC/DC** | Source of coverage |
 | --- | --- | --- | --- | --- |
-| `main.c` | 90% | 65% | **~43%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `dispatch_frame`, the `handle_*` lookups, the `handle_write` ADR-0008 preflight via a real pty) + `signal_cov.c` (`handle_signal`'s L9 signal-number validation) |
+| `main.c` | 90% | 65% | **~43%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `dispatch_frame`, the `handle_*` lookups, the `handle_write` ADR-0008 preflight via a real pty) + `signal_cov.c` (`handle_signal`'s L9 signal-number validation) + `poll_cov.c` (the `build_poll_set`/`service_poll_watch` poll-multiplexing invariant) |
 | `labpty_registry.c` | 93% | 65% | **~56%** | integration + `registry_cov.c` (pure fns + the reap/`wait_for_child_exit` SIGKILL escalation via real forked children) |
 | **daemon total** | 91% | 65% | **~47%** (≥45% floor) | union |
 

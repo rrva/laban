@@ -370,10 +370,17 @@ a binding or proof, add a mutant the new check must catch.
 (DO-178C DAL-A) of the daemon's un-proven decision code and ratchets it
 (`--check N`), as the union of the integration suite and the deterministic
 harnesses in `proofs/labpty/coverage/*_cov.c`. Those harnesses go beyond
-coverage where it matters: `signal_cov.c` macro-stubs `killpg`/`kill` and
-**asserts** that no out-of-range client-controlled signal number reaches the
-syscall (lesson L9), so reverting that guard fails the harness — a regression
-gate, not just a covered decision.
+coverage where it matters and double as **regression gates**:
+`signal_cov.c` macro-stubs `killpg`/`kill` and asserts that no out-of-range
+client-controlled signal number reaches the syscall (lesson L9), so reverting
+that guard fails the harness. `poll_cov.c` binds the event loop's
+poll-multiplexing layer — the last daemon layer with no formal binding, and a
+data-structure consistency invariant rather than a state machine, so a proof
+harness is the right tool, not a TLA+ trace binding: it asserts `build_poll_set`
+emits a poll set whose every slot's `(fd, kind, index)` is consistent with the
+daemon state, and `service_poll_watch` routes a slot's `revents` to the handler
+at *that* slot's index — so a misrouting fault (a wrong stored index, a
+kind/index mismatch, a fixed-index dispatch) fails the harness.
 
 `coverage-labpty` is wired into `scripts/check` (macOS-only; skips without the
 darwin profile runtime), and `check-anchors` rule F refuses an unwired `*_cov.c`.
