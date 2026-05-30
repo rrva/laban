@@ -21,18 +21,20 @@ reasons about the C that parses bytes at the trust boundary. See
 | `LabptyControlChannel.tla` | `Sources/Labpty/main.c` per-connection state machine (`labpty_client_t` slots, hello negotiation, slowloris reaper). | `EstablishedImpliesNegotiated` and `UnnegotiatedIdleIsNotPermanent` (commit 2aac41a fix). |
 | `LabptyStartup.tla` | `Sources/Labpty/main.c::listen_unix_socket` multi-daemon race on the `--socket` path. | `ServingDaemonOwnsPath`, `AtMostOneServing` (commit b5e7819 fix). |
 | `LabptyAttachment.tla` | `Sources/Labpty/main.c` per-session connected-client mask (`attached_clients`, `ATTACH`/`DETACH`, opener auto-attach, `client_release` scrub). | `AttachmentImpliesInUse` — no mask retains a departed client, so the count never overcounts an owner (ADR 0010). |
+| `LabptyReuse.tla` | `Sources/Labpty/labpty_registry.c::labpty_registry_open` `logical_id` reuse rule. | `TerminatedIdIsReusable` — a logical_id held only by not-alive (closing) sessions is immediately reusable, not just eventually (commit 389df73 fix). `LabptyLifecycle.tla` has no `logical_id`, so it could not state this. |
 
 Each module is paired with one or more `MC_*.tla` / `MC_*.cfg` harnesses
 that constrain the state space for TLC. Configs come in two shapes:
 
 - **Positive** (`MC.cfg`, `MC_Larger.cfg`, `MC_ControlChannel.cfg`,
-  `MC_Attachment.cfg`, `MC_Startup.cfg`, `MC_ByteRing.cfg`,
+  `MC_Attachment.cfg`, `MC_Startup.cfg`, `MC_Reuse.cfg`, `MC_ByteRing.cfg`,
   `MC_ByteRing_Larger.cfg`): the fix is in. TLC verifies the spec.
 - **Negative-control** (`MC_PreF2.cfg`, `MC_PreSlotReclaim.cfg`,
   `MC_ControlChannelPreFix.cfg`, `MC_AttachmentPreFix.cfg`,
-  `MC_StartupPreFix.cfg`,
+  `MC_StartupPreFix.cfg`, `MC_ReusePreFix.cfg`,
   `MC_ByteRingTorn.cfg`, `MC_ByteRing_Boundary.cfg`): the fix is not in
-  (or a parameter is set unsafely). TLC is **required to find a
+  (or a parameter is set unsafely — `MC_Reuse` and `MC_ReusePreFix` share
+  one module and flip the `Fixed` constant). TLC is **required to find a
   counter-example**. The negative configs are permanent regression
   tests — if one silently starts passing, the bug-shape it documented
   is gone and someone has accidentally fixed the wrong thing.
@@ -44,6 +46,7 @@ Update a spec when you change the state machine it models. In practice:
 | You changed | Update |
 | --- | --- |
 | `labpty_registry.c` actions on session slots | `LabptyLifecycle.tla` |
+| `labpty_registry_open` `logical_id` reuse / duplicate-id rule | `LabptyReuse.tla` |
 | `labpty_byte_ring.c` write/read or layout fields | `LabptyByteRing.tla` |
 | `main.c::labpty_client_t` fields, transitions, or expire policy | `LabptyControlChannel.tla` |
 | `main.c` session attachment (`attached_clients`, attach/detach, `client_release` scrub) | `LabptyAttachment.tla` |

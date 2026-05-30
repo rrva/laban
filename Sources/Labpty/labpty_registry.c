@@ -174,7 +174,12 @@ labpty_status_t labpty_registry_open(
          * lose this race with the reap tick, so finish the prior teardown
          * synchronously (labpty_session_close SIGKILL-escalates the child
          * and reaps it) and reuse the freed slot. If the child somehow
-         * outlives even SIGKILL the slot stays used and we still reject. */
+         * outlives even SIGKILL the slot stays used and we still reject.
+         *
+         * Modelled by specs/labpty/LabptyReuse.tla::TerminatedIdIsReusable;
+         * the pre-fix "reject any same-id holder" shape is pinned by the
+         * MC_ReusePreFix.cfg negative control. LabptyLifecycle.tla has no
+         * logical_id, so it could not catch this — see formal-specs.md. */
         labpty_session_close(existing);
         if (existing->used) return LABPTY_E_SESSION_ID_IN_USE;
     }
