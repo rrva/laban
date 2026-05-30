@@ -80,6 +80,15 @@ for h in proofs/labpty/trace/*.c; do
   grep -q "$base" scripts/check-trace || err "trace harness $base is not run by check-trace"
 done
 
+# F. Every coverage/assertion harness must be run by coverage-labpty — an
+#    unwired *_cov.c is coverage (and, for signal_cov, a regression gate)
+#    nobody executes, the same drift rules D/E guard for CBMC/trace.
+for h in proofs/labpty/coverage/*.c; do
+  [ -e "$h" ] || continue
+  base=$(basename "$h")
+  grep -q "$base" scripts/coverage-labpty || err "coverage harness $base is not run by coverage-labpty"
+done
+
 if [ "$fail" -ne 0 ]; then
   printf 'check-anchors: labpty formal layer has dangling anchors or unwired checks\n' >&2
   exit 1

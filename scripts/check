@@ -81,6 +81,19 @@ if [ -f Package.swift ]; then
   ./scripts/check-sanitize
   ./scripts/smoke-runtime
   ./scripts/test-e2e
+  # MC/DC ratchet over the daemon's un-proven decision code, plus the
+  # assertion gates in proofs/labpty/coverage/*_cov.c (e.g. signal_cov's L9
+  # no-out-of-range-signo-reaches-kill proof). Runs LAST: it leaves an
+  # instrumented labpty that the next ordinary build restores. Gating it here
+  # is what turns a stale coverage assertion — like the main_cov drift the
+  # handle_write hung-up-child fix introduced — into a check failure instead of
+  # silent rot. macOS-only (needs the darwin profile runtime); skips gracefully
+  # elsewhere, like check-specs skips without the TLA+ jar.
+  if [ -f "$(cc -print-resource-dir)/lib/darwin/libclang_rt.profile_osx.a" ]; then
+    ./scripts/coverage-labpty --check 45
+  else
+    printf 'check: skipping coverage-labpty (darwin profile runtime not found)\n'
+  fi
 fi
 
 printf 'check passed\n'
