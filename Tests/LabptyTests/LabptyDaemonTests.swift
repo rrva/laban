@@ -881,6 +881,143 @@ final class LabptyDaemonTests: XCTestCase {
     }
   }
 
+  func testByteRingReaderSurvivesAdversarialHeaders() throws {
+    // Fuzz the reader's trust boundary — the one tier the C formal layer can't
+    // see. init(path:) mmaps a daemon-written shared-memory file and parses
+    // offsets/counters from the header; a malformed header must be REJECTED at
+    // init, never construct-then-crash. A Swift trap or an unaligned
+    // atomic-load SIGBUS aborts this process, which IS the detection. Two recent
+    // bugs lived right here (the Data-slice trap 91e2676, the unaligned-counters
+    // SIGBUS 1efadf3); this is the regression net and a search for the next.
+    let url = try temporaryRingURL()
+    let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
+    let u32Fields: [UInt64] = [16, 20, 24, 28, 32] // headerBytes, counters/readerSlot offsets
+    let u64Fields: [UInt64] = [40, 48, 56, 64, 72] // input/output ring offsets, capacities, metadata
+    let counterFields: [UInt64] = [
+      LabptyByteRingLayout.outputBytesWrittenTotalOffset,
+      LabptyByteRingLayout.outputWrapCountOffset,
+    ]
+    let u32Values: [UInt32] = [0, 1, 7, 8, 9, 63, 64, 191, 192, 256, 0xFFFF, 0x7FFF_FFFF, 0xFFFF_FFFF]
+    let u64Values: [UInt64] = [0, 1, 7, 8, capacity &- 1, capacity, capacity &+ 1,
+                               0xFFFF, 0xFFFF_FFFF, UInt64.max / 2, UInt64.max]
+    let lengths: [UInt64] = [0, 8, 100, 192, capacity, capacity &* 2]
+
+    // Deterministic xorshift so a failure reproduces.
+    var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+    func rnd() -> UInt64 { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return seed }
+    func pick<T>(_ a: [T]) -> T { a[Int(rnd() % UInt64(a.count))] }
+
+    var constructed = 0, rejected = 0
+    for _ in 0..<1200 {
+      try? FileManager.default.removeItem(at: url) // O_EXCL writer needs a fresh path
+      do {
+        let writer = try LabptyByteRingWriter(
+          path: url.path, outputRingCapacity: capacity, logicalSessionId: "fuzz")
+        writer.write(Data("fuzz-payload-0123456789".utf8))
+      }
+      let handle = try FileHandle(forUpdating: url)
+      let n = Int(rnd() % 4) + 1
+      for _ in 0..<n {
+        switch rnd() % 3 {
+        case 0: try patchUInt32(handle: handle, offset: pick(u32Fields), value: pick(u32Values))
+        case 1: try patchUInt64(handle: handle, offset: pick(u64Fields), value: pick(u64Values))
+        default: try patchUInt64(handle: handle, offset: pick(counterFields), value: pick(u64Values))
+        }
+      }
+      if rnd() & 3 == 0 { try? handle.truncate(atOffset: pick(lengths)) }
+      try? handle.close()
+
+      // Throw or construct — never crash. A constructed reader's read path is
+      // then driven with adversarial last-offsets (the counters may be garbage).
+      if let reader = try? LabptyByteRingReader(path: url.path) {
+        constructed += 1
+        _ = reader.outputWriteOffset()
+        _ = reader.outputWrapCount()
+        _ = reader.producerAliveMonoNs()
+        _ = reader.readSince(0)
+        _ = reader.readSince(UInt64.max)
+        _ = reader.readSince(pick(u64Values))
+      } else {
+        rejected += 1
+      }
+    }
+
+    // Reaching here without aborting is the assertion. Sanity: validation
+    // actually fired on many inputs and some still constructed, so the read
+    // path was exercised too.
+    XCTAssertGreaterThan(rejected, 100, "fuzzer barely exercised validation (\(rejected) rejected)")
+    XCTAssertGreaterThan(constructed, 0, "no mutation constructed — read path unexercised")
+  }
+
+  // Craft a self-consistent additive-header ring whose counters sit at an
+  // arbitrary `countersOffset` (parameterizes testByteRingReaderRejectsUnaligned).
+  private func craftAdditiveRing(
+    at url: URL, countersOffset: UInt32, capacity: UInt64, payload: Data
+  ) throws {
+    try? FileManager.default.removeItem(at: url)
+    do {
+      let writer = try LabptyByteRingWriter(
+        path: url.path, outputRingCapacity: capacity, logicalSessionId: "additive")
+      writer.write(payload)
+    }
+    let headerBytes: UInt32 = 192
+    let readerSlotOffset = countersOffset + UInt32(LabptyByteRingLayout.countersBytes)
+    let readerSlotBytes: UInt32 = 96
+    let readerSlotCount = LabptyByteRingLayout.readerSlotCount
+    let inputRingOffset = UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
+    let outputRingOffset = inputRingOffset
+    let newFileLength = outputRingOffset + capacity
+    let handle = try FileHandle(forUpdating: url)
+    defer { try? handle.close() }
+    try handle.truncate(atOffset: newFileLength)
+    try copyBytes(
+      handle: handle, from: LabptyByteRingLayout.inputRingOffset,
+      to: outputRingOffset, count: UInt64(payload.count))
+    try copyBytes(handle: handle, from: LabptyByteRingLayout.outputBytesWrittenTotalOffset,
+      to: UInt64(countersOffset), count: 8)
+    try copyBytes(handle: handle, from: LabptyByteRingLayout.outputWrapCountOffset,
+      to: UInt64(countersOffset + 16), count: 8)
+    try copyBytes(handle: handle, from: LabptyByteRingLayout.producerAliveMonoNsOffset,
+      to: UInt64(countersOffset + 32), count: 8)
+    try patchUInt32(handle: handle, offset: 16, value: headerBytes)
+    try patchUInt32(handle: handle, offset: 20, value: countersOffset)
+    try patchUInt32(handle: handle, offset: 24, value: readerSlotOffset)
+    try patchUInt32(handle: handle, offset: 28, value: readerSlotBytes)
+    try patchUInt64(handle: handle, offset: 40, value: inputRingOffset)
+    try patchUInt64(handle: handle, offset: 56, value: outputRingOffset)
+    try patchUInt64(handle: handle, offset: 72, value: newFileLength)
+  }
+
+  func testByteRingReaderAlignmentAcrossAdditiveLayouts() throws {
+    // Structured complement to the random fuzz: a self-consistent additive
+    // layout with the counters offset swept across an 8-byte window. Aligned
+    // offsets must construct AND survive the read path (the counters are read
+    // with atomic acquire loads — `ldapr` SIGBUSes on an unaligned span);
+    // misaligned offsets must be rejected at init. This isolates the L8
+    // alignment guard the other consistency guards would otherwise mask —
+    // dropping `countersOffset % 8 == 0` makes the misaligned cases fail here.
+    let url = try temporaryRingURL()
+    let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
+    let payload = Data("additive-layout".utf8)
+    var aligned = 0, misaligned = 0
+    for off: UInt32 in 256...288 {
+      try craftAdditiveRing(at: url, countersOffset: off, capacity: capacity, payload: payload)
+      if off % 8 == 0 {
+        let reader = try LabptyByteRingReader(path: url.path)
+        _ = reader.producerAliveMonoNs() // atomic load at countersOffset+32
+        _ = reader.outputWriteOffset()
+        _ = reader.readSince(0)
+        aligned += 1
+      } else {
+        XCTAssertThrowsError(try LabptyByteRingReader(path: url.path),
+          "misaligned countersOffset \(off) must be rejected, not constructed-then-SIGBUS")
+        misaligned += 1
+      }
+    }
+    XCTAssertGreaterThan(aligned, 0)
+    XCTAssertGreaterThan(misaligned, 0)
+  }
+
   func testByteRingRoundTripSmall() throws {
     let url = try temporaryRingURL()
     let writer = try LabptyByteRingWriter(
