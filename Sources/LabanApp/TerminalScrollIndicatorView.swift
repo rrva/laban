@@ -3,10 +3,10 @@ import LabanCore
 
 /// SOTA overlay scroll indicator: invisible at the live bottom, fades in when
 /// the user scrolls back into history, holds while scrolled-up or hovered
-/// over the right edge, and fades out after a short idle. Matches the macOS
-/// Tahoe overlay-scrollbar spirit (hidden chrome, hover-expand) but adds a
-/// numeric position pill so the user knows *how far back* they are without
-/// reading the thumb.
+/// over the right edge, and fades out a short delay after scrolling stops back
+/// at the bottom. Matches the macOS Tahoe overlay-scrollbar spirit (hidden
+/// chrome, hover-expand) but adds a numeric position pill so the user knows
+/// *how far back* they are without reading the thumb.
 ///
 /// The view is a sibling of `TerminalBitmapView` inside the window's
 /// containerView — same z-ordering pattern as `UpdateBadgeView`. It is
@@ -38,6 +38,10 @@ final class TerminalScrollIndicatorView: NSView {
 
   private var lastInput: TerminalScrollIndicator.Input?
   private var lastOutput: TerminalScrollIndicator.Output = .hidden
+  // Scrolled-back distance from the previous sample. Only a change here counts
+  // as scroll activity that (re)arms the idle-hide countdown; output that grows
+  // the buffer while the viewport stays pinned to the bottom must not.
+  private var lastLinesBack = 0
   private var isHoverEdge = false
   private var idleHideWorkItem: DispatchWorkItem?
   private var trackingArea: NSTrackingArea?
@@ -131,6 +135,7 @@ final class TerminalScrollIndicatorView: NSView {
   func reset() {
     lastInput = nil
     lastOutput = .hidden
+    lastLinesBack = 0
     cancelIdleHide()
     setThumbOpacity(0, animated: false)
     setPillAlpha(0, animated: false)
@@ -145,17 +150,31 @@ final class TerminalScrollIndicatorView: NSView {
     lastInput = input
     let output = TerminalScrollIndicator.decide(input)
     let wasVisible = thumbLayer.opacity > 0
+    let linesBack = TerminalScrollIndicator.linesBack(input)
+    let action = TerminalScrollIndicator.idleHideAction(
+      shouldHold: output.shouldHold,
+      linesBack: linesBack,
+      previousLinesBack: lastLinesBack,
+      isVisible: wasVisible,
+      hidePending: idleHideWorkItem != nil
+    )
+    lastLinesBack = linesBack
     lastOutput = output
     layoutFromOutput()
 
-    if output.shouldHold {
+    switch action {
+    case .hold:
       cancelIdleHide()
       setThumbOpacity(1, animated: !wasVisible)
       setPillAlpha(output.pillVisible ? 1 : 0, animated: true)
-    } else if wasVisible {
-      // Just returned to the live bottom (or hover left while at bottom):
-      // hold briefly so the user sees the snap, then fade.
+    case .armHide:
+      // Scrolling just brought us back to the live bottom (or input snapped us
+      // there): hold briefly so the user sees the snap, then fade. Streaming
+      // output keeps `linesBack` at 0, so it lands in `.keep` and cannot keep
+      // re-arming this — the indicator hides once scrolling has actually stopped.
       scheduleIdleHide()
+    case .keep:
+      break
     }
   }
 

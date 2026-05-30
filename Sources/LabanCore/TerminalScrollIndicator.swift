@@ -71,15 +71,23 @@ public enum TerminalScrollIndicator {
   /// the "no scrollbar" baseline this indicator replaces.
   public static let minThumbFraction: Double = 0.06
 
+  /// How many rows the viewport is scrolled back from the live bottom. 0 means
+  /// pinned to the bottom; N means N rows into history. This is the only signal
+  /// the idle-hide timer treats as *scroll activity*: streaming output grows
+  /// `totalRows` while the viewport follows the tail, leaving this at 0, so it
+  /// must not be mistaken for the user moving the viewport.
+  public static func linesBack(_ input: Input) -> Int {
+    let bottomOffset = max(0, input.totalRows - input.viewportRows)
+    return max(0, bottomOffset - input.viewportOffset)
+  }
+
   public static func decide(_ input: Input) -> Output {
     guard input.viewportRows > 0, input.totalRows > input.viewportRows else {
       return .hidden
     }
 
     let maxScrollback = input.totalRows - input.viewportRows
-    let bottomOffset = max(0, maxScrollback)
-    let appliedRows = input.viewportOffset - bottomOffset
-    let linesBack = max(0, -appliedRows)
+    let linesBack = linesBack(input)
 
     let rawFraction = Double(input.viewportRows) / Double(input.totalRows)
     let thumbFraction = max(Self.minThumbFraction, min(0.95, rawFraction))
@@ -96,5 +104,34 @@ public enum TerminalScrollIndicator {
       pillVisible: scrolledBack,
       pillText: scrolledBack ? "\(linesBack) / \(maxScrollback)" : ""
     )
+  }
+
+  /// What the overlay view should do with its idle-hide timer for the latest
+  /// viewport sample. The indicator holds while scrolled back or hovered, and
+  /// otherwise fades after a short quiet delay — but the countdown is (re)armed
+  /// only by genuine scroll movement (`linesBack` changing). A terminal
+  /// streaming output at the live bottom therefore cannot keep re-arming the
+  /// timer and pinning the indicator on screen: the fade lands a short delay
+  /// after scrolling *stops*, not a short delay after the last byte of output.
+  public enum IdleHideAction: Equatable {
+    /// Cancel any pending hide and show at full opacity.
+    case hold
+    /// Start (or restart) the idle-hide countdown.
+    case armHide
+    /// Leave the pending timer and current opacity untouched.
+    case keep
+  }
+
+  public static func idleHideAction(
+    shouldHold: Bool,
+    linesBack: Int,
+    previousLinesBack: Int,
+    isVisible: Bool,
+    hidePending: Bool
+  ) -> IdleHideAction {
+    if shouldHold { return .hold }
+    guard isVisible else { return .keep }
+    let scrollMoved = linesBack != previousLinesBack
+    return scrollMoved || !hidePending ? .armHide : .keep
   }
 }

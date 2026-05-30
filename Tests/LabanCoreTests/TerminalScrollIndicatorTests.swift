@@ -66,4 +66,64 @@ final class TerminalScrollIndicatorTests: XCTestCase {
       .init(viewportOffset: 10_000, totalRows: 1000, viewportRows: 100, isHoverEdge: false))
     XCTAssertLessThanOrEqual(out.thumbOffsetFraction, 1 - out.thumbFraction + 1e-9)
   }
+
+  // MARK: - linesBack
+
+  func testLinesBackZeroAtLiveBottom() {
+    XCTAssertEqual(
+      TerminalScrollIndicator.linesBack(
+        .init(viewportOffset: 976, totalRows: 1000, viewportRows: 24, isHoverEdge: false)),
+      0)
+  }
+
+  func testLinesBackCountsRowsIntoHistory() {
+    XCTAssertEqual(
+      TerminalScrollIndicator.linesBack(
+        .init(viewportOffset: 500, totalRows: 1000, viewportRows: 24, isHoverEdge: false)),
+      476)
+  }
+
+  // MARK: - Idle-hide arming
+
+  func testScrolledBackHoldsAndCancelsAnyPendingHide() {
+    let action = TerminalScrollIndicator.idleHideAction(
+      shouldHold: true, linesBack: 5, previousLinesBack: 0,
+      isVisible: true, hidePending: true)
+    XCTAssertEqual(action, .hold)
+  }
+
+  func testReturnToBottomArmsHide() {
+    // linesBack moved 3 -> 0: genuine scroll back to the live bottom.
+    let action = TerminalScrollIndicator.idleHideAction(
+      shouldHold: false, linesBack: 0, previousLinesBack: 3,
+      isVisible: true, hidePending: false)
+    XCTAssertEqual(action, .armHide)
+  }
+
+  func testStreamingOutputAtBottomDoesNotRearmPendingHide() {
+    // Already at the bottom with a hide already counting down; output grew the
+    // buffer but the viewport stayed pinned (linesBack unchanged at 0). The
+    // countdown must keep running rather than restart, so the indicator can
+    // still fade while output flows.
+    let action = TerminalScrollIndicator.idleHideAction(
+      shouldHold: false, linesBack: 0, previousLinesBack: 0,
+      isVisible: true, hidePending: true)
+    XCTAssertEqual(action, .keep)
+  }
+
+  func testVisibleAtBottomWithNoTimerArmsHide() {
+    // Defensive: visible at the bottom but nothing is scheduled — arm so a
+    // stuck indicator can never linger forever.
+    let action = TerminalScrollIndicator.idleHideAction(
+      shouldHold: false, linesBack: 0, previousLinesBack: 0,
+      isVisible: true, hidePending: false)
+    XCTAssertEqual(action, .armHide)
+  }
+
+  func testHiddenIndicatorStaysHidden() {
+    let action = TerminalScrollIndicator.idleHideAction(
+      shouldHold: false, linesBack: 0, previousLinesBack: 0,
+      isVisible: false, hidePending: false)
+    XCTAssertEqual(action, .keep)
+  }
 }
