@@ -818,6 +818,7 @@ public final class AppModel {
         findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
         launchCommandByTab.removeValue(forKey: tab.id)
         agentByTab.removeValue(forKey: tab.id)
+        cwdFallbackAppliedByTab.removeValue(forKey: tab.id)
         metadataSync.forget(tab: tab)
         _tabs.remove(at: idx)
         recordTab(.tabClosed, tabId: tab.id, sessionId: tab.sessionId)
