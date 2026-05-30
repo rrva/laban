@@ -288,9 +288,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// against what was actually built. Shown via the standard macOS
   /// "About Laban" item in the app menu.
   @objc func showAbout(_ sender: Any?) {
+    // Compute the build age against the moment the panel opens so it reads
+    // how stale the running binary is, not a frozen build-time string.
+    let built =
+      BuildInfo.ageDescription().map { "Built \(BuildInfo.date) (\($0))" }
+      ?? "Built \(BuildInfo.date)"
     let credits = NSAttributedString(
       string:
-        "Build \(BuildInfo.commit)\nBuilt \(BuildInfo.date)\n\nA terminal that aims to be quiet, fast, and honest.",
+        "Build \(BuildInfo.commit)\n\(built)\n\nA terminal that aims to be quiet, fast, and honest.",
       attributes: [.foregroundColor: NSColor.labelColor])
     NSApp.orderFrontStandardAboutPanel(options: [
       .applicationName: "Laban",
