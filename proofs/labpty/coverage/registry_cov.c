@@ -83,10 +83,68 @@ static void cover_find_and_ring_path(void) {
     assert(make_ring_path(&reg, 7, path, 4) == LABPTY_E_PAYLOAD_TOO_LARGE);    /* n >= cap */
 }
 
+/* Real forked children for the reaping paths. The harness is built WITHOUT
+ * -fprofile-continuous, so children that _exit() or are killed never run
+ * atexit and never write to the parent's profile file. */
+static pid_t fork_exiting_child(void) {
+    pid_t p = fork();
+    if (p == 0) _exit(0);          /* exits immediately -> reapable */
+    return p;
+}
+static pid_t fork_stubborn_child(void) {
+    pid_t p = fork();
+    if (p == 0) { setpgid(0, 0); for (;;) pause(); } /* own pgroup; dies only on signal */
+    return p;
+}
+
+/* wait_for_child_exit: child reaped on the first poll; a non-child returning
+ * ECHILD; and a stubborn child that forces the SIGKILL escalation. */
+static void cover_wait_for_child_exit(void) {
+    pid_t a = fork_exiting_child();
+    usleep(50000);
+    assert(wait_for_child_exit(a) == 1);          /* got == child_pid */
+    assert(wait_for_child_exit(999999) == 1);     /* got < 0, errno == ECHILD */
+    pid_t c = fork_stubborn_child();
+    usleep(50000);
+    assert(wait_for_child_exit(c) == 1);          /* 20-poll loop -> SIGKILL -> reaped */
+}
+
+/* labpty_registry_reap (ReapTick): close_pending with the child already gone;
+ * close_pending with a stubborn child past its SIGKILL deadline; and a natural
+ * exit that becomes a dead leak. */
+static void cover_reap(void) {
+    labpty_registry_t reg;
+    labpty_registry_init(&reg, "/tmp");
+
+    reg.sessions[0].used = 1; reg.sessions[0].close_pending = 1; reg.sessions[0].child_pid = 0;
+    labpty_registry_reap(&reg);
+    assert(reg.sessions[0].used == 0);            /* close_pending + child gone -> freed */
+
+    pid_t c = fork_stubborn_child();
+    usleep(50000);
+    reg.sessions[1].used = 1; reg.sessions[1].close_pending = 1;
+    reg.sessions[1].child_pid = c; reg.sessions[1].terminate_deadline_ns = 1; /* long past */
+    for (int i = 0; i < 300 && reg.sessions[1].used; i++) {
+        labpty_registry_reap(&reg);               /* deadline elapsed -> SIGKILL, then reap */
+        if (reg.sessions[1].used) usleep(10000);
+    }
+    assert(reg.sessions[1].used == 0);
+
+    pid_t d = fork_exiting_child();
+    usleep(50000);
+    reg.sessions[2].used = 1; reg.sessions[2].alive = 1;
+    reg.sessions[2].close_pending = 0; reg.sessions[2].child_pid = d;
+    labpty_registry_reap(&reg);                   /* natural exit -> dead leak */
+    assert(reg.sessions[2].used == 1 && reg.sessions[2].child_pid == 0 && reg.sessions[2].alive == 0);
+    reclaim_dead_session(&reg.sessions[2]);
+}
+
 int main(void) {
     cover_valid_output_capacity();
     cover_make_logical_id();
     cover_is_reclaimable();
     cover_find_and_ring_path();
+    cover_wait_for_child_exit();
+    cover_reap();
     return 0;
 }

@@ -16,7 +16,7 @@ daemon code**: `main.c` handlers + the event loop, and `labpty_registry.c`.
 
 ```
 scripts/coverage-labpty            # build instrumented, run tests, print report
-scripts/coverage-labpty --check 40 # same, but fail if daemon MC/DC < 40% (ratchet)
+scripts/coverage-labpty --check 45 # same, but fail if daemon MC/DC < 45% (ratchet)
 ```
 
 Single matched toolchain (Apple clang 21 + `xcrun llvm-cov`, both do MC/DC
@@ -48,17 +48,17 @@ to 100% / near-100% — deterministically.
 ## Baseline (2026-05-30, `main`)
 
 Union of the integration suite + the deterministic harnesses. The integration
-suite alone was a jittery **18.4%**; the harnesses took it to a stable **42%**:
+suite alone was a jittery **18.4%**; the harnesses took it to a stable **47%**:
 
 | File | Line | Branch | **MC/DC** | Source of coverage |
 | --- | --- | --- | --- | --- |
 | `main.c` | 90% | 65% | **~43%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `dispatch_frame`, the `handle_*` lookups, the `handle_write` ADR-0008 preflight via a real pty) |
-| `labpty_registry.c` | 86% | 59% | **~42%** | integration + `registry_cov.c` |
-| **daemon total** | 89% | 63% | **~42%** (≥40% floor) | union |
+| `labpty_registry.c` | 93% | 65% | **~56%** | integration + `registry_cov.c` (pure fns + the reap/`wait_for_child_exit` SIGKILL escalation via real forked children) |
+| **daemon total** | 91% | 65% | **~47%** (≥45% floor) | union |
 
 ## Ratchet + target
 
-`scripts/coverage-labpty --check 40` is a one-way ratchet: coverage may only go
+`scripts/coverage-labpty --check 45` is a one-way ratchet: coverage may only go
 up. CI runs it as a floor so the suite can never regress below the recorded
 baseline; raise the floor as each harness lands.
 
