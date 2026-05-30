@@ -370,6 +370,59 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "a click under mouse tracking must clear the existing local selection")
   }
 
+  func testWheelScrollClearsSelectionWhenMouseTrackingIsActive() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    // Commit a selection while the app is not tracking the mouse.
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    // A fullscreen TUI turns on mouse reporting. A plain wheel is now forwarded
+    // to the app, which scrolls its own content without moving Laban's viewport
+    // — the leftover selection must be dropped, not left frozen on screen.
+    enableMouseTracking(in: session)
+    harness.view.scrollWheel(
+      with: TestScrollWheelEvent(
+        locationInWindow: point(row: 2, col: 0, in: harness), deltaY: 1))
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "a wheel scroll forwarded under mouse tracking must clear the local selection")
+  }
+
+  func testAltScrollWheelClearsSelection() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    enableAltScroll(in: session)
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    // Alt-scroll (less/man-style) translates the wheel into the app's cursor
+    // keys. The app scrolls but Laban's viewport doesn't, so the selection must
+    // be dropped rather than left painted at a fixed screen position.
+    harness.view.scrollWheel(
+      with: TestScrollWheelEvent(
+        locationInWindow: point(row: 2, col: 0, in: harness), deltaY: 1))
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "an alt-scroll wheel must clear the local selection it can no longer track")
+  }
+
   func testShiftWheelScrollsLocalScrollbackUnderMouseTracking() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
@@ -538,6 +591,16 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     session.write(Array("\u{1B}[?1000h\u{1B}[?1006h".utf8))
     session.poll()
     XCTAssertEqual(session.viewportState()?.mouseTracking, true)
+  }
+
+  private func enableAltScroll(in session: Session) {
+    // Enter the alternate screen (1049) and turn on DEC alternate-scroll (1007),
+    // the less/man/vim wheel mode where the app consumes the wheel as cursor keys.
+    session.write(Array("\u{1B}[?1049h\u{1B}[?1007h".utf8))
+    session.poll()
+    let vs = session.viewportState()
+    XCTAssertEqual(vs?.altScreen, true)
+    XCTAssertEqual(vs?.altScroll, true)
   }
 
   private func clickTabRow(tabIndex: Int, in harness: Harness) {

@@ -2311,6 +2311,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
           hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
         ))
       guard let direction else { return }
+      // Forwarding the wheel to the app scrolls its content but not Laban's
+      // viewport, so drop any leftover local selection it would otherwise pin.
+      dismissLocalSelectionForForwardedInput()
       let button: MouseButton = direction == .up ? .wheelUp : .wheelDown
       let geom = terminalMouseGeometry(at: pt)
       let me = MouseEvent(
@@ -2359,6 +2362,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       else {
         return
       }
+      // Alt-scroll drives the app's cursor keys; its content moves but Laban's
+      // viewport doesn't, so drop any leftover local selection it would pin.
+      dismissLocalSelectionForForwardedInput()
       let key: Key = keys.key == .up ? .arrowUp : .arrowDown
       var bytes: [UInt8] = []
       for _ in 0..<keys.count {
@@ -2535,6 +2541,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
   }
 
+  /// Wheel or click input forwarded to the app (mouse reporting or DEC
+  /// alternate-scroll) scrolls the *app's* own content without moving Laban's
+  /// viewport offset, so a committed local selection can no longer track what
+  /// sits underneath it and would stay painted in place while the app scrolls.
+  /// Drop it the way a bare forwarded click does — scoped to the active tab,
+  /// and scrubbed from the per-tab cache so it can't resurrect on a tab switch.
+  private func dismissLocalSelectionForForwardedInput() {
+    guard selectionAnchor != nil || selectionFocus != nil else { return }
+    syncSelectionStateToActiveTab()
+    selectionAnchor = nil
+    selectionFocus = nil
+    selectionOriginCell = nil
+    persistSelectionStateForCurrentTab()
+    recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+  }
+
   private static func pointDistance(_ lhs: NSPoint, _ rhs: NSPoint) -> CGFloat {
     let dx = lhs.x - rhs.x
     let dy = lhs.y - rhs.y
@@ -2633,20 +2655,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       // press+release and the drag path is local, so neither needs it, and a
       // stale .left would survive into the next gesture.
       cancelSelectionDragForMouseTracking()
-      // A press under mouse tracking dismisses any existing local selection, the
-      // same way a bare click does without tracking. cancelSelectionDragForMouseTracking
-      // only resets drag state, so the committed selection must be cleared here
-      // (scoped to the active tab) or it stays painted after the click is
-      // forwarded to the app — and would resurrect from the per-tab cache on a
-      // tab switch.
-      if selectionAnchor != nil || selectionFocus != nil {
-        syncSelectionStateToActiveTab()
-        selectionAnchor = nil
-        selectionFocus = nil
-        selectionOriginCell = nil
-        persistSelectionStateForCurrentTab()
-        recordInput(kind: "selection", route: "terminal", command: "clearSelection")
-      }
+      // A press under mouse tracking dismisses any existing local selection the
+      // same way a bare click does without tracking (cancelSelectionDragForMouseTracking
+      // above only resets drag state, not the committed selection).
+      dismissLocalSelectionForForwardedInput()
       pendingTrackingClick = PendingTrackingClick(
         downPoint: pt, pressModifiers: event.labanModifiers)
     case .localSelection:
