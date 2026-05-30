@@ -79,6 +79,43 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try clientA.terminate(handle: handle)
   }
 
+  func testTerminateOfNaturallyExitedSessionDoesNotLeakInspectFd() throws {
+    // Regression for H-6: a child that exits naturally leaves a dead-leak
+    // slot whose slave_inspect_fd stayed open; terminating it freed the slot
+    // without closing the fd, leaking one descriptor per open→exit→terminate
+    // cycle and marching the long-lived daemon toward RLIMIT_NOFILE.
+    let harness = try launchHarness()
+    let daemonPid = pid_t(harness.process.processIdentifier)
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+
+    func cycle(_ i: Int) throws {
+      // Distinct logical ids so each terminate hits the dead-leak branch,
+      // not the same-id reclaim path (which already closed the fd).
+      let descriptor = try client.openSession(
+        LabptyOpenSessionRequest(
+          rows: 24, cols: 80, argv: ["/bin/sh", "-c", "exit 0"],
+          logicalSessionId: "fd-leak-\(i)"))
+      try waitForDead(pid: pid_t(descriptor.childPid))
+      try waitForSessionAliveState(client: client, handle: descriptor.ptyHandle, alive: false)
+      _ = try client.terminate(handle: descriptor.ptyHandle)
+    }
+
+    try cycle(0)
+    usleep(150_000)
+    let baseline = openFileDescriptorCount(pid: daemonPid)
+
+    let iterations = 30
+    for i in 1...iterations { try cycle(i) }
+    usleep(150_000)
+    let after = openFileDescriptorCount(pid: daemonPid)
+
+    XCTAssertLessThan(
+      after - baseline, 5,
+      "daemon open-fd count grew by \(after - baseline) over \(iterations) "
+        + "open→exit→terminate cycles — slave_inspect_fd leak (H-6)")
+  }
+
   func testEstablishedIdleClientStaysCounted() throws {
     let harness = try launchHarness()
     let owner = try waitForClient(socketPath: harness.socketPath)
@@ -1029,6 +1066,18 @@ final class LabptyDaemonTests: XCTestCase {
       usleep(50_000)
     }
     XCTFail("pid \(pid) was still alive")
+  }
+
+  private func openFileDescriptorCount(pid: pid_t) -> Int {
+    let needed = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+    guard needed > 0 else { return 0 }
+    let capacity = Int(needed) / MemoryLayout<proc_fdinfo>.stride
+    var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: max(capacity, 1))
+    let used = fds.withUnsafeMutableBytes { buffer in
+      proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buffer.baseAddress, Int32(buffer.count))
+    }
+    guard used > 0 else { return 0 }
+    return Int(used) / MemoryLayout<proc_fdinfo>.stride
   }
 
   private func waitForPathGone(_ path: String) throws {

@@ -204,6 +204,11 @@ labpty_status_t labpty_registry_open(
     if (ptsname_r(master_fd, ptsname_buf, sizeof(ptsname_buf)) == 0) {
         slave_inspect_fd = open(ptsname_buf, O_RDONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
     }
+    /* Defensive: never let a leftover inspect fd survive slot reuse —
+     * memset would overwrite the fd value and orphan the descriptor. */
+    if (slot->slave_inspect_fd > 0) {
+        close(slot->slave_inspect_fd);
+    }
     memset(slot, 0, sizeof(*slot));
     slot->used = 1;
     slot->alive = 1;
@@ -344,6 +349,14 @@ void labpty_registry_reap(labpty_registry_t *registry) {
             s->sigkill_sent = 1;
         }
         if (s->child_pid <= 0) {
+            /* The inspect fd is only useful while the child is alive
+             * (writeInput preflight). Close it as soon as the slot is
+             * known dead so a dead-leak slot (close_pending=0) does not
+             * hold it until terminate/reuse — the H-6 fd leak. */
+            if (s->slave_inspect_fd >= 0) {
+                close(s->slave_inspect_fd);
+                s->slave_inspect_fd = -1;
+            }
             if (s->close_pending) {
                 labpty_byte_ring_close(&s->ring);
                 s->close_pending = 0;
@@ -358,6 +371,10 @@ void labpty_registry_reap(labpty_registry_t *registry) {
         if (got == s->child_pid || (got < 0 && errno == ECHILD)) {
             s->child_pid = 0;
             s->alive = 0;
+            if (s->slave_inspect_fd >= 0) {
+                close(s->slave_inspect_fd);
+                s->slave_inspect_fd = -1;
+            }
             if (s->close_pending) {
                 labpty_byte_ring_close(&s->ring);
                 s->close_pending = 0;

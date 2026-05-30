@@ -569,6 +569,10 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
          * acknowledged the death by calling terminate; the work is
          * just labpty_byte_ring_close, no syscalls that can block
          * the event loop. */
+        if (session->slave_inspect_fd >= 0) {
+            close(session->slave_inspect_fd);
+            session->slave_inspect_fd = -1;
+        }
         labpty_byte_ring_close(&session->ring);
         session->used = 0;
         session->alive = 0;
