@@ -48,17 +48,17 @@ to 100% / near-100% — deterministically.
 ## Baseline (2026-05-30, `main`)
 
 Union of the integration suite + the deterministic harnesses. The integration
-suite alone was a jittery **18.4%**; the harnesses took it to a stable **32%**:
+suite alone was a jittery **18.4%**; the harnesses took it to a stable **38%**:
 
 | File | Line | Branch | **MC/DC** | Source of coverage |
 | --- | --- | --- | --- | --- |
-| `main.c` | 88% | 60% | **~27%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`) |
+| `main.c` | 88% | 61% | **~37%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `handle_attach`/`detach`/`resize`) |
 | `labpty_registry.c` | 86% | 59% | **~42%** | integration + `registry_cov.c` |
-| **daemon total** | 87% | 60% | **~32%** (≥30% floor) | union |
+| **daemon total** | 88% | 61% | **~38%** (≥36% floor) | union |
 
 ## Ratchet + target
 
-`scripts/coverage-labpty --check 30` is a one-way ratchet: coverage may only go
+`scripts/coverage-labpty --check 36` is a one-way ratchet: coverage may only go
 up. CI runs it as a floor so the suite can never regress below the recorded
 baseline; raise the floor as each harness lands.
 
@@ -66,10 +66,9 @@ The honest target is **100% of the *feasible* conditions**, not 100% of all
 conditions — a chunk are genuinely infeasible (defensive null-guards, `errno`
 fault branches, `killpg` fallbacks) and should be documented as excluded (an
 avionics-style deviation record) rather than chased. Remaining levers, in
-`main.c` (still 60 of the 125 conditions missing): the request handlers via a
-constructed `labpty_daemon_t` (`handle_attach`/`detach`/`resize`/`signal`),
-`dispatch_frame`, `parse_args`, and the poll-dispatch helpers — all drivable
-deterministically by extending `main_cov.c`.
+`main.c` (still ~52 of the 125 conditions missing): `dispatch_frame`,
+`handle_open`'s failure paths, `handle_hello` negotiation, and the poll-dispatch
+helpers — all drivable deterministically by extending `main_cov.c`.
 
 To find the specific untested conditions, run:
 

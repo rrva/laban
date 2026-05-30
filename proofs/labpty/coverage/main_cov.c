@@ -81,8 +81,80 @@ static void cover_expire_stalled_clients(void) {
     expire_stalled_clients(&cov_daemon);
 }
 
+/* (--socket && has-value), (--shm-dir && has-value), (socket && shm set). */
+static void cover_parse_args(void) {
+    char sock[LABPTY_PATH_BYTES + 1], shm[LABPTY_PATH_BYTES + 1];
+    char *ok[]          = { "labpty", "--socket", "/s", "--shm-dir", "/d" };
+    char *unknown[]     = { "labpty", "--bogus" };
+    char *no_sock_val[] = { "labpty", "--socket" };
+    char *no_shm_val[]  = { "labpty", "--socket", "/s", "--shm-dir" };
+    char *only_sock[]   = { "labpty", "--socket", "/s" };
+    assert(parse_args(5, ok, sock, shm) == 0);            /* both flags + values */
+    assert(parse_args(2, unknown, sock, shm) == -1);      /* unknown flag */
+    assert(parse_args(2, no_sock_val, sock, shm) == -1);  /* --socket without value */
+    assert(parse_args(4, no_shm_val, sock, shm) == -1);   /* --shm-dir without value */
+    assert(parse_args(3, only_sock, sock, shm) == -1);    /* socket set, shm-dir empty */
+}
+
+static size_t build_handle_payload(uint8_t *buf, size_t cap, uint64_t handle) {
+    labpty_writer_t w = { buf, buf + cap };
+    labpty_write_u64(&w, handle);
+    return (size_t)(w.cur - buf);
+}
+
+static size_t build_resize_payload(uint8_t *buf, size_t cap, uint64_t handle,
+                                   uint32_t rows, uint32_t cols) {
+    labpty_writer_t w = { buf, buf + cap };
+    labpty_write_u64(&w, handle);
+    labpty_write_u32(&w, rows);
+    labpty_write_u32(&w, cols);
+    return (size_t)(w.cur - buf);
+}
+
+/* handle_attach/detach/resize: session found-and-alive / missing / not-alive.
+ * master_fd = -1 makes resize's ioctl fail deterministically (no real pty). */
+static void cover_handlers(void) {
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    cov_daemon.registry.next_handle = 200;
+    labpty_session_t *s = &cov_daemon.registry.sessions[0];
+    s->used = 1; s->alive = 1; s->handle = 100; s->master_fd = -1;
+    s->rows = 24; s->cols = 80;
+    snprintf(s->logical_id, sizeof(s->logical_id), "cov");
+    snprintf(s->ring.path, sizeof(s->ring.path), "/tmp/cov.br");
+    s->ring.output_capacity = LABPTY_MIN_OUTPUT_CAPACITY;
+    labpty_client_t *c = &cov_daemon.clients[0];
+    c->fd = -1; c->in_use = 1;
+
+    uint8_t pay[64], out[512];
+    size_t out_len = 0, n;
+
+    n = build_handle_payload(pay, sizeof(pay), 100);
+    assert(handle_attach(&cov_daemon, c, pay, n, out, sizeof(out), &out_len) == LABPTY_OK);
+    n = build_handle_payload(pay, sizeof(pay), 999);
+    assert(handle_attach(&cov_daemon, c, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
+    s->alive = 0;
+    n = build_handle_payload(pay, sizeof(pay), 100);
+    assert(handle_attach(&cov_daemon, c, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
+    s->alive = 1;
+
+    n = build_handle_payload(pay, sizeof(pay), 100);
+    assert(handle_detach(&cov_daemon, c, pay, n, out, sizeof(out), &out_len) == LABPTY_OK);
+    n = build_handle_payload(pay, sizeof(pay), 999);
+    assert(handle_detach(&cov_daemon, c, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
+
+    n = build_resize_payload(pay, sizeof(pay), 100, 30, 100);
+    assert(handle_resize(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_E_INTERNAL); /* ioctl(-1) fails */
+    n = build_resize_payload(pay, sizeof(pay), 999, 30, 100);
+    assert(handle_resize(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
+    s->alive = 0;
+    n = build_resize_payload(pay, sizeof(pay), 100, 30, 100);
+    assert(handle_resize(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
+}
+
 int main(void) {
     cover_is_canonical_delimiter();
     cover_expire_stalled_clients();
+    cover_parse_args();
+    cover_handlers();
     return 0;
 }
