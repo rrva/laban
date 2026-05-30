@@ -62,7 +62,24 @@ extension TerminalKeyDescriptor {
   func route(hasMarkedText: Bool = false) -> TerminalInputRoute {
     if action == .release {
       guard let key else { return .ignored }
-      return .encodedKey(KeyEvent(action: .release, key: key, modifiers: modifiers))
+      // Mirror the press: if pressing this chord is consumed by the app
+      // (Ctrl+Tab tab-switch, Cmd chords), its release must not be encoded
+      // to the active session — which after a tab switch is a different
+      // session that never saw the press, corrupting its key-state under
+      // the Kitty report-all protocol. (M-2)
+      let pressRoute = TerminalKeyDescriptor(
+        action: .press,
+        key: key,
+        modifiers: modifiers,
+        characters: characters,
+        charactersIgnoringModifiers: charactersIgnoringModifiers
+      ).route(hasMarkedText: false)
+      switch pressRoute {
+      case .appCommand, .swallowCommand:
+        return .swallowCommand
+      default:
+        return .encodedKey(KeyEvent(action: .release, key: key, modifiers: modifiers))
+      }
     }
 
     if hasMarkedText {

@@ -192,6 +192,22 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertNil(ev.text)
   }
 
+  func testControlTabReleaseIsSwallowedNotEncoded() {
+    // M-2: the Ctrl+Tab press is consumed as a tab switch, so its matching
+    // release must NOT be encoded to the active session — after the switch
+    // that is a different session that never saw the press.
+    let press = TerminalKeyDescriptor(action: .press, key: .tab, modifiers: .control)
+    XCTAssertEqual(press.route(), .appCommand(.selectNextTab))
+    let release = TerminalKeyDescriptor(action: .release, key: .tab, modifiers: .control)
+    XCTAssertEqual(release.route(), .swallowCommand)
+  }
+
+  func testAppCommandChordReleaseIsSwallowed() {
+    // M-2: a Command chord whose press is an app command emits no release.
+    let release = TerminalKeyDescriptor(action: .release, key: .t, modifiers: .command)
+    XCTAssertEqual(release.route(), .swallowCommand)
+  }
+
   func testTextInputCursorRectUsesTopDownTerminalGrid() {
     let rect = TerminalTextInputGeometry.cursorRect(
       rows: 24,
