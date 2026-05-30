@@ -457,7 +457,11 @@ public final class DebugHTTPServer {
         "Snapshot the last N seconds of a tab's PTY output as an asciinema v2 cast.",
       queryParameters: ["seconds", "tabId"]
     ) { runtime, request, _ in
-      let seconds = Double(request.query["seconds"] ?? "") ?? 10
+      let parsedSeconds = Double(request.query["seconds"] ?? "") ?? 10
+      guard parsedSeconds.isFinite, parsedSeconds >= 0 else {
+        return json(jsonError("seconds must be a finite, non-negative number", status: 400))
+      }
+      let seconds = min(parsedSeconds, 3600)
       let tabId = request.query["tabId"]
       switch runtime.recentCastBytes(seconds: seconds, tabId: tabId) {
       case .success(let data, let resolvedTabId, let chunks, let windowSeconds):

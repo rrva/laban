@@ -272,9 +272,14 @@ public final class RecentByteRing {
   }
 
   private static func cutoffNanos(window: TimeInterval) -> UInt64 {
-    precondition(window >= 0, "window must be non-negative")
+    // Reachable from network input (/debug/cast/recent), so this must
+    // never trap. A non-finite, negative, or absurdly large window all
+    // mean "include everything", i.e. a cutoff of 0.
+    guard window.isFinite, window >= 0 else { return 0 }
     let nowNanos = RecentByteRing.monotonicNanos()
-    let windowNanos = UInt64((window * 1_000_000_000).rounded())
+    let scaled = (window * 1_000_000_000).rounded()
+    guard scaled.isFinite, scaled < Double(UInt64.max) else { return 0 }
+    let windowNanos = UInt64(scaled)
     if windowNanos >= nowNanos { return 0 }
     return nowNanos - windowNanos
   }

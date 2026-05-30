@@ -79,6 +79,22 @@ final class RecentByteRingTests: XCTestCase {
     XCTAssertEqual(snapshot.entries.map(\.bytes), [Array("new".utf8)])
   }
 
+  func testInvalidWindowDoesNotTrap() {
+    // Regression for C-1: /debug/cast/recent forwards a caller-controlled
+    // `seconds` to the ring. Negative / NaN / inf / overflowing windows
+    // must clamp to "include everything" instead of trapping the process.
+    let ring = RecentByteRing()
+    write(ring: ring, string: "hello")
+    for window in [-1.0, -0.0001, .nan, .infinity, -.infinity, 1e20, Double.greatestFiniteMagnitude] {
+      let cast = ring.castWindowSnapshot(window: window)
+      XCTAssertEqual(
+        cast.initialEntries.count + cast.entries.count, 1,
+        "window \(window) should not drop or duplicate the recorded chunk")
+      let snap = ring.snapshot(window: window)
+      XCTAssertEqual(snap.count, 1, "window \(window) should not trap snapshot()")
+    }
+  }
+
   func testHeaderRingOverflowDropsOldestHeaders() {
     let ring = RecentByteRing(byteCapacity: 4096, headerCapacity: 4)
     for i in 0..<6 {
