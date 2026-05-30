@@ -291,7 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Compute the build age against the moment the panel opens so it reads
     // how stale the running binary is, not a frozen build-time string.
     let built =
-      BuildInfo.ageDescription().map { "Built \(BuildInfo.date) (\($0))" }
+      BuildInfo.ageDescription().map { "Built \(BuildInfo.date)\n\($0)" }
       ?? "Built \(BuildInfo.date)"
     let credits = NSAttributedString(
       string:
