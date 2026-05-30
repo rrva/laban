@@ -534,6 +534,10 @@ static labpty_status_t handle_signal(labpty_daemon_t *daemon, const uint8_t *pay
     if (status != LABPTY_OK) return status;
     labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handle);
     if (!session || !session->alive) return LABPTY_E_SESSION_NOT_FOUND;
+    /* Reject a client-controlled out-of-range signal number rather than
+     * forwarding it to killpg/kill; the daemon defines the accepted set. (L9) */
+    /* signo 0 is the valid POSIX null signal (permission/existence probe). */
+    if (request.signo < 0 || request.signo >= NSIG) return LABPTY_E_INTERNAL;
     /* Try the child's process group first; if it has already been torn
      * down (ESRCH) or POSIX rejects the call because no member of the
      * group is eligible (EPERM), fall back to signalling the immediate
