@@ -62,6 +62,15 @@ public final class Session {
   public let id: ID
   private var handle: OpaquePointer?
   public private(set) var isClosed = false
+  /// Serializes the handle's lifecycle: every C call below holds this across
+  /// its use of `handle`, and `close()` holds it while destroying, so the
+  /// laband multi-client tier can never run `laban_session_destroy` on one
+  /// thread while another is mid-`write`/`snapshot`/`resize` (M-5 UAF).
+  /// Recursive so a synchronous callback that re-enters a Session method on
+  /// the same thread cannot self-deadlock. The runner thread's direct
+  /// `laban_session_poll` is not covered here — it stays caller-ordered
+  /// (stop the runner before `close()`), as `makeRunner` documents.
+  private let handleLock = NSRecursiveLock()
   private let fixtureMode: Bool
   private let callbackState: SessionCallbackState
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
@@ -269,6 +278,8 @@ public final class Session {
     injection: RestoreShellInjection? = nil,
     launchArgv: [String]? = nil
   ) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     if let argv = injection?.argv ?? launchArgv, !argv.isEmpty {
       let exe = injection?.shellPath ?? argv[0]
@@ -294,6 +305,8 @@ public final class Session {
   /// noise until the user or autoresume writes real input.
   @discardableResult
   public func suppressPtyOutputUntilInput(_ enabled: Bool = true) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_suppress_pty_output_until_input(h, enabled ? 1 : 0)
   }
@@ -357,6 +370,8 @@ public final class Session {
   }
 
   public func close() {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed else { return }
     isClosed = true
     if let h = handle {
@@ -373,6 +388,8 @@ public final class Session {
 
   @discardableResult
   public func poll() -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_poll(h)
   }
@@ -382,18 +399,24 @@ public final class Session {
   /// caller is responsible for `start()`ing the runner and for calling
   /// `stop()` before this session is `close()`d.
   public func makeRunner(onDirty: @escaping @Sendable () -> Void) -> SessionRunner? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !fixtureMode, !isClosed, let h = handle else { return nil }
     return SessionRunner(handle: h, onDirty: onDirty)
   }
 
   @discardableResult
   public func resize(_ size: LabanTerminalSize) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_resize(h, size)
   }
 
   @discardableResult
   public func write(_ bytes: [UInt8]) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     if bytes.isEmpty { return 0 }
     return bytes.withUnsafeBytes { buf in
@@ -405,6 +428,8 @@ public final class Session {
   /// Used to inject OSC palette sequences at session startup.
   @discardableResult
   public func feedOutput(_ bytes: [UInt8]) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     if bytes.isEmpty { return 0 }
     return bytes.withUnsafeBytes { buf in
@@ -417,6 +442,8 @@ public final class Session {
   /// This bypasses PTY input semantics and does not emit capture callbacks.
   @discardableResult
   public func replayPtyOutput(_ bytes: [UInt8]) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     if bytes.isEmpty { return 0 }
     return bytes.withUnsafeBytes { buf in
@@ -430,6 +457,8 @@ public final class Session {
   }
 
   public func snapshot() -> UnsafeMutablePointer<LabanSnapshot>? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     var snap: UnsafeMutablePointer<LabanSnapshot>?
     guard laban_session_snapshot(h, &snap) == 0 else { return nil }
@@ -440,6 +469,8 @@ public final class Session {
   /// Returns false on C failure or closed session; the frame loop
   /// should treat C failure as non-fatal and retry on the next tick.
   public func renderDirty() -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     var dirty: Int32 = 0
     guard laban_session_render_dirty(h, &dirty) == 0 else { return false }
@@ -450,6 +481,8 @@ public final class Session {
   /// Returns -1 on C failure, 0 on success.
   @discardableResult
   public func markRendered() -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_mark_rendered(h)
   }
@@ -459,6 +492,8 @@ public final class Session {
   /// Returns the current exit state of the child process.
   /// Returns `.running` when closed so callers need not special-case isClosed.
   public func exitState() -> TabStatus {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return .running }
     let raw = laban_session_exit_state(h)
     switch raw.status {
@@ -475,17 +510,23 @@ public final class Session {
   /// success.
   @discardableResult
   public func startCapture(path: String) -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     return path.withCString { laban_session_capture_start(h, $0) == 0 }
   }
 
   @discardableResult
   public func stopCapture() -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     return laban_session_capture_stop(h) == 0
   }
 
   public var isCapturing: Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     return laban_session_capture_active(h) != 0
   }
@@ -495,6 +536,8 @@ public final class Session {
   /// persistence path samples this at quit so transcript replay does
   /// not paint half-finished TUI state on the next launch.
   public var altBufferActive: Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     return laban_session_alt_buffer_active(h) != 0
   }
@@ -510,6 +553,8 @@ public final class Session {
     _ callback: LabanPersistenceBytesCallback?,
     userdata: UnsafeMutableRawPointer?
   ) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_set_persistence_callback(h, callback, userdata)
   }
@@ -520,6 +565,8 @@ public final class Session {
   /// Returns (dirty: true, raw: String?) when a title change was pending and
   /// its raw bytes were copied; returns (false, nil) when nothing changed.
   public func consumeTitle() -> (dirty: Bool, raw: String?) {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return (false, nil) }
     return withUnsafeTemporaryAllocation(of: CChar.self, capacity: 1024) { buf in
       let r = laban_session_consume_title(h, buf.baseAddress, buf.count)
@@ -532,6 +579,8 @@ public final class Session {
   // MARK: - Process metadata
 
   public func processMetadata() -> ProcessMetadata? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     // Fixture sessions have no PTY and no foreground process. The C path
     // still returns success with empty pid/process/command and `launch_cwd`
@@ -598,6 +647,8 @@ public final class Session {
   /// the active bottom. Returns 0 on success.
   @discardableResult
   public func scrollViewport(deltaRows: Int) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_scroll_viewport(h, Int32(deltaRows))
   }
@@ -605,6 +656,8 @@ public final class Session {
   /// Returns the current viewport state (scrollback rows, offset, mouse tracking, etc.),
   /// or nil if the session is closed or the C call fails.
   public func viewportState() -> ViewportState? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     var vs = LabanViewportState()
     guard laban_session_viewport_state(h, &vs) == 0 else { return nil }
@@ -612,6 +665,8 @@ public final class Session {
   }
 
   public func scrollbackBlock(rowOffset: Int = 0, maxRows: Int = 0) -> ScrollbackBlock? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     let safeOffset = max(0, rowOffset)
     let safeMaxRows = max(0, maxRows)
@@ -660,6 +715,8 @@ public final class Session {
     maxRows: Int = 0,
     caseMode: TerminalFindCaseMode = .smart
   ) -> [TerminalFindMatch]? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     let needleBytes = Array(needle.utf8)
     guard !needleBytes.isEmpty else { return [] }
@@ -715,6 +772,8 @@ public final class Session {
   }
 
   public var synchronizedOutputActive: Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     var active: Int32 = 0
     guard laban_session_synchronized_output_active(h, &active) == 0 else { return false }
@@ -723,11 +782,15 @@ public final class Session {
 
   @discardableResult
   public func resetSynchronizedOutput() -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_reset_synchronized_output(h)
   }
 
   public func bellCount() -> UInt64 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return 0 }
     var count: UInt64 = 0
     guard laban_session_bell_count(h, &count) == 0 else { return 0 }
@@ -736,11 +799,15 @@ public final class Session {
 
   @discardableResult
   public func setColorScheme(_ scheme: TerminalColorScheme) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_set_color_scheme(h, scheme.rawValue)
   }
 
   public var focusReportingEnabled: Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     var enabled: Int32 = 0
     guard laban_session_focus_reporting_enabled(h, &enabled) == 0 else { return false }
@@ -748,6 +815,8 @@ public final class Session {
   }
 
   public func encodeFocus(focused: Bool) -> [UInt8]? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     var buf = [UInt8](repeating: 0, count: 16)
     var len: size_t = 0
@@ -760,6 +829,8 @@ public final class Session {
 
   @discardableResult
   public func sendFocus(focused: Bool) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_send_focus(h, focused ? 1 : 0)
   }
@@ -770,6 +841,8 @@ public final class Session {
   /// Returns nil if the session is closed, if encoding fails, or if the key produces no bytes
   /// (e.g. an unmodified modifier key). Handles UTF-8 text lifetime internally.
   public func encodeKey(_ event: KeyEvent) -> [UInt8]? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     var buf = [UInt8](repeating: 0, count: 128)
     var len = 0
@@ -806,6 +879,8 @@ public final class Session {
   /// In fixture mode, encoding succeeds but no PTY write occurs.
   @discardableResult
   public func sendKey(_ event: KeyEvent) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return event.withLabanKeyEvent { raw in
       var rawCopy = raw
@@ -817,6 +892,8 @@ public final class Session {
   /// terminal-core send path. In fixture mode, returns encoded bytes without a
   /// PTY write.
   public func sendKeyCapturingBytes(_ event: KeyEvent) -> CapturedKeyWrite {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return CapturedKeyWrite(result: -1, bytes: []) }
     var buf = [UInt8](repeating: 0, count: 128)
     var len = 0
@@ -858,6 +935,8 @@ public final class Session {
   /// Returns nil if the session is closed, the C call fails, or if mouse tracking is
   /// disabled (the encoder returns zero bytes).
   public func encodeMouse(_ event: MouseEvent) -> [UInt8]? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     var raw = event.toLabanMouseEvent()
     var buf = [UInt8](repeating: 0, count: 64)
@@ -871,12 +950,16 @@ public final class Session {
   /// In fixture mode, this is a no-op that returns 0.
   @discardableResult
   public func sendMouse(_ event: MouseEvent) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     var raw = event.toLabanMouseEvent()
     return laban_session_send_mouse(h, &raw)
   }
 
   public func sendMouseCapturingBytes(_ event: MouseEvent) -> CapturedMouseWrite {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return CapturedMouseWrite(result: -1, bytes: []) }
     var raw = event.toLabanMouseEvent()
     var buf = [UInt8](repeating: 0, count: 128)
@@ -906,6 +989,8 @@ public final class Session {
   }
 
   public func bracketedPasteEnabled() -> Bool {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return false }
     var enabled: Int32 = 0
     guard laban_session_bracketed_paste_enabled(h, &enabled) == 0 else { return false }
@@ -921,6 +1006,8 @@ public final class Session {
 
   @discardableResult
   public func writePaste(_ text: String) -> PasteWriteResult? {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return nil }
     let bytes = Array(text.utf8)
     if bytes.isEmpty {
@@ -951,6 +1038,8 @@ public final class Session {
   /// back via the byte ring and gets fed through `feedOutput` like
   /// every other PTY output byte.
   public func encodePaste(_ text: String) -> CapturedPasteWrite {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return CapturedPasteWrite(result: nil, bytes: []) }
     let bytes = Array(text.utf8)
     if bytes.isEmpty {
@@ -985,6 +1074,8 @@ public final class Session {
   }
 
   public func writePasteCapturingBytes(_ text: String) -> CapturedPasteWrite {
+    handleLock.lock()
+    defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return CapturedPasteWrite(result: nil, bytes: []) }
     let bytes = Array(text.utf8)
     if bytes.isEmpty {
