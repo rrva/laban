@@ -236,6 +236,14 @@ extension UnsafeRawPointer {
   fileprivate func loadU64(_ offset: Int) -> UInt64 {
     UInt64(littleEndian: load(fromByteOffset: offset, as: UInt64.self))
   }
+
+  /// Acquire-ordered load of the seqlock word. Pairs with
+  /// `storeU64Release` so payload reads after observing an even seqlock
+  /// see the writer's payload stores (H-1). Same-host shared memory, so
+  /// the native (non-byte-swapped) representation round-trips.
+  fileprivate func loadU64Acquire(_ offset: Int) -> UInt64 {
+    laban_atomic_load_u64_acquire(advanced(by: offset))
+  }
 }
 
 extension UnsafeMutableRawPointer {
@@ -253,6 +261,11 @@ extension UnsafeMutableRawPointer {
 
   fileprivate func storeU64(_ value: UInt64, _ offset: Int) {
     storeBytes(of: value.littleEndian, toByteOffset: offset, as: UInt64.self)
+  }
+
+  /// Release-ordered store of the seqlock word (see `loadU64Acquire`).
+  fileprivate func storeU64Release(_ value: UInt64, _ offset: Int) {
+    laban_atomic_store_u64_release(advanced(by: offset), value)
   }
 }
 
@@ -413,7 +426,7 @@ public final class LabandSnapshotRingWriter {
       let slot = pointer.advanced(
         by: Int(LabandSnapshotRingLayout.fileHeaderBytes) + slotIndex * slotStride)
       let seqlockComplete = generation &* 2
-      slot.storeU64(seqlockComplete | 1, LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
+      slot.storeU64Release(seqlockComplete | 1, LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
 
       memset(
         slot.advanced(by: Int(LabandSnapshotRingLayout.slotHeaderBytes)), 0,
@@ -442,7 +455,7 @@ public final class LabandSnapshotRingWriter {
       slot.storeU64(ptyDrainMonoNs, LabandSnapshotRingLayout.SlotHeaderOffset.ptyDrainMonoNs)
       slot.storeU64(publishedAt, LabandSnapshotRingLayout.SlotHeaderOffset.snapshotPublishMonoNs)
       slot.storeU64(generation, LabandSnapshotRingLayout.SlotHeaderOffset.titleGeneration)
-      slot.storeU64(seqlockComplete, LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
+      slot.storeU64Release(seqlockComplete, LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
       pointer.storeU64(generation, LabandSnapshotRingLayout.FileHeaderOffset.writerGeneration)
     }
   }
@@ -713,7 +726,7 @@ public final class LabandSnapshotRingReader {
   private func readSlot(index: Int) -> SlotRead? {
     let slot = UnsafeRawPointer(pointer).advanced(
       by: Int(LabandSnapshotRingLayout.fileHeaderBytes) + index * slotStride)
-    let before = slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
+    let before = slot.loadU64Acquire(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
     guard before != 0, before % 2 == 0 else { return nil }
     let generation = slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.generation)
     let rows = Int(slot.loadU16(LabandSnapshotRingLayout.SlotHeaderOffset.rows))
@@ -727,7 +740,7 @@ public final class LabandSnapshotRingReader {
       slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.snapshotPublishMonoNs))
     let dirtyRanges = readDirtyRanges(slot: slot, rows: rows)
     let snapshot = readSnapshot(slot: slot, rows: rows, cols: cols)
-    let after = slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
+    let after = slot.loadU64Acquire(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
     guard before == after, after % 2 == 0 else { return nil }
     return SlotRead(
       generation: generation,
@@ -763,7 +776,7 @@ public final class LabandSnapshotRingReader {
   private func readCell(slotIndex: Int, row: Int, col: Int) -> LabandSnapshotRingCellRead? {
     let slot = UnsafeRawPointer(pointer).advanced(
       by: Int(LabandSnapshotRingLayout.fileHeaderBytes) + slotIndex * slotStride)
-    let before = slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
+    let before = slot.loadU64Acquire(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
     guard before != 0, before % 2 == 0 else { return nil }
     let generation = slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.generation)
     let rows = Int(slot.loadU16(LabandSnapshotRingLayout.SlotHeaderOffset.rows))
@@ -782,7 +795,7 @@ public final class LabandSnapshotRingReader {
       stringsBase: stringsBase,
       stringTableBytes: stringTableBytes
     )
-    let after = slot.loadU64(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
+    let after = slot.loadU64Acquire(LabandSnapshotRingLayout.SlotHeaderOffset.seqlock)
     guard before == after, after % 2 == 0 else { return nil }
     return LabandSnapshotRingCellRead(
       generation: generation,
