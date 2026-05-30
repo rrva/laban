@@ -1,0 +1,32 @@
+diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
+index 6740a93..2c1506c 100644
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -3092,11 +3092,16 @@ pub fn switchScreenMode(
+         // we disable it.
+         .@"1049" => if (enabled) {
+             assert(self.screens.active_key == .alternate);
+-            self.eraseDisplay(.complete, false);
+ 
+             // When we enter alt screen with 1049, we always copy the
+             // cursor from the primary screen (if we weren't already
+-            // on it).
++            // on it). Copy it BEFORE erasing: the alternate screen keeps
++            // its own cursor, so right after the switch the active pen is
++            // the previous alt-screen app's stale SGR background. Erasing
++            // with that pen (BCE) repaints the screen in the old app's
++            // colours — e.g. quitting btop (black bg) then starting top
++            // flashes a black screen until top repaints. Copying the
++            // primary cursor first makes the erase use the primary pen.
+             if (old_) |old| {
+                 self.screens.active.cursorCopy(old.cursor, .{
+                     .hyperlink = false,
+@@ -3107,6 +3112,8 @@ pub fn switchScreenMode(
+                     );
+                 };
+             }
++
++            self.eraseDisplay(.complete, false);
+         } else {
+             assert(self.screens.active_key == .primary);
+             self.restoreCursor();

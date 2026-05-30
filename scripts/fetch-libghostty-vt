@@ -69,6 +69,17 @@ sed -i '' \
     's/log\.warn("unimplemented mode:/log.debug("unimplemented mode:/g' \
     "$stream_zig"
 
+# alt-screen: clear the alternate screen using the PRIMARY screen's pen, not the
+# alternate screen's stale SGR background. Upstream switchScreenMode (mode 1049
+# enter) erases the screen BEFORE copying the primary cursor; because each screen
+# keeps its own cursor, the erase uses the previous alt-screen app's leftover pen.
+# Re-entering the alt screen — e.g. quitting btop (black bg) then launching top —
+# then repaints in the old app's background until the new app draws (a black
+# flash). The patch reorders the cursor copy before the erase.
+# See docs/adr/0011-libghostty-alt-screen-clear-uses-primary-pen.md.
+git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0001-alt-screen-clear-uses-primary-pen.patch" \
+    || fail "failed to apply alt-screen clear patch (libghostty-vt-0001)"
+
 # Build libghostty-vt. Zig fetches its own dependencies on first build
 # (~3-10 min). Subsequent builds use ~/.cache/zig and are fast.
 #
