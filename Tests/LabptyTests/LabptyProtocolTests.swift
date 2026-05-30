@@ -111,6 +111,19 @@ final class LabptyProtocolTests: XCTestCase {
     XCTAssertEqual(try LabptyPingResponse.decode(from: payloadWithTail(ping.encode())), ping)
   }
 
+  func testPayloadReaderHandlesSlicedData() throws {
+    // L7: LabptyPayloadReader indexed its backing Data absolutely, so a
+    // slice (Data.SubSequence == Data keeps a non-zero startIndex) trapped
+    // on the first byte. It must now read a slice correctly.
+    let prefixed = Data([0xAA, 0xBB]) + Data([0x01, 0x02, 0x03, 0x04])
+    var reader = LabptyPayloadReader(prefixed.dropFirst(2))  // startIndex == 2
+    XCTAssertEqual(reader.remainingCount, 4)
+    XCTAssertEqual(try reader.readUInt8(), 0x01)
+    XCTAssertEqual(try reader.readUInt8(), 0x02)
+    XCTAssertEqual(try reader.readUInt16(), 0x0403)  // little-endian 03 04
+    XCTAssertEqual(reader.remainingCount, 0)
+  }
+
   func testFrameRoundTrip() throws {
     let payload = try LabptyWriteInputRequest(ptyHandle: 7, bytes: Data([1, 2, 3])).encode()
     let encoded = try LabptyFraming.encodeRequest(

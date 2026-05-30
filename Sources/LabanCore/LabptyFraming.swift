@@ -230,7 +230,10 @@ public struct LabptyPayloadReader {
   private let data: Data
 
   public init(_ data: Data) {
-    self.data = data
+    // Normalize to a 0-indexed Data so the absolute indexing below is correct
+    // even when handed a slice (Data.SubSequence == Data keeps a non-zero
+    // startIndex), which would otherwise trap on the first byte. (L7)
+    self.data = Data(data)
   }
 
   public var remainingCount: Int {
