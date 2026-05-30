@@ -201,6 +201,11 @@ public enum TerminalFind {
     var column = 0
     for character in rowString {
       let characterBytes = Array(String(character).utf8)
+      // NOTE (L-1): this advances one column per grapheme, so a wide
+      // CJK/emoji cell left of a match under-reports the column in the
+      // scrollback-fallback path vs the width-correct snapshot path. A
+      // locale-independent fix needs the extractor to carry per-row column
+      // metadata (wcwidth is locale-dependent and unreliable here); deferred.
       let nextColumn = column + 1
       for byte in characterBytes {
         appendByte(byte, startColumn: column, endColumn: nextColumn, to: &result)

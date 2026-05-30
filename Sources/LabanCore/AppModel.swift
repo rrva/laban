@@ -390,7 +390,15 @@ public final class AppModel {
   ) -> TerminalFindState? {
     withModelLock {
       guard findStateBySession[sessionID]?.isActive == true else { return nil }
-      _ = refreshFindFullUnlocked(sessionID: sessionID)
+      // Navigation only moves the selected index across the existing match
+      // set; do NOT re-run the O(scrollback) full search on every keypress.
+      // The full-search cache is evicted on each output batch, so a streaming
+      // session would otherwise reformat its whole scrollback per next/prev
+      // press. Recompute only when no matches have been gathered yet (e.g.
+      // after setFindNeedlePending). (M-6)
+      if findStateBySession[sessionID]?.matches.isEmpty == true {
+        _ = refreshFindFullUnlocked(sessionID: sessionID)
+      }
       guard var state = findStateBySession[sessionID] else { return nil }
       guard !state.matches.isEmpty else {
         state.selectedIndex = nil
