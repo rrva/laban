@@ -144,7 +144,10 @@ static void cover_handlers(void) {
     assert(handle_detach(&cov_daemon, c, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
 
     n = build_resize_payload(pay, sizeof(pay), 100, 30, 100);
-    assert(handle_resize(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_E_INTERNAL); /* ioctl(-1) fails */
+    /* master_fd < 0: the child hung up before the reap tick flipped alive;
+     * handle_resize reports SESSION_NOT_FOUND rather than ioctl(-1) -> INTERNAL
+     * (L2, commit 00d5865). */
+    assert(handle_resize(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
     n = build_resize_payload(pay, sizeof(pay), 999, 30, 100);
     assert(handle_resize(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
     s->alive = 0;
@@ -232,10 +235,11 @@ static void cover_handle_write(void) {
     assert(handle_write(&cov_daemon, pay, n) == LABPTY_E_SESSION_NOT_FOUND); /* not alive */
     s->alive = 1;
 
-    /* slave_inspect_fd < 0: preflight skipped, raw write to master_fd = -1
-     * fails -> INTERNAL (covers the master write-failure branch). */
+    /* master_fd < 0: the child hung up before the reap tick flipped alive;
+     * handle_write reports SESSION_NOT_FOUND rather than EBADF -> INTERNAL
+     * (L2, commit 00d5865). */
     n = build_write_payload(pay, sizeof(pay), 100, (const uint8_t *)"x", 1);
-    assert(handle_write(&cov_daemon, pay, n) == LABPTY_E_INTERNAL);
+    assert(handle_write(&cov_daemon, pay, n) == LABPTY_E_SESSION_NOT_FOUND);
 
     int master = -1, slave = -1;
     if (openpty(&master, &slave, NULL, NULL, NULL) == 0) {
