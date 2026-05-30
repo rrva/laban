@@ -12,6 +12,14 @@ untrusted socket input. TLA+ reasons about the state machines; CBMC
 reasons about the C that parses bytes at the trust boundary. See
 [Bounded model checking (CBMC)](#bounded-model-checking-cbmc) below.
 
+Three further layers close the loop from spec to running code, each its own
+section below: **runtime trace conformance** (`scripts/check-trace`) replays the
+real daemon's transitions through the TLA+ models so `// Modelled by` is a
+checked fact, not a claim; **mutation adequacy** (`scripts/check-{trace,cbmc}-
+mutants`) injects faults and requires each check to catch them; and the **MC/DC
+coverage gate** (`scripts/coverage-labpty`) ratchets decision coverage and runs
+the `proofs/labpty/coverage/*_cov.c` assertion harnesses.
+
 ## What is modelled
 
 | Spec | Mirrors | Key property |
@@ -287,3 +295,80 @@ tool. `make_seeds.py` generates the committed seed corpus under `corpus/`
 A real campaign belongs on Linux/CI (AFL++'s macOS support is the weak
 spot). Locally, `--check` always runs because it needs only the system
 `cc` with ASan/UBSan.
+
+## Runtime trace conformance (binding the C to the specs)
+
+The TLA+ models prove the *spec* is correct; CBMC proves the *decoders* safe.
+Neither proves the *daemon obeys its spec* — the `// Modelled by` anchors were
+honour-system until `scripts/check-trace` closed the loop. It drives the **real**
+daemon code through seeded-random operation sequences, captures the transitions
+the daemon emits (`LABPTY_TRACE`), and replays them through the matching TLA+
+model with TLC. A logged transition that is not a spec action makes TLC
+deadlock; the safety invariants are checked on every observed state.
+
+Three machines are bound, each fuzzed over many seeds (TLC replays all of a
+machine's traces in one run) with a `-DLABPTY_TRACE_NEGCTL` negative control TLC
+is **required to reject**:
+
+| Binding | Spec | Harness (seeds) | Negative control |
+| --- | --- | --- | --- |
+| attachment | `LabptyAttachment.tla` | `proofs/labpty/trace/trace_attachment.c` (64) | skip the `client_release` scrub |
+| reuse | `LabptyReuse.tla` | `proofs/labpty/trace/trace_reuse.c` (32) | keep the id while close_pending |
+| control | `LabptyControlChannel.tla` | `proofs/labpty/trace/trace_control.c` (24) | establish on any round-trip |
+
+The daemon emits only the **observable projection**: a model variable with no
+daemon counterpart (the control channel's `frames_issued`, a TLC finiteness
+bound) stays hidden and the spec lets it run free while pinning the observed
+fields. Each `Trace<X>.tla` conjoins the **labelled** model action (`StepAction`),
+so a fault that produces a different-but-valid action — an attach that wrongly
+clears a bit, reading as a detach — is still caught.
+
+`scripts/check-trace` is wired into `scripts/check` and self-skips to a
+compile-only drift smoke without the TLA+ jar. `check-anchors` rule E refuses a
+`Trace*.tla` or `proofs/labpty/trace/*.c` that `check-trace` does not run.
+
+**When to update:** if you change a bound machine's observable transitions
+(attachment masks; reuse open/terminate/reap; the control-channel
+accept/hello/dispatch/write/expire cycle), update both the harness
+(`proofs/labpty/trace/<machine>.c`) and `Trace<machine>.tla`, then re-run
+`scripts/check-trace`. A new bound machine needs a `Trace<machine>.tla`, an
+`MC_Trace<machine>.cfg`, a generator (`scripts/gen-<machine>-tla.py`), and a
+`check-trace` stanza — `check-anchors` rule E enforces the last.
+
+## Mutation adequacy (do the checks have teeth?)
+
+A green proof or conformance run shows the check **passes** — not that it would
+**catch a regression**. Two standalone runners inject faults into the real code
+and require each to be rejected:
+
+- `scripts/check-cbmc-mutants` mutates the byte-ring writer and frame decoders
+  and requires each CBMC proof to report `VERIFICATION FAILED`.
+- `scripts/check-trace-mutants` mutates the attachment / reuse / control code and
+  requires the trace replay to reject the trace.
+
+These are **deep** checks (a build + solver run per mutant) — run manually or in
+deep CI, self-skipping without their tool, not in the fast `scripts/check`. A
+**surviving** mutant is a real gap: the harness does not observe enough state, or
+the property is too weak. Mutation-testing this layer is what surfaced that the
+attachment binding could not tell attach from detach until each transition was
+required to match its *labelled* action, and that the byte-ring proof covers
+memory safety but not byte *placement* (that is `NoTornRead`'s job). When you add
+a binding or proof, add a mutant the new check must catch.
+
+## MC/DC coverage gate
+
+`scripts/coverage-labpty` measures Modified Condition/Decision Coverage
+(DO-178C DAL-A) of the daemon's un-proven decision code and ratchets it
+(`--check N`), as the union of the integration suite and the deterministic
+harnesses in `proofs/labpty/coverage/*_cov.c`. Those harnesses go beyond
+coverage where it matters: `signal_cov.c` macro-stubs `killpg`/`kill` and
+**asserts** that no out-of-range client-controlled signal number reaches the
+syscall (lesson L9), so reverting that guard fails the harness — a regression
+gate, not just a covered decision.
+
+`coverage-labpty` is wired into `scripts/check` (macOS-only; skips without the
+darwin profile runtime), and `check-anchors` rule F refuses an unwired `*_cov.c`.
+Gating it is what turns a stale coverage assertion — like the `main_cov` drift
+the `handle_write` hung-up-child fix introduced — into a check failure instead of
+silent rot. See `docs/quality/labpty-mcdc-coverage.md` for the baseline, the
+ratchet, and the infeasible-condition deviation record.

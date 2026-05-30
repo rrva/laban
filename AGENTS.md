@@ -41,7 +41,7 @@ task matches them.
 | `schemas/` | You are changing debug endpoints, fixture formats, artifact metadata, or typed contracts. |
 | `docs/quality/` | You are tracking drift, test gaps, debt, or quality gates. |
 | `docs/adr/` | A change touches the terminal library, PTY ownership, rendering architecture, SwiftPM target boundaries, or a decision that looks previously settled. |
-| `docs/process/formal-specs.md` | You are changing a labpty state machine that has a TLA+ spec in `specs/labpty/`, fixing a bug it should have caught, or wiring a new spec into `scripts/check-specs`. |
+| `docs/process/formal-specs.md` | You are changing a labpty state machine with a TLA+ spec in `specs/labpty/`, a CBMC proof or trace-conformance harness in `proofs/labpty/`, the MC/DC or mutation-adequacy gates (`coverage-labpty`, `check-{trace,cbmc}-mutants`), or a recent fix needs regression coverage. |
 
 ## Project Landmarks
 
