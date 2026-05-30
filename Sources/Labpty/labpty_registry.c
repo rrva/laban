@@ -1,5 +1,7 @@
 #include "labpty_registry.h"
 
+static uint64_t reap_monotonic_ns(void);
+
 static labpty_session_t *free_slot(labpty_registry_t *registry) {
     assert(registry != NULL);
     assert(registry->next_handle > 0);
@@ -222,7 +224,12 @@ labpty_status_t labpty_registry_open(
     snprintf(slot->logical_id, sizeof(slot->logical_id), "%s", logical_id);
     status = labpty_byte_ring_create(ring_path, cap, slot->logical_id, &slot->ring);
     if (status != LABPTY_OK) {
-        labpty_session_close(slot);
+        /* Arm asynchronous teardown rather than the synchronous close, which
+         * busy-waits in usleep steps up to ~700ms on the single-threaded event
+         * loop after a post-fork ring-create failure (disk-full / fd / RLIMIT).
+         * labpty_registry_reap finishes via WNOHANG + SIGKILL escalation, the
+         * same path handle_terminate uses. (L3) */
+        labpty_session_request_close(slot, reap_monotonic_ns());
         return status;
     }
     *out = slot;
