@@ -86,19 +86,10 @@ holds vendored libs (`libghostty-vt`) shared across worktrees.
 
 ## Hard Rules
 
-- The project must be autonomously verifiable. User-visible terminal behavior
-  needs tests, debug-state checks, screenshot artifacts, or capture/replay
-  artifacts.
-- The debug/headless harness in `docs/process/dev-process.md` is product
-  infrastructure, not optional polish.
-- `HeadlessDebugRuntime` stays in feature parity with
-  `MainWindowController.makeAndShow`. Wire new subsystems into both and
-  expose HTTP endpoints. Move shared types from `LabanApp` down to
-  `LabanCore` (no AppKit deps) so `LabanDebug` can reach them.
-- Terminal session identity must survive tab selection, view rebuilds, resize,
-  and UI refresh.
+- The project must be autonomously verifiable. User-visible terminal behavior needs tests, debug-state checks, screenshot artifacts, or capture/replay artifacts.
+- The debug/headless harness in `docs/process/dev-process.md` is product infrastructure, not optional polish.
+- `HeadlessDebugRuntime` stays in feature parity with `MainWindowController.makeAndShow`. Wire new subsystems into both and expose HTTP endpoints. Move shared types from `LabanApp` down to `LabanCore` (no AppKit deps) so `LabanDebug` can reach them.
+- Terminal session identity must survive tab selection, view rebuilds, resize, and UI refresh.
 - Native text input wins over raw modifier interpretation.
 - Keep changesets focused on one behavioral reason.
-- Git commits are atomic. Commit messages are single-line reason statements:
-  why the change exists, not what changed. Bad: `Update plans`. Good:
-  `Agents need bounded execution shards`.
+- Git commits are atomic. Commit messages are single-line reason statements: why the change exists, not what changed. Bad: `Update plans`. Good: `Agents need bounded execution shards`.
