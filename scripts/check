@@ -34,6 +34,9 @@ git diff --check
 ./scripts/check-docs
 ./scripts/check-debug-contract
 ./scripts/check-fd-hygiene
+# Verify the labpty formal layer is fully anchored and wired before running
+# it: dangling spec/proof anchors and unwired checks fail here.
+./scripts/check-anchors
 
 # TLA+ model-checker run. Skipped when tla2tools.jar is absent so the
 # script stays usable on dev machines without the TLA+ Toolbox; CI sets

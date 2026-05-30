@@ -1,0 +1,73 @@
+#!/usr/bin/env sh
+# Keep the labpty formal layer honest: every spec/proof anchor in the source
+# must resolve to a real artifact, and every spec and proof harness must
+# actually be checked. Comments claiming "Modelled by specs/labpty/X" or
+# "proven by proofs/labpty/Y" are worthless if X/Y were renamed away or the
+# check was never wired — this lint makes that drift a hard failure instead
+# of a silent lie. See docs/process/formal-specs.md.
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+fail=0
+err() { printf 'check-anchors: %s\n' "$1" >&2; fail=1; }
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+# A. Every specs/labpty/<f> or proofs/labpty/<f> path named in a Sources/Labpty
+#    comment must exist (phrasing-agnostic — "Modelled by", "proven by",
+#    "pinned by", "see ...", all count).
+refs=$(grep -rhoE '(specs|proofs)/labpty/[A-Za-z0-9_./-]+\.(tla|cfg|c|h)' Sources/Labpty/ \
+        2>/dev/null | sort -u)
+for ref in $refs; do
+  [ -e "$ref" ] || err "source anchor points at a missing file: $ref"
+done
+
+# Modules wired into the TLC sweep (the third column of each run_tlc line).
+grep -oE 'run_tlc +[A-Za-z0-9_]+\.cfg +[A-Za-z0-9_]+' scripts/check-specs \
+  | awk '{print $3}' | sort -u > "$tmp"
+wired_modules=$(cat "$tmp")
+
+# B. Every spec module must be exercised by a wired MC harness that EXTENDS
+#    it — a spec that exists but is never model-checked is dead weight that
+#    looks like coverage.
+for spec in specs/labpty/Labpty*.tla; do
+  [ -e "$spec" ] || continue
+  name=$(basename "$spec" .tla)
+  covered=0
+  for mc in specs/labpty/MC*.tla; do
+    [ -e "$mc" ] || continue
+    if grep -qE "EXTENDS +${name}([^A-Za-z0-9_]|$)" "$mc"; then
+      mcname=$(basename "$mc" .tla)
+      if printf '%s\n' "$wired_modules" | grep -qx "$mcname"; then covered=1; break; fi
+    fi
+  done
+  [ "$covered" -eq 1 ] || err "spec ${name}.tla is not checked by any wired MC harness in check-specs"
+done
+
+# C. Every config/module named in check-specs must exist (catch a typo'd or
+#    deleted wiring before TLC does, with a clearer message).
+grep -oE 'run_tlc +[A-Za-z0-9_]+\.cfg +[A-Za-z0-9_]+' scripts/check-specs > "$tmp"
+while read -r _ cfg module; do
+  [ -f "specs/labpty/$cfg" ] || err "check-specs references a missing config: $cfg"
+  [ -f "specs/labpty/$module.tla" ] || err "check-specs references a missing module: $module.tla"
+done < "$tmp"
+
+# D. Every CBMC proof harness must be run by check-cbmc — an un-wired
+#    *_proof.c / *_negctl.c is an assertion nobody checks.
+grep -oE 'run_cbmc +[A-Za-z0-9_]+\.c' scripts/check-cbmc | awk '{print $2}' | sort -u > "$tmp"
+wired_proofs=$(cat "$tmp")
+for p in proofs/labpty/*_proof.c proofs/labpty/*_negctl.c; do
+  [ -e "$p" ] || continue
+  base=$(basename "$p")
+  printf '%s\n' "$wired_proofs" | grep -qx "$base" \
+    || err "proof harness $base is not run by check-cbmc"
+done
+
+if [ "$fail" -ne 0 ]; then
+  printf 'check-anchors: labpty formal layer has dangling anchors or unwired checks\n' >&2
+  exit 1
+fi
+printf 'check-anchors: labpty formal layer fully anchored and wired\n'
