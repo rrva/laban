@@ -402,7 +402,9 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
       rows: Int(descriptor.rows),
       cols: Int(descriptor.cols),
       lifecycleState: descriptor.alive ? .running : .exited,
-      attachedClientCount: descriptor.alive ? 1 : 0,
+      // Use the daemon's real popcount(attached_clients) (ADR 0010), not a
+      // faked liveness restatement — matches AppSessionCoordinator's path.
+      attachedClientCount: Int(descriptor.connectedClients),
       leaseHolder: nil,
       transportMode: transportMode)
   }
