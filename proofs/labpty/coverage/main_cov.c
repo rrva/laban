@@ -151,10 +151,63 @@ static void cover_handlers(void) {
     assert(handle_resize(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
 }
 
+/* dispatch_frame's op router + the pre-hello negotiation gate. An empty
+ * payload (frame_len == header size) makes every stateful handler bail at its
+ * decode before any signal or syscall, so the routing is covered safely. */
+static void cover_dispatch_frame(void) {
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    cov_daemon.registry.next_handle = 1;
+    labpty_client_t *c = &cov_daemon.clients[0];
+    uint16_t ops[] = {
+        LABPTY_OP_HELLO, LABPTY_OP_OPEN_SESSION, LABPTY_OP_LIST_SESSIONS,
+        LABPTY_OP_RESIZE_SESSION, LABPTY_OP_SIGNAL_SESSION, LABPTY_OP_TERMINATE_SESSION,
+        LABPTY_OP_WRITE_INPUT, LABPTY_OP_PING, LABPTY_OP_ATTACH_SESSION,
+        LABPTY_OP_DETACH_SESSION, (uint16_t)0xBEEF /* unknown op */
+    };
+    for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+        memset(c, 0, sizeof(*c));
+        c->fd = -1; c->in_use = 1; c->negotiated = 1;
+        c->header.op = ops[i];
+        c->header.frame_len = LABPTY_FRAME_HEADER_BYTES; /* empty payload */
+        size_t out_len = 0;
+        (void)dispatch_frame(&cov_daemon, c, &out_len);
+    }
+    /* negotiation gate: a non-hello op before hello must be rejected. */
+    memset(c, 0, sizeof(*c));
+    c->fd = -1; c->in_use = 1; c->negotiated = 0;
+    c->header.op = LABPTY_OP_PING;
+    c->header.frame_len = LABPTY_FRAME_HEADER_BYTES;
+    size_t out_len = 0;
+    assert(dispatch_frame(&cov_daemon, c, &out_len) == LABPTY_E_CAPABILITY_REQUIRED);
+}
+
+/* poll_revents_* predicates and service_client_poll's write/read/fault routing.
+ * fd = -1 makes the underlying client_pump_read/write return -1 harmlessly. */
+static void cover_poll_dispatch(void) {
+    assert(poll_revents_readable(POLLIN) != 0);
+    assert(poll_revents_readable(0) == 0);
+    assert(poll_revents_faulted(POLLHUP) != 0);
+    assert(poll_revents_faulted(0) == 0);
+
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    labpty_client_t *c = &cov_daemon.clients[0];
+    c->fd = -1; c->in_use = 1;
+    c->write_total = 10; c->write_sent = 0;
+    (void)service_client_poll(&cov_daemon, 0, POLLOUT);  /* writing && POLLOUT */
+    c->write_total = 0;  c->write_sent = 0;
+    (void)service_client_poll(&cov_daemon, 0, POLLIN);   /* !writing && readable */
+    c->write_total = 10; c->write_sent = 0;
+    (void)service_client_poll(&cov_daemon, 0, POLLERR);  /* neither -> faulted */
+    c->in_use = 0;
+    (void)service_client_poll(&cov_daemon, 0, POLLIN);   /* not in_use -> 0 */
+}
+
 int main(void) {
     cover_is_canonical_delimiter();
     cover_expire_stalled_clients();
     cover_parse_args();
     cover_handlers();
+    cover_dispatch_frame();
+    cover_poll_dispatch();
     return 0;
 }
