@@ -160,6 +160,77 @@ final class LabptyAdversarialTests: XCTestCase {
     XCTAssertTrue(harness.process.isRunning)
   }
 
+  // MARK: - Event-loop responsiveness under adversarial load
+
+  func testEventLoopStaysResponsiveUnderAdversarialLoad() throws {
+    let harness = try launchHarness()
+
+    // The adversary backs up a raw-mode, non-reading child (writeInput) and
+    // churns open/signal/terminate — the operations that block the single-
+    // threaded loop if any of them ever does blocking I/O. This gate is the
+    // dynamic defense for the timing-bug class the untimed TLA/CBMC layers are
+    // structurally blind to: it has already produced two real bugs
+    // (terminate-stall 02cb0e6, writeInput-stall). A loop stall shows up
+    // directly as latency on a separate watchdog client.
+    let adv = try waitForClient(socketPath: harness.socketPath)
+    defer { adv.close() }
+    let slow = try adv.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80,
+        argv: ["/bin/sh", "-c", "stty raw; exec sleep 30"],
+        logicalSessionId: "loadgen"))
+    Thread.sleep(forTimeInterval: 0.2)
+
+    // The adversary exercises the NON-forking RPC ops — writeInput (the
+    // blocking-I/O stall vector) and signal. openSession is deliberately
+    // excluded: it fork+execs a child, which is legitimately tens of ms and is
+    // session-creation cost, not a loop stall — including it would measure fork
+    // latency, not responsiveness.
+    let stopAdv = DispatchSemaphore(value: 0)
+    let advDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      let payload = [UInt8](repeating: 0x41, count: 16 * 1024)
+      while stopAdv.wait(timeout: .now()) == .timedOut {
+        for _ in 0..<8 { try? adv.writeInput(handle: slow.ptyHandle, bytes: payload) }
+        _ = try? adv.signal(handle: slow.ptyHandle, signal: Int32(SIGWINCH))
+      }
+      advDone.signal()
+    }
+
+    // Watchdog: a separate client does a fixed number of round-trips while the
+    // adversary hammers. With a responsive loop every ping is fast; a stall
+    // delays every ping caught during it, so both the worst single latency and
+    // the total blow up.
+    let watch = try waitForClient(socketPath: harness.socketPath)
+    defer { watch.close() }
+    XCTAssertNoThrow(try watch.listLabptySessions()) // establish
+
+    var maxLatency: TimeInterval = 0
+    let start = Date()
+    var errors = 0
+    for _ in 0..<40 {
+      let t0 = Date()
+      do { _ = try watch.listLabptySessions(); maxLatency = max(maxLatency, Date().timeIntervalSince(t0)) }
+      catch { errors += 1 }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    let total = Date().timeIntervalSince(start)
+    stopAdv.signal()
+    advDone.wait()
+
+    // Thresholds: a single blocking op stalls the loop ~100ms+ (a fixed,
+    // machine-independent magnitude — the old writeInput budget, the terminate
+    // HUP budget), so 90ms catches it while clearing non-blocking RPC jitter;
+    // the cumulative 2.5s clears the fixed 0.77s and flags the 3.78s a stall
+    // produces, with margin for slow CI.
+    XCTAssertEqual(errors, 0, "watchdog client was starved/force-expired under load")
+    XCTAssertLessThan(maxLatency, 0.09,
+      "an operation stalled the event loop: worst round-trip \(maxLatency * 1000)ms")
+    XCTAssertLessThan(total, 2.5,
+      "the event loop was not responsive: 40 round-trips took \(total)s under load")
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   // MARK: - Concurrent terminate race
 
   func testConcurrentTerminateOnSameHandleSurvives() throws {
