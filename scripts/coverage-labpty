@@ -62,17 +62,24 @@ fi
 # under test, so their profile merges with the integration profile and the
 # reported number is the UNION of integration + unit coverage.
 printf 'coverage-labpty: running deterministic decision-function harnesses\n'
-cc -O0 -fprofile-instr-generate -fcoverage-mapping -fcoverage-mcdc \
-   -I Sources/Labpty -I Sources/Labpty/include -I Sources/LabanTerminalCore/include \
+cov_inc="-I Sources/Labpty -I Sources/Labpty/include -I Sources/LabanTerminalCore/include"
+# shellcheck disable=SC2086
+cc -O0 -fprofile-instr-generate -fcoverage-mapping -fcoverage-mcdc $cov_inc \
    proofs/labpty/coverage/registry_cov.c Sources/Labpty/labpty_byte_ring.c \
    -o "$covdir/registry_cov"
+# shellcheck disable=SC2086
+cc -O0 -fprofile-instr-generate -fcoverage-mapping -fcoverage-mcdc $cov_inc \
+   proofs/labpty/coverage/main_cov.c Sources/Labpty/labpty_frame.c \
+   Sources/Labpty/labpty_protocol.c Sources/Labpty/labpty_registry.c \
+   Sources/Labpty/labpty_byte_ring.c -o "$covdir/main_cov"
 LLVM_PROFILE_FILE="$covdir/registry_cov.profraw" "$covdir/registry_cov"
+LLVM_PROFILE_FILE="$covdir/main_cov.profraw" "$covdir/main_cov" 2>/dev/null
 
-xcrun llvm-profdata merge -sparse \
-  "$covdir"/labpty-*.profraw "$covdir/registry_cov.profraw" -o "$covdir/labpty.profdata"
+xcrun llvm-profdata merge -sparse "$covdir"/labpty-*.profraw \
+  "$covdir/registry_cov.profraw" "$covdir/main_cov.profraw" -o "$covdir/labpty.profdata"
 
 daemon="Sources/Labpty/main.c Sources/Labpty/labpty_registry.c"
-objects="-object $covdir/registry_cov"
+objects="-object $covdir/registry_cov -object $covdir/main_cov"
 printf 'coverage-labpty: MC/DC over the un-proven daemon code (%s integration profiles + harnesses)\n' "$n"
 # shellcheck disable=SC2086
 xcrun llvm-cov report .build/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \
