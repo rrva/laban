@@ -85,16 +85,26 @@ when admission fails; the Swift client always exposes the typed error.
   ADR landed lose preflight admission gracefully; the inspection fd is
   best-effort.
 - Raw-mode `writeInput` is unchanged. The check applies only when
-  `ICANON` is set on the slave at the time of the call. Mode flips
-  between calls are handled correctly because each call reads termios
-  fresh.
+  `ICANON` is set on the slave at the time of the call; termios is read
+  fresh each call. KNOWN LIMITATION (M3): a `raw`→`canonical` flip is
+  *not* fully handled. Bytes written while raw that the child never read
+  stay queued in the slave, but the raw-mode path resets
+  `canonical_pending_estimate` to 0, and canonical-mode `FIONREAD`
+  reports only completed lines — not the carried-over unterminated line.
+  So the first canonical write after an undrained raw period can
+  over-admit into a near-full queue and the line discipline silently
+  drops the overflow (bounded to that overflow). Not fixed: the only
+  accurate fix is an `ioctl(FIONREAD)` on every raw-mode write — too
+  costly on the hot input path for this narrow window (a child flipping
+  to canonical almost always drains first).
 - The per-session `canonical_pending_estimate` is a conservative
   estimate, not authoritative state. It can drift over-pessimistic
   (refusing writes that would have fit) if the child consumes raw-queue
-  bytes via `VLNEXT` or other non-delimiter promotion paths, but it
-  cannot drift over-optimistic (admitting writes that overflow) so long
-  as we count every accepted byte and only credit when we observe a
-  delimiter. A safety margin against `MAX_INPUT`/`MAX_CANON` absorbs
+  bytes via `VLNEXT` or other non-delimiter promotion paths. Within a
+  continuous canonical period it cannot drift over-optimistic (admitting
+  writes that overflow) so long as we count every accepted byte and only
+  credit when we observe a delimiter; the one exception is the
+  raw→canonical carry documented above. A safety margin against `MAX_INPUT`/`MAX_CANON` absorbs
   termios edge cases (`IUTF8` multibyte expansion, etc).
 - ADR 0007's "additive-only" guarantee is amended: new daemon error
   codes may be introduced when the previous behavior was data-losing.

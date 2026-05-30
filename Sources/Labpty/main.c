@@ -710,6 +710,18 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
     estimate_updated:
         ;
     } else {
+        /* Raw mode resets the canonical raw-queue estimate. KNOWN LIMITATION
+         * (M3): bytes written in raw mode that the child never reads stay
+         * physically queued in the slave, yet we drop them from the estimate.
+         * After a raw->canonical flip, canonical-mode FIONREAD reports only
+         * completed lines (not the carried-over partial line), so the next
+         * canonical preflight can over-admit into a near-full queue and the
+         * line discipline silently drops the overflow. NOT fixed: the only
+         * accurate fix is an ioctl(FIONREAD) on every raw-mode write (you can't
+         * know which raw write precedes the flip), which is too costly on the
+         * hot input path for a narrow window — a child flipping to canonical
+         * almost always drains first, and the loss is bounded to the overflow.
+         * See ADR 0008's mode-flip caveat. */
         session->canonical_pending_estimate = 0;
     }
     return LABPTY_OK;
