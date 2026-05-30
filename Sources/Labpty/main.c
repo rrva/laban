@@ -894,6 +894,14 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
          * and is not refreshed by subsequent bytes, so a trickle attacker
          * that keeps `deadline_ns` moving forward still expires here. */
         if (client->frame_deadline_ns != 0 && now >= client->frame_deadline_ns) {
+            if (client->established) {
+                fprintf(stderr,
+                    "labpty: force-expiring established client %d on frame deadline "
+                    "(read_have=%zu write_total=%zu write_sent=%zu) — the event loop "
+                    "likely stalled past the frame budget\n",
+                    client_index(daemon, client), client->read_have,
+                    client->write_total, client->write_sent);
+            }
             client_release(daemon, client);
             continue;
         }
@@ -903,6 +911,20 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
          * them unless they have a half-sent frame in flight. */
         int has_pending_frame = client->read_have > 0 || client->write_total > 0;
         if (client->established && !has_pending_frame) continue;
+        /* Releasing an established client here is abnormal: it means the idle
+         * deadline elapsed while a frame was in flight. A pending RESPONSE
+         * (write_total > 0) is the daemon's own write, not client
+         * delinquency, so this almost always means the single-threaded loop
+         * stalled past the idle budget (e.g. a blocking syscall in a
+         * handler). Log it so the resulting client-side ECONNRESET is
+         * diagnosable instead of a mystery. */
+        if (client->established) {
+            fprintf(stderr,
+                "labpty: force-expiring established client %d on idle deadline "
+                "(read_have=%zu write_total=%zu write_sent=%zu) — event-loop stall suspected\n",
+                client_index(daemon, client), client->read_have,
+                client->write_total, client->write_sent);
+        }
         client_release(daemon, client);
     }
 }
