@@ -823,6 +823,64 @@ final class LabptyDaemonTests: XCTestCase {
     XCTAssertFalse(result.overflowed)
   }
 
+  func testByteRingReaderRejectsUnalignedCountersOffset() throws {
+    // L8: the counters at +0/+16/+32 are read with atomic acquire loads
+    // (`ldapr` on arm64), which SIGBUS the consumer on an unaligned span.
+    // This is the additive-layout case but with countersOffset moved to a
+    // non-8-aligned offset (260); the reader must REJECT the file at init,
+    // not construct and then crash on the first poll.
+    let url = try temporaryRingURL()
+    let payload = Data("unaligned-counters".utf8)
+    let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
+    do {
+      let writer = try LabptyByteRingWriter(
+        path: url.path,
+        outputRingCapacity: capacity,
+        logicalSessionId: "unaligned")
+      writer.write(payload)
+    }
+
+    let headerBytes: UInt32 = 192
+    let countersOffset: UInt32 = 260  // 260 % 8 == 4 — unaligned
+    let readerSlotOffset: UInt32 = 388  // preserves the 128-byte counters gap
+    let readerSlotBytes: UInt32 = 96
+    let readerSlotCount = LabptyByteRingLayout.readerSlotCount
+    let inputRingOffset = UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
+    let outputRingOffset = inputRingOffset
+    let oldOutputRingOffset = LabptyByteRingLayout.inputRingOffset
+    let newFileLength = outputRingOffset + capacity
+    let handle = try FileHandle(forUpdating: url)
+    defer { try? handle.close() }
+    try handle.truncate(atOffset: newFileLength)
+    try copyBytes(
+      handle: handle, from: oldOutputRingOffset, to: outputRingOffset,
+      count: UInt64(payload.count))
+    try copyBytes(
+      handle: handle, from: LabptyByteRingLayout.outputBytesWrittenTotalOffset,
+      to: UInt64(countersOffset), count: 8)
+    try copyBytes(
+      handle: handle, from: LabptyByteRingLayout.outputWrapCountOffset,
+      to: UInt64(countersOffset + 16), count: 8)
+    try copyBytes(
+      handle: handle, from: LabptyByteRingLayout.producerAliveMonoNsOffset,
+      to: UInt64(countersOffset + 32), count: 8)
+    try patchUInt32(handle: handle, offset: 16, value: headerBytes)
+    try patchUInt32(handle: handle, offset: 20, value: countersOffset)
+    try patchUInt32(handle: handle, offset: 24, value: readerSlotOffset)
+    try patchUInt32(handle: handle, offset: 28, value: readerSlotBytes)
+    try patchUInt64(handle: handle, offset: 40, value: inputRingOffset)
+    try patchUInt64(handle: handle, offset: 56, value: outputRingOffset)
+    try patchUInt64(handle: handle, offset: 72, value: newFileLength)
+    try handle.close()
+
+    XCTAssertThrowsError(try LabptyByteRingReader(path: url.path)) { error in
+      // The aligned variant of this exact layout is accepted by
+      // testByteRingReaderToleratesAdditiveHeaderLayout, so the only
+      // difference driving rejection here is the 8-byte misalignment.
+      XCTAssertTrue(error is TerminalSessionClientError)
+    }
+  }
+
   func testByteRingRoundTripSmall() throws {
     let url = try temporaryRingURL()
     let writer = try LabptyByteRingWriter(

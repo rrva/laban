@@ -68,6 +68,12 @@ public final class LabptyByteRingReader {
     let readerSlotCount = UInt64(LabptyByteRingReader.loadUInt32(bytes, offset: 32))
     guard
       countersOffset >= headerBytes,
+      // The counters at +0/+16/+32 are read with atomic acquire loads
+      // (`ldapr` on arm64), which SIGBUS the consumer on an unaligned span.
+      // Reject a producer header whose counters offset is not 8-byte aligned
+      // (legit daemon writes 128). 8-alignment keeps additive layout bumps
+      // tolerable while preventing the granule-crossing crash. (L8)
+      countersOffset % 8 == 0,
       LabptyByteRingReader.validateSpan(
         offset: countersOffset,
         count: UInt64(LabptyByteRingLayout.countersBytes),
