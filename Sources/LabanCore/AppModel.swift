@@ -393,15 +393,16 @@ public final class AppModel {
   ) -> TerminalFindState? {
     withModelLock {
       guard findStateBySession[sessionID]?.isActive == true else { return nil }
-      // Navigation only moves the selected index across the existing match
-      // set; do NOT re-run the O(scrollback) full search on every keypress.
-      // The full-search cache is evicted on each output batch, so a streaming
-      // session would otherwise reformat its whole scrollback per next/prev
-      // press. Recompute only when no matches have been gathered yet (e.g.
-      // after setFindNeedlePending). (M-6)
-      if findStateBySession[sessionID]?.matches.isEmpty == true {
-        _ = refreshFindFullUnlocked(sessionID: sessionID)
-      }
+      // Re-run the full find before navigating: refreshFindFullUnlocked reuses
+      // the cached match set when it is still valid (cheap for an idle session)
+      // and re-scans when output invalidated it, so next/prev reflects
+      // newly-arrived matches. An earlier optimization that skipped this when
+      // matches were already non-empty broke output-invalidation (see
+      // testOutputInvalidatesCachedFullFindResults). Eliminating the re-scan
+      // during *active streaming* (where totalRows changes every batch and the
+      // cache can't help) needs an incremental match index — the open half of
+      // M-6, not a stepFind change.
+      _ = refreshFindFullUnlocked(sessionID: sessionID)
       guard var state = findStateBySession[sessionID] else { return nil }
       guard !state.matches.isEmpty else {
         state.selectedIndex = nil
