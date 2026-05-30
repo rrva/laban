@@ -869,7 +869,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
     }
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
 
-    let cursorBlinkFrame = advanceCursorBlinkState()
+    // Only let cursor blink drive a frame when the window is actually
+    // visible to the user. A backgrounded/occluded terminal otherwise
+    // rebuilds its frame command list twice a second purely to toggle a
+    // cursor nobody can see — measurable idle battery/thermal cost. The
+    // blink phase still advances internally so it resumes coherently on
+    // refocus. (M-7)
+    let windowVisibleToUser =
+      (window?.isKeyWindow == true)
+      && (window?.occlusionState.contains(.visible) ?? false)
+    let cursorBlinkFrame = advanceCursorBlinkState() && windowVisibleToUser
 
     // Tab change interrupts any in-flight scroll animation: snap the
     // displayed position to whatever the new session is showing so the PD
