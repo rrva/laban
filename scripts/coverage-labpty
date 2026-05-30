@@ -72,14 +72,24 @@ cc -O0 -fprofile-instr-generate -fcoverage-mapping -fcoverage-mcdc $cov_inc \
    proofs/labpty/coverage/main_cov.c Sources/Labpty/labpty_frame.c \
    Sources/Labpty/labpty_protocol.c Sources/Labpty/labpty_registry.c \
    Sources/Labpty/labpty_byte_ring.c -o "$covdir/main_cov"
+# signal_cov asserts handle_signal's client-controlled signal validation (L9):
+# an out-of-range signo never reaches killpg/kill. It macro-stubs the syscalls,
+# so its assertions are a regression gate as well as MC/DC for handle_signal.
+# shellcheck disable=SC2086
+cc -O0 -fprofile-instr-generate -fcoverage-mapping -fcoverage-mcdc $cov_inc \
+   proofs/labpty/coverage/signal_cov.c Sources/Labpty/labpty_frame.c \
+   Sources/Labpty/labpty_protocol.c Sources/Labpty/labpty_registry.c \
+   Sources/Labpty/labpty_byte_ring.c -o "$covdir/signal_cov"
 LLVM_PROFILE_FILE="$covdir/registry_cov.profraw" "$covdir/registry_cov"
 LLVM_PROFILE_FILE="$covdir/main_cov.profraw" "$covdir/main_cov" 2>/dev/null
+LLVM_PROFILE_FILE="$covdir/signal_cov.profraw" "$covdir/signal_cov"
 
 xcrun llvm-profdata merge -sparse "$covdir"/labpty-*.profraw \
-  "$covdir/registry_cov.profraw" "$covdir/main_cov.profraw" -o "$covdir/labpty.profdata"
+  "$covdir/registry_cov.profraw" "$covdir/main_cov.profraw" \
+  "$covdir/signal_cov.profraw" -o "$covdir/labpty.profdata"
 
 daemon="Sources/Labpty/main.c Sources/Labpty/labpty_registry.c"
-objects="-object $covdir/registry_cov -object $covdir/main_cov"
+objects="-object $covdir/registry_cov -object $covdir/main_cov -object $covdir/signal_cov"
 printf 'coverage-labpty: MC/DC over the un-proven daemon code (%s integration profiles + harnesses)\n' "$n"
 # shellcheck disable=SC2086
 xcrun llvm-cov report .build/debug/labpty $objects -instr-profile="$covdir/labpty.profdata" \

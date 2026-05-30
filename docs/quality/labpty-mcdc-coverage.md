@@ -43,7 +43,11 @@ is merged with the integration profile (`llvm-cov -object`), so the reported
 number is the **union**. `registry_cov.c` alone took `registry.c` from 23% to
 44% by covering `valid_output_capacity`, `is_reclaimable_dead_session`,
 `make_logical_id` (incl. the NULL vector), `registry_find`, and `make_ring_path`
-to 100% / near-100% — deterministically.
+to 100% / near-100% — deterministically. `signal_cov.c` goes further than
+coverage: it macro-stubs `killpg`/`kill` and asserts that an out-of-range
+client-controlled signal number is rejected (L9, commit 51f7761) before any
+syscall is reached, so reverting that guard fails the harness — a regression
+gate, not just a covered decision.
 
 ## Baseline (2026-05-30, `main`)
 
@@ -52,7 +56,7 @@ suite alone was a jittery **18.4%**; the harnesses took it to a stable **47%**:
 
 | File | Line | Branch | **MC/DC** | Source of coverage |
 | --- | --- | --- | --- | --- |
-| `main.c` | 90% | 65% | **~43%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `dispatch_frame`, the `handle_*` lookups, the `handle_write` ADR-0008 preflight via a real pty) |
+| `main.c` | 90% | 65% | **~43%** | integration + `main_cov.c` (`is_canonical_delimiter`, `expire_stalled_clients`, `parse_args`, `dispatch_frame`, the `handle_*` lookups, the `handle_write` ADR-0008 preflight via a real pty) + `signal_cov.c` (`handle_signal`'s L9 signal-number validation) |
 | `labpty_registry.c` | 93% | 65% | **~56%** | integration + `registry_cov.c` (pure fns + the reap/`wait_for_child_exit` SIGKILL escalation via real forked children) |
 | **daemon total** | 91% | 65% | **~47%** (≥45% floor) | union |
 
