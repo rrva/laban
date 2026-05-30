@@ -160,8 +160,10 @@ for close confirmation. Teardown closes the pty, signals a still-running child
 as a normal terminal disconnect, reaps the child where the platform requires
 it, and releases terminal resources.
 
-Closing the final tab follows one explicit MVP policy: immediately create a
-replacement tab. Selection must never point at freed state.
+Closing the final tab closes the window, which quits the app; the MVP does not
+create a replacement tab. This is the deliberate final-tab policy `spec.md`
+permits, not an oversight. Selection must never point at freed state: the tab
+list is emptied before the window closes.
 
 ### Tab Sidebar
 
