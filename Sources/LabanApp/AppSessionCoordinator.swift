@@ -803,7 +803,20 @@ private final class LabptyParserFeed {
       }
       _ = session.feedOutput([0x1B, 0x63])
     }
+    let diagBefore =
+      ScrollDiagnostics.shared.isEnabled ? session.viewportState() : nil
     _ = session.feedOutput(Array(result.bytes))
+    if ScrollDiagnostics.shared.isEnabled, let after = session.viewportState() {
+      // Does appending output on the background timer move `viewportOffset` with
+      // `totalRows` (follow-output engaged) or leave the offset behind so the
+      // overlay's `linesBack` keeps climbing while the user sits at the bottom?
+      ScrollDiagnostics.shared.feed(
+        bytesLen: result.bytes.count,
+        offBefore: diagBefore?.viewportOffset ?? after.viewportOffset,
+        totalBefore: diagBefore?.totalRows ?? after.totalRows,
+        off: after.viewportOffset, total: after.totalRows, vp: after.viewportRows,
+        sb: after.scrollbackRows, alt: after.altScreen, mouse: after.mouseTracking)
+    }
     onDirty(session.id)
   }
 }

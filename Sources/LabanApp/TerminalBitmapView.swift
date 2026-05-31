@@ -1190,6 +1190,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     if let vs = session.viewportState() {
       onViewportChanged?(
         vs.viewportOffset, vs.totalRows, vs.viewportRows, vs.altScreen, vs.mouseTracking)
+      if ScrollDiagnostics.shared.isEnabled {
+        // The exact numbers the overlay indicator decides on, paired with the
+        // view's own scroll belief and window focus. If `linesBack > 0` here
+        // while `applied == 0` and the window is focused, the view thinks it is
+        // pinned to the bottom but libghostty disagrees — the labpty drift.
+        ScrollDiagnostics.shared.sample(
+          kind: "sample",
+          off: vs.viewportOffset, total: vs.totalRows, vp: vs.viewportRows,
+          sb: vs.scrollbackRows, alt: vs.altScreen, mouse: vs.mouseTracking,
+          focused: window?.isKeyWindow == true,
+          applied: appliedScrollRows,
+          displayed: displayedScrollRows,
+          target: targetScrollRows,
+          animating: scrollAnimating)
+      }
     } else {
       onViewportUnavailable?()
     }
@@ -2505,6 +2520,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       // snap-to-active, so scroll-to-bottom follows output that streamed past
       // the old bottom while the user was scrolled up.
       targetScrollRows = min(0, targetScrollRows + Double(decision.rowsDelta))
+      if ScrollDiagnostics.shared.isEnabled,
+        let session = model.activeTab.flatMap({ model.session(forTab: $0.id) }),
+        let vs = session.viewportState()
+      {
+        ScrollDiagnostics.shared.event(
+          kind: "scroll",
+          off: vs.viewportOffset, total: vs.totalRows, vp: vs.viewportRows,
+          sb: vs.scrollbackRows, alt: vs.altScreen, mouse: vs.mouseTracking,
+          deltaRows: decision.rowsDelta, applied: appliedScrollRows,
+          note: "wheel; target=\(targetScrollRows)")
+      }
       // Snap directly when:
       // - macOS reports precise (trackpad) deltas — already smoothed by the OS
       // - the input is small enough to be skim-reading clicks AND nothing is
@@ -3367,6 +3393,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       appliedScrollRows < desiredApplied,
       appliedScrollRows >= -Self.scrollFollowReengageRows
     {
+      if ScrollDiagnostics.shared.isEnabled, let vs = session.viewportState() {
+        ScrollDiagnostics.shared.event(
+          kind: "reengage",
+          off: vs.viewportOffset, total: vs.totalRows, vp: vs.viewportRows,
+          sb: vs.scrollbackRows, alt: vs.altScreen, mouse: vs.mouseTracking,
+          deltaRows: delta, applied: appliedScrollRows,
+          note: "step landed short of bottom; band-snapping")
+      }
       snapScrollToActiveBottom(tab: tab, session: session)
     }
   }
@@ -3399,7 +3433,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       // leave us short of follow-output (the stuck-indicator race).
       session.scrollViewportToActiveBottom()
     }
-    resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
+    let snappedApplied = authoritativeAppliedRows(for: session) ?? 0
+    resetSmoothScrollState(to: snappedApplied)
+    if ScrollDiagnostics.shared.isEnabled, let vs = session.viewportState() {
+      // What did the atomic pin actually land on? If `applied < 0` here, a feed
+      // moved the bottom between the pin and this read-back, so the viewport is
+      // already short of the live bottom again — follow-output won't be engaged.
+      ScrollDiagnostics.shared.event(
+        kind: "snap",
+        off: vs.viewportOffset, total: vs.totalRows, vp: vs.viewportRows,
+        sb: vs.scrollbackRows, alt: vs.altScreen, mouse: vs.mouseTracking,
+        applied: snappedApplied,
+        note: sessionCoordinator?.usesRemoteSnapshots == true ? "remote" : "local-pin")
+    }
   }
 
   @discardableResult
@@ -3901,6 +3947,107 @@ extension NSEvent {
   /// Bit 0 = Shift, Bit 1 = Ctrl, Bit 2 = Alt/Option, Bit 3 = Super/Command.
   fileprivate var labanModifiers: Int {
     TerminalMouseInput.ghosttyModifierMask(from: modifierFlags)
+  }
+}
+
+// MARK: - Scroll-indicator diagnostics (gated by --scroll-debug)
+
+extension TerminalBitmapView {
+  /// One read of everything the overlay scroll indicator depends on, plus the
+  /// view's own scroll belief and window focus. Served by `ScrollDebugServer`.
+  struct ScrollDebugSnapshot {
+    var available: Bool
+    var off: Int
+    var total: Int
+    var vp: Int
+    var sb: Int
+    var linesBack: Int
+    var alt: Bool
+    var mouse: Bool
+    var focused: Bool
+    var applied: Int
+    var displayed: Double
+    var target: Double
+    var animating: Bool
+    var renderedFrame: Int
+
+    var dictionary: [String: Any] {
+      [
+        "available": available, "off": off, "total": total, "vp": vp, "sb": sb,
+        "linesBack": linesBack, "alt": alt, "mouse": mouse, "focused": focused,
+        "applied": applied, "displayed": displayed, "target": target,
+        "animating": animating, "renderedFrame": renderedFrame,
+      ]
+    }
+  }
+
+  func debugScrollSnapshot() -> ScrollDebugSnapshot {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let vs = session.viewportState()
+    else {
+      return ScrollDebugSnapshot(
+        available: false, off: 0, total: 0, vp: 0, sb: 0, linesBack: 0, alt: false,
+        mouse: false, focused: window?.isKeyWindow == true, applied: appliedScrollRows,
+        displayed: displayedScrollRows, target: targetScrollRows, animating: scrollAnimating,
+        renderedFrame: renderedFrameCount)
+    }
+    return ScrollDebugSnapshot(
+      available: true,
+      off: vs.viewportOffset, total: vs.totalRows, vp: vs.viewportRows, sb: vs.scrollbackRows,
+      linesBack: ScrollDiagnostics.linesBack(
+        off: vs.viewportOffset, total: vs.totalRows, vp: vs.viewportRows),
+      alt: vs.altScreen, mouse: vs.mouseTracking, focused: window?.isKeyWindow == true,
+      applied: appliedScrollRows, displayed: displayedScrollRows, target: targetScrollRows,
+      animating: scrollAnimating, renderedFrame: renderedFrameCount)
+  }
+
+  /// Drive a row-quantised scroll through the same single-step path the wheel
+  /// handler's small-click branch uses, so a programmatic repro exercises the
+  /// real `applyScrollStep` / snap-to-active-bottom logic. Negative scrolls up
+  /// into history; positive scrolls toward the live bottom.
+  func debugScrollByRows(_ rows: Int) {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else { return }
+    targetScrollRows = min(0, targetScrollRows + Double(rows))
+    applyScrollStep(
+      toDesiredApplied: Int(targetScrollRows.rounded(.toNearestOrAwayFromZero)),
+      tab: activeTab, session: session, resetOnClamp: true)
+    displayedScrollRows = Double(appliedScrollRows)
+    scrollVelocityRowsPerSec = 0
+    renderInvalidated = true
+    needsDisplay = true
+  }
+
+  func debugSnapToBottom() {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else { return }
+    snapScrollToActiveBottom(tab: activeTab, session: session)
+    renderInvalidated = true
+    needsDisplay = true
+  }
+
+  @discardableResult
+  func debugWriteInput(_ bytes: [UInt8]) -> Bool {
+    guard model.activeTab != nil else { return false }
+    sendBytes(bytes)
+    return true
+  }
+
+  /// Enable the Metal drawable→CPU readback so `/scroll/screenshot.png` returns a
+  /// fresh frame. A no-op on the software backend (which always keeps the last
+  /// CGImage). Costs a per-frame blit, acceptable for a debug session.
+  func debugEnableScreenshotReadback() {
+    (backend as? MetalRenderer)?.captureMode = true
+    renderInvalidated = true
+    needsDisplay = true
+  }
+
+  func debugFramePNG() -> Data? {
+    (backend as? MetalRenderer)?.captureMode = true
+    return backend.pngData
   }
 }
 

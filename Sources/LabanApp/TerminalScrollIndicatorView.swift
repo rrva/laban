@@ -274,3 +274,36 @@ extension TerminalScrollIndicator.Input {
     return copy
   }
 }
+
+// MARK: - Scroll-indicator diagnostics (gated by --scroll-debug)
+
+extension TerminalScrollIndicatorView {
+  /// The indicator's *real on-screen* state — the layer opacities the user
+  /// actually sees plus the last decision it rendered. Lets `ScrollDebugServer`
+  /// confirm "the pill is visible" against hard numbers instead of a screenshot.
+  struct DebugVisibility {
+    var thumbOpacity: Double
+    var pillAlpha: Double
+    var shouldHold: Bool
+    var pillVisible: Bool
+    var pillText: String
+    var lastLinesBack: Int
+
+    var dictionary: [String: Any] {
+      [
+        "thumbOpacity": thumbOpacity, "pillAlpha": pillAlpha, "shouldHold": shouldHold,
+        "pillVisible": pillVisible, "pillText": pillText, "lastLinesBack": lastLinesBack,
+      ]
+    }
+  }
+
+  func debugVisibility() -> DebugVisibility {
+    DebugVisibility(
+      thumbOpacity: Double(thumbLayer.opacity),
+      pillAlpha: Double(pillContainer.alphaValue),
+      shouldHold: lastOutput.shouldHold,
+      pillVisible: lastOutput.pillVisible,
+      pillText: lastOutput.pillText,
+      lastLinesBack: lastLinesBack)
+  }
+}

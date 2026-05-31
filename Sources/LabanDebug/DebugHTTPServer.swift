@@ -256,6 +256,16 @@ public final class DebugHTTPServer {
       json(runtime.scrollIndicatorState(query: request.query))
     },
     DebugHTTPRoute(
+      method: "GET",
+      path: "/debug/scroll-trace",
+      category: "state",
+      summary:
+        "Return the ScrollDiagnostics event ring (viewport samples, labpty feeds, scroll/snap events) recorded since --scroll-debug / LABAN_SCROLL_DEBUG armed it. Accepts clear=1 to drain the ring after reading.",
+      queryParameters: ["clear"]
+    ) { runtime, request, _ in
+      json(runtime.scrollTrace(query: request.query))
+    },
+    DebugHTTPRoute(
       method: "POST",
       path: "/debug/wait",
       category: "control",
