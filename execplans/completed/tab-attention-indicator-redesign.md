@@ -1,7 +1,7 @@
 # Quiet Idle Tabs, A Calm "Needs You" Signal
 
 This ExecPlan is a living document maintained in accordance with `PLANS.md`
-(at the repository root, `/Users/rrj/wrk/laban/PLANS.md`). Keep `Progress` and
+(at the repository root, `/Users/dev/wrk/laban/PLANS.md`). Keep `Progress` and
 `Validation and Acceptance` current as work proceeds. Add optional sections only
 when they contain information that will help a fresh contributor.
 
@@ -429,7 +429,7 @@ Tests:
 
 ## Concrete Steps
 
-Run everything from the repository root `/Users/rrj/wrk/laban`.
+Run everything from the repository root `/Users/dev/wrk/laban`.
 
 Build the app (per project convention, **not** `swift build`):
 
