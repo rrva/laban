@@ -281,6 +281,19 @@ int laban_session_capture_start(LabanSession *session, const char *path);
 int laban_session_capture_stop(LabanSession *session);
 int laban_session_capture_active(LabanSession *session);
 
+/*
+ * laban_session_capture_input:
+ *   Tee keyboard input bytes into the capture sink as PTY_INPUT WITHOUT
+ *   writing them to any PTY. The daemon (labpty/laband) tier writes keystrokes
+ *   over a socket to the daemon's PTY, so the app's PTY-less viewer session
+ *   never observes input the way it observes output (laban_session_feed_output)
+ *   and terminal responses. The app calls this with the same bytes it sends to
+ *   the daemon so an active capture's pty-input stream is complete.
+ *
+ *   No-op when the session has no capture callback installed.
+ */
+void laban_session_capture_input(LabanSession *session, const uint8_t *bytes, size_t len);
+
 typedef enum {
     LABAN_CAPTURE_BYTES_PTY_INPUT = 0,
     LABAN_CAPTURE_BYTES_PTY_OUTPUT = 1,

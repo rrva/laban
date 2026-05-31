@@ -77,6 +77,47 @@ final class CaptureSessionBridgeTests: XCTestCase {
     XCTAssertEqual(session.bellCount(), 3)
   }
 
+  func testCaptureInputReachesSinkOnPtylessViewerSession() throws {
+    // The daemon (labpty/laband) tier holds a PTY-less viewer session: output
+    // arrives via feedOutput, but keystrokes go over the socket to the daemon,
+    // so the app must tee them in with captureInput or pty-input.bin stays empty.
+    let sink = TestCaptureSink()
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    session.captureSink = sink
+    session.setCaptureFrame(3)
+
+    session.captureInput(Array("ls\r".utf8))
+
+    let input = sink.byteEvents.filter { $0.direction == .ptyInput }
+    XCTAssertEqual(input.count, 1)
+    XCTAssertEqual(input.first?.bytes, Array("ls\r".utf8))
+    XCTAssertEqual(input.first?.sessionId, session.id)
+    XCTAssertEqual(input.first?.frame, 3)
+    // The viewer session has no PTY, so captureInput must not produce output.
+    XCTAssertFalse(sink.byteEvents.contains { $0.direction == .ptyOutput })
+  }
+
+  func testCaptureInputStopsAfterSinkIsCleared() throws {
+    let sink = TestCaptureSink()
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.captureSink = sink
+    session.captureInput(Array("a".utf8))
+    XCTAssertEqual(sink.byteEvents.filter { $0.direction == .ptyInput }.count, 1)
+
+    session.captureSink = nil
+    session.captureInput(Array("b".utf8))
+    XCTAssertEqual(sink.byteEvents.filter { $0.direction == .ptyInput }.count, 1)
+  }
+
   func testRealPtyInputBytesReachCaptureSinkAfterWrite() throws {
     let sink = TestCaptureSink()
     var size = LabanTerminalSize()

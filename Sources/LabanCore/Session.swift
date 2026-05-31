@@ -546,6 +546,23 @@ public final class Session {
     return laban_session_capture_active(h) != 0
   }
 
+  /// Tee keyboard input into the capture sink as PTY_INPUT without writing to
+  /// any PTY. In the daemon (labpty/laband) tier the app's viewer session has
+  /// no PTY — output arrives via `feedOutput` and responses via VT effects, but
+  /// keystrokes go over the socket to the daemon, so PTY_INPUT never reaches the
+  /// app-side sink unless teed here. The app calls this with the same bytes it
+  /// sends to the daemon. No-op when no capture sink is attached.
+  public func captureInput(_ bytes: [UInt8]) {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return }
+    if bytes.isEmpty { return }
+    bytes.withUnsafeBytes { buf in
+      laban_session_capture_input(
+        h, buf.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count)
+    }
+  }
+
   /// True when libghostty-vt currently has the alternate-screen buffer
   /// active (full-screen TUI mode — vim/htop/less). The workspace
   /// persistence path samples this at quit so transcript replay does

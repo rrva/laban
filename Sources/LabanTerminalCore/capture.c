@@ -10,6 +10,17 @@ void laban_emit_capture_bytes(
     s->capture_callback(s->capture_userdata, s, direction, bytes, len);
 }
 
+void laban_session_capture_input(LabanSession *s, const uint8_t *bytes, size_t len) {
+    /* Tee keyboard input into the capture sink without touching a PTY. In the
+     * daemon (labpty/laband) tier the app holds a PTY-less viewer session:
+     * output arrives via laban_session_feed_output and responses via the VT
+     * effects, but keystrokes are written over the socket to the daemon, so
+     * the app-side sink never sees PTY_INPUT unless it is teed here. */
+    if (!s || !bytes || len == 0) return;
+    SESSION_LOCK(s);
+    laban_emit_capture_bytes(s, LABAN_CAPTURE_BYTES_PTY_INPUT, bytes, len);
+}
+
 void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
     laban_emit_capture_bytes(s, LABAN_CAPTURE_BYTES_PTY_OUTPUT, bytes, len);
     if (s->capture_fd >= 0 && len > 0) {

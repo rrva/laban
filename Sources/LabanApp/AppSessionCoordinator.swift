@@ -149,12 +149,17 @@ final class AppSessionCoordinator {
     if let labptyClient {
       let descriptor = try ensureLabptyDescriptor(for: tab, session: session, size: size)
       try labptyClient.writeInput(handle: descriptor.ptyHandle, bytes: bytes)
+      // The daemon owns the PTY; the app's viewer session sees output via the
+      // byte ring but never these keystrokes. Tee them into the capture sink so
+      // an active capture records pty-input alongside pty-output/responses.
+      session?.captureInput(bytes)
       return
     }
     guard let labandClient else { return }
     let info = try ensureLabandSession(for: tab, size: size)
     snapshotGenerationMonitor?.boost(sessionId: info.logicalSessionId)
     try labandClient.writeInput(sessionId: info.logicalSessionId, bytes: bytes)
+    session?.captureInput(bytes)
     if let refreshed = try? labandClient.lookupSession(logicalSessionId: info.logicalSessionId) {
       store(refreshed, for: tab)
     }
