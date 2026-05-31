@@ -949,12 +949,17 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   frames; `TerminalSurfaceControllerTests` verifies warmed capacity is reused. This is
   backed by a release-only `TerminalCellPayloadAllocationBench` that verifies zero
   warmed storage-growth events for repeated one-dirty-row payload builds.
+- `MetalRenderer` no longer allocates a temporary dirty-row bitmap for payload
+  patches, and it skips clearing a dirty row only when the payload contains one glyph
+  for every cell in every dirty row. Sparse dirty-row payloads still clear the row
+  before patching, covered by `GPUCellParityTests`.
 - New tests:
   - `TerminalSurfaceControllerTests` verifies compatible payload mode omits terminal
     glyph commands, selection mode falls back to commands, and warmed payload capacity
     is retained.
   - `GPUCellParityTests` verifies payload patching uploads only the dirty cell-buffer
-    row range and that remote GPU-cell fallback reports classic effective status.
+    row range, sparse patches clear stale glyphs, and remote GPU-cell fallback reports
+    classic effective status.
   - `LabanDebugSmokeTests.testRuntimeRenderStateReportsRendererStatus` verifies the
     debug render-state JSON includes renderer-status fields.
   - `TerminalCellPayloadAllocationBench` gates the warmed one-dirty-row payload builder
@@ -970,17 +975,17 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     passed.
 - Release benchmark evidence from `MetalFrameTimingBench`:
   - GPU-cell command-fed patch vs payload patch, 160x48, p50:
-    - row 0: command patch 95.5 us, payload 13.8 us
-    - row 23: command patch 95.4 us, payload 14.0 us
-    - sparse rows 0,23: command patch 337.2 us, payload 27.6 us
-    - sparse rows 0,12,23: command patch 337.6 us, payload 41.2 us
-    - contiguous 1 row: command patch 95.8 us, payload 14.2 us
-    - contiguous 5 rows: command patch 141.1 us, payload 70.4 us
+    - row 0: command patch 95.3 us, payload 13.1 us
+    - row 23: command patch 93.2 us, payload 13.6 us
+    - sparse rows 0,23: command patch 342.7 us, payload 26.7 us
+    - sparse rows 0,12,23: command patch 336.0 us, payload 40.4 us
+    - contiguous 1 row: command patch 95.5 us, payload 13.5 us
+    - contiguous 5 rows: command patch 137.9 us, payload 67.1 us
 - `TerminalCellPayloadAllocationBench` evidence: 10,000 warmed one-dirty-row payload
   builds reported `storageGrowthEvents=0` and `perFrame=1.660 us` in release.
 - M3 is intentionally **not** checked off yet: the payload builder is within ~1-2 us
   of the M1 classic scoped one-row microbench but does not consistently beat it
-  (latest M1 scoped p50: row 0 12.5 us, row 23 13.0 us, contiguous 1 row 12.8 us),
+  (latest M1 scoped p50: row 0 12.1 us, row 23 12.0 us, contiguous 1 row 12.4 us),
   so the remaining M3 gap is a release microbench win against the M1 classic scoped
   baseline.
 

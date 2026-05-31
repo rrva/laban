@@ -336,6 +336,9 @@ public final class MetalRenderer: RendererBackend {
 
   var terminalGlyphAtlasTextureSizeForTesting: Int { glyphAtlas.textureSize }
   var cellGlyphUploadRangesForTesting: [Range<Int>] { cellGlyphUploadRanges }
+  var activeCellGlyphIndicesForTesting: [Int] {
+    cellGlyphs.indices.filter { cellGlyphs[$0].flags != 0 }
+  }
 
   func rebuildInstancesForTesting(
     commands: [FrameCommand],
@@ -1484,6 +1487,11 @@ public final class MetalRenderer: RendererBackend {
       }
     }
 
+    let dirtyRowsFillAllCells =
+      !fullCellRebuild
+      && payload.dirtyRows.allSatisfy { $0 >= 0 && $0 < payload.rows }
+      && payload.glyphs.count == payload.dirtyRows.count * geometry.cols
+
     if !fullCellRebuild, case .partial = damage {
       for topDownRow in payload.dirtyRows {
         let row = geometry.rows - 1 - topDownRow
@@ -1491,8 +1499,10 @@ public final class MetalRenderer: RendererBackend {
         let start = row * geometry.cols
         let end = min(start + geometry.cols, cellGlyphs.count)
         guard start < end else { continue }
-        for index in start..<end {
-          cellGlyphs[index] = Self.emptyCellGlyph
+        if !dirtyRowsFillAllCells {
+          for index in start..<end {
+            cellGlyphs[index] = Self.emptyCellGlyph
+          }
         }
         cellGlyphUploadRanges.append(start..<end)
       }

@@ -177,6 +177,33 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(patchCounts.glyphs, 0)
   }
 
+  func testGPUCellPayloadClearsDirtyRowWhenPatchIsSparse() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-sparse-row")
+    let initial = payload(seed: 31, changedRow: nil, includedRows: Array(0..<rows))
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: initial,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+    XCTAssertEqual(renderer.activeCellGlyphIndicesForTesting.count, rows * cols)
+
+    var sparse = payload(seed: 32, changedRow: 4, includedRows: [4])
+    sparse.glyphs = Array(sparse.glyphs.prefix(1))
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: sparse,
+        commands: [],
+        damage: .partial(yRanges: [dirtyRange(forRow: 4)]),
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    XCTAssertEqual(renderer.activeCellGlyphIndicesForTesting.count, (rows - 1) * cols + 1)
+  }
+
   func testGPUCellRemoteFallbackReportsClassicStatus() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
