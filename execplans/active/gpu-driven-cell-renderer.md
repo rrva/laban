@@ -179,8 +179,10 @@ fancier shader. Two distinct moves follow, and we do both:
 - **GPU-driven (M2–M5):** keep one instance *per cell* in a persistent GPU buffer
   indexed by `row * cols + col`; each frame overwrite only the cells in dirty rows;
   the GPU re-draws the whole grid from its buffer (cheap — it is 99.6% idle); on
-  macOS 26 reuse the encoded command buffer too. The CPU's per-frame cost becomes
-  O(changed cells), and on macOS 26 the encode cost approaches zero.
+  macOS 26 reuse the command-buffer object (Metal 4) to cut encode *overhead* too. The
+  CPU's per-frame cost becomes O(changed cells), and on macOS 26 the per-frame
+  command-encode overhead is reduced (object/allocation/binding churn removed — not
+  eliminated; the draw is still re-encoded each frame — see M5).
 
 ## Decision Log
 
@@ -227,7 +229,8 @@ fancier shader. Two distinct moves follow, and we do both:
   must run in `LabanCore` (`makeFrame`, snapshot alive), **not** in the renderer (the
   renderer only gets `[FrameCommand]` and the snapshot is freed before `makeFrame`
   returns). The result is a **renderer-neutral** value-type cell payload (raw cell
-  data — text, colours, attributes, grid position — *not* Metal `CellGlyph`s; the
+  data — text, colours, attributes, underline style/colour, hyperlink, wide/spacer,
+  grid position — *not* Metal `CellGlyph`s; the
   atlas lookup that builds `CellGlyph`s stays in `MetalRenderer`) carried on
   `TerminalSurfaceFrame`. Bypassing `FrameProducer`'s glyph-run coalescing for the
   Metal cell path is the larger correctness surface, hence staged.
@@ -420,12 +423,37 @@ and a CPU mirror alongside it. Each frame:
   explicit semaphore. The dirty patch then either replays onto each of the N buffers
   (still O(dirty cells)) or tracks per-buffer dirtiness so a buffer that skipped K
   frames replays the union. Ghostty uses exactly such a multi-frame swap chain +
-  semaphore. M5's Metal 4 residency model gives the explicit tools; M3 on the current
-  command model must do this by hand. **Do not ship a single in-place buffer.**
+  semaphore. (M5's Metal 4 gives allocator pools + explicit barriers for this;
+  `MTLResidencySet` manages residency, *not* hazards. M3 on the current command model
+  does it by hand via the `onFrameCompleted` handler.) **Do not ship a single in-place
+  buffer.**
 - Source the per-cell data from the snapshot cells (the cell path no longer needs
   `FrameProducer`'s glyph-run coalescing) so only dirty rows are read. Reproduce
   `FrameProducer`'s foreground/background/attribute resolution for plain glyphs;
   validate against the `FrameProducer` path via the parity harness.
+- **Routing for the CPU win — no existing path skips command production; M3 must add
+  one (review finding).** Today `makeFrame` *always* builds `commands +=
+  producer.commands(...)` (local `TerminalSurfaceController.swift:427`, remote `:521`)
+  and `TerminalBitmapView` *always* renders `surfaceFrame.commands` (`:1145`). So
+  "skip `FrameProducer.commands`" is not free — M3 must add an explicit **render mode**
+  to the frame request (e.g. `cellPayloadOnly` / `commands` / `both`) and a
+  **consumer-detection contract**: build the neutral cell payload and skip command
+  coalescing **only** when (a) the active renderer is GPU-cell mode **and** (b) no
+  frame-command consumer is attached (capture recorder, `/debug/frame-commands`, render
+  trace, the software backend, `snapshotCommandsHook`/`frameProbe`); otherwise build
+  commands (optionally also the payload). `TerminalBitmapView` then renders the payload
+  instead of `cmds` in that mode. Without this routing the CPU win does not materialise
+  and the M3 benchmark misses its target.
+- **GPU-cell mode is local-session only until the laband protocol is extended (review
+  finding).** Background/remote sessions render from a `LabandSnapshotResponse` whose
+  `LabandSnapshotCell` carries only `row/col/text/flags/fg/bg`
+  (`LabandProtocol.swift:249`) — no underline colour/style, hyperlink, or wide/spacer —
+  and `TerminalBitmapView` uses the remote frame for background sessions (`:1117`), so
+  the full renderer-neutral payload cannot be built from it. **M3 scopes the GPU-cell
+  path to local (in-process) libghostty-snapshot sessions** and falls back to the
+  classic renderer for remote frames. Extending the laband snapshot-cell protocol to
+  carry the full cell is a separate cross-process contract change (its own ADR) — out
+  of scope here; note it as future work.
 
 **M3's cell payload crosses the renderer boundary (interface fix).** The renderer
 *cannot* "read the snapshot directly": `MetalRenderer.render` only receives
@@ -435,9 +463,12 @@ libghostty snapshot is freed by `defer { laban_snapshot_destroy(snap) }` before
 renderer would mean keeping that snapshot alive past `makeFrame` — an unsafe
 lifetime. So the dirty-row extraction happens **in `LabanCore`, inside `makeFrame`,
 while the snapshot is still alive**, and copies a **renderer-neutral** per-cell
-payload — for each dirty cell its grapheme/cluster text, resolved foreground and
-background colour, `TextAttributes`, and grid `col`/`row`, plus the list of dirty
-row indices — onto a new optional field of `TerminalSurfaceFrame`. The payload must
+payload — for each dirty cell **everything `LabanCell` carries that affects rendering**:
+its grapheme/cluster text, resolved foreground and background colour, `TextAttributes`,
+**underline style and underline colour, hyperlink id, and wide/spacer state**
+(`LabanTerminalCore.h:88` — narrowing to just text/colours/attrs would fail M4
+parity), and grid `col`/`row`, plus the list of dirty row indices — onto a new
+optional field of `TerminalSurfaceFrame`. The payload must
 **not** carry `CellGlyph`s: a `CellGlyph` needs atlas UVs, atlas texture size, and
 per-glyph tile metrics, all of which come from `MetalGlyphAtlas` — a renderer-owned
 resource (`MetalRenderer.swift:153`; UVs are computed from `atlas.textureSize` at
@@ -520,11 +551,21 @@ the largest single render slice in the profile (**15.5%**) and M0–M4 leave it
 untouched. On macOS 26 the renderer adopts the **Metal 4** command model: command
 buffers become long-lived, app-allocator-owned objects instead of fire-and-forget
 transients recreated each frame, plus `MTL4ArgumentTable` binding and **residency
-sets** (`MTLResidencySet`). For a terminal this is an ideal fit: the *draw* is
-identical every frame (`instanceCount = cols*rows`, one solid + one glyph pass), so
-the command buffer can be **encoded once and replayed**, while only the persistent
-cell buffer's contents change (the M3 dirty-patch). The residency/barrier model also
-supplies the explicit CPU↔GPU synchronisation the M3 N-buffered cell buffers need.
+sets** (`MTLResidencySet`). **What this actually buys (corrected — Metal 4 has no
+"encode once, replay" for graphics):** reusing an `MTL4CommandBuffer` means calling
+`allocator.reset()` then `beginCommandBuffer(allocator:)` and **re-encoding the draw
+each frame** — the win is removing per-frame *object/allocation/binding* churn (a
+long-lived command buffer + a pool of reset-able command allocators +
+`MTL4ArgumentTable`), **not** replaying an already-encoded buffer, so encode CPU is
+*reduced*, not eliminated. A terminal is a reasonable fit because the draw shape is
+identical every frame (`instanceCount = cols*rows`, one solid + one glyph pass) so the
+encode is trivial and the per-frame object/allocator overhead is the part worth cutting.
+**`MTLResidencySet` manages residency, not hazards** — it does *not* provide the
+CPU↔GPU synchronisation the M3 N-buffered cell buffers need; that comes from explicit
+MTL4 barriers plus an allocator/buffer pool cycled on frame-completion (an allocator
+cannot be `reset()` while its commands are still in-flight). **Gate this milestone
+behind a proof spike** that measures the real encode-CPU delta on representative frames
+*before* committing to it — do not assume a large win.
 
 This milestone is **macOS-26-only by construction** and is *the* reason the GPU path
 targets macOS 26 (Purpose → Platform target). It **composes with M3, it does not
@@ -536,17 +577,19 @@ draw calls; Laban issues ~2 instanced draws, so the encode cost is render-pass +
 buffer setup, not draw-call multiplicity — ICBs would add complexity for little gain
 (web research). Metal 4 reusable command buffers attack the actual cost.
 
-**What exists at the end:** on macOS 26, per-frame CPU encode for a mostly-static
-screen approaches zero (command buffer reused); the combined M3+M5 path shows both
-the rebuild share *and* the encode share of the profile collapse. This is a **perf
-milestone** — earn-its-keep: a release microbench must show a net encode-CPU
-reduction (vs the M3-only GPU path and vs the M1 classic baseline) or it is reverted.
+**What exists at the end:** on macOS 26, per-frame CPU encode is **reduced** (no
+per-frame command-buffer/allocator object churn or argument re-binding; the draw is
+still re-encoded, cheaply). The combined M3+M5 path should show the encode share of
+the profile shrink alongside the rebuild share. This is a **perf milestone** —
+earn-its-keep is strict here precisely because the win is overhead-reduction, not
+replay: the proof spike and a release microbench must show a net encode-CPU reduction
+(vs the M3-only GPU path and vs the M1 classic baseline) or it is reverted.
 
 **Acceptance (release mode, macOS 26):**
 ```
 LABAN_RUN_PERF_BENCH=1 swift test -c release --filter <encode microbench>
-# -> per-frame encode CPU on a static screen drops materially vs the M3-only path;
-#    no regression on full-redraw frames.
+# -> per-frame encode CPU on a static screen is measurably reduced vs the M3-only
+#    path (overhead-reduction, not elimination); no regression on full-redraw frames.
 swift test --filter GPUCellParityTests
 # -> still byte-identical (the reused command buffer draws the same pixels)
 ```
@@ -746,6 +789,19 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
   ICBs are a poor fit at ~2 draw calls; residency sets alone, mesh shaders, MetalFX, and
   ML-in-shaders are minor or irrelevant here. Sources: Apple WWDC25 "Discover Metal 4";
   Apple "What's New in Metal"; Apple indirect-command-encoding docs.
+- **Review (Codex r4) — three corrections folded in.** (1) **Metal 4 has no
+  "encode once, replay" for graphics:** command-buffer *objects* are reused via
+  `allocator.reset()` + `beginCommandBuffer(allocator:)` + **re-encode**, and
+  `MTLResidencySet` manages residency, *not* hazards — so M5 is recast as
+  object/allocation/binding-overhead reduction behind a proof spike, not encode
+  elimination. (2) **Nothing today skips `FrameProducer.commands`** (`makeFrame` always
+  builds them — `TerminalSurfaceController.swift:427`/`:521`; `TerminalBitmapView`
+  always renders them — `:1145`), so M3 must add an explicit render-mode +
+  consumer-detection contract or its win is illusory. (3) **The neutral payload must
+  carry underline style/colour, hyperlink, and wide/spacer** (full `LabanCell`,
+  `LabanTerminalCore.h:88`), and GPU-cell mode is **local-session only** because the
+  remote `LabandSnapshotCell` (`LabandProtocol.swift:249`) lacks those fields. Sources:
+  Apple MTL4CommandBuffer / `beginCommandBuffer(allocator:)` / MTLResidencySet docs.
 
 ## Idempotence and Recovery
 
@@ -778,11 +834,22 @@ option (or is left disabled) — record the decision in `Outcomes & Retrospectiv
     `LabanCell`, `LabanSnapshot.dirty_rows`).
   - `Sources/LabanCore/TerminalSurfaceController.swift` — add an optional
     **renderer-neutral** cell payload field to `TerminalSurfaceFrame` (raw cell data:
-    text, colours, `TextAttributes`, grid position; AppKit/Metal-free, lives in
-    `LabanCore`). No atlas/`CellGlyph` types here — `LabanCore` cannot import
-    `MetalGlyphAtlas`.
-  - `Sources/LabanApp/TerminalBitmapView.swift:1155` — pass the payload alongside
-    `cmds`/`damage` into the render call.
+    text, colours, `TextAttributes`, **underline style/colour, hyperlink id,
+    wide/spacer state** — the full `LabanCell` render surface — and grid position;
+    AppKit/Metal-free, lives in `LabanCore`). No atlas/`CellGlyph` types here —
+    `LabanCore` cannot import `MetalGlyphAtlas`. Also add the **render-mode** field
+    (`cellPayloadOnly` / `commands` / `both`) the M3-scope routing needs.
+  - `Sources/LabanRenderer/RendererBackend.swift` — **the protocol must grow a new API
+    shape (review finding):** today `render(_ commands: [FrameCommand], damage:)` is the
+    only entry (`RendererBackend.swift:44`) and `SoftwareBackend` already ignores
+    `damage` (`:46`). Add an overload/parameter carrying the optional cell payload, e.g.
+    `render(_ commands:, cellPayload:, damage:)`. **`SoftwareBackend` ignores the
+    payload (no-op, exactly as it ignores `damage`) and keeps rendering
+    `[FrameCommand]`**; only `MetalRenderer` consumes the payload. The
+    `render(_ commands:)` convenience stays.
+  - `Sources/LabanApp/TerminalBitmapView.swift:1145` — in GPU-cell mode with no command
+    consumer, render the payload via the new API instead of `surfaceFrame.commands`;
+    otherwise unchanged.
   - `Sources/LabanRenderer/` — do the `MetalGlyphAtlas.entry` lookup, build the
     `CellGlyph`s, and patch the persistent cell buffer (`MetalRenderer.swift`,
     `Shaders.metal`). `CellGlyph` (atlas UVs/metrics) is defined and populated only
