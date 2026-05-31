@@ -1,8 +1,12 @@
 # Laban
 
-This repository builds a macOS terminal application. The MVP described in
-`docs/product/mvp.md` shipped on 2026-05-17; that document is now the
-regression contract. New product direction lives in `docs/product/spec.md`.
+This repository builds a macOS terminal application. **It is post-MVP.** The
+MVP shipped on 2026-05-17, so `docs/product/mvp.md` is now a *regression
+contract* — a list of shipped behaviors you must not break, **not** a build
+target or a roadmap. Its Non-Goals, Suggested Work Order, and Later Milestones
+are historical MVP scoping, not current constraints; do not read
+deferred-for-MVP as forbidden-now. Current and future product direction lives
+in `docs/product/spec.md`.
 
 This file is the map. Keep it small. Open the deeper documents only when the
 task matches them.
@@ -11,14 +15,18 @@ task matches them.
 
 1. Start from the user's task and the files already in front of you.
 2. Check `docs/product/mvp.md` as a regression contract — never break a
-   behavior required there.
-3. Check `docs/product/spec.md` before expanding product scope.
+   behavior required there. Its Non-Goals are not a ban list; those items are
+   the post-MVP roadmap.
+3. Check `docs/product/spec.md` before expanding product scope — it is the
+   forward source of truth, not mvp.md.
 4. For non-trivial or cross-boundary work, create or update an ExecPlan using
    `PLANS.md`.
 
 ## Source Of Truth
 
-- `docs/product/mvp.md` is the regression contract for shipped behavior.
+- `docs/product/mvp.md` is the regression contract for shipped behavior; its
+  Non-Goals / Suggested Work Order / Later Milestones are historical MVP
+  scoping superseded by `spec.md`, not current constraints.
 - `docs/product/spec.md` is the long-term direction; new scope flows through it.
 - Bug fixes, polish, performance, and refactors that preserve MVP behavior
   do not need spec.md approval.

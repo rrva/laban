@@ -1,5 +1,15 @@
 # Minimal Terminal Application MVP
 
+> **Post-MVP — this is a regression contract, not a plan.** The MVP shipped
+> 2026-05-17.
+>
+> - **Binding (do not break):** *Required Behavior* and *Quality Bar* describe
+>   shipped behavior that must keep working.
+> - **Historical (non-binding):** *Explicit Non-Goals*, *Suggested Work Order*,
+>   and *Later Milestones* record what was deferred **for the MVP** — not what
+>   is forbidden now. Those deferred items are the post-MVP roadmap; current and
+>   future scope lives in `docs/product/spec.md`.
+
 ## Status
 
 **Shipped on 2026-05-17.** Every requirement in this document is implemented
