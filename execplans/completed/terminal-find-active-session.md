@@ -1070,7 +1070,7 @@ upstream." If yes, follow the pattern of `docs/adr/0001-…` /
 ## Concrete Steps
 
 These commands assume the working directory is the repository root
-(`/Users/rrj/wrk/laban` for the original author; any clone path is
+(`/Users/dev/wrk/laban` for the original author; any clone path is
 fine). All commands are idempotent.
 
 Build the app once to confirm the baseline compiles:

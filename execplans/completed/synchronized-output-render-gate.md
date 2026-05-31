@@ -26,7 +26,7 @@ snapshot until `CSI ? 2026 l` arrives.
 - [x] Inspected `docs/product/mvp.md` and `docs/process/dev-process.md`; this is
   MVP terminal behavior and must be autonomously verifiable.
 - [x] Inspected the latest AppKit capture at
-  `/Users/rrj/Library/Logs/Laban/captures/appkit-2026-05-05T18-47-46Z`.
+  `/Users/dev/Library/Logs/Laban/captures/appkit-2026-05-05T18-47-46Z`.
 - [x] Confirmed the capture contains Codex startup output bracketed by
   `CSI ? 2026 h/l`, while Laban records intermediate frames with
   `cursorVisible: true`.
@@ -105,7 +105,7 @@ synchronized window again, and advances after the mode is reset.
 
 - Observation: The latest AppKit capture did not replay cleanly before using it
   as acceptance evidence for this bug.
-  Evidence: `./scripts/replay-capture /Users/rrj/Library/Logs/Laban/captures/appkit-2026-05-05T18-47-46Z`
+  Evidence: `./scripts/replay-capture /Users/dev/Library/Logs/Laban/captures/appkit-2026-05-05T18-47-46Z`
   failed with frame-command hash drift starting at frame 48, before the Codex
   synchronized-output startup section. Comparing frame 48 showed replay was
   recomputing terminal commands with Selenized Dark colors while the capture
@@ -116,8 +116,8 @@ synchronized window again, and advances after the mode is reset.
 
 ## Concrete Steps
 
-Work from `/Users/rrj/.codex/worktrees/befc/laban`. Prefix commands with
-`rtk`, per `/Users/rrj/.codex/RTK.md`.
+Work from `/Users/dev/.codex/worktrees/befc/laban`. Prefix commands with
+`rtk`, per `/Users/dev/.codex/RTK.md`.
 
 1. Edit the C header and implementation to add the synchronized-output mode
    query.
@@ -157,7 +157,7 @@ The changes are additive and can be rerun safely. If `.external/` is missing in
 this worktree, recreate it with:
 
 ```sh
-rtk ln -s /Users/rrj/wrk/laban/.external .external
+rtk ln -s /Users/dev/wrk/laban/.external .external
 ```
 
 If a test leaves build products behind, rerun the same `swift test` command;

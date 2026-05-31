@@ -36,8 +36,8 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
 - [x] (2026-05-04) Inspected libghostty-vt key encoder headers in
   `.external/libghostty-vt/include/ghostty/vt/key/encoder.h` and
   `.external/libghostty-vt/include/ghostty/vt/key/event.h`.
-- [x] (2026-05-04) Inspected `/Users/rrj/wrk/ghostling/main.c` and
-  `/Users/rrj/wrk/ghostling/README.md` for its keyboard encoder path and
+- [x] (2026-05-04) Inspected `/Users/dev/wrk/ghostling/main.c` and
+  `/Users/dev/wrk/ghostling/README.md` for its keyboard encoder path and
   known input limitations.
 - [x] (2026-05-04) Updated the debug/input-log milestone so it records
   recorder-compatible event envelopes and explicitly does not claim to be the
@@ -124,7 +124,7 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
   before encoding, maps platform keys into `GhosttyKey`, sets modifiers,
   unshifted codepoint, consumed modifiers, and UTF-8 text, then calls
   `ghostty_key_encoder_encode`.
-  Evidence: `/Users/rrj/wrk/ghostling/main.c` has `key_encoder` and
+  Evidence: `/Users/dev/wrk/ghostling/main.c` has `key_encoder` and
   `key_event` fields in `TerminalSession`; `handle_input` syncs encoder
   options, drains text input, fills a `GhosttyKeyEvent`, and writes encoded
   bytes to the PTY.
@@ -132,7 +132,7 @@ text, not accidentally reinterpreted as terminal Alt or Super chords.
 - Observation: Ghostling is a useful behavior lab but not enough for Laban's
   macOS app because Raylib does not provide rich enough native input events
   for full Kitty keyboard protocol correctness.
-  Evidence: `/Users/rrj/wrk/ghostling/README.md` says Kitty keyboard protocol
+  Evidence: `/Users/dev/wrk/ghostling/README.md` says Kitty keyboard protocol
   support is broken for some inputs because Raylib cannot report enough input
   detail, while libghostty-vt itself supports the protocol when given correct
   events.
@@ -778,7 +778,7 @@ Run commands from the repository root:
 
 ```sh
 pwd
-# /Users/rrj/wrk/laban/.claude/worktrees/still-glowing-cobra
+# /Users/dev/wrk/laban/.claude/worktrees/still-glowing-cobra
 
 swift test --filter LabanSessionKeyEncodingTests
 swift test --filter TerminalKeyInputTests

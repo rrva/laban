@@ -67,7 +67,7 @@ transporting image bytes.
 
 ## Validation and Acceptance
 
-Run these commands from `/Users/rrj/wrk/laban`:
+Run these commands from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter TerminalKeyInputTests

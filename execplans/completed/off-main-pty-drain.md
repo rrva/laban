@@ -418,7 +418,7 @@ New file: `Tests/LabanTerminalCoreTests/LabanSessionPollBlockingTests.swift`.
 
 ## Concrete Steps
 
-All commands run from `/Users/rrj/wrk/laban` unless otherwise noted.
+All commands run from `/Users/dev/wrk/laban` unless otherwise noted.
 The build script (per the user's repo instructions) is `./scripts/build-app`,
 **not** `swift build` directly.
 

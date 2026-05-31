@@ -157,7 +157,7 @@ headless only with an explicit scale argument of `1`.
 Work from the repository root:
 
 ```sh
-cd /Users/rrj/wrk/laban
+cd /Users/dev/wrk/laban
 ```
 
 Inspect the relevant files before editing:

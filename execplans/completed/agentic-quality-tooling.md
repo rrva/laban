@@ -257,7 +257,7 @@ Update `docs/quality/quality.md` after the scripts exist:
 
 ## Concrete Steps
 
-Run these commands from the repository root, `/Users/rrj/wrk/laban`:
+Run these commands from the repository root, `/Users/dev/wrk/laban`:
 
 ```sh
 ./scripts/format

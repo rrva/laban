@@ -27,7 +27,7 @@ idle `sample(1)` capture of `LabanApp` launched with `--no-persistence-restore`.
   `sample(1)` profile.
 - [x] (2026-05-19 05:44Z) Rebase the worktree onto local `main` and rerun
   focused tests, build, and idle sampling on the rebased base.
-- [x] (2026-05-19) Reviewed `/Users/rrj/Downloads/Untitled4.trace`, a fresh
+- [x] (2026-05-19) Reviewed `/Users/dev/Downloads/Untitled4.trace`, a fresh
   20 second CPU Counters trace captured from `.build/laban/Laban.app` built with
   `./scripts/build-app --profile`.
 - [ ] Coalesce the remaining render-path `Session.processMetadata()` work so
@@ -86,7 +86,7 @@ state, inactive dirty marking, title capture, and model change reporting. If
 the implementation adds a reusable model helper, cover the behavior through the
 public controller path rather than by testing private implementation detail.
 
-Follow-up from `/Users/rrj/Downloads/Untitled4.trace`: the remaining expensive
+Follow-up from `/Users/dev/Downloads/Untitled4.trace`: the remaining expensive
 work is not a tab scan, but repeated process metadata collection on the frame
 path. `TabMetadataSynchronizer.syncSurfaceMetadata(...)` currently checks a
 0.25 second per-tab throttle and then calls `Session.processMetadata()`. That
@@ -154,7 +154,7 @@ change that makes a follow-up trace visibly quieter:
 
 ## Validation and Acceptance
 
-From repository root `/Users/rrj/wrk/laban/.codex/worktrees/idle-perf-2`:
+From repository root `/Users/dev/wrk/laban/.codex/worktrees/idle-perf-2`:
 
 ```bash
 rtk swift test --filter TerminalSurfaceControllerTests
@@ -191,7 +191,7 @@ rtk swift test --filter LabanSessionTests/testProcessMetadataReportsForegroundPr
 ```
 
 Then capture a new 20 second idle CPU Counters trace from
-`.build/laban/Laban.app` and compare it with `/Users/rrj/Downloads/Untitled4.trace`.
+`.build/laban/Laban.app` and compare it with `/Users/dev/Downloads/Untitled4.trace`.
 Acceptance is that the frame-path libproc cluster drops substantially; the
 specific target is fewer than 20 exported `time-profile` rows containing
 `Session.processMetadata()` in the same 20 second idle scenario, and no

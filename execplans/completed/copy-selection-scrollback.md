@@ -70,7 +70,7 @@ rendering callers on `segments(rows:cols:)`.
 
 ## Concrete Steps
 
-Run commands from `/Users/rrj/wrk/laban/.codex/worktrees/copy-paste`.
+Run commands from `/Users/dev/wrk/laban/.codex/worktrees/copy-paste`.
 
 1. Add a focused test to `Tests/LabanCoreTests/TerminalSelectionTests.swift`.
 2. Run the focused test and observe failure before production code changes:
@@ -140,7 +140,7 @@ rtk ./scripts/check
 - Observation: A fresh worktree may be missing `.external`, which prevents
   `swift test` from finding `ghostty/vt/terminal.h`.
   Evidence: The first focused test run failed during C compilation. Creating
-  `.external -> /Users/rrj/wrk/laban/.external` restored the vendored headers.
+  `.external -> /Users/dev/wrk/laban/.external` restored the vendored headers.
 
 - Observation: The repository-wide `./scripts/check` currently fails before it
   can complete because the formatter reports issues in unrelated files.

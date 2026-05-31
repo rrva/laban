@@ -234,7 +234,7 @@ unless a later plan explicitly opts into that.
 Format inserted path text with POSIX shell-style quoting and a trailing space:
 
 ```text
-'/Users/rrj/Desktop/Screenshot 2026-05-14 at 12.03.01.png' 
+'/Users/dev/Desktop/Screenshot 2026-05-14 at 12.03.01.png' 
 ```
 
 For multiple dropped files, join quoted paths with one space and append a final
@@ -330,7 +330,7 @@ Update product documentation after implementation:
 Run all commands from the repository root:
 
 ```sh
-cd /Users/rrj/wrk/laban/.codex/worktrees/clipboard
+cd /Users/dev/wrk/laban/.codex/worktrees/clipboard
 ```
 
 1. Add the AppKit drop helper:

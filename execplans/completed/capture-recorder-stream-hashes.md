@@ -32,7 +32,7 @@ Add a regression in `Tests/LabanDebugTests/CaptureRecorderTests.swift`: write by
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/4ba1/laban`:
+Run from `/Users/dev/.codex/worktrees/4ba1/laban`:
 
 ```sh
 rtk swift test --filter CaptureRecorderTests

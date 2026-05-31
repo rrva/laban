@@ -873,7 +873,7 @@ Run commands from the repository root:
 
 ```sh
 pwd
-# /Users/rrj/wrk/laban/.claude/worktrees/still-glowing-cobra
+# /Users/dev/wrk/laban/.claude/worktrees/still-glowing-cobra
 
 swift test --filter CaptureRecorderTests
 swift test --filter CaptureReplayTests

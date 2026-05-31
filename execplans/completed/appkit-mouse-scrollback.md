@@ -82,7 +82,7 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
+- [x] Run `./scripts/check` from `/Users/dev/wrk/laban`; expect exit 0 and
   final output `check passed`.
 - [x] Grep `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; expect
   declarations for `laban_session_scroll_viewport`,
@@ -443,7 +443,7 @@ Implementation requirements:
 Work from the repository root:
 
 ```sh
-cd /Users/rrj/wrk/laban
+cd /Users/dev/wrk/laban
 ```
 
 Inspect the relevant files before editing:

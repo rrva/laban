@@ -61,7 +61,7 @@ Update `MetalRenderer` to:
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/6627/laban`:
+Run from `/Users/dev/.codex/worktrees/6627/laban`:
 
 ```sh
 swift test --filter LabanRendererTests

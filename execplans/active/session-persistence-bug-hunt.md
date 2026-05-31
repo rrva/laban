@@ -47,7 +47,7 @@ Normalize line breaks in the workspace-restore native-resume assertion so it sti
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/wrk/laban`:
+Run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter 'RecentByteRingIntegrationTests|PersistenceRoundTripTests|TranscriptRoundTripTests'

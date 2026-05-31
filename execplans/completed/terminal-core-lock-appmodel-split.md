@@ -85,7 +85,7 @@ Then split Swift responsibilities:
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/6627/laban`:
+Run from `/Users/dev/.codex/worktrees/6627/laban`:
 
 ```sh
 swift test --filter LabanTerminalCoreTests
@@ -121,7 +121,7 @@ Additional checks:
   missing from discovery. This change does not touch debug endpoint discovery.
 
 During validation, `.external/` was absent in this worktree, so it was symlinked
-from `/Users/rrj/wrk/laban/.external` as documented in `AGENTS.md`.
+from `/Users/dev/wrk/laban/.external` as documented in `AGENTS.md`.
 
 ## Idempotence and Recovery
 

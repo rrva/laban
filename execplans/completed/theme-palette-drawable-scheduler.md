@@ -73,7 +73,7 @@ finish it in failure paths or the command-buffer completion handler.
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/6627/laban`:
+Run from `/Users/dev/.codex/worktrees/6627/laban`:
 
 ```sh
 swift test --filter AppModelTests

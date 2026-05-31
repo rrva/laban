@@ -84,7 +84,7 @@ the same legacy badge slot.
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/wrk/laban`:
+Run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter AppModelTests

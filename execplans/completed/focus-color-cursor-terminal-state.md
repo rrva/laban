@@ -95,7 +95,7 @@ pass it into `FrameProducer`.
 
 ## Concrete Steps
 
-Work from `/Users/rrj/wrk/laban`. Prefix shell commands with `rtk`.
+Work from `/Users/dev/wrk/laban`. Prefix shell commands with `rtk`.
 
 1. Edit `Sources/LabanTerminalCore/include/LabanTerminalCore.h` and
    `Sources/LabanTerminalCore/session.c`.
@@ -129,7 +129,7 @@ Acceptance is:
   blinking cursors when the blink phase is off.
 - `./scripts/check` passes.
 
-Validation performed on 2026-05-06 from `/Users/rrj/wrk/laban`:
+Validation performed on 2026-05-06 from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter LabanSessionTests

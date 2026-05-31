@@ -29,7 +29,7 @@ Add unit coverage for routing and cursor-rect math in the App tests. Full `NSTex
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/4ba1/laban`:
+Run from `/Users/dev/.codex/worktrees/4ba1/laban`:
 
 ```sh
 rtk swift test --filter TerminalKeyInputTests

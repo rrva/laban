@@ -41,7 +41,7 @@ Add tests in `Tests/LabanCoreTests/AgentSupportTests.swift` and `Tests/LabanCore
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/wrk/laban`:
+Run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter AgentSupportTests

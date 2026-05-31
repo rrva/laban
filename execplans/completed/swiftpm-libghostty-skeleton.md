@@ -240,7 +240,7 @@ checks, and `git diff --check`.
 From the repo root:
 
 ```sh
-cd /Users/rrj/wrk/laban
+cd /Users/dev/wrk/laban
 ./scripts/check
 ```
 

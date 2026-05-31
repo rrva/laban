@@ -116,7 +116,7 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
+- [x] Run `./scripts/check` from `/Users/dev/wrk/laban`; expect exit 0 and
   final output `check passed`. Verified 2026-05-04: exit 0, final line
   `check passed`, 129 tests with 0 failures across the suite.
 - [x] Grep `Sources/LabanCore`; expect a shared selection helper type that can
@@ -410,7 +410,7 @@ as carriage returns and `bracketed == false`.
 
 ## Concrete Steps
 
-Run all commands from `/Users/rrj/wrk/laban`.
+Run all commands from `/Users/dev/wrk/laban`.
 
 1. Confirm the current baseline:
 

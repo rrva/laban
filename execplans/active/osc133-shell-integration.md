@@ -516,7 +516,7 @@ from the deferred list.
 
 ## Concrete Steps
 
-Run everything from the repository root `/Users/rrj/wrk/laban`.
+Run everything from the repository root `/Users/dev/wrk/laban`.
 
 ```
 # Read the precedents first.
