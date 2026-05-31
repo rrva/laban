@@ -256,7 +256,8 @@ final class ScrollDebugServer {
     var body: Data
     static func json(_ object: Any, status: Int = 200) -> Response {
       let data =
-        (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]))
+        (try? JSONSerialization.data(
+          withJSONObject: object, options: [.prettyPrinted, .sortedKeys]))
         ?? Data("{}".utf8)
       return Response(status: status, contentType: "application/json", body: data)
     }
@@ -265,7 +266,8 @@ final class ScrollDebugServer {
     }
   }
 
-  private func route(method: String, path: String, query: [String: String], body: Data) -> Response {
+  private func route(method: String, path: String, query: [String: String], body: Data) -> Response
+  {
     switch (method, path) {
     case ("GET", "/"), ("GET", "/scroll"):
       return Response.text(Self.helpText)
@@ -352,12 +354,16 @@ final class ScrollDebugServer {
 
   // MARK: - Main-thread hop helpers
 
-  private func onMain(_ body: @escaping (TerminalBitmapView, TerminalScrollIndicatorView, AppModel) -> Response) -> Response {
+  private func onMain(
+    _ body: @escaping (TerminalBitmapView, TerminalScrollIndicatorView, AppModel) -> Response
+  ) -> Response {
     onMainValue { tv, ind, model in body(tv, ind, model) }
       ?? Response.json(["error": "window not available"], status: 503)
   }
 
-  private func onMainValue<T>(_ body: @escaping (TerminalBitmapView, TerminalScrollIndicatorView, AppModel) -> T) -> T? {
+  private func onMainValue<T>(
+    _ body: @escaping (TerminalBitmapView, TerminalScrollIndicatorView, AppModel) -> T
+  ) -> T? {
     var result: T?
     DispatchQueue.main.sync {
       guard let tv = self.termView, let ind = self.indicator, let model = self.model else { return }
