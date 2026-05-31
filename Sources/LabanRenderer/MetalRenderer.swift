@@ -1411,21 +1411,6 @@ public final class MetalRenderer: RendererBackend {
       cellHeight: payload.cellSize.height)
   }
 
-  private func rowsToPatch(
-    for payload: TerminalCellPayload,
-    geometry: TerminalGridGeometry?,
-    damage: RenderDamage
-  ) -> [Bool] {
-    guard case .partial = damage, let geometry else { return [] }
-    var rows = [Bool](repeating: false, count: geometry.rows)
-    for topDownRow in payload.dirtyRows {
-      let bottomUpRow = geometry.rows - 1 - topDownRow
-      guard bottomUpRow >= 0, bottomUpRow < rows.count else { continue }
-      rows[bottomUpRow] = true
-    }
-    return rows
-  }
-
   private func buildGPUCellInstanceLists(
     payload: TerminalCellPayload,
     commands: [FrameCommand],
@@ -1499,12 +1484,10 @@ public final class MetalRenderer: RendererBackend {
       }
     }
 
-    let patchRows = fullCellRebuild ? [] : rowsToPatch(
-      for: payload,
-      geometry: geometry,
-      damage: damage)
-    if !fullCellRebuild {
-      for row in patchRows.indices where patchRows[row] {
+    if !fullCellRebuild, case .partial = damage {
+      for topDownRow in payload.dirtyRows {
+        let row = geometry.rows - 1 - topDownRow
+        guard row >= 0, row < geometry.rows else { continue }
         let start = row * geometry.cols
         let end = min(start + geometry.cols, cellGlyphs.count)
         guard start < end else { continue }

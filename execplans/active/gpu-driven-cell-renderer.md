@@ -947,7 +947,8 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   backend shape.
 - `TerminalSurfaceController` retains reusable payload and dirty-row buffers across
   frames; `TerminalSurfaceControllerTests` verifies warmed capacity is reused. This is
-  a capacity-retention proof point, not yet the required allocation-count gate.
+  backed by a release-only `TerminalCellPayloadAllocationBench` that verifies zero
+  warmed storage-growth events for repeated one-dirty-row payload builds.
 - New tests:
   - `TerminalSurfaceControllerTests` verifies compatible payload mode omits terminal
     glyph commands, selection mode falls back to commands, and warmed payload capacity
@@ -956,12 +957,16 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     row range and that remote GPU-cell fallback reports classic effective status.
   - `LabanDebugSmokeTests.testRuntimeRenderStateReportsRendererStatus` verifies the
     debug render-state JSON includes renderer-status fields.
+  - `TerminalCellPayloadAllocationBench` gates the warmed one-dirty-row payload builder
+    on zero retained-storage growth events.
 - Validation:
   - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|MetalFrameTimingBench'`
     passed (15 tests).
   - `swift test --filter 'GPUCellParity|testRuntimeRenderStateReportsRendererStatus|TerminalSurfaceControllerTests'`
     passed (17 tests).
   - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter TerminalCellPayloadAllocationBench`
     passed.
 - Release benchmark evidence from `MetalFrameTimingBench`:
   - GPU-cell command-fed patch vs payload patch, 160x48, p50:
@@ -971,11 +976,13 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - sparse rows 0,12,23: command patch 337.6 us, payload 41.2 us
     - contiguous 1 row: command patch 95.8 us, payload 14.2 us
     - contiguous 5 rows: command patch 141.1 us, payload 70.4 us
-  - M3 is intentionally **not** checked off yet: the payload builder is within ~1-2 us
-    of the M1 classic scoped one-row microbench but does not consistently beat it
-    (latest M1 scoped p50: row 0 12.5 us, row 23 13.0 us, contiguous 1 row 12.8 us),
-    and the required `TerminalCellPayloadAllocationBench` allocation-count gate is
-    still missing.
+- `TerminalCellPayloadAllocationBench` evidence: 10,000 warmed one-dirty-row payload
+  builds reported `storageGrowthEvents=0` and `perFrame=1.660 us` in release.
+- M3 is intentionally **not** checked off yet: the payload builder is within ~1-2 us
+  of the M1 classic scoped one-row microbench but does not consistently beat it
+  (latest M1 scoped p50: row 0 12.5 us, row 23 13.0 us, contiguous 1 row 12.8 us),
+  so the remaining M3 gap is a release microbench win against the M1 classic scoped
+  baseline.
 
 ## Review Gate
 
