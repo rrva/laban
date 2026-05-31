@@ -32,23 +32,66 @@ and CI.
 
 ## Build
 
-Requirements:
+Prerequisites:
 
-- macOS 13 or later
-- Xcode 15 or later (Swift 5.9+)
-- Zig 0.15.2 or later (used to build the vendored libghostty-vt core)
+- macOS 13 (Ventura) or later
+- Xcode 15 or later (provides the Swift 5.9+ and Metal toolchains)
+- [Zig](https://ziglang.org/download/) 0.15.2 or later — builds the vendored
+  libghostty-vt VT core
+- `jq` — used by `./scripts/check` and the debug examples below
+
+Install the tooling, then build:
 
 ```sh
-brew install zig
+brew install zig jq
 git clone https://github.com/rrva/laban
 cd laban
-./scripts/fetch-libghostty-vt
-./scripts/build-app
-open .artifacts/Laban.app
+./scripts/fetch-libghostty-vt   # one-time: clone + build the pinned libghostty-vt
+./scripts/build-app             # builds LabanApp, laband, labpty into the .app bundle
 ```
 
-The first build of libghostty-vt takes a couple of minutes. Subsequent builds
-are cached under `.external/libghostty-vt/zig-out/`.
+`build-app` produces a signed (ad-hoc) bundle at **`.build/laban/Laban.app`**.
+
+> Always build with `./scripts/build-app`, not a bare `swift build`. The script
+> assembles the `.app` bundle, copies in the `laband`/`labpty` helpers and
+> resources, stamps the git commit into `Info.plist`, and code-signs — none of
+> which a plain `swift build` does.
+
+The first `fetch-libghostty-vt` takes a couple of minutes; afterward it is a
+no-op until the pin moves, and its output is cached under
+`.external/libghostty-vt/zig-out/`.
+
+## Run
+
+Three ways to run Laban: as a normal windowed terminal, as a one-shot headless
+renderer, or as a live, agent-controllable debug server.
+
+### As a terminal (GUI)
+
+```sh
+open .build/laban/Laban.app
+```
+
+Drag it into `/Applications` if you want it on your dock. (It's an ad-hoc
+signed alpha build, so the first launch may need a right-click → **Open**.)
+
+### Headless, one shot
+
+Render a fixture without a window server and write a screenshot plus a JSON
+result — handy from CI or for a quick visual check:
+
+```sh
+./scripts/run-headless                              # default fixture
+./scripts/run-headless fixtures/colored-boxes.fixture.json
+```
+
+It prints the artifact paths on exit:
+
+```text
+Artifacts: .artifacts/runs/<run-id>
+Screenshot: .artifacts/runs/<run-id>/screenshot.png
+Result:    .artifacts/runs/<run-id>/result.json
+```
 
 ## Debugging and agent control
 
@@ -102,6 +145,16 @@ swift run laban-agent -- --help
 The full debug contract — capabilities, fixture format, capture/replay,
 screenshot artifacts, observability — lives in
 [`docs/process/dev-process.md`](docs/process/dev-process.md).
+
+## Verify
+
+Run the unit tests, or the full local gate (schemas, docs, formatting, build,
+tests, runtime smoke test, and a headless end-to-end scenario):
+
+```sh
+./scripts/test     # swift test only
+./scripts/check    # the full gate CI must pass
+```
 
 ## License
 
