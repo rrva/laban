@@ -1,12 +1,9 @@
 # Laban
 
-This repository builds a macOS terminal application. **It is post-MVP.** The
-MVP shipped on 2026-05-17, so `docs/product/mvp.md` is now a *regression
-contract* — a list of shipped behaviors you must not break, **not** a build
-target or a roadmap. Its Non-Goals, Suggested Work Order, and Later Milestones
-are historical MVP scoping, not current constraints; do not read
-deferred-for-MVP as forbidden-now. Current and future product direction lives
-in `docs/product/spec.md`.
+This repository builds a macOS terminal application. **It is post-MVP**: the
+MVP shipped 2026-05-17, so `docs/product/mvp.md` is now a regression contract
+(shipped behavior not to break), not a build target — its Non-Goals are the
+post-MVP roadmap, not a ban list. New direction lives in `docs/product/spec.md`.
 
 This file is the map. Keep it small. Open the deeper documents only when the
 task matches them.
@@ -15,18 +12,15 @@ task matches them.
 
 1. Start from the user's task and the files already in front of you.
 2. Check `docs/product/mvp.md` as a regression contract — never break a
-   behavior required there. Its Non-Goals are not a ban list; those items are
-   the post-MVP roadmap.
-3. Check `docs/product/spec.md` before expanding product scope — it is the
-   forward source of truth, not mvp.md.
+   behavior required there.
+3. Check `docs/product/spec.md` before expanding product scope.
 4. For non-trivial or cross-boundary work, create or update an ExecPlan using
    `PLANS.md`.
 
 ## Source Of Truth
 
 - `docs/product/mvp.md` is the regression contract for shipped behavior; its
-  Non-Goals / Suggested Work Order / Later Milestones are historical MVP
-  scoping superseded by `spec.md`, not current constraints.
+  non-goals and milestones are historical, superseded by `spec.md`.
 - `docs/product/spec.md` is the long-term direction; new scope flows through it.
 - Bug fixes, polish, performance, and refactors that preserve MVP behavior
   do not need spec.md approval.
@@ -58,7 +52,7 @@ task matches them.
 AGENTS.md                              Small map for agents.
 PLANS.md                               ExecPlan rules for long-running work.
 README.md                              Human and agent project entrypoint.
-docs/product/mvp.md                    Current MVP behavior and non-goals.
+docs/product/mvp.md                    Shipped-MVP regression contract; non-goals are historical.
 docs/product/spec.md                   Long-term product behavior.
 docs/process/dev-process.md            Agent-driven debug, capture/replay, and headless test harness.
 docs/process/agent-operating-guide.md  Detailed working rules for agents.
