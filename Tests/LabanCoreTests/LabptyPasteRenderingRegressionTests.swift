@@ -83,14 +83,14 @@ final class LabptyPasteRenderingRegressionTests: XCTestCase {
   }
 
   private func assertNoCorruption(label: String, rows: [String]) {
-    // The captured fixture's bottom status row contains "/Users/rrj".
+    // The captured fixture's bottom status row contains "/Users/dev".
     // A correctly rendered grid keeps the path and paste indicator intact;
     // the live bug injected paste digits into status text or drew paste
     // indicator spaces as horizontal-line glyphs.
     let joined = rows.joined(separator: "\n")
     XCTAssertTrue(
-      joined.contains("/Users/rrj"),
-      "[\(label)] /Users/rrj not found intact in grid; see test log")
+      joined.contains("/Users/dev"),
+      "[\(label)] /Users/dev not found intact in grid; see test log")
     XCTAssertTrue(
       joined.contains("[Pasted text #1 +3 lines]"),
       "[\(label)] paste indicator not found intact in grid; see test log")

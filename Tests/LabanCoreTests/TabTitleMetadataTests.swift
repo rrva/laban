@@ -169,17 +169,17 @@ final class TabTitleMetadataTests: XCTestCase {
         displayTitle: "Tab 1",
         titleSource: .fallback,
         process: TabProcessMetadata(
-          foregroundProcess: "agy",
-          foregroundCommand: "/Users/rrj/.local/bin/agy"
+          foregroundProcess: "mytool",
+          foregroundCommand: "/Users/dev/.local/bin/mytool"
         )
       ),
       fallbackPosition: 1
     )
 
-    XCTAssertEqual(resolved.displayTitle, "agy")
+    XCTAssertEqual(resolved.displayTitle, "mytool")
     XCTAssertEqual(resolved.titleSource, .process)
     XCTAssertFalse(
-      resolved.infoLines.contains { $0.contains("/Users/rrj") || $0 == "agy" },
+      resolved.infoLines.contains { $0.contains("/Users/dev") || $0 == "mytool" },
       "binary path should not duplicate the process title: \(resolved.infoLines)")
   }
 
@@ -190,10 +190,10 @@ final class TabTitleMetadataTests: XCTestCase {
         titleSource: .fallback,
         process: TabProcessMetadata(
           foregroundProcess: "node",
-          foregroundCommand: "/Users/rrj/.volta/bin/node",
+          foregroundCommand: "/Users/dev/.volta/bin/node",
           foregroundArguments: [
-            "/Users/rrj/.volta/bin/node",
-            "/Users/rrj/wrk/portal-caddy-route/src/server.ts",
+            "/Users/dev/.volta/bin/node",
+            "/Users/dev/projects/web-app/src/server.ts",
             "--watch",
           ]
         )

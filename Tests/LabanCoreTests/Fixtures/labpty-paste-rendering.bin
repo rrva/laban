@@ -1,10 +1,10 @@
 Restored session: Thu May 28 00:09:01 CEST 2026
-[1m[7m%[27m[1m[0m                                                                   ]133;A]7;file://libidel.local/Users/rrj[0m[27m[24m[J~$ [K[?2004hcclaude-y[?2004l
+[1m[7m%[27m[1m[0m                                                                   ]133;A]7;file://example.local/Users/dev[0m[27m[24m[J~$ [K[?2004hcclaude-y[?2004l
 ]133;C7[r8[?25h[?25l[?2004h[?1004h[?2031h
 [38;2;150;108;30m───────────────────────────────────────────────────────────────────[39m
 [2G[38;2;150;108;30m[1mAccessing[12Gworkspace:[22m[39m
 
-[2G[1m/Users/rrj[22m
+[2G[1m/Users/dev[22m
 
 [2GQuick[8Gsafety[15Gcheck:[22GIs[25Gthis[30Ga[32Gproject[40Gyou[44Gcreated[52Gor[55Gone[59Gyou
 [2Gtrust?[9G(Like[15Gyour[20Gown[24Gcode,[30Ga[32Gwell-known[43Gopen[48Gsource[55Gproject,[64Gor
@@ -25,7 +25,7 @@ Restored session: Thu May 28 00:09:01 CEST 2026
 
 [1C[4A[1D[4B[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G[1A[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[1B[K[18A]0;✳ Claude Code[38;2;215;119;87m▗[48;2;215;119;87m[38;2;0;0;0m ▗   ▖ [49m[38;2;215;119;87m▖[12G[39m[1mClaude[19GCode[24G[22m[38;2;102;102;102mv2.1.153[39m
 [2G[48;2;215;119;87m       [12G[49m[38;2;102;102;102mOpus[17G4.7[21G(1M[25Gcontext)[34Gwith[39Gxhigh[45Geffort[52G·[54GClaude[61GMax[39m
-[3G[38;2;215;119;87m▘▘[6G▝▝[12G[38;2;102;102;102m/Users/rrj[39m
+[3G[38;2;215;119;87m▘▘[6G▝▝[12G[38;2;102;102;102m/Users/dev[39m
 
 [38;2;153;153;153m───────────────────────────────────────────────────────────────────[39m
 ❯ [7mT[27m[2mry[7G"how[12Gdoes[17G<filepath>[28Gwork?"[22m
@@ -36,7 +36,7 @@ Restored session: Thu May 28 00:09:01 CEST 2026
 [49G[38;2;102;102;102m◉[51Gxhigh[57G·[59G/effort[39m
 [2C[5A[2D[5B[6A[K[1B[38;2;153;153;153m───────────────────────────────────────────────────────────────────[1B[39m❯ [7mT[27m[2mry "how does <filepath> work?"[22m[K[1B[38;2;153;153;153m───────────────────────────────────────────────────────────────────[2C[1B[38;2;102;102;102m~ [Opus 4.7 (1M context)][39m[K[2C[1B[38;2;171;43;63m⏵⏵ bypass permissions on[38;2;102;102;102m (shift+tab to cycle) ·[51G← for[57Gagents[39m[K
 [49G[38;2;102;102;102m◉[51Gxhigh[57G·[59G/effort[39m
-[2C[5A[2D[5B[6A  /remote-control is active[38;2;102;102;102m · Continue here, on your phone, or at [39m[K[1B  [38;2;102;102;102mhttps://claude.ai/code/session_01NjJLUcAqR643Xdup43AJ3S[1B[39m[K[1B[38;2;153;153;153m───────────────────────────────────────────────────────────────────[1B[39m❯ [7m [27m[K[1B[38;2;153;153;153m───────────────────────────────────────────────────────────────────[39m
+[2C[5A[2D[5B[6A  /remote-control is active[38;2;102;102;102m · Continue here, on your phone, or at [39m[K[1B  [38;2;102;102;102mhttps://claude.ai/code/session_xxxxxxxxxxxxxxxxxxxxxxxx[1B[39m[K[1B[38;2;153;153;153m───────────────────────────────────────────────────────────────────[1B[39m❯ [7m [27m[K[1B[38;2;153;153;153m───────────────────────────────────────────────────────────────────[39m
 [3G[38;2;102;102;102m~[5G[Opus[11G4.7[15G(1M[19Gcontext)][39m
 [3G[38;2;171;43;63m⏵⏵[6Gbypass[13Gpermissions[25Gon[38;2;102;102;102m (shift+tab[39Gto[42Gcycle)[49G·[51G←[53Gfor[57Gagents[39m
 [49G[38;2;102;102;102m◉[51Gxhigh[57G·[59G/effort[39m
@@ -322,11 +322,11 @@ Restored session: Thu May 28 00:09:01 CEST 2026
 [36G[38;2;150;108;30m1[38GMCP[42Gserver[49Gneeds[55Gauth[38;2;102;102;102m ·[62G/mcp[39m
 [27C[5A[27D[5B[2K[G[1A[K[27C[4A(B[27D[4B[H[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[H[38;2;215;119;87m▗[48;2;215;119;87m[38;2;0;0;0m ▗   ▖ [49m[38;2;215;119;87m▖[12G[39m[1mClaude[19GCode[24G[22m[38;2;102;102;102mv2.1.153[39m
 [2G[48;2;215;119;87m       [12G[49m[38;2;102;102;102mOpus[17G4.7[21G(1M[25Gcontext)[34Gwith[39Gxhigh[45Geffort[52G·[54GClaude[61GMax[39m
-[3G[38;2;215;119;87m▘▘[6G▝▝[12G[38;2;102;102;102m/Users/rrj[39m
+[3G[38;2;215;119;87m▘▘[6G▝▝[12G[38;2;102;102;102m/Users/dev[39m
 
 
 [3G/remote-control[19Gis[22Gactive[38;2;102;102;102m ·[31GContinue[40Ghere,[46Gon[49Gyour[54Gphone,[61Gor[64Gat[39m
-[3G[38;2;102;102;102mhttps://claude.ai/code/session_01NjJLUcAqR643Xdup43AJ3S[39m
+[3G[38;2;102;102;102mhttps://claude.ai/code/session_xxxxxxxxxxxxxxxxxxxxxxxx[39m
 
 [48;2;240;240;240m[38;2;175;175;175m❯ [38;2;0;0;0mprint the numbers 1 to 4[39m                                         [49m
 
