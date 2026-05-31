@@ -749,7 +749,7 @@ Run commands from the repository root:
 
 ```sh
 pwd
-# /Users/rrj/wrk/laban/.claude/worktrees/still-glowing-cobra
+# /Users/dev/wrk/laban/.claude/worktrees/still-glowing-cobra
 
 swift test --filter TabTitleMetadataTests
 swift test --filter SidebarProducerTests

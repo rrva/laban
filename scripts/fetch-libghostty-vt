@@ -57,19 +57,18 @@ if [ "$actual" != "$GHOSTTY_COMMIT" ]; then
     fail "expected commit $GHOSTTY_COMMIT, got $actual"
 fi
 
-# Apply local patches.
-# stream: rename log scope to libghostty_vt_stream so log lines are clearly
-# attributed to this library; downgrade unimplemented-mode warnings to debug
-# so benign mode requests from programs like tmux don't surface as noise.
-stream_zig="$repo_root/$DEST/src/terminal/stream.zig"
-sed -i '' \
-    's/const log = std\.log\.scoped(\.stream)/const log = std.log.scoped(.libghostty_vt_stream)/' \
-    "$stream_zig"
-sed -i '' \
-    's/log\.warn("unimplemented mode:/log.debug("unimplemented mode:/g' \
-    "$stream_zig"
+# Apply local patches to the vendored source. Every modification lives as a
+# reviewable patch in patches/ — never an inline sed — so its provenance is
+# auditable as a diff and it applies identically on every platform.
+#
+# 0002 (stream.zig): rename the log scope to libghostty_vt_stream so log lines
+# are clearly attributed to this library; downgrade unimplemented-mode warnings
+# to debug so benign mode requests from programs like tmux don't surface as
+# noise.
+git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0002-stream-log-scope-and-mode-debug.patch" \
+    || fail "failed to apply stream log/mode patch (libghostty-vt-0002)"
 
-# alt-screen: clear the alternate screen using the PRIMARY screen's pen, not the
+# 0001 (Terminal.zig): clear the alternate screen using the PRIMARY screen's pen, not the
 # alternate screen's stale SGR background. Upstream switchScreenMode (mode 1049
 # enter) erases the screen BEFORE copying the primary cursor; because each screen
 # keeps its own cursor, the erase uses the previous alt-screen app's leftover pen.

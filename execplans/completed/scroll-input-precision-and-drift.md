@@ -29,7 +29,7 @@ Add small helpers to `TerminalScrollInput`: one to resolve a mouse-reporting whe
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/4ba1/laban`:
+Run from `/Users/dev/.codex/worktrees/4ba1/laban`:
 
 ```sh
 rtk swift test --filter TerminalScrollInputTests

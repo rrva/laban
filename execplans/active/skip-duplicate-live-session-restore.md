@@ -47,7 +47,7 @@ Add `PersistenceRestoreLaunchFlag` in core and use it from `AppDelegate` and `la
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/wrk/laban`:
+Run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter 'RestorePlannerTests|PersistenceRoundTripTests|AppModelTests.testSyncProcessMetadataUsesForegroundProcessForTitle|LabanDebugSmokeTests.testRuntimeCanSkipLoadingPersistedWorkspace'

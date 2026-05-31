@@ -86,7 +86,7 @@ The change is visible in two ways:
   at this commit is a standalone VT terminal library with no GUI dependency.
   It provides full VT parsing, render state with true colors and grapheme
   clusters, and a cursor, all accessible from C without AppKit. This is
-  discovered by inspecting ghostling (`/Users/rrj/wrk/ghostling`), which pins
+  discovered by inspecting ghostling (`/Users/dev/wrk/ghostling`), which pins
   the same commit and uses libghostty-vt with Raylib.
   Date/Author: 2026-05-03 / Codex.
 

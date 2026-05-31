@@ -510,7 +510,7 @@ persisted transcript replay.
 Run commands from the repository root:
 
 ```sh
-cd /Users/rrj/wrk/laban/.claude/worktrees/jaunty-brewing-tower
+cd /Users/dev/wrk/laban/.claude/worktrees/jaunty-brewing-tower
 ```
 
 1. Confirm CLI command shapes if the installed CLIs may have changed:
@@ -582,8 +582,8 @@ The change is acceptable when all of the following are true:
   "--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.2"]`, the
   generated command contains `codex resume <id>` and `--model gpt-5.2`, and
   does not contain `dangerously-bypass`.
-- If Codex cwd is `/Users/rrj/wrk/laban`, the generated command includes
-  Codex's cwd flag (`-C '/Users/rrj/wrk/laban'` if using `-C`).
+- If Codex cwd is `/Users/dev/wrk/laban`, the generated command includes
+  Codex's cwd flag (`-C '/Users/dev/wrk/laban'` if using `-C`).
 - Agent environment persistence does not write secret-looking names or values
   into `workspace.json`.
 - Existing workspaces without `argv`, `env`, or agent `cwd` still decode.

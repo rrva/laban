@@ -140,7 +140,7 @@ Add four new files and make two small edits.
 
 ## Concrete Steps
 
-All commands run from the repository root `/Users/rrj/wrk/laban`.
+All commands run from the repository root `/Users/dev/wrk/laban`.
 
 1. Create the four new files and apply the two edits described in Plan of Work.
    Reference implementations:

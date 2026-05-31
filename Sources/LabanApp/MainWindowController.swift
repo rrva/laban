@@ -336,6 +336,19 @@ final class MainWindowController: NSWindowController {
       model?.markActiveTabNotificationSeen()
     }
 
+    // OSC 52 clipboard bridge: a program copying via `ESC ] 52 ; c ; <base64>`
+    // (e.g. a coding agent over SSH) lands on the macOS pasteboard. AppModel
+    // fires onClipboardWrite on the main queue. Read replies are gated by
+    // model.osc52ReadEnabled (off by default); the provider is wired so flipping
+    // it on works without re-plumbing. Headless parity lives in
+    // HeadlessDebugRuntime against its debug clipboard.
+    model.onClipboardWrite = { _, data in
+      TerminalClipboard.writeOSC52(data, to: .general)
+    }
+    model.clipboardReadProvider = {
+      TerminalClipboard.osc52ReadData(.general)
+    }
+
     if persistenceSyncEnabled {
       // Persistence is wired AFTER the optional restore so the initial
       // restored snapshot does not bounce back through the coordinator.

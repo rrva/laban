@@ -348,6 +348,23 @@ public final class HeadlessDebugRuntime {
     model.onAgentNotification = { [weak self] tabId, text in
       self?.recordAgentNotificationEvent(tabId: tabId, text: text)
     }
+    // OSC 52 clipboard parity: a program copying via `ESC ] 52 ; c ; <base64>`
+    // mirrors into the debug clipboard and the event stream (the headless
+    // counterpart of MainWindowController's NSPasteboard write). The read
+    // provider serves that same debug clipboard; read replies stay gated by
+    // model.osc52ReadEnabled (off by default).
+    model.onClipboardWrite = { [weak self] tabId, data in
+      self?.recordClipboardOSC52Write(tabId: tabId, data: data)
+    }
+    model.clipboardReadProvider = { [weak self] in
+      guard let self else { return nil }
+      return self.withRuntimeLock { Data(self.debugClipboard.utf8) }
+    }
+    // OSC 7 cwd parity: surface a shell's working-directory report on the event
+    // stream (the cwd itself is adopted by the shared metadata path).
+    model.onWorkingDirectoryChange = { [weak self] tabId, cwd in
+      self?.recordWorkingDirectoryEvent(tabId: tabId, cwd: cwd)
+    }
 
     renderFrameUnlocked()
   }

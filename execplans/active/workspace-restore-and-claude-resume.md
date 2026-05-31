@@ -987,7 +987,7 @@ adds these):
       "tabs": [
         {
           "id": "tab-A1B2",
-          "cwd": "/Users/rrj/wrk/laban",
+          "cwd": "/Users/dev/wrk/laban",
           "launchCommand": "/bin/zsh -l",
           "lastActiveAt": "2026-05-17T14:23:11Z"
         }
@@ -1424,7 +1424,7 @@ third agent later is one entry in `AgentSupport`.
     "agent": {
       "name": "claude",
       "sessionId": "0fa31a8c-...-...",
-      "jsonlPath": "/Users/rrj/.claude/projects/.../0fa31a8c-...-....jsonl",
+      "jsonlPath": "/Users/dev/.claude/projects/.../0fa31a8c-...-....jsonl",
       "wasRunningAtQuit": true
     }
   }

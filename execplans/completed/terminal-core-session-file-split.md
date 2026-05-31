@@ -81,7 +81,7 @@ files while preserving their bodies:
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/0259/laban`:
+Run from `/Users/dev/.codex/worktrees/0259/laban`:
 
 ```sh
 swift test --filter LabanTerminalCoreTests
@@ -108,7 +108,7 @@ reported no whitespace errors.
   `ghostty/vt/terminal.h` on the first validation attempt.
   Evidence: the initial build failed with `fatal error:
   'ghostty/vt/terminal.h' file not found`. Following `AGENTS.md`, adding
-  `.external -> /Users/rrj/wrk/laban/.external` restored the vendored headers.
+  `.external -> /Users/dev/wrk/laban/.external` restored the vendored headers.
 
 ## Outcomes & Retrospective
 

@@ -123,7 +123,7 @@ in this ExecPlan.
 
 ## Validation and Acceptance
 
-From `/Users/rrj/wrk/laban`, run:
+From `/Users/dev/wrk/laban`, run:
 
 ```sh
 rtk swift build --product bench-keystroke-latency

@@ -244,7 +244,7 @@ captured cause, then rerun the same repro and relevant tests.
 ## Validation and Acceptance
 
 Acceptance required both a targeted automated repro and code-level tests. These
-commands were run from `/Users/rrj/wrk/laban`:
+commands were run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk scripts/run-resize-repro --seconds 8 --renderer metal

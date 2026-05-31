@@ -47,7 +47,7 @@ bitmap. The debug runtime and capture replay serialize frame commands through
 `Sources/LabanDebug/HeadlessDebugRuntime.swift` and
 `Sources/LabanDebug/CaptureRecorder.swift`.
 
-The worktree must have `.external` linked to `/Users/rrj/wrk/laban/.external`
+The worktree must have `.external` linked to `/Users/dev/wrk/laban/.external`
 before build/test commands that depend on libghostty-vt can pass.
 
 ## Plan of Work
@@ -97,7 +97,7 @@ the SGR attributes and `◢◣◤◥` without overlap.
 The latest local capture found during planning is:
 
 ```text
-/Users/rrj/Library/Logs/Laban/captures/appkit-2026-05-04T20-20-57Z
+/Users/dev/Library/Logs/Laban/captures/appkit-2026-05-04T20-20-57Z
 ```
 
 It contains terminal bytes and screenshots, so use it locally only and do not

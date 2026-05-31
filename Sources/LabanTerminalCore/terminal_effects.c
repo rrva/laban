@@ -77,9 +77,10 @@ bool laban_effect_device_attributes(GhosttyTerminal terminal, void *userdata,
     (void)userdata;
     if (!out_attrs) return false;
 
-    /* DA1: VT220 conformance with ANSI color. Keep this conservative:
-       Laban does not install a custom terminfo entry or intentionally expose
-       terminal-driven 80/132-column switching or OSC-52 clipboard writes. */
+    /* DA1: VT220 conformance with ANSI color. Keep this conservative: Laban
+       does not install a custom terminfo entry or intentionally expose
+       terminal-driven 80/132-column switching. (OSC 52 clipboard IS supported,
+       via the osc_host.c side-channel bridge, but DA1 never advertised it.) */
     out_attrs->primary.conformance_level = GHOSTTY_DA_CONFORMANCE_VT220;
     out_attrs->primary.features[0] = GHOSTTY_DA_FEATURE_ANSI_COLOR;
     out_attrs->primary.num_features = 1;

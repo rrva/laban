@@ -11,16 +11,55 @@ import Foundation
 /// kernel-blessed tool for this and is rock-solid even when the target's
 /// main thread is wedged.
 ///
+/// ## Distinguishing real stalls from a paused process
+///
+/// The heartbeat is driven by the render loop's display link, which stops
+/// ticking whenever the *whole process* is paused — system sleep, App Nap, or
+/// occlusion — none of which is a main-thread stall. Two guards keep those out
+/// of the capture set (they were the large majority of historical captures,
+/// including bogus multi-hour "stalls" recorded across overnight sleep):
+///
+///  1. The clock is `CLOCK_UPTIME_RAW`, which does *not* advance while the
+///     system is asleep, so a sleeping Mac shows no heartbeat gap at all.
+///  2. The watchdog timer measures its *own* scheduling gap. A genuine
+///     main-thread stall does not delay this background timer (it runs on a
+///     separate dispatch queue), so the self-gap stays near one interval. App
+///     Nap and throttling defer the timer itself, producing a large self-gap —
+///     when that happens the heartbeat gap is an artifact and the baseline is
+///     reset instead of captured.
+///
+/// A configurable ceiling drops any residual oversized capture as a backstop.
+///
 /// Control via env vars:
-///   LABAN_WATCHDOG=0           disable entirely
-///   LABAN_WATCHDOG_MS=<int>    stall threshold (default 200 ms)
-///   LABAN_WATCHDOG_COOLDOWN_MS=<int>  min gap between captures (default 5000)
+///   LABAN_WATCHDOG=0                  disable entirely
+///   LABAN_WATCHDOG_MS=<int>          stall threshold (default 200 ms)
+///   LABAN_WATCHDOG_COOLDOWN_MS=<int> min gap between captures (default 5000)
+///   LABAN_WATCHDOG_MAX_MS=<int>      artifact ceiling; ignore "stalls" longer
+///                                    than this, 0 disables (default 60000)
+///   LABAN_WATCHDOG_PAUSE_GAP_MS=<int> watchdog self-gap above which the
+///                                    process is treated as paused (default 1000)
+///   LABAN_WATCHDOG_KEEP=<int>        max inproc-stall files retained (default 200)
 final class MainThreadWatchdog {
 
   static let shared = MainThreadWatchdog()
 
+  /// Outcome of evaluating one watchdog tick. Pure data so the policy can be
+  /// unit-tested without a real main-thread stall or `/usr/bin/sample`.
+  enum Decision: Equatable {
+    case belowThreshold
+    /// The whole process was suspended; the gap is an artifact. Reset baseline.
+    case paused
+    case cooldown
+    /// Above the artifact ceiling — almost certainly not a real UI hang.
+    case aboveCeiling
+    case capture(stalledForMs: Int)
+  }
+
   private let stallThresholdMs: Int
   private let captureCooldownMs: Int
+  private let maxStallMs: Int
+  private let pauseGapMs: Int
+  private let keepFiles: Int
   private let enabled: Bool
   private let outputDir: URL
 
@@ -32,6 +71,12 @@ final class MainThreadWatchdog {
   private var lastCaptureNs: Int64 = 0
   private var heartbeatLock = os_unfair_lock()
 
+  /// Uptime at the previous watchdog tick, used to measure the timer's own
+  /// scheduling gap. Touched only on `queue`, so it needs no lock.
+  private var lastObservedNs: Int64 = 0
+
+  private let intervalMs = 50
+
   private let queue = DispatchQueue(label: "laban.watchdog", qos: .utility)
   private var timer: DispatchSourceTimer?
   private var sampleTasks: [Process] = []
@@ -42,6 +87,10 @@ final class MainThreadWatchdog {
     self.stallThresholdMs = env["LABAN_WATCHDOG_MS"].flatMap(Int.init) ?? 200
     self.captureCooldownMs =
       env["LABAN_WATCHDOG_COOLDOWN_MS"].flatMap(Int.init) ?? 5000
+    self.maxStallMs = env["LABAN_WATCHDOG_MAX_MS"].flatMap(Int.init) ?? 60000
+    self.pauseGapMs =
+      env["LABAN_WATCHDOG_PAUSE_GAP_MS"].flatMap(Int.init) ?? 1000
+    self.keepFiles = env["LABAN_WATCHDOG_KEEP"].flatMap(Int.init) ?? 200
     self.outputDir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("laban-watchdog")
     try? FileManager.default.createDirectory(
@@ -52,19 +101,21 @@ final class MainThreadWatchdog {
   func start() {
     guard enabled, timer == nil else { return }
     let t = DispatchSource.makeTimerSource(queue: queue)
-    t.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50))
+    t.schedule(
+      deadline: .now() + .milliseconds(intervalMs),
+      repeating: .milliseconds(intervalMs))
     t.setEventHandler { [weak self] in self?.tick() }
     self.timer = t
     heartbeat()  // prime so the first comparison is meaningful
     t.resume()
     AppLog.watchdog.info(
-      "active threshold=\(stallThresholdMs)ms cooldown=\(captureCooldownMs)ms dir=\(outputDir.path)"
+      "active threshold=\(stallThresholdMs)ms cooldown=\(captureCooldownMs)ms maxStall=\(maxStallMs)ms keep=\(keepFiles) dir=\(outputDir.path)"
     )
   }
 
   /// Call from the main thread once per displayLink tick.
   func heartbeat() {
-    let now = monotonicNs()
+    let now = uptimeNs()
     os_unfair_lock_lock(&heartbeatLock)
     lastTickNs = now
     os_unfair_lock_unlock(&heartbeatLock)
@@ -72,17 +123,60 @@ final class MainThreadWatchdog {
 
   // MARK: - Watchdog tick
 
+  /// Pure stall-vs-artifact policy. Order matters: a paused process is detected
+  /// first because its heartbeat gap is meaningless; the ceiling is a backstop
+  /// for anything that slips past the pause guard (e.g. occlusion that stops
+  /// the display link while the watchdog timer keeps its own schedule).
+  static func decide(
+    heartbeatAgeMs: Int,
+    selfGapMs: Int,
+    sinceLastCaptureMs: Int,
+    thresholdMs: Int,
+    pauseGapMs: Int,
+    cooldownMs: Int,
+    maxStallMs: Int
+  ) -> Decision {
+    if selfGapMs > pauseGapMs { return .paused }
+    if heartbeatAgeMs < thresholdMs { return .belowThreshold }
+    if sinceLastCaptureMs < cooldownMs { return .cooldown }
+    if maxStallMs > 0, heartbeatAgeMs > maxStallMs { return .aboveCeiling }
+    return .capture(stalledForMs: heartbeatAgeMs)
+  }
+
   private func tick() {
-    let now = monotonicNs()
+    let now = uptimeNs()
+    let prevObserved = lastObservedNs
+    lastObservedNs = now
+    // 0 on the very first tick — treat as no gap rather than a huge one.
+    let selfGapMs = prevObserved == 0 ? 0 : Int((now - prevObserved) / 1_000_000)
+
     os_unfair_lock_lock(&heartbeatLock)
     let last = lastTickNs
     os_unfair_lock_unlock(&heartbeatLock)
-    let elapsedNs = now - last
-    let elapsedMs = Int(elapsedNs / 1_000_000)
-    guard elapsedMs >= stallThresholdMs else { return }
-    if (now - lastCaptureNs) / 1_000_000 < Int64(captureCooldownMs) { return }
-    lastCaptureNs = now
-    captureSample(stalledForMs: elapsedMs)
+    let heartbeatAgeMs = Int((now - last) / 1_000_000)
+    let sinceLastCaptureMs =
+      lastCaptureNs == 0 ? Int.max : Int((now - lastCaptureNs) / 1_000_000)
+
+    switch Self.decide(
+      heartbeatAgeMs: heartbeatAgeMs,
+      selfGapMs: selfGapMs,
+      sinceLastCaptureMs: sinceLastCaptureMs,
+      thresholdMs: stallThresholdMs,
+      pauseGapMs: pauseGapMs,
+      cooldownMs: captureCooldownMs,
+      maxStallMs: maxStallMs
+    ) {
+    case .paused:
+      // Whole process was suspended (system sleep, App Nap, throttling): the
+      // heartbeat gap is an artifact. Reset the baseline so the next tick
+      // measures from now instead of immediately re-firing.
+      heartbeat()
+    case .belowThreshold, .cooldown, .aboveCeiling:
+      break
+    case .capture(let ms):
+      lastCaptureNs = now
+      captureSample(stalledForMs: ms)
+    }
   }
 
   private func captureSample(stalledForMs: Int) {
@@ -107,16 +201,62 @@ final class MainThreadWatchdog {
       EventLog.shared.log(
         "watchdog.stall",
         ["ms": stalledForMs, "path": outURL.path])
+      pruneOldCaptures()
     } catch {
       // sample missing or sandboxed — silent. This is a debug aid.
     }
   }
 
+  // MARK: - Retention
+
+  /// Pure retention policy: from captures paired with their modification
+  /// dates, return the ones to delete so only the `keep` newest survive.
+  /// Extracted from `pruneOldCaptures` so the cap is unit-testable without
+  /// touching disk. `keep <= 0` disables pruning (returns nothing to delete).
+  static func capturesToPrune<T>(_ captures: [(T, Date)], keep: Int) -> [T] {
+    guard keep > 0, captures.count > keep else { return [] }
+    return
+      captures
+      .sorted { $0.1 > $1.1 }  // newest first
+      .dropFirst(keep)
+      .map { $0.0 }
+  }
+
+  /// Keep only the most recent `keepFiles` in-process captures. The in-process
+  /// path historically never trimmed, letting the directory grow to tens of
+  /// thousands of files; only our own `inproc-stall-*` files are touched, never
+  /// the external sampler's `<pid>-<name>-*` files. Runs on `queue`, gated
+  /// behind the capture cooldown, so the directory scan stays off the main
+  /// thread and runs at most once per cooldown window.
+  private func pruneOldCaptures() {
+    guard keepFiles > 0 else { return }
+    let fm = FileManager.default
+    guard
+      let urls = try? fm.contentsOfDirectory(
+        at: outputDir,
+        includingPropertiesForKeys: [.contentModificationDateKey],
+        options: [.skipsHiddenFiles])
+    else { return }
+    func mtime(_ url: URL) -> Date {
+      (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        .contentModificationDate) ?? .distantPast
+    }
+    let captures =
+      urls
+      .filter { $0.lastPathComponent.hasPrefix("inproc-stall-") }
+      .map { ($0, mtime($0)) }
+    for url in Self.capturesToPrune(captures, keep: keepFiles) {
+      try? fm.removeItem(at: url)
+    }
+  }
+
   // MARK: - Helpers
 
-  private func monotonicNs() -> Int64 {
+  /// Uptime in nanoseconds. `CLOCK_UPTIME_RAW` does not advance while the
+  /// system is asleep, so an overnight sleep produces no phantom heartbeat gap.
+  private func uptimeNs() -> Int64 {
     var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
+    clock_gettime(CLOCK_UPTIME_RAW, &ts)
     return Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec)
   }
 

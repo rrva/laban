@@ -126,6 +126,36 @@ final class RenderPerfBench: XCTestCase {
     }
   }
 
+  // A/B: the legacy String-per-cell glyph pass vs the macOS 26 Span/UTF8Span
+  // pass. Both emit byte-identical FrameCommands (FrameProducerSpanParityTests),
+  // so this isolates the producer-side CPU win the perf change targets.
+  func testFrameProducerGlyphPassLegacyVsFast() throws {
+    guard enabled() else { return }
+    guard #available(macOS 26, *) else {
+      throw XCTSkip("Span/UTF8Span fast path requires macOS 26")
+    }
+    defer { FrameProducer._forceLegacyGlyphRuns = false }
+    func bench(_ label: String, cols: Int32, rows: Int32, payload: String) throws {
+      let s = try makeSession(cols: cols, rows: rows)
+      defer { s.close() }
+      feed(s, payload)
+      let snap = s.snapshot()!
+      defer { laban_snapshot_destroy(snap) }
+      let producer = FrameProducer(cellWidth: 9, cellHeight: 19, originX: 200, originY: 0)
+      FrameProducer._forceLegacyGlyphRuns = true
+      measure(label: "\(label) glyph [legacy]", iterations: 200) {
+        _ = producer.commands(from: UnsafePointer(snap))
+      }
+      FrameProducer._forceLegacyGlyphRuns = false
+      measure(label: "\(label) glyph [fast]  ", iterations: 200) {
+        _ = producer.commands(from: UnsafePointer(snap))
+      }
+    }
+    try bench("text    160x48", cols: 160, rows: 48, payload: textPayload(cols: 160, rows: 48))
+    try bench("tui     160x48", cols: 160, rows: 48, payload: tuiPayload(cols: 160, rows: 48))
+    try bench("colored 160x48", cols: 160, rows: 48, payload: coloredPayload(cols: 160, rows: 48))
+  }
+
   // MARK: - Command counts (for sanity-checking what hits the renderer)
 
   func testCommandCountsAcrossWorkloads() throws {

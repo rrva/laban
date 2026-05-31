@@ -114,11 +114,11 @@ fragments.
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/wrk/laban`:
+Run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk scripts/cursor-spinner-repro --cycles 3 --frame-gap-ms 1 >/tmp/spinner.bin
-rtk scripts/analyze-spinner-repro /Users/rrj/Library/Logs/Laban/captures/appkit-2026-05-09T07-05-06Z
+rtk scripts/analyze-spinner-repro /Users/dev/Library/Logs/Laban/captures/appkit-2026-05-09T07-05-06Z
 rtk scripts/run-spinner-repro --seconds 3 --mode probe
 rtk scripts/run-spinner-repro --seconds 3 --mode capture --no-build
 ```
@@ -134,11 +134,11 @@ Acceptance:
 - A capture run writes both probe output and a normal full capture directory
   under `.artifacts/spinner-repro/.../captures/`.
 
-Validation completed on 2026-05-09 from `/Users/rrj/wrk/laban`:
+Validation completed on 2026-05-09 from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk scripts/cursor-spinner-repro --cycles 3 --frame-gap-ms 1 >/tmp/laban-spinner-repro.bin
-rtk scripts/analyze-spinner-repro /Users/rrj/Library/Logs/Laban/captures/appkit-2026-05-09T07-05-06Z --pretty
+rtk scripts/analyze-spinner-repro /Users/dev/Library/Logs/Laban/captures/appkit-2026-05-09T07-05-06Z --pretty
 rtk swift test --filter TerminalBitmapViewSyncOutputTests
 rtk scripts/run-spinner-repro --seconds 2 --mode probe
 rtk scripts/run-spinner-repro --seconds 2 --mode capture --no-build
@@ -155,7 +155,7 @@ rtk env LABAN_SPINNER_STYLE=split-home LABAN_SPINNER_HOME_GAP_MS=4 scripts/run-s
 Observed outputs:
 
 - Latest manual capture
-  `/Users/rrj/Library/Logs/Laban/captures/appkit-2026-05-09T07-05-06Z`:
+  `/Users/dev/Library/Logs/Laban/captures/appkit-2026-05-09T07-05-06Z`:
   `frames=173`, `cursorCols={"1":173}`, `leftCursorFrames=0`.
 - Aggressive three-write probe-only run
   `.artifacts/spinner-repro/20260509T072205Z/probe-off/probe/frame-probe.ndjson`:

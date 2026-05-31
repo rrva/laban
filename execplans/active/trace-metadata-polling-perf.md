@@ -25,7 +25,7 @@ shows fewer APFS and sandbox samples.
 - [x] (2026-05-19) Added focused tests for the behavior affected by the optimizations.
 - [x] (2026-05-19) Ran targeted validation and the full package test suite.
 - [x] (2026-05-19) Reviewed the fresh profile trace at
-  `/Users/rrj/Downloads/Untitled4.trace` from the profile build.
+  `/Users/dev/Downloads/Untitled4.trace` from the profile build.
 - [x] (2026-05-19) Increased the Claude session-log lookup cache from 2 seconds
   to 5 seconds after the follow-up trace still showed the detector/log-locator
   cluster.
@@ -110,7 +110,7 @@ shows fewer APFS and sandbox samples.
 
 - Observation: Instruments trace bundles can contain the launched app's
   environment.
-  Evidence: The table-of-contents export for `/Users/rrj/Downloads/Untitled4.trace`
+  Evidence: The table-of-contents export for `/Users/dev/Downloads/Untitled4.trace`
   included environment variable names and values. Treat trace bundles as
   sensitive artifacts when sharing them.
 
@@ -168,7 +168,7 @@ The macOS terms in the trace mean:
 
 ## Concrete Steps
 
-Run commands from `/Users/rrj/wrk/laban` and prefix them with `rtk` per the
+Run commands from `/Users/dev/wrk/laban` and prefix them with `rtk` per the
 repository agent runtime convention.
 
 1. Inspect the relevant source and tests:

@@ -115,7 +115,7 @@ Fourth, run real app-style debug scenarios with `scripts/run-debug-script` or
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/wrk/laban`:
+Run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter TerminalSelectionTests
@@ -136,7 +136,7 @@ Acceptance:
 - Any discovered bug has a focused regression test that fails before the fix
   and passes after the fix.
 
-Validation run on 2026-05-16 from `/Users/rrj/wrk/laban`:
+Validation run on 2026-05-16 from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter TerminalSelectionTests

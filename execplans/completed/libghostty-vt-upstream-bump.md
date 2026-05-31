@@ -137,7 +137,7 @@ plan with validation results and any surprises before committing.
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/wrk/laban`:
+Run from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk ./scripts/fetch-libghostty-vt

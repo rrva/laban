@@ -95,7 +95,7 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. The executing agent must not mark the plan as
 done until this gate has passed.
 
-- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; exits 0, prints `check passed`.
+- [x] Run `./scripts/check` from `/Users/dev/wrk/laban`; exits 0, prints `check passed`.
 - [x] `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` registered in `session.c`;
   `laban_session_consume_title` declared in `LabanTerminalCore.h` and implemented.
 - [x] `Sources/LabanCore/TerminalTitle.swift` — shared sanitization policy (bounding,
@@ -251,7 +251,7 @@ checked progress bullet for title handling and recording validation evidence.
 
 ## Concrete Steps
 
-Run all commands from `/Users/rrj/wrk/laban`.
+Run all commands from `/Users/dev/wrk/laban`.
 
 1. Confirm the current baseline:
 

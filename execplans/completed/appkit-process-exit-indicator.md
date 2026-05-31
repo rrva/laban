@@ -125,7 +125,7 @@ A separate fresh-state review agent must verify the following before this
 ExecPlan is considered complete. See the "Review gate and review-fix loop"
 section in `PLANS.md` for the full process.
 
-- [ ] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0 and
+- [ ] Run `./scripts/check` from `/Users/dev/wrk/laban`; expect exit 0 and
   `check passed` in stdout.
 - [ ] `LabanTerminalCore.h` declares `LabanExitState` struct (two `int` fields:
   `status`, `exit_status`) and `laban_session_exit_state()`; `session.c`
@@ -525,7 +525,7 @@ equivalent), poll until the session exits (with deadline), then assert
 
 ## Concrete Steps
 
-Run all commands from `/Users/rrj/wrk/laban`.
+Run all commands from `/Users/dev/wrk/laban`.
 
 1. Confirm baseline:
 

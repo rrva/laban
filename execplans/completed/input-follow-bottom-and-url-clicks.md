@@ -70,7 +70,7 @@ metadata from `LabanSnapshot`. Plain visible URLs have no `hyperlink_id`, so
 Targeted validation:
 
 ```sh
-cd /Users/rrj/wrk/laban
+cd /Users/dev/wrk/laban
 rtk swift test --filter TerminalScrollInputTests
 rtk swift test --filter TerminalHyperlinkOpeningTests
 rtk swift test --filter HyperlinkPlumbingTests

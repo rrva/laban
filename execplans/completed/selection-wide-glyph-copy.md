@@ -28,7 +28,7 @@ Update `TerminalSelection.selectedText(from:)` so cells whose `wide` field is `L
 
 ## Validation and Acceptance
 
-Run from `/Users/rrj/.codex/worktrees/4ba1/laban`:
+Run from `/Users/dev/.codex/worktrees/4ba1/laban`:
 
 ```sh
 rtk swift test --filter TerminalSelectionTests

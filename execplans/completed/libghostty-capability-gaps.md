@@ -117,7 +117,7 @@ SwiftPM fails because `.external/` is missing in this worktree, create the
 documented symlink:
 
 ```sh
-ln -s /Users/rrj/wrk/laban/.external .external
+ln -s /Users/dev/wrk/laban/.external .external
 ```
 
 Do not fetch a second copy of libghostty-vt into this worktree.

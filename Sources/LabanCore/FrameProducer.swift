@@ -35,6 +35,21 @@ public struct FrameProducer {
     self.contentYOffset = contentYOffset
   }
 
+  // A/B toggle: force the legacy glyph pass even on macOS 26. Production never
+  // sets this; the parity test flips it to prove the Span/UTF8Span fast path
+  // emits byte-identical FrameCommands, and the bench measures both in one run.
+  nonisolated(unsafe) static var _forceLegacyGlyphRuns = false
+
+  // Raw bitmasks so the hot loop avoids cross-module OptionSet method calls.
+  // TextAttributes lives in LabanRenderer; `.intersection`/`.subtracting` do
+  // not inline across the module boundary, so they showed up as real cost in
+  // the profile. Bitwise ops on the raw UInt16 are free.
+  private static let renderableMaskRaw: UInt16 = TextAttributes.renderableMask.rawValue
+  private static let inverseRaw: UInt16 = TextAttributes.inverse.rawValue
+  private static let faintRaw: UInt16 = TextAttributes.faint.rawValue
+  private static let invisibleRaw: UInt16 = TextAttributes.invisible.rawValue
+  private static let underlineRaw: UInt16 = TextAttributes.underline.rawValue
+
   // Caller owns the snapshot lifetime; FrameProducer does not retain it.
   public func commands(
     from snap: UnsafePointer<LabanSnapshot>,
@@ -199,7 +214,274 @@ public struct FrameProducer {
     }
 
     // ---- Pass 4: Glyph runs and block-element rects for all rows ----
+    // macOS 26 takes a Span/UTF8Span fast path that builds each coalesced run
+    // from raw UTF-8 bytes (one String per run, not per cell) and merges
+    // grapheme clusters without allocating; older systems — and the A/B test
+    // toggle — take the legacy loop. Both MUST emit byte-identical
+    // FrameCommands; FrameProducerSpanParityTests pins that.
     let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
+    if #available(macOS 26, *), !FrameProducer._forceLegacyGlyphRuns {
+      appendFastTerminalGlyphRuns(
+        into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
+        hyperlinkURIs: hyperlinkURIs)
+    } else {
+      appendLegacyTerminalGlyphRuns(
+        into: &cmds, snapshot: snapshot, rows: rows, cols: cols, cw: cw, ch: ch,
+        hyperlinkURIs: hyperlinkURIs)
+    }
+
+    // Cursor
+    if snapshot.cursor_visible != 0,
+      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      Int(snapshot.cursor_row) < rows,
+      Int(snapshot.cursor_col) < cols
+    {
+      let cx = originX + CGFloat(snapshot.cursor_col) * cw
+      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
+      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+        cmds.append(.cursor(rect, color: Theme.current.cursor))
+      }
+    }
+
+    // Exit banner overlays the bottom terminal row after all terminal cells
+    // have been emitted so stale bottom-row content cannot cover it.
+    appendExitBanner()
+
+    return cmds
+  }
+
+  // Grapheme-cluster count over contiguous UTF-8 bytes, allocation-free. Uses
+  // the same UAX-29 segmentation as `String.count`, so the spacer-merge
+  // decision is identical to the legacy `(runText + text).count` comparison.
+  @available(macOS 26, *)
+  private static func graphemeClusterCount(_ utf8Bytes: Span<UInt8>) -> Int {
+    guard let utf8 = try? UTF8Span(validating: utf8Bytes) else { return 0 }
+    var iterator = utf8.makeCharacterIterator()
+    var count = 0
+    while iterator.next() != nil { count += 1 }
+    return count
+  }
+
+  // macOS 26 glyph pass. Builds each coalesced run by appending raw UTF-8 bytes
+  // into one reused buffer and materialises a single String per run at flush —
+  // versus the legacy `String(bytes:encoding:)` allocation per cell, which
+  // dominated the profile via per-call generic-metadata instantiation, malloc,
+  // and ARC. Attribute masking uses raw bits (no cross-module OptionSet calls)
+  // and grapheme merging uses UTF8Span (no per-cell Character/String). Output
+  // is byte-identical to `appendLegacyTerminalGlyphRuns` (parity test).
+  @available(macOS 26, *)
+  private func appendFastTerminalGlyphRuns(
+    into cmds: inout [FrameCommand],
+    snapshot: LabanSnapshot,
+    rows: Int,
+    cols: Int,
+    cw: CGFloat,
+    ch: CGFloat,
+    hyperlinkURIs: [String]
+  ) {
+    guard let cells = snapshot.cells else { return }
+    let storage = snapshot.utf8_storage
+
+    // One allocation, reused across every run in every row.
+    var runBytes: [UInt8] = []
+    runBytes.reserveCapacity(cols * 4)
+
+    for row in 0..<rows {
+      let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
+      let rowStart = row * cols
+
+      var runStart: Int? = nil
+      var runFg: UInt32 = 0
+      var runBg: UInt32 = 0
+      var runAttrsRaw: UInt16 = 0
+      var runUnderlineStyle: UnderlineStyle = .none
+      var runUnderlineColor: UInt32? = nil
+      var runHyperlink: String? = nil
+      var pendingSpacer = false
+      runBytes.removeAll(keepingCapacity: true)
+
+      func flushRun() {
+        guard let start = runStart, !runBytes.isEmpty else {
+          runStart = nil
+          runBytes.removeAll(keepingCapacity: true)
+          return
+        }
+        let cellX = originX + CGFloat(start) * cw
+        cmds.append(
+          .glyphRun(
+            origin: CGPoint(x: cellX, y: cellY),
+            text: String(decoding: runBytes, as: UTF8.self),
+            foreground: runFg,
+            background: runBg,
+            attributes: TextAttributes(rawValue: runAttrsRaw),
+            source: .terminal,
+            underlineStyle: runUnderlineStyle,
+            underlineColor: runUnderlineColor,
+            hyperlink: runHyperlink
+          ))
+        runStart = nil
+        runBytes.removeAll(keepingCapacity: true)
+        runUnderlineStyle = .none
+        runUnderlineColor = nil
+        runHyperlink = nil
+      }
+
+      for col in 0..<cols {
+        let cell = cells[rowStart + col]
+        let isSpacerTail = (cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL))
+        let hasContent = cell.utf8_length > 0 && storage != nil
+
+        if isSpacerTail {
+          if runStart != nil { pendingSpacer = true }
+          continue
+        }
+
+        // Renderable flags minus inverse, as raw bits (the C bridge already
+        // swapped fg/bg for inverse video).
+        let attrsRaw = (cell.flags & FrameProducer.renderableMaskRaw) & ~FrameProducer.inverseRaw
+        let cellBg = cell.background_rgba
+        let cellFg =
+          (attrsRaw & FrameProducer.faintRaw) != 0
+          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
+          : cell.foreground_rgba
+        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
+        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
+        let cellHyperlink: String? = {
+          let id = Int(cell.hyperlink_id)
+          guard id > 0, id <= hyperlinkURIs.count else { return nil }
+          return hyperlinkURIs[id - 1]
+        }()
+        var cellAttrsRaw = attrsRaw
+        if cellHyperlink != nil {
+          if cellUnderlineStyle == .none && (cellAttrsRaw & FrameProducer.underlineRaw) == 0 {
+            cellUnderlineStyle = .single
+          }
+          if cellUnderlineColor == nil {
+            cellUnderlineColor = Theme.current.blue
+          }
+          cellAttrsRaw |= FrameProducer.underlineRaw
+        }
+
+        guard hasContent, (attrsRaw & FrameProducer.invisibleRaw) == 0, let storage else {
+          flushRun()
+          pendingSpacer = false
+          continue
+        }
+
+        let offset = Int(cell.utf8_offset)
+        let length = Int(cell.utf8_length)
+        let cellBytes = UnsafeBufferPointer<UInt8>(
+          start: UnsafeRawPointer(storage).advanced(by: offset).assumingMemoryBound(to: UInt8.self),
+          count: length)
+
+        // Validate UTF-8 (mirrors `String(bytes:encoding:) != nil`) and detect a
+        // lone procedural box-drawing scalar. Pure ASCII — the common case for
+        // agent output — skips UTF8Span entirely and can never be procedural.
+        var validUTF8 = false
+        var proceduralScalar: Unicode.Scalar? = nil
+        if length == 1, cellBytes[0] < 0x80 {
+          validUTF8 = true
+        } else if let utf8 = try? UTF8Span(validating: cellBytes.span) {
+          validUTF8 = true
+          var scalars = utf8.makeUnicodeScalarIterator()
+          if let first = scalars.next(), scalars.next() == nil,
+            BoxDrawing.isProceduralCellElement(first)
+          {
+            proceduralScalar = first
+          }
+        }
+
+        guard validUTF8 else {
+          flushRun()
+          pendingSpacer = false
+          continue
+        }
+
+        // Block and fixed-format geometric elements are emitted as procedural
+        // .rect commands so they tile gap-free regardless of fallback metrics.
+        if let scalar = proceduralScalar {
+          flushRun()
+          pendingSpacer = false
+          let cellX = originX + CGFloat(col) * cw
+          for filled in BoxDrawing.proceduralCellElementRects(
+            scalar,
+            at: CGPoint(x: cellX, y: cellY),
+            cellWidth: cw,
+            cellHeight: ch,
+            foreground: cellFg
+          ) {
+            cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
+          }
+          continue
+        }
+
+        let sameStyle =
+          runFg == cellFg && runBg == cellBg && runAttrsRaw == cellAttrsRaw
+          && runUnderlineStyle == cellUnderlineStyle
+          && runUnderlineColor == cellUnderlineColor
+          && runHyperlink == cellHyperlink
+
+        if runStart != nil, sameStyle {
+          if pendingSpacer {
+            // Resolve the held SPACER_TAIL: keep the wide cell and this one in
+            // the same run iff merging shrinks the grapheme-cluster count.
+            var merged = runBytes
+            merged.append(contentsOf: cellBytes)
+            let mergedCount = FrameProducer.graphemeClusterCount(merged.span)
+            let separateCount =
+              FrameProducer.graphemeClusterCount(runBytes.span)
+              + FrameProducer.graphemeClusterCount(cellBytes.span)
+            if mergedCount < separateCount {
+              runBytes.append(contentsOf: cellBytes)
+              pendingSpacer = false
+            } else {
+              flushRun()
+              pendingSpacer = false
+              runStart = col
+              runFg = cellFg
+              runBg = cellBg
+              runAttrsRaw = cellAttrsRaw
+              runUnderlineStyle = cellUnderlineStyle
+              runUnderlineColor = cellUnderlineColor
+              runHyperlink = cellHyperlink
+              runBytes.removeAll(keepingCapacity: true)
+              runBytes.append(contentsOf: cellBytes)
+            }
+          } else {
+            runBytes.append(contentsOf: cellBytes)
+          }
+        } else {
+          flushRun()
+          pendingSpacer = false
+          runStart = col
+          runFg = cellFg
+          runBg = cellBg
+          runAttrsRaw = cellAttrsRaw
+          runUnderlineStyle = cellUnderlineStyle
+          runUnderlineColor = cellUnderlineColor
+          runHyperlink = cellHyperlink
+          runBytes.removeAll(keepingCapacity: true)
+          runBytes.append(contentsOf: cellBytes)
+        }
+      }
+      flushRun()
+      pendingSpacer = false
+    }
+  }
+
+  // Pre-macOS-26 / forced-legacy glyph pass. Kept byte-for-byte as it shipped;
+  // the fast path is validated against this output.
+  private func appendLegacyTerminalGlyphRuns(
+    into cmds: inout [FrameCommand],
+    snapshot: LabanSnapshot,
+    rows: Int,
+    cols: Int,
+    cw: CGFloat,
+    ch: CGFloat,
+    hyperlinkURIs: [String]
+  ) {
+    guard let cells = snapshot.cells else { return }
     for row in 0..<rows {
       let cellY = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
       let rowStart = row * cols
@@ -375,26 +657,6 @@ public struct FrameProducer {
       flushRun()
       pendingSpacer = false
     }
-
-    // Cursor
-    if snapshot.cursor_visible != 0,
-      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
-      Int(snapshot.cursor_row) < rows,
-      Int(snapshot.cursor_col) < cols
-    {
-      let cx = originX + CGFloat(snapshot.cursor_col) * cw
-      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
-      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
-        cmds.append(.cursor(rect, color: Theme.current.cursor))
-      }
-    }
-
-    // Exit banner overlays the bottom terminal row after all terminal cells
-    // have been emitted so stale bottom-row content cannot cover it.
-    appendExitBanner()
-
-    return cmds
   }
 
   public func commands(

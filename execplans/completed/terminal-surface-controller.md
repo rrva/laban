@@ -17,7 +17,7 @@ commands, and existing tests continue to pass.
 
 ## Progress
 
-- [x] Confirmed `main` is checked out at `/Users/rrj/wrk/laban` and clean before edits.
+- [x] Confirmed `main` is checked out at `/Users/dev/wrk/laban` and clean before edits.
 - [x] Read `docs/product/mvp.md`, `PLANS.md`, `AGENTS.md`, and `docs/process/agent-operating-guide.md`.
 - [x] Added a shared AppKit-free terminal surface controller and snapshot text helpers in `Sources/LabanCore`.
 - [x] Wired `TerminalBitmapView` frame command assembly and dirty-row damage through the shared controller.
@@ -85,7 +85,7 @@ encoding in their existing adapter files.
 
 ## Validation and Acceptance
 
-Run these commands from `/Users/rrj/wrk/laban`:
+Run these commands from `/Users/dev/wrk/laban`:
 
 ```sh
 rtk swift test --filter TerminalSurfaceControllerTests

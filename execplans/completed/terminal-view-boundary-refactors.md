@@ -221,7 +221,7 @@ main actor.
 
 ## Validation and Acceptance
 
-Run these commands from `/Users/rrj/.codex/worktrees/4b01/laban`:
+Run these commands from `/Users/dev/.codex/worktrees/4b01/laban`:
 
 ```sh
 swift test --filter TerminalClipboardTests
@@ -286,7 +286,7 @@ immediate rerun passed. The latest successful full run executed 422 tests with
 setup symlink:
 
 ```sh
-ln -s /Users/rrj/wrk/laban/.external .external
+ln -s /Users/dev/wrk/laban/.external .external
 ```
 
 The previous `TerminalBitmapView.kickDisplayFromBackground()` main-actor warning

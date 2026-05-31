@@ -501,7 +501,7 @@ Laban has no OSC 9 handling. Optionally surface a busy affordance on the tab
 ## Concrete Steps
 
 Work from the repository root
-(`/Users/rrj/wrk/laban/.claude/worktrees/abstract-fluttering-dolphin`). Build with
+(`/Users/dev/wrk/laban/.claude/worktrees/abstract-fluttering-dolphin`). Build with
 `./scripts/build-app` (not `swift build`). Run the full gate with `./scripts/check`.
 
 For each milestone: make the edit, add/adjust the test named in *Validation*, run

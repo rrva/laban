@@ -170,6 +170,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   // already animating. Single click-and-read scrollback navigation feels
   // crisp; only fast continuous spins go through the controller.
   private static let scrollSmoothingThreshold: Int = 3
+  /// How close to the live bottom a downward scroll must land before it is
+  /// treated as a return-to-follow when a streaming app moved the bottom past
+  /// the step. A non-alt-screen app (Codex) streaming ~1 row/frame matches each
+  /// 1-row down-nudge, so a bounded scroll stalls a few rows short forever and
+  /// the overlay indicator never clears; within this band we pin to the active
+  /// bottom instead. Bounded small so a down-scroll deep in history (navigation,
+  /// not a return to the bottom) is never yanked to the live bottom.
+  private static let scrollFollowReengageRows: Int = 6
   /// Set true by the per-frame PD controller while it's still moving
   /// `displayedScrollRows` toward `targetScrollRows`. The render path
   /// reads it to (1) compute the sub-cell `contentYOffset` and (2) force
@@ -3344,6 +3352,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       session: session,
       desiredAppliedRows: desiredApplied,
       resetOnClamp: resetOnClamp)
+    // A downward step (delta > 0 moves toward the live bottom) that reconciles
+    // *further* from the bottom than it aimed — `appliedScrollRows` ends more
+    // negative than `desiredApplied` — means a non-alt-screen app (e.g. Codex)
+    // streamed output and pushed the live bottom past the step between our
+    // viewport read and the scroll landing. Bounded steps then never catch the
+    // receding bottom: the user nudges down a row, output adds a row, and the
+    // overlay scroll indicator stays stuck a row short indefinitely (the
+    // `targetScrollRows == 0` snap above only fires when a step lands exactly on
+    // the bottom, which streaming prevents). Once within a small band of the
+    // live bottom, pin to active so libghostty re-engages follow-output. The
+    // band keeps a small down-scroll deep in history (navigation) from snapping.
+    if delta > 0,
+      appliedScrollRows < desiredApplied,
+      appliedScrollRows >= -Self.scrollFollowReengageRows
+    {
+      snapScrollToActiveBottom(tab: tab, session: session)
+    }
   }
 
   /// Snap the viewport to the live active bottom through whichever scroll path

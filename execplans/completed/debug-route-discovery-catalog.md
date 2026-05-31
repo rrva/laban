@@ -119,7 +119,7 @@ files pass strict format lint directly.
 - Observation: this worktree did not have `.external/`, so the first Swift test
   run could not find `ghostty/vt/terminal.h`.
   Evidence: the project `AGENTS.md` says worktrees should symlink `.external`
-  from `/Users/rrj/wrk/laban/.external` when missing; after creating that
+  from `/Users/dev/wrk/laban/.external` when missing; after creating that
   symlink, the focused Swift tests compiled and passed.
 
 ## Outcomes & Retrospective

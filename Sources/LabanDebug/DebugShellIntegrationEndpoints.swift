@@ -65,4 +65,41 @@ extension HeadlessDebugRuntime {
         ))
     }
   }
+
+  /// Record an OSC 52 clipboard *write* on the event stream and mirror it into
+  /// the debug clipboard, so `GET /debug/events` and `GET /debug/clipboard`
+  /// reflect a program copying via `ESC ] 52 ; c ; <base64> ST`. Wired to
+  /// `AppModel.onClipboardWrite` — the headless parity for the AppKit
+  /// NSPasteboard writer.
+  func recordClipboardOSC52Write(tabId: String, data: Data) {
+    let text = String(decoding: data, as: UTF8.self)
+    let sessionId = model.tabs.first { $0.id == tabId }?.sessionId
+    withRuntimeLock {
+      debugClipboard = text
+      appendEvent(
+        EventEntry(
+          kind: "clipboard.osc52Write",
+          tabId: tabId,
+          sessionId: sessionId,
+          text: text
+        ))
+    }
+  }
+
+  /// Record an OSC 7 working-directory report on the event stream so
+  /// `GET /debug/events` shows a shell's `cd`. Wired to
+  /// `AppModel.onWorkingDirectoryChange`; the headless parity for the cwd the
+  /// metadata sync also adopts from the same OSC 7 report.
+  func recordWorkingDirectoryEvent(tabId: String, cwd: String) {
+    let sessionId = model.tabs.first { $0.id == tabId }?.sessionId
+    withRuntimeLock {
+      appendEvent(
+        EventEntry(
+          kind: "cwd.osc7",
+          tabId: tabId,
+          sessionId: sessionId,
+          text: cwd
+        ))
+    }
+  }
 }

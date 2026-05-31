@@ -116,6 +116,100 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
     }
   }
 
+  /// The exact case from a user capture: a non-alt-screen app (Codex) streams
+  /// ~1 row per frame while the user nudges *down* one row at a time near the
+  /// bottom. Each 1-row down-scroll is matched by a streamed row, and the
+  /// smooth-scroll accountant's clamp-reset pulls `targetScrollRows` back, so a
+  /// bounded scroll never lands exactly on the moving bottom — the
+  /// `targetScrollRows == 0` snap never fires and the overlay indicator stays
+  /// stuck a row short. A downward step that reconciles further from the bottom
+  /// than it aimed must pin to active so follow-output re-engages.
+  func testIncrementalScrollDownDuringStreamingReachesBottom() throws {
+    try withSoftwareRenderer {
+      let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)
+      let activeTab = try XCTUnwrap(model.activeTab)
+      let session = try XCTUnwrap(model.session(forTab: activeTab.id))
+
+      var nextLine = 0
+      func stream(_ count: Int) {
+        var text = ""
+        for _ in 0..<count {
+          text += "line \(nextLine)\r\n"
+          nextLine += 1
+        }
+        session.write(Array(text.utf8))
+        view.advanceFrame()
+      }
+      func linesBack() throws -> Int {
+        let vs = try XCTUnwrap(session.viewportState())
+        return max(0, max(0, vs.totalRows - vs.viewportRows) - vs.viewportOffset)
+      }
+
+      stream(120)
+      XCTAssertEqual(try linesBack(), 0, "starts pinned to the bottom")
+
+      // User scrolls up a few rows to re-read recent output.
+      view.scrollWheel(with: wheel(rowsUp: 3, cellHeight: cellHeight))
+      view.advanceFrame()
+      XCTAssertGreaterThan(try linesBack(), 0, "scrolled back into history")
+
+      // Now nudge down one row per frame while output streams one row per frame.
+      // Pre-fix every nudge is cancelled by a streamed row and this stalls a row
+      // or two short forever; the snap-to-active must catch the receding bottom.
+      for _ in 0..<30 {
+        stream(1)
+        view.scrollWheel(with: wheel(rowsUp: -1, cellHeight: cellHeight))
+        view.advanceFrame()
+      }
+      XCTAssertEqual(
+        try linesBack(), 0,
+        "incremental scroll-down during streaming must reach and follow the live bottom")
+
+      // And it must stay pinned as more output arrives (viewport is active).
+      stream(5)
+      XCTAssertEqual(try linesBack(), 0, "after reaching the bottom the viewport must follow")
+    }
+  }
+
+  /// Guards the streaming follow-snap against over-reach: a small down-scroll
+  /// deep in history (the user is navigating, not returning to the bottom) must
+  /// NOT snap to the live bottom even though streaming moved the bottom past the
+  /// step. Only steps that land within a few rows of the bottom re-engage follow.
+  func testDeepHistoryDownScrollDuringStreamingStaysInHistory() throws {
+    try withSoftwareRenderer {
+      let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)
+      let activeTab = try XCTUnwrap(model.activeTab)
+      let session = try XCTUnwrap(model.session(forTab: activeTab.id))
+
+      func linesBack() throws -> Int {
+        let vs = try XCTUnwrap(session.viewportState())
+        return max(0, max(0, vs.totalRows - vs.viewportRows) - vs.viewportOffset)
+      }
+
+      session.write(Array((0..<120).map { "line \($0)\r\n" }.joined().utf8))
+      view.advanceFrame()
+
+      // Scroll far up into history.
+      view.scrollWheel(with: wheel(rowsUp: 60, cellHeight: cellHeight))
+      view.advanceFrame()
+      // App streams a large burst while the user reads deep in history, moving
+      // the live bottom far past where a small down-scroll would land.
+      session.write(Array((120..<180).map { "line \($0)\r\n" }.joined().utf8))
+      view.advanceFrame()
+      let deep = try linesBack()
+      XCTAssertGreaterThan(deep, 50, "user is deep in history with the bottom far below")
+
+      // A small down-scroll (navigation, not a return-to-bottom) lands short of
+      // its aim because output streamed — but it is nowhere near the bottom, so
+      // it must stay in history rather than snapping to follow.
+      view.scrollWheel(with: wheel(rowsUp: -5, cellHeight: cellHeight))
+      view.advanceFrame()
+      XCTAssertGreaterThan(
+        try linesBack(), 30,
+        "a small down-scroll deep in history must not snap to the live bottom")
+    }
+  }
+
   /// A partial scroll-up that the user does NOT fully reverse must remain
   /// scrolled back — the snap only fires when the user actually returns to the
   /// bottom, so normal mid-history reading is unaffected.

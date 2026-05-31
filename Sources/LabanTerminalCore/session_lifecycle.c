@@ -286,6 +286,10 @@ static void free_ghostty_resources(LabanSession *s) {
     s->response_buf = NULL;
     s->response_len = 0;
     s->response_cap = 0;
+    free(s->osc_host_scanner.osc52_buf);
+    s->osc_host_scanner.osc52_buf = NULL;
+    s->osc_host_scanner.osc52_len = 0;
+    s->osc_host_scanner.osc52_cap = 0;
 }
 
 int laban_session_create(

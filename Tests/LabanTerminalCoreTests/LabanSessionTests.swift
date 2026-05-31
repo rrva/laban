@@ -2248,7 +2248,9 @@ final class LabanSessionTests: XCTestCase {
     let response = drainResponse(session)
     let asString = String(bytes: response, encoding: .utf8) ?? ""
     // Keep DA1 conservative: VT220 conformance (62) plus ANSI color (22).
-    // Do not claim 132-column mode or OSC-52 clipboard support from the MVP bridge.
+    // Do not claim 132-column mode here. (OSC 52 clipboard is supported via the
+    // osc_host.c side channel, but it is not a DA1 attribute and never appeared
+    // in this reply.)
     XCTAssertEqual(
       asString, "\u{1b}[?62;22c",
       "DA1 reply should be conservative; got \(asString.debugDescription)")
@@ -2579,6 +2581,277 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(
       sink.messages, ["Agent turn complete", "Approval requested"],
       "OSC 9;4 progress reports must not fire the notification callback")
+  }
+
+  // MARK: - OSC 52 clipboard bridge
+  //
+  // libghostty-vt parses OSC 52 but its VT-only API registers no clipboard
+  // sink, so the sequence is dropped. osc_host.c picks it up: a *write* delivers
+  // the base64 payload to a callback (the Swift bridge decodes + writes
+  // NSPasteboard), and a *read* query is answered on the PTY only when read is
+  // explicitly enabled. The headline use is copy-from-a-remote-program over SSH.
+
+  final class ClipboardSink {
+    var selection: String?
+    var base64: String?
+    var writes = 0
+    var reads = 0
+  }
+
+  private func installClipboardWriteCapture(
+    _ session: OpaquePointer, _ sink: ClipboardSink
+  ) {
+    let ud = Unmanaged.passUnretained(sink).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_osc_clipboard_callbacks(
+        session,
+        { ud, _, sel, selLen, b64, b64Len in
+          guard let ud else { return }
+          let sink = Unmanaged<ClipboardSink>.fromOpaque(ud).takeUnretainedValue()
+          sink.writes += 1
+          if let sel, selLen > 0 {
+            sink.selection = sel.withMemoryRebound(to: UInt8.self, capacity: selLen) {
+              String(decoding: UnsafeBufferPointer(start: $0, count: selLen), as: UTF8.self)
+            }
+          } else {
+            sink.selection = ""
+          }
+          if let b64, b64Len > 0 {
+            sink.base64 = String(
+              decoding: UnsafeBufferPointer(start: b64, count: b64Len), as: UTF8.self)
+          }
+        },
+        nil,
+        ud),
+      0)
+  }
+
+  func testOSC52WriteFiresClipboardCallbackWithBase64AndSelection() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ClipboardSink()
+    installClipboardWriteCapture(session, sink)
+
+    // base64("hello") == "aGVsbG8=" — a program copying to the host clipboard.
+    writeBytes(session, Array("\u{1b}]52;c;aGVsbG8=\u{07}".utf8))
+    XCTAssertEqual(sink.writes, 1)
+    XCTAssertEqual(sink.selection, "c")
+    XCTAssertEqual(sink.base64, "aGVsbG8=")
+    XCTAssertEqual(drainResponse(session), [], "a clipboard write must not reply on the PTY")
+  }
+
+  func testOSC52WriteAcceptsSTTerminatorAndEmptySelection() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ClipboardSink()
+    installClipboardWriteCapture(session, sink)
+
+    // Empty Pc (defaults to clipboard) + ST terminator. base64("world").
+    writeBytes(session, Array("\u{1b}]52;;d29ybGQ=\u{1b}\\".utf8))
+    XCTAssertEqual(sink.writes, 1)
+    XCTAssertEqual(sink.selection, "")
+    XCTAssertEqual(sink.base64, "d29ybGQ=")
+  }
+
+  func testOSC52EmptyWritePayloadIsIgnored() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ClipboardSink()
+    installClipboardWriteCapture(session, sink)
+
+    // `OSC 52 ; c ;` with no data clears the selection in xterm; Laban ignores
+    // it so a stray sequence cannot silently wipe the user's clipboard.
+    writeBytes(session, Array("\u{1b}]52;c;\u{07}".utf8))
+    XCTAssertEqual(sink.writes, 0, "an empty OSC 52 write must not fire the callback")
+  }
+
+  func testOSC52OversizedWriteIsDropped() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ClipboardSink()
+    installClipboardWriteCapture(session, sink)
+
+    // 300 KiB of base64 is past OSC_HOST_OSC52_MAX (256 KiB): dropped, not
+    // truncated — the clipboard is left untouched rather than set to a partial.
+    let huge = String(repeating: "A", count: 300 * 1024)
+    writeBytes(session, Array("\u{1b}]52;c;\(huge)\u{07}".utf8))
+    XCTAssertEqual(sink.writes, 0, "an oversized OSC 52 write must be dropped")
+  }
+
+  func testOSC52ReadQueryDeniedByDefaultProducesNoResponse() {
+    final class ReadSink { var reads = 0 }
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ReadSink()
+    let ud = Unmanaged.passUnretained(sink).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_osc_clipboard_callbacks(
+        session,
+        nil,
+        { ud, _, _, _ in
+          guard let ud else { return }
+          Unmanaged<ReadSink>.fromOpaque(ud).takeUnretainedValue().reads += 1
+        },
+        ud),
+      0)
+
+    // Read is off by default: a `?` query must neither fire the callback nor
+    // reply, so a remote program cannot read the host clipboard unasked.
+    writeBytes(session, Array("\u{1b}]52;c;?\u{07}".utf8))
+    XCTAssertEqual(sink.reads, 0, "read callback must not fire while read is disabled")
+    XCTAssertEqual(drainResponse(session), [], "a denied OSC 52 read must not reply")
+  }
+
+  func testOSC52ReadQueryWhenEnabledRespondsOnPTY() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    XCTAssertEqual(laban_session_set_osc52_read_enabled(session, 1), 0)
+    // The read handler answers with base64("world") == "d29ybGQ=" for "c".
+    XCTAssertEqual(
+      laban_session_set_osc_clipboard_callbacks(
+        session,
+        nil,
+        { _, session, _, _ in
+          guard let session else { return }
+          let b64 = Array("d29ybGQ=".utf8)
+          let sel = Array("c".utf8)
+          sel.withUnsafeBufferPointer { s in
+            s.withMemoryRebound(to: CChar.self) { sc in
+              b64.withUnsafeBufferPointer { bb in
+                _ = laban_session_respond_clipboard_osc52(
+                  session, sc.baseAddress, sc.count, bb.baseAddress, bb.count)
+              }
+            }
+          }
+        },
+        nil),
+      0)
+
+    writeBytes(session, Array("\u{1b}]52;c;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]52;c;d29ybGQ=\u{1b}\\",
+      "an enabled OSC 52 read must reply with the clipboard as base64, ST-terminated")
+  }
+
+  // MARK: - OSC 7 working directory
+  //
+  // A shell emits `ESC ] 7 ; file://<host>/<path> ST` on each prompt. Laban
+  // observes it and adopts a local-host path as the session's authoritative cwd
+  // (preferred over proc_pidinfo). A remote-host report is ignored.
+
+  /// Current cwd as reported by laban_session_process_metadata. In fixture mode
+  /// the foreground pid is absent, so this returns the OSC 7 cwd when one has
+  /// been adopted and the launch cwd otherwise.
+  private func processCwd(_ session: OpaquePointer) -> String {
+    var childPid: Int32 = -1
+    var foregroundPid: Int32 = -1
+    var process = [CChar](repeating: 0, count: 256)
+    var command = [CChar](repeating: 0, count: 1024)
+    var cwd = [CChar](repeating: 0, count: 1024)
+    _ = process.withUnsafeMutableBufferPointer { processPtr in
+      command.withUnsafeMutableBufferPointer { commandPtr in
+        cwd.withUnsafeMutableBufferPointer { cwdPtr in
+          laban_session_process_metadata(
+            session, &childPid, &foregroundPid,
+            processPtr.baseAddress, processPtr.count,
+            commandPtr.baseAddress, commandPtr.count,
+            cwdPtr.baseAddress, cwdPtr.count)
+        }
+      }
+    }
+    return String(cString: cwd)
+  }
+
+  private func installCwdCapture(_ session: OpaquePointer, _ sink: ClipboardSink) {
+    // Reuse ClipboardSink.base64 as a generic captured-string slot.
+    let ud = Unmanaged.passUnretained(sink).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_osc_working_directory_callback(
+        session,
+        { ud, _, path, len in
+          guard let ud, let path, len > 0 else { return }
+          let sink = Unmanaged<ClipboardSink>.fromOpaque(ud).takeUnretainedValue()
+          sink.reads += 1
+          sink.base64 = path.withMemoryRebound(to: UInt8.self, capacity: len) {
+            String(decoding: UnsafeBufferPointer(start: $0, count: len), as: UTF8.self)
+          }
+        },
+        ud),
+      0)
+  }
+
+  func testOSC7LocalReportFiresCallbackAndAdoptsCwd() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ClipboardSink()
+    installCwdCapture(session, sink)
+
+    writeBytes(session, Array("\u{1b}]7;file://localhost/Users/me/proj\u{07}".utf8))
+    XCTAssertEqual(sink.reads, 1)
+    XCTAssertEqual(sink.base64, "/Users/me/proj")
+    XCTAssertEqual(
+      processCwd(session), "/Users/me/proj",
+      "an OSC 7 local-host report must become the session's authoritative cwd")
+  }
+
+  func testOSC7PercentDecodesPathAndAcceptsEmptyHost() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Empty authority (file:///...) plus a percent-encoded space.
+    writeBytes(session, Array("\u{1b}]7;file:///Users/me/a%20b\u{1b}\\".utf8))
+    XCTAssertEqual(processCwd(session), "/Users/me/a b")
+  }
+
+  func testOSC7RemoteHostIsIgnored() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ClipboardSink()
+    installCwdCapture(session, sink)
+
+    // A clearly non-local host (reserved .invalid TLD): the path must NOT be
+    // adopted, so a remote SSH shell can't set a bogus local cwd.
+    writeBytes(session, Array("\u{1b}]7;file://remote-box.invalid/home/u\u{07}".utf8))
+    XCTAssertEqual(sink.reads, 0, "a remote-host OSC 7 must not fire the callback")
+    XCTAssertNotEqual(
+      processCwd(session), "/home/u",
+      "a remote-host OSC 7 path must not become the local cwd")
   }
 
   func testFocusReportingModeGatesFocusEncoding() {

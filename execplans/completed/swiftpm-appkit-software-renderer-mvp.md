@@ -793,7 +793,7 @@ Acceptance for this milestone:
 Start from the repo root:
 
 ```sh
-cd /Users/rrj/wrk/laban
+cd /Users/dev/wrk/laban
 ```
 
 Before editing implementation files, verify the current baseline:
@@ -947,8 +947,8 @@ These are mechanical checks for a fresh agent or automation runner. They are
 not a human review loop. The umbrella plan is complete only when each check can
 be run from a clean working tree and produce the expected result.
 
-- [x] Run `./scripts/check` from `/Users/rrj/wrk/laban`; expect exit 0.
-- [x] Run `swift test` from `/Users/rrj/wrk/laban`; expect exit 0. (2026-05-17:
+- [x] Run `./scripts/check` from `/Users/dev/wrk/laban`; expect exit 0.
+- [x] Run `swift test` from `/Users/dev/wrk/laban`; expect exit 0. (2026-05-17:
   511 tests, 2 skipped, 0 failures.)
 - [x] Run `./scripts/build-app`; expect
   `.build/laban/Laban.app/Contents/MacOS/LabanApp` to exist and be executable.

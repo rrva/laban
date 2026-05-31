@@ -622,7 +622,7 @@ Implement this plan in small commits or logical chunks:
 Work from the repository root:
 
 ```sh
-cd /Users/rrj/wrk/laban
+cd /Users/dev/wrk/laban
 ```
 
 Before editing, confirm the current baseline:
