@@ -41,7 +41,11 @@ jobs:
 
   build:
     name: build
-    runs-on: macos-latest
+    # FrameProducer's glyph fast path uses Span/UTF8Span (Swift 6.2+, macOS 26
+    # SDK), gated at runtime with @available(macOS 26, *). The default Xcode on
+    # the macos-15 image is 16.4 (Swift 6.1) and lacks those symbols, so the
+    # build needs the macos-26 image, whose default Xcode (26.x) ships them.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
         with:
@@ -96,9 +100,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .build
-          key: swiftpm-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
+          # v4: the runner moved from macos-15 (Xcode 16.4) to macos-26 (Xcode
+          # 26.x); a .build compiled by the old toolchain must not be restored
+          # onto the new one.
+          key: swiftpm-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Sources/**') }}
           restore-keys: |
-            swiftpm-v3-${{ runner.os }}-${{ runner.arch }}-
+            swiftpm-v4-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build
         run: swift build
