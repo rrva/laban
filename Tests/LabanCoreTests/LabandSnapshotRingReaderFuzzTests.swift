@@ -183,6 +183,44 @@ final class LabandSnapshotRingReaderFuzzTests: XCTestCase {
     }
   }
 
+  /// A slot advertises its own string-table size in its header, but the table
+  /// only spans `slotStride - stringTableOffset` bytes. A hostile slot can claim
+  /// the whole `UInt32` and point a cell far into that imaginary table; the
+  /// reader's only bound is that claimed size, so without clamping to the real
+  /// capacity the string read leaves the mapping entirely (the labpty 91e2676
+  /// out-of-bounds-slice class). This keeps the published slot otherwise valid —
+  /// seqlock, generation, rows, cols all intact — so the booby-trapped cell is
+  /// actually read.
+  func testSnapshotRingReaderClampsLyingStringTable() throws {
+    let (attachment, valid) = try validRing()
+    let dir = ".tmp/laband-ring-strtab-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: URL(fileURLWithPath: dir)) }
+    let scratch = "\(dir)/ring.bin"
+
+    // The published frame is generation 1 -> slot 0, which `latestSnapshotFrame`
+    // selects. Poison its string-table size and cell (0,0)'s string pointer.
+    let slot0 = 64
+    let cell00 = slot0 + LabandSnapshotRingLayout.cellsOffset(maxRows: attachment.maxRows)
+    var bytes = valid
+    patchU32(
+      &bytes, slot0 + LabandSnapshotRingLayout.SlotHeaderOffset.stringTableBytes, 0xFFFF_FFFF)
+    patchU32(
+      &bytes, cell00 + LabandSnapshotRingLayout.CellOffset.stringOffset, 0x1000_0000)
+    patchU16(&bytes, cell00 + LabandSnapshotRingLayout.CellOffset.stringLength, 16)
+    try Data(bytes).write(to: URL(fileURLWithPath: scratch))
+
+    var poisoned = attachment
+    poisoned.path = scratch
+    let reader = try LabandSnapshotRingReader(
+      attachment: poisoned, logicalSessionId: "fuzz", incarnationId: "inc")
+    // With the clamp, the lying offset fails the (now honest) bound and the cell
+    // falls back to its codepoint; the frame reads back without leaving the map.
+    // Without the clamp this dereferences ~256 MiB past a 17 KiB mapping -> SIGBUS.
+    let frame = try reader.latestSnapshotFrame()
+    XCTAssertGreaterThan(frame.generation ?? 0, 0)
+  }
+
   // MARK: - Helpers
 
   /// A zero-filled buffer sized for `stride`, with the 64-byte file header copied
@@ -229,5 +267,9 @@ final class LabandSnapshotRingReaderFuzzTests: XCTestCase {
 
   private func patchU32(_ bytes: inout [UInt8], _ offset: Int, _ value: UInt32) {
     for index in 0..<4 { bytes[offset + index] = UInt8((value >> (8 * index)) & 0xff) }
+  }
+
+  private func patchU16(_ bytes: inout [UInt8], _ offset: Int, _ value: UInt16) {
+    for index in 0..<2 { bytes[offset + index] = UInt8((value >> (8 * index)) & 0xff) }
   }
 }
