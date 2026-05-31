@@ -345,6 +345,9 @@ public final class HeadlessDebugRuntime {
     model.onShellIntegrationChange = { [weak self] tabId, state in
       self?.recordShellIntegrationEvent(tabId: tabId, state: state)
     }
+    model.onAgentNotification = { [weak self] tabId, text in
+      self?.recordAgentNotificationEvent(tabId: tabId, text: text)
+    }
 
     renderFrameUnlocked()
   }

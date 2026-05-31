@@ -76,6 +76,7 @@ public final class Session {
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
   private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
   private var bellCallbackUserdata: UnsafeMutableRawPointer?
+  private var oscNotificationCallbackUserdata: UnsafeMutableRawPointer?
   private var shellIntegrationCallbackUserdata: UnsafeMutableRawPointer?
   public weak var captureSink: CaptureSink? {
     didSet {
@@ -108,6 +109,19 @@ public final class Session {
     didSet {
       callbackState.setBellHandler(onBell)
       updateBellCallback()
+    }
+  }
+
+  /// Set once per Session to receive OSC 9 desktop notifications — `ESC ] 9 ;
+  /// <text> BEL/ST` — for example the Codex agent TUI emitting "agent turn
+  /// complete" or "approval requested". Fires with the notification text on the
+  /// same thread that drove `poll()` or `feedOutput(_:)`. (The OSC 10/11 color
+  /// query reply that shares the same C scanner is always-on and needs no
+  /// handler.)
+  public var onOSCNotification: ((String) -> Void)? {
+    didSet {
+      callbackState.setOSCNotificationHandler(onOSCNotification)
+      updateOSCNotificationCallback()
     }
   }
 
@@ -378,6 +392,7 @@ public final class Session {
       clearCaptureCallback(handle: h)
       clearTabStatusCallback(handle: h)
       clearBellCallback(handle: h)
+      clearOSCNotificationCallback(handle: h)
       clearShellIntegrationCallback(handle: h)
       laban_session_destroy(h)
       handle = nil
@@ -1177,6 +1192,19 @@ public final class Session {
     }
   }
 
+  private func updateOSCNotificationCallback() {
+    guard !isClosed, let h = handle else { return }
+    if callbackState.hasOSCNotificationHandler {
+      if oscNotificationCallbackUserdata == nil {
+        oscNotificationCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
+      laban_session_set_osc_notification_callback(
+        h, sessionOSCNotificationCallback, oscNotificationCallbackUserdata)
+    } else {
+      clearOSCNotificationCallback(handle: h)
+    }
+  }
+
   private func clearCaptureCallback(handle h: OpaquePointer) {
     laban_session_set_capture_callback(h, nil, nil)
     if let userdata = captureCallbackUserdata {
@@ -1201,6 +1229,14 @@ public final class Session {
     }
   }
 
+  private func clearOSCNotificationCallback(handle h: OpaquePointer) {
+    laban_session_set_osc_notification_callback(h, nil, nil)
+    if let userdata = oscNotificationCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      oscNotificationCallbackUserdata = nil
+    }
+  }
+
   private func clearShellIntegrationCallback(handle h: OpaquePointer) {
     laban_session_set_osc133_callback(h, nil, nil)
     if let userdata = shellIntegrationCallbackUserdata {
@@ -1217,6 +1253,7 @@ private final class SessionCallbackState {
   private var captureFrame = 0
   private var tabStatusHandler: ((Session.TabStatusUpdate) -> Void)?
   private var bellHandler: ((UInt64) -> Void)?
+  private var oscNotificationHandler: ((String) -> Void)?
   private var shellIntegrationHandler: ((ShellIntegrationState) -> Void)?
   private var shellIntegration = ShellIntegrationState()
 
@@ -1242,6 +1279,12 @@ private final class SessionCallbackState {
     return bellHandler != nil
   }
 
+  var hasOSCNotificationHandler: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return oscNotificationHandler != nil
+  }
+
   func setCaptureSink(_ sink: CaptureSink?) {
     lock.lock()
     captureSink = sink
@@ -1263,6 +1306,12 @@ private final class SessionCallbackState {
   func setBellHandler(_ handler: ((UInt64) -> Void)?) {
     lock.lock()
     bellHandler = handler
+    lock.unlock()
+  }
+
+  func setOSCNotificationHandler(_ handler: ((String) -> Void)?) {
+    lock.lock()
+    oscNotificationHandler = handler
     lock.unlock()
   }
 
@@ -1308,6 +1357,12 @@ private final class SessionCallbackState {
     defer { lock.unlock() }
     return bellHandler
   }
+
+  func oscNotificationTarget() -> ((String) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return oscNotificationHandler
+  }
 }
 
 private let sessionBellCallback:
@@ -1316,6 +1371,16 @@ private let sessionBellCallback:
     guard let userdata else { return }
     let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
     state.bellTarget()?(count)
+  }
+
+private let sessionOSCNotificationCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?, OpaquePointer?, UnsafePointer<UInt8>?, Int
+  ) -> Void = { userdata, _, text, len in
+    guard let userdata, let text, len > 0 else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    let message = String(decoding: UnsafeBufferPointer(start: text, count: len), as: UTF8.self)
+    state.oscNotificationTarget()?(message)
   }
 
 private let sessionShellIntegrationCallback:

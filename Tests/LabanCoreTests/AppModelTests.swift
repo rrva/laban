@@ -68,6 +68,31 @@ final class AppModelTests: XCTestCase {
     XCTAssertFalse(session!.isClosed)
   }
 
+  func testOSC9DesktopNotificationReachesAgentNotificationHook() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+
+    var received: [(tab: Tab.ID, text: String)] = []
+    model.onAgentNotification = { id, text in received.append((id, text)) }
+
+    // A Codex turn-complete notification: ESC ] 9 ; <text> BEL.
+    session.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
+    pumpMainQueue()
+
+    XCTAssertEqual(received.count, 1, "OSC 9 must fire onAgentNotification exactly once")
+    XCTAssertEqual(received.first?.tab, tabId)
+    XCTAssertEqual(received.first?.text, "Agent turn complete")
+
+    // A ConEmu progress report (OSC 9;4) must not be surfaced as a notification.
+    session.feedOutput(Array("\u{1b}]9;4;1;75\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(received.count, 1, "OSC 9;4 progress must not reach the notification hook")
+  }
+
   func testCreateTabAddsTabAndSelectsIt() throws {
     let model = try makeModel()
     let originalId = model.tabs[0].id

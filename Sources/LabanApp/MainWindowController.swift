@@ -312,6 +312,22 @@ final class MainWindowController: NSWindowController {
     autoChecker.start()
     controller.updateAutoChecker = autoChecker
 
+    // OSC 9 desktop notifications (e.g. the Codex agent finishing a turn or
+    // asking for approval) -> native macOS banner. AppModel fires
+    // onAgentNotification on the main queue. The poster is retained by the
+    // closure, which the model owns; suppress the banner for the tab already in
+    // front of the user. Headless parity lives in HeadlessDebugRuntime, which
+    // records the same notification as a debug event.
+    let agentNotificationPoster = AgentNotificationPoster()
+    agentNotificationPoster.isTabFrontmost = { [weak model] tabId in
+      guard NSApplication.shared.isActive, let model else { return false }
+      return model.tabs.first(where: { $0.isActive })?.id == tabId
+    }
+    model.onAgentNotification = { [weak model] tabId, text in
+      let title = model?.tabs.first(where: { $0.id == tabId })?.title
+      agentNotificationPoster.post(tabId: tabId, tabTitle: title, text: text)
+    }
+
     if persistenceSyncEnabled {
       // Persistence is wired AFTER the optional restore so the initial
       // restored snapshot does not bounce back through the coordinator.

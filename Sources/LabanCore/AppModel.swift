@@ -90,6 +90,14 @@ public final class AppModel {
   /// `Session.onShellIntegration` stays owned by AppModel.
   public var onShellIntegrationChange: ((Tab.ID, ShellIntegrationState) -> Void)?
 
+  /// Broadcast when a tab's program emits an OSC 9 desktop notification (the
+  /// Codex agent TUI signalling e.g. "agent turn complete" or "approval
+  /// requested"). Always dispatched to the main queue with the originating tab
+  /// and the notification text. The AppKit host posts a native macOS user
+  /// notification; the debug runtime records it. Single broadcast point so
+  /// `Session.onOSCNotification` stays owned by AppModel.
+  public var onAgentNotification: ((Tab.ID, String) -> Void)?
+
   /// Optional logger invoked for each tab that fails to spawn during
   /// `replaceTabs(from:)`. Production wires this to `AppLog` so
   /// restore failures don't disappear silently.
@@ -1487,6 +1495,7 @@ public final class AppModel {
   private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {
     attachTabStatus(session: session, tabId: tabId)
     attachBellAttention(session: session, tabId: tabId)
+    attachOSCNotification(session: session, tabId: tabId)
     attachShellIntegration(session: session, tabId: tabId)
   }
 
@@ -1546,6 +1555,23 @@ public final class AppModel {
   private func applyBellAttention(forTab tabId: Tab.ID, at date: Date) -> Bool {
     withModelLock {
       metadataSync.noteBell(forTab: tabId, at: date, tabs: &_tabs)
+    }
+  }
+
+  /// Re-broadcast OSC 9 desktop notifications. The session callback fires on the
+  /// reader thread; hop to main (matching `attachBellAttention`) so the host's
+  /// notification posting and the model mutation both run on the main queue.
+  private func attachOSCNotification(session: Session, tabId: Tab.ID) {
+    session.onOSCNotification = { [weak self] text in
+      let date = Date()
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        // Raise the same per-tab attention indicator a bell does, so a
+        // backgrounded Codex tab shows it needs the user even if the native
+        // banner is dismissed or notifications are denied.
+        self.applyBellAttention(forTab: tabId, at: date)
+        self.onAgentNotification?(tabId, text)
+      }
     }
   }
 
