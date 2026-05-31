@@ -91,7 +91,9 @@ final class TabAttentionTests: XCTestCase {
   }
 
   func testAnyNeedsActionTrueForUnfocusedWaitingTab() {
-    let tabs = [waitingTab("a"), Tab(id: "b", position: 2, title: "b", isActive: true, sessionId: "sb")]
+    let tabs = [
+      waitingTab("a"), Tab(id: "b", position: 2, title: "b", isActive: true, sessionId: "sb"),
+    ]
     XCTAssertTrue(TabAttentionClassifier.anyNeedsAction(tabs: tabs, activeTabId: "b"))
   }
 

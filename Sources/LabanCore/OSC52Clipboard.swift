@@ -22,7 +22,8 @@ public enum OSC52Clipboard {
     let raw = Data(bytes)
     // Strict decode first; fall back to tolerating stray whitespace/newlines a
     // few emitters insert. Unknown characters otherwise mean a malformed write.
-    let decoded = Data(base64Encoded: raw)
+    let decoded =
+      Data(base64Encoded: raw)
       ?? Data(base64Encoded: raw, options: .ignoreUnknownCharacters)
     guard let decoded, decoded.count <= maxDecodedBytes else { return nil }
     return decoded
