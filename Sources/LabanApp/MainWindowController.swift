@@ -284,6 +284,12 @@ final class MainWindowController: NSWindowController {
     termView.onViewportUnavailable = { [weak scrollIndicator] in
       scrollIndicator?.reset()
     }
+    // Drag-to-scrub: dragging the overlay thumb maps the pointer to an absolute
+    // scroll offset (spec.md §scrollback). The indicator reports a history
+    // fraction; the terminal owns the viewport and jumps there.
+    scrollIndicator.onScrubToFraction = { [weak termView] fraction in
+      termView?.scrubViewportToHistoryFraction(fraction)
+    }
     termView.onActiveTabChanged = { [weak scrollIndicator] in
       scrollIndicator?.reset()
     }

@@ -166,4 +166,39 @@ final class TerminalScrollIndicatorTests: XCTestCase {
       isVisible: false, hidePending: false)
     XCTAssertEqual(action, .keep)
   }
+
+  // MARK: - Drag-to-scrub history fraction
+
+  /// Track spans y ∈ [bottom 12, top 588] (height 600, topInset 12); a 100pt
+  /// thumb travels over availableTravel = (588-12) - 100 = 476pt.
+  private func fraction(thumbTopY: Double) -> Double {
+    TerminalScrollIndicator.historyFraction(
+      thumbTopY: thumbTopY, trackTop: 588, trackBottom: 12, thumbHeight: 100)
+  }
+
+  func testHistoryFractionThumbAtTrackTopIsOldestHistory() {
+    // Thumb top pinned to the track top -> oldest scrollback (fraction 0).
+    XCTAssertEqual(fraction(thumbTopY: 588), 0, accuracy: 1e-9)
+  }
+
+  func testHistoryFractionThumbAtTrackBottomIsLiveBottom() {
+    // Thumb top a full travel below the track top -> live bottom (fraction 1).
+    XCTAssertEqual(fraction(thumbTopY: 588 - 476), 1, accuracy: 1e-9)
+  }
+
+  func testHistoryFractionMidTravelIsHalf() {
+    XCTAssertEqual(fraction(thumbTopY: 588 - 238), 0.5, accuracy: 1e-9)
+  }
+
+  func testHistoryFractionClampsBeyondTrackEnds() {
+    XCTAssertEqual(fraction(thumbTopY: 9999), 0, accuracy: 1e-9, "above the top clamps to oldest")
+    XCTAssertEqual(fraction(thumbTopY: -9999), 1, accuracy: 1e-9, "below the bottom clamps to live")
+  }
+
+  func testHistoryFractionDegenerateTrackReturnsLiveBottom() {
+    // Thumb as tall as the track (no travel) can only mean the live bottom.
+    let f = TerminalScrollIndicator.historyFraction(
+      thumbTopY: 100, trackTop: 588, trackBottom: 12, thumbHeight: 9999)
+    XCTAssertEqual(f, 1, accuracy: 1e-9)
+  }
 }

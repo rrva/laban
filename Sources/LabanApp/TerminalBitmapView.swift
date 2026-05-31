@@ -3448,6 +3448,35 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     }
   }
 
+  /// Drag-to-scrub from the overlay scrollbar (`spec.md` §scrollback): map a
+  /// history fraction (0 = oldest scrollback, 1 = live bottom) to an absolute
+  /// viewport offset and jump there immediately, settling the smooth-scroll PD
+  /// state so the thumb tracks the pointer 1:1 with no glide. Reuses the shared
+  /// `scrollViewport` path so it works on every backend (in-process, labpty,
+  /// laband). No-op on the alternate screen or when there is no scrollback.
+  func scrubViewportToHistoryFraction(_ fraction: Double) {
+    guard let tab = model.activeTab,
+      let session = model.session(forTab: tab.id),
+      let vs = session.viewportState(),
+      !vs.altScreen
+    else { return }
+    let maxScrollback = max(0, vs.totalRows - vs.viewportRows)
+    guard maxScrollback > 0 else { return }
+    let target = Int((max(0, min(1, fraction)) * Double(maxScrollback)).rounded())
+    let delta = target - vs.viewportOffset
+    guard delta != 0 else { return }
+    // applied-rows convention: appliedRows = viewportOffset - maxScrollback (≤ 0).
+    let desiredApplied = target - maxScrollback
+    scrollViewport(
+      deltaRows: delta, tab: tab, session: session,
+      desiredAppliedRows: desiredApplied, resetOnClamp: true)
+    displayedScrollRows = Double(appliedScrollRows)
+    targetScrollRows = Double(appliedScrollRows)
+    scrollVelocityRowsPerSec = 0
+    renderInvalidated = true
+    needsDisplay = true
+  }
+
   @discardableResult
   private func followActiveBottomBeforeTerminalInput(session: Session) -> Int {
     let hadPendingScrollState =

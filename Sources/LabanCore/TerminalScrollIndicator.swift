@@ -101,6 +101,23 @@ public enum TerminalScrollIndicator {
     return max(0, bottomOffset - input.viewportOffset)
   }
 
+  /// Drag-to-scrub inverse: map a desired thumb *top-edge* Y (view coordinates,
+  /// non-flipped, y up) to a history fraction in [0, 1] where 0 is the oldest
+  /// scrollback (thumb pinned to the track top) and 1 is the live bottom (thumb
+  /// at the track bottom). This is the exact inverse of the thumb placement the
+  /// AppKit view computes in `layoutFromOutput`, factored out so the scrub
+  /// mapping is unit-testable without AppKit. The terminal multiplies the result
+  /// by its authoritative `maxScrollback` to get an absolute viewport offset.
+  public static func historyFraction(
+    thumbTopY: Double, trackTop: Double, trackBottom: Double, thumbHeight: Double
+  ) -> Double {
+    let trackHeight = max(0, trackTop - trackBottom)
+    let availableTravel = trackHeight - thumbHeight
+    guard availableTravel > 0 else { return 1 }
+    let offsetFromTop = min(max(0, trackTop - thumbTopY), availableTravel)
+    return offsetFromTop / availableTravel
+  }
+
   public static func decide(_ input: Input) -> Output {
     // When the focused app owns the wheel, there is no user-navigable Laban
     // scrollback for the overlay to point at, so stay hidden even when hovering

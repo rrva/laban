@@ -28,6 +28,9 @@ final class TerminalScrollIndicatorView: NSView {
   private static let thumbWidthHover: CGFloat = 7
   private static let minThumbHeight: CGFloat = 32
   private static let hoverZoneWidth: CGFloat = 24
+  // Extra grab margin around the thin thumb so drag-to-scrub is forgiving to hit
+  // without eating terminal selection across a wide strip.
+  private static let thumbGrabSlop: CGFloat = 6
   private static let fadeInDuration: TimeInterval = 0.12
   private static let fadeOutDuration: TimeInterval = 0.24
   private static let idleHoldDuration: TimeInterval = 0.8
@@ -45,6 +48,17 @@ final class TerminalScrollIndicatorView: NSView {
   private var isHoverEdge = false
   private var idleHideWorkItem: DispatchWorkItem?
   private var trackingArea: NSTrackingArea?
+
+  // Drag-to-scrub state. While dragging the thumb, the view maps the pointer to
+  // an absolute history position and reports it through `onScrubToFraction`; the
+  // terminal jumps the viewport there. See `spec.md` §scrollback.
+  private var isDragging = false
+  /// Offset from the pointer to the thumb's top edge at grab time, so the grab
+  /// point stays under the cursor for the whole drag.
+  private var dragGrabDY: CGFloat?
+  /// Maps a history fraction (0 = oldest scrollback, 1 = live bottom) to an
+  /// absolute viewport offset on the terminal. Wired by the window controller.
+  var onScrubToFraction: ((Double) -> Void)?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -83,9 +97,64 @@ final class TerminalScrollIndicatorView: NSView {
     fatalError("init(coder:) has not been implemented")
   }
 
-  // Click-transparent: pass all hits through to the terminal. The tracking
-  // area for hover-reveal works independently of hit-testing.
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+  // Grabbable only over the visible thumb (drag-to-scrub); everywhere else stays
+  // click-transparent so terminal selection and wheel scroll are unaffected. The
+  // hover tracking area works independently of hit-testing.
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard isThumbGrabbable else { return nil }
+    let inView = convert(point, from: superview)
+    return thumbGrabRect.contains(inView) ? self : nil
+  }
+
+  /// There is a visible thumb to grab (scrollback exists and the thumb is shown,
+  /// e.g. while scrolled back or hover-revealed at the bottom).
+  private var isThumbGrabbable: Bool {
+    lastOutput.thumbFraction > 0 && thumbLayer.opacity > 0
+  }
+
+  /// The thumb's frame padded by the grab slop, in view coordinates.
+  private var thumbGrabRect: NSRect {
+    thumbLayer.frame.insetBy(dx: -Self.thumbGrabSlop, dy: -Self.thumbGrabSlop)
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    guard isThumbGrabbable else { return }
+    let p = convert(event.locationInWindow, from: nil)
+    guard thumbGrabRect.contains(p) else { return }
+    isDragging = true
+    dragGrabDY = thumbLayer.frame.maxY - p.y
+    cancelIdleHide()
+    setThumbOpacity(1, animated: false)
+    layoutFromOutput()
+  }
+
+  override func mouseDragged(with event: NSEvent) {
+    guard isDragging, let grabDY = dragGrabDY else { return }
+    let p = convert(event.locationInWindow, from: nil)
+    let thumbTopY = p.y + grabDY
+    onScrubToFraction?(historyFraction(forThumbTopY: thumbTopY))
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    guard isDragging else { return }
+    isDragging = false
+    dragGrabDY = nil
+    // Settle: re-validate hover against the live pointer and re-evaluate so the
+    // idle-hide re-arms if we landed back at the bottom and the thumb width drops
+    // to idle once the pointer leaves the edge.
+    if !pointerInHoverZone() { isHoverEdge = false }
+    if let lastInput { apply(input: lastInput.withHover(isHoverEdge)) }
+  }
+
+  /// Map a desired thumb top-edge Y (view coordinates) to a history fraction via
+  /// the pure inverse of the thumb layout.
+  private func historyFraction(forThumbTopY thumbTopY: CGFloat) -> Double {
+    TerminalScrollIndicator.historyFraction(
+      thumbTopY: Double(thumbTopY),
+      trackTop: Double(bounds.height - Self.topInset),
+      trackBottom: Double(Self.bottomInset),
+      thumbHeight: Double(thumbLayer.frame.height))
+  }
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
@@ -158,7 +227,7 @@ final class TerminalScrollIndicatorView: NSView {
     // pointer has left the right-edge zone, clear it so a stale hover can't pin
     // the thumb visible at the live bottom (the stuck-indicator bug). Cheap; the
     // pointer query only runs while a sample arrives and only acts when stuck.
-    if isHoverEdge, !pointerInHoverZone() {
+    if isHoverEdge, !isDragging, !pointerInHoverZone() {
       isHoverEdge = false
       ScrollDiagnostics.shared.mark(
         kind: "hover-reconcile", note: "cleared stuck isHoverEdge on frame sample")
@@ -236,7 +305,9 @@ final class TerminalScrollIndicatorView: NSView {
       ? lastOutput.thumbOffsetFraction / max(1 - lastOutput.thumbFraction, 0.001)
       : 0
     let offsetFromTop = availableTravel * CGFloat(normalized)
-    let thumbWidth = isHoverEdge ? Self.thumbWidthHover : Self.thumbWidthIdle
+    // Stay fat while dragging even if the pointer drifts off the hover zone.
+    let expanded = isHoverEdge || isDragging
+    let thumbWidth = expanded ? Self.thumbWidthHover : Self.thumbWidthIdle
 
     let thumbX = bounds.maxX - Self.edgeInset - thumbWidth
     let thumbY = trackTop - offsetFromTop - thumbHeight
@@ -244,7 +315,7 @@ final class TerminalScrollIndicatorView: NSView {
     CATransaction.setDisableActions(true)
     thumbLayer.frame = NSRect(x: thumbX, y: thumbY, width: thumbWidth, height: thumbHeight)
     thumbLayer.cornerRadius = thumbWidth / 2
-    thumbLayer.backgroundColor = TerminalScrollIndicatorView.thumbColor(hover: isHoverEdge)
+    thumbLayer.backgroundColor = TerminalScrollIndicatorView.thumbColor(hover: expanded)
     CATransaction.commit()
 
     // Pill: top-right, just under the titlebar reserve, left of the thumb.
