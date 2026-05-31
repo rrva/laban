@@ -62,6 +62,14 @@ fixtures/                              Fixture format notes and examples.
 execplans/                             Active and completed ExecPlans.
 ```
 
+## Runtime Artifacts (where to look — don't re-search)
+
+Under `~/Library/Logs/Laban/`:
+
+- **PTY capture** — `captures/appkit-<UTC>/streams/`: `pty-output.bin` (child→terminal), `pty-input.bin` (keys), `terminal-response.bin` (Laban's replies back to the child — **confirm a responder fired here**: CPR/DA/kitty/OSC 10-11). Also `manifest.json`, `frames/`, `snapshots/`. Headless: `/debug` `startCapture` (`docs/process/dev-process.md`).
+- **Asciinema cast** — `casts/laban-<UTC>-lastNs.cast` (`LABAN_CAST_DIR` overrides).
+- **Main-thread stall stacks** — `~/laban-watchdog/inproc-stall-*.txt`.
+
 ## Decision Index
 
 - `docs/adr/0001-libghostty-vt-owns-vt-parsing.md` — libghostty-vt (not GhosttyKit) owns VT parsing; application owns the PTY.
