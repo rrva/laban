@@ -1767,7 +1767,6 @@ public final class MetalRenderer: RendererBackend {
     for glyph in payload.glyphs {
       guard glyph.row >= 0, glyph.row < payload.rows,
         glyph.col >= 0, glyph.col < payload.cols,
-        !glyph.hasHyperlink,
         glyph.wide == 0,
         (glyph.attributes.rawValue & ~Self.gpuCellSupportedAttributes.rawValue) == 0,
         glyph.scalarValue != nil || (glyph.text.first != nil && glyph.text.count == 1)
@@ -2022,7 +2021,7 @@ public final class MetalRenderer: RendererBackend {
 
       case .glyphRun(
         let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, let hyperlink
+        let underlineStyle, let underlineColor, _
       ):
         let isSidebar = runSource == .sidebar
         let runHeight = isSidebar ? sidebarCellHeight : glyphCellHeight
@@ -2032,7 +2031,6 @@ public final class MetalRenderer: RendererBackend {
 
         if !isSidebar {
           guard attrs.subtracting(Self.gpuCellSupportedAttributes).isEmpty,
-            hyperlink == nil,
             let geometry
           else {
             return false

@@ -233,6 +233,53 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalCommands.isEmpty)
   }
 
+  func testCellPayloadModeKeepsHyperlinksOnPayloadPath() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 80
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+
+    let esc = "\u{1b}"
+    let st = "\u{1b}\\"
+    let bytes =
+      "go "
+      + "\(esc)]8;;https://example.com\(st)example.com\(esc)]8;;\(st)"
+      + " done\r\n"
+    _ = session.write(Array(bytes.utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 840,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 840,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertTrue(payload.glyphs.contains { $0.hasHyperlink })
+    XCTAssertTrue(payload.glyphs.contains { $0.hasHyperlink && $0.attributes.contains(.underline) })
+    let terminalCommands = frame.commands.filter { command in
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+        return source == .terminal
+      }
+      return false
+    }
+    XCTAssertTrue(terminalCommands.isEmpty)
+  }
+
   func testCellPayloadModeReusesWarmCapacity() throws {
     var size = LabanTerminalSize()
     size.rows = 4

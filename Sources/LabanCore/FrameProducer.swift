@@ -469,7 +469,6 @@ public struct FrameProducer {
             cellUnderlineColor = Theme.current.blue
           }
           cellAttrs.insert(.underline)
-          markFallback(.hyperlink)
         }
 
         if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {

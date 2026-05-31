@@ -90,34 +90,30 @@ final class GPUCellParityTests: XCTestCase {
     }
   }
 
-  func testGPUCellPathRejectsHyperlinksUntilLinkRenderingSlice() throws {
+  func testGPUCellPathMatchesClassicForHyperlinkVisuals() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
 
-    let renderer = try makeRenderer(label: "unsupported-link")
-    let commands: [FrameCommand] = [
-      .rect(
-        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: cellH),
-        color: 0x10_20_30_FF,
-        source: .terminal),
-      .glyphRun(
-        origin: CGPoint(x: 0, y: 0),
-        text: "unsupported",
-        foreground: 0xFF_FF_FF_FF,
-        background: 0x10_20_30_FF,
-        attributes: [.underline],
-        source: .terminal,
-        underlineStyle: .single,
-        underlineColor: 0x33_99_FF_FF,
-        hyperlink: "https://example.test"),
-    ]
+    let commands = hyperlinkFrame(seed: 29)
 
-    XCTAssertFalse(
-      renderer.gpuCellPathSupportedForTesting(
-        commands: commands,
-        surfacePxH: Int(cellH * scale)),
-      "hyperlink visual/click state is still outside the text-decoration slice")
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-hyperlink", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(label: "gpu-hyperlink", commands: commands, damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-hyperlink-visuals",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
   }
 
   func testGPUCellPathMatchesClassicForPlainText() throws {
@@ -310,6 +306,37 @@ final class GPUCellParityTests: XCTestCase {
       expected: classic.image,
       actual: gpu.image,
       fixture: "gpu-cell-payload-procedural-cells",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
+  func testGPUCellPayloadMatchesClassicForHyperlinkVisuals() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = hyperlinkFrame(seed: 31)
+    let payload = hyperlinkPayload(seed: 31, includedRows: Array(0..<rows))
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-payload-hyperlink", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-hyperlink",
+      commands: [],
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-hyperlink-visuals",
       expectedPNG: classic.png,
       actualPNG: gpu.png)
   }
@@ -520,6 +547,38 @@ final class GPUCellParityTests: XCTestCase {
     return commands
   }
 
+  private func hyperlinkFrame(seed: Int) -> [FrameCommand] {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    var commands: [FrameCommand] = []
+    for row in 0..<rows {
+      let y = CGFloat(rows - 1 - row) * cellH
+      let base = UInt32((seed + row * 13) & 0xFF)
+      let bg: UInt32 =
+        ((0x14 + base) << 24) | ((0x20 + base) << 16) | ((0x2E + base) << 8) | 0xFF
+      let fg: UInt32 =
+        ((0xC0 + UInt32(row * 5)) << 24) | ((0xD0 - UInt32(row * 3)) << 16)
+        | ((0xF0 - UInt32(row * 2)) << 8) | 0xFF
+      commands.append(
+        .rect(
+          CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+          color: bg,
+          source: .terminal))
+      let line = String((0..<cols).map { ascii[($0 + row + seed) % ascii.count] })
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: 0, y: y),
+          text: line,
+          foreground: fg,
+          background: bg,
+          attributes: [.underline],
+          source: .terminal,
+          underlineStyle: .single,
+          underlineColor: 0x33_99_FF_FF,
+          hyperlink: "https://example.test/\(row)"))
+    }
+    return commands
+  }
+
   private func proceduralFrame(seed: Int) -> [FrameCommand] {
     let scalars = proceduralScalars()
     var commands: [FrameCommand] = [
@@ -627,6 +686,43 @@ final class GPUCellParityTests: XCTestCase {
             attributes: style.attributes,
             underlineStyle: style.underlineStyle,
             underlineColor: style.underlineColor))
+      }
+    }
+    return payload
+  }
+
+  private func hyperlinkPayload(seed: Int, includedRows: [Int]) -> TerminalCellPayload {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: includedRows)
+    for row in includedRows {
+      let base = UInt32((seed + row * 13) & 0xFF)
+      let bg: UInt32 =
+        ((0x14 + base) << 24) | ((0x20 + base) << 16) | ((0x2E + base) << 8) | 0xFF
+      let fg: UInt32 =
+        ((0xC0 + UInt32(row * 5)) << 24) | ((0xD0 - UInt32(row * 3)) << 16)
+        | ((0xF0 - UInt32(row * 2)) << 8) | 0xFF
+      payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+      for col in 0..<cols {
+        let scalar = ascii[(col + row + seed) % ascii.count]
+        payload.glyphs.append(
+          .init(
+            row: row,
+            col: col,
+            text: "",
+            scalarValue: scalar.unicodeScalars.first?.value,
+            foreground: fg,
+            background: bg,
+            attributes: [.underline],
+            underlineStyle: .single,
+            underlineColor: 0x33_99_FF_FF,
+            hasHyperlink: true))
       }
     }
     return payload

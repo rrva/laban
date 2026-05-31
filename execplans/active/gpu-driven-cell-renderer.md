@@ -1077,6 +1077,41 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - contiguous 1 row: payload 27.7 us, payload+upload 28.0 us
     - contiguous 5 rows: payload 137.7 us, payload+upload 138.8 us
 
+### 2026-05-31 — M4 slice 4 hyperlink visuals landed in `gpu-work`
+
+- The GPU-cell paths now render OSC-8 hyperlink visual state without falling back. The
+  renderer still does not receive or use the URI; `FrameProducer`/payload extraction
+  resolve the visual treatment (underline bit, underline style, underline colour), and
+  URI/click hit testing remains in `TerminalHyperlink` against the live snapshot.
+- `FrameProducer.fillTerminalCellPayload` no longer marks `.hyperlink` fallback after it
+  records `hasHyperlink` and applies the default link underline visual. `MetalRenderer`
+  accepts `hasHyperlink` payload glyphs and command-fed terminal glyph runs with a
+  non-nil `hyperlink`, drawing them through the existing glyph + decoration paths.
+- New tests:
+  - `GPUCellParityTests` verifies command-fed and payload-fed hyperlink visuals are
+    raw-RGBA identical to classic rendering.
+  - `TerminalSurfaceControllerTests.testCellPayloadModeKeepsHyperlinksOnPayloadPath`
+    verifies real OSC-8 local snapshots keep payload mode and carry `hasHyperlink`
+    glyphs.
+- Validation:
+  - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|HyperlinkPlumbingTests'`
+    passed (34 tests).
+  - `swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|GraphemeClustering|TextDecorationLayout|FrameProducer|HyperlinkPlumbing'`
+    passed (84 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench` after the slice:
+  - Classic vs GPU-cell full-frame text path, 160x48, p50/p95/p99 CPU:
+    - classic: 6.751 / 7.659 / 7.939 ms, glyphs 6120, cellGlyphs 0, solids 48
+    - gpuCell: 6.729 / 7.677 / 8.021 ms, glyphs 0, cellGlyphs 7680, solids 48
+  - GPU-cell dirty-row payload patch, 160x48, p50:
+    - row 0: payload 27.0 us, payload+upload 27.3 us
+    - row 23: payload 27.6 us, payload+upload 28.0 us
+    - sparse rows 0,23: payload 53.6 us, payload+upload 54.3 us
+    - sparse rows 0,12,23: payload 80.5 us, payload+upload 81.2 us
+    - contiguous 1 row: payload 27.3 us, payload+upload 27.5 us
+    - contiguous 5 rows: payload 134.3 us, payload+upload 136.6 us
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
