@@ -396,6 +396,29 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "a click under mouse tracking must clear the existing local selection")
   }
 
+  func testPasteClearsActiveSelection() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "alpha")
+
+    setPasteboard("PASTED")
+    harness.view.paste(nil)
+
+    // After a paste the selection is gone, so a follow-up copy finds nothing to
+    // put on the pasteboard and the sentinel survives unchanged.
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "pasting must clear the on-screen selection the user pasted from")
+  }
+
   func testWheelScrollPreservesSelectionWhenMouseTrackingIsActive() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

@@ -2624,6 +2624,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     recordInput(kind: "selection", route: "terminal", command: "clearSelection")
   }
 
+  /// A paste consumes the on-screen selection from the user's point of view:
+  /// they selected, copied, and pasted, so the highlight has done its job and
+  /// leaving it painted reads as stale. Scrub it the way a forwarded click does
+  /// — scoped to the active tab and removed from the per-tab cache so it can't
+  /// resurrect on a tab switch — and force a repaint so the highlight clears now
+  /// rather than waiting on the app's paste echo.
+  private func clearSelectionAfterPaste() {
+    guard selectionAnchor != nil || selectionFocus != nil else { return }
+    syncSelectionStateToActiveTab()
+    selectionAnchor = nil
+    selectionFocus = nil
+    selectionOriginCell = nil
+    persistSelectionStateForCurrentTab()
+    recordInput(kind: "selection", route: "terminal", command: "clearSelection")
+    renderInvalidated = true
+  }
+
   private static func pointDistance(_ lhs: NSPoint, _ rhs: NSPoint) -> CGFloat {
     let dx = lhs.x - rhs.x
     let dy = lhs.y - rhs.y
