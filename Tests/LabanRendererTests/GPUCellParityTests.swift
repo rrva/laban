@@ -283,6 +283,37 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  func testGPUCellPayloadMatchesClassicForProceduralCells() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = proceduralFrame(seed: 23)
+    let payload = proceduralPayload(seed: 23, includedRows: Array(0..<rows))
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-procedural", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-procedural",
+      commands: [],
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+      XCTAssertGreaterThan(gpu.counts.solids, rows)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-procedural-cells",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
   func testGPUCellPayloadPatchesOnlyDirtyRows() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -489,6 +520,41 @@ final class GPUCellParityTests: XCTestCase {
     return commands
   }
 
+  private func proceduralFrame(seed: Int) -> [FrameCommand] {
+    let scalars = proceduralScalars()
+    var commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+        color: 0x10_20_30_FF,
+        source: .terminal)
+    ]
+    for row in 0..<rows {
+      let y = CGFloat(rows - 1 - row) * cellH
+      let base = UInt32((seed + row * 23) & 0xFF)
+      let bg: UInt32 =
+        ((0x18 + base) << 24) | ((0x22 + base) << 16) | ((0x2C + base) << 8) | 0xFF
+      commands.append(
+        .rect(
+          CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+          color: bg,
+          source: .terminal))
+      for col in 0..<cols {
+        let scalar = scalars[(row * 7 + col + seed) % scalars.count]
+        let fg = proceduralForeground(row: row, col: col, seed: seed)
+        for filled in BoxDrawing.proceduralCellElementRects(
+          scalar,
+          at: CGPoint(x: CGFloat(col) * cellW, y: y),
+          cellWidth: cellW,
+          cellHeight: cellH,
+          foreground: fg)
+        {
+          commands.append(.rect(filled.rect, color: filled.color, source: .terminal))
+        }
+      }
+    }
+    return commands
+  }
+
   private func payload(
     seed: Int,
     changedRow: Int?,
@@ -564,6 +630,51 @@ final class GPUCellParityTests: XCTestCase {
       }
     }
     return payload
+  }
+
+  private func proceduralPayload(seed: Int, includedRows: [Int]) -> TerminalCellPayload {
+    let scalars = proceduralScalars()
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: includedRows)
+    for row in includedRows {
+      let base = UInt32((seed + row * 23) & 0xFF)
+      let bg: UInt32 =
+        ((0x18 + base) << 24) | ((0x22 + base) << 16) | ((0x2C + base) << 8) | 0xFF
+      payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+      for col in 0..<cols {
+        let scalar = scalars[(row * 7 + col + seed) % scalars.count]
+        payload.proceduralCells.append(
+          .init(
+            row: row,
+            col: col,
+            scalarValue: scalar.value,
+            foreground: proceduralForeground(row: row, col: col, seed: seed)))
+      }
+    }
+    return payload
+  }
+
+  private func proceduralScalars() -> [Unicode.Scalar] {
+    [
+      Unicode.Scalar(0x2580)!, Unicode.Scalar(0x2584)!, Unicode.Scalar(0x2588)!,
+      Unicode.Scalar(0x258C)!, Unicode.Scalar(0x2590)!, Unicode.Scalar(0x2591)!,
+      Unicode.Scalar(0x2593)!, Unicode.Scalar(0x2596)!, Unicode.Scalar(0x259A)!,
+      Unicode.Scalar(0x259F)!, Unicode.Scalar(0x25E2)!, Unicode.Scalar(0x25E3)!,
+      Unicode.Scalar(0x25E4)!, Unicode.Scalar(0x25E5)!,
+    ]
+  }
+
+  private func proceduralForeground(row: Int, col: Int, seed: Int) -> UInt32 {
+    let r = UInt32((0x70 + seed + row * 11 + col * 3) & 0xFF)
+    let g = UInt32((0x90 + seed + row * 5 + col * 7) & 0xFF)
+    let b = UInt32((0xB0 + seed + row * 3 + col * 13) & 0xFF)
+    return (r << 24) | (g << 16) | (b << 8) | 0xFF
   }
 
   private func decorationStyle(

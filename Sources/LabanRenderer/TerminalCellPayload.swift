@@ -74,6 +74,20 @@ public struct TerminalCellPayload: Equatable, Sendable {
     }
   }
 
+  public struct ProceduralCell: Equatable, Sendable {
+    public var row: Int
+    public var col: Int
+    public var scalarValue: UInt32
+    public var foreground: UInt32
+
+    public init(row: Int, col: Int, scalarValue: UInt32, foreground: UInt32) {
+      self.row = row
+      self.col = col
+      self.scalarValue = scalarValue
+      self.foreground = foreground
+    }
+  }
+
   public struct CursorRect: Equatable, Sendable {
     public var rect: CGRect
     public var color: UInt32
@@ -95,6 +109,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
   public var dirtyRows: [Int]
   public var backgroundRuns: [BackgroundRun]
   public var glyphs: [Glyph]
+  public var proceduralCells: [ProceduralCell]
   public var cursorRects: [CursorRect]
   public var utf8Bytes: [UInt8]
   public var fallbackReason: FallbackReason?
@@ -111,6 +126,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
     dirtyRows: [Int] = [],
     backgroundRuns: [BackgroundRun] = [],
     glyphs: [Glyph] = [],
+    proceduralCells: [ProceduralCell] = [],
     cursorRects: [CursorRect] = [],
     utf8Bytes: [UInt8] = [],
     fallbackReason: FallbackReason? = nil
@@ -124,6 +140,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
     self.dirtyRows = dirtyRows
     self.backgroundRuns = backgroundRuns
     self.glyphs = glyphs
+    self.proceduralCells = proceduralCells
     self.cursorRects = cursorRects
     self.utf8Bytes = utf8Bytes
     self.fallbackReason = fallbackReason
@@ -151,6 +168,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
     public var dirtyRows: Int
     public var backgroundRuns: Int
     public var glyphs: Int
+    public var proceduralCells: Int
     public var cursorRects: Int
     public var utf8Bytes: Int
   }
@@ -160,6 +178,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
       dirtyRows: dirtyRows.capacity,
       backgroundRuns: backgroundRuns.capacity,
       glyphs: glyphs.capacity,
+      proceduralCells: proceduralCells.capacity,
       cursorRects: cursorRects.capacity,
       utf8Bytes: utf8Bytes.capacity)
   }
@@ -183,6 +202,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
     dirtyRows.removeAll(keepingCapacity: true)
     backgroundRuns.removeAll(keepingCapacity: true)
     glyphs.removeAll(keepingCapacity: true)
+    proceduralCells.removeAll(keepingCapacity: true)
     cursorRects.removeAll(keepingCapacity: true)
     utf8Bytes.removeAll(keepingCapacity: true)
   }

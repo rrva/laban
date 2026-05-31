@@ -222,6 +222,7 @@ private extension TerminalCellPayload.CapacitySnapshot {
       next.dirtyRows > dirtyRows,
       next.backgroundRuns > backgroundRuns,
       next.glyphs > glyphs,
+      next.proceduralCells > proceduralCells,
       next.cursorRects > cursorRects,
       next.utf8Bytes > utf8Bytes,
     ].filter { $0 }.count

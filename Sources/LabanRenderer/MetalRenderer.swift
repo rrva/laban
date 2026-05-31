@@ -1597,6 +1597,28 @@ public final class MetalRenderer: RendererBackend {
       appendSolid(rect: rect, color: run.color)
     }
 
+    for procedural in payload.proceduralCells {
+      guard procedural.row >= 0, procedural.row < payload.rows,
+        procedural.col >= 0, procedural.col < payload.cols,
+        let scalar = Unicode.Scalar(procedural.scalarValue)
+      else {
+        return false
+      }
+      let cellOrigin = CGPoint(
+        x: payload.origin.x + CGFloat(procedural.col) * payload.cellSize.width,
+        y: payload.origin.y + CGFloat(payload.rows - 1 - procedural.row) * payload.cellSize.height
+          + payload.contentYOffset)
+      for filled in BoxDrawing.proceduralCellElementRects(
+        scalar,
+        at: cellOrigin,
+        cellWidth: payload.cellSize.width,
+        cellHeight: payload.cellSize.height,
+        foreground: procedural.foreground)
+      {
+        appendSolid(rect: filled.rect, color: filled.color)
+      }
+    }
+
     for cmd in commands {
       switch cmd {
       case .rect(let rect, let color, _):

@@ -1033,6 +1033,50 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - contiguous 1 row: payload 29.1 us, payload+upload 29.7 us
     - contiguous 5 rows: payload 143.3 us, payload+upload 144.2 us
 
+### 2026-05-31 — M4 slice 3 procedural cells landed in `gpu-work`
+
+- The payload path now carries procedural block/triangle cells through a small
+  renderer-neutral `TerminalCellPayload.ProceduralCell` side channel instead of marking
+  `.proceduralCell` fallback. This preserves the command-stream skip for local
+  interactive GPU-cell payload mode when dirty rows contain `U+2580...U+259F` block
+  elements or `U+25E2...U+25E5` fixed triangles.
+- `MetalRenderer` consumes those procedural cells by calling the existing
+  `BoxDrawing.proceduralCellElementRects` helper and appending the resulting solid
+  rects. The command-fed GPU-cell path was already correct because procedural cells
+  arrive as ordinary `.rect` commands there; this slice closes the payload CPU-win path.
+- `TerminalCellPayload.CapacitySnapshot` now tracks `proceduralCells` capacity so the
+  warmed allocation gate covers the new retained array.
+- New tests:
+  - `GPUCellParityTests.testGPUCellPayloadMatchesClassicForProceduralCells` verifies
+    payload-fed GPU-cell procedural blocks/triangles are raw-RGBA identical to classic
+    command rendering.
+  - `TerminalSurfaceControllerTests.testCellPayloadModeKeepsProceduralCellsOnPayloadPath`
+    verifies real local snapshots with procedural cells keep payload mode and omit
+    terminal rect/glyph commands.
+- Validation:
+  - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|TerminalCellPayloadAllocationBench'`
+    passed (30 tests).
+  - `swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|GraphemeClustering|TextDecorationLayout|FrameProducer'`
+    passed (79 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter TerminalCellPayloadAllocationBench`
+    passed: 10,000 warmed one-dirty-row payload builds reported
+    `storageGrowthEvents=0`, `perFrame=2.547 us`, and capacities including
+    `proceduralCells: 1`; routed dirty-row p50 was classic commands+M1 scoped `156.1
+    us` versus payload fill+GPU patch `28.2 us`.
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench` after the slice:
+  - Classic vs GPU-cell full-frame text path, 160x48, p50/p95/p99 CPU:
+    - classic: 6.756 / 7.715 / 8.205 ms, glyphs 6120, cellGlyphs 0, solids 48
+    - gpuCell: 6.805 / 7.578 / 7.861 ms, glyphs 0, cellGlyphs 7680, solids 48
+  - GPU-cell dirty-row payload patch, 160x48, p50:
+    - row 0: payload 27.5 us, payload+upload 27.8 us
+    - row 23: payload 28.2 us, payload+upload 28.5 us
+    - sparse rows 0,23: payload 55.2 us, payload+upload 55.5 us
+    - sparse rows 0,12,23: payload 81.7 us, payload+upload 82.6 us
+    - contiguous 1 row: payload 27.7 us, payload+upload 28.0 us
+    - contiguous 5 rows: payload 137.7 us, payload+upload 138.8 us
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under

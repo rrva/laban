@@ -435,6 +435,7 @@ public struct FrameProducer {
 
     let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
     payload.glyphs.reserveCapacity(payload.dirtyRows.count * cols)
+    payload.proceduralCells.reserveCapacity(payload.dirtyRows.count)
     for row in payload.dirtyRows {
       let rowStart = row * cols
       for col in 0..<cols {
@@ -501,7 +502,12 @@ public struct FrameProducer {
             continue
           }
           if BoxDrawing.isProceduralCellElement(scalar) {
-            markFallback(.proceduralCell)
+            payload.proceduralCells.append(
+              TerminalCellPayload.ProceduralCell(
+                row: row,
+                col: col,
+                scalarValue: scalarValue,
+                foreground: cellFg))
             continue
           }
           payload.glyphs.append(

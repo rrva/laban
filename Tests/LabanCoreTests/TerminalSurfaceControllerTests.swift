@@ -190,6 +190,49 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalGlyphCommands.isEmpty)
   }
 
+  func testCellPayloadModeKeepsProceduralCellsOnPayloadPath() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+
+    _ = session.write(Array("█▀▄▌▐░▓▖▚▟◢◣◤◥".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 520,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 520,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertFalse(payload.proceduralCells.isEmpty)
+    let terminalCommands = frame.commands.filter { command in
+      switch command {
+      case .rect(_, _, let source),
+        .glyphRun(_, _, _, _, _, let source, _, _, _):
+        return source == .terminal
+      default:
+        return false
+      }
+    }
+    XCTAssertTrue(terminalCommands.isEmpty)
+  }
+
   func testCellPayloadModeReusesWarmCapacity() throws {
     var size = LabanTerminalSize()
     size.rows = 4
