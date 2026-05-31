@@ -133,6 +133,33 @@ final class AppModelTests: XCTestCase {
       "returning to the app must clear the active tab's notification")
   }
 
+  func testNotificationsSuppressedDuringRestoreGraceWindow() throws {
+    let model = try makeModel()
+    try model.createTab()
+    let bgTabId = model.tabs[0].id
+    guard let bgSession = model.session(forTab: bgTabId) else {
+      XCTFail("background tab must have a session")
+      return
+    }
+
+    // `replaceTabs` opens this window so a restored agent's resume-time OSC 9
+    // doesn't badge every tab on launch.
+    model.notificationSuppressionDeadline = Date().addingTimeInterval(60)
+    bgSession.feedOutput(Array("\u{1b}]9;Claude needs your permission\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertNil(
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
+      "OSC 9 during the restore grace window must not badge the tab")
+
+    // After the window closes, notifications badge normally.
+    model.notificationSuppressionDeadline = nil
+    bgSession.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertNotNil(
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
+      "OSC 9 after the grace window must badge normally")
+  }
+
   func testCreateTabAddsTabAndSelectsIt() throws {
     let model = try makeModel()
     let originalId = model.tabs[0].id

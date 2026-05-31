@@ -578,6 +578,8 @@ public final class AppModel {
   public func replaceTabs(from state: WorkspaceState) {
     guard let window = state.windows.first else { return }
     withModelLock {
+      // Don't let restored agents' resume-time OSC 9 burst badge every tab.
+      notificationSuppressionDeadline = Date().addingTimeInterval(restoreNotificationGraceSeconds)
       closeAllSessionsUnlocked()
     }
     for (index, persistedTab) in window.tabs.enumerated() {
@@ -1576,6 +1578,14 @@ public final class AppModel {
     }
   }
 
+  /// Open while a workspace restore is settling. A restored agent that resumes
+  /// into a "waiting" / "needs permission" state re-emits its OSC 9 on launch,
+  /// which would otherwise badge every restored tab with a stale notification
+  /// the instant the app opens. `replaceTabs` opens this window; it closes
+  /// `restoreNotificationGraceSeconds` later, after the resume burst settles.
+  var notificationSuppressionDeadline: Date?
+  var restoreNotificationGraceSeconds: TimeInterval = 8
+
   /// Record an OSC 9 desktop notification on a tab so it shows in the sidebar
   /// until the user opens (or returns to) that tab. Codex only emits OSC 9 when
   /// the tab is unfocused, so we always badge; the clear happens on
@@ -1584,6 +1594,8 @@ public final class AppModel {
   /// before the tab is viewed accumulate an unread count.
   private func applyAgentNotification(forTab tabId: Tab.ID, text: String) {
     let changed: Bool = withModelLock {
+      // Ignore the restore-time resume burst (see notificationSuppressionDeadline).
+      if let deadline = notificationSuppressionDeadline, Date() < deadline { return false }
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
       let prior = _tabs[idx].titleMetadata.notification
       _tabs[idx].titleMetadata.notification = TabNotification(
