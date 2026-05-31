@@ -277,6 +277,75 @@ public struct FrameProducer {
     return payload
   }
 
+  private enum SingleUTF8ScalarResult {
+    case scalar(UInt32)
+    case multiScalar
+    case invalid
+  }
+
+  private static func singleUTF8ScalarValue(
+    _ bytes: UnsafePointer<UInt8>,
+    length: Int
+  ) -> SingleUTF8ScalarResult {
+    @inline(__always)
+    func continuation(_ byte: UInt8) -> Bool {
+      (byte & 0xC0) == 0x80
+    }
+
+    switch length {
+    case 1:
+      let b0 = bytes[0]
+      return b0 < 0x80 ? .scalar(UInt32(b0)) : .invalid
+    case 2:
+      let b0 = bytes[0]
+      let b1 = bytes[1]
+      guard (0xC2...0xDF).contains(b0), continuation(b1) else { return .invalid }
+      return .scalar(UInt32(b0 & 0x1F) << 6 | UInt32(b1 & 0x3F))
+    case 3:
+      let b0 = bytes[0]
+      let b1 = bytes[1]
+      let b2 = bytes[2]
+      guard continuation(b2) else { return .invalid }
+      switch b0 {
+      case 0xE0:
+        guard (0xA0...0xBF).contains(b1) else { return .invalid }
+      case 0xE1...0xEC, 0xEE...0xEF:
+        guard continuation(b1) else { return .invalid }
+      case 0xED:
+        guard (0x80...0x9F).contains(b1) else { return .invalid }
+      default:
+        return .invalid
+      }
+      return .scalar(
+        UInt32(b0 & 0x0F) << 12
+          | UInt32(b1 & 0x3F) << 6
+          | UInt32(b2 & 0x3F))
+    case 4:
+      let b0 = bytes[0]
+      let b1 = bytes[1]
+      let b2 = bytes[2]
+      let b3 = bytes[3]
+      guard continuation(b2), continuation(b3) else { return .invalid }
+      switch b0 {
+      case 0xF0:
+        guard (0x90...0xBF).contains(b1) else { return .invalid }
+      case 0xF1...0xF3:
+        guard continuation(b1) else { return .invalid }
+      case 0xF4:
+        guard (0x80...0x8F).contains(b1) else { return .invalid }
+      default:
+        return .invalid
+      }
+      return .scalar(
+        UInt32(b0 & 0x07) << 18
+          | UInt32(b1 & 0x3F) << 12
+          | UInt32(b2 & 0x3F) << 6
+          | UInt32(b3 & 0x3F))
+    default:
+      return .multiScalar
+    }
+  }
+
   public func fillTerminalCellPayload(
     into payload: inout TerminalCellPayload,
     from snap: UnsafePointer<LabanSnapshot>,
@@ -417,57 +486,37 @@ public struct FrameProducer {
         let offset = Int(cell.utf8_offset)
         let length = Int(cell.utf8_length)
         let ptr = UnsafeRawPointer(storage).advanced(by: offset)
-        if length == 1 {
-          let byte = ptr.load(as: UInt8.self)
-          if byte < 0x80 {
-            payload.glyphs.append(
-              TerminalCellPayload.Glyph(
-                row: row,
-                col: col,
-                text: "",
-                scalarValue: UInt32(byte),
-                foreground: cellFg,
-                background: cellBg,
-                attributes: cellAttrs,
-                underlineStyle: cellUnderlineStyle,
-                underlineColor: cellUnderlineColor,
-                hasHyperlink: hasHyperlink,
-                wide: cell.wide))
+        let scalarResult = Self.singleUTF8ScalarValue(
+          ptr.assumingMemoryBound(to: UInt8.self),
+          length: length)
+        switch scalarResult {
+        case .scalar(let scalarValue):
+          guard let scalar = Unicode.Scalar(scalarValue) else {
+            markFallback(.invalidUTF8)
             continue
           }
-        }
-        let buf = UnsafeBufferPointer<UInt8>(
-          start: ptr.assumingMemoryBound(to: UInt8.self),
-          count: length)
-        guard let text = String(bytes: buf, encoding: .utf8), !text.isEmpty else {
-          markFallback(.invalidUTF8)
-          continue
-        }
-        if text.count != 1 {
+          if BoxDrawing.isProceduralCellElement(scalar) {
+            markFallback(.proceduralCell)
+            continue
+          }
+          payload.glyphs.append(
+            TerminalCellPayload.Glyph(
+              row: row,
+              col: col,
+              text: "",
+              scalarValue: scalarValue,
+              foreground: cellFg,
+              background: cellBg,
+              attributes: cellAttrs,
+              underlineStyle: cellUnderlineStyle,
+              underlineColor: cellUnderlineColor,
+              hasHyperlink: hasHyperlink,
+              wide: cell.wide))
+        case .multiScalar:
           markFallback(.wideOrClusterCell)
+        case .invalid:
+          markFallback(.invalidUTF8)
         }
-        if text.unicodeScalars.count == 1,
-          let scalar = text.unicodeScalars.first,
-          BoxDrawing.isProceduralCellElement(scalar)
-        {
-          markFallback(.proceduralCell)
-          continue
-        }
-        let scalarValue: UInt32? =
-          text.unicodeScalars.count == 1 ? text.unicodeScalars.first?.value : nil
-        payload.glyphs.append(
-          TerminalCellPayload.Glyph(
-            row: row,
-            col: col,
-            text: text,
-            scalarValue: scalarValue,
-            foreground: cellFg,
-            background: cellBg,
-            attributes: cellAttrs,
-            underlineStyle: cellUnderlineStyle,
-            underlineColor: cellUnderlineColor,
-            hasHyperlink: hasHyperlink,
-            wide: cell.wide))
       }
     }
 

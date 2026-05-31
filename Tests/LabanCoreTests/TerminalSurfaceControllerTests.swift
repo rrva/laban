@@ -175,6 +175,38 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(controller.cellPayloadCapacitySnapshotForTesting, warmed)
   }
 
+  func testCellPayloadModeDecodesSingleUTF8ScalarWithoutTextMaterialization() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let session = try XCTUnwrap(model.activeTab.flatMap { model.session(forTab: $0.id) })
+
+    _ = session.write(Array("é".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    let glyph = try XCTUnwrap(frame.cellPayload?.glyphs.first { $0.scalarValue == 0xE9 })
+    XCTAssertEqual(glyph.text, "")
+    XCTAssertNil(frame.cellPayload?.fallbackReason)
+  }
+
   func testCellPayloadModeFallsBackToCommandsForSelectionOverlay() throws {
     var size = LabanTerminalSize()
     size.rows = 4

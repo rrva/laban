@@ -949,21 +949,25 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   frames; `TerminalSurfaceControllerTests` verifies warmed capacity is reused. This is
   backed by a release-only `TerminalCellPayloadAllocationBench` that verifies zero
   warmed storage-growth events for repeated one-dirty-row payload builds.
+- The payload builder now decodes single UTF-8 scalars directly into `scalarValue`
+  without materializing a `String`; multi-scalar clusters still fall back to the command
+  path until M4 carries cluster text through the payload model.
 - `MetalRenderer` no longer allocates a temporary dirty-row bitmap for payload
   patches, and it skips clearing a dirty row only when the payload contains one glyph
   for every cell in every dirty row. Sparse dirty-row payloads still clear the row
   before patching, covered by `GPUCellParityTests`.
 - New tests:
   - `TerminalSurfaceControllerTests` verifies compatible payload mode omits terminal
-    glyph commands, selection mode falls back to commands, and warmed payload capacity
-    is retained.
+    glyph commands, selection mode falls back to commands, warmed payload capacity is
+    retained, and single UTF-8 scalar cells avoid text materialization.
   - `GPUCellParityTests` verifies payload patching uploads only the dirty cell-buffer
     row range, sparse patches clear stale glyphs, and remote GPU-cell fallback reports
     classic effective status.
   - `LabanDebugSmokeTests.testRuntimeRenderStateReportsRendererStatus` verifies the
     debug render-state JSON includes renderer-status fields.
   - `TerminalCellPayloadAllocationBench` gates the warmed one-dirty-row payload builder
-    on zero retained-storage growth events.
+    on zero retained-storage growth events and compares the routed payload path against
+    classic command production plus M1 scoped rebuild.
 - Validation:
   - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|MetalFrameTimingBench'`
     passed (15 tests).
@@ -982,12 +986,13 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - contiguous 1 row: command patch 95.5 us, payload 13.5 us
     - contiguous 5 rows: command patch 137.9 us, payload 67.1 us
 - `TerminalCellPayloadAllocationBench` evidence: 10,000 warmed one-dirty-row payload
-  builds reported `storageGrowthEvents=0` and `perFrame=1.660 us` in release.
-- M3 is intentionally **not** checked off yet: the payload builder is within ~1-2 us
-  of the M1 classic scoped one-row microbench but does not consistently beat it
-  (latest M1 scoped p50: row 0 12.1 us, row 23 12.0 us, contiguous 1 row 12.4 us),
-  so the remaining M3 gap is a release microbench win against the M1 classic scoped
-  baseline.
+  builds reported `storageGrowthEvents=0` and `perFrame=1.867 us` in release. The routed
+  dirty-row bench reported classic command production plus M1 scoped rebuild at
+  `112.8 us` p50 versus payload fill plus GPU patch at `14.8 us` p50.
+- M3 is intentionally **not** checked off yet: the routed perf and allocation gates now
+  pass, but the payload model still does not carry a copied UTF-8 slab for multi-scalar
+  cluster text. Those cells fall back to commands until the M4 payload/overlay work
+  removes the text-feature fallback.
 
 ## Review Gate
 
