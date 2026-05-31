@@ -482,7 +482,8 @@ final class AgentSessionDetectorTests: XCTestCase {
         "laban-claude-cross-tab-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: base) }
     let cwd = "/Users/x/shared-project"
-    let project = base
+    let project =
+      base
       .appendingPathComponent("projects", isDirectory: true)
       .appendingPathComponent(
         ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)
@@ -541,7 +542,8 @@ final class AgentSessionDetectorTests: XCTestCase {
         "laban-claude-own-recover-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: base) }
     let cwd = "/Users/x/own-project"
-    let project = base
+    let project =
+      base
       .appendingPathComponent("projects", isDirectory: true)
       .appendingPathComponent(
         ClaudeSessionLogLocator.encodedProjectName(for: cwd), isDirectory: true)

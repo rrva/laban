@@ -108,8 +108,9 @@ public final class LabptyByteRingReader {
       Darwin.close(fd)
       throw TerminalSessionClientError.protocolError("invalid labpty byte ring capacity")
     }
-    guard LabptyByteRingReader.validateSpan(
-      offset: ringOffset, count: ringCapacity, mapLength: UInt64(mapLength))
+    guard
+      LabptyByteRingReader.validateSpan(
+        offset: ringOffset, count: ringCapacity, mapLength: UInt64(mapLength))
     else {
       munmap(map, mapLength)
       Darwin.close(fd)

@@ -127,7 +127,8 @@ enum BitmapDiffHarness {
     file: StaticString,
     line: UInt
   ) {
-    let runId = ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
+    let runId =
+      ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
       ?? "bitmap-diff-\(UUID().uuidString.prefix(8))"
     let dir = URL(fileURLWithPath: ".artifacts/tests/\(runId)/\(label)", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -170,4 +171,3 @@ enum BitmapDiffHarness {
     }
   }
 }
-

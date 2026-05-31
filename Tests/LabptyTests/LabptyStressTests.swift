@@ -315,7 +315,8 @@ final class LabptyStressTests: XCTestCase {
 
   private func assertShmDirIsEmpty(_ shmDir: String) throws {
     let url = URL(
-      fileURLWithPath: shmDir, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+      fileURLWithPath: shmDir,
+      relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
     let entries = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
     let leftover = entries.filter { $0.hasSuffix(".br") }
     XCTAssertTrue(
@@ -423,7 +424,8 @@ private struct StressConfig {
     let anchorActors = max(1, min(anchorEnv, 6))
     let transientActors = env["LABPTY_STRESS_TRANSIENT_ACTORS"].flatMap(Int.init) ?? 24
     let minCycles = env["LABPTY_STRESS_MIN_CYCLES"].flatMap(Int.init) ?? 1500
-    let seed = env["LABPTY_STRESS_SEED"].flatMap(UInt64.init)
+    let seed =
+      env["LABPTY_STRESS_SEED"].flatMap(UInt64.init)
       ?? UInt64(bitPattern: Int64(Date().timeIntervalSince1970))
     return StressConfig(
       duration: duration,
@@ -456,11 +458,13 @@ private final class StopFlag {
   private let lock = NSLock()
   private var stopped = false
   func signal() {
-    lock.lock(); defer { lock.unlock() }
+    lock.lock()
+    defer { lock.unlock() }
     stopped = true
   }
   var isSet: Bool {
-    lock.lock(); defer { lock.unlock() }
+    lock.lock()
+    defer { lock.unlock() }
     return stopped
   }
 }
@@ -794,8 +798,8 @@ private final class StallActor {
 /// the backpressure path is exercised, not bypassed).
 private final class SlowReaderTapActor {
   struct Observations {
-    var overflowEvents: Int       // tap fell behind by > capacity between reads
-    var ringWrapEvents: Int       // daemon writer wrapped at least once
+    var overflowEvents: Int  // tap fell behind by > capacity between reads
+    var ringWrapEvents: Int  // daemon writer wrapped at least once
     var heartbeatAdvances: Int
     var sessionsRun: Int
     var totalBytesRead: UInt64

@@ -105,6 +105,7 @@ final class BitmapInvarianceTests: XCTestCase {
     }
     XCTAssertGreaterThan(
       result.mismatchedPixels, 0,
-      "writePasteCapturingBytes in fixture mode must feed bytes to the local VT — bitmaps should differ")
+      "writePasteCapturingBytes in fixture mode must feed bytes to the local VT — bitmaps should differ"
+    )
   }
 }

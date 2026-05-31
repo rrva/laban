@@ -45,8 +45,8 @@ final class FrameProducerRemoteBlockElementTests: XCTestCase {
     row: Int,
     col: Int,
     text: String,
-    fg: UInt32 = 0xFFFFFFFF,
-    bg: UInt32 = 0x00000000
+    fg: UInt32 = 0xFFFF_FFFF,
+    bg: UInt32 = 0x0000_0000
   ) -> LabandSnapshotCell {
     LabandSnapshotCell(
       row: row, col: col, text: text, flags: 0,

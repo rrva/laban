@@ -168,7 +168,9 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   public func attachSession(logicalSessionId: String) throws -> LabandSessionInfo {
-    if let descriptor = try listLabptySessions().first(where: { $0.logicalSessionId == logicalSessionId }) {
+    if let descriptor = try listLabptySessions().first(where: {
+      $0.logicalSessionId == logicalSessionId
+    }) {
       return labandInfo(from: descriptor)
     }
     throw TerminalSessionClientError.sessionNotFound(logicalSessionId)
@@ -186,9 +188,10 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   public func resize(sessionId: String, rows: Int, cols: Int) throws -> LabandSessionInfo {
-    try labandInfo(from: withFreshHandleRetry(sessionId: sessionId) { handle in
-      try resize(handle: handle, rows: rows, cols: cols)
-    })
+    try labandInfo(
+      from: withFreshHandleRetry(sessionId: sessionId) { handle in
+        try resize(handle: handle, rows: rows, cols: cols)
+      })
   }
 
   public func attachSnapshotRing(sessionId: String) throws -> LabandSnapshotRingAttachment {
@@ -212,9 +215,10 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   public func terminate(sessionId: String) throws -> LabandSessionInfo {
-    try labandInfo(from: withFreshHandleRetry(sessionId: sessionId) { handle in
-      try terminate(handle: handle)
-    })
+    try labandInfo(
+      from: withFreshHandleRetry(sessionId: sessionId) { handle in
+        try terminate(handle: handle)
+      })
   }
 
   private func unsupported<T>() -> T {
@@ -276,7 +280,8 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     let sequence = nextSequence
     nextSequence += 1
     do {
-      try writeAll(LabptyFraming.encodeRequest(operation: operation, sequence: sequence, payload: payload))
+      try writeAll(
+        LabptyFraming.encodeRequest(operation: operation, sequence: sequence, payload: payload))
     } catch {
       closeLocked()
       throw error

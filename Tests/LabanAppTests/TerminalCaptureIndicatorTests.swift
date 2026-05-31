@@ -51,10 +51,16 @@ final class TerminalCaptureIndicatorTests: XCTestCase {
     let oldCaptureDir = getenv("LABAN_CAPTURE_DIR").map { String(cString: $0) }
     setenv("LABAN_CAPTURE_DIR", tempDir.path, 1)
     defer {
-      if let oldRenderer { setenv("LABAN_RENDERER", oldRenderer, 1) }
-      else { unsetenv("LABAN_RENDERER") }
-      if let oldCaptureDir { setenv("LABAN_CAPTURE_DIR", oldCaptureDir, 1) }
-      else { unsetenv("LABAN_CAPTURE_DIR") }
+      if let oldRenderer {
+        setenv("LABAN_RENDERER", oldRenderer, 1)
+      } else {
+        unsetenv("LABAN_RENDERER")
+      }
+      if let oldCaptureDir {
+        setenv("LABAN_CAPTURE_DIR", oldCaptureDir, 1)
+      } else {
+        unsetenv("LABAN_CAPTURE_DIR")
+      }
       try? FileManager.default.removeItem(at: tempDir)
     }
 

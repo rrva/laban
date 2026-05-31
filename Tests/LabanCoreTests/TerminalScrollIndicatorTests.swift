@@ -22,14 +22,16 @@ final class TerminalScrollIndicatorTests: XCTestCase {
     // screen and its own scrollback. Even with a large scrollback total and an
     // offset that reads as scrolled-back, the overlay must stay hidden.
     let out = TerminalScrollIndicator.decide(
-      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: false,
+      .init(
+        viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: false,
         isAltScreen: true))
     XCTAssertEqual(out, .hidden)
   }
 
   func testAltScreenStaysHiddenEvenWhenHovering() {
     let out = TerminalScrollIndicator.decide(
-      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: true,
+      .init(
+        viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: true,
         isAltScreen: true))
     XCTAssertEqual(out, .hidden)
   }
@@ -41,14 +43,16 @@ final class TerminalScrollIndicatorTests: XCTestCase {
     // that scrollback isn't user-navigable — the overlay must stay hidden
     // rather than pin on permanently.
     let out = TerminalScrollIndicator.decide(
-      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: false,
+      .init(
+        viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: false,
         isAltScreen: false, isMouseTracking: true))
     XCTAssertEqual(out, .hidden)
   }
 
   func testMouseTrackingStaysHiddenEvenWhenHovering() {
     let out = TerminalScrollIndicator.decide(
-      .init(viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: true,
+      .init(
+        viewportOffset: 200, totalRows: 1000, viewportRows: 24, isHoverEdge: true,
         isAltScreen: false, isMouseTracking: true))
     XCTAssertEqual(out, .hidden)
   }

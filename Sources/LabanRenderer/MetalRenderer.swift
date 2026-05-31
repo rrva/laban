@@ -712,12 +712,12 @@ public final class MetalRenderer: RendererBackend {
   /// first rect's colour, then to black.
   static func fullRedrawClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
     var rgba: UInt32?
-    for case let .rect(_, color, source) in commands where source == .terminal {
+    for case .rect(_, let color, let source) in commands where source == .terminal {
       rgba = color
       break
     }
     if rgba == nil {
-      for case let .rect(_, color, _) in commands {
+      for case .rect(_, let color, _) in commands {
         rgba = color
         break
       }

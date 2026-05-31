@@ -102,11 +102,13 @@ final class SessionModeCLITests: XCTestCase {
 
     let parent = controller.makeMenuItem()
     let submenu = try XCTUnwrap(parent.submenu)
-    XCTAssertEqual(submenu.items.map(\.title), [
-      "Local Sessions",
-      "Background Sessions",
-      "Detached Sessions",
-    ])
+    XCTAssertEqual(
+      submenu.items.map(\.title),
+      [
+        "Local Sessions",
+        "Background Sessions",
+        "Detached Sessions",
+      ])
     XCTAssertEqual(submenu.items[1].state, .on)
 
     controller.selectDetached(nil)

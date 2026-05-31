@@ -118,7 +118,8 @@ final class CrossBackendBitmapTests: XCTestCase {
       if snapshot.visibleText.contains(needle) { return snapshot }
       usleep(20_000)
     }
-    XCTFail("laband snapshot never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
+    XCTFail(
+      "laband snapshot never contained \(needle); last=\(lastSnapshot?.visibleText ?? "<none>")")
     throw POSIXError(.ETIMEDOUT)
   }
 

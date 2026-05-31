@@ -76,7 +76,8 @@ final class LabptyProtocolTests: XCTestCase {
       envp: ["TERM=xterm-256color"],
       cwd: "/tmp",
       logicalSessionId: "logical-1")
-    XCTAssertEqual(try LabptyOpenSessionRequest.decode(from: payloadWithTail(try open.encode())), open)
+    XCTAssertEqual(
+      try LabptyOpenSessionRequest.decode(from: payloadWithTail(try open.encode())), open)
 
     let descriptor = LabptySessionDescriptor(
       ptyHandle: 42,
@@ -97,10 +98,12 @@ final class LabptyProtocolTests: XCTestCase {
       list)
 
     let resize = LabptyResizeSessionRequest(ptyHandle: 42, rows: 40, cols: 132)
-    XCTAssertEqual(try LabptyResizeSessionRequest.decode(from: payloadWithTail(resize.encode())), resize)
+    XCTAssertEqual(
+      try LabptyResizeSessionRequest.decode(from: payloadWithTail(resize.encode())), resize)
 
     let signal = LabptySignalSessionRequest(ptyHandle: 42, signal: 2)
-    XCTAssertEqual(try LabptySignalSessionRequest.decode(from: payloadWithTail(signal.encode())), signal)
+    XCTAssertEqual(
+      try LabptySignalSessionRequest.decode(from: payloadWithTail(signal.encode())), signal)
 
     let terminate = LabptyTerminateSessionRequest(ptyHandle: 42)
     XCTAssertEqual(
@@ -135,8 +138,10 @@ final class LabptyProtocolTests: XCTestCase {
     XCTAssertEqual(decoded.header.operation, .writeInput)
     XCTAssertEqual(decoded.header.responseCode, .ok)
     XCTAssertEqual(decoded.header.sequence, 123)
-    XCTAssertEqual(decoded.header.frameLength, UInt32(LabptyFrameHeader.headerByteCount + payload.count))
-    XCTAssertEqual(try LabptyWriteInputRequest.decode(from: decoded.payload).bytes, Data([1, 2, 3]))
+    XCTAssertEqual(
+      decoded.header.frameLength, UInt32(LabptyFrameHeader.headerByteCount + payload.count))
+    XCTAssertEqual(
+      try LabptyWriteInputRequest.decode(from: decoded.payload).bytes, Data([1, 2, 3]))
   }
 
   func testFrameHeaderGoldenBytes() throws {
@@ -173,7 +178,8 @@ final class LabptyProtocolTests: XCTestCase {
       [UInt8](
         try LabptyHelloResponse(
           capabilities: [],
-          daemonMonoNs: 0x0102_0304_0506_0708).encode()),
+          daemonMonoNs: 0x0102_0304_0506_0708
+        ).encode()),
       [
         0x01, 0x00,
         0x00, 0x00,
@@ -308,7 +314,8 @@ final class LabptyProtocolTests: XCTestCase {
     // must reconstruct the original byte payload and drop the
     // trailer — the property that makes WRITE_INPUT additive.
     let original = try LabptyWriteInputRequest(
-      ptyHandle: 99, bytes: Data("typed\n".utf8)).encode()
+      ptyHandle: 99, bytes: Data("typed\n".utf8)
+    ).encode()
 
     var future = original
     var trailer = LabptyPayloadWriter()
