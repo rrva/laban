@@ -174,11 +174,13 @@ final class SidebarProducerTests: XCTestCase {
   /// shifting layout. If these drift apart, the user sees the row reflow
   /// every time the cursor enters or leaves.
   func testIndicatorAndCloseGlyphShareRightEdgeSlot() {
-    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: true, sessionId: "s")
+    // Indicators only render on background tabs, so make this tab inactive by
+    // pointing `activeTabId` at a different id.
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
     tab.titleMetadata.agentStatus = TabAgentStatus(indicatorColor: "#00ff00")
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
 
-    let dotX = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
+    let dotX = p.commands(tabs: [tab], activeTabId: "other", height: 600)
       .compactMap { cmd -> CGFloat? in
         if case .glyphRun(let origin, let text, _, _, _, _, _, _, _) = cmd,
           text == "●"
@@ -188,7 +190,7 @@ final class SidebarProducerTests: XCTestCase {
         return nil
       }.first
     let xX = p.commands(
-      tabs: [tab], activeTabId: tab.id, height: 600, hoveredTabId: tab.id
+      tabs: [tab], activeTabId: "other", height: 600, hoveredTabId: tab.id
     )
     .compactMap { cmd -> CGFloat? in
       if case .glyphRun(let origin, let text, _, _, _, _, _, _, _) = cmd,
@@ -208,11 +210,21 @@ final class SidebarProducerTests: XCTestCase {
   /// Otherwise close-on-hover would visually crowd the indicator and the
   /// indicator's color would compete with the close affordance.
   func testHoverHidesIndicator() {
-    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: true, sessionId: "s")
+    // Inactive tab so the agent dot is present to begin with; hover must then
+    // swap it for the close glyph rather than rendering both.
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
     tab.titleMetadata.agentStatus = TabAgentStatus(indicatorColor: "#00ff00")
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+
+    let idleTexts = p.commands(tabs: [tab], activeTabId: "other", height: 600)
+      .compactMap { cmd -> String? in
+        if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+        return nil
+      }
+    XCTAssertTrue(idleTexts.contains("●"), "indicator must render when not hovered")
+
     let cmds = p.commands(
-      tabs: [tab], activeTabId: tab.id, height: 600, hoveredTabId: tab.id)
+      tabs: [tab], activeTabId: "other", height: 600, hoveredTabId: tab.id)
     let texts = cmds.compactMap { cmd -> String? in
       if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
       return nil
@@ -452,6 +464,64 @@ final class SidebarProducerTests: XCTestCase {
 
     XCTAssertTrue(texts.contains("●"))
     XCTAssertFalse(texts.contains("•"))
+  }
+
+  // MARK: - quiet idle / focused tabs (always-on-dot removal)
+
+  /// The headline fix: a background tab whose foreground program is merely
+  /// running (OSC 133 pins `.running` for the program's whole life) must show
+  /// no right-edge indicator. Previously this lit a permanent blue dot.
+  func testRunningBackgroundTabHasNoIndicator() {
+    var tab = Tab(id: "t", position: 1, title: "claude", isActive: false, sessionId: "s")
+    tab.titleMetadata.shellPhase = .running
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+    for marker in ["●", "◆", "!", "*", "•"] {
+      XCTAssertFalse(
+        texts.contains(marker),
+        "a merely-running background tab must show no \(marker) indicator; got \(texts)")
+    }
+  }
+
+  /// A failed command still earns a red dot — the failure case is the one
+  /// shell-phase state worth surfacing.
+  func testFailedCommandBackgroundTabShowsRedIndicator() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
+    tab.titleMetadata.shellPhase = .atPrompt
+    tab.titleMetadata.lastCommandExitCode = 1
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
+    let dot = cmds.compactMap { cmd -> UInt32? in
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "●" {
+        return fg
+      }
+      return nil
+    }.first
+    XCTAssertEqual(dot, Theme.current.red, "failed command must show a red dot")
+  }
+
+  /// The focused/active tab is quiet even when it carries attention state —
+  /// you are already looking at it.
+  func testActiveTabSuppressesIndicator() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: true, sessionId: "s")
+    tab.titleMetadata.bellAttention = true
+    tab.titleMetadata.lastCommandExitCode = 1
+    tab.titleMetadata.unseenOutput = true
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+    for marker in ["●", "◆", "!", "*", "•"] {
+      XCTAssertFalse(
+        texts.contains(marker),
+        "the active tab must show no \(marker) indicator; got \(texts)")
+    }
   }
 
   // MARK: - drag-reorder

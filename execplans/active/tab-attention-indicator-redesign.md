@@ -85,13 +85,14 @@ scope: `docs/product/spec.md §7` already states the OSC 133 state machine feeds
 Milestones are independently shippable. M1 alone resolves the user's primary
 complaint and should be committed before M2/M3 begin.
 
-- [ ] **M1 — Quiet the always-on dot (subtraction; no animation).**
-  - [ ] Remove the implicit `shellPhase == .running` blue dot from
+- [x] (2026-05-31) **M1 — Quiet the always-on dot (subtraction; no animation).**
+  - [x] Remove the implicit `shellPhase == .running` blue dot from
     `SidebarProducer.shellPhaseIndicatorColor`.
-  - [ ] Suppress *all* right-edge status indicators on the active/focused tab.
-  - [ ] Tests: a running, unfocused tab with no other signal renders **no**
+  - [x] Suppress *all* right-edge status indicators on the active/focused tab
+    (`if !showCloseX && !isActive`).
+  - [x] Tests: a running, unfocused tab with no other signal renders **no**
     indicator glyph; a failed-command tab still renders red; the focused tab
-    renders nothing.
+    renders nothing. (`SidebarProducerTests`: 35 passed.)
 - [ ] **M2 — A distinct, static "needs you" tier (colour + shape + row tint).**
   - [ ] Add a pure `TabAttention` classifier (`none / passive / done /
     needsAction`) in `LabanCore`.

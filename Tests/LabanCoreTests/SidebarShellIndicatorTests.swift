@@ -17,9 +17,12 @@ final class SidebarShellIndicatorTests: XCTestCase {
     XCTAssertEqual(color, Theme.current.red)
   }
 
-  func testRunningShowsBlue() {
-    let color = SidebarProducer.shellPhaseIndicatorColor(metadata(phase: .running, exit: nil))
-    XCTAssertEqual(color, Theme.current.blue)
+  /// A merely running command no longer shows a dot. OSC 133 pins `.running`
+  /// for a foreground program's whole life, so a running indicator would light
+  /// a permanent dot on every agent/REPL/editor tab — an always-on signal that
+  /// carries no information.
+  func testRunningShowsNothing() {
+    XCTAssertNil(SidebarProducer.shellPhaseIndicatorColor(metadata(phase: .running, exit: nil)))
   }
 
   func testFinishedZeroShowsNothing() {
@@ -39,11 +42,12 @@ final class SidebarShellIndicatorTests: XCTestCase {
     XCTAssertNil(SidebarProducer.shellPhaseIndicatorColor(metadata(phase: .atPrompt, exit: 0)))
   }
 
-  /// Re-running a command after a failure shows blue (running), not a stale
-  /// red — the running check wins.
-  func testRunningAfterFailureShowsBlue() {
+  /// With no running-state indicator, a non-zero last exit still shows red
+  /// even while a follow-up command runs — the exit code lingers until the
+  /// next command finishes, and surfacing the last failure is the useful cue.
+  func testRunningWithPriorFailedExitShowsRed() {
     let color = SidebarProducer.shellPhaseIndicatorColor(metadata(phase: .running, exit: 1))
-    XCTAssertEqual(color, Theme.current.blue)
+    XCTAssertEqual(color, Theme.current.red)
   }
 
   func testIdleShowsNothing() {

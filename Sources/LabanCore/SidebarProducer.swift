@@ -170,11 +170,12 @@ public struct SidebarProducer {
       // Right-edge indicator, by specificity (only when the tab is not
       // hovered — the close X takes the slot on hover):
       //  1. OSC 21337 agent dot — an agent explicitly reported a status.
-      //  2. OSC 133 shell phase — a command failed (red) or is running
-      //     (blue). This complements the bell badge: the bell says "output
-      //     happened", the shell phase says "the command finished, here's
-      //     whether it succeeded".
+      //  2. OSC 133 shell phase — a command failed (red). A merely *running*
+      //     command shows nothing (see shellPhaseIndicatorColor).
       //  3. Legacy red attention badge — "something happened in this tab".
+      //
+      // Never on the focused/active tab: a per-tab indicator means "come back
+      // here", which is meaningless for the tab you are already looking at.
       let meta = tab.titleMetadata
       let agentStatus = meta.agentStatus
       // The right-edge slot shows the close X iff the cursor is on this
@@ -184,7 +185,7 @@ public struct SidebarProducer {
       // hidden and the indicator stays visible (the drag overlay dims it
       // along with the rest of the row).
       let showCloseX = (hoveredTabId == tab.id) && !isDragging
-      if !showCloseX {
+      if !showCloseX && !isActive {
         if let notif = meta.notification {
           // Unseen OSC 9 notification: a distinct ◆ in a reserved color (red
           // when action is needed, accent otherwise), taking the slot over the
@@ -408,21 +409,22 @@ public struct SidebarProducer {
   }
 
   /// The indicator color for a tab's OSC 133 shell phase, or nil when no
-  /// indicator should show. A running command shows blue; otherwise a
-  /// non-zero last-command exit shows red. `idle` and a clean prompt show
-  /// nothing so the sidebar stays quiet at rest.
+  /// indicator should show. A non-zero last-command exit shows red; every
+  /// other phase shows nothing so the sidebar stays quiet at rest.
+  ///
+  /// A merely *running* command deliberately shows nothing. OSC 133 pins the
+  /// phase at `.running` for the whole lifetime of a foreground program, so a
+  /// long-lived agent / REPL / editor would otherwise light a permanent dot on
+  /// every tab — an always-on indicator that carries no signal. Only the
+  /// failure case earns a dot.
   ///
   /// The red signal is gated on the exit code, NOT on `phase == .finished`:
   /// shells emit OSC 133 `D;<exit>` immediately followed by `A` in the same
   /// precmd, so the *settled* phase after a command is `.atPrompt`, never
   /// `.finished`. Gating on `.finished` would mean the failure dot is only
   /// "live" for the sub-millisecond between the two markers — i.e. never
-  /// visible. The running check comes first so re-running a command after a
-  /// failure shows blue, not a stale red.
+  /// visible.
   static func shellPhaseIndicatorColor(_ meta: TabTitleMetadata) -> UInt32? {
-    if meta.shellPhase == .running {
-      return Theme.current.blue
-    }
     if let exit = meta.lastCommandExitCode, exit != 0 {
       return Theme.current.red
     }
