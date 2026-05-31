@@ -104,6 +104,13 @@ final class TerminalScrollIndicatorView: NSView {
     )
     addTrackingArea(area)
     trackingArea = area
+    // Rebuilding the area drops AppKit's record that the pointer was inside (no
+    // synthetic mouseExited is emitted). If the pointer has since left the zone,
+    // clear the now-stale hover here so the thumb isn't stuck until a real exit.
+    if isHoverEdge, !pointerInHoverZone() {
+      isHoverEdge = false
+      if let lastInput { apply(input: lastInput.withHover(false)) }
+    }
   }
 
   override func mouseEntered(with event: NSEvent) {
@@ -118,12 +125,44 @@ final class TerminalScrollIndicatorView: NSView {
     if let lastInput { apply(input: lastInput.withHover(false)) }
   }
 
+  /// Whether the pointer is actually within the right-edge hover zone right now,
+  /// checked against the live pointer location instead of trusting the last
+  /// `mouseEntered`/`mouseExited`. AppKit drops `mouseExited` when a tracking
+  /// area is rebuilt with the pointer inside (and in a few other races), which
+  /// pins `isHoverEdge` true and sticks the thumb visible at the live bottom —
+  /// it then only clears on the next genuine enter/exit or on window unfocus
+  /// (`.activeInKeyWindow` emits an exit on resignKey, which is why the bug
+  /// "fixes itself" when the window loses focus). Re-validating here lets the
+  /// view recover on its own. Only meaningful while the window is key; off-key
+  /// hover is already cleared by the resignKey exit.
+  /// Test seam: the real check reads the live pointer location, which a unit
+  /// test cannot set. Tests inject a deterministic answer; production leaves it
+  /// nil and uses the real geometry.
+  var pointerInHoverZoneProbe: (() -> Bool)?
+
+  private func pointerInHoverZone() -> Bool {
+    if let pointerInHoverZoneProbe { return pointerInHoverZoneProbe() }
+    guard let window, window.isKeyWindow else { return false }
+    let inView = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    guard bounds.contains(inView) else { return false }
+    return inView.x >= bounds.maxX - Self.hoverZoneWidth
+  }
+
   /// Called every frame from `TerminalBitmapView.advanceFrame`. Cheap noop
   /// when the viewport state hasn't changed.
   func applyViewport(
     viewportOffset: Int, totalRows: Int, viewportRows: Int,
     isAltScreen: Bool, isMouseTracking: Bool
   ) {
+    // Recover from a dropped `mouseExited`: if hover is still flagged but the
+    // pointer has left the right-edge zone, clear it so a stale hover can't pin
+    // the thumb visible at the live bottom (the stuck-indicator bug). Cheap; the
+    // pointer query only runs while a sample arrives and only acts when stuck.
+    if isHoverEdge, !pointerInHoverZone() {
+      isHoverEdge = false
+      ScrollDiagnostics.shared.mark(
+        kind: "hover-reconcile", note: "cleared stuck isHoverEdge on frame sample")
+    }
     let input = TerminalScrollIndicator.Input(
       viewportOffset: viewportOffset,
       totalRows: totalRows,
@@ -288,11 +327,17 @@ extension TerminalScrollIndicatorView {
     var pillVisible: Bool
     var pillText: String
     var lastLinesBack: Int
+    /// The view's current hover flag and whether the pointer is *actually* in
+    /// the right-edge zone. `isHoverEdge=true` with `pointerInZone=false` is the
+    /// stuck-hover bug; the self-correction clears it on the next sample.
+    var isHoverEdge: Bool
+    var pointerInZone: Bool
 
     var dictionary: [String: Any] {
       [
         "thumbOpacity": thumbOpacity, "pillAlpha": pillAlpha, "shouldHold": shouldHold,
         "pillVisible": pillVisible, "pillText": pillText, "lastLinesBack": lastLinesBack,
+        "isHoverEdge": isHoverEdge, "pointerInZone": pointerInZone,
       ]
     }
   }
@@ -304,6 +349,8 @@ extension TerminalScrollIndicatorView {
       shouldHold: lastOutput.shouldHold,
       pillVisible: lastOutput.pillVisible,
       pillText: lastOutput.pillText,
-      lastLinesBack: lastLinesBack)
+      lastLinesBack: lastLinesBack,
+      isHoverEdge: isHoverEdge,
+      pointerInZone: pointerInHoverZone())
   }
 }
