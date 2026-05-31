@@ -24,6 +24,27 @@ private struct GlyphInstance {
   var color: SIMD4<Float>  // 16
 }
 
+private struct CellGlyph {
+  var originPx: SIMD2<Float>  //  8
+  var sizePx: SIMD2<Float>  //  8
+  var uvOrigin: SIMD2<Float>  //  8
+  var uvSize: SIMD2<Float>  //  8
+  var flags: UInt32  //  4
+  var _pad0: UInt32 = 0  //  4
+  var _pad1: UInt32 = 0  //  4
+  var _pad2: UInt32 = 0  //  4
+  var fg: SIMD4<Float>  // 16
+}
+
+struct GPUCellGlyphRecord: Equatable, Sendable {
+  var originPx: SIMD2<Float>
+  var sizePx: SIMD2<Float>
+  var uvOrigin: SIMD2<Float>
+  var uvSize: SIMD2<Float>
+  var color: SIMD4<Float>
+  var flags: UInt32
+}
+
 private struct Uniforms {
   var surfaceSizePixels: SIMD2<Float>
   var scale: Float
@@ -38,6 +59,15 @@ private struct Uniforms {
 public final class MetalRenderer: RendererBackend {
   private static let maxGlyphAtlasTextureSize = 16_384
 
+  /// A/B override for the classic damage-scoped instance rebuild. Kept
+  /// process-wide so tests and microbenches can compare both paths in one
+  /// binary. M1 makes the scoped rebuild the shipping classic default.
+  public nonisolated(unsafe) static var useClassicDamageScoped = true
+
+  /// A/B override reserved for the macOS-26 GPU-cell path. Until that path is
+  /// implemented, enabling it resolves to the classic renderer.
+  public nonisolated(unsafe) static var useGPUCellPath = false
+
   // MARK: - Public surface
 
   public let device: MTLDevice
@@ -46,6 +76,7 @@ public final class MetalRenderer: RendererBackend {
   /// Optional smaller font for sidebar chrome. When the caller provides
   /// nil at init time, sidebar text uses the same atlas as the terminal.
   public let sidebarFontAtlas: FontAtlas
+  public var configuredRendererMode: RendererMode
 
   public var surfaceWidth: Int { Int(layer.drawableSize.width.rounded()) }
   public var surfaceHeight: Int { Int(layer.drawableSize.height.rounded()) }
@@ -59,8 +90,33 @@ public final class MetalRenderer: RendererBackend {
   /// cursor-blink frames cheap).
   public var pngData: Data? { readback.pngData(waitingFor: lastCmdBuf) }
 
-  /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time
-  /// inside `render()`. GPU = `cmdBuf.gpuEndTime - gpuStartTime` from the
+  public struct RenderInstanceCounts: Equatable, Sendable {
+    public var solids: Int
+    public var glyphs: Int
+    public var sidebarGlyphs: Int
+    public var cellGlyphs: Int
+    public var cursors: Int
+
+    public init(
+      solids: Int = 0,
+      glyphs: Int = 0,
+      sidebarGlyphs: Int = 0,
+      cellGlyphs: Int = 0,
+      cursors: Int = 0
+    ) {
+      self.solids = solids
+      self.glyphs = glyphs
+      self.sidebarGlyphs = sidebarGlyphs
+      self.cellGlyphs = cellGlyphs
+      self.cursors = cursors
+    }
+  }
+
+  public private(set) var lastInstanceCounts = RenderInstanceCounts()
+
+  /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time spent
+  /// building instances and encoding commands before `commit()`. GPU =
+  /// `cmdBuf.gpuEndTime - gpuStartTime` from the
   /// completion handler. Per-pass timings (content / presentBlit /
   /// cursorOverlay / readbackBlit) come from `MTLCounterSampleBuffer`
   /// timestamp samples — they are 0 when the device doesn't support
@@ -70,9 +126,11 @@ public final class MetalRenderer: RendererBackend {
     public var sampleCount: Int
     public var cpuMeanMs: Double
     public var cpuP50Ms: Double
+    public var cpuP95Ms: Double
     public var cpuP99Ms: Double
     public var gpuMeanMs: Double
     public var gpuP50Ms: Double
+    public var gpuP95Ms: Double
     public var gpuP99Ms: Double
     public var contentMeanMs: Double
     public var presentBlitMeanMs: Double
@@ -94,13 +152,25 @@ public final class MetalRenderer: RendererBackend {
     let readback = frameSamples.compactMap { $0.readbackBlitMs > 0 ? $0.readbackBlitMs : nil }
     return FrameTimings(
       sampleCount: frameSamples.count,
-      cpuMeanMs: mean(cpu), cpuP50Ms: percentile(cpu, 0.50), cpuP99Ms: percentile(cpu, 0.99),
-      gpuMeanMs: mean(gpu), gpuP50Ms: percentile(gpu, 0.50), gpuP99Ms: percentile(gpu, 0.99),
+      cpuMeanMs: mean(cpu),
+      cpuP50Ms: percentile(cpu, 0.50),
+      cpuP95Ms: percentile(cpu, 0.95),
+      cpuP99Ms: percentile(cpu, 0.99),
+      gpuMeanMs: mean(gpu),
+      gpuP50Ms: percentile(gpu, 0.50),
+      gpuP95Ms: percentile(gpu, 0.95),
+      gpuP99Ms: percentile(gpu, 0.99),
       contentMeanMs: mean(content),
       presentBlitMeanMs: mean(present),
       cursorOverlayMeanMs: mean(cursor),
       readbackBlitMeanMs: mean(readback),
       perPassAvailable: counterSampleBuffer != nil)
+  }
+
+  public func resetFrameTimings() {
+    frameSampleLock.lock()
+    frameSamples.removeAll(keepingCapacity: true)
+    frameSampleLock.unlock()
   }
 
   /// Resolve the most recent frame's sample-buffer slots into per-pass
@@ -149,6 +219,7 @@ public final class MetalRenderer: RendererBackend {
   private let queue: MTLCommandQueue
   private let solidPipeline: MTLRenderPipelineState
   private let glyphPipeline: MTLRenderPipelineState
+  private let cellGlyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
   private var glyphAtlas: MetalGlyphAtlas
   /// Distinct atlas for sidebar text — same when sidebarFontAtlas ===
@@ -158,6 +229,9 @@ public final class MetalRenderer: RendererBackend {
 
   private var solidInstances: [SolidInstance] = []
   private var glyphInstances: [GlyphInstance] = []
+  private var cellGlyphs: [CellGlyph] = []
+  private var cellGlyphUploadRanges: [Range<Int>] = []
+  private var cellGlyphGridGeometry: TerminalGridGeometry?
   /// Glyphs that draw against the sidebar atlas. Kept separate so we can
   /// issue one draw call per atlas — the sidebar's R8 texture holds glyphs
   /// rasterized at a smaller pt size and isn't substitutable for the main.
@@ -171,6 +245,7 @@ public final class MetalRenderer: RendererBackend {
   // We size MTLBuffers on demand and reuse them frame-to-frame.
   private var solidBuffer: MTLBuffer?
   private var glyphBuffer: MTLBuffer?
+  private var cellGlyphBuffer: MTLBuffer?
   private var sidebarGlyphBuffer: MTLBuffer?
   private var cursorBuffer: MTLBuffer?
 
@@ -201,6 +276,10 @@ public final class MetalRenderer: RendererBackend {
   /// on briefly so layer geometry and the just-sized drawable do not race in
   /// WindowServer presentation.
   public var waitForFrameCompletion: Bool = false
+
+  public func waitForLastFrame() {
+    lastCmdBuf?.waitUntilCompleted()
+  }
 
   /// Rolling per-frame timing samples. CPU = wall time spent in render()
   /// itself (encoding work). GPU = cmdBuf.gpuEndTime - gpuStartTime, set in
@@ -250,6 +329,81 @@ public final class MetalRenderer: RendererBackend {
   private let sidebarCellHeight: CGFloat
 
   var terminalGlyphAtlasTextureSizeForTesting: Int { glyphAtlas.textureSize }
+  var cellGlyphUploadRangesForTesting: [Range<Int>] { cellGlyphUploadRanges }
+
+  func rebuildInstancesForTesting(
+    commands: [FrameCommand],
+    damage: RenderDamage,
+    surfacePxH: Int
+  ) -> RenderInstanceCounts {
+    buildInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: damage)
+    return lastInstanceCounts
+  }
+
+  func rebuildGPUCellInstancesForTesting(
+    commands: [FrameCommand],
+    damage: RenderDamage,
+    surfacePxH: Int
+  ) -> RenderInstanceCounts? {
+    guard buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: damage) else {
+      return nil
+    }
+    return lastInstanceCounts
+  }
+
+  func rebuildGPUCellPayloadInstancesForTesting(
+    payload: TerminalCellPayload,
+    commands: [FrameCommand],
+    damage: RenderDamage,
+    surfacePxH: Int
+  ) -> RenderInstanceCounts? {
+    guard buildGPUCellInstanceLists(
+      payload: payload,
+      commands: commands,
+      surfacePxH: surfacePxH,
+      damage: damage)
+    else {
+      return nil
+    }
+    return lastInstanceCounts
+  }
+
+  func classicTerminalGlyphRecordsForTesting(
+    commands: [FrameCommand],
+    surfacePxH: Int
+  ) -> [GPUCellGlyphRecord] {
+    buildInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: .full)
+    return glyphInstances.map(Self.record(from:)).sortedForOriginParity()
+  }
+
+  func gpuCellGlyphRecordsForTesting(
+    commands: [FrameCommand],
+    surfacePxH: Int
+  ) -> [GPUCellGlyphRecord]? {
+    guard buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: .full) else {
+      return nil
+    }
+    return cellGlyphs.compactMap { glyph in
+      guard glyph.flags != 0 else { return nil }
+      return Self.record(from: glyph)
+    }.sortedForOriginParity()
+  }
+
+  func gpuCellPathSupportedForTesting(
+    commands: [FrameCommand],
+    surfacePxH: Int
+  ) -> Bool {
+    buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: .full)
+  }
+
+  public var effectiveRendererMode: RendererMode {
+    let requested = Self.useGPUCellPath ? RendererMode.gpuDriven : configuredRendererMode
+    guard requested == .gpuDriven else { return .classic }
+    if #available(macOS 26, *) {
+      return .gpuDriven
+    }
+    return .classic
+  }
 
   /// Initializes the renderer. Returns nil when Metal is unavailable (no
   /// device, missing default library, or pipeline compile failure).
@@ -257,7 +411,8 @@ public final class MetalRenderer: RendererBackend {
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas? = nil,
     scale: CGFloat = 1,
-    glyphAtlasTextureSize: Int = 2048
+    glyphAtlasTextureSize: Int = 2048,
+    rendererMode: RendererMode = .classic
   ) {
     guard let device = MTLCreateSystemDefaultDevice() else { return nil }
     guard let queue = device.makeCommandQueue() else { return nil }
@@ -277,6 +432,7 @@ public final class MetalRenderer: RendererBackend {
       let solidVS = library.makeFunction(name: "solid_vertex"),
       let solidFS = library.makeFunction(name: "solid_fragment"),
       let glyphVS = library.makeFunction(name: "glyph_vertex"),
+      let cellGlyphVS = library.makeFunction(name: "cell_glyph_vertex"),
       let glyphFS = library.makeFunction(name: "glyph_fragment")
     else { return nil }
 
@@ -323,9 +479,24 @@ public final class MetalRenderer: RendererBackend {
     glyphAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
     glyphAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 
+    let cellGlyphDesc = MTLRenderPipelineDescriptor()
+    cellGlyphDesc.label = "laban.cell-glyph-quad"
+    cellGlyphDesc.vertexFunction = cellGlyphVS
+    cellGlyphDesc.fragmentFunction = glyphFS
+    let cellGlyphAttachment = cellGlyphDesc.colorAttachments[0]!
+    cellGlyphAttachment.pixelFormat = layer.pixelFormat
+    cellGlyphAttachment.isBlendingEnabled = true
+    cellGlyphAttachment.rgbBlendOperation = .add
+    cellGlyphAttachment.alphaBlendOperation = .add
+    cellGlyphAttachment.sourceRGBBlendFactor = .one
+    cellGlyphAttachment.sourceAlphaBlendFactor = .one
+    cellGlyphAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+    cellGlyphAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDesc),
-      let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDesc)
+      let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDesc),
+      let cellGlyphPipeline = try? device.makeRenderPipelineState(descriptor: cellGlyphDesc)
     else { return nil }
 
     let samplerDesc = MTLSamplerDescriptor()
@@ -373,8 +544,10 @@ public final class MetalRenderer: RendererBackend {
     self.readback = MetalReadback(device: device, pixelFormat: layer.pixelFormat)
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarAtlas
+    self.configuredRendererMode = rendererMode.isAvailableOnCurrentOS ? rendererMode : .classic
     self.solidPipeline = solidPipeline
     self.glyphPipeline = glyphPipeline
+    self.cellGlyphPipeline = cellGlyphPipeline
     self.sampler = sampler
     self.glyphAtlas = atlas
     self.sidebarGlyphAtlas = sidebarGlyphAtlasInstance
@@ -473,6 +646,15 @@ public final class MetalRenderer: RendererBackend {
 
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
+    render(commands, cellPayload: nil, damage: damage)
+  }
+
+  @discardableResult
+  public func render(
+    _ commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage
+  ) -> Bool {
     let cpuStart = ContinuousClock.now
 
     // Drop this frame if the previous GPU frame has not retired. The drawable
@@ -487,30 +669,6 @@ public final class MetalRenderer: RendererBackend {
       return false
     }
     cmdBuf.label = "laban.frame"
-    // Strong-self capture keeps the renderer alive until the GPU work
-    // completes. The same handler closes out per-frame timing and releases
-    // the scheduled frame once the GPU has reported gpuStartTime/gpuEndTime.
-    cmdBuf.addCompletedHandler { [self] buffer in
-      let cpuMs = msSince(cpuStart)
-      let gpuMs = max(0.0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
-      // Resolve per-pass GPU times BEFORE signalling the next frame in
-      // (otherwise frame N+1 could overwrite the sample buffer slots).
-      let perPass = self.resolvePerPassTimingsForFrame()
-      self.frameSampleLock.lock()
-      self.frameSamples.append(
-        FrameSample(
-          cpuMs: cpuMs, gpuMs: gpuMs,
-          contentMs: perPass.content,
-          presentBlitMs: perPass.present,
-          cursorOverlayMs: perPass.cursor,
-          readbackBlitMs: perPass.readback))
-      if self.frameSamples.count > Self.frameSampleCap {
-        self.frameSamples.removeFirst(self.frameSamples.count - Self.frameSampleCap)
-      }
-      self.frameSampleLock.unlock()
-      self.onFrameCompleted?()
-      scheduledFrame.finish()
-    }
 
     let surfaceWPx = max(1, Int(layer.drawableSize.width.rounded()))
     let surfaceHPx = max(1, Int(layer.drawableSize.height.rounded()))
@@ -527,6 +685,7 @@ public final class MetalRenderer: RendererBackend {
     // First frame after a target realloc must clear+repaint the full surface.
     // Otherwise honour the caller's damage hint directly.
     let effectiveDamage: RenderDamage = targetNeedsFullRedraw ? .full : damage
+    let effectiveRendererMode = self.effectiveRendererMode
 
     var passSlots = PassSlots()
 
@@ -536,13 +695,25 @@ public final class MetalRenderer: RendererBackend {
       buildCursorInstanceList(commands: commands)
       didContent = false
     } else {
-      didContent = encodeContentPass(
-        commands: commands,
-        damage: effectiveDamage,
-        target: target,
-        surfacePxH: surfaceHPx,
-        uniforms: &u,
-        cmdBuf: cmdBuf)
+      switch effectiveRendererMode {
+      case .classic:
+        didContent = encodeContentPass(
+          commands: commands,
+          damage: effectiveDamage,
+          target: target,
+          surfacePxH: surfaceHPx,
+          uniforms: &u,
+          cmdBuf: cmdBuf)
+      case .gpuDriven:
+        didContent = encodeGPUCellContentPass(
+          commands: commands,
+          cellPayload: cellPayload,
+          damage: effectiveDamage,
+          target: target,
+          surfacePxH: surfaceHPx,
+          uniforms: &u,
+          cmdBuf: cmdBuf)
+      }
     }
     if targetNeedsFullRedraw && !didContent {
       scheduledFrame.finish()
@@ -629,6 +800,30 @@ public final class MetalRenderer: RendererBackend {
 
     self.lastFramePassSlots = passSlots
     cmdBuf.present(drawable)
+    let cpuEncodeMs = msSince(cpuStart)
+    // Strong-self capture keeps the renderer alive until the GPU work
+    // completes. The same handler closes out per-frame timing and releases
+    // the scheduled frame once the GPU has reported gpuStartTime/gpuEndTime.
+    cmdBuf.addCompletedHandler { [self] buffer in
+      let gpuMs = max(0.0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
+      // Resolve per-pass GPU times BEFORE signalling the next frame in
+      // (otherwise frame N+1 could overwrite the sample buffer slots).
+      let perPass = self.resolvePerPassTimingsForFrame()
+      self.frameSampleLock.lock()
+      self.frameSamples.append(
+        FrameSample(
+          cpuMs: cpuEncodeMs, gpuMs: gpuMs,
+          contentMs: perPass.content,
+          presentBlitMs: perPass.present,
+          cursorOverlayMs: perPass.cursor,
+          readbackBlitMs: perPass.readback))
+      if self.frameSamples.count > Self.frameSampleCap {
+        self.frameSamples.removeFirst(self.frameSamples.count - Self.frameSampleCap)
+      }
+      self.frameSampleLock.unlock()
+      self.onFrameCompleted?()
+      scheduledFrame.finish()
+    }
     cmdBuf.commit()
     lastCmdBuf = cmdBuf
     if waitForFrameCompletion {
@@ -746,7 +941,7 @@ public final class MetalRenderer: RendererBackend {
     cmdBuf: MTLCommandBuffer
   ) -> Bool {
     // Build instance lists once for both the content pass and the cursor pass.
-    buildInstanceLists(commands: commands, surfacePxH: surfacePxH)
+    buildInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: damage)
 
     // Skip the content pass entirely if the caller said nothing changed.
     if case .partial(let yRanges) = damage, yRanges.isEmpty {
@@ -856,6 +1051,133 @@ public final class MetalRenderer: RendererBackend {
     return true
   }
 
+  @discardableResult
+  private func encodeGPUCellContentPass(
+    commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage,
+    target: MTLTexture,
+    surfacePxH: Int,
+    uniforms u: inout Uniforms,
+    cmdBuf: MTLCommandBuffer
+  ) -> Bool {
+    let builtInstances: Bool
+    if let cellPayload {
+      builtInstances = buildGPUCellInstanceLists(
+        payload: cellPayload,
+        commands: commands,
+        surfacePxH: surfacePxH,
+        damage: damage)
+    } else {
+      builtInstances = buildGPUCellInstanceLists(
+        commands: commands,
+        surfacePxH: surfacePxH,
+        damage: damage)
+    }
+    guard builtInstances else {
+      return encodeContentPass(
+        commands: commands,
+        damage: damage,
+        target: target,
+        surfacePxH: surfacePxH,
+        uniforms: &u,
+        cmdBuf: cmdBuf)
+    }
+
+    if case .partial(let yRanges) = damage, yRanges.isEmpty {
+      return false
+    }
+
+    let pass = MTLRenderPassDescriptor()
+    let attach = pass.colorAttachments[0]!
+    attach.texture = target
+    attach.storeAction = .store
+
+    var scissor: MTLScissorRect?
+    switch damage {
+    case .full:
+      attach.loadAction = .clear
+      attach.clearColor = fullRedrawClearColor(commands)
+    case .partial(let yRanges):
+      attach.loadAction = .load
+      scissor = scissorRectFromYRanges(
+        yRanges,
+        surfacePxW: target.width,
+        surfacePxH: surfacePxH,
+        scale: layer.contentsScale)
+    }
+
+    if counterRenderSupported, let cb = counterSampleBuffer,
+      let sa = pass.sampleBufferAttachments[0]
+    {
+      sa.sampleBuffer = cb
+      sa.startOfVertexSampleIndex = 0
+      sa.endOfFragmentSampleIndex = 1
+    }
+
+    let solidFrameBuffer: MTLBuffer?
+    if solidInstances.isEmpty {
+      solidFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&solidBuffer, for: solidInstances) else {
+        return false
+      }
+      solidFrameBuffer = buffer
+    }
+
+    let sidebarGlyphFrameBuffer: MTLBuffer?
+    if sidebarGlyphInstances.isEmpty {
+      sidebarGlyphFrameBuffer = nil
+    } else {
+      guard
+        let buffer = prepareInstanceBuffer(&sidebarGlyphBuffer, for: sidebarGlyphInstances)
+      else {
+        return false
+      }
+      sidebarGlyphFrameBuffer = buffer
+    }
+
+    let cellGlyphFrameBuffer = prepareCellGlyphBuffer()
+
+    guard let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: pass) else {
+      return false
+    }
+    encoder.label = "terminal-content-gpu-cell"
+    encoder.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+    encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+    if let s = scissor {
+      encoder.setScissorRect(s)
+    }
+
+    if let buf = solidFrameBuffer {
+      encoder.setRenderPipelineState(solidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: solidInstances.count)
+    }
+    if let buf = sidebarGlyphFrameBuffer {
+      encoder.setRenderPipelineState(glyphPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.setFragmentTexture(sidebarGlyphAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: sidebarGlyphInstances.count)
+    }
+    if let buf = cellGlyphFrameBuffer {
+      encoder.setRenderPipelineState(cellGlyphPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.setFragmentTexture(glyphAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: cellGlyphs.count)
+    }
+    encoder.endEncoding()
+    return true
+  }
+
   /// Compute the union bounding-box scissor rect (in device pixels) covering
   /// all dirty Y ranges. Returns nil for an empty list. CG has y-up; Metal
   /// scissor rects use y-down (origin top-left), so we flip here.
@@ -885,15 +1207,20 @@ public final class MetalRenderer: RendererBackend {
   /// pollute the persistent terminal target with a blink-rate redraw.
   private func buildInstanceLists(
     commands: [FrameCommand],
-    surfacePxH: Int
+    surfacePxH: Int,
+    damage: RenderDamage
   ) {
     var attempts = 0
+    let damageBounds = Self.useClassicDamageScoped ? Self.damageYBounds(damage) : nil
     while true {
       glyphAtlas.clearOverflowFlag()
       if sidebarGlyphAtlas !== glyphAtlas {
         sidebarGlyphAtlas.clearOverflowFlag()
       }
-      buildInstanceListsOnce(commands: commands, surfacePxH: surfacePxH)
+      buildInstanceListsOnce(
+        commands: commands,
+        surfacePxH: surfacePxH,
+        damageBounds: damageBounds)
 
       let terminalOverflow = glyphAtlas.didOverflow
       let sidebarOverflow = sidebarGlyphAtlas.didOverflow
@@ -913,10 +1240,722 @@ public final class MetalRenderer: RendererBackend {
     }
   }
 
+  private static let gpuCellActiveFlag: UInt32 = 1
+  private static let m2SupportedGPUCellAttributes: TextAttributes = [.bold, .italic]
+  private static let gridAlignmentEpsilon: CGFloat = 0.001
+
+  private struct TerminalGridGeometry: Equatable {
+    var originX: CGFloat
+    var originY: CGFloat
+    var cols: Int
+    var rows: Int
+    var cellAdvance: CGFloat
+    var cellHeight: CGFloat
+
+    var cellCount: Int { max(0, cols * rows) }
+
+    func index(cellX: CGFloat, cellY: CGFloat, cellOffset: Int) -> Int? {
+      let rawCol = (cellX - originX) / cellAdvance
+      let rawRow = (cellY - originY) / cellHeight
+      let roundedCol = rawCol.rounded()
+      let roundedRow = rawRow.rounded()
+      guard abs(rawCol - roundedCol) <= MetalRenderer.gridAlignmentEpsilon,
+        abs(rawRow - roundedRow) <= MetalRenderer.gridAlignmentEpsilon
+      else {
+        return nil
+      }
+      let col = Int(roundedCol) + cellOffset
+      let row = Int(roundedRow)
+      guard row >= 0, row < rows, col >= 0, col < cols else { return nil }
+      return row * cols + col
+    }
+  }
+
+  private static var emptyCellGlyph: CellGlyph {
+    CellGlyph(
+      originPx: .zero,
+      sizePx: .zero,
+      uvOrigin: .zero,
+      uvSize: .zero,
+      flags: 0,
+      fg: .zero)
+  }
+
+  private func terminalGridGeometry(commands: [FrameCommand]) -> TerminalGridGeometry? {
+    var minX = CGFloat.greatestFiniteMagnitude
+    var minY = CGFloat.greatestFiniteMagnitude
+    var maxX = -CGFloat.greatestFiniteMagnitude
+    var maxY = -CGFloat.greatestFiniteMagnitude
+
+    @inline(__always)
+    func include(_ rect: CGRect) {
+      guard rect.width > 0, rect.height > 0 else { return }
+      minX = min(minX, rect.minX)
+      minY = min(minY, rect.minY)
+      maxX = max(maxX, rect.maxX)
+      maxY = max(maxY, rect.maxY)
+    }
+
+    for cmd in commands {
+      switch cmd {
+      case .rect(let rect, _, let source) where source == .terminal:
+        include(rect)
+      case .glyphRun(let origin, let text, _, _, _, let source, _, _, _) where source == .terminal:
+        guard !text.isEmpty else { continue }
+        include(
+          CGRect(
+            x: origin.x,
+            y: origin.y,
+            width: CGFloat(text.count) * glyphCellAdvance,
+            height: glyphCellHeight))
+      default:
+        break
+      }
+    }
+
+    guard minX.isFinite, minY.isFinite, maxX.isFinite, maxY.isFinite,
+      maxX > minX, maxY > minY,
+      glyphCellAdvance > 0, glyphCellHeight > 0
+    else { return nil }
+
+    let cols = max(1, Int(((maxX - minX) / glyphCellAdvance).rounded()))
+    let rows = max(1, Int(((maxY - minY) / glyphCellHeight).rounded()))
+    return TerminalGridGeometry(
+      originX: minX,
+      originY: minY,
+      cols: cols,
+      rows: rows,
+      cellAdvance: glyphCellAdvance,
+      cellHeight: glyphCellHeight)
+  }
+
+  private func rowsToPatch(
+    for damageBounds: DamageYBounds?,
+    geometry: TerminalGridGeometry?
+  ) -> [Bool] {
+    guard let damageBounds, let geometry else { return [] }
+    var rows = [Bool](repeating: false, count: geometry.rows)
+    let rawStart = ((damageBounds.minY - geometry.originY) / geometry.cellHeight).rounded(.down)
+    let rawEnd = ((damageBounds.maxY - geometry.originY) / geometry.cellHeight).rounded(.up)
+    let start = max(0, min(geometry.rows, Int(rawStart)))
+    let end = max(0, min(geometry.rows, Int(rawEnd)))
+    guard start < end else { return rows }
+    for row in start..<end {
+      rows[row] = true
+    }
+    return rows
+  }
+
+  private func terminalGridGeometry(payload: TerminalCellPayload) -> TerminalGridGeometry? {
+    guard payload.rows > 0, payload.cols > 0,
+      payload.cellSize.width > 0, payload.cellSize.height > 0
+    else { return nil }
+    return TerminalGridGeometry(
+      originX: payload.origin.x,
+      originY: payload.origin.y + payload.contentYOffset,
+      cols: payload.cols,
+      rows: payload.rows,
+      cellAdvance: payload.cellSize.width,
+      cellHeight: payload.cellSize.height)
+  }
+
+  private func rowsToPatch(
+    for payload: TerminalCellPayload,
+    geometry: TerminalGridGeometry?,
+    damage: RenderDamage
+  ) -> [Bool] {
+    guard case .partial = damage, let geometry else { return [] }
+    var rows = [Bool](repeating: false, count: geometry.rows)
+    for topDownRow in payload.dirtyRows {
+      let bottomUpRow = geometry.rows - 1 - topDownRow
+      guard bottomUpRow >= 0, bottomUpRow < rows.count else { continue }
+      rows[bottomUpRow] = true
+    }
+    return rows
+  }
+
+  private func buildGPUCellInstanceLists(
+    payload: TerminalCellPayload,
+    commands: [FrameCommand],
+    surfacePxH: Int,
+    damage: RenderDamage
+  ) -> Bool {
+    guard payload.isGPUCellCompatible else { return false }
+    var attempts = 0
+    let damageBounds = Self.useClassicDamageScoped ? Self.damageYBounds(damage) : nil
+    while true {
+      glyphAtlas.clearOverflowFlag()
+      if sidebarGlyphAtlas !== glyphAtlas {
+        sidebarGlyphAtlas.clearOverflowFlag()
+      }
+      guard buildGPUCellPayloadInstanceListsOnce(
+        payload: payload,
+        commands: commands,
+        surfacePxH: surfacePxH,
+        damage: damage,
+        damageBounds: damageBounds)
+      else {
+        return false
+      }
+
+      let terminalOverflow = glyphAtlas.didOverflow
+      let sidebarOverflow = sidebarGlyphAtlas.didOverflow
+      guard terminalOverflow || sidebarOverflow else { return true }
+
+      attempts += 1
+      guard attempts < 4 else { return false }
+
+      var grew = false
+      if terminalOverflow {
+        grew = growGlyphAtlas(forSidebar: false) || grew
+      }
+      if sidebarOverflow && !(terminalOverflow && sidebarGlyphAtlas === glyphAtlas) {
+        grew = growGlyphAtlas(forSidebar: true) || grew
+      }
+      guard grew else { return false }
+      cellGlyphGridGeometry = nil
+    }
+  }
+
+  private func buildGPUCellPayloadInstanceListsOnce(
+    payload: TerminalCellPayload,
+    commands: [FrameCommand],
+    surfacePxH: Int,
+    damage: RenderDamage,
+    damageBounds: DamageYBounds?
+  ) -> Bool {
+    solidInstances.removeAll(keepingCapacity: true)
+    glyphInstances.removeAll(keepingCapacity: true)
+    sidebarGlyphInstances.removeAll(keepingCapacity: true)
+    cellGlyphUploadRanges.removeAll(keepingCapacity: true)
+    cursorInstances.removeAll(keepingCapacity: true)
+
+    guard let geometry = terminalGridGeometry(payload: payload) else {
+      cellGlyphs.removeAll(keepingCapacity: true)
+      cellGlyphGridGeometry = nil
+      return false
+    }
+
+    let fullCellRebuild =
+      damage == .full || geometry != cellGlyphGridGeometry
+      || geometry.cellCount != cellGlyphs.count
+    if fullCellRebuild {
+      cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
+      cellGlyphGridGeometry = geometry
+      if !cellGlyphs.isEmpty {
+        cellGlyphUploadRanges.append(0..<cellGlyphs.count)
+      }
+    }
+
+    let patchRows = fullCellRebuild ? [] : rowsToPatch(
+      for: payload,
+      geometry: geometry,
+      damage: damage)
+    if !fullCellRebuild {
+      for row in patchRows.indices where patchRows[row] {
+        let start = row * geometry.cols
+        let end = min(start + geometry.cols, cellGlyphs.count)
+        guard start < end else { continue }
+        for index in start..<end {
+          cellGlyphs[index] = Self.emptyCellGlyph
+        }
+        cellGlyphUploadRanges.append(start..<end)
+      }
+    }
+
+    let surfaceH = Float(surfacePxH)
+    let scale = Float(layer.contentsScale)
+
+    @inline(__always)
+    func appendSolid(rect: CGRect, color: UInt32) {
+      guard rect.width > 0, rect.height > 0 else { return }
+      if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
+        return
+      }
+      solidInstances.append(
+        SolidInstance(
+          origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+          size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
+          color: rgbaToFloat4(color)))
+      _ = surfaceH
+    }
+
+    @inline(__always)
+    func appendSidebarGlyph(
+      cellX: CGFloat,
+      cellY: CGFloat,
+      entry: MetalGlyphAtlas.Entry,
+      atlas: MetalGlyphAtlas,
+      color: UInt32
+    ) {
+      let atlasW = Float(atlas.textureSize)
+      let atlasH = Float(atlas.textureSize)
+      sidebarGlyphInstances.append(
+        GlyphInstance(
+          origin: SIMD2<Float>(
+            Float(cellX + entry.logicalOriginX) * scale,
+            Float(cellY) * scale),
+          size: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+          uvOrigin: SIMD2<Float>(Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
+          uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+          color: rgbaToFloat4(color)))
+    }
+
+    switch damage {
+    case .full:
+      appendSolid(rect: payload.terminalRect, color: payload.defaultBackground)
+    case .partial:
+      var rowsWithFullBackgroundRun = [Bool](repeating: false, count: payload.rows)
+      for run in payload.backgroundRuns
+      where run.row >= 0 && run.row < payload.rows && run.startCol <= 0
+        && run.colCount >= payload.cols
+      {
+        rowsWithFullBackgroundRun[run.row] = true
+      }
+      for row in payload.dirtyRows where row >= 0 && row < payload.rows {
+        guard !rowsWithFullBackgroundRun[row] else { continue }
+        appendSolid(
+          rect: CGRect(
+            x: payload.origin.x,
+            y: payload.origin.y + CGFloat(payload.rows - 1 - row) * payload.cellSize.height
+              + payload.contentYOffset,
+            width: CGFloat(payload.cols) * payload.cellSize.width,
+            height: payload.cellSize.height),
+          color: payload.defaultBackground)
+      }
+    }
+    for run in payload.backgroundRuns {
+      let rect = CGRect(
+        x: payload.origin.x + CGFloat(run.startCol) * payload.cellSize.width,
+        y: payload.origin.y + CGFloat(payload.rows - 1 - run.row) * payload.cellSize.height
+          + payload.contentYOffset,
+        width: CGFloat(run.colCount) * payload.cellSize.width,
+        height: payload.cellSize.height)
+      appendSolid(rect: rect, color: run.color)
+    }
+
+    for cmd in commands {
+      switch cmd {
+      case .rect(let rect, let color, _):
+        appendSolid(rect: rect, color: color)
+      case .selection(let rect, let color),
+        .findMatch(let rect, let color),
+        .findSelected(let rect, let color):
+        appendSolid(rect: rect, color: color)
+      case .cursor(let rect, let color):
+        guard rect.width > 0, rect.height > 0 else { break }
+        cursorInstances.append(
+          SolidInstance(
+            origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+            size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
+            color: rgbaToFloat4(color)))
+      case .glyphRun(
+        let origin, let text, let fg, _, let attrs, let runSource,
+        let underlineStyle, let underlineColor, _
+      ) where runSource == .sidebar:
+        let runHeight = sidebarCellHeight
+        if let damageBounds, !damageBounds.overlaps(y: origin.y, height: runHeight) {
+          continue
+        }
+        let font = styledFont(for: attrs, in: sidebarFontAtlas)
+        let traits = CTFontGetSymbolicTraits(font)
+        let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
+        let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+        for (cellIndex, cluster) in text.enumerated() {
+          guard
+            let entry = sidebarGlyphAtlas.entry(
+              character: cluster,
+              font: font,
+              boldFallback: needsBoldFallback,
+              italicFallback: needsItalicFallback)
+          else { continue }
+          appendSidebarGlyph(
+            cellX: origin.x + CGFloat(cellIndex) * sidebarCellAdvance,
+            cellY: origin.y,
+            entry: entry,
+            atlas: sidebarGlyphAtlas,
+            color: fg)
+        }
+        emitDecorations(
+          for: text, at: origin, attributes: attrs,
+          cellAdvance: sidebarCellAdvance,
+          cellHeight: sidebarCellHeight,
+          descent: sidebarFontAtlas.descent,
+          fg: fg,
+          underlineStyle: underlineStyle, underlineColor: underlineColor,
+          appendSolid: appendSolid)
+      default:
+        break
+      }
+    }
+
+    var cachedPayloadAttributes: TextAttributes?
+    var cachedPayloadFont: CTFont?
+    var cachedPayloadNeedsBoldFallback = false
+    var cachedPayloadNeedsItalicFallback = false
+
+    @inline(__always)
+    func terminalFontInfo(
+      for attributes: TextAttributes
+    ) -> (font: CTFont, needsBoldFallback: Bool, needsItalicFallback: Bool) {
+      if cachedPayloadAttributes == attributes, let cachedPayloadFont {
+        return (
+          cachedPayloadFont,
+          cachedPayloadNeedsBoldFallback,
+          cachedPayloadNeedsItalicFallback
+        )
+      }
+      let font = styledFont(for: attributes, in: fontAtlas)
+      let traits = CTFontGetSymbolicTraits(font)
+      let needsBoldFallback = attributes.contains(.bold) && !traits.contains(.traitBold)
+      let needsItalicFallback = attributes.contains(.italic) && !traits.contains(.traitItalic)
+      cachedPayloadAttributes = attributes
+      cachedPayloadFont = font
+      cachedPayloadNeedsBoldFallback = needsBoldFallback
+      cachedPayloadNeedsItalicFallback = needsItalicFallback
+      return (font, needsBoldFallback, needsItalicFallback)
+    }
+
+    for glyph in payload.glyphs {
+      guard glyph.row >= 0, glyph.row < payload.rows,
+        glyph.col >= 0, glyph.col < payload.cols,
+        glyph.underlineStyle == .none,
+        glyph.underlineColor == nil,
+        !glyph.hasHyperlink,
+        glyph.wide == 0,
+        (glyph.attributes.rawValue & ~Self.m2SupportedGPUCellAttributes.rawValue) == 0,
+        glyph.scalarValue != nil || (glyph.text.first != nil && glyph.text.count == 1)
+      else {
+        return false
+      }
+      let cellY = payload.origin.y + CGFloat(payload.rows - 1 - glyph.row) * payload.cellSize.height
+        + payload.contentYOffset
+      let bottomRow = payload.rows - 1 - glyph.row
+      let cellX = payload.origin.x + CGFloat(glyph.col) * payload.cellSize.width
+      let fontInfo = terminalFontInfo(for: glyph.attributes)
+      let entry: MetalGlyphAtlas.Entry?
+      if let scalarValue = glyph.scalarValue, let scalar = Unicode.Scalar(scalarValue) {
+        entry = glyphAtlas.entry(
+          scalar: scalar,
+          font: fontInfo.font,
+          boldFallback: fontInfo.needsBoldFallback,
+          italicFallback: fontInfo.needsItalicFallback)
+      } else if let character = glyph.text.first {
+        entry = glyphAtlas.entry(
+          character: character,
+          font: fontInfo.font,
+          boldFallback: fontInfo.needsBoldFallback,
+          italicFallback: fontInfo.needsItalicFallback)
+      } else {
+        entry = nil
+      }
+      guard
+        let entry,
+        entry.logicalWidth <= glyphCellAdvance * 1.5,
+        bottomRow >= 0,
+        bottomRow < geometry.rows
+      else {
+        return false
+      }
+      let index = bottomRow * geometry.cols + glyph.col
+      guard index >= 0, index < cellGlyphs.count else { return false }
+      let atlasW = Float(glyphAtlas.textureSize)
+      let atlasH = Float(glyphAtlas.textureSize)
+      cellGlyphs[index] = CellGlyph(
+        originPx: SIMD2<Float>(
+          Float(cellX + entry.logicalOriginX) * scale,
+          Float(cellY) * scale),
+        sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+        uvOrigin: SIMD2<Float>(Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
+        uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+        flags: Self.gpuCellActiveFlag,
+        fg: rgbaToFloat4(glyph.foreground))
+    }
+
+    for cursor in payload.cursorRects {
+      let rect = cursor.rect
+      guard rect.width > 0, rect.height > 0 else { continue }
+      cursorInstances.append(
+        SolidInstance(
+          origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+          size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
+          color: rgbaToFloat4(cursor.color)))
+    }
+
+    lastInstanceCounts = RenderInstanceCounts(
+      solids: solidInstances.count,
+      glyphs: glyphInstances.count,
+      sidebarGlyphs: sidebarGlyphInstances.count,
+      cellGlyphs: cellGlyphs.count,
+      cursors: cursorInstances.count)
+    return true
+  }
+
+  private func buildGPUCellInstanceLists(
+    commands: [FrameCommand],
+    surfacePxH: Int,
+    damage: RenderDamage
+  ) -> Bool {
+    var attempts = 0
+    let damageBounds = Self.useClassicDamageScoped ? Self.damageYBounds(damage) : nil
+    while true {
+      glyphAtlas.clearOverflowFlag()
+      if sidebarGlyphAtlas !== glyphAtlas {
+        sidebarGlyphAtlas.clearOverflowFlag()
+      }
+      guard buildGPUCellInstanceListsOnce(
+        commands: commands,
+        surfacePxH: surfacePxH,
+        damageBounds: damageBounds)
+      else {
+        return false
+      }
+
+      let terminalOverflow = glyphAtlas.didOverflow
+      let sidebarOverflow = sidebarGlyphAtlas.didOverflow
+      guard terminalOverflow || sidebarOverflow else { return true }
+
+      attempts += 1
+      guard attempts < 4 else { return false }
+
+      var grew = false
+      if terminalOverflow {
+        grew = growGlyphAtlas(forSidebar: false) || grew
+      }
+      if sidebarOverflow && !(terminalOverflow && sidebarGlyphAtlas === glyphAtlas) {
+        grew = growGlyphAtlas(forSidebar: true) || grew
+      }
+      guard grew else { return false }
+      cellGlyphGridGeometry = nil
+    }
+  }
+
+  private func buildGPUCellInstanceListsOnce(
+    commands: [FrameCommand],
+    surfacePxH: Int,
+    damageBounds: DamageYBounds?
+  ) -> Bool {
+    solidInstances.removeAll(keepingCapacity: true)
+    glyphInstances.removeAll(keepingCapacity: true)
+    sidebarGlyphInstances.removeAll(keepingCapacity: true)
+    cellGlyphUploadRanges.removeAll(keepingCapacity: true)
+    cursorInstances.removeAll(keepingCapacity: true)
+
+    let geometry = terminalGridGeometry(commands: commands)
+    let fullCellRebuild =
+      damageBounds == nil || geometry != cellGlyphGridGeometry
+      || geometry?.cellCount != cellGlyphs.count
+    if let geometry, fullCellRebuild {
+      cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
+      cellGlyphGridGeometry = geometry
+      if !cellGlyphs.isEmpty {
+        cellGlyphUploadRanges.append(0..<cellGlyphs.count)
+      }
+    } else if geometry == nil {
+      cellGlyphs.removeAll(keepingCapacity: true)
+      cellGlyphGridGeometry = nil
+    }
+
+    let patchRows = fullCellRebuild ? [] : rowsToPatch(for: damageBounds, geometry: geometry)
+    if let geometry, !fullCellRebuild {
+      for row in patchRows.indices where patchRows[row] {
+        let start = row * geometry.cols
+        let end = min(start + geometry.cols, cellGlyphs.count)
+        guard start < end else { continue }
+        for index in start..<end {
+          cellGlyphs[index] = Self.emptyCellGlyph
+        }
+        cellGlyphUploadRanges.append(start..<end)
+      }
+    }
+
+    let surfaceH = Float(surfacePxH)
+    let scale = Float(layer.contentsScale)
+
+    @inline(__always)
+    func appendSolid(rect: CGRect, color: UInt32) {
+      guard rect.width > 0, rect.height > 0 else { return }
+      if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
+        return
+      }
+      let originPx = SIMD2<Float>(
+        Float(rect.origin.x) * scale, Float(rect.origin.y) * scale)
+      let sizePx = SIMD2<Float>(
+        Float(rect.width) * scale, Float(rect.height) * scale)
+      solidInstances.append(
+        SolidInstance(origin: originPx, size: sizePx, color: rgbaToFloat4(color)))
+      _ = surfaceH
+    }
+
+    @inline(__always)
+    func appendSidebarGlyph(
+      cellX: CGFloat, cellY: CGFloat,
+      entry: MetalGlyphAtlas.Entry,
+      atlas: MetalGlyphAtlas,
+      color: UInt32
+    ) {
+      let atlasW = Float(atlas.textureSize)
+      let atlasH = Float(atlas.textureSize)
+      sidebarGlyphInstances.append(
+        GlyphInstance(
+          origin: SIMD2<Float>(
+            Float(cellX + entry.logicalOriginX) * scale,
+            Float(cellY) * scale),
+          size: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+          uvOrigin: SIMD2<Float>(Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
+          uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+          color: rgbaToFloat4(color)))
+    }
+
+    @inline(__always)
+    func writeTerminalCellGlyph(
+      index: Int,
+      cellX: CGFloat,
+      cellY: CGFloat,
+      entry: MetalGlyphAtlas.Entry,
+      color: UInt32
+    ) -> Bool {
+      guard index >= 0, index < cellGlyphs.count else { return false }
+      guard entry.logicalWidth <= glyphCellAdvance * 1.5 else { return false }
+      if !patchRows.isEmpty {
+        let row = index / max(1, cellGlyphGridGeometry?.cols ?? 1)
+        guard row >= 0, row < patchRows.count, patchRows[row] else { return true }
+      }
+      let atlasW = Float(glyphAtlas.textureSize)
+      let atlasH = Float(glyphAtlas.textureSize)
+      cellGlyphs[index] = CellGlyph(
+        originPx: SIMD2<Float>(
+          Float(cellX + entry.logicalOriginX) * scale,
+          Float(cellY) * scale),
+        sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+        uvOrigin: SIMD2<Float>(Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
+        uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+        flags: Self.gpuCellActiveFlag,
+        fg: rgbaToFloat4(color))
+      return true
+    }
+
+    for cmd in commands {
+      switch cmd {
+      case .rect(let rect, let color, _):
+        appendSolid(rect: rect, color: color)
+
+      case .cursor(let rect, let color):
+        guard rect.width > 0, rect.height > 0 else { break }
+        cursorInstances.append(
+          SolidInstance(
+            origin: SIMD2<Float>(
+              Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+            size: SIMD2<Float>(
+              Float(rect.width) * scale, Float(rect.height) * scale),
+            color: rgbaToFloat4(color)))
+
+      case .selection(let rect, let color):
+        appendSolid(rect: rect, color: color)
+
+      case .findMatch(let rect, let color),
+        .findSelected(let rect, let color):
+        appendSolid(rect: rect, color: color)
+
+      case .clip:
+        break
+
+      case .glyphRun(
+        let origin, let text, let fg, _, let attrs, let runSource,
+        let underlineStyle, let underlineColor, let hyperlink
+      ):
+        let isSidebar = runSource == .sidebar
+        let runHeight = isSidebar ? sidebarCellHeight : glyphCellHeight
+        if isSidebar, let damageBounds, !damageBounds.overlaps(y: origin.y, height: runHeight) {
+          continue
+        }
+
+        if !isSidebar {
+          guard attrs.subtracting(Self.m2SupportedGPUCellAttributes).isEmpty,
+            underlineStyle == .none,
+            underlineColor == nil,
+            hyperlink == nil,
+            let geometry
+          else {
+            return false
+          }
+          let font = styledFont(for: attrs, in: fontAtlas)
+          let traits = CTFontGetSymbolicTraits(font)
+          let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
+          let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+
+          for (cellIndex, cluster) in text.enumerated() {
+            let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
+            if !patchRows.isEmpty,
+              let index = geometry.index(cellX: cellX, cellY: origin.y, cellOffset: 0)
+            {
+              let row = index / max(1, geometry.cols)
+              guard row >= 0, row < patchRows.count, patchRows[row] else { continue }
+            }
+            guard
+              let entry = glyphAtlas.entry(
+                character: cluster, font: font,
+                boldFallback: needsBoldFallback,
+                italicFallback: needsItalicFallback)
+            else { continue }
+            guard
+              let index = geometry.index(cellX: cellX, cellY: origin.y, cellOffset: 0),
+              writeTerminalCellGlyph(index: index, cellX: cellX, cellY: origin.y, entry: entry, color: fg)
+            else {
+              return false
+            }
+          }
+          continue
+        }
+
+        let font = styledFont(for: attrs, in: sidebarFontAtlas)
+        let traits = CTFontGetSymbolicTraits(font)
+        let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
+        let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+
+        for (cellIndex, cluster) in text.enumerated() {
+          guard
+            let entry = sidebarGlyphAtlas.entry(
+              character: cluster, font: font,
+              boldFallback: needsBoldFallback,
+              italicFallback: needsItalicFallback)
+          else { continue }
+          appendSidebarGlyph(
+            cellX: origin.x + CGFloat(cellIndex) * sidebarCellAdvance,
+            cellY: origin.y,
+            entry: entry,
+            atlas: sidebarGlyphAtlas,
+            color: fg)
+        }
+
+        emitDecorations(
+          for: text, at: origin, attributes: attrs,
+          cellAdvance: sidebarCellAdvance,
+          cellHeight: sidebarCellHeight,
+          descent: sidebarFontAtlas.descent,
+          fg: fg,
+          underlineStyle: underlineStyle, underlineColor: underlineColor,
+          appendSolid: appendSolid)
+
+      case .texturedQuad:
+        break
+      }
+    }
+
+    lastInstanceCounts = RenderInstanceCounts(
+      solids: solidInstances.count,
+      glyphs: glyphInstances.count,
+      sidebarGlyphs: sidebarGlyphInstances.count,
+      cellGlyphs: cellGlyphs.count,
+      cursors: cursorInstances.count)
+    return true
+  }
+
   private func buildCursorInstanceList(commands: [FrameCommand]) {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
+    cellGlyphs.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
 
     let scale = Float(layer.contentsScale)
@@ -931,15 +1970,46 @@ public final class MetalRenderer: RendererBackend {
             Float(rect.width) * scale, Float(rect.height) * scale),
           color: rgbaToFloat4(color)))
     }
+    lastInstanceCounts = RenderInstanceCounts(
+      solids: solidInstances.count,
+      glyphs: glyphInstances.count,
+      sidebarGlyphs: sidebarGlyphInstances.count,
+      cellGlyphs: cellGlyphs.count,
+      cursors: cursorInstances.count)
+  }
+
+  private struct DamageYBounds {
+    var minY: CGFloat
+    var maxY: CGFloat
+
+    func overlaps(y: CGFloat, height: CGFloat) -> Bool {
+      guard height > 0 else { return false }
+      return y < maxY && (y + height) > minY
+    }
+  }
+
+  private static func damageYBounds(_ damage: RenderDamage) -> DamageYBounds? {
+    guard case .partial(let ranges) = damage, !ranges.isEmpty else { return nil }
+    var minY = CGFloat.greatestFiniteMagnitude
+    var maxY = -CGFloat.greatestFiniteMagnitude
+    for range in ranges {
+      guard range.height > 0 else { continue }
+      minY = min(minY, range.y)
+      maxY = max(maxY, range.y + range.height)
+    }
+    guard minY.isFinite, maxY.isFinite, minY < maxY else { return nil }
+    return DamageYBounds(minY: minY, maxY: maxY)
   }
 
   private func buildInstanceListsOnce(
     commands: [FrameCommand],
-    surfacePxH: Int
+    surfacePxH: Int,
+    damageBounds: DamageYBounds?
   ) {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
+    cellGlyphs.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
 
     let surfaceH = Float(surfacePxH)
@@ -994,6 +2064,9 @@ public final class MetalRenderer: RendererBackend {
     for cmd in commands {
       switch cmd {
       case .rect(let rect, let color, _):
+        if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
+          continue
+        }
         appendSolid(rect: rect, color: color)
 
       case .cursor(let rect, let color):
@@ -1010,10 +2083,16 @@ public final class MetalRenderer: RendererBackend {
             color: rgbaToFloat4(color)))
 
       case .selection(let rect, let color):
+        if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
+          continue
+        }
         appendSolid(rect: rect, color: color)
 
       case .findMatch(let rect, let color),
         .findSelected(let rect, let color):
+        if let damageBounds, !damageBounds.overlaps(y: rect.origin.y, height: rect.height) {
+          continue
+        }
         appendSolid(rect: rect, color: color)
 
       case .clip:
@@ -1029,6 +2108,10 @@ public final class MetalRenderer: RendererBackend {
         let underlineStyle, let underlineColor, _
       ):
         let isSidebar = runSource == .sidebar
+        let runHeight = isSidebar ? sidebarCellHeight : glyphCellHeight
+        if let damageBounds, !damageBounds.overlaps(y: origin.y, height: runHeight) {
+          continue
+        }
         let activeAtlas = isSidebar ? sidebarGlyphAtlas : glyphAtlas
         let activeAdvance = isSidebar ? sidebarCellAdvance : glyphCellAdvance
         let activeFontAtlas = isSidebar ? sidebarFontAtlas : fontAtlas
@@ -1069,6 +2152,12 @@ public final class MetalRenderer: RendererBackend {
         break
       }
     }
+    lastInstanceCounts = RenderInstanceCounts(
+      solids: solidInstances.count,
+      glyphs: glyphInstances.count,
+      sidebarGlyphs: sidebarGlyphInstances.count,
+      cellGlyphs: cellGlyphs.count,
+      cursors: cursorInstances.count)
   }
 
   private func prepareInstanceBuffer<Element>(
@@ -1085,6 +2174,32 @@ public final class MetalRenderer: RendererBackend {
     instances.withUnsafeBufferPointer { src in
       if let base = src.baseAddress {
         memcpy(target.contents(), base, src.count * stride)
+      }
+    }
+    return target
+  }
+
+  private func prepareCellGlyphBuffer() -> MTLBuffer? {
+    guard !cellGlyphs.isEmpty else { return nil }
+    let stride = MemoryLayout<CellGlyph>.stride
+    let needsFullUpload = cellGlyphBuffer == nil
+    guard
+      let target = ensureBuffer(
+        &cellGlyphBuffer,
+        elementCount: cellGlyphs.count,
+        elementStride: stride)
+    else { return nil }
+    let ranges = needsFullUpload ? [0..<cellGlyphs.count] : cellGlyphUploadRanges
+    guard !ranges.isEmpty else { return target }
+    cellGlyphs.withUnsafeBufferPointer { src in
+      guard let base = src.baseAddress else { return }
+      for range in ranges {
+        guard range.lowerBound >= 0, range.upperBound <= src.count else { continue }
+        let byteOffset = range.lowerBound * stride
+        memcpy(
+          target.contents().advanced(by: byteOffset),
+          base.advanced(by: range.lowerBound),
+          range.count * stride)
       }
     }
     return target
@@ -1193,9 +2308,42 @@ public final class MetalRenderer: RendererBackend {
     return font
   }
 
+  private static func record(from glyph: GlyphInstance) -> GPUCellGlyphRecord {
+    GPUCellGlyphRecord(
+      originPx: glyph.origin,
+      sizePx: glyph.size,
+      uvOrigin: glyph.uvOrigin,
+      uvSize: glyph.uvSize,
+      color: glyph.color,
+      flags: gpuCellActiveFlag)
+  }
+
+  private static func record(from cell: CellGlyph) -> GPUCellGlyphRecord {
+    GPUCellGlyphRecord(
+      originPx: cell.originPx,
+      sizePx: cell.sizePx,
+      uvOrigin: cell.uvOrigin,
+      uvSize: cell.uvSize,
+      color: cell.fg,
+      flags: cell.flags)
+  }
 }
 
 // MARK: - Helpers
+
+extension Array where Element == GPUCellGlyphRecord {
+  fileprivate func sortedForOriginParity() -> [GPUCellGlyphRecord] {
+    sorted { lhs, rhs in
+      if lhs.originPx.y != rhs.originPx.y {
+        return lhs.originPx.y < rhs.originPx.y
+      }
+      if lhs.originPx.x != rhs.originPx.x {
+        return lhs.originPx.x < rhs.originPx.x
+      }
+      return lhs.sizePx.x < rhs.sizePx.x
+    }
+  }
+}
 
 private func rgbaToFloat4(_ rgba: UInt32) -> SIMD4<Float> {
   let r = Float((rgba >> 24) & 0xFF) / 255.0

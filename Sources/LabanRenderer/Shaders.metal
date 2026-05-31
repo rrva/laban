@@ -17,6 +17,21 @@ struct GlyphInstance {
     float4 color;
 };
 
+// Per-cell glyph record used by the GPU-driven renderer. Geometry is already
+// resolved on the CPU with the same arithmetic as the classic GlyphInstance
+// path; instance_id selects a record but never derives row/column position.
+struct CellGlyph {
+    float2 originPx;
+    float2 sizePx;
+    float2 uvOrigin;
+    float2 uvSize;
+    uint flags;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+    float4 fg;
+};
+
 struct Uniforms {
     float2 surfaceSizePixels;  // pixel dims of the render target
     float  scale;              // backing scale (for line thickness etc.)
@@ -87,6 +102,24 @@ vertex VOut glyph_vertex(
     // top-down by CGContext (origin top-left in image coords).
     o.uv = float2(inst.uvOrigin.x + unit.x * inst.uvSize.x,
                   inst.uvOrigin.y + (1.0 - unit.y) * inst.uvSize.y);
+    return o;
+}
+
+vertex VOut cell_glyph_vertex(
+    uint vertexId   [[vertex_id]],
+    uint instanceId [[instance_id]],
+    constant CellGlyph *cells [[buffer(0)]],
+    constant Uniforms  &u     [[buffer(1)]]
+) {
+    CellGlyph cell = cells[instanceId];
+    float2 unit = kQuadVertices[vertexId];
+    float2 px = cell.originPx + unit * cell.sizePx;
+
+    VOut o;
+    o.position = float4(toNDC(px, u.surfaceSizePixels), 0.0, 1.0);
+    o.color = cell.fg;
+    o.uv = float2(cell.uvOrigin.x + unit.x * cell.uvSize.x,
+                  cell.uvOrigin.y + (1.0 - unit.y) * cell.uvSize.y);
     return o;
 }
 

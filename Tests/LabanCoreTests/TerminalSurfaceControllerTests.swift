@@ -103,6 +103,117 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalText.contains("hello"), "got terminal text \(terminalText)")
   }
 
+  func testCellPayloadModeSkipsTerminalCommandsWhenCompatible() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+
+    _ = session.write(Array("hello".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    XCTAssertEqual(frame.tabId, tab.id)
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertTrue(payload.glyphs.contains { $0.scalarValue == Character("h").unicodeScalars.first?.value })
+    let terminalGlyphCommands = frame.commands.filter { command in
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+        return source == .terminal
+      }
+      return false
+    }
+    XCTAssertTrue(terminalGlyphCommands.isEmpty)
+  }
+
+  func testCellPayloadModeReusesWarmCapacity() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let session = try XCTUnwrap(model.activeTab.flatMap { model.session(forTab: $0.id) })
+
+    _ = session.write(Array("hello".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let request = TerminalSurfaceFrameRequest(
+      frame: 1,
+      viewportWidth: 360,
+      viewportHeight: 64,
+      requireActiveSnapshot: true,
+      surfaceWidth: 360,
+      surfaceHeight: 64,
+      surfaceScale: 1,
+      contentMode: .cellPayloadPreferred)
+
+    _ = try XCTUnwrap(controller.makeFrame(request))
+    let warmed = controller.cellPayloadCapacitySnapshotForTesting
+    _ = try XCTUnwrap(controller.makeFrame(request))
+    XCTAssertEqual(controller.cellPayloadCapacitySnapshotForTesting, warmed)
+  }
+
+  func testCellPayloadModeFallsBackToCommandsForSelectionOverlay() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let session = try XCTUnwrap(model.activeTab.flatMap { model.session(forTab: $0.id) })
+
+    _ = session.write(Array("hello".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let selection = TerminalSelection(
+      sessionId: session.id,
+      anchor: .init(row: 0, col: 0),
+      focus: .init(row: 0, col: 2))
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          selection: selection,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    XCTAssertNil(frame.cellPayload)
+    XCTAssertTrue(frame.commands.contains { command in
+      if case .selection = command { return true }
+      return false
+    })
+  }
+
   func testSyncSessionsReportsDirtySessionsAndMarksOnlyInactiveRendered() throws {
     var size = LabanTerminalSize()
     size.rows = 4

@@ -85,9 +85,9 @@ The classic-damage renderer (M1) runs on all macOS versions and is the default;
 the GPU-driven renderer (M2–M5) is gated `#available(macOS 26, *)`. **Both renderers
 stay in the codebase permanently** and are user-selectable (M6).
 
-- [ ] M0 — Renderer-selection scaffold + pixel-parity & head-to-head comparison harness
-- [ ] M1 — Classic renderer, damage-scoped incremental rebuild ("old but fixed"; all OSes; the baseline)
-- [ ] M2 — GPU-driven: text-only cell path, whole-buffer rebuild each frame, pixel-identical (macOS 26)
+- [x] M0 — Renderer-selection scaffold + pixel-parity & head-to-head comparison harness
+- [x] M1 — Classic renderer, damage-scoped incremental rebuild ("old but fixed"; all OSes; the baseline)
+- [x] M2 — GPU-driven: text-only cell path, whole-buffer rebuild each frame, pixel-identical (macOS 26)
 - [ ] M3 — GPU-driven: persistent cell buffer + dirty-row-only patching (the CPU rebuild win)
 - [ ] M4 — GPU-driven: feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
 - [ ] M5 — GPU-driven: Metal 4 command-allocator/command-buffer reuse + argument tables (encode-*overhead* reduction, behind a proof spike; macOS 26 only)
@@ -853,6 +853,116 @@ The existing renderer test suites must stay green at every milestone:
 time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
 `ETIMEDOUT` as environmental, not a regression), `GraphemeClusteringTests`,
 `TextDecorationLayoutTests`.
+
+## Outcomes & Retrospective
+
+### 2026-05-31 — M0/M1 landed in `gpu-work`
+
+- M0 added the permanent `RendererMode` model (`classic` / `gpuDriven`), persisted
+  under `LabanRendererMode`, with `.gpuDriven` resolving only on macOS 26+. The AppKit
+  Metal renderer reads the persisted mode, and `MetalRenderer` keeps A/B overrides
+  `useClassicDamageScoped` and `useGPUCellPath` for tests/benches. M0 initially made
+  the GPU-cell override an explicit pass-through to classic; M2 replaced that branch
+  with the text-only cell pipeline below.
+- M0 added `GPUCellParityTests`, which decodes Metal readback PNGs to raw RGBA and
+  compares bytes. On mismatch it writes `expected.png`, `actual.png`, and `diff.png`
+  under `LABAN_ARTIFACTS` (default `.artifacts/GPUCellParityTests`) and reports the
+  first differing pixel, total differing pixels, and max channel delta.
+- M0 fixed the timing drain by adding `MetalRenderer.waitForLastFrame()` and making
+  `MetalFrameTimingBench` drain the final frame directly instead of enabling readback
+  after the fact.
+- M1 made `useClassicDamageScoped` the default classic path. On partial damage,
+  `MetalRenderer` scopes solid/glyph/selection/find instance construction to the same
+  dirty Y union that the existing Metal scissor already applies; cursor instances are
+  still collected globally for the overlay pass.
+- Validation:
+  - `swift test --filter GPUCellParityTests` passed (3 tests).
+  - `swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor'`
+    passed (16 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench`:
+  - Frame-level timings are still dominated by drawable/present costs, so the table
+    intentionally also reports an instance-list-only microbench for the CPU work M1
+    changes.
+  - Instance-list rebuild only, 160x48, p50:
+    - row 0: full 615.7 us, scoped 13.8 us (glyphs 7329 -> 160)
+    - row 23: full 580.5 us, scoped 13.7 us (glyphs 7331 -> 160)
+    - sparse rows 0,23: full 593.2 us, scoped 303.7 us (dirty-union limitation)
+    - sparse rows 0,12,23: full 595.7 us, scoped 305.0 us (dirty-union limitation)
+    - contiguous 1 row: full 586.1 us, scoped 14.3 us
+    - contiguous 5 rows: full 592.7 us, scoped 65.4 us
+  - These numbers confirm M1's expected dirty-scissor-union scaling and expose the
+    planned sparse-row weakness that a later multi-scissor variant would address.
+
+### 2026-05-31 — M2 text-only GPU cell path landed in `gpu-work`
+
+- M2 added `CellGlyph` to `Shaders.metal` and `MetalRenderer`, plus a
+  `cell_glyph_vertex` pipeline. The shader uses `instance_id` only as the cell-buffer
+  index; `originPx`, `sizePx`, UVs, and colour are CPU-computed with the same arithmetic
+  as the classic `GlyphInstance` path.
+- The GPU-cell branch now builds a whole-frame cell buffer from terminal
+  `.glyphRun` commands while leaving every `.rect` on the existing solid pipeline.
+  Sidebar glyphs continue through the classic glyph pipeline. M2 falls back to classic
+  for decorated/linked terminal glyph runs or glyphs whose atlas entry spans more than
+  one cell.
+- `GPUCellParityTests` now checks the pre-render origin contract by comparing the raw
+  float bit patterns of classic glyph instances and GPU cell records, rejects an
+  unsupported decorated terminal run, and verifies real GPU-cell readback pixels match
+  classic for plain text.
+- Validation:
+  - `swift test --filter GPUCellParityTests` passed (5 tests).
+  - `swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|MetalFrameTimingBench'`
+    passed (19 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench`:
+  - Classic vs GPU-cell full-frame text path, 160x48, p50/p95/p99 CPU:
+    - classic: 6.966 / 8.028 / 8.413 ms, glyphs 6120, cellGlyphs 0, solids 48
+    - gpuCell: 6.971 / 8.070 / 8.211 ms, glyphs 0, cellGlyphs 7680, solids 48
+  - This confirms the expected M2 result: the whole-buffer cell path is
+    pixel-identical and within noise of classic, but it is not a CPU win yet. The CPU
+    win is still M3's dirty-row-only patching.
+
+### 2026-05-31 — M3 payload-routing groundwork landed, M3 remains open
+
+- Added the renderer-neutral `TerminalCellPayload` type in `LabanRenderer` and wired
+  `TerminalSurfaceController` to populate it while the local `LabanSnapshot` is alive.
+  `TerminalBitmapView` now requests payload mode only for local interactive Metal
+  GPU-cell rendering when no frame-command consumer is attached (`captureRecorder`,
+  `frameProbe`, software/headless/remote all keep command production).
+- `TerminalSurfaceController` skips terminal glyph/background command coalescing only
+  when the payload is compatible with the current text-only GPU-cell milestone. It
+  falls back to commands for selection/find overlays, exit banners, links,
+  decorations, wide/cluster cells, procedural cells, invalid UTF-8, or missing cell
+  storage.
+- `MetalRenderer` can now consume the payload path, retain the persistent cell buffer,
+  patch only the payload's dirty rows, upload only changed cell ranges, and still draw
+  sidebar/chrome commands through the classic glyph/solid pipelines. A scalar atlas
+  lookup avoids rebuilding a `Character` for payload glyphs.
+- New tests:
+  - `TerminalSurfaceControllerTests` verifies compatible payload mode omits terminal
+    glyph commands and selection mode falls back to commands.
+  - `GPUCellParityTests` verifies payload patching uploads only the dirty cell-buffer
+    row range.
+- Validation:
+  - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|MetalFrameTimingBench'`
+    passed (15 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench`:
+  - GPU-cell command-fed patch vs payload patch, 160x48, p50:
+    - row 0: command patch 95.5 us, payload 13.8 us
+    - row 23: command patch 95.4 us, payload 14.0 us
+    - sparse rows 0,23: command patch 337.2 us, payload 27.6 us
+    - sparse rows 0,12,23: command patch 337.6 us, payload 41.2 us
+    - contiguous 1 row: command patch 95.8 us, payload 14.2 us
+    - contiguous 5 rows: command patch 141.1 us, payload 70.4 us
+  - M3 is intentionally **not** checked off yet: the payload builder is within ~1-2 us
+    of the M1 classic scoped one-row microbench but does not consistently beat it
+    (latest M1 scoped p50: row 0 12.5 us, row 23 13.0 us, contiguous 1 row 12.8 us),
+    the reusable no-allocation payload builder/allocation bench is still missing, and
+    the remote/debug effective-renderer fallback state is not yet exposed.
 
 ## Review Gate
 

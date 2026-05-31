@@ -25,6 +25,22 @@ public struct DirtyYRange: Equatable, Sendable {
   }
 }
 
+public struct RendererStatus: Equatable, Sendable, Encodable {
+  public var configuredRenderer: String
+  public var effectiveRenderer: String
+  public var fallbackReason: String?
+
+  public init(
+    configuredRenderer: String,
+    effectiveRenderer: String,
+    fallbackReason: String? = nil
+  ) {
+    self.configuredRenderer = configuredRenderer
+    self.effectiveRenderer = effectiveRenderer
+    self.fallbackReason = fallbackReason
+  }
+}
+
 /// Common surface contract for swappable rendering backends.
 ///
 /// Two backends ship today:
@@ -43,6 +59,23 @@ public protocol RendererBackend: AnyObject {
   @discardableResult
   func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool
 
+  /// Render one frame with an optional terminal-cell payload. Backends that do
+  /// not understand the payload ignore it and render the command stream.
+  @discardableResult
+  func render(
+    _ commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage
+  ) -> Bool
+
+  @discardableResult
+  func render(
+    _ commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage,
+    rendererFallbackReason: String?
+  ) -> Bool
+
   /// Surface metrics in device pixels and the backing scale factor.
   var surfaceWidth: Int { get }
   var surfaceHeight: Int { get }
@@ -60,13 +93,42 @@ public protocol RendererBackend: AnyObject {
 
   /// PNG bytes of the most recent rendered frame for screenshots / capture.
   var pngData: Data? { get }
+
+  var rendererStatus: RendererStatus { get }
 }
 
 extension RendererBackend {
+  public var rendererStatus: RendererStatus {
+    RendererStatus(configuredRenderer: "software", effectiveRenderer: "software")
+  }
+
+  @discardableResult
+  public func render(
+    _ commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage
+  ) -> Bool {
+    render(
+      commands,
+      cellPayload: cellPayload,
+      damage: damage,
+      rendererFallbackReason: nil)
+  }
+
+  @discardableResult
+  public func render(
+    _ commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage,
+    rendererFallbackReason: String?
+  ) -> Bool {
+    render(commands, damage: damage)
+  }
+
   /// Convenience for callers that have no damage info — equivalent to a full
   /// redraw.
   @discardableResult
   public func render(_ commands: [FrameCommand]) -> Bool {
-    render(commands, damage: .full)
+    render(commands, cellPayload: nil, damage: .full, rendererFallbackReason: nil)
   }
 }

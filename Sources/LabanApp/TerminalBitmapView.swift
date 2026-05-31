@@ -300,8 +300,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
 
     let preference = ProcessInfo.processInfo.environment["LABAN_RENDERER"]?.lowercased()
     let wantSoftware = preference == "software" || preference == "cpu"
+    let rendererMode = RendererMode.persisted()
     if !wantSoftware,
-      let metal = MetalRenderer(fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
+      let metal = MetalRenderer(
+        fontAtlas: fontAtlas,
+        sidebarFontAtlas: sidebarFontAtlas,
+        rendererMode: rendererMode)
     {
       self.backend = metal
       self.backendSelfPresents = true
@@ -1079,6 +1083,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     let scrollContentYOffset = -CGFloat(subCellRows) * CGFloat(cellHeight)
     let insets = Self.contentInsets
+    let canRequestCellPayload =
+      !usingRemoteSessions
+      && captureRecorder == nil
+      && frameProbe == nil
+      && (backend as? MetalRenderer)?.effectiveRendererMode == .gpuDriven
     let request = TerminalSurfaceFrameRequest(
       frame: captureFrame,
       viewportWidth: bounds.width,
@@ -1098,7 +1107,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       forceFullDamage: renderInvalidated || tabChanged || scrollAnimating,
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
-      surfaceScale: Double(backend.surfaceScale)
+      surfaceScale: Double(backend.surfaceScale),
+      contentMode: canRequestCellPayload ? .cellPayloadPreferred : .commands
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -1152,7 +1162,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     // Smooth-scroll forces .full while animating: the persistent target
     // holds last frame's pixels at the previous fractional position, so
     // partial damage would leave stale pixels at the new sub-cell offset.
-    guard backend.render(cmds, damage: surfaceFrame.damage) else {
+    guard backend.render(cmds, cellPayload: surfaceFrame.cellPayload, damage: surfaceFrame.damage)
+    else {
       renderInvalidated = true
       scheduleRenderRetry()
       return

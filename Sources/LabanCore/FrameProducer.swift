@@ -251,6 +251,241 @@ public struct FrameProducer {
     return cmds
   }
 
+  public func terminalCellPayload(
+    from snap: UnsafePointer<LabanSnapshot>,
+    includedRows requestedRows: [Int],
+    selection: TerminalSelection? = nil,
+    findState: TerminalFindState? = nil,
+    viewportRowOffset: Int = 0,
+    cursorBlinkVisible: Bool = true
+  ) -> TerminalCellPayload? {
+    var payload = TerminalCellPayload(
+      rows: 0,
+      cols: 0,
+      origin: CGPoint(x: originX, y: originY),
+      cellSize: CGSize(width: CGFloat(cellWidth), height: CGFloat(cellHeight)),
+      contentYOffset: contentYOffset,
+      defaultBackground: 0)
+    fillTerminalCellPayload(
+      into: &payload,
+      from: snap,
+      includedRows: requestedRows,
+      selection: selection,
+      findState: findState,
+      viewportRowOffset: viewportRowOffset,
+      cursorBlinkVisible: cursorBlinkVisible)
+    return payload
+  }
+
+  public func fillTerminalCellPayload(
+    into payload: inout TerminalCellPayload,
+    from snap: UnsafePointer<LabanSnapshot>,
+    includedRows requestedRows: [Int],
+    selection: TerminalSelection? = nil,
+    findState: TerminalFindState? = nil,
+    viewportRowOffset: Int = 0,
+    cursorBlinkVisible: Bool = true
+  ) {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    let cw = CGFloat(cellWidth)
+    let ch = CGFloat(cellHeight)
+    let defaultBg = snapshot.default_background_rgba
+    payload.reset(
+      rows: rows,
+      cols: cols,
+      origin: CGPoint(x: originX, y: originY),
+      cellSize: CGSize(width: cw, height: ch),
+      contentYOffset: contentYOffset,
+      defaultBackground: defaultBg,
+      fallbackReason: snapshot.status == 0 ? nil : .exitBanner)
+    guard rows > 0, cols > 0 else {
+      return
+    }
+    guard let cells = snapshot.cells else {
+      payload.fallbackReason = .missingCellStorage
+      return
+    }
+
+    payload.dirtyRows.reserveCapacity(requestedRows.count)
+    for row in requestedRows where row >= 0 && row < rows {
+      payload.dirtyRows.append(row)
+    }
+
+    func markFallback(_ reason: TerminalCellPayload.FallbackReason) {
+      if payload.fallbackReason == nil {
+        payload.fallbackReason = reason
+      }
+    }
+
+    if selection != nil {
+      markFallback(.selectionOrFindOverlay)
+    }
+    if let findState, findState.isActive, !findState.matches.isEmpty {
+      _ = viewportRowOffset
+      markFallback(.selectionOrFindOverlay)
+    }
+    if snapshot.status != 0 {
+      markFallback(.exitBanner)
+    }
+
+    payload.backgroundRuns.reserveCapacity(payload.dirtyRows.count * 2)
+    for row in payload.dirtyRows {
+      let rowStart = row * cols
+      var bgStart: Int?
+      var bgColor: UInt32 = 0
+      for col in 0..<cols {
+        let cell = cells[rowStart + col]
+        let cellBg = cell.background_rgba
+        if bgStart == nil {
+          if cellBg != defaultBg {
+            bgStart = col
+            bgColor = cellBg
+          }
+        } else if cellBg != bgColor || cellBg == defaultBg {
+          payload.backgroundRuns.append(
+            TerminalCellPayload.BackgroundRun(
+              row: row,
+              startCol: bgStart!,
+              colCount: col - bgStart!,
+              color: bgColor))
+          bgStart = cellBg != defaultBg ? col : nil
+          bgColor = cellBg
+        }
+      }
+      if let start = bgStart {
+        payload.backgroundRuns.append(
+          TerminalCellPayload.BackgroundRun(
+            row: row,
+            startCol: start,
+            colCount: cols - start,
+            color: bgColor))
+      }
+    }
+
+    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
+    payload.glyphs.reserveCapacity(payload.dirtyRows.count * cols)
+    for row in payload.dirtyRows {
+      let rowStart = row * cols
+      for col in 0..<cols {
+        let cell = cells[rowStart + col]
+        let isSpacerTail = cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL)
+        if cell.wide != UInt8(LABAN_CELL_WIDE_NARROW) {
+          markFallback(.wideOrClusterCell)
+        }
+        guard !isSpacerTail else { continue }
+
+        let attrs = TextAttributes(rawValue: cell.flags)
+          .intersection(.renderableMask)
+          .subtracting(.inverse)
+        let cellBg = cell.background_rgba
+        let cellFg =
+          attrs.contains(.faint)
+          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
+          : cell.foreground_rgba
+        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
+        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
+        let hasHyperlink: Bool = {
+          let id = Int(cell.hyperlink_id)
+          return id > 0 && id <= hyperlinkURIs.count
+        }()
+        var cellAttrs = attrs
+        if hasHyperlink {
+          if cellUnderlineStyle == .none && !cellAttrs.contains(.underline) {
+            cellUnderlineStyle = .single
+          }
+          if cellUnderlineColor == nil {
+            cellUnderlineColor = Theme.current.blue
+          }
+          cellAttrs.insert(.underline)
+          markFallback(.hyperlink)
+        }
+
+        if !cellAttrs.subtracting([.bold, .italic]).isEmpty {
+          markFallback(.unsupportedAttributes)
+        }
+        if cellUnderlineStyle != .none || cellUnderlineColor != nil {
+          markFallback(.textDecoration)
+        }
+
+        guard cell.utf8_length > 0, snapshot.utf8_storage != nil else { continue }
+        if attrs.contains(.invisible) {
+          continue
+        }
+        guard let storage = snapshot.utf8_storage else { continue }
+        let offset = Int(cell.utf8_offset)
+        let length = Int(cell.utf8_length)
+        let ptr = UnsafeRawPointer(storage).advanced(by: offset)
+        if length == 1 {
+          let byte = ptr.load(as: UInt8.self)
+          if byte < 0x80 {
+            payload.glyphs.append(
+              TerminalCellPayload.Glyph(
+                row: row,
+                col: col,
+                text: "",
+                scalarValue: UInt32(byte),
+                foreground: cellFg,
+                background: cellBg,
+                attributes: cellAttrs,
+                underlineStyle: cellUnderlineStyle,
+                underlineColor: cellUnderlineColor,
+                hasHyperlink: hasHyperlink,
+                wide: cell.wide))
+            continue
+          }
+        }
+        let buf = UnsafeBufferPointer<UInt8>(
+          start: ptr.assumingMemoryBound(to: UInt8.self),
+          count: length)
+        guard let text = String(bytes: buf, encoding: .utf8), !text.isEmpty else {
+          markFallback(.invalidUTF8)
+          continue
+        }
+        if text.count != 1 {
+          markFallback(.wideOrClusterCell)
+        }
+        if text.unicodeScalars.count == 1,
+          let scalar = text.unicodeScalars.first,
+          BoxDrawing.isProceduralCellElement(scalar)
+        {
+          markFallback(.proceduralCell)
+          continue
+        }
+        let scalarValue: UInt32? =
+          text.unicodeScalars.count == 1 ? text.unicodeScalars.first?.value : nil
+        payload.glyphs.append(
+          TerminalCellPayload.Glyph(
+            row: row,
+            col: col,
+            text: text,
+            scalarValue: scalarValue,
+            foreground: cellFg,
+            background: cellBg,
+            attributes: cellAttrs,
+            underlineStyle: cellUnderlineStyle,
+            underlineColor: cellUnderlineColor,
+            hasHyperlink: hasHyperlink,
+            wide: cell.wide))
+      }
+    }
+
+    if snapshot.cursor_visible != 0,
+      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      Int(snapshot.cursor_row) < rows,
+      Int(snapshot.cursor_col) < cols
+    {
+      let cx = originX + CGFloat(snapshot.cursor_col) * cw
+      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
+      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+        payload.cursorRects.append(
+          TerminalCellPayload.CursorRect(rect: rect, color: Theme.current.cursor))
+      }
+    }
+  }
+
   // Grapheme-cluster count over contiguous UTF-8 bytes, allocation-free. Uses
   // the same UAX-29 segmentation as `String.count`, so the spacer-merge
   // decision is identical to the legacy `(runText + text).count` comparison.
