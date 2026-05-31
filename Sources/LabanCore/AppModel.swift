@@ -868,6 +868,11 @@ public final class AppModel {
         _tabs[i].titleMetadata.unseenOutput = false
         _tabs[i].titleMetadata.bellAttention = false
         _tabs[i].titleMetadata.notification = nil
+        // Viewing the tab acknowledges its last command's outcome: drop the
+        // steady failed-command dot the same way we drop the other attention
+        // signals. It re-arms only when a later command finishes non-zero
+        // while this tab is in the background (see applyShellIntegration).
+        _tabs[i].titleMetadata.lastCommandExitCode = nil
       }
       if _tabs[i].status == .running {
         _tabs[i].titleMetadata.activityState =
@@ -931,6 +936,7 @@ public final class AppModel {
           _tabs[newActiveIdx].titleMetadata.unseenOutput = false
           _tabs[newActiveIdx].titleMetadata.bellAttention = false
           _tabs[newActiveIdx].titleMetadata.notification = nil
+          _tabs[newActiveIdx].titleMetadata.lastCommandExitCode = nil
           if _tabs[newActiveIdx].status == .running {
             _tabs[newActiveIdx].titleMetadata.activityState = .active
           }
@@ -1627,7 +1633,15 @@ public final class AppModel {
     withModelLock {
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
       _tabs[idx].titleMetadata.shellPhase = state.phase
-      _tabs[idx].titleMetadata.lastCommandExitCode = state.lastExitCode
+      // The failed-command dot is an attention signal for *background* tabs:
+      // it tells you a tab you weren't watching finished a command non-zero.
+      // A command that finishes while you're already on the tab earns no dot
+      // (you saw it), mirroring how `noteOutput` never marks the active tab
+      // unseen. This also keeps a focus-clear durable — a plain prompt
+      // re-emission carries the stale exit code, but it only reaches an
+      // active tab, so it can't re-arm a dot the user just dismissed.
+      _tabs[idx].titleMetadata.lastCommandExitCode =
+        _tabs[idx].isActive ? nil : state.lastExitCode
     }
   }
 

@@ -133,6 +133,48 @@ final class AppModelTests: XCTestCase {
       "returning to the app must clear the active tab's notification")
   }
 
+  func testFailedCommandDotArmsInBackgroundAndClearsOnFocus() throws {
+    let model = try makeModel()
+    try model.createTab()  // tab[1] is active; tab[0] is a background tab
+    let bgTabId = model.tabs[0].id
+    guard let bgSession = model.session(forTab: bgTabId) else {
+      XCTFail("background tab must have a session")
+      return
+    }
+    func bgExit() -> Int? {
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.lastCommandExitCode
+    }
+
+    // A command that finishes non-zero on a background tab arms the steady
+    // failed-command dot (the sidebar paints it red iff lastCommandExitCode != 0).
+    bgSession.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))
+    bgSession.feedOutput(Array("\u{1B}]133;C\u{07}".utf8))
+    bgSession.feedOutput(Array("\u{1B}]133;D;1\u{07}".utf8))
+    pumpMainQueue()
+    // lastCommandExitCode != 0 is exactly what `SidebarProducer`'s steady red
+    // dot keys on (the color mapping itself is covered by SidebarShellIndicatorTests).
+    XCTAssertEqual(bgExit(), 1, "a background command exiting non-zero must arm the dot")
+
+    // Focusing the tab acknowledges the failure and clears the dot.
+    model.selectTab(bgTabId)
+    XCTAssertNil(bgExit(), "selecting the tab must clear the failed-command dot")
+
+    // A stale prompt re-emission (the reducer still carries exitCode 1) reaches
+    // the now-active tab but must NOT re-arm the dismissed dot.
+    bgSession.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertNil(bgExit(), "a prompt re-emit on the active tab must not re-arm the dot")
+
+    // A command that fails while the user is watching the tab earns no dot —
+    // they saw it — even after they later switch away.
+    bgSession.feedOutput(Array("\u{1B}]133;C\u{07}".utf8))
+    bgSession.feedOutput(Array("\u{1B}]133;D;2\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertNil(bgExit(), "a command failing on the active tab must not arm the dot")
+    model.selectTab(model.tabs[1].id)
+    XCTAssertNil(bgExit(), "the dot stays clear after switching away from a watched failure")
+  }
+
   func testNotificationsSuppressedDuringRestoreGraceWindow() throws {
     let model = try makeModel()
     try model.createTab()
