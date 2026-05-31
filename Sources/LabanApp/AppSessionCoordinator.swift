@@ -737,6 +737,8 @@ private final class LabptyParserFeed {
   private let lock = NSLock()
   private var lastOffset: UInt64 = 0
   private var stopped = false
+  // Touched only from `poll()` on the serial timer queue, like `lastOffset`.
+  private var overflowGate = LabptyByteRingOverflowGate()
 
   init(
     ptyHandle: UInt64,
@@ -781,10 +783,22 @@ private final class LabptyParserFeed {
     let result = reader.readSince(lastOffset)
     lastOffset = result.newOffset
     guard !result.bytes.isEmpty else { return }
+    // The first read positions the cursor from offset 0, so its span covers the
+    // session's whole lifetime, not output we dropped live: on a restart
+    // reconnect to a session that has emitted more than a window of output it
+    // "overflows" by construction. Repaint from the window tail either way, but
+    // only raise the "output skipped" badge once we hold an established cursor
+    // and genuinely fell behind the producer in real time.
+    let liveDrop = overflowGate.isLiveDrop(overflowed: result.overflowed)
     if result.overflowed {
-      AppLog.app.error(
-        "labpty byte ring overflow for pty handle \(self.ptyHandle); resetting parser continuity")
-      onOverflow()
+      if liveDrop {
+        AppLog.app.error(
+          "labpty byte ring overflow for pty handle \(self.ptyHandle); resetting parser continuity")
+        onOverflow()
+      } else {
+        AppLog.app.info(
+          "labpty byte ring join repaint from window tail for pty handle \(self.ptyHandle)")
+      }
       _ = session.feedOutput([0x1B, 0x63])
     }
     _ = session.feedOutput(Array(result.bytes))
