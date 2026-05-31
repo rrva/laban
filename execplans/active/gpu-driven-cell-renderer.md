@@ -156,12 +156,23 @@ per-frame cost becomes O(changed cells).
   The renderer ships on `main`; any visible regression is unacceptable. We compare
   `MetalRenderer.pngData` of the new path against the current path for a battery of
   frames including scroll, selection, find, resize, clusters, and box-drawing.
-- **M1 feeds the cell buffer from existing `FrameCommand`s; M2+ reads the snapshot
-  cells directly.** Feeding from `FrameCommand`s in M1 reuses `FrameProducer`'s
+- **M1 feeds the cell buffer from existing `FrameCommand`s; M2 reads the snapshot
+  cells in `LabanCore`.** Feeding from `FrameCommand`s in M1 reuses `FrameProducer`'s
   already-correct foreground/background/attribute/cluster logic, so parity is
-  achievable before we bypass it. The CPU win requires reading only dirty rows,
-  which means going to the snapshot cells directly (M2). Bypassing `FrameProducer`
-  is the larger correctness surface, hence staged.
+  achievable before we bypass it. The CPU win requires reading only dirty rows, which
+  means extracting per-cell data straight from the snapshot — but that extraction
+  must run in `LabanCore` (`makeFrame`, snapshot alive), **not** in the renderer (the
+  renderer only gets `[FrameCommand]` and the snapshot is freed before `makeFrame`
+  returns). The result is a value-type cell payload carried on `TerminalSurfaceFrame`
+  to the Metal backend. Bypassing `FrameProducer`'s glyph-run coalescing for the
+  Metal cell path is the larger correctness surface, hence staged.
+- **The GPU cell path is a Metal-only acceleration; `[FrameCommand]` stays the shared
+  cross-backend language.** Per `mvp.md`/`dev-process.md`, software/offscreen,
+  `/debug/frame-commands`, capture replay, and render trace all consume
+  `[FrameCommand]`. The cell payload does not replace it. The software backend keeps
+  rendering from commands and stays behavior-equivalent (`CrossBackendBitmapTests` +
+  the pixel-parity gate); commands keep being emitted whenever a capture/debug/trace
+  consumer is attached. Recorded as policy in the M4 ADR.
 - **Every change must earn its keep via a release microbench, or it is reverted —
   not merged.** This is a hard gate, not advice. Before landing any milestone or
   sub-change, run its microbench `-c release` and compare against the baseline
@@ -224,12 +235,23 @@ position from its grid index instead of from a CPU-supplied origin:
   fill a CPU `[CellGlyph]` of size `cols*rows` (empty cells get `flags=0`/zero size)
   **from the current `[FrameCommand]` glyph runs** (expand each run into per-cell
   entries; reuse `MetalGlyphAtlas.entry`), upload it, and draw `instanceCount =
-  cols*rows`. Background: a parallel per-cell bg buffer, or keep the existing solid
-  background path unchanged (simplest: reuse current backgrounds, only move glyphs
-  to the cell path in M1). **Fall back to the current path** for any frame whose
-  commands include non-plain-glyph content the cell path does not yet handle
-  (procedural box-drawing `.rect`s with `source == .terminal` beyond backgrounds,
-  decorations, etc.) so M1 never renders wrong.
+  cols*rows`.
+- **In M1 only `.glyphRun` commands move to the cell path; every `.rect` stays on
+  the existing solid path unchanged.** This matters for a mechanically checkable
+  fallback: `FrameCommand.rect` carries only `(CGRect, color, source)`
+  (`Sources/LabanRenderer/FrameCommand.swift:99`), so per-cell/run *backgrounds*
+  (`FrameProducer.swift:150`) and procedural *box-drawing* rects
+  (`FrameProducer.swift:600`) are **both** `.rect(_, color:, source: .terminal)` and
+  cannot be told apart from the command alone. M1 does not try to: all `.rect`s
+  (backgrounds *and* box-art) render via the unchanged solid path, and a box-art
+  cell simply has no glyph entry in the cell buffer. So box-drawing needs no special
+  fallback at all.
+- **Fall back to the current path for the whole frame** only on a predicate read
+  straight off the `.glyphRun` commands the cell path consumes: any `attributes`
+  outside the M1-supported set, a non-`.none` `underlineStyle`, a non-nil
+  `underlineColor`/`hyperlink`, or a multi-cell cluster (text whose grapheme width
+  exceeds one cell). These are all fields on the `glyphRun` case — checkable without
+  any new rect-classification metadata — so M1 never renders wrong.
 
 **What exists at the end:** a working GPU cell glyph pipeline; for plain-text
 frames, output is byte-identical to the current renderer. No CPU win yet (whole
@@ -254,14 +276,50 @@ and a CPU mirror alongside it. Each frame:
   `CellGlyph` write). Upload only the changed byte range(s) of the buffer
   (`MTLBuffer.contents()` is `storageModeShared`; write in place, no per-frame
   allocation). Draw the whole grid (`instanceCount = cols*rows`).
-- Source the per-cell data **directly from the snapshot cells** (bypass
-  `FrameProducer` for the cell path) so only dirty rows are read. Reproduce
+- Source the per-cell data from the snapshot cells (the cell path no longer needs
+  `FrameProducer`'s glyph-run coalescing) so only dirty rows are read. Reproduce
   `FrameProducer`'s foreground/background/attribute resolution for plain glyphs;
   validate against the `FrameProducer` path via the parity harness.
 
+**M2's cell payload crosses the renderer boundary (interface fix).** The renderer
+*cannot* "read the snapshot directly": `MetalRenderer.render` only receives
+`[FrameCommand]` + `RenderDamage` (`TerminalBitmapView.swift:1155`), and the
+libghostty snapshot is freed by `defer { laban_snapshot_destroy(snap) }` before
+`makeFrame` returns (`TerminalSurfaceController.swift:385`). Reading cells in the
+renderer would mean keeping that snapshot alive past `makeFrame` — an unsafe
+lifetime. So the dirty-row cell extraction happens **in `LabanCore`, inside
+`makeFrame`, while the snapshot is still alive**, and produces a small value-type
+per-cell payload (the `CellGlyph` data for the dirty rows, plus row indices) carried
+on a new optional field of `TerminalSurfaceFrame`. `TerminalBitmapView` hands that
+payload to `backend.render`; `MetalRenderer` patches its persistent buffer from it.
+This is why M2 is **not** "touches only `Sources/LabanRenderer/`" (corrected in
+Interfaces and Dependencies). The payload is the Metal path's internal
+representation — it does **not** replace the `[FrameCommand]` language (see below).
+
+**Frame-command and headless contract (resolves the Metal-only concern).** `mvp.md`
+(Implementation Shape) and `dev-process.md` (Headless Rendering Contract,
+`/debug/frame-commands`, capture replay `frames/*.commands.json`, render trace) make
+`[FrameCommand]` the shared, serializable language that **both** the Metal and the
+software/offscreen backends consume. The GPU cell path must not break that:
+- The GPU cell path is a **Metal-interactive-only acceleration**. The
+  software/offscreen backend keeps consuming `FrameProducer`'s `[FrameCommand]`
+  unchanged and stays behavior-equivalent — enforced by `CrossBackendBitmapTests`
+  and the pixel-parity gate.
+- `FrameProducer.commands` continues to be produced whenever a frame-command
+  consumer is active (capture/replay, `/debug/frame-commands`, render trace,
+  headless). The CPU win applies to the steady interactive Metal path *when no such
+  consumer is attached* — there, the dirty-row cell payload is built and command
+  coalescing is skipped; when a consumer is attached, commands are still emitted so
+  replay/debug/trace stay accurate. State this trade-off explicitly so an
+  implementer does not assume commands disappear unconditionally.
+- A frame whose cell payload the GPU path cannot yet represent still falls back to
+  the `[FrameCommand]` path (the M1 fallback rule), so the contract holds at every
+  milestone.
+
 **What exists at the end:** per-frame render CPU scales with dirty rows. On a mostly
 static screen with a few changing lines, `buildInstanceList`-equivalent work drops
-~5–20×.
+~5–20×. The `[FrameCommand]` stream remains the authoritative cross-backend language
+for software, headless, capture, and debug.
 
 **Acceptance (must show the win, release mode):**
 ```
@@ -302,9 +360,16 @@ swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|Gr
 ### M4 [P2] Default on + ADR
 
 **Scope.** Flip `useGPUCellPath` default to `true` (keep the flag as an escape
-hatch or remove it). Write `docs/adr/0014-gpu-driven-cell-renderer.md` recording the
-decision, the profile evidence, and the persistent-buffer architecture. Update
-`docs/quality/` if it tracks render performance. Re-run the live before/after.
+hatch or remove it). Write `docs/adr/0016-gpu-driven-cell-renderer.md` (0014 and
+0015 already exist — use the next sequential number; re-check `docs/adr/` at write
+time) recording the decision, the profile evidence, the persistent-buffer
+architecture, **and the frame-command contract boundary** (see "Frame-command and
+headless contract" below): the GPU cell path is a Metal-interactive-only
+acceleration; the software/offscreen backend, `/debug/frame-commands`, capture
+replay, and render trace keep consuming the `[FrameCommand]` language. Add the
+one-line ADR entry to the `AGENTS.md` Decision Index (the `AGENTS.md` "Write a new
+ADR" rule requires it). Update `docs/quality/` if it tracks render performance.
+Re-run the live before/after.
 
 ## Validation and Acceptance
 
@@ -337,6 +402,13 @@ ways, all reproducible from a clean checkout:
    `FrameProducer.commands` + `buildInstanceList` + `MetalRenderer.render` encode
    share must drop substantially versus the `15fb668` baseline in this plan, with
    GPU utilization staying near 0.4% (Metal System Trace).
+4. **Frame-command contract preserved (M2/M4).** The GPU cell path must not change
+   the shared `[FrameCommand]` language. `CrossBackendBitmapTests` (software vs Metal
+   behavior-equivalence) stays green with the GPU path on. With capture/debug active,
+   `/debug/frame-commands` and capture-replay `frames/*.commands.json` for a given
+   frame are **unchanged** from the `[FrameCommand]` path (assert identical command
+   streams flag-on vs flag-off for a capture fixture) — proving the cell payload is a
+   Metal-only acceleration, not a divergent render language.
 
 The existing renderer test suites must stay green at every milestone:
 `MetalRendererSmokeTests`, `MetalRendererClearColorTests`,
@@ -367,6 +439,14 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
       artifacts), and the gate is zero-tolerance (a single differing pixel fails).
 - [ ] No new per-frame heap allocations in the GPU path (buffers reused like
       `ensureBuffer`; cell buffer is persistent; `storageModeShared` writes in place).
+- [ ] For M2+: the cell payload is extracted in `LabanCore` while the snapshot is
+      alive and carried on `TerminalSurfaceFrame` — the renderer does not read the
+      libghostty snapshot (which is freed before `makeFrame` returns).
+- [ ] For M2/M4: the `[FrameCommand]` cross-backend contract is preserved —
+      `CrossBackendBitmapTests` green with the flag on, and `/debug/frame-commands` /
+      capture-replay command streams are identical flag-on vs flag-off.
+- [ ] For M4: the ADR uses the next free number (0016+, not the already-taken 0014),
+      and a matching one-line entry was added to the `AGENTS.md` Decision Index.
 - [ ] Existing renderer suites green (or failing only via the known environmental
       daemon timeout, identical to `main`).
 - [ ] Records the commit SHA reviewed and a one-line summary; on failure, lists
@@ -403,14 +483,31 @@ pixel-parity and far less surface area — and record the pivot here.
 
 ## Interfaces and Dependencies
 
-- Touches only `Sources/LabanRenderer/` (`MetalRenderer.swift`, `Shaders.metal`,
-  possibly `MetalGlyphAtlas.swift` for a stable per-glyph index) and new tests under
-  `Tests/LabanRendererTests/`. M2's snapshot-direct read also reads the libghostty
-  cell struct already consumed by `FrameProducer`
-  (`Sources/LabanTerminalCore/include/LabanTerminalCore.h`: `LabanCell`,
-  `LabanSnapshot.dirty_rows`).
+- **M0/M1 touch only `Sources/LabanRenderer/`** (`MetalRenderer.swift`,
+  `Shaders.metal`, possibly `MetalGlyphAtlas.swift` for a stable per-glyph index)
+  and new tests under `Tests/LabanRendererTests/`. M1 builds its cell buffer from
+  the `[FrameCommand]` the renderer already receives, so it needs no upstream
+  changes.
+- **M2 necessarily crosses the renderer boundary** (see "M2's cell payload crosses
+  the renderer boundary" in the M2 scope). The renderer only ever receives
+  `[FrameCommand]` + `RenderDamage` via `backend.render` and the libghostty snapshot
+  is destroyed (`laban_snapshot_destroy`) before `makeFrame` returns
+  (`TerminalSurfaceController.swift:385`), so the renderer *cannot* read snapshot
+  cells directly. M2 therefore touches:
+  - `Sources/LabanCore/TerminalSurfaceController.swift` — extract the dirty-row
+    cell payload **while the snapshot is still alive** (before the `defer
+    laban_snapshot_destroy`), reading the libghostty cell struct already consumed by
+    `FrameProducer` (`Sources/LabanTerminalCore/include/LabanTerminalCore.h`:
+    `LabanCell`, `LabanSnapshot.dirty_rows`).
+  - `Sources/LabanCore/TerminalSurfaceController.swift` — add an optional value-type
+    cell payload field to `TerminalSurfaceFrame` (AppKit-free, lives in `LabanCore`).
+  - `Sources/LabanApp/TerminalBitmapView.swift:1155` — pass the payload alongside
+    `cmds`/`damage` into the render call.
+  - `Sources/LabanRenderer/` — consume the payload to patch the persistent cell
+    buffer (`MetalRenderer.swift`, `Shaders.metal`).
 - Deployment target is `macOS .v13` (`Package.swift`), but the merged Span work uses
   macOS-26 APIs behind `#available`; this plan uses no macOS-26-only APIs (plain
   Metal + buffers), so no availability gating is required.
 - ADR boundary: per `AGENTS.md`, a change to "rendering architecture" warrants an
-  ADR — written in M4 (`docs/adr/0014-…`).
+  ADR — written in M4 (`docs/adr/0016-…`, next sequential after the existing 0015),
+  with the matching `AGENTS.md` Decision Index entry.
