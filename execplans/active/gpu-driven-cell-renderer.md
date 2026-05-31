@@ -1192,6 +1192,24 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - contiguous 1 row: payload 29.5 us, payload+upload 29.8 us
     - contiguous 5 rows: payload 145.9 us, payload+upload 147.0 us
 
+### 2026-05-31 — M4 slice 7 smooth-scroll payload parity recorded in `gpu-work`
+
+- No production change was needed for smooth-scroll: `TerminalCellPayload` already
+  carries `contentYOffset`, and `MetalRenderer.terminalGridGeometry(payload:)` includes
+  it in the cached geometry so fractional scroll offsets invalidate stale cell-buffer
+  geometry.
+- New tests:
+  - `GPUCellParityTests.testGPUCellPayloadMatchesClassicForFractionalContentYOffset`
+    verifies payload-fed fractional `contentYOffset` output is raw-RGBA identical to
+    classic rendering with shifted per-row backgrounds/glyphs.
+  - `TerminalSurfaceControllerTests.testCellPayloadModePreservesContentYOffsetOnPayloadPath`
+    verifies local payload mode preserves the controller's smooth-scroll offset.
+- Validation:
+  - `swift test --filter 'GPUCellParityTests/testGPUCellPayloadMatchesClassicForFractionalContentYOffset|TerminalSurfaceControllerTests/testCellPayloadModePreservesContentYOffsetOnPayloadPath'`
+    passed (2 tests).
+  - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|GraphemeClustering|FrameProducerSpanParity|MetalRendererSmoke|MetalRendererClearColor|TextDecorationLayout'`
+    passed (70 tests).
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under

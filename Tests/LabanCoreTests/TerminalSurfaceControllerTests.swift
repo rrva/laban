@@ -410,6 +410,39 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalGlyphCommands.isEmpty)
   }
 
+  func testCellPayloadModePreservesContentYOffsetOnPayloadPath() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let session = try XCTUnwrap(model.activeTab.flatMap { model.session(forTab: $0.id) })
+
+    _ = session.write(Array("hello\r\n".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          contentYOffset: 3.5,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertEqual(payload.contentYOffset, 3.5)
+  }
+
   func testCellPayloadModeKeepsSelectionOverlayOnPayloadPath() throws {
     var size = LabanTerminalSize()
     size.rows = 4

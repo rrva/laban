@@ -405,6 +405,39 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  func testGPUCellPayloadMatchesClassicForFractionalContentYOffset() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let offset: CGFloat = 4.25
+    let commands = offsetFrame(seed: 43, contentYOffset: offset)
+    var payload = payload(seed: 43, changedRow: nil, includedRows: Array(0..<rows))
+    payload.contentYOffset = offset
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-content-y-offset", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-content-y-offset",
+      commands: [],
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-content-y-offset",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
   func testGPUCellPathMatchesClassicForWideAndClusterGlyphs() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -757,6 +790,37 @@ final class GPUCellParityTests: XCTestCase {
         CGRect(x: 18 * cellW, y: cursorY, width: cellW, height: cellH),
         color: 0xAD_BC_BC_FF),
     ]
+  }
+
+  private func offsetFrame(seed: Int, contentYOffset: CGFloat) -> [FrameCommand] {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    var commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+        color: 0x10_20_30_FF,
+        source: .terminal)
+    ]
+    for row in 0..<rows {
+      let y = CGFloat(rows - 1 - row) * cellH + contentYOffset
+      let base = UInt32((seed + row * 17) & 0xFF)
+      let bg: UInt32 =
+        ((0x10 + base) << 24) | ((0x20 + base) << 16) | ((0x30 + base) << 8) | 0xFF
+      commands.append(
+        .rect(
+          CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+          color: bg,
+          source: .terminal))
+      let line = String((0..<cols).map { ascii[($0 + row + seed) % ascii.count] })
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: 0, y: y),
+          text: line,
+          foreground: 0xDD_EE_EE_FF,
+          background: bg,
+          attributes: [],
+          source: .terminal))
+    }
+    return commands
   }
 
   private func wideClusterFrame() -> [FrameCommand] {
