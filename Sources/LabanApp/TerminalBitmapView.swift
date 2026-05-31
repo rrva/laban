@@ -929,15 +929,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       }
 
       let desiredApplied = Int(displayedScrollRows.rounded(.toNearestOrAwayFromZero))
-      let delta = desiredApplied - appliedScrollRows
-      if delta != 0 {
-        scrollViewport(
-          deltaRows: delta,
-          tab: activeTab,
-          session: session,
-          desiredAppliedRows: desiredApplied
-        )
-      }
+      applyScrollStep(
+        toDesiredApplied: desiredApplied,
+        tab: activeTab,
+        session: session,
+        resetOnClamp: false)
 
       renderInvalidated = true
       activeTerminalDirty = true
@@ -2461,7 +2457,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     )
     scrollResidualPx = decision.newResidualPx
     if decision.rowsDelta != 0 {
-      targetScrollRows += Double(decision.rowsDelta)
+      // Targeting below the live bottom is meaningless — the viewport can't
+      // move past the active area — so clamp the accumulator at 0. Reaching 0
+      // via a downward scroll then routes through applyScrollStep's
+      // snap-to-active, so scroll-to-bottom follows output that streamed past
+      // the old bottom while the user was scrolled up.
+      targetScrollRows = min(0, targetScrollRows + Double(decision.rowsDelta))
       // Snap directly when:
       // - macOS reports precise (trackpad) deltas — already smoothed by the OS
       // - the input is small enough to be skim-reading clicks AND nothing is
@@ -2470,16 +2471,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       let isSmallClick =
         abs(decision.rowsDelta) <= Self.scrollSmoothingThreshold && !scrollAnimating
       if isPrecise || isSmallClick {
-        let delta = Int(targetScrollRows.rounded(.toNearestOrAwayFromZero)) - appliedScrollRows
-        if delta != 0 {
-          scrollViewport(
-            deltaRows: delta,
-            tab: activeTab,
-            session: session,
-            desiredAppliedRows: appliedScrollRows + delta,
-            resetOnClamp: true
-          )
-        }
+        applyScrollStep(
+          toDesiredApplied: Int(targetScrollRows.rounded(.toNearestOrAwayFromZero)),
+          tab: activeTab,
+          session: session,
+          resetOnClamp: true)
         displayedScrollRows = Double(appliedScrollRows)
         scrollVelocityRowsPerSec = 0
       }
@@ -3268,6 +3264,57 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     if resetOnClamp && reconciled.clamped {
       resetSmoothScrollState(to: reconciled.actualAppliedRows)
     }
+  }
+
+  /// Apply one smooth-scroll step toward `desiredApplied` (≤ 0; 0 == the live
+  /// active bottom). When the step reaches the bottom, snap the viewport to the
+  /// active area so it re-engages follow-output instead of moving by a bounded
+  /// delta. A bounded delta stops on whatever pin `desiredApplied - applied`
+  /// lands on, but output a non-alt-screen app (e.g. Codex) streamed while the
+  /// user was scrolled back moves the true bottom past that pin — so a
+  /// scroll-to-bottom would stall short of the live bottom and leave the overlay
+  /// scroll indicator stuck visible at what only looks like the bottom. Snapping
+  /// to active follows the real bottom wherever output pushed it.
+  private func applyScrollStep(
+    toDesiredApplied desiredApplied: Int,
+    tab: Tab,
+    session: Session,
+    resetOnClamp: Bool
+  ) {
+    if desiredApplied >= 0 {
+      snapScrollToActiveBottom(tab: tab, session: session)
+      return
+    }
+    let delta = desiredApplied - appliedScrollRows
+    guard delta != 0 else { return }
+    scrollViewport(
+      deltaRows: delta,
+      tab: tab,
+      session: session,
+      desiredAppliedRows: desiredApplied,
+      resetOnClamp: resetOnClamp)
+  }
+
+  /// Snap the viewport to the live active bottom through whichever scroll path
+  /// the session uses (remote daemon or in-process), then realign the
+  /// smooth-scroll state to the reconciled position so the PD controller settles
+  /// at the bottom and follows new output.
+  private func snapScrollToActiveBottom(tab: Tab, session: Session) {
+    if let vs = session.viewportState() {
+      let toBottom = ViewportState.scrollDeltaToActiveBottom(
+        viewportOffset: vs.viewportOffset,
+        totalRows: vs.totalRows,
+        viewportRows: vs.viewportRows)
+      if toBottom > 0 {
+        scrollViewport(
+          deltaRows: toBottom,
+          tab: tab,
+          session: session,
+          desiredAppliedRows: 0,
+          resetOnClamp: false)
+      }
+    }
+    resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
   }
 
   @discardableResult
