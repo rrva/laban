@@ -162,10 +162,19 @@ per-frame cost becomes O(changed cells).
   achievable before we bypass it. The CPU win requires reading only dirty rows,
   which means going to the snapshot cells directly (M2). Bypassing `FrameProducer`
   is the larger correctness surface, hence staged.
-- **All benchmarks run `-c release`.** Debug builds do not specialize Swift
-  generics and badly mislead (the merged `FrameProducer` Span change measured −40%
-  in debug but is a 5–7× speedup in release; a String micro-fix looked neutral in
-  debug but regressed in release). See Surprises.
+- **Every change must earn its keep via a release microbench, or it is reverted —
+  not merged.** This is a hard gate, not advice. Before landing any milestone or
+  sub-change, run its microbench `-c release` and compare against the baseline
+  captured at the start of that milestone. Keep the change only if it shows a net
+  win (for the perf milestone M2) or provably no regression (for parity-only
+  milestones M0/M1/M3); otherwise `git checkout` it and record why in
+  `Surprises & Discoveries`. This is exactly what happened in the prior session: a
+  `String(unsafeUninitializedCapacity:)` micro-fix was implemented, measured in
+  release, found to *regress* (text 0.145→0.169 ms), and reverted — it did not
+  reach `main`. Do the same here. **All benchmarks run `-c release`.** Debug builds
+  do not specialize Swift generics and badly mislead (the merged `FrameProducer`
+  Span change measured −40% in debug but is a 5–7× speedup in release; the String
+  micro-fix above looked neutral in debug but regressed in release). See Surprises.
 - **Ship behind a flag (`MetalRenderer.useGPUCellPath`), default off until M4.**
   Same `nonisolated(unsafe) static var` toggle pattern as the two merged changes,
   so the A/B path and the parity test live in one binary.
@@ -307,8 +316,16 @@ ways, all reproducible from a clean checkout:
    box-drawing, underline/strike/overline, hyperlinks, selection, find, cursor,
    scroll, resize, a row-by-row streaming sequence that exercises partial damage)
    through both the current and GPU paths via `captureMode`/`pngData` and asserts
-   the PNG bytes are identical. A failure prints the first differing frame + a small
-   diff. This is the gate for every milestone that enables new GPU coverage.
+   the PNG bytes are identical. **On any mismatch the test must emit an actionable
+   pixel diff, not just "failed":** decode both PNGs to raw RGBA and report (a) the
+   fixture name and grid size, (b) the first differing pixel as `(x, y)` with its
+   expected vs actual RGBA values, (c) the total count of differing pixels and the
+   maximum per-channel delta, and (d) write `<fixture>.expected.png`,
+   `<fixture>.actual.png`, and `<fixture>.diff.png` (the diff highlighting differing
+   pixels, e.g. magenta on black) to `LABAN_ARTIFACTS` (default `.artifacts/`) for
+   inspection. "Identical" means **zero** differing pixels — there is no tolerance
+   threshold; a single differing pixel fails the gate. This is the gate for every
+   milestone that enables new GPU coverage.
 2. **Performance (the point), release only.**
    `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
    and a new dirty-row microbench must show per-frame render CPU falling with the
@@ -341,6 +358,13 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
       breaking the GPU path and seeing parity fail).
 - [ ] For M2+: the dirty-row microbench is **release** (`-c release`) and shows a
       real reduction; debug-only numbers do not count.
+- [ ] Earn-its-keep was applied: every landed sub-change has a release microbench
+      showing a net win (or no regression for parity-only work). Any change that did
+      not earn its keep was reverted and the reversion is recorded in
+      `Surprises & Discoveries` (not silently kept).
+- [ ] On a parity failure the test emits the actionable pixel diff (first differing
+      `(x,y)` + RGBA, differing-pixel count, and `expected/actual/diff.png`
+      artifacts), and the gate is zero-tolerance (a single differing pixel fails).
 - [ ] No new per-frame heap allocations in the GPU path (buffers reused like
       `ensureBuffer`; cell buffer is persistent; `storageModeShared` writes in place).
 - [ ] Existing renderer suites green (or failing only via the known environmental
