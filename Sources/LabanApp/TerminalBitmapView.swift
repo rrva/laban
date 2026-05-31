@@ -7,7 +7,7 @@ import LabanRenderer
 import LabanTerminalCore
 import QuartzCore
 
-final class TerminalBitmapView: NSView, NSTextInputClient {
+final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation {
 
   /// Reserved strip at the top of the contentView that sits behind the
   /// transparent full-size titlebar. Picked to clear the standard window
@@ -183,6 +183,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   private var lastPixelHeight: Int = 0
   private var lastSurfaceScale: CGFloat = 0
   private var captureRecorder: CaptureRecorder?
+  /// On-surface "● REC" pill, shown only while a capture is active. Created
+  /// lazily on first capture start, mirroring the find-chip subview pattern.
+  private var captureIndicatorView: TerminalCaptureIndicatorView?
   private var frameProbe: AppKitFrameProbe?
   private var resizeProbe: AppKitResizeProbe?
   private var resizeAutomationScheduled = false
@@ -852,12 +855,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       return
     }
 
-    let suffix = captureRecorder == nil ? "" : " — capturing"
-    let windowTitle = model.windowTitle + suffix
+    let windowTitle =
+      model.windowTitle + TerminalCaptureIndicator.windowTitleSuffix(active: isCaptureActive)
     if windowTitle != lastAppliedWindowTitle {
       window?.title = windowTitle
       lastAppliedWindowTitle = windowTitle
     }
+    updateCaptureIndicator()
 
     let tabChanged = lastRenderedActiveTabId != activeTab.id
     if tabChanged,
@@ -1568,6 +1572,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
     layoutFindChip()
+    layoutCaptureIndicator()
     let w = Int(newSize.width)
     let h = Int(newSize.height)
     guard w > 0, h > 0 else { return }
@@ -3665,6 +3670,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       // Capture stopped: drop the per-frame readback blit again.
       (backend as? MetalRenderer)?.captureMode = false
       model.captureSink = nil
+      updateCaptureIndicator()
       renderInvalidated = true
       return
     }
@@ -3686,12 +3692,60 @@ final class TerminalBitmapView: NSView, NSTextInputClient {
       (backend as? MetalRenderer)?.captureMode = true
       model.captureSink = recorder
       model.recordExistingStateForCapture()
+      updateCaptureIndicator()
       AppLog.capture.info("started \(recorder.directoryURL.path)")
       EventLog.shared.log("capture.start", ["path": recorder.directoryURL.path])
       renderInvalidated = true
     } catch {
       AppLog.capture.error("failed to start: \(error)")
     }
+  }
+
+  /// Single source of truth for "a capture is running" used by the Debug-menu
+  /// title, the window-title suffix, and the on-surface "● REC" pill. The
+  /// app-side recorder is the authority: it is attached exactly while capturing.
+  var isCaptureActive: Bool { captureRecorder != nil }
+
+  /// Mutate the persistent Debug-menu item's title in place (Start/Stop PTY
+  /// Capture) rather than rebuilding the menu — the Show/Hide Sidebar pattern.
+  func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(TerminalBitmapView.toggleCapture(_:)) {
+      menuItem.title = TerminalCaptureIndicator.menuTitle(active: isCaptureActive)
+      return true
+    }
+    return true
+  }
+
+  /// Show the "● REC" pill while capturing, hide it otherwise. Driven from
+  /// `advanceFrame` off the same `isCaptureActive` state as the menu title.
+  private func updateCaptureIndicator() {
+    if isCaptureActive {
+      let indicator: TerminalCaptureIndicatorView
+      if let existing = captureIndicatorView {
+        indicator = existing
+      } else {
+        indicator = TerminalCaptureIndicatorView(frame: .zero)
+        captureIndicatorView = indicator
+        addSubview(indicator)
+      }
+      indicator.isHidden = false
+      layoutCaptureIndicator()
+    } else {
+      captureIndicatorView?.removeFromSuperview()
+      captureIndicatorView = nil
+    }
+  }
+
+  /// Pin the pill to the top-right corner of the terminal content area, just
+  /// inside the inset so it clears the titlebar and right edge.
+  private func layoutCaptureIndicator() {
+    guard let indicator = captureIndicatorView else { return }
+    let size = TerminalCaptureIndicatorView.preferredSize
+    let content = terminalContentRect()
+    let margin: CGFloat = 8
+    let x = content.maxX - size.width - margin
+    let y = content.maxY - size.height - margin
+    indicator.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
   }
 
   /// `~/Library/Logs/Laban/captures` by default; overridable via

@@ -189,8 +189,10 @@ enum MenuCommands {
     let debugMenu = NSMenu(title: "Debug")
     debugItem.submenu = debugMenu
 
+    // Single persistent item; TerminalBitmapView.validateMenuItem flips the
+    // title between "Start"/"Stop PTY Capture" based on live capture state.
     let captureItem = NSMenuItem(
-      title: "Toggle PTY Capture",
+      title: "Start PTY Capture",
       action: #selector(TerminalBitmapView.toggleCapture(_:)),
       keyEquivalent: "r"
     )
