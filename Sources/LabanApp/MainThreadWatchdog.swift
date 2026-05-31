@@ -38,6 +38,7 @@ import Foundation
 ///                                    than this, 0 disables (default 60000)
 ///   LABAN_WATCHDOG_PAUSE_GAP_MS=<int> watchdog self-gap above which the
 ///                                    process is treated as paused (default 1000)
+///   LABAN_WATCHDOG_KEEP=<int>        max inproc-stall files retained (default 200)
 final class MainThreadWatchdog {
 
   static let shared = MainThreadWatchdog()
@@ -58,6 +59,7 @@ final class MainThreadWatchdog {
   private let captureCooldownMs: Int
   private let maxStallMs: Int
   private let pauseGapMs: Int
+  private let keepFiles: Int
   private let enabled: Bool
   private let outputDir: URL
 
@@ -88,6 +90,7 @@ final class MainThreadWatchdog {
     self.maxStallMs = env["LABAN_WATCHDOG_MAX_MS"].flatMap(Int.init) ?? 60000
     self.pauseGapMs =
       env["LABAN_WATCHDOG_PAUSE_GAP_MS"].flatMap(Int.init) ?? 1000
+    self.keepFiles = env["LABAN_WATCHDOG_KEEP"].flatMap(Int.init) ?? 200
     self.outputDir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("laban-watchdog")
     try? FileManager.default.createDirectory(
@@ -106,7 +109,7 @@ final class MainThreadWatchdog {
     heartbeat()  // prime so the first comparison is meaningful
     t.resume()
     AppLog.watchdog.info(
-      "active threshold=\(stallThresholdMs)ms cooldown=\(captureCooldownMs)ms maxStall=\(maxStallMs)ms dir=\(outputDir.path)"
+      "active threshold=\(stallThresholdMs)ms cooldown=\(captureCooldownMs)ms maxStall=\(maxStallMs)ms keep=\(keepFiles) dir=\(outputDir.path)"
     )
   }
 
@@ -198,8 +201,52 @@ final class MainThreadWatchdog {
       EventLog.shared.log(
         "watchdog.stall",
         ["ms": stalledForMs, "path": outURL.path])
+      pruneOldCaptures()
     } catch {
       // sample missing or sandboxed — silent. This is a debug aid.
+    }
+  }
+
+  // MARK: - Retention
+
+  /// Pure retention policy: from captures paired with their modification
+  /// dates, return the ones to delete so only the `keep` newest survive.
+  /// Extracted from `pruneOldCaptures` so the cap is unit-testable without
+  /// touching disk. `keep <= 0` disables pruning (returns nothing to delete).
+  static func capturesToPrune<T>(_ captures: [(T, Date)], keep: Int) -> [T] {
+    guard keep > 0, captures.count > keep else { return [] }
+    return
+      captures
+      .sorted { $0.1 > $1.1 }  // newest first
+      .dropFirst(keep)
+      .map { $0.0 }
+  }
+
+  /// Keep only the most recent `keepFiles` in-process captures. The in-process
+  /// path historically never trimmed, letting the directory grow to tens of
+  /// thousands of files; only our own `inproc-stall-*` files are touched, never
+  /// the external sampler's `<pid>-<name>-*` files. Runs on `queue`, gated
+  /// behind the capture cooldown, so the directory scan stays off the main
+  /// thread and runs at most once per cooldown window.
+  private func pruneOldCaptures() {
+    guard keepFiles > 0 else { return }
+    let fm = FileManager.default
+    guard
+      let urls = try? fm.contentsOfDirectory(
+        at: outputDir,
+        includingPropertiesForKeys: [.contentModificationDateKey],
+        options: [.skipsHiddenFiles])
+    else { return }
+    func mtime(_ url: URL) -> Date {
+      (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        .contentModificationDate) ?? .distantPast
+    }
+    let captures =
+      urls
+      .filter { $0.lastPathComponent.hasPrefix("inproc-stall-") }
+      .map { ($0, mtime($0)) }
+    for url in Self.capturesToPrune(captures, keep: keepFiles) {
+      try? fm.removeItem(at: url)
     }
   }
 

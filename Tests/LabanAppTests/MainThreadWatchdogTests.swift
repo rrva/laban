@@ -74,4 +74,39 @@ final class MainThreadWatchdogTests: XCTestCase {
     XCTAssertEqual(
       decide(heartbeatAgeMs: 800, selfGapMs: 1000), .capture(stalledForMs: 800))
   }
+
+  // MARK: - Retention cap
+
+  /// `dates[i]` is item `i`'s mtime; larger = newer. Returns the ids the policy
+  /// would delete, sorted for stable comparison.
+  private func prune(_ dates: [Int], keep: Int) -> [Int] {
+    let captures = dates.enumerated().map {
+      ($0.offset, Date(timeIntervalSince1970: TimeInterval($0.element)))
+    }
+    return MainThreadWatchdog.capturesToPrune(captures, keep: keep).sorted()
+  }
+
+  func testNothingPrunedWhenUnderCap() {
+    XCTAssertEqual(prune([10, 20, 30], keep: 200), [])
+  }
+
+  func testNothingPrunedExactlyAtCap() {
+    XCTAssertEqual(prune([10, 20, 30], keep: 3), [])
+  }
+
+  /// Oldest captures (smallest mtime) are deleted; the `keep` newest survive.
+  func testPrunesOldestBeyondCap() {
+    // ids 0..4 with mtimes 10,20,30,40,50 → keep 2 newest (ids 4,3),
+    // delete ids 0,1,2.
+    XCTAssertEqual(prune([10, 20, 30, 40, 50], keep: 2), [0, 1, 2])
+  }
+
+  func testKeepZeroDisablesPruning() {
+    XCTAssertEqual(prune([10, 20, 30], keep: 0), [])
+  }
+
+  func testKeepOneRetainsOnlyNewest() {
+    // newest is id 1 (mtime 99); everything else is pruned.
+    XCTAssertEqual(prune([5, 99, 7, 3], keep: 1), [0, 2, 3])
+  }
 }
