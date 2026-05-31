@@ -38,6 +38,23 @@ public final class MetalGlyphAtlas {
     let italicFallback: Bool
   }
 
+  // Single-scalar fast-path key. Terminal text is overwhelmingly one scalar
+  // per cell, so keying the per-frame lookup on the integer scalar value skips
+  // the `String(character)` allocation and SipHash string hashing the cluster
+  // path pays per glyph per frame. Mirrors the font+glyph cache key strategy
+  // used by GPU terminals (Ghostty improved exactly this hashing in 1.2.0).
+  private struct ScalarKey: Hashable {
+    let scalar: UInt32
+    let font: ObjectIdentifier
+    let boldFallback: Bool
+    let italicFallback: Bool
+  }
+
+  // A/B toggle for the bench (MetalGlyphAtlasLookupBench). Production keeps the
+  // fast path on; flipping it off forces the String-keyed lookup so the two can
+  // be compared in one release binary.
+  nonisolated(unsafe) public static var useScalarFastPath = true
+
   private enum RasterPlan {
     case glyph(CGGlyph, advance: CGFloat, bounds: CGRect)
     case line(CTLine, width: CGFloat, bounds: CGRect)
@@ -72,6 +89,7 @@ public final class MetalGlyphAtlas {
   private let colorSpace = CGColorSpaceCreateDeviceGray()
 
   private var entries: [Key: Entry] = [:]
+  private var scalarEntries: [ScalarKey: Entry] = [:]
   private var glyphForScalar: [ObjectIdentifier: [UInt32: CGGlyph]] = [:]
   private var advanceForGlyph: [ObjectIdentifier: [CGGlyph: CGFloat]] = [:]
   private(set) var didOverflow = false
@@ -133,10 +151,30 @@ public final class MetalGlyphAtlas {
     boldFallback: Bool,
     italicFallback: Bool
   ) -> Entry? {
+    let fid = ObjectIdentifier(font)
+    // Fast path: single-scalar cluster (the common case). Integer-keyed lookup,
+    // no per-glyph String allocation. Only the rare cache miss materialises a
+    // String for rasterisation. Multi-scalar clusters (emoji/ZWJ/RI) fall back
+    // to the String key so composed glyphs still resolve correctly.
+    if Self.useScalarFastPath,
+      character.unicodeScalars.count == 1,
+      let scalar = character.unicodeScalars.first
+    {
+      let sk = ScalarKey(
+        scalar: scalar.value, font: fid,
+        boldFallback: boldFallback, italicFallback: italicFallback)
+      if let cached = scalarEntries[sk] { return cached }
+      let made = rasterizeAndPack(
+        text: String(character), font: font,
+        boldFallback: boldFallback, italicFallback: italicFallback)
+      if let made { scalarEntries[sk] = made }
+      return made
+    }
+
     let text = String(character)
     let key = Key(
       text: text,
-      font: ObjectIdentifier(font),
+      font: fid,
       boldFallback: boldFallback,
       italicFallback: italicFallback)
     if let cached = entries[key] { return cached }
