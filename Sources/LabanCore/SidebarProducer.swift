@@ -241,14 +241,12 @@ public struct SidebarProducer {
       // when status takes its slot.
       var displayLines: [(String, UInt32)] = []
       if let notif = meta.notification {
-        // The notification owns the top info line — the most actionable signal
-        // on the tab right now — with an unread count when several arrived.
-        let raw = notif.count > 1 ? "\(notif.text) ×\(notif.count)" : notif.text
-        displayLines.append(
-          (
-            String(raw.prefix(infoMaxScalars)),
-            notif.urgent ? Theme.current.red : Theme.current.cursor
-          ))
+        // Keep it short and glanceable: the ◆ badge carries the signal, so the
+        // line is just a short urgency label plus an unread count — not the
+        // agent's full notification text (the native banner already has that).
+        let label = notif.urgent ? "needs you" : "done"
+        let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
+        displayLines.append((line, notif.urgent ? Theme.current.red : Theme.current.cursor))
       }
       if let st = agentStatus.statusText {
         let color =
