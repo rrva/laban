@@ -42,6 +42,7 @@ task matches them.
 | `docs/quality/` | You are tracking drift, test gaps, debt, or quality gates. |
 | `docs/adr/` | A change touches the terminal library, PTY ownership, rendering architecture, SwiftPM target boundaries, or a decision that looks previously settled. |
 | `docs/process/formal-specs.md` | You are changing a labpty state machine with a TLA+ spec in `specs/labpty/`, a CBMC proof or trace-conformance harness in `proofs/labpty/`, the MC/DC or mutation-adequacy gates (`coverage-labpty`, `check-{trace,cbmc}-mutants`), or a recent fix needs regression coverage. |
+| `docs/process/rpg-graph-maintenance.md` | You are lifting or refreshing the `.rpg` semantic graph (`graph.json`), or wiring it into git worktrees. |
 
 ## Project Landmarks
 
@@ -92,6 +93,13 @@ Write a new ADR when a change establishes durable architectural policy, reverses
 Git worktrees do not clone `.external/`. If missing, symlink it from the
 main repo: `ln -s "$LABAN_MAIN_REPO/.external" .external`. `.external/`
 holds vendored libs (`libghostty-vt`) shared across worktrees.
+
+`.rpg/graph.json` is a committed, generated artifact, so a fresh worktree
+already has a fully-lifted graph — do not rebuild it or commit per-branch
+drift. `main` is its canonical owner; refresh and commit it there. In a
+feature worktree run `git update-index --skip-worktree .rpg/graph.json` so
+local graph re-syncs stay out of `git status` and your commits. See
+`docs/process/rpg-graph-maintenance.md`.
 
 ## Hard Rules
 
