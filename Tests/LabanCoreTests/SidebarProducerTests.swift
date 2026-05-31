@@ -605,6 +605,37 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertEqual(marker, Theme.current.dim0, "passive marker is dim, not red")
   }
 
+  /// The needsAction marker breathes (its alpha varies with `now`) unless
+  /// Reduce Motion is on, where it is steady at full opacity.
+  func testNeedsActionMarkerPulsesUnlessReduceMotion() {
+    var tab = Tab(id: "t", position: 1, title: "claude", isActive: false, sessionId: "s")
+    tab.titleMetadata.activityState = .waiting
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+
+    func markerAlpha(now: Date, reduceMotion: Bool) -> UInt32? {
+      p.commands(
+        tabs: [tab], activeTabId: "other", height: 600, now: now, reduceMotion: reduceMotion
+      )
+      .compactMap { cmd -> UInt32? in
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "◆" {
+          return fg & 0xFF
+        }
+        return nil
+      }.first
+    }
+
+    let trough = markerAlpha(now: Date(timeIntervalSinceReferenceDate: 0), reduceMotion: false)
+    let peak = markerAlpha(
+      now: Date(timeIntervalSinceReferenceDate: AttentionPulse.period / 2), reduceMotion: false)
+    XCTAssertNotNil(trough)
+    XCTAssertNotNil(peak)
+    XCTAssertLessThan(trough ?? 0, peak ?? 0, "the marker alpha breathes over time")
+    XCTAssertEqual(peak, 0xFF, "the breath peaks at full opacity")
+
+    let steady = markerAlpha(now: Date(timeIntervalSinceReferenceDate: 0), reduceMotion: true)
+    XCTAssertEqual(steady, 0xFF, "Reduce Motion freezes the marker at full opacity")
+  }
+
   // MARK: - drag-reorder
 
   func testDropSlotAboveFirstRowReturnsZero() {

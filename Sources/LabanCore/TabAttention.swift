@@ -51,4 +51,42 @@ public enum TabAttentionClassifier {
     if m.unseenOutput || m.bellAttention { return .passive }
     return .none
   }
+
+  /// Whether any *unfocused* tab needs the user — i.e. whether the sidebar is
+  /// currently showing a marker that should breathe. The render loop uses this
+  /// (further gated on window visibility and Reduce Motion) to decide whether to
+  /// keep ticking, so an idle terminal parks the loop and holds its idle-CPU
+  /// budget.
+  public static func anyNeedsAction(tabs: [Tab], activeTabId: Tab.ID?) -> Bool {
+    tabs.contains { tab in
+      tab.id != activeTabId && classify(tab.titleMetadata, isActive: false) == .needsAction
+    }
+  }
+}
+
+/// A calm "breathing" pulse for the `needsAction` marker. Pure and
+/// app-independent so it is unit-testable without a running render loop; the
+/// AppKit layer feeds it a per-frame `now` and gates it on Reduce Motion.
+public enum AttentionPulse {
+  /// Seconds per breath. ~1.5s reads as calm; sub-second on/off reads as alarm.
+  public static let period: TimeInterval = 1.5
+  /// The marker never fully fades — it breathes between `floor` and full so it
+  /// reads as a gentle pulse, not a blink.
+  public static let floor: Double = 0.55
+
+  /// Alpha in `[floor, 1.0]` following a raised-cosine ("ease in/out") breath.
+  /// Anchored to an absolute clock so every `needsAction` tab pulses in unison.
+  public static func alpha(at now: Date) -> Double {
+    let t = now.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
+    let phase = t / period * 2 * Double.pi
+    let unit = (1 - cos(phase)) / 2  // 0 → 1 → 0, smooth at both ends
+    return floor + (1 - floor) * unit
+  }
+
+  /// Replace the low alpha byte of a `0xRRGGBBAA` colour with `a` (clamped to
+  /// `0…1`), leaving its RGB untouched.
+  public static func applyAlpha(_ color: UInt32, _ a: Double) -> UInt32 {
+    let byte = UInt32((min(max(a, 0), 1) * 255).rounded())
+    return (color & 0xFFFF_FF00) | byte
+  }
 }

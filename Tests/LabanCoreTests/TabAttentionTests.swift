@@ -81,4 +81,28 @@ final class TabAttentionTests: XCTestCase {
       unseenOutput: true)
     XCTAssertEqual(classify(m), .done)
   }
+
+  // MARK: - anyNeedsAction (render-loop idle gate predicate)
+
+  private func waitingTab(_ id: String) -> Tab {
+    var t = Tab(id: id, position: 1, title: id, isActive: false, sessionId: "s-\(id)")
+    t.titleMetadata.activityState = .waiting
+    return t
+  }
+
+  func testAnyNeedsActionTrueForUnfocusedWaitingTab() {
+    let tabs = [waitingTab("a"), Tab(id: "b", position: 2, title: "b", isActive: true, sessionId: "sb")]
+    XCTAssertTrue(TabAttentionClassifier.anyNeedsAction(tabs: tabs, activeTabId: "b"))
+  }
+
+  func testAnyNeedsActionIgnoresTheFocusedTab() {
+    // The only waiting tab is the focused one -> nothing should animate.
+    let tabs = [waitingTab("a")]
+    XCTAssertFalse(TabAttentionClassifier.anyNeedsAction(tabs: tabs, activeTabId: "a"))
+  }
+
+  func testAnyNeedsActionFalseWhenNothingWaits() {
+    let tabs = [Tab(id: "a", position: 1, title: "a", isActive: false, sessionId: "sa")]
+    XCTAssertFalse(TabAttentionClassifier.anyNeedsAction(tabs: tabs, activeTabId: "x"))
+  }
 }

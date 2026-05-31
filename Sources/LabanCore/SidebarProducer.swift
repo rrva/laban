@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import LabanRenderer
 
 // Produces FrameCommands for the left-side tab sidebar.
@@ -61,7 +62,9 @@ public struct SidebarProducer {
   public func commands(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
-    dragIndicator: DragIndicator? = nil
+    dragIndicator: DragIndicator? = nil,
+    now: Date = Date(),
+    reduceMotion: Bool = false
   ) -> [FrameCommand] {
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(tabs.count * 7 + 6)
@@ -193,11 +196,18 @@ public struct SidebarProducer {
         let slot = CGPoint(x: slotX, y: titleY)
         switch attention {
         case .needsAction:
+          // The one place that pulses: the marker breathes between a floor and
+          // full opacity so it reads as "act here", calmly. Reduce Motion
+          // freezes it at full opacity (still distinct by colour + shape).
+          let markerColor =
+            reduceMotion
+            ? Theme.current.red
+            : AttentionPulse.applyAlpha(Theme.current.red, AttentionPulse.alpha(at: now))
           cmds.append(
             .glyphRun(
               origin: slot,
               text: "◆",
-              foreground: Theme.current.red,
+              foreground: markerColor,
               background: bg,
               attributes: [],
               source: .sidebar

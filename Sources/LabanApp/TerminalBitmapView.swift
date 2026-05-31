@@ -134,6 +134,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   // Damage-driven render budget state
   private var renderInvalidated = true
   private var themeChangeObserver: NSObjectProtocol?
+  private var reduceMotionObserver: NSObjectProtocol?
+  /// Cached system Reduce Motion setting, refreshed via NSWorkspace
+  /// accessibility notifications. Freezes the sidebar needsAction pulse so a
+  /// motion-sensitive user gets a steady marker instead of a breathing one.
+  private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
   private var lastRenderedActiveTabId: Tab.ID?
   private var remoteSnapshotRenderTracker = RemoteSnapshotRenderTracker()
   private var scrollResidualPx: CGFloat = 0
@@ -324,6 +329,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
+      self?.renderInvalidated = true
+    }
+
+    // Track the system Reduce Motion setting so the sidebar needsAction pulse
+    // can freeze when it changes mid-session, and force a frame so the change
+    // takes effect immediately.
+    reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+      object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
       self?.renderInvalidated = true
     }
 
@@ -760,6 +776,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     if let themeChangeObserver {
       NotificationCenter.default.removeObserver(themeChangeObserver)
     }
+    if let reduceMotionObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+    }
   }
 
   override func viewDidChangeBackingProperties() {
@@ -1028,8 +1047,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       outputSettleHold = nil
     }
 
+    // Keep ticking while a background tab needs the user, so its sidebar marker
+    // can breathe. Gated on a visible window and off under Reduce Motion, so an
+    // idle (or motion-reduced) terminal still parks the render loop and holds
+    // the idle-CPU budget. Cheap: a field-only classification, no render work.
+    let attentionAnimating =
+      windowVisibleToUser && !reduceMotion
+      && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: activeTab.id)
+
     // Return early when nothing changed
-    guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame else { return }
+    guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame || attentionAnimating
+    else { return }
 
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: captureFrame))
 
@@ -1054,6 +1082,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       sidebarDragIndicator: sidebarDragIndicator,
       contentYOffset: scrollContentYOffset,
       cursorBlinkVisible: cursorBlinkVisible,
+      now: Date(),
+      reduceMotion: reduceMotion,
       selection: currentTerminalSelection(sessionId: session.id),
       includeTerminalAreaBackground: true,
       requireActiveSnapshot: true,

@@ -77,6 +77,10 @@ public struct TerminalSurfaceFrameRequest {
   public var sidebarDragIndicator: SidebarProducer.DragIndicator?
   public var contentYOffset: CGFloat
   public var cursorBlinkVisible: Bool
+  /// Wall-clock time for time-based sidebar animation (the needsAction pulse).
+  public var now: Date
+  /// System Reduce Motion setting; freezes the needsAction pulse when true.
+  public var reduceMotion: Bool
   public var selection: TerminalSelection?
   public var includeTerminalAreaBackground: Bool
   public var requireActiveSnapshot: Bool
@@ -96,6 +100,8 @@ public struct TerminalSurfaceFrameRequest {
     sidebarDragIndicator: SidebarProducer.DragIndicator? = nil,
     contentYOffset: CGFloat = 0,
     cursorBlinkVisible: Bool = true,
+    now: Date = Date(),
+    reduceMotion: Bool = false,
     selection: TerminalSelection? = nil,
     includeTerminalAreaBackground: Bool = false,
     requireActiveSnapshot: Bool = false,
@@ -114,6 +120,8 @@ public struct TerminalSurfaceFrameRequest {
     self.sidebarDragIndicator = sidebarDragIndicator
     self.contentYOffset = contentYOffset
     self.cursorBlinkVisible = cursorBlinkVisible
+    self.now = now
+    self.reduceMotion = reduceMotion
     self.selection = selection
     self.includeTerminalAreaBackground = includeTerminalAreaBackground
     self.requireActiveSnapshot = requireActiveSnapshot
@@ -334,7 +342,9 @@ public final class TerminalSurfaceController {
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
       hoveredTabId: request.hoveredSidebarTabId,
-      dragIndicator: request.sidebarDragIndicator
+      dragIndicator: request.sidebarDragIndicator,
+      now: request.now,
+      reduceMotion: request.reduceMotion
     )
 
     guard let session = model.session(forTab: activeTab.id) else {
@@ -470,7 +480,9 @@ public final class TerminalSurfaceController {
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
       hoveredTabId: request.hoveredSidebarTabId,
-      dragIndicator: request.sidebarDragIndicator
+      dragIndicator: request.sidebarDragIndicator,
+      now: request.now,
+      reduceMotion: request.reduceMotion
     )
 
     let rows = max(snapshot.rows, 1)
@@ -539,7 +551,9 @@ public final class TerminalSurfaceController {
     viewportHeight: CGFloat,
     topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
-    dragIndicator: SidebarProducer.DragIndicator? = nil
+    dragIndicator: SidebarProducer.DragIndicator? = nil,
+    now: Date = Date(),
+    reduceMotion: Bool = false
   ) -> [FrameCommand] {
     SidebarProducer(
       sidebarWidth: sidebarWidth,
@@ -551,7 +565,9 @@ public final class TerminalSurfaceController {
       height: viewportHeight,
       topInset: topInset,
       hoveredTabId: hoveredTabId,
-      dragIndicator: dragIndicator)
+      dragIndicator: dragIndicator,
+      now: now,
+      reduceMotion: reduceMotion)
   }
 
   public static func terminalGridOriginY(

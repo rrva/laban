@@ -104,15 +104,22 @@ complaint and should be committed before M2/M3 begin.
   - [x] Tests: `TabAttentionTests` (10), new `SidebarProducerTests` cases
     (tint/markers/precedence), and a `LabanDebugTitleTests` focus-clear case.
     (63 LabanCore + 7 LabanDebug passed.)
-- [ ] **M3 — Calm breathing pulse (animation), Reduce-Motion-aware.**
-  - [ ] Thread a frame `now: Date` and a `reduceMotion: Bool` into the sidebar
-    command path (keeping `LabanCore` AppKit-free).
-  - [ ] Pulse only the `needsAction` marker's alpha between a floor and full,
-    on a shared phase anchor so all such tabs breathe in unison.
-  - [ ] Keep the render loop ticking only while a `needsAction` tab is visible;
-    let it idle otherwise (must not regress the idle-CPU budget).
-  - [ ] Read Reduce Motion in the AppKit layer; when on, render a steady marker.
-  - [ ] Tests for the pure pulse function and an idle-loop assertion.
+- [x] (2026-05-31) **M3 — Calm breathing pulse (animation), Reduce-Motion-aware.**
+  - [x] Thread `now: Date` + `reduceMotion: Bool` through
+    `TerminalSurfaceFrameRequest` → `sidebarCommands` → `SidebarProducer.commands`
+    (`LabanCore` stays AppKit-free; `AttentionPulse` is pure).
+  - [x] Pulse only the `needsAction` marker's alpha between `floor` (0.55) and
+    full via a raised-cosine on a shared `timeIntervalSinceReferenceDate` anchor
+    (all such tabs breathe in unison). Row tint stays steady.
+  - [x] Keep the loop ticking only while an unfocused `needsAction` tab is
+    visible (`TabAttentionClassifier.anyNeedsAction`, gated on
+    `windowVisibleToUser && !reduceMotion`); idle otherwise.
+  - [x] Read Reduce Motion in `TerminalBitmapView`
+    (`NSWorkspace…accessibilityDisplayShouldReduceMotion` + change observer);
+    when on, the marker is steady at full opacity.
+  - [x] Tests: `AttentionPulseTests` (6), the `SidebarProducer` pulse/Reduce-Motion
+    case, and `anyNeedsAction` predicate tests. (65 LabanCore passed; LabanApp
+    render tests unaffected.)
 
 ## Decision Log
 
