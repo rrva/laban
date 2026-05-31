@@ -13,9 +13,10 @@ This plan pursues **two renderers that both stay in the codebase permanently as 
 user-selectable option** — not a migration that deletes the old one:
 
 1. **Classic renderer, damage-optimized ("old but fixed").** A low-risk fix *on top
-   of the existing CPU renderer*: only rebuild the instances for the **dirty rows**
-   (the rest is already clipped by the existing damage scissor), instead of rebuilding
-   the whole screen every frame. Plain Metal, **works on every supported macOS**, and
+   of the existing CPU renderer*: only rebuild instances whose Y overlaps the current
+   **dirty-scissor union** (the rest is already clipped by the existing damage scissor;
+   true sparse-dirty-row scaling needs a later multi-scissor variant), instead of
+   rebuilding the whole screen every frame. Plain Metal, **works on every supported macOS**, and
    is provably pixel-identical to today's output. This becomes the default renderer
    and the **baseline the GPU renderer must beat**.
 2. **GPU-driven cell renderer (macOS 26).** The terminal grid lives in a **persistent
@@ -462,8 +463,17 @@ LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench
 
 **Scope.** Make the cell buffer **persistent** (a member, indexed `row*cols+col`)
 and a CPU mirror alongside it. Each frame:
-- On `.full` damage, resize, theme change, or **glyph-atlas regrow** (tile origins
-  move), rebuild the whole buffer.
+- On `.full` damage, resize, theme change, **glyph-atlas regrow** (tile origins
+  move), or any **`geometryEpoch`** bump, rebuild the whole buffer. Because each
+  `CellGlyph` caches a **final screen-space `originPx`**, *any* global input that
+  changes `originPx`/`sizePx` invalidates every slot even when no terminal cell is
+  dirty — so maintain a `geometryEpoch` over backing scale, font/cell metrics,
+  viewport/surface origin, content offset / smooth-scroll `contentYOffset`, grid
+  dimensions, and font-fallback/layout metrics; when it changes, rebuild all slots or
+  fall back to classic for that frame. A shader-side global scroll/transform uniform is
+  allowed *only* if `GPUOriginParityTests` proves bit-identical `originPx` behaviour
+  against the classic path (it must include a smooth-scroll /
+  fractional-`contentYOffset` fixture).
 - On `.partial(yRanges)`, map the dirty `yRanges` back to row indices, and for each
   dirty row: clear that row's cells in the buffer, then re-fill them (atlas lookup +
   `CellGlyph` write). Upload only the changed byte range(s) of the buffer
@@ -528,7 +538,7 @@ and a CPU mirror alongside it. Each frame:
   or the next frame's dirty set is corrupt. Note: full redraws and alt-screen swaps
   arrive as **all-rows-dirty** (`snapshot.c` memsets `dirty_rows`), not as `.full`, so
   the per-dirty-row patch already covers them; M3's whole-buffer-rebuild branch keys off
-  resize/theme/atlas-regrow, not this. (`FrameProducer` itself never reads dirty state —
+  resize/theme/atlas-regrow/`geometryEpoch`, not this. (`FrameProducer` itself never reads dirty state —
   it always walks the full grid, `FrameProducer.swift:131,138`.)
 - **GPU-cell mode is local-session only until the laband protocol is extended (review
   finding).** Background/remote sessions render from a `LabandSnapshotResponse` whose
@@ -906,6 +916,11 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
 - [ ] For M3: a `TerminalCellPayloadAllocationBench` shows **zero** per-frame heap
       allocations on 1-dirty-row frames after warm-up (reusable builder + retained
       capacity).
+- [ ] For M3+: a `geometryEpoch` covers every input that affects cached
+      `originPx`/`sizePx` (scale, font/cell metrics, grid dims, viewport origin,
+      `contentYOffset`, transform); a change invalidates all cell-buffer slots and
+      forces full rebuild or classic fallback, and `GPUOriginParityTests` includes a
+      smooth-scroll / fractional-offset fixture.
 - [ ] For M4: non-cell overlays (cursor/selection/find) are carried as `overlayCommands`
       alongside the cell payload; full glyph/background command coalescing stays skipped
       in steady GPU-cell mode.
