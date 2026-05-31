@@ -327,6 +327,14 @@ final class MainWindowController: NSWindowController {
       let title = model?.tabs.first(where: { $0.id == tabId })?.title
       agentNotificationPoster.post(tabId: tabId, tabTitle: title, text: text)
     }
+    // Returning to the app means the user is now looking at the active tab, so
+    // clear its notification badge (peers clear on viewing the tab, not on
+    // every window-focus change of background tabs).
+    NotificationCenter.default.addObserver(
+      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { [weak model] _ in
+      model?.markActiveTabNotificationSeen()
+    }
 
     if persistenceSyncEnabled {
       // Persistence is wired AFTER the optional restore so the initial

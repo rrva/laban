@@ -93,6 +93,46 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(received.count, 1, "OSC 9;4 progress must not reach the notification hook")
   }
 
+  func testOSC9NotificationBadgesTabAndClearsOnViewing() throws {
+    let model = try makeModel()
+    try model.createTab()  // tab[1] is now active; tab[0] is a background tab
+    let bgTabId = model.tabs[0].id
+    guard let bgSession = model.session(forTab: bgTabId) else {
+      XCTFail("background tab must have a session")
+      return
+    }
+
+    // Turn-complete on a background tab -> an informational notification badge.
+    bgSession.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
+    pumpMainQueue()
+    let first = model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification
+    XCTAssertEqual(first?.text, "Agent turn complete")
+    XCTAssertEqual(first?.count, 1)
+    XCTAssertEqual(first?.urgent, false)
+
+    // A second, action-needed notification accumulates the count and goes urgent.
+    bgSession.feedOutput(Array("\u{1b}]9;Approval requested: rm -rf /\u{07}".utf8))
+    pumpMainQueue()
+    let second = model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification
+    XCTAssertEqual(second?.count, 2)
+    XCTAssertEqual(second?.urgent, true, "an approval request must render urgent")
+
+    // Opening the tab clears its badge.
+    model.selectTab(bgTabId)
+    XCTAssertNil(
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
+      "selecting the tab must clear its notification")
+
+    // A notification on the now-active tab clears when the user returns to the app.
+    bgSession.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertNotNil(model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification)
+    model.markActiveTabNotificationSeen()
+    XCTAssertNil(
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
+      "returning to the app must clear the active tab's notification")
+  }
+
   func testCreateTabAddsTabAndSelectsIt() throws {
     let model = try makeModel()
     let originalId = model.tabs[0].id

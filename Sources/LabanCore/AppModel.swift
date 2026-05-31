@@ -797,6 +797,7 @@ public final class AppModel {
       if selected {
         _tabs[i].titleMetadata.unseenOutput = false
         _tabs[i].titleMetadata.bellAttention = false
+        _tabs[i].titleMetadata.notification = nil
       }
       if _tabs[i].status == .running {
         _tabs[i].titleMetadata.activityState =
@@ -859,6 +860,7 @@ public final class AppModel {
           _tabs[newActiveIdx].isActive = true
           _tabs[newActiveIdx].titleMetadata.unseenOutput = false
           _tabs[newActiveIdx].titleMetadata.bellAttention = false
+          _tabs[newActiveIdx].titleMetadata.notification = nil
           if _tabs[newActiveIdx].status == .running {
             _tabs[newActiveIdx].titleMetadata.activityState = .active
           }
@@ -1563,16 +1565,56 @@ public final class AppModel {
   /// notification posting and the model mutation both run on the main queue.
   private func attachOSCNotification(session: Session, tabId: Tab.ID) {
     session.onOSCNotification = { [weak self] text in
-      let date = Date()
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }
-        // Raise the same per-tab attention indicator a bell does, so a
-        // backgrounded Codex tab shows it needs the user even if the native
-        // banner is dismissed or notifications are denied.
-        self.applyBellAttention(forTab: tabId, at: date)
+        // Surface it on the tab (sidebar badge + text) so a backgrounded Codex
+        // tab visibly shows it finished / needs the user, even if the native
+        // banner is dismissed or notification permission was denied.
+        self.applyAgentNotification(forTab: tabId, text: text)
         self.onAgentNotification?(tabId, text)
       }
     }
+  }
+
+  /// Record an OSC 9 desktop notification on a tab so it shows in the sidebar
+  /// until the user opens (or returns to) that tab. Codex only emits OSC 9 when
+  /// the tab is unfocused, so we always badge; the clear happens on
+  /// `selectTabUnlocked` (open another-then-this tab) and
+  /// `markActiveTabNotificationSeen` (return to the app). Repeat notifications
+  /// before the tab is viewed accumulate an unread count.
+  private func applyAgentNotification(forTab tabId: Tab.ID, text: String) {
+    let changed: Bool = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      let prior = _tabs[idx].titleMetadata.notification
+      _tabs[idx].titleMetadata.notification = TabNotification(
+        text: text,
+        urgent: Self.isUrgentNotification(text) || (prior?.urgent ?? false),
+        count: (prior?.count ?? 0) + 1)
+      return true
+    }
+    if changed { notifyWorkspaceMutation() }
+  }
+
+  /// Heuristic: approval / edit / input requests need user action (urgent
+  /// style); a turn-complete summary is informational.
+  private static func isUrgentNotification(_ text: String) -> Bool {
+    let t = text.lowercased()
+    return t.contains("approval") || t.contains("approve")
+      || t.contains("wants to") || t.contains("needs input")
+      || t.contains("requested") || t.contains("waiting")
+  }
+
+  /// Clear the notification on the active tab — the user has returned to the
+  /// window and is now looking at it. Wired to the app becoming active.
+  public func markActiveTabNotificationSeen() {
+    let changed: Bool = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.isActive }),
+        _tabs[idx].titleMetadata.notification != nil
+      else { return false }
+      _tabs[idx].titleMetadata.notification = nil
+      return true
+    }
+    if changed { notifyWorkspaceMutation() }
   }
 
   private func applyTabStatusUpdate(_ update: Session.TabStatusUpdate, forTab tabId: Tab.ID) {

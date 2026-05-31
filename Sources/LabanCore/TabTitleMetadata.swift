@@ -121,6 +121,26 @@ public struct TabAgentMetadata: Codable, Equatable {
   }
 }
 
+/// A desktop notification an in-tab program emitted via OSC 9 (e.g. the Codex
+/// agent signalling "turn complete" or "approval requested") that the user has
+/// not yet seen. It is surfaced on the tab until the user opens that tab —
+/// distinct from `bellAttention` (a transient bell) and `agentStatus` (live
+/// status), following the per-tab attention conventions of iTerm2 / kitty /
+/// Warp. `count` accumulates notifications that arrive before the tab is
+/// viewed; `urgent` marks action-needed notifications (approval / edit / input
+/// requests) for the urgent visual style.
+public struct TabNotification: Codable, Equatable, Sendable {
+  public var text: String
+  public var urgent: Bool
+  public var count: Int
+
+  public init(text: String, urgent: Bool, count: Int = 1) {
+    self.text = text
+    self.urgent = urgent
+    self.count = max(1, count)
+  }
+}
+
 public struct TabTitleMetadata: Codable, Equatable {
   public var userTitle: String?
   public var titleFrozen: Bool
@@ -136,6 +156,9 @@ public struct TabTitleMetadata: Codable, Equatable {
   public var lastOutputAt: Date?
   public var unseenOutput: Bool
   public var bellAttention: Bool
+  /// Unseen OSC 9 desktop notification for this tab, or nil when none is
+  /// pending. Cleared when the user opens (or returns to) this tab.
+  public var notification: TabNotification?
   public var exitStatus: Int?
   /// Live OSC 133 shell phase for this tab's session. Runtime UI state, not
   /// persisted: a restored tab's fresh shell re-emits its own markers.
@@ -160,6 +183,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     lastOutputAt: Date? = nil,
     unseenOutput: Bool = false,
     bellAttention: Bool = false,
+    notification: TabNotification? = nil,
     exitStatus: Int? = nil,
     shellPhase: ShellIntegrationPhase = .idle,
     lastCommandExitCode: Int? = nil
@@ -179,6 +203,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.lastOutputAt = lastOutputAt
     self.unseenOutput = unseenOutput
     self.bellAttention = bellAttention
+    self.notification = notification
     self.exitStatus = exitStatus
     self.shellPhase = shellPhase
     self.lastCommandExitCode = lastCommandExitCode

@@ -185,7 +185,20 @@ public struct SidebarProducer {
       // along with the rest of the row).
       let showCloseX = (hoveredTabId == tab.id) && !isDragging
       if !showCloseX {
-        if let hex = agentStatus.indicatorColor,
+        if let notif = meta.notification {
+          // Unseen OSC 9 notification: a distinct ◆ in a reserved color (red
+          // when action is needed, accent otherwise), taking the slot over the
+          // live status dot until the user opens the tab.
+          cmds.append(
+            .glyphRun(
+              origin: CGPoint(x: slotX, y: titleY),
+              text: "◆",
+              foreground: notif.urgent ? Theme.current.red : Theme.current.cursor,
+              background: bg,
+              attributes: [],
+              source: .sidebar
+            ))
+        } else if let hex = agentStatus.indicatorColor,
           let color = Self.parseHexColor(hex)
         {
           cmds.append(
@@ -227,6 +240,16 @@ public struct SidebarProducer {
       // title; folder and branch follow, and the command line drops out
       // when status takes its slot.
       var displayLines: [(String, UInt32)] = []
+      if let notif = meta.notification {
+        // The notification owns the top info line — the most actionable signal
+        // on the tab right now — with an unread count when several arrived.
+        let raw = notif.count > 1 ? "\(notif.text) ×\(notif.count)" : notif.text
+        displayLines.append(
+          (
+            String(raw.prefix(infoMaxScalars)),
+            notif.urgent ? Theme.current.red : Theme.current.cursor
+          ))
+      }
       if let st = agentStatus.statusText {
         let color =
           agentStatus.statusTextColor.flatMap(Self.parseHexColor)
