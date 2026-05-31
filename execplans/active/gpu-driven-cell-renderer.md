@@ -36,8 +36,8 @@ fraction shrinks.
 - **Damage / `RenderDamage`**: which rows changed this frame. `.full` = redraw
   everything; `.partial(yRanges:)` = only these vertical pixel ranges changed.
   Code: `Sources/LabanRenderer/` (the `RenderDamage`/`DirtyYRange` types) and the
-  producer `TerminalSurfaceController.computeDamage`
-  (`Sources/LabanCore/TerminalSurfaceController.swift:590`).
+  producer `TerminalSurfaceController.damage(snapshot:…)`
+  (`Sources/LabanCore/TerminalSurfaceController.swift:583`).
 - **Persistent target texture**: an offscreen GPU texture that survives between
   frames; on partial damage the renderer preserves it (`loadAction = .load`) and
   only redraws the dirty scissor region. Already exists in `MetalRenderer`.
@@ -125,8 +125,8 @@ inform the patterns used here:
    `{pixelWidth, pixelHeight, originX, originY, logicalOriginX, logicalWidth}` (atlas
    pixel rect + sub-cell layout offsets). The atlas **grows by reallocation** when
    full; when it grows, all tile origins change (relevant to buffer invalidation).
-5. Damage source: `Sources/LabanCore/TerminalSurfaceController.swift:590`
-   (`computeDamage`) reads `snapshot.dirty_rows` (one byte per row) and emits tight
+5. Damage source: `Sources/LabanCore/TerminalSurfaceController.swift:583`
+   (`damage(snapshot:…)`) reads `snapshot.dirty_rows` (one byte per row) and emits tight
    per-row `.partial(yRanges:)`. So **precise per-row dirty information already
    exists** and reaches `MetalRenderer.render` via `surfaceFrame.damage`
    (`Sources/LabanApp/TerminalBitmapView.swift:1155`).
@@ -163,16 +163,20 @@ per-frame cost becomes O(changed cells).
   means extracting per-cell data straight from the snapshot — but that extraction
   must run in `LabanCore` (`makeFrame`, snapshot alive), **not** in the renderer (the
   renderer only gets `[FrameCommand]` and the snapshot is freed before `makeFrame`
-  returns). The result is a value-type cell payload carried on `TerminalSurfaceFrame`
-  to the Metal backend. Bypassing `FrameProducer`'s glyph-run coalescing for the
+  returns). The result is a **renderer-neutral** value-type cell payload (raw cell
+  data — text, colours, attributes, grid position — *not* Metal `CellGlyph`s; the
+  atlas lookup that builds `CellGlyph`s stays in `MetalRenderer`) carried on
+  `TerminalSurfaceFrame`. Bypassing `FrameProducer`'s glyph-run coalescing for the
   Metal cell path is the larger correctness surface, hence staged.
 - **The GPU cell path is a Metal-only acceleration; `[FrameCommand]` stays the shared
   cross-backend language.** Per `mvp.md`/`dev-process.md`, software/offscreen,
   `/debug/frame-commands`, capture replay, and render trace all consume
   `[FrameCommand]`. The cell payload does not replace it. The software backend keeps
-  rendering from commands and stays behavior-equivalent (`CrossBackendBitmapTests` +
-  the pixel-parity gate); commands keep being emitted whenever a capture/debug/trace
-  consumer is attached. Recorded as policy in the M4 ADR.
+  rendering from commands and stays behavior-equivalent (`CrossBackendBitmapTests`);
+  the Metal GPU path's pixel equivalence is the separate `GPUCellParityTests` gate
+  (`CrossBackendBitmapTests` never instantiates `MetalRenderer`). Commands keep being
+  emitted whenever a capture/debug/trace consumer is attached. Recorded as policy in
+  the M4 ADR.
 - **Every change must earn its keep via a release microbench, or it is reverted —
   not merged.** This is a hard gate, not advice. Before landing any milestone or
   sub-change, run its microbench `-c release` and compare against the baseline
@@ -287,14 +291,22 @@ and a CPU mirror alongside it. Each frame:
 libghostty snapshot is freed by `defer { laban_snapshot_destroy(snap) }` before
 `makeFrame` returns (`TerminalSurfaceController.swift:385`). Reading cells in the
 renderer would mean keeping that snapshot alive past `makeFrame` — an unsafe
-lifetime. So the dirty-row cell extraction happens **in `LabanCore`, inside
-`makeFrame`, while the snapshot is still alive**, and produces a small value-type
-per-cell payload (the `CellGlyph` data for the dirty rows, plus row indices) carried
-on a new optional field of `TerminalSurfaceFrame`. `TerminalBitmapView` hands that
-payload to `backend.render`; `MetalRenderer` patches its persistent buffer from it.
-This is why M2 is **not** "touches only `Sources/LabanRenderer/`" (corrected in
-Interfaces and Dependencies). The payload is the Metal path's internal
-representation — it does **not** replace the `[FrameCommand]` language (see below).
+lifetime. So the dirty-row extraction happens **in `LabanCore`, inside `makeFrame`,
+while the snapshot is still alive**, and copies a **renderer-neutral** per-cell
+payload — for each dirty cell its grapheme/cluster text, resolved foreground and
+background colour, `TextAttributes`, and grid `col`/`row`, plus the list of dirty
+row indices — onto a new optional field of `TerminalSurfaceFrame`. The payload must
+**not** carry `CellGlyph`s: a `CellGlyph` needs atlas UVs, atlas texture size, and
+per-glyph tile metrics, all of which come from `MetalGlyphAtlas` — a renderer-owned
+resource (`MetalRenderer.swift:153`; UVs are computed from `atlas.textureSize` at
+`MetalRenderer.swift:977`) that `LabanCore` neither owns nor can import. So
+`LabanCore` does the cell-data resolution (fg/bg/attributes, the part that needs the
+live snapshot), and **`MetalRenderer` does the `MetalGlyphAtlas.entry` lookup and
+turns those cells into `CellGlyph`s as it patches its persistent buffer.**
+`TerminalBitmapView` just forwards the neutral payload to `backend.render`. This is
+why M2 is **not** "touches only `Sources/LabanRenderer/`" (corrected in Interfaces
+and Dependencies). The neutral payload is an internal acceleration channel — it does
+**not** replace the `[FrameCommand]` language (see below).
 
 **Frame-command and headless contract (resolves the Metal-only concern).** `mvp.md`
 (Implementation Shape) and `dev-process.md` (Headless Rendering Contract,
@@ -304,7 +316,8 @@ software/offscreen backends consume. The GPU cell path must not break that:
 - The GPU cell path is a **Metal-interactive-only acceleration**. The
   software/offscreen backend keeps consuming `FrameProducer`'s `[FrameCommand]`
   unchanged and stays behavior-equivalent — enforced by `CrossBackendBitmapTests`
-  and the pixel-parity gate.
+  (which exercises the *software* backend only). The Metal GPU path's pixel
+  equivalence is separately enforced by the `GPUCellParityTests` pixel-parity gate.
 - `FrameProducer.commands` continues to be produced whenever a frame-command
   consumer is active (capture/replay, `/debug/frame-commands`, render trace,
   headless). The CPU win applies to the steady interactive Metal path *when no such
@@ -403,12 +416,24 @@ ways, all reproducible from a clean checkout:
    share must drop substantially versus the `15fb668` baseline in this plan, with
    GPU utilization staying near 0.4% (Metal System Trace).
 4. **Frame-command contract preserved (M2/M4).** The GPU cell path must not change
-   the shared `[FrameCommand]` language. `CrossBackendBitmapTests` (software vs Metal
-   behavior-equivalence) stays green with the GPU path on. With capture/debug active,
-   `/debug/frame-commands` and capture-replay `frames/*.commands.json` for a given
-   frame are **unchanged** from the `[FrameCommand]` path (assert identical command
-   streams flag-on vs flag-off for a capture fixture) — proving the cell payload is a
-   Metal-only acceleration, not a divergent render language.
+   the shared `[FrameCommand]` language or the software backend's output. No single
+   existing test covers this, so the gate is two distinct checks — do not conflate
+   them:
+   - **Metal GPU-path pixel equivalence is `GPUCellParityTests`**: it renders through
+     `MetalRenderer` with `useGPUCellPath` on vs off (`captureMode`/`pngData`) and
+     asserts byte-identical pixels. **`CrossBackendBitmapTests` does *not* prove
+     this** — its helpers render `FrameProducer.commands` → `SoftwareBackend` only
+     (`CrossBackendBitmapTests.swift:126,240`) and never instantiate `MetalRenderer`,
+     so flipping `useGPUCellPath` does not change what they exercise. They still must
+     stay green, but only as evidence the *software* path and `FrameProducer`'s
+     commands are unchanged. If you want a Metal-backed cross-backend check, you must
+     **add** a fixture that renders a `MetalRenderer` bitmap with `useGPUCellPath` on
+     (the current helpers cannot).
+   - **Command-stream invariance**: with capture/debug active, `/debug/frame-commands`
+     and capture-replay `frames/*.commands.json` for a given frame are **unchanged**
+     flag-on vs flag-off (assert identical command streams for a capture fixture) —
+     proving the cell payload is a Metal-only acceleration that does not divert the
+     command language the software/headless path consumes.
 
 The existing renderer test suites must stay green at every milestone:
 `MetalRendererSmokeTests`, `MetalRendererClearColorTests`,
@@ -441,9 +466,14 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
       `ensureBuffer`; cell buffer is persistent; `storageModeShared` writes in place).
 - [ ] For M2+: the cell payload is extracted in `LabanCore` while the snapshot is
       alive and carried on `TerminalSurfaceFrame` — the renderer does not read the
-      libghostty snapshot (which is freed before `makeFrame` returns).
-- [ ] For M2/M4: the `[FrameCommand]` cross-backend contract is preserved —
-      `CrossBackendBitmapTests` green with the flag on, and `/debug/frame-commands` /
+      libghostty snapshot (which is freed before `makeFrame` returns). The payload is
+      **renderer-neutral** (raw cell data); `CellGlyph`/atlas-UV construction lives in
+      `MetalRenderer` (it owns `MetalGlyphAtlas`), not in `LabanCore`.
+- [ ] For M2/M4: the `[FrameCommand]` cross-backend contract is preserved — GPU-path
+      pixel equivalence is proven by `GPUCellParityTests` (Metal flag-on vs off, *not*
+      by `CrossBackendBitmapTests`, which never instantiates `MetalRenderer`);
+      `CrossBackendBitmapTests` stays green only as evidence the software path +
+      `FrameProducer` commands are unchanged; and `/debug/frame-commands` /
       capture-replay command streams are identical flag-on vs flag-off.
 - [ ] For M4: the ADR uses the next free number (0016+, not the already-taken 0014),
       and a matching one-line entry was added to the `AGENTS.md` Decision Index.
@@ -466,8 +496,8 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
 - **Partial damage already scissors + `.load`s.** Off-scissor instances are already
   clipped, which is why the lower-risk "damage-scoped" alternative (Decision Log)
   would be provably pixel-identical. Keep it in pocket as a fallback for M2.
-- **`computeDamage` already emits tight per-row dirty ranges** from
-  `snapshot.dirty_rows` (`TerminalSurfaceController.swift:590`). M2 does not need new
+- **`damage(snapshot:…)` already emits tight per-row dirty ranges** from
+  `snapshot.dirty_rows` (`TerminalSurfaceController.swift:583`). M2 does not need new
   dirty-tracking; it needs to consume what exists.
 - **Glyph-atlas regrow invalidates the whole cell buffer** (tile origins change on
   reallocation). M2 must rebuild on regrow; missing this would show stale glyphs.
@@ -499,12 +529,17 @@ pixel-parity and far less surface area — and record the pivot here.
     laban_snapshot_destroy`), reading the libghostty cell struct already consumed by
     `FrameProducer` (`Sources/LabanTerminalCore/include/LabanTerminalCore.h`:
     `LabanCell`, `LabanSnapshot.dirty_rows`).
-  - `Sources/LabanCore/TerminalSurfaceController.swift` — add an optional value-type
-    cell payload field to `TerminalSurfaceFrame` (AppKit-free, lives in `LabanCore`).
+  - `Sources/LabanCore/TerminalSurfaceController.swift` — add an optional
+    **renderer-neutral** cell payload field to `TerminalSurfaceFrame` (raw cell data:
+    text, colours, `TextAttributes`, grid position; AppKit/Metal-free, lives in
+    `LabanCore`). No atlas/`CellGlyph` types here — `LabanCore` cannot import
+    `MetalGlyphAtlas`.
   - `Sources/LabanApp/TerminalBitmapView.swift:1155` — pass the payload alongside
     `cmds`/`damage` into the render call.
-  - `Sources/LabanRenderer/` — consume the payload to patch the persistent cell
-    buffer (`MetalRenderer.swift`, `Shaders.metal`).
+  - `Sources/LabanRenderer/` — do the `MetalGlyphAtlas.entry` lookup, build the
+    `CellGlyph`s, and patch the persistent cell buffer (`MetalRenderer.swift`,
+    `Shaders.metal`). `CellGlyph` (atlas UVs/metrics) is defined and populated only
+    here, never in `LabanCore`.
 - Deployment target is `macOS .v13` (`Package.swift`), but the merged Span work uses
   macOS-26 APIs behind `#available`; this plan uses no macOS-26-only APIs (plain
   Metal + buffers), so no availability gating is required.
