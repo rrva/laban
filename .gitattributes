@@ -1,0 +1,12 @@
+# The RPG semantic code graph is a generated, committed artifact (built by
+# rpg-encoder; see .rpg/README.md). Treat it as generated so it stops behaving
+# like hand-edited source:
+#   merge=ours          never 3-way-merge the 10MB JSON — keep our side and
+#                        regenerate (`rpg-encoder update` + lift) instead of
+#                        resolving an unmergeable conflict. Requires once:
+#                        `git config merge.ours.driver true`
+#   -diff               don't emit a textual diff (treat as binary-ish) so
+#                        `git diff` / reviews don't dump ~100k lines of churn.
+#   linguist-generated  collapse it in GitHub PR diffs and exclude from language
+#                        stats.
+.rpg/graph.json merge=ours -diff linguist-generated
