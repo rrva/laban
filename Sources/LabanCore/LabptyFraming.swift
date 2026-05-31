@@ -395,15 +395,15 @@ extension Data {
   }
 
   fileprivate mutating func appendUInt32(_ value: UInt32) {
-    append(UInt8(value & 0x000000FF))
-    append(UInt8((value >> 8) & 0x000000FF))
-    append(UInt8((value >> 16) & 0x000000FF))
-    append(UInt8((value >> 24) & 0x000000FF))
+    append(UInt8(value & 0x0000_00FF))
+    append(UInt8((value >> 8) & 0x0000_00FF))
+    append(UInt8((value >> 16) & 0x0000_00FF))
+    append(UInt8((value >> 24) & 0x0000_00FF))
   }
 
   fileprivate mutating func appendUInt64(_ value: UInt64) {
     for shift in stride(from: 0, to: 64, by: 8) {
-      append(UInt8((value >> UInt64(shift)) & 0x00000000000000FF))
+      append(UInt8((value >> UInt64(shift)) & 0x0000_0000_0000_00FF))
     }
   }
 }

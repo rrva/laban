@@ -487,7 +487,8 @@ final class AppSessionCoordinator {
         "labpty listSessions failed during tab metadata refresh: \(String(describing: error))")
       return
     }
-    let descriptorById = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.logicalSessionId, $0) })
+    let descriptorById = Dictionary(
+      uniqueKeysWithValues: descriptors.map { ($0.logicalSessionId, $0) })
     // Drop degraded stamps whose cooldown has fully elapsed so the map cannot
     // accumulate entries for tabs that overflowed once and were never closed.
     labptyStateLock.withLock { labptyDegradation.pruneExpired(now: now) }
@@ -554,7 +555,8 @@ final class AppSessionCoordinator {
     let pid = descriptor.childPid
     let metadata = processMetadata(pid: pid, childPid: descriptor.childPid)
     let commandDisplayName =
-      metadata.foregroundProcess?.isEmpty == false ? metadata.foregroundProcess! : "Background Session"
+      metadata.foregroundProcess?.isEmpty == false
+      ? metadata.foregroundProcess! : "Background Session"
     return LabandSessionInfo(
       logicalSessionId: descriptor.logicalSessionId,
       incarnationId: String(descriptor.ptyHandle),

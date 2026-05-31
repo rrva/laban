@@ -56,7 +56,7 @@ final class FrameProducerRemoteDefaultBackgroundTests: XCTestCase {
       cells: [
         LabandSnapshotCell(
           row: 0, col: 0, text: "", flags: 0,
-          foregroundRGBA: 0xFFFFFFFF, backgroundRGBA: 0)
+          foregroundRGBA: 0xFFFF_FFFF, backgroundRGBA: 0)
       ],
       defaultBackgroundRGBA: 0x12_34_56_FF)
 
@@ -76,7 +76,7 @@ final class FrameProducerRemoteDefaultBackgroundTests: XCTestCase {
       cells: [
         LabandSnapshotCell(
           row: 0, col: 0, text: "", flags: 0,
-          foregroundRGBA: 0xFFFFFFFF, backgroundRGBA: 0)
+          foregroundRGBA: 0xFFFF_FFFF, backgroundRGBA: 0)
       ],
       defaultBackgroundRGBA: nil)
 
@@ -96,7 +96,7 @@ final class FrameProducerRemoteDefaultBackgroundTests: XCTestCase {
       cells: [
         LabandSnapshotCell(
           row: 0, col: 0, text: "", flags: 0,
-          foregroundRGBA: 0xFFFFFFFF, backgroundRGBA: 0xAABBCCFF)
+          foregroundRGBA: 0xFFFF_FFFF, backgroundRGBA: 0xAABB_CCFF)
       ],
       defaultBackgroundRGBA: 0)
 

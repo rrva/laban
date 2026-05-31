@@ -85,7 +85,9 @@ final class RecentByteRingTests: XCTestCase {
     // must clamp to "include everything" instead of trapping the process.
     let ring = RecentByteRing()
     write(ring: ring, string: "hello")
-    for window in [-1.0, -0.0001, .nan, .infinity, -.infinity, 1e20, Double.greatestFiniteMagnitude] {
+    for window in [
+      -1.0, -0.0001, .nan, .infinity, -.infinity, 1e20, Double.greatestFiniteMagnitude,
+    ] {
       let cast = ring.castWindowSnapshot(window: window)
       XCTAssertEqual(
         cast.initialEntries.count + cast.entries.count, 1,

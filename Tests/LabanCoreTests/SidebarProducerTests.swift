@@ -182,7 +182,9 @@ final class SidebarProducerTests: XCTestCase {
       .compactMap { cmd -> CGFloat? in
         if case .glyphRun(let origin, let text, _, _, _, _, _, _, _) = cmd,
           text == "●"
-        { return origin.x }
+        {
+          return origin.x
+        }
         return nil
       }.first
     let xX = p.commands(
@@ -191,7 +193,9 @@ final class SidebarProducerTests: XCTestCase {
     .compactMap { cmd -> CGFloat? in
       if case .glyphRun(let origin, let text, _, _, _, _, _, _, _) = cmd,
         text == "✕"
-      { return origin.x }
+      {
+        return origin.x
+      }
       return nil
     }.first
 

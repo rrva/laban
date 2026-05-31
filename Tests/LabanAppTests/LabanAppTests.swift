@@ -115,7 +115,8 @@ final class LabanAppTests: XCTestCase {
       session: secondSession,
       size: size)
     XCTAssertEqual(secondInfo.childPid, childPid)
-    try secondCoordinator.write(Array("two\n".utf8), to: secondTab, session: secondSession, size: size)
+    try secondCoordinator.write(
+      Array("two\n".utf8), to: secondTab, session: secondSession, size: size)
     let text = try waitForLocalSnapshotText(model: secondModel, tab: secondTab, text: "got two")
     XCTAssertTrue(text.contains("READY"))
     XCTAssertTrue(text.contains("got one"))

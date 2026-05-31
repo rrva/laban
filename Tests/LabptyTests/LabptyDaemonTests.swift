@@ -411,9 +411,10 @@ final class LabptyDaemonTests: XCTestCase {
         logicalSessionId: "restart-after-crash"))
     let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
     let output = try waitForOutput(reader: reader, contains: "survivor:")
-    let survivorLine = try XCTUnwrap(output.split(whereSeparator: \.isNewline).first {
-      $0.hasPrefix("survivor:")
-    })
+    let survivorLine = try XCTUnwrap(
+      output.split(whereSeparator: \.isNewline).first {
+        $0.hasPrefix("survivor:")
+      })
     let survivorPid = try XCTUnwrap(pid_t(String(survivorLine.dropFirst("survivor:".count))))
     defer {
       _ = Darwin.kill(survivorPid, SIGKILL)
@@ -576,7 +577,8 @@ final class LabptyDaemonTests: XCTestCase {
     defer { Darwin.close(raw) }
 
     let payload = try LabptyHelloRequest(
-      clientId: "missing-caps", capabilities: []).encode()
+      clientId: "missing-caps", capabilities: []
+    ).encode()
     let frame = try LabptyFraming.encodeRequest(
       operation: .hello, sequence: 1, payload: payload)
     try writeAllRaw(fd: raw, data: frame)
@@ -690,7 +692,8 @@ final class LabptyDaemonTests: XCTestCase {
         rows: 24,
         cols: 80,
         argv: ["/bin/sleep", "30"],
-        logicalSessionId: "additive-open").encode() + extra
+        logicalSessionId: "additive-open"
+      ).encode() + extra
     let openFrame = try LabptyFraming.encodeRequest(
       operation: .openSession, sequence: 2, payload: openPayload)
     try writeAllRaw(fd: raw, data: openFrame)
@@ -760,7 +763,8 @@ final class LabptyDaemonTests: XCTestCase {
     let reader = try LabptyByteRingReader(path: url.path)
 
     XCTAssertEqual(reader.outputRingOffset, LabptyByteRingLayout.inputRingOffset)
-    XCTAssertEqual(reader.outputRingCapacity, UInt64(LabptyByteRingLayout.minimumOutputRingCapacity))
+    XCTAssertEqual(
+      reader.outputRingCapacity, UInt64(LabptyByteRingLayout.minimumOutputRingCapacity))
   }
 
   func testByteRingReaderToleratesAdditiveHeaderLayout() throws {
@@ -780,7 +784,8 @@ final class LabptyDaemonTests: XCTestCase {
     let readerSlotOffset: UInt32 = 384
     let readerSlotBytes: UInt32 = 96
     let readerSlotCount = LabptyByteRingLayout.readerSlotCount
-    let inputRingOffset = UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
+    let inputRingOffset =
+      UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
     let outputRingOffset = inputRingOffset
     let oldOutputRingOffset = LabptyByteRingLayout.inputRingOffset
     let newFileLength = outputRingOffset + capacity
@@ -845,7 +850,8 @@ final class LabptyDaemonTests: XCTestCase {
     let readerSlotOffset: UInt32 = 388  // preserves the 128-byte counters gap
     let readerSlotBytes: UInt32 = 96
     let readerSlotCount = LabptyByteRingLayout.readerSlotCount
-    let inputRingOffset = UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
+    let inputRingOffset =
+      UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
     let outputRingOffset = inputRingOffset
     let oldOutputRingOffset = LabptyByteRingLayout.inputRingOffset
     let newFileLength = outputRingOffset + capacity
@@ -891,25 +897,36 @@ final class LabptyDaemonTests: XCTestCase {
     // SIGBUS 1efadf3); this is the regression net and a search for the next.
     let url = try temporaryRingURL()
     let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
-    let u32Fields: [UInt64] = [16, 20, 24, 28, 32] // headerBytes, counters/readerSlot offsets
-    let u64Fields: [UInt64] = [40, 48, 56, 64, 72] // input/output ring offsets, capacities, metadata
+    let u32Fields: [UInt64] = [16, 20, 24, 28, 32]  // headerBytes, counters/readerSlot offsets
+    // input/output ring offsets, capacities, metadata
+    let u64Fields: [UInt64] = [40, 48, 56, 64, 72]
     let counterFields: [UInt64] = [
       LabptyByteRingLayout.outputBytesWrittenTotalOffset,
       LabptyByteRingLayout.outputWrapCountOffset,
     ]
-    let u32Values: [UInt32] = [0, 1, 7, 8, 9, 63, 64, 191, 192, 256, 0xFFFF, 0x7FFF_FFFF, 0xFFFF_FFFF]
-    let u64Values: [UInt64] = [0, 1, 7, 8, capacity &- 1, capacity, capacity &+ 1,
-                               0xFFFF, 0xFFFF_FFFF, UInt64.max / 2, UInt64.max]
+    let u32Values: [UInt32] = [
+      0, 1, 7, 8, 9, 63, 64, 191, 192, 256, 0xFFFF, 0x7FFF_FFFF, 0xFFFF_FFFF,
+    ]
+    let u64Values: [UInt64] = [
+      0, 1, 7, 8, capacity &- 1, capacity, capacity &+ 1,
+      0xFFFF, 0xFFFF_FFFF, UInt64.max / 2, UInt64.max,
+    ]
     let lengths: [UInt64] = [0, 8, 100, 192, capacity, capacity &* 2]
 
     // Deterministic xorshift so a failure reproduces.
     var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
-    func rnd() -> UInt64 { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return seed }
+    func rnd() -> UInt64 {
+      seed ^= seed << 13
+      seed ^= seed >> 7
+      seed ^= seed << 17
+      return seed
+    }
     func pick<T>(_ a: [T]) -> T { a[Int(rnd() % UInt64(a.count))] }
 
-    var constructed = 0, rejected = 0
+    var constructed = 0
+    var rejected = 0
     for _ in 0..<1200 {
-      try? FileManager.default.removeItem(at: url) // O_EXCL writer needs a fresh path
+      try? FileManager.default.removeItem(at: url)  // O_EXCL writer needs a fresh path
       do {
         let writer = try LabptyByteRingWriter(
           path: url.path, outputRingCapacity: capacity, logicalSessionId: "fuzz")
@@ -921,7 +938,8 @@ final class LabptyDaemonTests: XCTestCase {
         switch rnd() % 3 {
         case 0: try patchUInt32(handle: handle, offset: pick(u32Fields), value: pick(u32Values))
         case 1: try patchUInt64(handle: handle, offset: pick(u64Fields), value: pick(u64Values))
-        default: try patchUInt64(handle: handle, offset: pick(counterFields), value: pick(u64Values))
+        default:
+          try patchUInt64(handle: handle, offset: pick(counterFields), value: pick(u64Values))
         }
       }
       if rnd() & 3 == 0 { try? handle.truncate(atOffset: pick(lengths)) }
@@ -964,7 +982,8 @@ final class LabptyDaemonTests: XCTestCase {
     let readerSlotOffset = countersOffset + UInt32(LabptyByteRingLayout.countersBytes)
     let readerSlotBytes: UInt32 = 96
     let readerSlotCount = LabptyByteRingLayout.readerSlotCount
-    let inputRingOffset = UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
+    let inputRingOffset =
+      UInt64(readerSlotOffset) + UInt64(readerSlotBytes) * UInt64(readerSlotCount)
     let outputRingOffset = inputRingOffset
     let newFileLength = outputRingOffset + capacity
     let handle = try FileHandle(forUpdating: url)
@@ -973,11 +992,14 @@ final class LabptyDaemonTests: XCTestCase {
     try copyBytes(
       handle: handle, from: LabptyByteRingLayout.inputRingOffset,
       to: outputRingOffset, count: UInt64(payload.count))
-    try copyBytes(handle: handle, from: LabptyByteRingLayout.outputBytesWrittenTotalOffset,
+    try copyBytes(
+      handle: handle, from: LabptyByteRingLayout.outputBytesWrittenTotalOffset,
       to: UInt64(countersOffset), count: 8)
-    try copyBytes(handle: handle, from: LabptyByteRingLayout.outputWrapCountOffset,
+    try copyBytes(
+      handle: handle, from: LabptyByteRingLayout.outputWrapCountOffset,
       to: UInt64(countersOffset + 16), count: 8)
-    try copyBytes(handle: handle, from: LabptyByteRingLayout.producerAliveMonoNsOffset,
+    try copyBytes(
+      handle: handle, from: LabptyByteRingLayout.producerAliveMonoNsOffset,
       to: UInt64(countersOffset + 32), count: 8)
     try patchUInt32(handle: handle, offset: 16, value: headerBytes)
     try patchUInt32(handle: handle, offset: 20, value: countersOffset)
@@ -999,17 +1021,19 @@ final class LabptyDaemonTests: XCTestCase {
     let url = try temporaryRingURL()
     let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
     let payload = Data("additive-layout".utf8)
-    var aligned = 0, misaligned = 0
+    var aligned = 0
+    var misaligned = 0
     for off: UInt32 in 256...288 {
       try craftAdditiveRing(at: url, countersOffset: off, capacity: capacity, payload: payload)
       if off % 8 == 0 {
         let reader = try LabptyByteRingReader(path: url.path)
-        _ = reader.producerAliveMonoNs() // atomic load at countersOffset+32
+        _ = reader.producerAliveMonoNs()  // atomic load at countersOffset+32
         _ = reader.outputWriteOffset()
         _ = reader.readSince(0)
         aligned += 1
       } else {
-        XCTAssertThrowsError(try LabptyByteRingReader(path: url.path),
+        XCTAssertThrowsError(
+          try LabptyByteRingReader(path: url.path),
           "misaligned countersOffset \(off) must be rejected, not constructed-then-SIGBUS")
         misaligned += 1
       }
@@ -1430,7 +1454,8 @@ final class LabptyDaemonTests: XCTestCase {
     }
   }
 
-  private func waitForOutput(reader: LabptyByteRingReader, contains needle: String) throws -> String {
+  private func waitForOutput(reader: LabptyByteRingReader, contains needle: String) throws -> String
+  {
     let deadline = Date().addingTimeInterval(10)
     var offset: UInt64 = 0
     var data = Data()
@@ -1465,12 +1490,13 @@ final class LabptyDaemonTests: XCTestCase {
 
   private func patchUInt32(handle: FileHandle, offset: UInt64, value: UInt32) throws {
     try handle.seek(toOffset: offset)
-    try handle.write(contentsOf: Data([
-      UInt8(value & 0xFF),
-      UInt8((value >> 8) & 0xFF),
-      UInt8((value >> 16) & 0xFF),
-      UInt8((value >> 24) & 0xFF),
-    ]))
+    try handle.write(
+      contentsOf: Data([
+        UInt8(value & 0xFF),
+        UInt8((value >> 8) & 0xFF),
+        UInt8((value >> 16) & 0xFF),
+        UInt8((value >> 24) & 0xFF),
+      ]))
   }
 
   private func patchUInt64(handle: FileHandle, offset: UInt64, value: UInt64) throws {

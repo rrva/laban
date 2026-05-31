@@ -72,7 +72,8 @@ final class MarkRenderedSnapshotRaceTests: XCTestCase {
     laban_snapshot_destroy(snap2)
     XCTAssertEqual(
       dirty2[11], 1,
-      "row 11 was dirtied after snap1 but before mark_rendered; it must remain dirty so the next frame redraws it")
+      "row 11 was dirtied after snap1 but before mark_rendered; it must remain dirty so the next frame redraws it"
+    )
   }
 
   /// mark_rendered must still clear the rows that the matching
@@ -137,7 +138,8 @@ final class MarkRenderedSnapshotRaceTests: XCTestCase {
     laban_snapshot_destroy(snap2)
     XCTAssertEqual(
       dirty2[11], 1,
-      "row 11 was dirtied after snap1 and observed before mark_rendered; it still must remain dirty")
+      "row 11 was dirtied after snap1 and observed before mark_rendered; it still must remain dirty"
+    )
   }
 
   /// Across many micro-feeds interleaved with one snapshot/mark cycle,

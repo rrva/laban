@@ -77,7 +77,8 @@ final class LabptyProtocolPropertyTests: XCTestCase {
   func testListSessionsRoundtripProperty() throws {
     var rng = SplitMix64(seed: 0xA1B2_C3D4_E5F6_0705)
     for _ in 0..<Self.propertyIterations {
-      let count = Int(rng.nextUInt32(below: UInt32(LabptyProtocolLimits.maxSessionDescriptorCount + 1)))
+      let count = Int(
+        rng.nextUInt32(below: UInt32(LabptyProtocolLimits.maxSessionDescriptorCount + 1)))
       let sessions = (0..<count).map { _ in rng.nextSessionDescriptor() }
       let message = LabptyListSessionsResponse(sessions: sessions)
       let decoded = try LabptyListSessionsResponse.decode(from: try message.encode())
@@ -298,10 +299,18 @@ final class LabptyProtocolPropertyTests: XCTestCase {
       assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyHelloResponse.decode(from: blob) }
       assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyOpenSessionRequest.decode(from: blob) }
       assertDoesNotTrapOrThrowsProtocolError { _ = try LabptySessionDescriptor.decode(from: blob) }
-      assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyListSessionsResponse.decode(from: blob) }
-      assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyResizeSessionRequest.decode(from: blob) }
-      assertDoesNotTrapOrThrowsProtocolError { _ = try LabptySignalSessionRequest.decode(from: blob) }
-      assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyTerminateSessionRequest.decode(from: blob) }
+      assertDoesNotTrapOrThrowsProtocolError {
+        _ = try LabptyListSessionsResponse.decode(from: blob)
+      }
+      assertDoesNotTrapOrThrowsProtocolError {
+        _ = try LabptyResizeSessionRequest.decode(from: blob)
+      }
+      assertDoesNotTrapOrThrowsProtocolError {
+        _ = try LabptySignalSessionRequest.decode(from: blob)
+      }
+      assertDoesNotTrapOrThrowsProtocolError {
+        _ = try LabptyTerminateSessionRequest.decode(from: blob)
+      }
       assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyWriteInputRequest.decode(from: blob) }
       assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyPingResponse.decode(from: blob) }
       assertDoesNotTrapOrThrowsProtocolError { _ = try LabptyFraming.decode(blob) }
@@ -411,7 +420,8 @@ final class LabptyProtocolPropertyTests: XCTestCase {
     } catch is LabptyProtocolError {
       // Expected: structured rejection.
     } catch {
-      XCTFail("decoder threw non-protocol error \(type(of: error)): \(error)", file: file, line: line)
+      XCTFail(
+        "decoder threw non-protocol error \(type(of: error)): \(error)", file: file, line: line)
     }
   }
 }

@@ -30,8 +30,8 @@ final class LabptyAdversarialTests: XCTestCase {
     // is self-catching instead of resurfacing as an unexplained client reset.
     for process in launched {
       guard let pipe = process.standardError as? Pipe,
-            let data = try? pipe.fileHandleForReading.readToEnd(),
-            let text = String(data: data, encoding: .utf8)
+        let data = try? pipe.fileHandleForReading.readToEnd(),
+        let text = String(data: data, encoding: .utf8)
       else { continue }
       XCTAssertFalse(
         text.contains("force-expiring established client"),
@@ -91,12 +91,15 @@ final class LabptyAdversarialTests: XCTestCase {
     // touch freed registry state. Terminate-after-terminate is the
     // most interesting one — it re-enters labpty_session_close on a
     // slot that's already been torn down.
-    XCTAssertThrowsError(try client.writeInput(
-      handle: descriptor.ptyHandle, bytes: [UInt8]("x".utf8)))
-    XCTAssertThrowsError(try client.resize(
-      handle: descriptor.ptyHandle, rows: 30, cols: 100))
-    XCTAssertThrowsError(try client.signal(
-      handle: descriptor.ptyHandle, signal: Int32(SIGTERM)))
+    XCTAssertThrowsError(
+      try client.writeInput(
+        handle: descriptor.ptyHandle, bytes: [UInt8]("x".utf8)))
+    XCTAssertThrowsError(
+      try client.resize(
+        handle: descriptor.ptyHandle, rows: 30, cols: 100))
+    XCTAssertThrowsError(
+      try client.signal(
+        handle: descriptor.ptyHandle, signal: Int32(SIGTERM)))
     XCTAssertThrowsError(try client.terminate(handle: descriptor.ptyHandle))
 
     XCTAssertNoThrow(try client.listLabptySessions())
@@ -120,7 +123,7 @@ final class LabptyAdversarialTests: XCTestCase {
         rows: 24, cols: 80,
         argv: ["/bin/sh", "-c", "stty raw; exec sleep 30"],
         logicalSessionId: "slow-consumer"))
-    Thread.sleep(forTimeInterval: 0.2) // let the child apply stty raw
+    Thread.sleep(forTimeInterval: 0.2)  // let the child apply stty raw
 
     // Client B issues a steady stream of requests on a background queue. Pre-fix
     // a B request in flight when the loop stalled past 250 ms was force-expired
@@ -128,16 +131,25 @@ final class LabptyAdversarialTests: XCTestCase {
     // fix keeps the loop responsive so every B request succeeds.
     let b = try waitForClient(socketPath: harness.socketPath)
     defer { b.close() }
-    XCTAssertNoThrow(try b.listLabptySessions()) // establish b
+    XCTAssertNoThrow(try b.listLabptySessions())  // establish b
 
     let stop = DispatchSemaphore(value: 0)
     let done = DispatchSemaphore(value: 0)
     let lock = NSLock()
-    var bErrors = 0, bOk = 0
+    var bErrors = 0
+    var bOk = 0
     DispatchQueue.global().async {
       while stop.wait(timeout: .now()) == .timedOut {
-        do { _ = try b.listLabptySessions(); lock.lock(); bOk += 1; lock.unlock() }
-        catch { lock.lock(); bErrors += 1; lock.unlock() }
+        do {
+          _ = try b.listLabptySessions()
+          lock.lock()
+          bOk += 1
+          lock.unlock()
+        } catch {
+          lock.lock()
+          bErrors += 1
+          lock.unlock()
+        }
         Thread.sleep(forTimeInterval: 0.01)
       }
       done.signal()
@@ -203,15 +215,17 @@ final class LabptyAdversarialTests: XCTestCase {
     // the total blow up.
     let watch = try waitForClient(socketPath: harness.socketPath)
     defer { watch.close() }
-    XCTAssertNoThrow(try watch.listLabptySessions()) // establish
+    XCTAssertNoThrow(try watch.listLabptySessions())  // establish
 
     var maxLatency: TimeInterval = 0
     let start = Date()
     var errors = 0
     for _ in 0..<40 {
       let t0 = Date()
-      do { _ = try watch.listLabptySessions(); maxLatency = max(maxLatency, Date().timeIntervalSince(t0)) }
-      catch { errors += 1 }
+      do {
+        _ = try watch.listLabptySessions()
+        maxLatency = max(maxLatency, Date().timeIntervalSince(t0))
+      } catch { errors += 1 }
       Thread.sleep(forTimeInterval: 0.005)
     }
     let total = Date().timeIntervalSince(start)
@@ -224,9 +238,11 @@ final class LabptyAdversarialTests: XCTestCase {
     // the cumulative 2.5s clears the fixed 0.77s and flags the 3.78s a stall
     // produces, with margin for slow CI.
     XCTAssertEqual(errors, 0, "watchdog client was starved/force-expired under load")
-    XCTAssertLessThan(maxLatency, 0.09,
+    XCTAssertLessThan(
+      maxLatency, 0.09,
       "an operation stalled the event loop: worst round-trip \(maxLatency * 1000)ms")
-    XCTAssertLessThan(total, 2.5,
+    XCTAssertLessThan(
+      total, 2.5,
       "the event loop was not responsive: 40 round-trips took \(total)s under load")
     XCTAssertTrue(harness.process.isRunning)
   }
@@ -365,10 +381,10 @@ final class LabptyAdversarialTests: XCTestCase {
     // Random non-magic bytes filling a header slot. The daemon's
     // decoder must reject and close the connection; it must not keep
     // reading hoping for valid bytes.
-    var junk = Array<UInt8>(repeating: 0, count: 24)
+    var junk = [UInt8](repeating: 0, count: 24)
     for i in 0..<junk.count { junk[i] = UInt8.random(in: 0..<255) }
     junk[0] = 0x00  // never matches 'L' so magic mismatch is immediate
-    junk[8] = 24   // frameLength = 24 so the decoder reads exactly the bad header
+    junk[8] = 24  // frameLength = 24 so the decoder reads exactly the bad header
     try writeAllRaw(fd: bad, data: Data(junk))
     try waitForSocketClosed(fd: bad)
 
@@ -757,7 +773,8 @@ final class LabptyAdversarialTests: XCTestCase {
     let elapsed = Date().timeIntervalSince(start)
     XCTAssertLessThan(
       elapsed, 0.250,
-      "observer RPC took \(elapsed)s; terminate of a HUP-ignoring child should not block the event loop")
+      "observer RPC took \(elapsed)s; terminate of a HUP-ignoring child should not block the event loop"
+    )
 
     // The terminate itself must finish within the SIGKILL budget plus
     // a comfortable margin.
@@ -849,8 +866,8 @@ final class LabptyAdversarialTests: XCTestCase {
     // Swift String would enforce UTF-8 before the daemon ever sees
     // the bytes — the wire format is what we need to exercise.
     var open = [UInt8]()
-    open.appendUInt32(24)   // rows
-    open.appendUInt32(80)   // cols
+    open.appendUInt32(24)  // rows
+    open.appendUInt32(80)  // cols
     open.appendUInt64(UInt64(LabptyByteRingLayout.defaultOutputRingCapacity))
     // argv ["/bin/sleep", "1"]
     open.appendUInt32(2)
@@ -1078,7 +1095,8 @@ final class LabptyAdversarialTests: XCTestCase {
     let descriptor = try client.openSession(
       LabptyOpenSessionRequest(
         rows: 24, cols: 80, argv: ["/bin/sleep", "30"], logicalSessionId: ""))
-    XCTAssertTrue(descriptor.logicalSessionId.hasPrefix("labpty-"),
+    XCTAssertTrue(
+      descriptor.logicalSessionId.hasPrefix("labpty-"),
       "daemon must synthesize an id, got \(descriptor.logicalSessionId)")
     _ = try? client.terminate(handle: descriptor.ptyHandle)
     XCTAssertTrue(harness.process.isRunning)
@@ -1095,9 +1113,10 @@ final class LabptyAdversarialTests: XCTestCase {
     // the 256 KiB minimum; 128 MiB is a power of two above the 64 MiB maximum.
     for cap: UInt64 in [300_000, 1024, 128 * 1024 * 1024] {
       XCTAssertThrowsError(
-        try client.openSession(LabptyOpenSessionRequest(
-          rows: 24, cols: 80, outputRingCapacity: cap,
-          argv: ["/bin/sleep", "30"], logicalSessionId: "badcap-\(cap)")),
+        try client.openSession(
+          LabptyOpenSessionRequest(
+            rows: 24, cols: 80, outputRingCapacity: cap,
+            argv: ["/bin/sleep", "30"], logicalSessionId: "badcap-\(cap)")),
         "capacity \(cap) must be rejected")
     }
     XCTAssertTrue(harness.process.isRunning)
@@ -1151,7 +1170,7 @@ final class LabptyAdversarialTests: XCTestCase {
         rows: 24, cols: 80, argv: ["/bin/sh", "-c", "exit 0"],
         logicalSessionId: "dead-leak"))
     try waitForDead(pid: pid_t(first.childPid))
-    usleep(300_000) // let the reap tick fold the zombie into a dead leak
+    usleep(300_000)  // let the reap tick fold the zombie into a dead leak
     let second = try client.openSession(
       LabptyOpenSessionRequest(
         rows: 24, cols: 80, argv: ["/bin/sleep", "30"],
@@ -1170,8 +1189,9 @@ final class LabptyAdversarialTests: XCTestCase {
         rows: 24, cols: 80, argv: ["/bin/cat"], logicalSessionId: "canon-write"))
     // Newline-delimited bytes drive is_canonical_delimiter's '\n' branch and
     // handle_write's canonical-pending accounting (ADR 0008 preflight).
-    XCTAssertNoThrow(try client.writeInput(
-      handle: descriptor.ptyHandle, bytes: [UInt8]("echo one\necho two\n".utf8)))
+    XCTAssertNoThrow(
+      try client.writeInput(
+        handle: descriptor.ptyHandle, bytes: [UInt8]("echo one\necho two\n".utf8)))
     _ = try? client.terminate(handle: descriptor.ptyHandle)
     XCTAssertTrue(harness.process.isRunning)
   }

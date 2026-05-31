@@ -2281,7 +2281,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     EventLog.shared.log(
       "paste.image.forwarded",
       [
-        "encodedBytes": bytes.count,
+        "encodedBytes": bytes.count
       ])
     recordInput(
       kind: "key",

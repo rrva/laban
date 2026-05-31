@@ -188,19 +188,19 @@ private final class FakeLabptyServer {
   }
 }
 
-private extension Array where Element == UInt8 {
-  mutating func appendUInt16(_ value: UInt16) {
+extension Array where Element == UInt8 {
+  fileprivate mutating func appendUInt16(_ value: UInt16) {
     append(UInt8(value & 0xFF))
     append(UInt8((value >> 8) & 0xFF))
   }
 
-  mutating func appendUInt32(_ value: UInt32) {
+  fileprivate mutating func appendUInt32(_ value: UInt32) {
     for shift in stride(from: 0, through: 24, by: 8) {
       append(UInt8((value >> shift) & 0xFF))
     }
   }
 
-  mutating func appendUInt64(_ value: UInt64) {
+  fileprivate mutating func appendUInt64(_ value: UInt64) {
     for shift in stride(from: 0, through: 56, by: 8) {
       append(UInt8((value >> UInt64(shift)) & 0xFF))
     }

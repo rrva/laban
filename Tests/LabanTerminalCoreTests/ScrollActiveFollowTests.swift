@@ -43,7 +43,8 @@ final class ScrollActiveFollowTests: XCTestCase {
 
   func testExactDeltaToBottomEngagesActiveFollow() {
     guard let session = makeFixtureSession(rows: 10, cols: 40) else {
-      XCTFail("session create failed"); return
+      XCTFail("session create failed")
+      return
     }
     defer { laban_session_destroy(session) }
 
