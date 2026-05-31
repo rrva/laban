@@ -478,17 +478,26 @@ public struct FrameProducer {
           markFallback(.textDecoration)
         }
 
-        guard cell.utf8_length > 0, snapshot.utf8_storage != nil else { continue }
         if attrs.contains(.invisible) {
           continue
         }
-        guard let storage = snapshot.utf8_storage else { continue }
-        let offset = Int(cell.utf8_offset)
-        let length = Int(cell.utf8_length)
-        let ptr = UnsafeRawPointer(storage).advanced(by: offset)
-        let scalarResult = Self.singleUTF8ScalarValue(
-          ptr.assumingMemoryBound(to: UInt8.self),
-          length: length)
+        let scalarResult: SingleUTF8ScalarResult
+        let utf8Bytes: UnsafeBufferPointer<UInt8>?
+        if cell.codepoint != 0 {
+          scalarResult = .scalar(cell.codepoint)
+          utf8Bytes = nil
+        } else {
+          guard cell.utf8_length > 0, let storage = snapshot.utf8_storage else { continue }
+          let offset = Int(cell.utf8_offset)
+          let length = Int(cell.utf8_length)
+          let ptr = UnsafeRawPointer(storage).advanced(by: offset)
+          scalarResult = Self.singleUTF8ScalarValue(
+            ptr.assumingMemoryBound(to: UInt8.self),
+            length: length)
+          utf8Bytes = UnsafeBufferPointer<UInt8>(
+            start: ptr.assumingMemoryBound(to: UInt8.self),
+            count: length)
+        }
         switch scalarResult {
         case .scalar(let scalarValue):
           guard let scalar = Unicode.Scalar(scalarValue) else {
@@ -513,11 +522,12 @@ public struct FrameProducer {
               hasHyperlink: hasHyperlink,
               wide: cell.wide))
         case .multiScalar:
+          guard let utf8Bytes else {
+            markFallback(.invalidUTF8)
+            continue
+          }
           let start = payload.utf8Bytes.count
-          let bytes = UnsafeBufferPointer<UInt8>(
-            start: ptr.assumingMemoryBound(to: UInt8.self),
-            count: length)
-          payload.utf8Bytes.append(contentsOf: bytes)
+          payload.utf8Bytes.append(contentsOf: utf8Bytes)
           payload.glyphs.append(
             TerminalCellPayload.Glyph(
               row: row,

@@ -377,6 +377,24 @@ public final class MetalRenderer: RendererBackend {
     return lastInstanceCounts
   }
 
+  func rebuildAndPrepareGPUCellPayloadInstancesForTesting(
+    payload: TerminalCellPayload,
+    commands: [FrameCommand],
+    damage: RenderDamage,
+    surfacePxH: Int
+  ) -> RenderInstanceCounts? {
+    guard buildGPUCellInstanceLists(
+      payload: payload,
+      commands: commands,
+      surfacePxH: surfacePxH,
+      damage: damage)
+    else {
+      return nil
+    }
+    _ = prepareCellGlyphBuffer()
+    return lastInstanceCounts
+  }
+
   func classicTerminalGlyphRecordsForTesting(
     commands: [FrameCommand],
     surfacePxH: Int
@@ -1483,7 +1501,7 @@ public final class MetalRenderer: RendererBackend {
       cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
       cellGlyphGridGeometry = geometry
       if !cellGlyphs.isEmpty {
-        cellGlyphUploadRanges.append(0..<cellGlyphs.count)
+        appendCellGlyphUploadRange(0..<cellGlyphs.count)
       }
     }
 
@@ -1504,7 +1522,7 @@ public final class MetalRenderer: RendererBackend {
             cellGlyphs[index] = Self.emptyCellGlyph
           }
         }
-        cellGlyphUploadRanges.append(start..<end)
+        appendCellGlyphUploadRange(start..<end)
       }
     }
 
@@ -1736,6 +1754,18 @@ public final class MetalRenderer: RendererBackend {
     return true
   }
 
+  private func appendCellGlyphUploadRange(_ range: Range<Int>) {
+    guard !range.isEmpty else { return }
+    if let last = cellGlyphUploadRanges.last,
+      last.lowerBound <= range.upperBound && range.lowerBound <= last.upperBound
+    {
+      cellGlyphUploadRanges[cellGlyphUploadRanges.count - 1] =
+        min(last.lowerBound, range.lowerBound)..<max(last.upperBound, range.upperBound)
+      return
+    }
+    cellGlyphUploadRanges.append(range)
+  }
+
   private func buildGPUCellInstanceLists(
     commands: [FrameCommand],
     surfacePxH: Int,
@@ -1794,7 +1824,7 @@ public final class MetalRenderer: RendererBackend {
       cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
       cellGlyphGridGeometry = geometry
       if !cellGlyphs.isEmpty {
-        cellGlyphUploadRanges.append(0..<cellGlyphs.count)
+        appendCellGlyphUploadRange(0..<cellGlyphs.count)
       }
     } else if geometry == nil {
       cellGlyphs.removeAll(keepingCapacity: true)
@@ -1810,7 +1840,7 @@ public final class MetalRenderer: RendererBackend {
         for index in start..<end {
           cellGlyphs[index] = Self.emptyCellGlyph
         }
-        cellGlyphUploadRanges.append(start..<end)
+        appendCellGlyphUploadRange(start..<end)
       }
     }
 

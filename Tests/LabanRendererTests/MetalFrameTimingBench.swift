@@ -304,6 +304,17 @@ final class MetalFrameTimingBench: XCTestCase {
         fontAtlas: fontAtlas,
         dirtyRows: dirtyRows)
       let payload = try measureGPUCellPayloadBuild(
+        includeUpload: false,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        surfacePxH: pixelH,
+        fontAtlas: fontAtlas,
+        dirtyRows: dirtyRows)
+      let payloadUpload = try measureGPUCellPayloadBuild(
+        includeUpload: true,
         cols: cols,
         rows: rows,
         cellW: cellW,
@@ -315,6 +326,7 @@ final class MetalFrameTimingBench: XCTestCase {
       printGPUCellBuildRow(label: label, path: "full", result: full)
       printGPUCellBuildRow(label: label, path: "patch", result: patch)
       printGPUCellBuildRow(label: label, path: "payload", result: payload)
+      printGPUCellBuildRow(label: label, path: "payload+upload", result: payloadUpload)
     }
   }
 
@@ -596,6 +608,7 @@ final class MetalFrameTimingBench: XCTestCase {
   }
 
   private func measureGPUCellPayloadBuild(
+    includeUpload: Bool,
     cols: Int,
     rows: Int,
     cellW: CGFloat,
@@ -641,11 +654,19 @@ final class MetalFrameTimingBench: XCTestCase {
       })
 
     for _ in 0..<20 {
-      _ = renderer.rebuildGPUCellPayloadInstancesForTesting(
-        payload: payload,
-        commands: [],
-        damage: damage,
-        surfacePxH: surfacePxH)
+      if includeUpload {
+        _ = renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
+          payload: payload,
+          commands: [],
+          damage: damage,
+          surfacePxH: surfacePxH)
+      } else {
+        _ = renderer.rebuildGPUCellPayloadInstancesForTesting(
+          payload: payload,
+          commands: [],
+          damage: damage,
+          surfacePxH: surfacePxH)
+      }
     }
 
     var samples: [Double] = []
@@ -653,12 +674,19 @@ final class MetalFrameTimingBench: XCTestCase {
     var counts = MetalRenderer.RenderInstanceCounts()
     for _ in 0..<240 {
       let start = DispatchTime.now().uptimeNanoseconds
-      counts =
-        renderer.rebuildGPUCellPayloadInstancesForTesting(
+      if includeUpload {
+        counts = renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
           payload: payload,
           commands: [],
           damage: damage,
           surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
+      } else {
+        counts = renderer.rebuildGPUCellPayloadInstancesForTesting(
+          payload: payload,
+          commands: [],
+          damage: damage,
+          surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
+      }
       let end = DispatchTime.now().uptimeNanoseconds
       samples.append(Double(end - start) / 1_000.0)
     }

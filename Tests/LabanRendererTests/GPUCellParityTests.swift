@@ -233,6 +233,36 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(patchCounts.glyphs, 0)
   }
 
+  func testGPUCellPayloadCoalescesContiguousDirtyRowUploads() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-contiguous-upload-ranges")
+    let initial = payload(seed: 19, changedRow: nil, includedRows: Array(0..<rows))
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: initial,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    let dirtyRows = [3, 4, 5]
+    let next = payload(seed: 20, changedRow: 4, includedRows: dirtyRows)
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: next,
+        commands: [],
+        damage: .partial(yRanges: dirtyRows.map { dirtyRange(forRow: $0) }),
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    let lowerBottomUpRow = rows - 1 - dirtyRows.max()!
+    let upperBottomUpRow = rows - 1 - dirtyRows.min()!
+    XCTAssertEqual(
+      renderer.cellGlyphUploadRangesForTesting,
+      [(lowerBottomUpRow * cols)..<((upperBottomUpRow + 1) * cols)])
+  }
+
   func testGPUCellPayloadClearsDirtyRowWhenPatchIsSparse() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
