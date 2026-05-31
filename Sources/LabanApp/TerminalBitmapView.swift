@@ -1083,11 +1083,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     let scrollContentYOffset = -CGFloat(subCellRows) * CGFloat(cellHeight)
     let insets = Self.contentInsets
+    let metalRenderer = backend as? MetalRenderer
+    let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
+    let rendererFallbackReason =
+      usingRemoteSessions && gpuCellRequested ? "remoteSnapshotPayloadIncomplete" : nil
     let canRequestCellPayload =
       !usingRemoteSessions
       && captureRecorder == nil
       && frameProbe == nil
-      && (backend as? MetalRenderer)?.effectiveRendererMode == .gpuDriven
+      && metalRenderer?.effectiveRendererMode == .gpuDriven
     let request = TerminalSurfaceFrameRequest(
       frame: captureFrame,
       viewportWidth: bounds.width,
@@ -1162,7 +1166,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     // Smooth-scroll forces .full while animating: the persistent target
     // holds last frame's pixels at the previous fractional position, so
     // partial damage would leave stale pixels at the new sub-cell offset.
-    guard backend.render(cmds, cellPayload: surfaceFrame.cellPayload, damage: surfaceFrame.damage)
+    guard
+      backend.render(
+        cmds,
+        cellPayload: surfaceFrame.cellPayload,
+        damage: surfaceFrame.damage,
+        rendererFallbackReason: rendererFallbackReason)
     else {
       renderInvalidated = true
       scheduleRenderRetry()

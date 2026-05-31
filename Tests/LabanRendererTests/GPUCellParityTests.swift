@@ -177,6 +177,28 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(patchCounts.glyphs, 0)
   }
 
+  func testGPUCellRemoteFallbackReportsClassicStatus() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    let renderer = try makeRenderer(label: "remote-fallback-status")
+    XCTAssertTrue(
+      renderer.render(
+        frame(seed: 23, changedRow: nil),
+        cellPayload: nil,
+        damage: .full,
+        rendererFallbackReason: "remoteSnapshotPayloadIncomplete"))
+    renderer.waitForLastFrame()
+
+    XCTAssertEqual(renderer.rendererStatus.configuredRenderer, RendererMode.gpuDriven.rawValue)
+    XCTAssertEqual(renderer.rendererStatus.effectiveRenderer, RendererMode.classic.rawValue)
+    XCTAssertEqual(renderer.rendererStatus.fallbackReason, "remoteSnapshotPayloadIncomplete")
+    XCTAssertGreaterThan(renderer.lastInstanceCounts.glyphs, 0)
+    XCTAssertEqual(renderer.lastInstanceCounts.cellGlyphs, 0)
+  }
+
   private func frame(seed: Int, changedRow: Int?) -> [FrameCommand] {
     let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
     var commands: [FrameCommand] = []

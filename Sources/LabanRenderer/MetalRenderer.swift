@@ -77,6 +77,9 @@ public final class MetalRenderer: RendererBackend {
   /// nil at init time, sidebar text uses the same atlas as the terminal.
   public let sidebarFontAtlas: FontAtlas
   public var configuredRendererMode: RendererMode
+  public var requestedRendererMode: RendererMode {
+    Self.useGPUCellPath ? .gpuDriven : configuredRendererMode
+  }
 
   public var surfaceWidth: Int { Int(layer.drawableSize.width.rounded()) }
   public var surfaceHeight: Int { Int(layer.drawableSize.height.rounded()) }
@@ -113,6 +116,9 @@ public final class MetalRenderer: RendererBackend {
   }
 
   public private(set) var lastInstanceCounts = RenderInstanceCounts()
+  public private(set) var rendererStatus = RendererStatus(
+    configuredRenderer: RendererMode.classic.rawValue,
+    effectiveRenderer: RendererMode.classic.rawValue)
 
   /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time spent
   /// building instances and encoding commands before `commit()`. GPU =
@@ -397,7 +403,7 @@ public final class MetalRenderer: RendererBackend {
   }
 
   public var effectiveRendererMode: RendererMode {
-    let requested = Self.useGPUCellPath ? RendererMode.gpuDriven : configuredRendererMode
+    let requested = requestedRendererMode
     guard requested == .gpuDriven else { return .classic }
     if #available(macOS 26, *) {
       return .gpuDriven
@@ -557,6 +563,7 @@ public final class MetalRenderer: RendererBackend {
     self.sidebarCellHeight = sidebarCell.height
 
     setupCounterSampling()
+    rendererStatus = resolvedRendererStatus(rendererFallbackReason: nil).status
   }
 
   /// Discover the device's timestamp counter set and allocate a sample
@@ -646,7 +653,7 @@ public final class MetalRenderer: RendererBackend {
 
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
-    render(commands, cellPayload: nil, damage: damage)
+    render(commands, cellPayload: nil, damage: damage, rendererFallbackReason: nil)
   }
 
   @discardableResult
@@ -655,7 +662,19 @@ public final class MetalRenderer: RendererBackend {
     cellPayload: TerminalCellPayload?,
     damage: RenderDamage
   ) -> Bool {
+    render(commands, cellPayload: cellPayload, damage: damage, rendererFallbackReason: nil)
+  }
+
+  @discardableResult
+  public func render(
+    _ commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage,
+    rendererFallbackReason: String?
+  ) -> Bool {
     let cpuStart = ContinuousClock.now
+    let selection = resolvedRendererStatus(rendererFallbackReason: rendererFallbackReason)
+    rendererStatus = selection.status
 
     // Drop this frame if the previous GPU frame has not retired. The drawable
     // is acquired later, after offscreen work is encoded, so Core Animation's
@@ -685,7 +704,6 @@ public final class MetalRenderer: RendererBackend {
     // First frame after a target realloc must clear+repaint the full surface.
     // Otherwise honour the caller's damage hint directly.
     let effectiveDamage: RenderDamage = targetNeedsFullRedraw ? .full : damage
-    let effectiveRendererMode = self.effectiveRendererMode
 
     var passSlots = PassSlots()
 
@@ -695,7 +713,7 @@ public final class MetalRenderer: RendererBackend {
       buildCursorInstanceList(commands: commands)
       didContent = false
     } else {
-      switch effectiveRendererMode {
+      switch selection.effectiveMode {
       case .classic:
         didContent = encodeContentPass(
           commands: commands,
@@ -831,6 +849,40 @@ public final class MetalRenderer: RendererBackend {
     }
     targetNeedsFullRedraw = false
     return true
+  }
+
+  private func resolvedRendererStatus(
+    rendererFallbackReason: String?
+  ) -> (effectiveMode: RendererMode, status: RendererStatus) {
+    let requested = requestedRendererMode
+    guard requested == .gpuDriven else {
+      return (
+        .classic,
+        RendererStatus(
+          configuredRenderer: requested.rawValue,
+          effectiveRenderer: RendererMode.classic.rawValue))
+    }
+    if let rendererFallbackReason {
+      return (
+        .classic,
+        RendererStatus(
+          configuredRenderer: requested.rawValue,
+          effectiveRenderer: RendererMode.classic.rawValue,
+          fallbackReason: rendererFallbackReason))
+    }
+    if #available(macOS 26, *) {
+      return (
+        .gpuDriven,
+        RendererStatus(
+          configuredRenderer: requested.rawValue,
+          effectiveRenderer: RendererMode.gpuDriven.rawValue))
+    }
+    return (
+      .classic,
+      RendererStatus(
+        configuredRenderer: requested.rawValue,
+        effectiveRenderer: RendererMode.classic.rawValue,
+        fallbackReason: "gpuDrivenUnavailableOnCurrentOS"))
   }
 
   /// Slots in flight for the most recent frame. Read by the completion

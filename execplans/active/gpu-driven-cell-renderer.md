@@ -940,14 +940,27 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   patch only the payload's dirty rows, upload only changed cell ranges, and still draw
   sidebar/chrome commands through the classic glyph/solid pipelines. A scalar atlas
   lookup avoids rebuilding a `Character` for payload glyphs.
+- `MetalRenderer` now reports `{configuredRenderer, effectiveRenderer,
+  fallbackReason}` and an explicit `remoteSnapshotPayloadIncomplete` reason forces the
+  effective path to classic while preserving the configured GPU-driven status. The
+  `/debug/render` response carries the same renderer-status fields for the software
+  backend shape.
+- `TerminalSurfaceController` retains reusable payload and dirty-row buffers across
+  frames; `TerminalSurfaceControllerTests` verifies warmed capacity is reused. This is
+  a capacity-retention proof point, not yet the required allocation-count gate.
 - New tests:
   - `TerminalSurfaceControllerTests` verifies compatible payload mode omits terminal
-    glyph commands and selection mode falls back to commands.
+    glyph commands, selection mode falls back to commands, and warmed payload capacity
+    is retained.
   - `GPUCellParityTests` verifies payload patching uploads only the dirty cell-buffer
-    row range.
+    row range and that remote GPU-cell fallback reports classic effective status.
+  - `LabanDebugSmokeTests.testRuntimeRenderStateReportsRendererStatus` verifies the
+    debug render-state JSON includes renderer-status fields.
 - Validation:
   - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|MetalFrameTimingBench'`
     passed (15 tests).
+  - `swift test --filter 'GPUCellParity|testRuntimeRenderStateReportsRendererStatus|TerminalSurfaceControllerTests'`
+    passed (17 tests).
   - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
     passed.
 - Release benchmark evidence from `MetalFrameTimingBench`:
@@ -961,8 +974,8 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   - M3 is intentionally **not** checked off yet: the payload builder is within ~1-2 us
     of the M1 classic scoped one-row microbench but does not consistently beat it
     (latest M1 scoped p50: row 0 12.5 us, row 23 13.0 us, contiguous 1 row 12.8 us),
-    the reusable no-allocation payload builder/allocation bench is still missing, and
-    the remote/debug effective-renderer fallback state is not yet exposed.
+    and the required `TerminalCellPayloadAllocationBench` allocation-count gate is
+    still missing.
 
 ## Review Gate
 
