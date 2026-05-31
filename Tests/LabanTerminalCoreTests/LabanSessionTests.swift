@@ -2475,6 +2475,112 @@ final class LabanSessionTests: XCTestCase {
       "mode 2031 should report a switch back to a dark host scheme")
   }
 
+  // MARK: - OSC host-integration (color query + notifications)
+  //
+  // libghostty-vt parses OSC 9 and the OSC 10/11 color *query* form but its
+  // VT-only C API neither answers the query nor surfaces the notification.
+  // Laban's osc_host.c side-channel scanner closes both gaps. A coding-agent
+  // TUI (OpenAI Codex) probes OSC 10/11 to match its theme to the window and
+  // emits OSC 9 on turn-complete.
+
+  func testOSCForegroundColorQueryEchoesEffectiveForeground() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Set the default foreground (OSC 10), as ThemePaletteInjector does.
+    writeBytes(session, Array("\u{1b}]10;#1a2b3c\u{07}".utf8))
+    XCTAssertEqual(drainResponse(session), [], "an OSC 10 set must not produce a reply")
+
+    // Query it (OSC 10;?). Expect the xterm 4-hex reply, ST-terminated.
+    writeBytes(session, Array("\u{1b}]10;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]10;rgb:1a1a/2b2b/3c3c\u{1b}\\",
+      "OSC 10;? must reply with the effective foreground in rgb:RRRR/GGGG/BBBB")
+  }
+
+  func testOSCBackgroundColorQueryEchoesEffectiveBackground() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1b}]11;#ffcc00\u{07}".utf8))
+    _ = drainResponse(session)
+    writeBytes(session, Array("\u{1b}]11;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]11;rgb:ffff/cccc/0000\u{1b}\\",
+      "OSC 11;? must reply with the effective background")
+  }
+
+  func testOSCColorQueryFallsBackToColorScheme() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // No theme configured: the reply is synthesized from the light/dark scheme
+    // so the querying app always gets a usable pair. Dark -> white fg, black bg.
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_DARK)), 0)
+    writeBytes(session, Array("\u{1b}]11;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]11;rgb:0000/0000/0000\u{1b}\\",
+      "dark scheme with no configured color must report a black background")
+
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_LIGHT)), 0)
+    writeBytes(session, Array("\u{1b}]11;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]11;rgb:ffff/ffff/ffff\u{1b}\\",
+      "light scheme with no configured color must report a white background")
+  }
+
+  func testOSC9NotificationFiresCallbackAndIgnoresProgress() {
+    final class Sink { var messages: [String] = [] }
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = Sink()
+    let userdata = Unmanaged.passUnretained(sink).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_osc_notification_callback(
+        session,
+        { ud, _, text, len in
+          guard let ud, let text else { return }
+          let sink = Unmanaged<Sink>.fromOpaque(ud).takeUnretainedValue()
+          let bytes = UnsafeBufferPointer(start: text, count: len)
+          sink.messages.append(String(decoding: bytes, as: UTF8.self))
+        },
+        userdata),
+      0)
+
+    // OSC 9 desktop notification (BEL-terminated) fires the callback.
+    writeBytes(session, Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
+    XCTAssertEqual(sink.messages, ["Agent turn complete"])
+
+    // OSC 9 ST-terminated also works.
+    writeBytes(session, Array("\u{1b}]9;Approval requested\u{1b}\\".utf8))
+    XCTAssertEqual(sink.messages, ["Agent turn complete", "Approval requested"])
+
+    // ConEmu progress (OSC 9 ; 4 ; ...) must NOT be treated as a notification.
+    writeBytes(session, Array("\u{1b}]9;4;1;50\u{07}".utf8))
+    XCTAssertEqual(
+      sink.messages, ["Agent turn complete", "Approval requested"],
+      "OSC 9;4 progress reports must not fire the notification callback")
+  }
+
   func testFocusReportingModeGatesFocusEncoding() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

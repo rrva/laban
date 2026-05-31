@@ -31,6 +31,9 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
     laban_scan_tab_status(s, bytes, len);
     laban_scan_osc133(s, bytes, len);
     ghostty_terminal_vt_write(s->terminal, bytes, len);
+    /* After libghostty applies the chunk: answer OSC 10/11 color queries against
+     * post-update color state and deliver OSC 9 notifications. See osc_host.c. */
+    laban_scan_osc_host(s, bytes, len);
     laban_session_note_terminal_dirty(s);
 }
 

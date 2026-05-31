@@ -425,6 +425,36 @@ int laban_session_set_bell_callback(
 int laban_session_bell_count(LabanSession *session, uint64_t *out_count);
 
 /*
+ * Desktop-notification observer. Fires when the program emits an OSC 9 desktop
+ * notification (`ESC ] 9 ; <text> BEL/ST`) — for example, the Codex agent TUI
+ * signalling "agent turn complete" or "approval requested". libghostty-vt
+ * parses OSC 9 but does not surface it, so Laban scans for it directly (see
+ * osc_host.c). ConEmu progress reports (`OSC 9 ; 4 ; ...`) are NOT delivered
+ * here. `text` points at `len` UTF-8 bytes that are NOT NUL-terminated and are
+ * only valid for the duration of the call — copy what you need.
+ *
+ * The callback fires while the session lock is held on whichever thread drove
+ * `laban_session_poll` / `laban_session_feed_output`. It should copy the text
+ * and enqueue follow-up work, then return quickly. Pass NULL to disable.
+ *
+ * Separately, this scanner answers default foreground/background color queries
+ * (`OSC 10 ; ?` / `OSC 11 ; ?`) by replying with the session's effective theme
+ * colors. That reply path is always active and needs no callback.
+ */
+typedef void (*LabanOSCNotificationCallback)(
+    void *userdata,
+    LabanSession *session,
+    const uint8_t *text,
+    size_t len
+);
+
+int laban_session_set_osc_notification_callback(
+    LabanSession *session,
+    LabanOSCNotificationCallback callback,
+    void *userdata
+);
+
+/*
  * Feed captured PTY output bytes directly into the VT parser during replay.
  * This is intentionally named for replay so callers do not confuse terminal
  * byte replay with user input written to a live child process.

@@ -121,6 +121,41 @@ typedef struct {
     int payload_overflow;
 } LabanOSC133Scanner;
 
+/* OSC host-integration scanner. Sniffs a small set of OSCs out of the PTY byte
+ * stream that libghostty-vt parses but neither answers nor surfaces:
+ *   - OSC 10;? / OSC 11;?  -> default foreground/background color query.
+ *     libghostty parses it but the handler is a no-op, so Laban replies here
+ *     with the theme's effective fg/bg (Codex probes this to match its theme).
+ *   - OSC 9;<text>         -> desktop notification (e.g. Codex turn-complete).
+ *     Delivered to osc_notification_callback. ConEmu progress (OSC 9;4;...) is
+ *     skipped.
+ * Same observe-and-act-in-parallel approach as the OSC 133 / OSC 21337 scanners
+ * above; every byte still flows unchanged to libghostty. */
+typedef enum {
+    OH_NORMAL = 0,
+    OH_AFTER_ESC,
+    OH_OSC_NUM,
+    OH_BODY,                /* payload of an OSC we care about (9/10/11) */
+    OH_BODY_AFTER_ESC,
+    OH_BODY_OTHER,          /* payload of an OSC we ignore: skip to terminator */
+    OH_BODY_OTHER_AFTER_ESC,
+    OH_STRING,              /* inside a DCS/SOS/PM/APC string: skip, do not scan */
+    OH_STRING_AFTER_ESC,
+} OSCHostState;
+
+#define OSC_HOST_NUM_MAX 8        /* "11" + room */
+#define OSC_HOST_PAYLOAD_MAX 512  /* notification text; color queries are tiny */
+
+typedef struct {
+    OSCHostState state;
+    char num[OSC_HOST_NUM_MAX];
+    size_t num_len;
+    int osc_number;           /* parsed number once ';' is seen; -1 before then */
+    char payload[OSC_HOST_PAYLOAD_MAX];
+    size_t payload_len;
+    int payload_overflow;
+} LabanOSCHostScanner;
+
 struct LabanSession {
     /* Serializes access to every field below. Recursive (PTHREAD_MUTEX_RECURSIVE). */
     pthread_mutex_t lock;
@@ -186,6 +221,10 @@ struct LabanSession {
     LabanOSC133Scanner osc133_scanner;
     LabanOSC133Callback osc133_callback;
     void *osc133_userdata;
+
+    LabanOSCHostScanner osc_host_scanner;
+    LabanOSCNotificationCallback osc_notification_callback;
+    void *osc_notification_userdata;
 
     uint64_t bell_count;
     LabanBellCallback bell_callback;
@@ -255,6 +294,7 @@ void laban_emit_capture_bytes(
 );
 void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len);
+void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_session_note_terminal_dirty(LabanSession *s);
 int laban_write_pty_bytes(
