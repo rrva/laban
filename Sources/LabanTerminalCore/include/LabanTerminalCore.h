@@ -524,6 +524,21 @@ typedef struct {
 } LabanViewportState;
 
 int laban_session_scroll_viewport(LabanSession *session, int delta_rows);
+
+/*
+ * Pin the viewport to the active bottom in a single locked operation, so a
+ * concurrent reader thread streaming output cannot move the live bottom
+ * between the caller reading the scrollbar and applying a delta. Computing
+ * `(total - len) - offset` and then scrolling by that delta is two separate
+ * lock acquisitions; output appended in between lands the viewport short of
+ * the real bottom and — because it is no longer exactly at the bottom —
+ * libghostty does not re-engage follow-output, leaving Laban's overlay scroll
+ * indicator stuck visible. This uses GHOSTTY_SCROLL_VIEWPORT_BOTTOM under one
+ * lock and reports the rows moved (>= 0) via *out_delta_rows for callers that
+ * gate render invalidation on whether anything changed. Returns 0 on success.
+ */
+int laban_session_scroll_viewport_to_bottom(LabanSession *session, int *out_delta_rows);
+
 int laban_session_viewport_state(LabanSession *session, LabanViewportState *out_state);
 
 /*

@@ -793,14 +793,23 @@ public final class Session {
   }
 
   /// Snap the viewport to the active bottom if it is currently showing older
-  /// scrollback. Returns the row delta applied through `scrollViewport`.
+  /// scrollback. Returns the row delta the viewport moved.
+  ///
+  /// This pins to the bottom in a single C call (`GHOSTTY_SCROLL_VIEWPORT_BOTTOM`)
+  /// rather than reading the scrollbar and scrolling by `(total - len) - offset`
+  /// in two steps. The reader thread streams a chatty app's output into
+  /// libghostty concurrently, so a two-step snap can have rows appended between
+  /// the read and the scroll: the delta is then stale, the viewport lands short
+  /// of the live bottom, follow-output never re-engages, and the overlay scroll
+  /// indicator stays stuck visible. The atomic pin closes that race.
   @discardableResult
   public func scrollViewportToActiveBottom() -> Int {
-    guard let state = viewportState() else { return 0 }
-    let deltaRows = state.scrollDeltaToActiveBottom
-    guard deltaRows > 0 else { return 0 }
-    scrollViewport(deltaRows: deltaRows)
-    return deltaRows
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return 0 }
+    var movedRows: Int32 = 0
+    guard laban_session_scroll_viewport_to_bottom(h, &movedRows) == 0 else { return 0 }
+    return Int(movedRows)
   }
 
   public var synchronizedOutputActive: Bool {

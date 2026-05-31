@@ -3321,19 +3321,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   /// smooth-scroll state to the reconciled position so the PD controller settles
   /// at the bottom and follows new output.
   private func snapScrollToActiveBottom(tab: Tab, session: Session) {
-    if let vs = session.viewportState() {
-      let toBottom = ViewportState.scrollDeltaToActiveBottom(
-        viewportOffset: vs.viewportOffset,
-        totalRows: vs.totalRows,
-        viewportRows: vs.viewportRows)
-      if toBottom > 0 {
-        scrollViewport(
-          deltaRows: toBottom,
-          tab: tab,
-          session: session,
-          desiredAppliedRows: 0,
-          resetOnClamp: false)
+    if let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
+      // Remote daemon owns the authoritative viewport; reach it through the
+      // coordinator with a delta computed from the latest snapshot state.
+      if let vs = session.viewportState() {
+        let toBottom = ViewportState.scrollDeltaToActiveBottom(
+          viewportOffset: vs.viewportOffset,
+          totalRows: vs.totalRows,
+          viewportRows: vs.viewportRows)
+        if toBottom > 0 {
+          scrollViewport(
+            deltaRows: toBottom,
+            tab: tab,
+            session: session,
+            desiredAppliedRows: 0,
+            resetOnClamp: false)
+        }
       }
+    } else {
+      // Local session: pin atomically so the reader thread streaming output
+      // can't move the live bottom between a delta read and the scroll and
+      // leave us short of follow-output (the stuck-indicator race).
+      session.scrollViewportToActiveBottom()
     }
     resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
   }

@@ -743,6 +743,37 @@ int laban_session_scroll_viewport(LabanSession *s, int delta_rows) {
     return 0;
 }
 
+int laban_session_scroll_viewport_to_bottom(LabanSession *s, int *out_delta_rows) {
+    if (out_delta_rows) *out_delta_rows = 0;
+    if (!s) return -1;
+    SESSION_LOCK(s);
+
+    /* Measure how far the viewport moves while still holding the lock the pin
+     * below acquires, so the reported delta matches the scroll that actually
+     * lands and no streamed row can wedge between the read and the scroll. */
+    GhosttyTerminalScrollbar scrollbar;
+    int delta = 0;
+    if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
+            == GHOSTTY_SUCCESS) {
+        long bottom_offset = (long)scrollbar.total - (long)scrollbar.len;
+        if (bottom_offset < 0) bottom_offset = 0;
+        long moved = bottom_offset - (long)scrollbar.offset;
+        delta = moved > 0 ? (int)moved : 0;
+    }
+
+    GhosttyTerminalScrollViewport behavior = {
+        .tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
+    };
+    ghostty_terminal_scroll_viewport(s->terminal, behavior);
+    GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+    ghostty_render_state_set(s->render_state,
+        GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty);
+    laban_session_note_terminal_dirty(s);
+
+    if (out_delta_rows) *out_delta_rows = delta;
+    return 0;
+}
+
 int laban_session_viewport_state(LabanSession *s, LabanViewportState *out_state) {
     if (out_state) memset(out_state, 0, sizeof(*out_state));
     if (!s || !out_state) return -1;
