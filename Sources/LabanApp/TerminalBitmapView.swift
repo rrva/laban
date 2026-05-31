@@ -2237,6 +2237,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       encodedHex: TerminalInputCaptureMetadata.encodedHex(sent.bytes),
       encodedLength: TerminalInputCaptureMetadata.encodedLength(sent.bytes)
     )
+
+    // The paste has been emitted; drop the selection the user just pasted from.
+    clearSelectionAfterPaste()
   }
 
   private func forwardClipboardImagePasteToTerminal(session: Session) {
