@@ -35,6 +35,11 @@ final class LabanDebugTitleTests: XCTestCase {
     return tabs[0]
   }
 
+  private func allTabs(from response: DebugResponse) throws -> [[String: Any]] {
+    let state = try jsonObject(response)
+    return state["tabs"] as! [[String: Any]]
+  }
+
   func testStateExposesTerminalTitleMetadata() throws {
     let (runtime, artifacts) = try makeRuntime()
     defer { try? FileManager.default.removeItem(at: artifacts) }
@@ -134,5 +139,31 @@ final class LabanDebugTitleTests: XCTestCase {
     let sessionsBody = try jsonObject(sessionsResponse)
     let sessions = sessionsBody["sessions"] as! [[String: Any]]
     XCTAssertEqual(sessions[0]["bellAttention"] as? Bool, true)
+  }
+
+  /// The derived attention level is exposed per tab and clears on focus. A
+  /// second tab makes the first unfocused — a focused tab is always `none`.
+  func testStateExposesAttentionLevelClearingOnFocus() throws {
+    let (runtime, artifacts) = try makeRuntime()
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    try post(runtime, ["action": "newTab"])
+    let firstId = try allTabs(from: runtime.state())[0]["id"] as! String
+
+    // The unfocused first tab is waiting on input -> needsAction.
+    try post(
+      runtime,
+      ["action": "setTabMetadata", "tabId": firstId, "activityState": "waiting"])
+
+    var tabs = try allTabs(from: runtime.state())
+    XCTAssertEqual(tabs[0]["active"] as? Bool, false)
+    XCTAssertEqual(tabs[0]["attention"] as? String, "needsAction")
+    XCTAssertEqual(tabs[1]["attention"] as? String, "none", "the focused tab is quiet")
+
+    // Opening the tab clears its attention.
+    try post(runtime, ["action": "selectTab", "tabId": firstId])
+    tabs = try allTabs(from: runtime.state())
+    XCTAssertEqual(tabs[0]["active"] as? Bool, true)
+    XCTAssertEqual(tabs[0]["attention"] as? String, "none")
   }
 }

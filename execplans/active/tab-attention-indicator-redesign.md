@@ -93,15 +93,17 @@ complaint and should be committed before M2/M3 begin.
   - [x] Tests: a running, unfocused tab with no other signal renders **no**
     indicator glyph; a failed-command tab still renders red; the focused tab
     renders nothing. (`SidebarProducerTests`: 35 passed.)
-- [ ] **M2 — A distinct, static "needs you" tier (colour + shape + row tint).**
-  - [ ] Add a pure `TabAttention` classifier (`none / passive / done /
-    needsAction`) in `LabanCore`.
-  - [ ] Render `needsAction` with a reserved marker + a faint row-background
-    tint; render `done` as the existing accent diamond; keep `passive` muted.
-  - [ ] Expose the derived attention level in the debug/headless state for
-    autonomous verification.
-  - [ ] Tests for classification, rendered tint/marker, focus-clear, and debug
-    state.
+- [x] (2026-05-31) **M2 — A distinct, static "needs you" tier (colour + shape + row tint).**
+  - [x] Add a pure `TabAttention` classifier (`none / passive / done /
+    needsAction`) in `LabanCore` (`Sources/LabanCore/TabAttention.swift`).
+  - [x] Render `needsAction` with a red `◆` + a faint red row tint
+    (`SidebarProducer.tint`, 14%); render `done` as an accent `◆`; keep
+    `passive` muted (`dim0`); failed-command stays a steady red `●`.
+  - [x] Expose the derived attention level (`TabResponse.attention`) in the
+    debug/headless state for autonomous verification.
+  - [x] Tests: `TabAttentionTests` (10), new `SidebarProducerTests` cases
+    (tint/markers/precedence), and a `LabanDebugTitleTests` focus-clear case.
+    (63 LabanCore + 7 LabanDebug passed.)
 - [ ] **M3 — Calm breathing pulse (animation), Reduce-Motion-aware.**
   - [ ] Thread a frame `now: Date` and a `reduceMotion: Bool` into the sidebar
     command path (keeping `LabanCore` AppKit-free).
@@ -144,6 +146,19 @@ complaint and should be committed before M2/M3 begin.
   Rationale: A pulse must mean exactly one thing ("act here"). A steady tint is
   calmer than a pulsing background and still draws the eye when scanning many
   tabs.
+  Date/Author: 2026-05-31 / Claude.
+
+- Decision: A failed last command / non-zero process exit is NOT `needsAction`;
+  it stays a steady red error marker (the existing `shellPhaseIndicatorColor`
+  path is kept, not folded into the classifier).
+  Rationale: A finished-with-error command is not *blocking* the user the way an
+  approval prompt is, so it should not pulse (M3) — pulsing must stay reserved
+  for "act here". This keeps `needsAction` scoped to genuine blocked states
+  (urgent notification / `waiting` / `awaitingInput`) and avoids deleting the
+  well-tested shell-phase helper. Consequence: a failed-command tab reports
+  `attention == "none"` in the debug state even though it renders a red dot —
+  the `attention` field reflects the *attention tier*, while the error dot is a
+  separate signal verifiable via `shellPhase` / `lastCommandExitCode`.
   Date/Author: 2026-05-31 / Claude.
 
 - Sources consulted (for posterity; principles are restated in-plan above):
@@ -266,8 +281,8 @@ attention", and render three visually-distinct, static tiers. Still no motion.
    public enum TabAttention: String, Equatable, Codable, Sendable {
      case none        // focused tab, or idle/at-prompt/running with nothing unseen
      case passive     // unseen output / bell on a background tab — low salience
-     case done        // a background task finished (informational)
-     case needsAction // agent asked for permission/input, or a command failed
+     case done        // a background task reported completion (informational)
+     case needsAction // the user is blocked: agent needs permission/input, or shell waiting
    }
 
    public enum TabAttentionClassifier {
@@ -276,9 +291,7 @@ attention", and render three visually-distinct, static tiers. Still no motion.
        if isActive { return .none }
        if (m.notification?.urgent ?? false)
          || m.activityState == .waiting
-         || m.agent.awaitingInput
-         || (m.activityState == .exited && (m.exitStatus ?? 0) != 0)
-         || ((m.lastCommandExitCode ?? 0) != 0) { return .needsAction }
+         || m.agent.awaitingInput { return .needsAction }
        if m.notification != nil { return .done }   // non-urgent notification = "done"
        if m.unseenOutput || m.bellAttention { return .passive }
        return .none
@@ -286,18 +299,27 @@ attention", and render three visually-distinct, static tiers. Still no motion.
    }
    ```
 
+   > **Refinement (2026-05-31, applied):** `needsAction` is scoped to states
+   > where the user is *blocked* (urgent notification / `waiting` /
+   > `awaitingInput`). A failed last command or a non-zero process exit is *not*
+   > `needsAction` — it has finished, it is not waiting on the user — so it
+   > stays a **steady** red error marker rendered by the existing
+   > `shellPhaseIndicatorColor` / status-badge path (kept, not removed), never
+   > a pulse. See the Decision Log.
+
 2. In `SidebarProducer.commands(...)`, replace the ad-hoc indicator precedence
    (M1's block) with a single switch on
    `TabAttentionClassifier.classify(meta, isActive: tab.id == activeTabId)`:
-   - `.needsAction`: draw a reserved marker glyph (keep the `"◆"` shape the
-     notification path already uses) in `Theme.current.red`, **and** tint the
-     whole row by blending `bg` a small fraction (e.g. 12–16%) toward red. The
-     first info line shows the existing short label (`needs you ×N` when a
-     notification count exists, else `needs input` / `exited <code>`).
-   - `.done`: draw `"◆"` in `Theme.current.cursor` (accent); no row tint; first
-     info line `done ×N`. (Matches today's non-urgent notification look.)
-   - `.passive`: keep a muted marker — the existing `*`/`•`/dim `●` — no tint.
-   - `.none`: draw nothing.
+   - `.needsAction`: draw a `"◆"` marker in `Theme.current.red`, **and** tint the
+     whole row by blending `bg` ~14% toward red (`SidebarProducer.tint`). The
+     notification info line (`needs you ×N`) is unchanged.
+   - `.done`: draw `"◆"` in `Theme.current.cursor` (accent); no row tint; the
+     `done ×N` info line is unchanged.
+   - `.passive` / `.none`: an explicit OSC 21337 `agentStatus.indicatorColor`
+     `"●"` wins the slot; else a failed-last-command red `"●"`
+     (`shellPhaseIndicatorColor`, kept); else a muted `statusBadge`
+     (`"!"` stays red for an exited-nonzero process, `"•"`/`"*"` are `dim0`);
+     else nothing.
    - An explicit OSC 21337 `agentStatus.indicatorColor` still wins over
      `.passive` (an agent that *explicitly* set a colour is more specific than
      generic unseen output), but `.needsAction`/`.done` (real attention) win over

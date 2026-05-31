@@ -89,7 +89,16 @@ public struct SidebarProducer {
       let tabY = height - CGFloat(i + 1) * rowHeight - topInset
       let isActive = tab.id == activeTabId
       let isDragging = (draggingIndex == i)
-      let bg = isActive ? Theme.current.bg2 : Theme.current.bg1
+      let meta = tab.titleMetadata
+      let agentStatus = meta.agentStatus
+      // How urgently this background tab wants the user (a focused tab is always
+      // `.none`). `needsAction` additionally washes the whole row a faint red.
+      let attention = TabAttentionClassifier.classify(meta, isActive: isActive)
+      let baseBg = isActive ? Theme.current.bg2 : Theme.current.bg1
+      let bg =
+        attention == .needsAction
+        ? Self.tint(baseBg, toward: Theme.current.red, fraction: Self.needsActionTintFraction)
+        : baseBg
       let fg = isActive ? Theme.current.fg1 : Theme.current.fg0
 
       cmds.append(
@@ -167,70 +176,80 @@ public struct SidebarProducer {
           source: .sidebar
         ))
 
-      // Right-edge indicator, by specificity (only when the tab is not
-      // hovered — the close X takes the slot on hover):
-      //  1. OSC 21337 agent dot — an agent explicitly reported a status.
-      //  2. OSC 133 shell phase — a command failed (red). A merely *running*
-      //     command shows nothing (see shellPhaseIndicatorColor).
-      //  3. Legacy red attention badge — "something happened in this tab".
+      // Right-edge attention marker — one per tab, chosen by attention level.
+      // Rendered only when the tab is not hovered (the close X takes the slot
+      // on hover) and never on the focused tab (always `.none`):
+      //   needsAction → red ◆ over the row tint applied above ("act here")
+      //   done        → accent ◆ ("a task finished")
+      //   passive/none → an explicit OSC 21337 agent dot, else a failed-command
+      //                  red dot, else a muted unseen/bell badge, else nothing
       //
-      // Never on the focused/active tab: a per-tab indicator means "come back
-      // here", which is meaningless for the tab you are already looking at.
-      let meta = tab.titleMetadata
-      let agentStatus = meta.agentStatus
-      // The right-edge slot shows the close X iff the cursor is on this
-      // row AND this row isn't the drag source (drag suppresses the X to
-      // avoid accidental close mid-gesture). Otherwise the slot belongs
-      // to the indicator — including while dragging, where the X is
-      // hidden and the indicator stays visible (the drag overlay dims it
-      // along with the rest of the row).
+      // The slot shows the close X iff the cursor is on this row AND it isn't
+      // the drag source (drag suppresses the X to avoid an accidental
+      // mid-gesture close); otherwise the slot belongs to the marker, including
+      // while dragging (the drag overlay dims it with the rest of the row).
       let showCloseX = (hoveredTabId == tab.id) && !isDragging
       if !showCloseX && !isActive {
-        if let notif = meta.notification {
-          // Unseen OSC 9 notification: a distinct ◆ in a reserved color (red
-          // when action is needed, accent otherwise), taking the slot over the
-          // live status dot until the user opens the tab.
+        let slot = CGPoint(x: slotX, y: titleY)
+        switch attention {
+        case .needsAction:
           cmds.append(
             .glyphRun(
-              origin: CGPoint(x: slotX, y: titleY),
+              origin: slot,
               text: "◆",
-              foreground: notif.urgent ? Theme.current.red : Theme.current.cursor,
-              background: bg,
-              attributes: [],
-              source: .sidebar
-            ))
-        } else if let hex = agentStatus.indicatorColor,
-          let color = Self.parseHexColor(hex)
-        {
-          cmds.append(
-            .glyphRun(
-              origin: CGPoint(x: slotX, y: titleY),
-              text: "●",
-              foreground: color,
-              background: bg,
-              attributes: [],
-              source: .sidebar
-            ))
-        } else if let shellColor = Self.shellPhaseIndicatorColor(meta) {
-          cmds.append(
-            .glyphRun(
-              origin: CGPoint(x: slotX, y: titleY),
-              text: "●",
-              foreground: shellColor,
-              background: bg,
-              attributes: [],
-              source: .sidebar
-            ))
-        } else if let badge = resolved.statusBadge {
-          cmds.append(
-            .glyphRun(
-              origin: CGPoint(x: slotX, y: titleY),
-              text: badge,
               foreground: Theme.current.red,
               background: bg,
               attributes: [],
               source: .sidebar
             ))
+        case .done:
+          cmds.append(
+            .glyphRun(
+              origin: slot,
+              text: "◆",
+              foreground: Theme.current.cursor,
+              background: bg,
+              attributes: [],
+              source: .sidebar
+            ))
+        case .passive, .none:
+          if let hex = agentStatus.indicatorColor, let color = Self.parseHexColor(hex) {
+            // An agent that explicitly pushed a colour (OSC 21337) owns the slot.
+            cmds.append(
+              .glyphRun(
+                origin: slot,
+                text: "●",
+                foreground: color,
+                background: bg,
+                attributes: [],
+                source: .sidebar
+              ))
+          } else if let shellColor = Self.shellPhaseIndicatorColor(meta) {
+            // A failed last command: a steady red dot — it finished, it is not
+            // waiting on the user, so it does not earn the needsAction pulse.
+            cmds.append(
+              .glyphRun(
+                origin: slot,
+                text: "●",
+                foreground: shellColor,
+                background: bg,
+                attributes: [],
+                source: .sidebar
+              ))
+          } else if let badge = resolved.statusBadge {
+            // Low-salience activity: an exited-nonzero "!" stays red; bell/
+            // unseen ("•"/"*") are muted so they inform without shouting.
+            let color = badge == "!" ? Theme.current.red : Theme.current.dim0
+            cmds.append(
+              .glyphRun(
+                origin: slot,
+                text: badge,
+                foreground: color,
+                background: bg,
+                attributes: [],
+                source: .sidebar
+              ))
+          }
         }
       }
 
@@ -329,6 +348,23 @@ public struct SidebarProducer {
   /// user is dragging. Tuned to read as "lifted" on both light and dark
   /// themes without losing the underlying label.
   private static let dragSourceOverlayColor: UInt32 = 0x0000_0066
+
+  /// Fraction the needsAction row tint blends `bg` toward the attention colour.
+  /// Faint enough to read as a wash behind the text, not a fill.
+  static let needsActionTintFraction: Double = 0.14
+
+  /// Blend `base` toward `accent` by `fraction` (0…1), preserving base's alpha.
+  /// 0xRRGGBBAA in, 0xRRGGBBAA out. Used for the faint row wash behind a tab
+  /// that needs the user's action.
+  static func tint(_ base: UInt32, toward accent: UInt32, fraction: Double) -> UInt32 {
+    let f = min(max(fraction, 0), 1)
+    func channel(_ shift: UInt32) -> UInt32 {
+      let b = Double((base >> shift) & 0xFF)
+      let a = Double((accent >> shift) & 0xFF)
+      return UInt32((b + (a - b) * f).rounded()) & 0xFF
+    }
+    return (channel(24) << 24) | (channel(16) << 16) | (channel(8) << 8) | (base & 0xFF)
+  }
 
   /// Compute the y-position (CG bottom-origin) of the drop-target accent
   /// bar for `slot`. Returns nil when no accent should be drawn — either

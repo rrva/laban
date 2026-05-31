@@ -524,6 +524,87 @@ final class SidebarProducerTests: XCTestCase {
     }
   }
 
+  // MARK: - attention tiers (needs-you vs done vs passive)
+
+  func testNeedsActionRendersRedDiamondAndRowTint() {
+    var tab = Tab(id: "t", position: 1, title: "claude", isActive: false, sessionId: "s")
+    tab.titleMetadata.activityState = .waiting
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
+
+    // A ◆ marker whose RGB is red. Compare RGB only — M3 modulates the alpha
+    // byte for the breathing pulse.
+    let marker = cmds.compactMap { cmd -> UInt32? in
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "◆" { return fg }
+      return nil
+    }.first
+    XCTAssertNotNil(marker, "needsAction must render a ◆ marker")
+    XCTAssertEqual((marker ?? 0) | 0xFF, Theme.current.red | 0xFF, "marker RGB must be red")
+
+    // The full-width row rect is washed toward red — neither the plain inactive
+    // bg nor the active-tab bg.
+    let rowColors = cmds.compactMap { cmd -> UInt32? in
+      if case .rect(let r, let c, _) = cmd, r.width == p.sidebarWidth, r.height == p.rowHeight {
+        return c
+      }
+      return nil
+    }
+    XCTAssertTrue(
+      rowColors.contains { $0 != Theme.current.bg1 && $0 != Theme.current.bg2 },
+      "needsAction row must be tinted; got \(rowColors.map { String(format: "%08X", $0) })")
+  }
+
+  func testDoneRendersAccentDiamondWithoutTint() {
+    var tab = Tab(id: "t", position: 1, title: "build", isActive: false, sessionId: "s")
+    tab.titleMetadata.notification = TabNotification(text: "build complete", urgent: false)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
+
+    let marker = cmds.compactMap { cmd -> UInt32? in
+      if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "◆" { return fg }
+      return nil
+    }.first
+    XCTAssertEqual(marker, Theme.current.cursor, "done marker uses the accent colour")
+
+    let rowTinted = cmds.contains { cmd in
+      if case .rect(let r, let c, _) = cmd, r.width == p.sidebarWidth, r.height == p.rowHeight {
+        return c != Theme.current.bg1
+      }
+      return false
+    }
+    XCTAssertFalse(rowTinted, "done tab must not tint the row")
+  }
+
+  /// An explicit OSC 21337 agent colour beats passive activity for the slot,
+  /// but a real "needs you" state beats the agent colour.
+  func testNeedsActionBeatsExplicitAgentDot() {
+    var tab = Tab(id: "t", position: 1, title: "codex", isActive: false, sessionId: "s")
+    tab.titleMetadata.agentStatus = TabAgentStatus(indicatorColor: "#00ff00")
+    tab.titleMetadata.agent.awaitingInput = true
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let texts = p.commands(tabs: [tab], activeTabId: "other", height: 600)
+      .compactMap { cmd -> String? in
+        if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+        return nil
+      }
+    XCTAssertTrue(texts.contains("◆"), "needs-action ◆ wins the slot")
+    XCTAssertFalse(texts.contains("●"), "the agent dot is superseded by needs-action")
+  }
+
+  /// Passive activity (unseen output) is muted, not red — it informs without
+  /// shouting.
+  func testPassiveMarkerIsMuted() {
+    var tab = Tab(id: "t", position: 1, title: "zsh", isActive: false, sessionId: "s")
+    tab.titleMetadata.unseenOutput = true
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let marker = p.commands(tabs: [tab], activeTabId: "other", height: 600)
+      .compactMap { cmd -> UInt32? in
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "*" { return fg }
+        return nil
+      }.first
+    XCTAssertEqual(marker, Theme.current.dim0, "passive marker is dim, not red")
+  }
+
   // MARK: - drag-reorder
 
   func testDropSlotAboveFirstRowReturnsZero() {

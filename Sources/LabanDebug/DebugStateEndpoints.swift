@@ -97,6 +97,7 @@ extension HeadlessDebugRuntime {
       lastOutputAt: metadata.lastOutputAt,
       unseenOutput: metadata.unseenOutput,
       bellAttention: metadata.bellAttention,
+      attention: TabAttentionClassifier.classify(metadata, isActive: tab.isActive).rawValue,
       exitStatus: metadata.exitStatus,
       shellPhase: metadata.shellPhase.rawValue,
       lastCommandExitCode: metadata.lastCommandExitCode,

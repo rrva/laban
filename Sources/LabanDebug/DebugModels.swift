@@ -114,6 +114,10 @@ struct TabResponse: Encodable {
   var lastOutputAt: Date?
   var unseenOutput: Bool
   var bellAttention: Bool
+  /// Derived attention level (`none`/`passive`/`done`/`needsAction`) — the
+  /// tier that drives the sidebar marker and row tint. `none` on the focused
+  /// tab and on idle background tabs.
+  var attention: String
   var exitStatus: Int?
   var shellPhase: String
   var lastCommandExitCode: Int?
