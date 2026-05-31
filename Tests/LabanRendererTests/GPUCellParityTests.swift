@@ -90,12 +90,12 @@ final class GPUCellParityTests: XCTestCase {
     }
   }
 
-  func testGPUCellPathRejectsUnsupportedTerminalGlyphFeatures() throws {
+  func testGPUCellPathRejectsHyperlinksUntilLinkRenderingSlice() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
 
-    let renderer = try makeRenderer(label: "unsupported-glyph")
+    let renderer = try makeRenderer(label: "unsupported-link")
     let commands: [FrameCommand] = [
       .rect(
         CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: cellH),
@@ -108,14 +108,16 @@ final class GPUCellParityTests: XCTestCase {
         background: 0x10_20_30_FF,
         attributes: [.underline],
         source: .terminal,
-        underlineStyle: .single),
+        underlineStyle: .single,
+        underlineColor: 0x33_99_FF_FF,
+        hyperlink: "https://example.test"),
     ]
 
     XCTAssertFalse(
       renderer.gpuCellPathSupportedForTesting(
         commands: commands,
         surfacePxH: Int(cellH * scale)),
-      "M2 must fall back to classic for decorated terminal glyph runs")
+      "hyperlink visual/click state is still outside the text-decoration slice")
   }
 
   func testGPUCellPathMatchesClassicForPlainText() throws {
@@ -175,6 +177,34 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  func testGPUCellPathMatchesClassicForTextDecorations() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = decoratedFrame(seed: 13)
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-decorations", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(label: "gpu-decorations", commands: commands, damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(
+        gpu.counts.cellGlyphs, 0,
+        "decorated terminal runs must stay on the GPU cell path")
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-text-decorations",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
   func testGPUCellPayloadAcceptsColorSafeAttributes() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -198,6 +228,59 @@ final class GPUCellParityTests: XCTestCase {
         damage: .full,
         surfacePxH: Int(CGFloat(rows) * cellH * scale)),
       "the GPU cell builder must accept colour-safe attributed payloads")
+  }
+
+  func testGPUCellPayloadAcceptsTextDecorations() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-decorations")
+    let decorated = decoratedPayload(seed: 17, includedRows: Array(0..<rows))
+
+    XCTAssertNil(decorated.fallbackReason)
+    let counts = try XCTUnwrap(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: decorated,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)),
+      "decorated payloads must stay GPU-cell compatible")
+
+    XCTAssertEqual(counts.cellGlyphs, rows * cols)
+    XCTAssertEqual(counts.glyphs, 0)
+    XCTAssertGreaterThan(counts.solids, rows)
+  }
+
+  func testGPUCellPayloadMatchesClassicForTextDecorations() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = decoratedFrame(seed: 19)
+    let payload = decoratedPayload(seed: 19, includedRows: Array(0..<rows))
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-payload-decorations", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-decorations",
+      commands: commands,
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-text-decorations",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
   }
 
   func testGPUCellPayloadPatchesOnlyDirtyRows() throws {
@@ -374,6 +457,38 @@ final class GPUCellParityTests: XCTestCase {
     return commands
   }
 
+  private func decoratedFrame(seed: Int) -> [FrameCommand] {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    var commands: [FrameCommand] = []
+    for row in 0..<rows {
+      let style = decorationStyle(for: row)
+      let y = CGFloat(rows - 1 - row) * cellH
+      let base = UInt32((seed + row * 19) & 0xFF)
+      let bg: UInt32 =
+        ((0x18 + base) << 24) | ((0x24 + base) << 16) | ((0x34 + base) << 8) | 0xFF
+      let fg: UInt32 =
+        ((0xE0 - UInt32(row * 8)) << 24) | ((0xD0 - UInt32(row * 4)) << 16)
+        | ((0xC0 + UInt32(row * 3)) << 8) | 0xFF
+      commands.append(
+        .rect(
+          CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+          color: bg,
+          source: .terminal))
+      let line = String((0..<cols).map { ascii[($0 + row + seed) % ascii.count] })
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: 0, y: y),
+          text: line,
+          foreground: fg,
+          background: bg,
+          attributes: style.attributes,
+          source: .terminal,
+          underlineStyle: style.underlineStyle,
+          underlineColor: style.underlineColor))
+    }
+    return commands
+  }
+
   private func payload(
     seed: Int,
     changedRow: Int?,
@@ -414,6 +529,58 @@ final class GPUCellParityTests: XCTestCase {
     return payload
   }
 
+  private func decoratedPayload(seed: Int, includedRows: [Int]) -> TerminalCellPayload {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: includedRows)
+    for row in includedRows {
+      let style = decorationStyle(for: row)
+      let base = UInt32((seed + row * 19) & 0xFF)
+      let bg: UInt32 =
+        ((0x18 + base) << 24) | ((0x24 + base) << 16) | ((0x34 + base) << 8) | 0xFF
+      let fg: UInt32 =
+        ((0xE0 - UInt32(row * 8)) << 24) | ((0xD0 - UInt32(row * 4)) << 16)
+        | ((0xC0 + UInt32(row * 3)) << 8) | 0xFF
+      payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+      for col in 0..<cols {
+        let scalar = ascii[(col + row + seed) % ascii.count]
+        payload.glyphs.append(
+          .init(
+            row: row,
+            col: col,
+            text: "",
+            scalarValue: scalar.unicodeScalars.first?.value,
+            foreground: fg,
+            background: bg,
+            attributes: style.attributes,
+            underlineStyle: style.underlineStyle,
+            underlineColor: style.underlineColor))
+      }
+    }
+    return payload
+  }
+
+  private func decorationStyle(
+    for row: Int
+  ) -> (attributes: TextAttributes, underlineStyle: UnderlineStyle, underlineColor: UInt32?) {
+    switch row % 8 {
+    case 0: return ([.underline], .single, nil)
+    case 1: return ([], .double, nil)
+    case 2: return ([], .dotted, nil)
+    case 3: return ([], .dashed, nil)
+    case 4: return ([], .curly, nil)
+    case 5: return ([.strikethrough], .none, nil)
+    case 6: return ([.overline], .none, nil)
+    default: return ([.underline, .strikethrough, .overline], .single, 0x33_99_FF_FF)
+    }
+  }
+
   private func dirtyRange(forRow row: Int) -> DirtyYRange {
     DirtyYRange(y: CGFloat(rows - 1 - row) * cellH, height: cellH)
   }
@@ -438,8 +605,23 @@ final class GPUCellParityTests: XCTestCase {
     commands: [FrameCommand],
     damage: RenderDamage
   ) throws -> RenderResult {
+    try renderSingle(label: label, commands: commands, payload: nil, damage: damage)
+  }
+
+  private func renderSingle(
+    label: String,
+    commands: [FrameCommand],
+    payload: TerminalCellPayload?,
+    damage: RenderDamage
+  ) throws -> RenderResult {
     let renderer = try makeRenderer(label: label)
-    XCTAssertTrue(renderer.render(commands, damage: damage), "\(label): render failed")
+    XCTAssertTrue(
+      renderer.render(
+        commands,
+        cellPayload: payload,
+        damage: damage,
+        rendererFallbackReason: nil),
+      "\(label): render failed")
     renderer.waitForLastFrame()
     return try readResult(renderer: renderer, label: label)
   }

@@ -474,10 +474,6 @@ public struct FrameProducer {
         if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {
           markFallback(.unsupportedAttributes)
         }
-        if cellUnderlineStyle != .none || cellUnderlineColor != nil {
-          markFallback(.textDecoration)
-        }
-
         if attrs.contains(.invisible) {
           continue
         }

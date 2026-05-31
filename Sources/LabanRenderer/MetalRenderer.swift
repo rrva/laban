@@ -1657,6 +1657,69 @@ public final class MetalRenderer: RendererBackend {
     var cachedPayloadNeedsBoldFallback = false
     var cachedPayloadNeedsItalicFallback = false
 
+    var runRow: Int?
+    var runStartCol = 0
+    var runCellCount = 0
+    var runFg: UInt32 = 0
+    var runBg: UInt32 = 0
+    var runAttributes: TextAttributes = []
+    var runUnderlineStyle: UnderlineStyle = .none
+    var runUnderlineColor: UInt32?
+    var runHasHyperlink = false
+
+    @inline(__always)
+    func flushPayloadDecorationRun() {
+      guard let row = runRow, runCellCount > 0 else {
+        runRow = nil
+        runCellCount = 0
+        return
+      }
+      emitDecorations(
+        cellCount: runCellCount,
+        at: CGPoint(
+          x: payload.origin.x + CGFloat(runStartCol) * payload.cellSize.width,
+          y: payload.origin.y + CGFloat(payload.rows - 1 - row) * payload.cellSize.height
+            + payload.contentYOffset),
+        attributes: runAttributes,
+        cellAdvance: payload.cellSize.width,
+        cellHeight: payload.cellSize.height,
+        descent: fontAtlas.descent,
+        fg: runFg,
+        underlineStyle: runUnderlineStyle,
+        underlineColor: runUnderlineColor,
+        appendSolid: appendSolid)
+      runRow = nil
+      runCellCount = 0
+    }
+
+    @inline(__always)
+    func appendPayloadDecorationCell(_ glyph: TerminalCellPayload.Glyph) {
+      let sameStyle =
+        runRow == glyph.row
+        && glyph.col == runStartCol + runCellCount
+        && runFg == glyph.foreground
+        && runBg == glyph.background
+        && runAttributes == glyph.attributes
+        && runUnderlineStyle == glyph.underlineStyle
+        && runUnderlineColor == glyph.underlineColor
+        && runHasHyperlink == glyph.hasHyperlink
+      if runRow != nil, sameStyle {
+        runCellCount += 1
+        return
+      }
+
+      flushPayloadDecorationRun()
+      runRow = glyph.row
+      runStartCol = glyph.col
+      runCellCount = 1
+      runFg = glyph.foreground
+      runBg = glyph.background
+      runAttributes = glyph.attributes
+      runUnderlineStyle = glyph.underlineStyle
+      runUnderlineColor = glyph.underlineColor
+      runHasHyperlink = glyph.hasHyperlink
+    }
+
     @inline(__always)
     func terminalFontInfo(
       for attributes: TextAttributes
@@ -1682,8 +1745,6 @@ public final class MetalRenderer: RendererBackend {
     for glyph in payload.glyphs {
       guard glyph.row >= 0, glyph.row < payload.rows,
         glyph.col >= 0, glyph.col < payload.cols,
-        glyph.underlineStyle == .none,
-        glyph.underlineColor == nil,
         !glyph.hasHyperlink,
         glyph.wide == 0,
         (glyph.attributes.rawValue & ~Self.gpuCellSupportedAttributes.rawValue) == 0,
@@ -1733,7 +1794,9 @@ public final class MetalRenderer: RendererBackend {
         uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
         flags: Self.gpuCellActiveFlag,
         fg: rgbaToFloat4(glyph.foreground))
+      appendPayloadDecorationCell(glyph)
     }
+    flushPayloadDecorationRun()
 
     for cursor in payload.cursorRects {
       let rect = cursor.rect
@@ -1947,8 +2010,6 @@ public final class MetalRenderer: RendererBackend {
 
         if !isSidebar {
           guard attrs.subtracting(Self.gpuCellSupportedAttributes).isEmpty,
-            underlineStyle == .none,
-            underlineColor == nil,
             hyperlink == nil,
             let geometry
           else {
@@ -1980,6 +2041,14 @@ public final class MetalRenderer: RendererBackend {
               return false
             }
           }
+          emitDecorations(
+            for: text, at: origin, attributes: attrs,
+            cellAdvance: glyphCellAdvance,
+            cellHeight: glyphCellHeight,
+            descent: fontAtlas.descent,
+            fg: fg,
+            underlineStyle: underlineStyle, underlineColor: underlineColor,
+            appendSolid: appendSolid)
           continue
         }
 
@@ -2316,10 +2385,35 @@ public final class MetalRenderer: RendererBackend {
     underlineColor: UInt32?,
     appendSolid: (CGRect, UInt32) -> Void
   ) {
+    emitDecorations(
+      cellCount: text.count,
+      at: origin,
+      attributes: attributes,
+      cellAdvance: cellAdvance,
+      cellHeight: cellHeight,
+      descent: descent,
+      fg: fg,
+      underlineStyle: underlineStyle,
+      underlineColor: underlineColor,
+      appendSolid: appendSolid)
+  }
+
+  private func emitDecorations(
+    cellCount: Int,
+    at origin: CGPoint,
+    attributes: TextAttributes,
+    cellAdvance: CGFloat,
+    cellHeight: CGFloat,
+    descent: CGFloat,
+    fg: UInt32,
+    underlineStyle: UnderlineStyle,
+    underlineColor: UInt32?,
+    appendSolid: (CGRect, UInt32) -> Void
+  ) {
     guard
       let layout = TextDecorationLayout.make(
         origin: origin,
-        cellCount: text.count,
+        cellCount: cellCount,
         attributes: attributes,
         underlineStyle: underlineStyle,
         cellAdvance: cellAdvance,

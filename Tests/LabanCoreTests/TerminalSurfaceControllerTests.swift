@@ -144,6 +144,52 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalGlyphCommands.isEmpty)
   }
 
+  func testCellPayloadModeKeepsTextDecorationsOnPayloadPath() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 80
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+
+    let line =
+      "\u{1B}[4mUL\u{1B}[0m "
+      + "\u{1B}[9mSTRK\u{1B}[0m "
+      + "\u{1B}[53mOVR\u{1B}[0m\r\n"
+    _ = session.write(Array(line.utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 840,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 840,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertTrue(payload.glyphs.contains { $0.attributes.contains(.underline) })
+    XCTAssertTrue(payload.glyphs.contains { $0.attributes.contains(.strikethrough) })
+    XCTAssertTrue(payload.glyphs.contains { $0.attributes.contains(.overline) })
+    let terminalGlyphCommands = frame.commands.filter { command in
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+        return source == .terminal
+      }
+      return false
+    }
+    XCTAssertTrue(terminalGlyphCommands.isEmpty)
+  }
+
   func testCellPayloadModeReusesWarmCapacity() throws {
     var size = LabanTerminalSize()
     size.rows = 4
