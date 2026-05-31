@@ -69,8 +69,8 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
   /// `invisible` cell emits no glyph, and `blink` has no static visual. Font
   /// selection only reads bold/italic, so none of these change the glyph or its
   /// geometry. Text decorations are emitted as solid overlays by the GPU-cell
-  /// path. Clusters and wide cells are folded in by later M4 slices as the cell
-  /// path learns to draw them.
+  /// path, and wide/cluster glyph geometry is handled by the cell payload and
+  /// atlas metrics rather than by attribute gating.
   public static let gpuCellRenderableMask: TextAttributes = [
     .bold, .italic, .faint, .inverse, .invisible, .underline, .strikethrough, .overline, .blink,
   ]

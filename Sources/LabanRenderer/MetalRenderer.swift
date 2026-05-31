@@ -1770,9 +1770,10 @@ public final class MetalRenderer: RendererBackend {
     for glyph in payload.glyphs {
       guard glyph.row >= 0, glyph.row < payload.rows,
         glyph.col >= 0, glyph.col < payload.cols,
-        glyph.wide == 0,
+        glyph.wide == 0 || glyph.wide == 1,
         (glyph.attributes.rawValue & ~Self.gpuCellSupportedAttributes.rawValue) == 0,
-        glyph.scalarValue != nil || (glyph.text.first != nil && glyph.text.count == 1)
+        glyph.scalarValue != nil || glyph.utf8Range != nil
+          || (glyph.text.first != nil && glyph.text.count == 1)
       else {
         return false
       }
@@ -1788,6 +1789,17 @@ public final class MetalRenderer: RendererBackend {
           font: fontInfo.font,
           boldFallback: fontInfo.needsBoldFallback,
           italicFallback: fontInfo.needsItalicFallback)
+      } else if let range = glyph.utf8Range,
+        range.lowerBound >= 0,
+        range.upperBound <= payload.utf8Bytes.count
+      {
+        let text = String(decoding: payload.utf8Bytes[range], as: UTF8.self)
+        guard text.count == 1, let character = text.first else { return false }
+        entry = glyphAtlas.entry(
+          character: character,
+          font: fontInfo.font,
+          boldFallback: fontInfo.needsBoldFallback,
+          italicFallback: fontInfo.needsItalicFallback)
       } else if let character = glyph.text.first {
         entry = glyphAtlas.entry(
           character: character,
@@ -1797,9 +1809,13 @@ public final class MetalRenderer: RendererBackend {
       } else {
         entry = nil
       }
+      let maxLogicalWidth =
+        glyph.wide == 1
+        ? payload.cellSize.width * 2.5
+        : payload.cellSize.width * 1.5
       guard
         let entry,
-        entry.logicalWidth <= glyphCellAdvance * 1.5,
+        entry.logicalWidth <= maxLogicalWidth,
         bottomRow >= 0,
         bottomRow < geometry.rows
       else {
@@ -1978,7 +1994,7 @@ public final class MetalRenderer: RendererBackend {
       color: UInt32
     ) -> Bool {
       guard index >= 0, index < cellGlyphs.count else { return false }
-      guard entry.logicalWidth <= glyphCellAdvance * 1.5 else { return false }
+      guard entry.logicalWidth <= glyphCellAdvance * 2.5 else { return false }
       if !patchRows.isEmpty {
         let row = index / max(1, cellGlyphGridGeometry?.cols ?? 1)
         guard row >= 0, row < patchRows.count, patchRows[row] else { return true }

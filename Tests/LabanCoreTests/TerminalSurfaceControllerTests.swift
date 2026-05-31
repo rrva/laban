@@ -343,7 +343,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertNil(frame.cellPayload?.fallbackReason)
   }
 
-  func testCellPayloadCopiesClusterTextIntoUTF8SlabBeforeFallback() throws {
+  func testCellPayloadKeepsClusterTextInUTF8SlabOnPayloadPath() throws {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 20
@@ -362,9 +362,52 @@ final class TerminalSurfaceControllerTests: XCTestCase {
         includedRows: [0],
         cursorBlinkVisible: false))
 
-    XCTAssertEqual(payload.fallbackReason, .wideOrClusterCell)
+    XCTAssertNil(payload.fallbackReason)
     XCTAssertFalse(payload.utf8Bytes.isEmpty)
-    XCTAssertTrue(payload.glyphs.contains { $0.utf8Range != nil })
+    let clusterTexts = payload.glyphs.compactMap { glyph -> String? in
+      guard let range = glyph.utf8Range else { return nil }
+      return String(decoding: payload.utf8Bytes[range], as: UTF8.self)
+    }
+    XCTAssertTrue(clusterTexts.contains("👩‍💻"), "got cluster payloads \(clusterTexts)")
+  }
+
+  func testCellPayloadModeKeepsWideGlyphsOnPayloadPath() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let session = try XCTUnwrap(model.activeTab.flatMap { model.session(forTab: $0.id) })
+
+    _ = session.write(Array("中文A\r\n".utf8))
+    _ = session.poll()
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 360,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 360,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertTrue(payload.glyphs.contains { $0.wide == UInt8(LABAN_CELL_WIDE_WIDE) })
+    let terminalGlyphCommands = frame.commands.filter { command in
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+        return source == .terminal
+      }
+      return false
+    }
+    XCTAssertTrue(terminalGlyphCommands.isEmpty)
   }
 
   func testCellPayloadModeKeepsSelectionOverlayOnPayloadPath() throws {

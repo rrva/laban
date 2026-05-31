@@ -515,13 +515,82 @@ public struct FrameProducer {
     payload.proceduralCells.reserveCapacity(payload.dirtyRows.count)
     for row in payload.dirtyRows {
       let rowStart = row * cols
+      var pendingSpacerAfterLastGlyph = false
+
+      func glyphBytes(_ glyph: TerminalCellPayload.Glyph) -> [UInt8]? {
+        if let range = glyph.utf8Range {
+          guard range.lowerBound >= 0, range.upperBound <= payload.utf8Bytes.count else {
+            return nil
+          }
+          return Array(payload.utf8Bytes[range])
+        }
+        if let scalarValue = glyph.scalarValue,
+          let scalar = Unicode.Scalar(scalarValue)
+        {
+          return Array(String(scalar).utf8)
+        }
+        if !glyph.text.isEmpty {
+          return Array(glyph.text.utf8)
+        }
+        return nil
+      }
+
+      func samePayloadGlyphStyle(_ lhs: TerminalCellPayload.Glyph, _ rhs: TerminalCellPayload.Glyph)
+        -> Bool
+      {
+        lhs.row == rhs.row
+          && lhs.foreground == rhs.foreground
+          && lhs.background == rhs.background
+          && lhs.attributes == rhs.attributes
+          && lhs.underlineStyle == rhs.underlineStyle
+          && lhs.underlineColor == rhs.underlineColor
+          && lhs.hasHyperlink == rhs.hasHyperlink
+      }
+
+      func appendGlyphOrMergeAfterSpacer(
+        _ glyph: TerminalCellPayload.Glyph,
+        bytes: [UInt8],
+        forceUTF8Storage: Bool
+      ) {
+        if pendingSpacerAfterLastGlyph,
+          let previousIndex = payload.glyphs.indices.last,
+          samePayloadGlyphStyle(payload.glyphs[previousIndex], glyph),
+          let previousBytes = glyphBytes(payload.glyphs[previousIndex])
+        {
+          let previousText = String(decoding: previousBytes, as: UTF8.self)
+          let currentText = String(decoding: bytes, as: UTF8.self)
+          let mergedBytes = previousBytes + bytes
+          let mergedText = String(decoding: mergedBytes, as: UTF8.self)
+          if mergedText.count < previousText.count + currentText.count {
+            let start = payload.utf8Bytes.count
+            payload.utf8Bytes.append(contentsOf: mergedBytes)
+            payload.glyphs[previousIndex].text = ""
+            payload.glyphs[previousIndex].scalarValue = nil
+            payload.glyphs[previousIndex].utf8Range = start..<payload.utf8Bytes.count
+            pendingSpacerAfterLastGlyph = false
+            return
+          }
+        }
+
+        var storedGlyph = glyph
+        if forceUTF8Storage {
+          let start = payload.utf8Bytes.count
+          payload.utf8Bytes.append(contentsOf: bytes)
+          storedGlyph.utf8Range = start..<payload.utf8Bytes.count
+        }
+        payload.glyphs.append(storedGlyph)
+        pendingSpacerAfterLastGlyph = false
+      }
+
       for col in 0..<cols {
         let cell = cells[rowStart + col]
         let isSpacerTail = cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL)
-        if cell.wide != UInt8(LABAN_CELL_WIDE_NARROW) {
-          markFallback(.wideOrClusterCell)
+        if isSpacerTail {
+          if payload.glyphs.last?.row == row {
+            pendingSpacerAfterLastGlyph = true
+          }
+          continue
         }
-        guard !isSpacerTail else { continue }
 
         let attrs = TextAttributes(rawValue: cell.flags)
           .intersection(.renderableMask)
@@ -552,6 +621,7 @@ public struct FrameProducer {
           markFallback(.unsupportedAttributes)
         }
         if attrs.contains(.invisible) {
+          pendingSpacerAfterLastGlyph = false
           continue
         }
         let scalarResult: SingleUTF8ScalarResult
@@ -574,10 +644,12 @@ public struct FrameProducer {
         switch scalarResult {
         case .scalar(let scalarValue):
           guard let scalar = Unicode.Scalar(scalarValue) else {
+            pendingSpacerAfterLastGlyph = false
             markFallback(.invalidUTF8)
             continue
           }
           if BoxDrawing.isProceduralCellElement(scalar) {
+            pendingSpacerAfterLastGlyph = false
             payload.proceduralCells.append(
               TerminalCellPayload.ProceduralCell(
                 row: row,
@@ -586,42 +658,58 @@ public struct FrameProducer {
                 foreground: cellFg))
             continue
           }
-          payload.glyphs.append(
-            TerminalCellPayload.Glyph(
-              row: row,
-              col: col,
-              text: "",
-              scalarValue: scalarValue,
-              foreground: cellFg,
-              background: cellBg,
-              attributes: cellAttrs,
-              underlineStyle: cellUnderlineStyle,
-              underlineColor: cellUnderlineColor,
-              hasHyperlink: hasHyperlink,
-              wide: cell.wide))
+          let glyph = TerminalCellPayload.Glyph(
+            row: row,
+            col: col,
+            text: "",
+            scalarValue: scalarValue,
+            foreground: cellFg,
+            background: cellBg,
+            attributes: cellAttrs,
+            underlineStyle: cellUnderlineStyle,
+            underlineColor: cellUnderlineColor,
+            hasHyperlink: hasHyperlink,
+            wide: cell.wide)
+          if pendingSpacerAfterLastGlyph {
+            appendGlyphOrMergeAfterSpacer(
+              glyph,
+              bytes: Array(String(scalar).utf8),
+              forceUTF8Storage: false)
+          } else {
+            payload.glyphs.append(glyph)
+          }
         case .multiScalar:
           guard let utf8Bytes else {
+            pendingSpacerAfterLastGlyph = false
             markFallback(.invalidUTF8)
             continue
           }
-          let start = payload.utf8Bytes.count
-          payload.utf8Bytes.append(contentsOf: utf8Bytes)
-          payload.glyphs.append(
-            TerminalCellPayload.Glyph(
-              row: row,
-              col: col,
-              text: "",
-              scalarValue: nil,
-              foreground: cellFg,
-              background: cellBg,
-              attributes: cellAttrs,
-              underlineStyle: cellUnderlineStyle,
-              underlineColor: cellUnderlineColor,
-              hasHyperlink: hasHyperlink,
-              wide: cell.wide,
-              utf8Range: start..<payload.utf8Bytes.count))
-          markFallback(.wideOrClusterCell)
+          let glyph = TerminalCellPayload.Glyph(
+            row: row,
+            col: col,
+            text: "",
+            scalarValue: nil,
+            foreground: cellFg,
+            background: cellBg,
+            attributes: cellAttrs,
+            underlineStyle: cellUnderlineStyle,
+            underlineColor: cellUnderlineColor,
+            hasHyperlink: hasHyperlink,
+            wide: cell.wide)
+          if pendingSpacerAfterLastGlyph {
+            appendGlyphOrMergeAfterSpacer(
+              glyph,
+              bytes: Array(utf8Bytes),
+              forceUTF8Storage: true)
+          } else {
+            let start = payload.utf8Bytes.count
+            payload.utf8Bytes.append(contentsOf: utf8Bytes)
+            var storedGlyph = glyph
+            storedGlyph.utf8Range = start..<payload.utf8Bytes.count
+            payload.glyphs.append(storedGlyph)
+          }
         case .invalid:
+          pendingSpacerAfterLastGlyph = false
           markFallback(.invalidUTF8)
         }
       }

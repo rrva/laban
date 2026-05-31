@@ -374,6 +374,63 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  func testGPUCellPayloadMatchesClassicForWideAndClusterGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = wideClusterFrame()
+    let payload = wideClusterPayload()
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-wide-cluster", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-wide-cluster",
+      commands: [],
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-wide-cluster",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
+  func testGPUCellPathMatchesClassicForWideAndClusterGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = wideClusterFrame()
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-wide-cluster-command", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(label: "gpu-wide-cluster-command", commands: commands, damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-wide-cluster",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
   func testGPUCellPayloadPatchesOnlyDirtyRows() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -700,6 +757,92 @@ final class GPUCellParityTests: XCTestCase {
         CGRect(x: 18 * cellW, y: cursorY, width: cellW, height: cellH),
         color: 0xAD_BC_BC_FF),
     ]
+  }
+
+  private func wideClusterFrame() -> [FrameCommand] {
+    let bg: UInt32 = 0x18_24_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let row = 3
+    let y = CGFloat(rows - 1 - row) * cellH
+    return [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+        color: 0x10_20_30_FF,
+        source: .terminal),
+      .rect(
+        CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+        color: bg,
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 0, y: y),
+        text: "中",
+        foreground: fg,
+        background: bg,
+        attributes: [],
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 2 * cellW, y: y),
+        text: "👩‍💻",
+        foreground: fg,
+        background: bg,
+        attributes: [],
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 4 * cellW, y: y),
+        text: "A",
+        foreground: fg,
+        background: bg,
+        attributes: [],
+        source: .terminal),
+    ]
+  }
+
+  private func wideClusterPayload() -> TerminalCellPayload {
+    let bg: UInt32 = 0x18_24_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let row = 3
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: Array(0..<rows))
+    payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+    payload.glyphs.append(
+      .init(
+        row: row,
+        col: 0,
+        text: "",
+        scalarValue: "中".unicodeScalars.first?.value,
+        foreground: fg,
+        background: bg,
+        attributes: [],
+        wide: 1))
+    let clusterStart = payload.utf8Bytes.count
+    payload.utf8Bytes.append(contentsOf: Array("👩‍💻".utf8))
+    payload.glyphs.append(
+      .init(
+        row: row,
+        col: 2,
+        text: "",
+        scalarValue: nil,
+        foreground: fg,
+        background: bg,
+        attributes: [],
+        wide: 1,
+        utf8Range: clusterStart..<payload.utf8Bytes.count))
+    payload.glyphs.append(
+      .init(
+        row: row,
+        col: 4,
+        text: "A",
+        scalarValue: "A".unicodeScalars.first?.value,
+        foreground: fg,
+        background: bg,
+        attributes: []))
+    return payload
   }
 
   private func payload(

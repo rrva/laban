@@ -1153,6 +1153,45 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - contiguous 1 row: payload 28.3 us, payload+upload 28.5 us
     - contiguous 5 rows: payload 139.1 us, payload+upload 139.7 us
 
+### 2026-05-31 — M4 slice 6 wide and cluster glyphs landed in `gpu-work`
+
+- The GPU-cell paths now render wide CJK and one-grapheme cluster glyphs without the
+  wide/cluster fallback. The payload builder keeps wide cells, skips spacer tails, and
+  merges a following cell across a spacer-tail only when the combined UTF-8 shrinks the
+  Swift grapheme-cluster count, matching the command path's cluster-continuity rule.
+- Payload clusters are stored in the existing UTF-8 slab (`utf8Range`); scalar cells
+  keep the scalar fast path unless a spacer-tail merge needs bytes. This preserves the
+  zero storage-growth invariant for ordinary dirty-row payloads.
+- `MetalRenderer` accepts payload UTF-8 ranges and wide cell flags, allows two-cell
+  logical glyph metrics, and relaxes the command-fed GPU-cell path's metric guard so
+  command-fed wide/cluster runs remain pixel-identical too.
+- New tests:
+  - `GPUCellParityTests` verifies both command-fed and payload-fed wide/cluster glyphs
+    are raw-RGBA identical to classic rendering.
+  - `TerminalSurfaceControllerTests` verifies real local snapshots keep payload mode for
+    wide CJK and carry the composed `👩‍💻` cluster through the UTF-8 slab.
+- Validation:
+  - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|GraphemeClustering|FrameProducerSpanParity|TerminalCellPayloadAllocationBench'`
+    passed (55 tests).
+  - `swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|GraphemeClustering|TextDecorationLayout|FrameProducer|HyperlinkPlumbing|TerminalSurfaceControllerTests'`
+    passed (103 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter TerminalCellPayloadAllocationBench`
+    passed: `storageGrowthEvents=0`, `perFrame=2.610 us`, routed dirty-row p50 classic
+    commands+M1 scoped `154.4 us`, payload fill+GPU patch `28.5 us`.
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench` after the slice:
+  - Classic vs GPU-cell full-frame text path, 160x48, p50/p95/p99 CPU:
+    - classic: 6.576 / 7.768 / 8.024 ms, glyphs 6120, cellGlyphs 0, solids 48
+    - gpuCell: 6.703 / 8.137 / 8.381 ms, glyphs 0, cellGlyphs 7680, solids 48
+  - GPU-cell dirty-row payload patch, 160x48, p50:
+    - row 0: payload 29.2 us, payload+upload 29.6 us
+    - row 23: payload 29.9 us, payload+upload 30.3 us
+    - sparse rows 0,23: payload 58.2 us, payload+upload 58.9 us
+    - sparse rows 0,12,23: payload 87.6 us, payload+upload 88.7 us
+    - contiguous 1 row: payload 29.5 us, payload+upload 29.8 us
+    - contiguous 5 rows: payload 145.9 us, payload+upload 147.0 us
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
