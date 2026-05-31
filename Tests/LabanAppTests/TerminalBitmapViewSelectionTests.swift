@@ -396,7 +396,7 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "a click under mouse tracking must clear the existing local selection")
   }
 
-  func testWheelScrollClearsSelectionWhenMouseTrackingIsActive() throws {
+  func testWheelScrollPreservesSelectionWhenMouseTrackingIsActive() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
 
@@ -410,20 +410,21 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
     XCTAssertEqual(copyText(from: harness.view), "alpha")
 
-    // A fullscreen TUI turns on mouse reporting. A plain wheel is now forwarded
-    // to the app, which scrolls its own content without moving Laban's viewport
-    // — the leftover selection must be dropped, not left frozen on screen.
+    // A fullscreen TUI (Claude Code) turns on mouse reporting, so a plain wheel
+    // is forwarded to the app. iTerm2/kitty keep the selection across a
+    // forwarded scroll rather than dropping it on every notch — bumping the
+    // wheel must not lose what the user selected.
     enableMouseTracking(in: session)
     harness.view.scrollWheel(
       with: TestScrollWheelEvent(
         locationInWindow: point(row: 2, col: 0, in: harness), deltaY: 1))
 
     XCTAssertEqual(
-      copyText(from: harness.view), "sentinel",
-      "a wheel scroll forwarded under mouse tracking must clear the local selection")
+      copyText(from: harness.view), "alpha",
+      "a wheel scroll forwarded under mouse tracking must keep the local selection")
   }
 
-  func testAltScrollWheelClearsSelection() throws {
+  func testAltScrollWheelPreservesSelection() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
 
@@ -438,15 +439,15 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     XCTAssertEqual(copyText(from: harness.view), "alpha")
 
     // Alt-scroll (less/man-style) translates the wheel into the app's cursor
-    // keys. The app scrolls but Laban's viewport doesn't, so the selection must
-    // be dropped rather than left painted at a fixed screen position.
+    // keys. Like iTerm2/kitty, a wheel notch must not discard a selection the
+    // user can still copy or extend.
     harness.view.scrollWheel(
       with: TestScrollWheelEvent(
         locationInWindow: point(row: 2, col: 0, in: harness), deltaY: 1))
 
     XCTAssertEqual(
-      copyText(from: harness.view), "sentinel",
-      "an alt-scroll wheel must clear the local selection it can no longer track")
+      copyText(from: harness.view), "alpha",
+      "an alt-scroll wheel must keep the local selection")
   }
 
   func testShiftWheelScrollsLocalScrollbackUnderMouseTracking() throws {

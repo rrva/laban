@@ -2374,9 +2374,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
           hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
         ))
       guard let direction else { return }
-      // Forwarding the wheel to the app scrolls its content but not Laban's
-      // viewport, so drop any leftover local selection it would otherwise pin.
-      dismissLocalSelectionForForwardedInput()
+      // Keep any committed local selection across the forwarded wheel, matching
+      // iTerm2/kitty: a scroll notch shouldn't discard a selection the user can
+      // still copy or extend. The app scrolls its own content under the pinned
+      // highlight; a click (forwarded below) is what dismisses it.
       let button: MouseButton = direction == .up ? .wheelUp : .wheelDown
       let geom = terminalMouseGeometry(at: pt)
       let me = MouseEvent(
@@ -2425,9 +2426,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       else {
         return
       }
-      // Alt-scroll drives the app's cursor keys; its content moves but Laban's
-      // viewport doesn't, so drop any leftover local selection it would pin.
-      dismissLocalSelectionForForwardedInput()
+      // Keep any committed local selection across the forwarded wheel, matching
+      // iTerm2/kitty: alt-scroll drives the app's cursor keys, but a wheel notch
+      // must not discard a selection the user can still copy or extend.
       let key: Key = keys.key == .up ? .arrowUp : .arrowDown
       var bytes: [UInt8] = []
       for _ in 0..<keys.count {
@@ -2604,12 +2605,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     }
   }
 
-  /// Wheel or click input forwarded to the app (mouse reporting or DEC
-  /// alternate-scroll) scrolls the *app's* own content without moving Laban's
-  /// viewport offset, so a committed local selection can no longer track what
-  /// sits underneath it and would stay painted in place while the app scrolls.
-  /// Drop it the way a bare forwarded click does — scoped to the active tab,
-  /// and scrubbed from the per-tab cache so it can't resurrect on a tab switch.
+  /// A bare click forwarded to the app (mouse reporting) is a deliberate pointer
+  /// action, so it dismisses any committed local selection the same way a click
+  /// does without tracking — scoped to the active tab, and scrubbed from the
+  /// per-tab cache so it can't resurrect on a tab switch. Forwarded *wheel*
+  /// scrolls deliberately do not call this: iTerm2/kitty keep the selection
+  /// across a scroll instead of dropping it on every notch.
   private func dismissLocalSelectionForForwardedInput() {
     guard selectionAnchor != nil || selectionFocus != nil else { return }
     syncSelectionStateToActiveTab()
