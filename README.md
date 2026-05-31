@@ -160,7 +160,11 @@ tests, runtime smoke test, and a headless end-to-end scenario):
 
 Laban is released under the MIT license; see [`LICENSE`](LICENSE).
 
-- JetBrains Mono is licensed under the SIL Open Font License 1.1; see
+Third-party components bundled or linked into the distributed app are credited
+in full in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md):
+
+- libghostty-vt (Ghostty) — MIT licensed (© 2024 Mitchell Hashimoto, Ghostty
+  contributors); fetched at build time into `.external/libghostty-vt/` and
+  statically linked.
+- JetBrains Mono — SIL Open Font License 1.1; see
   [`Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt`](Sources/LabanRenderer/Resources/JetBrainsMono-OFL.txt).
-- libghostty-vt, fetched at build time into `.external/libghostty-vt/`, is
-  MIT licensed (© 2024 Mitchell Hashimoto, Ghostty contributors).

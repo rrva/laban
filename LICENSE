@@ -19,3 +19,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+This product links and bundles third-party components under their own licenses
+(including libghostty-vt from Ghostty, MIT © 2024 Mitchell Hashimoto and
+Ghostty contributors). Their notices are reproduced in full in
+THIRD_PARTY_LICENSES.md.
