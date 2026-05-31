@@ -22,6 +22,16 @@ to what is drawn* — proven by a pixel-for-pixel identical-output test and by a
 release-mode microbench that shows per-frame render CPU falling as the dirty-row
 fraction shrinks.
 
+**Platform target — macOS 26 first; older OSes stay on the current renderer.**
+The GPU-driven cell path is the macOS 26 deliverable and is the thing that lands
+first; it is gated `#available(macOS 26, *)`. On macOS 13–25 the flag is inert and
+the current (shipped) renderer runs unchanged — those OSes are allowed to stay
+slower, by explicit decision (Decision Log). This is the same OS-gated SOTA
+dual-path the merged `FrameProducer` Span work uses: a macOS-26 fast path plus an
+untouched legacy fallback. Because macOS 26 is the only target for the new path, it
+may use macOS-26-only **Metal 4** APIs (M4) for the command-encode win, not just
+plain Metal buffers.
+
 **Term definitions (plain language, used throughout):**
 
 - **Cell**: one character box in the terminal grid (a column × row position).
@@ -48,11 +58,15 @@ fraction shrinks.
 
 ## Progress
 
+All milestones gate the GPU path on `#available(macOS 26, *)`; macOS 13–25 keep the
+current renderer (Purpose → Platform target).
+
 - [ ] M0 — Flag + pixel-parity harness (GPU path initially delegates to the current path)
 - [ ] M1 — Text-only GPU cell path, whole-buffer rebuild each frame, pixel-identical to current
-- [ ] M2 — Persistent cell buffer + dirty-row-only patching (the CPU win)
+- [ ] M2 — Persistent cell buffer + dirty-row-only patching (the CPU rebuild win)
 - [ ] M3 — Feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
-- [ ] M4 — Make GPU path default; record ADR; remove or demote the flag
+- [ ] M4 — Metal 4 reusable command buffers + residency sets (the encode win; macOS 26 only)
+- [ ] M5 — Make GPU path default on macOS 26; record ADR; remove or demote the flag
 - [ ] Review Gate passed
 
 ## Context and Orientation
@@ -143,15 +157,31 @@ per-frame cost becomes O(changed cells).
 
 ## Decision Log
 
+- **Target macOS 26 first; older OSes keep the current renderer (decided).** The
+  user's directive: the optimization targets macOS 26 and macOS 26 lands first;
+  macOS 13–25 may stay slower. So the whole GPU cell path is gated
+  `#available(macOS 26, *)` and the current renderer is the untouched < macOS 26
+  fallback (no new work there — it already ships). This is the user's preferred
+  OS-gated SOTA dual-path (the merged Span work's pattern). It also brings the
+  Metal 4 command-encode win (M4) in-scope, because macOS 26 is the only target for
+  the new path — see "Recent-Metal research" in Surprises.
 - **Persistent per-cell GPU buffer, not transient damage-scoped instance build.**
   An alternative ("damage-scoped") keeps the current transient instance arrays but
   only builds instances whose Y overlaps the dirty scissor box — provably
   pixel-identical because the scissor already clips the rest. It is lower-risk and
   ~7% absolute CPU. We chose the persistent-buffer approach because it (a) exploits
   the idle GPU more directly, (b) yields a cleaner O(dirty cells) CPU cost without
-  the scissor/`.load`/background-rect interactions, and (c) is the architecture GPU
-  terminals (kitty, Alacritty, Ghostty) converge on. The damage-scoped variant
-  remains a valid fallback if M2 proves too risky; record that pivot here if taken.
+  the scissor/`.load`/background-rect interactions, and (c) is the architecture
+  **kitty** uses (persistent GPU-side cell buffer + per-line dirty-flag upload;
+  `reload_all_gpu_data` is its exceptional full-refresh path). **Correction (web
+  research):** Ghostty — the closest comparator (Metal + CoreText + a 32-byte
+  per-cell `CellText` struct + in-shader `grid_pos`) — and Alacritty instead
+  **rebuild the full instance set on the CPU every frame** and are still fast
+  (Ghostty is cited ~120 fps). So per-frame rebuild is *not* intrinsically the
+  bottleneck; the case for incremental patching rests on Laban's specific profile
+  (where the frame is also ticked twice — settle-wake + CADisplayLink). The
+  damage-scoped variant, and coalescing that double-tick, remain valid cheaper
+  fallbacks if M2 underdelivers; record the pivot here if taken.
 - **Correctness contract = pixel-parity (byte-identical readback), not eyeballing.**
   The renderer ships on `main`; any visible regression is unacceptable. We compare
   `MetalRenderer.pngData` of the new path against the current path for a battery of
@@ -176,12 +206,12 @@ per-frame cost becomes O(changed cells).
   the Metal GPU path's pixel equivalence is the separate `GPUCellParityTests` gate
   (`CrossBackendBitmapTests` never instantiates `MetalRenderer`). Commands keep being
   emitted whenever a capture/debug/trace consumer is attached. Recorded as policy in
-  the M4 ADR.
+  the M5 ADR.
 - **Every change must earn its keep via a release microbench, or it is reverted —
   not merged.** This is a hard gate, not advice. Before landing any milestone or
   sub-change, run its microbench `-c release` and compare against the baseline
   captured at the start of that milestone. Keep the change only if it shows a net
-  win (for the perf milestone M2) or provably no regression (for parity-only
+  win (for the perf milestones M2 and M4) or provably no regression (for parity-only
   milestones M0/M1/M3); otherwise `git checkout` it and record why in
   `Surprises & Discoveries`. This is exactly what happened in the prior session: a
   `String(unsafeUninitializedCapacity:)` micro-fix was implemented, measured in
@@ -190,14 +220,16 @@ per-frame cost becomes O(changed cells).
   do not specialize Swift generics and badly mislead (the merged `FrameProducer`
   Span change measured −40% in debug but is a 5–7× speedup in release; the String
   micro-fix above looked neutral in debug but regressed in release). See Surprises.
-- **Ship behind a flag (`MetalRenderer.useGPUCellPath`), default off until M4.**
-  Same `nonisolated(unsafe) static var` toggle pattern as the two merged changes,
-  so the A/B path and the parity test live in one binary.
+- **Ship behind a flag (`MetalRenderer.useGPUCellPath`), default off until M5, and
+  gated `#available(macOS 26, *)`.** Same `nonisolated(unsafe) static var` toggle
+  pattern as the two merged changes, so the A/B path and the parity test live in one
+  binary. On < macOS 26 the flag is inert (the current path always runs).
 
 ## Plan of Work
 
 Each milestone is independently verifiable and leaves the app working with the GPU
-path **off by default** until M4. Build the app with `./scripts/build-app`
+path **off by default** until M5 and **gated `#available(macOS 26, *)`** (macOS
+13–25 always run the current renderer). Build the app with `./scripts/build-app`
 (debug) or `./scripts/install-app` (profilable release to `~/Laban.app`). Run unit
 tests with `swift test`; run release microbenches with
 `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter <name>`. Work from the repo
@@ -235,6 +267,24 @@ position from its grid index instead of from a CPU-supplied origin:
   `glyph_vertex`. A matching `cell_bg_vertex`/reuse of `solid` for per-cell
   backgrounds. Add the new grid uniforms to the `Uniforms` struct (Swift + Metal
   must stay byte-identical in layout).
+- **Pixel-parity precondition — compute the origin bit-for-bit like the current path
+  (web/maths research).** The zero-tolerance gate is *not* automatically reachable:
+  the current path passes a CPU-computed origin (`FrameProducer` does `originX +
+  col*cw` in `Double`/CGFloat, then `MetalRenderer` casts to `Float × scale`), whereas
+  this shader recomputes it in `Float` from the grid index. Floating point is
+  non-associative and Metal permits **FMA contraction**, so `col*adv + origin` can
+  round differently between the two expressions; the rasterizer then snaps the vertex
+  to a fixed-point sub-pixel grid (~8 sub-pixel bits), and a sub-ULP difference can
+  shift glyph coverage by a whole pixel at edges → a non-identical PNG and a failed
+  gate. This is exactly the multi-pass "variance" problem GLSL's `invariant`/`precise`
+  exist for (MSL has the equivalents), but those only guarantee *same-expression*
+  invariance — they do **not** make two different formulas agree. **So M1 must
+  reproduce the current origin arithmetic exactly** — same operand order, same
+  `Float`/`Double` widths at each step, FMA-contraction pinned (`fma`/`precise`/
+  `-ffp-contract`) consistently on both sides — *or* the team must consciously relax
+  the gate to a documented bounded tolerance (max ULP / capped edge-pixel delta),
+  which the plan currently forbids. Decide this **before** writing the shader, not at
+  the gate. (Sources in Surprises & Discoveries.)
 - In `MetalRenderer`: build pipelines for the new shaders; when `useGPUCellPath`,
   fill a CPU `[CellGlyph]` of size `cols*rows` (empty cells get `flags=0`/zero size)
   **from the current `[FrameCommand]` glyph runs** (expand each run into per-cell
@@ -280,6 +330,19 @@ and a CPU mirror alongside it. Each frame:
   `CellGlyph` write). Upload only the changed byte range(s) of the buffer
   (`MTLBuffer.contents()` is `storageModeShared`; write in place, no per-frame
   allocation). Draw the whole grid (`instanceCount = cols*rows`).
+- **GPU-in-flight hazard — a single in-place-patched buffer is unsafe (research).**
+  Apple's Metal Best Practices require **triple buffering** for a CPU-writable,
+  GPU-readable buffer: "an access conflict occurs if CPU writing and GPU reading
+  happen at the same time." With one persistent buffer, patching frame N+1's dirty
+  rows can corrupt the buffer the GPU is still reading for frame N (the renderer
+  already pipelines — note its `onFrameCompleted` completion handler). So the
+  "persistent cell buffer" is really **N persistent cell buffers** (N = the
+  renderer's in-flight depth, typically 3) cycled per frame, or one buffer behind an
+  explicit semaphore. The dirty patch then either replays onto each of the N buffers
+  (still O(dirty cells)) or tracks per-buffer dirtiness so a buffer that skipped K
+  frames replays the union. Ghostty uses exactly such a multi-frame swap chain +
+  semaphore. M4's Metal 4 residency model gives the explicit tools; M2 on the current
+  command model must do this by hand. **Do not ship a single in-place buffer.**
 - Source the per-cell data from the snapshot cells (the cell path no longer needs
   `FrameProducer`'s glyph-run coalescing) so only dirty rows are read. Reproduce
   `FrameProducer`'s foreground/background/attribute resolution for plain glyphs;
@@ -370,23 +433,65 @@ removed; the existing suites stay green:
 swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|GraphemeClustering|TextDecorationLayout|FrameProducer'
 ```
 
-### M4 [P2] Default on + ADR
+### M4 [P2] Metal 4 reusable command buffers — THE ENCODE WIN (macOS 26)
 
-**Scope.** Flip `useGPUCellPath` default to `true` (keep the flag as an escape
-hatch or remove it). Write `docs/adr/0016-gpu-driven-cell-renderer.md` (0014 and
+**Scope.** M2 removes the per-frame *rebuild* cost; this milestone removes the
+per-frame *encode* cost. `MetalRenderer.render`'s CPU-side command-buffer encode is
+the largest single render slice in the profile (**15.5%**) and M0–M3 leave it
+untouched. On macOS 26 the renderer adopts the **Metal 4** command model: command
+buffers become long-lived, app-allocator-owned objects instead of fire-and-forget
+transients recreated each frame, plus `MTL4ArgumentTable` binding and **residency
+sets** (`MTLResidencySet`). For a terminal this is an ideal fit: the *draw* is
+identical every frame (`instanceCount = cols*rows`, one solid + one glyph pass), so
+the command buffer can be **encoded once and replayed**, while only the persistent
+cell buffer's contents change (the M2 dirty-patch). The residency/barrier model also
+supplies the explicit CPU↔GPU synchronisation the M2 N-buffered cell buffers need.
+
+This milestone is **macOS-26-only by construction** and is *the* reason the plan
+targets macOS 26 (Purpose → Platform target). It **composes with M2, it does not
+replace it**: keep M2's plain-Metal persistent-buffer path as the macOS-26 baseline,
+and < macOS 26 stays on the current renderer regardless.
+
+**Do *not* reach for Indirect Command Buffers here.** ICBs pay off at *thousands* of
+draw calls; Laban issues ~2 instanced draws, so the encode cost is render-pass +
+buffer setup, not draw-call multiplicity — ICBs would add complexity for little gain
+(web research). Metal 4 reusable command buffers attack the actual cost.
+
+**What exists at the end:** on macOS 26, per-frame CPU encode for a mostly-static
+screen approaches zero (command buffer reused); the combined M2+M4 path shows both
+the rebuild share *and* the encode share of the profile collapse. This is a **perf
+milestone** — earn-its-keep: a release microbench must show a net encode-CPU
+reduction or it is reverted.
+
+**Acceptance (release mode, macOS 26):**
+```
+LABAN_RUN_PERF_BENCH=1 swift test -c release --filter <encode microbench>
+# -> per-frame encode CPU on a static screen drops materially vs the M2-only path;
+#    no regression on full-redraw frames.
+swift test --filter GPUCellParityTests
+# -> still byte-identical (the reused command buffer draws the same pixels)
+```
+
+### M5 [P2] Default on (macOS 26) + ADR
+
+**Scope.** Flip `useGPUCellPath` default to `true` **on macOS 26** (keep the flag as
+an escape hatch or remove it; < macOS 26 stays on the current renderer). Write
+`docs/adr/0016-gpu-driven-cell-renderer.md` (0014 and
 0015 already exist — use the next sequential number; re-check `docs/adr/` at write
 time) recording the decision, the profile evidence, the persistent-buffer
-architecture, **and the frame-command contract boundary** (see "Frame-command and
-headless contract" below): the GPU cell path is a Metal-interactive-only
-acceleration; the software/offscreen backend, `/debug/frame-commands`, capture
-replay, and render trace keep consuming the `[FrameCommand]` language. Add the
+architecture, the **macOS-26 `#available` dual-path** (older OSes keep the current
+renderer) and the **Metal 4 command model** (M4), **and the frame-command contract
+boundary** (see "Frame-command and headless contract" below): the GPU cell path is a
+Metal-interactive-only acceleration; the software/offscreen backend,
+`/debug/frame-commands`, capture replay, and render trace keep consuming the
+`[FrameCommand]` language. Add the
 one-line ADR entry to the `AGENTS.md` Decision Index (the `AGENTS.md` "Write a new
 ADR" rule requires it). Update `docs/quality/` if it tracks render performance.
 Re-run the live before/after.
 
 ## Validation and Acceptance
 
-The change is **internal** (same pixels, less CPU), so acceptance is proven three
+The change is **internal** (same pixels, less CPU), so acceptance is proven four
 ways, all reproducible from a clean checkout:
 
 1. **Pixel-parity (correctness).** `swift test --filter GPUCellParityTests` renders
@@ -415,7 +520,7 @@ ways, all reproducible from a clean checkout:
    `FrameProducer.commands` + `buildInstanceList` + `MetalRenderer.render` encode
    share must drop substantially versus the `15fb668` baseline in this plan, with
    GPU utilization staying near 0.4% (Metal System Trace).
-4. **Frame-command contract preserved (M2/M4).** The GPU cell path must not change
+4. **Frame-command contract preserved (M2 onward).** The GPU cell path must not change
    the shared `[FrameCommand]` language or the software backend's output. No single
    existing test covers this, so the gate is two distinct checks — do not conflate
    them:
@@ -469,14 +574,26 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
       libghostty snapshot (which is freed before `makeFrame` returns). The payload is
       **renderer-neutral** (raw cell data); `CellGlyph`/atlas-UV construction lives in
       `MetalRenderer` (it owns `MetalGlyphAtlas`), not in `LabanCore`.
-- [ ] For M2/M4: the `[FrameCommand]` cross-backend contract is preserved — GPU-path
+- [ ] For M2 onward: the `[FrameCommand]` cross-backend contract is preserved — GPU-path
       pixel equivalence is proven by `GPUCellParityTests` (Metal flag-on vs off, *not*
       by `CrossBackendBitmapTests`, which never instantiates `MetalRenderer`);
       `CrossBackendBitmapTests` stays green only as evidence the software path +
       `FrameProducer` commands are unchanged; and `/debug/frame-commands` /
       capture-replay command streams are identical flag-on vs flag-off.
-- [ ] For M4: the ADR uses the next free number (0016+, not the already-taken 0014),
-      and a matching one-line entry was added to the `AGENTS.md` Decision Index.
+- [ ] The GPU path is gated `#available(macOS 26, *)`; on < macOS 26 the flag is inert
+      and the current renderer runs (verify the dual-path compiles and the legacy path
+      is byte-unchanged).
+- [ ] For M1: the cell-path origin is computed bit-for-bit like the current path (same
+      operand order/precision, FMA-contraction pinned) — or the zero-tolerance gate was
+      consciously relaxed to a documented bounded tolerance.
+- [ ] For M2: the persistent cell buffer is N-buffered (or semaphore-gated) to the
+      renderer's in-flight depth — no single in-place-patched buffer the GPU may still
+      be reading.
+- [ ] For M4: the Metal 4 reusable-command-buffer path shows a release-mode encode-CPU
+      reduction (earn-its-keep), stays byte-identical, and is macOS-26-gated.
+- [ ] For M5: the ADR uses the next free number (0016+, not the already-taken 0014),
+      records the macOS-26 dual-path + Metal 4 decision, and a matching one-line entry
+      was added to the `AGENTS.md` Decision Index.
 - [ ] Existing renderer suites green (or failing only via the known environmental
       daemon timeout, identical to `main`).
 - [ ] Records the commit SHA reviewed and a one-line summary; on failure, lists
@@ -501,12 +618,35 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
   dirty-tracking; it needs to consume what exists.
 - **Glyph-atlas regrow invalidates the whole cell buffer** (tile origins change on
   reallocation). M2 must rebuild on regrow; missing this would show stale glyphs.
+- **Web research — only kitty does incremental cell upload; Ghostty/Alacritty rebuild
+  per frame.** kitty keeps a persistent GPU cell buffer and uploads only dirty lines
+  (`has_dirty_text`/`is_dirty`; `reload_all_gpu_data` = full refresh). Ghostty (Metal,
+  closest comparator) and Alacritty rebuild the full instance set every frame and are
+  still fast — so the "convergence" claim was corrected (Decision Log) and the
+  rebuild-per-frame fallback noted. Sources: kitty & Ghostty DeepWiki; Alacritty
+  PR #4373 / issue #5843.
+- **Maths research — the zero-tolerance pixel gate is reachable only with bit-exact
+  origin math.** FP non-associativity + Metal FMA contraction + fixed-point sub-pixel
+  snapping mean an in-shader origin can differ from the CPU origin by a pixel at edges.
+  GLSL/MSL `invariant`/`precise` fix only *same-expression* variance, not divergent
+  formulas. Drives the M1 precondition. Sources: Khronos Type Qualifier wiki; Geeks3D
+  precise qualifier; randomascii FP-determinism; arXiv 2408.05148 (FP non-associativity);
+  NVIDIA IEEE-754 (FMA contraction); scratchapixel rasterization (sub-pixel fixed-point).
+- **Apple Metal Best Practices require triple buffering for CPU-write/GPU-read
+  buffers.** Drives M2's N-buffered cell buffer. Source: Apple "Metal Best Practices:
+  Triple Buffering".
+- **Recent-Metal research — Metal 4 (macOS 26) is the encode lever (now M4).** Metal 4's
+  long-lived command buffers + argument tables + residency sets are built "to minimise
+  CPU overhead" of command encoding — exactly the 15.5% encode slice M0–M3 leave alone.
+  ICBs are a poor fit at ~2 draw calls; residency sets alone, mesh shaders, MetalFX, and
+  ML-in-shaders are minor or irrelevant here. Sources: Apple WWDC25 "Discover Metal 4";
+  Apple "What's New in Metal"; Apple indirect-command-encoding docs.
 
 ## Idempotence and Recovery
 
-Every step is additive and behind `useGPUCellPath` (default off), so the app keeps
-working at all times; reverting is flipping the flag or `git checkout` of the
-renderer files. Tests and benches can be re-run freely. If M2's snapshot-direct cell
+Every step is additive and behind `useGPUCellPath` (default off, and inert on
+< macOS 26), so the app keeps working at all times; reverting is flipping the flag or
+`git checkout` of the renderer files. Tests and benches can be re-run freely. If M2's snapshot-direct cell
 read proves too risky, fall back to the damage-scoped instance-build variant
 (Decision Log) — it reaches a large fraction of the CPU win with provable
 pixel-parity and far less surface area — and record the pivot here.
@@ -540,9 +680,14 @@ pixel-parity and far less surface area — and record the pivot here.
     `CellGlyph`s, and patch the persistent cell buffer (`MetalRenderer.swift`,
     `Shaders.metal`). `CellGlyph` (atlas UVs/metrics) is defined and populated only
     here, never in `LabanCore`.
-- Deployment target is `macOS .v13` (`Package.swift`), but the merged Span work uses
-  macOS-26 APIs behind `#available`; this plan uses no macOS-26-only APIs (plain
-  Metal + buffers), so no availability gating is required.
+- **Platform: macOS 26 first.** Package deployment target stays `macOS .v13`
+  (`Package.swift`), but the entire GPU cell path is gated `#available(macOS 26, *)`
+  and macOS 13–25 keep the current renderer (Purpose → Platform target; Decision Log).
+  M0–M3 use plain Metal + buffers (which *would* run on macOS 13, but the plan does
+  not support or test them there — the gate keeps the surface small). **M4 uses
+  macOS-26-only Metal 4 APIs** (long-lived command buffers, `MTL4ArgumentTable`,
+  `MTLResidencySet`). This matches the merged Span work's `#available` fast-path +
+  untouched-legacy pattern.
 - ADR boundary: per `AGENTS.md`, a change to "rendering architecture" warrants an
-  ADR — written in M4 (`docs/adr/0016-…`, next sequential after the existing 0015),
+  ADR — written in M5 (`docs/adr/0016-…`, next sequential after the existing 0015),
   with the matching `AGENTS.md` Decision Index entry.
