@@ -1,0 +1,51 @@
+#!/usr/bin/env sh
+# Build a *profilable release* Laban.app and install it over ~/Laban.app, with
+# its .dSYM placed next to the bundle so `sample`, Instruments, and xctrace
+# resolve symbols and line numbers.
+#
+# `build-app` defaults to a *debug* (-Onone) bundle: generics go unspecialised,
+# so a debug build mis-reports CPU hot paths (e.g. String/Span generic dispatch
+# that the optimiser removes in release). Profiling the shipped app means
+# profiling release. This wraps `build-app --profile` (release + dSYM, no strip)
+# and replaces the installed bundle.
+#
+# Does NOT launch the app — quit and relaunch Laban yourself to pick up the
+# new build (a windowless launch from the shell grabs the single-instance lock).
+#
+# Usage:
+#   scripts/install-app                          # -> ~/Laban.app  (+ ~/Laban.app.dSYM)
+#   LABAN_INSTALL_DIR=/Applications scripts/install-app
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+install_dir="${LABAN_INSTALL_DIR:-$HOME}"
+dest="${install_dir%/}/Laban.app"
+src=".build/laban/Laban.app"
+
+# Profilable release build: -c release + dSYM emitted next to the bundle, no
+# strip and no path scrub (so Instruments keeps the debug map).
+./scripts/build-app --profile
+
+if [ ! -x "$src/Contents/MacOS/LabanApp" ]; then
+  printf 'install-app failed: %s missing after `build-app --profile`\n' "$src" >&2
+  exit 1
+fi
+
+# Replace the bundle and its debug map in lockstep. A stale .dSYM left beside a
+# new binary would mis-symbolicate by UUID, so it is removed and recopied too.
+# ditto preserves the ad-hoc code signature and bundle layout.
+rm -rf "$dest" "${dest}.dSYM"
+ditto "$src" "$dest"
+if [ -d "${src}.dSYM" ]; then
+  ditto "${src}.dSYM" "${dest}.dSYM"
+fi
+
+stamp=$(/usr/libexec/PlistBuddy -c 'Print :LABANBuildCommit' \
+  "$dest/Contents/Info.plist" 2>/dev/null || echo unknown)
+printf 'install-app: installed profilable release build %s -> %s\n' "$stamp" "$dest"
+if [ -d "${dest}.dSYM" ]; then
+  printf 'install-app: dSYM at %s\n' "${dest}.dSYM"
+fi
+printf 'install-app: quit and relaunch Laban to pick up the new build\n'
