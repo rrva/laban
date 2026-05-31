@@ -144,6 +144,62 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpuRequested.png)
   }
 
+  func testGPUCellPathMatchesClassicForColorSafeAttributes() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    // faint/inverse/blink are colour/visibility-safe: FrameProducer bakes them
+    // into fg/bg before emission, so both paths read the same per-run colour and
+    // the cell path must render them (M4 slice 1) instead of falling back.
+    let commands = attributedFrame(seed: 9)
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-attrs", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(label: "gpu-attrs", commands: commands, damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(
+        gpu.counts.cellGlyphs, 0,
+        "colour-safe attributed runs must render through the GPU cell path")
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-color-safe-attrs",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
+  func testGPUCellPayloadAcceptsColorSafeAttributes() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-color-safe")
+    var faint = payload(seed: 41, changedRow: nil, includedRows: Array(0..<rows))
+    faint.glyphs = faint.glyphs.map {
+      var glyph = $0
+      glyph.attributes = [.faint, .blink]
+      return glyph
+    }
+
+    XCTAssertNil(
+      faint.fallbackReason,
+      "faint/blink payloads stay GPU-cell compatible after M4 slice 1")
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: faint,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)),
+      "the GPU cell builder must accept colour-safe attributed payloads")
+  }
+
   func testGPUCellPayloadPatchesOnlyDirtyRows() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -250,6 +306,39 @@ final class GPUCellParityTests: XCTestCase {
           foreground: changed ? 0xFF_FF_00_FF : 0xDD_EE_EE_FF,
           background: bg,
           attributes: [],
+          source: .terminal))
+    }
+    return commands
+  }
+
+  private func attributedFrame(seed: Int) -> [FrameCommand] {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    // Cycle colour/visibility-safe attribute combinations across rows. Both the
+    // classic and GPU-cell paths read the run's pre-resolved colour, so any
+    // value renders identically — the point is that the attribute bits no longer
+    // force a fallback.
+    let attributeCycle: [TextAttributes] = [
+      [], [.faint], [.bold, .faint], [.inverse], [.blink], [.bold, .italic, .faint], [.italic], [],
+    ]
+    var commands: [FrameCommand] = []
+    for row in 0..<rows {
+      let y = CGFloat(rows - 1 - row) * cellH
+      let base = UInt32((seed + row * 17) & 0xFF)
+      let bg: UInt32 =
+        ((0x10 + base) << 24) | ((0x20 + base) << 16) | ((0x30 + base) << 8) | 0xFF
+      commands.append(
+        .rect(
+          CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+          color: bg,
+          source: .terminal))
+      let line = String((0..<cols).map { ascii[($0 + row + seed) % ascii.count] })
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: 0, y: y),
+          text: line,
+          foreground: 0xCC_DD_EE_FF,
+          background: bg,
+          attributes: attributeCycle[row % attributeCycle.count],
           source: .terminal))
     }
     return commands

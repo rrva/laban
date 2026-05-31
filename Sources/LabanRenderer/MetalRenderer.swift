@@ -1296,7 +1296,7 @@ public final class MetalRenderer: RendererBackend {
   }
 
   private static let gpuCellActiveFlag: UInt32 = 1
-  private static let m2SupportedGPUCellAttributes: TextAttributes = [.bold, .italic]
+  private static let gpuCellSupportedAttributes = TextAttributes.gpuCellRenderableMask
   private static let gridAlignmentEpsilon: CGFloat = 0.001
 
   private struct TerminalGridGeometry: Equatable {
@@ -1668,7 +1668,7 @@ public final class MetalRenderer: RendererBackend {
         glyph.underlineColor == nil,
         !glyph.hasHyperlink,
         glyph.wide == 0,
-        (glyph.attributes.rawValue & ~Self.m2SupportedGPUCellAttributes.rawValue) == 0,
+        (glyph.attributes.rawValue & ~Self.gpuCellSupportedAttributes.rawValue) == 0,
         glyph.scalarValue != nil || (glyph.text.first != nil && glyph.text.count == 1)
       else {
         return false
@@ -1916,7 +1916,7 @@ public final class MetalRenderer: RendererBackend {
         }
 
         if !isSidebar {
-          guard attrs.subtracting(Self.m2SupportedGPUCellAttributes).isEmpty,
+          guard attrs.subtracting(Self.gpuCellSupportedAttributes).isEmpty,
             underlineStyle == .none,
             underlineColor == nil,
             hyperlink == nil,

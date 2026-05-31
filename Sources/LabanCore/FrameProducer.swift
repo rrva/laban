@@ -471,7 +471,7 @@ public struct FrameProducer {
           markFallback(.hyperlink)
         }
 
-        if !cellAttrs.subtracting([.bold, .italic]).isEmpty {
+        if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {
           markFallback(.unsupportedAttributes)
         }
         if cellUnderlineStyle != .none || cellUnderlineColor != nil {

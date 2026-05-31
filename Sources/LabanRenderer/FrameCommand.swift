@@ -62,6 +62,18 @@ public struct TextAttributes: OptionSet, Sendable, Codable, Equatable {
     .bold, .italic, .faint, .inverse, .invisible, .underline, .strikethrough, .overline, .blink,
   ]
 
+  /// Attributes the GPU-driven cell path renders without falling back to the
+  /// classic command path. These are all colour/visibility-safe: `FrameProducer`
+  /// pre-resolves `inverse` (the C bridge swaps fg/bg) and `faint` (fg is blended
+  /// toward bg) into the final colours the cell record already carries, an
+  /// `invisible` cell emits no glyph, and `blink` has no static visual. Font
+  /// selection only reads bold/italic, so none of these change the glyph or its
+  /// geometry. Decorations, clusters, and wide cells are folded in by later M4
+  /// slices as the cell path learns to draw them.
+  public static let gpuCellRenderableMask: TextAttributes = [
+    .bold, .italic, .faint, .inverse, .invisible, .blink,
+  ]
+
   public var names: [String] {
     var result: [String] = []
     if contains(.bold) { result.append("bold") }
