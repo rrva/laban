@@ -994,6 +994,45 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   commands until M4 removes the text-feature fallback and renders them through the GPU
   cell path.
 
+### 2026-05-31 — M4 slice 2 text decorations landed in `gpu-work`
+
+- The GPU-cell path now accepts terminal underline, strikethrough, and overline
+  attributes, plus explicit underline styles/colours. Hyperlinks, wide/cluster cells,
+  procedural cells, and selection/find overlays still fall back to later M4 slices.
+- `TextAttributes.gpuCellRenderableMask` now includes underline/strike/overline, and
+  `FrameProducer.fillTerminalCellPayload` no longer marks plain text decorations as a
+  payload fallback.
+- `MetalRenderer` reuses the existing `TextDecorationLayout`/`emitDecorations`
+  machinery for terminal GPU-cell runs. The command-fed path emits decorations once per
+  terminal glyph run, and the payload path reconstructs adjacent same-style runs before
+  emitting decorations so dotted/dashed/curly underline phase matches the classic
+  coalesced command path.
+- New tests:
+  - `GPUCellParityTests` verifies command-fed and payload-fed GPU-cell text decorations
+    are raw-RGBA identical to classic rendering across single/double/dotted/dashed/curly
+    underline, underline colour, strikethrough, and overline.
+  - `TerminalSurfaceControllerTests.testCellPayloadModeKeepsTextDecorationsOnPayloadPath`
+    verifies decorated local snapshots still skip terminal glyph command coalescing in
+    payload-preferred mode.
+- Validation:
+  - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests'` passed (26
+    tests).
+  - `swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|GraphemeClustering|TextDecorationLayout|FrameProducer'`
+    passed (78 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench` after the slice:
+  - Classic vs GPU-cell full-frame text path, 160x48, p50/p95/p99 CPU:
+    - classic: 6.810 / 7.910 / 8.452 ms, glyphs 6120, cellGlyphs 0, solids 48
+    - gpuCell: 6.823 / 7.870 / 8.431 ms, glyphs 0, cellGlyphs 7680, solids 48
+  - GPU-cell dirty-row payload patch, 160x48, p50:
+    - row 0: payload 28.9 us, payload+upload 29.5 us
+    - row 23: payload 29.2 us, payload+upload 29.5 us
+    - sparse rows 0,23: payload 57.1 us, payload+upload 58.0 us
+    - sparse rows 0,12,23: payload 85.7 us, payload+upload 86.7 us
+    - contiguous 1 row: payload 29.1 us, payload+upload 29.7 us
+    - contiguous 5 rows: payload 143.3 us, payload+upload 144.2 us
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
