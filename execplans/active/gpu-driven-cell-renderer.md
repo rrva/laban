@@ -1112,6 +1112,47 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - contiguous 1 row: payload 27.3 us, payload+upload 27.5 us
     - contiguous 5 rows: payload 134.3 us, payload+upload 136.6 us
 
+### 2026-05-31 — M4 slice 5 selection/find/cursor overlays landed in `gpu-work`
+
+- `TerminalSurfaceFrame` now carries `overlayCommands` beside the cell payload. Local
+  payload mode builds only sidebar/base commands plus the small overlay list for
+  selection, find highlights, and cursor; full terminal glyph/background command
+  coalescing remains skipped when the payload is compatible.
+- `FrameProducer.fillTerminalCellPayload` no longer marks `.selectionOrFindOverlay`
+  fallback. The controller keeps cursor rects out of the payload in steady GPU-cell
+  mode and routes cursor drawing through `overlayCommands`, matching the M4 overlay
+  representation decision.
+- `MetalRenderer` draws command rects as underlays before payload backgrounds, then
+  draws selection/find solids before payload glyphs and cursor in the cursor pass. This
+  keeps terminal-area background commands from covering payload background runs while
+  preserving classic overlay order.
+- New tests:
+  - `GPUCellParityTests.testGPUCellPayloadMatchesClassicForOverlayCommands` verifies
+    payload-fed selection/find/cursor overlays are raw-RGBA identical to classic
+    rendering.
+  - `TerminalSurfaceControllerTests.testCellPayloadModeKeepsSelectionOverlayOnPayloadPath`
+    and `testCellPayloadModeKeepsFindOverlayOnPayloadPath` verify real local snapshots
+    keep the payload path and populate `overlayCommands` without terminal glyph
+    commands.
+- Validation:
+  - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests'` passed (32
+    tests).
+  - `swift test --filter 'GPUCellParity|MetalRendererSmoke|MetalRendererClearColor|GraphemeClustering|TextDecorationLayout|FrameProducer|HyperlinkPlumbing'`
+    passed (85 tests).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed.
+- Release benchmark evidence from `MetalFrameTimingBench` after the slice:
+  - Classic vs GPU-cell full-frame text path, 160x48, p50/p95/p99 CPU:
+    - classic: 7.149 / 8.276 / 8.499 ms, glyphs 6120, cellGlyphs 0, solids 48
+    - gpuCell: 7.102 / 7.988 / 8.144 ms, glyphs 0, cellGlyphs 7680, solids 48
+  - GPU-cell dirty-row payload patch, 160x48, p50:
+    - row 0: payload 28.0 us, payload+upload 28.1 us
+    - row 23: payload 28.7 us, payload+upload 28.8 us
+    - sparse rows 0,23: payload 55.7 us, payload+upload 56.3 us
+    - sparse rows 0,12,23: payload 82.8 us, payload+upload 83.8 us
+    - contiguous 1 row: payload 28.3 us, payload+upload 28.5 us
+    - contiguous 5 rows: payload 139.1 us, payload+upload 139.7 us
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under

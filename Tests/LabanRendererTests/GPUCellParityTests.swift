@@ -341,6 +341,39 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  func testGPUCellPayloadMatchesClassicForOverlayCommands() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let overlays = overlayCommands()
+    let commands = overlayFrame(seed: 37, overlays: overlays)
+    let payload = payload(seed: 37, changedRow: nil, includedRows: Array(0..<rows))
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-payload-overlays", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-overlays",
+      commands: overlays,
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+      XCTAssertGreaterThan(gpu.counts.cursors, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-overlays",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
   func testGPUCellPayloadPatchesOnlyDirtyRows() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -612,6 +645,61 @@ final class GPUCellParityTests: XCTestCase {
       }
     }
     return commands
+  }
+
+  private func overlayFrame(seed: Int, overlays: [FrameCommand]) -> [FrameCommand] {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    var backgrounds: [FrameCommand] = []
+    var glyphs: [FrameCommand] = []
+    for row in 0..<rows {
+      let y = CGFloat(rows - 1 - row) * cellH
+      let base = UInt32((seed + row * 17) & 0xFF)
+      let bg: UInt32 =
+        ((0x10 + base) << 24) | ((0x20 + base) << 16) | ((0x30 + base) << 8) | 0xFF
+      backgrounds.append(
+        .rect(
+          CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+          color: bg,
+          source: .terminal))
+      let line = String((0..<cols).map { ascii[($0 + row + seed) % ascii.count] })
+      glyphs.append(
+        .glyphRun(
+          origin: CGPoint(x: 0, y: y),
+          text: line,
+          foreground: 0xDD_EE_EE_FF,
+          background: bg,
+          attributes: [],
+          source: .terminal))
+    }
+    let cursorCommands = overlays.filter {
+      if case .cursor = $0 { return true }
+      return false
+    }
+    let nonCursorOverlays = overlays.filter {
+      if case .cursor = $0 { return false }
+      return true
+    }
+    return backgrounds + nonCursorOverlays + glyphs + cursorCommands
+  }
+
+  private func overlayCommands() -> [FrameCommand] {
+    let row2Y = CGFloat(rows - 1 - 2) * cellH
+    let row4Y = CGFloat(rows - 1 - 4) * cellH
+    let cursorY = CGFloat(rows - 1 - 1) * cellH
+    return [
+      .selection(
+        CGRect(x: 2 * cellW, y: row2Y, width: 6 * cellW, height: cellH),
+        color: 0x32_5B_66_80),
+      .findMatch(
+        CGRect(x: 11 * cellW, y: row2Y, width: 5 * cellW, height: cellH),
+        color: 0xDB_B3_2D_4D),
+      .findSelected(
+        CGRect(x: 4 * cellW, y: row4Y, width: 7 * cellW, height: cellH),
+        color: 0xEB_C1_3D_B3),
+      .cursor(
+        CGRect(x: 18 * cellW, y: cursorY, width: cellW, height: cellH),
+        color: 0xAD_BC_BC_FF),
+    ]
   }
 
   private func payload(

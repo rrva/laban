@@ -251,6 +251,89 @@ public struct FrameProducer {
     return cmds
   }
 
+  public func overlayCommands(
+    from snap: UnsafePointer<LabanSnapshot>,
+    selection: TerminalSelection?,
+    findState: TerminalFindState? = nil,
+    viewportRowOffset: Int = 0,
+    cursorBlinkVisible: Bool
+  ) -> [FrameCommand] {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    let cw = CGFloat(cellWidth)
+    let ch = CGFloat(cellHeight)
+
+    guard rows > 0, cols > 0 else { return [] }
+
+    var cmds: [FrameCommand] = []
+    cmds.reserveCapacity(4)
+
+    if let sel = selection {
+      for rect in sel.cgRects(
+        rows: rows,
+        cols: cols,
+        cellWidth: cw,
+        cellHeight: ch,
+        originX: originX,
+        originY: originY
+      ) {
+        cmds.append(
+          .selection(
+            CGRect(
+              x: rect.origin.x,
+              y: rect.origin.y + contentYOffset,
+              width: rect.width,
+              height: rect.height),
+            color: Theme.current.selectionBg))
+      }
+    }
+
+    if let findState, findState.isActive, !findState.matches.isEmpty {
+      let selectedMatch = findState.selectedMatch
+      for match in findState.matches where match != selectedMatch {
+        guard
+          let rect = findRect(
+            for: match,
+            viewportRowOffset: viewportRowOffset,
+            rows: rows,
+            cols: cols,
+            cellWidth: cw,
+            cellHeight: ch
+          )
+        else { continue }
+        cmds.append(.findMatch(rect, color: findMatchColor()))
+      }
+      if let selectedMatch,
+        let rect = findRect(
+          for: selectedMatch,
+          viewportRowOffset: viewportRowOffset,
+          rows: rows,
+          cols: cols,
+          cellWidth: cw,
+          cellHeight: ch
+        )
+      {
+        cmds.append(.findSelected(rect, color: findSelectedColor()))
+      }
+    }
+
+    if snapshot.cursor_visible != 0,
+      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      Int(snapshot.cursor_row) < rows,
+      Int(snapshot.cursor_col) < cols
+    {
+      let cx = originX + CGFloat(snapshot.cursor_col) * cw
+      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
+      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+        cmds.append(.cursor(rect, color: Theme.current.cursor))
+      }
+    }
+
+    return cmds
+  }
+
   public func terminalCellPayload(
     from snap: UnsafePointer<LabanSnapshot>,
     includedRows requestedRows: [Int],
@@ -353,7 +436,8 @@ public struct FrameProducer {
     selection: TerminalSelection? = nil,
     findState: TerminalFindState? = nil,
     viewportRowOffset: Int = 0,
-    cursorBlinkVisible: Bool = true
+    cursorBlinkVisible: Bool = true,
+    includeCursor: Bool = true
   ) {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -388,13 +472,6 @@ public struct FrameProducer {
       }
     }
 
-    if selection != nil {
-      markFallback(.selectionOrFindOverlay)
-    }
-    if let findState, findState.isActive, !findState.matches.isEmpty {
-      _ = viewportRowOffset
-      markFallback(.selectionOrFindOverlay)
-    }
     if snapshot.status != 0 {
       markFallback(.exitBanner)
     }
@@ -550,7 +627,8 @@ public struct FrameProducer {
       }
     }
 
-    if snapshot.cursor_visible != 0,
+    if includeCursor,
+      snapshot.cursor_visible != 0,
       snapshot.cursor_blinking == 0 || cursorBlinkVisible,
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols

@@ -1156,7 +1156,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       cursorBlinkVisible = true
       lastCursorBlinkToggleAt = Date()
     }
-    let cmds = surfaceFrame.commands
+    let cmds = surfaceFrame.commands + surfaceFrame.overlayCommands
     // Compute damage hint from libghostty's per-row dirty bits. Tab changes
     // and renderInvalidated force .full because we may be drawing different
     // content into the persistent target. Otherwise translate dirty rows

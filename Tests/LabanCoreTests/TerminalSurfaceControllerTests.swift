@@ -367,7 +367,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(payload.glyphs.contains { $0.utf8Range != nil })
   }
 
-  func testCellPayloadModeFallsBackToCommandsForSelectionOverlay() throws {
+  func testCellPayloadModeKeepsSelectionOverlayOnPayloadPath() throws {
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 20
@@ -399,11 +399,74 @@ final class TerminalSurfaceControllerTests: XCTestCase {
           surfaceScale: 1,
           contentMode: .cellPayloadPreferred)))
 
-    XCTAssertNil(frame.cellPayload)
-    XCTAssertTrue(frame.commands.contains { command in
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertTrue(payload.cursorRects.isEmpty)
+    XCTAssertTrue(frame.overlayCommands.contains { command in
       if case .selection = command { return true }
       return false
     })
+    XCTAssertTrue(frame.overlayCommands.contains { command in
+      if case .cursor = command { return true }
+      return false
+    })
+    let terminalCommands = frame.commands.filter { command in
+      switch command {
+      case .rect(_, _, let source),
+        .glyphRun(_, _, _, _, _, let source, _, _, _):
+        return source == .terminal
+      default:
+        return false
+      }
+    }
+    XCTAssertTrue(terminalCommands.isEmpty)
+  }
+
+  func testCellPayloadModeKeepsFindOverlayOnPayloadPath() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 32
+    let model = try AppModel(initialSize: size)
+    let session = try XCTUnwrap(model.activeTab.flatMap { model.session(forTab: $0.id) })
+
+    _ = session.write(Array("apple banana apple\r\n".utf8))
+    _ = session.poll()
+    XCTAssertNotNil(model.startFind(sessionID: session.id, needle: "apple"))
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let frame = try XCTUnwrap(
+      controller.makeFrame(
+        TerminalSurfaceFrameRequest(
+          frame: 1,
+          viewportWidth: 456,
+          viewportHeight: 64,
+          requireActiveSnapshot: true,
+          surfaceWidth: 456,
+          surfaceHeight: 64,
+          surfaceScale: 1,
+          contentMode: .cellPayloadPreferred)))
+
+    let payload = try XCTUnwrap(frame.cellPayload)
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertTrue(frame.overlayCommands.contains { command in
+      if case .findMatch = command { return true }
+      return false
+    })
+    XCTAssertTrue(frame.overlayCommands.contains { command in
+      if case .findSelected = command { return true }
+      return false
+    })
+    let terminalGlyphCommands = frame.commands.filter { command in
+      if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
+        return source == .terminal
+      }
+      return false
+    }
+    XCTAssertTrue(terminalGlyphCommands.isEmpty)
   }
 
   func testSyncSessionsReportsDirtySessionsAndMarksOnlyInactiveRendered() throws {

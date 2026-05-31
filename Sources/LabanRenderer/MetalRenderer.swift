@@ -1564,6 +1564,11 @@ public final class MetalRenderer: RendererBackend {
           color: rgbaToFloat4(color)))
     }
 
+    for cmd in commands {
+      guard case .rect(let rect, let color, _) = cmd else { continue }
+      appendSolid(rect: rect, color: color)
+    }
+
     switch damage {
     case .full:
       appendSolid(rect: payload.terminalRect, color: payload.defaultBackground)
@@ -1621,8 +1626,6 @@ public final class MetalRenderer: RendererBackend {
 
     for cmd in commands {
       switch cmd {
-      case .rect(let rect, let color, _):
-        appendSolid(rect: rect, color: color)
       case .selection(let rect, let color),
         .findMatch(let rect, let color),
         .findSelected(let rect, let color):

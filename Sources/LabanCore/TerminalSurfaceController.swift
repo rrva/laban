@@ -150,6 +150,7 @@ public struct TerminalSurfaceFrame {
   public var tabId: Tab.ID?
   public var sessionId: Session.ID?
   public var commands: [FrameCommand]
+  public var overlayCommands: [FrameCommand]
   public var rows: Int?
   public var cols: Int?
   public var cursorBlinking: Bool
@@ -163,6 +164,7 @@ public struct TerminalSurfaceFrame {
     tabId: Tab.ID?,
     sessionId: Session.ID?,
     commands: [FrameCommand],
+    overlayCommands: [FrameCommand] = [],
     rows: Int?,
     cols: Int?,
     cursorBlinking: Bool,
@@ -175,6 +177,7 @@ public struct TerminalSurfaceFrame {
     self.tabId = tabId
     self.sessionId = sessionId
     self.commands = commands
+    self.overlayCommands = overlayCommands
     self.rows = rows
     self.cols = cols
     self.cursorBlinking = cursorBlinking
@@ -457,6 +460,7 @@ public final class TerminalSurfaceController {
       cellHeight: CGFloat(cellHeight),
       originY: gridOriginY)
     let cellPayload: TerminalCellPayload?
+    let overlayCommands: [FrameCommand]
     if request.contentMode == .cellPayloadPreferred {
       Self.fillPayloadRows(
         snapshot: UnsafePointer(snap),
@@ -469,10 +473,18 @@ public final class TerminalSurfaceController {
         selection: request.selection,
         findState: findState,
         viewportRowOffset: viewportOffset,
-        cursorBlinkVisible: request.cursorBlinkVisible)
+        cursorBlinkVisible: request.cursorBlinkVisible,
+        includeCursor: false)
       cellPayload = reusableCellPayload
+      overlayCommands = producer.overlayCommands(
+        from: UnsafePointer(snap),
+        selection: request.selection,
+        findState: findState,
+        viewportRowOffset: viewportOffset,
+        cursorBlinkVisible: request.cursorBlinkVisible)
     } else {
       cellPayload = nil
+      overlayCommands = []
     }
     let canSkipTerminalCommands =
       request.contentMode == .cellPayloadPreferred
@@ -497,6 +509,7 @@ public final class TerminalSurfaceController {
       tabId: activeTab.id,
       sessionId: session.id,
       commands: commands,
+      overlayCommands: canSkipTerminalCommands ? overlayCommands : [],
       rows: rows,
       cols: cols,
       cursorBlinking: snapshot.cursor_blinking != 0,
