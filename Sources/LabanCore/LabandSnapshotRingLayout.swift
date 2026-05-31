@@ -594,6 +594,24 @@ public final class LabandSnapshotRingReader {
     guard opened >= 0 else {
       throw LabandSnapshotRingError.fileOpenFailed(attachment.path, errno)
     }
+    // The producer is another process; the descriptor it advertised may name a
+    // file shorter than the attachment's claimed `fileBytes` (a writer that
+    // crashed mid-ftruncate, a truncated or substituted file). mmap succeeds for
+    // a length past EOF, but the first read of a page beyond the file's last
+    // backed page SIGBUSes — uncatchable. Refuse to map more than the file backs.
+    var fileInfo = Darwin.stat()
+    guard Darwin.fstat(opened, &fileInfo) == 0 else {
+      let err = errno
+      Darwin.close(opened)
+      throw LabandSnapshotRingError.fileOpenFailed(attachment.path, err)
+    }
+    guard
+      attachment.fileBytes >= Int(LabandSnapshotRingLayout.fileHeaderBytes),
+      fileInfo.st_size >= off_t(attachment.fileBytes)
+    else {
+      Darwin.close(opened)
+      throw LabandSnapshotRingError.incompatibleHeader("file shorter than mapped length")
+    }
     let mapped = Darwin.mmap(nil, attachment.fileBytes, PROT_READ, MAP_SHARED, opened, 0)
     guard mapped != MAP_FAILED, let mapped else {
       let err = errno
@@ -713,6 +731,29 @@ public final class LabandSnapshotRingReader {
     else {
       throw LabandSnapshotRingError.incompatibleHeader("attachment metadata mismatch")
     }
+    guard
+      attachment.slotCount >= LabandSnapshotRingLayout.minimumSlotCount,
+      attachment.maxRows > 0, attachment.maxCols > 0
+    else {
+      throw LabandSnapshotRingError.incompatibleHeader("degenerate ring geometry")
+    }
+    // A slot base is `fileHeaderBytes + index * slotStride`; fileHeaderBytes is
+    // 8-aligned, so a stride that is not a multiple of 8 misaligns every odd
+    // slot and the acquire load of its seqlock SIGBUSes on a misaligned address
+    // (the labpty 1efadf3 atomic-load class). A stride shorter than the
+    // header+dirty+cells span would let a cell or string read run past the slot.
+    let minimumStride = LabandSnapshotRingLayout.slotStride(
+      maxRows: attachment.maxRows, maxCols: attachment.maxCols, stringTableBytes: 0)
+    guard attachment.slotStride % 8 == 0, attachment.slotStride >= minimumStride else {
+      throw LabandSnapshotRingError.incompatibleHeader("slot stride misaligned or too small")
+    }
+    guard
+      attachment.fileBytes
+        >= LabandSnapshotRingLayout.fileBytes(
+          slotCount: attachment.slotCount, slotStride: attachment.slotStride)
+    else {
+      throw LabandSnapshotRingError.incompatibleHeader("file shorter than slot span")
+    }
   }
 
   private struct SlotRead {
@@ -788,7 +829,7 @@ public final class LabandSnapshotRingReader {
         + (row * maxCols + col) * Int(LabandSnapshotRingLayout.cellBytes))
     let stringsBase = slot.advanced(
       by: LabandSnapshotRingLayout.stringTableOffset(maxRows: maxRows, maxCols: maxCols))
-    let stringTableBytes = Int(
+    let stringTableBytes = clampedStringTableBytes(
       slot.loadU32(LabandSnapshotRingLayout.SlotHeaderOffset.stringTableBytes))
     let text = readCellText(
       cell: cell,
@@ -819,7 +860,7 @@ public final class LabandSnapshotRingReader {
       by: LabandSnapshotRingLayout.cellsOffset(maxRows: maxRows))
     let stringsBase = slot.advanced(
       by: LabandSnapshotRingLayout.stringTableOffset(maxRows: maxRows, maxCols: maxCols))
-    let stringTableBytes = Int(
+    let stringTableBytes = clampedStringTableBytes(
       slot.loadU32(LabandSnapshotRingLayout.SlotHeaderOffset.stringTableBytes))
     let cellBytes = Int(LabandSnapshotRingLayout.cellBytes)
     var cells: [LabandSnapshotCell] = []
@@ -864,6 +905,19 @@ public final class LabandSnapshotRingReader {
       cells: cells,
       synchronizedOutput: (flags & LabandSnapshotRingLayout.SlotFlag.synchronizedOutput) != 0
     )
+  }
+
+  /// The slot advertises its used string-table size in its own header, but the
+  /// region only spans `slotStride - stringTableOffset` bytes. A corrupt or
+  /// hostile producer can claim more; clamping to the real capacity keeps
+  /// `readCellText`'s `stringOffset + stringLength <= stringTableBytes` bound
+  /// honest, so a string read can never leave the slot (and thus the mapping).
+  private func clampedStringTableBytes(_ raw: UInt32) -> Int {
+    let capacity = max(
+      0,
+      slotStride
+        - LabandSnapshotRingLayout.stringTableOffset(maxRows: maxRows, maxCols: maxCols))
+    return min(Int(raw), capacity)
   }
 
   private func readCellText(
