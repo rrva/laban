@@ -77,6 +77,8 @@ public final class Session {
   private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
   private var bellCallbackUserdata: UnsafeMutableRawPointer?
   private var oscNotificationCallbackUserdata: UnsafeMutableRawPointer?
+  private var clipboardCallbackUserdata: UnsafeMutableRawPointer?
+  private var workingDirectoryCallbackUserdata: UnsafeMutableRawPointer?
   private var shellIntegrationCallbackUserdata: UnsafeMutableRawPointer?
   public weak var captureSink: CaptureSink? {
     didSet {
@@ -122,6 +124,80 @@ public final class Session {
     didSet {
       callbackState.setOSCNotificationHandler(onOSCNotification)
       updateOSCNotificationCallback()
+    }
+  }
+
+  /// Set to observe OSC 7 working-directory reports — `ESC ] 7 ;
+  /// file://<host>/<path> ST` — that a shell emits on each prompt. Fires with
+  /// the decoded absolute path on the same thread that drove `poll()` /
+  /// `feedOutput(_:)`. Observing is optional: the reported cwd is adopted as the
+  /// session's authoritative directory regardless (it flows through
+  /// `processMetadata().cwd`), so this handler is for observers that want the
+  /// change immediately (e.g. the debug event stream). A remote-host report is
+  /// filtered out in the C layer and never fires this.
+  public var onWorkingDirectory: ((String) -> Void)? {
+    didSet {
+      callbackState.setWorkingDirectoryHandler(onWorkingDirectory)
+      updateWorkingDirectoryCallback()
+    }
+  }
+
+  /// Set to receive OSC 52 clipboard *writes* — `ESC ] 52 ; c ; <base64> ST`,
+  /// emitted by a program (e.g. an editor or coding agent reached over SSH)
+  /// that wants to place data on the macOS clipboard. Fires with the already
+  /// base64-decoded bytes on the same thread that drove `poll()` /
+  /// `feedOutput(_:)`; the AppKit consumer hops to the main queue to touch
+  /// `NSPasteboard`. An invalid or oversized payload is dropped before this
+  /// fires. Always honored when set — there is no opt-in for write.
+  public var onClipboardWrite: ((Data) -> Void)? {
+    didSet {
+      callbackState.setClipboardWriteHandler(onClipboardWrite)
+      updateClipboardCallbacks()
+    }
+  }
+
+  /// Set to receive OSC 52 clipboard *read* queries — `ESC ] 52 ; c ; ? ST`.
+  /// Fires with the requested selection string ONLY when `clipboardReadEnabled`
+  /// is true (default false), so a remote program cannot read the host
+  /// clipboard unasked. The handler should read the clipboard off the reader
+  /// thread (hop to main) and answer with `respondClipboardRead`.
+  public var onClipboardReadRequest: ((String) -> Void)? {
+    didSet {
+      callbackState.setClipboardReadHandler(onClipboardReadRequest)
+      updateClipboardCallbacks()
+    }
+  }
+
+  /// Whether to answer OSC 52 read queries. Defaults to false: writes (copy
+  /// from a remote program to the host clipboard) work out of the box, but a
+  /// read query is dropped with no reply unless the host opts in. Mirrors the
+  /// security stance of xterm's `allowWindowOps`.
+  public var clipboardReadEnabled: Bool = false {
+    didSet {
+      guard oldValue != clipboardReadEnabled else { return }
+      handleLock.lock()
+      defer { handleLock.unlock() }
+      guard !isClosed, let h = handle else { return }
+      laban_session_set_osc52_read_enabled(h, clipboardReadEnabled ? 1 : 0)
+    }
+  }
+
+  /// Answer an OSC 52 read query by writing the host clipboard back to the
+  /// child PTY as `ESC ] 52 ; <selection> ; <base64> ST`. Call from an
+  /// `onClipboardReadRequest` handler after reading `NSPasteboard`.
+  public func respondClipboardRead(selection: String, data: Data) {
+    let base64 = Array(OSC52Clipboard.encodeRead(data).utf8)
+    let selectionBytes = Array(selection.utf8)
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return }
+    selectionBytes.withUnsafeBufferPointer { sel in
+      sel.withMemoryRebound(to: CChar.self) { selChar in
+        base64.withUnsafeBufferPointer { b64 in
+          _ = laban_session_respond_clipboard_osc52(
+            h, selChar.baseAddress, selChar.count, b64.baseAddress, b64.count)
+        }
+      }
     }
   }
 
@@ -393,6 +469,8 @@ public final class Session {
       clearTabStatusCallback(handle: h)
       clearBellCallback(handle: h)
       clearOSCNotificationCallback(handle: h)
+      clearClipboardCallbacks(handle: h)
+      clearWorkingDirectoryCallback(handle: h)
       clearShellIntegrationCallback(handle: h)
       laban_session_destroy(h)
       handle = nil
@@ -1231,6 +1309,33 @@ public final class Session {
     }
   }
 
+  private func updateClipboardCallbacks() {
+    guard !isClosed, let h = handle else { return }
+    if callbackState.hasClipboardHandlers {
+      if clipboardCallbackUserdata == nil {
+        clipboardCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
+      laban_session_set_osc_clipboard_callbacks(
+        h, sessionClipboardWriteCallback, sessionClipboardReadCallback,
+        clipboardCallbackUserdata)
+    } else {
+      clearClipboardCallbacks(handle: h)
+    }
+  }
+
+  private func updateWorkingDirectoryCallback() {
+    guard !isClosed, let h = handle else { return }
+    if callbackState.hasWorkingDirectoryHandler {
+      if workingDirectoryCallbackUserdata == nil {
+        workingDirectoryCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
+      laban_session_set_osc_working_directory_callback(
+        h, sessionWorkingDirectoryCallback, workingDirectoryCallbackUserdata)
+    } else {
+      clearWorkingDirectoryCallback(handle: h)
+    }
+  }
+
   private func clearCaptureCallback(handle h: OpaquePointer) {
     laban_session_set_capture_callback(h, nil, nil)
     if let userdata = captureCallbackUserdata {
@@ -1263,6 +1368,22 @@ public final class Session {
     }
   }
 
+  private func clearClipboardCallbacks(handle h: OpaquePointer) {
+    laban_session_set_osc_clipboard_callbacks(h, nil, nil, nil)
+    if let userdata = clipboardCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      clipboardCallbackUserdata = nil
+    }
+  }
+
+  private func clearWorkingDirectoryCallback(handle h: OpaquePointer) {
+    laban_session_set_osc_working_directory_callback(h, nil, nil)
+    if let userdata = workingDirectoryCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      workingDirectoryCallbackUserdata = nil
+    }
+  }
+
   private func clearShellIntegrationCallback(handle h: OpaquePointer) {
     laban_session_set_osc133_callback(h, nil, nil)
     if let userdata = shellIntegrationCallbackUserdata {
@@ -1280,6 +1401,9 @@ private final class SessionCallbackState {
   private var tabStatusHandler: ((Session.TabStatusUpdate) -> Void)?
   private var bellHandler: ((UInt64) -> Void)?
   private var oscNotificationHandler: ((String) -> Void)?
+  private var clipboardWriteHandler: ((Data) -> Void)?
+  private var clipboardReadHandler: ((String) -> Void)?
+  private var workingDirectoryHandler: ((String) -> Void)?
   private var shellIntegrationHandler: ((ShellIntegrationState) -> Void)?
   private var shellIntegration = ShellIntegrationState()
 
@@ -1311,6 +1435,18 @@ private final class SessionCallbackState {
     return oscNotificationHandler != nil
   }
 
+  var hasClipboardHandlers: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return clipboardWriteHandler != nil || clipboardReadHandler != nil
+  }
+
+  var hasWorkingDirectoryHandler: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return workingDirectoryHandler != nil
+  }
+
   func setCaptureSink(_ sink: CaptureSink?) {
     lock.lock()
     captureSink = sink
@@ -1338,6 +1474,24 @@ private final class SessionCallbackState {
   func setOSCNotificationHandler(_ handler: ((String) -> Void)?) {
     lock.lock()
     oscNotificationHandler = handler
+    lock.unlock()
+  }
+
+  func setClipboardWriteHandler(_ handler: ((Data) -> Void)?) {
+    lock.lock()
+    clipboardWriteHandler = handler
+    lock.unlock()
+  }
+
+  func setClipboardReadHandler(_ handler: ((String) -> Void)?) {
+    lock.lock()
+    clipboardReadHandler = handler
+    lock.unlock()
+  }
+
+  func setWorkingDirectoryHandler(_ handler: ((String) -> Void)?) {
+    lock.lock()
+    workingDirectoryHandler = handler
     lock.unlock()
   }
 
@@ -1389,6 +1543,24 @@ private final class SessionCallbackState {
     defer { lock.unlock() }
     return oscNotificationHandler
   }
+
+  func clipboardWriteTarget() -> ((Data) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return clipboardWriteHandler
+  }
+
+  func clipboardReadTarget() -> ((String) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return clipboardReadHandler
+  }
+
+  func workingDirectoryTarget() -> ((String) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return workingDirectoryHandler
+  }
 }
 
 private let sessionBellCallback:
@@ -1407,6 +1579,57 @@ private let sessionOSCNotificationCallback:
     let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
     let message = String(decoding: UnsafeBufferPointer(start: text, count: len), as: UTF8.self)
     state.oscNotificationTarget()?(message)
+  }
+
+/// OSC 52 write: the C scanner hands us the raw base64 payload. Decode + cap
+/// here (the codec is shared with the headless runtime and unit-tested) and
+/// deliver the clipboard bytes; a malformed or oversized payload is dropped.
+private let sessionClipboardWriteCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?, OpaquePointer?,
+    UnsafePointer<CChar>?, Int,
+    UnsafePointer<UInt8>?, Int
+  ) -> Void = { userdata, _, _, _, base64, base64Len in
+    guard let userdata, let base64, base64Len > 0 else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    guard let handler = state.clipboardWriteTarget() else { return }
+    let bytes = Array(UnsafeBufferPointer(start: base64, count: base64Len))
+    guard let data = OSC52Clipboard.decodeWrite(base64: bytes) else { return }
+    handler(data)
+  }
+
+/// OSC 52 read query: deliver the requested selection string. Only fires when
+/// read is enabled (the C side gates on osc52_read_enabled).
+private let sessionClipboardReadCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?, OpaquePointer?, UnsafePointer<CChar>?, Int
+  ) -> Void = { userdata, _, selection, selectionLen in
+    guard let userdata else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    guard let handler = state.clipboardReadTarget() else { return }
+    let sel: String
+    if let selection, selectionLen > 0 {
+      sel = selection.withMemoryRebound(to: UInt8.self, capacity: selectionLen) {
+        String(decoding: UnsafeBufferPointer(start: $0, count: selectionLen), as: UTF8.self)
+      }
+    } else {
+      sel = "c"
+    }
+    handler(sel)
+  }
+
+/// OSC 7 working-directory report: deliver the decoded absolute path.
+private let sessionWorkingDirectoryCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?, OpaquePointer?, UnsafePointer<CChar>?, Int
+  ) -> Void = { userdata, _, path, len in
+    guard let userdata, let path, len > 0 else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    guard let handler = state.workingDirectoryTarget() else { return }
+    let cwd = path.withMemoryRebound(to: UInt8.self, capacity: len) {
+      String(decoding: UnsafeBufferPointer(start: $0, count: len), as: UTF8.self)
+    }
+    handler(cwd)
   }
 
 private let sessionShellIntegrationCallback:

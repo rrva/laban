@@ -129,13 +129,20 @@ typedef struct {
  *   - OSC 9;<text>         -> desktop notification (e.g. Codex turn-complete).
  *     Delivered to osc_notification_callback. ConEmu progress (OSC 9;4;...) is
  *     skipped.
+ *   - OSC 52;<Pc>;<Pd>     -> clipboard set (Pd base64) / query (Pd '?').
+ *     Bridged to the macOS clipboard via osc_clipboard_{write,read}_callback so
+ *     a program reached over SSH can copy to / read from the host pasteboard.
+ *   - OSC 7;file://<host>/<path> -> shell working-directory report. Adopted as
+ *     the session's authoritative cwd (preferred over proc_pidinfo in
+ *     laban_session_process_metadata) when the host is local; also delivered to
+ *     osc_cwd_callback. A remote host (e.g. an SSH shell) is ignored.
  * Same observe-and-act-in-parallel approach as the OSC 133 / OSC 21337 scanners
  * above; every byte still flows unchanged to libghostty. */
 typedef enum {
     OH_NORMAL = 0,
     OH_AFTER_ESC,
     OH_OSC_NUM,
-    OH_BODY,                /* payload of an OSC we care about (9/10/11) */
+    OH_BODY,                /* payload of an OSC we care about (7/9/10/11/52) */
     OH_BODY_AFTER_ESC,
     OH_BODY_OTHER,          /* payload of an OSC we ignore: skip to terminator */
     OH_BODY_OTHER_AFTER_ESC,
@@ -144,7 +151,20 @@ typedef enum {
 } OSCHostState;
 
 #define OSC_HOST_NUM_MAX 8        /* "11" + room */
-#define OSC_HOST_PAYLOAD_MAX 512  /* notification text; color queries are tiny */
+/* Color queries are tiny and notification text is short, but an OSC 7
+ * `file://host/path` cwd report can approach a percent-encoded PATH_MAX, so the
+ * inline payload is sized to hold a realistic file:// URL. (Clipboard data is
+ * far larger and uses the separate osc52_buf below, not this buffer.) */
+#define OSC_HOST_PAYLOAD_MAX 2048
+
+/* OSC 52 clipboard payloads can be large (Codex caps copies at 100 KB raw, so
+ * ~133 KB base64), far past the inline OSC_HOST_PAYLOAD_MAX. They accumulate in
+ * a separate heap buffer (osc52_buf) allocated lazily on the first OSC 52 byte,
+ * grown up to this cap, and freed at session destroy. A payload past the cap is
+ * dropped (clipboard left untouched) rather than truncated. 256 KiB leaves
+ * comfortable headroom over Codex's limit while staying well under the 10 MiB
+ * paste ceiling. */
+#define OSC_HOST_OSC52_MAX (256 * 1024)
 
 typedef struct {
     OSCHostState state;
@@ -154,6 +174,12 @@ typedef struct {
     char payload[OSC_HOST_PAYLOAD_MAX];
     size_t payload_len;
     int payload_overflow;
+
+    /* OSC 52 accumulation (used only when osc_number == 52). */
+    char *osc52_buf;          /* lazily heap-allocated; NULL until first use */
+    size_t osc52_len;
+    size_t osc52_cap;
+    int osc52_overflow;
 } LabanOSCHostScanner;
 
 struct LabanSession {
@@ -225,6 +251,22 @@ struct LabanSession {
     LabanOSCHostScanner osc_host_scanner;
     LabanOSCNotificationCallback osc_notification_callback;
     void *osc_notification_userdata;
+
+    /* OSC 52 clipboard bridge (osc_host.c). Write is always honored when a
+     * write callback is set; read fires only when osc52_read_enabled is set
+     * (default 0 — a remote query cannot read the host clipboard unasked). */
+    LabanOSCClipboardWriteCallback osc_clipboard_write_callback;
+    LabanOSCClipboardReadCallback osc_clipboard_read_callback;
+    void *osc_clipboard_userdata;
+    int osc52_read_enabled;
+
+    /* OSC 7 working-directory report (osc_host.c). osc7_cwd holds the last
+     * local-host cwd a shell reported; laban_session_process_metadata prefers it
+     * over the proc_pidinfo cwd once valid. osc_cwd_callback observes reports. */
+    char osc7_cwd[PATH_MAX];
+    int osc7_cwd_valid;
+    LabanOSCWorkingDirectoryCallback osc_cwd_callback;
+    void *osc_cwd_userdata;
 
     uint64_t bell_count;
     LabanBellCallback bell_callback;

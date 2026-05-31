@@ -468,6 +468,118 @@ int laban_session_set_osc_notification_callback(
 );
 
 /*
+ * OSC 52 clipboard bridge — `ESC ] 52 ; <Pc> ; <Pd> BEL/ST`.
+ *
+ * libghostty-vt parses OSC 52 (as `clipboard_contents`) but its VT-only C API
+ * registers no clipboard sink, so the sequence is parsed and dropped. Laban's
+ * osc_host.c scanner closes the gap the same observe-and-act way it answers OSC
+ * 10/11 and surfaces OSC 9 — letting a program running under Laban (e.g. an
+ * editor or coding agent reached over SSH, where the native clipboard is out of
+ * reach) place data on, or read data from, the macOS clipboard.
+ *
+ * `Pc` is the selection list (`c` clipboard, `p` primary, `s`, `q`, `0`-`7`).
+ * macOS has a single general pasteboard, so the selection is informational: it
+ * is delivered to the callbacks and echoed verbatim in a read reply, but every
+ * selection maps to the same pasteboard. `selection` points at `selection_len`
+ * bytes that are NOT NUL-terminated and valid only for the call.
+ *
+ * WRITE (`Pd` is base64): `write_callback` fires with the raw base64 payload
+ * (NOT decoded — the Swift bridge decodes with the platform base64 decoder and
+ * enforces the size cap). The callback runs while the session lock is held on
+ * the thread driving poll()/feed_output(); copy what you need and return fast.
+ *
+ * READ (`Pd` is a lone `?`): `read_callback` fires ONLY when OSC 52 read has
+ * been explicitly enabled (see laban_session_set_osc52_read_enabled). When read
+ * is disabled — the default — a `?` query is dropped with no reply, so a remote
+ * program cannot exfiltrate the host clipboard without opt-in. The handler is
+ * expected to read the system clipboard off the lock (hop to the main queue)
+ * and answer with laban_session_respond_clipboard_osc52.
+ *
+ * Pass NULL callbacks to disable. An oversized payload (past the scanner's OSC
+ * 52 cap) is dropped without firing either callback.
+ */
+typedef void (*LabanOSCClipboardWriteCallback)(
+    void *userdata,
+    LabanSession *session,
+    const char *selection,
+    size_t selection_len,
+    const uint8_t *base64,
+    size_t base64_len
+);
+
+typedef void (*LabanOSCClipboardReadCallback)(
+    void *userdata,
+    LabanSession *session,
+    const char *selection,
+    size_t selection_len
+);
+
+int laban_session_set_osc_clipboard_callbacks(
+    LabanSession *session,
+    LabanOSCClipboardWriteCallback write_callback,
+    LabanOSCClipboardReadCallback read_callback,
+    void *userdata
+);
+
+/*
+ * Enable (non-zero) or disable (zero, the default) answering OSC 52 read
+ * queries. While disabled, `ESC ] 52 ; c ; ? ST` fires no read callback and
+ * produces no PTY reply. Returns 0 on success, -1 on a NULL/closed session.
+ */
+int laban_session_set_osc52_read_enabled(LabanSession *session, int enabled);
+
+/*
+ * Answer an OSC 52 read query: writes `ESC ] 52 ; <selection> ; <base64> ST`
+ * back to the child PTY (the terminal-response channel, captured to
+ * terminal-response.bin). `base64` is the already-encoded clipboard contents;
+ * `selection` should echo the queried selection (e.g. "c"). Intended to be
+ * called from the read-callback handler after it has read the system clipboard.
+ * Returns 0 on success, -1 on invalid input or a failed PTY write.
+ */
+int laban_session_respond_clipboard_osc52(
+    LabanSession *session,
+    const char *selection,
+    size_t selection_len,
+    const uint8_t *base64,
+    size_t base64_len
+);
+
+/*
+ * OSC 7 working-directory report — `ESC ] 7 ; file://<host>/<path> BEL/ST`.
+ *
+ * A shell (via its precmd hook) emits OSC 7 on each prompt to tell the terminal
+ * its current directory. libghostty-vt parses it but the VT-only API does not
+ * surface it, so Laban's osc_host.c scanner observes it (same observe pattern as
+ * OSC 9). The reported path is also adopted as the session's authoritative cwd:
+ * `laban_session_process_metadata` returns it in preference to the
+ * `proc_pidinfo` working directory, which can lag or mis-attribute when the
+ * foreground process differs from the shell's logical cwd.
+ *
+ * The `<host>` authority is validated: an empty host, `localhost`, or a match
+ * to the local hostname is accepted; any other host (e.g. a remote shell over
+ * SSH reporting a path that does not exist locally) is ignored, so the local
+ * `proc_pidinfo` cwd stands. The path is percent-decoded and must be absolute.
+ *
+ * This callback is optional — observing it is not required for the cwd-adoption
+ * behaviour above, which is always active. When set, it fires with the decoded
+ * absolute path (NOT NUL-terminated, valid only for the call) while the session
+ * lock is held on the poll()/feed_output() thread; copy and return fast. Pass
+ * NULL to disable.
+ */
+typedef void (*LabanOSCWorkingDirectoryCallback)(
+    void *userdata,
+    LabanSession *session,
+    const char *path,
+    size_t len
+);
+
+int laban_session_set_osc_working_directory_callback(
+    LabanSession *session,
+    LabanOSCWorkingDirectoryCallback callback,
+    void *userdata
+);
+
+/*
  * Feed captured PTY output bytes directly into the VT parser during replay.
  * This is intentionally named for replay so callers do not confuse terminal
  * byte replay with user input written to a live child process.

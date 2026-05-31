@@ -59,7 +59,13 @@ int laban_session_process_metadata(
     if (out_foreground_pid) *out_foreground_pid = foreground_pid;
 
     if (foreground_pid <= 0) {
-        copy_cstr(cwd_buf, cwd_capacity, s->launch_cwd);
+        /* A shell-reported OSC 7 cwd outlives the foreground process and is the
+         * best logical cwd we have once the child is gone. */
+        if (s->osc7_cwd_valid && s->osc7_cwd[0]) {
+            copy_cstr(cwd_buf, cwd_capacity, s->osc7_cwd);
+        } else {
+            copy_cstr(cwd_buf, cwd_capacity, s->launch_cwd);
+        }
         return 0;
     }
 
@@ -78,6 +84,11 @@ int laban_session_process_metadata(
     }
 
     if (cwd_buf && cwd_capacity > 0) {
+        /* A shell's OSC 7 report is the authoritative logical cwd: it survives a
+         * foreground subprocess whose own cwd differs, and reflects a `cd` the
+         * kernel vnode path can lag on. Fall back to proc_pidinfo, then to the
+         * launch cwd. (Remote-host OSC 7 reports were rejected at parse time, so
+         * a valid osc7_cwd is always a local path.) */
         struct proc_vnodepathinfo info;
         memset(&info, 0, sizeof(info));
         int rc = proc_pidinfo(
@@ -87,7 +98,9 @@ int laban_session_process_metadata(
             &info,
             sizeof(info)
         );
-        if (rc == (int)sizeof(info) && info.pvi_cdir.vip_path[0]) {
+        if (s->osc7_cwd_valid && s->osc7_cwd[0]) {
+            copy_cstr(cwd_buf, cwd_capacity, s->osc7_cwd);
+        } else if (rc == (int)sizeof(info) && info.pvi_cdir.vip_path[0]) {
             copy_cstr(cwd_buf, cwd_capacity, info.pvi_cdir.vip_path);
         } else {
             copy_cstr(cwd_buf, cwd_capacity, s->launch_cwd);

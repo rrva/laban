@@ -98,6 +98,36 @@ public final class AppModel {
   /// `Session.onOSCNotification` stays owned by AppModel.
   public var onAgentNotification: ((Tab.ID, String) -> Void)?
 
+  /// Broadcast when a tab's program copies to the clipboard via OSC 52
+  /// (`ESC ] 52 ; c ; <base64> ST`) — e.g. a coding agent reached over SSH,
+  /// where the native clipboard is unreachable. Dispatched to the main queue
+  /// with the originating tab and the already base64-decoded bytes. The AppKit
+  /// host writes `NSPasteboard`; the debug runtime records it. Single broadcast
+  /// point so `Session.onClipboardWrite` stays owned by AppModel.
+  public var onClipboardWrite: ((Tab.ID, Data) -> Void)?
+
+  /// Supplies the current host clipboard bytes when a tab's program issues an
+  /// OSC 52 *read* query (`ESC ] 52 ; c ; ? ST`). Invoked on the main queue;
+  /// return nil for "no/empty clipboard". The AppKit host reads `NSPasteboard`;
+  /// the debug runtime returns its debug clipboard. Only consulted when
+  /// `osc52ReadEnabled` is true (read is off by default — see that flag).
+  public var clipboardReadProvider: (() -> Data?)?
+
+  /// Whether sessions answer OSC 52 read queries. Default false: copy-from-a-
+  /// remote-program (write) works unconditionally, but a read query is dropped
+  /// with no reply unless the host opts in, so a remote process cannot pull the
+  /// host clipboard unasked. Applied to each session as it is attached.
+  public var osc52ReadEnabled: Bool = false
+
+  /// Broadcast when a tab's shell reports its working directory via OSC 7.
+  /// Dispatched to the main queue with the tab and the decoded absolute path.
+  /// The cwd is already adopted as the session's authoritative directory (it
+  /// flows through `processMetadata().cwd` into `titleMetadata.workspace.cwd` on
+  /// the next metadata sync); this hook is for observers that want it
+  /// immediately — chiefly the debug event stream. Single broadcast point so
+  /// `Session.onWorkingDirectory` stays owned by AppModel.
+  public var onWorkingDirectoryChange: ((Tab.ID, String) -> Void)?
+
   /// Optional logger invoked for each tab that fails to spawn during
   /// `replaceTabs(from:)`. Production wires this to `AppLog` so
   /// restore failures don't disappear silently.
@@ -1500,7 +1530,43 @@ public final class AppModel {
     attachTabStatus(session: session, tabId: tabId)
     attachBellAttention(session: session, tabId: tabId)
     attachOSCNotification(session: session, tabId: tabId)
+    attachClipboard(session: session, tabId: tabId)
+    attachWorkingDirectory(session: session, tabId: tabId)
     attachShellIntegration(session: session, tabId: tabId)
+  }
+
+  /// Re-broadcast OSC 7 working-directory reports on the main queue. The cwd is
+  /// adopted authoritatively in the C layer (see `processMetadata`), so this is
+  /// only an observability hook; it does not itself mutate `workspace.cwd` (the
+  /// metadata sync owns that write, now sourced from the OSC 7 cwd).
+  private func attachWorkingDirectory(session: Session, tabId: Tab.ID) {
+    session.onWorkingDirectory = { [weak self] cwd in
+      DispatchQueue.main.async { [weak self] in
+        self?.onWorkingDirectoryChange?(tabId, cwd)
+      }
+    }
+  }
+
+  /// Bridge the session's OSC 52 clipboard callbacks to the host. The C
+  /// callbacks fire on the reader thread with the session lock held, so — like
+  /// `attachOSCNotification` — both the pasteboard write and the read reply hop
+  /// to the main queue (the read reply also keeps `NSPasteboard` off the reader
+  /// thread). Write is wired unconditionally; read fires only when the session
+  /// has read enabled, set here from `osc52ReadEnabled`.
+  private func attachClipboard(session: Session, tabId: Tab.ID) {
+    session.clipboardReadEnabled = osc52ReadEnabled
+    session.onClipboardWrite = { [weak self] data in
+      DispatchQueue.main.async { [weak self] in
+        self?.onClipboardWrite?(tabId, data)
+      }
+    }
+    session.onClipboardReadRequest = { [weak self, weak session] selection in
+      DispatchQueue.main.async { [weak self, weak session] in
+        guard let session else { return }
+        let data = self?.clipboardReadProvider?() ?? Data()
+        session.respondClipboardRead(selection: selection, data: data)
+      }
+    }
   }
 
   /// Subscribe to OSC 133 transitions and re-broadcast them on the main
