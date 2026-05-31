@@ -88,7 +88,7 @@ stay in the codebase permanently** and are user-selectable (M6).
 - [x] M0 — Renderer-selection scaffold + pixel-parity & head-to-head comparison harness
 - [x] M1 — Classic renderer, damage-scoped incremental rebuild ("old but fixed"; all OSes; the baseline)
 - [x] M2 — GPU-driven: text-only cell path, whole-buffer rebuild each frame, pixel-identical (macOS 26)
-- [ ] M3 — GPU-driven: persistent cell buffer + dirty-row-only patching (the CPU rebuild win)
+- [x] M3 — GPU-driven: persistent cell buffer + dirty-row-only patching (the CPU rebuild win)
 - [ ] M4 — GPU-driven: feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
 - [ ] M5 — GPU-driven: Metal 4 command-allocator/command-buffer reuse + argument tables (encode-*overhead* reduction, behind a proof spike; macOS 26 only)
 - [ ] M6 — Expose renderer choice as a user setting; keep both renderers; record head-to-head comparison; ADR
@@ -924,7 +924,7 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     pixel-identical and within noise of classic, but it is not a CPU win yet. The CPU
     win is still M3's dirty-row-only patching.
 
-### 2026-05-31 — M3 payload-routing groundwork landed, M3 remains open
+### 2026-05-31 — M3 persistent payload routing landed in `gpu-work`
 
 - Added the renderer-neutral `TerminalCellPayload` type in `LabanRenderer` and wired
   `TerminalSurfaceController` to populate it while the local `LabanSnapshot` is alive.
@@ -986,13 +986,13 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     - contiguous 1 row: command patch 95.5 us, payload 13.5 us
     - contiguous 5 rows: command patch 137.9 us, payload 67.1 us
 - `TerminalCellPayloadAllocationBench` evidence: 10,000 warmed one-dirty-row payload
-  builds reported `storageGrowthEvents=0` and `perFrame=1.867 us` in release. The routed
+  builds reported `storageGrowthEvents=0` and `perFrame=2.107 us` in release. The routed
   dirty-row bench reported classic command production plus M1 scoped rebuild at
-  `112.8 us` p50 versus payload fill plus GPU patch at `14.8 us` p50.
-- M3 is intentionally **not** checked off yet: the routed perf and allocation gates now
-  pass, but the payload model still does not carry a copied UTF-8 slab for multi-scalar
-  cluster text. Those cells fall back to commands until the M4 payload/overlay work
-  removes the text-feature fallback.
+  `113.1 us` p50 versus payload fill plus GPU patch at `14.8 us` p50.
+- M3 is checked off with the M2 text-feature fallback still in place: multi-scalar
+  cluster bytes are copied into the payload slab, but those cells still fall back to
+  commands until M4 removes the text-feature fallback and renders them through the GPU
+  cell path.
 
 ## Review Gate
 

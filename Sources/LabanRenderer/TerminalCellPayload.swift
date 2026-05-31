@@ -43,6 +43,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
     public var underlineColor: UInt32?
     public var hasHyperlink: Bool
     public var wide: UInt8
+    public var utf8Range: Range<Int>?
 
     public init(
       row: Int,
@@ -55,7 +56,8 @@ public struct TerminalCellPayload: Equatable, Sendable {
       underlineStyle: UnderlineStyle = .none,
       underlineColor: UInt32? = nil,
       hasHyperlink: Bool = false,
-      wide: UInt8 = 0
+      wide: UInt8 = 0,
+      utf8Range: Range<Int>? = nil
     ) {
       self.row = row
       self.col = col
@@ -68,6 +70,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
       self.underlineColor = underlineColor
       self.hasHyperlink = hasHyperlink
       self.wide = wide
+      self.utf8Range = utf8Range
     }
   }
 
@@ -93,6 +96,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
   public var backgroundRuns: [BackgroundRun]
   public var glyphs: [Glyph]
   public var cursorRects: [CursorRect]
+  public var utf8Bytes: [UInt8]
   public var fallbackReason: FallbackReason?
 
   public var isGPUCellCompatible: Bool { fallbackReason == nil }
@@ -108,6 +112,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
     backgroundRuns: [BackgroundRun] = [],
     glyphs: [Glyph] = [],
     cursorRects: [CursorRect] = [],
+    utf8Bytes: [UInt8] = [],
     fallbackReason: FallbackReason? = nil
   ) {
     self.rows = rows
@@ -120,6 +125,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
     self.backgroundRuns = backgroundRuns
     self.glyphs = glyphs
     self.cursorRects = cursorRects
+    self.utf8Bytes = utf8Bytes
     self.fallbackReason = fallbackReason
   }
 
@@ -155,7 +161,7 @@ public struct TerminalCellPayload: Equatable, Sendable {
       backgroundRuns: backgroundRuns.capacity,
       glyphs: glyphs.capacity,
       cursorRects: cursorRects.capacity,
-      utf8Bytes: 0)
+      utf8Bytes: utf8Bytes.capacity)
   }
 
   public mutating func reset(
@@ -178,5 +184,6 @@ public struct TerminalCellPayload: Equatable, Sendable {
     backgroundRuns.removeAll(keepingCapacity: true)
     glyphs.removeAll(keepingCapacity: true)
     cursorRects.removeAll(keepingCapacity: true)
+    utf8Bytes.removeAll(keepingCapacity: true)
   }
 }

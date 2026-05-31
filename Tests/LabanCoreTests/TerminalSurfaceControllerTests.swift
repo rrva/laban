@@ -207,6 +207,30 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertNil(frame.cellPayload?.fallbackReason)
   }
 
+  func testCellPayloadCopiesClusterTextIntoUTF8SlabBeforeFallback() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    _ = session.write(Array("👩‍💻".utf8))
+    _ = session.poll()
+    let snap = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16, originX: 0, originY: 0)
+    let payload = try XCTUnwrap(
+      producer.terminalCellPayload(
+        from: UnsafePointer(snap),
+        includedRows: [0],
+        cursorBlinkVisible: false))
+
+    XCTAssertEqual(payload.fallbackReason, .wideOrClusterCell)
+    XCTAssertFalse(payload.utf8Bytes.isEmpty)
+    XCTAssertTrue(payload.glyphs.contains { $0.utf8Range != nil })
+  }
+
   func testCellPayloadModeFallsBackToCommandsForSelectionOverlay() throws {
     var size = LabanTerminalSize()
     size.rows = 4

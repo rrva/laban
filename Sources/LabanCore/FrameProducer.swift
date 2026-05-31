@@ -513,6 +513,25 @@ public struct FrameProducer {
               hasHyperlink: hasHyperlink,
               wide: cell.wide))
         case .multiScalar:
+          let start = payload.utf8Bytes.count
+          let bytes = UnsafeBufferPointer<UInt8>(
+            start: ptr.assumingMemoryBound(to: UInt8.self),
+            count: length)
+          payload.utf8Bytes.append(contentsOf: bytes)
+          payload.glyphs.append(
+            TerminalCellPayload.Glyph(
+              row: row,
+              col: col,
+              text: "",
+              scalarValue: nil,
+              foreground: cellFg,
+              background: cellBg,
+              attributes: cellAttrs,
+              underlineStyle: cellUnderlineStyle,
+              underlineColor: cellUnderlineColor,
+              hasHyperlink: hasHyperlink,
+              wide: cell.wide,
+              utf8Range: start..<payload.utf8Bytes.count))
           markFallback(.wideOrClusterCell)
         case .invalid:
           markFallback(.invalidUTF8)
