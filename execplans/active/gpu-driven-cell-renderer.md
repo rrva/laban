@@ -444,6 +444,20 @@ and a CPU mirror alongside it. Each frame:
   commands (optionally also the payload). `TerminalBitmapView` then renders the payload
   instead of `cmds` in that mode. Without this routing the CPU win does not materialise
   and the M3 benchmark misses its target.
+- **The dirty signal M3 reuses is edge-triggered and *consumed* — preserve that
+  lifecycle (damage-path research).** `dirty_rows` is populated from libghostty per
+  snapshot (`Sources/LabanTerminalCore/snapshot.c`, reading
+  `GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY`) and **cleared by `laban_session_mark_rendered()`**
+  for the rows that were in the last snapshot, so the next snapshot only reports
+  *newly*-changed rows. M3's payload extraction reuses the **same** `dirty_rows` (no new
+  dirty tracking — it is the source `damage()` already reads), but it must (a) read
+  `dirty_rows` **before** `mark_rendered` clears them, and (b) ensure `mark_rendered`
+  still fires exactly once per rendered frame whichever path ran (commands or payload),
+  or the next frame's dirty set is corrupt. Note: full redraws and alt-screen swaps
+  arrive as **all-rows-dirty** (`snapshot.c` memsets `dirty_rows`), not as `.full`, so
+  the per-dirty-row patch already covers them; M3's whole-buffer-rebuild branch keys off
+  resize/theme/atlas-regrow, not this. (`FrameProducer` itself never reads dirty state —
+  it always walks the full grid, `FrameProducer.swift:131,138`.)
 - **GPU-cell mode is local-session only until the laband protocol is extended (review
   finding).** Background/remote sessions render from a `LabandSnapshotResponse` whose
   `LabandSnapshotCell` carries only `row/col/text/flags/fg/bg`
