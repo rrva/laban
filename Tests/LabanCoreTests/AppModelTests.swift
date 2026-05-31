@@ -170,6 +170,44 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].id, originalId, "original tab id must not change")
   }
 
+  func testNewTabInheritsActiveTabCwd() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    // The active tab's reported working directory — what the OSC 7 / metadata
+    // sync writes into `workspace.cwd`. Use a real existing directory so the
+    // inherited cwd passes createTab's existence check.
+    let dir = canonicalPath(FileManager.default.temporaryDirectory.path)
+    model.applyProcessMetadata(
+      processMetadata(pid: 4242, process: "zsh", command: "/bin/zsh", cwd: dir),
+      forTab: tabId)
+
+    var capturedCwd: String?
+    model.newTabSessionFactory = { size, cwd in
+      capturedCwd = cwd
+      return try Session.fixture(size: size)
+    }
+    _ = try model.createTab()
+    XCTAssertEqual(
+      capturedCwd.map(canonicalPath), dir,
+      "a new tab must spawn in the active tab's reported cwd")
+  }
+
+  func testNewTabFallsBackToDefaultFactoryWhenNoCwdKnown() throws {
+    let model = try makeModel()
+    // No OSC 7 and a fixture has no process cwd, so nothing is inherited: the
+    // cwd-aware factory must NOT be used (preserving the prior spawn behavior).
+    var capturedCwd: String?
+    model.newTabSessionFactory = { size, cwd in
+      capturedCwd = cwd
+      return try Session.fixture(size: size)
+    }
+    _ = try model.createTab()
+    XCTAssertNil(
+      capturedCwd,
+      "with no known cwd, createTab must fall back to the default sessionFactory")
+    XCTAssertEqual(model.tabs.count, 2, "the tab is still created via the fallback")
+  }
+
   func testSelectTabChangesActiveTab() throws {
     let model = try makeModel()
     try model.createTab()

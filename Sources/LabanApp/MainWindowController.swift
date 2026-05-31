@@ -159,6 +159,22 @@ final class MainWindowController: NSWindowController {
       }
     }
 
+    // New tabs (⌘T) open in the active tab's reported working directory — its
+    // OSC 7 / metadata cwd, or its live process cwd — so a new tab lands where
+    // you are instead of at the launcher's directory. Same spawn shape as the
+    // restore factory; the cwd is meaningful only for the in-process backend.
+    model.newTabSessionFactory = { size, cwd in
+      switch terminalBackend {
+      case .laband, .labpty:
+        return try Session.parserOnly(size: size)
+      case .inProcess:
+        return try Session.realShell(
+          size: size, cwd: cwd,
+          environment: shellLaunch.environmentOverrides,
+          launchArgv: shellLaunch.argv)
+      }
+    }
+
     // The default tab created by AppModel.init() needs its writer
     // attached too — its session was constructed before the delegate
     // was assigned. Attach explicitly here.

@@ -142,6 +142,16 @@ public final class AppModel {
   /// `Session.realShell(size:, cwd:)`.
   public var restoredSessionFactory: ((LabanTerminalSize, String) throws -> Session)?
 
+  /// Factory for a brand-new (⌘T) tab spawned in an explicit cwd — the active
+  /// tab's working directory — so a new tab opens where you currently are
+  /// rather than at the launcher's directory. The cwd is the active tab's
+  /// reported directory: its OSC 7 / metadata-synced `workspace.cwd`, else its
+  /// live process cwd. When this is nil, or no cwd resolves, or the cwd no
+  /// longer exists, `createTab` falls back to the default `sessionFactory`
+  /// (the prior behavior). Production wires this to `Session.realShell(size:,
+  /// cwd:)`; headless tests leave it nil unless exercising inheritance.
+  public var newTabSessionFactory: ((LabanTerminalSize, String) throws -> Session)?
+
   /// Richer restore-time factory. When set, takes precedence over
   /// `restoredSessionFactory`. The spec carries enough state for the
   /// factory to construct a deferred-spawn Session, replay the
@@ -538,7 +548,16 @@ public final class AppModel {
     let (tab, session) = try withModelLock {
       () -> (Tab, Session) in
       guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
-      let session = try sessionFactory(currentSize)
+      // A new tab opens in the active tab's working directory when one is known
+      // and a cwd-aware factory is wired; otherwise spawn at the default
+      // location, exactly as before. `selectTabUnlocked` below moves activeness
+      // to the new tab, so resolve the inherited cwd here, first.
+      let session: Session
+      if let inherited = resolveInheritedCwdUnlocked(), let factory = newTabSessionFactory {
+        session = try factory(currentSize, resolveRestoredCwd(inherited).cwd)
+      } else {
+        session = try sessionFactory(currentSize)
+      }
       session.captureSink = captureSink
       AppModel.maybeAutoCapture(session)
       ThemePaletteInjector.injectCurrentTheme(into: session)
@@ -729,6 +748,25 @@ public final class AppModel {
       return (cwd, false)
     }
     return (fm.homeDirectoryForCurrentUser.path, true)
+  }
+
+  /// The active tab's working directory for new-tab inheritance, resolved the
+  /// same way persistence resolves it: prefer the reported `workspace.cwd` (the
+  /// OSC 7 / metadata-synced directory), then the live process cwd. Returns nil
+  /// when nothing is known, so the new tab spawns at the default location.
+  /// Assumes the model lock is held (reads `_tabs` and the session registry,
+  /// matching `snapshotForPersistence`).
+  private func resolveInheritedCwdUnlocked() -> String? {
+    guard let active = _tabs.first(where: { $0.isActive }) else { return nil }
+    if let cached = active.titleMetadata.workspace.cwd, !cached.isEmpty {
+      return cached
+    }
+    if let session = sessionRegistry.session(id: active.sessionId),
+      let cwd = session.processMetadata()?.cwd, !cwd.isEmpty
+    {
+      return cwd
+    }
+    return nil
   }
 
   /// Snapshot the current workspace into a Codable structure suitable
