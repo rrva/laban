@@ -1298,6 +1298,48 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   (decorations, colour-safe attributes, procedural cells, overlays/sidebar as needed)
   and shows release-mode frame-level encode reduction.
 
+### 2026-06-01 — M5 opt-in parity expanded to text decorations
+
+- Added `GPUCellParityTests/testMetal4GPUCellPayloadMatchesClassicForTextDecorationsWhenOptedIn`,
+  skipped unless `LABAN_TEST_MTL4_COMMAND_MODEL=1` is set.
+- The test mirrors the existing payload decoration parity fixture and exercises glyphs +
+  underline/strikethrough/overline decoration solids through the MTL4 opt-in branch.
+- Validation:
+  - default invocation skips cleanly:
+    `swift test --filter GPUCellParityTests/testMetal4GPUCellPayloadMatchesClassicForTextDecorationsWhenOptedIn`
+  - MTL4 opt-in decoration payload parity passes:
+    `LABAN_TEST_MTL4_COMMAND_MODEL=1 swift test --filter GPUCellParityTests/testMetal4GPUCellPayloadMatchesClassicForTextDecorationsWhenOptedIn`
+  - current MTL4 opt-in mini-matrix passes:
+    `LABAN_TEST_MTL4_COMMAND_MODEL=1 swift test --filter 'GPUCellParityTests/testMetal4.*'`
+  - default narrow gate remains green:
+    `swift test --filter 'GPUCellParityTests/testGPUCellPathMatchesClassicForPlainText|GPUCellParityTests/testGPUCellPayloadMatchesClassicForTextDecorations|MetalRendererSmokeTests/testMetalRendererInitializesAndRendersOneFrame'`
+
+### 2026-06-02 — M5 opt-in parity covers cursor, atlas churn, and resize
+
+- Added skipped-by-default MTL4 opt-in parity fixtures:
+  - `GPUCellParityTests/testMetal4GPUCellPayloadMatchesClassicForOverlayCommandsWhenOptedIn`
+    for overlay/cursor payload commands;
+  - `GPUCellParityTests/testMetal4GPUCellPathMatchesClassicForAtlasStressWhenOptedIn`
+    for many distinct atlas-backed glyphs in one frame;
+  - `GPUCellParityTests/testMetal4GPUCellPathMatchesClassicAfterAtlasMutationWhenOptedIn`
+    for a same-renderer two-frame sequence that populates new atlas glyphs after an
+    initial frame;
+  - `GPUCellParityTests/testMetal4GPUCellPathMatchesClassicAfterResizeWhenOptedIn`
+    for drawable/readback texture recreation after a smaller initial render.
+- The current MTL4 opt-in mini-matrix now covers plain text, text decorations,
+  overlay/cursor payload commands, atlas stress, atlas mutation across frames, and
+  resize. The branch remains opt-in through `MetalRenderer.useMetal4CommandModel`.
+- Validation:
+  - current MTL4 opt-in mini-matrix passes:
+    `LABAN_TEST_MTL4_COMMAND_MODEL=1 swift test --filter 'GPUCellParityTests/testMetal4.*'`
+  - default narrow gate remains green:
+    `swift test --filter 'GPUCellParityTests/testGPUCellPathMatchesClassicForPlainText|GPUCellParityTests/testGPUCellPayloadMatchesClassicForTextDecorations|MetalRendererSmokeTests/testMetalRendererInitializesAndRendersOneFrame'`
+  - whitespace check passes:
+    `git diff --check`
+- M5 remains open for non-1x scale/DPR parity, feedback-error assertion coverage,
+  a post-residency MTL4 copy probe, and release-mode frame timing before any default
+  enablement decision.
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
