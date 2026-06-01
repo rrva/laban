@@ -1,4 +1,5 @@
 import CoreGraphics
+import Dispatch
 import Foundation
 import Metal
 import XCTest
@@ -39,6 +40,7 @@ final class MetalFrameTimingBench: XCTestCase {
     try benchGPUCellComparison(fontAtlas: fontAtlas)
     try benchGPUCellPatchBuildComparison(fontAtlas: fontAtlas)
     try benchInstanceBuildComparison(fontAtlas: fontAtlas)
+    try benchMetal4EncodeOverheadSpike()
   }
 
   private func benchAt(
@@ -328,6 +330,258 @@ final class MetalFrameTimingBench: XCTestCase {
       printGPUCellBuildRow(label: label, path: "payload", result: payload)
       printGPUCellBuildRow(label: label, path: "payload+upload", result: payloadUpload)
     }
+  }
+
+  private func benchMetal4EncodeOverheadSpike() throws {
+    guard #available(macOS 26, *) else {
+      print("\n=== Metal 4 encode spike skipped: requires macOS 26 ===")
+      return
+    }
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    guard let queue = device.makeCommandQueue(),
+      let mtl4Queue = device.makeMTL4CommandQueue(),
+      let allocator = device.makeCommandAllocator(),
+      let commandBuffer = device.makeCommandBuffer()
+    else {
+      throw XCTSkip("Metal 4 command model unavailable")
+    }
+
+    let pipeline = try makeEncodeSpikePipeline(device: device)
+    let texture = try makeEncodeSpikeTexture(device: device)
+    let argumentTable = try makeEncodeSpikeArgumentTable(device: device, texture: texture)
+
+    let legacy = try measureLegacyEncodeSpike(
+      queue: queue,
+      pipeline: pipeline,
+      texture: texture)
+    let metal4 = try measureMetal4EncodeSpike(
+      queue: mtl4Queue,
+      allocator: allocator,
+      commandBuffer: commandBuffer,
+      pipeline: pipeline,
+      texture: texture,
+      argumentTable: argumentTable)
+    let delta = legacy.p50Us - metal4.p50Us
+    print("\n=== Metal 4 command-model encode proof spike (single render pass, us) ===")
+    print("  path       p50/p95/p99 us")
+    printEncodeSpikeRow(path: "legacy", result: legacy)
+    printEncodeSpikeRow(path: "metal4", result: metal4)
+    print(String(format: "  delta p50  %.2f us (positive means Metal 4 encoded faster)", delta))
+  }
+
+  private struct EncodeSpikeResult {
+    var p50Us: Double
+    var p95Us: Double
+    var p99Us: Double
+  }
+
+  private func makeEncodeSpikePipeline(device: MTLDevice) throws -> MTLRenderPipelineState {
+    let source = """
+      #include <metal_stdlib>
+      using namespace metal;
+      struct VertexOut {
+        float4 position [[position]];
+      };
+      vertex VertexOut encode_spike_vertex(uint vertexID [[vertex_id]]) {
+        constexpr float2 points[3] = {
+          float2(-1.0, -1.0),
+          float2( 3.0, -1.0),
+          float2(-1.0,  3.0)
+        };
+        VertexOut out;
+        out.position = float4(points[vertexID], 0.0, 1.0);
+        return out;
+      }
+      fragment float4 encode_spike_fragment() {
+        return float4(0.05, 0.10, 0.15, 1.0);
+      }
+      """
+    let library = try device.makeLibrary(source: source, options: nil)
+    let desc = MTLRenderPipelineDescriptor()
+    desc.label = "laban.encode-spike"
+    desc.vertexFunction = library.makeFunction(name: "encode_spike_vertex")
+    desc.fragmentFunction = library.makeFunction(name: "encode_spike_fragment")
+    desc.colorAttachments[0].pixelFormat = .bgra8Unorm
+    return try device.makeRenderPipelineState(descriptor: desc)
+  }
+
+  private func makeEncodeSpikeTexture(device: MTLDevice) throws -> MTLTexture {
+    let desc = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .bgra8Unorm,
+      width: 160 * 9 * 2,
+      height: 48 * 19 * 2,
+      mipmapped: false)
+    desc.usage = [.renderTarget, .shaderRead]
+    guard let texture = device.makeTexture(descriptor: desc) else {
+      throw XCTSkip("could not allocate encode spike texture")
+    }
+    return texture
+  }
+
+  @available(macOS 26, *)
+  private func makeEncodeSpikeArgumentTable(
+    device: MTLDevice,
+    texture: MTLTexture
+  ) throws -> any MTL4ArgumentTable {
+    let desc = MTL4ArgumentTableDescriptor()
+    desc.maxTextureBindCount = 1
+    desc.initializeBindings = true
+    desc.label = "laban.encode-spike.argument-table"
+    let table = try device.makeArgumentTable(descriptor: desc)
+    table.setTexture(texture.gpuResourceID, index: 0)
+    return table
+  }
+
+  private func measureLegacyEncodeSpike(
+    queue: MTLCommandQueue,
+    pipeline: MTLRenderPipelineState,
+    texture: MTLTexture
+  ) throws -> EncodeSpikeResult {
+    var pending: MTLCommandBuffer?
+    defer { pending?.waitUntilCompleted() }
+    for _ in 0..<40 {
+      _ = try encodeLegacySpike(
+        queue: queue,
+        pipeline: pipeline,
+        texture: texture,
+        pending: &pending)
+    }
+    var samples: [Double] = []
+    samples.reserveCapacity(240)
+    for _ in 0..<240 {
+      let encodeUs = try encodeLegacySpike(
+        queue: queue,
+        pipeline: pipeline,
+        texture: texture,
+        pending: &pending)
+      samples.append(encodeUs)
+    }
+    return EncodeSpikeResult(
+      p50Us: percentile(samples, 0.50),
+      p95Us: percentile(samples, 0.95),
+      p99Us: percentile(samples, 0.99))
+  }
+
+  private func encodeLegacySpike(
+    queue: MTLCommandQueue,
+    pipeline: MTLRenderPipelineState,
+    texture: MTLTexture,
+    pending: inout MTLCommandBuffer?
+  ) throws -> Double {
+    pending?.waitUntilCompleted()
+    let start = DispatchTime.now().uptimeNanoseconds
+    guard let commandBuffer = queue.makeCommandBuffer() else {
+      throw XCTSkip("could not allocate legacy command buffer")
+    }
+    let pass = MTLRenderPassDescriptor()
+    let attachment = pass.colorAttachments[0]!
+    attachment.texture = texture
+    attachment.loadAction = .clear
+    attachment.storeAction = .store
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+      throw XCTSkip("could not allocate legacy render encoder")
+    }
+    encoder.setRenderPipelineState(pipeline)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+    encoder.endEncoding()
+    let end = DispatchTime.now().uptimeNanoseconds
+    commandBuffer.commit()
+    pending = commandBuffer
+    return Double(end - start) / 1_000.0
+  }
+
+  @available(macOS 26, *)
+  private func measureMetal4EncodeSpike(
+    queue: any MTL4CommandQueue,
+    allocator: any MTL4CommandAllocator,
+    commandBuffer: any MTL4CommandBuffer,
+    pipeline: MTLRenderPipelineState,
+    texture: MTLTexture,
+    argumentTable: any MTL4ArgumentTable
+  ) throws -> EncodeSpikeResult {
+    let feedbackSemaphore = DispatchSemaphore(value: 1)
+    for _ in 0..<40 {
+      _ = try encodeMetal4Spike(
+        queue: queue,
+        allocator: allocator,
+        commandBuffer: commandBuffer,
+        pipeline: pipeline,
+        texture: texture,
+        argumentTable: argumentTable,
+        feedbackSemaphore: feedbackSemaphore)
+    }
+    var samples: [Double] = []
+    samples.reserveCapacity(240)
+    for _ in 0..<240 {
+      let encodeUs = try encodeMetal4Spike(
+        queue: queue,
+        allocator: allocator,
+        commandBuffer: commandBuffer,
+        pipeline: pipeline,
+        texture: texture,
+        argumentTable: argumentTable,
+        feedbackSemaphore: feedbackSemaphore)
+      samples.append(encodeUs)
+    }
+    feedbackSemaphore.wait()
+    feedbackSemaphore.signal()
+    return EncodeSpikeResult(
+      p50Us: percentile(samples, 0.50),
+      p95Us: percentile(samples, 0.95),
+      p99Us: percentile(samples, 0.99))
+  }
+
+  @available(macOS 26, *)
+  private func encodeMetal4Spike(
+    queue: any MTL4CommandQueue,
+    allocator: any MTL4CommandAllocator,
+    commandBuffer: any MTL4CommandBuffer,
+    pipeline: MTLRenderPipelineState,
+    texture: MTLTexture,
+    argumentTable: any MTL4ArgumentTable,
+    feedbackSemaphore: DispatchSemaphore
+  ) throws -> Double {
+    feedbackSemaphore.wait()
+    allocator.reset()
+    let start = DispatchTime.now().uptimeNanoseconds
+    commandBuffer.beginCommandBuffer(allocator: allocator)
+    let pass = MTL4RenderPassDescriptor()
+    let attachment = pass.colorAttachments[0]!
+    attachment.texture = texture
+    attachment.loadAction = .clear
+    attachment.storeAction = .store
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass, options: []) else {
+      feedbackSemaphore.signal()
+      throw XCTSkip("could not allocate Metal 4 render encoder")
+    }
+    encoder.setRenderPipelineState(pipeline)
+    encoder.setArgumentTable(argumentTable, stages: .fragment)
+    encoder.drawPrimitives(primitiveType: .triangle, vertexStart: 0, vertexCount: 3)
+    encoder.endEncoding()
+    commandBuffer.endCommandBuffer()
+    let end = DispatchTime.now().uptimeNanoseconds
+
+    let options = MTL4CommitOptions()
+    options.addFeedbackHandler { feedback in
+      if let error = feedback.error {
+        print("Metal 4 encode spike feedback error: \(error)")
+      }
+      feedbackSemaphore.signal()
+    }
+    queue.commit([commandBuffer], options: options)
+    return Double(end - start) / 1_000.0
+  }
+
+  private func printEncodeSpikeRow(path: String, result: EncodeSpikeResult) {
+    print(
+      String(
+        format: "  %-8@ %.2f/%.2f/%.2f",
+        path as NSString,
+        result.p50Us,
+        result.p95Us,
+        result.p99Us))
   }
 
   private struct DamageBenchResult {

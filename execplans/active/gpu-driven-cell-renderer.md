@@ -89,7 +89,7 @@ stay in the codebase permanently** and are user-selectable (M6).
 - [x] M1 — Classic renderer, damage-scoped incremental rebuild ("old but fixed"; all OSes; the baseline)
 - [x] M2 — GPU-driven: text-only cell path, whole-buffer rebuild each frame, pixel-identical (macOS 26)
 - [x] M3 — GPU-driven: persistent cell buffer + dirty-row-only patching (the CPU rebuild win)
-- [ ] M4 — GPU-driven: feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
+- [x] M4 — GPU-driven: feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
 - [ ] M5 — GPU-driven: Metal 4 command-allocator/command-buffer reuse + argument tables (encode-*overhead* reduction, behind a proof spike; macOS 26 only)
 - [ ] M6 — Expose renderer choice as a user setting; keep both renderers; record head-to-head comparison; ADR
 - [ ] Review Gate passed
@@ -1209,6 +1209,43 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
     passed (2 tests).
   - `swift test --filter 'GPUCellParity|TerminalSurfaceControllerTests|GraphemeClustering|FrameProducerSpanParity|MetalRendererSmoke|MetalRendererClearColor|TextDecorationLayout'`
     passed (70 tests).
+
+### 2026-05-31 — M4 visual feature parity closed; low-priority fallbacks retained
+
+- The M4 acceptance scope lists terminal visual features that previously forced command
+  fallback: colour-safe attrs, text decorations, procedural block-art cells, hyperlink
+  visuals, selection/find/cursor overlays, wide/cluster glyphs, and fractional
+  `contentYOffset`. Those have landed in slices 1-7 with raw-RGBA parity evidence.
+- Remaining `TerminalCellPayload.FallbackReason` cases are not normal visual feature
+  gaps for M4:
+  - `missingCellStorage`, `invalidUTF8`, and `unsupportedAttributes` are defensive
+    guards for malformed/incomplete snapshot state or future unknown attributes.
+  - `exitBanner` is a rare post-process banner after process termination. It remains
+    on the command fallback path by priority choice rather than blocking M4's listed
+    renderer-feature parity.
+- Next work starts M5 with the required Metal 4 encode-overhead proof spike before any
+  production renderer rewrite.
+
+### 2026-05-31 — M5 proof spike measured Metal 4 encode overhead in `gpu-work`
+
+- Added an opt-in release microbench to `MetalFrameTimingBench` that encodes the same
+  single render pass through:
+  - legacy `MTLCommandQueue.makeCommandBuffer()` + `MTLRenderCommandEncoder`
+  - Metal 4 `MTL4CommandBuffer` reused with `MTL4CommandAllocator.reset()` +
+    `beginCommandBuffer(allocator:)` + `MTL4RenderCommandEncoder` +
+    `MTL4ArgumentTable`
+- The spike measures host encode time before commit, while still committing and waiting
+  for completion between iterations so allocator reset is legal.
+- Validation:
+  - `swift test --filter MetalFrameTimingBench` passed (bench disabled, compile gate).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench`
+    passed. Metal 4 encode spike result:
+    - legacy: p50/p95/p99 `12.12 / 15.29 / 18.04 us`
+    - metal4: p50/p95/p99 `8.38 / 11.12 / 13.08 us`
+    - p50 delta: `+3.75 us` in favour of Metal 4
+- This is proof-spike evidence only. M5 remains open until the production GPU-cell render
+  path adopts the Metal 4 command model, stays pixel-identical, and shows release-mode
+  frame-level encode reduction.
 
 ## Review Gate
 
