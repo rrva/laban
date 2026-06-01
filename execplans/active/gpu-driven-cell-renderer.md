@@ -1247,6 +1247,57 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   path adopts the Metal 4 command model, stays pixel-identical, and shows release-mode
   frame-level encode reduction.
 
+### 2026-06-01 — M5 production attempt isolated a glyph-parity blocker
+
+- Added an opt-in `MetalRenderer.useMetal4CommandModel` branch that can encode a
+  full-frame GPU-cell render through `MTL4CommandBuffer`, `MTL4CommandAllocator`, and
+  per-draw `MTL4ArgumentTable`s. The branch is **disabled by default** because it is not
+  yet parity-safe.
+- Local probes established:
+  - MTL4 clear, solid instancing, texture/sampler binding, and `cell_glyph_vertex` work
+    in isolation.
+  - CPU uploads must happen before `beginCommandBuffer`; moving the renderer uploads
+    earlier made background solids match.
+  - `MTL4ComputeCommandEncoder.copy(sourceTexture:destinationTexture:)` returned zeroed
+    results at realistic frame sizes on this host, so readback/present cannot rely on
+    that copy path without more research.
+- Production parity is still blocked: with the opt-in path enabled,
+  `GPUCellParityTests/testGPUCellPathMatchesClassicForPlainText` renders matching
+  backgrounds but misses cell glyphs (`first diff (1, 4) expected glyph colour,
+  actual background`). The default path remains legacy command-buffer encoding and that
+  parity test passes.
+- M5 remains open. Next M5 work should focus on why the renderer's real glyph atlas +
+  compacted cell-glyph buffer samples transparent under MTL4 despite standalone
+  cell-glyph probes passing.
+
+### 2026-06-01 — M5 residency fix made the first opt-in parity test pass
+
+- External review pointed at missing Metal 4 residency and drawable wait wiring as the
+  highest-probability defect. Local SDK headers confirmed the needed APIs:
+  `MTLResidencySet`, `MTL4CommandBuffer.useResidencySet(_:)`, and
+  `MTL4CommandQueue.waitForDrawable(_:)`.
+- Updated the opt-in MTL4 path to:
+  - build a command-buffer-scoped residency set for uniform/instance/cursor buffers,
+    glyph atlas textures, drawable texture, and readback texture;
+  - call `useResidencySet(_:)` before encoding work;
+  - call `waitForDrawable(_:)` before commit and `signalDrawable(_:)` before present;
+  - fail closed when `MTL4ArgumentTable` creation fails;
+  - log `MTL4CommitFeedback.error`;
+  - reset `MetalRenderer.useMetal4CommandModel` in `GPUCellParityTests.tearDown`.
+- Added a skipped-by-default parity harness:
+  `GPUCellParityTests/testMetal4GPUCellPathMatchesClassicForPlainTextWhenOptedIn`.
+  Run it with `LABAN_TEST_MTL4_COMMAND_MODEL=1`.
+- Validation:
+  - default opt-in harness invocation skips cleanly:
+    `swift test --filter GPUCellParityTests/testMetal4GPUCellPathMatchesClassicForPlainTextWhenOptedIn`
+  - MTL4 opt-in plain-text parity now passes:
+    `LABAN_TEST_MTL4_COMMAND_MODEL=1 swift test --filter GPUCellParityTests/testMetal4GPUCellPathMatchesClassicForPlainTextWhenOptedIn`
+  - default path remains green:
+    `swift test --filter 'GPUCellParityTests/testGPUCellPathMatchesClassicForPlainText|GPUCellParityTests/testGPUCellPayloadMatchesClassicForTextDecorations|MetalRendererSmokeTests/testMetalRendererInitializesAndRendersOneFrame'`
+- M5 remains open until the opt-in MTL4 path passes broader GPU-cell parity fixtures
+  (decorations, colour-safe attributes, procedural cells, overlays/sidebar as needed)
+  and shows release-mode frame-level encode reduction.
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under

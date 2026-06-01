@@ -53,6 +53,82 @@ private struct Uniforms {
   var _pad: Float = 0
 }
 
+private struct PreparedGPUCellMetal4Buffers {
+  var solid: MTLBuffer?
+  var sidebarGlyph: MTLBuffer?
+  var cellGlyph: MTLBuffer?
+  var cellGlyphCount: Int = 0
+}
+
+private final class FrameCompletion: @unchecked Sendable {
+  private let semaphore = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private var completed = false
+  private let retainedObjects: [AnyObject]
+
+  init(retainedObjects: [AnyObject] = []) {
+    self.retainedObjects = retainedObjects
+  }
+
+  func signal() {
+    lock.lock()
+    guard !completed else {
+      lock.unlock()
+      return
+    }
+    completed = true
+    lock.unlock()
+    semaphore.signal()
+  }
+
+  func wait() {
+    lock.lock()
+    if completed {
+      lock.unlock()
+      return
+    }
+    lock.unlock()
+    semaphore.wait()
+  }
+}
+
+@available(macOS 26, *)
+private final class Metal4Context {
+  let device: MTLDevice
+  let queue: any MTL4CommandQueue
+  let allocator: any MTL4CommandAllocator
+  let commandBuffer: any MTL4CommandBuffer
+  let argumentTableDescriptor: MTL4ArgumentTableDescriptor
+  var uniformBuffer: MTLBuffer?
+
+  init?(device: MTLDevice) {
+    guard let queue = device.makeMTL4CommandQueue(),
+      let allocator = device.makeCommandAllocator(),
+      let commandBuffer = device.makeCommandBuffer()
+    else { return nil }
+
+    let tableDesc = MTL4ArgumentTableDescriptor()
+    tableDesc.maxBufferBindCount = 2
+    tableDesc.maxTextureBindCount = 1
+    tableDesc.maxSamplerStateBindCount = 1
+    tableDesc.initializeBindings = true
+    tableDesc.label = "laban.metal4.arguments"
+    guard (try? device.makeArgumentTable(descriptor: tableDesc)) != nil else {
+      return nil
+    }
+
+    self.device = device
+    self.queue = queue
+    self.allocator = allocator
+    self.commandBuffer = commandBuffer
+    self.argumentTableDescriptor = tableDesc
+  }
+
+  func makeArgumentTable() -> (any MTL4ArgumentTable)? {
+    try? device.makeArgumentTable(descriptor: argumentTableDescriptor)
+  }
+}
+
 /// GPU renderer backed by `CAMetalLayer`. One device, one queue, one library.
 /// Two pipelines (solid quad + textured glyph quad). Two draw calls per
 /// "scissor span" — clip changes flush, everything else batches.
@@ -67,6 +143,10 @@ public final class MetalRenderer: RendererBackend {
   /// A/B override reserved for the macOS-26 GPU-cell path. Until that path is
   /// implemented, enabling it resolves to the classic renderer.
   public nonisolated(unsafe) static var useGPUCellPath = false
+
+  /// A/B override for M5's Metal 4 command model on the GPU-cell renderer.
+  /// It only applies when the effective renderer is `.gpuDriven` on macOS 26.
+  public nonisolated(unsafe) static var useMetal4CommandModel = false
 
   // MARK: - Public surface
 
@@ -91,7 +171,10 @@ public final class MetalRenderer: RendererBackend {
   /// Last-frame readback for screenshots / capture. Returns nil when
   /// `captureMode` is off (the drawable→CPU blit is skipped to keep
   /// cursor-blink frames cheap).
-  public var pngData: Data? { readback.pngData(waitingFor: lastCmdBuf) }
+  public var pngData: Data? {
+    lastFrameCompletion?.wait()
+    return readback.pngData(waitingFor: lastCmdBuf)
+  }
 
   public struct RenderInstanceCounts: Equatable, Sendable {
     public var solids: Int
@@ -252,6 +335,8 @@ public final class MetalRenderer: RendererBackend {
   private var solidBuffer: MTLBuffer?
   private var glyphBuffer: MTLBuffer?
   private var cellGlyphBuffer: MTLBuffer?
+  private var metal4CellGlyphBuffer: MTLBuffer?
+  private var metal4CellGlyphs: [CellGlyph] = []
   private var sidebarGlyphBuffer: MTLBuffer?
   private var cursorBuffer: MTLBuffer?
 
@@ -268,6 +353,7 @@ public final class MetalRenderer: RendererBackend {
   private var lastCmdBuf: MTLCommandBuffer?
   private let drawableScheduler: MetalDrawableScheduler
   private let readback: MetalReadback
+  private let metal4Context: AnyObject?
 
   /// Set true while a capture session needs the per-frame readback blit;
   /// false otherwise so cursor-blink frames don't pay the drawable→CPU copy
@@ -284,6 +370,7 @@ public final class MetalRenderer: RendererBackend {
   public var waitForFrameCompletion: Bool = false
 
   public func waitForLastFrame() {
+    lastFrameCompletion?.wait()
     lastCmdBuf?.waitUntilCompleted()
   }
 
@@ -303,6 +390,7 @@ public final class MetalRenderer: RendererBackend {
   private var frameSamples: [FrameSample] = []
   private static let frameSampleCap = 240
   private let frameSampleLock = NSLock()
+  private var lastFrameCompletion: FrameCompletion?
 
   // MARK: - GPU timestamp counters
   //
@@ -569,6 +657,11 @@ public final class MetalRenderer: RendererBackend {
     self.layer = layer
     self.drawableScheduler = MetalDrawableScheduler(layer: layer)
     self.readback = MetalReadback(device: device, pixelFormat: layer.pixelFormat)
+    if #available(macOS 26, *) {
+      self.metal4Context = Metal4Context(device: device)
+    } else {
+      self.metal4Context = nil
+    }
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarAtlas
     self.configuredRendererMode = rendererMode.isAvailableOnCurrentOS ? rendererMode : .classic
@@ -696,6 +789,17 @@ public final class MetalRenderer: RendererBackend {
     let cpuStart = ContinuousClock.now
     let selection = resolvedRendererStatus(rendererFallbackReason: rendererFallbackReason)
     rendererStatus = selection.status
+    if Self.useMetal4CommandModel,
+      selection.effectiveMode == .gpuDriven,
+      let rendered = renderMetal4GPUCell(
+        commands,
+        cellPayload: cellPayload,
+        damage: damage,
+        selection: selection,
+        cpuStart: cpuStart)
+    {
+      return rendered
+    }
 
     // Drop this frame if the previous GPU frame has not retired. The drawable
     // is acquired later, after offscreen work is encoded, so Core Animation's
@@ -708,6 +812,7 @@ public final class MetalRenderer: RendererBackend {
       scheduledFrame.finish()
       return false
     }
+    lastFrameCompletion = nil
     cmdBuf.label = "laban.frame"
 
     let surfaceWPx = max(1, Int(layer.drawableSize.width.rounded()))
@@ -869,6 +974,220 @@ public final class MetalRenderer: RendererBackend {
       cmdBuf.waitUntilCompleted()
     }
     targetNeedsFullRedraw = false
+    return true
+  }
+
+  private func renderMetal4GPUCell(
+    _ commands: [FrameCommand],
+    cellPayload: TerminalCellPayload?,
+    damage: RenderDamage,
+    selection _: (effectiveMode: RendererMode, status: RendererStatus),
+    cpuStart: ContinuousClock.Instant
+  ) -> Bool? {
+    guard #available(macOS 26, *), let context = metal4Context as? Metal4Context else {
+      return nil
+    }
+
+    guard damage == .full else {
+      return nil
+    }
+
+    let needsFullFrame = targetNeedsFullRedraw || damage == .full
+    guard let scheduledFrame = drawableScheduler.beginFrame(needsFullFrame: needsFullFrame) else {
+      return false
+    }
+
+    let surfaceWPx = max(1, Int(layer.drawableSize.width.rounded()))
+    let surfaceHPx = max(1, Int(layer.drawableSize.height.rounded()))
+
+    var u = Uniforms(
+      surfaceSizePixels: SIMD2<Float>(Float(surfaceWPx), Float(surfaceHPx)),
+      scale: Float(layer.contentsScale))
+    guard let uniformBuffer = prepareMetal4UniformBuffer(u, context: context) else {
+      scheduledFrame.finish()
+      return nil
+    }
+
+    let effectiveDamage: RenderDamage = .full
+    var passSlots = PassSlots()
+    let didContent: Bool
+    let built: Bool
+    if let cellPayload {
+      built = buildGPUCellInstanceLists(
+        payload: cellPayload,
+        commands: commands,
+        surfacePxH: surfaceHPx,
+        damage: effectiveDamage)
+    } else {
+      built = buildGPUCellInstanceLists(
+        commands: commands,
+        surfacePxH: surfaceHPx,
+        damage: effectiveDamage)
+    }
+    guard built else {
+      scheduledFrame.finish()
+      return nil
+    }
+    didContent = true
+    passSlots.contentActive = didContent
+    guard let preparedContentBuffers = prepareGPUCellMetal4Buffers() else {
+      scheduledFrame.finish()
+      return nil
+    }
+    let preparedCursorBuffer: MTLBuffer?
+    if cursorInstances.isEmpty {
+      preparedCursorBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&cursorBuffer, for: cursorInstances) else {
+        scheduledFrame.finish()
+        return nil
+      }
+      preparedCursorBuffer = buffer
+    }
+
+    guard let drawable = scheduledFrame.acquireDrawable() else {
+      scheduledFrame.finish()
+      return false
+    }
+    let drawableTex = drawable.texture
+    guard drawableTex.width == surfaceWPx, drawableTex.height == surfaceHPx else {
+      targetNeedsFullRedraw = true
+      scheduledFrame.finish()
+      return false
+    }
+    let readbackTexture = readback.renderTargetTexture(width: surfaceWPx, height: surfaceHPx)
+    guard
+      let residencySet = makeMetal4ResidencySet(
+        context: context,
+        uniformBuffer: uniformBuffer,
+        preparedBuffers: preparedContentBuffers,
+        cursorBuffer: preparedCursorBuffer,
+        drawableTexture: drawableTex,
+        readbackTexture: readbackTexture)
+    else {
+      scheduledFrame.finish()
+      return nil
+    }
+
+    context.allocator.reset()
+    let commandBuffer = context.commandBuffer
+    commandBuffer.label = "laban.frame.metal4"
+    commandBuffer.beginCommandBuffer(allocator: context.allocator)
+    commandBuffer.useResidencySet(residencySet)
+    var retainedArgumentTables: [AnyObject] = []
+
+    guard
+      encodePreparedGPUCellContentPassMetal4(
+        commands: commands,
+        damage: effectiveDamage,
+        target: drawableTex,
+        surfacePxH: surfaceHPx,
+        uniforms: &u,
+        uniformBuffer: uniformBuffer,
+        preparedBuffers: preparedContentBuffers,
+        context: context,
+        commandBuffer: commandBuffer,
+        retainedArgumentTables: &retainedArgumentTables)
+    else {
+      commandBuffer.endCommandBuffer()
+      scheduledFrame.finish()
+      return nil
+    }
+
+    if let preparedCursorBuffer {
+      guard
+        encodeMetal4CursorPass(
+          commandBuffer: commandBuffer,
+          drawableTex: drawableTex,
+          buffer: preparedCursorBuffer,
+          uniforms: &u,
+          uniformBuffer: uniformBuffer,
+          context: context,
+          retainedArgumentTables: &retainedArgumentTables)
+      else {
+        commandBuffer.endCommandBuffer()
+        scheduledFrame.finish()
+        return nil
+      }
+      passSlots.cursorActive = true
+    }
+
+    if let readbackTexture {
+      guard
+        encodePreparedGPUCellContentPassMetal4(
+          commands: commands,
+          damage: effectiveDamage,
+          target: readbackTexture,
+          surfacePxH: surfaceHPx,
+          uniforms: &u,
+          uniformBuffer: uniformBuffer,
+          preparedBuffers: preparedContentBuffers,
+          context: context,
+          commandBuffer: commandBuffer,
+          retainedArgumentTables: &retainedArgumentTables)
+      else {
+        commandBuffer.endCommandBuffer()
+        scheduledFrame.finish()
+        return nil
+      }
+      if let preparedCursorBuffer {
+        guard
+          encodeMetal4CursorPass(
+            commandBuffer: commandBuffer,
+            drawableTex: readbackTexture,
+            buffer: preparedCursorBuffer,
+            uniforms: &u,
+            uniformBuffer: uniformBuffer,
+            context: context,
+            retainedArgumentTables: &retainedArgumentTables)
+        else {
+          commandBuffer.endCommandBuffer()
+          scheduledFrame.finish()
+          return nil
+        }
+      }
+      passSlots.readbackActive = true
+    }
+
+    self.lastFramePassSlots = passSlots
+    commandBuffer.endCommandBuffer()
+
+    var retainedObjects = retainedArgumentTables
+    retainedObjects.append(residencySet as AnyObject)
+    let completion = FrameCompletion(retainedObjects: retainedObjects)
+    lastFrameCompletion = completion
+    lastCmdBuf = nil
+    let cpuEncodeMs = msSince(cpuStart)
+    let options = MTL4CommitOptions()
+    options.addFeedbackHandler { [self] feedback in
+      if let error = feedback.error {
+        fputs("Metal 4 command feedback error: \(error)\n", stderr)
+      }
+      let gpuMs = max(0.0, (feedback.gpuEndTime - feedback.gpuStartTime) * 1000.0)
+      self.frameSampleLock.lock()
+      self.frameSamples.append(
+        FrameSample(
+          cpuMs: cpuEncodeMs, gpuMs: gpuMs,
+          contentMs: 0,
+          presentBlitMs: 0,
+          cursorOverlayMs: 0,
+          readbackBlitMs: 0))
+      if self.frameSamples.count > Self.frameSampleCap {
+        self.frameSamples.removeFirst(self.frameSamples.count - Self.frameSampleCap)
+      }
+      self.frameSampleLock.unlock()
+      self.onFrameCompleted?()
+      scheduledFrame.finish()
+      completion.signal()
+    }
+    context.queue.waitForDrawable(drawable)
+    context.queue.commit([commandBuffer], options: options)
+    context.queue.signalDrawable(drawable)
+    drawable.present()
+    if waitForFrameCompletion {
+      completion.wait()
+    }
+    targetNeedsFullRedraw = true
     return true
   }
 
@@ -1248,6 +1567,305 @@ public final class MetalRenderer: RendererBackend {
         vertexCount: 6, instanceCount: cellGlyphs.count)
     }
     encoder.endEncoding()
+    return true
+  }
+
+  @available(macOS 26, *)
+  private func makeMetal4ResidencySet(
+    context: Metal4Context,
+    uniformBuffer: MTLBuffer,
+    preparedBuffers: PreparedGPUCellMetal4Buffers,
+    cursorBuffer: MTLBuffer?,
+    drawableTexture: MTLTexture,
+    readbackTexture: MTLTexture?
+  ) -> (any MTLResidencySet)? {
+    let descriptor = MTLResidencySetDescriptor()
+    descriptor.label = "laban.metal4.frame.residency"
+    guard let residencySet = try? context.device.makeResidencySet(descriptor: descriptor) else {
+      return nil
+    }
+
+    residencySet.addAllocation(uniformBuffer)
+    if let buffer = preparedBuffers.solid {
+      residencySet.addAllocation(buffer)
+    }
+    if let buffer = preparedBuffers.sidebarGlyph {
+      residencySet.addAllocation(buffer)
+    }
+    if let buffer = preparedBuffers.cellGlyph {
+      residencySet.addAllocation(buffer)
+    }
+    if let cursorBuffer {
+      residencySet.addAllocation(cursorBuffer)
+    }
+    residencySet.addAllocation(glyphAtlas.texture)
+    if sidebarGlyphAtlas !== glyphAtlas {
+      residencySet.addAllocation(sidebarGlyphAtlas.texture)
+    }
+    residencySet.addAllocation(drawableTexture)
+    if let readbackTexture {
+      residencySet.addAllocation(readbackTexture)
+    }
+    residencySet.commit()
+    residencySet.requestResidency()
+    return residencySet
+  }
+
+  @available(macOS 26, *)
+  private func prepareGPUCellMetal4Buffers() -> PreparedGPUCellMetal4Buffers? {
+    let solidFrameBuffer: MTLBuffer?
+    if solidInstances.isEmpty {
+      solidFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&solidBuffer, for: solidInstances) else {
+        return nil
+      }
+      solidFrameBuffer = buffer
+    }
+
+    let sidebarGlyphFrameBuffer: MTLBuffer?
+    if sidebarGlyphInstances.isEmpty {
+      sidebarGlyphFrameBuffer = nil
+    } else {
+      guard
+        let buffer = prepareInstanceBuffer(&sidebarGlyphBuffer, for: sidebarGlyphInstances)
+      else {
+        return nil
+      }
+      sidebarGlyphFrameBuffer = buffer
+    }
+
+    metal4CellGlyphs.removeAll(keepingCapacity: true)
+    for glyph in cellGlyphs where glyph.flags != 0 {
+      metal4CellGlyphs.append(glyph)
+    }
+    let cellGlyphFrameBuffer: MTLBuffer?
+    if metal4CellGlyphs.isEmpty {
+      cellGlyphFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&metal4CellGlyphBuffer, for: metal4CellGlyphs) else {
+        return nil
+      }
+      cellGlyphFrameBuffer = buffer
+    }
+    return PreparedGPUCellMetal4Buffers(
+      solid: solidFrameBuffer,
+      sidebarGlyph: sidebarGlyphFrameBuffer,
+      cellGlyph: cellGlyphFrameBuffer,
+      cellGlyphCount: metal4CellGlyphs.count)
+  }
+
+  @available(macOS 26, *)
+  private func encodePreparedGPUCellContentPassMetal4(
+    commands: [FrameCommand],
+    damage: RenderDamage,
+    target: MTLTexture,
+    surfacePxH: Int,
+    uniforms _: inout Uniforms,
+    uniformBuffer: MTLBuffer,
+    preparedBuffers: PreparedGPUCellMetal4Buffers,
+    context: Metal4Context,
+    commandBuffer: any MTL4CommandBuffer,
+    retainedArgumentTables: inout [AnyObject]
+  ) -> Bool {
+    if case .partial(let yRanges) = damage, yRanges.isEmpty {
+      return false
+    }
+
+    let pass = MTL4RenderPassDescriptor()
+    pass.renderTargetWidth = target.width
+    pass.renderTargetHeight = target.height
+    let attach = pass.colorAttachments[0]!
+    attach.texture = target
+    attach.storeAction = .store
+
+    var scissor: MTLScissorRect?
+    switch damage {
+    case .full:
+      attach.loadAction = .clear
+      attach.clearColor = fullRedrawClearColor(commands)
+    case .partial(let yRanges):
+      attach.loadAction = .load
+      scissor = scissorRectFromYRanges(
+        yRanges,
+        surfacePxW: target.width,
+        surfacePxH: surfacePxH,
+        scale: layer.contentsScale)
+    }
+
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass, options: []) else {
+      return false
+    }
+    encoder.label = "terminal-content-gpu-cell-metal4"
+    encoder.setViewport(
+      MTLViewport(
+        originX: 0,
+        originY: 0,
+        width: Double(target.width),
+        height: Double(target.height),
+        znear: 0,
+        zfar: 1))
+    if let s = scissor {
+      encoder.setScissorRect(s)
+    }
+
+    if let buf = preparedBuffers.solid {
+      encoder.setRenderPipelineState(solidPipeline)
+      guard bindMetal4Arguments(
+        encoder: encoder,
+        context: context,
+        instanceBuffer: buf,
+        uniformBuffer: uniformBuffer,
+        texture: nil,
+        retainedArgumentTables: &retainedArgumentTables)
+      else {
+        encoder.endEncoding()
+        return false
+      }
+      encoder.drawPrimitives(
+        primitiveType: .triangle,
+        vertexStart: 0,
+        vertexCount: 6,
+        instanceCount: solidInstances.count)
+    }
+    if let buf = preparedBuffers.sidebarGlyph {
+      encoder.setRenderPipelineState(glyphPipeline)
+      guard bindMetal4Arguments(
+        encoder: encoder,
+        context: context,
+        instanceBuffer: buf,
+        uniformBuffer: uniformBuffer,
+        texture: sidebarGlyphAtlas.texture,
+        retainedArgumentTables: &retainedArgumentTables)
+      else {
+        encoder.endEncoding()
+        return false
+      }
+      encoder.drawPrimitives(
+        primitiveType: .triangle,
+        vertexStart: 0,
+        vertexCount: 6,
+        instanceCount: sidebarGlyphInstances.count)
+    }
+    if let buf = preparedBuffers.cellGlyph {
+      encoder.setRenderPipelineState(cellGlyphPipeline)
+      guard bindMetal4Arguments(
+        encoder: encoder,
+        context: context,
+        instanceBuffer: buf,
+        uniformBuffer: uniformBuffer,
+        texture: glyphAtlas.texture,
+        retainedArgumentTables: &retainedArgumentTables)
+      else {
+        encoder.endEncoding()
+        return false
+      }
+      encoder.drawPrimitives(
+        primitiveType: .triangle,
+        vertexStart: 0,
+        vertexCount: 6,
+        instanceCount: preparedBuffers.cellGlyphCount)
+    }
+    encoder.endEncoding()
+    return true
+  }
+
+  @available(macOS 26, *)
+  private func encodeMetal4CursorPass(
+    commandBuffer: any MTL4CommandBuffer,
+    drawableTex: MTLTexture,
+    buffer: MTLBuffer,
+    uniforms _: inout Uniforms,
+    uniformBuffer: MTLBuffer,
+    context: Metal4Context,
+    retainedArgumentTables: inout [AnyObject]
+  ) -> Bool {
+    let cursorPass = MTL4RenderPassDescriptor()
+    cursorPass.renderTargetWidth = drawableTex.width
+    cursorPass.renderTargetHeight = drawableTex.height
+    let attach = cursorPass.colorAttachments[0]!
+    attach.texture = drawableTex
+    attach.loadAction = .load
+    attach.storeAction = .store
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: cursorPass, options: [])
+    else {
+      return false
+    }
+    encoder.label = "cursor-overlay-metal4"
+    encoder.setViewport(
+      MTLViewport(
+        originX: 0,
+        originY: 0,
+        width: Double(drawableTex.width),
+        height: Double(drawableTex.height),
+        znear: 0,
+        zfar: 1))
+    encoder.setRenderPipelineState(solidPipeline)
+    guard bindMetal4Arguments(
+      encoder: encoder,
+      context: context,
+      instanceBuffer: buffer,
+      uniformBuffer: uniformBuffer,
+      texture: nil,
+      retainedArgumentTables: &retainedArgumentTables)
+    else {
+      encoder.endEncoding()
+      return false
+    }
+    encoder.drawPrimitives(
+      primitiveType: .triangle,
+      vertexStart: 0,
+      vertexCount: 6,
+      instanceCount: cursorInstances.count)
+    encoder.endEncoding()
+    return true
+  }
+
+  @available(macOS 26, *)
+  private func encodeMetal4TextureCopy(
+    commandBuffer: any MTL4CommandBuffer,
+    source: MTLTexture,
+    destination: MTLTexture,
+    width: Int,
+    height: Int
+  ) -> Bool {
+    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+      return false
+    }
+    encoder.copy(
+      sourceTexture: source,
+      sourceSlice: 0,
+      sourceLevel: 0,
+      sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+      sourceSize: MTLSize(width: width, height: height, depth: 1),
+      destinationTexture: destination,
+      destinationSlice: 0,
+      destinationLevel: 0,
+      destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+    encoder.endEncoding()
+    return true
+  }
+
+  @available(macOS 26, *)
+  private func bindMetal4Arguments(
+    encoder: any MTL4RenderCommandEncoder,
+    context: Metal4Context,
+    instanceBuffer: MTLBuffer,
+    uniformBuffer: MTLBuffer,
+    texture: MTLTexture?,
+    retainedArgumentTables: inout [AnyObject]
+  ) -> Bool {
+    guard let table = context.makeArgumentTable() else {
+      return false
+    }
+    table.setAddress(instanceBuffer.gpuAddress, index: 0)
+    table.setAddress(uniformBuffer.gpuAddress, index: 1)
+    if let texture {
+      table.setTexture(texture.gpuResourceID, index: 0)
+      table.setSamplerState(sampler.gpuResourceID, index: 0)
+    }
+    retainedArgumentTables.append(table as AnyObject)
+    encoder.setArgumentTable(table, stages: [.vertex, .fragment])
     return true
   }
 
@@ -2383,6 +3001,27 @@ public final class MetalRenderer: RendererBackend {
           target.contents().advanced(by: byteOffset),
           base.advanced(by: range.lowerBound),
           range.count * stride)
+      }
+    }
+    return target
+  }
+
+  @available(macOS 26, *)
+  private func prepareMetal4UniformBuffer(
+    _ uniforms: Uniforms,
+    context: Metal4Context
+  ) -> MTLBuffer? {
+    let stride = MemoryLayout<Uniforms>.stride
+    guard
+      let target = ensureBuffer(
+        &context.uniformBuffer,
+        elementCount: 1,
+        elementStride: stride)
+    else { return nil }
+    var copy = uniforms
+    withUnsafeBytes(of: &copy) { src in
+      if let base = src.baseAddress {
+        memcpy(target.contents(), base, stride)
       }
     }
     return target

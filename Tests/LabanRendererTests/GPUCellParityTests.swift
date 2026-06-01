@@ -16,6 +16,7 @@ final class GPUCellParityTests: XCTestCase {
   override func tearDown() {
     MetalRenderer.useClassicDamageScoped = true
     MetalRenderer.useGPUCellPath = false
+    MetalRenderer.useMetal4CommandModel = false
     super.tearDown()
   }
 
@@ -140,6 +141,38 @@ final class GPUCellParityTests: XCTestCase {
       fixture: "gpu-cell-plain-text",
       expectedPNG: classic.png,
       actualPNG: gpuRequested.png)
+  }
+
+  func testMetal4GPUCellPathMatchesClassicForPlainTextWhenOptedIn() throws {
+    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
+      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
+    }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    guard #available(macOS 26, *) else {
+      throw XCTSkip("Metal 4 command model requires macOS 26")
+    }
+
+    let commands = frame(seed: 11, changedRow: nil)
+
+    MetalRenderer.useGPUCellPath = false
+    MetalRenderer.useMetal4CommandModel = false
+    let classic = try renderSingle(label: "classic-metal4-baseline", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    MetalRenderer.useMetal4CommandModel = true
+    let metal4 = try renderSingle(label: "gpu-metal4-requested", commands: commands, damage: .full)
+
+    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
+    XCTAssertEqual(metal4.counts.glyphs, 0)
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: metal4.image,
+      fixture: "gpu-cell-metal4-plain-text",
+      expectedPNG: classic.png,
+      actualPNG: metal4.png)
   }
 
   func testGPUCellPathMatchesClassicForColorSafeAttributes() throws {
