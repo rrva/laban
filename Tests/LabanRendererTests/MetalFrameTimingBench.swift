@@ -38,6 +38,7 @@ final class MetalFrameTimingBench: XCTestCase {
     try benchAt(label: "xl     400x120", cols: 400, rows: 120, fontAtlas: fontAtlas)
     try benchClassicDamageComparison(fontAtlas: fontAtlas)
     try benchGPUCellComparison(fontAtlas: fontAtlas)
+    try benchMetal4ProductionGPUCellComparison(fontAtlas: fontAtlas)
     try benchGPUCellPatchBuildComparison(fontAtlas: fontAtlas)
     try benchInstanceBuildComparison(fontAtlas: fontAtlas)
     try benchMetal4EncodeOverheadSpike()
@@ -263,6 +264,59 @@ final class MetalFrameTimingBench: XCTestCase {
       fontAtlas: fontAtlas)
     printFullFrameRow(path: "classic", result: classic)
     printFullFrameRow(path: "gpuCell", result: gpuCell)
+  }
+
+  private func benchMetal4ProductionGPUCellComparison(fontAtlas: FontAtlas) throws {
+    guard #available(macOS 26, *) else {
+      print("\n=== Metal 4 production GPU-cell comparison skipped: requires macOS 26 ===")
+      return
+    }
+
+    let cols = 160
+    let rows = 48
+    let cellW: CGFloat = 9
+    let cellH: CGFloat = 19
+    let scale: CGFloat = 2
+    let pixelW = Int(CGFloat(cols) * cellW * scale)
+    let pixelH = Int(CGFloat(rows) * cellH * scale)
+
+    print("\n=== GPU-cell command model: legacy vs Metal 4 static screen (160x48, release) ===")
+    print("  path       n   cpu p50/p95/p99 ms   glyphs cellGlyphs solids")
+    defer {
+      MetalRenderer.useGPUCellPath = false
+      MetalRenderer.useMetal4CommandModel = false
+      MetalRenderer.useClassicDamageScoped = true
+    }
+    let gpuCell = try measureFullFramePath(
+      useGPUCell: true,
+      useMetal4CommandModel: false,
+      staticSeed: 42,
+      cols: cols,
+      rows: rows,
+      cellW: cellW,
+      cellH: cellH,
+      scale: scale,
+      pixelW: pixelW,
+      pixelH: pixelH,
+      fontAtlas: fontAtlas)
+    let metal4 = try measureFullFramePath(
+      useGPUCell: true,
+      useMetal4CommandModel: true,
+      staticSeed: 42,
+      cols: cols,
+      rows: rows,
+      cellW: cellW,
+      cellH: cellH,
+      scale: scale,
+      pixelW: pixelW,
+      pixelH: pixelH,
+      fontAtlas: fontAtlas)
+    printFullFrameRow(path: "gpuCell", result: gpuCell)
+    printFullFrameRow(path: "metal4", result: metal4)
+    print(
+      String(
+        format: "  delta p50  %.3f ms (positive means Metal 4 encoded faster)",
+        gpuCell.timings.cpuP50Ms - metal4.timings.cpuP50Ms))
   }
 
   private func benchGPUCellPatchBuildComparison(fontAtlas: FontAtlas) throws {
@@ -598,6 +652,8 @@ final class MetalFrameTimingBench: XCTestCase {
 
   private func measureFullFramePath(
     useGPUCell: Bool,
+    useMetal4CommandModel: Bool = false,
+    staticSeed: Int? = nil,
     cols: Int,
     rows: Int,
     cellW: CGFloat,
@@ -615,12 +671,18 @@ final class MetalFrameTimingBench: XCTestCase {
     renderer.resize(pixelWidth: pixelW, pixelHeight: pixelH, scale: scale)
     MetalRenderer.useClassicDamageScoped = true
     MetalRenderer.useGPUCellPath = useGPUCell
+    MetalRenderer.useMetal4CommandModel = useMetal4CommandModel
 
+    let staticFrame = staticSeed.map {
+      damageFrame(cols: cols, rows: rows, cellW: cellW, cellH: cellH, seed: $0)
+    }
     for i in 0..<12 {
+      let commands =
+        staticFrame ?? damageFrame(cols: cols, rows: rows, cellW: cellW, cellH: cellH, seed: i)
       XCTAssertTrue(
         renderAccepted(
           renderer,
-          commands: damageFrame(cols: cols, rows: rows, cellW: cellW, cellH: cellH, seed: i),
+          commands: commands,
           damage: .full))
     }
     renderer.waitForLastFrame()
@@ -629,9 +691,11 @@ final class MetalFrameTimingBench: XCTestCase {
     var accepted = 0
     var seed = 12
     while accepted < 120 && seed < 260 {
+      let commands =
+        staticFrame ?? damageFrame(cols: cols, rows: rows, cellW: cellW, cellH: cellH, seed: seed)
       if renderAccepted(
         renderer,
-        commands: damageFrame(cols: cols, rows: rows, cellW: cellW, cellH: cellH, seed: seed),
+        commands: commands,
         damage: .full)
       {
         accepted += 1

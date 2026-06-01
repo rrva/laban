@@ -262,6 +262,18 @@ public final class MetalRenderer: RendererBackend {
     frameSampleLock.unlock()
   }
 
+  var lastMetal4FeedbackError: String? {
+    metal4FeedbackLock.lock()
+    defer { metal4FeedbackLock.unlock() }
+    return lastMetal4FeedbackErrorStorage
+  }
+
+  private func setLastMetal4FeedbackError(_ message: String?) {
+    metal4FeedbackLock.lock()
+    lastMetal4FeedbackErrorStorage = message
+    metal4FeedbackLock.unlock()
+  }
+
   /// Resolve the most recent frame's sample-buffer slots into per-pass
   /// milliseconds. Slots not used by this frame (e.g., readback when
   /// captureMode is off) are returned as 0.
@@ -390,6 +402,8 @@ public final class MetalRenderer: RendererBackend {
   private var frameSamples: [FrameSample] = []
   private static let frameSampleCap = 240
   private let frameSampleLock = NSLock()
+  private let metal4FeedbackLock = NSLock()
+  private var lastMetal4FeedbackErrorStorage: String?
   private var lastFrameCompletion: FrameCompletion?
 
   // MARK: - GPU timestamp counters
@@ -987,6 +1001,7 @@ public final class MetalRenderer: RendererBackend {
     guard #available(macOS 26, *), let context = metal4Context as? Metal4Context else {
       return nil
     }
+    setLastMetal4FeedbackError(nil)
 
     guard damage == .full else {
       return nil
@@ -1161,7 +1176,9 @@ public final class MetalRenderer: RendererBackend {
     let options = MTL4CommitOptions()
     options.addFeedbackHandler { [self] feedback in
       if let error = feedback.error {
-        fputs("Metal 4 command feedback error: \(error)\n", stderr)
+        let message = String(describing: error)
+        setLastMetal4FeedbackError(message)
+        fputs("Metal 4 command feedback error: \(message)\n", stderr)
       }
       let gpuMs = max(0.0, (feedback.gpuEndTime - feedback.gpuStartTime) * 1000.0)
       self.frameSampleLock.lock()

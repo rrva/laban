@@ -1340,6 +1340,44 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   a post-residency MTL4 copy probe, and release-mode frame timing before any default
   enablement decision.
 
+### 2026-06-02 — M5 validation plan completed; production perf gate not met
+
+- Added `GPUCellParityTests/testMetal4GPUCellPathMatchesClassicAfterScaleChangeWhenOptedIn`.
+  It renders a 1x frame, resizes the same renderer to 2x, rebuilds scale-specific
+  atlas contents, and compares MTL4 against the classic path at the final 2x pixels.
+- Added test-visible MTL4 feedback-error tracking in `MetalRenderer` and asserted
+  `lastMetal4FeedbackError == nil` from the shared parity readback helper, so opt-in
+  MTL4 parity tests fail on command feedback errors instead of only logging them.
+- Added `GPUCellParityTests/testMetal4TextureCopyProbeAfterResidencyWhenOptedIn`.
+  It uses explicit MTL4 residency sets and byte-compares R8 texture copies at `64x64`
+  and `288x152`, matching the post-residency copy-probe question without reviving the
+  production copy path.
+- Added a release benchmark row for the production GPU-cell command model:
+  legacy M3 GPU-cell vs opt-in MTL4 on a static `160x48` screen.
+- Validation:
+  - expanded opt-in MTL4 matrix passes:
+    `LABAN_TEST_MTL4_COMMAND_MODEL=1 swift test --filter 'GPUCellParityTests/testMetal4.*'`
+    (8 tests, 0 failures)
+  - default full parity suite remains green:
+    `swift test --filter GPUCellParityTests`
+    (28 tests, 8 opt-in skips, 0 failures)
+  - release timing bench passes:
+    `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench/testFrameTimingsAcrossWorkloads`
+  - production static-screen row from that run:
+    - M3 GPU-cell: `6.871/8.205/8.667 ms` p50/p95/p99
+    - MTL4 GPU-cell: `7.071/8.039/8.259 ms` p50/p95/p99
+    - p50 delta: `-0.200 ms` (negative means MTL4 was slower)
+  - standalone encode spike still shows an encode-only win:
+    - legacy: `9.29/14.75/23.58 us` p50/p95/p99
+    - MTL4: `6.50/11.17/14.21 us` p50/p95/p99
+    - p50 delta: `+2.79 us`
+- Decision from validation: keep the MTL4 branch opt-in for now because parity,
+  feedback, scale, atlas, resize, and copy validation are green, but do **not** enable
+  it by default and do **not** mark M5 complete. The production frame-level p50 gate
+  has not been met. Next M5 work should either reduce the per-frame MTL4 overhead
+  (notably residency/argument-table churn) and rerun this bench, or retire the MTL4
+  production branch despite the standalone encode-spike win.
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
