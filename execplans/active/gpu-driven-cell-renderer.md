@@ -1393,6 +1393,28 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   promise, but the production release p50 gate failed, so the branch was retired
   instead of being kept as a selectable renderer path.
 
+### 2026-06-02 — M6 renderer setting and ADR slice landed
+
+- Added the user-facing renderer selector under the View menu. It persists
+  `RendererMode` via `LabanRendererMode`, defaults to Classic, and disables the
+  GPU-driven item with a macOS 26 note when the GPU cell path is unavailable.
+- Wired live switching through `AppDelegate` -> `MainWindowController` ->
+  `TerminalBitmapView.applyRendererMode(_:)`. The switch updates the existing
+  `MetalRenderer.configuredRendererMode`, forces a full redraw, and does not recreate
+  `AppModel`, tabs, or sessions.
+- Added `RendererModeSettingsTests` covering menu persistence/availability and the
+  active-session identity invariant across a renderer-mode switch.
+- Added ADR 0016 and the AGENTS Decision Index entry. The ADR records the permanent
+  two-renderer decision, the frame-command contract boundary, the GPU-cell payload /
+  persistent-buffer architecture, and the M5 Metal 4 no-go. Classic remains default;
+  GPU-driven remains opt-in because the predeclared default-enable threshold is not
+  met.
+- Validation:
+  - `swift test --filter RendererModeSettingsTests` (2 tests, 0 failures)
+  - `git diff --check`
+- M6 remains open for the final recorded broad comparison/review-gate pass; this slice
+  closes the user-selectable setting, session-identity, and ADR deliverables.
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under

@@ -509,6 +509,29 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
 
   required init?(coder: NSCoder) { nil }
 
+  var rendererMode: RendererMode {
+    guard let metal = backend as? MetalRenderer else {
+      return .classic
+    }
+    return metal.configuredRendererMode
+  }
+
+  var usesMetalBackend: Bool {
+    backend is MetalRenderer
+  }
+
+  func applyRendererMode(_ mode: RendererMode) {
+    let resolved = mode.isAvailableOnCurrentOS ? mode : .classic
+    RendererMode.set(resolved)
+    guard let metal = backend as? MetalRenderer else { return }
+    guard metal.configuredRendererMode != resolved else { return }
+    metal.configuredRendererMode = resolved
+    renderInvalidated = true
+    if window != nil {
+      scheduleRenderRetry()
+    }
+  }
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     lastAppliedWindowTitle = nil

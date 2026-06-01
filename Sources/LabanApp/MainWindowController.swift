@@ -11,6 +11,7 @@ final class MainWindowController: NSWindowController {
   /// model.
   private(set) var persistenceCoordinator: PersistenceCoordinator?
   private(set) var model: AppModel?
+  private(set) var terminalView: TerminalBitmapView?
   private(set) var terminalBackend: TerminalSessionBackend = .inProcess
   private(set) var terminalSessionClient: TerminalSessionClient?
   private(set) var sessionCoordinator: AppSessionCoordinator?
@@ -327,6 +328,7 @@ final class MainWindowController: NSWindowController {
 
     let controller = MainWindowController(window: window)
     controller.model = model
+    controller.terminalView = termView
     controller.terminalBackend = terminalBackend
     controller.terminalSessionClient =
       sessionCoordinator?.terminalClient
@@ -436,6 +438,14 @@ final class MainWindowController: NSWindowController {
     }
 
     return controller
+  }
+
+  var currentRendererMode: RendererMode {
+    terminalView?.rendererMode ?? RendererMode.persisted()
+  }
+
+  func applyRendererMode(_ mode: RendererMode) {
+    terminalView?.applyRendererMode(mode)
   }
 
   /// Launch-time recovery for the labpty tier. If the daemon is holding

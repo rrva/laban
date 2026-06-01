@@ -8,6 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let themeMenuController = ThemeMenuController()
   private let restoreOnLaunchMenuController = RestoreOnLaunchMenuController()
   private let terminalBackendMenuController = TerminalBackendMenuController()
+  private lazy var rendererModeMenuController = RendererModeMenuController {
+    [weak self] mode in
+    self?.windowController?.applyRendererMode(mode)
+  }
   private var updateCheckInFlight = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -41,7 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     MenuCommands.setupMenuBar(
       themeMenu: themeMenuController,
       restoreOnLaunchMenu: restoreOnLaunchMenuController,
-      terminalBackendMenu: terminalBackendMenuController
+      terminalBackendMenu: terminalBackendMenuController,
+      rendererModeMenu: rendererModeMenuController
     )
 
     // Decide whether to restore on this launch:
