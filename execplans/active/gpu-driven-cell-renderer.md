@@ -90,7 +90,7 @@ stay in the codebase permanently** and are user-selectable (M6).
 - [x] M2 — GPU-driven: text-only cell path, whole-buffer rebuild each frame, pixel-identical (macOS 26)
 - [x] M3 — GPU-driven: persistent cell buffer + dirty-row-only patching (the CPU rebuild win)
 - [x] M4 — GPU-driven: feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
-- [ ] M5 — GPU-driven: Metal 4 command-allocator/command-buffer reuse + argument tables (encode-*overhead* reduction, behind a proof spike; macOS 26 only)
+- [x] M5 — GPU-driven: Metal 4 command model evaluated and production branch retired after failing the release p50 gate (proof spike retained)
 - [ ] M6 — Expose renderer choice as a user setting; keep both renderers; record head-to-head comparison; ADR
 - [ ] Review Gate passed
 
@@ -1377,6 +1377,21 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   has not been met. Next M5 work should either reduce the per-frame MTL4 overhead
   (notably residency/argument-table churn) and rerun this bench, or retire the MTL4
   production branch despite the standalone encode-spike win.
+
+### 2026-06-02 — M5 closed by retiring the production Metal 4 branch
+
+- Removed the opt-in production Metal 4 command-model path from `MetalRenderer`:
+  the reusable `MTL4CommandBuffer` context, per-frame residency set wiring,
+  MTL4 argument-table binding, MTL4 cursor/content passes, and the `useMetal4CommandModel`
+  A/B switch are gone. The GPU-driven renderer remains on the M3 plain-Metal path.
+- Removed the MTL4-only parity fixtures and the production MTL4 benchmark row. The
+  standalone MTL4 encode-overhead spike remains as historical evidence only.
+- Validation:
+  - `swift test --filter GPUCellParityTests` (20 tests, 0 failures)
+  - `git diff --check`
+- M5 is complete by the milestone's strict fallback rule: the proof spike showed
+  promise, but the production release p50 gate failed, so the branch was retired
+  instead of being kept as a selectable renderer path.
 
 ## Review Gate
 

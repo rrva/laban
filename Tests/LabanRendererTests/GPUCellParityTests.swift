@@ -16,7 +16,6 @@ final class GPUCellParityTests: XCTestCase {
   override func tearDown() {
     MetalRenderer.useClassicDamageScoped = true
     MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
     super.tearDown()
   }
 
@@ -141,235 +140,6 @@ final class GPUCellParityTests: XCTestCase {
       fixture: "gpu-cell-plain-text",
       expectedPNG: classic.png,
       actualPNG: gpuRequested.png)
-  }
-
-  func testMetal4GPUCellPathMatchesClassicForPlainTextWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-
-    let commands = frame(seed: 11, changedRow: nil)
-
-    MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
-    let classic = try renderSingle(label: "classic-metal4-baseline", commands: commands, damage: .full)
-
-    MetalRenderer.useGPUCellPath = true
-    MetalRenderer.useMetal4CommandModel = true
-    let metal4 = try renderSingle(label: "gpu-metal4-requested", commands: commands, damage: .full)
-
-    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
-    XCTAssertEqual(metal4.counts.glyphs, 0)
-
-    try assertPixelsEqual(
-      expected: classic.image,
-      actual: metal4.image,
-      fixture: "gpu-cell-metal4-plain-text",
-      expectedPNG: classic.png,
-      actualPNG: metal4.png)
-  }
-
-  func testMetal4GPUCellPathMatchesClassicForAtlasStressWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-
-    let commands = atlasStressFrame(seed: 29)
-
-    MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
-    let classic = try renderSingle(label: "classic-metal4-atlas-stress", commands: commands, damage: .full)
-
-    MetalRenderer.useGPUCellPath = true
-    MetalRenderer.useMetal4CommandModel = true
-    let metal4 = try renderSingle(label: "gpu-metal4-atlas-stress", commands: commands, damage: .full)
-
-    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
-    XCTAssertEqual(metal4.counts.glyphs, 0)
-
-    try assertPixelsEqual(
-      expected: classic.image,
-      actual: metal4.image,
-      fixture: "gpu-cell-metal4-atlas-stress",
-      expectedPNG: classic.png,
-      actualPNG: metal4.png)
-  }
-
-  func testMetal4GPUCellPathMatchesClassicAfterAtlasMutationWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-
-    let initial = frame(seed: 11, changedRow: nil)
-    let next = atlasStressFrame(seed: 61)
-
-    MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
-    let classic = try renderSequence(
-      label: "classic-metal4-atlas-mutation",
-      initial: initial,
-      next: next,
-      damage: .full)
-
-    MetalRenderer.useGPUCellPath = true
-    MetalRenderer.useMetal4CommandModel = true
-    let metal4 = try renderSequence(
-      label: "gpu-metal4-atlas-mutation",
-      initial: initial,
-      next: next,
-      damage: .full)
-
-    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
-    XCTAssertEqual(metal4.counts.glyphs, 0)
-
-    try assertPixelsEqual(
-      expected: classic.image,
-      actual: metal4.image,
-      fixture: "gpu-cell-metal4-atlas-mutation",
-      expectedPNG: classic.png,
-      actualPNG: metal4.png)
-  }
-
-  func testMetal4GPUCellPathMatchesClassicAfterResizeWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-
-    let initialCols = 18
-    let initialRows = 5
-    let initial = sizedFrame(seed: 7, frameRows: initialRows, frameCols: initialCols)
-    let next = atlasStressFrame(seed: 67)
-
-    MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
-    let classic = try renderResizeSequence(
-      label: "classic-metal4-resize",
-      initial: initial,
-      initialRows: initialRows,
-      initialCols: initialCols,
-      next: next)
-
-    MetalRenderer.useGPUCellPath = true
-    MetalRenderer.useMetal4CommandModel = true
-    let metal4 = try renderResizeSequence(
-      label: "gpu-metal4-resize",
-      initial: initial,
-      initialRows: initialRows,
-      initialCols: initialCols,
-      next: next)
-
-    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
-    XCTAssertEqual(metal4.counts.glyphs, 0)
-
-    try assertPixelsEqual(
-      expected: classic.image,
-      actual: metal4.image,
-      fixture: "gpu-cell-metal4-resize",
-      expectedPNG: classic.png,
-      actualPNG: metal4.png)
-  }
-
-  func testMetal4GPUCellPathMatchesClassicAfterScaleChangeWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-
-    let initialScale: CGFloat = 1
-    let nextScale: CGFloat = 2
-    let initial = frame(seed: 11, changedRow: nil)
-    let next = atlasStressFrame(seed: 79)
-
-    MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
-    let classic = try renderScaleChangeSequence(
-      label: "classic-metal4-scale-change",
-      initial: initial,
-      next: next,
-      initialScale: initialScale,
-      nextScale: nextScale)
-
-    MetalRenderer.useGPUCellPath = true
-    MetalRenderer.useMetal4CommandModel = true
-    let metal4 = try renderScaleChangeSequence(
-      label: "gpu-metal4-scale-change",
-      initial: initial,
-      next: next,
-      initialScale: initialScale,
-      nextScale: nextScale)
-
-    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
-    XCTAssertEqual(metal4.counts.glyphs, 0)
-
-    try assertPixelsEqual(
-      expected: classic.image,
-      actual: metal4.image,
-      fixture: "gpu-cell-metal4-scale-change",
-      expectedPNG: classic.png,
-      actualPNG: metal4.png)
-  }
-
-  func testMetal4TextureCopyProbeAfterResidencyWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-    guard let device = MTLCreateSystemDefaultDevice() else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard
-      let queue = device.makeMTL4CommandQueue(),
-      let allocator = device.makeCommandAllocator(),
-      let commandBuffer = device.makeCommandBuffer()
-    else {
-      throw XCTSkip("Metal 4 command model unavailable")
-    }
-
-    try assertMetal4TextureCopyMatchesCPU(
-      device: device,
-      queue: queue,
-      allocator: allocator,
-      commandBuffer: commandBuffer,
-      width: 64,
-      height: 64)
-    try assertMetal4TextureCopyMatchesCPU(
-      device: device,
-      queue: queue,
-      allocator: allocator,
-      commandBuffer: commandBuffer,
-      width: 288,
-      height: 152)
   }
 
   func testGPUCellPathMatchesClassicForColorSafeAttributes() throws {
@@ -509,46 +279,6 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
-  func testMetal4GPUCellPayloadMatchesClassicForTextDecorationsWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-
-    let commands = decoratedFrame(seed: 19)
-    let payload = decoratedPayload(seed: 19, includedRows: Array(0..<rows))
-
-    MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
-    let classic = try renderSingle(
-      label: "classic-metal4-payload-decorations",
-      commands: commands,
-      damage: .full)
-
-    MetalRenderer.useGPUCellPath = true
-    MetalRenderer.useMetal4CommandModel = true
-    let metal4 = try renderSingle(
-      label: "gpu-metal4-payload-decorations",
-      commands: commands,
-      payload: payload,
-      damage: .full)
-
-    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
-    XCTAssertEqual(metal4.counts.glyphs, 0)
-
-    try assertPixelsEqual(
-      expected: classic.image,
-      actual: metal4.image,
-      fixture: "gpu-cell-metal4-payload-text-decorations",
-      expectedPNG: classic.png,
-      actualPNG: metal4.png)
-  }
-
   func testGPUCellPayloadMatchesClassicForProceduralCells() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -642,48 +372,6 @@ final class GPUCellParityTests: XCTestCase {
       fixture: "gpu-cell-payload-overlays",
       expectedPNG: classic.png,
       actualPNG: gpu.png)
-  }
-
-  func testMetal4GPUCellPayloadMatchesClassicForOverlayCommandsWhenOptedIn() throws {
-    guard ProcessInfo.processInfo.environment["LABAN_TEST_MTL4_COMMAND_MODEL"] == "1" else {
-      throw XCTSkip("set LABAN_TEST_MTL4_COMMAND_MODEL=1 to run the opt-in Metal 4 path")
-    }
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    guard #available(macOS 26, *) else {
-      throw XCTSkip("Metal 4 command model requires macOS 26")
-    }
-
-    let overlays = overlayCommands()
-    let commands = overlayFrame(seed: 37, overlays: overlays)
-    let payload = payload(seed: 37, changedRow: nil, includedRows: Array(0..<rows))
-
-    MetalRenderer.useGPUCellPath = false
-    MetalRenderer.useMetal4CommandModel = false
-    let classic = try renderSingle(
-      label: "classic-metal4-payload-overlays",
-      commands: commands,
-      damage: .full)
-
-    MetalRenderer.useGPUCellPath = true
-    MetalRenderer.useMetal4CommandModel = true
-    let metal4 = try renderSingle(
-      label: "gpu-metal4-payload-overlays",
-      commands: overlays,
-      payload: payload,
-      damage: .full)
-
-    XCTAssertGreaterThan(metal4.counts.cellGlyphs, 0)
-    XCTAssertEqual(metal4.counts.glyphs, 0)
-    XCTAssertGreaterThan(metal4.counts.cursors, 0)
-
-    try assertPixelsEqual(
-      expected: classic.image,
-      actual: metal4.image,
-      fixture: "gpu-cell-metal4-payload-overlays",
-      expectedPNG: classic.png,
-      actualPNG: metal4.png)
   }
 
   func testGPUCellPayloadMatchesClassicForWideAndClusterGlyphs() throws {
@@ -1457,8 +1145,7 @@ final class GPUCellParityTests: XCTestCase {
     DirtyYRange(y: CGFloat(rows - 1 - row) * cellH, height: cellH)
   }
 
-  private func makeRenderer(label: String, scale renderScale: CGFloat? = nil) throws -> MetalRenderer {
-    let scale = renderScale ?? self.scale
+  private func makeRenderer(label: String) throws -> MetalRenderer {
     let fontAtlas = FontAtlas(pointSize: 14)
     guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale) else {
       XCTFail("\(label): MetalRenderer.init returned nil")
@@ -1485,10 +1172,9 @@ final class GPUCellParityTests: XCTestCase {
     label: String,
     commands: [FrameCommand],
     payload: TerminalCellPayload?,
-    damage: RenderDamage,
-    scale renderScale: CGFloat? = nil
+    damage: RenderDamage
   ) throws -> RenderResult {
-    let renderer = try makeRenderer(label: label, scale: renderScale)
+    let renderer = try makeRenderer(label: label)
     XCTAssertTrue(
       renderer.render(
         commands,
@@ -1504,10 +1190,9 @@ final class GPUCellParityTests: XCTestCase {
     label: String,
     initial: [FrameCommand],
     next: [FrameCommand],
-    damage: RenderDamage,
-    scale renderScale: CGFloat? = nil
+    damage: RenderDamage
   ) throws -> RenderResult {
-    let renderer = try makeRenderer(label: label, scale: renderScale)
+    let renderer = try makeRenderer(label: label)
     XCTAssertTrue(renderer.render(initial, damage: .full), "\(label): initial render failed")
     renderer.waitForLastFrame()
     XCTAssertTrue(renderer.render(next, damage: damage), "\(label): update render failed")
@@ -1538,128 +1223,11 @@ final class GPUCellParityTests: XCTestCase {
     return try readResult(renderer: renderer, label: label)
   }
 
-  private func renderScaleChangeSequence(
-    label: String,
-    initial: [FrameCommand],
-    next: [FrameCommand],
-    initialScale: CGFloat,
-    nextScale: CGFloat
-  ) throws -> RenderResult {
-    let renderer = try makeRenderer(label: label, scale: initialScale)
-    XCTAssertTrue(renderer.render(initial, damage: .full), "\(label): initial render failed")
-    renderer.waitForLastFrame()
-    renderer.resize(
-      pixelWidth: Int(CGFloat(cols) * cellW * nextScale),
-      pixelHeight: Int(CGFloat(rows) * cellH * nextScale),
-      scale: nextScale)
-    XCTAssertTrue(renderer.render(next, damage: .full), "\(label): scaled render failed")
-    renderer.waitForLastFrame()
-    return try readResult(renderer: renderer, label: label)
-  }
-
-  @available(macOS 26, *)
-  private func assertMetal4TextureCopyMatchesCPU(
-    device: MTLDevice,
-    queue: any MTL4CommandQueue,
-    allocator: any MTL4CommandAllocator,
-    commandBuffer: any MTL4CommandBuffer,
-    width: Int,
-    height: Int
-  ) throws {
-    let bytesPerRow = width
-    let byteCount = bytesPerRow * height
-    let expected = (0..<byteCount).map { UInt8(($0 * 37 + width + height) & 0xFF) }
-    let zeros = Array(repeating: UInt8(0), count: byteCount)
-
-    let source = try makeSharedR8Texture(device: device, width: width, height: height)
-    let destination = try makeSharedR8Texture(device: device, width: width, height: height)
-    let region = MTLRegionMake2D(0, 0, width, height)
-    expected.withUnsafeBytes { bytes in
-      source.replace(
-        region: region,
-        mipmapLevel: 0,
-        withBytes: bytes.baseAddress!,
-        bytesPerRow: bytesPerRow)
-    }
-    zeros.withUnsafeBytes { bytes in
-      destination.replace(
-        region: region,
-        mipmapLevel: 0,
-        withBytes: bytes.baseAddress!,
-        bytesPerRow: bytesPerRow)
-    }
-
-    let descriptor = MTLResidencySetDescriptor()
-    descriptor.label = "laban.tests.metal4-copy.residency"
-    let residencySet = try device.makeResidencySet(descriptor: descriptor)
-    residencySet.addAllocation(source)
-    residencySet.addAllocation(destination)
-    residencySet.commit()
-    residencySet.requestResidency()
-
-    let completed = DispatchSemaphore(value: 0)
-    var feedbackError: String?
-    allocator.reset()
-    commandBuffer.beginCommandBuffer(allocator: allocator)
-    commandBuffer.useResidencySet(residencySet)
-    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-      throw XCTSkip("could not allocate Metal 4 compute encoder")
-    }
-    encoder.copy(
-      sourceTexture: source,
-      sourceSlice: 0,
-      sourceLevel: 0,
-      sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-      sourceSize: MTLSize(width: width, height: height, depth: 1),
-      destinationTexture: destination,
-      destinationSlice: 0,
-      destinationLevel: 0,
-      destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-    encoder.endEncoding()
-    commandBuffer.endCommandBuffer()
-
-    let options = MTL4CommitOptions()
-    options.addFeedbackHandler { feedback in
-      if let error = feedback.error {
-        feedbackError = String(describing: error)
-      }
-      completed.signal()
-    }
-    queue.commit([commandBuffer], options: options)
-    XCTAssertEqual(completed.wait(timeout: .now() + .seconds(2)), .success)
-    XCTAssertNil(feedbackError, "Metal 4 texture copy feedback error for \(width)x\(height)")
-
-    var actual = Array(repeating: UInt8(0), count: byteCount)
-    actual.withUnsafeMutableBytes { bytes in
-      destination.getBytes(
-        bytes.baseAddress!,
-        bytesPerRow: bytesPerRow,
-        from: region,
-        mipmapLevel: 0)
-    }
-    XCTAssertEqual(actual, expected, "Metal 4 texture copy mismatch for \(width)x\(height)")
-  }
-
-  private func makeSharedR8Texture(device: MTLDevice, width: Int, height: Int) throws -> MTLTexture {
-    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-      pixelFormat: .r8Unorm,
-      width: width,
-      height: height,
-      mipmapped: false)
-    descriptor.storageMode = .shared
-    descriptor.usage = [.shaderRead, .shaderWrite]
-    guard let texture = device.makeTexture(descriptor: descriptor) else {
-      throw XCTSkip("could not allocate shared R8 texture")
-    }
-    return texture
-  }
-
   private func readResult(renderer: MetalRenderer, label: String) throws -> RenderResult {
     guard let png = renderer.pngData else {
       XCTFail("\(label): renderer did not produce pngData")
       throw TestFailure()
     }
-    XCTAssertNil(renderer.lastMetal4FeedbackError, "\(label): Metal 4 feedback error")
     return RenderResult(
       png: png,
       image: try decodeRGBA(png),
