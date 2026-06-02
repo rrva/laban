@@ -298,6 +298,7 @@ public final class MetalRenderer: RendererBackend {
   /// caller passed `.partial(empty)` but the surface size changed).
   private var targetTexture: MTLTexture?
   private var targetNeedsFullRedraw: Bool = true
+  private var gpuCellPayloadNeedsFullRepaintRetry = false
   /// Last frame's command buffer. `pngData` waits on it before reading the
   /// readback texture so capture-side callers see the actual just-rendered
   /// pixels and not whatever the previous frame happened to leave behind.
@@ -1180,6 +1181,7 @@ public final class MetalRenderer: RendererBackend {
   ) -> Bool {
     let builtInstances: Bool
     if let cellPayload {
+      gpuCellPayloadNeedsFullRepaintRetry = false
       builtInstances = buildGPUCellInstanceLists(
         payload: cellPayload,
         commands: commands,
@@ -1192,6 +1194,10 @@ public final class MetalRenderer: RendererBackend {
         damage: damage)
     }
     guard builtInstances else {
+      if gpuCellPayloadNeedsFullRepaintRetry {
+        targetNeedsFullRedraw = true
+        return false
+      }
       return encodeContentPass(
         commands: commands,
         damage: damage,
@@ -1510,6 +1516,7 @@ public final class MetalRenderer: RendererBackend {
     surfacePxH: Int,
     damage: RenderDamage
   ) -> Bool {
+    gpuCellPayloadNeedsFullRepaintRetry = false
     guard payload.isGPUCellCompatible else { return false }
     var attempts = 0
     let damageBounds = Self.useClassicDamageScoped ? Self.damageYBounds(damage) : nil
@@ -1569,6 +1576,10 @@ public final class MetalRenderer: RendererBackend {
     let fullCellRebuild =
       damage == .full || geometry != cellGlyphGridGeometry
       || geometry.cellCount != cellGlyphs.count
+    if fullCellRebuild, damage != .full {
+      gpuCellPayloadNeedsFullRepaintRetry = true
+      return false
+    }
     if fullCellRebuild {
       cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
       cellGlyphGridGeometry = geometry

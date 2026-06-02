@@ -367,6 +367,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
         self?.advanceFrame()
       }
     }
+    model.onSessionFullRepaintRequested = { [weak self, displayKickCoalescer] _ in
+      displayKickCoalescer.requestFrameAdvance {
+        self?.advanceFrame()
+      }
+    }
 
     configureFrameProbeIfRequested()
     configureResizeProbeIfRequested()
@@ -921,6 +926,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     else {
       onViewportUnavailable?()
       return
+    }
+    if model.consumeSessionFullRepaint(session.id) {
+      renderInvalidated = true
     }
 
     let windowTitle =

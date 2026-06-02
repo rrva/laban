@@ -554,7 +554,7 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(renderer.activeCellGlyphIndicesForTesting.count, (rows - 1) * cols + 1)
   }
 
-  func testGPUCellPayloadScaleChangeForcesFullCellRebuild() throws {
+  func testGPUCellPayloadScaleChangeRequiresFullPayloadRetry() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
@@ -576,14 +576,22 @@ final class GPUCellParityTests: XCTestCase {
       pixelWidth: Int(CGFloat(cols) * cellW * scale),
       pixelHeight: Int(CGFloat(rows) * cellH * scale),
       scale: 2)
-    let next = payload(seed: 42, changedRow: 4, includedRows: [4])
-    XCTAssertNotNil(
+    let partial = payload(seed: 42, changedRow: 4, includedRows: [4])
+    XCTAssertNil(
       renderer.rebuildGPUCellPayloadInstancesForTesting(
-        payload: next,
+        payload: partial,
         commands: [],
         damage: .partial(yRanges: [dirtyRange(forRow: 4)]),
-        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)),
+      "stale GPU-cell geometry cannot be rebuilt from a partial payload")
 
+    let full = payload(seed: 42, changedRow: 4, includedRows: Array(0..<rows))
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: full,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
     XCTAssertEqual(renderer.cellGlyphUploadRangesForTesting, [0..<(rows * cols)])
   }
 

@@ -26,6 +26,7 @@ final class AppSessionCoordinator {
   private let processIntrospector = LibprocIntrospector()
 
   var onSessionDirty: (@Sendable (Session.ID) -> Void)?
+  var onSessionFullRepaintRequired: (@Sendable (Session.ID) -> Void)?
 
   init(
     client: LabandTerminalSessionClient,
@@ -460,6 +461,9 @@ final class AppSessionCoordinator {
       onDirty: { [weak self] sessionId in
         self?.onSessionDirty?(sessionId)
       },
+      onFullRepaintRequired: { [weak self] sessionId in
+        self?.onSessionFullRepaintRequired?(sessionId)
+      },
       onOverflow: { [weak self] in
         self?.markLabptyOutputDegraded(for: tabId)
       })
@@ -733,6 +737,7 @@ private final class LabptyParserFeed {
   private let reader: LabptyByteRingReader
   private let session: Session
   private let onDirty: @Sendable (Session.ID) -> Void
+  private let onFullRepaintRequired: @Sendable (Session.ID) -> Void
   private let onOverflow: @Sendable () -> Void
   private let queue: DispatchQueue
   private let timer: DispatchSourceTimer
@@ -747,12 +752,14 @@ private final class LabptyParserFeed {
     reader: LabptyByteRingReader,
     session: Session,
     onDirty: @escaping @Sendable (Session.ID) -> Void,
+    onFullRepaintRequired: @escaping @Sendable (Session.ID) -> Void,
     onOverflow: @escaping @Sendable () -> Void
   ) {
     self.ptyHandle = ptyHandle
     self.reader = reader
     self.session = session
     self.onDirty = onDirty
+    self.onFullRepaintRequired = onFullRepaintRequired
     self.onOverflow = onOverflow
     self.queue = DispatchQueue(label: "com.laban.labpty.parser.\(ptyHandle)", qos: .userInteractive)
     self.timer = DispatchSource.makeTimerSource(queue: queue)
@@ -782,6 +789,7 @@ private final class LabptyParserFeed {
     if lock.withLock({ stopped }) {
       return
     }
+    let initialRead = lastOffset == 0
     let result = reader.readSince(lastOffset)
     lastOffset = result.newOffset
     guard !result.bytes.isEmpty else { return }
@@ -816,6 +824,9 @@ private final class LabptyParserFeed {
         totalBefore: diagBefore?.totalRows ?? after.totalRows,
         off: after.viewportOffset, total: after.totalRows, vp: after.viewportRows,
         sb: after.scrollbackRows, alt: after.altScreen, mouse: after.mouseTracking)
+    }
+    if initialRead || result.overflowed {
+      onFullRepaintRequired(session.id)
     }
     onDirty(session.id)
   }

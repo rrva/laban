@@ -1,6 +1,7 @@
 import Foundation
 import LabanCore
 import LabanTerminalCore
+import os
 import XCTest
 
 @testable import LabanApp
@@ -50,9 +51,18 @@ final class LabanAppTests: XCTestCase {
       cwdByTabId: [tab.id: FileManager.default.currentDirectoryPath]
     )
     defer { coordinator.detach() }
+    let repaintSessionIds = OSAllocatedUnfairLock(initialState: Set<Session.ID>())
+    coordinator.onSessionFullRepaintRequired = { sessionId in
+      repaintSessionIds.withLock { ids in
+        _ = ids.insert(sessionId)
+      }
+    }
 
     _ = try coordinator.ensureSession(for: tab, session: session, size: size)
     _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "STARTED")
+    try waitForCondition("initial labpty byte-ring replay requests a full repaint") {
+      repaintSessionIds.withLock { $0.contains(session.id) }
+    }
 
     try coordinator.write(Array("ping\n".utf8), to: tab, session: session, size: size)
     let text = try waitForLocalSnapshotText(model: model, tab: tab, text: "got ping")
@@ -343,5 +353,14 @@ final class LabanAppTests: XCTestCase {
     }
     XCTFail("timed out waiting for \(text); last=\(last)")
     return last
+  }
+
+  private func waitForCondition(_ label: String, predicate: () -> Bool) throws {
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      if predicate() { return }
+      usleep(50_000)
+    }
+    XCTFail("timed out waiting for \(label)")
   }
 }

@@ -207,6 +207,11 @@ final class MainWindowController: NSWindowController {
     sessionCoordinator?.onSessionDirty = { [weak model] sessionId in
       model?.onSessionDirty?(sessionId)
     }
+    sessionCoordinator?.onSessionFullRepaintRequired = { [weak model] sessionId in
+      DispatchQueue.main.async {
+        model?.requestSessionFullRepaint(sessionId)
+      }
+    }
     try sessionCoordinator?.ensureSessions(for: model.tabs, in: model, size: model.terminalSize)
     // After the legitimate tabs have attached or created their daemon
     // sessions, sweep anything else still in laband. With
