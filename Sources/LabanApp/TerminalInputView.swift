@@ -14,6 +14,7 @@ enum AppCommand: Equatable {
   case copy
   case paste
   case find
+  case dumpRenderJournal
 }
 
 // MARK: - Key descriptor
@@ -116,6 +117,8 @@ extension TerminalKeyDescriptor {
   private func routeCommand() -> TerminalInputRoute {
     guard let key else { return .swallowCommand }
     switch key {
+    case .j where modifiers.contains(.control) && modifiers.contains(.alt):
+      return .appCommand(.dumpRenderJournal)
     case .t: return .appCommand(.newTab)
     case .w: return .appCommand(.closeTab)
     case .c: return .appCommand(.copy)

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import os
 
 /// Centralized log handles. Each call writes to BOTH:
@@ -62,8 +63,6 @@ final class LogFile: @unchecked Sendable {
 
   private let queue = DispatchQueue(label: "laban.logfile", qos: .utility)
   private let dirURL: URL
-  private var currentDate: String = ""
-  private var currentHandle: FileHandle?
   private static let retainDays = 7
 
   private init() {
@@ -106,21 +105,27 @@ final class LogFile: @unchecked Sendable {
 
   private func writeLocked(level: String, category: String, message: String) {
     let now = Date()
-    let day = Self.dayString(now)
-    if day != currentDate {
-      currentDate = day
-      try? currentHandle?.close()
-      currentHandle = nil
-      let url = dirURL.appendingPathComponent("\(day).log")
-      if !FileManager.default.fileExists(atPath: url.path) {
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-      }
-      currentHandle = try? FileHandle(forWritingTo: url)
-      _ = try? currentHandle?.seekToEnd()
-    }
     let line = "\(Self.tsString(now)) \(level) [\(category)] \(message)\n"
     if let data = line.data(using: .utf8) {
-      try? currentHandle?.write(contentsOf: data)
+      let url = dirURL.appendingPathComponent("\(Self.dayString(now)).log")
+      Self.appendAtomically(data, to: url)
+    }
+  }
+
+  private static func appendAtomically(_ data: Data, to url: URL) {
+    url.path.withCString { path in
+      let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR)
+      guard fd >= 0 else { return }
+      defer { close(fd) }
+      data.withUnsafeBytes { rawBuffer in
+        guard let base = rawBuffer.baseAddress else { return }
+        var written = 0
+        while written < rawBuffer.count {
+          let result = write(fd, base.advanced(by: written), rawBuffer.count - written)
+          guard result > 0 else { return }
+          written += result
+        }
+      }
     }
   }
 

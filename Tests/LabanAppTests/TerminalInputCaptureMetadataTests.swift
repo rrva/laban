@@ -32,5 +32,8 @@ final class TerminalInputCaptureMetadataTests: XCTestCase {
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .copy), "copy")
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .paste), "paste")
     XCTAssertEqual(TerminalInputCaptureMetadata.captureName(for: .find), "find")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .dumpRenderJournal),
+      "dumpRenderJournal")
   }
 }

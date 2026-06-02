@@ -231,6 +231,57 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(next.cellPayload?.dirtyRows, Array(0..<Int(size.rows)))
   }
 
+  func testScrollbackReturnToBottomForcesFullDamageAfterRenderedHistoryFrame() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 32
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 0)
+
+    func makeFrame(_ frame: Int, forceFull: Bool) throws -> TerminalSurfaceFrame {
+      try XCTUnwrap(
+        controller.makeFrame(
+          TerminalSurfaceFrameRequest(
+            frame: frame,
+            viewportWidth: 256,
+            viewportHeight: 80,
+            requireActiveSnapshot: true,
+            forceFullDamage: forceFull,
+            surfaceWidth: 256,
+            surfaceHeight: 80,
+            surfaceScale: 1,
+            contentMode: .cellPayloadPreferred)))
+    }
+
+    let history = (0..<80).map { "line-\($0)" }.joined(separator: "\r\n") + "\r\n"
+    XCTAssertEqual(session.feedOutput(Array(history.utf8)), 0)
+    _ = try makeFrame(1, forceFull: true)
+    XCTAssertEqual(session.markRendered(), 0)
+
+    XCTAssertEqual(session.scrollViewport(deltaRows: -20), 0)
+    let scrolledFrame = try makeFrame(2, forceFull: false)
+    guard case .full = scrolledFrame.damage else {
+      XCTFail("scrolling into history must force full damage, got \(scrolledFrame.damage)")
+      return
+    }
+    XCTAssertEqual(session.markRendered(), 0)
+
+    XCTAssertGreaterThan(session.scrollViewportToActiveBottom(), 0)
+    let bottomFrame = try makeFrame(3, forceFull: false)
+    guard case .full = bottomFrame.damage else {
+      XCTFail("returning to bottom must force full damage, got \(bottomFrame.damage)")
+      return
+    }
+    XCTAssertEqual(bottomFrame.cellPayload?.dirtyRows, Array(0..<Int(size.rows)))
+    XCTAssertFalse(bottomFrame.cellPayload?.glyphs.isEmpty ?? true)
+  }
+
   func testCaptureCommandStreamIgnoresCellPayloadPreference() throws {
     func capturedCommands(
       contentMode: TerminalSurfaceFrameContentMode
@@ -802,6 +853,30 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     }
 
     XCTAssertEqual(damage, .partial(yRanges: [DirtyYRange(y: 15, height: 10)]))
+  }
+
+  func testGloballyDirtySnapshotWithNoRowBitsForcesFullDamage() {
+    let dirtyRows: [UInt8] = [0, 0, 0, 0]
+    var snapshot = LabanSnapshot()
+    snapshot.rows = 4
+    snapshot.dirty = 1
+    snapshot.dirty_row_count = 4
+
+    let damage = dirtyRows.withUnsafeBufferPointer { buffer -> RenderDamage in
+      snapshot.dirty_rows = buffer.baseAddress
+      return withUnsafePointer(to: &snapshot) { ptr in
+        TerminalSurfaceController.damage(
+          snapshot: ptr,
+          forceFull: false,
+          cellHeight: 5,
+          originY: 10)
+      }
+    }
+
+    XCTAssertEqual(
+      damage,
+      .full,
+      "a globally dirty snapshot with no row-local bits cannot safely preserve a Metal target")
   }
 
   func testRemoteDirtyRangesMapTopDownRowsToBottomUpYRanges() {

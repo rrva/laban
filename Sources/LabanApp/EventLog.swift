@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import os
 
 /// Append-only JSON-lines event recorder. One entry per line, one file
@@ -20,8 +21,6 @@ final class EventLog: @unchecked Sendable {
 
   private let queue = DispatchQueue(label: "laban.events", qos: .utility)
   private let dirURL: URL
-  private var currentDate: String = ""
-  private var currentHandle: FileHandle?
   private static let retainDays = 7
 
   private init() {
@@ -72,18 +71,6 @@ final class EventLog: @unchecked Sendable {
 
   private func writeLocked(kind: String, payload: [String: Any]) {
     let now = Date()
-    let day = Self.dayString(now)
-    if day != currentDate {
-      currentDate = day
-      try? currentHandle?.close()
-      currentHandle = nil
-      let url = dirURL.appendingPathComponent("\(day).jsonl")
-      if !FileManager.default.fileExists(atPath: url.path) {
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-      }
-      currentHandle = try? FileHandle(forWritingTo: url)
-      _ = try? currentHandle?.seekToEnd()
-    }
     var entry: [String: Any] = [
       "ts": Self.isoMs(now),
       "kind": kind,
@@ -96,7 +83,25 @@ final class EventLog: @unchecked Sendable {
     }
     var line = data
     line.append(0x0A)  // "\n"
-    try? currentHandle?.write(contentsOf: line)
+    let url = dirURL.appendingPathComponent("\(Self.dayString(now)).jsonl")
+    Self.appendAtomically(line, to: url)
+  }
+
+  private static func appendAtomically(_ data: Data, to url: URL) {
+    url.path.withCString { path in
+      let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR)
+      guard fd >= 0 else { return }
+      defer { close(fd) }
+      data.withUnsafeBytes { rawBuffer in
+        guard let base = rawBuffer.baseAddress else { return }
+        var written = 0
+        while written < rawBuffer.count {
+          let result = write(fd, base.advanced(by: written), rawBuffer.count - written)
+          guard result > 0 else { return }
+          written += result
+        }
+      }
+    }
   }
 
   private static let isoFormatter: ISO8601DateFormatter = {

@@ -27,7 +27,6 @@ public final class AppModel {
   private let sessionRegistry = SessionRegistry()
   private var findStateBySession: [Session.ID: TerminalFindState] = [:]
   private var findFullSearchCacheBySession: [Session.ID: FindFullSearchCache] = [:]
-  private var pendingFullRepaintSessions: Set<Session.ID> = []
   // Sessions whose active find needs a full scrollback rescan deferred from a
   // live resize drag; flushed by refreshActiveFindsAfterResize on settle. (H-5)
   private var pendingFindRescanSessions: Set<Session.ID> = []
@@ -60,11 +59,6 @@ public final class AppModel {
       }
     }
   }
-  /// Set by the AppKit view to receive "this session's retained/recovered
-  /// content must be repainted from a full snapshot" wake-ups. Unlike
-  /// `onSessionDirty`, the model also records a pending bit so replays that
-  /// arrive before the view is constructed are not lost.
-  public var onSessionFullRepaintRequested: (@Sendable (Session.ID) -> Void)?
   public weak var captureSink: CaptureSink? {
     didSet {
       withModelLock {
@@ -221,20 +215,6 @@ public final class AppModel {
   /// tab does not exist or no agent has been detected.
   public func agent(forTab tabId: Tab.ID) -> AgentInfo? {
     withModelLock { agentByTab[tabId] }
-  }
-
-  public func requestSessionFullRepaint(_ sessionId: Session.ID) {
-    let callback: (@Sendable (Session.ID) -> Void)? = withModelLock {
-      pendingFullRepaintSessions.insert(sessionId)
-      return onSessionFullRepaintRequested
-    }
-    callback?(sessionId)
-  }
-
-  public func consumeSessionFullRepaint(_ sessionId: Session.ID) -> Bool {
-    withModelLock {
-      pendingFullRepaintSessions.remove(sessionId) != nil
-    }
   }
 
   @discardableResult

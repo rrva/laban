@@ -202,6 +202,14 @@ enum MenuCommands {
     captureItem.keyEquivalentModifierMask = [.command, .shift]
     debugMenu.addItem(captureItem)
 
+    let renderJournalItem = NSMenuItem(
+      title: "Dump Render Journal",
+      action: #selector(TerminalBitmapView.dumpRenderJournal(_:)),
+      keyEquivalent: "j"
+    )
+    renderJournalItem.keyEquivalentModifierMask = [.command, .control, .option]
+    debugMenu.addItem(renderJournalItem)
+
     debugMenu.addItem(NSMenuItem.separator())
     debugMenu.addItem(
       NSMenuItem(

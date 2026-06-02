@@ -248,6 +248,121 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertGreaterThan(counts.solids, rows)
   }
 
+  func testGPUCellPayloadBuildFailureFailsClosedThenCommandRetryRendersGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    if #unavailable(macOS 26) {
+      throw XCTSkip("GPU cell renderer is gated to macOS 26")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    let renderer = try makeRenderer(label: "payload-build-failure")
+    var badPayload = payload(seed: 23, changedRow: nil, includedRows: Array(0..<rows))
+    badPayload.glyphs[0].text = ""
+    badPayload.glyphs[0].scalarValue = nil
+    badPayload.glyphs[0].utf8Range = nil
+
+    XCTAssertNil(badPayload.fallbackReason)
+    XCTAssertFalse(
+      renderer.render(
+        [],
+        cellPayload: badPayload,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "a supplied payload cannot safely fall back to commands after terminal commands were skipped")
+    let failure = try XCTUnwrap(renderer.lastGPUCellPayloadBuildFailure)
+    XCTAssertEqual(failure.reason, "missingGlyphText")
+    XCTAssertEqual(failure.row, 0)
+    XCTAssertEqual(failure.col, 0)
+    XCTAssertEqual(failure.utf8ByteCount, badPayload.utf8Bytes.count)
+
+    XCTAssertTrue(
+      renderer.render(
+        frame(seed: 23, changedRow: nil),
+        cellPayload: nil,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "after a payload failure, the command-mode retry must repaint safely")
+    renderer.waitForLastFrame()
+    XCTAssertGreaterThan(
+      renderer.lastInstanceCounts.cellGlyphs,
+      0,
+      "command-mode retry should rebuild glyphs instead of preserving a blank target")
+  }
+
+  func testGPUCellPayloadAcceptsTwoCellMetricNarrowSymbols() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-two-cell-metric-symbols")
+    let payload = twoCellMetricSymbolPayload()
+
+    let counts = try XCTUnwrap(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: payload,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+    XCTAssertNil(renderer.lastGPUCellPayloadBuildFailure)
+    XCTAssertEqual(counts.cellGlyphs, rows * cols)
+  }
+
+  func testGPUCellPayloadMatchesClassicForTwoCellMetricNarrowSymbols() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = twoCellMetricSymbolFrame()
+    let payload = twoCellMetricSymbolPayload()
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-two-cell-metric-symbols", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-two-cell-metric-symbols",
+      commands: [],
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-two-cell-metric-symbols",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
+  func testSoftwareAndMetalUseSameInkBoundsForTwoCellMetricNarrowSymbols() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = twoCellMetricSymbolFrame()
+    let software = try renderSoftware(label: "software-two-cell-metric-symbols", commands: commands)
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-two-cell-metric-symbols", commands: commands, damage: .full)
+
+    try assertInkBoundsEqual(
+      expected: software.image,
+      actual: classic.image,
+      crop: 18..<45,
+      label: "U+23BF")
+    try assertInkBoundsEqual(
+      expected: software.image,
+      actual: classic.image,
+      crop: 54..<81,
+      label: "U+21B3")
+  }
+
   func testGPUCellPayloadMatchesClassicForTextDecorations() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -1044,6 +1159,65 @@ final class GPUCellParityTests: XCTestCase {
     return payload
   }
 
+  private func twoCellMetricSymbolFrame() -> [FrameCommand] {
+    let bg: UInt32 = 0x18_24_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let row = 3
+    let y = CGFloat(rows - 1 - row) * cellH
+    return [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+        color: 0x10_20_30_FF,
+        source: .terminal),
+      .rect(
+        CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+        color: bg,
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 2 * cellW, y: y),
+        text: "⎿",
+        foreground: fg,
+        background: bg,
+        attributes: [],
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 6 * cellW, y: y),
+        text: "↳",
+        foreground: fg,
+        background: bg,
+        attributes: [],
+        source: .terminal),
+    ]
+  }
+
+  private func twoCellMetricSymbolPayload() -> TerminalCellPayload {
+    let bg: UInt32 = 0x18_24_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let row = 3
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: Array(0..<rows))
+    payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+    for (offset, scalarValue) in [UInt32(0x23BF), UInt32(0x21B3)].enumerated() {
+      payload.glyphs.append(
+        .init(
+          row: row,
+          col: 2 + offset * 4,
+          text: "",
+          scalarValue: scalarValue,
+          foreground: fg,
+          background: bg,
+          attributes: [],
+          wide: 0))
+    }
+    return payload
+  }
+
   private func payload(
     seed: Int,
     changedRow: Int?,
@@ -1263,6 +1437,23 @@ final class GPUCellParityTests: XCTestCase {
     return try readResult(renderer: renderer, label: label)
   }
 
+  private func renderSoftware(label: String, commands: [FrameCommand]) throws -> RenderResult {
+    let backend = SoftwareBackend(
+      fontAtlas: FontAtlas(pointSize: 14),
+      pixelWidth: Int(CGFloat(cols) * cellW * scale),
+      pixelHeight: Int(CGFloat(rows) * cellH * scale),
+      scale: scale)
+    XCTAssertTrue(backend.render(commands, damage: .full), "\(label): software render failed")
+    guard let png = backend.pngData else {
+      XCTFail("\(label): software renderer did not produce pngData")
+      throw TestFailure()
+    }
+    return RenderResult(
+      png: png,
+      image: try decodeRGBA(png),
+      counts: MetalRenderer.RenderInstanceCounts())
+  }
+
   private func renderSequence(
     label: String,
     initial: [FrameCommand],
@@ -1456,6 +1647,54 @@ final class GPUCellParityTests: XCTestCase {
         line: line)
       throw TestFailure()
     }
+  }
+
+  private func assertInkBoundsEqual(
+    expected: RGBAImage,
+    actual: RGBAImage,
+    crop: Range<Int>,
+    label: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) throws {
+    let expectedBounds = try XCTUnwrap(
+      inkBounds(in: expected, crop: crop),
+      "\(label): expected image has no ink",
+      file: file,
+      line: line)
+    let actualBounds = try XCTUnwrap(
+      inkBounds(in: actual, crop: crop),
+      "\(label): actual image has no ink",
+      file: file,
+      line: line)
+    XCTAssertEqual(expectedBounds, actualBounds, "\(label): ink bounds differ", file: file, line: line)
+  }
+
+  private func inkBounds(in image: RGBAImage, crop: Range<Int>) -> CGRect? {
+    guard image.width > 0, image.height > 0 else { return nil }
+    var minX = Int.max
+    var minY = Int.max
+    var maxX = -1
+    var maxY = -1
+    let clampedLower = max(0, crop.lowerBound)
+    let clampedUpper = min(image.width, crop.upperBound)
+    guard clampedLower < clampedUpper else { return nil }
+    for y in 0..<image.height {
+      for x in clampedLower..<clampedUpper where !isTwoCellMetricFixtureBackground(image, x: x, y: y) {
+        minX = min(minX, x)
+        minY = min(minY, y)
+        maxX = max(maxX, x)
+        maxY = max(maxY, y)
+      }
+    }
+    guard maxX >= minX, maxY >= minY else { return nil }
+    return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+  }
+
+  private func isTwoCellMetricFixtureBackground(_ image: RGBAImage, x: Int, y: Int) -> Bool {
+    let offset = (y * image.width + x) * 4
+    let pixel = Array(image.bytes[offset..<(offset + 4)])
+    return pixel == [0x10, 0x20, 0x30, 0xFF] || pixel == [0x18, 0x24, 0x30, 0xFF]
   }
 
   private func writeArtifacts(

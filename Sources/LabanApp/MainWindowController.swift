@@ -207,11 +207,6 @@ final class MainWindowController: NSWindowController {
     sessionCoordinator?.onSessionDirty = { [weak model] sessionId in
       model?.onSessionDirty?(sessionId)
     }
-    sessionCoordinator?.onSessionFullRepaintRequired = { [weak model] sessionId in
-      DispatchQueue.main.async {
-        model?.requestSessionFullRepaint(sessionId)
-      }
-    }
     try sessionCoordinator?.ensureSessions(for: model.tabs, in: model, size: model.terminalSize)
     // After the legitimate tabs have attached or created their daemon
     // sessions, sweep anything else still in laband. With
@@ -445,12 +440,12 @@ final class MainWindowController: NSWindowController {
     return controller
   }
 
-  var currentRendererMode: RendererMode {
-    terminalView?.rendererMode ?? RendererMode.persisted()
+  var currentRendererSelection: RendererSelection {
+    terminalView?.rendererSelection ?? RendererSelection.persisted()
   }
 
-  func applyRendererMode(_ mode: RendererMode) {
-    terminalView?.applyRendererMode(mode)
+  func applyRendererSelection(_ selection: RendererSelection) {
+    terminalView?.applyRendererSelection(selection)
   }
 
   /// Launch-time recovery for the labpty tier. If the daemon is holding

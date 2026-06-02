@@ -19,7 +19,7 @@ final class GPUCellRetainedRingRegressionTests: XCTestCase {
     super.tearDown()
   }
 
-  func testGPUCellRetainedLabptyClaudeUIRepaintsAfterCleanSnapshot() throws {
+  func testGPUCellRetainedLabptyClaudeUIRepaintsOnFirstSnapshotAfterCleanRenderState() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
@@ -36,33 +36,60 @@ final class GPUCellRetainedRingRegressionTests: XCTestCase {
     XCTAssertTrue(session.renderDirty(), "retained bytes must dirty the parser render state")
     XCTAssertEqual(session.markRendered(), 0)
     XCTAssertFalse(session.renderDirty(), "fixture models retained content after dirty rows were consumed")
-    model.requestSessionFullRepaint(session.id)
-    let forceFullDamage = model.consumeSessionFullRepaint(session.id)
-    XCTAssertTrue(forceFullDamage, "retained labpty replay must force one full repaint")
 
     let controller = TerminalSurfaceController(
       model: model,
       cellWidth: Int(cellW),
       cellHeight: Int(cellH),
       sidebarWidth: 0)
-    let frame = try XCTUnwrap(
+
+    func makeFrame(_ frameNumber: Int, forceFullDamage: Bool) throws -> TerminalSurfaceFrame {
+      try XCTUnwrap(
+        controller.makeFrame(
+          TerminalSurfaceFrameRequest(
+            frame: frameNumber,
+            viewportWidth: CGFloat(cols) * cellW,
+            viewportHeight: CGFloat(rows) * cellH,
+            now: Date(timeIntervalSince1970: 1_234),
+            reduceMotion: true,
+            requireActiveSnapshot: true,
+            forceFullDamage: forceFullDamage,
+            surfaceWidth: Int(CGFloat(cols) * cellW * scale),
+            surfaceHeight: Int(CGFloat(rows) * cellH * scale),
+            surfaceScale: Double(scale),
+            contentMode: .cellPayloadPreferred)))
+    }
+
+    let frame = try makeFrame(1, forceFullDamage: false)
+    guard case .full = frame.damage else {
+      XCTFail("first snapshot after retained replay must force full damage, got \(frame.damage)")
+      return
+    }
+    let payload = try XCTUnwrap(
+      frame.cellPayload,
+      "gpu-driven local frames should use the cell payload path")
+    XCTAssertFalse(
+      payload.glyphs.isEmpty,
+      "first retained repaint must include all visible glyphs even when renderDirty was already consumed")
+
+    let commandFrame = try XCTUnwrap(
       controller.makeFrame(
         TerminalSurfaceFrameRequest(
-          frame: 1,
+          frame: 2,
           viewportWidth: CGFloat(cols) * cellW,
           viewportHeight: CGFloat(rows) * cellH,
           now: Date(timeIntervalSince1970: 1_234),
           reduceMotion: true,
           requireActiveSnapshot: true,
-          forceFullDamage: forceFullDamage,
+          forceFullDamage: true,
           surfaceWidth: Int(CGFloat(cols) * cellW * scale),
           surfaceHeight: Int(CGFloat(rows) * cellH * scale),
           surfaceScale: Double(scale),
-          contentMode: .cellPayloadPreferred)))
-    let payload = try XCTUnwrap(
-      frame.cellPayload,
-      "gpu-driven local frames should use the cell payload path")
-    XCTAssertFalse(payload.glyphs.isEmpty, "forced retained repaint must include all visible glyphs")
+          contentMode: .commands)))
+    XCTAssertGreaterThan(
+      commandFrame.commands.count,
+      frame.commands.count,
+      "the command-mode fallback frame should contain terminal glyph commands")
 
     MetalRenderer.useGPUCellPath = true
     let renderer = try makeRenderer(label: "retained-labpty-gpu-cell")
@@ -89,6 +116,10 @@ final class GPUCellRetainedRingRegressionTests: XCTestCase {
     renderer.waitForLastFrame()
     let retainedPNG = try XCTUnwrap(renderer.pngData)
 
+    XCTAssertGreaterThan(
+      renderer.lastInstanceCounts.cellGlyphs,
+      0,
+      "retained labpty repaint must build GPU cell glyph instances, not only repaint background")
     XCTAssertNotEqual(
       retainedPNG,
       blankPNG,

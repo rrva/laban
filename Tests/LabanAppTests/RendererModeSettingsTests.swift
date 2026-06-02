@@ -15,7 +15,7 @@ final class RendererModeSettingsTests: XCTestCase {
     super.setUp()
     oldRendererEnv = getenv("LABAN_RENDERER").map { String(cString: $0) }
     unsetenv("LABAN_RENDERER")
-    UserDefaults.standard.removeObject(forKey: RendererMode.defaultsKey)
+    UserDefaults.standard.removeObject(forKey: RendererSelection.defaultsKey)
   }
 
   override func tearDown() {
@@ -25,7 +25,7 @@ final class RendererModeSettingsTests: XCTestCase {
       unsetenv("LABAN_RENDERER")
     }
     oldRendererEnv = nil
-    UserDefaults.standard.removeObject(forKey: RendererMode.defaultsKey)
+    UserDefaults.standard.removeObject(forKey: RendererSelection.defaultsKey)
     for suiteName in suiteNames {
       UserDefaults.standard.removePersistentDomain(forName: suiteName)
     }
@@ -35,39 +35,77 @@ final class RendererModeSettingsTests: XCTestCase {
 
   func testRendererMenuPersistsAvailableSelectionAndAppliesLiveMode() throws {
     let defaults = try makeDefaults()
-    var applied: [RendererMode] = []
-    let controller = RendererModeMenuController(defaults: defaults) { mode in
-      applied.append(mode)
+    var applied: [RendererSelection] = []
+    let controller = RendererModeMenuController(defaults: defaults) { selection in
+      applied.append(selection)
     }
 
     let parent = controller.makeMenuItem()
     let submenu = try XCTUnwrap(parent.submenu)
-    XCTAssertEqual(submenu.items[0].title, "Classic Renderer")
-    XCTAssertEqual(submenu.items[0].state, .on)
+    XCTAssertEqual(
+      submenu.items.map(\.title),
+      [
+        "Software Renderer",
+        "Classic Metal Renderer",
+        RendererMode.gpuDriven.isAvailableOnCurrentOS
+          ? "GPU-driven Renderer" : "GPU-driven Renderer (requires macOS 26)",
+      ])
+    XCTAssertEqual(submenu.items[0].state, .off)
+    XCTAssertEqual(submenu.items[1].state, .on)
 
-    let gpuItem = try XCTUnwrap(submenu.items.dropFirst().first)
+    controller.selectSoftware(nil)
+
+    XCTAssertEqual(RendererSelection.persisted(defaults: defaults), .software)
+    XCTAssertEqual(applied, [.software])
+    XCTAssertEqual(submenu.items[0].state, .on)
+    XCTAssertEqual(submenu.items[1].state, .off)
+
+    let gpuItem = submenu.items[2]
     if #available(macOS 26, *) {
       XCTAssertEqual(gpuItem.title, "GPU-driven Renderer")
       XCTAssertTrue(gpuItem.isEnabled)
 
       controller.selectGPUDriven(nil)
 
-      XCTAssertEqual(RendererMode.persisted(defaults: defaults), .gpuDriven)
-      XCTAssertEqual(applied, [.gpuDriven])
+      XCTAssertEqual(RendererSelection.persisted(defaults: defaults), .gpuDriven)
+      XCTAssertEqual(applied, [.software, .gpuDriven])
       XCTAssertEqual(submenu.items[0].state, .off)
+      XCTAssertEqual(submenu.items[1].state, .off)
       XCTAssertEqual(gpuItem.state, .on)
 
       controller.selectClassic(nil)
 
-      XCTAssertEqual(RendererMode.persisted(defaults: defaults), .classic)
-      XCTAssertEqual(applied, [.gpuDriven, .classic])
-      XCTAssertEqual(submenu.items[0].state, .on)
+      XCTAssertEqual(RendererSelection.persisted(defaults: defaults), .classic)
+      XCTAssertEqual(applied, [.software, .gpuDriven, .classic])
+      XCTAssertEqual(submenu.items[0].state, .off)
+      XCTAssertEqual(submenu.items[1].state, .on)
       XCTAssertEqual(gpuItem.state, .off)
     } else {
       XCTAssertEqual(gpuItem.title, "GPU-driven Renderer (requires macOS 26)")
       XCTAssertFalse(gpuItem.isEnabled)
       XCTAssertEqual(gpuItem.state, .off)
     }
+  }
+
+  func testRendererSelectionSoftwarePersistsAndUsesSoftwareBackend() throws {
+    RendererSelection.set(.software)
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 20
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let sidebarFontAtlas = FontAtlas(pointSize: 11)
+    let view = TerminalBitmapView(
+      model: model,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      cellWidth: Int(fontAtlas.cellSize.width),
+      cellHeight: Int(fontAtlas.cellSize.height)
+    )
+
+    XCTAssertEqual(view.rendererSelection, .software)
+    XCTAssertFalse(view.usesMetalBackend)
+    XCTAssertEqual(RendererSelection.persisted(), .software)
   }
 
   func testRendererModeSwitchPreservesActiveSessionIdentity() throws {
@@ -97,14 +135,55 @@ final class RendererModeSettingsTests: XCTestCase {
 
     view.applyRendererMode(.gpuDriven)
 
-    let expected: RendererMode
+    let expected: RendererSelection
     if #available(macOS 26, *) {
       expected = .gpuDriven
     } else {
       expected = .classic
     }
-    XCTAssertEqual(view.rendererMode, expected)
-    XCTAssertEqual(RendererMode.persisted(), expected)
+    XCTAssertEqual(view.rendererSelection, expected)
+    XCTAssertEqual(RendererSelection.persisted(), expected)
+    XCTAssertEqual(model.activeTab?.id, activeTab.id)
+    XCTAssertTrue(model.session(forTab: activeTab.id) === activeSession)
+  }
+
+  func testRendererSelectionSwitchesBetweenSoftwareAndMetalWithoutReplacingSession() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    RendererSelection.set(.software)
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 20
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let sidebarFontAtlas = FontAtlas(pointSize: 11)
+    let view = TerminalBitmapView(
+      model: model,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      cellWidth: Int(fontAtlas.cellSize.width),
+      cellHeight: Int(fontAtlas.cellSize.height)
+    )
+    let activeTab = try XCTUnwrap(model.activeTab)
+    let activeSession = try XCTUnwrap(model.session(forTab: activeTab.id))
+
+    XCTAssertFalse(view.usesMetalBackend)
+
+    view.applyRendererSelection(.classic)
+
+    XCTAssertTrue(view.usesMetalBackend)
+    XCTAssertEqual(view.rendererSelection, .classic)
+    XCTAssertEqual(RendererSelection.persisted(), .classic)
+    XCTAssertEqual(model.activeTab?.id, activeTab.id)
+    XCTAssertTrue(model.session(forTab: activeTab.id) === activeSession)
+
+    view.applyRendererSelection(.software)
+
+    XCTAssertFalse(view.usesMetalBackend)
+    XCTAssertEqual(view.rendererSelection, .software)
+    XCTAssertEqual(RendererSelection.persisted(), .software)
     XCTAssertEqual(model.activeTab?.id, activeTab.id)
     XCTAssertTrue(model.session(forTab: activeTab.id) === activeSession)
   }

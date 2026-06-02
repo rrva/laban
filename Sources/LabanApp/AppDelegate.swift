@@ -9,8 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let restoreOnLaunchMenuController = RestoreOnLaunchMenuController()
   private let terminalBackendMenuController = TerminalBackendMenuController()
   private lazy var rendererModeMenuController = RendererModeMenuController {
-    [weak self] mode in
-    self?.windowController?.applyRendererMode(mode)
+    [weak self] selection in
+    self?.windowController?.applyRendererSelection(selection)
   }
   private var updateCheckInFlight = false
 

@@ -26,6 +26,14 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(desc.route(), .appCommand(.find))
   }
 
+  func testCommandControlOptionJRoutesToDumpRenderJournal() {
+    let desc = TerminalKeyDescriptor(
+      action: .press,
+      key: .j,
+      modifiers: [.command, .control, .alt])
+    XCTAssertEqual(desc.route(), .appCommand(.dumpRenderJournal))
+  }
+
   func testCommandOneRoutesToSelectFirstTab() {
     let desc = TerminalKeyDescriptor(action: .press, key: .digit1, modifiers: .command)
     XCTAssertEqual(desc.route(), .appCommand(.selectTab(index: 0)))
