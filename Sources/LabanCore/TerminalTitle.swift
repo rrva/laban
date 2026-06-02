@@ -11,6 +11,12 @@ enum TerminalTitle {
     guard let raw, !raw.isEmpty else { return nil }
     guard maxScalars > 0 else { return nil }
 
+    // Fast path: sanitizing an already-clean string is the common case (the
+    // resolver re-sanitizes stored, already-sanitized fields every frame).
+    // Verify cleanliness in one allocation-free scan and hand back the
+    // original — no scalar buffer, no second String.
+    if isAlreadySanitized(raw, maxScalars: maxScalars) { return raw }
+
     // Build into a scalar buffer in one pass: per-scalar growth of a `String`
     // bridges/retains on every append, and `scalar.properties.isWhitespace`
     // hits the Unicode property database for every scalar. Titles are almost
@@ -59,6 +65,28 @@ enum TerminalTitle {
     let v = scalar.value
     if v < 0x80 { return v == 0x20 }
     return scalar.properties.isWhitespace
+  }
+
+  /// True when `sanitize` would return `value` unchanged: no characters to
+  /// collapse or remove, no leading/trailing whitespace to trim, and within
+  /// the scalar cap. Single pass, no allocation.
+  private static func isAlreadySanitized(_ value: String, maxScalars: Int) -> Bool {
+    var count = 0
+    var first: Unicode.Scalar?
+    var last: Unicode.Scalar = " "
+    for scalar in value.unicodeScalars {
+      let v = scalar.value
+      // tab/LF/CR collapse to a space; other C0/C1/DEL get removed — either
+      // way the result would differ from the input.
+      if v == 0x09 || v == 0x0A || v == 0x0D { return false }
+      if v < 0x20 || v == 0x7F || (v >= 0x80 && v <= 0x9F) { return false }
+      if first == nil { first = scalar }
+      last = scalar
+      count += 1
+      if count > maxScalars { return false }
+    }
+    guard let firstScalar = first else { return false }
+    return !isTrimmableWhitespace(firstScalar) && !isTrimmableWhitespace(last)
   }
 
   static func prefixScalars(_ value: String, maxScalars: Int) -> String {
