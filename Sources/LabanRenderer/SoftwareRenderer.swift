@@ -179,7 +179,13 @@ public final class SoftwareRenderer {
         positions.append(cellOrigin)
       } else {
         flushGlyphs()
-        drawFallbackText(String(cluster), at: cellOrigin, foreground: fgColor, font: font, in: ctx)
+        drawFallbackText(
+          String(cluster),
+          at: cellOrigin,
+          foreground: fgColor,
+          font: font,
+          cellAdvance: cellAdvance,
+          in: ctx)
       }
     }
     flushGlyphs()
@@ -204,21 +210,15 @@ public final class SoftwareRenderer {
     at position: CGPoint,
     foreground fgColor: CGColor,
     font: CTFont,
+    cellAdvance: CGFloat,
     in ctx: CGContext
   ) {
-    let attrStr = NSMutableAttributedString(string: text)
-    let range = NSRange(location: 0, length: attrStr.length)
-    attrStr.addAttribute(
-      kCTFontAttributeName as NSAttributedString.Key,
-      value: font,
-      range: range
+    let line = TerminalGlyphFallback.fallbackLine(
+      text: text,
+      font: font,
+      cellAdvance: cellAdvance,
+      foreground: fgColor
     )
-    attrStr.addAttribute(
-      kCTForegroundColorAttributeName as NSAttributedString.Key,
-      value: fgColor,
-      range: range
-    )
-    let line = CTLineCreateWithAttributedString(attrStr)
     ctx.textMatrix = .identity
     ctx.textPosition = position
     CTLineDraw(line, ctx)
