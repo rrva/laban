@@ -89,6 +89,35 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     XCTAssertFalse(harness.view.hasMarkedText(), "tab switch must discard marked IME text")
   }
 
+  func testSelectedRangeReportsValidInsertionPointForDictation() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    // Idle (no IME composition): macOS dictation queries selectedRange() for
+    // the insertion point before opening. A location of NSNotFound makes it
+    // abort with the "ding" and never show the overlay, so the caret must be a
+    // real, zero-length position.
+    let idle = harness.view.selectedRange()
+    XCTAssertNotEqual(
+      idle.location, NSNotFound,
+      "selectedRange() must expose a real insertion point or dictation/IME refuse to open")
+    XCTAssertEqual(idle, NSRange(location: 0, length: 0))
+
+    // During an IME composition the caret stays valid and inside the marked
+    // range so candidate windows and accent overlays still anchor correctly.
+    harness.view.setMarkedText(
+      "か",
+      selectedRange: NSRange(location: 1, length: 0),
+      replacementRange: NSRange(location: NSNotFound, length: 0))
+    XCTAssertTrue(harness.view.hasMarkedText(), "precondition: composition is marked")
+    let composing = harness.view.selectedRange()
+    XCTAssertNotEqual(composing.location, NSNotFound)
+    let marked = harness.view.markedRange()
+    XCTAssertLessThanOrEqual(
+      composing.location, marked.location + marked.length,
+      "caret must sit within the marked composition range")
+  }
+
   func testColumnChangingResizeClearsCachedInactiveSelections() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

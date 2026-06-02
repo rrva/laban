@@ -1750,7 +1750,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     inputContext?.discardMarkedText()
     unmarkText()
   }
-  func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+  func selectedRange() -> NSRange {
+    // macOS dictation, IME candidate windows, and the press-and-hold accent
+    // overlay all ask the focused text client for its insertion point here and
+    // silently refuse to open (the dictation "ding" with no overlay) when the
+    // location is NSNotFound. NSNotFound is the correct empty sentinel for
+    // markedRange(), but selectedRange() must always report a valid caret. We
+    // expose no document contents, so the caret sits at the end of any in-flight
+    // composition, or at 0 when idle.
+    NSRange(location: markedText.length, length: 0)
+  }
   func markedRange() -> NSRange {
     markedText.length > 0
       ? NSRange(location: 0, length: markedText.length)
