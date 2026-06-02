@@ -1452,6 +1452,40 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   higher, energy/wakeups have no measured win, remote frames fall back, and M5's Metal
   4 production branch failed its p50 gate.
 
+### 2026-06-02 — Review Gate current-HEAD validation refreshed
+
+- Current reviewed head for this refresh: `ce869b8`.
+- Safe validation rerun from the repo without launching the GUI app:
+  - `swift test --filter 'GPUCellParityTests|TerminalSurfaceControllerTests|RendererModeSettingsTests|CrossBackendBitmapTests|MetalRendererSmokeTests|MetalRendererClearColorTests|TextDecorationLayoutTests|GraphemeClusteringTests'`
+    passed (64 tests, 0 failures).
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter TerminalCellPayloadAllocationBench`
+    passed. The warmed one-dirty-row allocation bench reported
+    `storageGrowthEvents=0`, `perFrame=4.415 us`; the routed dirty-row bench reported
+    classic commands+M1 scoped `206.7 us` p50 versus payload fill+GPU patch `28.8 us`
+    p50, with `payloadStorageGrowthEvents=0` and `rendererRowMarkerGrowthEvents=0`.
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench/testFrameTimingsAcrossWorkloads`
+    passed, refreshing the M6 matrix on the cache-invalidation/allocation-fix head.
+  - `git diff --check` passed.
+- Current-head M6 highlights from that run:
+  - 0-dirty cursor blink p50: classic `7.645 ms`, GPU-cell `7.648 ms`; process CPU
+    per frame: classic `0.344 ms`, GPU-cell `0.388 ms`; dropped `0/0`.
+  - 1-row append p50: classic `7.641 ms`, GPU-cell `7.686 ms`; process CPU per
+    frame: classic `0.410 ms`, GPU-cell `0.462 ms`; dropped `0/0`.
+  - 25% contiguous p50: classic `7.667 ms`, GPU-cell `6.737 ms`; process CPU per
+    frame: classic `0.746 ms`, GPU-cell `1.316 ms`; dropped `0/0`.
+  - Sparse dirty rows p50: classic `7.696 ms`, GPU-cell `6.570 ms`; process CPU per
+    frame: classic `0.474 ms`, GPU-cell `0.720 ms`; dropped `0/0`.
+  - Full repaint p50: classic `6.159 ms`, GPU-cell `5.264 ms`; process CPU per frame:
+    classic `2.073 ms`, GPU-cell `4.205 ms`; dropped `0/0`.
+  - Emoji/CJK/ZWJ p99: classic `7.922 ms`, GPU-cell `8.027 ms`, so the p99 threshold
+    is still not met.
+  - Remote fallback configured GPU-driven but effective classic: p50 classic
+    `7.550 ms`, GPU-cell-configured fallback `7.696 ms`; dropped `0/0`.
+- The live AppKit before/after gate is still pending. Launching another
+  `~/Laban.app` from this Codex-hosted Laban session can terminate the app running the
+  session, so the GUI Instruments capture must be run manually or from an isolated
+  app identity before the Review Gate can be checked off.
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
