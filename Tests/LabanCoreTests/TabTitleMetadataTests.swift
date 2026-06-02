@@ -333,4 +333,26 @@ final class TabTitleMetadataTests: XCTestCase {
     resolved = TabTitleResolver.resolve(metadata, fallbackPosition: 1)
     XCTAssertEqual(resolved.statusBadge, "!")
   }
+
+  func testDirectFieldMutationIsSanitizedBySetter() {
+    // The render-time resolver no longer re-sanitizes, so a raw write that
+    // bypasses the initializer must still be cleaned by the field's didSet.
+    var metadata = TabTitleMetadata(displayTitle: "Tab 1", titleSource: .fallback)
+    metadata.workspace.cwd = "/tmp/\u{01}evil\nname"
+    metadata.process.foregroundProcess = "ze\u{07}sh"
+    metadata.process.foregroundArguments = ["arg\u{1F}one", "\u{01}\u{02}"]
+    metadata.agent.model = "claude\u{1B}-opus"
+    metadata.terminalTitle = "ti\u{7F}tle"
+
+    XCTAssertEqual(metadata.workspace.cwd, "/tmp/evil name")
+    XCTAssertEqual(metadata.process.foregroundProcess, "zesh")
+    XCTAssertEqual(metadata.process.foregroundArguments, ["argone"])
+    XCTAssertEqual(metadata.agent.model, "claude-opus")
+    XCTAssertEqual(metadata.terminalTitle, "title")
+
+    let resolved = TabTitleResolver.resolve(metadata, fallbackPosition: 1)
+    XCTAssertFalse(resolved.displayTitle.unicodeScalars.contains { $0.value < 0x20 })
+    XCTAssertFalse(
+      resolved.infoLines.joined().unicodeScalars.contains { $0.value < 0x20 })
+  }
 }

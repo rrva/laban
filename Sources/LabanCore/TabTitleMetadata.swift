@@ -20,12 +20,17 @@ public enum TabActivityState: String, Codable, Equatable {
   case exited
 }
 
+/// String fields are sanitized on every assignment — by the initializer and
+/// by the `didSet` observers — so the render-time title resolver can treat
+/// them as already clean instead of re-sanitizing each field per frame.
 public struct TabWorkspaceMetadata: Codable, Equatable {
-  public var cwd: String?
-  public var repoName: String?
-  public var repoRoot: String?
-  public var worktreeName: String?
-  public var branch: String?
+  public var cwd: String? { didSet { cwd = TerminalTitle.sanitize(cwd) } }
+  public var repoName: String? { didSet { repoName = TerminalTitle.sanitize(repoName) } }
+  public var repoRoot: String? { didSet { repoRoot = TerminalTitle.sanitize(repoRoot) } }
+  public var worktreeName: String? {
+    didSet { worktreeName = TerminalTitle.sanitize(worktreeName) }
+  }
+  public var branch: String? { didSet { branch = TerminalTitle.sanitize(branch) } }
   public var isDirty: Bool
 
   public init(
@@ -46,9 +51,15 @@ public struct TabWorkspaceMetadata: Codable, Equatable {
 }
 
 public struct TabProcessMetadata: Codable, Equatable {
-  public var foregroundProcess: String?
-  public var foregroundCommand: String?
-  public var foregroundArguments: [String]?
+  public var foregroundProcess: String? {
+    didSet { foregroundProcess = TerminalTitle.sanitize(foregroundProcess) }
+  }
+  public var foregroundCommand: String? {
+    didSet { foregroundCommand = TerminalTitle.sanitize(foregroundCommand) }
+  }
+  public var foregroundArguments: [String]? {
+    didSet { foregroundArguments = Self.sanitizeArguments(foregroundArguments) }
+  }
   public var pid: Int?
 
   public init(
@@ -59,9 +70,13 @@ public struct TabProcessMetadata: Codable, Equatable {
   ) {
     self.foregroundProcess = TerminalTitle.sanitize(foregroundProcess)
     self.foregroundCommand = TerminalTitle.sanitize(foregroundCommand)
-    let sanitizedArguments = foregroundArguments?.compactMap { TerminalTitle.sanitize($0) }
-    self.foregroundArguments = sanitizedArguments?.isEmpty == false ? sanitizedArguments : nil
+    self.foregroundArguments = Self.sanitizeArguments(foregroundArguments)
     self.pid = pid
+  }
+
+  static func sanitizeArguments(_ arguments: [String]?) -> [String]? {
+    let sanitized = arguments?.compactMap { TerminalTitle.sanitize($0) }
+    return sanitized?.isEmpty == false ? sanitized : nil
   }
 }
 
@@ -94,11 +109,11 @@ public struct TabAgentStatus: Codable, Equatable, Sendable {
 }
 
 public struct TabAgentMetadata: Codable, Equatable {
-  public var agentName: String?
-  public var sessionName: String?
-  public var sessionId: String?
-  public var taskLabel: String?
-  public var model: String?
+  public var agentName: String? { didSet { agentName = TerminalTitle.sanitize(agentName) } }
+  public var sessionName: String? { didSet { sessionName = TerminalTitle.sanitize(sessionName) } }
+  public var sessionId: String? { didSet { sessionId = TerminalTitle.sanitize(sessionId) } }
+  public var taskLabel: String? { didSet { taskLabel = TerminalTitle.sanitize(taskLabel) } }
+  public var model: String? { didSet { model = TerminalTitle.sanitize(model) } }
   public var contextPercent: Int?
   public var awaitingInput: Bool
 
@@ -142,10 +157,14 @@ public struct TabNotification: Codable, Equatable, Sendable {
 }
 
 public struct TabTitleMetadata: Codable, Equatable {
-  public var userTitle: String?
+  public var userTitle: String? { didSet { userTitle = TerminalTitle.sanitize(userTitle) } }
   public var titleFrozen: Bool
-  public var terminalTitle: String?
-  public var displayTitle: String
+  public var terminalTitle: String? {
+    didSet { terminalTitle = TerminalTitle.sanitize(terminalTitle) }
+  }
+  public var displayTitle: String {
+    didSet { displayTitle = TerminalTitle.sanitize(displayTitle) ?? "" }
+  }
   public var titleSource: TabTitleSource
   public var workspace: TabWorkspaceMetadata
   public var process: TabProcessMetadata
@@ -191,8 +210,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.userTitle = TerminalTitle.sanitize(userTitle)
     self.titleFrozen = titleFrozen
     self.terminalTitle = TerminalTitle.sanitize(terminalTitle)
-    self.displayTitle =
-      TerminalTitle.sanitize(displayTitle) ?? displayTitle.trimmingCharacters(in: .whitespaces)
+    self.displayTitle = TerminalTitle.sanitize(displayTitle) ?? ""
     self.titleSource = titleSource
     self.workspace = workspace
     self.process = process
@@ -521,7 +539,11 @@ public enum TabTitleResolver {
   }
 
   private static func useful(_ value: String?) -> String? {
-    TerminalTitle.sanitize(value)
+    // Title metadata is sanitized at every ingestion boundary (the metadata
+    // initializers and their `didSet` observers), so the render path only
+    // needs to drop empty values rather than re-sanitize each field per frame.
+    guard let value, !value.isEmpty else { return nil }
+    return value
   }
 
   private static func pathTail(_ path: String) -> String {
