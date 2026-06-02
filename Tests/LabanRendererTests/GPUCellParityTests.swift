@@ -363,6 +363,166 @@ final class GPUCellParityTests: XCTestCase {
       label: "U+21B3")
   }
 
+  func testGPUCellPayloadAcceptsRepresentativeNarrowGlyphEdgeScalars() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-narrow-glyph-edge-scalars")
+    var failures: [String] = []
+    for scalarValue in representativeNarrowGlyphEdgeScalars() {
+      let payload = singleGlyphPayload(
+        scalarValue: scalarValue,
+        wide: 0,
+        attributes: [],
+        labelSeed: Int(scalarValue))
+      if renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: payload,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)) == nil
+      {
+        let failure = renderer.lastGPUCellPayloadBuildFailure
+        failures.append(
+          String(
+            format: "U+%04X reason=%@ logicalWidth=%.2f max=%.2f",
+            scalarValue,
+            failure?.reason ?? "unknown",
+            failure?.logicalWidth ?? -1,
+            failure?.maxLogicalWidth ?? -1))
+      }
+    }
+
+    XCTAssertTrue(
+      failures.isEmpty,
+      "representative narrow symbols must not be rejected by glyph metrics: \(failures.joined(separator: ", "))")
+  }
+
+  func testGPUCellPayloadAcceptsStyledNarrowGlyphEdgeScalars() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-styled-narrow-glyph-edge-scalars")
+    let attributes: [TextAttributes] = [[], [.bold], [.italic], [.bold, .italic]]
+    var failures: [String] = []
+    for attrs in attributes {
+      for scalarValue in [UInt32(0x23BF), UInt32(0x21B3), UInt32(0xE0B0), UInt32(0xE0B2)] {
+        let payload = singleGlyphPayload(
+          scalarValue: scalarValue,
+          wide: 0,
+          attributes: attrs,
+          labelSeed: Int(scalarValue) + Int(attrs.rawValue))
+        if renderer.rebuildGPUCellPayloadInstancesForTesting(
+          payload: payload,
+          commands: [],
+          damage: .full,
+          surfacePxH: Int(CGFloat(rows) * cellH * scale)) == nil
+        {
+          let failure = renderer.lastGPUCellPayloadBuildFailure
+          failures.append(
+            String(
+              format: "U+%04X attrs=0x%04X reason=%@ logicalWidth=%.2f max=%.2f",
+              scalarValue,
+              attrs.rawValue,
+              failure?.reason ?? "unknown",
+              failure?.logicalWidth ?? -1,
+              failure?.maxLogicalWidth ?? -1))
+        }
+      }
+    }
+
+    XCTAssertTrue(
+      failures.isEmpty,
+      "styled narrow symbols must keep enough ink slop for fallback/bold/italic metrics: \(failures.joined(separator: ", "))")
+  }
+
+  func testGPUCellPayloadAcceptsSingleCharacterCombiningEmojiAndFallbackClusters() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-single-character-clusters")
+    let clusters: [(text: String, wide: UInt8)] = [
+      ("e\u{0301}", 0),
+      ("a\u{0308}", 0),
+      ("1\u{FE0F}\u{20E3}", 0),
+      ("👩\u{200D}💻", 1),
+      ("🇸🇪", 1),
+      ("🏳️\u{200D}🌈", 1),
+      ("क्\u{200D}ष", 1),
+      ("क्षि", 1),
+    ]
+    var failures: [String] = []
+
+    for (text, wide) in clusters {
+      XCTAssertEqual(text.count, 1, "\(text) must be one Swift Character for this payload probe")
+      let payload = singleClusterPayload(text: text, wide: wide, labelSeed: text.hashValue)
+      if renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: payload,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)) == nil
+      {
+        let failure = renderer.lastGPUCellPayloadBuildFailure
+        failures.append(
+          "\(text) reason=\(failure?.reason ?? "unknown") logicalWidth=\(failure?.logicalWidth ?? -1) max=\(failure?.maxLogicalWidth ?? -1)")
+      }
+    }
+
+    XCTAssertTrue(
+      failures.isEmpty,
+      "single-Character clusters must remain renderable through the payload atlas path: \(failures.joined(separator: ", "))")
+  }
+
+  func testGPUCellPayloadReportsShapingRunsAsUnsupportedInsteadOfAmbiguousGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-shaping-run-diagnostics")
+    for text in ["لا", "مرحبا"] {
+      XCTAssertGreaterThan(text.count, 1, "\(text) must be a multi-Character shaping run")
+      let payload = singleClusterPayload(text: text, wide: 1, labelSeed: text.hashValue)
+      XCTAssertNil(
+        renderer.rebuildGPUCellPayloadInstancesForTesting(
+          payload: payload,
+          commands: [],
+          damage: .full,
+          surfacePxH: Int(CGFloat(rows) * cellH * scale)),
+        "\(text) should not be coerced into one payload glyph")
+      let failure = try XCTUnwrap(renderer.lastGPUCellPayloadBuildFailure)
+      XCTAssertEqual(failure.reason, "utf8ClusterNotSingleCharacter")
+      XCTAssertEqual(failure.textPreview, text)
+    }
+  }
+
+  func testGPUCellPayloadPartialDirtyRowAcceptsWideInkNarrowSymbols() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-partial-wide-ink-symbols")
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: twoCellMetricSymbolPayload(),
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    let payload = twoCellMetricSymbolPayload(dirtyRows: [3])
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: payload,
+        commands: [],
+        damage: .partial(yRanges: [dirtyRange(forRow: 3)]),
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+    XCTAssertNil(renderer.lastGPUCellPayloadBuildFailure)
+    XCTAssertEqual(
+      renderer.cellGlyphUploadRangesForTesting,
+      [((rows - 1 - 3) * cols)..<((rows - 3) * cols)])
+  }
+
   func testGPUCellPayloadMatchesClassicForTextDecorations() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -1190,7 +1350,7 @@ final class GPUCellParityTests: XCTestCase {
     ]
   }
 
-  private func twoCellMetricSymbolPayload() -> TerminalCellPayload {
+  private func twoCellMetricSymbolPayload(dirtyRows: [Int]? = nil) -> TerminalCellPayload {
     let bg: UInt32 = 0x18_24_30_FF
     let fg: UInt32 = 0xE6_EE_F6_FF
     let row = 3
@@ -1201,7 +1361,7 @@ final class GPUCellParityTests: XCTestCase {
       cellSize: CGSize(width: cellW, height: cellH),
       contentYOffset: 0,
       defaultBackground: 0x10_20_30_FF,
-      dirtyRows: Array(0..<rows))
+      dirtyRows: dirtyRows ?? Array(0..<rows))
     payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
     for (offset, scalarValue) in [UInt32(0x23BF), UInt32(0x21B3)].enumerated() {
       payload.glyphs.append(
@@ -1216,6 +1376,104 @@ final class GPUCellParityTests: XCTestCase {
           wide: 0))
     }
     return payload
+  }
+
+  private func representativeNarrowGlyphEdgeScalars() -> [UInt32] {
+    [
+      // Regression glyphs from the live payload failures.
+      0x23BF, 0x21B3,
+      // Adjacent terminal UI and arrows likely to fall back to symbol fonts.
+      0x23BE, 0x23CC, 0x21B0, 0x21B1, 0x21B2, 0x21B4,
+      0x2190, 0x2191, 0x2192, 0x2193, 0x2194, 0x2195,
+      0x21D0, 0x21D2, 0x27F5, 0x27F6, 0x27F9,
+      // Misc technical/control glyphs used in terminal UIs.
+      0x2318, 0x2325, 0x232B, 0x2326, 0x238B, 0x23CE,
+      // Box and block glyphs that are often narrow cells but font-dependent.
+      0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518,
+      0x2588, 0x2591, 0x2592, 0x2593, 0x2800, 0x28FF,
+      // Powerline private-use glyphs; may resolve through user/fallback fonts.
+      0xE0A0, 0xE0A1, 0xE0A2, 0xE0B0, 0xE0B1, 0xE0B2, 0xE0B3,
+      // A small Nerd Font private-use sample.
+      0xF013, 0xF054, 0xF07B, 0xF0C9, 0xF120,
+    ]
+  }
+
+  private func singleGlyphPayload(
+    scalarValue: UInt32,
+    wide: UInt8,
+    attributes: TextAttributes,
+    labelSeed: Int
+  ) -> TerminalCellPayload {
+    let row = 3
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: Array(0..<rows))
+    payload.backgroundRuns.append(
+      .init(row: row, startCol: 0, colCount: cols, color: edgeProbeBackground(seed: labelSeed)))
+    payload.glyphs.append(
+      .init(
+        row: row,
+        col: 4,
+        text: "",
+        scalarValue: scalarValue,
+        foreground: edgeProbeForeground(seed: labelSeed),
+        background: edgeProbeBackground(seed: labelSeed),
+        attributes: attributes,
+        wide: wide))
+    return payload
+  }
+
+  private func singleClusterPayload(
+    text: String,
+    wide: UInt8,
+    labelSeed: Int
+  ) -> TerminalCellPayload {
+    let row = 3
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: Array(0..<rows))
+    payload.backgroundRuns.append(
+      .init(row: row, startCol: 0, colCount: cols, color: edgeProbeBackground(seed: labelSeed)))
+    let start = payload.utf8Bytes.count
+    payload.utf8Bytes.append(contentsOf: Array(text.utf8))
+    payload.glyphs.append(
+      .init(
+        row: row,
+        col: 4,
+        text: "",
+        scalarValue: nil,
+        foreground: edgeProbeForeground(seed: labelSeed),
+        background: edgeProbeBackground(seed: labelSeed),
+        attributes: [],
+        wide: wide,
+        utf8Range: start..<payload.utf8Bytes.count))
+    return payload
+  }
+
+  private func edgeProbeBackground(seed: Int) -> UInt32 {
+    let value = UInt32(truncatingIfNeeded: seed)
+    let r = UInt32(0x18 + (value & 0x1F))
+    let g = UInt32(0x24 + ((value >> 5) & 0x1F))
+    let b = UInt32(0x30 + ((value >> 10) & 0x1F))
+    return (r << 24) | (g << 16) | (b << 8) | 0xFF
+  }
+
+  private func edgeProbeForeground(seed: Int) -> UInt32 {
+    let value = UInt32(truncatingIfNeeded: seed)
+    let r = UInt32(0xD8 - (value & 0x1F))
+    let g = UInt32(0xE0 - ((value >> 5) & 0x1F))
+    let b = UInt32(0xF0 - ((value >> 10) & 0x1F))
+    return (r << 24) | (g << 16) | (b << 8) | 0xFF
   }
 
   private func payload(
