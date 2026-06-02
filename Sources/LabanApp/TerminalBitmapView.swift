@@ -186,6 +186,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
 
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
+  // Caret position within `markedText`, in cells (grapheme clusters from the
+  // start), derived from the IME's selectedRange so the on-screen caret sits at
+  // the composition's insertion point rather than always at its end.
+  private var markedTextCaretCells: Int = 0
 
   // Active key descriptor during interpretKeyEvents dispatch
   private var currentKeyDescriptor: TerminalKeyDescriptor?
@@ -1240,7 +1244,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale),
       contentMode: canRequestCellPayload ? .cellPayloadPreferred : .commands,
-      preedit: hasMarkedText() ? markedText.string : nil
+      preedit: hasMarkedText() ? markedText.string : nil,
+      preeditCaretCells: hasMarkedText() ? markedTextCaretCells : 0
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -2160,6 +2165,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     } else if let a = string as? NSAttributedString {
       markedText = a
     }
+    // Place the caret at the IME's insertion point within the composition. The
+    // selectedRange is the actively-edited segment in UTF-16 units relative to
+    // the marked text; its end (NSMaxRange) is the caret for both a zero-length
+    // insertion point and an active selection, and is also where macOS
+    // dictation parks the caret (end of the transcript). Convert that UTF-16
+    // offset to a cell count (grapheme clusters), since the terminal grid and
+    // FrameProducer advance one cell per cluster.
+    let ns = markedText.string as NSString
+    let caretUTF16 =
+      selectedRange.location == NSNotFound
+      ? ns.length : min(max(NSMaxRange(selectedRange), 0), ns.length)
+    markedTextCaretCells = ns.substring(to: caretUTF16).count
     // The live composition (dictation transcript / IME preedit) is drawn inline
     // at the cursor by FrameProducer; force a fresh full-damage frame so the
     // updated marked text repaints the cursor row immediately as the user
@@ -2169,6 +2186,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
 
   func unmarkText() {
     markedText = NSAttributedString(string: "")
+    markedTextCaretCells = 0
     // Composition ended (committed or abandoned): repaint so the preedit run is
     // cleared from the cursor row on the next frame.
     renderInvalidated = true

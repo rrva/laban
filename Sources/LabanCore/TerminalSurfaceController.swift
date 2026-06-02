@@ -103,6 +103,10 @@ public struct TerminalSurfaceFrameRequest {
   /// cursor, or nil when there is no in-flight composition. The producer emits
   /// it as an underlined run so it reads as pending until the program commits.
   public var preedit: String?
+  /// Caret position within the composition, in cells (grapheme clusters from
+  /// its start), so the cursor can sit at the IME's insertion point inside the
+  /// marked text rather than always at its end.
+  public var preeditCaretCells: Int
 
   public init(
     frame: Int,
@@ -125,7 +129,8 @@ public struct TerminalSurfaceFrameRequest {
     surfaceScale: Double,
     captureBackend: String = "software",
     contentMode: TerminalSurfaceFrameContentMode = .commands,
-    preedit: String? = nil
+    preedit: String? = nil,
+    preeditCaretCells: Int = 0
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -148,6 +153,7 @@ public struct TerminalSurfaceFrameRequest {
     self.captureBackend = captureBackend
     self.contentMode = contentMode
     self.preedit = preedit
+    self.preeditCaretCells = preeditCaretCells
   }
 }
 
@@ -533,7 +539,8 @@ public final class TerminalSurfaceController {
         findState: findState,
         viewportRowOffset: viewportOffset,
         cursorBlinkVisible: request.cursorBlinkVisible,
-        preedit: request.preedit)
+        preedit: request.preedit,
+        preeditCaretCells: request.preeditCaretCells)
     } else {
       cellPayload = nil
       overlayCommands = []
@@ -551,7 +558,8 @@ public final class TerminalSurfaceController {
         findState: findState,
         viewportRowOffset: viewportOffset,
         cursorBlinkVisible: request.cursorBlinkVisible,
-        preedit: request.preedit)
+        preedit: request.preedit,
+        preeditCaretCells: request.preeditCaretCells)
     }
 
     snapshotCommandsHook?(UnsafePointer(snap), commands)
@@ -643,7 +651,8 @@ public final class TerminalSurfaceController {
       from: snapshot,
       selection: request.selection,
       cursorBlinkVisible: request.cursorBlinkVisible,
-      preedit: request.preedit
+      preedit: request.preedit,
+      preeditCaretCells: request.preeditCaretCells
     )
     recordFrameCommands(request, commands: commands)
 

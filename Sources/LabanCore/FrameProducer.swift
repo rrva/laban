@@ -123,7 +123,8 @@ public struct FrameProducer {
     findState: TerminalFindState? = nil,
     viewportRowOffset: Int = 0,
     cursorBlinkVisible: Bool,
-    preedit: String? = nil
+    preedit: String? = nil,
+    preeditCaretCells: Int = 0
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -285,7 +286,11 @@ public struct FrameProducer {
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
-      let cx = originX + CGFloat(snapshot.cursor_col) * cw
+      // Advance the caret past any in-flight composition so it tracks the end
+      // of the preedit as the user dictates/composes, matching native text
+      // fields; with no marked text the offset is 0 and the caret is unmoved.
+      let caretCol = min(Int(snapshot.cursor_col) + preeditCaretCells, cols - 1)
+      let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
       for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
@@ -318,7 +323,8 @@ public struct FrameProducer {
     findState: TerminalFindState? = nil,
     viewportRowOffset: Int = 0,
     cursorBlinkVisible: Bool,
-    preedit: String? = nil
+    preedit: String? = nil,
+    preeditCaretCells: Int = 0
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -385,7 +391,11 @@ public struct FrameProducer {
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
-      let cx = originX + CGFloat(snapshot.cursor_col) * cw
+      // Advance the caret past any in-flight composition so it tracks the end
+      // of the preedit as the user dictates/composes, matching native text
+      // fields; with no marked text the offset is 0 and the caret is unmoved.
+      let caretCol = min(Int(snapshot.cursor_col) + preeditCaretCells, cols - 1)
+      let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
       for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
@@ -1191,7 +1201,8 @@ public struct FrameProducer {
     from snapshot: LabandSnapshotResponse,
     selection: TerminalSelection? = nil,
     cursorBlinkVisible: Bool = true,
-    preedit: String? = nil
+    preedit: String? = nil,
+    preeditCaretCells: Int = 0
   ) -> [FrameCommand] {
     let rows = max(snapshot.rows, 0)
     let cols = max(snapshot.cols, 0)
@@ -1380,8 +1391,11 @@ public struct FrameProducer {
       snapshot.cursorRow < rows,
       snapshot.cursorCol < cols
     {
+      // Advance the caret past any in-flight composition (preedit) so it
+      // tracks the end of the marked text, matching the local snapshot path.
+      let caretCol = min(snapshot.cursorCol + preeditCaretCells, cols - 1)
       let rect = CGRect(
-        x: originX + CGFloat(snapshot.cursorCol) * cw,
+        x: originX + CGFloat(caretCol) * cw,
         y: originY + CGFloat(rows - 1 - snapshot.cursorRow) * ch + contentYOffset,
         width: cw,
         height: ch

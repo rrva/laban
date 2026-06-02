@@ -2085,12 +2085,22 @@ public final class MetalRenderer: RendererBackend {
     // The `.preedit` source is only produced at the cursor, so ordinary cells
     // are never touched.
     for cmd in commands {
-      guard
-        case .glyphRun(
-          let origin, let text, let fg, _, let attrs, let runSource,
-          let underlineStyle, let underlineColor, _
-        ) = cmd, runSource == .preedit, !text.isEmpty
+      guard case .glyphRun(
+        let origin, let text, let fg, let bg, let attrs, let runSource,
+        let underlineStyle, let underlineColor, _
+      ) = cmd, runSource == .preedit, !text.isEmpty
       else { continue }
+      // Opaque background over the composition cells, appended AFTER the
+      // payload's own cell backgrounds so an application-rendered caret under
+      // the composition (e.g. Claude Code's reverse-video input caret, which
+      // sits where the terminal cursor is) is masked instead of bleeding
+      // through as a second cursor. The `.rect` mask FrameProducer emits runs
+      // through the earlier prepass and would otherwise be painted over.
+      appendSolid(
+        rect: CGRect(
+          x: origin.x, y: origin.y,
+          width: CGFloat(text.count) * glyphCellAdvance, height: glyphCellHeight),
+        color: bg)
       let font = styledFont(for: attrs, in: fontAtlas)
       let traits = CTFontGetSymbolicTraits(font)
       let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)

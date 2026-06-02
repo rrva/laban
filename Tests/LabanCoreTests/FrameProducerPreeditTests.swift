@@ -118,4 +118,71 @@ final class FrameProducerPreeditTests: XCTestCase {
     XCTAssertEqual(run.text, "ab")
     XCTAssertTrue(run.attrs.contains(.underline))
   }
+
+  private func firstCursorRect(in cmds: [FrameCommand]) -> CGRect? {
+    for cmd in cmds {
+      if case .cursor(let rect, _) = cmd { return rect }
+    }
+    return nil
+  }
+
+  func testCursorAdvancesToEndOfPreedit() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+    let cw = 8, ch = 16
+    let producer = FrameProducer(cellWidth: cw, cellHeight: ch)
+
+    // The caret must move as the composition grows — otherwise it sticks at the
+    // start of the marked text instead of tracking what the user is typing.
+    let withoutPreedit = producer.commands(
+      from: snap, selection: nil, cursorBlinkVisible: true, preedit: nil)
+    let composition = "abc"  // three single-cell clusters
+    let withPreedit = producer.commands(
+      from: snap, selection: nil, cursorBlinkVisible: true,
+      preedit: composition, preeditCaretCells: composition.count)
+
+    let baseCaret = try XCTUnwrap(
+      firstCursorRect(in: withoutPreedit),
+      "the shell caret must be drawn so we can measure how far it advances")
+    let composedCaret = try XCTUnwrap(
+      firstCursorRect(in: withPreedit),
+      "the caret must still be drawn while composing")
+
+    XCTAssertEqual(
+      composedCaret.origin.x - baseCaret.origin.x,
+      CGFloat(composition.count) * CGFloat(cw),
+      accuracy: 0.5,
+      "a caret at the end of the composition advances one cell per cluster")
+    XCTAssertEqual(
+      composedCaret.origin.y, baseCaret.origin.y, accuracy: 0.5,
+      "the caret stays on the cursor row while composing")
+  }
+
+  func testCaretHonorsImeInsertionPointWithinComposition() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+    let cw = 8, ch = 16
+    let producer = FrameProducer(cellWidth: cw, cellHeight: ch)
+
+    // An IME with the insertion point mid-composition (e.g. editing an earlier
+    // syllable) reports a caret short of the end; the on-screen caret must land
+    // exactly there, not at the composition's end.
+    let base = try XCTUnwrap(
+      firstCursorRect(in: producer.commands(from: snap, cursorBlinkVisible: true)))
+    let midCaret = try XCTUnwrap(
+      firstCursorRect(
+        in: producer.commands(
+          from: snap, selection: nil, cursorBlinkVisible: true,
+          preedit: "abcde", preeditCaretCells: 2)))
+
+    XCTAssertEqual(
+      midCaret.origin.x - base.origin.x, CGFloat(2) * CGFloat(cw), accuracy: 0.5,
+      "the caret must sit at the IME's insertion point (2 cells in), not at the end")
+  }
 }
