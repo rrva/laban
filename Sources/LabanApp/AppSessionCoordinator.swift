@@ -27,6 +27,12 @@ final class AppSessionCoordinator {
 
   var onSessionDirty: (@Sendable (Session.ID) -> Void)?
 
+  /// Per-tab launch argv override, consulted when building a daemon session
+  /// request so a tab created via `AppModel.createTab(runningArgv:)` launches
+  /// that command instead of the login shell. Wired to
+  /// `AppModel.launchArgv(forTab:)` by `MainWindowController`.
+  var argvProvider: ((Tab.ID) -> [String]?)?
+
   init(
     client: LabandTerminalSessionClient,
     shellLaunch: ShellIntegrationLaunch,
@@ -694,7 +700,7 @@ final class AppSessionCoordinator {
     LabptyOpenSessionRequest(
       rows: UInt32(max(1, Int(size.rows))),
       cols: UInt32(max(1, Int(size.cols))),
-      argv: shellLaunch.argv ?? [],
+      argv: (argvProvider?(tab.id) ?? shellLaunch.argv) ?? [],
       envp: shellLaunch.environmentOverrides.map { "\($0.key)=\($0.value)" }.sorted(),
       cwd: cwdByTabId[tab.id] ?? FileManager.default.homeDirectoryForCurrentUser.path,
       logicalSessionId: tab.id)
@@ -704,7 +710,7 @@ final class AppSessionCoordinator {
     for tab: Tab,
     size: LabanTerminalSize
   ) -> TerminalSessionLaunchRequest {
-    let argv = shellLaunch.argv
+    let argv = argvProvider?(tab.id) ?? shellLaunch.argv
     return TerminalSessionLaunchRequest(
       executable: argv?.first,
       argv: argv,

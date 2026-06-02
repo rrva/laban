@@ -152,6 +152,16 @@ public final class AppModel {
   /// cwd:)`; headless tests leave it nil unless exercising inheritance.
   public var newTabSessionFactory: ((LabanTerminalSize, String) throws -> Session)?
 
+  /// Factory for a tab that runs a caller-supplied argv (argv[0] is the
+  /// executable) instead of the login shell — the "run argv in a new tab"
+  /// path, e.g. an `ssh://` URL handler. Mirrors `newTabSessionFactory` but
+  /// takes the argv and an optional cwd. Production wires it to
+  /// `Session.realShell(..., launchArgv: argv)` for the in-process backend;
+  /// for the daemon backends the returned session is parser-only and the
+  /// daemon launches `argv`, which it reads back via `launchArgv(forTab:)`.
+  /// When nil, `createTab(runningArgv:)` falls back to the default factory.
+  public var commandSessionFactory: ((LabanTerminalSize, String?, [String]) throws -> Session)?
+
   /// Richer restore-time factory. When set, takes precedence over
   /// `restoredSessionFactory`. The spec carries enough state for the
   /// factory to construct a deferred-spawn Session, replay the
@@ -178,6 +188,12 @@ public final class AppModel {
   /// created with an explicit launch command (restored tabs). Keyed by
   /// Tab.ID. Cleared on tab close.
   private var launchCommandByTab: [Tab.ID: String] = [:]
+
+  /// Explicit launch argv for tabs created via `createTab(runningArgv:)`,
+  /// keyed by Tab.ID. The daemon-backed coordinators read this through
+  /// `launchArgv(forTab:)` to launch the requested command instead of the
+  /// login shell. Cleared on tab close.
+  private var launchArgvByTab: [Tab.ID: [String]] = [:]
 
   /// Most recent agent observation per tab, fed by the LabanApp-side
   /// `AgentSessionDetector`. Persisted into `TabState.agent` by
@@ -583,6 +599,57 @@ public final class AppModel {
     return tab
   }
 
+  /// Create and select a new tab whose session runs `argv` (argv[0] is the
+  /// executable) instead of the login shell — the "run argv in a new tab"
+  /// entry point used by, e.g., an `ssh://` URL handler. In-process spawns the
+  /// command directly via `commandSessionFactory`; for the daemon backends the
+  /// local session is parser-only and the daemon launches `argv`, which the
+  /// coordinator reads back through `launchArgv(forTab:)`. Falls back to a
+  /// plain shell tab when `argv` is empty or no `commandSessionFactory` is set.
+  @discardableResult
+  public func createTab(runningArgv argv: [String], cwd: String? = nil) throws -> Tab {
+    let (tab, session) = try withModelLock { () -> (Tab, Session) in
+      guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
+      let session: Session
+      if !argv.isEmpty, let factory = commandSessionFactory {
+        session = try factory(currentSize, cwd, argv)
+      } else if let cwd, let factory = newTabSessionFactory {
+        session = try factory(currentSize, cwd)
+      } else {
+        session = try sessionFactory(currentSize)
+      }
+      session.captureSink = captureSink
+      AppModel.maybeAutoCapture(session)
+      ThemePaletteInjector.injectCurrentTheme(into: session)
+      let position = _tabs.count + 1
+      let tab = Tab(
+        id: UUID().uuidString,
+        position: position,
+        title: "Tab \(position)",
+        isActive: false,
+        sessionId: session.id
+      )
+      if !argv.isEmpty { launchArgvByTab[tab.id] = argv }
+      sessionRegistry.add(session)
+      _tabs.append(tab)
+      attachSessionCallbacks(session: session, tabId: tab.id)
+      recordSessionCreated(sessionId: session.id, tabId: tab.id)
+      recordTab(.tabCreated, tabId: tab.id, sessionId: session.id)
+      selectTabUnlocked(tab.id)
+      return (_tabs.last!, session)
+    }
+    transcriptDelegate?.attachTranscriptWriter(to: session, tabId: tab.id)
+    onTabCreated?(tab.id, session)
+    notifyWorkspaceMutation()
+    return tab
+  }
+
+  /// The explicit launch argv recorded for a tab created via
+  /// `createTab(runningArgv:)`, or nil for an ordinary login-shell tab.
+  public func launchArgv(forTab tabId: Tab.ID) -> [String]? {
+    withModelLock { launchArgvByTab[tabId] }
+  }
+
   /// Create a tab pinned to a specific working directory with a
   /// caller-supplied id and launch command. Used directly by tests
   /// that want to exercise restored-tab semantics without going
@@ -918,6 +985,7 @@ public final class AppModel {
         findStateBySession.removeValue(forKey: tab.sessionId)
         findFullSearchCacheBySession.removeValue(forKey: tab.sessionId)
         launchCommandByTab.removeValue(forKey: tab.id)
+        launchArgvByTab.removeValue(forKey: tab.id)
         agentByTab.removeValue(forKey: tab.id)
         cwdFallbackAppliedByTab.removeValue(forKey: tab.id)
         metadataSync.forget(tab: tab)

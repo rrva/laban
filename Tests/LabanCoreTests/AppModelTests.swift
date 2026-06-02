@@ -58,6 +58,39 @@ private final class WorkspaceMutationCounter {
 
 final class AppModelTests: XCTestCase {
 
+  func testCreateTabRunningArgvUsesCommandFactoryAndRecordsArgv() throws {
+    let model = try makeModel()
+    var capturedArgv: [String]?
+    var capturedCwd: String?
+    model.commandSessionFactory = { size, cwd, argv in
+      capturedArgv = argv
+      capturedCwd = cwd
+      return try Session.fixture(size: size)
+    }
+    let tab = try model.createTab(runningArgv: ["ssh", "host"], cwd: "/tmp")
+    XCTAssertEqual(capturedArgv, ["ssh", "host"])
+    XCTAssertEqual(capturedCwd, "/tmp")
+    XCTAssertEqual(model.launchArgv(forTab: tab.id), ["ssh", "host"])
+    XCTAssertTrue(model.tabs.contains { $0.id == tab.id && $0.isActive })
+  }
+
+  func testCreateTabRunningArgvRecordsArgvWithoutCommandFactory() throws {
+    let model = try makeModel()
+    // No commandSessionFactory: the session falls back to the default shell
+    // factory, but the argv is still recorded so a daemon backend can launch it.
+    let tab = try model.createTab(runningArgv: ["ssh", "host"])
+    XCTAssertEqual(model.launchArgv(forTab: tab.id), ["ssh", "host"])
+  }
+
+  func testLaunchArgvClearedOnTabClose() throws {
+    let model = try makeModel()
+    model.commandSessionFactory = { size, _, _ in try Session.fixture(size: size) }
+    let tab = try model.createTab(runningArgv: ["ssh", "host"])
+    XCTAssertEqual(model.launchArgv(forTab: tab.id), ["ssh", "host"])
+    try model.closeTab(tab.id)
+    XCTAssertNil(model.launchArgv(forTab: tab.id))
+  }
+
   func testInitialModelHasOneActiveTabAndSession() throws {
     let model = try makeModel()
     XCTAssertEqual(model.tabs.count, 1)

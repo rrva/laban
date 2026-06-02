@@ -181,6 +181,31 @@ final class MainWindowController: NSWindowController {
       }
     }
 
+    // Command tabs (e.g. an ssh:// URL handler) run a caller-supplied argv
+    // instead of the login shell. In-process spawns it directly; the daemon
+    // backends use a parser-only local session and launch argv daemon-side —
+    // the coordinator reads it via `argvProvider`, wired just below.
+    model.commandSessionFactory = { size, cwd, argv in
+      switch terminalBackend {
+      case .laband, .labpty:
+        return try Session.parserOnly(size: size)
+      case .inProcess:
+        if let cwd {
+          return try Session.realShell(
+            size: size, cwd: cwd,
+            environment: shellLaunch.environmentOverrides,
+            launchArgv: argv)
+        }
+        return try Session.realShell(
+          size: size,
+          environment: shellLaunch.environmentOverrides,
+          launchArgv: argv)
+      }
+    }
+    sessionCoordinator?.argvProvider = { [weak model] tabId in
+      model?.launchArgv(forTab: tabId)
+    }
+
     // The default tab created by AppModel.init() needs its writer
     // attached too — its session was constructed before the delegate
     // was assigned. Attach explicitly here.
@@ -535,6 +560,16 @@ final class MainWindowController: NSWindowController {
 
   func detachTerminalSessions() {
     sessionCoordinator?.detach()
+  }
+
+  /// Open and select a new tab that runs `argv` (argv[0] is the executable)
+  /// instead of the login shell — e.g. an `ssh://` URL handler. The daemon
+  /// backends pick up the argv via `argvProvider`; in-process spawns it
+  /// directly. Returns the created tab.
+  @discardableResult
+  func openTab(runningArgv argv: [String], cwd: String? = nil) throws -> Tab {
+    guard let model else { throw AppError.tabNotFound }
+    return try model.createTab(runningArgv: argv, cwd: cwd)
   }
 
   static func configuredAppTerminalBackend(
