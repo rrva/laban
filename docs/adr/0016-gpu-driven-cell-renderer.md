@@ -72,6 +72,14 @@ the Metal 4 production branch failed its p50 gate.
   `6.871/8.205/8.667 ms` p50/p95/p99 and MTL4 GPU-cell at
   `7.071/8.039/8.259 ms`; p50 was 0.200 ms slower, so the production MTL4 branch
   was removed.
+- M6 head-to-head: the release matrix covered cursor blink, one-row append, 5% and
+  25% contiguous dirties, sparse rows, full repaint, fast scroll, dense colours,
+  box drawing, emoji/CJK/ZWJ clusters, theme/atlas growth, and remote fallback.
+  GPU-driven won some render-CPU p50 rows, but not the p50+p99 threshold: one-row
+  append p50 was classic `6.651 ms` vs GPU `6.718 ms`; emoji/CJK/ZWJ p99 was classic
+  `9.642 ms` vs GPU `11.487 ms`. Process CPU per frame was frequently higher in
+  GPU-driven mode, dropped render attempts were zero, and energy/wakeups were not
+  measurable from the XCTest harness, so no energy win was proven.
 
 ## Consequences
 

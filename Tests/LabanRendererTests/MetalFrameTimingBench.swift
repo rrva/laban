@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Dispatch
 import Foundation
 import Metal
@@ -39,6 +40,7 @@ final class MetalFrameTimingBench: XCTestCase {
     try benchClassicDamageComparison(fontAtlas: fontAtlas)
     try benchGPUCellComparison(fontAtlas: fontAtlas)
     try benchGPUCellPatchBuildComparison(fontAtlas: fontAtlas)
+    try benchM6HeadToHeadComparison(fontAtlas: fontAtlas)
     try benchInstanceBuildComparison(fontAtlas: fontAtlas)
     try benchMetal4EncodeOverheadSpike()
   }
@@ -589,6 +591,30 @@ final class MetalFrameTimingBench: XCTestCase {
     var counts: MetalRenderer.RenderInstanceCounts
   }
 
+  private struct M6Workload {
+    enum Style {
+      case ascii
+      case denseColor
+      case boxDrawing
+      case clusters
+      case atlasGrowth
+    }
+
+    var label: String
+    var style: Style
+    var dirtyRows: [Int]
+    var fullDamage: Bool = false
+    var contentYOffset: CGFloat = 0
+    var rendererFallbackReason: String? = nil
+  }
+
+  private struct M6HeadToHeadResult {
+    var timings: MetalRenderer.FrameTimings
+    var counts: MetalRenderer.RenderInstanceCounts
+    var processCPUMsPerFrame: Double
+    var droppedFrames: Int
+  }
+
   private struct InstanceBuildBenchResult {
     var p50Us: Double
     var p95Us: Double
@@ -658,6 +684,232 @@ final class MetalFrameTimingBench: XCTestCase {
         result.counts.glyphs + result.counts.sidebarGlyphs,
         result.counts.cellGlyphs,
         result.counts.solids))
+  }
+
+  private func benchM6HeadToHeadComparison(fontAtlas: FontAtlas) throws {
+    guard #available(macOS 26, *) else {
+      print("\n=== M6 head-to-head comparison skipped: GPU-driven path requires macOS 26 ===")
+      return
+    }
+
+    let cols = 160
+    let rows = 48
+    let cellW: CGFloat = 9
+    let cellH: CGFloat = 19
+    let scale: CGFloat = 2
+    let pixelW = Int(CGFloat(cols) * cellW * scale)
+    let pixelH = Int(CGFloat(rows) * cellH * scale)
+    let workloads: [M6Workload] = [
+      .init(label: "0-dirty cursor blink", style: .ascii, dirtyRows: []),
+      .init(label: "1-row append", style: .ascii, dirtyRows: [rows - 1]),
+      .init(label: "5pct contiguous", style: .ascii, dirtyRows: Array(20..<23)),
+      .init(label: "25pct contiguous", style: .ascii, dirtyRows: Array(18..<30)),
+      .init(label: "sparse dirty rows", style: .ascii, dirtyRows: [0, 12, 23, rows - 1]),
+      .init(label: "full repaint", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true),
+      .init(label: "fast scroll", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true, contentYOffset: -cellH / 2),
+      .init(label: "dense colors", style: .denseColor, dirtyRows: Array(20..<23)),
+      .init(label: "box drawing", style: .boxDrawing, dirtyRows: Array(20..<23)),
+      .init(label: "emoji cjk zwj", style: .clusters, dirtyRows: Array(20..<23)),
+      .init(label: "theme atlas growth", style: .atlasGrowth, dirtyRows: Array(0..<rows), fullDamage: true),
+      .init(
+        label: "remote fallback",
+        style: .ascii,
+        dirtyRows: Array(20..<23),
+        rendererFallbackReason: "remoteSnapshotPayloadIncomplete"),
+    ]
+
+    print("\n=== M6 head-to-head renderer comparison (160x48, release) ===")
+    print(
+      "  workload             path       cpu p50/p95/p99 ms   processCPU/frame ms   gpu p50/p99 ms   dropped energy/wakeups")
+    defer {
+      MetalRenderer.useGPUCellPath = false
+      MetalRenderer.useClassicDamageScoped = true
+    }
+    for workload in workloads {
+      let classic = try measureM6HeadToHead(
+        workload: workload,
+        useGPUCell: false,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        pixelW: pixelW,
+        pixelH: pixelH,
+        fontAtlas: fontAtlas)
+      let gpu = try measureM6HeadToHead(
+        workload: workload,
+        useGPUCell: true,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        pixelW: pixelW,
+        pixelH: pixelH,
+        fontAtlas: fontAtlas)
+      printM6HeadToHeadRow(label: workload.label, path: "classic", result: classic)
+      printM6HeadToHeadRow(label: workload.label, path: "gpuCell", result: gpu)
+    }
+    print("  energy/wakeups: unavailable in XCTest; default decision treats this as no proven win")
+  }
+
+  private func measureM6HeadToHead(
+    workload: M6Workload,
+    useGPUCell: Bool,
+    cols: Int,
+    rows: Int,
+    cellW: CGFloat,
+    cellH: CGFloat,
+    scale: CGFloat,
+    pixelW: Int,
+    pixelH: Int,
+    fontAtlas: FontAtlas
+  ) throws -> M6HeadToHeadResult {
+    let mode: RendererMode = useGPUCell ? .gpuDriven : .classic
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale, rendererMode: mode) else {
+      XCTFail("MetalRenderer.init returned nil")
+      throw XCTSkip("MetalRenderer unavailable")
+    }
+    renderer.waitForFrameCompletion = true
+    renderer.resize(pixelWidth: pixelW, pixelHeight: pixelH, scale: scale)
+    MetalRenderer.useClassicDamageScoped = true
+    MetalRenderer.useGPUCellPath = false
+
+    let initialCommands = m6Commands(
+      workload: workload,
+      cols: cols,
+      rows: rows,
+      cellW: cellW,
+      cellH: cellH,
+      seed: 0,
+      includedRows: Array(0..<rows))
+    let initialPayload = m6Payload(
+      workload: workload,
+      cols: cols,
+      rows: rows,
+      cellW: cellW,
+      cellH: cellH,
+      seed: 0,
+      includedRows: Array(0..<rows))
+    XCTAssertTrue(
+      renderAccepted(
+        renderer,
+        commands: initialCommands,
+        payload: useGPUCell ? initialPayload : nil,
+        damage: .full,
+        rendererFallbackReason: workload.rendererFallbackReason))
+    renderer.waitForLastFrame()
+    renderer.resetFrameTimings()
+
+    for seed in 1..<8 {
+      _ = renderAccepted(
+        renderer,
+        commands: m6Commands(
+          workload: workload,
+          cols: cols,
+          rows: rows,
+          cellW: cellW,
+          cellH: cellH,
+          seed: seed,
+          includedRows: measuredRows(for: workload, rows: rows)),
+        payload: useGPUCell
+          ? m6Payload(
+            workload: workload,
+            cols: cols,
+            rows: rows,
+            cellW: cellW,
+            cellH: cellH,
+            seed: seed,
+            includedRows: measuredRows(for: workload, rows: rows)) : nil,
+        damage: m6Damage(for: workload, rows: rows, cellH: cellH),
+        rendererFallbackReason: workload.rendererFallbackReason)
+    }
+    renderer.waitForLastFrame()
+    renderer.resetFrameTimings()
+
+    let cpuStart = processCPUSeconds()
+    var accepted = 0
+    var attempts = 0
+    var seed = 8
+    while accepted < 40 && seed < 120 {
+      attempts += 1
+      if renderAccepted(
+        renderer,
+        commands: m6Commands(
+          workload: workload,
+          cols: cols,
+          rows: rows,
+          cellW: cellW,
+          cellH: cellH,
+          seed: seed,
+          includedRows: measuredRows(for: workload, rows: rows)),
+        payload: useGPUCell
+          ? m6Payload(
+            workload: workload,
+            cols: cols,
+            rows: rows,
+            cellW: cellW,
+            cellH: cellH,
+            seed: seed,
+            includedRows: measuredRows(for: workload, rows: rows)) : nil,
+        damage: m6Damage(for: workload, rows: rows, cellH: cellH),
+        rendererFallbackReason: workload.rendererFallbackReason)
+      {
+        accepted += 1
+      }
+      seed += 1
+    }
+    let cpuEnd = processCPUSeconds()
+    XCTAssertEqual(accepted, 40, "benchmark could not get enough accepted frames")
+    renderer.waitForLastFrame()
+    return M6HeadToHeadResult(
+      timings: renderer.recentFrameTimings(),
+      counts: renderer.lastInstanceCounts,
+      processCPUMsPerFrame: ((cpuEnd - cpuStart) * 1_000.0) / Double(max(1, accepted)),
+      droppedFrames: attempts - accepted)
+  }
+
+  private func renderAccepted(
+    _ renderer: MetalRenderer,
+    commands: [FrameCommand],
+    payload: TerminalCellPayload?,
+    damage: RenderDamage,
+    rendererFallbackReason: String?
+  ) -> Bool {
+    for _ in 0..<4 {
+      if renderer.render(
+        commands,
+        cellPayload: payload,
+        damage: damage,
+        rendererFallbackReason: rendererFallbackReason)
+      {
+        return true
+      }
+      renderer.waitForLastFrame()
+      Thread.sleep(forTimeInterval: 0.001)
+    }
+    return false
+  }
+
+  private func printM6HeadToHeadRow(
+    label: String,
+    path: String,
+    result: M6HeadToHeadResult
+  ) {
+    let t = result.timings
+    print(
+      String(
+        format: "  %-20@ %-8@ %.3f/%.3f/%.3f        %.3f              %.3f/%.3f       %3d     n/a",
+        label as NSString,
+        path as NSString,
+        t.cpuP50Ms,
+        t.cpuP95Ms,
+        t.cpuP99Ms,
+        result.processCPUMsPerFrame,
+        t.gpuP50Ms,
+        t.gpuP99Ms,
+        result.droppedFrames))
   }
 
   private func measureClassicDamage(
@@ -992,6 +1244,16 @@ final class MetalFrameTimingBench: XCTestCase {
     return sorted[idx]
   }
 
+  private func processCPUSeconds() -> Double {
+    var usage = rusage()
+    guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
+    return timevalSeconds(usage.ru_utime) + timevalSeconds(usage.ru_stime)
+  }
+
+  private func timevalSeconds(_ value: timeval) -> Double {
+    Double(value.tv_sec) + Double(value.tv_usec) / 1_000_000.0
+  }
+
   private func renderAccepted(
     _ renderer: MetalRenderer,
     commands: [FrameCommand],
@@ -1005,6 +1267,184 @@ final class MetalFrameTimingBench: XCTestCase {
       Thread.sleep(forTimeInterval: 0.001)
     }
     return false
+  }
+
+  private func measuredRows(for workload: M6Workload, rows: Int) -> [Int] {
+    workload.fullDamage ? Array(0..<rows) : workload.dirtyRows
+  }
+
+  private func m6Damage(for workload: M6Workload, rows: Int, cellH: CGFloat) -> RenderDamage {
+    guard !workload.fullDamage else { return .full }
+    return .partial(
+      yRanges: measuredRows(for: workload, rows: rows).map { row in
+        DirtyYRange(y: CGFloat(rows - 1 - row) * cellH + workload.contentYOffset, height: cellH)
+      })
+  }
+
+  private func m6Commands(
+    workload: M6Workload,
+    cols: Int,
+    rows: Int,
+    cellW: CGFloat,
+    cellH: CGFloat,
+    seed: Int,
+    includedRows: [Int]
+  ) -> [FrameCommand] {
+    var commands: [FrameCommand] = []
+    commands.reserveCapacity(includedRows.count * (workload.style == .denseColor ? cols * 2 : 2) + 1)
+    for row in includedRows {
+      let y = CGFloat(rows - 1 - row) * cellH + workload.contentYOffset
+      if workload.style == .denseColor {
+        for col in 0..<cols {
+          let color = m6Color(style: workload.style, row: row, col: col, seed: seed)
+          let rect = CGRect(x: CGFloat(col) * cellW, y: y, width: cellW, height: cellH)
+          commands.append(.rect(rect, color: color, source: .terminal))
+          commands.append(
+            .glyphRun(
+              origin: rect.origin,
+              text: m6Text(style: workload.style, row: row, col: col, seed: seed),
+              foreground: 0xFF_FF_FF_FF,
+              background: color,
+              attributes: [],
+              source: .terminal))
+        }
+      } else {
+        let color = m6Color(style: workload.style, row: row, col: 0, seed: seed)
+        commands.append(
+          .rect(
+            CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+            color: color,
+            source: .terminal))
+        let text = (0..<cols).map {
+          m6Text(style: workload.style, row: row, col: $0, seed: seed)
+        }.joined()
+        commands.append(
+          .glyphRun(
+            origin: CGPoint(x: 0, y: y),
+            text: text,
+            foreground: 0xFF_FF_FF_FF,
+            background: color,
+            attributes: [],
+            source: .terminal))
+      }
+    }
+    let cursorY = max(0, workload.contentYOffset)
+    commands.append(
+      .cursor(
+        CGRect(x: 0, y: cursorY, width: cellW, height: cellH),
+        color: seed.isMultiple(of: 2) ? 0xAD_BC_BC_FF : 0xFF_FF_FF_FF))
+    return commands
+  }
+
+  private func m6Payload(
+    workload: M6Workload,
+    cols: Int,
+    rows: Int,
+    cellW: CGFloat,
+    cellH: CGFloat,
+    seed: Int,
+    includedRows: [Int]
+  ) -> TerminalCellPayload {
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: workload.contentYOffset,
+      defaultBackground: 0x00_00_00_FF,
+      dirtyRows: includedRows)
+    payload.backgroundRuns.reserveCapacity(
+      workload.style == .denseColor ? includedRows.count * cols : includedRows.count)
+    payload.glyphs.reserveCapacity(includedRows.count * cols)
+    for row in includedRows {
+      if workload.style == .denseColor {
+        for col in 0..<cols {
+          let color = m6Color(style: workload.style, row: row, col: col, seed: seed)
+          payload.backgroundRuns.append(.init(row: row, startCol: col, colCount: 1, color: color))
+          appendM6Glyph(
+            to: &payload,
+            workload: workload,
+            row: row,
+            col: col,
+            seed: seed,
+            background: color)
+        }
+      } else {
+        let color = m6Color(style: workload.style, row: row, col: 0, seed: seed)
+        payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: color))
+        for col in 0..<cols {
+          appendM6Glyph(
+            to: &payload,
+            workload: workload,
+            row: row,
+            col: col,
+            seed: seed,
+            background: color)
+        }
+      }
+    }
+    payload.cursorRects.append(
+      .init(
+        rect: CGRect(x: 0, y: max(0, workload.contentYOffset), width: cellW, height: cellH),
+        color: seed.isMultiple(of: 2) ? 0xAD_BC_BC_FF : 0xFF_FF_FF_FF))
+    return payload
+  }
+
+  private func appendM6Glyph(
+    to payload: inout TerminalCellPayload,
+    workload: M6Workload,
+    row: Int,
+    col: Int,
+    seed: Int,
+    background: UInt32
+  ) {
+    let text = m6Text(style: workload.style, row: row, col: col, seed: seed)
+    let scalars = Array(text.unicodeScalars)
+    payload.glyphs.append(
+      .init(
+        row: row,
+        col: col,
+        text: text,
+        scalarValue: scalars.count == 1 ? scalars[0].value : nil,
+        foreground: 0xFF_FF_FF_FF,
+        background: background,
+        attributes: [],
+        wide: m6WideFlag(for: text)))
+  }
+
+  private func m6Color(style: M6Workload.Style, row: Int, col: Int, seed: Int) -> UInt32 {
+    let base = seed + row * 17 + col * (style == .denseColor ? 29 : 0)
+    return
+      (UInt32((base * 37) & 0xFF) << 24)
+      | (UInt32((base * 89) & 0xFF) << 16)
+      | (UInt32((base * 167) & 0xFF) << 8)
+      | 0xFF
+  }
+
+  private func m6Text(style: M6Workload.Style, row: Int, col: Int, seed: Int) -> String {
+    switch style {
+    case .ascii, .denseColor:
+      let scalars = Array(0x21...0x7E)
+      return String(UnicodeScalar(scalars[(seed + row + col) % scalars.count])!)
+    case .boxDrawing:
+      let glyphs = ["┌", "─", "┐", "│", "└", "┘"]
+      return glyphs[(seed + row + col) % glyphs.count]
+    case .clusters:
+      let glyphs = ["A", "表", "界", "👩‍💻", "ø", "ß"]
+      return glyphs[(seed + row + col) % glyphs.count]
+    case .atlasGrowth:
+      let value = 0x2500 + ((seed * 97 + row * 31 + col) % 0x80)
+      return UnicodeScalar(value).map(String.init) ?? "A"
+    }
+  }
+
+  private func m6WideFlag(for text: String) -> UInt8 {
+    switch text {
+    case "表", "界", "👩‍💻":
+      return 2
+    default:
+      return 0
+    }
   }
 
   private func damageFrame(

@@ -91,7 +91,7 @@ stay in the codebase permanently** and are user-selectable (M6).
 - [x] M3 — GPU-driven: persistent cell buffer + dirty-row-only patching (the CPU rebuild win)
 - [x] M4 — GPU-driven: feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
 - [x] M5 — GPU-driven: Metal 4 command model evaluated and production branch retired after failing the release p50 gate (proof spike retained)
-- [ ] M6 — Expose renderer choice as a user setting; keep both renderers; record head-to-head comparison; ADR
+- [x] M6 — Expose renderer choice as a user setting; keep both renderers; record head-to-head comparison; ADR
 - [ ] Review Gate passed
 
 ## Context and Orientation
@@ -1412,8 +1412,45 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
 - Validation:
   - `swift test --filter RendererModeSettingsTests` (2 tests, 0 failures)
   - `git diff --check`
-- M6 remains open for the final recorded broad comparison/review-gate pass; this slice
-  closes the user-selectable setting, session-identity, and ADR deliverables.
+- The final recorded broad comparison followed in the next entry; this slice closed
+  the user-selectable setting, session-identity, and ADR deliverables.
+
+### 2026-06-02 — M6 head-to-head comparison recorded
+
+- Extended `MetalFrameTimingBench/testFrameTimingsAcrossWorkloads` with an opt-in
+  release-only M6 comparison matrix for Classic vs GPU-driven on `160x48` frames:
+  0-dirty/cursor blink, 1-row append, 5% contiguous dirty rows, 25% contiguous dirty
+  rows, sparse dirty rows, full repaint, fast scroll, dense colours, box drawing,
+  emoji/CJK/ZWJ clusters, theme/atlas growth, and remote fallback.
+- The matrix records render CPU p50/p95/p99, process CPU per frame via `getrusage`,
+  GPU p50/p99, dropped render attempts, and energy/wakeups as `n/a` because XCTest
+  does not expose those counters. Per the predeclared threshold, lack of a measured
+  energy/wakeup win means GPU-driven cannot become the default.
+- Validation:
+  - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench/testFrameTimingsAcrossWorkloads`
+    passed (1 test, 0 failures; release build `153.30s`, benchmark body `2145.652s`)
+- M6 head-to-head highlights from that run:
+  - 0-dirty cursor blink p50: classic `7.227 ms`, gpuCell `6.758 ms`; process CPU
+    per frame: classic `0.985 ms`, gpuCell `1.004 ms`; dropped `0/0`.
+  - 1-row append p50: classic `6.651 ms`, gpuCell `6.718 ms`; process CPU per frame:
+    classic `1.197 ms`, gpuCell `1.337 ms`; dropped `0/0`.
+  - 25% contiguous p50: classic `6.562 ms`, gpuCell `5.594 ms`; process CPU per
+    frame: classic `2.075 ms`, gpuCell `3.147 ms`; dropped `0/0`.
+  - Sparse dirty rows p50: classic `6.724 ms`, gpuCell `6.010 ms`; process CPU per
+    frame: classic `1.457 ms`, gpuCell `2.475 ms`; dropped `0/0`.
+  - Full repaint p50: classic `5.072 ms`, gpuCell `3.575 ms`; process CPU per frame:
+    classic `4.691 ms`, gpuCell `5.757 ms`; dropped `0/0`.
+  - Dense colours p50: classic `6.833 ms`, gpuCell `6.686 ms`; process CPU per frame:
+    classic `1.060 ms`, gpuCell `1.521 ms`; dropped `0/0`.
+  - Emoji/CJK/ZWJ p99: classic `9.642 ms`, gpuCell `11.487 ms`, so the p99 threshold
+    is not met.
+  - Remote fallback configured GPU-driven but effective classic: p50 classic
+    `7.541 ms`, gpuCell-configured fallback `7.330 ms`; dropped `0/0`.
+- M6 default decision: keep Classic as the default and keep GPU-driven user-selectable
+  on macOS 26. GPU-driven wins some render-CPU p50 rows, but it does not show the
+  required 25% p50+p99 win across streaming/TUI workloads, process CPU is often
+  higher, energy/wakeups have no measured win, remote frames fall back, and M5's Metal
+  4 production branch failed its p50 gate.
 
 ## Review Gate
 
@@ -1486,10 +1523,10 @@ review, the changed files, and `AGENTS.md`) must verify, per milestone:
       alongside the cell payload; full glyph/background command coalescing stays skipped
       in steady GPU-cell mode.
 - [ ] For M5: a proof spike measured the real encode-overhead delta first; the Metal 4
-      command-allocator/buffer-reuse + argument-table path shows a release-mode
-      encode-CPU **reduction** (overhead, not elimination — draws are re-encoded),
-      stays pixel-identical, and is macOS-26-gated. Buffer safety is by slot-ownership +
-      completion handler, not residency sets or barriers alone.
+      command-allocator/buffer-reuse + argument-table production path either shows a
+      release-mode encode/frame-CPU **reduction** while staying pixel-identical and
+      macOS-26-gated, or it is retired with the no-go evidence recorded. Buffer safety
+      is by slot-ownership + completion handler, not residency sets or barriers alone.
 - [ ] For M6: **both renderers remain** in the codebase and are user-selectable (GPU
       option macOS-26-only); the head-to-head comparison is recorded; the ADR uses the
       next free number (0016+, not the already-taken 0014), records the two-renderer +
