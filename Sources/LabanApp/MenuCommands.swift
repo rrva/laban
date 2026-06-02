@@ -25,6 +25,13 @@ enum MenuCommands {
       keyEquivalent: ""
     )
     appMenu.addItem(NSMenuItem.separator())
+    // Checkmark is driven by AppDelegate.validateMenuItem.
+    appMenu.addItem(
+      withTitle: "Secure Keyboard Entry",
+      action: #selector(AppDelegate.toggleSecureKeyboardEntry(_:)),
+      keyEquivalent: ""
+    )
+    appMenu.addItem(NSMenuItem.separator())
     // Quits LabanApp and relaunches the on-disk bundle. labpty runs in
     // its own process and is not a child of LabanApp, so it survives
     // the swap — the new instance reconnects to the existing socket.
@@ -217,6 +224,47 @@ enum MenuCommands {
         action: #selector(AppDelegate.sendDiagnostics(_:)),
         keyEquivalent: ""
       ))
+
+    // Window menu — standard window management. Setting NSApp.windowsMenu lets
+    // AppKit append and check-mark the open-window list automatically.
+    let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+    mainMenu.addItem(windowItem)
+    let windowMenu = NSMenu(title: "Window")
+    windowItem.submenu = windowMenu
+    windowMenu.addItem(
+      NSMenuItem(
+        title: "Minimize",
+        action: #selector(NSWindow.performMiniaturize(_:)),
+        keyEquivalent: "m"
+      ))
+    windowMenu.addItem(
+      NSMenuItem(
+        title: "Zoom",
+        action: #selector(NSWindow.performZoom(_:)),
+        keyEquivalent: ""
+      ))
+    windowMenu.addItem(NSMenuItem.separator())
+    windowMenu.addItem(
+      NSMenuItem(
+        title: "Bring All to Front",
+        action: #selector(NSApplication.arrangeInFront(_:)),
+        keyEquivalent: ""
+      ))
+    NSApp.windowsMenu = windowMenu
+
+    // Help menu — setting NSApp.helpMenu also enables the system Help search
+    // field, which indexes every menu command.
+    let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+    mainMenu.addItem(helpItem)
+    let helpMenu = NSMenu(title: "Help")
+    helpItem.submenu = helpMenu
+    helpMenu.addItem(
+      NSMenuItem(
+        title: "Reveal Log Folder in Finder",
+        action: #selector(AppDelegate.revealLogFolder(_:)),
+        keyEquivalent: ""
+      ))
+    NSApp.helpMenu = helpMenu
 
     NSApp.mainMenu = mainMenu
   }

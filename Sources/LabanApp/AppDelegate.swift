@@ -1,8 +1,9 @@
 import AppKit
+import Carbon
 import LabanCore
 import LabanRenderer
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   private var windowController: MainWindowController?
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
@@ -13,6 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     self?.windowController?.applyRendererSelection(selection)
   }
   private var updateCheckInFlight = false
+  private static let secureKeyboardEntryDefaultsKey = "LabanSecureKeyboardEntry"
+  /// Whether `EnableSecureEventInput()` is currently in effect. The Enable/
+  /// Disable calls are reference-counted and process-global, so we track
+  /// engagement to keep them balanced and never strand the system in secure
+  /// input after Laban deactivates or quits.
+  private var secureInputEngaged = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     AppLog.app.notice("launch \(BuildInfo.summary)")
@@ -99,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) { _, _ in
       Self.applyTheme(for: NSApp.effectiveAppearance)
     }
+
+    // Re-engage secure keyboard entry if the user left it on last session.
+    applySecureKeyboardEntry()
   }
 
   static func applyTheme(for appearance: NSAppearance) {
@@ -107,6 +117,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+  /// Opt in to the macOS 14+ secure state-restoration contract. Without it
+  /// AppKit logs a warning each launch and declines to restore window state.
+  func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
+
+  // MARK: Secure Keyboard Entry
+
+  /// Toggle "Secure Keyboard Entry", mirroring Terminal.app: a user-controlled
+  /// switch that, while on, asks the system to route keystrokes away from the
+  /// event taps other processes install (keyloggers, input monitors).
+  @objc func toggleSecureKeyboardEntry(_ sender: Any?) {
+    UserDefaults.standard.set(
+      !secureKeyboardEntryEnabled, forKey: Self.secureKeyboardEntryDefaultsKey)
+    EventLog.shared.log(
+      "secureinput.toggle", ["enabled": secureKeyboardEntryEnabled ? "1" : "0"])
+    applySecureKeyboardEntry()
+  }
+
+  private var secureKeyboardEntryEnabled: Bool {
+    UserDefaults.standard.bool(forKey: Self.secureKeyboardEntryDefaultsKey)
+  }
+
+  /// Engage secure input only while the toggle is on AND Laban is frontmost,
+  /// so we never hold the global lock in the background.
+  private func applySecureKeyboardEntry() {
+    let shouldEngage = secureKeyboardEntryEnabled && NSApp.isActive
+    if shouldEngage, !secureInputEngaged {
+      EnableSecureEventInput()
+      secureInputEngaged = true
+    } else if !shouldEngage, secureInputEngaged {
+      DisableSecureEventInput()
+      secureInputEngaged = false
+    }
+  }
+
+  func applicationDidBecomeActive(_ notification: Notification) {
+    applySecureKeyboardEntry()
+  }
+
+  func applicationWillResignActive(_ notification: Notification) {
+    if secureInputEngaged {
+      DisableSecureEventInput()
+      secureInputEngaged = false
+    }
+  }
+
+  func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    if item.action == #selector(toggleSecureKeyboardEntry(_:)) {
+      item.state = secureKeyboardEntryEnabled ? .on : .off
+    }
+    return true
+  }
+
+  /// Help-menu entry: reveal ~/Library/Logs/Laban, where captures, casts, and
+  /// watchdog stacks are written (see AGENTS.md runtime artifacts).
+  @objc func revealLogFolder(_ sender: Any?) {
+    guard
+      let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("Logs/Laban", isDirectory: true)
+    else { return }
+    try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    NSWorkspace.shared.open(logs)
+  }
 
   private func showStartupFailure(_ error: Error) {
     let alert = NSAlert()
@@ -136,6 +209,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       windowController?.agentObserverHost?.flushAll()
     }
     windowController?.detachTerminalSessions()
+    if secureInputEngaged {
+      DisableSecureEventInput()
+      secureInputEngaged = false
+    }
     EventLog.shared.log("app.quit")
   }
 

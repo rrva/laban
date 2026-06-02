@@ -161,6 +161,14 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <string>${sha}${dirty}</string>
     <key>LABANBuildDate</key>
     <string>${date}</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Ragnar Rova</string>
 ${update_manifest_plist}
 </dict>
 </plist>
