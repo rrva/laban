@@ -1486,6 +1486,39 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   session, so the GUI Instruments capture must be run manually or from an isolated
   app identity before the Review Gate can be checked off.
 
+### 2026-06-02 — Manual live AppKit comparison captured
+
+- Manual live run artifacts:
+  `.artifacts/gpu-live-manual-20260602T063252Z/`.
+- The run used a quarantined app copy with bundle id
+  `com.laban.LabanApp.gpuValidation.20260602T063252Z` so it did not collide with the
+  user's active Laban instance. Both the repo head and the app build stamp were
+  `ce869b8`.
+- Each renderer ran for an 18-second Time Profiler attachment window plus a 5-second
+  `sample` capture while a deterministic `$SHELL` script streamed terminal output.
+- Classic mode:
+  - `sample_status=0`, symbolicated sample at
+    `.artifacts/gpu-live-manual-20260602T063252Z/classic.sample.txt`.
+  - `ps` samples: 36 samples, average CPU `18.10%`, peak CPU `50.50%`.
+  - `xctrace` reached the 18-second time limit and wrote
+    `.artifacts/gpu-live-manual-20260602T063252Z/classic.trace`, but exited with
+    status `2` because the trace log archive reported
+    `Fatal logging system error: The log archive is corrupt or incomplete and cannot be
+    read`. The saved trace bundle was still exportable with `xctrace export --toc`.
+- GPU-driven mode:
+  - `sample_status=0`, symbolicated sample at
+    `.artifacts/gpu-live-manual-20260602T063252Z/gpuDriven.sample.txt`.
+  - `ps` samples: 35 samples, average CPU `16.21%`, peak CPU `50.10%`.
+  - `xctrace` reached the 18-second time limit and wrote
+    `.artifacts/gpu-live-manual-20260602T063252Z/gpuDriven.trace`, with the same
+    status `2` log-archive warning; the saved trace bundle was still exportable with
+    `xctrace export --toc`.
+- This live run confirms the installed AppKit build can run both selectable renderers
+  under streaming output and shows a modest process-CPU drop for GPU-driven in this
+  shell-stream workload. It does **not** change the M6 default decision: the broader
+  release benchmark still fails the predeclared GPU-default thresholds, so Classic
+  remains the default and GPU-driven remains opt-in.
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
