@@ -138,11 +138,23 @@ public final class MetalGlyphAtlas {
     boldFallback: Bool,
     italicFallback: Bool
   ) -> Entry? {
-    entry(
-      character: Character(scalar),
-      font: font,
-      boldFallback: boldFallback,
-      italicFallback: italicFallback)
+    guard Self.useScalarFastPath else {
+      return entry(
+        character: Character(scalar),
+        font: font,
+        boldFallback: boldFallback,
+        italicFallback: italicFallback)
+    }
+    let fid = ObjectIdentifier(font)
+    let sk = ScalarKey(
+      scalar: scalar.value, font: fid,
+      boldFallback: boldFallback, italicFallback: italicFallback)
+    if let cached = scalarEntries[sk] { return cached }
+    let made = rasterizeAndPack(
+      text: String(scalar), font: font,
+      boldFallback: boldFallback, italicFallback: italicFallback)
+    if let made { scalarEntries[sk] = made }
+    return made
   }
 
   public func entry(

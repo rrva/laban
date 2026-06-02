@@ -50,6 +50,54 @@ public struct FrameProducer {
   private static let invisibleRaw: UInt16 = TextAttributes.invisible.rawValue
   private static let underlineRaw: UInt16 = TextAttributes.underline.rawValue
 
+  private struct ResolvedCellVisuals {
+    var foreground: UInt32
+    var background: UInt32
+    var attrsRaw: UInt16
+    var underlineStyle: UnderlineStyle
+    var underlineColor: UInt32?
+    var hyperlink: String?
+
+    var attributes: TextAttributes { TextAttributes(rawValue: attrsRaw) }
+    var hasHyperlink: Bool { hyperlink != nil }
+    var isInvisible: Bool { (attrsRaw & FrameProducer.invisibleRaw) != 0 }
+  }
+
+  private static func resolvedVisuals(
+    for cell: LabanCell,
+    hyperlinkURIs: [String]
+  ) -> ResolvedCellVisuals {
+    var attrsRaw = (cell.flags & renderableMaskRaw) & ~inverseRaw
+    let background = cell.background_rgba
+    let foreground =
+      (attrsRaw & faintRaw) != 0
+      ? blend(cell.foreground_rgba, toward: background, foregroundWeight: 0.50)
+      : cell.foreground_rgba
+    var underlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
+    var underlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
+    let hyperlink: String? = {
+      let id = Int(cell.hyperlink_id)
+      guard id > 0, id <= hyperlinkURIs.count else { return nil }
+      return hyperlinkURIs[id - 1]
+    }()
+    if hyperlink != nil {
+      if underlineStyle == .none && (attrsRaw & underlineRaw) == 0 {
+        underlineStyle = .single
+      }
+      if underlineColor == nil {
+        underlineColor = Theme.current.blue
+      }
+      attrsRaw |= underlineRaw
+    }
+    return ResolvedCellVisuals(
+      foreground: foreground,
+      background: background,
+      attrsRaw: attrsRaw,
+      underlineStyle: underlineStyle,
+      underlineColor: underlineColor,
+      hyperlink: hyperlink)
+  }
+
   // Caller owns the snapshot lifetime; FrameProducer does not retain it.
   public func commands(
     from snap: UnsafePointer<LabanSnapshot>,
@@ -251,6 +299,464 @@ public struct FrameProducer {
     return cmds
   }
 
+  public func overlayCommands(
+    from snap: UnsafePointer<LabanSnapshot>,
+    selection: TerminalSelection?,
+    findState: TerminalFindState? = nil,
+    viewportRowOffset: Int = 0,
+    cursorBlinkVisible: Bool
+  ) -> [FrameCommand] {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    let cw = CGFloat(cellWidth)
+    let ch = CGFloat(cellHeight)
+
+    guard rows > 0, cols > 0 else { return [] }
+
+    var cmds: [FrameCommand] = []
+    cmds.reserveCapacity(4)
+
+    if let sel = selection {
+      for rect in sel.cgRects(
+        rows: rows,
+        cols: cols,
+        cellWidth: cw,
+        cellHeight: ch,
+        originX: originX,
+        originY: originY
+      ) {
+        cmds.append(
+          .selection(
+            CGRect(
+              x: rect.origin.x,
+              y: rect.origin.y + contentYOffset,
+              width: rect.width,
+              height: rect.height),
+            color: Theme.current.selectionBg))
+      }
+    }
+
+    if let findState, findState.isActive, !findState.matches.isEmpty {
+      let selectedMatch = findState.selectedMatch
+      for match in findState.matches where match != selectedMatch {
+        guard
+          let rect = findRect(
+            for: match,
+            viewportRowOffset: viewportRowOffset,
+            rows: rows,
+            cols: cols,
+            cellWidth: cw,
+            cellHeight: ch
+          )
+        else { continue }
+        cmds.append(.findMatch(rect, color: findMatchColor()))
+      }
+      if let selectedMatch,
+        let rect = findRect(
+          for: selectedMatch,
+          viewportRowOffset: viewportRowOffset,
+          rows: rows,
+          cols: cols,
+          cellWidth: cw,
+          cellHeight: ch
+        )
+      {
+        cmds.append(.findSelected(rect, color: findSelectedColor()))
+      }
+    }
+
+    if snapshot.cursor_visible != 0,
+      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      Int(snapshot.cursor_row) < rows,
+      Int(snapshot.cursor_col) < cols
+    {
+      let cx = originX + CGFloat(snapshot.cursor_col) * cw
+      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
+      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+        cmds.append(.cursor(rect, color: Theme.current.cursor))
+      }
+    }
+
+    return cmds
+  }
+
+  public func terminalCellPayload(
+    from snap: UnsafePointer<LabanSnapshot>,
+    includedRows requestedRows: [Int],
+    selection: TerminalSelection? = nil,
+    findState: TerminalFindState? = nil,
+    viewportRowOffset: Int = 0,
+    cursorBlinkVisible: Bool = true
+  ) -> TerminalCellPayload? {
+    var payload = TerminalCellPayload(
+      rows: 0,
+      cols: 0,
+      origin: CGPoint(x: originX, y: originY),
+      cellSize: CGSize(width: CGFloat(cellWidth), height: CGFloat(cellHeight)),
+      contentYOffset: contentYOffset,
+      defaultBackground: 0)
+    fillTerminalCellPayload(
+      into: &payload,
+      from: snap,
+      includedRows: requestedRows,
+      selection: selection,
+      findState: findState,
+      viewportRowOffset: viewportRowOffset,
+      cursorBlinkVisible: cursorBlinkVisible)
+    return payload
+  }
+
+  private enum SingleUTF8ScalarResult {
+    case scalar(UInt32)
+    case multiScalar
+    case invalid
+  }
+
+  private static func singleUTF8ScalarValue(
+    _ bytes: UnsafePointer<UInt8>,
+    length: Int
+  ) -> SingleUTF8ScalarResult {
+    @inline(__always)
+    func continuation(_ byte: UInt8) -> Bool {
+      (byte & 0xC0) == 0x80
+    }
+
+    switch length {
+    case 1:
+      let b0 = bytes[0]
+      return b0 < 0x80 ? .scalar(UInt32(b0)) : .invalid
+    case 2:
+      let b0 = bytes[0]
+      let b1 = bytes[1]
+      guard (0xC2...0xDF).contains(b0), continuation(b1) else { return .invalid }
+      return .scalar(UInt32(b0 & 0x1F) << 6 | UInt32(b1 & 0x3F))
+    case 3:
+      let b0 = bytes[0]
+      let b1 = bytes[1]
+      let b2 = bytes[2]
+      guard continuation(b2) else { return .invalid }
+      switch b0 {
+      case 0xE0:
+        guard (0xA0...0xBF).contains(b1) else { return .invalid }
+      case 0xE1...0xEC, 0xEE...0xEF:
+        guard continuation(b1) else { return .invalid }
+      case 0xED:
+        guard (0x80...0x9F).contains(b1) else { return .invalid }
+      default:
+        return .invalid
+      }
+      return .scalar(
+        UInt32(b0 & 0x0F) << 12
+          | UInt32(b1 & 0x3F) << 6
+          | UInt32(b2 & 0x3F))
+    case 4:
+      let b0 = bytes[0]
+      let b1 = bytes[1]
+      let b2 = bytes[2]
+      let b3 = bytes[3]
+      guard continuation(b2), continuation(b3) else { return .invalid }
+      switch b0 {
+      case 0xF0:
+        guard (0x90...0xBF).contains(b1) else { return .invalid }
+      case 0xF1...0xF3:
+        guard continuation(b1) else { return .invalid }
+      case 0xF4:
+        guard (0x80...0x8F).contains(b1) else { return .invalid }
+      default:
+        return .invalid
+      }
+      return .scalar(
+        UInt32(b0 & 0x07) << 18
+          | UInt32(b1 & 0x3F) << 12
+          | UInt32(b2 & 0x3F) << 6
+          | UInt32(b3 & 0x3F))
+    default:
+      return .multiScalar
+    }
+  }
+
+  public func fillTerminalCellPayload(
+    into payload: inout TerminalCellPayload,
+    from snap: UnsafePointer<LabanSnapshot>,
+    includedRows requestedRows: [Int],
+    selection: TerminalSelection? = nil,
+    findState: TerminalFindState? = nil,
+    viewportRowOffset: Int = 0,
+    cursorBlinkVisible: Bool = true,
+    includeCursor: Bool = true
+  ) {
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    let cols = Int(snapshot.cols)
+    let cw = CGFloat(cellWidth)
+    let ch = CGFloat(cellHeight)
+    let defaultBg = snapshot.default_background_rgba
+    payload.reset(
+      rows: rows,
+      cols: cols,
+      origin: CGPoint(x: originX, y: originY),
+      cellSize: CGSize(width: cw, height: ch),
+      contentYOffset: contentYOffset,
+      defaultBackground: defaultBg,
+      fallbackReason: snapshot.status == 0 ? nil : .exitBanner)
+    guard rows > 0, cols > 0 else {
+      return
+    }
+    guard let cells = snapshot.cells else {
+      payload.fallbackReason = .missingCellStorage
+      return
+    }
+
+    payload.dirtyRows.reserveCapacity(requestedRows.count)
+    for row in requestedRows where row >= 0 && row < rows {
+      payload.dirtyRows.append(row)
+    }
+
+    func markFallback(_ reason: TerminalCellPayload.FallbackReason) {
+      if payload.fallbackReason == nil {
+        payload.fallbackReason = reason
+      }
+    }
+
+    if snapshot.status != 0 {
+      markFallback(.exitBanner)
+    }
+
+    payload.backgroundRuns.reserveCapacity(payload.dirtyRows.count * 2)
+    for row in payload.dirtyRows {
+      let rowStart = row * cols
+      var bgStart: Int?
+      var bgColor: UInt32 = 0
+      for col in 0..<cols {
+        let cell = cells[rowStart + col]
+        let cellBg = cell.background_rgba
+        if bgStart == nil {
+          if cellBg != defaultBg {
+            bgStart = col
+            bgColor = cellBg
+          }
+        } else if cellBg != bgColor || cellBg == defaultBg {
+          payload.backgroundRuns.append(
+            TerminalCellPayload.BackgroundRun(
+              row: row,
+              startCol: bgStart!,
+              colCount: col - bgStart!,
+              color: bgColor))
+          bgStart = cellBg != defaultBg ? col : nil
+          bgColor = cellBg
+        }
+      }
+      if let start = bgStart {
+        payload.backgroundRuns.append(
+          TerminalCellPayload.BackgroundRun(
+            row: row,
+            startCol: start,
+            colCount: cols - start,
+            color: bgColor))
+      }
+    }
+
+    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
+    payload.glyphs.reserveCapacity(payload.dirtyRows.count * cols)
+    payload.proceduralCells.reserveCapacity(payload.dirtyRows.count)
+    for row in payload.dirtyRows {
+      let rowStart = row * cols
+      var pendingSpacerAfterLastGlyph = false
+
+      func glyphBytes(_ glyph: TerminalCellPayload.Glyph) -> [UInt8]? {
+        if let range = glyph.utf8Range {
+          guard range.lowerBound >= 0, range.upperBound <= payload.utf8Bytes.count else {
+            return nil
+          }
+          return Array(payload.utf8Bytes[range])
+        }
+        if let scalarValue = glyph.scalarValue,
+          let scalar = Unicode.Scalar(scalarValue)
+        {
+          return Array(String(scalar).utf8)
+        }
+        if !glyph.text.isEmpty {
+          return Array(glyph.text.utf8)
+        }
+        return nil
+      }
+
+      func samePayloadGlyphStyle(_ lhs: TerminalCellPayload.Glyph, _ rhs: TerminalCellPayload.Glyph)
+        -> Bool
+      {
+        lhs.row == rhs.row
+          && lhs.foreground == rhs.foreground
+          && lhs.background == rhs.background
+          && lhs.attributes == rhs.attributes
+          && lhs.underlineStyle == rhs.underlineStyle
+          && lhs.underlineColor == rhs.underlineColor
+          && lhs.hasHyperlink == rhs.hasHyperlink
+      }
+
+      func appendGlyphOrMergeAfterSpacer(
+        _ glyph: TerminalCellPayload.Glyph,
+        bytes: [UInt8],
+        forceUTF8Storage: Bool
+      ) {
+        if pendingSpacerAfterLastGlyph,
+          let previousIndex = payload.glyphs.indices.last,
+          samePayloadGlyphStyle(payload.glyphs[previousIndex], glyph),
+          let previousBytes = glyphBytes(payload.glyphs[previousIndex])
+        {
+          let previousText = String(decoding: previousBytes, as: UTF8.self)
+          let currentText = String(decoding: bytes, as: UTF8.self)
+          let mergedBytes = previousBytes + bytes
+          let mergedText = String(decoding: mergedBytes, as: UTF8.self)
+          if mergedText.count < previousText.count + currentText.count {
+            let start = payload.utf8Bytes.count
+            payload.utf8Bytes.append(contentsOf: mergedBytes)
+            payload.glyphs[previousIndex].text = ""
+            payload.glyphs[previousIndex].scalarValue = nil
+            payload.glyphs[previousIndex].utf8Range = start..<payload.utf8Bytes.count
+            pendingSpacerAfterLastGlyph = false
+            return
+          }
+        }
+
+        var storedGlyph = glyph
+        if forceUTF8Storage {
+          let start = payload.utf8Bytes.count
+          payload.utf8Bytes.append(contentsOf: bytes)
+          storedGlyph.utf8Range = start..<payload.utf8Bytes.count
+        }
+        payload.glyphs.append(storedGlyph)
+        pendingSpacerAfterLastGlyph = false
+      }
+
+      for col in 0..<cols {
+        let cell = cells[rowStart + col]
+        let isSpacerTail = cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL)
+        if isSpacerTail {
+          if payload.glyphs.last?.row == row {
+            pendingSpacerAfterLastGlyph = true
+          }
+          continue
+        }
+
+        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+        let cellAttrs = visuals.attributes
+
+        if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {
+          markFallback(.unsupportedAttributes)
+        }
+        if visuals.isInvisible {
+          pendingSpacerAfterLastGlyph = false
+          continue
+        }
+        let scalarResult: SingleUTF8ScalarResult
+        let utf8Bytes: UnsafeBufferPointer<UInt8>?
+        if cell.codepoint != 0 {
+          scalarResult = .scalar(cell.codepoint)
+          utf8Bytes = nil
+        } else {
+          guard cell.utf8_length > 0, let storage = snapshot.utf8_storage else { continue }
+          let offset = Int(cell.utf8_offset)
+          let length = Int(cell.utf8_length)
+          let ptr = UnsafeRawPointer(storage).advanced(by: offset)
+          scalarResult = Self.singleUTF8ScalarValue(
+            ptr.assumingMemoryBound(to: UInt8.self),
+            length: length)
+          utf8Bytes = UnsafeBufferPointer<UInt8>(
+            start: ptr.assumingMemoryBound(to: UInt8.self),
+            count: length)
+        }
+        switch scalarResult {
+        case .scalar(let scalarValue):
+          guard let scalar = Unicode.Scalar(scalarValue) else {
+            pendingSpacerAfterLastGlyph = false
+            markFallback(.invalidUTF8)
+            continue
+          }
+          if BoxDrawing.isProceduralCellElement(scalar) {
+            pendingSpacerAfterLastGlyph = false
+            payload.proceduralCells.append(
+              TerminalCellPayload.ProceduralCell(
+                row: row,
+                col: col,
+                scalarValue: scalarValue,
+                foreground: visuals.foreground))
+            continue
+          }
+          let glyph = TerminalCellPayload.Glyph(
+            row: row,
+            col: col,
+            text: "",
+            scalarValue: scalarValue,
+            foreground: visuals.foreground,
+            background: visuals.background,
+            attributes: cellAttrs,
+            underlineStyle: visuals.underlineStyle,
+            underlineColor: visuals.underlineColor,
+            hasHyperlink: visuals.hasHyperlink,
+            wide: cell.wide)
+          if pendingSpacerAfterLastGlyph {
+            appendGlyphOrMergeAfterSpacer(
+              glyph,
+              bytes: Array(String(scalar).utf8),
+              forceUTF8Storage: false)
+          } else {
+            payload.glyphs.append(glyph)
+          }
+        case .multiScalar:
+          guard let utf8Bytes else {
+            pendingSpacerAfterLastGlyph = false
+            markFallback(.invalidUTF8)
+            continue
+          }
+          let glyph = TerminalCellPayload.Glyph(
+            row: row,
+            col: col,
+            text: "",
+            scalarValue: nil,
+            foreground: visuals.foreground,
+            background: visuals.background,
+            attributes: cellAttrs,
+            underlineStyle: visuals.underlineStyle,
+            underlineColor: visuals.underlineColor,
+            hasHyperlink: visuals.hasHyperlink,
+            wide: cell.wide)
+          if pendingSpacerAfterLastGlyph {
+            appendGlyphOrMergeAfterSpacer(
+              glyph,
+              bytes: Array(utf8Bytes),
+              forceUTF8Storage: true)
+          } else {
+            let start = payload.utf8Bytes.count
+            payload.utf8Bytes.append(contentsOf: utf8Bytes)
+            var storedGlyph = glyph
+            storedGlyph.utf8Range = start..<payload.utf8Bytes.count
+            payload.glyphs.append(storedGlyph)
+          }
+        case .invalid:
+          pendingSpacerAfterLastGlyph = false
+          markFallback(.invalidUTF8)
+        }
+      }
+    }
+
+    if includeCursor,
+      snapshot.cursor_visible != 0,
+      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      Int(snapshot.cursor_row) < rows,
+      Int(snapshot.cursor_col) < cols
+    {
+      let cx = originX + CGFloat(snapshot.cursor_col) * cw
+      let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
+      let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
+      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+        payload.cursorRects.append(
+          TerminalCellPayload.CursorRect(rect: rect, color: Theme.current.cursor))
+      }
+    }
+  }
+
   // Grapheme-cluster count over contiguous UTF-8 bytes, allocation-free. Uses
   // the same UAX-29 segmentation as `String.count`, so the spacer-merge
   // decision is identical to the legacy `(runText + text).count` comparison.
@@ -337,33 +843,9 @@ public struct FrameProducer {
           continue
         }
 
-        // Renderable flags minus inverse, as raw bits (the C bridge already
-        // swapped fg/bg for inverse video).
-        let attrsRaw = (cell.flags & FrameProducer.renderableMaskRaw) & ~FrameProducer.inverseRaw
-        let cellBg = cell.background_rgba
-        let cellFg =
-          (attrsRaw & FrameProducer.faintRaw) != 0
-          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
-          : cell.foreground_rgba
-        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
-        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
-        let cellHyperlink: String? = {
-          let id = Int(cell.hyperlink_id)
-          guard id > 0, id <= hyperlinkURIs.count else { return nil }
-          return hyperlinkURIs[id - 1]
-        }()
-        var cellAttrsRaw = attrsRaw
-        if cellHyperlink != nil {
-          if cellUnderlineStyle == .none && (cellAttrsRaw & FrameProducer.underlineRaw) == 0 {
-            cellUnderlineStyle = .single
-          }
-          if cellUnderlineColor == nil {
-            cellUnderlineColor = Theme.current.blue
-          }
-          cellAttrsRaw |= FrameProducer.underlineRaw
-        }
+        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
 
-        guard hasContent, (attrsRaw & FrameProducer.invisibleRaw) == 0, let storage else {
+        guard hasContent, !visuals.isInvisible, let storage else {
           flushRun()
           pendingSpacer = false
           continue
@@ -409,7 +891,7 @@ public struct FrameProducer {
             at: CGPoint(x: cellX, y: cellY),
             cellWidth: cw,
             cellHeight: ch,
-            foreground: cellFg
+            foreground: visuals.foreground
           ) {
             cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
           }
@@ -417,10 +899,11 @@ public struct FrameProducer {
         }
 
         let sameStyle =
-          runFg == cellFg && runBg == cellBg && runAttrsRaw == cellAttrsRaw
-          && runUnderlineStyle == cellUnderlineStyle
-          && runUnderlineColor == cellUnderlineColor
-          && runHyperlink == cellHyperlink
+          runFg == visuals.foreground && runBg == visuals.background
+          && runAttrsRaw == visuals.attrsRaw
+          && runUnderlineStyle == visuals.underlineStyle
+          && runUnderlineColor == visuals.underlineColor
+          && runHyperlink == visuals.hyperlink
 
         if runStart != nil, sameStyle {
           if pendingSpacer {
@@ -439,12 +922,12 @@ public struct FrameProducer {
               flushRun()
               pendingSpacer = false
               runStart = col
-              runFg = cellFg
-              runBg = cellBg
-              runAttrsRaw = cellAttrsRaw
-              runUnderlineStyle = cellUnderlineStyle
-              runUnderlineColor = cellUnderlineColor
-              runHyperlink = cellHyperlink
+              runFg = visuals.foreground
+              runBg = visuals.background
+              runAttrsRaw = visuals.attrsRaw
+              runUnderlineStyle = visuals.underlineStyle
+              runUnderlineColor = visuals.underlineColor
+              runHyperlink = visuals.hyperlink
               runBytes.removeAll(keepingCapacity: true)
               runBytes.append(contentsOf: cellBytes)
             }
@@ -455,12 +938,12 @@ public struct FrameProducer {
           flushRun()
           pendingSpacer = false
           runStart = col
-          runFg = cellFg
-          runBg = cellBg
-          runAttrsRaw = cellAttrsRaw
-          runUnderlineStyle = cellUnderlineStyle
-          runUnderlineColor = cellUnderlineColor
-          runHyperlink = cellHyperlink
+          runFg = visuals.foreground
+          runBg = visuals.background
+          runAttrsRaw = visuals.attrsRaw
+          runUnderlineStyle = visuals.underlineStyle
+          runUnderlineColor = visuals.underlineColor
+          runHyperlink = visuals.hyperlink
           runBytes.removeAll(keepingCapacity: true)
           runBytes.append(contentsOf: cellBytes)
         }
@@ -539,39 +1022,10 @@ public struct FrameProducer {
           continue
         }
 
-        // The C bridge already swaps fg/bg for inverse video, so .inverse is
-        // dropped here to keep downstream consumers from double-inverting.
-        let attrs = TextAttributes(rawValue: cell.flags)
-          .intersection(.renderableMask)
-          .subtracting(.inverse)
-        let cellBg = cell.background_rgba
-        let cellFg =
-          attrs.contains(.faint)
-          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
-          : cell.foreground_rgba
-        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
-        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
-        let cellHyperlink: String? = {
-          let id = Int(cell.hyperlink_id)
-          guard id > 0, id <= hyperlinkURIs.count else { return nil }
-          return hyperlinkURIs[id - 1]
-        }()
-        // Default link styling: a single underline in the accent color when
-        // the cell carries a hyperlink and the SGR didn't already set one.
-        // Lets users see and click on links without making the renderer
-        // theme-aware everywhere.
-        var cellAttrs = attrs
-        if cellHyperlink != nil {
-          if cellUnderlineStyle == .none && !cellAttrs.contains(.underline) {
-            cellUnderlineStyle = .single
-          }
-          if cellUnderlineColor == nil {
-            cellUnderlineColor = Theme.current.blue
-          }
-          cellAttrs.insert(.underline)
-        }
+        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+        let cellAttrs = visuals.attributes
 
-        if hasContent, !attrs.contains(.invisible), let storage = snapshot.utf8_storage {
+        if hasContent, !visuals.isInvisible, let storage = snapshot.utf8_storage {
           let offset = Int(cell.utf8_offset)
           let length = Int(cell.utf8_length)
           let ptr = UnsafeRawPointer(storage).advanced(by: offset)
@@ -595,7 +1049,7 @@ public struct FrameProducer {
                 at: CGPoint(x: cellX, y: cellY),
                 cellWidth: cw,
                 cellHeight: ch,
-                foreground: cellFg
+                foreground: visuals.foreground
               ) {
                 cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
               }
@@ -603,10 +1057,10 @@ public struct FrameProducer {
             }
 
             let sameStyle =
-              runFg == cellFg && runBg == cellBg && runAttrs == cellAttrs
-              && runUnderlineStyle == cellUnderlineStyle
-              && runUnderlineColor == cellUnderlineColor
-              && runHyperlink == cellHyperlink
+              runFg == visuals.foreground && runBg == visuals.background && runAttrs == cellAttrs
+              && runUnderlineStyle == visuals.underlineStyle
+              && runUnderlineColor == visuals.underlineColor
+              && runHyperlink == visuals.hyperlink
 
             if runStart != nil, sameStyle {
               if pendingSpacer {
@@ -622,12 +1076,12 @@ public struct FrameProducer {
                   flushRun()
                   pendingSpacer = false
                   runStart = col
-                  runFg = cellFg
-                  runBg = cellBg
+                  runFg = visuals.foreground
+                  runBg = visuals.background
                   runAttrs = cellAttrs
-                  runUnderlineStyle = cellUnderlineStyle
-                  runUnderlineColor = cellUnderlineColor
-                  runHyperlink = cellHyperlink
+                  runUnderlineStyle = visuals.underlineStyle
+                  runUnderlineColor = visuals.underlineColor
+                  runHyperlink = visuals.hyperlink
                   runText = text
                 }
               } else {
@@ -637,12 +1091,12 @@ public struct FrameProducer {
               flushRun()
               pendingSpacer = false
               runStart = col
-              runFg = cellFg
-              runBg = cellBg
+              runFg = visuals.foreground
+              runBg = visuals.background
               runAttrs = cellAttrs
-              runUnderlineStyle = cellUnderlineStyle
-              runUnderlineColor = cellUnderlineColor
-              runHyperlink = cellHyperlink
+              runUnderlineStyle = visuals.underlineStyle
+              runUnderlineColor = visuals.underlineColor
+              runHyperlink = visuals.hyperlink
               runText = text
             }
           } else {

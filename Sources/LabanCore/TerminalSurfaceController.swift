@@ -67,6 +67,15 @@ public struct TerminalSurfaceInsets: Equatable, Sendable {
   public static let zero = TerminalSurfaceInsets()
 }
 
+public enum TerminalSurfaceFrameContentMode: Equatable, Sendable {
+  /// Build the shared `[FrameCommand]` stream. Used by software, headless,
+  /// capture/replay, frame probes, and any path that needs command fallback.
+  case commands
+  /// Build a local terminal cell payload and skip terminal command coalescing
+  /// only when the payload is representable by the current GPU-cell milestone.
+  case cellPayloadPreferred
+}
+
 public struct TerminalSurfaceFrameRequest {
   public var frame: Int
   public var viewportWidth: CGFloat
@@ -89,6 +98,7 @@ public struct TerminalSurfaceFrameRequest {
   public var surfaceHeight: Int
   public var surfaceScale: Double
   public var captureBackend: String
+  public var contentMode: TerminalSurfaceFrameContentMode
 
   public init(
     frame: Int,
@@ -109,7 +119,8 @@ public struct TerminalSurfaceFrameRequest {
     surfaceWidth: Int,
     surfaceHeight: Int,
     surfaceScale: Double,
-    captureBackend: String = "software"
+    captureBackend: String = "software",
+    contentMode: TerminalSurfaceFrameContentMode = .commands
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -130,6 +141,48 @@ public struct TerminalSurfaceFrameRequest {
     self.surfaceHeight = surfaceHeight
     self.surfaceScale = surfaceScale
     self.captureBackend = captureBackend
+    self.contentMode = contentMode
+  }
+}
+
+public struct TerminalSurfaceFrameDiagnostics: Codable, Equatable, Sendable {
+  public struct DirtyRowRange: Codable, Equatable, Sendable {
+    public var startRow: Int
+    public var endRow: Int
+
+    public init(startRow: Int, endRow: Int) {
+      self.startRow = startRow
+      self.endRow = endRow
+    }
+  }
+
+  public var snapshotDirty: Bool?
+  public var dirtyRowCount: Int?
+  public var dirtyRowsSetCount: Int?
+  public var dirtyRowRanges: [DirtyRowRange]
+  public var visibleCellCount: Int
+  public var nonBlankRowCount: Int
+  public var visibleTextHash: UInt64
+  public var ambiguousDirtyNoRows: Bool
+
+  public init(
+    snapshotDirty: Bool?,
+    dirtyRowCount: Int?,
+    dirtyRowsSetCount: Int?,
+    dirtyRowRanges: [DirtyRowRange],
+    visibleCellCount: Int,
+    nonBlankRowCount: Int,
+    visibleTextHash: UInt64,
+    ambiguousDirtyNoRows: Bool
+  ) {
+    self.snapshotDirty = snapshotDirty
+    self.dirtyRowCount = dirtyRowCount
+    self.dirtyRowsSetCount = dirtyRowsSetCount
+    self.dirtyRowRanges = dirtyRowRanges
+    self.visibleCellCount = visibleCellCount
+    self.nonBlankRowCount = nonBlankRowCount
+    self.visibleTextHash = visibleTextHash
+    self.ambiguousDirtyNoRows = ambiguousDirtyNoRows
   }
 }
 
@@ -138,35 +191,44 @@ public struct TerminalSurfaceFrame {
   public var tabId: Tab.ID?
   public var sessionId: Session.ID?
   public var commands: [FrameCommand]
+  public var overlayCommands: [FrameCommand]
   public var rows: Int?
   public var cols: Int?
   public var cursorBlinking: Bool
   public var gridOriginY: CGFloat
   public var damage: RenderDamage
   public var snapshotMs: Double
+  public var cellPayload: TerminalCellPayload?
+  public var diagnostics: TerminalSurfaceFrameDiagnostics?
 
   public init(
     frame: Int,
     tabId: Tab.ID?,
     sessionId: Session.ID?,
     commands: [FrameCommand],
+    overlayCommands: [FrameCommand] = [],
     rows: Int?,
     cols: Int?,
     cursorBlinking: Bool,
     gridOriginY: CGFloat,
     damage: RenderDamage,
-    snapshotMs: Double = 0
+    snapshotMs: Double = 0,
+    cellPayload: TerminalCellPayload? = nil,
+    diagnostics: TerminalSurfaceFrameDiagnostics? = nil
   ) {
     self.frame = frame
     self.tabId = tabId
     self.sessionId = sessionId
     self.commands = commands
+    self.overlayCommands = overlayCommands
     self.rows = rows
     self.cols = cols
     self.cursorBlinking = cursorBlinking
     self.gridOriginY = gridOriginY
     self.damage = damage
     self.snapshotMs = snapshotMs
+    self.cellPayload = cellPayload
+    self.diagnostics = diagnostics
   }
 }
 
@@ -227,12 +289,24 @@ public final class TerminalSurfaceController {
 
   public let model: AppModel
   public var captureSink: TerminalSurfaceCaptureSink?
+  private var reusableCellPayload = TerminalCellPayload(
+    rows: 0,
+    cols: 0,
+    origin: .zero,
+    cellSize: .zero,
+    contentYOffset: 0,
+    defaultBackground: 0)
+  private var reusablePayloadRows: [Int] = []
 
   public var cellWidth: Int
   public var cellHeight: Int
   public var sidebarWidth: CGFloat
   public var sidebarCellWidth: CGFloat
   public var sidebarCellHeight: CGFloat
+
+  var cellPayloadCapacitySnapshotForTesting: TerminalCellPayload.CapacitySnapshot {
+    reusableCellPayload.capacitySnapshot
+  }
 
   public init(
     model: AppModel,
@@ -394,6 +468,7 @@ public final class TerminalSurfaceController {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
     let cols = Int(snapshot.cols)
+    let diagnostics = Self.diagnostics(snapshot: UnsafePointer(snap))
     let viewportOffset = session.viewportState()?.viewportOffset ?? 0
     model.refreshFindVisible(
       sessionID: session.id,
@@ -424,33 +499,70 @@ public final class TerminalSurfaceController {
       originY: gridOriginY,
       contentYOffset: request.contentYOffset
     )
-    commands += producer.commands(
-      from: UnsafePointer(snap),
-      selection: request.selection,
-      findState: findState,
-      viewportRowOffset: viewportOffset,
-      cursorBlinkVisible: request.cursorBlinkVisible)
-
-    snapshotCommandsHook?(UnsafePointer(snap), commands)
-    recordFrameCommands(request, commands: commands)
-
     let damage = Self.damage(
       snapshot: UnsafePointer(snap),
       forceFull: request.forceFullDamage,
       cellHeight: CGFloat(cellHeight),
       originY: gridOriginY)
+    let cellPayload: TerminalCellPayload?
+    let overlayCommands: [FrameCommand]
+    if request.contentMode == .cellPayloadPreferred {
+      Self.fillPayloadRows(
+        snapshot: UnsafePointer(snap),
+        damage: damage,
+        into: &reusablePayloadRows)
+      producer.fillTerminalCellPayload(
+        into: &reusableCellPayload,
+        from: UnsafePointer(snap),
+        includedRows: reusablePayloadRows,
+        selection: request.selection,
+        findState: findState,
+        viewportRowOffset: viewportOffset,
+        cursorBlinkVisible: request.cursorBlinkVisible,
+        includeCursor: false)
+      cellPayload = reusableCellPayload
+      overlayCommands = producer.overlayCommands(
+        from: UnsafePointer(snap),
+        selection: request.selection,
+        findState: findState,
+        viewportRowOffset: viewportOffset,
+        cursorBlinkVisible: request.cursorBlinkVisible)
+    } else {
+      cellPayload = nil
+      overlayCommands = []
+    }
+    let canSkipTerminalCommands =
+      request.contentMode == .cellPayloadPreferred
+      && cellPayload?.isGPUCellCompatible == true
+      && snapshotCommandsHook == nil
+      && captureSink == nil
+
+    if !canSkipTerminalCommands {
+      commands += producer.commands(
+        from: UnsafePointer(snap),
+        selection: request.selection,
+        findState: findState,
+        viewportRowOffset: viewportOffset,
+        cursorBlinkVisible: request.cursorBlinkVisible)
+    }
+
+    snapshotCommandsHook?(UnsafePointer(snap), commands)
+    recordFrameCommands(request, commands: commands)
 
     return TerminalSurfaceFrame(
       frame: request.frame,
       tabId: activeTab.id,
       sessionId: session.id,
       commands: commands,
+      overlayCommands: canSkipTerminalCommands ? overlayCommands : [],
       rows: rows,
       cols: cols,
       cursorBlinking: snapshot.cursor_blinking != 0,
       gridOriginY: gridOriginY,
       damage: damage,
-      snapshotMs: snapshotMs
+      snapshotMs: snapshotMs,
+      cellPayload: canSkipTerminalCommands ? cellPayload : nil,
+      diagnostics: diagnostics
     )
   }
 
@@ -487,6 +599,7 @@ public final class TerminalSurfaceController {
 
     let rows = max(snapshot.rows, 1)
     let cols = max(snapshot.cols, 1)
+    let diagnostics = Self.diagnostics(remoteSnapshot: snapshot, dirtyRanges: dirtyRanges)
     let gridOriginY = Self.terminalGridOriginY(
       viewportHeight: request.viewportHeight,
       rows: rows,
@@ -542,7 +655,8 @@ public final class TerminalSurfaceController {
       cursorBlinking: snapshot.cursorVisible,
       gridOriginY: gridOriginY,
       damage: damage,
-      snapshotMs: 0
+      snapshotMs: 0,
+      diagnostics: diagnostics
     )
   }
 
@@ -594,11 +708,13 @@ public final class TerminalSurfaceController {
     }
 
     var ranges: [DirtyYRange] = []
+    var dirtyRowCount = 0
     var row = 0
     while row < rows {
       if dirty[row] != 0 {
         var end = row
         while end < rows, dirty[end] != 0 { end += 1 }
+        dirtyRowCount += end - row
         let yBottom = originY + CGFloat(rows - end) * cellHeight
         let height = CGFloat(end - row) * cellHeight
         ranges.append(DirtyYRange(y: yBottom, height: height))
@@ -607,7 +723,50 @@ public final class TerminalSurfaceController {
         row += 1
       }
     }
+    if dirtyRowCount == 0, snapshot.dirty != 0 {
+      return .full
+    }
+    if dirtyRowCount >= rows { return .full }
     return .partial(yRanges: ranges)
+  }
+
+  public static func payloadRows(
+    snapshot snap: UnsafePointer<LabanSnapshot>,
+    damage: RenderDamage
+  ) -> [Int] {
+    var rows: [Int] = []
+    fillPayloadRows(snapshot: snap, damage: damage, into: &rows)
+    return rows
+  }
+
+  public static func fillPayloadRows(
+    snapshot snap: UnsafePointer<LabanSnapshot>,
+    damage: RenderDamage,
+    into result: inout [Int]
+  ) {
+    result.removeAll(keepingCapacity: true)
+    let snapshot = snap.pointee
+    let rows = Int(snapshot.rows)
+    guard rows > 0 else { return }
+    switch damage {
+    case .full:
+      result.reserveCapacity(rows)
+      for row in 0..<rows {
+        result.append(row)
+      }
+    case .partial:
+      guard snapshot.dirty_row_count == rows, let dirty = snapshot.dirty_rows else {
+        result.reserveCapacity(rows)
+        for row in 0..<rows {
+          result.append(row)
+        }
+        return
+      }
+      result.reserveCapacity(rows)
+      for row in 0..<rows where dirty[row] != 0 {
+        result.append(row)
+      }
+    }
   }
 
   public static func damage(
@@ -622,15 +781,147 @@ public final class TerminalSurfaceController {
 
     var ranges: [DirtyYRange] = []
     ranges.reserveCapacity(dirtyRanges.count)
+    var dirtyRowCount = 0
     for dirtyRange in dirtyRanges {
       let start = max(0, min(rows, dirtyRange.startRow))
       let end = max(0, min(rows, dirtyRange.endRow))
       guard start < end else { continue }
+      dirtyRowCount += end - start
       let yBottom = originY + CGFloat(rows - end) * cellHeight
       let height = CGFloat(end - start) * cellHeight
       ranges.append(DirtyYRange(y: yBottom, height: height))
     }
+    if dirtyRowCount >= rows { return .full }
     return ranges.isEmpty ? .full : .partial(yRanges: ranges)
+  }
+
+  public static func diagnostics(
+    snapshot snap: UnsafePointer<LabanSnapshot>
+  ) -> TerminalSurfaceFrameDiagnostics {
+    let snapshot = snap.pointee
+    let rows = max(0, Int(snapshot.rows))
+    let cols = max(0, Int(snapshot.cols))
+    let visibleCellCount = rows * cols
+    var nonBlankRowCount = 0
+    var hash = FNV1a64()
+
+    if let cells = snapshot.cells {
+      for row in 0..<rows {
+        var rowHasText = false
+        for col in 0..<cols {
+          let cell = cells[row * cols + col]
+          guard cell.utf8_length > 0 || cell.codepoint != 0 else { continue }
+          rowHasText = true
+          hash.combine(UInt64(row))
+          hash.combine(UInt64(col))
+          if let storage = snapshot.utf8_storage, cell.utf8_length > 0 {
+            let ptr = UnsafeRawPointer(storage).advanced(by: Int(cell.utf8_offset))
+            let bytes = UnsafeBufferPointer<UInt8>(
+              start: ptr.assumingMemoryBound(to: UInt8.self),
+              count: Int(cell.utf8_length)
+            )
+            hash.combine(bytes)
+          } else {
+            hash.combine(UInt64(cell.codepoint))
+          }
+        }
+        if rowHasText {
+          nonBlankRowCount += 1
+        }
+      }
+    }
+
+    let dirtyRowCount = Int(snapshot.dirty_row_count)
+    let dirtySummary = dirtyRowsSummary(rows: rows, dirtyRows: snapshot.dirty_rows)
+    return TerminalSurfaceFrameDiagnostics(
+      snapshotDirty: snapshot.dirty != 0,
+      dirtyRowCount: dirtyRowCount,
+      dirtyRowsSetCount: dirtySummary.setCount,
+      dirtyRowRanges: dirtySummary.ranges,
+      visibleCellCount: visibleCellCount,
+      nonBlankRowCount: nonBlankRowCount,
+      visibleTextHash: hash.value,
+      ambiguousDirtyNoRows: snapshot.dirty != 0 && dirtyRowCount == rows && dirtySummary.setCount == 0
+    )
+  }
+
+  public static func diagnostics(
+    remoteSnapshot snapshot: LabandSnapshotResponse,
+    dirtyRanges: [LabandSnapshotDirtyRange]?
+  ) -> TerminalSurfaceFrameDiagnostics {
+    var nonBlankRows = Set<Int>()
+    var hash = FNV1a64()
+    for cell in snapshot.cells {
+      guard !cell.text.isEmpty else { continue }
+      nonBlankRows.insert(cell.row)
+      hash.combine(UInt64(max(0, cell.row)))
+      hash.combine(UInt64(max(0, cell.col)))
+      hash.combine(cell.text.utf8)
+    }
+
+    let ranges = (dirtyRanges ?? []).map {
+      TerminalSurfaceFrameDiagnostics.DirtyRowRange(
+        startRow: $0.startRow,
+        endRow: $0.endRow)
+    }
+    let setCount = dirtyRanges?.reduce(0) { partial, range in
+      partial + max(0, range.endRow - range.startRow)
+    }
+    return TerminalSurfaceFrameDiagnostics(
+      snapshotDirty: snapshot.dirty,
+      dirtyRowCount: nil,
+      dirtyRowsSetCount: setCount,
+      dirtyRowRanges: ranges,
+      visibleCellCount: max(0, snapshot.rows) * max(0, snapshot.cols),
+      nonBlankRowCount: nonBlankRows.count,
+      visibleTextHash: hash.value,
+      ambiguousDirtyNoRows: snapshot.dirty && (dirtyRanges?.isEmpty ?? true)
+    )
+  }
+
+  private static func dirtyRowsSummary(
+    rows: Int,
+    dirtyRows dirty: UnsafePointer<UInt8>?
+  ) -> (setCount: Int, ranges: [TerminalSurfaceFrameDiagnostics.DirtyRowRange]) {
+    guard rows > 0, let dirty else { return (0, []) }
+    var ranges: [TerminalSurfaceFrameDiagnostics.DirtyRowRange] = []
+    var setCount = 0
+    var row = 0
+    while row < rows {
+      if dirty[row] != 0 {
+        var end = row
+        while end < rows, dirty[end] != 0 { end += 1 }
+        setCount += end - row
+        ranges.append(.init(startRow: row, endRow: end))
+        row = end
+      } else {
+        row += 1
+      }
+    }
+    return (setCount, ranges)
+  }
+
+  private struct FNV1a64 {
+    private(set) var value: UInt64 = 0xcbf29ce484222325
+
+    mutating func combine(_ byte: UInt8) {
+      value ^= UInt64(byte)
+      value = value &* 0x100000001b3
+    }
+
+    mutating func combine(_ value: UInt64) {
+      var raw = value.littleEndian
+      for _ in 0..<8 {
+        combine(UInt8(truncatingIfNeeded: raw))
+        raw >>= 8
+      }
+    }
+
+    mutating func combine<C: Collection>(_ bytes: C) where C.Element == UInt8 {
+      for byte in bytes {
+        combine(byte)
+      }
+    }
   }
 
   private func recordFrameCommands(

@@ -33,6 +33,9 @@ extension HeadlessDebugRuntime {
         RenderResponse(
           frame: currentFrame,
           backend: "software",
+          configuredRenderer: "software",
+          effectiveRenderer: "software",
+          fallbackReason: nil,
           surface: SurfaceResponse(
             width: surface.width, height: surface.height, scale: Double(surface.scale)),
           terminalViewport: RectResponse(

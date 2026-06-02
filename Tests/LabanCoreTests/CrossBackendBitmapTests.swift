@@ -67,8 +67,10 @@ final class CrossBackendBitmapTests: XCTestCase {
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
       throw XCTSkip("build laband first: swift build --product laband")
     }
-    let runId = "laband-xb-\(UUID().uuidString)"
-    let tempRoot = root.appendingPathComponent(".tmp/\(runId)", isDirectory: true)
+    let runId = "lbx-\(UUID().uuidString)"
+    let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+      runId,
+      isDirectory: true)
     tempRoots.append(tempRoot)
     try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
     let socketPath = "\(tempRoot.path)/s.sock"
@@ -142,8 +144,10 @@ final class CrossBackendBitmapTests: XCTestCase {
     guard FileManager.default.isExecutableFile(atPath: executable.path) else {
       throw XCTSkip("build labpty first: swift build --product labpty")
     }
-    let runId = "labpty-xb-\(UUID().uuidString)"
-    let tempRoot = root.appendingPathComponent(".tmp/\(runId)", isDirectory: true)
+    let runId = "lpx-\(UUID().uuidString)"
+    let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+      runId,
+      isDirectory: true)
     tempRoots.append(tempRoot)
     let shmDir = tempRoot.appendingPathComponent("shm").path
     try FileManager.default.createDirectory(

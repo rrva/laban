@@ -4,7 +4,8 @@ enum MenuCommands {
   static func setupMenuBar(
     themeMenu: ThemeMenuController,
     restoreOnLaunchMenu: RestoreOnLaunchMenuController,
-    terminalBackendMenu: TerminalBackendMenuController
+    terminalBackendMenu: TerminalBackendMenuController,
+    rendererModeMenu: RendererModeMenuController
   ) {
     let mainMenu = NSMenu()
 
@@ -130,6 +131,8 @@ enum MenuCommands {
         action: #selector(AppDelegate.showFontPicker(_:)),
         keyEquivalent: ""
       ))
+    viewMenu.addItem(NSMenuItem.separator())
+    viewMenu.addItem(rendererModeMenu.makeMenuItem())
 
     // Workspace menu — restore-on-launch toggle. Lives in its own
     // top-level submenu rather than under File or View so users have a
@@ -198,6 +201,14 @@ enum MenuCommands {
     )
     captureItem.keyEquivalentModifierMask = [.command, .shift]
     debugMenu.addItem(captureItem)
+
+    let renderJournalItem = NSMenuItem(
+      title: "Dump Render Journal",
+      action: #selector(TerminalBitmapView.dumpRenderJournal(_:)),
+      keyEquivalent: "j"
+    )
+    renderJournalItem.keyEquivalentModifierMask = [.command, .control, .option]
+    debugMenu.addItem(renderJournalItem)
 
     debugMenu.addItem(NSMenuItem.separator())
     debugMenu.addItem(

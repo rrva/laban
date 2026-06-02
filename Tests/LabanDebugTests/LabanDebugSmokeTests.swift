@@ -472,6 +472,27 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertNotNil(obj["truncated"])
   }
 
+  func testRuntimeRenderStateReportsRendererStatus() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-render-status"
+    )
+
+    let resp = runtime.renderState()
+    XCTAssertEqual(resp.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: resp.body) as! [String: Any]
+    XCTAssertEqual(obj["configuredRenderer"] as? String, "software")
+    XCTAssertEqual(obj["effectiveRenderer"] as? String, "software")
+    XCTAssertNil(obj["fallbackReason"])
+  }
+
   func testRuntimeRenderTraceHasRequiredFields() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")

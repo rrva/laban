@@ -56,6 +56,12 @@ final class MetalReadback {
     return true
   }
 
+  @available(macOS 26, *)
+  func renderTargetTexture(width: Int, height: Int) -> MTLTexture? {
+    guard captureMode else { return nil }
+    return ensureTexture(width: width, height: height)
+  }
+
   func pngData(waitingFor commandBuffer: MTLCommandBuffer?) -> Data? {
     guard let texture else { return nil }
     // Capture / screenshot callers can read pngData any time; the GPU might
@@ -107,7 +113,7 @@ final class MetalReadback {
       width: width,
       height: height,
       mipmapped: false)
-    descriptor.usage = [.shaderRead]
+    descriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
     descriptor.storageMode = .shared
     texture = device.makeTexture(descriptor: descriptor)
     texture?.label = "readback"

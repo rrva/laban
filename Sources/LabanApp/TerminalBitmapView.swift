@@ -6,6 +6,7 @@ import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
 import QuartzCore
+import UserNotifications
 
 final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation {
 
@@ -20,13 +21,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   private let urlOpener: any ExternalURLOpening
   private let fontAtlas: FontAtlas
   /// Either a SoftwareBackend (legacy path: blits a CGImage in `draw(_:)`)
-  /// or a MetalRenderer (self-presents into its own CAMetalLayer). Picked at
-  /// init time; toggle with the LABAN_RENDERER env var (`metal` is default,
-  /// `software` falls back to the CG path used through 2026-05).
+  /// or a MetalRenderer (self-presents into its own CAMetalLayer). The menu
+  /// can swap this live; LABAN_RENDERER=software/cpu still forces the initial
+  /// backend for debug recovery.
   private var backend: RendererBackend
   /// True when `backend` self-presents — TerminalBitmapView skips its own
   /// draw() blit and lets the layer composite directly.
-  private let backendSelfPresents: Bool
+  private var backendSelfPresents: Bool
   private let cellWidth: Int
   private let cellHeight: Int
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
@@ -123,6 +124,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
 
   // Damage-driven render budget state
   private var renderInvalidated = true
+  private let renderJournalEnabled = RenderJournal.isEnabled()
+  private lazy var renderJournal = RenderJournal()
+  /// Set when a GPU-cell payload render fails after terminal commands were
+  /// intentionally skipped. The next retry builds command content once so the
+  /// renderer has a safe fallback instead of clearing to a terminal background.
+  private var gpuCellCommandFallbackPending = false
+  private var lastAutoDumpedGPUCellPayloadFailureSignature: String?
+  private var lastGPUCellPayloadFailureAutoDumpAt: Date?
   private var themeChangeObserver: NSObjectProtocol?
   private var reduceMotionObserver: NSObjectProtocol?
   /// Cached system Reduce Motion setting, refreshed via NSWorkspace
@@ -288,37 +297,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       sidebarCellHeight: sidebarFontAtlas.cellSize.height
     )
 
-    let preference = ProcessInfo.processInfo.environment["LABAN_RENDERER"]?.lowercased()
-    let wantSoftware = preference == "software" || preference == "cpu"
-    if !wantSoftware,
-      let metal = MetalRenderer(fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
-    {
-      self.backend = metal
-      self.backendSelfPresents = true
-    } else {
-      self.backend = SoftwareBackend(
-        fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
-      self.backendSelfPresents = false
-    }
+    let selection =
+      Self.launchForcesSoftwareRenderer ? .software : RendererSelection.persisted()
+    self.backend = Self.makeBackend(
+      selection: selection,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas)
+    self.backendSelfPresents = backend.presentationLayer != nil
     super.init(frame: .zero)
     registerForDraggedTypes(TerminalDrop.acceptedTypes)
-
-    if backendSelfPresents, let layer = backend.presentationLayer {
-      self.layer = layer
-      wantsLayer = true
-      // Metal layers must opt in to backing scale changes via the view.
-      layerContentsRedrawPolicy = .duringViewResize
-    }
+    configurePresentationForCurrentBackend()
 
     // Install the per-frame completion hook so we can close out
     // input-to-photon latency samples on the GPU completion handler. The
     // callback fires on a Metal-internal queue; bounce to main before
     // touching shared state.
-    if let metal = backend as? MetalRenderer {
-      metal.onFrameCompleted = { [weak self] in
-        DispatchQueue.main.async { self?.recordInputLatencyIfPending() }
-      }
-    }
+    installFrameCompletionHook()
 
     // Force a full redraw on every theme swap so chrome (sidebar bg, cursor,
     // selection) re-reads `Theme.current`. AppModel re-injects the OSC
@@ -494,6 +488,120 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   }
 
   required init?(coder: NSCoder) { nil }
+
+  private static var launchForcesSoftwareRenderer: Bool {
+    let preference = ProcessInfo.processInfo.environment["LABAN_RENDERER"]?.lowercased()
+    return preference == "software" || preference == "cpu"
+  }
+
+  private static func makeBackend(
+    selection: RendererSelection,
+    fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas
+  ) -> RendererBackend {
+    if let metalMode = selection.metalMode,
+      let metal = MetalRenderer(
+        fontAtlas: fontAtlas,
+        sidebarFontAtlas: sidebarFontAtlas,
+        rendererMode: metalMode)
+    {
+      return metal
+    }
+    return SoftwareBackend(fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
+  }
+
+  private func configurePresentationForCurrentBackend() {
+    backendSelfPresents = backend.presentationLayer != nil
+    if let layer = backend.presentationLayer {
+      self.layer = layer
+      wantsLayer = true
+      // Metal layers must opt in to backing scale changes via the view.
+      layerContentsRedrawPolicy = .duringViewResize
+    } else {
+      self.layer = nil
+      wantsLayer = false
+    }
+  }
+
+  private func installFrameCompletionHook() {
+    guard let metal = backend as? MetalRenderer else { return }
+    metal.onFrameCompleted = { [weak self] in
+      DispatchQueue.main.async { self?.recordInputLatencyIfPending() }
+    }
+  }
+
+  var rendererMode: RendererMode {
+    guard let metal = backend as? MetalRenderer else {
+      return .classic
+    }
+    return metal.configuredRendererMode
+  }
+
+  var rendererSelection: RendererSelection {
+    if let metal = backend as? MetalRenderer {
+      return RendererSelection(metalMode: metal.configuredRendererMode)
+    }
+    return .software
+  }
+
+  var usesMetalBackend: Bool {
+    backend is MetalRenderer
+  }
+
+  func applyRendererMode(_ mode: RendererMode) {
+    applyRendererSelection(RendererSelection(metalMode: mode))
+  }
+
+  func applyRendererSelection(_ selection: RendererSelection) {
+    let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
+    RendererSelection.set(resolved)
+    if rendererSelection == resolved { return }
+
+    if let metalMode = resolved.metalMode,
+      let metal = backend as? MetalRenderer
+    {
+      guard metal.configuredRendererMode != metalMode else { return }
+      metal.configuredRendererMode = metalMode
+      renderInvalidated = true
+      if window != nil {
+        scheduleRenderRetry()
+      }
+      return
+    }
+
+    (backend as? MetalRenderer)?.onFrameCompleted = nil
+    backend = Self.makeBackend(
+      selection: resolved,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas)
+    configurePresentationForCurrentBackend()
+    installFrameCompletionHook()
+    lastPixelWidth = 0
+    lastPixelHeight = 0
+    lastSurfaceScale = 0
+    _ = recreateSurface()
+    renderInvalidated = true
+    if window != nil {
+      scheduleRenderRetry()
+    }
+    if !backendSelfPresents {
+      needsDisplay = true
+    }
+  }
+
+  func snapshotCommandsHook(captureFrame: Int) -> TerminalSurfaceController.SnapshotCommandsHook? {
+    guard let frameProbe else { return nil }
+    return { [weak self, frameProbe] snapshot, commands in
+      guard let self else { return }
+      frameProbe.record(
+        frame: captureFrame,
+        snapshot: snapshot.pointee,
+        commands: commands,
+        surfaceWidth: self.backend.surfaceWidth,
+        surfaceHeight: self.backend.surfaceHeight,
+        surfaceScale: Double(self.backend.surfaceScale))
+    }
+  }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
@@ -1018,6 +1126,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       // Hold the previous completed frame during DEC synchronized output. Laban
       // uses libghostty-vt without Ghostty's termio timer, so this mirrors
       // Ghostty's one-second watchdog before rendering anyway.
+      recordRenderJournal(
+        event: .skipped,
+        frame: captureFrame,
+        tab: activeTab,
+        session: session,
+        reason: "synchronizedOutputDefer",
+        terminalDirty: terminalDirty,
+        activeTerminalDirty: activeTerminalDirty,
+        renderInvalidated: renderInvalidated,
+        tabChanged: tabChanged,
+        cursorBlinkFrame: cursorBlinkFrame,
+        attentionAnimating: false,
+        scrollAnimating: scrollAnimating,
+        usingRemoteSnapshots: usingRemoteSessions,
+        cellPayloadRequested: false,
+        contentYOffset: 0)
       return
     }
 
@@ -1039,6 +1163,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       if settleGate.shouldDefer {
         scheduleOutputSettleWake(
           after: settleGate.wakeAfter ?? TerminalRenderGate.outputSettleQuietSeconds)
+        recordRenderJournal(
+          event: .skipped,
+          frame: captureFrame,
+          tab: activeTab,
+          session: session,
+          reason: "outputSettleDefer",
+          terminalDirty: terminalDirty,
+          activeTerminalDirty: activeTerminalDirty,
+          renderInvalidated: renderInvalidated,
+          tabChanged: tabChanged,
+          cursorBlinkFrame: cursorBlinkFrame,
+          attentionAnimating: false,
+          scrollAnimating: scrollAnimating,
+          usingRemoteSnapshots: usingRemoteSessions,
+          cellPayloadRequested: false,
+          contentYOffset: 0)
         return
       }
     } else {
@@ -1069,6 +1209,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     let scrollContentYOffset = -CGFloat(subCellRows) * CGFloat(cellHeight)
     let insets = Self.contentInsets
+    let metalRenderer = backend as? MetalRenderer
+    let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
+    let rendererFallbackReason =
+      usingRemoteSessions && gpuCellRequested ? "remoteSnapshotPayloadIncomplete" : nil
+    let canRequestCellPayload =
+      !usingRemoteSessions
+      && captureRecorder == nil
+      && frameProbe == nil
+      && metalRenderer?.effectiveRendererMode == .gpuDriven
+      && !gpuCellCommandFallbackPending
     let request = TerminalSurfaceFrameRequest(
       frame: captureFrame,
       viewportWidth: bounds.width,
@@ -1088,7 +1238,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       forceFullDamage: renderInvalidated || tabChanged || scrollAnimating,
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
-      surfaceScale: Double(backend.surfaceScale)
+      surfaceScale: Double(backend.surfaceScale),
+      contentMode: canRequestCellPayload ? .cellPayloadPreferred : .commands
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -1113,17 +1264,27 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     } else {
       surfaceFrame = surfaceController.makeFrame(
         request,
-        snapshotCommandsHook: { snapshot, commands in
-          self.frameProbe?.record(
-            frame: captureFrame,
-            snapshot: snapshot.pointee,
-            commands: commands,
-            surfaceWidth: self.backend.surfaceWidth,
-            surfaceHeight: self.backend.surfaceHeight,
-            surfaceScale: Double(self.backend.surfaceScale))
-        })
+        snapshotCommandsHook: snapshotCommandsHook(captureFrame: captureFrame))
     }
-    guard let surfaceFrame else { return }
+    guard let surfaceFrame else {
+      recordRenderJournal(
+        event: .skipped,
+        frame: captureFrame,
+        tab: activeTab,
+        session: session,
+        reason: "surfaceFrameUnavailable",
+        terminalDirty: terminalDirty,
+        activeTerminalDirty: activeTerminalDirty,
+        renderInvalidated: renderInvalidated,
+        tabChanged: tabChanged,
+        cursorBlinkFrame: cursorBlinkFrame,
+        attentionAnimating: attentionAnimating,
+        scrollAnimating: scrollAnimating,
+        usingRemoteSnapshots: usingRemoteSessions,
+        cellPayloadRequested: canRequestCellPayload,
+        contentYOffset: scrollContentYOffset)
+      return
+    }
 
     lastRows = surfaceFrame.rows ?? lastRows
     let snapshotCursorBlinking = surfaceFrame.cursorBlinking
@@ -1132,7 +1293,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       cursorBlinkVisible = true
       lastCursorBlinkToggleAt = Date()
     }
-    let cmds = surfaceFrame.commands
+    let cmds = surfaceFrame.commands + surfaceFrame.overlayCommands
     // Compute damage hint from libghostty's per-row dirty bits. Tab changes
     // and renderInvalidated force .full because we may be drawing different
     // content into the persistent target. Otherwise translate dirty rows
@@ -1142,11 +1303,61 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     // Smooth-scroll forces .full while animating: the persistent target
     // holds last frame's pixels at the previous fractional position, so
     // partial damage would leave stale pixels at the new sub-cell offset.
-    guard backend.render(cmds, damage: surfaceFrame.damage) else {
+    guard
+      backend.render(
+        cmds,
+        cellPayload: surfaceFrame.cellPayload,
+        damage: surfaceFrame.damage,
+        rendererFallbackReason: rendererFallbackReason)
+    else {
+      recordRenderJournal(
+        event: .renderFailed,
+        frame: captureFrame,
+        tab: activeTab,
+        session: session,
+        reason: "backendRenderReturnedFalse",
+        terminalDirty: terminalDirty,
+        activeTerminalDirty: activeTerminalDirty,
+        renderInvalidated: renderInvalidated,
+        tabChanged: tabChanged,
+        cursorBlinkFrame: cursorBlinkFrame,
+        attentionAnimating: attentionAnimating,
+        scrollAnimating: scrollAnimating,
+        usingRemoteSnapshots: usingRemoteSessions,
+        cellPayloadRequested: canRequestCellPayload,
+        contentYOffset: scrollContentYOffset,
+        surfaceFrame: surfaceFrame,
+        commands: cmds,
+        rendered: false)
+      if let payloadFailure = (backend as? MetalRenderer)?.lastGPUCellPayloadBuildFailure {
+        autoDumpGPUCellPayloadFailure(payloadFailure)
+      }
       renderInvalidated = true
+      if surfaceFrame.cellPayload != nil {
+        gpuCellCommandFallbackPending = true
+      }
       scheduleRenderRetry()
       return
     }
+    recordRenderJournal(
+      event: .rendered,
+      frame: captureFrame,
+      tab: activeTab,
+      session: session,
+      reason: nil,
+      terminalDirty: terminalDirty,
+      activeTerminalDirty: activeTerminalDirty,
+      renderInvalidated: renderInvalidated,
+      tabChanged: tabChanged,
+      cursorBlinkFrame: cursorBlinkFrame,
+      attentionAnimating: attentionAnimating,
+      scrollAnimating: scrollAnimating,
+      usingRemoteSnapshots: usingRemoteSessions,
+      cellPayloadRequested: canRequestCellPayload,
+      contentYOffset: scrollContentYOffset,
+      surfaceFrame: surfaceFrame,
+      commands: cmds,
+      rendered: true)
     renderedFrameCount = captureFrame
     if let recorder = captureRecorder {
       // Both software and Metal flow through the same recorder entry now.
@@ -1173,6 +1384,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     } else {
       session.markRendered()
     }
+    gpuCellCommandFallbackPending = false
     renderInvalidated = false
     lastRenderedActiveTabId = activeTab.id
     syncFindChip()
@@ -1198,6 +1410,213 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     } else {
       onViewportUnavailable?()
     }
+  }
+
+  private func recordRenderJournal(
+    event: RenderJournal.Event,
+    frame: Int,
+    tab: Tab,
+    session: Session,
+    reason: String?,
+    terminalDirty: Bool,
+    activeTerminalDirty: Bool,
+    renderInvalidated: Bool,
+    tabChanged: Bool,
+    cursorBlinkFrame: Bool,
+    attentionAnimating: Bool,
+    scrollAnimating: Bool,
+    usingRemoteSnapshots: Bool,
+    cellPayloadRequested: Bool,
+    contentYOffset: CGFloat,
+    surfaceFrame: TerminalSurfaceFrame? = nil,
+    commands: [FrameCommand]? = nil,
+    rendered: Bool? = nil
+  ) {
+    guard renderJournalEnabled else { return }
+    let metalRenderer = backend as? MetalRenderer
+    let gpuCellPayloadFailure =
+      event == .renderFailed ? metalRenderer?.lastGPUCellPayloadBuildFailure : nil
+    let commandList = surfaceFrame?.commands ?? commands
+    let overlayCommands = surfaceFrame?.overlayCommands ?? []
+    let entry = renderJournal.makeEntry(
+      event: event,
+      frame: frame,
+      tabId: tab.id,
+      sessionId: session.id,
+      reason: reason,
+      transportMode: sessionCoordinator?.transportMode ?? "in-process",
+      rendererStatus: backend.rendererStatus,
+      surface: renderJournalSurfaceSnapshot(),
+      frameState: RenderJournal.FrameStateSnapshot(
+        terminalDirty: terminalDirty,
+        activeTerminalDirty: activeTerminalDirty,
+        renderInvalidated: renderInvalidated,
+        tabChanged: tabChanged,
+        cursorBlinkFrame: cursorBlinkFrame,
+        attentionAnimating: attentionAnimating,
+        scrollAnimating: scrollAnimating,
+        renderingResizeFrame: renderingResizeFrame,
+        usingRemoteSnapshots: usingRemoteSnapshots,
+        gpuCellRequested: metalRenderer?.requestedRendererMode == .gpuDriven,
+        cellPayloadRequested: cellPayloadRequested,
+        gpuCellCommandFallbackPending: gpuCellCommandFallbackPending),
+      viewport: renderJournalViewportSnapshot(for: session),
+      scroll: renderJournalScrollSnapshot(contentYOffset: contentYOffset),
+      damage: surfaceFrame?.damage,
+      commands: commandList,
+      overlayCommands: overlayCommands,
+      payload: surfaceFrame?.cellPayload,
+      diagnostics: surfaceFrame?.diagnostics,
+      metalInstances: metalRenderer?.lastInstanceCounts,
+      gpuCellPayloadFailure: gpuCellPayloadFailure,
+      rendered: rendered)
+    renderJournal.record(entry)
+  }
+
+  private func autoDumpGPUCellPayloadFailure(
+    _ failure: MetalRenderer.GPUCellPayloadBuildFailure
+  ) {
+    let now = Date()
+    let signature = gpuCellPayloadFailureSignature(failure)
+    if signature == lastAutoDumpedGPUCellPayloadFailureSignature,
+      let previous = lastGPUCellPayloadFailureAutoDumpAt,
+      now.timeIntervalSince(previous) < 60
+    {
+      return
+    }
+    lastAutoDumpedGPUCellPayloadFailureSignature = signature
+    lastGPUCellPayloadFailureAutoDumpAt = now
+
+    var payload = gpuCellPayloadFailureEventPayload(failure)
+    EventLog.shared.log("render.gpuCellPayload.failure", payload)
+    guard renderJournalEnabled else { return }
+
+    var dumpPath: String?
+    do {
+      let url = try renderJournal.dump(currentPNG: backend.pngData)
+      dumpPath = url.path
+      AppLog.render.error(
+        "gpu cell payload build failed: \(failure.reason) row=\(failure.row) col=\(failure.col) dump=\(url.path)"
+      )
+    } catch {
+      AppLog.render.error("gpu cell payload failure auto-dump failed: \(error)")
+      EventLog.shared.log(
+        "render.gpuCellPayload.autoDump.failed",
+        ["error": String(describing: error)])
+    }
+
+    if let dumpPath {
+      payload["dumpPath"] = dumpPath
+      EventLog.shared.log("render.gpuCellPayload.failureDump", payload)
+    }
+    postGPUCellPayloadFailureNotification(failure, dumpPath: dumpPath)
+  }
+
+  private func gpuCellPayloadFailureEventPayload(
+    _ failure: MetalRenderer.GPUCellPayloadBuildFailure
+  ) -> [String: Any] {
+    var payload: [String: Any] = [
+      "reason": failure.reason,
+      "row": failure.row,
+      "col": failure.col,
+      "utf8ByteCount": failure.utf8ByteCount,
+      "wide": failure.wide,
+      "attributesRawValue": failure.attributesRawValue,
+    ]
+    if let scalarValue = failure.scalarValue {
+      payload["scalarValue"] = scalarValue
+    }
+    if let textPreview = failure.textPreview {
+      payload["textPreview"] = textPreview
+    }
+    if let lowerBound = failure.utf8RangeLowerBound {
+      payload["utf8RangeLowerBound"] = lowerBound
+    }
+    if let upperBound = failure.utf8RangeUpperBound {
+      payload["utf8RangeUpperBound"] = upperBound
+    }
+    if let logicalWidth = failure.logicalWidth {
+      payload["logicalWidth"] = logicalWidth
+    }
+    if let maxLogicalWidth = failure.maxLogicalWidth {
+      payload["maxLogicalWidth"] = maxLogicalWidth
+    }
+    return payload
+  }
+
+  private func gpuCellPayloadFailureSignature(
+    _ failure: MetalRenderer.GPUCellPayloadBuildFailure
+  ) -> String {
+    let scalarValue = failure.scalarValue.map { String($0) } ?? "nil"
+    let textPreview = failure.textPreview ?? "nil"
+    let logicalWidth = failure.logicalWidth.map { String($0) } ?? "nil"
+    let maxLogicalWidth = failure.maxLogicalWidth.map { String($0) } ?? "nil"
+    let parts: [String] = [
+      failure.reason,
+      scalarValue,
+      textPreview,
+      String(failure.wide),
+      String(failure.attributesRawValue),
+      logicalWidth,
+      maxLogicalWidth,
+    ]
+    return parts.joined(separator: "|")
+  }
+
+  private func postGPUCellPayloadFailureNotification(
+    _ failure: MetalRenderer.GPUCellPayloadBuildFailure,
+    dumpPath: String?
+  ) {
+    NSSound.beep()
+    guard Bundle.main.bundleIdentifier != nil else { return }
+    let content = UNMutableNotificationContent()
+    content.title = "Laban GPU renderer fallback"
+    content.body =
+      "Payload build failed: \(failure.reason) at row \(failure.row), col \(failure.col)."
+    if dumpPath != nil {
+      content.subtitle = "Render journal dumped"
+    }
+    content.sound = .default
+    let request = UNNotificationRequest(
+      identifier: "gpu-cell-payload-\(UUID().uuidString)",
+      content: content,
+      trigger: nil)
+    let center = UNUserNotificationCenter.current()
+    center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+      guard granted else { return }
+      center.add(request, withCompletionHandler: nil)
+    }
+  }
+
+  private func renderJournalSurfaceSnapshot() -> RenderJournal.SurfaceSnapshot {
+    RenderJournal.SurfaceSnapshot(
+      width: backend.surfaceWidth,
+      height: backend.surfaceHeight,
+      scale: Double(backend.surfaceScale))
+  }
+
+  private func renderJournalViewportSnapshot(for session: Session) -> RenderJournal.ViewportSnapshot? {
+    guard let viewport = session.viewportState() else { return nil }
+    return RenderJournal.ViewportSnapshot(
+      offset: viewport.viewportOffset,
+      totalRows: viewport.totalRows,
+      viewportRows: viewport.viewportRows,
+      scrollbackRows: viewport.scrollbackRows,
+      altScreen: viewport.altScreen,
+      mouseTracking: viewport.mouseTracking,
+      linesBack: ViewportState.scrollDeltaToActiveBottom(
+        viewportOffset: viewport.viewportOffset,
+        totalRows: viewport.totalRows,
+        viewportRows: viewport.viewportRows))
+  }
+
+  private func renderJournalScrollSnapshot(contentYOffset: CGFloat) -> RenderJournal.ScrollSnapshot {
+    RenderJournal.ScrollSnapshot(
+      appliedRows: appliedScrollRows,
+      displayedRows: displayedScrollRows,
+      targetRows: targetScrollRows,
+      velocityRowsPerSecond: scrollVelocityRowsPerSec,
+      contentYOffset: Double(contentYOffset))
   }
 
   // MARK: - Drawing
@@ -1896,6 +2315,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       paste(nil)
     case .find:
       showFindChip(selectingExistingNeedle: true)
+    case .dumpRenderJournal:
+      dumpRenderJournal(nil)
     }
   }
 
@@ -3796,6 +4217,26 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   }
 
   // MARK: - PTY-byte capture (debug)
+
+  @objc func dumpRenderJournal(_ sender: Any?) {
+    guard renderJournalEnabled else {
+      AppLog.render.info("render journal dump skipped because journal is disabled")
+      EventLog.shared.log(
+        "render.journal.dump.disabled",
+        [
+          "enableDefault": RenderJournal.enabledDefaultKey,
+          "enableEnvironment": RenderJournal.enabledEnvironmentKey,
+        ])
+      return
+    }
+    do {
+      let url = try renderJournal.dump(currentPNG: backend.pngData)
+      AppLog.render.info("render journal dumped \(url.path)")
+    } catch {
+      AppLog.render.error("render journal dump failed: \(error)")
+      EventLog.shared.log("render.journal.dump.failed", ["error": String(describing: error)])
+    }
+  }
 
   /// Toggle a full capture artifact. The directory path is printed to stderr so
   /// a user reproducing a bug can locate the capture without opening a save panel.

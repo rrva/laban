@@ -273,6 +273,9 @@ struct DrawStatsResponse: Encodable {
 struct RenderResponse: Encodable {
   var frame: Int
   var backend: String
+  var configuredRenderer: String?
+  var effectiveRenderer: String?
+  var fallbackReason: String?
   var surface: SurfaceResponse
   var terminalViewport: RectResponse
   var cell: CellSizeResponse

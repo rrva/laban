@@ -8,6 +8,9 @@
   "properties": {
     "frame": {"type": "integer", "minimum": 0},
     "backend": {"type": "string"},
+    "configuredRenderer": {"type": "string"},
+    "effectiveRenderer": {"type": "string"},
+    "fallbackReason": {"type": ["string", "null"]},
     "surface": {"$ref": "#/$defs/rectWithScale"},
     "terminalViewport": {"$ref": "#/$defs/rect"},
     "cell": {

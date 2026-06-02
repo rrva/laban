@@ -47,23 +47,9 @@ task matches them.
 | `docs/process/rpg-graph-maintenance.md` | You are lifting or refreshing the `.rpg` semantic graph (`graph.json`), or wiring it into git worktrees. |
 
 ## Project Landmarks
-
-```text
-AGENTS.md                              Small map for agents.
-PLANS.md                               ExecPlan rules for long-running work.
-README.md                              Human and agent project entrypoint.
-docs/product/mvp.md                    Shipped-MVP regression contract; non-goals are historical.
-docs/product/spec.md                   Long-term product behavior.
-docs/process/dev-process.md            Agent-driven debug, capture/replay, and headless test harness.
-docs/process/agent-operating-guide.md  Detailed working rules for agents.
-docs/process/worktree-isolation.md     Isolated run contract for agent worktrees.
-docs/process/observability.md          Logs, events, metrics, and trace contract.
-docs/reference/                        Non-binding references and prototype lessons.
-docs/quality/                          Quality score, debt, and drift tracking.
-schemas/                               JSON schemas for debug contracts and fixtures.
-fixtures/                              Fixture format notes and examples.
-execplans/                             Active and completed ExecPlans.
-```
+Core maps: `README.md`, `PLANS.md`, `execplans/`, `docs/adr/`, `docs/quality/`.
+Product and process truth: `docs/product/`, `docs/process/`, `docs/reference/`.
+Debug contracts and data: `schemas/`, `fixtures/`.
 
 ## Runtime Artifacts (where to look — don't re-search)
 
@@ -91,21 +77,18 @@ Under `~/Library/Logs/Laban/`:
 - `docs/adr/0014-osc52-clipboard-bridge.md` — extends the ADR 0012 `osc_host.c` side channel to OSC 52: a program's `OSC 52 ; c ; <base64>` *write* lands on `NSPasteboard` (so a coding agent reached over SSH can copy to the host clipboard), and an `OSC 52 ; c ; ?` *read* is answered on the PTY only when opted in (`osc52ReadEnabled`, default off — write-on/read-opt-in, matching xterm `allowWindowOps`). Base64 + size-cap live in the pure `OSC52Clipboard` (LabanCore); the C core only buffers bytes (lazy 256 KiB `osc52_buf`) and frames the reply.
 - `docs/adr/0015-osc7-working-directory-bridge.md` — extends the ADR 0012 `osc_host.c` side channel to OSC 7: a shell's `OSC 7 ; file://<host>/<path>` report is adopted as the session's authoritative cwd (preferred over `proc_pidinfo` in `laban_session_process_metadata`, so new-tab-cwd / tab path / restore pick it up via the existing metadata sync) — but only when the host is local (empty / `localhost` / local hostname), so a remote SSH shell's path is ignored. Observe-only on the wire; a `cwd.osc7` debug event gives headless parity.
 - `docs/adr/0016-left-drag-under-mouse-tracking-forwards-to-app.md` — under mouse tracking a plain (no-Shift) left press/drag/release is forwarded to the app as SGR mouse reports (iTerm2/Ghostty model: the press is sent on mouseDown and `trackedMouseButton` is claimed, so the existing motion/release forward paths fire), so a fullscreen renderer can autoscroll its own buffer and select text past one screen. Reverses the left-drag half of `b71ea98` (shift-free native selection) and restores the MVP contract; Shift stays the native-selection/scrollback escape hatch and the wheel→DECSET 1007 behavior is preserved.
+- `docs/adr/0017-gpu-driven-cell-renderer.md` — keeps the damage-scoped classic renderer as the default while retaining a macOS-26-only, user-selectable GPU-driven cell renderer; records the frame-command contract boundary, payload/persistent-buffer architecture, and the M5 Metal 4 no-go.
 
 Write a new ADR when a change establishes durable architectural policy, reverses a previously settled decision, or sets an adapter boundary. Number it sequentially in `docs/adr/`, follow the existing file's structure (Status, Context, Decision, Consequences, Applies To New Code), and add a one-line entry here with the path and summary.
 
 ## Worktree Setup
 
-Git worktrees do not clone `.external/`. If missing, symlink it from the
-main repo: `ln -s "$LABAN_MAIN_REPO/.external" .external`. `.external/`
-holds vendored libs (`libghostty-vt`) shared across worktrees.
+Git worktrees do not clone `.external/`; if missing, symlink it from the main repo:
+`ln -s "$LABAN_MAIN_REPO/.external" .external`. It holds shared vendored libs.
 
-`.rpg/graph.json` is a committed, generated artifact, so a fresh worktree
-already has a fully-lifted graph — do not rebuild it or commit per-branch
-drift. `main` is its canonical owner; refresh and commit it there. In a
-feature worktree run `git update-index --skip-worktree .rpg/graph.json` so
-local graph re-syncs stay out of `git status` and your commits. See
-`docs/process/rpg-graph-maintenance.md`.
+`.rpg/graph.json` is a committed, generated artifact owned by `main`; in feature
+worktrees run `git update-index --skip-worktree .rpg/graph.json` so local graph
+re-syncs stay out of commits. See `docs/process/rpg-graph-maintenance.md`.
 
 ## Hard Rules
 
