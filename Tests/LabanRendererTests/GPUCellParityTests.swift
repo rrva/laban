@@ -595,6 +595,42 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(renderer.cellGlyphUploadRangesForTesting, [0..<(rows * cols)])
   }
 
+  func testGPUCellCursorOnlyFramePreservesCellCache() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    let renderer = try makeRenderer(label: "gpu-cell-cursor-cache")
+    guard renderer.effectiveRendererMode == .gpuDriven else {
+      throw XCTSkip("gpu-driven renderer is unavailable on this OS")
+    }
+    let full = payload(seed: 51, changedRow: nil, includedRows: Array(0..<rows))
+    XCTAssertTrue(
+      renderer.render(
+        [],
+        cellPayload: full,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "initial full gpu-cell render failed")
+    renderer.waitForLastFrame()
+    XCTAssertEqual(renderer.activeCellGlyphIndicesForTesting.count, rows * cols)
+
+    XCTAssertTrue(
+      renderer.render(
+        [.cursor(CGRect(x: cellW, y: cellH, width: cellW, height: cellH), color: 0xFF_00_00_FF)],
+        cellPayload: nil,
+        damage: .partial(yRanges: []),
+        rendererFallbackReason: nil),
+      "cursor-only render failed")
+    renderer.waitForLastFrame()
+
+    XCTAssertEqual(
+      renderer.activeCellGlyphIndicesForTesting.count,
+      rows * cols,
+      "cursor-only frames must not poison the persistent GPU-cell cache")
+  }
+
   func testGPUCellRemoteFallbackReportsClassicStatus() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

@@ -2221,7 +2221,6 @@ public final class MetalRenderer: RendererBackend {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
-    cellGlyphs.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
 
     let scale = Float(layer.contentsScale)
@@ -2240,7 +2239,7 @@ public final class MetalRenderer: RendererBackend {
       solids: solidInstances.count,
       glyphs: glyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
-      cellGlyphs: cellGlyphs.count,
+      cellGlyphs: 0,
       cursors: cursorInstances.count)
   }
 
