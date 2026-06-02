@@ -2700,12 +2700,32 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       model.activeTab
       .flatMap { model.session(forTab: $0.id) }?
       .processMetadata()?.cwd
-    guard let url = TerminalQuickLook.fileURL(for: candidate, workingDirectory: cwd) else {
-      EventLog.shared.log("quicklook.miss", ["candidate": candidate])
-      return
+    // Resolve off the main actor: `fileExists` can block on a slow or dead
+    // network mount, and a main-thread stall here would trip MainThreadWatchdog.
+    // `resolveFileURL` is `nonisolated`, so awaiting it from this @MainActor
+    // method runs the stat on the cooperative pool (SE-0338); we resume back on
+    // the main actor to drive the panel.
+    Task { [weak self] in
+      let url = await Self.resolveFileURL(for: candidate, workingDirectory: cwd)
+      guard let self else { return }
+      guard let url else {
+        EventLog.shared.log("quicklook.miss", ["candidate": candidate])
+        return
+      }
+      self.showQuickLook(url)
     }
+  }
+
+  private nonisolated static func resolveFileURL(
+    for candidate: String,
+    workingDirectory: String?
+  ) async -> URL? {
+    TerminalQuickLook.fileURL(for: candidate, workingDirectory: workingDirectory)
+  }
+
+  private func showQuickLook(_ url: URL) {
     quickLookPreviewURL = url
-    EventLog.shared.log("quicklook.show", ["path": url.path])
+    EventLog.shared.log("quicklook.show", ["path": url.path(percentEncoded: false)])
     guard let panel = QLPreviewPanel.shared() else { return }
     if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
       panel.reloadData()

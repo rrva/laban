@@ -29,20 +29,22 @@ enum TerminalQuickLook {
 
     if token.hasPrefix("file://") {
       guard let url = URL(string: token), url.isFileURL else { return nil }
-      return fileExists(url.path) ? url : nil
+      return fileExists(url.path(percentEncoded: false)) ? url : nil
     }
 
+    // Tilde expansion still has no URL/Swift-native equivalent (SR-3717), so
+    // NSString remains the way to expand a leading `~`; everything else uses
+    // the modern URL file-path APIs.
     let expanded = (token as NSString).expandingTildeInPath
-    var pathsToTry: [String] = []
+    let resolved: URL
     if expanded.hasPrefix("/") {
-      pathsToTry.append(expanded)
+      resolved = URL(filePath: expanded, directoryHint: .inferFromPath)
     } else if let cwd = workingDirectory, !cwd.isEmpty {
-      pathsToTry.append((cwd as NSString).appendingPathComponent(expanded))
+      resolved = URL(filePath: cwd, directoryHint: .isDirectory)
+        .appending(path: expanded, directoryHint: .inferFromPath)
+    } else {
+      return nil
     }
-
-    for path in pathsToTry where fileExists(path) {
-      return URL(fileURLWithPath: path)
-    }
-    return nil
+    return fileExists(resolved.path(percentEncoded: false)) ? resolved : nil
   }
 }
