@@ -554,6 +554,39 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(renderer.activeCellGlyphIndicesForTesting.count, (rows - 1) * cols + 1)
   }
 
+  func testGPUCellPayloadScaleChangeForcesFullCellRebuild() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-scale-invalidation")
+    renderer.resize(
+      pixelWidth: Int(CGFloat(cols) * cellW * scale),
+      pixelHeight: Int(CGFloat(rows) * cellH * scale),
+      scale: scale)
+    let initial = payload(seed: 41, changedRow: nil, includedRows: Array(0..<rows))
+    XCTAssertNotNil(
+      renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
+        payload: initial,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    renderer.resize(
+      pixelWidth: Int(CGFloat(cols) * cellW * scale),
+      pixelHeight: Int(CGFloat(rows) * cellH * scale),
+      scale: 2)
+    let next = payload(seed: 42, changedRow: 4, includedRows: [4])
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: next,
+        commands: [],
+        damage: .partial(yRanges: [dirtyRange(forRow: 4)]),
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    XCTAssertEqual(renderer.cellGlyphUploadRangesForTesting, [0..<(rows * cols)])
+  }
+
   func testGPUCellRemoteFallbackReportsClassicStatus() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

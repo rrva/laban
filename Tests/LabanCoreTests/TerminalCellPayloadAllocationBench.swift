@@ -151,7 +151,17 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
           from: UnsafePointer(snap.snapshot),
           includedRows: dirtyRows,
           cursorBlinkVisible: false)
+        _ = payloadRenderer.rebuildGPUCellPayloadInstancesForTesting(
+          payload: payload,
+          commands: [],
+          damage: damage,
+          surfacePxH: surfacePxH)
       }
+
+      let warmedPayloadCapacity = payload.capacitySnapshot
+      let warmedRendererRowMarkerCapacity = payloadRenderer.payloadRowMarkerCapacityForTesting
+      var payloadStorageGrowthEvents = 0
+      var rendererRowMarkerGrowthEvents = 0
 
       for _ in 0..<400 {
         var start = DispatchTime.now().uptimeNanoseconds
@@ -166,6 +176,8 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
         classicSamples.append(Double(end - start) / 1_000.0)
 
         start = DispatchTime.now().uptimeNanoseconds
+        let beforePayloadCapacity = payload.capacitySnapshot
+        let beforeRendererRowMarkerCapacity = payloadRenderer.payloadRowMarkerCapacityForTesting
         producer.fillTerminalCellPayload(
           into: &payload,
           from: UnsafePointer(snap.snapshot),
@@ -176,6 +188,11 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
           commands: [],
           damage: damage,
           surfacePxH: surfacePxH)
+        payloadStorageGrowthEvents += beforePayloadCapacity.storageGrowthEvents(
+          to: payload.capacitySnapshot)
+        if payloadRenderer.payloadRowMarkerCapacityForTesting > beforeRendererRowMarkerCapacity {
+          rendererRowMarkerGrowthEvents += 1
+        }
         end = DispatchTime.now().uptimeNanoseconds
         payloadSamples.append(Double(end - start) / 1_000.0)
       }
@@ -185,11 +202,20 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
       print(
         String(
           format:
-            "\n=== TerminalCellPayload routed dirty-row bench ===\n  classic commands+M1 scoped p50=%.1f us\n  payload fill+GPU patch p50=%.1f us\n",
+            "\n=== TerminalCellPayload routed dirty-row bench ===\n  classic commands+M1 scoped p50=%.1f us\n  payload fill+GPU patch p50=%.1f us\n  payloadStorageGrowthEvents=%d rendererRowMarkerGrowthEvents=%d rendererRowMarkerCapacity=%d\n",
           classicP50,
-          payloadP50))
+          payloadP50,
+          payloadStorageGrowthEvents,
+          rendererRowMarkerGrowthEvents,
+          warmedRendererRowMarkerCapacity))
 
       XCTAssertLessThan(payloadP50, classicP50)
+      XCTAssertEqual(payloadStorageGrowthEvents, 0)
+      XCTAssertEqual(payload.capacitySnapshot, warmedPayloadCapacity)
+      XCTAssertEqual(rendererRowMarkerGrowthEvents, 0)
+      XCTAssertEqual(
+        payloadRenderer.payloadRowMarkerCapacityForTesting,
+        warmedRendererRowMarkerCapacity)
     #endif
   }
 

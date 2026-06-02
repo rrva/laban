@@ -273,6 +273,7 @@ public final class MetalRenderer: RendererBackend {
   private var cellGlyphs: [CellGlyph] = []
   private var cellGlyphUploadRanges: [Range<Int>] = []
   private var cellGlyphGridGeometry: TerminalGridGeometry?
+  private var payloadRowsWithFullBackgroundRun: [Bool] = []
   /// Glyphs that draw against the sidebar atlas. Kept separate so we can
   /// issue one draw call per atlas — the sidebar's R8 texture holds glyphs
   /// rasterized at a smaller pt size and isn't substitutable for the main.
@@ -373,6 +374,7 @@ public final class MetalRenderer: RendererBackend {
 
   var terminalGlyphAtlasTextureSizeForTesting: Int { glyphAtlas.textureSize }
   var cellGlyphUploadRangesForTesting: [Range<Int>] { cellGlyphUploadRanges }
+  var payloadRowMarkerCapacityForTesting: Int { payloadRowsWithFullBackgroundRun.capacity }
   var activeCellGlyphIndicesForTesting: [Int] {
     cellGlyphs.indices.filter { cellGlyphs[$0].flags != 0 }
   }
@@ -698,6 +700,10 @@ public final class MetalRenderer: RendererBackend {
       {
         sidebarGlyphAtlas = fresh
       }
+      cellGlyphGridGeometry = nil
+      cellGlyphs.removeAll(keepingCapacity: true)
+      cellGlyphUploadRanges.removeAll(keepingCapacity: true)
+      cellGlyphBuffer = nil
     }
     if sizeChanged {
       layer.drawableSize = CGSize(width: pw, height: ph)
@@ -1363,6 +1369,11 @@ public final class MetalRenderer: RendererBackend {
     var rows: Int
     var cellAdvance: CGFloat
     var cellHeight: CGFloat
+    var scale: CGFloat
+    var fontPointSize: CGFloat
+    var fontDescent: CGFloat
+    var fontCellAdvance: CGFloat
+    var fontCellHeight: CGFloat
 
     var cellCount: Int { max(0, cols * rows) }
 
@@ -1438,7 +1449,12 @@ public final class MetalRenderer: RendererBackend {
       cols: cols,
       rows: rows,
       cellAdvance: glyphCellAdvance,
-      cellHeight: glyphCellHeight)
+      cellHeight: glyphCellHeight,
+      scale: layer.contentsScale,
+      fontPointSize: fontAtlas.pointSize,
+      fontDescent: fontAtlas.descent,
+      fontCellAdvance: glyphCellAdvance,
+      fontCellHeight: glyphCellHeight)
   }
 
   private func rowsToPatch(
@@ -1468,7 +1484,24 @@ public final class MetalRenderer: RendererBackend {
       cols: payload.cols,
       rows: payload.rows,
       cellAdvance: payload.cellSize.width,
-      cellHeight: payload.cellSize.height)
+      cellHeight: payload.cellSize.height,
+      scale: layer.contentsScale,
+      fontPointSize: fontAtlas.pointSize,
+      fontDescent: fontAtlas.descent,
+      fontCellAdvance: glyphCellAdvance,
+      fontCellHeight: glyphCellHeight)
+  }
+
+  private func resetPayloadRowsWithFullBackgroundRun(count: Int) {
+    if payloadRowsWithFullBackgroundRun.count != count {
+      payloadRowsWithFullBackgroundRun.removeAll(keepingCapacity: true)
+      payloadRowsWithFullBackgroundRun.reserveCapacity(count)
+      payloadRowsWithFullBackgroundRun.append(contentsOf: repeatElement(false, count: count))
+    } else {
+      for index in payloadRowsWithFullBackgroundRun.indices {
+        payloadRowsWithFullBackgroundRun[index] = false
+      }
+    }
   }
 
   private func buildGPUCellInstanceLists(
@@ -1612,15 +1645,15 @@ public final class MetalRenderer: RendererBackend {
     case .full:
       appendSolid(rect: payload.terminalRect, color: payload.defaultBackground)
     case .partial:
-      var rowsWithFullBackgroundRun = [Bool](repeating: false, count: payload.rows)
+      resetPayloadRowsWithFullBackgroundRun(count: payload.rows)
       for run in payload.backgroundRuns
       where run.row >= 0 && run.row < payload.rows && run.startCol <= 0
         && run.colCount >= payload.cols
       {
-        rowsWithFullBackgroundRun[run.row] = true
+        payloadRowsWithFullBackgroundRun[run.row] = true
       }
       for row in payload.dirtyRows where row >= 0 && row < payload.rows {
-        guard !rowsWithFullBackgroundRun[row] else { continue }
+        guard !payloadRowsWithFullBackgroundRun[row] else { continue }
         appendSolid(
           rect: CGRect(
             x: payload.origin.x,
