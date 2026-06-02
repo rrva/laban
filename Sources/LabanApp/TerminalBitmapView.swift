@@ -2702,11 +2702,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       .processMetadata()?.cwd
     // Resolve off the main actor: `fileExists` can block on a slow or dead
     // network mount, and a main-thread stall here would trip MainThreadWatchdog.
-    // `resolveFileURL` is `nonisolated`, so awaiting it from this @MainActor
-    // method runs the stat on the cooperative pool (SE-0338); we resume back on
-    // the main actor to drive the panel.
+    // `resolvePreviewURL` is `nonisolated`, so awaiting it from this @MainActor
+    // method runs the git/stat lookup on the cooperative pool (SE-0338); we
+    // resume back on the main actor to drive the panel.
     Task { [weak self] in
-      let url = await Self.resolveFileURL(for: candidate, workingDirectory: cwd)
+      let url = await Self.resolvePreviewURL(for: candidate, workingDirectory: cwd)
       guard let self else { return }
       guard let url else {
         EventLog.shared.log("quicklook.miss", ["candidate": candidate])
@@ -2716,11 +2716,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
-  private nonisolated static func resolveFileURL(
+  private nonisolated static func resolvePreviewURL(
     for candidate: String,
     workingDirectory: String?
   ) async -> URL? {
-    TerminalQuickLook.fileURL(for: candidate, workingDirectory: workingDirectory)
+    // Prefer a git commit preview when the token is a commit hash in the
+    // session's repo; otherwise fall back to previewing a file.
+    if let commit = TerminalGitLookup.commitPreviewURL(
+      for: candidate, workingDirectory: workingDirectory)
+    {
+      return commit
+    }
+    return TerminalQuickLook.fileURL(for: candidate, workingDirectory: workingDirectory)
   }
 
   private func showQuickLook(_ url: URL) {
