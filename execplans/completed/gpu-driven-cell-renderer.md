@@ -1519,6 +1519,32 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
   release benchmark still fails the predeclared GPU-default thresholds, so Classic
   remains the default and GPU-driven remains opt-in.
 
+### 2026-06-02 - Post-gate live blanking hardening landed
+
+- After the Review Gate, live `~/Laban.app` testing with persisted `gpuDriven` mode
+  exposed GPU-only blank-tab failures: retained `labpty` sessions could reattach
+  blank, cursor-only frames could erase visible cell content, and bottom-follow /
+  scrollback viewport shifts could leave the at-bottom view blank while scrollback
+  still rendered. Software mode rendered the same live sessions, so the fixes stayed
+  in the GPU repaint/cache/damage surface rather than `labpty` or parser ownership.
+- Follow-up fixes landed as focused commits:
+  - `0884037` (`GPU labpty replays need full repaint`) forces a full repaint for
+    retained-ring replay and retries stale GPU payload geometry after reattach.
+  - `4189724` (`Cursor frames must preserve GPU cell cache`) keeps cursor-only frames
+    from clearing the persistent GPU cell cache.
+  - `8b9f9c3` (`Viewport shifts need full GPU repaint`) tracks rendered viewport
+    offset in the terminal core and promotes full-row dirty coverage to `.full`, so
+    scrollback, bottom-follow output, and alt-screen viewport shifts invalidate the
+    persistent GPU target correctly.
+- Focused validation passed for the final fix:
+  `TerminalSurfaceControllerTests/testBottomFollowOutputForcesFullDamageWhenViewportOffsetChanges`,
+  `TerminalSurfaceControllerTests`, `GPUCellParityTests`,
+  `MarkRenderedSnapshotRaceTests`, `GPUCellRetainedRingRegressionTests`, and
+  `git diff --check`. A clean `~/Laban.app` install at `8b9f9c3` was codesigned and
+  the user manually reported the live blanking scenario fixed.
+- This hardening does not reopen M6 or change the default decision: Classic remains
+  the default renderer and GPU-driven remains user-selectable/opt-in.
+
 ## Review Gate
 
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
