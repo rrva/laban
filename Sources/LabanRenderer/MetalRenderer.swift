@@ -2085,10 +2085,11 @@ public final class MetalRenderer: RendererBackend {
     // The `.preedit` source is only produced at the cursor, so ordinary cells
     // are never touched.
     for cmd in commands {
-      guard case .glyphRun(
-        let origin, let text, let fg, _, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _
-      ) = cmd, runSource == .preedit, !text.isEmpty
+      guard
+        case .glyphRun(
+          let origin, let text, let fg, _, let attrs, let runSource,
+          let underlineStyle, let underlineColor, _
+        ) = cmd, runSource == .preedit, !text.isEmpty
       else { continue }
       let font = styledFont(for: attrs, in: fontAtlas)
       let traits = CTFontGetSymbolicTraits(font)

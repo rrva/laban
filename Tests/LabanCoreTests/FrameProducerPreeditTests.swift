@@ -46,7 +46,8 @@ final class FrameProducerPreeditTests: XCTestCase {
       session.close()
     }
 
-    let cw = 8, ch = 16
+    let cw = 8
+    let ch = 16
     let producer = FrameProducer(cellWidth: cw, cellHeight: ch)
     let composition = "こんにちは"
     let cmds = producer.commands(
