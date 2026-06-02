@@ -348,6 +348,30 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testPlainDragUnderMouseTrackingForwardsToAppInsteadOfSelectingLocally() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("alpha bravo\r\n".utf8))
+    session.poll()
+    enableMouseTracking(in: session)
+    harness.view.advanceFrame()
+
+    // A plain (no-Shift) drag under mouse tracking is forwarded to the app as
+    // mouse reports (the iTerm2/Ghostty model) so the app runs its own
+    // selection and can scroll past one screen. It must NOT create a
+    // Laban-native selection — there is nothing local to copy afterward.
+    selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
+
+    XCTAssertEqual(
+      copyText(from: harness.view),
+      "sentinel",
+      "a plain drag under mouse tracking must forward to the app, not select locally"
+    )
+  }
+
   func testShiftClickExtendsSelectionWhenMouseTrackingIsActive() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

@@ -44,22 +44,24 @@ enum TerminalMouseInput {
   enum LeftMouseDownDisposition: Equatable {
     /// Start a Laban-native text selection immediately; nothing is forwarded.
     case localSelection
-    /// The app has mouse tracking on, so hold the press: a drag becomes a
-    /// native selection (the point of selecting without the Shift bypass),
-    /// while a release with no drag is forwarded as a press+release click so
-    /// the app's click-to-act behaviors keep working.
-    case deferUnderTracking
+    /// The app has mouse tracking on, so forward the press — and the drag and
+    /// release that follow — to it as SGR mouse reports (the iTerm2/Ghostty
+    /// model). The app runs its own selection and can autoscroll its buffer
+    /// past one screen, which is the only way to select text spanning more
+    /// than one screen in a fullscreen renderer. Shift still forces native
+    /// selection.
+    case forwardToApp
   }
 
   /// Route a left press. Shift always forces native selection (the historical
-  /// override, preserved). Otherwise an app with mouse tracking on defers so a
-  /// plain drag can select without Shift; with no tracking, a plain press just
-  /// selects as before.
+  /// override, preserved). Otherwise an app with mouse tracking on receives the
+  /// gesture as forwarded mouse reports so it can run its own selection and
+  /// scroll; with no tracking, a plain press selects natively as before.
   static func leftMouseDownDisposition(
     mouseTracking: Bool,
     shiftHeld: Bool
   ) -> LeftMouseDownDisposition {
     if shiftHeld { return .localSelection }
-    return mouseTracking ? .deferUnderTracking : .localSelection
+    return mouseTracking ? .forwardToApp : .localSelection
   }
 }

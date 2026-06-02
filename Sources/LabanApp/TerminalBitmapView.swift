@@ -64,16 +64,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   }
   private var pendingHyperlinkClick: PendingHyperlinkClick?
   private static let hyperlinkClickDragTolerance: CGFloat = 3
-  /// A left press withheld from a mouse-tracking app until we know whether it
-  /// is a click or the start of a drag-selection. A drag past
-  /// `hyperlinkClickDragTolerance` becomes a native selection (selecting
-  /// without holding Shift); a release with no drag is forwarded to the app as
-  /// a press+release click so click-to-act features keep working.
-  private struct PendingTrackingClick {
-    var downPoint: NSPoint
-    var pressModifiers: Int
-  }
-  private var pendingTrackingClick: PendingTrackingClick?
   /// True while the current mouseDown→mouseUp pair was consumed by
   /// window chrome (sidebar tab actions or the reserved titlebar strip).
   /// Without this, the paired mouseUp would treat the just-restored or
@@ -2795,20 +2785,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       mouseTracking: mouseTracking,
       shiftHeld: event.modifierFlags.contains(.shift)
     ) {
-    case .deferUnderTracking:
-      // The app has mouse tracking on. Withhold the press until mouseDragged or
-      // mouseUp decides click vs drag: a drag becomes a native selection (the
-      // shift-free selection path), a bare click is forwarded on release.
-      // Don't claim trackedMouseButton here — the click path forwards its own
-      // press+release and the drag path is local, so neither needs it, and a
-      // stale .left would survive into the next gesture.
+    case .forwardToApp:
+      // The app has mouse tracking on (iTerm2/Ghostty model). Forward the press
+      // now and claim the left button so mouseDragged forwards motion and
+      // mouseUp forwards the release: the app runs its own selection and can
+      // autoscroll its buffer past one screen, the only way to select text
+      // spanning more than one screen in a fullscreen renderer.
       cancelSelectionDragForMouseTracking()
-      // A press under mouse tracking dismisses any existing local selection the
-      // same way a bare click does without tracking (cancelSelectionDragForMouseTracking
-      // above only resets drag state, not the committed selection).
+      // A forwarded press is a deliberate pointer action, so it dismisses any
+      // existing local selection the same way a bare click does
+      // (cancelSelectionDragForMouseTracking above only resets drag state, not
+      // the committed selection).
       dismissLocalSelectionForForwardedInput()
-      pendingTrackingClick = PendingTrackingClick(
-        downPoint: pt, pressModifiers: event.labanModifiers)
+      trackedMouseButton = .left
+      forwardMousePress(at: pt, modifiers: event.labanModifiers)
     case .localSelection:
       // Focus stays nil until a drag actually happens, so a click without drag
       // clears any prior selection instead of leaving a one-cell highlight
@@ -2832,34 +2822,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
         return
       }
       pendingHyperlinkClick = nil
-      beginSelection(at: pending.downPoint, clickCount: 1)
-      lastDragPoint = pt
-      extendSelection(to: pt)
-      updateDragAutoscroll(at: pt)
-      if let anchor = selectionAnchor, let focus = selectionFocus {
-        recordInput(
-          kind: "selection",
-          route: "terminal",
-          command: "updateSelection",
-          anchor: (row: anchor.row, col: anchor.col),
-          focus: (row: focus.row, col: focus.col)
-        )
-      }
-      renderInvalidated = true
-      return
-    }
-
-    if let pending = pendingTrackingClick {
-      // A press withheld from a mouse-tracking app. Once the pointer moves past
-      // the click tolerance it is a drag-selection, not a click: take it over
-      // locally so text selects without the Shift bypass. Below the tolerance
-      // it stays a candidate click for mouseUp to forward.
-      guard Self.pointDistance(pending.downPoint, pt) > Self.hyperlinkClickDragTolerance
-      else {
-        return
-      }
-      pendingTrackingClick = nil
-      localSelectionMouseGestureActive = true
       beginSelection(at: pending.downPoint, clickCount: 1)
       lastDragPoint = pt
       extendSelection(to: pt)
@@ -2927,16 +2889,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     renderInvalidated = true
   }
 
-  /// Forward a withheld left press to the active mouse-tracking app as a
-  /// press+release click. `downPoint`/`upPoint` are usually the same cell for a
-  /// click, but each is encoded at its own position so a tiny within-tolerance
-  /// jitter still reports a coherent press and release.
-  private func forwardDeferredTrackingClick(
-    downPoint: NSPoint,
-    upPoint: NSPoint,
-    pressModifiers: Int,
-    releaseModifiers: Int
-  ) {
+  /// Forward a left-button press to the active mouse-tracking app as an SGR
+  /// mouse report. The matching motion and release are forwarded by
+  /// mouseDragged and mouseUp once `trackedMouseButton` is `.left`. A bare
+  /// click thus reports press-on-down and release-on-up, the order apps expect.
+  private func forwardMousePress(at pt: NSPoint, modifiers: Int) {
     guard let tabId = model.activeTab?.id,
       let session = model.session(forTab: tabId),
       let vs = session.viewportState(),
@@ -2944,28 +2901,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     else {
       return
     }
-    let pressGeom = terminalMouseGeometry(at: downPoint)
+    let geom = terminalMouseGeometry(at: pt)
     let pressEvent = MouseEvent(
       action: .press, button: .left,
-      x: pressGeom.x, y: pressGeom.y,
-      screenWidth: pressGeom.screenWidth, screenHeight: pressGeom.screenHeight,
-      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: pressModifiers)
-    let pressSent = session.sendMouseCapturingBytes(pressEvent)
-    let releaseGeom = terminalMouseGeometry(at: upPoint)
-    let releaseEvent = MouseEvent(
-      action: .release, button: .left,
-      x: releaseGeom.x, y: releaseGeom.y,
-      screenWidth: releaseGeom.screenWidth, screenHeight: releaseGeom.screenHeight,
-      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: releaseModifiers)
-    let releaseSent = session.sendMouseCapturingBytes(releaseEvent)
-    var bytes: [UInt8] = []
-    if pressSent.result == 0 { bytes.append(contentsOf: pressSent.bytes) }
-    if releaseSent.result == 0 { bytes.append(contentsOf: releaseSent.bytes) }
+      x: geom.x, y: geom.y,
+      screenWidth: geom.screenWidth, screenHeight: geom.screenHeight,
+      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: modifiers)
+    let sent = session.sendMouseCapturingBytes(pressEvent)
+    let bytes = sent.result == 0 ? sent.bytes : []
     forwardEncodedMouseToDaemon(bytes, session: session)
     recordInput(
       kind: "mouse",
       route: "terminal",
-      command: "mouseClick",
+      command: "mouseDown",
       encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
       encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
     )
@@ -2994,22 +2942,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
         route: "appCommand",
         text: pending.uri,
         command: "openHyperlink")
-      renderInvalidated = true
-      return
-    }
-
-    if let pending = pendingTrackingClick {
-      // The withheld press never became a drag, so it was a click after all.
-      // Forward press+release together now so the mouse-tracking app's
-      // click-to-act behavior still fires (we delayed it only long enough to
-      // rule out a drag-selection).
-      pendingTrackingClick = nil
-      forwardDeferredTrackingClick(
-        downPoint: pending.downPoint,
-        upPoint: pt,
-        pressModifiers: pending.pressModifiers,
-        releaseModifiers: event.labanModifiers)
-      trackedMouseButton = .none
       renderInvalidated = true
       return
     }
