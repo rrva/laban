@@ -75,6 +75,18 @@ final class TerminalBackendMenuController: NSObject {
     select(.laband)
   }
 
+  /// The backend the user has selected (persisted choice, or the active
+  /// backend when nothing is persisted). Used to preselect the Settings popup.
+  var currentSelection: TerminalSessionBackend {
+    TerminalBackendSettings.persisted(defaults: defaults) ?? activeBackend
+  }
+
+  /// Apply a backend choice from the Settings popup, routing through the same
+  /// persist + restart-prompt path as the menu items.
+  func choose(_ backend: TerminalSessionBackend) {
+    select(backend)
+  }
+
   private func select(_ backend: TerminalSessionBackend) {
     TerminalBackendSettings.set(backend, defaults: defaults)
     syncMenuState()

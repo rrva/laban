@@ -2607,6 +2607,42 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     recordInput(kind: "copy", route: "appCommand", text: text, command: "copy")
   }
 
+  /// Edit → Select All (⌘A): select the whole buffer including scrollback, so
+  /// a following ⌘C copies everything. The selection is expressed against the
+  /// absolute buffer (anchor row 0 → focus last row), so it stands regardless
+  /// of where the viewport is currently scrolled; the rendered highlight is
+  /// clipped to the visible rows by `TerminalSelection.segments`.
+  override func selectAll(_ sender: Any?) {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else { return }
+    let cols = currentCols()
+    let totalRows: Int
+    if let vs = session.viewportState() {
+      totalRows = vs.totalRows
+    } else if let snap = session.snapshot() {
+      totalRows = Int(snap.pointee.rows)
+      laban_snapshot_destroy(snap)
+    } else {
+      return
+    }
+    guard
+      let points = TerminalSelectionInput.selectAllPoints(totalRows: totalRows, cols: cols)
+    else { return }
+    selectionMode = .char
+    selectionOriginCell = points.anchor
+    selectionAnchor = points.anchor
+    selectionFocus = points.focus
+    syncSelectionStateToActiveTab()
+    advanceFrame()
+    recordInput(
+      kind: "selection",
+      route: "appCommand",
+      command: "selectAll",
+      anchor: (row: points.anchor.row, col: points.anchor.col),
+      focus: (row: points.focus.row, col: points.focus.col))
+  }
+
   @objc func paste(_ sender: Any?) {
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)

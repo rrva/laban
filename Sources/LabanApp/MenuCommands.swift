@@ -1,12 +1,7 @@
 import AppKit
 
 enum MenuCommands {
-  static func setupMenuBar(
-    themeMenu: ThemeMenuController,
-    restoreOnLaunchMenu: RestoreOnLaunchMenuController,
-    terminalBackendMenu: TerminalBackendMenuController,
-    rendererModeMenu: RendererModeMenuController
-  ) {
+  static func setupMenuBar() {
     let mainMenu = NSMenu()
 
     // App menu (first slot, shown as app name)
@@ -25,10 +20,38 @@ enum MenuCommands {
       keyEquivalent: ""
     )
     appMenu.addItem(NSMenuItem.separator())
+    // Settings (⌘,) — the native home for theme, font, renderer, session
+    // backend, and restore-on-launch (previously scattered across the View
+    // and Workspace menus).
+    appMenu.addItem(
+      withTitle: "Settings…",
+      action: #selector(AppDelegate.showSettings(_:)),
+      keyEquivalent: ","
+    )
+    appMenu.addItem(NSMenuItem.separator())
     // Checkmark is driven by AppDelegate.validateMenuItem.
     appMenu.addItem(
       withTitle: "Secure Keyboard Entry",
       action: #selector(AppDelegate.toggleSecureKeyboardEntry(_:)),
+      keyEquivalent: ""
+    )
+    appMenu.addItem(NSMenuItem.separator())
+    // Standard Hide group. nil targets route up the responder chain to NSApp.
+    appMenu.addItem(
+      withTitle: "Hide Laban",
+      action: #selector(NSApplication.hide(_:)),
+      keyEquivalent: "h"
+    )
+    let hideOthers = NSMenuItem(
+      title: "Hide Others",
+      action: #selector(NSApplication.hideOtherApplications(_:)),
+      keyEquivalent: "h"
+    )
+    hideOthers.keyEquivalentModifierMask = [.command, .option]
+    appMenu.addItem(hideOthers)
+    appMenu.addItem(
+      withTitle: "Show All",
+      action: #selector(NSApplication.unhideAllApplications(_:)),
       keyEquivalent: ""
     )
     appMenu.addItem(NSMenuItem.separator())
@@ -104,7 +127,7 @@ enum MenuCommands {
         action: #selector(TerminalBitmapView.exportLastSixtySeconds(_:)),
         keyEquivalent: ""))
 
-    // Edit menu — clipboard
+    // Edit menu — clipboard + selection
     let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
     mainMenu.addItem(editItem)
     let editMenu = NSMenu(title: "Edit")
@@ -114,43 +137,29 @@ enum MenuCommands {
       NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
     editMenu.addItem(
       NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+    // Select All routes via the responder chain: the terminal view selects the
+    // whole buffer; a focused find field selects its text.
+    editMenu.addItem(
+      NSMenuItem(
+        title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
     editMenu.addItem(NSMenuItem.separator())
     editMenu.addItem(
       NSMenuItem(title: "Find…", action: #selector(TerminalBitmapView.find(_:)), keyEquivalent: "f")
     )
 
-    // View menu — chrome + theme picker
+    // View menu — Enter Full Screen. AppKit renames this item to "Exit Full
+    // Screen" automatically while the window is full screen.
     let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
     mainMenu.addItem(viewItem)
     let viewMenu = NSMenu(title: "View")
     viewItem.submenu = viewMenu
-
-    let themeItem = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
-    viewMenu.addItem(themeItem)
-    let themeSubmenu = NSMenu(title: "Theme")
-    themeItem.submenu = themeSubmenu
-    for entry in themeMenu.makeMenuItems() {
-      themeSubmenu.addItem(entry)
-    }
-    viewMenu.addItem(
-      NSMenuItem(
-        title: "Font…",
-        action: #selector(AppDelegate.showFontPicker(_:)),
-        keyEquivalent: ""
-      ))
-    viewMenu.addItem(NSMenuItem.separator())
-    viewMenu.addItem(rendererModeMenu.makeMenuItem())
-
-    // Workspace menu — restore-on-launch toggle. Lives in its own
-    // top-level submenu rather than under File or View so users have a
-    // single, obvious place to find the persistence kill switch.
-    let workspaceItem = NSMenuItem(title: "Workspace", action: nil, keyEquivalent: "")
-    mainMenu.addItem(workspaceItem)
-    let workspaceMenu = NSMenu(title: "Workspace")
-    workspaceItem.submenu = workspaceMenu
-    workspaceMenu.addItem(restoreOnLaunchMenu.makeMenuItem())
-    workspaceMenu.addItem(NSMenuItem.separator())
-    workspaceMenu.addItem(terminalBackendMenu.makeMenuItem())
+    let fullScreenItem = NSMenuItem(
+      title: "Enter Full Screen",
+      action: #selector(NSWindow.toggleFullScreen(_:)),
+      keyEquivalent: "f"
+    )
+    fullScreenItem.keyEquivalentModifierMask = [.command, .control]
+    viewMenu.addItem(fullScreenItem)
 
     // Tab-select menu — Cmd+1…9
     let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")

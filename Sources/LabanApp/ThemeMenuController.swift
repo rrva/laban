@@ -76,11 +76,30 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
     return items
   }
 
+  // MARK: Settings access
+
+  /// Themes in menu order (dark group, then light group). The Settings window
+  /// builds its theme popup from this so it shows the same list as the menu.
+  var orderedThemes: [ThemeData] { themes }
+
+  /// Name of the theme currently applied — used to preselect the popup.
+  var currentThemeName: String { Theme.current.name }
+
+  /// Whether the app is currently following the system dark/light appearance.
+  var followsSystemAppearance: Bool { Theme.followsSystemAppearance }
+
   // MARK: Actions
 
   @objc func selectTheme(_ sender: NSMenuItem) {
-    guard sender.tag >= 0, sender.tag < themes.count else { return }
-    let theme = themes[sender.tag]
+    applyTheme(at: sender.tag)
+  }
+
+  /// Apply the theme at `index` into `orderedThemes`: pin it as the matching
+  /// dark/light variant, stop following the system, and apply immediately.
+  /// Shared by the View menu item and the Settings popup so both behave alike.
+  func applyTheme(at index: Int) {
+    guard index >= 0, index < themes.count else { return }
+    let theme = themes[index]
     if theme.isDark {
       Theme.darkVariant = theme
     } else {
@@ -93,8 +112,14 @@ final class ThemeMenuController: NSObject, NSMenuItemValidation {
   }
 
   @objc func toggleFollowsSystemAppearance(_ sender: NSMenuItem) {
-    Theme.followsSystemAppearance.toggle()
-    if Theme.followsSystemAppearance {
+    setFollowsSystem(!Theme.followsSystemAppearance)
+  }
+
+  /// Turn system-appearance following on or off. When turning on, snap the
+  /// palette to the live system appearance immediately.
+  func setFollowsSystem(_ on: Bool) {
+    Theme.followsSystemAppearance = on
+    if on {
       let isDark =
         NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
         == .darkAqua

@@ -98,6 +98,23 @@ enum TerminalSelectionInput {
     )
   }
 
+  /// Anchor/focus that select the entire buffer — every scrollback row, full
+  /// width — independent of the current scroll position. A point's absolute
+  /// row is `row + viewportOffsetAtCapture`, so capturing at offset 0 pins the
+  /// anchor to absolute row 0 and the focus to the last row no matter where the
+  /// viewport is scrolled when the user invokes Select All. Returns nil for an
+  /// empty buffer.
+  static func selectAllPoints(
+    totalRows: Int,
+    cols: Int
+  ) -> (anchor: TerminalSelectionPoint, focus: TerminalSelectionPoint)? {
+    guard totalRows > 0, cols > 0 else { return nil }
+    return (
+      TerminalSelectionPoint(row: 0, col: 0, viewportOffsetAtCapture: 0),
+      TerminalSelectionPoint(row: totalRows - 1, col: cols - 1, viewportOffsetAtCapture: 0)
+    )
+  }
+
   static func wordBounds(
     row: Int,
     col: Int,

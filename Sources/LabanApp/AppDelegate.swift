@@ -7,12 +7,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   private var windowController: MainWindowController?
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
-  private let restoreOnLaunchMenuController = RestoreOnLaunchMenuController()
   private let terminalBackendMenuController = TerminalBackendMenuController()
   private lazy var rendererModeMenuController = RendererModeMenuController {
     [weak self] selection in
     self?.windowController?.applyRendererSelection(selection)
   }
+  /// The Settings (⌘,) window, built lazily on first open and reused after.
+  private lazy var settingsWindowController = SettingsWindowController(
+    theme: themeMenuController,
+    renderer: rendererModeMenuController,
+    backend: terminalBackendMenuController,
+    onChangeFont: { [weak self] in self?.showFontPicker(nil) }
+  )
   private var updateCheckInFlight = false
   private static let secureKeyboardEntryDefaultsKey = "LabanSecureKeyboardEntry"
   /// Whether `EnableSecureEventInput()` is currently in effect. The Enable/
@@ -49,12 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     terminalBackendMenuController.configure(
       activeBackend: terminalBackendSelection.backend,
       launchSource: terminalBackendSelection.source)
-    MenuCommands.setupMenuBar(
-      themeMenu: themeMenuController,
-      restoreOnLaunchMenu: restoreOnLaunchMenuController,
-      terminalBackendMenu: terminalBackendMenuController,
-      rendererModeMenu: rendererModeMenuController
-    )
+    MenuCommands.setupMenuBar()
 
     // Decide whether to restore on this launch:
     //   1. If the user disabled the "Restore on Launch" toggle, start
@@ -192,6 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
       item.state = secureKeyboardEntryEnabled ? .on : .off
     }
     return true
+  }
+
+  /// App-menu entry: open the native Settings (⌘,) window.
+  @objc func showSettings(_ sender: Any?) {
+    settingsWindowController.present()
   }
 
   /// Help-menu entry: reveal ~/Library/Logs/Laban, where captures, casts, and

@@ -275,6 +275,10 @@ final class MainWindowController: NSWindowController {
     // interactive because AppKit composites them over the contentView.
     window.titlebarAppearsTransparent = true
     window.titleVisibility = .hidden
+    // Native full screen: lets the green button and View → Enter Full Screen
+    // (⌃⌘F) take the terminal fullscreen, which a terminal is a prime
+    // candidate for. Without fullScreenPrimary AppKit disables toggleFullScreen.
+    window.collectionBehavior.insert(.fullScreenPrimary)
     // Container view hosts the terminal plus a small overlay badge. The
     // terminal stays the full size; the badge floats in the bottom-left,
     // sized to its content. Using a sibling instead of a TerminalBitmapView

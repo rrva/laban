@@ -123,6 +123,16 @@ final class RendererModeMenuController: NSObject {
     return "GPU-driven Renderer (requires macOS 26)"
   }
 
+  /// The renderer currently persisted (and applied). Used to preselect the
+  /// Settings popup.
+  var currentSelection: RendererSelection { RendererSelection.persisted(defaults: defaults) }
+
+  /// Apply a renderer choice from the Settings popup, routing through the same
+  /// persist + live-apply path as the menu items.
+  func choose(_ selection: RendererSelection) {
+    select(selection)
+  }
+
   private func select(_ selection: RendererSelection) {
     let previous = RendererSelection.persisted(defaults: defaults)
     RendererSelection.set(selection, defaults: defaults)
