@@ -841,7 +841,8 @@ public final class TerminalSurfaceController {
       visibleCellCount: visibleCellCount,
       nonBlankRowCount: nonBlankRowCount,
       visibleTextHash: hash.value,
-      ambiguousDirtyNoRows: snapshot.dirty != 0 && dirtyRowCount == rows && dirtySummary.setCount == 0
+      ambiguousDirtyNoRows: snapshot.dirty != 0 && dirtyRowCount == rows
+        && dirtySummary.setCount == 0
     )
   }
 
@@ -902,11 +903,11 @@ public final class TerminalSurfaceController {
   }
 
   private struct FNV1a64 {
-    private(set) var value: UInt64 = 0xcbf29ce484222325
+    private(set) var value: UInt64 = 0xcbf2_9ce4_8422_2325
 
     mutating func combine(_ byte: UInt8) {
       value ^= UInt64(byte)
-      value = value &* 0x100000001b3
+      value = value &* 0x100_0000_01b3
     }
 
     mutating func combine(_ value: UInt64) {

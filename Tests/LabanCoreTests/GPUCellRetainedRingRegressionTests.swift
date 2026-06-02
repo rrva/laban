@@ -35,7 +35,8 @@ final class GPUCellRetainedRingRegressionTests: XCTestCase {
     XCTAssertEqual(session.feedOutput(bytes), 0)
     XCTAssertTrue(session.renderDirty(), "retained bytes must dirty the parser render state")
     XCTAssertEqual(session.markRendered(), 0)
-    XCTAssertFalse(session.renderDirty(), "fixture models retained content after dirty rows were consumed")
+    XCTAssertFalse(
+      session.renderDirty(), "fixture models retained content after dirty rows were consumed")
 
     let controller = TerminalSurfaceController(
       model: model,
@@ -70,7 +71,8 @@ final class GPUCellRetainedRingRegressionTests: XCTestCase {
       "gpu-driven local frames should use the cell payload path")
     XCTAssertFalse(
       payload.glyphs.isEmpty,
-      "first retained repaint must include all visible glyphs even when renderDirty was already consumed")
+      "first retained repaint must include all visible glyphs even when renderDirty was already consumed"
+    )
 
     let commandFrame = try XCTUnwrap(
       controller.makeFrame(
@@ -123,7 +125,8 @@ final class GPUCellRetainedRingRegressionTests: XCTestCase {
     XCTAssertNotEqual(
       retainedPNG,
       blankPNG,
-      "gpu-driven retained labpty frame must repaint nonblank Claude UI even when the snapshot is clean")
+      "gpu-driven retained labpty frame must repaint nonblank Claude UI even when the snapshot is clean"
+    )
   }
 
   private func loadLabptyClaudeFixture() throws -> [UInt8] {

@@ -1595,7 +1595,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       scale: Double(backend.surfaceScale))
   }
 
-  private func renderJournalViewportSnapshot(for session: Session) -> RenderJournal.ViewportSnapshot? {
+  private func renderJournalViewportSnapshot(for session: Session) -> RenderJournal
+    .ViewportSnapshot?
+  {
     guard let viewport = session.viewportState() else { return nil }
     return RenderJournal.ViewportSnapshot(
       offset: viewport.viewportOffset,
@@ -1610,7 +1612,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
         viewportRows: viewport.viewportRows))
   }
 
-  private func renderJournalScrollSnapshot(contentYOffset: CGFloat) -> RenderJournal.ScrollSnapshot {
+  private func renderJournalScrollSnapshot(contentYOffset: CGFloat) -> RenderJournal.ScrollSnapshot
+  {
     RenderJournal.ScrollSnapshot(
       appliedRows: appliedScrollRows,
       displayedRows: displayedScrollRows,

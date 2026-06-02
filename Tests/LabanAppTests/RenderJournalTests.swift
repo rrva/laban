@@ -1,5 +1,5 @@
-import Foundation
 import CoreGraphics
+import Foundation
 import LabanRenderer
 import XCTest
 
@@ -47,9 +47,12 @@ final class RenderJournalTests: XCTestCase {
     XCTAssertEqual(entries.last?.event, .renderFailed)
 
     let url = try journal.dump(currentPNG: Data([0x89, 0x50, 0x4E, 0x47]))
-    XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("summary.json").path))
-    XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("entries.jsonl").path))
-    XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("current-frame.png").path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: url.appendingPathComponent("summary.json").path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: url.appendingPathComponent("entries.jsonl").path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: url.appendingPathComponent("current-frame.png").path))
 
     let summaryData = try Data(contentsOf: url.appendingPathComponent("summary.json"))
     let summary = try JSONDecoder.iso8601.decode(RenderJournal.DumpSummary.self, from: summaryData)
@@ -90,8 +93,8 @@ final class RenderJournalTests: XCTestCase {
   }
 }
 
-private extension JSONDecoder {
-  static var iso8601: JSONDecoder {
+extension JSONDecoder {
+  fileprivate static var iso8601: JSONDecoder {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     return decoder

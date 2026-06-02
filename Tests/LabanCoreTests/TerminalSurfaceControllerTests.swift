@@ -175,7 +175,8 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(frame.tabId, tab.id)
     let payload = try XCTUnwrap(frame.cellPayload)
     XCTAssertNil(payload.fallbackReason)
-    XCTAssertTrue(payload.glyphs.contains { $0.scalarValue == Character("h").unicodeScalars.first?.value })
+    XCTAssertTrue(
+      payload.glyphs.contains { $0.scalarValue == Character("h").unicodeScalars.first?.value })
     let terminalGlyphCommands = frame.commands.filter { command in
       if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
         return source == .terminal
@@ -663,14 +664,16 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     let payload = try XCTUnwrap(frame.cellPayload)
     XCTAssertNil(payload.fallbackReason)
     XCTAssertTrue(payload.cursorRects.isEmpty)
-    XCTAssertTrue(frame.overlayCommands.contains { command in
-      if case .selection = command { return true }
-      return false
-    })
-    XCTAssertTrue(frame.overlayCommands.contains { command in
-      if case .cursor = command { return true }
-      return false
-    })
+    XCTAssertTrue(
+      frame.overlayCommands.contains { command in
+        if case .selection = command { return true }
+        return false
+      })
+    XCTAssertTrue(
+      frame.overlayCommands.contains { command in
+        if case .cursor = command { return true }
+        return false
+      })
     let terminalCommands = frame.commands.filter { command in
       switch command {
       case .rect(_, _, let source),
@@ -713,14 +716,16 @@ final class TerminalSurfaceControllerTests: XCTestCase {
 
     let payload = try XCTUnwrap(frame.cellPayload)
     XCTAssertNil(payload.fallbackReason)
-    XCTAssertTrue(frame.overlayCommands.contains { command in
-      if case .findMatch = command { return true }
-      return false
-    })
-    XCTAssertTrue(frame.overlayCommands.contains { command in
-      if case .findSelected = command { return true }
-      return false
-    })
+    XCTAssertTrue(
+      frame.overlayCommands.contains { command in
+        if case .findMatch = command { return true }
+        return false
+      })
+    XCTAssertTrue(
+      frame.overlayCommands.contains { command in
+        if case .findSelected = command { return true }
+        return false
+      })
     let terminalGlyphCommands = frame.commands.filter { command in
       if case .glyphRun(_, _, _, _, _, let source, _, _, _) = command {
         return source == .terminal

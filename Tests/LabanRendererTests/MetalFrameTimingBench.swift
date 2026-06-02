@@ -110,7 +110,8 @@ final class MetalFrameTimingBench: XCTestCase {
     let t = renderer.recentFrameTimings()
     print(
       String(
-        format: "  [%@]  n=%d  cpu p50/p95/p99=%.3f/%.3f/%.3f ms  gpu p50/p95/p99=%.3f/%.3f/%.3f ms",
+        format:
+          "  [%@]  n=%d  cpu p50/p95/p99=%.3f/%.3f/%.3f ms  gpu p50/p95/p99=%.3f/%.3f/%.3f ms",
         label, t.sampleCount,
         t.cpuP50Ms, t.cpuP95Ms, t.cpuP99Ms,
         t.gpuP50Ms, t.gpuP95Ms, t.gpuP99Ms))
@@ -706,11 +707,15 @@ final class MetalFrameTimingBench: XCTestCase {
       .init(label: "25pct contiguous", style: .ascii, dirtyRows: Array(18..<30)),
       .init(label: "sparse dirty rows", style: .ascii, dirtyRows: [0, 12, 23, rows - 1]),
       .init(label: "full repaint", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true),
-      .init(label: "fast scroll", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true, contentYOffset: -cellH / 2),
+      .init(
+        label: "fast scroll", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true,
+        contentYOffset: -cellH / 2),
       .init(label: "dense colors", style: .denseColor, dirtyRows: Array(20..<23)),
       .init(label: "box drawing", style: .boxDrawing, dirtyRows: Array(20..<23)),
       .init(label: "emoji cjk zwj", style: .clusters, dirtyRows: Array(20..<23)),
-      .init(label: "theme atlas growth", style: .atlasGrowth, dirtyRows: Array(0..<rows), fullDamage: true),
+      .init(
+        label: "theme atlas growth", style: .atlasGrowth, dirtyRows: Array(0..<rows),
+        fullDamage: true),
       .init(
         label: "remote fallback",
         style: .ascii,
@@ -720,7 +725,8 @@ final class MetalFrameTimingBench: XCTestCase {
 
     print("\n=== M6 head-to-head renderer comparison (160x48, release) ===")
     print(
-      "  workload             path       cpu p50/p95/p99 ms   processCPU/frame ms   gpu p50/p99 ms   dropped energy/wakeups")
+      "  workload             path       cpu p50/p95/p99 ms   processCPU/frame ms   gpu p50/p99 ms   dropped energy/wakeups"
+    )
     defer {
       MetalRenderer.useGPUCellPath = false
       MetalRenderer.useClassicDamageScoped = true
@@ -767,7 +773,8 @@ final class MetalFrameTimingBench: XCTestCase {
     fontAtlas: FontAtlas
   ) throws -> M6HeadToHeadResult {
     let mode: RendererMode = useGPUCell ? .gpuDriven : .classic
-    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale, rendererMode: mode) else {
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale, rendererMode: mode)
+    else {
       XCTFail("MetalRenderer.init returned nil")
       throw XCTSkip("MetalRenderer unavailable")
     }
@@ -1181,17 +1188,19 @@ final class MetalFrameTimingBench: XCTestCase {
     for _ in 0..<240 {
       let start = DispatchTime.now().uptimeNanoseconds
       if includeUpload {
-        counts = renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
-          payload: payload,
-          commands: [],
-          damage: damage,
-          surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
+        counts =
+          renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
+            payload: payload,
+            commands: [],
+            damage: damage,
+            surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
       } else {
-        counts = renderer.rebuildGPUCellPayloadInstancesForTesting(
-          payload: payload,
-          commands: [],
-          damage: damage,
-          surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
+        counts =
+          renderer.rebuildGPUCellPayloadInstancesForTesting(
+            payload: payload,
+            commands: [],
+            damage: damage,
+            surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
       }
       let end = DispatchTime.now().uptimeNanoseconds
       samples.append(Double(end - start) / 1_000.0)
@@ -1291,7 +1300,8 @@ final class MetalFrameTimingBench: XCTestCase {
     includedRows: [Int]
   ) -> [FrameCommand] {
     var commands: [FrameCommand] = []
-    commands.reserveCapacity(includedRows.count * (workload.style == .denseColor ? cols * 2 : 2) + 1)
+    commands.reserveCapacity(
+      includedRows.count * (workload.style == .denseColor ? cols * 2 : 2) + 1)
     for row in includedRows {
       let y = CGFloat(rows - 1 - row) * cellH + workload.contentYOffset
       if workload.style == .denseColor {

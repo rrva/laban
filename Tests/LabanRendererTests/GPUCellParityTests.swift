@@ -44,7 +44,8 @@ final class GPUCellParityTests: XCTestCase {
     let damage = RenderDamage.partial(yRanges: [dirtyRange(forRow: 3)])
 
     MetalRenderer.useClassicDamageScoped = false
-    let full = try renderSequence(label: "classic-full", initial: frameA, next: frameB, damage: damage)
+    let full = try renderSequence(
+      label: "classic-full", initial: frameA, next: frameB, damage: damage)
 
     MetalRenderer.useClassicDamageScoped = true
     let scoped = try renderSequence(
@@ -318,7 +319,8 @@ final class GPUCellParityTests: XCTestCase {
     let payload = twoCellMetricSymbolPayload()
 
     MetalRenderer.useGPUCellPath = false
-    let classic = try renderSingle(label: "classic-two-cell-metric-symbols", commands: commands, damage: .full)
+    let classic = try renderSingle(
+      label: "classic-two-cell-metric-symbols", commands: commands, damage: .full)
 
     MetalRenderer.useGPUCellPath = true
     let gpu = try renderSingle(
@@ -349,7 +351,8 @@ final class GPUCellParityTests: XCTestCase {
     let software = try renderSoftware(label: "software-two-cell-metric-symbols", commands: commands)
 
     MetalRenderer.useGPUCellPath = false
-    let classic = try renderSingle(label: "classic-two-cell-metric-symbols", commands: commands, damage: .full)
+    let classic = try renderSingle(
+      label: "classic-two-cell-metric-symbols", commands: commands, damage: .full)
 
     try assertInkBoundsEqual(
       expected: software.image,
@@ -395,7 +398,8 @@ final class GPUCellParityTests: XCTestCase {
 
     XCTAssertTrue(
       failures.isEmpty,
-      "representative narrow symbols must not be rejected by glyph metrics: \(failures.joined(separator: ", "))")
+      "representative narrow symbols must not be rejected by glyph metrics: \(failures.joined(separator: ", "))"
+    )
   }
 
   func testGPUCellPayloadAcceptsStyledNarrowGlyphEdgeScalars() throws {
@@ -434,7 +438,8 @@ final class GPUCellParityTests: XCTestCase {
 
     XCTAssertTrue(
       failures.isEmpty,
-      "styled narrow symbols must keep enough ink slop for fallback/bold/italic metrics: \(failures.joined(separator: ", "))")
+      "styled narrow symbols must keep enough ink slop for fallback/bold/italic metrics: \(failures.joined(separator: ", "))"
+    )
   }
 
   func testGPUCellPayloadAcceptsSingleCharacterCombiningEmojiAndFallbackClusters() throws {
@@ -466,13 +471,15 @@ final class GPUCellParityTests: XCTestCase {
       {
         let failure = renderer.lastGPUCellPayloadBuildFailure
         failures.append(
-          "\(text) reason=\(failure?.reason ?? "unknown") logicalWidth=\(failure?.logicalWidth ?? -1) max=\(failure?.maxLogicalWidth ?? -1)")
+          "\(text) reason=\(failure?.reason ?? "unknown") logicalWidth=\(failure?.logicalWidth ?? -1) max=\(failure?.maxLogicalWidth ?? -1)"
+        )
       }
     }
 
     XCTAssertTrue(
       failures.isEmpty,
-      "single-Character clusters must remain renderable through the payload atlas path: \(failures.joined(separator: ", "))")
+      "single-Character clusters must remain renderable through the payload atlas path: \(failures.joined(separator: ", "))"
+    )
   }
 
   func testGPUCellPayloadReportsShapingRunsAsUnsupportedInsteadOfAmbiguousGlyphs() throws {
@@ -532,7 +539,8 @@ final class GPUCellParityTests: XCTestCase {
     let payload = decoratedPayload(seed: 19, includedRows: Array(0..<rows))
 
     MetalRenderer.useGPUCellPath = false
-    let classic = try renderSingle(label: "classic-payload-decorations", commands: commands, damage: .full)
+    let classic = try renderSingle(
+      label: "classic-payload-decorations", commands: commands, damage: .full)
 
     MetalRenderer.useGPUCellPath = true
     let gpu = try renderSingle(
@@ -594,7 +602,8 @@ final class GPUCellParityTests: XCTestCase {
     let payload = hyperlinkPayload(seed: 31, includedRows: Array(0..<rows))
 
     MetalRenderer.useGPUCellPath = false
-    let classic = try renderSingle(label: "classic-payload-hyperlink", commands: commands, damage: .full)
+    let classic = try renderSingle(
+      label: "classic-payload-hyperlink", commands: commands, damage: .full)
 
     MetalRenderer.useGPUCellPath = true
     let gpu = try renderSingle(
@@ -626,7 +635,8 @@ final class GPUCellParityTests: XCTestCase {
     let payload = payload(seed: 37, changedRow: nil, includedRows: Array(0..<rows))
 
     MetalRenderer.useGPUCellPath = false
-    let classic = try renderSingle(label: "classic-payload-overlays", commands: commands, damage: .full)
+    let classic = try renderSingle(
+      label: "classic-payload-overlays", commands: commands, damage: .full)
 
     MetalRenderer.useGPUCellPath = true
     let gpu = try renderSingle(
@@ -691,7 +701,8 @@ final class GPUCellParityTests: XCTestCase {
     payload.contentYOffset = offset
 
     MetalRenderer.useGPUCellPath = false
-    let classic = try renderSingle(label: "classic-content-y-offset", commands: commands, damage: .full)
+    let classic = try renderSingle(
+      label: "classic-content-y-offset", commands: commands, damage: .full)
 
     MetalRenderer.useGPUCellPath = true
     let gpu = try renderSingle(
@@ -721,7 +732,8 @@ final class GPUCellParityTests: XCTestCase {
     let commands = wideClusterFrame()
 
     MetalRenderer.useGPUCellPath = false
-    let classic = try renderSingle(label: "classic-wide-cluster-command", commands: commands, damage: .full)
+    let classic = try renderSingle(
+      label: "classic-wide-cluster-command", commands: commands, damage: .full)
 
     MetalRenderer.useGPUCellPath = true
     let gpu = try renderSingle(label: "gpu-wide-cluster-command", commands: commands, damage: .full)
@@ -944,7 +956,8 @@ final class GPUCellParityTests: XCTestCase {
           CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
           color: bg,
           source: .terminal))
-      let line = String((0..<cols).map { ascii[($0 + row + seed + (changed ? 7 : 0)) % ascii.count] })
+      let line = String(
+        (0..<cols).map { ascii[($0 + row + seed + (changed ? 7 : 0)) % ascii.count] })
       commands.append(
         .glyphRun(
           origin: CGPoint(x: 0, y: y),
@@ -1002,7 +1015,8 @@ final class GPUCellParityTests: XCTestCase {
           CGRect(x: 0, y: y, width: CGFloat(frameCols) * cellW, height: cellH),
           color: bg,
           source: .terminal))
-      let line = String((0..<frameCols).map { glyphs[($0 + row * frameCols + seed) % glyphs.count] })
+      let line = String(
+        (0..<frameCols).map { glyphs[($0 + row * frameCols + seed) % glyphs.count] })
       commands.append(
         .glyphRun(
           origin: CGPoint(x: 0, y: y),
@@ -1781,9 +1795,11 @@ final class GPUCellParityTests: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) {
-    assertSIMD2BitsEqual(expected.originPx, actual.originPx, "\(label) originPx", file: file, line: line)
+    assertSIMD2BitsEqual(
+      expected.originPx, actual.originPx, "\(label) originPx", file: file, line: line)
     assertSIMD2BitsEqual(expected.sizePx, actual.sizePx, "\(label) sizePx", file: file, line: line)
-    assertSIMD2BitsEqual(expected.uvOrigin, actual.uvOrigin, "\(label) uvOrigin", file: file, line: line)
+    assertSIMD2BitsEqual(
+      expected.uvOrigin, actual.uvOrigin, "\(label) uvOrigin", file: file, line: line)
     assertSIMD2BitsEqual(expected.uvSize, actual.uvSize, "\(label) uvSize", file: file, line: line)
     assertSIMD4BitsEqual(expected.color, actual.color, "\(label) color", file: file, line: line)
     XCTAssertEqual(expected.flags, actual.flags, "\(label) flags", file: file, line: line)
@@ -1874,7 +1890,8 @@ final class GPUCellParityTests: XCTestCase {
               x: pixel % expected.width,
               y: pixel / expected.width,
               expected: expectedRGBA,
-              actual: actualRGBA)
+              actual: actualRGBA
+            )
           }
           for channel in 0..<4 {
             maxDelta = max(
@@ -1925,7 +1942,8 @@ final class GPUCellParityTests: XCTestCase {
       "\(label): actual image has no ink",
       file: file,
       line: line)
-    XCTAssertEqual(expectedBounds, actualBounds, "\(label): ink bounds differ", file: file, line: line)
+    XCTAssertEqual(
+      expectedBounds, actualBounds, "\(label): ink bounds differ", file: file, line: line)
   }
 
   private func inkBounds(in image: RGBAImage, crop: Range<Int>) -> CGRect? {
@@ -1938,7 +1956,8 @@ final class GPUCellParityTests: XCTestCase {
     let clampedUpper = min(image.width, crop.upperBound)
     guard clampedLower < clampedUpper else { return nil }
     for y in 0..<image.height {
-      for x in clampedLower..<clampedUpper where !isTwoCellMetricFixtureBackground(image, x: x, y: y) {
+      for x in clampedLower..<clampedUpper
+      where !isTwoCellMetricFixtureBackground(image, x: x, y: y) {
         minX = min(minX, x)
         minY = min(minY, y)
         maxX = max(maxX, x)
@@ -1993,11 +2012,12 @@ final class GPUCellParityTests: XCTestCase {
     }
     guard let image else { return nil }
     let data = NSMutableData()
-    guard let destination = CGImageDestinationCreateWithData(
-      data,
-      UTType.png.identifier as CFString,
-      1,
-      nil)
+    guard
+      let destination = CGImageDestinationCreateWithData(
+        data,
+        UTType.png.identifier as CFString,
+        1,
+        nil)
     else { return nil }
     CGImageDestinationAddImage(destination, image, nil)
     guard CGImageDestinationFinalize(destination) else { return nil }

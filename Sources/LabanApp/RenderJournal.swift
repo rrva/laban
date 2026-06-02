@@ -217,7 +217,9 @@ final class RenderJournal {
       viewport: viewport,
       scroll: scroll,
       damage: damage.map(Self.damageSnapshot),
-      commandCounts: commands.map { Self.commandCounts(commands: $0, overlayCommands: overlayCommands) },
+      commandCounts: commands.map {
+        Self.commandCounts(commands: $0, overlayCommands: overlayCommands)
+      },
       payload: payload.map(Self.payloadSnapshot),
       diagnostics: diagnostics,
       metalInstances: metalInstances.map(MetalInstanceCounts.init),
@@ -362,7 +364,8 @@ final class RenderJournal {
     let library =
       FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
       ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library")
-    return library
+    return
+      library
       .appendingPathComponent("Logs")
       .appendingPathComponent("Laban")
       .appendingPathComponent("render-journal")

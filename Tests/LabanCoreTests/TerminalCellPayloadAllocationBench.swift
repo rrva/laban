@@ -69,7 +69,8 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
         storageGrowthEvents += before.storageGrowthEvents(to: payload.capacitySnapshot)
       }
       let elapsed = ContinuousClock.now - start
-      let elapsedMs = Double(elapsed.components.seconds) * 1000
+      let elapsedMs =
+        Double(elapsed.components.seconds) * 1000
         + Double(elapsed.components.attoseconds) / 1e15
       print(
         String(
@@ -230,7 +231,8 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
     var bytes = Array("\u{1B}[?7l".utf8)
     for row in 1...rows {
       bytes += Array("\u{1B}[\(row);1H".utf8)
-      bytes += Array(String(repeating: Character(UnicodeScalar(0x41 + (row % 26))!), count: cols).utf8)
+      bytes += Array(
+        String(repeating: Character(UnicodeScalar(0x41 + (row % 26))!), count: cols).utf8)
     }
     _ = session.write(bytes)
     _ = session.poll()
@@ -242,8 +244,8 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
   }
 }
 
-private extension TerminalCellPayload.CapacitySnapshot {
-  func storageGrowthEvents(to next: Self) -> Int {
+extension TerminalCellPayload.CapacitySnapshot {
+  fileprivate func storageGrowthEvents(to next: Self) -> Int {
     [
       next.dirtyRows > dirtyRows,
       next.backgroundRuns > backgroundRuns,

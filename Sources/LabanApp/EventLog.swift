@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 import os
 
 /// Append-only JSON-lines event recorder. One entry per line, one file

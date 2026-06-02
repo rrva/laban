@@ -437,7 +437,8 @@ public final class MetalRenderer: RendererBackend {
     damage: RenderDamage,
     surfacePxH: Int
   ) -> RenderInstanceCounts? {
-    guard buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: damage) else {
+    guard buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: damage)
+    else {
       return nil
     }
     return lastInstanceCounts
@@ -449,11 +450,12 @@ public final class MetalRenderer: RendererBackend {
     damage: RenderDamage,
     surfacePxH: Int
   ) -> RenderInstanceCounts? {
-    guard buildGPUCellInstanceLists(
-      payload: payload,
-      commands: commands,
-      surfacePxH: surfacePxH,
-      damage: damage)
+    guard
+      buildGPUCellInstanceLists(
+        payload: payload,
+        commands: commands,
+        surfacePxH: surfacePxH,
+        damage: damage)
     else {
       return nil
     }
@@ -466,11 +468,12 @@ public final class MetalRenderer: RendererBackend {
     damage: RenderDamage,
     surfacePxH: Int
   ) -> RenderInstanceCounts? {
-    guard buildGPUCellInstanceLists(
-      payload: payload,
-      commands: commands,
-      surfacePxH: surfacePxH,
-      damage: damage)
+    guard
+      buildGPUCellInstanceLists(
+        payload: payload,
+        commands: commands,
+        surfacePxH: surfacePxH,
+        damage: damage)
     else {
       return nil
     }
@@ -490,7 +493,8 @@ public final class MetalRenderer: RendererBackend {
     commands: [FrameCommand],
     surfacePxH: Int
   ) -> [GPUCellGlyphRecord]? {
-    guard buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: .full) else {
+    guard buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: .full)
+    else {
       return nil
     }
     return cellGlyphs.compactMap { glyph in
@@ -969,7 +973,8 @@ public final class MetalRenderer: RendererBackend {
         .classic,
         RendererStatus(
           configuredRenderer: requested.rawValue,
-          effectiveRenderer: RendererMode.classic.rawValue))
+          effectiveRenderer: RendererMode.classic.rawValue)
+      )
     }
     if let rendererFallbackReason {
       return (
@@ -977,21 +982,24 @@ public final class MetalRenderer: RendererBackend {
         RendererStatus(
           configuredRenderer: requested.rawValue,
           effectiveRenderer: RendererMode.classic.rawValue,
-          fallbackReason: rendererFallbackReason))
+          fallbackReason: rendererFallbackReason)
+      )
     }
     if #available(macOS 26, *) {
       return (
         .gpuDriven,
         RendererStatus(
           configuredRenderer: requested.rawValue,
-          effectiveRenderer: RendererMode.gpuDriven.rawValue))
+          effectiveRenderer: RendererMode.gpuDriven.rawValue)
+      )
     }
     return (
       .classic,
       RendererStatus(
         configuredRenderer: requested.rawValue,
         effectiveRenderer: RendererMode.classic.rawValue,
-        fallbackReason: "gpuDrivenUnavailableOnCurrentOS"))
+        fallbackReason: "gpuDrivenUnavailableOnCurrentOS")
+    )
   }
 
   /// Slots in flight for the most recent frame. Read by the completion
@@ -1343,7 +1351,6 @@ public final class MetalRenderer: RendererBackend {
     return true
   }
 
-
   /// Compute the union bounding-box scissor rect (in device pixels) covering
   /// all dirty Y ranges. Returns nil for an empty list. CG has y-up; Metal
   /// scissor rects use y-down (origin top-left), so we flip here.
@@ -1613,12 +1620,13 @@ public final class MetalRenderer: RendererBackend {
       if sidebarGlyphAtlas !== glyphAtlas {
         sidebarGlyphAtlas.clearOverflowFlag()
       }
-      guard buildGPUCellPayloadInstanceListsOnce(
-        payload: payload,
-        commands: commands,
-        surfacePxH: surfacePxH,
-        damage: damage,
-        damageBounds: damageBounds)
+      guard
+        buildGPUCellPayloadInstanceListsOnce(
+          payload: payload,
+          commands: commands,
+          surfacePxH: surfacePxH,
+          damage: damage,
+          damageBounds: damageBounds)
       else {
         return false
       }
@@ -1949,7 +1957,8 @@ public final class MetalRenderer: RendererBackend {
         row: glyph.row,
         col: glyph.col,
         scalarValue: glyph.scalarValue,
-        textPreview: textPreview ?? Self.gpuCellPayloadFailurePreview(glyph: glyph, payload: payload),
+        textPreview: textPreview
+          ?? Self.gpuCellPayloadFailurePreview(glyph: glyph, payload: payload),
         utf8RangeLowerBound: range?.lowerBound,
         utf8RangeUpperBound: range?.upperBound,
         utf8ByteCount: payload.utf8Bytes.count,
@@ -1983,7 +1992,8 @@ public final class MetalRenderer: RendererBackend {
         recordPayloadFailure("missingGlyphText", glyph: glyph)
         return false
       }
-      let cellY = payload.origin.y + CGFloat(payload.rows - 1 - glyph.row) * payload.cellSize.height
+      let cellY =
+        payload.origin.y + CGFloat(payload.rows - 1 - glyph.row) * payload.cellSize.height
         + payload.contentYOffset
       let bottomRow = payload.rows - 1 - glyph.row
       let cellX = payload.origin.x + CGFloat(glyph.col) * payload.cellSize.width
@@ -2108,10 +2118,11 @@ public final class MetalRenderer: RendererBackend {
       if sidebarGlyphAtlas !== glyphAtlas {
         sidebarGlyphAtlas.clearOverflowFlag()
       }
-      guard buildGPUCellInstanceListsOnce(
-        commands: commands,
-        surfacePxH: surfacePxH,
-        damageBounds: damageBounds)
+      guard
+        buildGPUCellInstanceListsOnce(
+          commands: commands,
+          surfacePxH: surfacePxH,
+          damageBounds: damageBounds)
       else {
         return false
       }
@@ -2302,7 +2313,8 @@ public final class MetalRenderer: RendererBackend {
             else { continue }
             guard
               let index = geometry.index(cellX: cellX, cellY: origin.y, cellOffset: 0),
-              writeTerminalCellGlyph(index: index, cellX: cellX, cellY: origin.y, entry: entry, color: fg)
+              writeTerminalCellGlyph(
+                index: index, cellX: cellX, cellY: origin.y, entry: entry, color: fg)
             else {
               return false
             }

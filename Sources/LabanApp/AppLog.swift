@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 import os
 
 /// Centralized log handles. Each call writes to BOTH:

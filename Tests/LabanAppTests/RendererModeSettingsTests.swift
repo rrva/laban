@@ -206,7 +206,8 @@ final class RendererModeSettingsTests: XCTestCase {
 
     XCTAssertNil(
       view.snapshotCommandsHook(captureFrame: 1),
-      "a nil AppKit frame probe must stay a nil TerminalSurfaceController hook so payload mode can skip command production")
+      "a nil AppKit frame probe must stay a nil TerminalSurfaceController hook so payload mode can skip command production"
+    )
   }
 
   private func makeDefaults(

@@ -392,7 +392,8 @@ final class MetalRendererSmokeTests: XCTestCase {
     XCTAssertLessThanOrEqual(
       entry.logicalWidth,
       cellW * 1.25,
-      "width-1 terminal arrows should prefer monospaced fallback over proportional CoreText fallback")
+      "width-1 terminal arrows should prefer monospaced fallback over proportional CoreText fallback"
+    )
   }
 
   func testMetalGlyphAtlasGrowsAfterOverflow() throws {
