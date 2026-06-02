@@ -92,7 +92,7 @@ stay in the codebase permanently** and are user-selectable (M6).
 - [x] M4 — GPU-driven: feature parity (wide/cluster glyphs, box-drawing rects, decorations, selection/find, cursor, smooth-scroll, faint/inverse)
 - [x] M5 — GPU-driven: Metal 4 command model evaluated and production branch retired after failing the release p50 gate (proof spike retained)
 - [x] M6 — Expose renderer choice as a user setting; keep both renderers; record head-to-head comparison; ADR
-- [ ] Review Gate passed
+- [x] Review Gate passed
 
 ## Context and Orientation
 
@@ -1524,84 +1524,93 @@ time out in sandboxed CI — they fail the same way on `main`, so treat a daemon
 A fresh review agent (no prior context; given this ExecPlan, the milestone under
 review, the changed files, and `AGENTS.md`) must verify, per milestone:
 
-- [ ] `GPUCellParityTests` exists, runs, and asserts **identical raw RGBA pixels**
+Review result: Bohr (`019e870e-83ff-7572-976f-46077a5e5038`) reviewed
+`7d6fcad9b4ae1e3b59fb20aa502bc0026ed2e69f` and returned PASS with no blocking
+findings. Bohr verified the broad safe gate, `git diff --check`, raw-RGBA parity,
+command-stream invariance, macOS-26 gating, M2/M3 invariants, M3 allocation/geometry
+coverage, M5 production Metal 4 retirement, M6 renderer setting/session identity/ADR,
+and the manual AppKit artifacts. The live `xctrace status=2` log-archive warning was
+accepted because both Time Profiler trace bundles were written/exportable and the
+`sample`/`ps` evidence was clean.
+
+- [x] `GPUCellParityTests` exists, runs, and asserts **identical raw RGBA pixels**
       between the paths claimed complete in the milestone (read the test; confirm it
       decodes to raw RGBA and compares pixel bytes, not PNG bytes and not just shapes;
       PNGs are artifacts only).
-- [ ] The path under test is genuinely exercised (overrides actually change the code
+- [x] The path under test is genuinely exercised (overrides actually change the code
       path; confirm the new pipeline/shaders/instance-scoping are used, e.g. by a
       counter or by temporarily breaking the path and seeing parity fail).
-- [ ] For M1: the classic damage-scoped rebuild is **byte-identical** to the
+- [x] For M1: the classic damage-scoped rebuild is **byte-identical** to the
       full-rebuild classic path (the scissor already clipped what it now skips), and a
       release microbench shows the win — this is the recorded baseline for M3/M5.
-- [ ] For perf milestones (M1, M3, M5): the microbench is **release** (`-c release`)
+- [x] For perf milestones (M1, M3, M5): the microbench is **release** (`-c release`)
       and shows a real reduction; debug-only numbers do not count. M3/M5 are measured
       **against the M1 classic baseline**, not the original renderer.
-- [ ] Earn-its-keep was applied: every landed sub-change has a release microbench
+- [x] Earn-its-keep was applied: every landed sub-change has a release microbench
       showing a net win (or no regression for parity-only work). Any change that did
       not earn its keep was reverted and the reversion is recorded in
       `Surprises & Discoveries` (not silently kept).
-- [ ] On a parity failure the test emits the actionable pixel diff (first differing
+- [x] On a parity failure the test emits the actionable pixel diff (first differing
       `(x,y)` + RGBA, differing-pixel count, and `expected/actual/diff.png`
       artifacts), and the gate is zero-tolerance (a single differing pixel fails).
-- [ ] No new per-frame heap allocations in either render path (buffers reused like
+- [x] No new per-frame heap allocations in either render path (buffers reused like
       `ensureBuffer`; the GPU cell buffer is persistent; `storageModeShared` writes in
       place).
-- [ ] For M3+: the cell payload is extracted in `LabanCore` while the snapshot is
+- [x] For M3+: the cell payload is extracted in `LabanCore` while the snapshot is
       alive and carried on `TerminalSurfaceFrame` — the renderer does not read the
       libghostty snapshot (which is freed before `makeFrame` returns). The payload is
       **renderer-neutral** (raw cell data); `CellGlyph`/atlas-UV construction lives in
       `MetalRenderer` (it owns `MetalGlyphAtlas`), not in `LabanCore`.
-- [ ] For M2 onward: the `[FrameCommand]` cross-backend contract is preserved — GPU-path
+- [x] For M2 onward: the `[FrameCommand]` cross-backend contract is preserved — GPU-path
       pixel equivalence is proven by `GPUCellParityTests` (Metal flag-on vs off, *not*
       by `CrossBackendBitmapTests`, which never instantiates `MetalRenderer`);
       `CrossBackendBitmapTests` stays green only as evidence the software path +
       `FrameProducer` commands are unchanged; and `/debug/frame-commands` /
       capture-replay command streams are identical flag-on vs flag-off.
-- [ ] The GPU path is gated `#available(macOS 26, *)`; on < macOS 26 the GPU option is
+- [x] The GPU path is gated `#available(macOS 26, *)`; on < macOS 26 the GPU option is
       not offered and the classic renderer runs (verify the dual-path compiles and the
       classic path is byte-unchanged).
-- [ ] For M2: the cell-path stores the **CPU-computed final `originPx`** in `CellGlyph`
+- [x] For M2: the cell-path stores the **CPU-computed final `originPx`** in `CellGlyph`
       (same arithmetic as the classic `GlyphInstance` path) and the shader does **not**
       recompute geometry from the grid index; `GPUOriginParityTests` asserts the
       instance fields match bit-for-bit. (A documented bounded tolerance is the only
       alternative and is forbidden for the shipping path.)
-- [ ] For M3: the persistent cell buffer is **parameterised by in-flight depth** (N
+- [x] For M3: the persistent cell buffer is **parameterised by in-flight depth** (N
       slots with per-slot generation + dirty-union replay, or semaphore-gated at the
       current depth 1) — no design that assumes a single in-place buffer is safe at
       depth > 1, and CPU↔GPU safety is by slot-ownership + completion handler (not
       barriers, not residency sets). When depth > 1, target/uniform/sample resources
       are slot-specific too.
-- [ ] For M3: the neutral payload type is defined in `LabanRenderer` (or a render-model
+- [x] For M3: the neutral payload type is defined in `LabanRenderer` (or a render-model
       target) and only *populated* by `LabanCore` — not defined in `LabanCore` (which
       would be a dependency cycle, since `LabanCore` → `LabanRenderer`). It carries
       resolved hyperlink **visual** state (not the id/URI), and fg/bg/underline/
       hyperlink resolution is a shared helper extracted from `FrameProducer`, not
       reimplemented.
-- [ ] For M3: a `TerminalCellPayloadAllocationBench` shows **zero** per-frame heap
+- [x] For M3: a `TerminalCellPayloadAllocationBench` shows **zero** per-frame heap
       allocations on 1-dirty-row frames after warm-up (reusable builder + retained
       capacity).
-- [ ] For M3+: a `geometryEpoch` covers every input that affects cached
+- [x] For M3+: a `geometryEpoch` covers every input that affects cached
       `originPx`/`sizePx` (scale, font/cell metrics, grid dims, viewport origin,
       `contentYOffset`, transform); a change invalidates all cell-buffer slots and
       forces full rebuild or classic fallback, and `GPUOriginParityTests` includes a
       smooth-scroll / fractional-offset fixture.
-- [ ] For M4: non-cell overlays (cursor/selection/find) are carried as `overlayCommands`
+- [x] For M4: non-cell overlays (cursor/selection/find) are carried as `overlayCommands`
       alongside the cell payload; full glyph/background command coalescing stays skipped
       in steady GPU-cell mode.
-- [ ] For M5: a proof spike measured the real encode-overhead delta first; the Metal 4
+- [x] For M5: a proof spike measured the real encode-overhead delta first; the Metal 4
       command-allocator/buffer-reuse + argument-table production path either shows a
       release-mode encode/frame-CPU **reduction** while staying pixel-identical and
       macOS-26-gated, or it is retired with the no-go evidence recorded. Buffer safety
       is by slot-ownership + completion handler, not residency sets or barriers alone.
-- [ ] For M6: **both renderers remain** in the codebase and are user-selectable (GPU
+- [x] For M6: **both renderers remain** in the codebase and are user-selectable (GPU
       option macOS-26-only); the head-to-head comparison is recorded; the ADR uses the
       next free number (0016+, not the already-taken 0014), records the two-renderer +
       macOS-26 dual-path + Metal 4 decision, and a matching one-line entry was added to
       the `AGENTS.md` Decision Index. The renderer switch preserves session identity.
-- [ ] Existing renderer suites green (or failing only via the known environmental
+- [x] Existing renderer suites green (or failing only via the known environmental
       daemon timeout, identical to `main`).
-- [ ] Records the commit SHA reviewed and a one-line summary; on failure, lists
+- [x] Records the commit SHA reviewed and a one-line summary; on failure, lists
       concrete file:line findings.
 
 ## Surprises & Discoveries
