@@ -2075,6 +2075,66 @@ public final class MetalRenderer: RendererBackend {
     }
     flushPayloadDecorationRun()
 
+    // IME/dictation preedit. Drawn AFTER the payload has filled the cell grid
+    // so the composition glyphs overwrite the cells under the caret rather than
+    // being clobbered by them. The background mask was already emitted by the
+    // `.rect` prepass; here we set the terminal-atlas glyphs + underline. Index
+    // math mirrors the payload fill (row/col from the run origin minus
+    // `contentYOffset`) so it stays correct mid-smooth-scroll, where
+    // `geometry.index`'s integer-alignment check would reject the shifted Y.
+    // The `.preedit` source is only produced at the cursor, so ordinary cells
+    // are never touched.
+    for cmd in commands {
+      guard case .glyphRun(
+        let origin, let text, let fg, _, let attrs, let runSource,
+        let underlineStyle, let underlineColor, _
+      ) = cmd, runSource == .preedit, !text.isEmpty
+      else { continue }
+      let font = styledFont(for: attrs, in: fontAtlas)
+      let traits = CTFontGetSymbolicTraits(font)
+      let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
+      let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+      let atlasW = Float(glyphAtlas.textureSize)
+      let atlasH = Float(glyphAtlas.textureSize)
+      let bottomRow = Int(
+        ((origin.y - payload.origin.y - payload.contentYOffset) / payload.cellSize.height)
+          .rounded())
+      let baseCol = Int(((origin.x - payload.origin.x) / payload.cellSize.width).rounded())
+      for (cellIndex, cluster) in text.enumerated() {
+        let col = baseCol + cellIndex
+        guard bottomRow >= 0, bottomRow < geometry.rows, col >= 0, col < geometry.cols
+        else { continue }
+        let index = bottomRow * geometry.cols + col
+        guard index >= 0, index < cellGlyphs.count else { continue }
+        guard
+          let entry = glyphAtlas.entry(
+            character: cluster, font: font,
+            boldFallback: needsBoldFallback,
+            italicFallback: needsItalicFallback),
+          entry.logicalWidth <= payload.cellSize.width * 2.5
+        else { continue }
+        let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
+        cellGlyphs[index] = CellGlyph(
+          originPx: SIMD2<Float>(
+            Float(cellX + entry.logicalOriginX) * scale,
+            Float(origin.y) * scale),
+          sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+          uvOrigin: SIMD2<Float>(Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
+          uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+          flags: Self.gpuCellActiveFlag,
+          fg: rgbaToFloat4(fg))
+        appendCellGlyphUploadRange(index..<(index + 1))
+      }
+      emitDecorations(
+        for: text, at: origin, attributes: attrs,
+        cellAdvance: glyphCellAdvance,
+        cellHeight: glyphCellHeight,
+        descent: fontAtlas.descent,
+        fg: fg,
+        underlineStyle: underlineStyle, underlineColor: underlineColor,
+        appendSolid: appendSolid)
+    }
+
     for cursor in payload.cursorRects {
       let rect = cursor.rect
       guard rect.width > 0, rect.height > 0 else { continue }

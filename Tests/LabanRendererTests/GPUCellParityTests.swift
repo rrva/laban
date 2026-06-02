@@ -249,6 +249,59 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertGreaterThan(counts.solids, rows)
   }
 
+  /// IME/dictation preedit must render in the GPU-cell *payload* path too — the
+  /// one path that drops non-sidebar glyph runs, so it needs explicit handling.
+  /// FrameProducer emits the composition as a `.preedit` background mask + an
+  /// underlined glyph run at the cursor; the with-payload builder overwrites the
+  /// cells under the caret with those terminal-atlas glyphs. We can't assert
+  /// glyph identity through the counts hook (overwriting keeps the cell count
+  /// flat), so we assert the path runs without failing closed and that the mask
+  /// + underline land as extra solid instances.
+  func testGPUCellPayloadRendersPreeditComposition() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-preedit")
+    let pl = decoratedPayload(seed: 7, includedRows: Array(0..<rows))
+    let surfacePxH = Int(CGFloat(rows) * cellH * scale)
+
+    let base = try XCTUnwrap(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: pl, commands: [], damage: .full, surfacePxH: surfacePxH))
+    XCTAssertNil(renderer.lastGPUCellPayloadBuildFailure)
+
+    // A composition at the cursor cell (payload row 2, col 3), positioned and
+    // shaped exactly as `FrameProducer.appendPreedit` produces it.
+    let cursorCol = 3
+    let cx = CGFloat(cursorCol) * cellW
+    let cy = CGFloat(rows - 1 - 2) * cellH
+    let text = "abc"
+    let preedit: [FrameCommand] = [
+      .rect(
+        CGRect(x: cx, y: cy, width: CGFloat(text.count) * cellW, height: cellH),
+        color: 0x10_20_30_FF, source: .preedit),
+      .glyphRun(
+        origin: CGPoint(x: cx, y: cy), text: text,
+        foreground: 0xFF_FF_FF_FF, background: 0x10_20_30_FF,
+        attributes: [.underline], source: .preedit,
+        underlineStyle: .single, underlineColor: nil, hyperlink: nil),
+    ]
+    let composed = try XCTUnwrap(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: pl, commands: preedit, damage: .full, surfacePxH: surfacePxH))
+
+    XCTAssertNil(
+      renderer.lastGPUCellPayloadBuildFailure,
+      "the GPU-cell payload builder must accept a preedit overlay, not fail closed")
+    XCTAssertEqual(
+      composed.cellGlyphs, base.cellGlyphs,
+      "preedit overwrites the cells under the caret rather than adding new ones")
+    XCTAssertGreaterThan(
+      composed.solids, base.solids,
+      "the preedit background mask + underline must land as extra solid instances")
+  }
+
   func testGPUCellPayloadBuildFailureFailsClosedThenCommandRetryRendersGlyphs() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

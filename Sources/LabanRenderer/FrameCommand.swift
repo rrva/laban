@@ -8,6 +8,11 @@ public enum FrameSource: String, Sendable {
   case selection
   case find
   case image
+  /// IME/dictation composition (marked/preedit) text drawn at the cursor.
+  /// Rendered with the terminal glyph atlas and an underline so it reads as
+  /// pending, not committed. Distinct from `.terminal` so the GPU-cell path
+  /// can route it explicitly instead of treating it as payload-owned cells.
+  case preedit
 }
 
 public enum UnderlineStyle: UInt8, Sendable, Codable, Equatable {

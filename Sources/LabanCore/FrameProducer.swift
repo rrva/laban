@@ -122,7 +122,8 @@ public struct FrameProducer {
     selection: TerminalSelection?,
     findState: TerminalFindState? = nil,
     viewportRowOffset: Int = 0,
-    cursorBlinkVisible: Bool
+    cursorBlinkVisible: Bool,
+    preedit: String? = nil
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -292,6 +293,18 @@ public struct FrameProducer {
       }
     }
 
+    if let preedit {
+      appendPreedit(
+        into: &cmds,
+        text: preedit,
+        cursorRow: Int(snapshot.cursor_row),
+        cursorCol: Int(snapshot.cursor_col),
+        rows: rows,
+        cols: cols,
+        foreground: snapshot.default_foreground_rgba,
+        background: defaultBg)
+    }
+
     // Exit banner overlays the bottom terminal row after all terminal cells
     // have been emitted so stale bottom-row content cannot cover it.
     appendExitBanner()
@@ -304,7 +317,8 @@ public struct FrameProducer {
     selection: TerminalSelection?,
     findState: TerminalFindState? = nil,
     viewportRowOffset: Int = 0,
-    cursorBlinkVisible: Bool
+    cursorBlinkVisible: Bool,
+    preedit: String? = nil
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -379,7 +393,67 @@ public struct FrameProducer {
       }
     }
 
+    if let preedit {
+      appendPreedit(
+        into: &cmds,
+        text: preedit,
+        cursorRow: Int(snapshot.cursor_row),
+        cursorCol: Int(snapshot.cursor_col),
+        rows: rows,
+        cols: cols,
+        foreground: snapshot.default_foreground_rgba,
+        background: snapshot.default_background_rgba)
+    }
+
     return cmds
+  }
+
+  /// Emit IME/dictation composition (preedit) text at the cursor cell. macOS
+  /// delivers the live transcript through `setMarkedText` as the user speaks or
+  /// composes; this draws it inline — a background mask + an underlined glyph
+  /// run in the terminal font — using the exact cursor origin (including
+  /// `contentYOffset`) so it tracks the caret and scrolls with the grid, like
+  /// Ghostty/WezTerm "builtin" preedit. The `.preedit` source lets every
+  /// renderer (incl. the GPU-cell path) route it through the terminal atlas.
+  private func appendPreedit(
+    into cmds: inout [FrameCommand],
+    text: String,
+    cursorRow: Int,
+    cursorCol: Int,
+    rows: Int,
+    cols: Int,
+    foreground: UInt32,
+    background: UInt32
+  ) {
+    guard !text.isEmpty, rows > 0, cols > 0 else { return }
+    let row = min(max(cursorRow, 0), rows - 1)
+    let col = min(max(cursorCol, 0), cols - 1)
+    let cw = CGFloat(cellWidth)
+    let ch = CGFloat(cellHeight)
+    let cx = originX + CGFloat(col) * cw
+    let cy = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
+    // One cell advance per grapheme cluster, matching how the renderers lay out
+    // a glyph run; the mask covers that span so underlying cells don't bleed
+    // through the composition.
+    let runWidth = CGFloat(text.count) * cw
+    cmds.append(
+      .rect(
+        CGRect(x: cx, y: cy, width: runWidth, height: ch),
+        color: background,
+        source: .preedit
+      ))
+    cmds.append(
+      .glyphRun(
+        origin: CGPoint(x: cx, y: cy),
+        text: text,
+        foreground: foreground,
+        background: background,
+        attributes: [.underline],
+        source: .preedit,
+        underlineStyle: .single,
+        underlineColor: nil,
+        hyperlink: nil
+      ))
   }
 
   public func terminalCellPayload(
@@ -1116,7 +1190,8 @@ public struct FrameProducer {
   public func commands(
     from snapshot: LabandSnapshotResponse,
     selection: TerminalSelection? = nil,
-    cursorBlinkVisible: Bool = true
+    cursorBlinkVisible: Bool = true,
+    preedit: String? = nil
   ) -> [FrameCommand] {
     let rows = max(snapshot.rows, 0)
     let cols = max(snapshot.cols, 0)
@@ -1312,6 +1387,18 @@ public struct FrameProducer {
         height: ch
       )
       cmds.append(.cursor(rect, color: Theme.current.cursor))
+    }
+
+    if let preedit {
+      appendPreedit(
+        into: &cmds,
+        text: preedit,
+        cursorRow: snapshot.cursorRow,
+        cursorCol: snapshot.cursorCol,
+        rows: rows,
+        cols: cols,
+        foreground: Theme.current.fg0,
+        background: defaultBg)
     }
 
     appendRemoteExitBanner(snapshot, cols: cols, cellHeight: ch, commands: &cmds)

@@ -1239,7 +1239,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale),
-      contentMode: canRequestCellPayload ? .cellPayloadPreferred : .commands
+      contentMode: canRequestCellPayload ? .cellPayloadPreferred : .commands,
+      preedit: hasMarkedText() ? markedText.string : nil
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -2159,9 +2160,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     } else if let a = string as? NSAttributedString {
       markedText = a
     }
+    // The live composition (dictation transcript / IME preedit) is drawn inline
+    // at the cursor by FrameProducer; force a fresh full-damage frame so the
+    // updated marked text repaints the cursor row immediately as the user
+    // speaks or composes, rather than waiting for the program to emit output.
+    renderInvalidated = true
   }
 
-  func unmarkText() { markedText = NSAttributedString(string: "") }
+  func unmarkText() {
+    markedText = NSAttributedString(string: "")
+    // Composition ended (committed or abandoned): repaint so the preedit run is
+    // cleared from the cursor row on the next frame.
+    renderInvalidated = true
+  }
 
   /// Finalize/abandon any in-flight IME composition. Safe to call when
   /// there is no marked text. Used on tab switch and on losing first

@@ -99,6 +99,10 @@ public struct TerminalSurfaceFrameRequest {
   public var surfaceScale: Double
   public var captureBackend: String
   public var contentMode: TerminalSurfaceFrameContentMode
+  /// Live IME/dictation composition (marked/preedit) text to draw at the
+  /// cursor, or nil when there is no in-flight composition. The producer emits
+  /// it as an underlined run so it reads as pending until the program commits.
+  public var preedit: String?
 
   public init(
     frame: Int,
@@ -120,7 +124,8 @@ public struct TerminalSurfaceFrameRequest {
     surfaceHeight: Int,
     surfaceScale: Double,
     captureBackend: String = "software",
-    contentMode: TerminalSurfaceFrameContentMode = .commands
+    contentMode: TerminalSurfaceFrameContentMode = .commands,
+    preedit: String? = nil
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -142,6 +147,7 @@ public struct TerminalSurfaceFrameRequest {
     self.surfaceScale = surfaceScale
     self.captureBackend = captureBackend
     self.contentMode = contentMode
+    self.preedit = preedit
   }
 }
 
@@ -526,7 +532,8 @@ public final class TerminalSurfaceController {
         selection: request.selection,
         findState: findState,
         viewportRowOffset: viewportOffset,
-        cursorBlinkVisible: request.cursorBlinkVisible)
+        cursorBlinkVisible: request.cursorBlinkVisible,
+        preedit: request.preedit)
     } else {
       cellPayload = nil
       overlayCommands = []
@@ -543,7 +550,8 @@ public final class TerminalSurfaceController {
         selection: request.selection,
         findState: findState,
         viewportRowOffset: viewportOffset,
-        cursorBlinkVisible: request.cursorBlinkVisible)
+        cursorBlinkVisible: request.cursorBlinkVisible,
+        preedit: request.preedit)
     }
 
     snapshotCommandsHook?(UnsafePointer(snap), commands)
@@ -634,7 +642,8 @@ public final class TerminalSurfaceController {
     commands += producer.commands(
       from: snapshot,
       selection: request.selection,
-      cursorBlinkVisible: request.cursorBlinkVisible
+      cursorBlinkVisible: request.cursorBlinkVisible,
+      preedit: request.preedit
     )
     recordFrameCommands(request, commands: commands)
 
