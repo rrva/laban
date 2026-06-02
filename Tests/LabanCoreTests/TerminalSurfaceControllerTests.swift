@@ -144,6 +144,66 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalText.contains("hello"), "got terminal text \(terminalText)")
   }
 
+  func testSidebarCommandsMemoizesAndInvalidates() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let tabId = model.tabs[0].id
+
+    func sidebarTexts(_ cmds: [FrameCommand]) -> [String] {
+      cmds.compactMap { cmd in
+        if case .glyphRun(_, let text, _, _, _, let source, _, _, _) = cmd, source == .sidebar {
+          return text
+        }
+        return nil
+      }
+    }
+
+    // First call builds; an identical call — even with a different `now` — is a
+    // memo hit, because the (non-pulsing) sidebar does not depend on `now`.
+    let first = controller.sidebarCommands(
+      activeTabId: tabId, viewportHeight: 200, now: Date(timeIntervalSince1970: 1))
+    let buildsAfterFirst = controller.sidebarRebuildCountForTesting
+    let second = controller.sidebarCommands(
+      activeTabId: tabId, viewportHeight: 200, now: Date(timeIntervalSince1970: 999))
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting, buildsAfterFirst,
+      "identical inputs differing only in now must hit the memo")
+    XCTAssertEqual(first.count, second.count)
+
+    // The memoized commands match a fresh, uncached producer build.
+    let fresh = SidebarProducer(
+      sidebarWidth: 200,
+      cellWidth: controller.sidebarCellWidth,
+      cellHeight: controller.sidebarCellHeight
+    ).commands(tabs: model.tabs, activeTabId: tabId, height: 200)
+    XCTAssertEqual(sidebarTexts(second), sidebarTexts(fresh))
+
+    // Each changed input invalidates the memo.
+    var expected = buildsAfterFirst
+    _ = controller.sidebarCommands(activeTabId: tabId, viewportHeight: 240)
+    expected += 1
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting, expected, "viewport change must rebuild")
+
+    _ = controller.sidebarCommands(activeTabId: tabId, viewportHeight: 240, hoveredTabId: tabId)
+    expected += 1
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting, expected, "hover change must rebuild")
+
+    try model.updateTerminalTitle("renamed-session", forTab: tabId)
+    _ = controller.sidebarCommands(activeTabId: tabId, viewportHeight: 240, hoveredTabId: tabId)
+    expected += 1
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting, expected, "metadata change must rebuild")
+  }
+
   func testCellPayloadModeSkipsTerminalCommandsWhenCompatible() throws {
     var size = LabanTerminalSize()
     size.rows = 4

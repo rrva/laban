@@ -293,6 +293,33 @@ public enum TerminalSnapshotText {
   }
 }
 
+/// Value snapshot of every input the sidebar command list depends on, except
+/// `now` (whose only effect is the attention pulse, handled separately). Equal
+/// signatures ⇒ identical sidebar commands, so the memo can skip the rebuild.
+/// Embedding the whole `TabTitleMetadata` makes every per-tab rendering input
+/// part of the key automatically, so a new metadata field cannot silently go
+/// stale.
+private struct SidebarCacheSignature: Equatable {
+  struct Entry: Equatable {
+    var id: Tab.ID
+    var position: Int
+    var status: TabStatus
+    var isActive: Bool
+    var metadata: TabTitleMetadata
+  }
+  var tabs: [Entry]
+  var activeTabId: Tab.ID?
+  var viewportHeight: CGFloat
+  var topInset: CGFloat
+  var hoveredTabId: Tab.ID?
+  var dragIndicator: SidebarProducer.DragIndicator?
+  var reduceMotion: Bool
+  var sidebarWidth: CGFloat
+  var cellWidth: CGFloat
+  var cellHeight: CGFloat
+  var theme: ThemeData
+}
+
 public final class TerminalSurfaceController {
   public typealias SnapshotCommandsHook = (
     _ snapshot: UnsafePointer<LabanSnapshot>,
@@ -309,6 +336,16 @@ public final class TerminalSurfaceController {
     contentYOffset: 0,
     defaultBackground: 0)
   private var reusablePayloadRows: [Int] = []
+
+  // Memo for the sidebar command list. The sidebar is a pure function of its
+  // inputs except for the attention pulse on a `needsAction` tab (which reads
+  // `now`). When nothing is pulsing we skip the rebuild on frames where no
+  // input changed. `nil` signature means "recompute, do not cache".
+  private var sidebarCacheSignature: SidebarCacheSignature?
+  private var sidebarCacheCommands: [FrameCommand] = []
+  // Increments on every actual SidebarProducer build; lets tests assert cache
+  // hits without exposing the cached buffer.
+  private(set) var sidebarRebuildCountForTesting = 0
 
   public var cellWidth: Int
   public var cellHeight: Int
@@ -687,19 +724,65 @@ public final class TerminalSurfaceController {
     now: Date = Date(),
     reduceMotion: Bool = false
   ) -> [FrameCommand] {
-    SidebarProducer(
+    let tabs = model.tabs
+    let producer = SidebarProducer(
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
-      cellHeight: sidebarCellHeight
-    ).commands(
-      tabs: model.tabs,
+      cellHeight: sidebarCellHeight)
+    func build() -> [FrameCommand] {
+      sidebarRebuildCountForTesting += 1
+      return producer.commands(
+        tabs: tabs,
+        activeTabId: activeTabId,
+        height: viewportHeight,
+        topInset: topInset,
+        hoveredTabId: hoveredTabId,
+        dragIndicator: dragIndicator,
+        now: now,
+        reduceMotion: reduceMotion)
+    }
+
+    // The only `now`-dependent output is the attention pulse, drawn only for a
+    // `needsAction` tab while motion is allowed. While anything is pulsing the
+    // sidebar must rebuild every frame; otherwise it is a pure function of the
+    // signature below and can be served from the memo.
+    let pulsing =
+      !reduceMotion
+      && tabs.contains {
+        TabAttentionClassifier.classify($0.titleMetadata, isActive: $0.id == activeTabId)
+          == .needsAction
+      }
+    guard !pulsing else {
+      sidebarCacheSignature = nil
+      return build()
+    }
+
+    let signature = SidebarCacheSignature(
+      tabs: tabs.map {
+        SidebarCacheSignature.Entry(
+          id: $0.id,
+          position: $0.position,
+          status: $0.status,
+          isActive: $0.id == activeTabId,
+          metadata: $0.titleMetadata)
+      },
       activeTabId: activeTabId,
-      height: viewportHeight,
+      viewportHeight: viewportHeight,
       topInset: topInset,
       hoveredTabId: hoveredTabId,
       dragIndicator: dragIndicator,
-      now: now,
-      reduceMotion: reduceMotion)
+      reduceMotion: reduceMotion,
+      sidebarWidth: sidebarWidth,
+      cellWidth: sidebarCellWidth,
+      cellHeight: sidebarCellHeight,
+      theme: Theme.current)
+    if sidebarCacheSignature == signature {
+      return sidebarCacheCommands
+    }
+    let commands = build()
+    sidebarCacheSignature = signature
+    sidebarCacheCommands = commands
+    return commands
   }
 
   public static func terminalGridOriginY(
