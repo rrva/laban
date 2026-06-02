@@ -142,6 +142,14 @@ enum MenuCommands {
     editMenu.addItem(
       NSMenuItem(
         title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+    // Quick Look the selection if it names a file. The terminal can't use
+    // Space (it types), so ⌘Y is the keyboard path; force-click / three-finger
+    // tap on a word is the gesture path (TerminalBitmapView.quickLook(with:)).
+    editMenu.addItem(
+      NSMenuItem(
+        title: "Quick Look",
+        action: #selector(TerminalBitmapView.quickLookSelection(_:)),
+        keyEquivalent: "y"))
     editMenu.addItem(NSMenuItem.separator())
     editMenu.addItem(
       NSMenuItem(title: "Find…", action: #selector(TerminalBitmapView.find(_:)), keyEquivalent: "f")

@@ -5,10 +5,13 @@ import LabanCore
 import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
+import Quartz
 import QuartzCore
 import UserNotifications
 
-final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation {
+final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
+  QLPreviewPanelDataSource, QLPreviewPanelDelegate
+{
 
   /// Reserved strip at the top of the contentView that sits behind the
   /// transparent full-size titlebar. Picked to clear the standard window
@@ -2574,11 +2577,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
   // MARK: - Clipboard
 
   @objc func copy(_ sender: Any?) {
+    guard let text = currentSelectionText() else { return }
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+    EventLog.shared.log("copy", ["bytes": text.utf8.count])
+    recordInput(kind: "copy", route: "appCommand", text: text, command: "copy")
+  }
+
+  /// The active tab's current selection rendered to text (scrollback-aware via
+  /// the viewport path), or nil when there is no non-empty selection. Shared by
+  /// Copy and Quick Look.
+  private func currentSelectionText() -> String? {
     syncSelectionStateToActiveTab()
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id),
       let snap = session.snapshot()
-    else { return }
+    else { return nil }
     defer { laban_snapshot_destroy(snap) }
 
     let viewportState = session.viewportState()
@@ -2587,7 +2601,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
         sessionId: session.id,
         currentViewportOffset: viewportState?.viewportOffset ?? currentViewportOffset()
       )
-    else { return }
+    else { return nil }
 
     let text: String
     if let viewportState {
@@ -2599,12 +2613,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     } else {
       text = selection.selectedText(from: snap.pointee)
     }
-    guard !text.isEmpty else { return }
-
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-    EventLog.shared.log("copy", ["bytes": text.utf8.count])
-    recordInput(kind: "copy", route: "appCommand", text: text, command: "copy")
+    return text.isEmpty ? nil : text
   }
 
   /// Edit → Select All (⌘A): select the whole buffer including scrollback, so
@@ -2641,6 +2650,89 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
       command: "selectAll",
       anchor: (row: points.anchor.row, col: points.anchor.col),
       focus: (row: points.focus.row, col: points.focus.col))
+  }
+
+  // MARK: - Quick Look
+
+  /// The file currently shown in the Quick Look panel, or nil when nothing is
+  /// being previewed. Drives the panel data source.
+  private var quickLookPreviewURL: URL?
+
+  /// Quick Look gesture (three-finger tap / force click). AppKit routes the
+  /// system Quick Look gesture to this responder method; we preview the file
+  /// named by the word under the gesture point, resolved against the session's
+  /// working directory.
+  override func quickLook(with event: NSEvent) {
+    let pt = convert(event.locationInWindow, from: nil)
+    presentQuickLook(for: wordText(at: pt))
+  }
+
+  /// Edit → Quick Look (⌘Y): preview the file named by the current selection.
+  @objc func quickLookSelection(_ sender: Any?) {
+    presentQuickLook(for: currentSelectionText())
+  }
+
+  /// The on-screen word at `pt` (path/URL-aware via `wordBounds`'s glue chars),
+  /// or nil when the point is outside the grid or lands on blank cells.
+  private func wordText(at pt: NSPoint) -> String? {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snap = session.snapshot(),
+      let cell = termCell(at: pt)
+    else { return nil }
+    defer { laban_snapshot_destroy(snap) }
+    let bounds = TerminalSelectionInput.wordBounds(
+      row: cell.row, col: cell.col, in: snap.pointee)
+    let word = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: cell.row, col: bounds.start),
+      focus: TerminalCellCoordinate(row: cell.row, col: bounds.end)
+    ).selectedText(from: snap.pointee)
+    return word.isEmpty ? nil : word
+  }
+
+  /// Resolve `candidate` to a file (relative paths use the session's OSC 7 /
+  /// process-metadata cwd) and show it in the shared Quick Look panel. No-op
+  /// when the candidate does not name an existing file.
+  private func presentQuickLook(for candidate: String?) {
+    guard let candidate else { return }
+    let cwd =
+      model.activeTab
+      .flatMap { model.session(forTab: $0.id) }?
+      .processMetadata()?.cwd
+    guard let url = TerminalQuickLook.fileURL(for: candidate, workingDirectory: cwd) else {
+      EventLog.shared.log("quicklook.miss", ["candidate": candidate])
+      return
+    }
+    quickLookPreviewURL = url
+    EventLog.shared.log("quicklook.show", ["path": url.path])
+    guard let panel = QLPreviewPanel.shared() else { return }
+    if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
+      panel.reloadData()
+    } else {
+      panel.makeKeyAndOrderFront(nil)
+    }
+  }
+
+  override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+    quickLookPreviewURL != nil
+  }
+
+  override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+    panel.dataSource = self
+    panel.delegate = self
+  }
+
+  override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+    quickLookPreviewURL = nil
+  }
+
+  func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+    quickLookPreviewURL == nil ? 0 : 1
+  }
+
+  func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+    quickLookPreviewURL as NSURL?
   }
 
   @objc func paste(_ sender: Any?) {
@@ -4369,6 +4461,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     if menuItem.action == #selector(TerminalBitmapView.toggleCapture(_:)) {
       menuItem.title = TerminalCaptureIndicator.menuTitle(active: isCaptureActive)
       return true
+    }
+    // Quick Look needs a selection to name a file; disable it otherwise.
+    if menuItem.action == #selector(TerminalBitmapView.quickLookSelection(_:)) {
+      return selectionAnchor != nil && selectionFocus != nil
     }
     return true
   }
