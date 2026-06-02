@@ -37,10 +37,21 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   private var handlesBySessionId: [String: UInt64] = [:]
   private var descriptorsByHandle: [UInt64: LabptySessionDescriptor] = [:]
   private var negotiatedCapabilities: Set<String>?
+  /// Optional self-heal hook. If a reconnect fails mid-session (typically
+  /// because labpty crashed), this is invoked to bring a fresh daemon back up
+  /// before retrying the connect. labpty has no crash persistence, so prior
+  /// sessions are gone; this only keeps the app from wedging against a dead
+  /// socket. nil for transient/throwaway clients (e.g. reachability probes).
+  private let ensureDaemonRunning: (() throws -> Void)?
 
-  public init(socketPath: String, rpcTimeoutMilliseconds: Int = 2_000) throws {
+  public init(
+    socketPath: String,
+    rpcTimeoutMilliseconds: Int = 2_000,
+    ensureDaemonRunning: (() throws -> Void)? = nil
+  ) throws {
     self.socketPath = socketPath
     self.rpcTimeoutMilliseconds = rpcTimeoutMilliseconds
+    self.ensureDaemonRunning = ensureDaemonRunning
     fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
   }
 
@@ -307,7 +318,18 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
 
   private func ensureConnectedLocked() throws {
     if fd >= 0 { return }
-    fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
+    do {
+      fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
+    } catch {
+      // The socket is gone — labpty most likely crashed mid-session. If we
+      // were handed a relaunch hook, spawn a fresh daemon on demand and retry
+      // the connect once. Sessions from the dead daemon are not recovered
+      // (labpty keeps its catalog in memory only); higher layers re-create
+      // sessions against the new daemon. Without a hook we surface the error.
+      guard let ensureDaemonRunning else { throw error }
+      try ensureDaemonRunning()
+      fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
+    }
   }
 
   private func closeLocked() {

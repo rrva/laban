@@ -590,10 +590,36 @@ final class MainWindowController: NSWindowController {
       environment["LABAN_LABPTY_SOCKET"].flatMap { $0.isEmpty ? nil : $0 }
       ?? baseURL.appendingPathComponent("labpty.sock").path
 
-    if let client = try? LabptyTerminalSessionClient(socketPath: socketPath) {
-      _ = try client.hello()
-      return (client, nil)
-    }
+    // Spawn labpty on demand if it is not already listening, and hand the
+    // long-lived client a hook that re-runs the same spawn if the connection
+    // drops mid-session (a labpty crash). labpty keeps its session catalog in
+    // memory only, so this brings up a fresh, empty daemon rather than
+    // restoring sessions — the point is that the app keeps working instead of
+    // wedging against a dead socket.
+    let process = try ensureLabptyDaemonRunning(
+      socketPath: socketPath, shmURL: shmURL, baseURL: baseURL, logURL: logURL)
+    let client = try LabptyTerminalSessionClient(
+      socketPath: socketPath,
+      ensureDaemonRunning: {
+        _ = try Self.ensureLabptyDaemonRunning(
+          socketPath: socketPath, shmURL: shmURL, baseURL: baseURL, logURL: logURL)
+      })
+    _ = try client.hello()
+    return (client, process)
+  }
+
+  /// Ensure a labpty daemon is listening at `socketPath`, spawning one if the
+  /// socket is not currently reachable. Returns the spawned `Process`, or nil
+  /// when an existing daemon already answered. Shared by first launch and the
+  /// mid-session self-heal hook handed to `LabptyTerminalSessionClient`.
+  @discardableResult
+  private static func ensureLabptyDaemonRunning(
+    socketPath: String,
+    shmURL: URL,
+    baseURL: URL,
+    logURL: URL
+  ) throws -> Process? {
+    if labptyDaemonIsReachable(socketPath: socketPath) { return nil }
 
     guard let executableURL = labptyExecutableURL() else {
       throw TerminalSessionClientError.protocolError(
@@ -624,25 +650,25 @@ final class MainWindowController: NSWindowController {
     try process.run()
 
     let deadline = Date().addingTimeInterval(5)
-    var lastError: Error?
     while Date() < deadline {
       if !process.isRunning {
         throw TerminalSessionClientError.protocolError(
           "labpty exited before socket was ready; see \(stderrURL.path)")
       }
-      do {
-        let client = try LabptyTerminalSessionClient(socketPath: socketPath)
-        _ = try client.hello()
-        return (client, process)
-      } catch {
-        lastError = error
-        usleep(50_000)
+      if labptyDaemonIsReachable(socketPath: socketPath) {
+        return process
       }
+      usleep(50_000)
     }
 
     process.terminate()
     throw TerminalSessionClientError.protocolError(
-      "timed out connecting to labpty at \(socketPath): \(String(describing: lastError))")
+      "timed out waiting for labpty socket at \(socketPath)")
+  }
+
+  /// True when a labpty daemon currently accepts connections on `socketPath`.
+  private static func labptyDaemonIsReachable(socketPath: String) -> Bool {
+    (try? LabptyTerminalSessionClient(socketPath: socketPath)) != nil
   }
 
   private static func connectOrStartLaband() throws -> (
