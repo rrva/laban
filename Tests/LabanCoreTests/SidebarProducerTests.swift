@@ -575,6 +575,36 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertFalse(rowTinted, "done tab must not tint the row")
   }
 
+  /// Regression: a tab whose stack mixes a notification/status line with
+  /// info lines was sized from `resolved.infoLines.count`, which excludes
+  /// those extra lines. The row then rendered more lines than it was sized
+  /// for, so the bottom line dropped below the row edge and crowded the next
+  /// tab (the "done ×2" screenshot). Every rendered line must stay within its
+  /// own row.
+  func testNotificationStackDoesNotSpillIntoNextTab() {
+    var tab = Tab(id: "t", position: 1, title: "gpu-work", isActive: false, sessionId: "s")
+    tab.titleMetadata.notification = TabNotification(text: "done", urgent: false, count: 2)
+    tab.titleMetadata.agentStatus = TabAgentStatus(statusText: "thinking")
+    tab.titleMetadata.workspace = TabWorkspaceMetadata(repoName: "sixten-runtime")
+
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let height: CGFloat = 600
+    let cmds = p.commands(tabs: [tab], activeTabId: "other", height: height)
+
+    // The single top tab occupies [tabY, tabY + rowHeight] with topInset 0.
+    let tabY = height - p.rowHeight
+    let origins = cmds.compactMap { cmd -> CGPoint? in
+      if case .glyphRun(let origin, _, _, _, _, _, _, _, _) = cmd { return origin }
+      return nil
+    }
+    XCTAssertFalse(origins.isEmpty)
+    for o in origins {
+      XCTAssertGreaterThanOrEqual(
+        o.y, tabY,
+        "tab text must stay within its row, not spill below into the next tab")
+    }
+  }
+
   /// An explicit OSC 21337 agent colour beats passive activity for the slot,
   /// but a real "needs you" state beats the agent colour.
   func testNeedsActionBeatsExplicitAgentDot() {

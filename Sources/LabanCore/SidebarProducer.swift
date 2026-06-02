@@ -143,13 +143,35 @@ public struct SidebarProducer {
         maxTitleScalars: titleMaxScalars,
         maxSubtitleScalars: infoMaxScalars
       )
-      // Vertical layout: title + up to three info lines, centered inside
-      // the fixed quad-height row. Centering keeps geometry stable across
-      // status changes (a normally-running tab stays the same row height as
-      // an exited one) while removing the empty bottom strip on tabs that
-      // only render two lines.
-      let infoCount = min(3, resolved.infoLines.count)
-      let drawnLines = 1 + infoCount
+      // Build the info-line stack before computing geometry. A notification
+      // or pushed agent status occupies a slot that is NOT in
+      // `resolved.infoLines`, so sizing the row from `infoLines` alone
+      // undercounts the rendered lines and the surplus line drops below the
+      // row edge into the next tab. Size off the stack that is actually drawn.
+      var displayLines: [(String, UInt32)] = []
+      if let notif = meta.notification {
+        // Keep it short and glanceable: the ◆ badge carries the signal, so the
+        // line is just a short urgency label plus an unread count — not the
+        // agent's full notification text (the native banner already has that).
+        let label = notif.urgent ? "needs you" : "done"
+        let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
+        displayLines.append((line, notif.urgent ? Theme.current.red : Theme.current.cursor))
+      }
+      if let st = agentStatus.statusText {
+        let color =
+          agentStatus.statusTextColor.flatMap(Self.parseHexColor)
+          ?? Theme.current.fg0
+        displayLines.append((st, color))
+      }
+      for line in resolved.infoLines.prefix(3 - displayLines.count) {
+        displayLines.append((line, Theme.current.dim0))
+      }
+
+      // Vertical layout: title + the info-line stack, centered inside the
+      // fixed quad-height row. Centering keeps geometry stable across status
+      // changes (a normally-running tab stays the same row height as an exited
+      // one) while removing the empty bottom strip on tabs with fewer lines.
+      let drawnLines = 1 + displayLines.count
       let edgePad: CGFloat = 4
       let stackHeight = CGFloat(drawnLines) * cellHeight
       let availableHeight = rowHeight - 2 * edgePad
@@ -263,30 +285,9 @@ public struct SidebarProducer {
         }
       }
 
-      // Build the info-line stack. When an agent has pushed a status
-      // text, it owns the first info slot — that's the most actionable
-      // signal on the tab right now, more than which folder or which
-      // binary is running. We keep a max of three info lines under the
-      // title; folder and branch follow, and the command line drops out
-      // when status takes its slot.
-      var displayLines: [(String, UInt32)] = []
-      if let notif = meta.notification {
-        // Keep it short and glanceable: the ◆ badge carries the signal, so the
-        // line is just a short urgency label plus an unread count — not the
-        // agent's full notification text (the native banner already has that).
-        let label = notif.urgent ? "needs you" : "done"
-        let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
-        displayLines.append((line, notif.urgent ? Theme.current.red : Theme.current.cursor))
-      }
-      if let st = agentStatus.statusText {
-        let color =
-          agentStatus.statusTextColor.flatMap(Self.parseHexColor)
-          ?? Theme.current.fg0
-        displayLines.append((st, color))
-      }
-      for line in resolved.infoLines.prefix(3 - displayLines.count) {
-        displayLines.append((line, Theme.current.dim0))
-      }
+      // Render the info-line stack assembled above the layout block, each
+      // line one cell below the previous. Status/notification slots already
+      // took priority over folder/branch/command when the stack was built.
       for (offset, entry) in displayLines.enumerated() {
         cmds.append(
           .glyphRun(
