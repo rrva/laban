@@ -1741,7 +1741,12 @@ public final class MetalRenderer: RendererBackend {
     }
 
     for cmd in commands {
-      guard case .rect(let rect, let color, _) = cmd else { continue }
+      // The `.preedit` mask is intentionally skipped here and re-emitted by the
+      // preedit pass below — AFTER the payload's own cell backgrounds — so it
+      // covers an app-rendered caret under the composition instead of being
+      // painted over by those backgrounds.
+      guard case .rect(let rect, let color, let source) = cmd, source != .preedit
+      else { continue }
       appendSolid(rect: rect, color: color)
     }
 
