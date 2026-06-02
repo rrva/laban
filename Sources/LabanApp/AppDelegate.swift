@@ -122,6 +122,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   /// AppKit logs a warning each launch and declines to restore window state.
   func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
+  /// Handle `ssh://` and `telnet://` URLs opened via the system — a clicked
+  /// link, `open ssh://host`, or Laban registered as the default handler. Each
+  /// URL maps to an argv that runs in a fresh tab; unsupported or malformed
+  /// URLs are logged and skipped.
+  func application(_ application: NSApplication, open urls: [URL]) {
+    var openedAny = false
+    for url in urls {
+      guard let argv = TerminalURLCommand.argv(for: url) else {
+        AppLog.app.error("ignoring unsupported URL: \(url.absoluteString)")
+        continue
+      }
+      do {
+        _ = try windowController?.openTab(runningArgv: argv)
+        EventLog.shared.log("url.open", ["scheme": url.scheme ?? "", "command": argv.first ?? ""])
+        openedAny = true
+      } catch {
+        AppLog.app.error("failed to open \(url.absoluteString): \(String(describing: error))")
+      }
+    }
+    if openedAny {
+      NSApp.activate(ignoringOtherApps: true)
+    }
+  }
+
   // MARK: Secure Keyboard Entry
 
   /// Toggle "Secure Keyboard Entry", mirroring Terminal.app: a user-controlled

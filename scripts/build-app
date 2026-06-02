@@ -169,6 +169,20 @@ cat > "${bundle_dir}/Info.plist" <<EOF
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Ragnar Rova</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.laban.LabanApp.remote-shell</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>ssh</string>
+                <string>telnet</string>
+            </array>
+        </dict>
+    </array>
 ${update_manifest_plist}
 </dict>
 </plist>
