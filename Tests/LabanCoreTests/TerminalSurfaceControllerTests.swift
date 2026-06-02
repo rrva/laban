@@ -9,6 +9,7 @@ import XCTest
 final class TerminalSurfaceControllerTests: XCTestCase {
   private final class RecordingSurfaceCaptureSink: TerminalSurfaceCaptureSink {
     var events: [CaptureTimelineEvent] = []
+    var frameCommands: [[FrameCommand]] = []
 
     func nextSequence() -> Int { events.count + 1 }
 
@@ -43,8 +44,48 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       scale: Double,
       backend: String
     ) -> CaptureFrameRef? {
-      nil
+      frameCommands.append(commands)
+      return nil
     }
+  }
+
+  private func commandKey(_ command: FrameCommand) -> String {
+    func rectKey(_ rect: CGRect) -> String {
+      String(
+        format: "%.4f,%.4f,%.4f,%.4f", rect.origin.x, rect.origin.y, rect.width, rect.height)
+    }
+    func pointKey(_ point: CGPoint) -> String {
+      String(format: "%.4f,%.4f", point.x, point.y)
+    }
+    switch command {
+    case .rect(let rect, let color, let source):
+      return "rect|\(rectKey(rect))|\(color)|\(source.rawValue)"
+    case .glyphRun(
+      let origin, let text, let foreground, let background, let attributes, let source,
+      let underlineStyle, let underlineColor, let hyperlink):
+      let scalars = text.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: ".")
+      return
+        "glyph|\(pointKey(origin))|chars=\(text.count)|scalars=\(scalars)|fg=\(foreground)"
+        + "|bg=\(background)|attrs=\(attributes.rawValue)|src=\(source.rawValue)"
+        + "|us=\(underlineStyle.rawValue)|uc=\(underlineColor.map(String.init) ?? "nil")"
+        + "|link=\(hyperlink ?? "nil")"
+    case .cursor(let rect, let color):
+      return "cursor|\(rectKey(rect))|\(color)"
+    case .selection(let rect, let color):
+      return "selection|\(rectKey(rect))|\(color)"
+    case .findMatch(let rect, let color):
+      return "findMatch|\(rectKey(rect))|\(color)"
+    case .findSelected(let rect, let color):
+      return "findSelected|\(rectKey(rect))|\(color)"
+    case .clip(let rect):
+      return "clip|\(rectKey(rect))"
+    case .texturedQuad(let rect, let resourceId, let source):
+      return "texturedQuad|\(rectKey(rect))|\(resourceId)|\(source.rawValue)"
+    }
+  }
+
+  private func commandKeys(_ commands: [FrameCommand]) -> [String] {
+    commands.map(commandKey)
   }
 
   func testBuildsSidebarAndTerminalFrameCommands() throws {
@@ -142,6 +183,53 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       return false
     }
     XCTAssertTrue(terminalGlyphCommands.isEmpty)
+  }
+
+  func testCaptureCommandStreamIgnoresCellPayloadPreference() throws {
+    func capturedCommands(
+      contentMode: TerminalSurfaceFrameContentMode
+    ) throws -> (commands: [String], returnedPayload: TerminalCellPayload?) {
+      var size = LabanTerminalSize()
+      size.rows = 4
+      size.cols = 40
+      let model = try AppModel(initialSize: size)
+      let tab = try XCTUnwrap(model.activeTab)
+      let session = try XCTUnwrap(model.session(forTab: tab.id))
+
+      _ = session.write(Array("\u{1B}[4mhello\u{1B}[0m capture\r\n".utf8))
+      _ = session.poll()
+
+      let sink = RecordingSurfaceCaptureSink()
+      let controller = TerminalSurfaceController(
+        model: model,
+        cellWidth: 8,
+        cellHeight: 16,
+        sidebarWidth: 200,
+        captureSink: sink)
+      let frame = try XCTUnwrap(
+        controller.makeFrame(
+          TerminalSurfaceFrameRequest(
+            frame: 1,
+            viewportWidth: 520,
+            viewportHeight: 64,
+            now: Date(timeIntervalSince1970: 1_234),
+            reduceMotion: true,
+            requireActiveSnapshot: true,
+            surfaceWidth: 520,
+            surfaceHeight: 64,
+            surfaceScale: 1,
+            contentMode: contentMode)))
+
+      XCTAssertEqual(sink.frameCommands.count, 1)
+      return (commandKeys(try XCTUnwrap(sink.frameCommands.first)), frame.cellPayload)
+    }
+
+    let classic = try capturedCommands(contentMode: .commands)
+    let payloadPreferred = try capturedCommands(contentMode: .cellPayloadPreferred)
+
+    XCTAssertNil(classic.returnedPayload)
+    XCTAssertNil(payloadPreferred.returnedPayload)
+    XCTAssertEqual(payloadPreferred.commands, classic.commands)
   }
 
   func testCellPayloadModeKeepsTextDecorationsOnPayloadPath() throws {
