@@ -1,0 +1,55 @@
+#!/usr/bin/env sh
+# Fast local pre-push gate. Runs the cheap, high-signal subset of
+# scripts/check so pushes stay honest without burning CI minutes (laban is a
+# private repo on the free GitHub tier). The heavy formal-method gates
+# (TLA+/CBMC/fuzz/coverage/e2e) are intentionally NOT here — run the full
+# `scripts/check` manually before a release.
+#
+# Install:    scripts/install-git-hooks
+# Skip once:  PRE_PUSH_SKIP=1 git push ...
+# With tests: PRE_PUSH_TEST=1 git push ...   (off by default to stay fast)
+set -eu
+
+if [ "${PRE_PUSH_SKIP:-0}" = "1" ]; then
+  printf 'pre-push: skipped (PRE_PUSH_SKIP=1)\n'
+  exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+fail() {
+  printf 'pre-push failed: %s\n' "$1" >&2
+  printf 'pre-push: bypass once with `PRE_PUSH_SKIP=1 git push`\n' >&2
+  exit 1
+}
+
+# 1. Whitespace / leftover conflict-marker errors.
+git diff --check || fail "whitespace or merge-marker errors (git diff --check)"
+
+# 2. AGENTS.md stays map-sized — the scripts/check gate, caught locally.
+if [ -f AGENTS.md ]; then
+  agents_lines=$(wc -l < AGENTS.md | tr -d ' ')
+  if [ "$agents_lines" -gt 100 ]; then
+    fail "AGENTS.md should stay map-sized; found ${agents_lines} lines"
+  fi
+fi
+
+if [ -f Package.swift ]; then
+  # 3. swift-format lint (fast).
+  ./scripts/lint || fail "swift-format lint"
+
+  # 4. Build. Ensure the vendored VT header is present first (no-op once built).
+  if [ ! -f .external/libghostty-vt/zig-out/include/ghostty/vt.h ]; then
+    ./scripts/fetch-libghostty-vt || fail "fetch-libghostty-vt"
+  fi
+  swift build || fail "swift build"
+
+  # 5. Tests are opt-in: the stress/fuzz suites are slow, so keep the default
+  #    push fast and run them on request.
+  if [ "${PRE_PUSH_TEST:-0}" = "1" ]; then
+    swift test || fail "swift test"
+  fi
+fi
+
+printf 'pre-push: fast gates passed\n'
