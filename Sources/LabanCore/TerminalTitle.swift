@@ -10,40 +10,65 @@ enum TerminalTitle {
   static func sanitize(_ raw: String?, maxScalars: Int = maxLength) -> String? {
     guard let raw, !raw.isEmpty else { return nil }
     guard maxScalars > 0 else { return nil }
-    var result = ""
-    result.reserveCapacity(min(raw.count, maxScalars))
+
+    // Build into a scalar buffer in one pass: per-scalar growth of a `String`
+    // bridges/retains on every append, and `scalar.properties.isWhitespace`
+    // hits the Unicode property database for every scalar. Titles are almost
+    // entirely ASCII, so fast-path that and consult Unicode only for the rest.
+    var scalars: [Unicode.Scalar] = []
+    scalars.reserveCapacity(raw.unicodeScalars.count)
     var lastWasSpace = false
     for scalar in raw.unicodeScalars {
       let v = scalar.value
       if v == 0x09 || v == 0x0A || v == 0x0D {
         if !lastWasSpace {
-          result.append(" ")
+          scalars.append(" ")
           lastWasSpace = true
         }
       } else if v < 0x20 || v == 0x7F || (v >= 0x80 && v <= 0x9F) {
         // remove other control characters
       } else {
-        result.unicodeScalars.append(scalar)
-        lastWasSpace = scalar.properties.isWhitespace
+        scalars.append(scalar)
+        // Among scalars reaching this branch the only ASCII whitespace is
+        // U+0020; everything else ASCII is non-whitespace, so skip the
+        // property lookup for the common case.
+        lastWasSpace = v < 0x80 ? (v == 0x20) : scalar.properties.isWhitespace
       }
     }
-    result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-    if result.isEmpty { return nil }
-    result = prefixScalars(result, maxScalars: maxScalars)
-    return result
+
+    // Trim leading/trailing whitespace. Control chars are already gone and
+    // tab/LF/CR are collapsed to U+0020, so the remaining whitespace is
+    // U+0020 plus non-ASCII Unicode whitespace — the White_Space property
+    // matches CharacterSet.whitespacesAndNewlines on this content.
+    var lo = 0
+    var hi = scalars.count
+    while lo < hi, isTrimmableWhitespace(scalars[lo]) { lo += 1 }
+    while hi > lo, isTrimmableWhitespace(scalars[hi - 1]) { hi -= 1 }
+    if lo >= hi { return nil }
+
+    // Cap after trimming (matches the previous trim-then-prefix order), so a
+    // single buffer build replaces the former second `prefixScalars` pass.
+    let count = min(hi - lo, maxScalars)
+    var view = String.UnicodeScalarView()
+    view.reserveCapacity(count)
+    view.append(contentsOf: scalars[lo..<(lo + count)])
+    return String(view)
+  }
+
+  private static func isTrimmableWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+    let v = scalar.value
+    if v < 0x80 { return v == 0x20 }
+    return scalar.properties.isWhitespace
   }
 
   static func prefixScalars(_ value: String, maxScalars: Int) -> String {
     guard maxScalars >= 0 else { return "" }
-    var result = ""
-    result.reserveCapacity(min(value.count, maxScalars))
-    var count = 0
-    for scalar in value.unicodeScalars {
-      guard count < maxScalars else { break }
-      result.unicodeScalars.append(scalar)
-      count += 1
-    }
-    return result
+    let scalars = value.unicodeScalars
+    guard scalars.count > maxScalars else { return value }
+    var view = String.UnicodeScalarView()
+    view.reserveCapacity(maxScalars)
+    view.append(contentsOf: scalars.prefix(maxScalars))
+    return String(view)
   }
 
   static func scalarCount(_ value: String) -> Int {

@@ -64,6 +64,29 @@ final class TerminalTitleTests: XCTestCase {
   func testOscStyleTitle() {
     XCTAssertEqual(TerminalTitle.sanitize("Hello Effects"), "Hello Effects")
   }
+
+  func testLiteralSpaceRunsPreserved() {
+    // Only tab/LF/CR collapse to a single space; consecutive literal spaces
+    // are kept verbatim.
+    XCTAssertEqual(TerminalTitle.sanitize("a  b"), "a  b")
+  }
+
+  func testNonBreakingSpaceTrimmedAtEdges() {
+    XCTAssertEqual(TerminalTitle.sanitize("\u{00A0}zsh\u{00A0}"), "zsh")
+  }
+
+  func testCapAppliesAfterTrim() {
+    // Leading whitespace is trimmed before the scalar cap is applied.
+    let raw = "    " + String(repeating: "a", count: 10)
+    XCTAssertEqual(TerminalTitle.sanitize(raw, maxScalars: 5), "aaaaa")
+  }
+
+  func testSanitizeIsIdempotent() {
+    for input in ["zsh", "vim /etc/hosts", "  a\tb  ", "a\u{01}b", "répo@wörk"] {
+      let once = TerminalTitle.sanitize(input)
+      XCTAssertEqual(TerminalTitle.sanitize(once), once)
+    }
+  }
 }
 
 final class AppModelTitleTests: XCTestCase {
