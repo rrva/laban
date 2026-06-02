@@ -50,6 +50,54 @@ public struct FrameProducer {
   private static let invisibleRaw: UInt16 = TextAttributes.invisible.rawValue
   private static let underlineRaw: UInt16 = TextAttributes.underline.rawValue
 
+  private struct ResolvedCellVisuals {
+    var foreground: UInt32
+    var background: UInt32
+    var attrsRaw: UInt16
+    var underlineStyle: UnderlineStyle
+    var underlineColor: UInt32?
+    var hyperlink: String?
+
+    var attributes: TextAttributes { TextAttributes(rawValue: attrsRaw) }
+    var hasHyperlink: Bool { hyperlink != nil }
+    var isInvisible: Bool { (attrsRaw & FrameProducer.invisibleRaw) != 0 }
+  }
+
+  private static func resolvedVisuals(
+    for cell: LabanCell,
+    hyperlinkURIs: [String]
+  ) -> ResolvedCellVisuals {
+    var attrsRaw = (cell.flags & renderableMaskRaw) & ~inverseRaw
+    let background = cell.background_rgba
+    let foreground =
+      (attrsRaw & faintRaw) != 0
+      ? blend(cell.foreground_rgba, toward: background, foregroundWeight: 0.50)
+      : cell.foreground_rgba
+    var underlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
+    var underlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
+    let hyperlink: String? = {
+      let id = Int(cell.hyperlink_id)
+      guard id > 0, id <= hyperlinkURIs.count else { return nil }
+      return hyperlinkURIs[id - 1]
+    }()
+    if hyperlink != nil {
+      if underlineStyle == .none && (attrsRaw & underlineRaw) == 0 {
+        underlineStyle = .single
+      }
+      if underlineColor == nil {
+        underlineColor = Theme.current.blue
+      }
+      attrsRaw |= underlineRaw
+    }
+    return ResolvedCellVisuals(
+      foreground: foreground,
+      background: background,
+      attrsRaw: attrsRaw,
+      underlineStyle: underlineStyle,
+      underlineColor: underlineColor,
+      hyperlink: hyperlink)
+  }
+
   // Caller owns the snapshot lifetime; FrameProducer does not retain it.
   public func commands(
     from snap: UnsafePointer<LabanSnapshot>,
@@ -592,35 +640,13 @@ public struct FrameProducer {
           continue
         }
 
-        let attrs = TextAttributes(rawValue: cell.flags)
-          .intersection(.renderableMask)
-          .subtracting(.inverse)
-        let cellBg = cell.background_rgba
-        let cellFg =
-          attrs.contains(.faint)
-          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
-          : cell.foreground_rgba
-        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
-        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
-        let hasHyperlink: Bool = {
-          let id = Int(cell.hyperlink_id)
-          return id > 0 && id <= hyperlinkURIs.count
-        }()
-        var cellAttrs = attrs
-        if hasHyperlink {
-          if cellUnderlineStyle == .none && !cellAttrs.contains(.underline) {
-            cellUnderlineStyle = .single
-          }
-          if cellUnderlineColor == nil {
-            cellUnderlineColor = Theme.current.blue
-          }
-          cellAttrs.insert(.underline)
-        }
+        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+        let cellAttrs = visuals.attributes
 
         if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {
           markFallback(.unsupportedAttributes)
         }
-        if attrs.contains(.invisible) {
+        if visuals.isInvisible {
           pendingSpacerAfterLastGlyph = false
           continue
         }
@@ -655,7 +681,7 @@ public struct FrameProducer {
                 row: row,
                 col: col,
                 scalarValue: scalarValue,
-                foreground: cellFg))
+                foreground: visuals.foreground))
             continue
           }
           let glyph = TerminalCellPayload.Glyph(
@@ -663,12 +689,12 @@ public struct FrameProducer {
             col: col,
             text: "",
             scalarValue: scalarValue,
-            foreground: cellFg,
-            background: cellBg,
+            foreground: visuals.foreground,
+            background: visuals.background,
             attributes: cellAttrs,
-            underlineStyle: cellUnderlineStyle,
-            underlineColor: cellUnderlineColor,
-            hasHyperlink: hasHyperlink,
+            underlineStyle: visuals.underlineStyle,
+            underlineColor: visuals.underlineColor,
+            hasHyperlink: visuals.hasHyperlink,
             wide: cell.wide)
           if pendingSpacerAfterLastGlyph {
             appendGlyphOrMergeAfterSpacer(
@@ -689,12 +715,12 @@ public struct FrameProducer {
             col: col,
             text: "",
             scalarValue: nil,
-            foreground: cellFg,
-            background: cellBg,
+            foreground: visuals.foreground,
+            background: visuals.background,
             attributes: cellAttrs,
-            underlineStyle: cellUnderlineStyle,
-            underlineColor: cellUnderlineColor,
-            hasHyperlink: hasHyperlink,
+            underlineStyle: visuals.underlineStyle,
+            underlineColor: visuals.underlineColor,
+            hasHyperlink: visuals.hasHyperlink,
             wide: cell.wide)
           if pendingSpacerAfterLastGlyph {
             appendGlyphOrMergeAfterSpacer(
@@ -817,33 +843,9 @@ public struct FrameProducer {
           continue
         }
 
-        // Renderable flags minus inverse, as raw bits (the C bridge already
-        // swapped fg/bg for inverse video).
-        let attrsRaw = (cell.flags & FrameProducer.renderableMaskRaw) & ~FrameProducer.inverseRaw
-        let cellBg = cell.background_rgba
-        let cellFg =
-          (attrsRaw & FrameProducer.faintRaw) != 0
-          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
-          : cell.foreground_rgba
-        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
-        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
-        let cellHyperlink: String? = {
-          let id = Int(cell.hyperlink_id)
-          guard id > 0, id <= hyperlinkURIs.count else { return nil }
-          return hyperlinkURIs[id - 1]
-        }()
-        var cellAttrsRaw = attrsRaw
-        if cellHyperlink != nil {
-          if cellUnderlineStyle == .none && (cellAttrsRaw & FrameProducer.underlineRaw) == 0 {
-            cellUnderlineStyle = .single
-          }
-          if cellUnderlineColor == nil {
-            cellUnderlineColor = Theme.current.blue
-          }
-          cellAttrsRaw |= FrameProducer.underlineRaw
-        }
+        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
 
-        guard hasContent, (attrsRaw & FrameProducer.invisibleRaw) == 0, let storage else {
+        guard hasContent, !visuals.isInvisible, let storage else {
           flushRun()
           pendingSpacer = false
           continue
@@ -889,7 +891,7 @@ public struct FrameProducer {
             at: CGPoint(x: cellX, y: cellY),
             cellWidth: cw,
             cellHeight: ch,
-            foreground: cellFg
+            foreground: visuals.foreground
           ) {
             cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
           }
@@ -897,10 +899,11 @@ public struct FrameProducer {
         }
 
         let sameStyle =
-          runFg == cellFg && runBg == cellBg && runAttrsRaw == cellAttrsRaw
-          && runUnderlineStyle == cellUnderlineStyle
-          && runUnderlineColor == cellUnderlineColor
-          && runHyperlink == cellHyperlink
+          runFg == visuals.foreground && runBg == visuals.background
+          && runAttrsRaw == visuals.attrsRaw
+          && runUnderlineStyle == visuals.underlineStyle
+          && runUnderlineColor == visuals.underlineColor
+          && runHyperlink == visuals.hyperlink
 
         if runStart != nil, sameStyle {
           if pendingSpacer {
@@ -919,12 +922,12 @@ public struct FrameProducer {
               flushRun()
               pendingSpacer = false
               runStart = col
-              runFg = cellFg
-              runBg = cellBg
-              runAttrsRaw = cellAttrsRaw
-              runUnderlineStyle = cellUnderlineStyle
-              runUnderlineColor = cellUnderlineColor
-              runHyperlink = cellHyperlink
+              runFg = visuals.foreground
+              runBg = visuals.background
+              runAttrsRaw = visuals.attrsRaw
+              runUnderlineStyle = visuals.underlineStyle
+              runUnderlineColor = visuals.underlineColor
+              runHyperlink = visuals.hyperlink
               runBytes.removeAll(keepingCapacity: true)
               runBytes.append(contentsOf: cellBytes)
             }
@@ -935,12 +938,12 @@ public struct FrameProducer {
           flushRun()
           pendingSpacer = false
           runStart = col
-          runFg = cellFg
-          runBg = cellBg
-          runAttrsRaw = cellAttrsRaw
-          runUnderlineStyle = cellUnderlineStyle
-          runUnderlineColor = cellUnderlineColor
-          runHyperlink = cellHyperlink
+          runFg = visuals.foreground
+          runBg = visuals.background
+          runAttrsRaw = visuals.attrsRaw
+          runUnderlineStyle = visuals.underlineStyle
+          runUnderlineColor = visuals.underlineColor
+          runHyperlink = visuals.hyperlink
           runBytes.removeAll(keepingCapacity: true)
           runBytes.append(contentsOf: cellBytes)
         }
@@ -1019,39 +1022,10 @@ public struct FrameProducer {
           continue
         }
 
-        // The C bridge already swaps fg/bg for inverse video, so .inverse is
-        // dropped here to keep downstream consumers from double-inverting.
-        let attrs = TextAttributes(rawValue: cell.flags)
-          .intersection(.renderableMask)
-          .subtracting(.inverse)
-        let cellBg = cell.background_rgba
-        let cellFg =
-          attrs.contains(.faint)
-          ? FrameProducer.blend(cell.foreground_rgba, toward: cellBg, foregroundWeight: 0.50)
-          : cell.foreground_rgba
-        var cellUnderlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
-        var cellUnderlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
-        let cellHyperlink: String? = {
-          let id = Int(cell.hyperlink_id)
-          guard id > 0, id <= hyperlinkURIs.count else { return nil }
-          return hyperlinkURIs[id - 1]
-        }()
-        // Default link styling: a single underline in the accent color when
-        // the cell carries a hyperlink and the SGR didn't already set one.
-        // Lets users see and click on links without making the renderer
-        // theme-aware everywhere.
-        var cellAttrs = attrs
-        if cellHyperlink != nil {
-          if cellUnderlineStyle == .none && !cellAttrs.contains(.underline) {
-            cellUnderlineStyle = .single
-          }
-          if cellUnderlineColor == nil {
-            cellUnderlineColor = Theme.current.blue
-          }
-          cellAttrs.insert(.underline)
-        }
+        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+        let cellAttrs = visuals.attributes
 
-        if hasContent, !attrs.contains(.invisible), let storage = snapshot.utf8_storage {
+        if hasContent, !visuals.isInvisible, let storage = snapshot.utf8_storage {
           let offset = Int(cell.utf8_offset)
           let length = Int(cell.utf8_length)
           let ptr = UnsafeRawPointer(storage).advanced(by: offset)
@@ -1075,7 +1049,7 @@ public struct FrameProducer {
                 at: CGPoint(x: cellX, y: cellY),
                 cellWidth: cw,
                 cellHeight: ch,
-                foreground: cellFg
+                foreground: visuals.foreground
               ) {
                 cmds.append(.rect(filled.rect, color: filled.color, source: .terminal))
               }
@@ -1083,10 +1057,10 @@ public struct FrameProducer {
             }
 
             let sameStyle =
-              runFg == cellFg && runBg == cellBg && runAttrs == cellAttrs
-              && runUnderlineStyle == cellUnderlineStyle
-              && runUnderlineColor == cellUnderlineColor
-              && runHyperlink == cellHyperlink
+              runFg == visuals.foreground && runBg == visuals.background && runAttrs == cellAttrs
+              && runUnderlineStyle == visuals.underlineStyle
+              && runUnderlineColor == visuals.underlineColor
+              && runHyperlink == visuals.hyperlink
 
             if runStart != nil, sameStyle {
               if pendingSpacer {
@@ -1102,12 +1076,12 @@ public struct FrameProducer {
                   flushRun()
                   pendingSpacer = false
                   runStart = col
-                  runFg = cellFg
-                  runBg = cellBg
+                  runFg = visuals.foreground
+                  runBg = visuals.background
                   runAttrs = cellAttrs
-                  runUnderlineStyle = cellUnderlineStyle
-                  runUnderlineColor = cellUnderlineColor
-                  runHyperlink = cellHyperlink
+                  runUnderlineStyle = visuals.underlineStyle
+                  runUnderlineColor = visuals.underlineColor
+                  runHyperlink = visuals.hyperlink
                   runText = text
                 }
               } else {
@@ -1117,12 +1091,12 @@ public struct FrameProducer {
               flushRun()
               pendingSpacer = false
               runStart = col
-              runFg = cellFg
-              runBg = cellBg
+              runFg = visuals.foreground
+              runBg = visuals.background
               runAttrs = cellAttrs
-              runUnderlineStyle = cellUnderlineStyle
-              runUnderlineColor = cellUnderlineColor
-              runHyperlink = cellHyperlink
+              runUnderlineStyle = visuals.underlineStyle
+              runUnderlineColor = visuals.underlineColor
+              runHyperlink = visuals.hyperlink
               runText = text
             }
           } else {
