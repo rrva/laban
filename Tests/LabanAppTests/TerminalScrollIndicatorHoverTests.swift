@@ -77,4 +77,35 @@ final class TerminalScrollIndicatorHoverTests: XCTestCase {
     XCTAssertTrue(vis.isHoverEdge, "a live edge hover persists across frames")
     XCTAssertTrue(vis.shouldHold, "hover-reveal holds the thumb at the bottom")
   }
+
+  /// Performance: while the thumb is hidden at the live bottom, streaming output
+  /// changes the viewport input every frame (totalRows grows) but nothing is on
+  /// screen — so no Core Animation layout pass should run. Becoming visible
+  /// (scrolling back) must lay out again.
+  func testHiddenThumbSkipsLayoutWhileStreaming() {
+    let view = TerminalScrollIndicatorView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+    view.layoutSubtreeIfNeeded()
+    view.pointerInHoverZoneProbe = { false }
+
+    // Settle at the live bottom with no hover: the thumb stays hidden.
+    for total in 200...205 { applyAtBottom(view, total: total) }
+    XCTAssertEqual(
+      view.debugVisibility().thumbOpacity, 0, accuracy: 0.001,
+      "no hover at the live bottom keeps the thumb hidden")
+
+    let baseline = view.layoutPassCountForTesting
+    for total in 206...260 { applyAtBottom(view, total: total) }
+    XCTAssertEqual(
+      view.layoutPassCountForTesting, baseline,
+      "a hidden thumb must not lay out while streaming at the live bottom")
+
+    // Scrolling back to the top makes the thumb visible and must lay out again.
+    view.applyViewport(
+      viewportOffset: 0, totalRows: 260, viewportRows: 40,
+      isAltScreen: false, isMouseTracking: false)
+    XCTAssertGreaterThan(
+      view.layoutPassCountForTesting, baseline, "becoming visible triggers a layout pass")
+    XCTAssertGreaterThan(
+      view.debugVisibility().thumbOpacity, 0, "a scrolled-back thumb is visible")
+  }
 }

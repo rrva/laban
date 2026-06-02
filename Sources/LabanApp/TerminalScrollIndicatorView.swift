@@ -45,6 +45,13 @@ final class TerminalScrollIndicatorView: NSView {
   // as scroll activity that (re)arms the idle-hide countdown; output that grows
   // the buffer while the viewport stays pinned to the bottom must not.
   private var lastLinesBack = 0
+  // Cached pill measurement. `fittingSize` runs AppKit auto-layout, so it is
+  // only recomputed when the pill text actually changes.
+  private var lastPillText: String?
+  private var lastPillFittedSize: NSSize = .zero
+  // Test hook: counts layoutFromOutput passes so a test can assert the
+  // hidden-thumb streaming path performs no Core Animation layout.
+  private(set) var layoutPassCountForTesting = 0
   private var isHoverEdge = false
   private var idleHideWorkItem: DispatchWorkItem?
   private var trackingArea: NSTrackingArea?
@@ -273,7 +280,14 @@ final class TerminalScrollIndicatorView: NSView {
     )
     lastLinesBack = linesBack
     lastOutput = output
-    layoutFromOutput()
+    // While the thumb stays hidden, skip the Core Animation layout entirely.
+    // During sustained streaming at the live bottom `input` changes every frame
+    // (rows keep arriving) but nothing is on screen, so laying out the invisible
+    // thumb — and measuring the pill — is pure waste. The thumb reappears via
+    // `.hold`, which lays out then with the current output.
+    if !(action == .keep && !wasVisible) {
+      layoutFromOutput()
+    }
 
     switch action {
     case .hold:
@@ -292,6 +306,7 @@ final class TerminalScrollIndicatorView: NSView {
   }
 
   private func layoutFromOutput() {
+    layoutPassCountForTesting += 1
     guard lastOutput.thumbFraction > 0 else { return }
     let trackTop = bounds.height - Self.topInset
     let trackBottom = Self.bottomInset
@@ -320,16 +335,22 @@ final class TerminalScrollIndicatorView: NSView {
 
     // Pill: top-right, just under the titlebar reserve, left of the thumb.
     // Opacity (not isHidden) controls visibility — keeps the view in the tree
-    // so the fade animation can run when scrolledBack flips.
+    // so the fade animation can run when scrolledBack flips. Only measure and
+    // reposition while the pill is shown; `fittingSize` runs AppKit layout, so a
+    // held-visible pill reuses the cached size until its text changes.
     if lastOutput.pillVisible {
-      pillLabel.stringValue = lastOutput.pillText
+      if lastOutput.pillText != lastPillText {
+        pillLabel.stringValue = lastOutput.pillText
+        lastPillText = lastOutput.pillText
+        lastPillFittedSize = pillContainer.fittingSize
+      }
+      let pillSize = lastPillFittedSize
+      let pillX = bounds.maxX - Self.edgeInset - Self.thumbWidthHover - 6 - pillSize.width
+      let pillY = trackTop - pillSize.height
+      pillContainer.frame = NSRect(
+        x: max(pillX, 0), y: max(pillY, 0),
+        width: pillSize.width, height: pillSize.height)
     }
-    let pillSize = pillContainer.fittingSize
-    let pillX = bounds.maxX - Self.edgeInset - Self.thumbWidthHover - 6 - pillSize.width
-    let pillY = trackTop - pillSize.height
-    pillContainer.frame = NSRect(
-      x: max(pillX, 0), y: max(pillY, 0),
-      width: pillSize.width, height: pillSize.height)
   }
 
   private func setThumbOpacity(_ value: Float, animated: Bool) {
