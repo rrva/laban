@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import XCTest
 
 @testable import LabanRenderer
@@ -183,6 +184,63 @@ final class LabanRendererSmokeTests: XCTestCase {
         }
       }
     }
+  }
+
+  func testNarrowTerminalArrowFallbackDoesNotPaintIntoNextCell() throws {
+    let defaults = UserDefaults.standard
+    let previousFont = defaults.object(forKey: FontAtlas.userFontKey)
+    defaults.set("Helvetica", forKey: FontAtlas.userFontKey)
+    defer {
+      if let previousFont {
+        defaults.set(previousFont, forKey: FontAtlas.userFontKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontKey)
+      }
+    }
+
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard CTFontCopyPostScriptName(fontAtlas.font) as String == "Helvetica" else {
+      throw XCTSkip("Helvetica was not available as a controllable fallback probe font")
+    }
+    let cellW = Int(fontAtlas.cellSize.width)
+    guard Self.rawFallbackLineWidth("↳", font: fontAtlas.font) > CGFloat(cellW) + 0.5 else {
+      throw XCTSkip("system default fallback is already within one cell for U+21B3")
+    }
+
+    let cellH = Int(fontAtlas.cellSize.height)
+    let bg: UInt32 = 0x10_20_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let surface = BitmapSurface(width: cellW * 2, height: cellH)
+    let renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+
+    renderer.render([
+      .rect(CGRect(x: 0, y: 0, width: cellW * 2, height: cellH), color: bg, source: .terminal),
+      .glyphRun(
+        origin: .zero, text: "↳", foreground: fg, background: bg,
+        attributes: [], source: .terminal),
+    ])
+
+    for x in cellW..<(cellW * 2) {
+      for y in 0..<cellH {
+        if let pixel = surface.pixel(x: x, y: y), pixel != bg {
+          XCTFail("U+21B3 fallback painted into next terminal cell at (\(x),\(y))")
+          return
+        }
+      }
+    }
+  }
+
+  private static func rawFallbackLineWidth(_ text: String, font: CTFont) -> CGFloat {
+    let attrStr = NSMutableAttributedString(string: text)
+    attrStr.addAttribute(
+      kCTFontAttributeName as NSAttributedString.Key,
+      value: font,
+      range: NSRange(location: 0, length: attrStr.length))
+    let line = CTLineCreateWithAttributedString(attrStr)
+    var ascent: CGFloat = 0
+    var descent: CGFloat = 0
+    var leading: CGFloat = 0
+    return CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
   }
 
   // MARK: - PNG encoding

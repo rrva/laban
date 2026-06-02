@@ -363,6 +363,38 @@ final class MetalRendererSmokeTests: XCTestCase {
     }
   }
 
+  func testMetalGlyphAtlasPrefersMonospacedFallbackForNarrowTerminalArrow() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let font = CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+    let cellW: CGFloat = 9
+    let rawWidth = Self.rawFallbackLineWidth("↳", font: font)
+    guard rawWidth > cellW * 1.25 else {
+      throw XCTSkip("system default fallback is already narrow for U+21B3")
+    }
+
+    guard
+      let atlas = MetalGlyphAtlas(
+        device: device,
+        cellWidth: cellW,
+        cellHeight: 19,
+        descent: 4,
+        scale: 1,
+        textureSize: 128)
+    else {
+      XCTFail("MetalGlyphAtlas.init returned nil")
+      return
+    }
+
+    let entry = try XCTUnwrap(
+      atlas.entry(character: "↳", font: font, boldFallback: false, italicFallback: false))
+    XCTAssertLessThanOrEqual(
+      entry.logicalWidth,
+      cellW * 1.25,
+      "width-1 terminal arrows should prefer monospaced fallback over proportional CoreText fallback")
+  }
+
   func testMetalGlyphAtlasGrowsAfterOverflow() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -411,5 +443,18 @@ final class MetalRendererSmokeTests: XCTestCase {
     XCTAssertNotNil(blank)
     XCTAssertNotNil(withText)
     XCTAssertNotEqual(blank, withText)
+  }
+
+  private static func rawFallbackLineWidth(_ text: String, font: CTFont) -> CGFloat {
+    let attrStr = NSMutableAttributedString(string: text)
+    attrStr.addAttribute(
+      kCTFontAttributeName as NSAttributedString.Key,
+      value: font,
+      range: NSRange(location: 0, length: attrStr.length))
+    let line = CTLineCreateWithAttributedString(attrStr)
+    var ascent: CGFloat = 0
+    var descent: CGFloat = 0
+    var leading: CGFloat = 0
+    return CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
   }
 }

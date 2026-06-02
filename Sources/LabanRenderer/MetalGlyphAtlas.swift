@@ -354,19 +354,12 @@ public final class MetalGlyphAtlas {
   }
 
   private func fallbackLine(text: String, font: CTFont) -> CTLine {
-    let attrStr = NSMutableAttributedString(string: text)
-    let range = NSRange(location: 0, length: attrStr.length)
-    attrStr.addAttribute(
-      kCTFontAttributeName as NSAttributedString.Key,
-      value: font,
-      range: range
+    TerminalGlyphFallback.fallbackLine(
+      text: text,
+      font: font,
+      cellAdvance: cellWidth,
+      foreground: CGColor(gray: 1, alpha: 1)
     )
-    attrStr.addAttribute(
-      kCTForegroundColorAttributeName as NSAttributedString.Key,
-      value: CGColor(gray: 1, alpha: 1),
-      range: range
-    )
-    return CTLineCreateWithAttributedString(attrStr)
   }
 
   private func lookupGlyph(scalar: Unicode.Scalar, font: CTFont) -> CGGlyph? {
