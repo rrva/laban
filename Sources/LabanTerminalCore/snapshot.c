@@ -579,14 +579,15 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     if (dirty_rows && rows > 0 && dirty_state == GHOSTTY_RENDER_STATE_DIRTY_FULL) {
         memset(dirty_rows, 1, (size_t)rows);
     }
-    /* libghostty's per-row dirty bits track cell mutations, not screen swaps.
-     * Entering/exiting the alternate screen (?1049/?1047/?47) restores a
-     * buffer whose untouched rows stay clean even though every visible row
-     * changed. Force all rows dirty when the active screen differs from the
-     * one last rendered, so partial damage does not leave the previous
-     * screen's pixels in the renderer's persistent target (the "black flash"
-     * when quitting one full-screen TUI and starting another).
-     * last_rendered_active_screen is committed by mark_rendered. */
+    /* libghostty's per-row dirty bits track cell mutations, not every visible
+     * grid identity change. Entering/exiting the alternate screen
+     * (?1049/?1047/?47) restores a buffer whose untouched rows stay clean even
+     * though every visible row changed. Bottom-follow output and user scrollback
+     * can also change the viewport offset: the cells are valid, but they now
+     * refer to different absolute rows. Force all rows dirty when either value
+     * differs from the one last rendered, so partial damage does not leave the
+     * previous screen/viewport pixels in the renderer's persistent target.
+     * last_rendered_* is committed by mark_rendered. */
     {
         GhosttyTerminalScreen active_screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
         if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
@@ -596,6 +597,20 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
                 memset(dirty_rows, 1, (size_t)rows);
             }
             s->last_snapshot_active_screen = (int)active_screen;
+        }
+        GhosttyTerminalScrollbar scrollbar;
+        if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
+                == GHOSTTY_SUCCESS) {
+            int viewport_offset = (int)scrollbar.offset;
+            if (dirty_rows && rows > 0 &&
+                (!s->last_rendered_viewport_offset_valid ||
+                 viewport_offset != s->last_rendered_viewport_offset)) {
+                memset(dirty_rows, 1, (size_t)rows);
+            }
+            s->last_snapshot_viewport_offset = viewport_offset;
+            s->last_snapshot_viewport_offset_valid = 1;
+        } else {
+            s->last_snapshot_viewport_offset_valid = 0;
         }
     }
 
@@ -702,6 +717,10 @@ int laban_session_mark_rendered(LabanSession *session) {
      * race-free against the pty thread mutating state between snapshot and
      * mark_rendered. */
     session->last_rendered_active_screen = session->last_snapshot_active_screen;
+    if (session->last_snapshot_viewport_offset_valid) {
+        session->last_rendered_viewport_offset = session->last_snapshot_viewport_offset;
+        session->last_rendered_viewport_offset_valid = 1;
+    }
 
     return 0;
 }

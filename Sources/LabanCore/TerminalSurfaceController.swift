@@ -660,11 +660,13 @@ public final class TerminalSurfaceController {
     }
 
     var ranges: [DirtyYRange] = []
+    var dirtyRowCount = 0
     var row = 0
     while row < rows {
       if dirty[row] != 0 {
         var end = row
         while end < rows, dirty[end] != 0 { end += 1 }
+        dirtyRowCount += end - row
         let yBottom = originY + CGFloat(rows - end) * cellHeight
         let height = CGFloat(end - row) * cellHeight
         ranges.append(DirtyYRange(y: yBottom, height: height))
@@ -673,6 +675,7 @@ public final class TerminalSurfaceController {
         row += 1
       }
     }
+    if dirtyRowCount >= rows { return .full }
     return .partial(yRanges: ranges)
   }
 
@@ -727,14 +730,17 @@ public final class TerminalSurfaceController {
 
     var ranges: [DirtyYRange] = []
     ranges.reserveCapacity(dirtyRanges.count)
+    var dirtyRowCount = 0
     for dirtyRange in dirtyRanges {
       let start = max(0, min(rows, dirtyRange.startRow))
       let end = max(0, min(rows, dirtyRange.endRow))
       guard start < end else { continue }
+      dirtyRowCount += end - start
       let yBottom = originY + CGFloat(rows - end) * cellHeight
       let height = CGFloat(end - start) * cellHeight
       ranges.append(DirtyYRange(y: yBottom, height: height))
     }
+    if dirtyRowCount >= rows { return .full }
     return ranges.isEmpty ? .full : .partial(yRanges: ranges)
   }
 

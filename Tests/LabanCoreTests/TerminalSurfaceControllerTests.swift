@@ -185,6 +185,52 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(terminalGlyphCommands.isEmpty)
   }
 
+  func testBottomFollowOutputForcesFullDamageWhenViewportOffsetChanges() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 28
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 0)
+
+    func makeFrame(_ frame: Int, forceFull: Bool) throws -> TerminalSurfaceFrame {
+      try XCTUnwrap(
+        controller.makeFrame(
+          TerminalSurfaceFrameRequest(
+            frame: frame,
+            viewportWidth: 224,
+            viewportHeight: 64,
+            requireActiveSnapshot: true,
+            forceFullDamage: forceFull,
+            surfaceWidth: 224,
+            surfaceHeight: 64,
+            surfaceScale: 1,
+            contentMode: .cellPayloadPreferred)))
+    }
+
+    let initialOutput = (1...8).map { "old-\($0)" }.joined(separator: "\r\n") + "\r\n"
+    XCTAssertEqual(session.feedOutput(Array(initialOutput.utf8)), 0)
+    _ = try makeFrame(1, forceFull: true)
+    XCTAssertEqual(session.markRendered(), 0)
+    let before = try XCTUnwrap(session.viewportState()).viewportOffset
+
+    XCTAssertEqual(session.feedOutput(Array("new-bottom-line\r\n".utf8)), 0)
+    let next = try makeFrame(2, forceFull: false)
+    let after = try XCTUnwrap(session.viewportState()).viewportOffset
+    XCTAssertGreaterThan(after, before, "test setup must move the bottom-following viewport")
+
+    guard case .full = next.damage else {
+      XCTFail("viewport offset changes must force full damage, got \(next.damage)")
+      return
+    }
+    XCTAssertEqual(next.cellPayload?.dirtyRows, Array(0..<Int(size.rows)))
+  }
+
   func testCaptureCommandStreamIgnoresCellPayloadPreference() throws {
     func capturedCommands(
       contentMode: TerminalSurfaceFrameContentMode

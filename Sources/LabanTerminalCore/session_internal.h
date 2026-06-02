@@ -204,23 +204,30 @@ struct LabanSession {
 
     int title_dirty;     /* set to 1 by title-changed callback; cleared by consume */
 
-    /* Active screen (primary/alternate) tracking for renderer damage.
-     * libghostty's per-row dirty bits track cell mutations, not screen swaps:
-     * restoring the primary screen on ?1049l leaves its untouched rows clean
-     * even though every visible row changed. A snapshot forces all rows dirty
-     * when the active screen differs from the one that was last *rendered*, so
-     * the renderer's persistent target does not keep the old screen's pixels
-     * (the "black flash" between two full-screen TUIs).
+    /* Active screen and viewport tracking for renderer damage.
+     * libghostty's per-row dirty bits track cell mutations, not every way the
+     * visible grid can be reinterpreted. Restoring the primary screen on
+     * ?1049l leaves untouched rows clean even though every visible row changed;
+     * changing scrollback viewport offset likewise shifts which absolute rows
+     * occupy the viewport even when the reported dirty set is row-local. A
+     * snapshot forces all rows dirty when either identity differs from the one
+     * that was last *rendered*, so a persistent renderer target does not keep
+     * pixels from the previous screen or viewport.
      *
      * last_snapshot_active_screen is observed by every snapshot under the
      * session lock; last_rendered_active_screen is committed to that observed
-     * value by mark_rendered. Comparing against the *rendered* value — not a
-     * live re-query — keeps the signal race-free against the pty thread
-     * advancing terminal state between a frame's snapshot and its
-     * mark_rendered, and keeps out-of-band snapshots from consuming the
-     * transition before the next rendered frame sees it. */
+     * value by mark_rendered. The viewport offset fields follow the same
+     * snapshot-observed/rendered-committed pattern. Comparing against the
+     * *rendered* values — not live re-queries — keeps the signal race-free
+     * against the pty thread advancing terminal state between a frame's
+     * snapshot and its mark_rendered, and keeps out-of-band snapshots from
+     * consuming the transition before the next rendered frame sees it. */
     int last_snapshot_active_screen;
     int last_rendered_active_screen;
+    int last_snapshot_viewport_offset;
+    int last_snapshot_viewport_offset_valid;
+    int last_rendered_viewport_offset;
+    int last_rendered_viewport_offset_valid;
     uint8_t *last_snapshot_dirty_rows;
     size_t last_snapshot_dirty_row_count;
     size_t last_snapshot_dirty_row_cap;
