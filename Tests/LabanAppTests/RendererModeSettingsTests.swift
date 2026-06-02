@@ -109,6 +109,27 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertTrue(model.session(forTab: activeTab.id) === activeSession)
   }
 
+  func testTerminalViewDoesNotInstallCommandHookWithoutFrameProbe() throws {
+    setenv("LABAN_RENDERER", "software", 1)
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 20
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let sidebarFontAtlas = FontAtlas(pointSize: 11)
+    let view = TerminalBitmapView(
+      model: model,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      cellWidth: Int(fontAtlas.cellSize.width),
+      cellHeight: Int(fontAtlas.cellSize.height)
+    )
+
+    XCTAssertNil(
+      view.snapshotCommandsHook(captureFrame: 1),
+      "a nil AppKit frame probe must stay a nil TerminalSurfaceController hook so payload mode can skip command production")
+  }
+
   private func makeDefaults(
     file: StaticString = #filePath,
     line: UInt = #line

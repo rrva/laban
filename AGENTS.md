@@ -47,23 +47,9 @@ task matches them.
 | `docs/process/rpg-graph-maintenance.md` | You are lifting or refreshing the `.rpg` semantic graph (`graph.json`), or wiring it into git worktrees. |
 
 ## Project Landmarks
-
-```text
-AGENTS.md                              Small map for agents.
-PLANS.md                               ExecPlan rules for long-running work.
-README.md                              Human and agent project entrypoint.
-docs/product/mvp.md                    Shipped-MVP regression contract; non-goals are historical.
-docs/product/spec.md                   Long-term product behavior.
-docs/process/dev-process.md            Agent-driven debug, capture/replay, and headless test harness.
-docs/process/agent-operating-guide.md  Detailed working rules for agents.
-docs/process/worktree-isolation.md     Isolated run contract for agent worktrees.
-docs/process/observability.md          Logs, events, metrics, and trace contract.
-docs/reference/                        Non-binding references and prototype lessons.
-docs/quality/                          Quality score, debt, and drift tracking.
-schemas/                               JSON schemas for debug contracts and fixtures.
-fixtures/                              Fixture format notes and examples.
-execplans/                             Active and completed ExecPlans.
-```
+Core maps: `README.md`, `PLANS.md`, `execplans/`, `docs/adr/`, `docs/quality/`.
+Product and process truth: `docs/product/`, `docs/process/`, `docs/reference/`.
+Debug contracts and data: `schemas/`, `fixtures/`.
 
 ## Runtime Artifacts (where to look — don't re-search)
 
@@ -96,16 +82,12 @@ Write a new ADR when a change establishes durable architectural policy, reverses
 
 ## Worktree Setup
 
-Git worktrees do not clone `.external/`. If missing, symlink it from the
-main repo: `ln -s "$LABAN_MAIN_REPO/.external" .external`. `.external/`
-holds vendored libs (`libghostty-vt`) shared across worktrees.
+Git worktrees do not clone `.external/`; if missing, symlink it from the main repo:
+`ln -s "$LABAN_MAIN_REPO/.external" .external`. It holds shared vendored libs.
 
-`.rpg/graph.json` is a committed, generated artifact, so a fresh worktree
-already has a fully-lifted graph — do not rebuild it or commit per-branch
-drift. `main` is its canonical owner; refresh and commit it there. In a
-feature worktree run `git update-index --skip-worktree .rpg/graph.json` so
-local graph re-syncs stay out of `git status` and your commits. See
-`docs/process/rpg-graph-maintenance.md`.
+`.rpg/graph.json` is a committed, generated artifact owned by `main`; in feature
+worktrees run `git update-index --skip-worktree .rpg/graph.json` so local graph
+re-syncs stay out of commits. See `docs/process/rpg-graph-maintenance.md`.
 
 ## Hard Rules
 

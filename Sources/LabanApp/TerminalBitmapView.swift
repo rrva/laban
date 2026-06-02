@@ -532,6 +532,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     }
   }
 
+  func snapshotCommandsHook(captureFrame: Int) -> TerminalSurfaceController.SnapshotCommandsHook? {
+    guard let frameProbe else { return nil }
+    return { [weak self, frameProbe] snapshot, commands in
+      guard let self else { return }
+      frameProbe.record(
+        frame: captureFrame,
+        snapshot: snapshot.pointee,
+        commands: commands,
+        surfaceWidth: self.backend.surfaceWidth,
+        surfaceHeight: self.backend.surfaceHeight,
+        surfaceScale: Double(self.backend.surfaceScale))
+    }
+  }
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     lastAppliedWindowTitle = nil
@@ -1160,15 +1174,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation 
     } else {
       surfaceFrame = surfaceController.makeFrame(
         request,
-        snapshotCommandsHook: { snapshot, commands in
-          self.frameProbe?.record(
-            frame: captureFrame,
-            snapshot: snapshot.pointee,
-            commands: commands,
-            surfaceWidth: self.backend.surfaceWidth,
-            surfaceHeight: self.backend.surfaceHeight,
-            surfaceScale: Double(self.backend.surfaceScale))
-        })
+        snapshotCommandsHook: snapshotCommandsHook(captureFrame: captureFrame))
     }
     guard let surfaceFrame else { return }
 
