@@ -3,6 +3,7 @@ import Foundation
 import LabanCore
 import LabanRenderer
 import LabanTerminalCore
+import os
 
 final class AppSessionCoordinator {
   private let mode: TerminalSessionBackend
@@ -24,6 +25,17 @@ final class AppSessionCoordinator {
   private var snapshotGenerationMonitor: LabandSnapshotGenerationMonitor?
   private var lastTabMetadataRefreshAt: Date?
   private let processIntrospector = LibprocIntrospector()
+  // libproc foreground-process introspection (proc_pidinfo / getcwd / sysctl)
+  // is too slow to run synchronously on the main thread every metadata poll,
+  // so the walk runs off-main in a detached task and the poll reads the last
+  // cached result (keyed by the session's stable child pid). State lives behind
+  // an unfair lock so the render-tick read stays synchronous and lock-free of
+  // GCD ceremony.
+  private struct ProcMetadataState: Sendable {
+    var cache: [Int32: Session.ProcessMetadata] = [:]
+    var refreshInFlight = false
+  }
+  private let procMetadata = OSAllocatedUnfairLock(initialState: ProcMetadataState())
 
   var onSessionDirty: (@Sendable (Session.ID) -> Void)?
 
@@ -495,6 +507,9 @@ final class AppSessionCoordinator {
     }
     let descriptorById = Dictionary(
       uniqueKeysWithValues: descriptors.map { ($0.logicalSessionId, $0) })
+    // Kick off the off-main libproc walk for the live children so the next
+    // poll reads warm metadata instead of blocking the render tick on syscalls.
+    refreshProcMetadataCache(forChildPids: descriptors.map { $0.childPid })
     // Drop degraded stamps whose cooldown has fully elapsed so the map cannot
     // accumulate entries for tabs that overflowed once and were never closed.
     labptyStateLock.withLock { labptyDegradation.pruneExpired(now: now) }
@@ -588,8 +603,59 @@ final class AppSessionCoordinator {
     guard pid > 0 else {
       return Session.ProcessMetadata(childPid: Int(childPid))
     }
+    if let cached = procMetadata.withLock({ $0.cache[childPid] }) {
+      return cached
+    }
+    // Cold miss (first sighting of this child): compute once on the calling
+    // thread so a freshly opened tab shows its real process immediately.
+    // Steady-state polls are served from the cache, refreshed off-main below.
+    let computed = Self.computeProcessMetadata(
+      pid: pid, childPid: childPid, introspector: processIntrospector)
+    procMetadata.withLock { $0.cache[childPid] = computed }
+    return computed
+  }
+
+  /// Recompute the libproc metadata for the live child pids off the main
+  /// thread, then publish it into the cache. Fire-and-forget: the current poll
+  /// uses the previous cycle's cache, so the displayed process/cwd lags real
+  /// changes by at most one poll interval. A single refresh runs at a time.
+  private func refreshProcMetadataCache(forChildPids childPids: [Int32]) {
+    let live = childPids.filter { $0 > 0 }
+    guard !live.isEmpty else { return }
+    let shouldRun = procMetadata.withLock { state -> Bool in
+      if state.refreshInFlight { return false }
+      state.refreshInFlight = true
+      return true
+    }
+    guard shouldRun else { return }
+    let state = procMetadata
+    Task.detached(priority: .utility) {
+      let introspector = LibprocIntrospector()
+      let computed = Dictionary(
+        live.map { childPid in
+          (
+            childPid,
+            Self.computeProcessMetadata(
+              pid: childPid, childPid: childPid, introspector: introspector)
+          )
+        },
+        uniquingKeysWith: { current, _ in current })
+      state.withLock {
+        // Full replace also prunes pids no longer present.
+        $0.cache = computed
+        $0.refreshInFlight = false
+      }
+    }
+  }
+
+  private static func computeProcessMetadata(
+    pid: Int32, childPid: Int32, introspector: LibprocIntrospector
+  ) -> Session.ProcessMetadata {
+    guard pid > 0 else {
+      return Session.ProcessMetadata(childPid: Int(childPid))
+    }
     let processPid = pid_t(pid)
-    let arguments = processIntrospector.arguments(of: processPid)
+    let arguments = introspector.arguments(of: processPid)
     let processName = arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent }
     return Session.ProcessMetadata(
       childPid: Int(childPid),
@@ -597,7 +663,7 @@ final class AppSessionCoordinator {
       foregroundProcess: processName,
       foregroundCommand: arguments.isEmpty ? processName : arguments.joined(separator: " "),
       foregroundArguments: arguments.isEmpty ? nil : arguments,
-      cwd: processIntrospector.currentWorkingDirectory(of: processPid)
+      cwd: introspector.currentWorkingDirectory(of: processPid)
     )
   }
 
