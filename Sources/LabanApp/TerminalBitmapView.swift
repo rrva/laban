@@ -658,12 +658,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
       ) { [weak self] _ in
         self?.syncActiveSessionFocus(windowFocused: true)
+        // Wake the (possibly parked) display link and repaint on refocus.
+        self?.advanceFrame()
       })
     windowFocusObservers.append(
       center.addObserver(
         forName: NSWindow.didResignKeyNotification, object: window, queue: .main
       ) { [weak self] _ in
         self?.syncActiveSessionFocus(windowFocused: false)
+        self?.updateDisplayLinkRunState()
+      })
+    // Occlusion changes don't fire key notifications, so observe them too:
+    // becoming un-occluded must wake the parked link; becoming occluded parks
+    // it. advanceFrame's defer reconciles the run state in either direction.
+    windowFocusObservers.append(
+      center.addObserver(
+        forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+      ) { [weak self] _ in
+        self?.advanceFrame()
       })
   }
 
@@ -712,12 +724,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if #available(macOS 14.0, *) {
       // CADisplayLink + preferredFrameRateRange unlocks VRR throttling on
       // ProMotion: when nothing's changing the OS will fire us at the
-      // minimum rate (~24 Hz here), and ramp up to the maximum (panel max,
-      // typically 120 Hz) when the terminal becomes busy. Idle terminals
-      // use less battery; scrolling stays smooth.
+      // minimum rate (~8 Hz here), and ramp up to the maximum (panel max,
+      // typically 120 Hz) when the terminal becomes busy. A low minimum lets
+      // the panel idle further down (Apple's guidance: a high minimum keeps
+      // the panel awake); output latency stays covered by the onSessionDirty
+      // push, which bypasses the link throttle. Scrolling still ramps to 120.
       let link = displayLink(target: self, selector: #selector(displayLinkTick))
       link.preferredFrameRateRange = CAFrameRateRange(
-        minimum: 24, maximum: 120, preferred: 120)
+        minimum: 8, maximum: 120, preferred: 120)
       link.add(to: .main, forMode: .common)
       caDisplayLink = link
       return
@@ -873,6 +887,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     cvDisplayLink = nil
   }
 
+  /// Park the per-frame display link when the window is not visible to the user
+  /// (unfocused or fully occluded) and nothing is mid-animation. The link only
+  /// drives on-screen animation (cursor blink, smooth scroll, the attention
+  /// pulse); terminal output is painted through the `onSessionDirty` push, so a
+  /// backgrounded window keeps updating without the link running. Only the
+  /// macOS-14 CADisplayLink supports cheap pausing; the CVDisplayLink fallback
+  /// is left running.
+  private func updateDisplayLinkRunState() {
+    guard #available(macOS 14.0, *), let link = caDisplayLink as? CADisplayLink else { return }
+    let visible =
+      (window?.isKeyWindow == true)
+      && (window?.occlusionState.contains(.visible) ?? false)
+    link.isPaused = !TerminalIdlePolicy.displayLinkShouldRun(
+      windowVisibleToUser: visible, scrollAnimating: scrollAnimating)
+  }
+
   deinit {
     stopDisplayLink()
     sessionCoordinator?.stopSnapshotGenerationMonitor()
@@ -983,6 +1013,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // advanceFrame stops returning (or takes very long), the background
     // watchdog will spot the gap and snapshot our threads via sample(1).
     MainThreadWatchdog.shared.heartbeat()
+
+    // Reconcile the display-link run state on every frame, on all exit paths
+    // (including the idle early-return below). A window that is no longer
+    // visible to the user parks the link — background output still reaches the
+    // screen through the onSessionDirty push — so a backgrounded terminal stops
+    // waking the CPU at refresh cadence. Waking again is driven by the key and
+    // occlusion observers in installWindowFocusObservers.
+    defer { updateDisplayLinkRunState() }
 
     let captureFrame = renderedFrameCount + 1
     let sync = surfaceController.syncSessions(
