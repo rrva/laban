@@ -617,6 +617,37 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertTrue(clusterTexts.contains("👩‍💻"), "got cluster payloads \(clusterTexts)")
   }
 
+  func testCellPayloadKeepsShortCombiningClusterInUTF8SlabOnPayloadPath() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    // NFD "e" + combining acute = 3 UTF-8 bytes spanning 2 scalars: a valid
+    // grapheme cluster that fits in <= 4 bytes. It must stay on the GPU-cell
+    // payload path (kept in the UTF-8 slab), not be rejected as invalid UTF-8.
+    _ = session.write(Array("e\u{0301}".utf8))
+    _ = session.poll()
+    let snap = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 8, cellHeight: 16, originX: 0, originY: 0)
+    let payload = try XCTUnwrap(
+      producer.terminalCellPayload(
+        from: UnsafePointer(snap),
+        includedRows: [0],
+        cursorBlinkVisible: false))
+
+    XCTAssertNil(payload.fallbackReason)
+    XCTAssertFalse(payload.utf8Bytes.isEmpty)
+    let clusterTexts = payload.glyphs.compactMap { glyph -> String? in
+      guard let range = glyph.utf8Range else { return nil }
+      return String(decoding: payload.utf8Bytes[range], as: UTF8.self)
+    }
+    XCTAssertTrue(clusterTexts.contains("e\u{0301}"), "got cluster payloads \(clusterTexts)")
+  }
+
   func testCellPayloadModeKeepsWideGlyphsOnPayloadPath() throws {
     var size = LabanTerminalSize()
     size.rows = 4

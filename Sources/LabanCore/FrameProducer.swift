@@ -507,6 +507,19 @@ public struct FrameProducer {
       (byte & 0xC0) == 0x80
     }
 
+    // A cell whose UTF-8 spans 2...4 bytes may decode to a single scalar
+    // (e.g. precomposed "é") OR to a multi-scalar grapheme cluster whose
+    // encoding happens to fit in <= 4 bytes (e.g. NFD "e" + combining acute =
+    // 3 bytes / 2 scalars). The single-scalar fast path below recognises only
+    // the former. When it does not match, the span is not necessarily invalid:
+    // validate the whole span and classify a valid multi-scalar cluster as
+    // .multiScalar so the payload keeps it in the UTF-8 slab instead of failing
+    // closed with .invalidUTF8. Genuinely malformed bytes still return .invalid.
+    @inline(__always)
+    func multiScalarOrInvalid() -> SingleUTF8ScalarResult {
+      isValidUTF8(bytes, length) ? .multiScalar : .invalid
+    }
+
     switch length {
     case 1:
       let b0 = bytes[0]
@@ -514,22 +527,22 @@ public struct FrameProducer {
     case 2:
       let b0 = bytes[0]
       let b1 = bytes[1]
-      guard (0xC2...0xDF).contains(b0), continuation(b1) else { return .invalid }
+      guard (0xC2...0xDF).contains(b0), continuation(b1) else { return multiScalarOrInvalid() }
       return .scalar(UInt32(b0 & 0x1F) << 6 | UInt32(b1 & 0x3F))
     case 3:
       let b0 = bytes[0]
       let b1 = bytes[1]
       let b2 = bytes[2]
-      guard continuation(b2) else { return .invalid }
+      guard continuation(b2) else { return multiScalarOrInvalid() }
       switch b0 {
       case 0xE0:
-        guard (0xA0...0xBF).contains(b1) else { return .invalid }
+        guard (0xA0...0xBF).contains(b1) else { return multiScalarOrInvalid() }
       case 0xE1...0xEC, 0xEE...0xEF:
-        guard continuation(b1) else { return .invalid }
+        guard continuation(b1) else { return multiScalarOrInvalid() }
       case 0xED:
-        guard (0x80...0x9F).contains(b1) else { return .invalid }
+        guard (0x80...0x9F).contains(b1) else { return multiScalarOrInvalid() }
       default:
-        return .invalid
+        return multiScalarOrInvalid()
       }
       return .scalar(
         UInt32(b0 & 0x0F) << 12
@@ -540,16 +553,16 @@ public struct FrameProducer {
       let b1 = bytes[1]
       let b2 = bytes[2]
       let b3 = bytes[3]
-      guard continuation(b2), continuation(b3) else { return .invalid }
+      guard continuation(b2), continuation(b3) else { return multiScalarOrInvalid() }
       switch b0 {
       case 0xF0:
-        guard (0x90...0xBF).contains(b1) else { return .invalid }
+        guard (0x90...0xBF).contains(b1) else { return multiScalarOrInvalid() }
       case 0xF1...0xF3:
-        guard continuation(b1) else { return .invalid }
+        guard continuation(b1) else { return multiScalarOrInvalid() }
       case 0xF4:
-        guard (0x80...0x8F).contains(b1) else { return .invalid }
+        guard (0x80...0x8F).contains(b1) else { return multiScalarOrInvalid() }
       default:
-        return .invalid
+        return multiScalarOrInvalid()
       }
       return .scalar(
         UInt32(b0 & 0x07) << 18
@@ -558,6 +571,22 @@ public struct FrameProducer {
           | UInt32(b3 & 0x3F))
     default:
       return .multiScalar
+    }
+  }
+
+  @inline(__always)
+  private static func isValidUTF8(_ bytes: UnsafePointer<UInt8>, _ length: Int) -> Bool {
+    var decoder = Unicode.UTF8()
+    var iterator = UnsafeBufferPointer(start: bytes, count: length).makeIterator()
+    while true {
+      switch decoder.decode(&iterator) {
+      case .scalarValue:
+        continue
+      case .emptyInput:
+        return true
+      case .error:
+        return false
+      }
     }
   }
 
