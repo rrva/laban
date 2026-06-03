@@ -510,6 +510,94 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertNil(renderer.lastRenderFailureReason)
   }
 
+  func testGPUGlyphInkVerticalExtentMatchesSoftwareForTallClusters() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    // The GPU glyph atlas rasterizes each cluster into a tile exactly one cell
+    // tall (MetalGlyphAtlas: pixelH = cellHeight * scale) with no vertical slop,
+    // so ink above the cell top or below the cell bottom is clipped at raster
+    // time. The software renderer draws via CoreText with no per-cell vertical
+    // clip. Both GPU paths share this atlas, so the classic command path is a
+    // faithful proxy. This guards that tall fallback / combining / emoji /
+    // Indic clusters do not lose top/bottom ink on the GPU path relative to
+    // software — i.e. that the one-cell tile is tall enough at this metric.
+    MetalRenderer.useGPUCellPath = false
+    let bg: UInt32 = 0x20_28_30_FF
+    let fg: UInt32 = 0xF0_F0_F0_FF
+    let row = 3  // middle row: rows 0–2 above and 4–7 below are blank
+    let originY = CGFloat(rows - 1 - row) * cellH
+    let clusters: [(name: String, text: String)] = [
+      ("combining-acute", "e\u{0301}"),
+      ("precomposed-acute", "é"),
+      ("below-dot", "a\u{0323}"),
+      ("keycap", "1\u{FE0F}\u{20E3}"),
+      ("devanagari", "क्षि"),
+      ("zwj-emoji", "👩\u{200D}💻"),
+    ]
+    let tolerance = 2
+
+    for cluster in clusters {
+      let commands: [FrameCommand] = [
+        .rect(
+          CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+          color: bg, source: .terminal),
+        .glyphRun(
+          origin: CGPoint(x: 0, y: originY), text: cluster.text,
+          foreground: fg, background: bg, attributes: [], source: .terminal),
+      ]
+      let gpu = try renderSingle(label: "gpu-\(cluster.name)", commands: commands, damage: .full)
+      let sw = try renderSoftware(label: "sw-\(cluster.name)", commands: commands)
+      guard let gpuExtent = glyphInkRowExtent(gpu.image, background: bg) else {
+        XCTFail("\(cluster.name): GPU produced no ink")
+        continue
+      }
+      guard let swExtent = glyphInkRowExtent(sw.image, background: bg) else {
+        XCTFail("\(cluster.name): software produced no ink")
+        continue
+      }
+      XCTAssertLessThanOrEqual(
+        abs(gpuExtent.min - swExtent.min), tolerance,
+        "\(cluster.name): GPU top ink row \(gpuExtent.min) vs software \(swExtent.min) — atlas clipping ink above the cell?"
+      )
+      XCTAssertLessThanOrEqual(
+        abs(gpuExtent.max - swExtent.max), tolerance,
+        "\(cluster.name): GPU bottom ink row \(gpuExtent.max) vs software \(swExtent.max) — atlas clipping ink below the cell?"
+      )
+    }
+  }
+
+  /// The first and last image rows (top-down) that contain at least
+  /// `minInkPixels` pixels differing from `background` by more than `threshold`
+  /// on any channel. Returns nil when the image is all background.
+  private func glyphInkRowExtent(
+    _ image: RGBAImage,
+    background: UInt32,
+    threshold: Int = 40,
+    minInkPixels: Int = 2
+  ) -> (min: Int, max: Int)? {
+    let bgR = Int((background >> 24) & 0xFF)
+    let bgG = Int((background >> 16) & 0xFF)
+    let bgB = Int((background >> 8) & 0xFF)
+    var minRow = Int.max
+    var maxRow = -1
+    for y in 0..<image.height {
+      var inkCount = 0
+      for x in 0..<image.width {
+        let i = (y * image.width + x) * 4
+        let dr = abs(Int(image.bytes[i]) - bgR)
+        let dg = abs(Int(image.bytes[i + 1]) - bgG)
+        let db = abs(Int(image.bytes[i + 2]) - bgB)
+        if max(dr, max(dg, db)) > threshold { inkCount += 1 }
+      }
+      if inkCount >= minInkPixels {
+        minRow = Swift.min(minRow, y)
+        maxRow = Swift.max(maxRow, y)
+      }
+    }
+    return maxRow >= 0 ? (minRow, maxRow) : nil
+  }
+
   func testGPUCellPayloadAcceptsTwoCellMetricNarrowSymbols() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
