@@ -15,6 +15,15 @@ if [ "${PRE_PUSH_SKIP:-0}" = "1" ]; then
   exit 0
 fi
 
+# Say hi the instant the hook starts. The lint+build below can run for several
+# seconds with no output, which makes a push look hung — so greet immediately
+# and let the developer know Laban has the wheel.
+if [ -t 2 ]; then
+  printf '\033[1;35m✨ pre-push\033[0m  \033[2mLaban is preflighting your push — lint, build, the works…\033[0m\n' >&2
+else
+  printf 'pre-push: preflighting your push (lint, build)…\n' >&2
+fi
+
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
