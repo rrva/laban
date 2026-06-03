@@ -43,7 +43,10 @@ final class TerminalGitLookupTests: XCTestCase {
       runGit: { args, _ in
         args.first == "cat-file" ? (0, "tree\n") : (0, "should not be reached")
       },
-      writeTempFile: { _, _ in XCTFail("should not write when not a commit"); return nil })
+      writeTempFile: { _, _ in
+        XCTFail("should not write when not a commit")
+        return nil
+      })
     XCTAssertNil(url)
   }
 
@@ -51,14 +54,20 @@ final class TerminalGitLookupTests: XCTestCase {
     let url = TerminalGitLookup.commitPreviewURL(
       for: "abc1234", workingDirectory: "/repo",
       runGit: { _, _ in (128, "") },  // git error: not a valid object
-      writeTempFile: { _, _ in XCTFail("should not write on git failure"); return nil })
+      writeTempFile: { _, _ in
+        XCTFail("should not write on git failure")
+        return nil
+      })
     XCTAssertNil(url)
   }
 
   func testNonCandidateSkipsGitEntirely() {
     let url = TerminalGitLookup.commitPreviewURL(
       for: "feature/login", workingDirectory: "/repo",
-      runGit: { _, _ in XCTFail("git must not run for a non-candidate"); return nil },
+      runGit: { _, _ in
+        XCTFail("git must not run for a non-candidate")
+        return nil
+      },
       writeTempFile: { _, _ in nil })
     XCTAssertNil(url)
   }
@@ -66,7 +75,10 @@ final class TerminalGitLookupTests: XCTestCase {
   func testMissingWorkingDirectoryIsNil() {
     let url = TerminalGitLookup.commitPreviewURL(
       for: "deadbee", workingDirectory: nil,
-      runGit: { _, _ in XCTFail("git needs a cwd"); return nil },
+      runGit: { _, _ in
+        XCTFail("git needs a cwd")
+        return nil
+      },
       writeTempFile: { _, _ in nil })
     XCTAssertNil(url)
   }

@@ -132,7 +132,8 @@ final class FrameProducerPreeditTests: XCTestCase {
       laban_snapshot_destroy(snap)
       session.close()
     }
-    let cw = 8, ch = 16
+    let cw = 8
+    let ch = 16
     let producer = FrameProducer(cellWidth: cw, cellHeight: ch)
 
     // The caret must move as the composition grows — otherwise it sticks at the
@@ -167,7 +168,8 @@ final class FrameProducerPreeditTests: XCTestCase {
       laban_snapshot_destroy(snap)
       session.close()
     }
-    let cw = 8, ch = 16
+    let cw = 8
+    let ch = 16
     let producer = FrameProducer(cellWidth: cw, cellHeight: ch)
 
     // An IME with the insertion point mid-composition (e.g. editing an earlier
