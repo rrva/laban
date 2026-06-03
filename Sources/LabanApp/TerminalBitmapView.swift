@@ -1318,9 +1318,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     // Pull title + foreground-process metadata back from the daemon so the
     // sidebar shows real per-tab info ("claude", "vim", repo cwd, ...) in
-    // background-session mode. Throttled inside the coordinator; safe to
-    // call every frame.
-    sessionCoordinator?.refreshTabMetadata(for: model.tabs, into: model)
+    // background-session mode. Throttled inside the coordinator (~4 Hz), but
+    // skipped entirely while the window is not visible to the user: it only
+    // feeds the sidebar/title (which nobody can see when covered or
+    // tabbed-away), and the libproc argv+environment read it performs is a
+    // measurable idle cost. A fresh refresh runs on the next frame after the
+    // window becomes visible again — the key/occlusion observers wake us, and
+    // the coordinator's throttle is stale by then so it is not skipped. The
+    // separate AgentSessionDetector keeps running so a backgrounded agent
+    // session is still attributed for restore.
+    if windowVisibleToUser {
+      sessionCoordinator?.refreshTabMetadata(for: model.tabs, into: model)
+    }
     let surfaceFrame: TerminalSurfaceFrame?
     if let remoteFrame {
       surfaceFrame = surfaceController.makeFrame(
