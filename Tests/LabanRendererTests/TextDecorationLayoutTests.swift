@@ -38,4 +38,28 @@ final class TextDecorationLayoutTests: XCTestCase {
     XCTAssertEqual(layout.curlyUnderlinePoints.first?.x, 0)
     XCTAssertEqual(layout.curlyUnderlinePoints.last?.x, 20)
   }
+
+  func testDashedUnderlinePhaseContinuesAcrossAdjacentRuns() throws {
+    func dashOrigins(_ layout: TextDecorationLayout?) -> [CGFloat] {
+      (layout?.underlineRects ?? []).map { $0.minX }
+    }
+    // One continuous dashed underline spanning 4 cells, split into two
+    // adjacent 2-cell style runs (e.g. a mid-span foreground/hyperlink change).
+    // The second run must continue the dash phase from the shared row origin
+    // (x = 0), not restart the pattern at its own left edge.
+    let runA = TextDecorationLayout.make(
+      origin: CGPoint(x: 0, y: 0), cellCount: 2, attributes: [],
+      underlineStyle: .dashed, cellAdvance: 10, cellHeight: 18, descent: 4, scale: 1,
+      phaseOriginX: 0)
+    let runB = TextDecorationLayout.make(
+      origin: CGPoint(x: 20, y: 0), cellCount: 2, attributes: [],
+      underlineStyle: .dashed, cellAdvance: 10, cellHeight: 18, descent: 4, scale: 1,
+      phaseOriginX: 0)
+    let whole = TextDecorationLayout.make(
+      origin: CGPoint(x: 0, y: 0), cellCount: 4, attributes: [],
+      underlineStyle: .dashed, cellAdvance: 10, cellHeight: 18, descent: 4, scale: 1,
+      phaseOriginX: 0)
+
+    XCTAssertEqual(dashOrigins(runA) + dashOrigins(runB), dashOrigins(whole))
+  }
 }

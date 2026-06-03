@@ -16,7 +16,8 @@ struct TextDecorationLayout: Equatable {
     cellAdvance: CGFloat,
     cellHeight: CGFloat,
     descent: CGFloat,
-    scale: CGFloat
+    scale: CGFloat,
+    phaseOriginX: CGFloat? = nil
   ) -> TextDecorationLayout? {
     let drawsUnderline = attributes.contains(.underline) || underlineStyle != .none
     let drawsStrike = attributes.contains(.strikethrough)
@@ -28,6 +29,14 @@ struct TextDecorationLayout: Equatable {
     let width = CGFloat(cellCount) * cellAdvance
     let thickness = max(1.0 / max(scale, 1), 1)
     let underlineY = origin.y + max(1, floor(descent * 0.45))
+    // Patterned underlines (dashed/dotted/curly) seed their phase from this x.
+    // When a continuous terminal underline is split into several style runs
+    // (a mid-span foreground/hyperlink/colour change), each run passes the
+    // shared row origin so the pattern stays continuous across the boundary
+    // instead of restarting at every run's local left edge. Defaults to
+    // origin.x, which keeps a single, un-split run byte-identical to before.
+    let phaseX = phaseOriginX ?? origin.x
+    let runEnd = origin.x + width
 
     var underlineRects: [CGRect] = []
     var curlyUnderlinePoints: [CGPoint] = []
@@ -54,25 +63,35 @@ struct TextDecorationLayout: Equatable {
           let t = CGFloat(i) / CGFloat(steps)
           let x = origin.x + width * t
           let y =
-            baseY + amplitude * CGFloat(sin((Double(t) * Double(width) / Double(period)) * 2 * .pi))
+            baseY + amplitude
+            * CGFloat(sin((Double(x - phaseX) / Double(period)) * 2 * .pi))
           curlyUnderlinePoints.append(CGPoint(x: x, y: y))
         }
       case .dotted:
         let dot = max(thickness, 1)
-        var x = origin.x
-        while x < origin.x + width {
+        let stride = dot * 2
+        var x = phaseX
+        if x < origin.x { x += (((origin.x - x) / stride).rounded(.up)) * stride }
+        while x < runEnd {
           underlineRects.append(CGRect(x: x, y: underlineY, width: dot, height: thickness))
-          x += dot * 2
+          x += stride
         }
       case .dashed:
         let dash = max(cellAdvance * 0.5, 3)
         let gap = max(cellAdvance * 0.25, 2)
-        var x = origin.x
-        while x < origin.x + width {
-          let segmentWidth = min(dash, origin.x + width - x)
-          underlineRects.append(
-            CGRect(x: x, y: underlineY, width: segmentWidth, height: thickness))
-          x += dash + gap
+        let stride = dash + gap
+        var x = phaseX
+        if x < origin.x { x += (((origin.x - x) / stride).rounded(.down)) * stride }
+        while x < runEnd {
+          let segmentStart = max(x, origin.x)
+          let segmentEnd = min(x + dash, runEnd)
+          if segmentEnd > segmentStart {
+            underlineRects.append(
+              CGRect(
+                x: segmentStart, y: underlineY,
+                width: segmentEnd - segmentStart, height: thickness))
+          }
+          x += stride
         }
       }
     }

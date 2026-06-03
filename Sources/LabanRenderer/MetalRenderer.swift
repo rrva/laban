@@ -1893,6 +1893,7 @@ public final class MetalRenderer: RendererBackend {
         fg: runFg,
         underlineStyle: runUnderlineStyle,
         underlineColor: runUnderlineColor,
+        phaseOriginX: payload.origin.x,
         appendSolid: appendSolid)
       runRow = nil
       runCellCount = 0
@@ -2402,6 +2403,7 @@ public final class MetalRenderer: RendererBackend {
             descent: fontAtlas.descent,
             fg: fg,
             underlineStyle: underlineStyle, underlineColor: underlineColor,
+            phaseOriginX: geometry.originX,
             appendSolid: appendSolid)
           continue
         }
@@ -2736,6 +2738,7 @@ public final class MetalRenderer: RendererBackend {
     fg: UInt32,
     underlineStyle: UnderlineStyle,
     underlineColor: UInt32?,
+    phaseOriginX: CGFloat? = nil,
     appendSolid: (CGRect, UInt32) -> Void
   ) {
     emitDecorations(
@@ -2748,6 +2751,7 @@ public final class MetalRenderer: RendererBackend {
       fg: fg,
       underlineStyle: underlineStyle,
       underlineColor: underlineColor,
+      phaseOriginX: phaseOriginX,
       appendSolid: appendSolid)
   }
 
@@ -2761,6 +2765,7 @@ public final class MetalRenderer: RendererBackend {
     fg: UInt32,
     underlineStyle: UnderlineStyle,
     underlineColor: UInt32?,
+    phaseOriginX: CGFloat? = nil,
     appendSolid: (CGRect, UInt32) -> Void
   ) {
     guard
@@ -2772,7 +2777,8 @@ public final class MetalRenderer: RendererBackend {
         cellAdvance: cellAdvance,
         cellHeight: cellHeight,
         descent: descent,
-        scale: layer.contentsScale)
+        scale: layer.contentsScale,
+        phaseOriginX: phaseOriginX)
     else { return }
 
     let underlineRGBA = underlineColor ?? fg
