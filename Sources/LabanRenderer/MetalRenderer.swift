@@ -2113,10 +2113,11 @@ public final class MetalRenderer: RendererBackend {
     // The `.preedit` source is only produced at the cursor, so ordinary cells
     // are never touched.
     for cmd in commands {
-      guard case .glyphRun(
-        let origin, let text, let fg, let bg, let attrs, let runSource,
-        let underlineStyle, let underlineColor, _
-      ) = cmd, runSource == .preedit, !text.isEmpty
+      guard
+        case .glyphRun(
+          let origin, let text, let fg, let bg, let attrs, let runSource,
+          let underlineStyle, let underlineColor, _
+        ) = cmd, runSource == .preedit, !text.isEmpty
       else { continue }
       // Opaque background over the composition cells, appended AFTER the
       // payload's own cell backgrounds so an application-rendered caret under

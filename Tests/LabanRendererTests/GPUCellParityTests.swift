@@ -377,7 +377,8 @@ final class GPUCellParityTests: XCTestCase {
         commands: geometryB,
         damage: .partial(yRanges: [dirtyRange(forRow: 3)]),
         surfacePxH: surfacePxH),
-      "command-fed GPU-cell partial build must reject a grid geometry change and require a full redraw")
+      "command-fed GPU-cell partial build must reject a grid geometry change and require a full redraw"
+    )
   }
 
   private func shiftCommandsX(_ commands: [FrameCommand], by dx: CGFloat) -> [FrameCommand] {
@@ -385,7 +386,8 @@ final class GPUCellParityTests: XCTestCase {
       switch command {
       case .rect(let rect, let color, let source):
         return .rect(rect.offsetBy(dx: dx, dy: 0), color: color, source: source)
-      case .glyphRun(let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link):
+      case .glyphRun(
+        let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link):
         return .glyphRun(
           origin: CGPoint(x: origin.x + dx, y: origin.y),
           text: text, foreground: fg, background: bg, attributes: attrs, source: source,
@@ -424,7 +426,8 @@ final class GPUCellParityTests: XCTestCase {
     let fullPayload = distinctBackgroundPayload(includedRows: Array(0..<rows), defaultBg: defaultBg)
     XCTAssertTrue(
       renderer.render(
-        terminalAreaBackground, cellPayload: fullPayload, damage: .full, rendererFallbackReason: nil))
+        terminalAreaBackground, cellPayload: fullPayload, damage: .full, rendererFallbackReason: nil
+      ))
     renderer.waitForLastFrame()
     let expected = try readResult(renderer: renderer, label: "sparse-full")
 
@@ -432,11 +435,15 @@ final class GPUCellParityTests: XCTestCase {
     // non-contiguous, so the damage-union scissor spans the whole surface and
     // includes every clean interior row. Those rows must keep the backgrounds
     // painted by the full frame.
-    let partialPayload = distinctBackgroundPayload(includedRows: [0, rows - 1], defaultBg: defaultBg)
-    let damage = RenderDamage.partial(yRanges: [dirtyRange(forRow: 0), dirtyRange(forRow: rows - 1)])
+    let partialPayload = distinctBackgroundPayload(
+      includedRows: [0, rows - 1], defaultBg: defaultBg)
+    let damage = RenderDamage.partial(yRanges: [
+      dirtyRange(forRow: 0), dirtyRange(forRow: rows - 1),
+    ])
     XCTAssertTrue(
       renderer.render(
-        terminalAreaBackground, cellPayload: partialPayload, damage: damage, rendererFallbackReason: nil))
+        terminalAreaBackground, cellPayload: partialPayload, damage: damage,
+        rendererFallbackReason: nil))
     renderer.waitForLastFrame()
     let actual = try readResult(renderer: renderer, label: "sparse-partial")
 
@@ -446,10 +453,13 @@ final class GPUCellParityTests: XCTestCase {
     }
     XCTAssertEqual(
       changedBytes, 0,
-      "sparse partial payload wiped \(changedBytes) bytes of clean interior rows inside the damage-union scissor")
+      "sparse partial payload wiped \(changedBytes) bytes of clean interior rows inside the damage-union scissor"
+    )
   }
 
-  private func distinctBackgroundPayload(includedRows: [Int], defaultBg: UInt32) -> TerminalCellPayload {
+  private func distinctBackgroundPayload(includedRows: [Int], defaultBg: UInt32)
+    -> TerminalCellPayload
+  {
     var payload = TerminalCellPayload(
       rows: rows,
       cols: cols,
