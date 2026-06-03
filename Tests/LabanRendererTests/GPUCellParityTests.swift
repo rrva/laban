@@ -510,6 +510,59 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertNil(renderer.lastRenderFailureReason)
   }
 
+  func testCommandBufferErrorIsRecordedAndQueuesFullRedrawRecovery() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try makeRenderer(label: "cmdbuf-error")
+    XCTAssertNil(renderer.lastCommandBufferError)
+    XCTAssertFalse(renderer.hasPendingCommandBufferRecoveryForTesting)
+
+    renderer.noteCommandBufferCompletionForTesting(
+      status: .error,
+      error: NSError(domain: "test", code: 7, userInfo: [NSLocalizedDescriptionKey: "GPU hang"]))
+
+    XCTAssertEqual(
+      renderer.lastCommandBufferError?.status, Int(MTLCommandBufferStatus.error.rawValue))
+    XCTAssertEqual(renderer.lastCommandBufferError?.error, "GPU hang")
+    XCTAssertTrue(renderer.hasPendingCommandBufferRecoveryForTesting)
+  }
+
+  func testSuccessfulCommandBufferCompletionRecordsNoErrorOrRecovery() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try makeRenderer(label: "cmdbuf-ok")
+    renderer.noteCommandBufferCompletionForTesting(status: .completed, error: nil)
+    XCTAssertNil(renderer.lastCommandBufferError)
+    XCTAssertFalse(renderer.hasPendingCommandBufferRecoveryForTesting)
+  }
+
+  func testPendingCommandBufferRecoveryIsConsumedByNextRender() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try makeRenderer(label: "cmdbuf-recovery")
+    XCTAssertTrue(renderer.render(frame(seed: 1, changedRow: nil), damage: .full))
+    renderer.waitForLastFrame()
+
+    // Simulate a GPU command-buffer failure that the off-main completion handler
+    // would record.
+    renderer.noteCommandBufferCompletionForTesting(status: .error, error: nil)
+    XCTAssertTrue(renderer.hasPendingCommandBufferRecoveryForTesting)
+
+    // The next render — even a partial one — must consume the recovery (and force
+    // a full repaint), so the flag is cleared afterwards.
+    XCTAssertTrue(
+      renderer.render(
+        frame(seed: 1, changedRow: 3),
+        damage: .partial(yRanges: [dirtyRange(forRow: 3)])))
+    renderer.waitForLastFrame()
+    XCTAssertFalse(
+      renderer.hasPendingCommandBufferRecoveryForTesting,
+      "the next render must consume the pending GPU-error recovery")
+  }
+
   func testGPUGlyphInkVerticalExtentMatchesSoftwareForTallClusters() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

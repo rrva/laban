@@ -4,6 +4,7 @@ import Darwin.Mach
 import Foundation
 import Metal
 import QuartzCore
+import os
 
 // MARK: - Per-instance GPU types
 //
@@ -218,9 +219,31 @@ public final class MetalRenderer: RendererBackend {
     case drawableSizeMismatch
   }
 
+  /// A GPU command buffer that completed with `.error`. The completion handler
+  /// runs off the main thread, so this is published under `frameSampleLock` and
+  /// kept as the last-seen failure for diagnostics (not cleared on success).
+  public struct CommandBufferFailure: Codable, Equatable, Sendable {
+    /// `MTLCommandBufferStatus.rawValue` at completion (`.error` == 5).
+    public var status: Int
+    /// `MTLCommandBuffer.error?.localizedDescription`, if any.
+    public var error: String?
+
+    public init(status: Int, error: String?) {
+      self.status = status
+      self.error = error
+    }
+  }
+
+  private static let log = Logger(subsystem: "com.rrva.laban", category: "metal-renderer")
+
   public private(set) var lastInstanceCounts = RenderInstanceCounts()
   public private(set) var lastGPUCellPayloadBuildFailure: GPUCellPayloadBuildFailure?
   public private(set) var lastRenderFailureReason: RenderFailureReason?
+  /// Set off the main thread when a command buffer completes with `.error`;
+  /// the next `render` consumes it to force a full repaint, recovering from a
+  /// half-presented or dropped GPU frame. Guarded by `frameSampleLock`.
+  private var pendingCommandBufferRecovery = false
+  public private(set) var lastCommandBufferError: CommandBufferFailure?
   public private(set) var rendererStatus = RendererStatus(
     configuredRenderer: RendererMode.classic.rawValue,
     effectiveRenderer: RendererMode.classic.rawValue)
@@ -449,6 +472,14 @@ public final class MetalRenderer: RendererBackend {
   private let sidebarCellHeight: CGFloat
 
   var terminalGlyphAtlasTextureSizeForTesting: Int { glyphAtlas.textureSize }
+  func noteCommandBufferCompletionForTesting(status: MTLCommandBufferStatus, error: Error?) {
+    noteCommandBufferCompletion(status: status, error: error)
+  }
+  var hasPendingCommandBufferRecoveryForTesting: Bool {
+    frameSampleLock.lock()
+    defer { frameSampleLock.unlock() }
+    return pendingCommandBufferRecovery
+  }
   var cellGlyphUploadRangesForTesting: [Range<Int>] { cellGlyphUploadRanges }
   var payloadRowMarkerCapacityForTesting: Int { payloadRowsWithFullBackgroundRun.capacity }
   var activeCellGlyphIndicesForTesting: [Int] {
@@ -818,6 +849,12 @@ public final class MetalRenderer: RendererBackend {
   ) -> Bool {
     let cpuStart = ContinuousClock.now
     lastRenderFailureReason = nil
+    // A GPU command buffer that completed with `.error` (recorded off-main by
+    // the completion handler) means the persistent target may be half-painted,
+    // so repaint the whole surface this frame instead of trusting damage.
+    if consumePendingCommandBufferRecovery() {
+      targetNeedsFullRedraw = true
+    }
     let selection = resolvedRendererStatus(rendererFallbackReason: rendererFallbackReason)
     rendererStatus = selection.status
 
@@ -975,6 +1012,7 @@ public final class MetalRenderer: RendererBackend {
     // completes. The same handler closes out per-frame timing and releases
     // the scheduled frame once the GPU has reported gpuStartTime/gpuEndTime.
     cmdBuf.addCompletedHandler { [self] buffer in
+      self.noteCommandBufferCompletion(status: buffer.status, error: buffer.error)
       let gpuMs = max(0.0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
       // Resolve per-pass GPU times BEFORE signalling the next frame in
       // (otherwise frame N+1 could overwrite the sample buffer slots).
@@ -1000,6 +1038,30 @@ public final class MetalRenderer: RendererBackend {
       cmdBuf.waitUntilCompleted()
     }
     targetNeedsFullRedraw = false
+    return true
+  }
+
+  private func noteCommandBufferCompletion(status: MTLCommandBufferStatus, error: Error?) {
+    guard status == .error else { return }
+    let failure = CommandBufferFailure(
+      status: Int(status.rawValue), error: error?.localizedDescription)
+    frameSampleLock.lock()
+    lastCommandBufferError = failure
+    pendingCommandBufferRecovery = true
+    frameSampleLock.unlock()
+    Self.log.error(
+      "GPU command buffer failed (status \(status.rawValue, privacy: .public)): \(error?.localizedDescription ?? "no detail", privacy: .public) — forcing a full repaint"
+    )
+  }
+
+  /// Reads and clears the pending GPU-error recovery flag. Called at the top of
+  /// `render` on the main thread; the flag is set off-main by the completion
+  /// handler, so access is serialised through `frameSampleLock`.
+  private func consumePendingCommandBufferRecovery() -> Bool {
+    frameSampleLock.lock()
+    defer { frameSampleLock.unlock() }
+    guard pendingCommandBufferRecovery else { return false }
+    pendingCommandBufferRecovery = false
     return true
   }
 
