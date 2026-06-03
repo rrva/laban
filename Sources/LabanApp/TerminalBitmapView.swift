@@ -945,6 +945,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     )
   }
 
+  /// Whether a frame must repaint the whole terminal rather than only its dirty
+  /// rows. A pulse-only frame (a background tab needs attention) advances no
+  /// terminal rows, so the snapshot is clean and `damage` resolves to
+  /// `.partial([])` — which the renderer honours by skipping the entire content
+  /// pass, freezing the sidebar attention marker. Forcing full damage for such a
+  /// frame lets the content pass run so the marker keeps breathing. Hover and
+  /// drag already set `renderInvalidated`, so they need no entry here.
+  nonisolated static func shouldForceFullDamage(
+    renderInvalidated: Bool,
+    tabChanged: Bool,
+    scrollAnimating: Bool,
+    attentionAnimating: Bool
+  ) -> Bool {
+    renderInvalidated || tabChanged || scrollAnimating || attentionAnimating
+  }
+
   // MARK: - Frame loop
 
   private func advanceCursorBlinkState(now: Date = Date()) -> Bool {
@@ -1242,7 +1258,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       selection: currentTerminalSelection(sessionId: session.id),
       includeTerminalAreaBackground: true,
       requireActiveSnapshot: true,
-      forceFullDamage: renderInvalidated || tabChanged || scrollAnimating,
+      forceFullDamage: Self.shouldForceFullDamage(
+        renderInvalidated: renderInvalidated,
+        tabChanged: tabChanged,
+        scrollAnimating: scrollAnimating,
+        attentionAnimating: attentionAnimating),
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale),
