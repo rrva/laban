@@ -280,9 +280,16 @@ final class MetalFrameTimingBench: XCTestCase {
       ("row 23", [23]),
       ("rows 0,23 sparse", [0, 23]),
       ("rows 0,12,23 sparse", [0, 12, 23]),
+      ("rows 0,47 full-union", [0, 47]),
       ("contiguous 1 row", [12]),
       ("contiguous 5 rows", Array(20..<25)),
     ]
+    // C1: a payload that also carries the full-viewport terminal-area background
+    // rect. On a sparse partial the damage-union scissor spans the surface, so
+    // the fix must keep `solids` equal to the no-background payload row (the
+    // surface-wide rect is skipped). A regression that re-appends it inflates
+    // the `payload+bg` solids count.
+    let terminalBg: UInt32 = 0x10_20_30_FF
 
     print("\n=== GPU-cell build: full rebuild vs persistent dirty-row patch (160x48, us) ===")
     print("  dirty-set                  path       p50/p95/p99 us      cellGlyphs solids")
@@ -328,10 +335,34 @@ final class MetalFrameTimingBench: XCTestCase {
         surfacePxH: pixelH,
         fontAtlas: fontAtlas,
         dirtyRows: dirtyRows)
+      let payloadBg = try measureGPUCellPayloadBuild(
+        includeUpload: false,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        surfacePxH: pixelH,
+        fontAtlas: fontAtlas,
+        dirtyRows: dirtyRows,
+        terminalBackground: terminalBg)
+      let payloadBgUpload = try measureGPUCellPayloadBuild(
+        includeUpload: true,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        surfacePxH: pixelH,
+        fontAtlas: fontAtlas,
+        dirtyRows: dirtyRows,
+        terminalBackground: terminalBg)
       printGPUCellBuildRow(label: label, path: "full", result: full)
       printGPUCellBuildRow(label: label, path: "patch", result: patch)
       printGPUCellBuildRow(label: label, path: "payload", result: payload)
       printGPUCellBuildRow(label: label, path: "payload+upload", result: payloadUpload)
+      printGPUCellBuildRow(label: label, path: "payload+bg", result: payloadBg)
+      printGPUCellBuildRow(label: label, path: "pl+bg+upload", result: payloadBgUpload)
     }
   }
 
@@ -1129,12 +1160,26 @@ final class MetalFrameTimingBench: XCTestCase {
     scale: CGFloat,
     surfacePxH: Int,
     fontAtlas: FontAtlas,
-    dirtyRows: [Int]
+    dirtyRows: [Int],
+    terminalBackground: UInt32? = nil
   ) throws -> InstanceBuildBenchResult {
     guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale) else {
       XCTFail("MetalRenderer.init returned nil")
       throw XCTSkip("MetalRenderer unavailable")
     }
+    // Production appends a full-viewport terminal-area background rect alongside
+    // the payload, and canSkipTerminalCommands does not remove it. Passing it
+    // here exercises the C1 partial-frame path: on a sparse partial whose
+    // damage-union scissor spans the surface, that rect must NOT be appended as
+    // a surface-wide solid (which would overdraw and wipe clean interior rows).
+    let extra: [FrameCommand] =
+      terminalBackground.map {
+        [
+          .rect(
+            CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+            color: $0, source: .terminal)
+        ]
+      } ?? []
     let initial = damagePayload(
       cols: cols,
       rows: rows,
@@ -1145,7 +1190,7 @@ final class MetalFrameTimingBench: XCTestCase {
     guard
       renderer.rebuildGPUCellPayloadInstancesForTesting(
         payload: initial,
-        commands: [],
+        commands: extra,
         damage: .full,
         surfacePxH: surfacePxH) != nil
     else {
@@ -1170,13 +1215,13 @@ final class MetalFrameTimingBench: XCTestCase {
       if includeUpload {
         _ = renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
           payload: payload,
-          commands: [],
+          commands: extra,
           damage: damage,
           surfacePxH: surfacePxH)
       } else {
         _ = renderer.rebuildGPUCellPayloadInstancesForTesting(
           payload: payload,
-          commands: [],
+          commands: extra,
           damage: damage,
           surfacePxH: surfacePxH)
       }
@@ -1191,14 +1236,14 @@ final class MetalFrameTimingBench: XCTestCase {
         counts =
           renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
             payload: payload,
-            commands: [],
+            commands: extra,
             damage: damage,
             surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
       } else {
         counts =
           renderer.rebuildGPUCellPayloadInstancesForTesting(
             payload: payload,
-            commands: [],
+            commands: extra,
             damage: damage,
             surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
       }
