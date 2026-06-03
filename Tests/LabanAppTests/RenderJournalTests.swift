@@ -107,6 +107,81 @@ final class RenderJournalTests: XCTestCase {
     let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: encoded)
     XCTAssertEqual(decoded.renderFailureReason, .fullRedrawProducedNoContent)
   }
+
+  func testPayloadFailureThenCommandRetryChainIsCapturedInJournal() throws {
+    let journal = RenderJournal(capacity: 8)
+    let bgRect = FrameCommand.rect(
+      CGRect(x: 0, y: 0, width: 72, height: 76), color: 0x10_20_30_FF, source: .terminal)
+    let terminalGlyph = FrameCommand.glyphRun(
+      origin: .zero, text: "A", foreground: 0xFF_FF_FF_FF, background: 0x10_20_30_FF,
+      attributes: [], source: .terminal)
+    let payload = TerminalCellPayload(
+      rows: 4, cols: 8, origin: .zero, cellSize: CGSize(width: 9, height: 19),
+      contentYOffset: 0, defaultBackground: 0x10_20_30_FF, dirtyRows: [0])
+    let failure = MetalRenderer.GPUCellPayloadBuildFailure(
+      reason: "missingGlyphText", row: 0, col: 0, scalarValue: nil, textPreview: nil,
+      utf8RangeLowerBound: nil, utf8RangeUpperBound: nil, utf8ByteCount: 0,
+      wide: 0, attributesRawValue: 0)
+
+    // Frame N: a payload-compatible frame skips the per-cell terminal glyph
+    // commands, then the Metal payload build fails. The journal must capture the
+    // payload it tried to build, why it failed, the typed render-failure reason,
+    // that terminal glyph commands were skipped (count 0), and that nothing was
+    // presented.
+    journal.record(
+      journal.makeEntry(
+        event: .renderFailed, frame: 1, tabId: "t", sessionId: "s",
+        damage: .full,
+        commands: [bgRect],
+        payload: payload,
+        gpuCellPayloadFailure: failure,
+        renderFailureReason: .fullRedrawProducedNoContent,
+        rendered: false))
+
+    // Frame N+1: the command fallback re-emits the terminal glyph commands, runs
+    // with no payload, flags the fallback-pending retry state, and repaints full.
+    journal.record(
+      journal.makeEntry(
+        event: .rendered, frame: 2, tabId: "t", sessionId: "s",
+        frameState: RenderJournal.FrameStateSnapshot(
+          terminalDirty: true, activeTerminalDirty: true, renderInvalidated: true,
+          tabChanged: false, cursorBlinkFrame: false, attentionAnimating: false,
+          scrollAnimating: false, renderingResizeFrame: false, usingRemoteSnapshots: false,
+          gpuCellRequested: true, cellPayloadRequested: false,
+          gpuCellCommandFallbackPending: true),
+        damage: .full,
+        commands: [bgRect, terminalGlyph],
+        payload: nil,
+        rendered: true))
+
+    let entries = journal.snapshot()
+    XCTAssertEqual(entries.map(\.event), [.renderFailed, .rendered])
+
+    let failed = entries[0]
+    XCTAssertNotNil(
+      failed.payload, "the failed payload frame must record the payload it tried to build")
+    XCTAssertEqual(failed.renderFailureReason, .fullRedrawProducedNoContent)
+    XCTAssertEqual(failed.gpuCellPayloadFailure?.reason, "missingGlyphText")
+    XCTAssertEqual(
+      failed.commandCounts?.glyphRuns, 0,
+      "terminal glyph commands are skipped on a payload frame, so a blank-frame report shows 0")
+    XCTAssertEqual(failed.rendered, false)
+
+    let retry = entries[1]
+    XCTAssertNil(retry.payload, "the command fallback frame carries no payload")
+    XCTAssertGreaterThan(
+      retry.commandCounts?.glyphRuns ?? 0, 0, "the fallback re-emits terminal glyph commands")
+    XCTAssertEqual(retry.damage?.kind, "full", "the fallback repaints the whole target")
+    XCTAssertEqual(retry.frameState?.gpuCellCommandFallbackPending, true)
+
+    // The whole chain must survive the JSONL dump path the journal writes.
+    for entry in entries {
+      let encoded = try JSONEncoder().encode(entry)
+      let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: encoded)
+      XCTAssertEqual(decoded.event, entry.event)
+      XCTAssertEqual(decoded.renderFailureReason, entry.renderFailureReason)
+    }
+  }
 }
 
 extension JSONDecoder {
