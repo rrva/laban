@@ -205,7 +205,7 @@ private func runSnapshotLatency(payload: URL) {
       : makeFixtureSession()) else { return nil }
 
     let stop = AtomicFlag()
-    var readerExited = DispatchSemaphore(value: 0)
+    let readerExited = DispatchSemaphore(value: 0)
 
     let readerThread: Thread?
     if loaded {
