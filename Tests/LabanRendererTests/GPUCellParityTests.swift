@@ -345,6 +345,128 @@ final class GPUCellParityTests: XCTestCase {
       "command-mode retry should rebuild glyphs instead of preserving a blank target")
   }
 
+  func testGPUCellCommandPathRejectsPartialWhenGridGeometryChanges() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    if #unavailable(macOS 26) {
+      throw XCTSkip("GPU cell renderer is gated to macOS 26")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    MetalRenderer.useClassicDamageScoped = true
+    let renderer = try makeRenderer(label: "command-geometry-change")
+    let surfacePxH = Int(CGFloat(rows) * cellH * scale)
+
+    // A full command-fed GPU-cell build at geometry A (terminal origin x = 0)
+    // primes the retained cell cache.
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellInstancesForTesting(
+        commands: frame(seed: 0, changedRow: nil),
+        damage: .full,
+        surfacePxH: surfacePxH))
+
+    // A partial build whose terminal grid geometry differs (origin shifted by
+    // one cell) needs a full cache rebuild; honouring it as a partial scissor
+    // update would leave stale geometry-A pixels in the clean rows outside the
+    // band. The build must signal requires-full-redraw (nil), mirroring the
+    // payload path's fail-closed geometry guard.
+    let geometryB = shiftCommandsX(frame(seed: 0, changedRow: 3), by: cellW)
+    XCTAssertNil(
+      renderer.rebuildGPUCellInstancesForTesting(
+        commands: geometryB,
+        damage: .partial(yRanges: [dirtyRange(forRow: 3)]),
+        surfacePxH: surfacePxH),
+      "command-fed GPU-cell partial build must reject a grid geometry change and require a full redraw")
+  }
+
+  private func shiftCommandsX(_ commands: [FrameCommand], by dx: CGFloat) -> [FrameCommand] {
+    commands.map { command in
+      switch command {
+      case .rect(let rect, let color, let source):
+        return .rect(rect.offsetBy(dx: dx, dy: 0), color: color, source: source)
+      case .glyphRun(let origin, let text, let fg, let bg, let attrs, let source, let us, let uc, let link):
+        return .glyphRun(
+          origin: CGPoint(x: origin.x + dx, y: origin.y),
+          text: text, foreground: fg, background: bg, attributes: attrs, source: source,
+          underlineStyle: us, underlineColor: uc, hyperlink: link)
+      default:
+        return command
+      }
+    }
+  }
+
+  func testGPUCellPayloadSparseDirtyRowsPreserveCleanRowsInsideDamageUnion() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    if #unavailable(macOS 26) {
+      throw XCTSkip("GPU cell renderer is gated to macOS 26")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    MetalRenderer.useClassicDamageScoped = true
+    let renderer = try makeRenderer(label: "sparse-partial-preserves-clean-rows")
+    let defaultBg: UInt32 = 0x10_20_30_FF
+
+    // Production appends a full-viewport terminal-area background rect alongside
+    // the cell payload (TerminalSurfaceController.makeFrame, when
+    // includeTerminalAreaBackground is set), and canSkipTerminalCommands does
+    // not remove it. Mirror that here.
+    let terminalAreaBackground: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+        color: defaultBg,
+        source: .terminal)
+    ]
+
+    // Full frame: every row carries a distinct, non-default background.
+    let fullPayload = distinctBackgroundPayload(includedRows: Array(0..<rows), defaultBg: defaultBg)
+    XCTAssertTrue(
+      renderer.render(
+        terminalAreaBackground, cellPayload: fullPayload, damage: .full, rendererFallbackReason: nil))
+    renderer.waitForLastFrame()
+    let expected = try readResult(renderer: renderer, label: "sparse-full")
+
+    // Partial frame: only the first and last rows are dirty. They are
+    // non-contiguous, so the damage-union scissor spans the whole surface and
+    // includes every clean interior row. Those rows must keep the backgrounds
+    // painted by the full frame.
+    let partialPayload = distinctBackgroundPayload(includedRows: [0, rows - 1], defaultBg: defaultBg)
+    let damage = RenderDamage.partial(yRanges: [dirtyRange(forRow: 0), dirtyRange(forRow: rows - 1)])
+    XCTAssertTrue(
+      renderer.render(
+        terminalAreaBackground, cellPayload: partialPayload, damage: damage, rendererFallbackReason: nil))
+    renderer.waitForLastFrame()
+    let actual = try readResult(renderer: renderer, label: "sparse-partial")
+
+    XCTAssertEqual(actual.image.bytes.count, expected.image.bytes.count)
+    let changedBytes = zip(actual.image.bytes, expected.image.bytes).reduce(into: 0) {
+      if $1.0 != $1.1 { $0 += 1 }
+    }
+    XCTAssertEqual(
+      changedBytes, 0,
+      "sparse partial payload wiped \(changedBytes) bytes of clean interior rows inside the damage-union scissor")
+  }
+
+  private func distinctBackgroundPayload(includedRows: [Int], defaultBg: UInt32) -> TerminalCellPayload {
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: defaultBg,
+      dirtyRows: includedRows)
+    for row in includedRows {
+      let base = UInt32((row * 29 + 0x40) & 0xFF)
+      let bg: UInt32 =
+        ((0x40 + base) << 24) | ((0x60 + base) << 16) | ((0x80 + base) << 8) | 0xFF
+      payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+    }
+    return payload
+  }
+
   func testGPUCellPayloadAcceptsTwoCellMetricNarrowSymbols() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

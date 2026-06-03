@@ -342,6 +342,12 @@ public final class MetalRenderer: RendererBackend {
   /// caller passed `.partial(empty)` but the surface size changed).
   private var targetTexture: MTLTexture?
   private var targetNeedsFullRedraw: Bool = true
+  /// Set by the command-fed GPU-cell build when a partial update arrives after
+  /// the terminal grid geometry changed (so the retained cell cache had to be
+  /// fully rebuilt). The caller turns this into a full-target redraw rather than
+  /// a partial scissor update — which would leave stale pre-change pixels in the
+  /// clean rows — mirroring the cell-payload path's fail-closed geometry guard.
+  private var gpuCellCommandRequiresFullRedraw = false
   /// Last frame's command buffer. `pngData` waits on it before reading the
   /// readback texture so capture-side callers see the actual just-rendered
   /// pixels and not whatever the previous frame happened to leave behind.
@@ -1248,6 +1254,14 @@ public final class MetalRenderer: RendererBackend {
         targetNeedsFullRedraw = true
         return false
       }
+      if gpuCellCommandRequiresFullRedraw {
+        // Geometry changed under partial damage: repaint the whole target next
+        // frame rather than classic-fallback with the same partial damage,
+        // which would also leave stale pixels outside the scissor band.
+        gpuCellCommandRequiresFullRedraw = false
+        targetNeedsFullRedraw = true
+        return false
+      }
       return encodeContentPass(
         commands: commands,
         damage: damage,
@@ -1747,6 +1761,14 @@ public final class MetalRenderer: RendererBackend {
       // painted over by those backgrounds.
       guard case .rect(let rect, let color, let source) = cmd, source != .preedit
       else { continue }
+      // On a partial payload frame the per-dirty-row background below repaints
+      // exactly the dirty rows; the full-viewport terminal-area background rect
+      // (source .terminal, appended by TerminalSurfaceController and not removed
+      // by canSkipTerminalCommands) would otherwise be drawn across the whole
+      // damage-union scissor and wipe clean interior rows' non-default
+      // backgrounds / procedural fills to the default colour. Skip it on partial
+      // frames — clean rows are preserved by the persistent target's load action.
+      if case .partial = damage, source == .terminal { continue }
       appendSolid(rect: rect, color: color)
     }
 
@@ -2234,10 +2256,23 @@ public final class MetalRenderer: RendererBackend {
     cellGlyphUploadRanges.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
 
+    gpuCellCommandRequiresFullRedraw = false
     let geometry = terminalGridGeometry(commands: commands)
     let fullCellRebuild =
       damageBounds == nil || geometry != cellGlyphGridGeometry
       || geometry?.cellCount != cellGlyphs.count
+    // Mirror the cell-payload path (buildGPUCellPayloadInstanceListsOnce): a
+    // partial update (damageBounds != nil) cannot be honoured when the retained
+    // cell cache must be fully rebuilt because the terminal grid geometry
+    // changed (or the cache is cold). Partial-rendering would scissor to the
+    // dirty band and leave stale pre-change pixels in the clean rows, so signal
+    // a full-target redraw instead of partial-rendering or classic fallback.
+    if let geometry, damageBounds != nil,
+      geometry != cellGlyphGridGeometry || geometry.cellCount != cellGlyphs.count
+    {
+      gpuCellCommandRequiresFullRedraw = true
+      return false
+    }
     if let geometry, fullCellRebuild {
       cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
       cellGlyphGridGeometry = geometry
