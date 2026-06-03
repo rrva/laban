@@ -91,6 +91,22 @@ final class RenderJournalTests: XCTestCase {
     XCTAssertEqual(counts.selections, 1)
     XCTAssertEqual(counts.findMatches, 1)
   }
+
+  func testRenderFailedEntryCarriesRenderFailureReasonThroughSerialization() throws {
+    let journal = RenderJournal()
+    let entry = journal.makeEntry(
+      event: .renderFailed,
+      frame: 7,
+      tabId: "tab",
+      sessionId: "s",
+      renderFailureReason: .fullRedrawProducedNoContent)
+    XCTAssertEqual(entry.renderFailureReason, .fullRedrawProducedNoContent)
+
+    // The dump path serializes entries as JSONL, so the reason must round-trip.
+    let encoded = try JSONEncoder().encode(entry)
+    let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: encoded)
+    XCTAssertEqual(decoded.renderFailureReason, .fullRedrawProducedNoContent)
+  }
 }
 
 extension JSONDecoder {

@@ -193,8 +193,34 @@ public final class MetalRenderer: RendererBackend {
     }
   }
 
+  /// Why the most recent `render(_:cellPayload:damage:rendererFallbackReason:)`
+  /// returned `false`. `render` collapses several distinct conditions into one
+  /// `Bool`; this disambiguates them for the render journal and blank-frame
+  /// triage. Cleared to `nil` at the start of every `render` and left `nil` on a
+  /// successful frame.
+  public enum RenderFailureReason: String, Codable, Equatable, Sendable {
+    /// The drawable scheduler coalesced this frame because the previous GPU
+    /// frame had not retired yet (backpressure, not an error).
+    case previousFrameInFlight
+    /// `MTLCommandQueue.makeCommandBuffer()` returned nil.
+    case commandBufferUnavailable
+    /// The persistent terminal-content target texture could not be allocated.
+    case targetTextureUnavailable
+    /// A full redraw was required but the content pass produced nothing — e.g.
+    /// a cell-payload build failure or a command-fed grid-geometry change that
+    /// demands a full repaint. The frame is dropped and retried full next time;
+    /// `lastGPUCellPayloadBuildFailure` carries the payload-specific detail.
+    case fullRedrawProducedNoContent
+    /// `CAMetalLayer` had no drawable available to present into.
+    case drawableUnavailable
+    /// The layer resized between target allocation and drawable acquisition, so
+    /// the mismatched drawable was dropped and a full repaint forced.
+    case drawableSizeMismatch
+  }
+
   public private(set) var lastInstanceCounts = RenderInstanceCounts()
   public private(set) var lastGPUCellPayloadBuildFailure: GPUCellPayloadBuildFailure?
+  public private(set) var lastRenderFailureReason: RenderFailureReason?
   public private(set) var rendererStatus = RendererStatus(
     configuredRenderer: RendererMode.classic.rawValue,
     effectiveRenderer: RendererMode.classic.rawValue)
@@ -791,6 +817,7 @@ public final class MetalRenderer: RendererBackend {
     rendererFallbackReason: String?
   ) -> Bool {
     let cpuStart = ContinuousClock.now
+    lastRenderFailureReason = nil
     let selection = resolvedRendererStatus(rendererFallbackReason: rendererFallbackReason)
     rendererStatus = selection.status
 
@@ -799,9 +826,11 @@ public final class MetalRenderer: RendererBackend {
     // limited drawable pool is held for the shortest useful interval.
     let needsFullFrame = targetNeedsFullRedraw || damage == .full
     guard let scheduledFrame = drawableScheduler.beginFrame(needsFullFrame: needsFullFrame) else {
+      lastRenderFailureReason = .previousFrameInFlight
       return false
     }
     guard let cmdBuf = queue.makeCommandBuffer() else {
+      lastRenderFailureReason = .commandBufferUnavailable
       scheduledFrame.finish()
       return false
     }
@@ -812,6 +841,7 @@ public final class MetalRenderer: RendererBackend {
     let surfaceHPx = max(1, Int(layer.drawableSize.height.rounded()))
     ensureTargetTexture(width: surfaceWPx, height: surfaceHPx)
     guard let target = targetTexture else {
+      lastRenderFailureReason = .targetTextureUnavailable
       scheduledFrame.finish()
       return false
     }
@@ -853,12 +883,14 @@ public final class MetalRenderer: RendererBackend {
       }
     }
     if targetNeedsFullRedraw && !didContent {
+      lastRenderFailureReason = .fullRedrawProducedNoContent
       scheduledFrame.finish()
       return false
     }
     passSlots.contentActive = didContent
 
     guard let drawable = scheduledFrame.acquireDrawable() else {
+      lastRenderFailureReason = .drawableUnavailable
       scheduledFrame.finish()
       return false
     }
@@ -869,6 +901,7 @@ public final class MetalRenderer: RendererBackend {
       // correctly-sized target.
       targetTexture = nil
       targetNeedsFullRedraw = true
+      lastRenderFailureReason = .drawableSizeMismatch
       scheduledFrame.finish()
       return false
     }

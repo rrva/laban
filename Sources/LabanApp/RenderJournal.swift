@@ -32,6 +32,7 @@ final class RenderJournal {
     var diagnostics: TerminalSurfaceFrameDiagnostics?
     var metalInstances: MetalInstanceCounts?
     var gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure?
+    var renderFailureReason: MetalRenderer.RenderFailureReason?
     var rendered: Bool?
   }
 
@@ -201,6 +202,7 @@ final class RenderJournal {
     diagnostics: TerminalSurfaceFrameDiagnostics? = nil,
     metalInstances: MetalRenderer.RenderInstanceCounts? = nil,
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
+    renderFailureReason: MetalRenderer.RenderFailureReason? = nil,
     rendered: Bool? = nil
   ) -> Entry {
     Entry(
@@ -224,6 +226,7 @@ final class RenderJournal {
       diagnostics: diagnostics,
       metalInstances: metalInstances.map(MetalInstanceCounts.init),
       gpuCellPayloadFailure: gpuCellPayloadFailure,
+      renderFailureReason: renderFailureReason,
       rendered: rendered)
   }
 

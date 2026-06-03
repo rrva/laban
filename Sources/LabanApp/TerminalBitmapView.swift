@@ -1503,6 +1503,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let metalRenderer = backend as? MetalRenderer
     let gpuCellPayloadFailure =
       event == .renderFailed ? metalRenderer?.lastGPUCellPayloadBuildFailure : nil
+    let renderFailureReason =
+      event == .renderFailed ? metalRenderer?.lastRenderFailureReason : nil
     let commandList = surfaceFrame?.commands ?? commands
     let overlayCommands = surfaceFrame?.overlayCommands ?? []
     let entry = renderJournal.makeEntry(
@@ -1536,6 +1538,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       diagnostics: surfaceFrame?.diagnostics,
       metalInstances: metalRenderer?.lastInstanceCounts,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
+      renderFailureReason: renderFailureReason,
       rendered: rendered)
     renderJournal.record(entry)
   }

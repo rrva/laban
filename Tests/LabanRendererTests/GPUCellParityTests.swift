@@ -477,6 +477,39 @@ final class GPUCellParityTests: XCTestCase {
     return payload
   }
 
+  func testRenderFailureReasonReportsFullRedrawNoContentAndClearsOnSuccess() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    if #unavailable(macOS 26) {
+      throw XCTSkip("GPU cell renderer is gated to macOS 26")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    let renderer = try makeRenderer(label: "render-failure-reason")
+
+    // A payload that cannot build forces a full redraw that produces no
+    // content. The frame is dropped, but with a specific, inspectable reason
+    // instead of a bare `false`.
+    var badPayload = payload(seed: 5, changedRow: nil, includedRows: Array(0..<rows))
+    badPayload.glyphs[0].text = ""
+    badPayload.glyphs[0].scalarValue = nil
+    badPayload.glyphs[0].utf8Range = nil
+    XCTAssertFalse(
+      renderer.render([], cellPayload: badPayload, damage: .full, rendererFallbackReason: nil))
+    XCTAssertEqual(renderer.lastRenderFailureReason, .fullRedrawProducedNoContent)
+
+    // The command-mode retry repaints successfully and clears the reason.
+    XCTAssertTrue(
+      renderer.render(
+        frame(seed: 5, changedRow: nil),
+        cellPayload: nil,
+        damage: .full,
+        rendererFallbackReason: nil))
+    renderer.waitForLastFrame()
+    XCTAssertNil(renderer.lastRenderFailureReason)
+  }
+
   func testGPUCellPayloadAcceptsTwoCellMetricNarrowSymbols() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
