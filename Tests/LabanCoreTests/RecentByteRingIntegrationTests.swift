@@ -106,12 +106,14 @@ final class RecentByteRingIntegrationTests: XCTestCase {
     let castURL = baseDir.appendingPathComponent("smoke.cast")
     try castData.write(to: castURL)
 
-    // `asciinema cat` re-emits the recorded output verbatim and
-    // returns non-zero on a malformed cast file — exactly the
-    // validation we want without requiring a TTY.
+    // `asciinema convert -f raw <FILE> -` re-emits the recorded output
+    // verbatim to stdout and returns non-zero on a malformed cast file —
+    // exactly the validation we want without requiring a TTY. (asciinema 3.x
+    // repurposed `cat` for concatenating multiple casts; the 2.x raw re-emit
+    // moved to `convert -f raw`.)
     let task = Process()
     task.executableURL = URL(fileURLWithPath: asciinemaPath)
-    task.arguments = ["cat", castURL.path]
+    task.arguments = ["convert", "-f", "raw", castURL.path, "-"]
     let stdout = Pipe()
     let stderr = Pipe()
     task.standardOutput = stdout
@@ -129,10 +131,10 @@ final class RecentByteRingIntegrationTests: XCTestCase {
         encoding: .utf8) ?? ""
     XCTAssertEqual(
       task.terminationStatus, 0,
-      "asciinema cat rejected the cast: stderr=\(stderrText)")
+      "asciinema convert rejected the cast: stderr=\(stderrText)")
     XCTAssertTrue(
       stdoutText.contains("é & 🎉"),
-      "asciinema cat output should contain the recorded multi-byte glyphs; got=\(stdoutText.debugDescription)"
+      "asciinema convert output should contain the recorded multi-byte glyphs; got=\(stdoutText.debugDescription)"
     )
   }
 
