@@ -819,6 +819,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   /// CADisplayLink target/selector. Already on main, so no dispatch hop.
   @objc private func displayLinkTick(_ link: AnyObject) {
+    IdleCounters.shared.noteDisplayLinkTick()
     advanceFrame()
   }
 
@@ -1049,6 +1050,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   @objc func advanceFrame() {
+    IdleCounters.shared.noteAdvanceFrame()
     // Heartbeat the stall watchdog at the top of every tick. If
     // advanceFrame stops returning (or takes very long), the background
     // watchdog will spot the gap and snapshot our threads via sample(1).

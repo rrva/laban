@@ -835,6 +835,7 @@ private final class LabptyParserFeed {
       self?.poll()
     }
     timer.schedule(deadline: .now(), repeating: .milliseconds(4), leeway: .milliseconds(1))
+    IdleCounters.shared.noteLabptyFeedStarted()
     timer.resume()
   }
 
@@ -847,6 +848,7 @@ private final class LabptyParserFeed {
     if shouldCancel {
       timer.setEventHandler {}
       timer.cancel()
+      IdleCounters.shared.noteLabptyFeedStopped()
     }
   }
 
@@ -856,6 +858,7 @@ private final class LabptyParserFeed {
     }
     let result = reader.readSince(lastOffset)
     lastOffset = result.newOffset
+    IdleCounters.shared.noteLabptyPoll(byteCount: result.bytes.count)
     guard !result.bytes.isEmpty else { return }
     // The first read positions the cursor from offset 0, so its span covers the
     // session's whole lifetime, not output we dropped live: on a restart
