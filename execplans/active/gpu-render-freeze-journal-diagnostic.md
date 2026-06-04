@@ -218,3 +218,42 @@ when explicitly enabled. Re-running tests is safe. Deleting dump directories
 under `~/Library/Logs/Laban/render-journal/` is safe if they were created by a
 local diagnostic run. If false positives appear, raise the no-progress
 threshold or tighten the pending-work predicate before changing renderer code.
+
+## Outcome (2026-06-04)
+
+The detector caught the freeze it shipped for. With the auto-dump switch enabled,
+a live Claude Code TUI session produced the first real `freezeDetected` dump:
+`reason: gpuRenderNoProgress`, `renderFailureReason: drawableUnavailable`,
+`noProgressStreak: 12`, while idle (`terminalDirty: false`) with
+`renderInvalidated` stuck true.
+
+Root cause (in `Sources/LabanRenderer/MetalDrawableScheduler.swift` and the
+`TerminalBitmapView` render-failure branch): the scheduler's 8 ms drawable-acquire
+timeout abandoned the in-flight `nextDrawable()` but left `drawableRequestActive`
+set, so every subsequent frame fast-failed until the stuck call unblocked (a
+"poison gate"); meanwhile the failure branch re-asserted `renderInvalidated` and
+called `scheduleRenderRetry()`, a plain `DispatchQueue.main.async` hop that spun
+once per main-loop turn. Together they amplified one ~16 ms drawable-drain wait
+into bursts of 8-12 failed frames — a visible freeze the strict-consecutive-12
+detector only caught at its worst.
+
+Fix shipped (two reviews — an architect subagent and Codex — concurred):
+
+- `MetalRenderer.RenderFailureReason.isGPUBackpressure` classifies
+  `drawableUnavailable`/`previousFrameInFlight`.
+- App-side pacing (commit `aa3c738`): on backpressure, leave the frame
+  invalidated and let the next display-link tick repaint instead of an immediate
+  retry; keep immediate retry for transient reasons (size mismatch, no-content
+  full redraw).
+- Scheduler carry-forward (commit `2c5d98c`, independently revertible): a late
+  `nextDrawable()` is parked in `pendingDrawable` for the next acquire instead of
+  poisoning subsequent frames; stale-sized carry-forward is caught by the
+  existing `drawableSizeMismatch` guard.
+
+Live-journal verification (heavier load than the bad baselines): `drawableUnavailable`
+35% -> 4.7%, longest consecutive run 12 -> 2, `freezeDetected` 1 -> 0, no new
+failure reasons. Two diagnostic commits added en route and kept as observability:
+`f29b662` (off-bottom `noFrameNeeded` park trace) and `865ac2d`
+(`modelChanged`/`metadataSignature` journal fields). Both the scroll-to-bottom and
+title-spinner hypotheses they chased were disproven by the instrumentation before
+the drawable-starvation root cause was found.
