@@ -1494,7 +1494,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if surfaceFrame.cellPayload != nil {
         gpuCellCommandFallbackPending = true
       }
-      scheduleRenderRetry()
+      // On GPU/compositor backpressure (`drawableUnavailable` /
+      // `previousFrameInFlight`) an immediate main-queue retry just spins
+      // against the stall — every fast-failed attempt reschedules another,
+      // turning one ~16ms drawable-drain wait into a burst of failed frames.
+      // The display link is already ticking on a visible window; leave the
+      // frame invalidated and let the next tick repaint at the display's
+      // cadence. Other reasons are transient resource hiccups that a prompt
+      // retry resolves (size-mismatch repaint, GPU-cell command fallback).
+      let failureReason = (backend as? MetalRenderer)?.lastRenderFailureReason
+      if failureReason?.isGPUBackpressure != true {
+        scheduleRenderRetry()
+      }
       return
     }
     recordRenderJournal(

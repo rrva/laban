@@ -217,6 +217,24 @@ public final class MetalRenderer: RendererBackend {
     /// The layer resized between target allocation and drawable acquisition, so
     /// the mismatched drawable was dropped and a full repaint forced.
     case drawableSizeMismatch
+
+    /// GPU/compositor backpressure rather than a recoverable-by-retrying error:
+    /// either the previous frame is still in flight or the display has not yet
+    /// drained a drawable. Retrying on the same main-loop turn just spins
+    /// against the stall, so the caller should leave the frame invalidated and
+    /// let the next display-link tick repaint at the display's own cadence. The
+    /// other reasons (size mismatch, no-content full redraw, unavailable command
+    /// buffer/target) are transient resource hiccups where an immediate retry is
+    /// correct.
+    public var isGPUBackpressure: Bool {
+      switch self {
+      case .previousFrameInFlight, .drawableUnavailable:
+        return true
+      case .commandBufferUnavailable, .targetTextureUnavailable,
+        .fullRedrawProducedNoContent, .drawableSizeMismatch:
+        return false
+      }
+    }
   }
 
   /// A GPU command buffer that completed with `.error`. The completion handler
