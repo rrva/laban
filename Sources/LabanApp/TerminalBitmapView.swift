@@ -191,6 +191,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// new fractional position.
   private var scrollAnimating: Bool = false
 
+  /// Scroll-position signature of the most recently journaled idle park, so a
+  /// sustained off-bottom park logs one `noFrameNeeded` entry instead of one
+  /// per vsync. Reset to `nil` whenever the viewport sits at the live bottom.
+  private var lastParkSignature: String?
+
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
   // Caret position within `markedText`, in cells (grapheme clusters from the
@@ -1103,6 +1108,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // controller doesn't keep ticking against the wrong viewport.
     if tabChanged {
       resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
+      lastParkSignature = nil
       syncSelectionStateToActiveTab()
       // Drop the shared overlay indicator's outgoing-tab state before the new
       // tab's first viewport sample so it can't flash the previous thumb.
@@ -1289,7 +1295,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     // Return early when nothing changed
     guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame || attentionAnimating
-    else { return }
+    else {
+      recordParkedFrameIfInteresting(
+        frame: captureFrame,
+        tab: activeTab,
+        session: session,
+        terminalDirty: terminalDirty,
+        activeTerminalDirty: activeTerminalDirty,
+        tabChanged: tabChanged,
+        cursorBlinkFrame: cursorBlinkFrame,
+        attentionAnimating: attentionAnimating,
+        scrollAnimating: scrollAnimating,
+        usingRemoteSnapshots: usingRemoteSessions)
+      return
+    }
 
     captureRecorder?.record(CaptureTimelineEvent(kind: .frameBegin, frame: captureFrame))
 
@@ -1558,6 +1577,50 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     } else {
       onViewportUnavailable?()
     }
+  }
+
+  /// Journal the idle early-return in `advanceFrame`, but only when the park is
+  /// diagnostically interesting: the viewport is off the live bottom (the
+  /// "scrolled down but the final frame never landed" signature) and we have not
+  /// already logged this scroll position. The entry carries the full
+  /// scroll/viewport snapshot and the `renderInvalidated` flag (always false
+  /// here, since the loop only parks when nothing asked to draw), so a dropped
+  /// scroll-to-bottom trigger shows up as a `noFrameNeeded` park at a negative
+  /// applied-rows position rather than a `rendered` entry at the bottom.
+  private func recordParkedFrameIfInteresting(
+    frame: Int,
+    tab: Tab,
+    session: Session,
+    terminalDirty: Bool,
+    activeTerminalDirty: Bool,
+    tabChanged: Bool,
+    cursorBlinkFrame: Bool,
+    attentionAnimating: Bool,
+    scrollAnimating: Bool,
+    usingRemoteSnapshots: Bool
+  ) {
+    guard renderJournalEnabled else { return }
+    let decision = TerminalRenderGate.parkedFrameDecision(
+      appliedScrollRows: appliedScrollRows,
+      lastParkSignature: lastParkSignature)
+    lastParkSignature = decision.signature
+    guard decision.shouldRecord else { return }
+    recordRenderJournal(
+      event: .skipped,
+      frame: frame,
+      tab: tab,
+      session: session,
+      reason: "noFrameNeeded",
+      terminalDirty: terminalDirty,
+      activeTerminalDirty: activeTerminalDirty,
+      renderInvalidated: renderInvalidated,
+      tabChanged: tabChanged,
+      cursorBlinkFrame: cursorBlinkFrame,
+      attentionAnimating: attentionAnimating,
+      scrollAnimating: scrollAnimating,
+      usingRemoteSnapshots: usingRemoteSnapshots,
+      cellPayloadRequested: false,
+      contentYOffset: 0)
   }
 
   private func recordRenderJournal(

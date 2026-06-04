@@ -97,4 +97,31 @@ enum TerminalRenderGate {
     return OutputSettleDecision(
       shouldDefer: true, hold: currentHold, wakeAfter: wakeAfter)
   }
+
+  struct ParkedFrameDecision: Equatable {
+    var shouldRecord: Bool
+    var signature: String?
+  }
+
+  /// The display link ticks every vsync while the window is visible, so the
+  /// idle early-return in `advanceFrame` fires continuously. Recording every
+  /// idle tick would overrun the bounded render-journal ring in seconds and
+  /// bury real history. A park that leaves the viewport off the live bottom is
+  /// the only diagnostically interesting one — it is the "scrolled down but the
+  /// final frame never landed" signature — and only the first park at each
+  /// distinct off-bottom position is worth an entry. At the live bottom the
+  /// signature resets to `nil` so a later return to the same position logs
+  /// again instead of being deduplicated against a stale park.
+  static func parkedFrameDecision(
+    appliedScrollRows: Int,
+    lastParkSignature: String?
+  ) -> ParkedFrameDecision {
+    guard appliedScrollRows != 0 else {
+      return ParkedFrameDecision(shouldRecord: false, signature: nil)
+    }
+    let signature = String(appliedScrollRows)
+    return ParkedFrameDecision(
+      shouldRecord: signature != lastParkSignature,
+      signature: signature)
+  }
 }
