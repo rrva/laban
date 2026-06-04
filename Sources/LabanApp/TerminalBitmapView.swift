@@ -196,6 +196,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// per vsync. Reset to `nil` whenever the viewport sits at the live bottom.
   private var lastParkSignature: String?
 
+  /// Per-frame diagnostics captured at the top of `advanceFrame` so every
+  /// journal entry in the frame can report whether `syncSessions` re-asserted
+  /// `renderInvalidated` and what the active tab's metadata looked like. Used
+  /// to pin which metadata field keeps an otherwise idle terminal redrawing.
+  private var frameModelChanged = false
+  private var frameMetadataSignature: String?
+
   // IME composition buffer
   private var markedText: NSAttributedString = .init(string: "")
   // Caret position within `markedText`, in cells (grapheme clusters from the
@@ -1061,6 +1068,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       polling: .none,
       markInactiveDirtyRendered: true,
       noteOutputOnDirty: true)
+    frameModelChanged = sync.modelChanged
     if sync.modelChanged {
       renderInvalidated = true
     }
@@ -1073,6 +1081,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       onViewportUnavailable?()
       return
     }
+    frameMetadataSignature = renderJournalMetadataSignature(for: activeTab)
 
     let windowTitle =
       model.windowTitle + TerminalCaptureIndicator.windowTitleSuffix(active: isCaptureActive)
@@ -1579,6 +1588,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  /// Compact fingerprint of the active tab's surface metadata. Each component is
+  /// a source that can flip `syncSessions`' `modelChanged` (and thus re-assert
+  /// `renderInvalidated`); diffing the fingerprint across consecutive journal
+  /// entries shows which one keeps an idle terminal redrawing. A stable
+  /// fingerprint while `modelChanged` stays true points at process-metadata
+  /// churn that does not surface in `titleMetadata`.
+  private func renderJournalMetadataSignature(for tab: Tab) -> String {
+    let m = tab.titleMetadata
+    let agent = m.agentStatus
+    return [
+      "title=\(m.terminalTitle ?? "")",
+      "cwd=\(m.workspace.cwd ?? "")",
+      "branch=\(m.workspace.branch ?? "")",
+      "agent=\(agent.indicatorColor ?? "")/\(agent.statusText ?? "")",
+      "shell=\(m.shellPhase.rawValue)",
+      "exit=\(m.lastCommandExitCode.map(String.init) ?? "")",
+    ].joined(separator: " ")
+  }
+
   /// Journal the idle early-return in `advanceFrame`, but only when the park is
   /// diagnostically interesting: the viewport is off the live bottom (the
   /// "scrolled down but the final frame never landed" signature) and we have not
@@ -1674,7 +1702,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         usingRemoteSnapshots: usingRemoteSnapshots,
         gpuCellRequested: metalRenderer?.requestedRendererMode == .gpuDriven,
         cellPayloadRequested: cellPayloadRequested,
-        gpuCellCommandFallbackPending: gpuCellCommandFallbackPending),
+        gpuCellCommandFallbackPending: gpuCellCommandFallbackPending,
+        modelChanged: frameModelChanged,
+        metadataSignature: frameMetadataSignature),
       viewport: renderJournalViewportSnapshot(for: session),
       scroll: renderJournalScrollSnapshot(contentYOffset: contentYOffset),
       damage: surfaceFrame?.damage,

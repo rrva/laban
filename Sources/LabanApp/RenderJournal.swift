@@ -71,6 +71,14 @@ final class RenderJournal {
     var gpuCellRequested: Bool
     var cellPayloadRequested: Bool
     var gpuCellCommandFallbackPending: Bool
+    /// Diagnostic: did `syncSessions` report `modelChanged` this frame (the
+    /// `advanceFrame` path that re-asserts `renderInvalidated`)? Optional so old
+    /// dumps still decode.
+    var modelChanged: Bool?
+    /// Diagnostic: compact active-tab metadata fingerprint (title/cwd/branch/
+    /// agentStatus/shell/exit). Diff it across consecutive entries to see which
+    /// field flips and keeps re-invalidating an otherwise idle frame.
+    var metadataSignature: String?
   }
 
   struct ViewportSnapshot: Codable, Equatable, Sendable {
