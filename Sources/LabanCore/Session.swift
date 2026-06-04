@@ -1956,6 +1956,8 @@ public struct MouseEvent {
   public var cellWidth: Int
   public var cellHeight: Int
   public var modifiers: Int
+  public var trackingMode: Int
+  public var format: Int
 
   public init(
     action: MouseAction,
@@ -1966,7 +1968,9 @@ public struct MouseEvent {
     screenHeight: Int,
     cellWidth: Int,
     cellHeight: Int,
-    modifiers: Int = 0
+    modifiers: Int = 0,
+    trackingMode: Int = 0,
+    format: Int = 0
   ) {
     self.action = action
     self.button = button
@@ -1977,6 +1981,8 @@ public struct MouseEvent {
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
     self.modifiers = modifiers
+    self.trackingMode = trackingMode
+    self.format = format
   }
 
   func toLabanMouseEvent() -> LabanMouseEvent {
@@ -2001,6 +2007,28 @@ public struct MouseEvent {
     raw.cell_width = Int32(cellWidth)
     raw.cell_height = Int32(cellHeight)
     raw.modifiers = Int32(modifiers)
+    raw.tracking_mode = Self.labanMouseTrackingMode(from: trackingMode)
+    raw.format = Self.labanMouseFormat(from: format)
     return raw
+  }
+
+  private static func labanMouseTrackingMode(from value: Int) -> LabanMouseTrackingMode {
+    switch value {
+    case 1: return LABAN_MOUSE_TRACKING_X10
+    case 2: return LABAN_MOUSE_TRACKING_NORMAL
+    case 3: return LABAN_MOUSE_TRACKING_BUTTON
+    case 4: return LABAN_MOUSE_TRACKING_ANY
+    default: return LABAN_MOUSE_TRACKING_NONE
+    }
+  }
+
+  private static func labanMouseFormat(from value: Int) -> LabanMouseFormat {
+    switch value {
+    case 1: return LABAN_MOUSE_FORMAT_UTF8
+    case 2: return LABAN_MOUSE_FORMAT_SGR
+    case 3: return LABAN_MOUSE_FORMAT_URXVT
+    case 4: return LABAN_MOUSE_FORMAT_SGR_PIXELS
+    default: return LABAN_MOUSE_FORMAT_X10
+    }
   }
 }

@@ -300,6 +300,16 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
   /// showing a half-drawn frame. Optional for forwards/backwards compatibility:
   /// readers treat `nil` as "not synchronized".
   public var synchronizedOutput: Bool?
+  /// Terminal mouse reporting mode active for this snapshot. Optional so
+  /// older daemons/ring payloads decode as "not tracking".
+  public var mouseTracking: Bool?
+  /// Concrete mouse tracking encoder mode. Values match `LabanMouseTrackingMode`.
+  public var mouseTrackingMode: Int?
+  /// Concrete mouse output format. Values match `LabanMouseFormat`.
+  public var mouseFormat: Int?
+  /// Terminal focus reporting mode active for this snapshot. Optional so
+  /// older daemons/ring payloads decode as "not reporting".
+  public var focusReporting: Bool?
 
   public init(
     logicalSessionId: String,
@@ -316,7 +326,11 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
     visibleText: String,
     cells: [LabandSnapshotCell],
     defaultBackgroundRGBA: UInt32? = nil,
-    synchronizedOutput: Bool? = nil
+    synchronizedOutput: Bool? = nil,
+    mouseTracking: Bool? = nil,
+    mouseTrackingMode: Int? = nil,
+    mouseFormat: Int? = nil,
+    focusReporting: Bool? = nil
   ) {
     self.logicalSessionId = logicalSessionId
     self.incarnationId = incarnationId
@@ -333,6 +347,10 @@ public struct LabandSnapshotResponse: Codable, Equatable, Sendable {
     self.cells = cells
     self.defaultBackgroundRGBA = defaultBackgroundRGBA
     self.synchronizedOutput = synchronizedOutput
+    self.mouseTracking = mouseTracking
+    self.mouseTrackingMode = mouseTrackingMode
+    self.mouseFormat = mouseFormat
+    self.focusReporting = focusReporting
   }
 }
 

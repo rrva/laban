@@ -28,6 +28,7 @@ enum DebugAction: Decodable {
   case dropFiles(DropFilesActionRequest)
   case scrollViewport(ScrollViewportActionRequest)
   case mouseWheel(MouseWheelActionRequest)
+  case mouseDrag(MouseDragActionRequest)
   case click(ClickActionRequest)
   case key(DebugKeyActionRequest)
   case windowFocus(WindowFocusActionRequest)
@@ -85,6 +86,8 @@ enum DebugAction: Decodable {
       self = .scrollViewport(try ScrollViewportActionRequest(from: decoder))
     case "mouseWheel":
       self = .mouseWheel(try MouseWheelActionRequest(from: decoder))
+    case "mouseDrag":
+      self = .mouseDrag(try MouseDragActionRequest(from: decoder))
     case "click":
       self = .click(try ClickActionRequest(from: decoder))
     case "key":
@@ -176,6 +179,15 @@ struct MouseWheelActionRequest: Decodable {
   var x: Int?
   var y: Int?
   var deltaY: Double?
+}
+
+struct MouseDragActionRequest: Decodable {
+  var startX: Int?
+  var startY: Int?
+  var endX: Int?
+  var endY: Int?
+  var button: String?
+  var holdMs: Int?
 }
 
 struct ClickActionRequest: Decodable {

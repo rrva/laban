@@ -143,6 +143,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
   private var lastRenderedActiveTabId: Tab.ID?
   private var remoteSnapshotRenderTracker = RemoteSnapshotRenderTracker()
+  private var remoteMouseEncodingByTab: [Tab.ID: (trackingMode: Int, format: Int)] = [:]
   private var scrollResidualPx: CGFloat = 0
 
   /// Last cols value applied to libghostty. Used to detect when a reflow
@@ -1154,10 +1155,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         }
       } catch {
         remoteFrame = nil
+        remoteMouseEncodingByTab.removeValue(forKey: activeTab.id)
         AppLog.app.error("laband snapshot failed: \(String(describing: error))")
       }
     } else {
       remoteFrame = nil
+      remoteMouseEncodingByTab.removeAll()
+    }
+    if let remoteFrame {
+      cacheRemoteMouseEncoding(remoteFrame.snapshot, for: activeTab.id)
     }
 
     let terminalDirty = activeTerminalDirty || (!usingRemoteSessions && session.renderDirty())
@@ -1311,7 +1317,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
         remoteFrame = try sessionCoordinator.snapshotFrame(for: activeTab, size: model.terminalSize)
+        if let snapshot = remoteFrame?.snapshot {
+          cacheRemoteMouseEncoding(snapshot, for: activeTab.id)
+        }
       } catch {
+        remoteMouseEncodingByTab.removeValue(forKey: activeTab.id)
         AppLog.app.error("laband snapshot failed: \(String(describing: error))")
         return
       }
@@ -1466,8 +1476,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     syncFindChip()
 
     if let vs = session.viewportState() {
+      let reportedMouseTracking = mouseTrackingActive(for: activeTab, session: session)
       onViewportChanged?(
-        vs.viewportOffset, vs.totalRows, vs.viewportRows, vs.altScreen, vs.mouseTracking)
+        vs.viewportOffset, vs.totalRows, vs.viewportRows, vs.altScreen, reportedMouseTracking)
       if ScrollDiagnostics.shared.isEnabled {
         // The exact numbers the overlay indicator decides on, paired with the
         // view's own scroll belief and window focus. If `linesBack > 0` here
@@ -1987,6 +1998,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // and restore the prior selection rather than stranding the user on a
       // dead, input-rejecting tab. (H-4)
       remoteSnapshotRenderTracker.clear(tabId: tab.id)
+      remoteMouseEncodingByTab.removeValue(forKey: tab.id)
       try? model.closeTab(tab.id)
       if let previousActiveTabId {
         model.selectTab(previousActiveTabId)
@@ -2002,6 +2014,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       sessionCoordinator?.terminate(tab: tab)
     }
     remoteSnapshotRenderTracker.clear(tabId: tabId)
+    remoteMouseEncodingByTab.removeValue(forKey: tabId)
     try model.closeTab(tabId)
   }
 
@@ -2092,6 +2105,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func pruneClosedTabState(_ tabId: Tab.ID) {
     selectionsByTab.removeValue(forKey: tabId)
+    remoteMouseEncodingByTab.removeValue(forKey: tabId)
     if hoveredSidebarTabId == tabId {
       hoveredSidebarTabId = nil
     }
@@ -3090,6 +3104,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     guard pt.y <= bounds.height - Self.titlebarReservedHeight else { return }
 
     guard let vs = session.viewportState() else { return }
+    let mouseTracking = mouseTrackingActive(for: activeTab, session: session)
 
     // Shift+wheel is the universal escape hatch (iTerm2/Terminal.app/kitty) to
     // Laban's own scrollback even while a fullscreen app holds the mouse: skip
@@ -3097,7 +3112,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // local scrollback path below.
     let shiftScrollOverride = event.modifierFlags.contains(.shift)
 
-    if vs.mouseTracking && !localSelectionMouseGestureActive && !shiftScrollOverride {
+    if mouseTracking && !localSelectionMouseGestureActive && !shiftScrollOverride {
       // Mouse tracking active: encode wheel as press+release. Use legacy
       // deltaY for notched wheels and precise scrollingDeltaY for trackpads.
       let direction = TerminalScrollInput.mouseTrackingWheelDirection(
@@ -3113,6 +3128,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // highlight; a click (forwarded below) is what dismisses it.
       let button: MouseButton = direction == .up ? .wheelUp : .wheelDown
       let geom = terminalMouseGeometry(at: pt)
+      let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let me = MouseEvent(
         action: .press,
         button: button,
@@ -3121,7 +3137,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
-        modifiers: event.labanModifiers
+        modifiers: event.labanModifiers,
+        trackingMode: mouseEncoding?.trackingMode ?? 0,
+        format: mouseEncoding?.format ?? 0
       )
       let sent = session.sendMouseCapturingBytes(me)
       let bytes = sent.result == 0 ? sent.bytes : []
@@ -3463,10 +3481,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     localSelectionMouseGestureActive = false
 
     let mouseTracking: Bool = {
-      guard let tabId = model.activeTab?.id,
-        let vs = model.session(forTab: tabId)?.viewportState()
+      guard let activeTab = model.activeTab,
+        let session = model.session(forTab: activeTab.id)
       else { return false }
-      return vs.mouseTracking
+      return mouseTrackingActive(for: activeTab, session: session)
     }()
     switch TerminalMouseInput.leftMouseDownDisposition(
       mouseTracking: mouseTracking,
@@ -3533,10 +3551,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
 
     // If mouse tracking is active, send motion events.
-    if let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId),
-      let vs = session.viewportState(),
-      vs.mouseTracking
+    if let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      mouseTrackingActive(for: activeTab, session: session)
     {
       cancelSelectionDragForMouseTracking()
       guard pt.x >= sidebarWidth else { return }
@@ -3549,6 +3566,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         return
       }
       let geom = terminalMouseGeometry(at: pt)
+      let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let motionEvent = MouseEvent(
         action: .motion,
         button: button,
@@ -3557,7 +3575,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
-        modifiers: event.labanModifiers
+        modifiers: event.labanModifiers,
+        trackingMode: mouseEncoding?.trackingMode ?? 0,
+        format: mouseEncoding?.format ?? 0
       )
       let sent = session.sendMouseCapturingBytes(motionEvent)
       let bytes = sent.result == 0 ? sent.bytes : []
@@ -3581,19 +3601,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// mouseDragged and mouseUp once `trackedMouseButton` is `.left`. A bare
   /// click thus reports press-on-down and release-on-up, the order apps expect.
   private func forwardMousePress(at pt: NSPoint, modifiers: Int) {
-    guard let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId),
-      let vs = session.viewportState(),
-      vs.mouseTracking
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      mouseTrackingActive(for: activeTab, session: session)
     else {
       return
     }
     let geom = terminalMouseGeometry(at: pt)
+    let mouseEncoding = remoteMouseEncoding(for: activeTab)
     let pressEvent = MouseEvent(
       action: .press, button: .left,
       x: geom.x, y: geom.y,
       screenWidth: geom.screenWidth, screenHeight: geom.screenHeight,
-      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: modifiers)
+      cellWidth: cellWidth, cellHeight: cellHeight, modifiers: modifiers,
+      trackingMode: mouseEncoding?.trackingMode ?? 0,
+      format: mouseEncoding?.format ?? 0)
     let sent = session.sendMouseCapturingBytes(pressEvent)
     let bytes = sent.result == 0 ? sent.bytes : []
     forwardEncodedMouseToDaemon(bytes, session: session)
@@ -3640,10 +3662,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
 
     // If mouse tracking is active, send release event.
-    if let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId),
-      let vs = session.viewportState(),
-      vs.mouseTracking
+    if let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      mouseTrackingActive(for: activeTab, session: session)
     {
       cancelSelectionDragForMouseTracking()
       guard
@@ -3655,6 +3676,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         return
       }
       let geom = terminalMouseGeometry(at: pt)
+      let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let releaseEvent = MouseEvent(
         action: .release,
         button: button,
@@ -3663,7 +3685,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
-        modifiers: event.labanModifiers
+        modifiers: event.labanModifiers,
+        trackingMode: mouseEncoding?.trackingMode ?? 0,
+        format: mouseEncoding?.format ?? 0
       )
       let sent = session.sendMouseCapturingBytes(releaseEvent)
       let bytes = sent.result == 0 ? sent.bytes : []
@@ -3692,13 +3716,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
 
-    if let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId),
-      let vs = session.viewportState(),
-      vs.mouseTracking
+    if let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      mouseTrackingActive(for: activeTab, session: session)
     {
       trackedMouseButton = .right
       let geom = terminalMouseGeometry(at: pt)
+      let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let pressEvent = MouseEvent(
         action: .press,
         button: .right,
@@ -3707,7 +3731,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
-        modifiers: event.labanModifiers
+        modifiers: event.labanModifiers,
+        trackingMode: mouseEncoding?.trackingMode ?? 0,
+        format: mouseEncoding?.format ?? 0
       )
       let sent = session.sendMouseCapturingBytes(pressEvent)
       forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
@@ -3716,10 +3742,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   override func rightMouseDragged(with event: NSEvent) {
-    if let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId),
-      let vs = session.viewportState(),
-      vs.mouseTracking
+    if let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      mouseTrackingActive(for: activeTab, session: session)
     {
       let pt = convert(event.locationInWindow, from: nil)
       guard pt.x >= sidebarWidth else { return }
@@ -3732,6 +3757,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         return
       }
       let geom = terminalMouseGeometry(at: pt)
+      let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let motionEvent = MouseEvent(
         action: .motion,
         button: button,
@@ -3740,7 +3766,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
-        modifiers: event.labanModifiers
+        modifiers: event.labanModifiers,
+        trackingMode: mouseEncoding?.trackingMode ?? 0,
+        format: mouseEncoding?.format ?? 0
       )
       let sent = session.sendMouseCapturingBytes(motionEvent)
       forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
@@ -3749,10 +3777,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   override func rightMouseUp(with event: NSEvent) {
-    if let tabId = model.activeTab?.id,
-      let session = model.session(forTab: tabId),
-      let vs = session.viewportState(),
-      vs.mouseTracking
+    if let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      mouseTrackingActive(for: activeTab, session: session)
     {
       guard
         let button = TerminalMouseInput.trackedTerminalButton(
@@ -3764,6 +3791,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
       let pt = convert(event.locationInWindow, from: nil)
       let geom = terminalMouseGeometry(at: pt)
+      let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let releaseEvent = MouseEvent(
         action: .release,
         button: button,
@@ -3772,7 +3800,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         screenHeight: geom.screenHeight,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
-        modifiers: event.labanModifiers
+        modifiers: event.labanModifiers,
+        trackingMode: mouseEncoding?.trackingMode ?? 0,
+        format: mouseEncoding?.format ?? 0
       )
       let sent = session.sendMouseCapturingBytes(releaseEvent)
       forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
@@ -3930,6 +3960,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let vs = session.viewportState()
     else { return 0 }
     return vs.viewportOffset
+  }
+
+  private func mouseTrackingActive(for tab: Tab, session: Session) -> Bool {
+    if sessionCoordinator?.usesRemoteSnapshots == true {
+      return remoteMouseEncodingByTab[tab.id] != nil
+    }
+    return session.viewportState()?.mouseTracking == true
+  }
+
+  private func cacheRemoteMouseEncoding(_ snapshot: LabandSnapshotResponse, for tabId: Tab.ID) {
+    guard snapshot.mouseTracking == true, let trackingMode = snapshot.mouseTrackingMode,
+      trackingMode > 0
+    else {
+      remoteMouseEncodingByTab.removeValue(forKey: tabId)
+      return
+    }
+    remoteMouseEncodingByTab[tabId] = (
+      trackingMode: trackingMode,
+      format: snapshot.mouseFormat ?? 0
+    )
+  }
+
+  private func remoteMouseEncoding(for tab: Tab) -> (trackingMode: Int, format: Int)? {
+    guard sessionCoordinator?.usesRemoteSnapshots == true else { return nil }
+    return remoteMouseEncodingByTab[tab.id]
   }
 
   private func authoritativeAppliedRows(for session: Session) -> Int? {

@@ -1851,6 +1851,95 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(seq, "\u{1b}[<32;3;3M")
   }
 
+  func testButtonModeDragMotionBelowSurfaceClampsToBottomRow() {
+    guard let session = makeFixtureSession(rows: 5, cols: 30) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let enableSeq = Array("\u{1b}[?1002h\u{1b}[?1006h".utf8)
+    enableSeq.withUnsafeBytes { buf in
+      _ = laban_session_write(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        enableSeq.count)
+    }
+
+    var press = LabanMouseEvent()
+    press.action = LABAN_MOUSE_ACTION_PRESS
+    press.button = LABAN_MOUSE_BUTTON_LEFT
+    press.x = 8
+    press.y = 16
+    press.screen_width = 240
+    press.screen_height = 80
+    press.cell_width = 8
+    press.cell_height = 16
+
+    XCTAssertEqual(laban_session_send_mouse(session, &press), 0)
+
+    var motion = press
+    motion.action = LABAN_MOUSE_ACTION_MOTION
+    motion.button = LABAN_MOUSE_BUTTON_NONE
+    motion.x = 16
+    motion.y = 120
+
+    var motionBuf = [UInt8](repeating: 0, count: 64)
+    var motionLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_encode_mouse(session, &motion, &motionBuf, motionBuf.count, &motionLen), 0)
+
+    let seq = String(bytes: motionBuf.prefix(Int(motionLen)), encoding: .utf8)
+    XCTAssertEqual(
+      seq,
+      "\u{1b}[<32;3;5M",
+      "held left-button motion below the surface must be clamped to the bottom row")
+  }
+
+  func testExplicitButtonSgrMouseEncodingDoesNotRequireLocalTerminalMode() {
+    guard let session = makeFixtureSession(rows: 5, cols: 30) else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var press = LabanMouseEvent()
+    press.action = LABAN_MOUSE_ACTION_PRESS
+    press.button = LABAN_MOUSE_BUTTON_LEFT
+    press.x = 8
+    press.y = 16
+    press.screen_width = 240
+    press.screen_height = 80
+    press.cell_width = 8
+    press.cell_height = 16
+    press.tracking_mode = LABAN_MOUSE_TRACKING_BUTTON
+    press.format = LABAN_MOUSE_FORMAT_SGR
+
+    var pressBuf = [UInt8](repeating: 0, count: 64)
+    var pressLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_send_mouse_encoded(session, &press, &pressBuf, pressBuf.count, &pressLen),
+      0)
+    XCTAssertEqual(
+      String(bytes: pressBuf.prefix(Int(pressLen)), encoding: .utf8),
+      "\u{1b}[<0;2;2M")
+
+    var motion = press
+    motion.action = LABAN_MOUSE_ACTION_MOTION
+    motion.button = LABAN_MOUSE_BUTTON_NONE
+    motion.x = 16
+    motion.y = 120
+
+    var motionBuf = [UInt8](repeating: 0, count: 64)
+    var motionLen: size_t = 0
+    XCTAssertEqual(
+      laban_session_send_mouse_encoded(session, &motion, &motionBuf, motionBuf.count, &motionLen),
+      0)
+    XCTAssertEqual(
+      String(bytes: motionBuf.prefix(Int(motionLen)), encoding: .utf8),
+      "\u{1b}[<32;3;5M")
+  }
+
   func testMouseEncodeDoesNotCommitHeldButtonState() {
     guard let session = makeFixtureSession(rows: 5, cols: 30) else {
       XCTFail("laban_session_create returned non-zero")

@@ -23,6 +23,41 @@ static int encode_utf8(uint32_t cp, uint8_t *out) {
     return 4;
 }
 
+static LabanMouseTrackingMode laban_snapshot_mouse_tracking_mode_locked(LabanSession *s) {
+    int active = 0;
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_ANY_MOUSE, &active) == 0 && active) {
+        return LABAN_MOUSE_TRACKING_ANY;
+    }
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_BUTTON_MOUSE, &active) == 0 && active) {
+        return LABAN_MOUSE_TRACKING_BUTTON;
+    }
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_NORMAL_MOUSE, &active) == 0 && active) {
+        return LABAN_MOUSE_TRACKING_NORMAL;
+    }
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_X10_MOUSE, &active) == 0 && active) {
+        return LABAN_MOUSE_TRACKING_X10;
+    }
+    return LABAN_MOUSE_TRACKING_NONE;
+}
+
+static LabanMouseFormat laban_snapshot_mouse_format_locked(LabanSession *s) {
+    int active = 0;
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_SGR_PIXELS_MOUSE, &active) == 0
+            && active) {
+        return LABAN_MOUSE_FORMAT_SGR_PIXELS;
+    }
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_SGR_MOUSE, &active) == 0 && active) {
+        return LABAN_MOUSE_FORMAT_SGR;
+    }
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_URXVT_MOUSE, &active) == 0 && active) {
+        return LABAN_MOUSE_FORMAT_URXVT;
+    }
+    if (laban_session_mode_active_locked(s, GHOSTTY_MODE_UTF8_MOUSE, &active) == 0 && active) {
+        return LABAN_MOUSE_FORMAT_UTF8;
+    }
+    return LABAN_MOUSE_FORMAT_X10;
+}
+
 static int ensure_utf8_capacity(char **storage, size_t *cap, size_t used, size_t extra) {
     if (used > SIZE_MAX - 1) return -1;
     if (extra > SIZE_MAX - used - 1) return -1;
@@ -549,6 +584,8 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
             mouse_tracking = mt ? 1 : 0;
         }
     }
+    LabanMouseTrackingMode mouse_tracking_mode = laban_snapshot_mouse_tracking_mode_locked(s);
+    LabanMouseFormat mouse_format = laban_snapshot_mouse_format_locked(s);
 
     snap->rows                   = rows;
     snap->cols                   = cols;
@@ -560,6 +597,8 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->status                 = s->status;
     snap->exit_status            = s->exit_status;
     snap->mouse_tracking         = mouse_tracking;
+    snap->mouse_tracking_mode    = mouse_tracking_mode;
+    snap->mouse_format           = mouse_format;
     int focus_reporting = 0;
     (void)laban_session_mode_active_locked(s, GHOSTTY_MODE_FOCUS_EVENT, &focus_reporting);
     snap->focus_reporting        = focus_reporting;

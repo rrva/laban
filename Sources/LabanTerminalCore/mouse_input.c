@@ -17,6 +17,56 @@ static int laban_mouse_button_can_be_held(LabanMouseButton btn) {
            btn == LABAN_MOUSE_BUTTON_RIGHT;
 }
 
+static int map_laban_tracking_mode(
+    LabanMouseTrackingMode mode,
+    GhosttyMouseTrackingMode *out_mode
+) {
+    if (!out_mode) return -1;
+    switch (mode) {
+        case LABAN_MOUSE_TRACKING_X10:
+            *out_mode = GHOSTTY_MOUSE_TRACKING_X10;
+            return 0;
+        case LABAN_MOUSE_TRACKING_NORMAL:
+            *out_mode = GHOSTTY_MOUSE_TRACKING_NORMAL;
+            return 0;
+        case LABAN_MOUSE_TRACKING_BUTTON:
+            *out_mode = GHOSTTY_MOUSE_TRACKING_BUTTON;
+            return 0;
+        case LABAN_MOUSE_TRACKING_ANY:
+            *out_mode = GHOSTTY_MOUSE_TRACKING_ANY;
+            return 0;
+        case LABAN_MOUSE_TRACKING_NONE:
+        default:
+            return -1;
+    }
+}
+
+static int map_laban_mouse_format(
+    LabanMouseFormat format,
+    GhosttyMouseFormat *out_format
+) {
+    if (!out_format) return -1;
+    switch (format) {
+        case LABAN_MOUSE_FORMAT_X10:
+            *out_format = GHOSTTY_MOUSE_FORMAT_X10;
+            return 0;
+        case LABAN_MOUSE_FORMAT_UTF8:
+            *out_format = GHOSTTY_MOUSE_FORMAT_UTF8;
+            return 0;
+        case LABAN_MOUSE_FORMAT_SGR:
+            *out_format = GHOSTTY_MOUSE_FORMAT_SGR;
+            return 0;
+        case LABAN_MOUSE_FORMAT_URXVT:
+            *out_format = GHOSTTY_MOUSE_FORMAT_URXVT;
+            return 0;
+        case LABAN_MOUSE_FORMAT_SGR_PIXELS:
+            *out_format = GHOSTTY_MOUSE_FORMAT_SGR_PIXELS;
+            return 0;
+        default:
+            return -1;
+    }
+}
+
 static int laban_session_encode_mouse_internal(
     LabanSession *s,
     const LabanMouseEvent *event,
@@ -30,8 +80,19 @@ static int laban_session_encode_mouse_internal(
     if (!s || !event || !out_len) return -1;
     if (!out_bytes && out_capacity > 0) return -1;
 
-    /* Sync encoder options from terminal state. */
-    ghostty_mouse_encoder_setopt_from_terminal(s->mouse_encoder, s->terminal);
+    if (event->tracking_mode != LABAN_MOUSE_TRACKING_NONE) {
+        GhosttyMouseTrackingMode tracking_mode;
+        GhosttyMouseFormat format;
+        if (map_laban_tracking_mode(event->tracking_mode, &tracking_mode) != 0) return -1;
+        if (map_laban_mouse_format(event->format, &format) != 0) return -1;
+        ghostty_mouse_encoder_setopt(
+            s->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_EVENT, &tracking_mode);
+        ghostty_mouse_encoder_setopt(
+            s->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_FORMAT, &format);
+    } else {
+        /* Sync encoder options from terminal state. */
+        ghostty_mouse_encoder_setopt_from_terminal(s->mouse_encoder, s->terminal);
+    }
 
     /* Set geometry from event. */
     GhosttyMouseEncoderSize enc_size = {
@@ -203,4 +264,3 @@ int laban_session_send_mouse_encoded(
     s->mouse_pressed_button = next_pressed_button;
     return 0;
 }
-

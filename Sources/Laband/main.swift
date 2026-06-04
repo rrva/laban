@@ -1294,7 +1294,12 @@ private final class LabandDaemon {
       // renderer never has to improvise from `cells.first?.backgroundRGBA`,
       // which can be 0 (transparent black) on empty/unstyled cells and leaks
       // the layer-backed view's underlying color through as a black border.
-      defaultBackgroundRGBA: snapshot.default_background_rgba
+      defaultBackgroundRGBA: snapshot.default_background_rgba,
+      synchronizedOutput: snapshot.synchronized_output != 0,
+      mouseTracking: snapshot.mouse_tracking != 0,
+      mouseTrackingMode: Int(snapshot.mouse_tracking_mode),
+      mouseFormat: Int(snapshot.mouse_format),
+      focusReporting: snapshot.focus_reporting != 0
     )
   }
 

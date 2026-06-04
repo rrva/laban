@@ -61,6 +61,8 @@ extension HeadlessDebugRuntime {
       return DebugViewportActions(runtime: self).scrollViewport(request)
     case .mouseWheel(let request):
       return DebugMouseActions(runtime: self).mouseWheel(request)
+    case .mouseDrag(let request):
+      return DebugMouseActions(runtime: self).drag(request)
     case .click(let request):
       return DebugMouseActions(runtime: self).click(request)
     case .unsupported(let actionName):

@@ -14,6 +14,7 @@ enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(name: "advanceFrames", summary: "Render one or more additional frames."),
     DebugDiscoveryControl(name: "key", summary: "Send a structured key event."),
     DebugDiscoveryControl(name: "mouseWheel", summary: "Send a mouse wheel event."),
+    DebugDiscoveryControl(name: "mouseDrag", summary: "Send a mouse press-drag-release gesture."),
     DebugDiscoveryControl(name: "click", summary: "Send a click to sidebar or terminal content."),
     DebugDiscoveryControl(name: "setClipboardText", summary: "Set the debug clipboard text."),
     DebugDiscoveryControl(name: "paste", summary: "Paste debug clipboard text into the terminal."),

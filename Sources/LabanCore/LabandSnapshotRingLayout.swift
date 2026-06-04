@@ -98,6 +98,12 @@ public enum LabandSnapshotRingLayout {
     public static let cursorVisible: UInt32 = 1 << 1
     public static let cursorBlink: UInt32 = 1 << 2
     public static let synchronizedOutput: UInt32 = 1 << 3
+    public static let mouseTracking: UInt32 = 1 << 4
+    public static let focusReporting: UInt32 = 1 << 5
+    public static let mouseTrackingModeShift: UInt32 = 6
+    public static let mouseTrackingModeMask: UInt32 = 0b111 << mouseTrackingModeShift
+    public static let mouseFormatShift: UInt32 = 9
+    public static let mouseFormatMask: UInt32 = 0b111 << mouseFormatShift
   }
 
   public static func align8(_ value: Int) -> Int {
@@ -495,6 +501,14 @@ public final class LabandSnapshotRingWriter {
     if snapshot.synchronized_output != 0 {
       flags |= LabandSnapshotRingLayout.SlotFlag.synchronizedOutput
     }
+    if snapshot.mouse_tracking != 0 { flags |= LabandSnapshotRingLayout.SlotFlag.mouseTracking }
+    if snapshot.focus_reporting != 0 { flags |= LabandSnapshotRingLayout.SlotFlag.focusReporting }
+    flags |=
+      (UInt32(max(0, snapshot.mouse_tracking_mode)) << LabandSnapshotRingLayout.SlotFlag
+        .mouseTrackingModeShift) & LabandSnapshotRingLayout.SlotFlag.mouseTrackingModeMask
+    flags |=
+      (UInt32(max(0, snapshot.mouse_format)) << LabandSnapshotRingLayout.SlotFlag
+        .mouseFormatShift) & LabandSnapshotRingLayout.SlotFlag.mouseFormatMask
     return flags
   }
 
@@ -903,7 +917,15 @@ public final class LabandSnapshotRingReader {
       dirty: true,
       visibleText: visibleRows.joined(separator: "\n"),
       cells: cells,
-      synchronizedOutput: (flags & LabandSnapshotRingLayout.SlotFlag.synchronizedOutput) != 0
+      synchronizedOutput: (flags & LabandSnapshotRingLayout.SlotFlag.synchronizedOutput) != 0,
+      mouseTracking: (flags & LabandSnapshotRingLayout.SlotFlag.mouseTracking) != 0,
+      mouseTrackingMode: Int(
+        (flags & LabandSnapshotRingLayout.SlotFlag.mouseTrackingModeMask)
+          >> LabandSnapshotRingLayout.SlotFlag.mouseTrackingModeShift),
+      mouseFormat: Int(
+        (flags & LabandSnapshotRingLayout.SlotFlag.mouseFormatMask)
+          >> LabandSnapshotRingLayout.SlotFlag.mouseFormatShift),
+      focusReporting: (flags & LabandSnapshotRingLayout.SlotFlag.focusReporting) != 0
     )
   }
 

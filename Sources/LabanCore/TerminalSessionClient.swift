@@ -122,7 +122,12 @@ extension LabandSnapshotResponse {
       exitStatus: snapshot.status == 0 ? nil : Int(snapshot.exit_status),
       dirty: snapshot.dirty != 0,
       visibleText: TerminalSnapshotText.visibleText(from: pointer, mode: .fullGrid),
-      cells: Self.copyCells(snapshot)
+      cells: Self.copyCells(snapshot),
+      synchronizedOutput: snapshot.synchronized_output != 0,
+      mouseTracking: snapshot.mouse_tracking != 0,
+      mouseTrackingMode: Int(snapshot.mouse_tracking_mode),
+      mouseFormat: Int(snapshot.mouse_format),
+      focusReporting: snapshot.focus_reporting != 0
     )
   }
 

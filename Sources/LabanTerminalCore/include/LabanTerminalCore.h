@@ -118,6 +118,8 @@ typedef struct {
     int status;
     int exit_status;
     int mouse_tracking;
+    int mouse_tracking_mode;
+    int mouse_format;
     int focus_reporting;
     /* DEC private mode 2026 (synchronized output) active: viewers should hold
        presentation of this snapshot until the program ends the synchronized
@@ -766,6 +768,22 @@ typedef enum {
     LABAN_MOUSE_BUTTON_WHEEL_DOWN = 5
 } LabanMouseButton;
 
+typedef enum {
+    LABAN_MOUSE_TRACKING_NONE = 0,
+    LABAN_MOUSE_TRACKING_X10 = 1,
+    LABAN_MOUSE_TRACKING_NORMAL = 2,
+    LABAN_MOUSE_TRACKING_BUTTON = 3,
+    LABAN_MOUSE_TRACKING_ANY = 4
+} LabanMouseTrackingMode;
+
+typedef enum {
+    LABAN_MOUSE_FORMAT_X10 = 0,
+    LABAN_MOUSE_FORMAT_UTF8 = 1,
+    LABAN_MOUSE_FORMAT_SGR = 2,
+    LABAN_MOUSE_FORMAT_URXVT = 3,
+    LABAN_MOUSE_FORMAT_SGR_PIXELS = 4
+} LabanMouseFormat;
+
 typedef struct {
     LabanMouseAction action;
     LabanMouseButton button;
@@ -778,6 +796,14 @@ typedef struct {
     int cell_height;
     /* GhosttyMods bit order: shift=1, ctrl=2, alt=4, super=8. */
     int modifiers;
+    /*
+     * Optional encoder override for daemon-backed viewers. When tracking_mode
+     * is LABAN_MOUSE_TRACKING_NONE, the encoder derives its mode/format from
+     * the local libghostty terminal as before. Otherwise tracking_mode and
+     * format are applied directly to the encoder.
+     */
+    LabanMouseTrackingMode tracking_mode;
+    LabanMouseFormat format;
 } LabanMouseEvent;
 
 int laban_session_encode_mouse(

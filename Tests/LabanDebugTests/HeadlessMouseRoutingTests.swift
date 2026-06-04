@@ -66,6 +66,93 @@ final class HeadlessMouseRoutingTests: XCTestCase {
     }
   }
 
+  func testHeadlessMouseDragBelowBottomReachesChildOverLabandBackend() throws {
+    let socketDir = ".tmp/mouse-drag-routing-laband-\(UUID().uuidString)"
+    let socketPath = "\(socketDir)/laband.sock"
+    try withEnvironment([
+      "LABAN_TERMINAL_BACKEND": "laband",
+      "LABAN_LABAND_SOCKET": socketPath,
+      "LABAN_LABAND_BIN": ".build/debug/laband",
+      "LABAN_LABAND_SESSION_COMMAND": "stty raw -echo; exec cat -v",
+    ]) {
+      let runtime = try makeRuntime(runId: "mouse-drag-routing-laband")
+      defer {
+        runtime.shutdown(terminateRemoteSessions: true)
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: socketDir))
+      }
+
+      let feed = runtime.applyAction(
+        try JSONSerialization.data(withJSONObject: [
+          "action": "feedOutput",
+          "text": "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1006h",
+        ]))
+      XCTAssertEqual(feed.status, 200, "feedOutput must succeed")
+
+      let x = runtime.sidebarWidth + 200
+      let drag = runtime.applyAction(
+        try JSONSerialization.data(withJSONObject: [
+          "action": "mouseDrag",
+          "startX": x,
+          "startY": runtime.windowHeight / 2,
+          "endX": x,
+          "endY": -40,
+          "button": "left",
+        ]))
+      XCTAssertEqual(drag.status, 200, "mouseDrag action must succeed")
+
+      // `cat -v` renders the held-left drag sequence ESC[<32;col;rowM as the
+      // literal text ^[[<32;col;rowM. Seeing `[<32;` proves the bottom-edge drag
+      // report reached the daemon child; tmux uses this report to arm its copy
+      // mode autoscroll timer.
+      try waitForText(
+        runtime, "[<32;",
+        message: "child must receive the forwarded SGR drag event over the daemon PTY")
+    }
+  }
+
+  func testHeadlessMouseDragBelowBottomAutoscrollsFullscreenReproOverLabandBackend() throws {
+    let runId = UUID().uuidString
+    let socketDir = ".tmp/mouse-tui-routing-laband-\(runId)"
+    let socketPath = "\(socketDir)/laband.sock"
+    let logPath = ".tmp/mouse-tui-routing-laband-\(runId).log"
+    let command = "MOUSE_TUI_LOG='\(logPath)' python3 bughunt/drag_select_scroll_repro.py"
+    try withEnvironment([
+      "LABAN_TERMINAL_BACKEND": "laband",
+      "LABAN_LABAND_SOCKET": socketPath,
+      "LABAN_LABAND_BIN": ".build/debug/laband",
+      "LABAN_LABAND_SESSION_COMMAND": command,
+    ]) {
+      let runtime = try makeRuntime(runId: "mouse-tui-routing-laband")
+      defer {
+        runtime.shutdown(terminateRemoteSessions: true)
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: socketDir))
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: logPath))
+      }
+
+      try waitForText(
+        runtime, "drag below bottom",
+        message: "fullscreen repro must render and enable mouse tracking")
+
+      let x = runtime.sidebarWidth + 200
+      let drag = runtime.applyAction(
+        try JSONSerialization.data(withJSONObject: [
+          "action": "mouseDrag",
+          "startX": x,
+          "startY": runtime.windowHeight / 2,
+          "endX": x,
+          "endY": -40,
+          "button": "left",
+          "holdMs": 150,
+        ]))
+      XCTAssertEqual(drag.status, 200, "mouseDrag action must succeed")
+
+      try waitForLogContaining(
+        logPath,
+        "edge-scroll down",
+        message: "tmux-style fullscreen repro must autoscroll on bottom-edge drag")
+    }
+  }
+
   // MARK: - Harness
 
   private func makeRuntime(runId: String) throws -> HeadlessDebugRuntime {
@@ -93,6 +180,23 @@ final class HeadlessMouseRoutingTests: XCTestCase {
     let waited = try XCTUnwrap(
       JSONSerialization.jsonObject(with: response.body) as? [String: Any])
     XCTAssertEqual(waited["ok"] as? Bool, true, message)
+  }
+
+  private func waitForLogContaining(
+    _ path: String,
+    _ text: String,
+    message: String
+  ) throws {
+    let deadline = Date().addingTimeInterval(5)
+    var contents = ""
+    while Date() < deadline {
+      contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+      if contents.contains(text) {
+        return
+      }
+      usleep(50_000)
+    }
+    XCTFail("\(message); log was:\n\(contents)")
   }
 
   private func withEnvironment<T>(

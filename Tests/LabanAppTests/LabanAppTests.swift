@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import LabanCore
+import LabanRenderer
 import LabanTerminalCore
 import XCTest
 
@@ -263,6 +265,65 @@ final class LabanAppTests: XCTestCase {
     XCTAssertEqual(liveForId.count, 1, "adoption must reattach, not open a second session")
   }
 
+  func testAppDirectMouseDragBelowBottomReachesChildViaLabpty() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-mouse")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 40
+    size.pixel_width = 400
+    size.pixel_height = 100
+    size.cell_width = 10
+    size.cell_height = 20
+    let tabId = "mouse-tab"
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let command = [
+      "/bin/sh", "-lc",
+      "stty raw -echo; printf '\\033[?1000h\\033[?1002h\\033[?1006hREADY'; exec cat -v",
+    ]
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    let view = makeTerminalView(model: model, size: size, coordinator: coordinator)
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "READY")
+    XCTAssertEqual(
+      session.viewportState()?.mouseTracking,
+      true,
+      "labpty parser feed must adopt the child's mouse tracking mode locally")
+
+    view.advanceFrame()
+    let start = terminalPoint(row: 2, col: 10, rows: Int(size.rows))
+    let belowBottom = NSPoint(
+      x: start.x,
+      y: TerminalBitmapView.contentInsets.bottom - CGFloat(size.cell_height) * 2)
+    view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: start))
+    view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: belowBottom))
+    view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: belowBottom))
+
+    _ = try waitForLocalSnapshotText(
+      model: model,
+      tab: tab,
+      text: "[<32;",
+      message: "labpty child must receive the held-left bottom-edge SGR drag report")
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?
@@ -324,7 +385,8 @@ final class LabanAppTests: XCTestCase {
   private func waitForLocalSnapshotText(
     model: AppModel,
     tab: Tab,
-    text: String
+    text: String,
+    message: String? = nil
   ) throws -> String {
     let deadline = Date().addingTimeInterval(5)
     var last = ""
@@ -341,8 +403,59 @@ final class LabanAppTests: XCTestCase {
       }
       usleep(50_000)
     }
-    XCTFail("timed out waiting for \(text); last=\(last)")
+    XCTFail("\(message ?? "timed out waiting for \(text)"); last=\(last)")
     return last
+  }
+
+  private func makeTerminalView(
+    model: AppModel,
+    size: LabanTerminalSize,
+    coordinator: AppSessionCoordinator
+  ) -> TerminalBitmapView {
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let sidebarFontAtlas = FontAtlas(pointSize: 11)
+    let cellSize = fontAtlas.cellSize
+    let insets = TerminalBitmapView.contentInsets
+    let viewWidth =
+      SidebarLayout.defaultWidth + insets.left + CGFloat(size.cols) * cellSize.width
+      + insets.right
+    let viewHeight = insets.top + CGFloat(size.rows) * cellSize.height + insets.bottom
+    let view = TerminalBitmapView(
+      model: model,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas,
+      cellWidth: Int(cellSize.width),
+      cellHeight: Int(cellSize.height),
+      sessionCoordinator: coordinator)
+    view.frame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
+    return view
+  }
+
+  private func terminalPoint(
+    row: Int,
+    col: Int,
+    rows: Int,
+  ) -> NSPoint {
+    let cellSize = FontAtlas(pointSize: 14).cellSize
+    return NSPoint(
+      x: SidebarLayout.defaultWidth + TerminalBitmapView.contentInsets.left
+        + CGFloat(col) * cellSize.width + cellSize.width / 2,
+      y: TerminalBitmapView.contentInsets.bottom
+        + CGFloat(rows - 1 - row) * cellSize.height + cellSize.height / 2)
+  }
+
+  private func mouseEvent(type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+    NSEvent.mouseEvent(
+      with: type,
+      location: point,
+      modifierFlags: [],
+      timestamp: 0,
+      windowNumber: 0,
+      context: nil,
+      eventNumber: 0,
+      clickCount: 1,
+      pressure: 1
+    )!
   }
 
 }

@@ -7,6 +7,11 @@ import LabanTerminalCore
 struct DebugMouseActions {
   private unowned let runtime: HeadlessDebugRuntime
 
+  private struct MouseEncodingOptions {
+    var trackingMode: Int
+    var format: Int
+  }
+
   init(runtime: HeadlessDebugRuntime) {
     self.runtime = runtime
   }
@@ -29,13 +34,15 @@ struct DebugMouseActions {
     let isUp = deltaY > 0
 
     let viewportState = session.viewportState()
-    if viewportState?.mouseTracking == true {
+    let encodingOptions = mouseEncodingOptions(session: session)
+    if encodingOptions != nil || viewportState?.mouseTracking == true {
       return sendTrackedWheel(
         isUp: isUp,
         terminalPoint: terminalPoint,
         frameBefore: frameBefore,
         tab: tab,
-        session: session
+        session: session,
+        encodingOptions: encodingOptions
       )
     } else if viewportState?.altScreen == true, viewportState?.altScroll == true {
       // Alternate scroll mode (DEC private 1007): the alternate screen has no
@@ -104,13 +111,15 @@ struct DebugMouseActions {
     }
     let terminalPoint = runtime.terminalMousePosition(x: x, y: y)
 
-    if let viewportState = session.viewportState(), viewportState.mouseTracking {
+    let encodingOptions = mouseEncodingOptions(session: session)
+    if encodingOptions != nil || session.viewportState()?.mouseTracking == true {
       return sendMouseClick(
         button: button,
         terminalPoint: terminalPoint,
         frameBefore: frameBefore,
         tab: tab,
-        session: session
+        session: session,
+        encodingOptions: encodingOptions
       )
     } else {
       return setClickSelection(
@@ -122,12 +131,89 @@ struct DebugMouseActions {
     }
   }
 
+  func drag(_ request: MouseDragActionRequest) -> DebugResponse {
+    let frameBefore = runtime.currentFrame
+    guard
+      let startX = request.startX,
+      let startY = request.startY,
+      let endX = request.endX,
+      let endY = request.endY
+    else {
+      return jsonError("mouseDrag requires startX, startY, endX, and endY")
+    }
+    if startX < runtime.sidebarWidth {
+      runtime.appendEvent(EventEntry(kind: "mouse.sidebar", action: "mouseDrag"))
+      return runtime.actionResult(ok: true)
+    }
+    guard let tab = runtime.model.activeTab,
+      let session = runtime.model.session(forTab: tab.id)
+    else {
+      return jsonError("no active session for mouseDrag")
+    }
+    let encodingOptions = mouseEncodingOptions(session: session)
+    guard encodingOptions != nil || session.viewportState()?.mouseTracking == true else {
+      return jsonError("mouseDrag requires mouse tracking")
+    }
+
+    let mouseButton = Self.mouseButton(named: request.button)
+    let startPoint = runtime.terminalMousePosition(x: startX, y: startY)
+    let endPoint = runtime.terminalMousePosition(x: endX, y: endY)
+    let pressEvent = mouseEvent(
+      action: .press, button: mouseButton, at: startPoint, encodingOptions: encodingOptions)
+    let motionEvent = mouseEvent(
+      action: .motion, button: mouseButton, at: endPoint, encodingOptions: encodingOptions)
+    let releaseEvent = mouseEvent(
+      action: .release, button: mouseButton, at: endPoint, encodingOptions: encodingOptions)
+
+    let pressSent = sendMouseEvent(pressEvent, tab: tab, session: session)
+    let motionSent =
+      pressSent.result == 0
+      ? sendMouseEvent(motionEvent, tab: tab, session: session)
+      : Session.CapturedMouseWrite(result: -1, bytes: [])
+
+    if let holdMs = request.holdMs, holdMs > 0 {
+      Thread.sleep(forTimeInterval: Double(min(holdMs, 5_000)) / 1_000.0)
+    }
+
+    let releaseSent =
+      pressSent.result == 0
+      ? sendMouseEvent(releaseEvent, tab: tab, session: session)
+      : Session.CapturedMouseWrite(result: -1, bytes: [])
+    let encoded = pressSent.bytes + motionSent.bytes + releaseSent.bytes
+    runtime.appendInputEnvelope(
+      InputEventEnvelope(
+        inputId: UUID().uuidString,
+        source: "debug",
+        kind: "mouse",
+        route: "terminal",
+        frameBefore: frameBefore,
+        tabId: tab.id,
+        sessionId: session.id,
+        command: "mouseDrag",
+        encodedHex: encoded.isEmpty
+          ? nil
+          : encoded.map { String(format: "%02x", $0) }
+            .joined(),
+        encodedLength: encoded.isEmpty ? nil : encoded.count
+      ))
+    runtime.renderFrameUnlocked()
+    runtime.appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "mouseDrag"))
+    let sent = pressSent.result == 0 && motionSent.result == 0 && releaseSent.result == 0
+    return jsonEncode(
+      MouseActionResult(
+        ok: sent, frame: runtime.currentFrame,
+        activeTabId: tab.id, activeSessionId: tab.sessionId,
+        mouseTracking: true, sent: sent
+      ))
+  }
+
   private func sendTrackedWheel(
     isUp: Bool,
     terminalPoint: (x: Float, y: Float),
     frameBefore: Int,
     tab: Tab,
-    session: Session
+    session: Session,
+    encodingOptions: MouseEncodingOptions?
   ) -> DebugResponse {
     let button: MouseButton = isUp ? .wheelUp : .wheelDown
     let mouseEvent = MouseEvent(
@@ -138,7 +224,9 @@ struct DebugMouseActions {
       screenWidth: runtime.terminalSurfaceWidth,
       screenHeight: runtime.windowHeight,
       cellWidth: runtime.cellWidth,
-      cellHeight: runtime.cellHeight
+      cellHeight: runtime.cellHeight,
+      trackingMode: encodingOptions?.trackingMode ?? 0,
+      format: encodingOptions?.format ?? 0
     )
     let sent = session.sendMouseCapturingBytes(mouseEvent)
     let encoded = sent.bytes
@@ -172,6 +260,22 @@ struct DebugMouseActions {
         activeTabId: tab.id, activeSessionId: tab.sessionId,
         mouseTracking: true, sent: sent.result == 0
       ))
+  }
+
+  private func mouseEncodingOptions(session: Session) -> MouseEncodingOptions? {
+    if runtime.terminalSessionClient != nil,
+      let snapshot = runtime.terminalClientSnapshotUnlocked(sessionId: session.id)
+    {
+      guard snapshot.mouseTracking == true, let trackingMode = snapshot.mouseTrackingMode,
+        trackingMode > 0
+      else {
+        return nil
+      }
+      return MouseEncodingOptions(
+        trackingMode: trackingMode,
+        format: snapshot.mouseFormat ?? 0)
+    }
+    return nil
   }
 
   private func scrollWheel(
@@ -242,14 +346,10 @@ struct DebugMouseActions {
     terminalPoint: (x: Float, y: Float),
     frameBefore: Int,
     tab: Tab,
-    session: Session
+    session: Session,
+    encodingOptions: MouseEncodingOptions?
   ) -> DebugResponse {
-    let mouseButton: MouseButton
-    switch button {
-    case "middle": mouseButton = .middle
-    case "right": mouseButton = .right
-    default: mouseButton = .left
-    }
+    let mouseButton = Self.mouseButton(named: button)
     let pressEvent = MouseEvent(
       action: .press,
       button: mouseButton,
@@ -258,7 +358,9 @@ struct DebugMouseActions {
       screenWidth: runtime.terminalSurfaceWidth,
       screenHeight: runtime.windowHeight,
       cellWidth: runtime.cellWidth,
-      cellHeight: runtime.cellHeight
+      cellHeight: runtime.cellHeight,
+      trackingMode: encodingOptions?.trackingMode ?? 0,
+      format: encodingOptions?.format ?? 0
     )
     let releaseEvent = MouseEvent(
       action: .release,
@@ -268,7 +370,9 @@ struct DebugMouseActions {
       screenWidth: runtime.terminalSurfaceWidth,
       screenHeight: runtime.windowHeight,
       cellWidth: runtime.cellWidth,
-      cellHeight: runtime.cellHeight
+      cellHeight: runtime.cellHeight,
+      trackingMode: encodingOptions?.trackingMode ?? 0,
+      format: encodingOptions?.format ?? 0
     )
     let pressSent = session.sendMouseCapturingBytes(pressEvent)
     let releaseSent =
@@ -305,6 +409,48 @@ struct DebugMouseActions {
         activeTabId: tab.id, activeSessionId: tab.sessionId,
         mouseTracking: true, sent: sent
       ))
+  }
+
+  private static func mouseButton(named name: String?) -> MouseButton {
+    switch name {
+    case "middle": return .middle
+    case "right": return .right
+    default: return .left
+    }
+  }
+
+  private func mouseEvent(
+    action: MouseAction,
+    button: MouseButton,
+    at terminalPoint: (x: Float, y: Float),
+    encodingOptions: MouseEncodingOptions?
+  ) -> MouseEvent {
+    MouseEvent(
+      action: action,
+      button: button,
+      x: terminalPoint.x,
+      y: terminalPoint.y,
+      screenWidth: runtime.terminalSurfaceWidth,
+      screenHeight: runtime.windowHeight,
+      cellWidth: runtime.cellWidth,
+      cellHeight: runtime.cellHeight,
+      trackingMode: encodingOptions?.trackingMode ?? 0,
+      format: encodingOptions?.format ?? 0
+    )
+  }
+
+  private func sendMouseEvent(
+    _ event: MouseEvent,
+    tab: Tab,
+    session: Session
+  ) -> Session.CapturedMouseWrite {
+    let sent = session.sendMouseCapturingBytes(event)
+    let encoded = sent.result == 0 ? sent.bytes : []
+    if !encoded.isEmpty {
+      forwardEncodedInputToDaemon(encoded, tab: tab, session: session)
+      runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: encoded)
+    }
+    return sent
   }
 
   /// On the remote (labpty/laband) tier `sendMouseCapturingBytes` only encodes —

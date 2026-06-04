@@ -128,6 +128,8 @@ extension HeadlessDebugRuntime {
       rows = max(snapshot.rows, 1)
       cols = max(snapshot.cols, 1)
       exitStatus = snapshot.exitStatus
+      mouseTracking = snapshot.mouseTracking ?? false
+      focusReporting = snapshot.focusReporting ?? false
       dirty = snapshot.dirty
       if includeGrid {
         grid = sessionGridResponse(from: snapshot, maxCells: 2_000)

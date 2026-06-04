@@ -66,6 +66,18 @@ block and `mouseUp` release-forward block fire for the whole gesture. libghostty
 clamps the cell and keeps reporting once the pointer leaves the viewport, so the
 app sees bottom-row drag reports and runs its own autoscroll.
 
+**Remote session encoding.** On `laband`, the viewer's local libghostty
+instance is only a renderer mirror; it may not have parsed the child's `DECSET
+1002/1006` mouse-mode output. The daemon snapshot contract therefore carries
+the concrete mouse tracking mode and output format, and the viewer applies
+those as explicit mouse-encoder options when forwarding mouse input to the
+remote PTY. A boolean "mouse tracking active" is not enough: tmux copy-mode
+needs button-event tracking plus SGR formatting preserved so a held drag below
+the viewport encodes as a clamped bottom-row SGR motion report. `labpty` keeps
+the byte-ring output parsed into the local viewer session, so its mouse mode is
+still local state; its regression coverage must drive the real app-side
+`TerminalBitmapView` + `AppSessionCoordinator(labptyClient:)` path.
+
 **Removed machinery.** `pendingTrackingClick`/`PendingTrackingClick` and
 `forwardDeferredTrackingClick` are deleted — forwarding the press on down makes
 the click-vs-drag deferral unnecessary.

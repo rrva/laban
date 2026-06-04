@@ -25,6 +25,39 @@ final class LabandSnapshotSyncOutputRingTests: XCTestCase {
       "a normal snapshot must not carry the synchronized-output flag")
   }
 
+  func testMouseEncodingModeCrossesTheRing() throws {
+    var size = LabanTerminalSize()
+    size.rows = 6
+    size.cols = 24
+    let session = try Session.fixture(size: size)
+    _ = session.write(Array("\u{1b}[?1002h\u{1b}[?1006h".utf8))
+    _ = session.poll()
+
+    let snap = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snap) }
+    XCTAssertEqual(Int(snap.pointee.mouse_tracking_mode), 3)
+    XCTAssertEqual(Int(snap.pointee.mouse_format), 2)
+
+    let dir = ".tmp/mouse-ring-\(UUID().uuidString)"
+    defer { try? FileManager.default.removeItem(at: URL(fileURLWithPath: dir)) }
+    let writer = try LabandSnapshotRingWriter(
+      path: "\(dir)/ring.bin",
+      logicalSessionId: "mouse-mode-ring",
+      incarnationId: "inc",
+      maxRows: Int(size.rows),
+      maxCols: Int(size.cols))
+    try writer.publish(snapshot: snap)
+
+    let reader = try LabandSnapshotRingReader(
+      attachment: writer.attachment,
+      logicalSessionId: "mouse-mode-ring",
+      incarnationId: "inc")
+    let read = try reader.latestSnapshot()
+    XCTAssertEqual(read.mouseTracking, true)
+    XCTAssertEqual(read.mouseTrackingMode, 3, "1002 button-event mode must cross the ring")
+    XCTAssertEqual(read.mouseFormat, 2, "1006 SGR format must cross the ring")
+  }
+
   private func publishedSyncFlag(enable2026: Bool) throws -> Bool {
     var size = LabanTerminalSize()
     size.rows = 6
