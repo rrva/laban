@@ -313,15 +313,115 @@ final class LabanAppTests: XCTestCase {
     let belowBottom = NSPoint(
       x: start.x,
       y: TerminalBitmapView.contentInsets.bottom - CGFloat(size.cell_height) * 2)
+    let framesBeforePressPump = view.renderedFrameCountForTests
     view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: start))
+    XCTAssertTrue(
+      view.trackedMouseDragFrameTimerActiveForTests,
+      """
+      forwarded mouse-tracking drags should keep the frame loop alive during AppKit event tracking
+      """)
+    runEventTrackingLoop(for: 0.12)
+    XCTAssertGreaterThan(
+      view.renderedFrameCountForTests,
+      framesBeforePressPump,
+      "forwarded mouse-tracking drags must advance frames in AppKit event-tracking mode")
     view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: belowBottom))
     view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: belowBottom))
+    XCTAssertFalse(view.trackedMouseDragFrameTimerActiveForTests)
 
     _ = try waitForLocalSnapshotText(
       model: model,
       tab: tab,
       text: "[<32;11;5M",
       message: "labpty child must receive the held-left SGR drag report on the bottom row")
+  }
+
+  func testAppDirectTmuxSelectionAutoscrollContinuesBelowBottomViaLabpty() throws {
+    try requireTmux()
+    let tmuxName = "lbn-tmux-mouse-\(UUID().uuidString.prefix(8))"
+    defer { _ = try? runTmux(name: tmuxName, arguments: ["kill-server"]) }
+
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-tmux")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 8
+    size.cols = 40
+    let tabId = "tmux-mouse-tab"
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let command = [
+      "/bin/sh", "-lc",
+      """
+      set -eu
+      export TERM=xterm-256color
+      tmux -L \(tmuxName) -f /dev/null new-session -d -x \(Int(size.cols)) \
+        -y \(Int(size.rows)) \
+        "sh -lc 'jot -w LINE-%03d 400; exec sleep 1000'"
+      tmux -L \(tmuxName) -f /dev/null set -g mouse on
+      tmux -L \(tmuxName) -f /dev/null set -g status off
+      tmux -L \(tmuxName) -f /dev/null set -g mode-keys vi
+      exec tmux -L \(tmuxName) -f /dev/null attach-session
+      """,
+    ]
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    let view = makeTerminalView(model: model, size: size, coordinator: coordinator)
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "LINE-400")
+    try waitUntil(
+      session.viewportState()?.mouseTracking == true,
+      "tmux must enable mouse tracking on attach")
+
+    _ = try runTmux(name: tmuxName, arguments: ["copy-mode", "-u", "-t", ":0.0"])
+    _ = try runTmux(
+      name: tmuxName,
+      arguments: ["send-keys", "-t", ":0.0", "-X", "-N", "40", "page-up"])
+    let before = try waitForTmuxScrollPosition(name: tmuxName) { $0 > 12 }
+
+    view.advanceFrame()
+    let visibleBefore = try localSnapshotText(model: model, tab: tab)
+    let start = terminalPoint(row: 2, col: 10, rows: Int(size.rows))
+    let belowBottom = NSPoint(
+      x: start.x,
+      y: TerminalBitmapView.contentInsets.bottom - FontAtlas(pointSize: 14).cellSize.height * 2)
+    view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: start))
+    XCTAssertTrue(view.trackedMouseDragFrameTimerActiveForTests)
+    view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: belowBottom))
+    Thread.sleep(forTimeInterval: 0.8)
+    let during = try tmuxScrollPosition(name: tmuxName)
+    let visibleDuring = try waitForLocalSnapshotChange(
+      model: model,
+      tab: tab,
+      previous: visibleBefore)
+    view.mouseUp(with: mouseEvent(type: .leftMouseUp, at: belowBottom))
+    XCTAssertFalse(view.trackedMouseDragFrameTimerActiveForTests)
+
+    XCTAssertGreaterThanOrEqual(
+      before - during,
+      5,
+      """
+      holding a tmux copy-mode drag below the bottom row should keep autoscrolling, not stop after one line
+      """)
+    XCTAssertNotEqual(
+      visibleDuring,
+      visibleBefore,
+      "Laban must repaint tmux autoscroll output while the drag is still held")
   }
 
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
@@ -407,6 +507,37 @@ final class LabanAppTests: XCTestCase {
     return last
   }
 
+  private func localSnapshotText(model: AppModel, tab: Tab) throws -> String {
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let snapshot = try XCTUnwrap(session.snapshot())
+    defer { laban_snapshot_destroy(snapshot) }
+    return TerminalSnapshotText.visibleText(
+      from: UnsafePointer(snapshot),
+      mode: .trimmedNonEmptyRows)
+  }
+
+  private func waitForLocalSnapshotChange(
+    model: AppModel,
+    tab: Tab,
+    previous: String
+  ) throws -> String {
+    let deadline = Date().addingTimeInterval(5)
+    var last = previous
+    while Date() < deadline {
+      if let session = model.session(forTab: tab.id) {
+        session.poll()
+      }
+      let visible = try localSnapshotText(model: model, tab: tab)
+      if visible != previous {
+        return visible
+      }
+      last = visible
+      usleep(50_000)
+    }
+    XCTFail("timed out waiting for snapshot change; last=\(last)")
+    return last
+  }
+
   private func makeTerminalView(
     model: AppModel,
     size: LabanTerminalSize,
@@ -456,6 +587,99 @@ final class LabanAppTests: XCTestCase {
       clickCount: 1,
       pressure: 1
     )!
+  }
+
+  private func requireTmux() throws {
+    let result = try runProcess("/usr/bin/env", arguments: ["tmux", "-V"])
+    guard result.status == 0 else {
+      throw XCTSkip("tmux is not available")
+    }
+  }
+
+  private func runTmux(name: String, arguments: [String]) throws -> String {
+    let result = try runProcess(
+      "/usr/bin/env",
+      arguments: ["tmux", "-L", name, "-f", "/dev/null"] + arguments)
+    guard result.status == 0 else {
+      throw NSError(
+        domain: "LabanAppTests.tmux",
+        code: Int(result.status),
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "tmux \(arguments.joined(separator: " ")) failed: \(result.stderr)"
+        ])
+    }
+    return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func tmuxScrollPosition(name: String) throws -> Int {
+    let output = try runTmux(
+      name: name,
+      arguments: ["display-message", "-p", "-t", ":0.0", "#{scroll_position}"])
+    return Int(output) ?? 0
+  }
+
+  private func waitForTmuxScrollPosition(
+    name: String,
+    matching predicate: (Int) -> Bool
+  ) throws -> Int {
+    let deadline = Date().addingTimeInterval(5)
+    var last = 0
+    while Date() < deadline {
+      last = try tmuxScrollPosition(name: name)
+      if predicate(last) {
+        return last
+      }
+      usleep(50_000)
+    }
+    XCTFail("timed out waiting for tmux scroll position; last=\(last)")
+    return last
+  }
+
+  private func runEventTrackingLoop(for duration: TimeInterval) {
+    let deadline = Date().addingTimeInterval(duration)
+    while Date() < deadline {
+      let slice = min(0.02, deadline.timeIntervalSinceNow)
+      if slice <= 0 { break }
+      RunLoop.current.run(mode: .eventTracking, before: Date().addingTimeInterval(slice))
+    }
+  }
+
+  private func waitUntil(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      if condition() {
+        return
+      }
+      usleep(50_000)
+    }
+    XCTFail(message)
+    throw NSError(
+      domain: "LabanAppTests.wait",
+      code: 1,
+      userInfo: [NSLocalizedDescriptionKey: message])
+  }
+
+  private func runProcess(
+    _ executablePath: String,
+    arguments: [String]
+  ) throws -> (status: Int32, stdout: String, stderr: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executablePath)
+    process.arguments = arguments
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+    try process.run()
+    process.waitUntilExit()
+    let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
+    let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+    return (
+      process.terminationStatus,
+      String(data: stdoutData, encoding: .utf8) ?? "",
+      String(data: stderrData, encoding: .utf8) ?? ""
+    )
   }
 
 }

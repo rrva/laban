@@ -251,6 +251,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     get { outputSettleHold }
     set { outputSettleHold = newValue }
   }
+  private var trackedMouseDragFrameTimer: Timer?
+  var trackedMouseDragFrameTimerActiveForTests: Bool {
+    trackedMouseDragFrameTimer?.isValid == true
+  }
 
   private static let cursorBlinkInterval: TimeInterval = 0.5
   private var cursorBlinkVisible = true
@@ -906,6 +910,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   deinit {
     stopDisplayLink()
+    stopTrackedMouseDragFramePump()
     sessionCoordinator?.stopSnapshotGenerationMonitor()
     removeWindowFocusObservers()
     resizeBackgroundReset?.cancel()
@@ -1928,6 +1933,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     selectionOriginCell = nil
     stopDragAutoscroll()
+    stopTrackedMouseDragFramePump()
     lastDragPoint = nil
   }
 
@@ -2025,6 +2031,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     selectionOriginCell = nil
     activeSelectionTabId = model.activeTab?.id
     stopDragAutoscroll()
+    stopTrackedMouseDragFramePump()
     lastDragPoint = nil
   }
 
@@ -3503,6 +3510,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // the committed selection).
       dismissLocalSelectionForForwardedInput()
       trackedMouseButton = .left
+      startTrackedMouseDragFramePump()
       forwardMousePress(at: pt, modifiers: event.labanModifiers)
     case .localSelection:
       // Focus stays nil until a drag actually happens, so a click without drag
@@ -3700,10 +3708,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
       )
       if trackedMouseButton == .left { trackedMouseButton = .none }
+      stopTrackedMouseDragFramePump()
       renderInvalidated = true
       return
     }
-    if trackedMouseButton == .left { trackedMouseButton = .none }
+    if trackedMouseButton == .left {
+      trackedMouseButton = .none
+      stopTrackedMouseDragFramePump()
+    }
     finishLocalSelectionMouseGesture(at: pt)
     renderInvalidated = true
   }
@@ -4225,6 +4237,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     dragAutoscrollTimer?.invalidate()
     dragAutoscrollTimer = nil
     dragAutoscrollDirection = 0
+  }
+
+  private func startTrackedMouseDragFramePump() {
+    guard trackedMouseDragFrameTimer == nil else { return }
+    let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) {
+      [weak self] _ in self?.advanceFrame()
+    }
+    // AppKit switches the main run loop into event-tracking mode while the
+    // mouse is held. Keep draining/repainting forwarded-mouse apps there too,
+    // so fullscreen programs such as tmux can show their own drag autoscroll.
+    RunLoop.current.add(timer, forMode: .eventTracking)
+    trackedMouseDragFrameTimer = timer
+  }
+
+  private func stopTrackedMouseDragFramePump() {
+    trackedMouseDragFrameTimer?.invalidate()
+    trackedMouseDragFrameTimer = nil
   }
 
   private func cancelSelectionDragForMouseTracking() {
