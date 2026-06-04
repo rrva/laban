@@ -403,7 +403,15 @@ final class LabanAppTests: XCTestCase {
     view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: start))
     XCTAssertTrue(view.trackedMouseDragFrameTimerActiveForTests)
     view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: belowBottom))
-    Thread.sleep(forTimeInterval: 0.8)
+    let jitterColumns = [13, 14, 15, 16, 17, 18]
+    for index in 0..<30 {
+      let column = jitterColumns[index % jitterColumns.count]
+      let jitterPoint = NSPoint(
+        x: terminalPoint(row: 2, col: column, rows: Int(size.rows)).x,
+        y: belowBottom.y)
+      view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: jitterPoint))
+      Thread.sleep(forTimeInterval: 0.02)
+    }
     let during = try tmuxScrollPosition(name: tmuxName)
     let visibleDuring = try waitForLocalSnapshotChange(
       model: model,

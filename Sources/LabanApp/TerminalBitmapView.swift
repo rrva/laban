@@ -252,6 +252,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     set { outputSettleHold = newValue }
   }
   private var trackedMouseDragFrameTimer: Timer?
+  private enum TrackedMouseDragVerticalEdge {
+    case top
+    case bottom
+  }
+  private var trackedMouseDragEdge: TrackedMouseDragVerticalEdge?
+  private var trackedMouseDragEdgeX: Float?
   var trackedMouseDragFrameTimerActiveForTests: Bool {
     trackedMouseDragFrameTimer?.isValid == true
   }
@@ -3510,6 +3516,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // the committed selection).
       dismissLocalSelectionForForwardedInput()
       trackedMouseButton = .left
+      resetTrackedMouseDragEdgeLatch()
       startTrackedMouseDragFramePump()
       forwardMousePress(at: pt, modifiers: event.labanModifiers)
     case .localSelection:
@@ -3573,7 +3580,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       else {
         return
       }
-      let geom = terminalMouseGeometry(at: pt)
+      let geom = terminalMouseGeometryForForwardedLeftDrag(at: pt)
       let mouseEncoding = remoteMouseEncoding(for: activeTab)
       let motionEvent = MouseEvent(
         action: .motion,
@@ -4254,6 +4261,36 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func stopTrackedMouseDragFramePump() {
     trackedMouseDragFrameTimer?.invalidate()
     trackedMouseDragFrameTimer = nil
+    resetTrackedMouseDragEdgeLatch()
+  }
+
+  private func terminalMouseGeometryForForwardedLeftDrag(at pt: NSPoint) -> (
+    x: Float, y: Float, screenWidth: Int, screenHeight: Int
+  ) {
+    var geom = terminalMouseGeometry(at: pt)
+    let edge: TrackedMouseDragVerticalEdge?
+    if geom.y < 0 {
+      edge = .top
+    } else if geom.y >= Float(geom.screenHeight) {
+      edge = .bottom
+    } else {
+      resetTrackedMouseDragEdgeLatch()
+      return geom
+    }
+
+    if trackedMouseDragEdge != edge || trackedMouseDragEdgeX == nil {
+      trackedMouseDragEdge = edge
+      trackedMouseDragEdgeX = geom.x
+    }
+    if let x = trackedMouseDragEdgeX {
+      geom.x = x
+    }
+    return geom
+  }
+
+  private func resetTrackedMouseDragEdgeLatch() {
+    trackedMouseDragEdge = nil
+    trackedMouseDragEdgeX = nil
   }
 
   private func cancelSelectionDragForMouseTracking() {
