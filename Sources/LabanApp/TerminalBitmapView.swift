@@ -258,6 +258,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
   private var trackedMouseDragEdge: TrackedMouseDragVerticalEdge?
   private var trackedMouseDragEdgeX: Float?
+  private let trackedMouseDragEdgeXJitterToleranceCells = 8
   var trackedMouseDragFrameTimerActiveForTests: Bool {
     trackedMouseDragFrameTimer?.isValid == true
   }
@@ -4268,17 +4269,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     x: Float, y: Float, screenWidth: Int, screenHeight: Int
   ) {
     var geom = terminalMouseGeometry(at: pt)
-    let edge: TrackedMouseDragVerticalEdge?
-    if geom.y < 0 {
-      edge = .top
-    } else if geom.y >= Float(geom.screenHeight) {
-      edge = .bottom
-    } else {
+    guard let edge = trackedMouseDragVerticalEdge(for: geom) else {
       resetTrackedMouseDragEdgeLatch()
       return geom
     }
 
-    if trackedMouseDragEdge != edge || trackedMouseDragEdgeX == nil {
+    if trackedMouseDragEdge != edge || shouldResetTrackedMouseDragEdgeX(to: geom.x) {
       trackedMouseDragEdge = edge
       trackedMouseDragEdgeX = geom.x
     }
@@ -4286,6 +4282,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       geom.x = x
     }
     return geom
+  }
+
+  private func trackedMouseDragVerticalEdge(
+    for geom: (x: Float, y: Float, screenWidth: Int, screenHeight: Int)
+  ) -> TrackedMouseDragVerticalEdge? {
+    // tmux autoscroll is armed on the terminal edge row, before the pointer
+    // necessarily leaves the grid.
+    let edgeRowHeight = Float(max(cellHeight, 1))
+    if geom.y < edgeRowHeight {
+      return .top
+    }
+    let bottomEdgeY = max(0, Float(geom.screenHeight) - edgeRowHeight)
+    if geom.y >= bottomEdgeY {
+      return .bottom
+    }
+    return nil
+  }
+
+  private func shouldResetTrackedMouseDragEdgeX(to x: Float) -> Bool {
+    guard let latchedX = trackedMouseDragEdgeX else { return true }
+    let tolerance = Float(max(cellWidth, 1) * trackedMouseDragEdgeXJitterToleranceCells)
+    return abs(x - latchedX) > tolerance
   }
 
   private func resetTrackedMouseDragEdgeLatch() {

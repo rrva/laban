@@ -432,6 +432,99 @@ final class LabanAppTests: XCTestCase {
       "Laban must repaint tmux autoscroll output while the drag is still held")
   }
 
+  func testAppDirectTmuxSelectionAutoscrollSurvivesBottomRowJitterViaLabpty() throws {
+    try requireTmux()
+    let tmuxName = "lbn-tmux-row-\(UUID().uuidString.prefix(8))"
+    defer { _ = try? runTmux(name: tmuxName, arguments: ["kill-server"]) }
+
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-tmux-row")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 8
+    size.cols = 40
+    let tabId = "tmux-row-mouse-tab"
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let command = [
+      "/bin/sh", "-lc",
+      """
+      set -eu
+      export TERM=xterm-256color
+      tmux -L \(tmuxName) -f /dev/null new-session -d -x \(Int(size.cols)) \
+        -y \(Int(size.rows)) \
+        "sh -lc 'jot -w LINE-%03d 400; exec sleep 1000'"
+      tmux -L \(tmuxName) -f /dev/null set -g mouse on
+      tmux -L \(tmuxName) -f /dev/null set -g status off
+      tmux -L \(tmuxName) -f /dev/null set -g mode-keys vi
+      exec tmux -L \(tmuxName) -f /dev/null attach-session
+      """,
+    ]
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    let view = makeTerminalView(model: model, size: size, coordinator: coordinator)
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "LINE-400")
+    try waitUntil(
+      session.viewportState()?.mouseTracking == true,
+      "tmux must enable mouse tracking on attach")
+
+    _ = try runTmux(name: tmuxName, arguments: ["copy-mode", "-u", "-t", ":0.0"])
+    _ = try runTmux(
+      name: tmuxName,
+      arguments: ["send-keys", "-t", ":0.0", "-X", "-N", "40", "page-up"])
+    let before = try waitForTmuxScrollPosition(name: tmuxName) { $0 > 12 }
+
+    view.advanceFrame()
+    let visibleBefore = try localSnapshotText(model: model, tab: tab)
+    let start = terminalPoint(row: 2, col: 10, rows: Int(size.rows))
+    view.mouseDown(with: mouseEvent(type: .leftMouseDown, at: start))
+    XCTAssertTrue(view.trackedMouseDragFrameTimerActiveForTests)
+    let jitterColumns = [13, 14, 15, 16, 17, 18]
+    for index in 0..<30 {
+      let column = jitterColumns[index % jitterColumns.count]
+      let jitterPoint = terminalPoint(row: Int(size.rows) - 1, col: column, rows: Int(size.rows))
+      view.mouseDragged(with: mouseEvent(type: .leftMouseDragged, at: jitterPoint))
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    let during = try tmuxScrollPosition(name: tmuxName)
+    let visibleDuring = try waitForLocalSnapshotChange(
+      model: model,
+      tab: tab,
+      previous: visibleBefore)
+    view.mouseUp(
+      with: mouseEvent(
+        type: .leftMouseUp,
+        at: terminalPoint(row: Int(size.rows) - 1, col: 18, rows: Int(size.rows))))
+    XCTAssertFalse(view.trackedMouseDragFrameTimerActiveForTests)
+
+    XCTAssertGreaterThanOrEqual(
+      before - during,
+      5,
+      """
+      tmux bottom-row copy-mode drag should keep autoscrolling despite small horizontal jitter
+      """)
+    XCTAssertNotEqual(
+      visibleDuring,
+      visibleBefore,
+      "Laban must repaint tmux bottom-row autoscroll output while the drag is still held")
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?
