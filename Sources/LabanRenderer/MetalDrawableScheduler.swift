@@ -9,6 +9,13 @@ final class MetalDrawableScheduler {
   private let drawableQueue = DispatchQueue(label: "laban.metal-drawable", qos: .userInteractive)
   private let drawableRequestLock = NSLock()
   private var drawableRequestActive = false
+  /// A drawable that `nextDrawable()` returned *after* its caller's budget
+  /// expired. Instead of dropping it (wasting a pool slot until ARC) and leaving
+  /// `drawableRequestActive` to fast-fail every subsequent acquire — the poison
+  /// gate that turned one ~16ms drawable-drain wait into a burst of failed
+  /// frames — it is parked here and handed to the next acquire. Always touched
+  /// under `drawableRequestLock`.
+  private var pendingDrawable: (any CAMetalDrawable)?
 
   /// Limits frames in flight to 1. CAMetalLayer hands out up to 3 drawables
   /// in parallel, but MetalRenderer's persistent target + scratch textures are
@@ -34,7 +41,20 @@ final class MetalDrawableScheduler {
 
   private func acquireDrawableWithinBudget() -> (any CAMetalDrawable)? {
     drawableRequestLock.lock()
+    // Carry-forward: a prior acquire that timed out left its drawable here once
+    // `nextDrawable()` finally returned. Reuse it rather than fast-failing or
+    // acquiring a second drawable from the pool. Caller validates size against
+    // the current surface and drops on mismatch (MetalRenderer's
+    // `drawableSizeMismatch` guard), so a stale-sized carry-forward is safe.
+    if let carried = pendingDrawable {
+      pendingDrawable = nil
+      drawableRequestLock.unlock()
+      return carried
+    }
     if drawableRequestActive {
+      // A request is still parked in `nextDrawable()`. Don't start a second one
+      // and don't poison subsequent frames — just miss this tick; the next one
+      // picks up `pendingDrawable`.
       drawableRequestLock.unlock()
       return nil
     }
@@ -46,11 +66,18 @@ final class MetalDrawableScheduler {
 
     drawableQueue.async { [self] in
       let drawable = layer.nextDrawable()
-      if state.fulfill(drawable) {
+      let claimedByWaiter = state.fulfill(drawable)
+      if claimedByWaiter {
         completed.signal()
       }
 
       drawableRequestLock.lock()
+      // The caller already gave up: stash the late drawable for the next acquire
+      // instead of dropping it. Clearing `drawableRequestActive` in the same
+      // critical section keeps the stash visible before a new request can start.
+      if !claimedByWaiter, let drawable {
+        pendingDrawable = drawable
+      }
       drawableRequestActive = false
       drawableRequestLock.unlock()
     }
