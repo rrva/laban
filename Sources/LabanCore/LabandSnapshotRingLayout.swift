@@ -503,12 +503,15 @@ public final class LabandSnapshotRingWriter {
     }
     if snapshot.mouse_tracking != 0 { flags |= LabandSnapshotRingLayout.SlotFlag.mouseTracking }
     if snapshot.focus_reporting != 0 { flags |= LabandSnapshotRingLayout.SlotFlag.focusReporting }
+    let mouseTrackingMode = UInt32(max(0, snapshot.mouse_tracking_mode))
     flags |=
-      (UInt32(max(0, snapshot.mouse_tracking_mode)) << LabandSnapshotRingLayout.SlotFlag
-        .mouseTrackingModeShift) & LabandSnapshotRingLayout.SlotFlag.mouseTrackingModeMask
+      (mouseTrackingMode << LabandSnapshotRingLayout.SlotFlag.mouseTrackingModeShift)
+      & LabandSnapshotRingLayout.SlotFlag.mouseTrackingModeMask
+
+    let mouseFormat = UInt32(max(0, snapshot.mouse_format))
     flags |=
-      (UInt32(max(0, snapshot.mouse_format)) << LabandSnapshotRingLayout.SlotFlag
-        .mouseFormatShift) & LabandSnapshotRingLayout.SlotFlag.mouseFormatMask
+      (mouseFormat << LabandSnapshotRingLayout.SlotFlag.mouseFormatShift)
+      & LabandSnapshotRingLayout.SlotFlag.mouseFormatMask
     return flags
   }
 

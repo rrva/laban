@@ -8,6 +8,8 @@ ships and the protocol has survived its first real load, this document
 graduates to `docs/reference/labpty-protocol.md` and the ABI gets
 frozen.
 
+## Progress
+
 ## Who consumes `labpty`'s surfaces
 
 `labpty`'s only client in the planned default ("Background sessions")
@@ -1478,7 +1480,7 @@ Honest scope limits:
 These are deliberate omissions. Adding any of them is a future ADR's
 problem.
 
-## Validation strategy
+## Validation and Acceptance
 
 Tests live in `Tests/LabptyTests/`. Functional invariants gate the build
 mechanically; latency is tracked as a histogram against a regression

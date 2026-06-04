@@ -197,7 +197,12 @@ struct DebugMouseActions {
         encodedLength: encoded.isEmpty ? nil : encoded.count
       ))
     runtime.renderFrameUnlocked()
-    runtime.appendEvent(EventEntry(kind: "mouse.sent", sessionId: tab.sessionId, action: "mouseDrag"))
+    runtime.appendEvent(
+      EventEntry(
+        kind: "mouse.sent",
+        sessionId: tab.sessionId,
+        action: "mouseDrag"
+      ))
     let sent = pressSent.result == 0 && motionSent.result == 0 && releaseSent.result == 0
     return jsonEncode(
       MouseActionResult(
