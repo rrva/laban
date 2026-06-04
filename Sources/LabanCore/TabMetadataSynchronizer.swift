@@ -36,19 +36,25 @@ public struct TabSurfaceSignals {
   /// surface-owned status, used for transport degradation that is not
   /// emitted by the child process itself.
   public var agentStatus: TabAgentStatus?
+  /// `nil` means "no shell-integration update this cycle." Local sessions can
+  /// report their live OSC 133 state directly; daemon-backed sessions omit this
+  /// until they have an authoritative source.
+  public var shellIntegrationState: ShellIntegrationState?
 
   public init(
     processMetadata: Session.ProcessMetadata? = nil,
     titleDirty: Bool = false,
     titleRaw: String? = nil,
     exitState: TabStatus = .running,
-    agentStatus: TabAgentStatus? = nil
+    agentStatus: TabAgentStatus? = nil,
+    shellIntegrationState: ShellIntegrationState? = nil
   ) {
     self.processMetadata = processMetadata
     self.titleDirty = titleDirty
     self.titleRaw = titleRaw
     self.exitState = exitState
     self.agentStatus = agentStatus
+    self.shellIntegrationState = shellIntegrationState
   }
 }
 
@@ -303,7 +309,8 @@ final class TabMetadataSynchronizer {
       processMetadata: throttled ? nil : session.processMetadata(),
       titleDirty: titleDirty,
       titleRaw: titleRaw,
-      exitState: session.exitState()
+      exitState: session.exitState(),
+      shellIntegrationState: session.shellIntegrationState()
     )
     return syncSurfaceMetadata(
       forTab: tabId,
@@ -363,6 +370,17 @@ final class TabMetadataSynchronizer {
     {
       tabs[idx].titleMetadata.agentStatus = agentStatus
       result.modelChanged = true
+    }
+
+    if let shellIntegrationState = signals.shellIntegrationState {
+      let metadata = tabs[idx].titleMetadata
+      if metadata.shellPhase != shellIntegrationState.phase
+        || metadata.lastCommandExitCode != shellIntegrationState.lastExitCode
+      {
+        tabs[idx].titleMetadata.shellPhase = shellIntegrationState.phase
+        tabs[idx].titleMetadata.lastCommandExitCode = shellIntegrationState.lastExitCode
+        result.modelChanged = true
+      }
     }
 
     return result

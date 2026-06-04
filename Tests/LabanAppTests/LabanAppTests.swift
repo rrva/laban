@@ -320,8 +320,8 @@ final class LabanAppTests: XCTestCase {
     _ = try waitForLocalSnapshotText(
       model: model,
       tab: tab,
-      text: "[<32;",
-      message: "labpty child must receive the held-left bottom-edge SGR drag report")
+      text: "[<32;11;5M",
+      message: "labpty child must receive the held-left SGR drag report on the bottom row")
   }
 
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {

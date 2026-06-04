@@ -188,7 +188,7 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(obj["ok"] as? Bool, true)
   }
 
-  func testPersistenceFlushRecordsRecentClaudeLogWithoutLiveChild() throws {
+  func testPersistenceFlushIgnoresUnseenRecentClaudeLogWithoutLiveChild() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
     let persistence = FileManager.default.temporaryDirectory
@@ -238,20 +238,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(runtime.persistenceFlush().status, 200)
     let state = try XCTUnwrap(runtime.persistenceStore?.load())
     let tab = try XCTUnwrap(state.windows.first?.tabs.first)
-    let agent = try XCTUnwrap(tab.agent)
-    XCTAssertEqual(agent.name, .claude)
-    XCTAssertEqual(agent.sessionId, sessionId)
-    XCTAssertEqual(agent.wasRunningAtQuit, false)
-    XCTAssertEqual(
-      agent.argv,
-      ["claude", "--model", "claude-opus-4-7", "--dangerously-skip-permissions"])
-
-    guard case .prefillPrompt(let command) = RestoreLaunchPlanner.instruction(for: tab) else {
-      return XCTFail("recent inactive Claude log should prefill native resume")
-    }
-    XCTAssertEqual(
-      command,
-      "command claude --resume \(sessionId) --model claude-opus-4-7 --dangerously-skip-permissions")
+    XCTAssertNil(tab.agent)
+    XCTAssertEqual(RestoreLaunchPlanner.instruction(for: tab), .noPrefill)
   }
 
   func testRuntimeCanSkipLoadingPersistedWorkspace() throws {

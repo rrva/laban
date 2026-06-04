@@ -74,9 +74,8 @@ final class LabptyClientTransportTests: XCTestCase {
   }
 
   private func temporaryDirectory() throws -> URL {
-    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-      .appendingPathComponent(".tmp", isDirectory: true)
-      .appendingPathComponent("labpty-client-transport-\(UUID().uuidString)", isDirectory: true)
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+      .appendingPathComponent("lpt-client-\(UUID().uuidString.prefix(8))", isDirectory: true)
     tempRoots.append(root)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     return root
