@@ -31,6 +31,25 @@ final class RenderJournalTests: XCTestCase {
         environment: [RenderJournal.enabledEnvironmentKey: "0"]))
   }
 
+  func testGPUFreezeAutoDumpCanBeEnabledByDefaultsOrEnvironment() {
+    let suiteName = "RenderJournalTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    XCTAssertFalse(RenderJournal.gpuFreezeAutoDumpEnabled(defaults: defaults, environment: [:]))
+
+    defaults.set(true, forKey: RenderJournal.gpuFreezeAutoDumpDefaultKey)
+    XCTAssertTrue(RenderJournal.gpuFreezeAutoDumpEnabled(defaults: defaults, environment: [:]))
+    XCTAssertTrue(
+      RenderJournal.gpuFreezeAutoDumpEnabled(
+        defaults: defaults,
+        environment: [RenderJournal.gpuFreezeAutoDumpEnvironmentKey: "1"]))
+    XCTAssertFalse(
+      RenderJournal.gpuFreezeAutoDumpEnabled(
+        defaults: defaults,
+        environment: [RenderJournal.gpuFreezeAutoDumpEnvironmentKey: "0"]))
+  }
+
   func testRingKeepsNewestEntriesAndDumpsArtifacts() throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-render-journal-\(UUID().uuidString)", isDirectory: true)
@@ -106,6 +125,144 @@ final class RenderJournalTests: XCTestCase {
     let encoded = try JSONEncoder().encode(entry)
     let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: encoded)
     XCTAssertEqual(decoded.renderFailureReason, .fullRedrawProducedNoContent)
+  }
+
+  func testFreezeDetectedEntryCarriesDetectorSnapshotThroughSerialization() throws {
+    let journal = RenderJournal()
+    let freeze = RenderJournal.FreezeSnapshot(
+      reason: GPURenderFreezeDetector.Reason.gpuFrameCompletionStalled.rawValue,
+      noProgressStreak: 12,
+      terminalDirty: true,
+      activeTerminalDirty: true,
+      renderInvalidated: false,
+      tabChanged: false,
+      scrollAnimating: false,
+      rendered: false,
+      renderFailureReason: .previousFrameInFlight,
+      metalFrameCompletions: 3,
+      lastAcceptedFrame: 41,
+      completionCountAtLastAcceptedFrame: 3)
+    let entry = journal.makeEntry(
+      event: .freezeDetected,
+      frame: 53,
+      tabId: "tab",
+      sessionId: "s",
+      reason: freeze.reason,
+      renderFailureReason: .previousFrameInFlight,
+      freeze: freeze,
+      rendered: false)
+    XCTAssertEqual(entry.freeze, freeze)
+
+    let encoded = try JSONEncoder().encode(entry)
+    let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: encoded)
+    XCTAssertEqual(decoded.event, .freezeDetected)
+    XCTAssertEqual(
+      decoded.reason,
+      GPURenderFreezeDetector.Reason.gpuFrameCompletionStalled.rawValue)
+    XCTAssertEqual(decoded.freeze, freeze)
+  }
+
+  func testGPUFreezeDetectorIgnoresClassicAndCursorOnlyFailures() {
+    let detector = GPURenderFreezeDetector(noProgressThreshold: 1)
+
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          gpuDriven: false,
+          terminalDirty: true,
+          rendered: false,
+          renderFailureReason: .previousFrameInFlight)))
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          gpuDriven: true,
+          terminalDirty: false,
+          activeTerminalDirty: false,
+          renderInvalidated: false,
+          tabChanged: false,
+          scrollAnimating: false,
+          rendered: false,
+          renderFailureReason: .previousFrameInFlight)))
+  }
+
+  func testGPUFreezeDetectorFiresAfterCompletionStalledThresholdAndThrottles() {
+    let detector = GPURenderFreezeDetector(noProgressThreshold: 3, duplicateThrottleSeconds: 60)
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(frame: 10, rendered: true, renderFailureReason: nil, now: start)))
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          frame: 11, rendered: false, renderFailureReason: .previousFrameInFlight,
+          now: start.addingTimeInterval(1))))
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          frame: 12, rendered: false, renderFailureReason: .previousFrameInFlight,
+          now: start.addingTimeInterval(2))))
+
+    let detection = detector.sample(
+      freezeSample(
+        frame: 13, rendered: false, renderFailureReason: .previousFrameInFlight,
+        now: start.addingTimeInterval(3)))
+    XCTAssertEqual(
+      detection?.freeze.reason,
+      GPURenderFreezeDetector.Reason.gpuFrameCompletionStalled.rawValue)
+    XCTAssertEqual(detection?.freeze.noProgressStreak, 3)
+    XCTAssertEqual(detection?.freeze.lastAcceptedFrame, 10)
+
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          frame: 14, rendered: false, renderFailureReason: .previousFrameInFlight,
+          now: start.addingTimeInterval(4))),
+      "duplicate dumps for the same tab/session/reason are throttled")
+  }
+
+  func testGPUFreezeDetectorResetsStalledFrameAfterCompletion() {
+    let detector = GPURenderFreezeDetector(noProgressThreshold: 2, duplicateThrottleSeconds: 60)
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(frame: 20, rendered: true, renderFailureReason: nil, now: start)))
+    detector.noteMetalFrameCompleted(completionCount: 1)
+    XCTAssertNil(
+      detector.sample(
+        freezeSample(
+          frame: 21, rendered: false, renderFailureReason: .previousFrameInFlight,
+          metalFrameCompletions: 1,
+          now: start.addingTimeInterval(1))))
+
+    let detection = detector.sample(
+      freezeSample(
+        frame: 22, rendered: false, renderFailureReason: .previousFrameInFlight,
+        metalFrameCompletions: 1,
+        now: start.addingTimeInterval(2)))
+    XCTAssertEqual(
+      detection?.freeze.reason,
+      GPURenderFreezeDetector.Reason.gpuRenderNoProgress.rawValue)
+    XCTAssertNil(detection?.freeze.lastAcceptedFrame)
+
+    let resetDetector = GPURenderFreezeDetector(
+      noProgressThreshold: 1,
+      duplicateThrottleSeconds: 60)
+    resetDetector.noteMetalFrameCompleted(completionCount: 10)
+    resetDetector.reset()
+    XCTAssertNil(
+      resetDetector.sample(
+        freezeSample(
+          frame: 30, rendered: true, renderFailureReason: nil, metalFrameCompletions: 0,
+          now: start.addingTimeInterval(3))))
+    resetDetector.noteMetalFrameCompleted(completionCount: 1)
+    let resetDetection = resetDetector.sample(
+      freezeSample(
+        frame: 31, rendered: false, renderFailureReason: .previousFrameInFlight,
+        metalFrameCompletions: 1,
+        now: start.addingTimeInterval(4)))
+    XCTAssertNil(resetDetection?.freeze.lastAcceptedFrame)
   }
 
   func testPayloadFailureThenCommandRetryChainIsCapturedInJournal() throws {
@@ -190,4 +347,35 @@ extension JSONDecoder {
     decoder.dateDecodingStrategy = .iso8601
     return decoder
   }
+}
+
+private func freezeSample(
+  frame: Int = 1,
+  tabId: String = "tab",
+  sessionId: String = "session",
+  gpuDriven: Bool = true,
+  terminalDirty: Bool = true,
+  activeTerminalDirty: Bool = true,
+  renderInvalidated: Bool = false,
+  tabChanged: Bool = false,
+  scrollAnimating: Bool = false,
+  rendered: Bool,
+  renderFailureReason: MetalRenderer.RenderFailureReason?,
+  metalFrameCompletions: Int = 0,
+  now: Date = Date(timeIntervalSince1970: 1_800_000_000)
+) -> GPURenderFreezeDetector.Sample {
+  GPURenderFreezeDetector.Sample(
+    frame: frame,
+    tabId: tabId,
+    sessionId: sessionId,
+    gpuDriven: gpuDriven,
+    terminalDirty: terminalDirty,
+    activeTerminalDirty: activeTerminalDirty,
+    renderInvalidated: renderInvalidated,
+    tabChanged: tabChanged,
+    scrollAnimating: scrollAnimating,
+    rendered: rendered,
+    renderFailureReason: renderFailureReason,
+    metalFrameCompletions: metalFrameCompletions,
+    now: now)
 }

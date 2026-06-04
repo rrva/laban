@@ -127,8 +127,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   // Damage-driven render budget state
   private var renderInvalidated = true
-  private let renderJournalEnabled = RenderJournal.isEnabled()
+  private let gpuFreezeAutoDumpEnabled: Bool
+  private let renderJournalEnabled: Bool
   private lazy var renderJournal = RenderJournal()
+  private var gpuFreezeDetector = GPURenderFreezeDetector()
+  private var gpuFrameCompletionCount = 0
   /// Set when a GPU-cell payload render fails after terminal commands were
   /// intentionally skipped. The next retry builds command content once so the
   /// renderer has a safe fallback instead of clearing to a terminal background.
@@ -307,6 +310,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     self.sessionCoordinator = sessionCoordinator
     self.sidebarCellWidth = Int(sidebarFontAtlas.cellSize.width)
     self.sidebarCellHeight = Int(sidebarFontAtlas.cellSize.height)
+    let gpuFreezeAutoDumpEnabled = RenderJournal.gpuFreezeAutoDumpEnabled()
+    self.gpuFreezeAutoDumpEnabled = gpuFreezeAutoDumpEnabled
+    self.renderJournalEnabled = RenderJournal.isEnabled() || gpuFreezeAutoDumpEnabled
     self.surfaceController = TerminalSurfaceController(
       model: model,
       cellWidth: cellWidth,
@@ -545,7 +551,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func installFrameCompletionHook() {
     guard let metal = backend as? MetalRenderer else { return }
     metal.onFrameCompleted = { [weak self] in
-      DispatchQueue.main.async { self?.recordInputLatencyIfPending() }
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.gpuFrameCompletionCount += 1
+        self.gpuFreezeDetector.noteMetalFrameCompleted(
+          completionCount: self.gpuFrameCompletionCount)
+        self.recordInputLatencyIfPending()
+      }
     }
   }
 
@@ -575,6 +587,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
     RendererSelection.set(resolved)
     if rendererSelection == resolved { return }
+
+    gpuFreezeDetector.reset()
+    gpuFrameCompletionCount = 0
 
     if let metalMode = resolved.metalMode,
       let metal = backend as? MetalRenderer
@@ -1427,6 +1442,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         surfaceFrame: surfaceFrame,
         commands: cmds,
         rendered: false)
+      sampleGPUFreezeDetector(
+        frame: captureFrame,
+        tab: activeTab,
+        session: session,
+        terminalDirty: terminalDirty,
+        activeTerminalDirty: activeTerminalDirty,
+        renderInvalidated: renderInvalidated,
+        tabChanged: tabChanged,
+        cursorBlinkFrame: cursorBlinkFrame,
+        attentionAnimating: attentionAnimating,
+        scrollAnimating: scrollAnimating,
+        usingRemoteSnapshots: usingRemoteSessions,
+        cellPayloadRequested: canRequestCellPayload,
+        contentYOffset: scrollContentYOffset,
+        surfaceFrame: surfaceFrame,
+        commands: cmds,
+        rendered: false)
       if let payloadFailure = (backend as? MetalRenderer)?.lastGPUCellPayloadBuildFailure {
         autoDumpGPUCellPayloadFailure(payloadFailure)
       }
@@ -1443,6 +1475,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       tab: activeTab,
       session: session,
       reason: nil,
+      terminalDirty: terminalDirty,
+      activeTerminalDirty: activeTerminalDirty,
+      renderInvalidated: renderInvalidated,
+      tabChanged: tabChanged,
+      cursorBlinkFrame: cursorBlinkFrame,
+      attentionAnimating: attentionAnimating,
+      scrollAnimating: scrollAnimating,
+      usingRemoteSnapshots: usingRemoteSessions,
+      cellPayloadRequested: canRequestCellPayload,
+      contentYOffset: scrollContentYOffset,
+      surfaceFrame: surfaceFrame,
+      commands: cmds,
+      rendered: true)
+    sampleGPUFreezeDetector(
+      frame: captureFrame,
+      tab: activeTab,
+      session: session,
       terminalDirty: terminalDirty,
       activeTerminalDirty: activeTerminalDirty,
       renderInvalidated: renderInvalidated,
@@ -1529,14 +1578,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     contentYOffset: CGFloat,
     surfaceFrame: TerminalSurfaceFrame? = nil,
     commands: [FrameCommand]? = nil,
+    freeze: RenderJournal.FreezeSnapshot? = nil,
     rendered: Bool? = nil
   ) {
     guard renderJournalEnabled else { return }
     let metalRenderer = backend as? MetalRenderer
+    let includesMetalFailureDetails = event == .renderFailed || event == .freezeDetected
     let gpuCellPayloadFailure =
-      event == .renderFailed ? metalRenderer?.lastGPUCellPayloadBuildFailure : nil
+      includesMetalFailureDetails ? metalRenderer?.lastGPUCellPayloadBuildFailure : nil
     let renderFailureReason =
-      event == .renderFailed ? metalRenderer?.lastRenderFailureReason : nil
+      includesMetalFailureDetails ? metalRenderer?.lastRenderFailureReason : nil
     let commandList = surfaceFrame?.commands ?? commands
     let overlayCommands = surfaceFrame?.overlayCommands ?? []
     let entry = renderJournal.makeEntry(
@@ -1571,8 +1622,98 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       metalInstances: metalRenderer?.lastInstanceCounts,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
+      freeze: freeze,
       rendered: rendered)
     renderJournal.record(entry)
+  }
+
+  private func sampleGPUFreezeDetector(
+    frame: Int,
+    tab: Tab,
+    session: Session,
+    terminalDirty: Bool,
+    activeTerminalDirty: Bool,
+    renderInvalidated: Bool,
+    tabChanged: Bool,
+    cursorBlinkFrame: Bool,
+    attentionAnimating: Bool,
+    scrollAnimating: Bool,
+    usingRemoteSnapshots: Bool,
+    cellPayloadRequested: Bool,
+    contentYOffset: CGFloat,
+    surfaceFrame: TerminalSurfaceFrame?,
+    commands: [FrameCommand]?,
+    rendered: Bool
+  ) {
+    guard gpuFreezeAutoDumpEnabled else { return }
+    let rendererStatus = backend.rendererStatus
+    let gpuDriven = rendererStatus.effectiveRenderer == RendererMode.gpuDriven.rawValue
+    let detection = gpuFreezeDetector.sample(
+      GPURenderFreezeDetector.Sample(
+        frame: frame,
+        tabId: tab.id,
+        sessionId: session.id,
+        gpuDriven: gpuDriven,
+        terminalDirty: terminalDirty,
+        activeTerminalDirty: activeTerminalDirty,
+        renderInvalidated: renderInvalidated,
+        tabChanged: tabChanged,
+        scrollAnimating: scrollAnimating,
+        rendered: rendered,
+        renderFailureReason: (backend as? MetalRenderer)?.lastRenderFailureReason,
+        metalFrameCompletions: gpuFrameCompletionCount,
+        now: Date()))
+    guard let detection else { return }
+
+    recordRenderJournal(
+      event: .freezeDetected,
+      frame: frame,
+      tab: tab,
+      session: session,
+      reason: detection.freeze.reason,
+      terminalDirty: terminalDirty,
+      activeTerminalDirty: activeTerminalDirty,
+      renderInvalidated: renderInvalidated,
+      tabChanged: tabChanged,
+      cursorBlinkFrame: cursorBlinkFrame,
+      attentionAnimating: attentionAnimating,
+      scrollAnimating: scrollAnimating,
+      usingRemoteSnapshots: usingRemoteSnapshots,
+      cellPayloadRequested: cellPayloadRequested,
+      contentYOffset: contentYOffset,
+      surfaceFrame: surfaceFrame,
+      commands: commands,
+      freeze: detection.freeze,
+      rendered: rendered)
+    autoDumpGPUFreeze(detection)
+  }
+
+  private func autoDumpGPUFreeze(_ detection: GPURenderFreezeDetector.Detection) {
+    guard renderJournalEnabled else { return }
+    var payload: [String: Any] = [
+      "reason": detection.freeze.reason,
+      "streak": detection.freeze.noProgressStreak,
+      "metalFrameCompletions": detection.freeze.metalFrameCompletions,
+    ]
+    if let failure = detection.freeze.renderFailureReason {
+      payload["renderFailureReason"] = failure.rawValue
+    }
+    if let lastAcceptedFrame = detection.freeze.lastAcceptedFrame {
+      payload["lastAcceptedFrame"] = lastAcceptedFrame
+    }
+    do {
+      let url = try renderJournal.dump(currentPNG: backend.pngData)
+      payload["dumpPath"] = url.path
+      EventLog.shared.log("render.gpuFreeze.autoDump", payload)
+      AppLog.render.error(
+        "gpu render freeze suspected: \(detection.freeze.reason) streak=\(detection.freeze.noProgressStreak) dump=\(url.path)"
+      )
+    } catch {
+      AppLog.render.error("gpu render freeze auto-dump failed: \(error)")
+      EventLog.shared.log(
+        "render.gpuFreeze.autoDump.failed",
+        ["error": String(describing: error)])
+    }
   }
 
   private func autoDumpGPUCellPayloadFailure(

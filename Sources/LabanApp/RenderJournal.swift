@@ -5,11 +5,14 @@ import LabanRenderer
 final class RenderJournal {
   static let enabledDefaultKey = "LabanRenderJournalEnabled"
   static let enabledEnvironmentKey = "LABAN_RENDER_JOURNAL"
+  static let gpuFreezeAutoDumpDefaultKey = "LabanGPUFreezeJournalAutoDumpEnabled"
+  static let gpuFreezeAutoDumpEnvironmentKey = "LABAN_GPU_FREEZE_JOURNAL_AUTODUMP"
 
   enum Event: String, Codable, Sendable {
     case rendered
     case skipped
     case renderFailed
+    case freezeDetected
     case dump
   }
 
@@ -33,6 +36,7 @@ final class RenderJournal {
     var metalInstances: MetalInstanceCounts?
     var gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure?
     var renderFailureReason: MetalRenderer.RenderFailureReason?
+    var freeze: FreezeSnapshot?
     var rendered: Bool?
   }
 
@@ -138,6 +142,21 @@ final class RenderJournal {
     }
   }
 
+  struct FreezeSnapshot: Codable, Equatable, Sendable {
+    var reason: String
+    var noProgressStreak: Int
+    var terminalDirty: Bool
+    var activeTerminalDirty: Bool
+    var renderInvalidated: Bool
+    var tabChanged: Bool
+    var scrollAnimating: Bool
+    var rendered: Bool
+    var renderFailureReason: MetalRenderer.RenderFailureReason?
+    var metalFrameCompletions: Int
+    var lastAcceptedFrame: Int?
+    var completionCountAtLastAcceptedFrame: Int?
+  }
+
   struct DumpSummary: Codable, Equatable, Sendable {
     var generatedAt: Date
     var entryCount: Int
@@ -174,6 +193,16 @@ final class RenderJournal {
     return defaults.bool(forKey: enabledDefaultKey)
   }
 
+  static func gpuFreezeAutoDumpEnabled(
+    defaults: UserDefaults = .standard,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    if let value = environment[gpuFreezeAutoDumpEnvironmentKey] {
+      return isTruthy(value)
+    }
+    return defaults.bool(forKey: gpuFreezeAutoDumpDefaultKey)
+  }
+
   private static func isTruthy(_ value: String) -> Bool {
     switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
     case "1", "true", "yes", "on", "enabled":
@@ -203,6 +232,7 @@ final class RenderJournal {
     metalInstances: MetalRenderer.RenderInstanceCounts? = nil,
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
     renderFailureReason: MetalRenderer.RenderFailureReason? = nil,
+    freeze: FreezeSnapshot? = nil,
     rendered: Bool? = nil
   ) -> Entry {
     Entry(
@@ -227,6 +257,7 @@ final class RenderJournal {
       metalInstances: metalInstances.map(MetalInstanceCounts.init),
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
+      freeze: freeze,
       rendered: rendered)
   }
 
@@ -380,5 +411,156 @@ final class RenderJournal {
     return formatter.string(from: date)
       .replacingOccurrences(of: ":", with: "")
       .replacingOccurrences(of: ".", with: "")
+  }
+}
+
+final class GPURenderFreezeDetector {
+  enum Reason: String, Codable, Sendable {
+    case gpuFrameCompletionStalled
+    case gpuRenderNoProgress
+  }
+
+  struct Sample: Sendable {
+    var frame: Int
+    var tabId: String?
+    var sessionId: String?
+    var gpuDriven: Bool
+    var terminalDirty: Bool
+    var activeTerminalDirty: Bool
+    var renderInvalidated: Bool
+    var tabChanged: Bool
+    var scrollAnimating: Bool
+    var rendered: Bool
+    var renderFailureReason: MetalRenderer.RenderFailureReason?
+    var metalFrameCompletions: Int
+    var now: Date
+
+    var pendingVisibleWork: Bool {
+      terminalDirty || activeTerminalDirty || renderInvalidated || tabChanged || scrollAnimating
+    }
+  }
+
+  struct Detection: Sendable, Equatable {
+    var freeze: RenderJournal.FreezeSnapshot
+    var signature: String
+  }
+
+  private let noProgressThreshold: Int
+  private let duplicateThrottleSeconds: TimeInterval
+  private var noProgressStreak = 0
+  private var lastAcceptedFrame: Int?
+  private var completionCountAtLastAcceptedFrame: Int?
+  private var latestCompletionCount = 0
+  private var lastDumpAtBySignature: [String: Date] = [:]
+
+  init(noProgressThreshold: Int = 12, duplicateThrottleSeconds: TimeInterval = 60) {
+    self.noProgressThreshold = max(1, noProgressThreshold)
+    self.duplicateThrottleSeconds = duplicateThrottleSeconds
+  }
+
+  func reset() {
+    noProgressStreak = 0
+    lastAcceptedFrame = nil
+    completionCountAtLastAcceptedFrame = nil
+    latestCompletionCount = 0
+  }
+
+  func noteMetalFrameCompleted(completionCount: Int) {
+    guard completionCount > latestCompletionCount else { return }
+    latestCompletionCount = completionCount
+    if let acceptedCompletion = completionCountAtLastAcceptedFrame,
+      completionCount > acceptedCompletion
+    {
+      noProgressStreak = 0
+      lastAcceptedFrame = nil
+      completionCountAtLastAcceptedFrame = nil
+    }
+  }
+
+  func sample(_ sample: Sample) -> Detection? {
+    noteMetalFrameCompleted(completionCount: sample.metalFrameCompletions)
+
+    guard sample.gpuDriven else {
+      reset()
+      return nil
+    }
+    guard sample.pendingVisibleWork else {
+      if sample.rendered {
+        rememberAcceptedFrame(sample)
+      } else {
+        noProgressStreak = 0
+      }
+      return nil
+    }
+    if sample.rendered {
+      rememberAcceptedFrame(sample)
+      noProgressStreak = 0
+      return nil
+    }
+    guard Self.isNoProgressFailure(sample.renderFailureReason) else {
+      noProgressStreak = 0
+      return nil
+    }
+
+    noProgressStreak += 1
+    let reason = reason(for: sample)
+    let freeze = RenderJournal.FreezeSnapshot(
+      reason: reason.rawValue,
+      noProgressStreak: noProgressStreak,
+      terminalDirty: sample.terminalDirty,
+      activeTerminalDirty: sample.activeTerminalDirty,
+      renderInvalidated: sample.renderInvalidated,
+      tabChanged: sample.tabChanged,
+      scrollAnimating: sample.scrollAnimating,
+      rendered: sample.rendered,
+      renderFailureReason: sample.renderFailureReason,
+      metalFrameCompletions: sample.metalFrameCompletions,
+      lastAcceptedFrame: lastAcceptedFrame,
+      completionCountAtLastAcceptedFrame: completionCountAtLastAcceptedFrame)
+    guard noProgressStreak >= noProgressThreshold else { return nil }
+
+    let signature = [
+      sample.tabId ?? "nil",
+      sample.sessionId ?? "nil",
+      reason.rawValue,
+      sample.renderFailureReason?.rawValue ?? "nil",
+    ].joined(separator: "|")
+    if let previous = lastDumpAtBySignature[signature],
+      sample.now.timeIntervalSince(previous) < duplicateThrottleSeconds
+    {
+      return nil
+    }
+    lastDumpAtBySignature[signature] = sample.now
+    return Detection(freeze: freeze, signature: signature)
+  }
+
+  private func rememberAcceptedFrame(_ sample: Sample) {
+    lastAcceptedFrame = sample.frame
+    completionCountAtLastAcceptedFrame = sample.metalFrameCompletions
+  }
+
+  private func reason(for sample: Sample) -> Reason {
+    if lastAcceptedFrame != nil,
+      let acceptedCompletion = completionCountAtLastAcceptedFrame,
+      sample.metalFrameCompletions <= acceptedCompletion
+    {
+      return .gpuFrameCompletionStalled
+    }
+    return .gpuRenderNoProgress
+  }
+
+  private static func isNoProgressFailure(
+    _ reason: MetalRenderer.RenderFailureReason?
+  ) -> Bool {
+    switch reason {
+    case .previousFrameInFlight,
+      .commandBufferUnavailable,
+      .targetTextureUnavailable,
+      .fullRedrawProducedNoContent,
+      .drawableUnavailable:
+      return true
+    case .drawableSizeMismatch, .none:
+      return false
+    }
   }
 }
