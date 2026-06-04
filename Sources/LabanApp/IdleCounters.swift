@@ -12,7 +12,7 @@ final class IdleCounters: @unchecked Sendable {
   static let shared = IdleCounters()
 
   private let enabled: Bool
-  private let log = OSLog(subsystem: AppLog.subsystem, category: "PointsOfInterest")
+  private let log = OSLog(subsystem: AppLog.subsystem, category: .pointsOfInterest)
   private let lock = NSLock()
   private let queue = DispatchQueue(label: "laban.idle-counters", qos: .utility)
   private var timer: DispatchSourceTimer?
