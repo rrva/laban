@@ -647,7 +647,8 @@ final class MetalFrameTimingBench: XCTestCase {
     var droppedFrames: Int
     var energyMicrojoulesPerFrame: Double
     var wakeupsPerFrame: Double
-    var gpuTimeMicrosPerFrame: Double
+    var socGPUEnergyMicrojoulesPerFrame: Double
+    var socCPUEnergyMicrojoulesPerFrame: Double
   }
 
   private struct InstanceBuildBenchResult {
@@ -759,7 +760,7 @@ final class MetalFrameTimingBench: XCTestCase {
 
     print("\n=== M6 head-to-head renderer comparison (160x48, release) ===")
     print(
-      "  workload             path       cpu p50/p95/p99 ms   procCPU/fr ms  gpu p50/p99 ms  drop   uJ/frame  wk/frame  gpuUs/fr"
+      "  workload             path       cpu p50/p95/p99 ms   pCPU/fr  drop  taskuJ/fr wk/fr  socGPUuJ/fr socCPUuJ/fr"
     )
     defer {
       MetalRenderer.useGPUCellPath = false
@@ -792,9 +793,12 @@ final class MetalFrameTimingBench: XCTestCase {
       printM6HeadToHeadRow(label: workload.label, path: "gpuCell", result: gpu)
     }
     print(
-      "  uJ/frame = task_info(TASK_POWER_INFO_V2) task_energy delta / accepted frame"
-        + " (relative proxy, same-HW A/B only); wk/frame = (interrupt+idle) wakeups / frame;"
-        + " gpuUs/fr = task_gpu_utilisation / frame")
+      "  taskuJ/fr = task_info(TASK_POWER_INFO_V2) task_energy delta / frame (per-process,"
+        + " relative same-HW A/B); wk/fr = (interrupt+idle) wakeups / frame.")
+    print(
+      "  socGPUuJ/fr, socCPUuJ/fr = IOReport \"Energy Model\" GPU/CPU energy / frame"
+        + " (sudo-less, SoC-wide incl. WindowServer; the classic-vs-gpuCell difference is"
+        + (socEnergySampler == nil ? " UNAVAILABLE: IOReport init failed)." : " the signal)."))
   }
 
   private func measureM6HeadToHead(
@@ -874,6 +878,7 @@ final class MetalFrameTimingBench: XCTestCase {
 
     let cpuStart = processCPUSeconds()
     let energyStart = processEnergySample()
+    let socStart = socEnergySampler?.sample() ?? (gpu: 0, cpu: 0)
     var accepted = 0
     var attempts = 0
     var seed = 8
@@ -907,6 +912,7 @@ final class MetalFrameTimingBench: XCTestCase {
     }
     let cpuEnd = processCPUSeconds()
     let energyEnd = processEnergySample()
+    let socEnd = socEnergySampler?.sample() ?? (gpu: 0, cpu: 0)
     XCTAssertEqual(accepted, 40, "benchmark could not get enough accepted frames")
     renderer.waitForLastFrame()
     let perFrame = Double(max(1, accepted))
@@ -914,7 +920,8 @@ final class MetalFrameTimingBench: XCTestCase {
     let wakeupsDelta =
       (energyEnd.interruptWakeups &- energyStart.interruptWakeups)
       + (energyEnd.idleWakeups &- energyStart.idleWakeups)
-    let gpuTimeDeltaNanos = energyEnd.gpuTimeNanos &- energyStart.gpuTimeNanos
+    let socGPUDeltaNanojoules = Double(socEnd.gpu - socStart.gpu)
+    let socCPUDeltaNanojoules = Double(socEnd.cpu - socStart.cpu)
     return M6HeadToHeadResult(
       timings: renderer.recentFrameTimings(),
       counts: renderer.lastInstanceCounts,
@@ -922,7 +929,8 @@ final class MetalFrameTimingBench: XCTestCase {
       droppedFrames: attempts - accepted,
       energyMicrojoulesPerFrame: Double(energyDeltaNanojoules) / 1_000.0 / perFrame,
       wakeupsPerFrame: Double(wakeupsDelta) / perFrame,
-      gpuTimeMicrosPerFrame: Double(gpuTimeDeltaNanos) / 1_000.0 / perFrame)
+      socGPUEnergyMicrojoulesPerFrame: socGPUDeltaNanojoules / 1_000.0 / perFrame,
+      socCPUEnergyMicrojoulesPerFrame: socCPUDeltaNanojoules / 1_000.0 / perFrame)
   }
 
   private func renderAccepted(
@@ -955,20 +963,18 @@ final class MetalFrameTimingBench: XCTestCase {
     let t = result.timings
     print(
       String(
-        format: "  %-20@ %-8@ %.3f/%.3f/%.3f        %.3f          %.3f/%.3f   %3d"
-          + "   %9.1f %7.2f %8.1f",
+        format: "  %-20@ %-8@ %.3f/%.3f/%.3f   %.3f   %3d  %8.1f %6.2f  %9.1f %9.1f",
         label as NSString,
         path as NSString,
         t.cpuP50Ms,
         t.cpuP95Ms,
         t.cpuP99Ms,
         result.processCPUMsPerFrame,
-        t.gpuP50Ms,
-        t.gpuP99Ms,
         result.droppedFrames,
         result.energyMicrojoulesPerFrame,
         result.wakeupsPerFrame,
-        result.gpuTimeMicrosPerFrame))
+        result.socGPUEnergyMicrojoulesPerFrame,
+        result.socCPUEnergyMicrojoulesPerFrame))
   }
 
   private func measureClassicDamage(
@@ -1355,6 +1361,87 @@ final class MetalFrameTimingBench: XCTestCase {
       interruptWakeups: info.cpu_energy.task_interrupt_wakeups,
       idleWakeups: info.cpu_energy.task_platform_idle_wakeups,
       gpuTimeNanos: info.gpu_energy.task_gpu_utilisation)
+  }
+
+  // Lazily created once; nil on non-Apple-Silicon or if the private API is
+  // unavailable, in which case the SoC energy columns read 0.
+  private lazy var socEnergySampler: SoCEnergySampler? = SoCEnergySampler()
+
+  // Sudo-less SoC energy via the IOReport "Energy Model" group
+  // (/usr/lib/libIOReport.dylib, the macmon/socpowerbud approach). Reads the
+  // aggregate "GPU Energy" and "CPU Energy" counters and deltas them around a
+  // workload. Unlike task_info this is SoC-wide (not per-process): in a quiet
+  // bench the test process is the dominant GPU client, and a constant
+  // background offset cancels in the classic-vs-gpuCell difference. Values are
+  // returned in nanojoules.
+  final class SoCEnergySampler {
+    private typealias FnCopyChannels =
+      @convention(c) (CFString?, CFString?, UInt64, UInt64, UInt64) ->
+      Unmanaged<CFMutableDictionary>?
+    private typealias FnCreateSub =
+      @convention(c) (
+        UnsafeMutableRawPointer?, CFMutableDictionary,
+        UnsafeMutablePointer<Unmanaged<CFMutableDictionary>?>?, UInt64, CFTypeRef?
+      ) -> UnsafeMutableRawPointer?
+    private typealias FnCreateSamples =
+      @convention(c) (UnsafeMutableRawPointer?, CFMutableDictionary, CFTypeRef?) ->
+      Unmanaged<CFDictionary>?
+    private typealias FnChanName = @convention(c) (CFDictionary) -> Unmanaged<CFString>?
+    private typealias FnSimpleInt = @convention(c) (CFDictionary, Int32) -> Int64
+    private typealias FnIterate =
+      @convention(c) (CFDictionary, @convention(block) (CFDictionary) -> Int32) -> Void
+
+    private let sub: UnsafeMutableRawPointer
+    private let subbed: CFMutableDictionary
+    private let createSamples: FnCreateSamples
+    private let chanName: FnChanName
+    private let simpleInt: FnSimpleInt
+    private let iterate: FnIterate
+
+    init?() {
+      guard let lib = dlopen("/usr/lib/libIOReport.dylib", RTLD_NOW) else { return nil }
+      func sym<T>(_ name: String, _ type: T.Type) -> T? {
+        guard let p = dlsym(lib, name) else { return nil }
+        return unsafeBitCast(p, to: T.self)
+      }
+      guard
+        let copy = sym("IOReportCopyChannelsInGroup", FnCopyChannels.self),
+        let createSub = sym("IOReportCreateSubscription", FnCreateSub.self),
+        let samples = sym("IOReportCreateSamples", FnCreateSamples.self),
+        let name = sym("IOReportChannelGetChannelName", FnChanName.self),
+        let simple = sym("IOReportSimpleGetIntegerValue", FnSimpleInt.self),
+        let iter = sym("IOReportIterate", FnIterate.self)
+      else { return nil }
+      guard let chans = copy("Energy Model" as CFString, nil, 0, 0, 0)?.takeRetainedValue()
+      else { return nil }
+      var out: Unmanaged<CFMutableDictionary>?
+      guard let s = createSub(nil, chans, &out, 0, nil), let got = out?.takeRetainedValue()
+      else { return nil }
+      sub = s
+      subbed = got
+      createSamples = samples
+      chanName = name
+      simpleInt = simple
+      iterate = iter
+    }
+
+    // Accumulated (gpuNanojoules, cpuNanojoules). "GPU Energy" is reported in
+    // nJ, "CPU Energy" in mJ; both normalised to nJ.
+    func sample() -> (gpu: Int64, cpu: Int64) {
+      guard let raw = createSamples(sub, subbed, nil)?.takeRetainedValue() else { return (0, 0) }
+      var gpu: Int64 = 0
+      var cpu: Int64 = 0
+      iterate(raw) { ch in
+        guard let nameRef = self.chanName(ch)?.takeUnretainedValue() else { return 0 }
+        switch nameRef as String {
+        case "GPU Energy": gpu = self.simpleInt(ch, 0)
+        case "CPU Energy": cpu = self.simpleInt(ch, 0) * 1_000_000
+        default: break
+        }
+        return 0
+      }
+      return (gpu, cpu)
+    }
   }
 
   private func timevalSeconds(_ value: timeval) -> Double {
