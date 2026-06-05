@@ -833,6 +833,14 @@ final class MetalFrameTimingBench: XCTestCase {
     MetalRenderer.useClassicDamageScoped = true
     MetalRenderer.useGPUCellPath = false
 
+    let includedRows = measuredRows(for: workload, rows: rows)
+    let damage = m6Damage(for: workload, rows: rows, cellH: cellH)
+    func render(_ frame: (commands: [FrameCommand], payload: TerminalCellPayload?)) -> Bool {
+      renderAccepted(
+        renderer, commands: frame.commands, payload: frame.payload, damage: damage,
+        rendererFallbackReason: workload.rendererFallbackReason)
+    }
+
     let initialCommands = m6Commands(
       workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
       seed: 0, includedRows: Array(0..<rows))
@@ -846,34 +854,37 @@ final class MetalFrameTimingBench: XCTestCase {
         rendererFallbackReason: workload.rendererFallbackReason))
     renderer.waitForLastFrame()
 
-    func renderOne(_ seed: Int) -> Bool {
-      renderAccepted(
-        renderer,
-        commands: m6Commands(
-          workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
-          seed: seed, includedRows: measuredRows(for: workload, rows: rows)),
-        payload: useGPUCell
-          ? m6Payload(
-            workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
-            seed: seed, includedRows: measuredRows(for: workload, rows: rows)) : nil,
-        damage: m6Damage(for: workload, rows: rows, cellH: cellH),
-        rendererFallbackReason: workload.rendererFallbackReason)
-    }
-
-    // A single short window is energy-noisy: the SoC-wide IOReport baseline and
-    // scheduler jitter swamp the per-workload delta, so absolute numbers swing
-    // run to run. Repeat R windows of N accepted frames and take the median per
-    // metric. The classic-vs-gpuCell difference is the signal, and the constant
-    // background offset cancels in it. Both knobs are env-overridable so CI can
-    // trade runtime for tightness.
     let reps = max(
       1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_REPS"].flatMap(Int.init) ?? 7)
     let target = max(
       1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_FRAMES"].flatMap(Int.init) ?? 80)
 
+    // Pre-build the frame inputs OUTSIDE the timing brackets. The bench's
+    // per-cell payload/command construction (thousands of Glyph structs, each
+    // with a String) otherwise dominates the measured CPU and masks the
+    // renderer's own per-frame cost, which is the quantity under comparison. A
+    // small pool cycled across the window keeps content varying frame to frame
+    // so the renderer can't no-op identical frames.
+    let poolSize = min(target, 24)
+    var pool: [(commands: [FrameCommand], payload: TerminalCellPayload?)] = []
+    pool.reserveCapacity(poolSize)
+    for k in 0..<poolSize {
+      let s = 8 + k
+      pool.append(
+        (
+          commands: m6Commands(
+            workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
+            seed: s, includedRows: includedRows),
+          payload: useGPUCell
+            ? m6Payload(
+              workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
+              seed: s, includedRows: includedRows) : nil
+        ))
+    }
+
     // One unmeasured warm window so atlas, pipelines, and persistent target are
     // hot before the first measured window.
-    for seed in 1..<8 { _ = renderOne(seed) }
+    for frame in pool { _ = render(frame) }
     renderer.waitForLastFrame()
 
     var procCPUSamples: [Double] = []
@@ -884,7 +895,6 @@ final class MetalFrameTimingBench: XCTestCase {
     var lastTimings = renderer.recentFrameTimings()
     var lastCounts = renderer.lastInstanceCounts
     var droppedTotal = 0
-    var seed = 8
 
     for _ in 0..<reps {
       renderer.resetFrameTimings()
@@ -894,9 +904,9 @@ final class MetalFrameTimingBench: XCTestCase {
       var accepted = 0
       var attempts = 0
       while accepted < target && attempts < target * 2 {
+        let frame = pool[attempts % pool.count]
         attempts += 1
-        if renderOne(seed) { accepted += 1 }
-        seed += 1
+        if render(frame) { accepted += 1 }
       }
       let cpuEnd = processCPUSeconds()
       let energyEnd = processEnergySample()
