@@ -38,6 +38,9 @@ import LabanTerminalCore
 ///   --sessions N           parallel session count for daemon modes (default 1)
 ///   --producer cat|zero    child command emitting the payload (default cat).
 ///                          `zero` runs `dd if=/dev/zero bs=64k count=512`.
+///                          `flood` runs ~/laban-flood-output.sh for
+///                          --flood-seconds and uses quiet-after-exit rather
+///                          than a fixed byte threshold.
 ///   --top-outliers N       print the N slowest consumer reads per iter
 ///                          for daemon-drain (default 0)
 ///
@@ -66,11 +69,13 @@ enum Mode: String, CaseIterable {
 enum Producer: String {
   case cat
   case zero
+  case flood
 }
 
 struct Options {
   var sessions: Int = 1
   var producer: Producer = .cat
+  var floodSeconds: Int = 8
   var topOutliers: Int = 0
   var modes: [Mode] = Mode.allCases
 }
@@ -90,9 +95,15 @@ private func parseOptions(_ args: [String]) throws -> Options {
       i += 2
     case "--producer":
       guard i + 1 < args.count, let value = Producer(rawValue: args[i + 1]) else {
-        throw BenchError("--producer must be cat or zero")
+        throw BenchError("--producer must be cat, zero, or flood")
       }
       options.producer = value
+      i += 2
+    case "--flood-seconds":
+      guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
+        throw BenchError("--flood-seconds requires a positive integer")
+      }
+      options.floodSeconds = value
       i += 2
     case "--top-outliers":
       guard i + 1 < args.count, let value = Int(args[i + 1]), value >= 0 else {
@@ -116,9 +127,20 @@ private func parseOptions(_ args: [String]) throws -> Options {
   return options
 }
 
+private func timevalNs(_ tv: timeval) -> UInt64 {
+  UInt64(tv.tv_sec) &* 1_000_000_000 &+ UInt64(tv.tv_usec) &* 1_000
+}
+
+private func childrenCpuNs() -> UInt64 {
+  var usage = rusage()
+  guard getrusage(RUSAGE_CHILDREN, &usage) == 0 else { return 0 }
+  return timevalNs(usage.ru_utime) &+ timevalNs(usage.ru_stime)
+}
+
 private struct Sample {
   var producerBytes: UInt64
   var producerWallNs: UInt64
+  var childCpuNs: UInt64
   /// Consumer per-read latencies (ns). Empty for noread / ring-write modes.
   /// Concatenated across all sessions in a multi-session iter.
   var consumerReadNs: [UInt64]
@@ -153,7 +175,7 @@ private func makePayloadFile() throws -> URL {
   return url
 }
 
-private func childArgv(producer: Producer, payload: URL) -> [String] {
+private func childArgv(producer: Producer, payload: URL, options: Options) -> [String] {
   switch producer {
   case .cat:
     // `cat <payload>` reads a 32 MiB file and writes it to the PTY. The
@@ -168,6 +190,8 @@ private func childArgv(producer: Producer, payload: URL) -> [String] {
     let blockSize = 65536
     let count = totalBytes / blockSize
     return ["/bin/sh", "-c", "exec dd if=/dev/zero bs=\(blockSize) count=\(count) 2>/dev/null"]
+  case .flood:
+    return ["/bin/sh", "-c", "exec \"$HOME/laban-flood-output.sh\" \(options.floodSeconds)"]
   }
 }
 
@@ -179,6 +203,12 @@ private struct Harness {
 }
 
 private func locateLabptyBinary() -> (url: URL, isDebug: Bool)? {
+  if let override = ProcessInfo.processInfo.environment["LABPTY_BINARY"], !override.isEmpty {
+    let url = URL(fileURLWithPath: override)
+    if FileManager.default.isExecutableFile(atPath: url.path) {
+      return (url, false)
+    }
+  }
   let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
   let release = root.appendingPathComponent(".build/release/labpty")
   if FileManager.default.isExecutableFile(atPath: release.path) {
@@ -330,14 +360,18 @@ private func runDaemonDrain(
   options: Options,
   readPayload: Bool
 ) throws -> Sample {
+  let cpuBefore = childrenCpuNs()
   let harness = try launchLabpty()
-  defer { shutdown(harness) }
+  var didShutdown = false
+  defer {
+    if !didShutdown { shutdown(harness) }
+  }
   let client = try LabptyTerminalSessionClient(
     socketPath: harness.socketPath, rpcTimeoutMilliseconds: 5_000)
   defer { client.close() }
   _ = try client.hello()
 
-  // Open all sessions first, then start the consumer threads, so the
+  // Open all hot sessions first, then start the consumer threads, so the
   // wall-clock measurement starts the moment the first byte could be
   // produced.
   var descriptors: [LabptySessionDescriptor] = []
@@ -350,7 +384,7 @@ private func runDaemonDrain(
         rows: 50,
         cols: 200,
         outputRingCapacity: outputRingCapacity,
-        argv: childArgv(producer: options.producer, payload: payload),
+        argv: childArgv(producer: options.producer, payload: payload, options: options),
         logicalSessionId: "bench-\(slot)-\(UUID().uuidString)"))
     descriptors.append(descriptor)
     readers.append(try LabptyByteRingReader(path: descriptor.byteRingShmPath))
@@ -371,6 +405,8 @@ private func runDaemonDrain(
       return UInt64(payloadBytes)
     case .zero:
       return UInt64(payloadBytes)
+    case .flood:
+      return 0
     }
   }()
 
@@ -394,6 +430,9 @@ private func runDaemonDrain(
   for descriptor in descriptors {
     _ = try? client.terminate(handle: descriptor.ptyHandle)
   }
+  shutdown(harness)
+  didShutdown = true
+  let cpuAfter = childrenCpuNs()
 
   let totalProducerBytes = results.reduce(UInt64(0)) { $0 &+ $1.producerBytes }
   let totalConsumerBytes = results.reduce(UInt64(0)) { $0 &+ $1.consumerBytes }
@@ -403,6 +442,7 @@ private func runDaemonDrain(
   return Sample(
     producerBytes: totalProducerBytes,
     producerWallNs: endNs &- startNs,
+    childCpuNs: cpuAfter &- cpuBefore,
     consumerReadNs: mergedReads,
     consumerBytes: totalConsumerBytes,
     overflowed: overflowed)
@@ -442,6 +482,7 @@ private func runRingWrite() throws -> Sample {
   return Sample(
     producerBytes: UInt64(written),
     producerWallNs: endNs &- startNs,
+    childCpuNs: 0,
     consumerReadNs: [],
     consumerBytes: 0,
     overflowed: false)
@@ -468,12 +509,17 @@ private func summarize(mode: Mode, samples: [Sample], options: Options) {
   let avgBytes = samples.map { Double($0.producerBytes) }.reduce(0, +) / Double(samples.count)
   let mbps = avgBytes / (meanWallMs / 1000.0) / (1024.0 * 1024.0)
   let overflows = samples.filter { $0.overflowed }.count
+  let childCpuMeanMs =
+    samples.map { Double($0.childCpuNs) / 1_000_000.0 }.reduce(0, +) / Double(samples.count)
+  let childCpuPerMiB = avgBytes > 0
+    ? childCpuMeanMs / (avgBytes / (1024.0 * 1024.0))
+    : 0
 
   var line = String(
     format:
-      "SUMMARY[%@]  iters=%d  sessions=%d  producer=%@  wall_mean=%.1f ms  throughput=%.1f MiB/s  overflows=%d/%d",
+      "SUMMARY[%@]  iters=%d  sessions=%d  producer=%@  wall_mean=%.1f ms  throughput=%.1f MiB/s  child_cpu_mean=%.1f ms  child_cpu_per_mib=%.2f ms/MiB  overflows=%d/%d",
     mode.rawValue, samples.count, options.sessions, options.producer.rawValue,
-    meanWallMs, mbps, overflows, samples.count)
+    meanWallMs, mbps, childCpuMeanMs, childCpuPerMiB, overflows, samples.count)
 
   let allConsumerNs = samples.flatMap { $0.consumerReadNs }
   if !allConsumerNs.isEmpty {
@@ -502,6 +548,7 @@ private func runMode(_ mode: Mode, payload: URL, options: Options) {
     "bench-labpty-hot-path[\(mode.rawValue)]: payload=\(payloadBytes) B, "
       + "ring_capacity=\(outputRingCapacity) B, "
       + "sessions=\(options.sessions), producer=\(options.producer.rawValue), "
+      + "flood_seconds=\(options.floodSeconds), "
       + "iter=\(iterations) (after \(warmup) warmup)")
   for _ in 0..<warmup {
     do {

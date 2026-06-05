@@ -97,9 +97,36 @@ static void cover_parse_args(void) {
     assert(parse_args(3, only_sock, sock, shm) == -1);    /* socket set, shm-dir empty */
 }
 
+static void cover_maintenance_due_after_poll(void) {
+    unsigned ready_ticks = 12;
+    assert(maintenance_due_after_poll(0, &ready_ticks) == 1);
+    assert(ready_ticks == 0);
+    assert(maintenance_due_after_poll(-1, &ready_ticks) == 0);
+    assert(ready_ticks == 0);
+    for (unsigned i = 1; i < LABPTY_MAINTENANCE_READY_BUDGET; i++) {
+        assert(maintenance_due_after_poll(1, &ready_ticks) == 0);
+        assert(ready_ticks == i);
+    }
+    assert(maintenance_due_after_poll(1, &ready_ticks) == 1);
+    assert(ready_ticks == 0);
+}
+
 static size_t build_handle_payload(uint8_t *buf, size_t cap, uint64_t handle) {
     labpty_writer_t w = { buf, buf + cap };
     labpty_write_u64(&w, handle);
+    return (size_t)(w.cur - buf);
+}
+
+static size_t build_park_payload(uint8_t *buf, size_t cap,
+                                 const uint64_t *handles,
+                                 const uint64_t *offsets,
+                                 uint32_t count) {
+    labpty_writer_t w = { buf, buf + cap };
+    labpty_write_u32(&w, count);
+    for (uint32_t i = 0; i < count; i++) {
+        labpty_write_u64(&w, handles[i]);
+        labpty_write_u64(&w, offsets[i]);
+    }
     return (size_t)(w.cur - buf);
 }
 
@@ -214,6 +241,272 @@ static void cover_poll_dispatch(void) {
     (void)service_client_poll(&cov_daemon, 0, POLLIN);   /* not in_use -> 0 */
 }
 
+static void set_client_id(labpty_client_t *client, const char *client_id) {
+    snprintf(client->client_id, sizeof(client->client_id), "%s", client_id);
+}
+
+static void cover_output_wake_paths(void) {
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    labpty_client_t *match = &cov_daemon.clients[0];
+    match->fd = -1;
+    match->in_use = 1;
+    match->output_wake = 1;
+    set_client_id(match, "client-a");
+
+    labpty_client_t inactive = {0};
+    inactive.fd = -1;
+    assert(client_id_matches(&inactive, "client-a") == 0);       /* !in_use */
+    inactive.in_use = 1;
+    assert(client_id_matches(&inactive, "client-a") == 0);       /* empty id */
+    set_client_id(&inactive, "client-b");
+    assert(client_id_matches(&inactive, "client-a") == 0);       /* strcmp false */
+    assert(client_id_matches(match, "client-a") == 1);           /* all true */
+
+    labpty_session_t *session = &cov_daemon.registry.sessions[0];
+    session->used = 1;
+    session->alive = 1;
+    session->handle = 100;
+    session->attached_clients = 0;
+    assert(session_has_attached_client_id(&cov_daemon, session, "client-a") == 0);
+    session->attached_clients = (uint8_t)(1u << 1);
+    cov_daemon.clients[1].fd = -1;
+    cov_daemon.clients[1].in_use = 1;
+    cov_daemon.clients[1].output_wake = 1;
+    set_client_id(&cov_daemon.clients[1], "client-b");
+    assert(session_has_attached_client_id(&cov_daemon, session, "client-a") == 0);
+    session->attached_clients |= (uint8_t)(1u << 0);
+    assert(session_has_attached_client_id(&cov_daemon, session, "client-a") == 1);
+
+    memset(cov_daemon.clients, 0, sizeof(cov_daemon.clients));
+    cov_daemon.output_wake_armed_count = 0;
+    cov_daemon.clients[0].fd = -1; /* !in_use */
+    cov_daemon.clients[1].fd = -1; cov_daemon.clients[1].in_use = 1; set_client_id(&cov_daemon.clients[1], "client-a"); /* !output_wake */
+    cov_daemon.clients[2].fd = -1; cov_daemon.clients[2].in_use = 1; cov_daemon.clients[2].output_wake = 1; set_client_id(&cov_daemon.clients[2], "client-b");
+    cov_daemon.clients[3].fd = -1; cov_daemon.clients[3].in_use = 1; cov_daemon.clients[3].output_wake = 1; cov_daemon.clients[3].wake_armed = 1; set_client_id(&cov_daemon.clients[3], "client-a");
+    cov_daemon.clients[4].fd = -1; cov_daemon.clients[4].in_use = 1; cov_daemon.clients[4].output_wake = 1; set_client_id(&cov_daemon.clients[4], "client-a");
+    cov_daemon.output_wake_armed_count = 1;
+    arm_output_wake_clients(&cov_daemon, "client-a");
+    assert(cov_daemon.clients[4].wake_armed == 1);
+    assert(cov_daemon.output_wake_armed_count == 2);
+
+    labpty_client_t queue_client = {0};
+    queue_client.fd = -1;
+    queue_client.wake_pending = 1;
+    assert(queue_output_wake(&queue_client) == 0);
+    queue_client.wake_pending = 0;
+    queue_client.write_total = 8;
+    queue_client.write_sent = 3;
+    assert(queue_output_wake(&queue_client) == 0 && queue_client.wake_pending == 1);
+    queue_client.write_total = 0;
+    queue_client.write_sent = 0;
+    queue_client.wake_pending = 0;
+    assert(queue_output_wake(&queue_client) == -1);
+
+    int queue_pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, queue_pair) == 0);
+    queue_client.fd = queue_pair[0];
+    assert(queue_output_wake(&queue_client) == 0);
+    uint8_t queue_byte = 0;
+    assert(read(queue_pair[1], &queue_byte, 1) == 1 && queue_byte == 1);
+    close(queue_pair[0]);
+    close(queue_pair[1]);
+
+    labpty_client_t flush_client = {0};
+    flush_client.fd = -1;
+    assert(flush_output_wake(&flush_client) == 0);       /* !wake_pending */
+    flush_client.wake_pending = 1;
+    assert(flush_output_wake(&flush_client) == -1);      /* hard write error */
+    int flush_pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, flush_pair) == 0);
+    flush_client.fd = flush_pair[0];
+    flush_client.wake_pending = 1;
+    assert(flush_output_wake(&flush_client) == 0 && flush_client.wake_pending == 0);
+    assert(read(flush_pair[1], &queue_byte, 1) == 1 && queue_byte == 1);
+    close(flush_pair[0]);
+    close(flush_pair[1]);
+
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    session = &cov_daemon.registry.sessions[0];
+    session->used = 1;
+    session->alive = 1;
+    session->handle = 100;
+    session->attached_clients = (uint8_t)(1u << 3);
+    cov_daemon.output_wake_armed_count = 1;
+    cov_daemon.clients[0].fd = -1; /* !in_use */
+    cov_daemon.clients[1].fd = -1; cov_daemon.clients[1].in_use = 1; /* !output_wake */
+    cov_daemon.clients[2].fd = -1; cov_daemon.clients[2].in_use = 1; cov_daemon.clients[2].output_wake = 1; /* empty id */
+    cov_daemon.clients[3].fd = -1; cov_daemon.clients[3].in_use = 1; cov_daemon.clients[3].output_wake = 1; set_client_id(&cov_daemon.clients[3], "client-a"); /* !wake_armed */
+    cov_daemon.clients[4].fd = -1; cov_daemon.clients[4].in_use = 1; cov_daemon.clients[4].output_wake = 1; cov_daemon.clients[4].wake_armed = 1; set_client_id(&cov_daemon.clients[4], "client-b"); /* attached but id mismatch */
+    notify_output_wake_clients(&cov_daemon, session);
+    assert(cov_daemon.clients[4].wake_armed == 1);
+    assert(cov_daemon.output_wake_armed_count == 1);
+
+    int wake_pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, wake_pair) == 0);
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    session = &cov_daemon.registry.sessions[0];
+    session->used = 1;
+    session->alive = 1;
+    session->handle = 100;
+    session->attached_clients = (uint8_t)(1u << 0);
+    match = &cov_daemon.clients[0];
+    match->fd = wake_pair[0];
+    match->in_use = 1;
+    match->output_wake = 1;
+    match->wake_armed = 1;
+    set_client_id(match, "client-a");
+    cov_daemon.output_wake_armed_count = 1;
+    notify_output_wake_clients(&cov_daemon, session);
+    assert(match->wake_armed == 0);
+    assert(cov_daemon.output_wake_armed_count == 0);
+    uint8_t wake_byte = 0;
+    assert(read(wake_pair[1], &wake_byte, 1) == 1 && wake_byte == 1);
+    close(wake_pair[0]);
+    close(wake_pair[1]);
+
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    session = &cov_daemon.registry.sessions[0];
+    session->used = 1;
+    session->alive = 1;
+    session->handle = 100;
+    session->attached_clients = (uint8_t)(1u << 0);
+    match = &cov_daemon.clients[0];
+    match->fd = -1;
+    match->in_use = 1;
+    match->output_wake = 1;
+    match->wake_armed = 1;
+    match->wake_pending = 1;
+    set_client_id(match, "client-a");
+    cov_daemon.output_wake_armed_count = 1;
+    notify_output_wake_clients(&cov_daemon, session);
+    assert(match->in_use == 1 && match->wake_pending == 1);       /* pending suppresses write */
+
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    labpty_client_t *client = &cov_daemon.clients[0];
+    client->fd = -1;
+    client->in_use = 1;
+    client->supports_output_wake = 1;
+    client->output_wake = 1;
+    set_client_id(client, "client-a");
+    cov_daemon.registry.sessions[0].used = 1;
+    cov_daemon.registry.sessions[0].alive = 1;
+    cov_daemon.registry.sessions[0].handle = 100;
+    cov_daemon.registry.sessions[0].ring.output_offset = 7;
+    cov_daemon.registry.sessions[1].used = 1;
+    cov_daemon.registry.sessions[1].alive = 0;
+    cov_daemon.registry.sessions[1].handle = 101;
+    cov_daemon.registry.sessions[1].ring.output_offset = 9;
+    uint8_t pay[64], out[16];
+    size_t out_len = 0;
+    uint64_t handles[1] = {100};
+    uint64_t offsets[1] = {7};
+    size_t n = build_park_payload(pay, sizeof(pay), handles, offsets, 1);
+    assert(handle_park_output_wake(&cov_daemon, client, pay, n, out, sizeof(out), &out_len) == LABPTY_OK);
+    assert(out_len == 1 && out[0] == 1);
+    assert((cov_daemon.registry.sessions[0].attached_clients & 1u) != 0);
+
+    handles[0] = 101; offsets[0] = 9;
+    n = build_park_payload(pay, sizeof(pay), handles, offsets, 1);
+    assert(handle_park_output_wake(&cov_daemon, client, pay, n, out, sizeof(out), &out_len) == LABPTY_OK);
+    assert(out_len == 1 && out[0] == 1);
+    assert((cov_daemon.registry.sessions[1].attached_clients & 1u) == 0); /* found but !alive */
+
+    handles[0] = 100; offsets[0] = 99;
+    n = build_park_payload(pay, sizeof(pay), handles, offsets, 1);
+    assert(handle_park_output_wake(&cov_daemon, client, pay, n, out, sizeof(out), &out_len) == LABPTY_OK);
+    assert(out_len == 1 && out[0] == 0);                /* offset changed: not parked */
+
+    handles[0] = 999; offsets[0] = 0;
+    n = build_park_payload(pay, sizeof(pay), handles, offsets, 1);
+    assert(handle_park_output_wake(&cov_daemon, client, pay, n, out, sizeof(out), &out_len) == LABPTY_E_SESSION_NOT_FOUND);
+}
+
+static char cov_temp_dir[] = "/tmp/labpty-main-cov.XXXXXX";
+static int cov_temp_ready = 0;
+
+static void ensure_cov_temp_dir(void) {
+    if (!cov_temp_ready) {
+        assert(mkdtemp(cov_temp_dir) != NULL);
+        cov_temp_ready = 1;
+    }
+}
+
+static void init_drain_session(labpty_session_t *s, int fd, const char *name) {
+    ensure_cov_temp_dir();
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    memset(s, 0, sizeof(*s));
+    s->used = 1;
+    s->alive = 1;
+    s->master_fd = fd;
+    s->slave_inspect_fd = -1;
+    char path[LABPTY_PATH_BYTES + 1];
+    snprintf(path, sizeof(path), "%s/%s.br", cov_temp_dir, name);
+    assert(labpty_byte_ring_create(path, LABPTY_MIN_OUTPUT_CAPACITY, name, &s->ring) == LABPTY_OK);
+}
+
+static void close_drain_session(labpty_session_t *s) {
+    if (s->master_fd >= 0) close(s->master_fd);
+    labpty_byte_ring_close(&s->ring);
+}
+
+static void set_fd_nonblock_cov(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    assert(flags >= 0);
+    assert(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
+}
+
+static void cover_drain_session(void) {
+    labpty_session_t s;
+
+    int empty_pipe[2];
+    assert(pipe(empty_pipe) == 0);
+    set_fd_nonblock_cov(empty_pipe[0]);
+    init_drain_session(&s, empty_pipe[0], "drain-empty");
+    drain_session(&cov_daemon, &s);
+    assert(s.master_fd == empty_pipe[0]);          /* EAGAIN before any output: stay open */
+    assert(s.ring.output_offset == 0);
+    close(empty_pipe[1]);
+    close_drain_session(&s);
+
+    int data_pipe[2];
+    assert(pipe(data_pipe) == 0);
+    set_fd_nonblock_cov(data_pipe[0]);
+    const char payload[] = "pty-drain";
+    assert(write(data_pipe[1], payload, sizeof(payload) - 1) == (ssize_t)(sizeof(payload) - 1));
+    init_drain_session(&s, data_pipe[0], "drain-data");
+    drain_session(&cov_daemon, &s);
+    assert(s.master_fd == data_pipe[0]);           /* data then EAGAIN/yield: stay open */
+    assert(s.ring.output_offset == sizeof(payload) - 1);
+    close(data_pipe[1]);
+    close_drain_session(&s);
+
+    int eof_pipe[2];
+    assert(pipe(eof_pipe) == 0);
+    close(eof_pipe[1]);
+    init_drain_session(&s, eof_pipe[0], "drain-eof");
+    drain_session(&cov_daemon, &s);
+    assert(s.master_fd == -1);                     /* EOF closes the dead master */
+    labpty_byte_ring_close(&s.ring);
+
+    char file_path[LABPTY_PATH_BYTES + 1];
+    ensure_cov_temp_dir();
+    snprintf(file_path, sizeof(file_path), "%s/drain-budget.bin", cov_temp_dir);
+    int file_fd = open(file_path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+    assert(file_fd >= 0);
+    uint8_t block[4096];
+    memset(block, 'x', sizeof(block));
+    for (size_t written = 0; written < LABPTY_SESSION_DRAIN_BYTE_BUDGET + sizeof(block); written += sizeof(block)) {
+        assert(write(file_fd, block, sizeof(block)) == (ssize_t)sizeof(block));
+    }
+    assert(lseek(file_fd, 0, SEEK_SET) == 0);
+    init_drain_session(&s, file_fd, "drain-budget");
+    drain_session(&cov_daemon, &s);
+    assert(s.master_fd == file_fd);                /* byte budget, not EOF, stops the burst */
+    assert(s.ring.output_offset == LABPTY_SESSION_DRAIN_BYTE_BUDGET);
+    close_drain_session(&s);
+    unlink(file_path);
+}
+
 static size_t build_write_payload(uint8_t *buf, size_t cap, uint64_t handle,
                                   const uint8_t *data, size_t dlen) {
     labpty_writer_t w = { buf, buf + cap };
@@ -281,9 +574,13 @@ int main(void) {
     cover_is_canonical_delimiter();
     cover_expire_stalled_clients();
     cover_parse_args();
+    cover_maintenance_due_after_poll();
     cover_handlers();
     cover_dispatch_frame();
     cover_poll_dispatch();
+    cover_output_wake_paths();
+    cover_drain_session();
     cover_handle_write();
+    if (cov_temp_ready) rmdir(cov_temp_dir);
     return 0;
 }

@@ -1,6 +1,7 @@
 #include "labpty_registry.h"
 
 #include <poll.h>
+#include <sched.h>
 
 #define LABPTY_MAX_POLL_WATCHES (1 + LABPTY_MAX_CLIENTS + LABPTY_MAX_SESSIONS)
 
@@ -68,6 +69,10 @@ typedef struct {
 } labpty_poll_set_t;
 
 static const uint64_t LABPTY_IO_IDLE_TIMEOUT_NS = 250000000ull;
+static const unsigned LABPTY_MAINTENANCE_READY_BUDGET = 64;
+static const unsigned LABPTY_SESSION_DRAIN_READ_BUDGET = 256;
+static const size_t LABPTY_SESSION_DRAIN_BYTE_BUDGET = 256 * 1024;
+static const unsigned LABPTY_SESSION_DRAIN_EMPTY_YIELDS = 1;
 /* Maximum wall-clock time we'll wait for a single request frame to
  * arrive in full, measured from the first byte. Two seconds is well
  * above any legitimate round-trip on a local UNIX socket and below the
@@ -527,7 +532,8 @@ static labpty_status_t handle_park_output_wake(labpty_daemon_t *daemon, labpty_c
         uint8_t bit = (uint8_t)(1u << client_index(daemon, client));
         for (uint32_t i = 0; i < request.count; i++) {
             labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handles[i]);
-            if (session != NULL && session->alive) session->attached_clients |= bit;
+            assert(session != NULL);
+            if (session->alive) session->attached_clients |= bit;
         }
         arm_output_wake_clients(daemon, client->client_id);
     }
@@ -1037,16 +1043,34 @@ static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
     assert(daemon != NULL);
     assert(session != NULL);
     assert(session->master_fd >= 0);
-    ssize_t n = read(session->master_fd, daemon->read_buffer, sizeof(daemon->read_buffer));
-    if (n > 0) {
-        labpty_byte_ring_write(&session->ring, daemon->read_buffer, (size_t)n);
-        notify_output_wake_clients(daemon, session);
-        return;
-    }
-    if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+    size_t drained = 0;
+    unsigned reads = 0;
+    unsigned empty_yields = 0;
+    int wrote_output = 0;
+    while (reads < LABPTY_SESSION_DRAIN_READ_BUDGET && drained < LABPTY_SESSION_DRAIN_BYTE_BUDGET) {
+        ssize_t n = read(session->master_fd, daemon->read_buffer, sizeof(daemon->read_buffer));
+        if (n > 0) {
+            labpty_byte_ring_write(&session->ring, daemon->read_buffer, (size_t)n);
+            drained += (size_t)n;
+            reads++;
+            empty_yields = 0;
+            wrote_output = 1;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (wrote_output && empty_yields < LABPTY_SESSION_DRAIN_EMPTY_YIELDS) {
+                empty_yields++;
+                sched_yield();
+                continue;
+            }
+            break;
+        }
         close(session->master_fd);
         session->master_fd = -1;
+        break;
     }
+    if (wrote_output) notify_output_wake_clients(daemon, session);
 }
 
 static void add_poll_watch(labpty_poll_set_t *poll_set, int fd, short events, labpty_poll_kind_t kind, int index) {
@@ -1163,6 +1187,21 @@ static void tick_heartbeats(labpty_daemon_t *daemon) {
     }
 }
 
+static int maintenance_due_after_poll(int ready, unsigned *ready_iterations_since_maintenance) {
+    assert(ready_iterations_since_maintenance != NULL);
+    if (ready == 0) {
+        *ready_iterations_since_maintenance = 0;
+        return 1;
+    }
+    if (ready < 0) return 0;
+    if (*ready_iterations_since_maintenance + 1 >= LABPTY_MAINTENANCE_READY_BUDGET) {
+        *ready_iterations_since_maintenance = 0;
+        return 1;
+    }
+    (*ready_iterations_since_maintenance)++;
+    return 0;
+}
+
 /* Modelled by specs/labpty/LabptyControlChannel.tla::Expire. Both branches
  * of the OR matter: the `!established` branch reclaims un-negotiated
  * idle clients (UnnegotiatedIdleIsNotPermanent, the 2aac41a property);
@@ -1232,6 +1271,7 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
 static int event_loop(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     assert(daemon->listen_fd >= 0);
+    unsigned ready_iterations_since_maintenance = 0;
     while (!shutdown_requested) {
         labpty_poll_set_t poll_set;
         build_poll_set(daemon, &poll_set);
@@ -1244,14 +1284,16 @@ static int event_loop(labpty_daemon_t *daemon) {
         for (nfds_t i = 0; i < poll_set.count; i++) {
             service_poll_watch(daemon, &poll_set, i);
         }
-        tick_heartbeats(daemon);
-        int used_before = 0;
-        for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) used_before += daemon->registry.sessions[i].used;
-        labpty_registry_reap(&daemon->registry);
-        int used_after = 0;
-        for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) used_after += daemon->registry.sessions[i].used;
-        if (used_after != used_before) labpty_trace_emit(daemon, "TerminateSession");
-        expire_stalled_clients(daemon);
+        if (maintenance_due_after_poll(ready, &ready_iterations_since_maintenance)) {
+            tick_heartbeats(daemon);
+            int used_before = 0;
+            for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) used_before += daemon->registry.sessions[i].used;
+            labpty_registry_reap(&daemon->registry);
+            int used_after = 0;
+            for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) used_after += daemon->registry.sessions[i].used;
+            if (used_after != used_before) labpty_trace_emit(daemon, "TerminateSession");
+            expire_stalled_clients(daemon);
+        }
     }
     return 0;
 }
