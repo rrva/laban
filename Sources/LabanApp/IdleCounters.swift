@@ -31,7 +31,8 @@ final class IdleCounters: @unchecked Sendable {
     self.enabled = Self.isEnabled(defaults: defaults, environment: environment)
     guard enabled else { return }
     let timer = DispatchSource.makeTimerSource(queue: queue)
-    timer.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1), leeway: .milliseconds(100))
+    timer.schedule(
+      deadline: .now() + .seconds(1), repeating: .seconds(1), leeway: .milliseconds(100))
     timer.setEventHandler { [weak self] in
       self?.emitAndReset()
     }
