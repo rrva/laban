@@ -387,13 +387,18 @@ public enum TabTitleResolver {
 
   public static func resolvedMetadata(
     _ metadata: TabTitleMetadata,
-    fallbackPosition: Int,
-    now: Date = Date()
+    fallbackPosition: Int
   ) -> TabTitleMetadata {
+    // displayTitle and titleSource are the only resolved fields stored on
+    // TabTitleMetadata, and both come straight from titleChoice. Routing
+    // through the full resolve() recomputed secondaryLine, breakdownLines,
+    // and statusBadge — the split/join/trim string work the sidebar already
+    // does for itself — purely to discard them. On busy tabs this ran on
+    // every output tick; titleChoice alone yields the identical result.
     var next = metadata
-    let resolved = resolve(metadata, fallbackPosition: fallbackPosition, now: now)
-    next.displayTitle = resolved.displayTitle
-    next.titleSource = resolved.titleSource
+    let choice = titleChoice(metadata, fallbackPosition: fallbackPosition)
+    next.displayTitle = choice.title
+    next.titleSource = choice.source
     return next
   }
 
