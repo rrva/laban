@@ -517,7 +517,20 @@ static labpty_status_t handle_park_output_wake(labpty_daemon_t *daemon, labpty_c
             break;
         }
     }
-    if (parked) arm_output_wake_clients(daemon, client->client_id);
+    if (parked) {
+        /* A control-socket reconnect scrubs the old connection slot from
+         * attached_clients before the app re-parks the already-open wake socket.
+         * Treat a successful park over handles this client is actively reading as
+         * an idempotent re-claim of those live sessions; otherwise the subsequent
+         * notify path suppresses the wake because no attached slot has the same
+         * logical client_id. */
+        uint8_t bit = (uint8_t)(1u << client_index(daemon, client));
+        for (uint32_t i = 0; i < request.count; i++) {
+            labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handles[i]);
+            if (session != NULL && session->alive) session->attached_clients |= bit;
+        }
+        arm_output_wake_clients(daemon, client->client_id);
+    }
     labpty_writer_t writer = { .cur = out, .end = out + cap };
     status = labpty_write_u8(&writer, (uint8_t)(parked ? 1 : 0));
     if (status != LABPTY_OK) return status;

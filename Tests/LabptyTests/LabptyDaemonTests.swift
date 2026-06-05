@@ -118,6 +118,47 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try client.terminate(handle: descriptor.ptyHandle)
   }
 
+  func testOutputWakeParkReattachesAfterMainControlReconnect() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/cat"], logicalSessionId: "wake-reconnect"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    let wakeFD = try XCTUnwrap(client.openOutputWakeFileDescriptor())
+    defer { Darwin.close(wakeFD) }
+
+    XCTAssertEqual(try connectedCount(client, handle: descriptor.ptyHandle), 1)
+    XCTAssertTrue(
+      try client.parkOutputWake(
+        entries: [
+          LabptyOutputWakeParkEntry(
+            ptyHandle: descriptor.ptyHandle,
+            observedOutputOffset: reader.readSince(0).newOffset)
+        ]
+      ).parked)
+
+    client.close()
+    try waitForConnectedCount(client, handle: descriptor.ptyHandle, expected: 0)
+
+    XCTAssertTrue(
+      try client.parkOutputWake(
+        entries: [
+          LabptyOutputWakeParkEntry(ptyHandle: descriptor.ptyHandle, observedOutputOffset: 0)
+        ]
+      ).parked)
+    XCTAssertEqual(
+      try connectedCount(client, handle: descriptor.ptyHandle), 1,
+      "a successful park after reconnect must reclaim the session attachment that drives wakes")
+
+    try client.writeInput(handle: descriptor.ptyHandle, bytes: Array("after-reconnect-wake\n".utf8))
+    XCTAssertEqual(try readExactRaw(fd: wakeFD, count: 1).count, 1)
+    let output = try waitForOutput(reader: reader, contains: "after-reconnect-wake")
+    XCTAssertTrue(output.contains("after-reconnect-wake"))
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
   func testWakeOperationsRequireAdvertisedCapability() throws {
     let harness = try launchHarness()
     try waitForSocketFile(socketPath: harness.socketPath)

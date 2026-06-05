@@ -320,6 +320,7 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   /// duplicate a session, re-inject input, or double-deliver a signal.
   private static let reconnectRetryableOperations: Set<LabptyOperation> = [
     .hello, .listSessions, .ping, .attachSession, .detachSession, .resizeSession,
+    .parkOutputWake,
   ]
   /// Total control-RPC attempts before surfacing the drop. The 20/40/80/160/320
   /// ms backoff between tries spans several daemon idle-deadline windows so a

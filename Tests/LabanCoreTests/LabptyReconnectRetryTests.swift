@@ -93,13 +93,19 @@ final class LabptyReconnectRetryTests: XCTestCase {
       return try? LabptyFraming.decode(full)
     }
 
-    /// Answer a HELLO with a valid, capability-complete response echoing `seq`.
-    static func sendHelloOK(_ fd: Int32, sequence: UInt64) {
-      guard let payload = try? LabptyHelloResponse().encode(),
+    /// Answer a request with a valid OK response echoing `seq`.
+    static func sendOK(_ fd: Int32, sequence: UInt64, payload: Data = Data()) {
+      guard
         let frame = try? LabptyFraming.encodeResponse(
           sequence: sequence, code: .ok, payload: payload)
       else { return }
       _ = writeAll(fd, frame)
+    }
+
+    /// Answer a HELLO with a valid, capability-complete response echoing `seq`.
+    static func sendHelloOK(_ fd: Int32, sequence: UInt64) {
+      guard let payload = try? LabptyHelloResponse().encode() else { return }
+      sendOK(fd, sequence: sequence, payload: payload)
     }
 
     private static func readExact(_ fd: Int32, _ count: Int) -> Data? {
@@ -184,6 +190,34 @@ final class LabptyReconnectRetryTests: XCTestCase {
     XCTAssertEqual(
       server.acceptCount, 2,
       "hello must recover on the clean response after exactly one reconnect")
+  }
+
+  func testParkOutputWakeReconnectsAndRetriesOnForceClose() throws {
+    let parks = AtomicInt()
+    let server = try FakeLabptyServer { _, fd in
+      while let req = FakeLabptyServer.readRequestFrame(fd) {
+        switch req.header.operation {
+        case .hello:
+          FakeLabptyServer.sendHelloOK(fd, sequence: req.header.sequence)
+        case .parkOutputWake:
+          parks.increment()
+          if parks.value == 1 { return }  // force-close mid-response
+          let payload = LabptyOutputWakeParkResponse(parked: true).encode()
+          FakeLabptyServer.sendOK(fd, sequence: req.header.sequence, payload: payload)
+        default:
+          return
+        }
+      }
+    }
+    defer { server.stop() }
+    let client = try LabptyTerminalSessionClient(
+      socketPath: server.path, rpcTimeoutMilliseconds: 500)
+    defer { client.close() }
+
+    let response = try client.parkOutputWake(entries: [])
+    XCTAssertTrue(response.parked)
+    XCTAssertEqual(parks.value, 2, "parkOutputWake is idempotent and must replay after a drop")
+    XCTAssertGreaterThan(server.acceptCount, 1)
   }
 
   func testOpenSessionDoesNotReplayOnForceClose() throws {
