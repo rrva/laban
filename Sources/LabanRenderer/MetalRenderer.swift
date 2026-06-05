@@ -3074,12 +3074,18 @@ extension Array where Element == GPUCellGlyphRecord {
   }
 }
 
+// Precomputed byte -> unit-float table. Bit-identical to `Float(byte) / 255.0`
+// (the table is filled by that exact expression), so colours are unchanged; it
+// just trades four divisions per cell for four loads on the per-glyph hot path.
+private let rgbaUnitFloatTable: [Float] = (0...255).map { Float($0) / 255.0 }
+
+@inline(__always)
 private func rgbaToFloat4(_ rgba: UInt32) -> SIMD4<Float> {
-  let r = Float((rgba >> 24) & 0xFF) / 255.0
-  let g = Float((rgba >> 16) & 0xFF) / 255.0
-  let b = Float((rgba >> 8) & 0xFF) / 255.0
-  let a = Float(rgba & 0xFF) / 255.0
-  return SIMD4<Float>(r, g, b, a)
+  SIMD4<Float>(
+    rgbaUnitFloatTable[Int((rgba >> 24) & 0xFF)],
+    rgbaUnitFloatTable[Int((rgba >> 16) & 0xFF)],
+    rgbaUnitFloatTable[Int((rgba >> 8) & 0xFF)],
+    rgbaUnitFloatTable[Int(rgba & 0xFF)])
 }
 
 @inline(__always)
