@@ -386,6 +386,22 @@ public final class MetalRenderer: RendererBackend {
   private var cellGlyphUploadRanges: [Range<Int>] = []
   private var cellGlyphGridGeometry: TerminalGridGeometry?
   private var payloadRowsWithFullBackgroundRun: [Bool] = []
+  // Per-build direct-mapped cache in front of the glyph atlas's dictionary.
+  // A full-frame rebuild looks up every cell, but a terminal row draws from a
+  // tiny alphabet (spaces and a few dozen glyphs dominate), so the same
+  // (scalar, attributes) pair recurs hundreds of times per frame. A stamp
+  // equal to `scalarEntryCacheGeneration` marks a slot live for the current
+  // build; bumping the generation each build invalidates the whole table in
+  // O(1) without clearing, and a cached Entry is only reused within one build
+  // (the atlas only appends within a build, never moves existing glyphs).
+  private static let scalarEntryCacheSize = 1024
+  private var scalarEntryCacheKeys = [UInt64](
+    repeating: 0, count: MetalRenderer.scalarEntryCacheSize)
+  private var scalarEntryCacheEntries = [MetalGlyphAtlas.Entry?](
+    repeating: nil, count: MetalRenderer.scalarEntryCacheSize)
+  private var scalarEntryCacheStamp = [UInt32](
+    repeating: 0, count: MetalRenderer.scalarEntryCacheSize)
+  private var scalarEntryCacheGeneration: UInt32 = 0
   /// Glyphs that draw against the sidebar atlas. Kept separate so we can
   /// issue one draw call per atlas — the sidebar's R8 texture holds glyphs
   /// rasterized at a smaller pt size and isn't substitutable for the main.
@@ -2113,6 +2129,8 @@ public final class MetalRenderer: RendererBackend {
         maxLogicalWidth: maxLogicalWidth.map(Double.init))
     }
 
+    let invAtlasSize = 1.0 / Float(glyphAtlas.textureSize)
+    scalarEntryCacheGeneration &+= 1
     for glyph in payload.glyphs {
       guard glyph.row >= 0, glyph.row < payload.rows else {
         recordPayloadFailure("rowOutOfBounds", glyph: glyph)
@@ -2145,11 +2163,11 @@ public final class MetalRenderer: RendererBackend {
       let fontInfo = terminalFontInfo(for: glyph.attributes)
       let entry: MetalGlyphAtlas.Entry?
       if let scalarValue = glyph.scalarValue, let scalar = Unicode.Scalar(scalarValue) {
-        entry = glyphAtlas.entry(
+        entry = cachedScalarEntry(
+          scalarValue: scalarValue,
           scalar: scalar,
-          font: fontInfo.font,
-          boldFallback: fontInfo.needsBoldFallback,
-          italicFallback: fontInfo.needsItalicFallback)
+          attrsKey: UInt64(glyph.attributes.rawValue),
+          fontInfo: fontInfo)
       } else if glyph.scalarValue != nil {
         recordPayloadFailure("invalidScalar", glyph: glyph)
         return false
@@ -2205,15 +2223,15 @@ public final class MetalRenderer: RendererBackend {
         recordPayloadFailure("cellIndexOutOfBounds", glyph: glyph)
         return false
       }
-      let atlasW = Float(glyphAtlas.textureSize)
-      let atlasH = Float(glyphAtlas.textureSize)
       cellGlyphs[index] = CellGlyph(
         originPx: SIMD2<Float>(
           Float(cellX + entry.logicalOriginX) * scale,
           Float(cellY) * scale),
         sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
-        uvOrigin: SIMD2<Float>(Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
-        uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+        uvOrigin: SIMD2<Float>(
+          Float(entry.originX) * invAtlasSize, Float(entry.originY) * invAtlasSize),
+        uvSize: SIMD2<Float>(
+          Float(entry.pixelWidth) * invAtlasSize, Float(entry.pixelHeight) * invAtlasSize),
         flags: Self.gpuCellActiveFlag,
         fg: rgbaToFloat4(glyph.foreground))
       appendPayloadDecorationCell(glyph)
@@ -2321,6 +2339,36 @@ public final class MetalRenderer: RendererBackend {
       return
     }
     cellGlyphUploadRanges.append(range)
+  }
+
+  // Direct-mapped, per-build memo in front of `glyphAtlas.entry`. The key fully
+  // determines the atlas entry: the glyph scalar plus the cell attributes (the
+  // font, bold-fallback, and italic-fallback the atlas keys on are all derived
+  // from the attributes via `terminalFontInfo`). A hit skips the atlas
+  // dictionary's hashing entirely.
+  @inline(__always)
+  private func cachedScalarEntry(
+    scalarValue: UInt32,
+    scalar: Unicode.Scalar,
+    attrsKey: UInt64,
+    fontInfo: (font: CTFont, needsBoldFallback: Bool, needsItalicFallback: Bool)
+  ) -> MetalGlyphAtlas.Entry? {
+    let key = (UInt64(scalarValue) << 32) | (attrsKey & 0xFFFF_FFFF)
+    let slot = Int((key &* 0x9E37_79B9_7F4A_7C15) >> 54) & (Self.scalarEntryCacheSize - 1)
+    if scalarEntryCacheStamp[slot] == scalarEntryCacheGeneration,
+      scalarEntryCacheKeys[slot] == key
+    {
+      return scalarEntryCacheEntries[slot]
+    }
+    let entry = glyphAtlas.entry(
+      scalar: scalar,
+      font: fontInfo.font,
+      boldFallback: fontInfo.needsBoldFallback,
+      italicFallback: fontInfo.needsItalicFallback)
+    scalarEntryCacheKeys[slot] = key
+    scalarEntryCacheEntries[slot] = entry
+    scalarEntryCacheStamp[slot] = scalarEntryCacheGeneration
+    return entry
   }
 
   private func buildGPUCellInstanceLists(
