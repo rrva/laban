@@ -645,6 +645,9 @@ final class MetalFrameTimingBench: XCTestCase {
     var counts: MetalRenderer.RenderInstanceCounts
     var processCPUMsPerFrame: Double
     var droppedFrames: Int
+    var energyMicrojoulesPerFrame: Double
+    var wakeupsPerFrame: Double
+    var gpuTimeMicrosPerFrame: Double
   }
 
   private struct InstanceBuildBenchResult {
@@ -756,7 +759,7 @@ final class MetalFrameTimingBench: XCTestCase {
 
     print("\n=== M6 head-to-head renderer comparison (160x48, release) ===")
     print(
-      "  workload             path       cpu p50/p95/p99 ms   processCPU/frame ms   gpu p50/p99 ms   dropped energy/wakeups"
+      "  workload             path       cpu p50/p95/p99 ms   procCPU/fr ms  gpu p50/p99 ms  drop   uJ/frame  wk/frame  gpuUs/fr"
     )
     defer {
       MetalRenderer.useGPUCellPath = false
@@ -788,7 +791,10 @@ final class MetalFrameTimingBench: XCTestCase {
       printM6HeadToHeadRow(label: workload.label, path: "classic", result: classic)
       printM6HeadToHeadRow(label: workload.label, path: "gpuCell", result: gpu)
     }
-    print("  energy/wakeups: unavailable in XCTest; default decision treats this as no proven win")
+    print(
+      "  uJ/frame = task_info(TASK_POWER_INFO_V2) task_energy delta / accepted frame"
+        + " (relative proxy, same-HW A/B only); wk/frame = (interrupt+idle) wakeups / frame;"
+        + " gpuUs/fr = task_gpu_utilisation / frame")
   }
 
   private func measureM6HeadToHead(
@@ -867,6 +873,7 @@ final class MetalFrameTimingBench: XCTestCase {
     renderer.resetFrameTimings()
 
     let cpuStart = processCPUSeconds()
+    let energyStart = processEnergySample()
     var accepted = 0
     var attempts = 0
     var seed = 8
@@ -899,13 +906,23 @@ final class MetalFrameTimingBench: XCTestCase {
       seed += 1
     }
     let cpuEnd = processCPUSeconds()
+    let energyEnd = processEnergySample()
     XCTAssertEqual(accepted, 40, "benchmark could not get enough accepted frames")
     renderer.waitForLastFrame()
+    let perFrame = Double(max(1, accepted))
+    let energyDeltaNanojoules = energyEnd.energyNanojoules &- energyStart.energyNanojoules
+    let wakeupsDelta =
+      (energyEnd.interruptWakeups &- energyStart.interruptWakeups)
+      + (energyEnd.idleWakeups &- energyStart.idleWakeups)
+    let gpuTimeDeltaNanos = energyEnd.gpuTimeNanos &- energyStart.gpuTimeNanos
     return M6HeadToHeadResult(
       timings: renderer.recentFrameTimings(),
       counts: renderer.lastInstanceCounts,
-      processCPUMsPerFrame: ((cpuEnd - cpuStart) * 1_000.0) / Double(max(1, accepted)),
-      droppedFrames: attempts - accepted)
+      processCPUMsPerFrame: ((cpuEnd - cpuStart) * 1_000.0) / perFrame,
+      droppedFrames: attempts - accepted,
+      energyMicrojoulesPerFrame: Double(energyDeltaNanojoules) / 1_000.0 / perFrame,
+      wakeupsPerFrame: Double(wakeupsDelta) / perFrame,
+      gpuTimeMicrosPerFrame: Double(gpuTimeDeltaNanos) / 1_000.0 / perFrame)
   }
 
   private func renderAccepted(
@@ -938,7 +955,8 @@ final class MetalFrameTimingBench: XCTestCase {
     let t = result.timings
     print(
       String(
-        format: "  %-20@ %-8@ %.3f/%.3f/%.3f        %.3f              %.3f/%.3f       %3d     n/a",
+        format: "  %-20@ %-8@ %.3f/%.3f/%.3f        %.3f          %.3f/%.3f   %3d"
+          + "   %9.1f %7.2f %8.1f",
         label as NSString,
         path as NSString,
         t.cpuP50Ms,
@@ -947,7 +965,10 @@ final class MetalFrameTimingBench: XCTestCase {
         result.processCPUMsPerFrame,
         t.gpuP50Ms,
         t.gpuP99Ms,
-        result.droppedFrames))
+        result.droppedFrames,
+        result.energyMicrojoulesPerFrame,
+        result.wakeupsPerFrame,
+        result.gpuTimeMicrosPerFrame))
   }
 
   private func measureClassicDamage(
@@ -1302,6 +1323,38 @@ final class MetalFrameTimingBench: XCTestCase {
     var usage = rusage()
     guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
     return timevalSeconds(usage.ru_utime) + timevalSeconds(usage.ru_stime)
+  }
+
+  private struct EnergySample {
+    var energyNanojoules: UInt64
+    var interruptWakeups: UInt64
+    var idleWakeups: UInt64
+    var gpuTimeNanos: UInt64
+  }
+
+  // Per-process energy via task_info(TASK_POWER_INFO_V2). Apple Silicon only,
+  // no root or entitlement. task_energy is an uncalibrated CLPC model value
+  // (Apple DTS: only safe to compare runs on the same hardware), which is
+  // exactly the classic-vs-gpuCell A/B here — so it is used as a relative
+  // energy proxy, not absolute joules.
+  private func processEnergySample() -> EnergySample {
+    var info = task_power_info_v2()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_power_info_v2>.size / MemoryLayout<natural_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) { ptr in
+      ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+        task_info(mach_task_self_, task_flavor_t(TASK_POWER_INFO_V2), intPtr, &count)
+      }
+    }
+    guard kr == KERN_SUCCESS else {
+      return EnergySample(
+        energyNanojoules: 0, interruptWakeups: 0, idleWakeups: 0, gpuTimeNanos: 0)
+    }
+    return EnergySample(
+      energyNanojoules: info.task_energy,
+      interruptWakeups: info.cpu_energy.task_interrupt_wakeups,
+      idleWakeups: info.cpu_energy.task_platform_idle_wakeups,
+      gpuTimeNanos: info.gpu_energy.task_gpu_utilisation)
   }
 
   private func timevalSeconds(_ value: timeval) -> Double {
