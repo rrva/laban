@@ -50,13 +50,25 @@ final class RenderJournalTests: XCTestCase {
         environment: [RenderJournal.gpuFreezeAutoDumpEnvironmentKey: "0"]))
   }
 
+  func testEnablementAdviceNamesCurrentDefaultsDomainAndEnvironmentOverride() {
+    let advice = RenderJournal.enablementAdvice(bundleIdentifier: "com.example.Laban")
+
+    XCTAssertTrue(
+      advice.contains(
+        "defaults write com.example.Laban \(RenderJournal.enabledDefaultKey) -bool YES"))
+    XCTAssertTrue(advice.contains(RenderJournal.enabledEnvironmentKey))
+    XCTAssertTrue(advice.contains("relaunch Laban"))
+    XCTAssertTrue(advice.contains("different bundle domain"))
+  }
+
   func testRingKeepsNewestEntriesAndDumpsArtifacts() throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-render-journal-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
     let fixedDate = Date(timeIntervalSince1970: 1_800_000_000)
-    let journal = RenderJournal(capacity: 2, dumpRoot: root, clock: { fixedDate })
+    let journal = RenderJournal(
+      capacity: 2, dumpRoot: root, clock: { fixedDate }, processID: 42_424)
     journal.record(journal.makeEntry(event: .rendered, frame: 1, tabId: "tab", sessionId: "s"))
     journal.record(journal.makeEntry(event: .rendered, frame: 2, tabId: "tab", sessionId: "s"))
     journal.record(journal.makeEntry(event: .renderFailed, frame: 3, tabId: "tab", sessionId: "s"))
@@ -64,6 +76,7 @@ final class RenderJournalTests: XCTestCase {
     let entries = journal.snapshot()
     XCTAssertEqual(entries.map(\.frame), [2, 3])
     XCTAssertEqual(entries.last?.event, .renderFailed)
+    XCTAssertEqual(entries.map(\.processID), [42_424, 42_424])
 
     let url = try journal.dump(currentPNG: Data([0x89, 0x50, 0x4E, 0x47]))
     XCTAssertTrue(
@@ -76,12 +89,14 @@ final class RenderJournalTests: XCTestCase {
     let summaryData = try Data(contentsOf: url.appendingPathComponent("summary.json"))
     let summary = try JSONDecoder.iso8601.decode(RenderJournal.DumpSummary.self, from: summaryData)
     XCTAssertEqual(summary.entryCount, 2)
+    XCTAssertEqual(summary.processID, 42_424)
     XCTAssertEqual(summary.firstFrame, 2)
     XCTAssertEqual(summary.lastFrame, 3)
     XCTAssertEqual(summary.pngFilename, "current-frame.png")
 
     let jsonl = try String(contentsOf: url.appendingPathComponent("entries.jsonl"), encoding: .utf8)
     XCTAssertEqual(jsonl.split(separator: "\n").count, 2)
+    XCTAssertTrue(jsonl.contains(#""processID":42424"#))
   }
 
   func testCommandCountsClassifyFrameCommands() {

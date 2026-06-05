@@ -20,6 +20,7 @@ final class RenderJournal {
     var timestamp: Date
     var event: Event
     var frame: Int
+    var processID: Int?
     var tabId: String?
     var sessionId: String?
     var reason: String?
@@ -168,6 +169,7 @@ final class RenderJournal {
   struct DumpSummary: Codable, Equatable, Sendable {
     var generatedAt: Date
     var entryCount: Int
+    var processID: Int?
     var firstFrame: Int?
     var lastFrame: Int?
     var pngFilename: String?
@@ -176,6 +178,7 @@ final class RenderJournal {
   private let capacity: Int
   private let dumpRoot: URL
   private let clock: () -> Date
+  private let processID: Int
   private var entries: [Entry?]
   private var nextIndex = 0
   private var count = 0
@@ -183,11 +186,13 @@ final class RenderJournal {
   init(
     capacity: Int = 720,
     dumpRoot: URL = RenderJournal.defaultDumpRoot(),
-    clock: @escaping () -> Date = Date.init
+    clock: @escaping () -> Date = Date.init,
+    processID: Int = Int(ProcessInfo.processInfo.processIdentifier)
   ) {
     self.capacity = max(1, capacity)
     self.dumpRoot = dumpRoot
     self.clock = clock
+    self.processID = processID
     self.entries = Array(repeating: nil, count: max(1, capacity))
   }
 
@@ -209,6 +214,21 @@ final class RenderJournal {
       return isTruthy(value)
     }
     return defaults.bool(forKey: gpuFreezeAutoDumpDefaultKey)
+  }
+
+  static func enablementAdvice(
+    bundleIdentifier: String? = Bundle.main.bundleIdentifier
+  ) -> String {
+    let defaultsDomain = bundleIdentifier ?? "com.laban.LabanApp"
+    return """
+      Render journaling is disabled, so the in-memory ring was not recording frames.
+
+      Enable it for the current app defaults domain, relaunch Laban, reproduce the issue, then dump again:
+
+      defaults write \(defaultsDomain) \(enabledDefaultKey) -bool YES
+
+      For one launch from a shell, set \(enabledEnvironmentKey)=1 before starting LabanApp. Defaults written under a different bundle domain are ignored.
+      """
   }
 
   private static func isTruthy(_ value: String) -> Bool {
@@ -247,6 +267,7 @@ final class RenderJournal {
       timestamp: clock(),
       event: event,
       frame: frame,
+      processID: processID,
       tabId: tabId,
       sessionId: sessionId,
       reason: reason,
@@ -304,6 +325,7 @@ final class RenderJournal {
     let summary = DumpSummary(
       generatedAt: clock(),
       entryCount: entries.count,
+      processID: processID,
       firstFrame: entries.first?.frame,
       lastFrame: entries.last?.frame,
       pngFilename: pngFilename)
@@ -331,7 +353,7 @@ final class RenderJournal {
     record(dumpEntry)
     EventLog.shared.log(
       "render.journal.dump",
-      ["path": directory.path, "entries": entries.count])
+      ["path": directory.path, "entries": entries.count, "processID": processID])
     return directory
   }
 

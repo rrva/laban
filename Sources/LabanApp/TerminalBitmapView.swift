@@ -4911,13 +4911,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   @objc func dumpRenderJournal(_ sender: Any?) {
     guard renderJournalEnabled else {
+      let advice = RenderJournal.enablementAdvice()
       AppLog.render.info("render journal dump skipped because journal is disabled")
       EventLog.shared.log(
         "render.journal.dump.disabled",
         [
           "enableDefault": RenderJournal.enabledDefaultKey,
           "enableEnvironment": RenderJournal.enabledEnvironmentKey,
+          "advice": advice,
         ])
+      showRenderJournalDisabledAlert(advice: advice)
       return
     }
     do {
@@ -4927,6 +4930,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       AppLog.render.error("render journal dump failed: \(error)")
       EventLog.shared.log("render.journal.dump.failed", ["error": String(describing: error)])
     }
+  }
+
+  private func showRenderJournalDisabledAlert(advice: String) {
+    let alert = NSAlert()
+    alert.messageText = "Render Journal Is Disabled"
+    alert.informativeText = advice
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
   }
 
   /// Toggle a full capture artifact. The directory path is printed to stderr so
