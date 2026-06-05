@@ -1,12 +1,13 @@
 /// Idle policy for the terminal's per-frame display link.
 ///
-/// The display link only needs to tick to drive *on-screen animation* — cursor
-/// blink, smooth scroll, and the attention pulse — all of which run only while
-/// the window is visible to the user (key window, not occluded). Terminal
-/// *output* does not need the link: it is pushed straight to a frame via the
-/// reader-thread `onSessionDirty` callback. So a backgrounded or fully occluded
-/// window can park the link entirely and the push path still paints any
-/// background output, taking idle CPU/refresh wake-ups toward zero.
+/// The display link needs to tick to drive on-screen animation — cursor blink,
+/// smooth scroll, attention pulse, and recently-dirty visible terminal output.
+/// Output is still pushed straight to a frame via the reader-thread
+/// `onSessionDirty` callback, but keeping the visible link at the active rate
+/// prevents continuous terminal output from falling back to the idle cadence.
+/// A backgrounded or fully occluded window can park the link entirely and the
+/// push path still paints any background output, taking idle CPU/refresh wake-ups
+/// toward zero.
 ///
 /// Pure and AppKit-free so the "should the link be running?" decision is
 /// unit-tested without a window or display.
@@ -31,7 +32,8 @@ public enum TerminalIdlePolicy {
   public static func preferredDisplayLinkFramesPerSecond(
     windowVisibleToUser: Bool,
     scrollAnimating: Bool,
-    attentionAnimating: Bool
+    attentionAnimating: Bool,
+    terminalOutputActive: Bool
   ) -> Int {
     guard
       displayLinkShouldRun(
@@ -40,7 +42,7 @@ public enum TerminalIdlePolicy {
     else {
       return idleDisplayLinkFramesPerSecond
     }
-    return (scrollAnimating || attentionAnimating)
+    return (scrollAnimating || attentionAnimating || terminalOutputActive)
       ? activeDisplayLinkFramesPerSecond
       : idleDisplayLinkFramesPerSecond
   }

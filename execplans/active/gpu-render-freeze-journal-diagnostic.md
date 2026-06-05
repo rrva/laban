@@ -257,3 +257,24 @@ failure reasons. Two diagnostic commits added en route and kept as observability
 (`modelChanged`/`metadataSignature` journal fields). Both the scroll-to-bottom and
 title-spinner hypotheses they chased were disproven by the instrumentation before
 the drawable-starvation root cause was found.
+
+## Follow-up (2026-06-05)
+
+Runtime inspection of the latest render journals showed the remaining
+self-sustaining loop after the scheduler and immediate-retry fixes:
+
+- latest manual dump `~/Library/Logs/Laban/render-journal/2026-06-04T200200585Z`
+  had 34 idle `drawableUnavailable` misses where `terminalDirty`,
+  `activeTerminalDirty`, tab change, cursor blink, attention animation, scroll,
+  and resize were all false while only `renderInvalidated` stayed true;
+- latest auto-freeze dump
+  `~/Library/Logs/Laban/render-journal/2026-06-04T194439344Z` had 68 matching
+  idle drawable misses, 45 with `gpuCellCommandFallbackPending` set only after a
+  drawable miss, and a `freezeDetected` entry at `noProgressStreak: 12`.
+
+Fix: track whether `renderInvalidated` is only being carried forward from a
+GPU-backpressure miss. The first backpressure miss keeps the frame invalidated
+for a display-link-paced retry; a repeated miss with no independent visual work
+clears `renderInvalidated` and parks the loop. Drawable starvation no longer
+sets `gpuCellCommandFallbackPending`; that fallback is reserved for
+`.fullRedrawProducedNoContent` when a GPU-cell payload was present.

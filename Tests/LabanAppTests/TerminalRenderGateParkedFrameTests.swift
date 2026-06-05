@@ -9,6 +9,40 @@ import XCTest
 /// bounded render-journal ring being flooded by idle ticks.
 final class TerminalRenderGateParkedFrameTests: XCTestCase {
 
+  func testBackpressureInvalidationDoesNotParkFirstMiss() {
+    let decision = backpressureInvalidationDecision(
+      renderInvalidated: true,
+      renderInvalidatedFromGPUBackpressureOnly: false)
+    XCTAssertFalse(decision.shouldPark)
+  }
+
+  func testBackpressureInvalidationParksRepeatedIdleMiss() {
+    let decision = backpressureInvalidationDecision(
+      renderInvalidated: true,
+      renderInvalidatedFromGPUBackpressureOnly: true)
+    XCTAssertTrue(decision.shouldPark)
+  }
+
+  func testBackpressureInvalidationStaysActiveForIndependentWork() {
+    let independentWorkCases: [(String, TerminalRenderGate.BackpressureInvalidationDecision)] = [
+      ("terminalDirty", backpressureInvalidationDecision(terminalDirty: true)),
+      ("activeTerminalDirty", backpressureInvalidationDecision(activeTerminalDirty: true)),
+      ("tabChanged", backpressureInvalidationDecision(tabChanged: true)),
+      ("cursorBlinkFrame", backpressureInvalidationDecision(cursorBlinkFrame: true)),
+      ("attentionAnimating", backpressureInvalidationDecision(attentionAnimating: true)),
+      ("scrollAnimating", backpressureInvalidationDecision(scrollAnimating: true)),
+      ("renderingResizeFrame", backpressureInvalidationDecision(renderingResizeFrame: true)),
+      (
+        "gpuCellCommandFallbackPending",
+        backpressureInvalidationDecision(gpuCellCommandFallbackPending: true)
+      ),
+    ]
+
+    for (name, decision) in independentWorkCases {
+      XCTAssertFalse(decision.shouldPark, name)
+    }
+  }
+
   func testLiveBottomNeverRecordsAndResetsSignature() {
     let decision = TerminalRenderGate.parkedFrameDecision(
       appliedScrollRows: 0,
@@ -62,4 +96,29 @@ final class TerminalRenderGateParkedFrameTests: XCTestCase {
     XCTAssertFalse(atBottom.shouldRecord)
     XCTAssertTrue(again.shouldRecord)
   }
+}
+
+private func backpressureInvalidationDecision(
+  renderInvalidated: Bool = true,
+  renderInvalidatedFromGPUBackpressureOnly: Bool = true,
+  terminalDirty: Bool = false,
+  activeTerminalDirty: Bool = false,
+  tabChanged: Bool = false,
+  cursorBlinkFrame: Bool = false,
+  attentionAnimating: Bool = false,
+  scrollAnimating: Bool = false,
+  renderingResizeFrame: Bool = false,
+  gpuCellCommandFallbackPending: Bool = false
+) -> TerminalRenderGate.BackpressureInvalidationDecision {
+  TerminalRenderGate.backpressureInvalidationDecision(
+    renderInvalidated: renderInvalidated,
+    renderInvalidatedFromGPUBackpressureOnly: renderInvalidatedFromGPUBackpressureOnly,
+    terminalDirty: terminalDirty,
+    activeTerminalDirty: activeTerminalDirty,
+    tabChanged: tabChanged,
+    cursorBlinkFrame: cursorBlinkFrame,
+    attentionAnimating: attentionAnimating,
+    scrollAnimating: scrollAnimating,
+    renderingResizeFrame: renderingResizeFrame,
+    gpuCellCommandFallbackPending: gpuCellCommandFallbackPending)
 }

@@ -126,7 +126,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private static let findTypingSearchDelay: TimeInterval = 0.25
 
   // Damage-driven render budget state
-  private var renderInvalidated = true
+  private var renderInvalidated = true {
+    didSet {
+      if !renderInvalidated || !settingRenderInvalidatedFromGPUBackpressure {
+        renderInvalidatedFromGPUBackpressureOnly = false
+      }
+    }
+  }
+  private var renderInvalidatedFromGPUBackpressureOnly = false
+  private var settingRenderInvalidatedFromGPUBackpressure = false
   private let gpuFreezeAutoDumpEnabled: Bool
   private let renderJournalEnabled: Bool
   private lazy var renderJournal = RenderJournal()
@@ -144,6 +152,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// accessibility notifications. Freezes the sidebar needsAction pulse so a
   /// motion-sensitive user gets a steady marker instead of a breathing one.
   private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+  private var terminalOutputActiveUntil = Date.distantPast
   private var lastRenderedActiveTabId: Tab.ID?
   private var remoteSnapshotRenderTracker = RemoteSnapshotRenderTracker()
   private var remoteMouseEncodingByTab: [Tab.ID: (trackingMode: Int, format: Int)] = [:]
@@ -172,6 +181,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   // back to *read* the content as it passes; less time at peak velocity =
   // less unreadable middle of the animation.
   private static let scrollOmega: Double = 50.0  // rad/s
+  private static let terminalOutputDisplayLinkHoldSeconds: TimeInterval = 0.150
   // Wheel deltas at or below this magnitude snap directly when nothing's
   // already animating. Single click-and-read scrollback navigation feels
   // crisp; only fast continuous spins go through the controller.
@@ -938,13 +948,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let visible =
       (window?.isKeyWindow == true)
       && (window?.occlusionState.contains(.visible) ?? false)
+    let now = Date()
+    let terminalOutputActive = visible && terminalOutputActiveUntil > now
     let attentionAnimating =
       visible && !reduceMotion
       && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: model.activeTab?.id)
     let preferred = TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
       windowVisibleToUser: visible,
       scrollAnimating: scrollAnimating,
-      attentionAnimating: attentionAnimating)
+      attentionAnimating: attentionAnimating,
+      terminalOutputActive: terminalOutputActive)
     link.preferredFrameRateRange = CAFrameRateRange(
       minimum: Float(TerminalIdlePolicy.idleDisplayLinkFramesPerSecond),
       maximum: Float(TerminalIdlePolicy.activeDisplayLinkFramesPerSecond),
@@ -1009,6 +1022,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func invalidateFrame() {
     renderInvalidated = true
+  }
+
+  private func carryRenderInvalidationForGPUBackpressure() {
+    settingRenderInvalidatedFromGPUBackpressure = true
+    defer { settingRenderInvalidatedFromGPUBackpressure = false }
+    renderInvalidated = true
+    renderInvalidatedFromGPUBackpressureOnly = true
   }
 
   static func terminalGridOriginY(
@@ -1223,6 +1243,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let terminalDirty = activeTerminalDirty || (!usingRemoteSessions && session.renderDirty())
 
     let gateNow = Date()
+    if terminalDirty {
+      terminalOutputActiveUntil = gateNow.addingTimeInterval(
+        Self.terminalOutputDisplayLinkHoldSeconds)
+    }
     // On the daemon (laband) tier the local Session is fixture-mode and never
     // sees the program's BSU/ESU, so synchronized-output state must come from the
     // published snapshot's flag — otherwise the gate is inert and clients show
@@ -1502,20 +1526,34 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       if let payloadFailure = (backend as? MetalRenderer)?.lastGPUCellPayloadBuildFailure {
         autoDumpGPUCellPayloadFailure(payloadFailure)
       }
-      renderInvalidated = true
-      if surfaceFrame.cellPayload != nil {
-        gpuCellCommandFallbackPending = true
-      }
-      // On GPU/compositor backpressure (`drawableUnavailable` /
-      // `previousFrameInFlight`) an immediate main-queue retry just spins
-      // against the stall — every fast-failed attempt reschedules another,
-      // turning one ~16ms drawable-drain wait into a burst of failed frames.
-      // The display link is already ticking on a visible window; leave the
-      // frame invalidated and let the next tick repaint at the display's
-      // cadence. Other reasons are transient resource hiccups that a prompt
-      // retry resolves (size-mismatch repaint, GPU-cell command fallback).
       let failureReason = (backend as? MetalRenderer)?.lastRenderFailureReason
-      if failureReason?.isGPUBackpressure != true {
+      // GPU/compositor backpressure gets one display-link-paced retry. If that
+      // retry finds no work except the carried invalidation, park instead of
+      // sustaining a no-progress render loop.
+      if failureReason?.isGPUBackpressure == true {
+        let decision = TerminalRenderGate.backpressureInvalidationDecision(
+          renderInvalidated: renderInvalidated,
+          renderInvalidatedFromGPUBackpressureOnly: renderInvalidatedFromGPUBackpressureOnly,
+          terminalDirty: terminalDirty,
+          activeTerminalDirty: activeTerminalDirty,
+          tabChanged: tabChanged,
+          cursorBlinkFrame: cursorBlinkFrame,
+          attentionAnimating: attentionAnimating,
+          scrollAnimating: scrollAnimating,
+          renderingResizeFrame: renderingResizeFrame,
+          gpuCellCommandFallbackPending: gpuCellCommandFallbackPending)
+        if decision.shouldPark {
+          renderInvalidated = false
+        } else {
+          carryRenderInvalidationForGPUBackpressure()
+        }
+      } else {
+        renderInvalidated = true
+        if surfaceFrame.cellPayload != nil,
+          failureReason == .fullRedrawProducedNoContent
+        {
+          gpuCellCommandFallbackPending = true
+        }
         scheduleRenderRetry()
       }
       return

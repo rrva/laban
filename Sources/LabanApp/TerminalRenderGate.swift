@@ -24,6 +24,10 @@ enum TerminalRenderGate {
     var wakeAfter: TimeInterval?
   }
 
+  struct BackpressureInvalidationDecision: Equatable {
+    var shouldPark: Bool
+  }
+
   static let synchronizedOutputMaxHoldSeconds: TimeInterval = 1.0
   static let outputSettleQuietSeconds: TimeInterval = 0.012
   static let remoteSnapshotOutputSettleQuietSeconds: TimeInterval = 0.008
@@ -96,6 +100,26 @@ enum TerminalRenderGate {
     let wakeAfter = max(0.001, min(remainingQuiet, remainingHold))
     return OutputSettleDecision(
       shouldDefer: true, hold: currentHold, wakeAfter: wakeAfter)
+  }
+
+  static func backpressureInvalidationDecision(
+    renderInvalidated: Bool,
+    renderInvalidatedFromGPUBackpressureOnly: Bool,
+    terminalDirty: Bool,
+    activeTerminalDirty: Bool,
+    tabChanged: Bool,
+    cursorBlinkFrame: Bool,
+    attentionAnimating: Bool,
+    scrollAnimating: Bool,
+    renderingResizeFrame: Bool,
+    gpuCellCommandFallbackPending: Bool
+  ) -> BackpressureInvalidationDecision {
+    let independentWork =
+      terminalDirty || activeTerminalDirty || tabChanged || cursorBlinkFrame || attentionAnimating
+      || scrollAnimating || renderingResizeFrame || gpuCellCommandFallbackPending
+
+    return BackpressureInvalidationDecision(
+      shouldPark: renderInvalidated && renderInvalidatedFromGPUBackpressureOnly && !independentWork)
   }
 
   struct ParkedFrameDecision: Equatable {

@@ -28,7 +28,8 @@ final class TerminalIdlePolicyTests: XCTestCase {
       TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
         windowVisibleToUser: true,
         scrollAnimating: false,
-        attentionAnimating: false),
+        attentionAnimating: false,
+        terminalOutputActive: false),
       TerminalIdlePolicy.idleDisplayLinkFramesPerSecond)
   }
 
@@ -37,7 +38,8 @@ final class TerminalIdlePolicyTests: XCTestCase {
       TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
         windowVisibleToUser: true,
         scrollAnimating: true,
-        attentionAnimating: false),
+        attentionAnimating: false,
+        terminalOutputActive: false),
       TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
   }
 
@@ -46,7 +48,28 @@ final class TerminalIdlePolicyTests: XCTestCase {
       TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
         windowVisibleToUser: true,
         scrollAnimating: false,
-        attentionAnimating: true),
+        attentionAnimating: true,
+        terminalOutputActive: false),
       TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+  }
+
+  func testVisibleTerminalOutputPrefersActiveFrameRate() {
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: true),
+      TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+  }
+
+  func testHiddenTerminalOutputKeepsIdlePreference() {
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: false,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        terminalOutputActive: true),
+      TerminalIdlePolicy.idleDisplayLinkFramesPerSecond)
   }
 }
