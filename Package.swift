@@ -6,6 +6,15 @@ let _pkgDir = URL(fileURLWithPath: #file).deletingLastPathComponent().path
 let _vtInclude = "\(_pkgDir)/.external/libghostty-vt/zig-out/include"
 let _vtLib = "\(_pkgDir)/.external/libghostty-vt/zig-out/lib"
 
+// Release builds drop Swift's *runtime* exclusivity checks. Time Profiler showed
+// AccessSet::insert + swift_beginAccess at ~5% of main-thread CPU, concentrated
+// in the renderer's closure-heavy cell build (captured-var accesses each take a
+// dynamic exclusivity check). Static (compile-time) exclusivity enforcement
+// still runs; only the dynamic belt-and-suspenders check is removed.
+let _releaseExclusivity: [SwiftSetting] = [
+  .unsafeFlags(["-enforce-exclusivity=unchecked"], .when(configuration: .release))
+]
+
 let package = Package(
   name: "Laban",
   platforms: [.macOS(.v13)],
@@ -41,11 +50,13 @@ let package = Package(
         .copy("Resources/JetBrainsMono-Regular.ttf"),
         .copy("Resources/JetBrainsMono-OFL.txt"),
         .process("Shaders.metal"),
-      ]
+      ],
+      swiftSettings: _releaseExclusivity
     ),
     .target(
       name: "LabanCore",
-      dependencies: ["LabanTerminalCore", "LabanRenderer"]
+      dependencies: ["LabanTerminalCore", "LabanRenderer"],
+      swiftSettings: _releaseExclusivity
     ),
     .target(
       name: "LabanDebug",
@@ -54,7 +65,8 @@ let package = Package(
     .executableTarget(
       name: "LabanApp",
       dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore"],
-      resources: [.copy("Resources/AppIcon.icns")]
+      resources: [.copy("Resources/AppIcon.icns")],
+      swiftSettings: _releaseExclusivity
     ),
     .executableTarget(
       name: "LabanAgent",
