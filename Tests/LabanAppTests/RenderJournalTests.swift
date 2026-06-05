@@ -190,6 +190,37 @@ final class RenderJournalTests: XCTestCase {
     XCTAssertEqual(decoded.displayLink, displayLink)
   }
 
+  func testSkippedEntryDropsCarriedDrawableAcquireDiagnostic() {
+    let journal = RenderJournal()
+    let diagnostic = MetalDrawableAcquireDiagnostic(
+      outcome: .timedOut,
+      budgetMs: 8,
+      elapsedMs: 8.5,
+      drawableRequestActiveBefore: false,
+      drawableRequestActiveAfter: true,
+      pendingDrawablePresentBefore: false,
+      pendingDrawablePresentAfter: false,
+      layerMaximumDrawableCount: 3,
+      layerAllowsNextDrawableTimeout: true)
+
+    // A skipped frame never reached `render()`, so even though the renderer
+    // still carries the last rendered frame's acquire diagnostic, the journal
+    // entry must not misattribute it to the skip.
+    let skipped = journal.makeEntry(
+      event: .skipped, frame: 9, tabId: "tab", sessionId: "s",
+      drawableAcquire: diagnostic)
+    XCTAssertNil(skipped.drawableAcquire)
+
+    // Render-bearing events did acquire (or attempt to acquire) a drawable, so
+    // they keep the diagnostic.
+    for event in [RenderJournal.Event.rendered, .renderFailed, .freezeDetected] {
+      let entry = journal.makeEntry(
+        event: event, frame: 9, tabId: "tab", sessionId: "s",
+        drawableAcquire: diagnostic)
+      XCTAssertEqual(entry.drawableAcquire, diagnostic, "\(event) must keep the diagnostic")
+    }
+  }
+
   func testFreezeDetectedEntryCarriesDetectorSnapshotThroughSerialization() throws {
     let journal = RenderJournal()
     let freeze = RenderJournal.FreezeSnapshot(

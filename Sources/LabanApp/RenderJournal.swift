@@ -357,7 +357,19 @@ final class RenderJournal {
     freeze: FreezeSnapshot? = nil,
     rendered: Bool? = nil
   ) -> Entry {
-    Entry(
+    // A drawable is only acquired on a frame that reached `render()`. The
+    // renderer resets `lastDrawableAcquireDiagnostic` at render entry and sets
+    // it after the acquire, so it survives across skipped frames describing an
+    // earlier rendered frame. A skipped/dump entry never acquired a drawable,
+    // so drop the carried diagnostic rather than misattribute it.
+    let drawableAcquireForEvent: MetalDrawableAcquireDiagnostic?
+    switch event {
+    case .rendered, .renderFailed, .freezeDetected:
+      drawableAcquireForEvent = drawableAcquire
+    case .skipped, .dump:
+      drawableAcquireForEvent = nil
+    }
+    return Entry(
       timestamp: clock(),
       event: event,
       frame: frame,
@@ -380,7 +392,7 @@ final class RenderJournal {
       payload: payload.map(Self.payloadSnapshot),
       diagnostics: diagnostics,
       metalInstances: metalInstances.map(MetalInstanceCounts.init),
-      drawableAcquire: drawableAcquire,
+      drawableAcquire: drawableAcquireForEvent,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
       freeze: freeze,
