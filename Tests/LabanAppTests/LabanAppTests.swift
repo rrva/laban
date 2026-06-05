@@ -525,6 +525,73 @@ final class LabanAppTests: XCTestCase {
       "Laban must repaint tmux bottom-row autoscroll output while the drag is still held")
   }
 
+  func testReattachedLabptySessionResetsParserStateAfterRingWrap() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-mouse-wrap")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 8
+    size.cols = 40
+    let tabId = "wrapped-mouse-tab"
+    let capacity = UInt64(LabptyByteRingLayout.minimumOutputRingCapacity)
+    let command = [
+      "/bin/sh", "-lc",
+      """
+      printf '\\033[?1000h\\033[?1002h\\033[?1006hREADY\\n'
+      jot -b X 180000
+      printf 'TAIL\\n'
+      exec cat -v
+      """,
+    ]
+
+    let seedClient = try waitForLabptyClient(socketPath: socketPath)
+    let seedDescriptor = try seedClient.openSession(
+      LabptyOpenSessionRequest(
+        rows: UInt32(size.rows),
+        cols: UInt32(size.cols),
+        outputRingCapacity: capacity,
+        argv: command,
+        cwd: FileManager.default.currentDirectoryPath,
+        logicalSessionId: tabId))
+    let reader = try LabptyByteRingReader(path: seedDescriptor.byteRingShmPath)
+    try waitForByteRingOffset(reader, atLeast: capacity + 64 * 1024)
+    XCTAssertTrue(
+      reader.readSince(0).overflowed,
+      "test setup must prove the reattach starts from a wrapped byte-ring window")
+    seedClient.close()
+
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(model: model, tab: tab, text: "TAIL")
+
+    XCTAssertEqual(
+      session.viewportState()?.mouseTracking,
+      false,
+      """
+      labpty Phase 1 reattaches by replaying the retained byte-ring tail after \
+      a parser reset; it cannot reconstruct DECSET mouse-tracking modes that \
+      were overwritten before the readable window
+      """)
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?
@@ -744,6 +811,26 @@ final class LabanAppTests: XCTestCase {
       if slice <= 0 { break }
       RunLoop.current.run(mode: .eventTracking, before: Date().addingTimeInterval(slice))
     }
+  }
+
+  private func waitForByteRingOffset(
+    _ reader: LabptyByteRingReader,
+    atLeast target: UInt64
+  ) throws {
+    let deadline = Date().addingTimeInterval(5)
+    var last: UInt64 = 0
+    while Date() < deadline {
+      last = reader.outputWriteOffset()
+      if last >= target {
+        return
+      }
+      usleep(50_000)
+    }
+    XCTFail("timed out waiting for byte ring offset >= \(target); last=\(last)")
+    throw NSError(
+      domain: "LabanAppTests.byteRing",
+      code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "byte ring offset \(last) < \(target)"])
   }
 
   private func waitUntil(_ condition: @autoclosure () -> Bool, _ message: String) throws {

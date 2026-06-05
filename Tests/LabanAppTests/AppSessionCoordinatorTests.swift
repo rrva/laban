@@ -4,6 +4,7 @@ import LabanCore
 import LabanRenderer
 import LabanTerminalCore
 import XCTest
+import os
 
 @testable import LabanApp
 
@@ -435,9 +436,17 @@ final class AppSessionCoordinatorTests: XCTestCase {
     let tab = try XCTUnwrap(model.tabs.first)
     _ = try coordinator.ensureSession(for: tab, size: size)
     let woke = expectation(description: "daemon snapshot generation advanced")
+    let wokeOnce = OSAllocatedUnfairLock(initialState: false)
     coordinator.startSnapshotGenerationMonitor { logicalSessionId, _ in
       XCTAssertEqual(logicalSessionId, tab.id)
-      woke.fulfill()
+      let shouldFulfill = wokeOnce.withLock { fulfilled -> Bool in
+        guard !fulfilled else { return false }
+        fulfilled = true
+        return true
+      }
+      if shouldFulfill {
+        woke.fulfill()
+      }
     }
 
     try coordinator.write(Array("g".utf8), to: tab, size: size)
