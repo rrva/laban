@@ -166,7 +166,9 @@ final class IdleCounters: @unchecked Sendable {
       "dirtyLabptyPolls": snapshot.dirtyLabptyPolls,
       "activeFeeds": snapshot.activeFeeds,
     ]
-    guard let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]) else {
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
+    else {
       return
     }
     var line = data
