@@ -758,7 +758,13 @@ final class MetalFrameTimingBench: XCTestCase {
         rendererFallbackReason: "remoteSnapshotPayloadIncomplete"),
     ]
 
-    print("\n=== M6 head-to-head renderer comparison (160x48, release) ===")
+    let m6Reps = max(
+      1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_REPS"].flatMap(Int.init) ?? 7)
+    let m6Frames = max(
+      1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_FRAMES"].flatMap(Int.init) ?? 80)
+    print(
+      "\n=== M6 head-to-head renderer comparison (160x48, release; "
+        + "median of \(m6Reps) windows x \(m6Frames) frames) ===")
     print(
       "  workload             path       cpu p50/p95/p99 ms   pCPU/fr  drop  taskuJ/fr wk/fr  socGPUuJ/fr socCPUuJ/fr"
     )
@@ -793,6 +799,9 @@ final class MetalFrameTimingBench: XCTestCase {
       printM6HeadToHeadRow(label: workload.label, path: "gpuCell", result: gpu)
     }
     print(
+      "  per-frame energy/CPU/wakeup columns are the MEDIAN across the repeated windows"
+        + " (env: LABAN_BENCH_M6_REPS, LABAN_BENCH_M6_FRAMES).")
+    print(
       "  taskuJ/fr = task_info(TASK_POWER_INFO_V2) task_energy delta / frame (per-process,"
         + " relative same-HW A/B); wk/fr = (interrupt+idle) wakeups / frame.")
     print(
@@ -825,112 +834,106 @@ final class MetalFrameTimingBench: XCTestCase {
     MetalRenderer.useGPUCellPath = false
 
     let initialCommands = m6Commands(
-      workload: workload,
-      cols: cols,
-      rows: rows,
-      cellW: cellW,
-      cellH: cellH,
-      seed: 0,
-      includedRows: Array(0..<rows))
+      workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
+      seed: 0, includedRows: Array(0..<rows))
     let initialPayload = m6Payload(
-      workload: workload,
-      cols: cols,
-      rows: rows,
-      cellW: cellW,
-      cellH: cellH,
-      seed: 0,
-      includedRows: Array(0..<rows))
+      workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
+      seed: 0, includedRows: Array(0..<rows))
     XCTAssertTrue(
       renderAccepted(
-        renderer,
-        commands: initialCommands,
-        payload: useGPUCell ? initialPayload : nil,
-        damage: .full,
+        renderer, commands: initialCommands,
+        payload: useGPUCell ? initialPayload : nil, damage: .full,
         rendererFallbackReason: workload.rendererFallbackReason))
     renderer.waitForLastFrame()
-    renderer.resetFrameTimings()
 
-    for seed in 1..<8 {
-      _ = renderAccepted(
+    func renderOne(_ seed: Int) -> Bool {
+      renderAccepted(
         renderer,
         commands: m6Commands(
-          workload: workload,
-          cols: cols,
-          rows: rows,
-          cellW: cellW,
-          cellH: cellH,
-          seed: seed,
-          includedRows: measuredRows(for: workload, rows: rows)),
+          workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
+          seed: seed, includedRows: measuredRows(for: workload, rows: rows)),
         payload: useGPUCell
           ? m6Payload(
-            workload: workload,
-            cols: cols,
-            rows: rows,
-            cellW: cellW,
-            cellH: cellH,
-            seed: seed,
-            includedRows: measuredRows(for: workload, rows: rows)) : nil,
+            workload: workload, cols: cols, rows: rows, cellW: cellW, cellH: cellH,
+            seed: seed, includedRows: measuredRows(for: workload, rows: rows)) : nil,
         damage: m6Damage(for: workload, rows: rows, cellH: cellH),
         rendererFallbackReason: workload.rendererFallbackReason)
     }
-    renderer.waitForLastFrame()
-    renderer.resetFrameTimings()
 
-    let cpuStart = processCPUSeconds()
-    let energyStart = processEnergySample()
-    let socStart = socEnergySampler?.sample() ?? (gpu: 0, cpu: 0)
-    var accepted = 0
-    var attempts = 0
+    // A single short window is energy-noisy: the SoC-wide IOReport baseline and
+    // scheduler jitter swamp the per-workload delta, so absolute numbers swing
+    // run to run. Repeat R windows of N accepted frames and take the median per
+    // metric. The classic-vs-gpuCell difference is the signal, and the constant
+    // background offset cancels in it. Both knobs are env-overridable so CI can
+    // trade runtime for tightness.
+    let reps = max(
+      1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_REPS"].flatMap(Int.init) ?? 7)
+    let target = max(
+      1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_FRAMES"].flatMap(Int.init) ?? 80)
+
+    // One unmeasured warm window so atlas, pipelines, and persistent target are
+    // hot before the first measured window.
+    for seed in 1..<8 { _ = renderOne(seed) }
+    renderer.waitForLastFrame()
+
+    var procCPUSamples: [Double] = []
+    var taskEnergySamples: [Double] = []
+    var wakeupSamples: [Double] = []
+    var socGPUSamples: [Double] = []
+    var socCPUSamples: [Double] = []
+    var lastTimings = renderer.recentFrameTimings()
+    var lastCounts = renderer.lastInstanceCounts
+    var droppedTotal = 0
     var seed = 8
-    while accepted < 40 && seed < 120 {
-      attempts += 1
-      if renderAccepted(
-        renderer,
-        commands: m6Commands(
-          workload: workload,
-          cols: cols,
-          rows: rows,
-          cellW: cellW,
-          cellH: cellH,
-          seed: seed,
-          includedRows: measuredRows(for: workload, rows: rows)),
-        payload: useGPUCell
-          ? m6Payload(
-            workload: workload,
-            cols: cols,
-            rows: rows,
-            cellW: cellW,
-            cellH: cellH,
-            seed: seed,
-            includedRows: measuredRows(for: workload, rows: rows)) : nil,
-        damage: m6Damage(for: workload, rows: rows, cellH: cellH),
-        rendererFallbackReason: workload.rendererFallbackReason)
-      {
-        accepted += 1
+
+    for _ in 0..<reps {
+      renderer.resetFrameTimings()
+      let cpuStart = processCPUSeconds()
+      let energyStart = processEnergySample()
+      let socStart = socEnergySampler?.sample() ?? (gpu: 0, cpu: 0)
+      var accepted = 0
+      var attempts = 0
+      while accepted < target && attempts < target * 2 {
+        attempts += 1
+        if renderOne(seed) { accepted += 1 }
+        seed += 1
       }
-      seed += 1
+      let cpuEnd = processCPUSeconds()
+      let energyEnd = processEnergySample()
+      let socEnd = socEnergySampler?.sample() ?? (gpu: 0, cpu: 0)
+      renderer.waitForLastFrame()
+
+      let perFrame = Double(max(1, accepted))
+      let taskEnergyDelta = energyEnd.energyNanojoules &- energyStart.energyNanojoules
+      let wakeupsDelta =
+        (energyEnd.interruptWakeups &- energyStart.interruptWakeups)
+        + (energyEnd.idleWakeups &- energyStart.idleWakeups)
+      procCPUSamples.append(((cpuEnd - cpuStart) * 1_000.0) / perFrame)
+      taskEnergySamples.append(Double(taskEnergyDelta) / 1_000.0 / perFrame)
+      wakeupSamples.append(Double(wakeupsDelta) / perFrame)
+      socGPUSamples.append(Double(socEnd.gpu - socStart.gpu) / 1_000.0 / perFrame)
+      socCPUSamples.append(Double(socEnd.cpu - socStart.cpu) / 1_000.0 / perFrame)
+      droppedTotal += attempts - accepted
+      lastTimings = renderer.recentFrameTimings()
+      lastCounts = renderer.lastInstanceCounts
     }
-    let cpuEnd = processCPUSeconds()
-    let energyEnd = processEnergySample()
-    let socEnd = socEnergySampler?.sample() ?? (gpu: 0, cpu: 0)
-    XCTAssertEqual(accepted, 40, "benchmark could not get enough accepted frames")
-    renderer.waitForLastFrame()
-    let perFrame = Double(max(1, accepted))
-    let energyDeltaNanojoules = energyEnd.energyNanojoules &- energyStart.energyNanojoules
-    let wakeupsDelta =
-      (energyEnd.interruptWakeups &- energyStart.interruptWakeups)
-      + (energyEnd.idleWakeups &- energyStart.idleWakeups)
-    let socGPUDeltaNanojoules = Double(socEnd.gpu - socStart.gpu)
-    let socCPUDeltaNanojoules = Double(socEnd.cpu - socStart.cpu)
+
     return M6HeadToHeadResult(
-      timings: renderer.recentFrameTimings(),
-      counts: renderer.lastInstanceCounts,
-      processCPUMsPerFrame: ((cpuEnd - cpuStart) * 1_000.0) / perFrame,
-      droppedFrames: attempts - accepted,
-      energyMicrojoulesPerFrame: Double(energyDeltaNanojoules) / 1_000.0 / perFrame,
-      wakeupsPerFrame: Double(wakeupsDelta) / perFrame,
-      socGPUEnergyMicrojoulesPerFrame: socGPUDeltaNanojoules / 1_000.0 / perFrame,
-      socCPUEnergyMicrojoulesPerFrame: socCPUDeltaNanojoules / 1_000.0 / perFrame)
+      timings: lastTimings,
+      counts: lastCounts,
+      processCPUMsPerFrame: median(procCPUSamples),
+      droppedFrames: droppedTotal / reps,
+      energyMicrojoulesPerFrame: median(taskEnergySamples),
+      wakeupsPerFrame: median(wakeupSamples),
+      socGPUEnergyMicrojoulesPerFrame: median(socGPUSamples),
+      socCPUEnergyMicrojoulesPerFrame: median(socCPUSamples))
+  }
+
+  private func median(_ values: [Double]) -> Double {
+    guard !values.isEmpty else { return 0 }
+    let sorted = values.sorted()
+    let mid = sorted.count / 2
+    return sorted.count % 2 == 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
   }
 
   private func renderAccepted(
