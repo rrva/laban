@@ -1005,10 +1005,12 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
             if (client->established) {
                 fprintf(stderr,
                     "labpty: force-expiring established client %d on frame deadline "
-                    "(read_have=%zu write_total=%zu write_sent=%zu) — the event loop "
-                    "likely stalled past the frame budget\n",
+                    "(read_have=%zu write_total=%zu write_sent=%zu) — request frame "
+                    "incomplete %llums past the frame budget (slow/trickle client or "
+                    "event-loop stall)\n",
                     client_index(daemon, client), client->read_have,
-                    client->write_total, client->write_sent);
+                    client->write_total, client->write_sent,
+                    (unsigned long long)((now - client->frame_deadline_ns) / 1000000ull));
             }
             client_release(daemon, client);
             continue;
@@ -1029,9 +1031,11 @@ static void expire_stalled_clients(labpty_daemon_t *daemon) {
         if (client->established) {
             fprintf(stderr,
                 "labpty: force-expiring established client %d on idle deadline "
-                "(read_have=%zu write_total=%zu write_sent=%zu) — event-loop stall suspected\n",
+                "(read_have=%zu write_total=%zu write_sent=%zu) — event-loop stall "
+                "suspected, stalled %llums past the idle budget\n",
                 client_index(daemon, client), client->read_have,
-                client->write_total, client->write_sent);
+                client->write_total, client->write_sent,
+                (unsigned long long)((now - client->deadline_ns) / 1000000ull));
         }
         client_release(daemon, client);
     }
