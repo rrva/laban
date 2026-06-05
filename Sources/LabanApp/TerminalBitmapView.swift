@@ -761,16 +761,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private func startDisplayLink() {
     if #available(macOS 14.0, *) {
-      // CADisplayLink + preferredFrameRateRange unlocks VRR throttling on
-      // ProMotion: when nothing's changing the OS will fire us at the
-      // minimum rate (~8 Hz here), and ramp up to the maximum (panel max,
-      // typically 120 Hz) when the terminal becomes busy. A low minimum lets
-      // the panel idle further down (Apple's guidance: a high minimum keeps
-      // the panel awake); output latency stays covered by the onSessionDirty
-      // push, which bypasses the link throttle. Scrolling still ramps to 120.
+      // A low preferred rate keeps visible-idle terminals cold; output latency
+      // is still covered by the onSessionDirty push path, which bypasses the
+      // link throttle. updateDisplayLinkRunState raises preferred while smooth
+      // scroll or attention animation is active.
       let link = displayLink(target: self, selector: #selector(displayLinkTick))
       link.preferredFrameRateRange = CAFrameRateRange(
-        minimum: 8, maximum: 120, preferred: 120)
+        minimum: Float(TerminalIdlePolicy.idleDisplayLinkFramesPerSecond),
+        maximum: Float(TerminalIdlePolicy.activeDisplayLinkFramesPerSecond),
+        preferred: Float(TerminalIdlePolicy.idleDisplayLinkFramesPerSecond))
       link.add(to: .main, forMode: .common)
       caDisplayLink = link
       return
@@ -939,6 +938,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let visible =
       (window?.isKeyWindow == true)
       && (window?.occlusionState.contains(.visible) ?? false)
+    let attentionAnimating =
+      visible && !reduceMotion
+      && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: model.activeTab?.id)
+    let preferred = TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+      windowVisibleToUser: visible,
+      scrollAnimating: scrollAnimating,
+      attentionAnimating: attentionAnimating)
+    link.preferredFrameRateRange = CAFrameRateRange(
+      minimum: Float(TerminalIdlePolicy.idleDisplayLinkFramesPerSecond),
+      maximum: Float(TerminalIdlePolicy.activeDisplayLinkFramesPerSecond),
+      preferred: Float(preferred))
     link.isPaused = !TerminalIdlePolicy.displayLinkShouldRun(
       windowVisibleToUser: visible, scrollAnimating: scrollAnimating)
   }

@@ -33,6 +33,12 @@ typedef struct {
 } labpty_handle_request_t;
 
 typedef struct {
+    uint32_t count;
+    uint64_t handles[LABPTY_MAX_SESSIONS];
+    uint64_t observed_offsets[LABPTY_MAX_SESSIONS];
+} labpty_output_wake_park_request_t;
+
+typedef struct {
     uint64_t handle;
     /* The `bytes` pointer addresses exactly `len` bytes of the request
      * frame buffer; -fbounds-safety statically checks every access via
@@ -101,6 +107,11 @@ labpty_status_t labpty_decode_handle_request(
     const uint8_t *payload __sized_by(len),
     size_t len,
     labpty_handle_request_t *out __single
+);
+labpty_status_t labpty_decode_output_wake_park_request(
+    const uint8_t *payload __sized_by(len),
+    size_t len,
+    labpty_output_wake_park_request_t *out __single
 );
 
 labpty_status_t labpty_decode_write_input_request(

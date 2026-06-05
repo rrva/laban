@@ -166,7 +166,9 @@ static void cover_dispatch_frame(void) {
         LABPTY_OP_HELLO, LABPTY_OP_OPEN_SESSION, LABPTY_OP_LIST_SESSIONS,
         LABPTY_OP_RESIZE_SESSION, LABPTY_OP_SIGNAL_SESSION, LABPTY_OP_TERMINATE_SESSION,
         LABPTY_OP_WRITE_INPUT, LABPTY_OP_PING, LABPTY_OP_ATTACH_SESSION,
-        LABPTY_OP_DETACH_SESSION, (uint16_t)0xBEEF /* unknown op */
+        LABPTY_OP_DETACH_SESSION, LABPTY_OP_OPEN_OUTPUT_WAKE,
+        LABPTY_OP_PARK_OUTPUT_WAKE,
+        (uint16_t)0xBEEF /* unknown op */
     };
     for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
         memset(c, 0, sizeof(*c));
@@ -202,6 +204,12 @@ static void cover_poll_dispatch(void) {
     (void)service_client_poll(&cov_daemon, 0, POLLIN);   /* !writing && readable */
     c->write_total = 10; c->write_sent = 0;
     (void)service_client_poll(&cov_daemon, 0, POLLERR);  /* neither -> faulted */
+    c->write_total = 0; c->write_sent = 0;
+    c->output_wake = 1; c->wake_armed = 1; c->wake_pending = 1;
+    cov_daemon.output_wake_armed_count = 1;
+    (void)service_client_poll(&cov_daemon, 0, POLLOUT);  /* wake pending flush */
+    c->wake_pending = 0;
+    (void)service_client_poll(&cov_daemon, 0, POLLIN);   /* wake peer sent data */
     c->in_use = 0;
     (void)service_client_poll(&cov_daemon, 0, POLLIN);   /* not in_use -> 0 */
 }

@@ -63,6 +63,7 @@ run_tlc MC_ByteRing.cfg              MC_ByteRing              pass
 run_tlc MC_ByteRing_Larger.cfg       MC_ByteRing              pass
 run_tlc MC_ControlChannel.cfg        MC_ControlChannel        pass
 run_tlc MC_Attachment.cfg            MC_Attachment            pass
+run_tlc MC_OutputWake.cfg            MC_OutputWake            pass
 run_tlc MC_Startup.cfg               MC_Startup               pass
 run_tlc MC_Reuse.cfg                 MC_Reuse                 pass
 
@@ -79,6 +80,8 @@ run_tlc MC_ByteRing_Boundary.cfg     MC_ByteRing              fail
 run_tlc MC_ControlChannelPreFix.cfg       MC_ControlChannelPreFix       fail
 run_tlc MC_ControlChannelMidFrameLeak.cfg MC_ControlChannelMidFrameLeak fail
 run_tlc MC_AttachmentPreFix.cfg           MC_AttachmentPreFix           fail
+run_tlc MC_OutputWakeWakeWhileActive.cfg  MC_OutputWake                 fail
+run_tlc MC_OutputWakeStalePark.cfg        MC_OutputWake                 fail
 run_tlc MC_StartupPreFix.cfg              MC_StartupPreFix              fail
 run_tlc MC_StartupCleanupTOCTOU.cfg       MC_StartupCleanupTOCTOU       fail
 run_tlc MC_ReusePreFix.cfg                MC_Reuse                      fail

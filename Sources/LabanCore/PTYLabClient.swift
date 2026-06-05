@@ -27,6 +27,10 @@ public struct LabptyResponseError: Error, Equatable, CustomStringConvertible {
 
 public final class LabptyTerminalSessionClient: TerminalSessionClient {
   public let transportMode = "labpty"
+  private static let advertisedCapabilities =
+    LabptyCapabilities.phase1 + [
+      LabptyCapabilities.outputWakeV1
+    ]
 
   private let socketPath: String
   private let rpcTimeoutMilliseconds: Int
@@ -63,6 +67,62 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     lock.withLock {
       closeLocked()
     }
+  }
+
+  /// Open a dedicated readable file descriptor that becomes readable when any
+  /// session attached by this logical client receives output. Older daemons do
+  /// not advertise `output-wake/v1`; callers should fall back to timer polling
+  /// when this returns nil.
+  public func openOutputWakeFileDescriptor() throws -> Int32? {
+    var wakeFD: Int32
+    do {
+      wakeFD = try Self.connect(
+        socketPath: socketPath,
+        timeoutMilliseconds: rpcTimeoutMilliseconds)
+    } catch {
+      guard let ensureDaemonRunning else { throw error }
+      try ensureDaemonRunning()
+      wakeFD = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
+    }
+
+    do {
+      let helloPayload = try LabptyHelloRequest(
+        clientId: clientId,
+        capabilities: Self.advertisedCapabilities
+      ).encode()
+      let hello: LabptyHelloResponse = try Self.sendOnce(
+        fd: wakeFD,
+        operation: .hello,
+        sequence: 1,
+        payload: helloPayload,
+        decode: LabptyHelloResponse.decode)
+      try validateHello(hello)
+      guard hello.capabilities.contains(LabptyCapabilities.outputWakeV1) else {
+        Darwin.close(wakeFD)
+        return nil
+      }
+
+      try Self.sendOnce(
+        fd: wakeFD,
+        operation: .openOutputWake,
+        sequence: 2,
+        payload: Data(),
+        decode: { _ in () })
+      try Self.setNonblocking(fd: wakeFD)
+      return wakeFD
+    } catch {
+      Darwin.close(wakeFD)
+      throw error
+    }
+  }
+
+  public func parkOutputWake(
+    entries: [LabptyOutputWakeParkEntry]
+  ) throws -> LabptyOutputWakeParkResponse {
+    try send(
+      operation: .parkOutputWake,
+      payload: try LabptyOutputWakeParkRequest(entries: entries).encode(),
+      decode: LabptyOutputWakeParkResponse.decode)
   }
 
   public func hello() throws -> LabptyHelloResponse {
@@ -352,7 +412,10 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   }
 
   private func helloLocked() throws -> LabptyHelloResponse {
-    let payload = try LabptyHelloRequest(clientId: clientId).encode()
+    let payload = try LabptyHelloRequest(
+      clientId: clientId,
+      capabilities: Self.advertisedCapabilities
+    ).encode()
     let response: LabptyHelloResponse = try sendLocked(
       operation: .hello,
       payload: payload,
@@ -383,15 +446,19 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     let sequence = nextSequence
     nextSequence += 1
     do {
-      try writeAll(
-        LabptyFraming.encodeRequest(operation: operation, sequence: sequence, payload: payload))
+      try Self.writeAll(
+        fd: fd,
+        data: LabptyFraming.encodeRequest(
+          operation: operation,
+          sequence: sequence,
+          payload: payload))
     } catch {
       closeLocked()
       throw error
     }
     let response: LabptyFrame
     do {
-      response = try LabptyFraming.decode(try readFrame())
+      response = try LabptyFraming.decode(try Self.readFrame(fd: fd))
     } catch {
       closeLocked()
       throw error
@@ -574,6 +641,31 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     return fd
   }
 
+  private static func sendOnce<T>(
+    fd: Int32,
+    operation: LabptyOperation,
+    sequence: UInt64,
+    payload: Data,
+    decode: (Data) throws -> T
+  ) throws -> T {
+    try writeAll(
+      fd: fd,
+      data: LabptyFraming.encodeRequest(
+        operation: operation,
+        sequence: sequence,
+        payload: payload))
+    let response = try LabptyFraming.decode(try readFrame(fd: fd))
+    guard response.header.sequence == sequence else {
+      throw TerminalSessionClientError.protocolError("labpty response sequence mismatch")
+    }
+    guard response.header.responseCode == .ok else {
+      throw LabptyResponseError(
+        rawCode: response.header.codeRaw,
+        message: labptyErrorMessage(codeRaw: response.header.codeRaw))
+    }
+    return try decode(response.payload)
+  }
+
   private static func setTimeout(fd: Int32, option: Int32, milliseconds: Int) throws {
     let clamped = max(1, milliseconds)
     var timeout = timeval(
@@ -592,8 +684,18 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     }
   }
 
-  private func readFrame() throws -> Data {
-    let header = try readExact(count: LabptyFrameHeader.headerByteCount)
+  private static func setNonblocking(fd: Int32) throws {
+    let flags = fcntl(fd, F_GETFL, 0)
+    guard flags >= 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    guard fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+  }
+
+  private static func readFrame(fd: Int32) throws -> Data {
+    let header = try readExact(fd: fd, count: LabptyFrameHeader.headerByteCount)
     let headerBytes = [UInt8](header)
     let totalLength = Int(
       UInt32(headerBytes[8])
@@ -607,11 +709,11 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     guard totalLength <= LabptyFrameHeader.maxFrameBytes else {
       throw LabptyProtocolError.oversizeFrame
     }
-    let payload = try readExact(count: totalLength - LabptyFrameHeader.headerByteCount)
+    let payload = try readExact(fd: fd, count: totalLength - LabptyFrameHeader.headerByteCount)
     return header + payload
   }
 
-  private func readExact(count: Int) throws -> Data {
+  private static func readExact(fd: Int32, count: Int) throws -> Data {
     var data = Data(count: count)
     var offset = 0
     while offset < count {
@@ -629,7 +731,7 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     return data
   }
 
-  private func writeAll(_ data: Data) throws {
+  private static func writeAll(fd: Int32, data: Data) throws {
     var offset = 0
     while offset < data.count {
       let n = data.withUnsafeBytes { raw -> Int in

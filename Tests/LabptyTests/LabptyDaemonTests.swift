@@ -79,6 +79,82 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try clientA.terminate(handle: handle)
   }
 
+  func testOutputWakeConnectionWakesOnlyWhenParked() throws {
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let wakeFD = try XCTUnwrap(client.openOutputWakeFileDescriptor())
+    defer { Darwin.close(wakeFD) }
+
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24,
+        cols: 80,
+        argv: [
+          "/bin/sh", "-c",
+          "printf wake-one; sleep 0.10; printf wake-two; sleep 0.50; printf wake-three; sleep 1",
+        ],
+        logicalSessionId: "output-wake"))
+    XCTAssertEqual(descriptor.connectedClients, 1)
+
+    XCTAssertEqual(try readExactRaw(fd: wakeFD, count: 1).count, 1)
+    XCTAssertEqual(try connectedCount(client, handle: descriptor.ptyHandle), 1)
+
+    try assertNoWake(fd: wakeFD, duration: 0.25)
+
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    let drained = try waitForOutputWithOffset(reader: reader, contains: "wake-two")
+    let parked = try client.parkOutputWake(
+      entries: [
+        LabptyOutputWakeParkEntry(
+          ptyHandle: descriptor.ptyHandle,
+          observedOutputOffset: drained.offset)
+      ])
+    XCTAssertTrue(parked.parked)
+
+    XCTAssertEqual(try readExactRaw(fd: wakeFD, count: 1).count, 1)
+    let output = try waitForOutputWithOffset(reader: reader, contains: "wake-three").output
+    XCTAssertTrue(output.contains("wake-three"))
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
+  func testWakeOperationsRequireAdvertisedCapability() throws {
+    let harness = try launchHarness()
+    try waitForSocketFile(socketPath: harness.socketPath)
+    let raw = try connectRaw(socketPath: harness.socketPath)
+    defer { Darwin.close(raw) }
+
+    let helloFrame = try LabptyFraming.encodeRequest(
+      operation: .hello,
+      sequence: 1,
+      payload: try LabptyHelloRequest(
+        clientId: "phase1-only",
+        capabilities: LabptyCapabilities.phase1
+      ).encode())
+    try writeAllRaw(fd: raw, data: helloFrame)
+    let helloResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(helloResponse.header.responseCode, .ok)
+
+    let openWakeFrame = try LabptyFraming.encodeRequest(
+      operation: .openOutputWake,
+      sequence: 2,
+      payload: Data())
+    try writeAllRaw(fd: raw, data: openWakeFrame)
+    let openWakeResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(openWakeResponse.header.sequence, 2)
+    XCTAssertEqual(openWakeResponse.header.responseCode, .capabilityRequired)
+
+    let parkWakeFrame = try LabptyFraming.encodeRequest(
+      operation: .parkOutputWake,
+      sequence: 3,
+      payload: try LabptyOutputWakeParkRequest(entries: []).encode())
+    try writeAllRaw(fd: raw, data: parkWakeFrame)
+    let parkWakeResponse = try readFrameRaw(fd: raw)
+    XCTAssertEqual(parkWakeResponse.header.sequence, 3)
+    XCTAssertEqual(parkWakeResponse.header.responseCode, .capabilityRequired)
+    XCTAssertTrue(harness.process.isRunning)
+  }
+
   func testTerminateOfNaturallyExitedSessionDoesNotLeakInspectFd() throws {
     // Regression for H-6: a child that exits naturally leaves a dead-leak
     // slot whose slave_inspect_fd stayed open; terminating it freed the slot
@@ -1456,6 +1532,13 @@ final class LabptyDaemonTests: XCTestCase {
 
   private func waitForOutput(reader: LabptyByteRingReader, contains needle: String) throws -> String
   {
+    return try waitForOutputWithOffset(reader: reader, contains: needle).output
+  }
+
+  private func waitForOutputWithOffset(
+    reader: LabptyByteRingReader,
+    contains needle: String
+  ) throws -> (output: String, offset: UInt64) {
     let deadline = Date().addingTimeInterval(10)
     var offset: UInt64 = 0
     var data = Data()
@@ -1464,13 +1547,32 @@ final class LabptyDaemonTests: XCTestCase {
       offset = result.newOffset
       data.append(result.bytes)
       if let text = String(data: data, encoding: .utf8), text.contains(needle) {
-        return text
+        return (text, offset)
       }
       usleep(10_000)
     }
     let text = String(data: data, encoding: .utf8) ?? "<invalid utf8>"
     XCTFail("output never contained \(needle); got \(text.suffix(200))")
     throw POSIXError(.ETIMEDOUT)
+  }
+
+  private func assertNoWake(fd: Int32, duration: TimeInterval) throws {
+    let deadline = Date().addingTimeInterval(duration)
+    var byte: UInt8 = 0
+    while Date() < deadline {
+      let n = Darwin.read(fd, &byte, 1)
+      if n > 0 {
+        XCTFail("unexpected labpty output wake byte while reader was active")
+        return
+      }
+      if n == 0 { throw POSIXError(.ECONNRESET) }
+      if errno == EINTR { continue }
+      if errno == EAGAIN || errno == EWOULDBLOCK {
+        usleep(10_000)
+        continue
+      }
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
   }
 
   private func temporaryRingURL() throws -> URL {

@@ -145,6 +145,21 @@ void proof_decode_handle(void) {
     (void)labpty_decode_handle_request(buf, len, &out);
 }
 
+void proof_decode_output_wake_park(void) {
+    size_t len = nondet_size();
+    ASSUME(len <= 36);
+    uint8_t *buf = malloc(len);
+    ASSUME(buf != NULL);
+#ifndef LABPTY_CBMC
+    if (len) memset(buf, (int)nondet_uint(), len);
+#endif
+    labpty_output_wake_park_request_t out;
+    if (labpty_decode_output_wake_park_request(buf, len, &out) == LABPTY_OK) {
+        ASSERT(out.count <= LABPTY_MAX_SESSIONS, "wake park count bounded");
+        ASSERT(out.count <= 2, "bounded harness permits at most two complete entries");
+    }
+}
+
 /* The decoded slice (out.bytes, out.len) is handed straight to the PTY
  * master write path. Prove it is capped and lies entirely inside the
  * request buffer for every input. */
@@ -205,6 +220,7 @@ int main(void) {
     proof_decode_resize();
     proof_decode_signal();
     proof_decode_handle();
+    proof_decode_output_wake_park();
     proof_decode_write_input();
     proof_decode_hello();
     proof_decode_open();

@@ -4,6 +4,13 @@ import XCTest
 @testable import LabanCore
 
 final class LabptyProtocolTests: XCTestCase {
+  func testOutputWakeCapabilityIsOptionalPostPhase1Extension() {
+    XCTAssertEqual(LabptyOperation.openOutputWake.rawValue, 0x000B)
+    XCTAssertEqual(LabptyOperation.parkOutputWake.rawValue, 0x000C)
+    XCTAssertEqual(LabptyCapabilities.outputWakeV1, "output-wake/v1")
+    XCTAssertFalse(LabptyCapabilities.phase1.contains(LabptyCapabilities.outputWakeV1))
+  }
+
   func testLabptyProtocolRoundTrip() throws {
     let hello = LabptyHelloRequest(
       clientId: "test-client",
@@ -44,6 +51,18 @@ final class LabptyProtocolTests: XCTestCase {
 
     let write = LabptyWriteInputRequest(ptyHandle: 42, bytes: Data("ping\n".utf8))
     XCTAssertEqual(try LabptyWriteInputRequest.decode(from: write.encode()), write)
+
+    let park = LabptyOutputWakeParkRequest(
+      entries: [
+        LabptyOutputWakeParkEntry(ptyHandle: 42, observedOutputOffset: 128),
+        LabptyOutputWakeParkEntry(ptyHandle: 43, observedOutputOffset: 256),
+      ])
+    XCTAssertEqual(try LabptyOutputWakeParkRequest.decode(from: park.encode()), park)
+
+    let parkResponse = LabptyOutputWakeParkResponse(parked: true)
+    XCTAssertEqual(
+      try LabptyOutputWakeParkResponse.decode(from: parkResponse.encode()),
+      parkResponse)
 
     let ping = LabptyPingResponse(daemonMonoNs: 999)
     XCTAssertEqual(try LabptyPingResponse.decode(from: ping.encode()), ping)

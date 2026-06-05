@@ -105,6 +105,7 @@ run_cbmc frame_proof.c  proof_decode_header     12  pass
 run_cbmc frame_proof.c  proof_decode_resize     12  pass
 run_cbmc frame_proof.c  proof_decode_signal     12  pass
 run_cbmc frame_proof.c  proof_decode_handle     12  pass
+run_cbmc frame_proof.c  proof_decode_output_wake_park 12 pass
 run_cbmc frame_proof.c  proof_decode_write_input 12 pass
 
 # Byte-ring WRITE index arithmetic: wraparound split + over-capacity clamp

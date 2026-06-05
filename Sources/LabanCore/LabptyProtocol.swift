@@ -21,6 +21,7 @@ public enum LabptyCapabilities {
   public static let writeInputRpcV1 = "write-input-rpc/v1"
   public static let heartbeatShmV1 = "heartbeat-shm/v1"
   public static let sessionIdPinningV1 = "session-id-pinning/v1"
+  public static let outputWakeV1 = "output-wake/v1"
 
   public static let phase1: [String] = [
     byteRingV1,
@@ -441,6 +442,73 @@ public struct LabptyWriteInputRequest: Equatable, Sendable {
     }
     let bytes = try reader.readBytes(count: declaredLength)
     return LabptyWriteInputRequest(ptyHandle: ptyHandle, bytes: bytes)
+  }
+}
+
+public struct LabptyOutputWakeParkEntry: Equatable, Sendable {
+  public var ptyHandle: UInt64
+  public var observedOutputOffset: UInt64
+
+  public init(ptyHandle: UInt64, observedOutputOffset: UInt64) {
+    self.ptyHandle = ptyHandle
+    self.observedOutputOffset = observedOutputOffset
+  }
+}
+
+public struct LabptyOutputWakeParkRequest: Equatable, Sendable {
+  public var entries: [LabptyOutputWakeParkEntry]
+
+  public init(entries: [LabptyOutputWakeParkEntry]) {
+    self.entries = entries
+  }
+
+  public func encode() throws -> Data {
+    guard entries.count <= LabptyProtocolLimits.maxSessionDescriptorCount else {
+      throw LabptyProtocolError.payloadTooLarge("output_wake_park")
+    }
+    var writer = LabptyPayloadWriter()
+    writer.appendUInt32(UInt32(entries.count))
+    for entry in entries {
+      writer.appendUInt64(entry.ptyHandle)
+      writer.appendUInt64(entry.observedOutputOffset)
+    }
+    return writer.data
+  }
+
+  public static func decode(from payload: Data) throws -> LabptyOutputWakeParkRequest {
+    var reader = LabptyPayloadReader(payload)
+    let count = Int(try reader.readUInt32())
+    guard count <= LabptyProtocolLimits.maxSessionDescriptorCount else {
+      throw LabptyProtocolError.payloadTooLarge("output_wake_park")
+    }
+    var entries: [LabptyOutputWakeParkEntry] = []
+    entries.reserveCapacity(count)
+    for _ in 0..<count {
+      entries.append(
+        LabptyOutputWakeParkEntry(
+          ptyHandle: try reader.readUInt64(),
+          observedOutputOffset: try reader.readUInt64()))
+    }
+    return LabptyOutputWakeParkRequest(entries: entries)
+  }
+}
+
+public struct LabptyOutputWakeParkResponse: Equatable, Sendable {
+  public var parked: Bool
+
+  public init(parked: Bool) {
+    self.parked = parked
+  }
+
+  public func encode() -> Data {
+    var writer = LabptyPayloadWriter()
+    writer.appendBool(parked)
+    return writer.data
+  }
+
+  public static func decode(from payload: Data) throws -> LabptyOutputWakeParkResponse {
+    var reader = LabptyPayloadReader(payload)
+    return LabptyOutputWakeParkResponse(parked: try reader.readBool())
   }
 }
 

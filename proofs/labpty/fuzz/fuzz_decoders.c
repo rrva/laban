@@ -35,7 +35,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const uint8_t *p = data + 1;
     size_t n = size - 1;
 
-    switch (data[0] % 7) {
+    switch (data[0] % 8) {
     case 0: {
         labpty_frame_header_t h;
         labpty_decode_header(p, n, &h);
@@ -76,6 +76,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             labpty_negotiate_hello(&hello_req);
         }
         break;
+    case 7: {
+        labpty_output_wake_park_request_t wake;
+        labpty_decode_output_wake_park_request(p, n, &wake);
+        break;
+    }
     }
     return 0;
 }

@@ -2,7 +2,7 @@
 """Generate the seed corpus for fuzz_decoders.c.
 
 Each seed is `selector_byte || payload`, matching the harness input
-layout: the first byte picks the decoder (mod 7), the rest is the op
+layout: the first byte picks the decoder (mod 8), the rest is the op
 payload fed verbatim. Valid payloads give the fuzzer good starting
 coverage; it mutates outward from here. Re-run to regenerate; output is
 deterministic.
@@ -54,6 +54,8 @@ SEEDS = {
     "hello": bytes([6]) + u16(1) + u16(0) + lp("test") + u32(4)
              + lp("byte-ring/v1") + lp("write-input-rpc/v1")
              + lp("heartbeat-shm/v1") + lp("session-id-pinning/v1"),
+    # selector 7: output_wake_park (count=1, handle, observed output offset)
+    "output_wake_park": bytes([7]) + u32(1) + u64(0) + u64(0),
 }
 
 

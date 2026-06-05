@@ -10,6 +10,20 @@ frozen.
 
 ## Progress
 
+- [x] 2026-06-05: A 20s focused-app idle trace showed the Phase 1
+  4 ms byte-ring poll was no longer invisible: `LabptyParserFeed.poll`
+  ran ~500 empty polls/s across two tabs while the display link also
+  stayed visible-idle hot. The reader-readiness deferral is therefore
+  lifted for `LabanApp`.
+- [x] 2026-06-05: Reader wake is implemented as optional
+  `output-wake/v1`: a second negotiated control socket from the same
+  logical client switches into wake mode via `openOutputWake`. The app
+  parks with `parkOutputWake` only after it has drained observed ring
+  offsets; `labpty` arms that wake socket only if those offsets still
+  match, then sends one byte on the next parked-to-active transition.
+  Streaming output while active emits no wake bytes. This deliberately
+  avoids SCM_RIGHTS.
+
 ## Who consumes `labpty`'s surfaces
 
 `labpty`'s only client in the planned default ("Background sessions")
@@ -35,8 +49,10 @@ without the lease (one app, one writer; the lease is deferred until a
 multi-writer scenario is concrete). The "Phase 2 single-client
 byte-ring mode" repeatedly named below as a future trigger for wake
 pipes is **the current Background-mode default**, not a future
-state — but the wake-pipe deferral still stands (polling delivers the
-same outcome at zero `labpty` state). A graduation pass to
+state. The 2026-06-05 idle trace lifted the reader-wake deferral, but
+the implementation uses an optional same-protocol wake socket
+(`output-wake/v1`) rather than the older SCM_RIGHTS wake-pipe sketch.
+A graduation pass to
 `docs/reference/labpty-protocol.md` will sweep the residual
 historical phrasing.
 
@@ -185,21 +201,23 @@ skip the "Phase 2" subsections of everything below.
 - Output byte ring in shm for the data plane.
 - Input via the `writeInput` control RPC, raw bytes in the frame
   payload. No shared-memory input ring.
+- Optional output wake connection via `output-wake/v1`: the app opens a
+  second control socket, negotiates `HELLO`, sends `openOutputWake`,
+  then watches that fd for one-byte parked-to-active notifications. The
+  normal control socket sends `parkOutputWake` with observed ring
+  offsets to arm the next wake. Older daemons omit the capability and
+  the app falls back to polling.
 - **No SCM_RIGHTS anywhere.** No PTY master fd handoff (forbidden by
-  the single-custodian invariant); no wake-pipe fd handoff (readers
-  poll the ring).
+  the single-custodian invariant); no wake-pipe fd handoff.
 
 **Phase 1 reader model:**
 
-`LabanApp` (the Background-mode client, and the only reader by default;
-any future reader would behave the same way) opens the byte ring
-read-only, samples `output_write_offset` on a poll tick (4 ms is the
-recommended starting interval; tune later), reads new bytes, feeds
-them into its own parser. `labpty` does not know readers exist; there
-is no per-reader slot table populated, no wake registry, no
-consumer-alive tracking. Phase 2 introduces wake pipes and per-reader
-state if and only if measurements show the polling tick is a
-perceptible source of latency.
+`LabanApp` (the Background-mode client, and the only reader by default)
+opens the byte ring read-only and feeds new bytes into its own parser.
+With `output-wake/v1`, it monitors a dedicated wake fd and keeps only a
+slow safety poll. Without that capability it falls back to the original
+4 ms ring poll. `labpty` still has no per-reader slot table populated
+and does not track consumer-alive state.
 
 **Phase 1 control-plane semantics:**
 
@@ -245,8 +263,8 @@ explicitly.
 | Output bytes (PTY → readers) | Single-producer multi-consumer shared-memory ring (`LBPTY-BR-01`) | Hot path. Hundreds to thousands of writes per second per active session. Zero IPC overhead per byte. |
 | Input bytes (writer → PTY), Phase 1 | `writeInput` control RPC on the same Unix socket, bytes carried directly in the binary frame payload (no base64), bounded to 64 KiB per call | Keystroke and paste throughput is bounded by user action. Avoids the cost of building a real shared-memory input path before measurements justify it. **Phase 1's writer is `LabanApp` (one writer per session by construction).** Multi-writer arbitration is not a Phase 1 concern. |
 | Input bytes (writer → PTY), Phase 2 | Single-producer single-consumer shared-memory ring (`LBPTY-IR-01`) per session, with pipe-based wakeup | Lower-rate hot path. SPSC ring matches the output path's discipline. The active plan's M5 ships the **single-writer flavor** without `multi-attach-write-lease/v1`; a future multi-writer scenario would re-introduce the lease prerequisite. |
-| Reader readiness, Phase 1 | Readers poll the byte ring's `output_write_offset`. Recommended tick: 4 ms (250 Hz). `labpty` does nothing — no per-reader registry, no fd handoff. | Polling for a `LabanApp`-attached reader is dominated by `LabanApp`'s own render-frame cadence (~16 ms at 60 Hz); the polling tick is invisible at the system level. Costs `labpty` zero state and zero code; matches surface principle 0. |
-| Reader readiness, Phase 2 | Pipe write-end handed to labpty via SCM_RIGHTS at attach time; labpty writes one byte per coalesced batch | Lands when measurements show the Phase 1 polling tick is a perceptible latency source — primarily a Phase 2 / single-client-byte-ring-mode concern, not a Phase 1 concern. Documented under "Wakeup discipline (Phase 2)" below. |
+| Reader readiness, current | Optional `output-wake/v1` second control socket; `labpty` writes one byte only when a parked reader becomes active. The app rearms with `parkOutputWake(handle, observedOffset...)`. Fallback: 4 ms poll on `output_write_offset`. | 2026-06-05 idle traces showed the fallback poll is visible at system level while idle. A second socket gives the app-owned wake fd needed by `DispatchSourceRead` without SCM_RIGHTS ancillary parsing or per-reader shm slots, and the parked/active contract avoids wake-per-drain churn during streaming output. |
+| Reader readiness, older Phase 2 sketch | Pipe write-end handed to labpty via SCM_RIGHTS at attach time; labpty writes one byte per coalesced batch | Superseded for `LabanApp` by `output-wake/v1`. Keep only as historical context for a future multi-reader slot table, if one is ever needed. |
 | Heartbeats, `labpty` → readers | Shared-memory timestamp `producer_alive_mono_ns`, updated on each event-loop tick capped at 100 ms cadence | No kernel call to check "is the other side alive". One u64 store per tick on labpty; one u64 load per reader poll. |
 | Heartbeats, reader → `labpty` (Phase 2) | Reserved field in the per-reader slot table | Phase 1 `labpty` does not know readers exist, so this primitive is meaningless until the per-reader slot table is populated in Phase 2. |
 | Per-session counters | Shared-memory counters block at fixed offset of the byte ring | Anyone with the shm path can sample. No RPC needed. |
@@ -606,10 +624,46 @@ children) does not depend on sub-millisecond reader wake.
 Phase 2 may add wake pipes (next subsection) if measurements show the
 polling tick produces user-visible lag.
 
-### Phase 2: per-reader wake pipes
+### Current: `output-wake/v1` dedicated wake socket
+
+`output-wake/v1` gives `LabanApp` the one primitive a mmap ring cannot
+provide by itself: a readable fd that becomes ready when the daemon has
+published output. The app opens a second Unix `SOCK_STREAM` connection
+using the same `client_id`, negotiates `HELLO`, sends `openOutputWake`,
+then registers the returned fd with `DispatchSourceRead`. The normal
+control socket later sends `parkOutputWake` requests containing the
+current `(handle, observedOutputOffset)` values. This avoids
+SCM_RIGHTS entirely: the fd is created in the app process, and labpty
+only writes ordinary bytes on the socket it already accepted.
+
+Wake targeting is by logical client id, not by attaching the wake
+connection to sessions. The owner control socket opens or attaches a
+session and therefore contributes to `connected_clients`; the wake
+socket never sets an attachment bit, so it does not inflate orphan
+detection counts. A wake socket is either **parked/armed** or **active/
+disarmed**. After each successful PTY-master drain and byte-ring
+publish, `labpty` wakes only matching sockets that are currently armed;
+it immediately disarms them before queueing the wake byte. If a framed
+response is still pending on the wake socket, or the socket send buffer
+is full, the daemon sets `wake_pending` and flushes exactly one byte on
+the next `POLLOUT`.
+
+The app drains and discards wake bytes, enters a short active-drain mode,
+and polls feeds at active cadence until the output stream has been quiet
+for 50 ms.
+Only then does it call `parkOutputWake` with the offsets it has drained.
+If any listed session already advanced beyond the observed offset,
+`labpty` returns `parked = false`; the app remains active and drains
+again. If all offsets match, `labpty` arms the wake socket and the app
+parks. Feeds retain a slow safety poll so an unlikely missed wake cannot
+wedge output forever. Older daemons that do not advertise
+`output-wake/v1` keep the original 4 ms polling behavior.
+
+### Historical Phase 2 sketch: per-reader wake pipes
 
 > **Phase 2 design.** Phase 1 `labpty` does not implement this
-> section. Phase 1 readers do not pass wake pipes at attach.
+> section. `output-wake/v1` supersedes it for `LabanApp`; keep the
+> sketch only as context for a future multi-reader slot table.
 
 One wake notification per drained batch from the PTY master, not per
 byte. Algo-trader rationale: scheduler wakeups are the single most
@@ -1034,6 +1088,9 @@ byte-ring/v1                  // output ring with the layout in this doc
 write-input-rpc/v1            // writeInput control RPC, raw bytes in frame
 heartbeat-shm/v1              // producer_alive_mono_ns in counters block
 session-id-pinning/v1         // accepts client-supplied logicalSessionId
+output-wake/v1                // optional same-client parked/active wake
+                              // socket; not a required Phase 1 capability
+                              // because older daemons fall back to polling
 ```
 
 Reserved for later phases (deliberately **not** Phase 1; each requires
@@ -1082,7 +1139,9 @@ clients fall back gracefully. Phase 1 fallbacks:
 - For `input-ring/v1` → `write-input-rpc/v1`.
 - For `opaque-snapshot-cache/v1` → in-ring "replay from current window"
   (see "Overflow recovery").
-- For `wake-pipe-scm/v1` → 4 ms polling tick on `output_write_offset`.
+- For `output-wake/v1` → 4 ms polling tick on `output_write_offset`.
+- For historical `wake-pipe-scm/v1` → `output-wake/v1`, then polling
+  if unavailable.
 - For `deadline-enforcement/v1` → client-side socket timeout / teardown.
 
 Two capabilities that earlier drafts of this document listed in Phase 1

@@ -11,6 +11,9 @@
 /// Pure and AppKit-free so the "should the link be running?" decision is
 /// unit-tested without a window or display.
 public enum TerminalIdlePolicy {
+  public static let idleDisplayLinkFramesPerSecond = 8
+  public static let activeDisplayLinkFramesPerSecond = 120
+
   /// Whether the per-frame display link should keep ticking.
   ///
   /// - Parameters:
@@ -23,5 +26,22 @@ public enum TerminalIdlePolicy {
     scrollAnimating: Bool
   ) -> Bool {
     windowVisibleToUser || scrollAnimating
+  }
+
+  public static func preferredDisplayLinkFramesPerSecond(
+    windowVisibleToUser: Bool,
+    scrollAnimating: Bool,
+    attentionAnimating: Bool
+  ) -> Int {
+    guard
+      displayLinkShouldRun(
+        windowVisibleToUser: windowVisibleToUser,
+        scrollAnimating: scrollAnimating)
+    else {
+      return idleDisplayLinkFramesPerSecond
+    }
+    return (scrollAnimating || attentionAnimating)
+      ? activeDisplayLinkFramesPerSecond
+      : idleDisplayLinkFramesPerSecond
   }
 }

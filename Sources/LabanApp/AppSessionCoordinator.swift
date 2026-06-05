@@ -17,6 +17,15 @@ final class AppSessionCoordinator {
   private var infoByLocalSessionId: [Session.ID: LabandSessionInfo] = [:]
   private var labptyDescriptorByTabId: [Tab.ID: LabptySessionDescriptor] = [:]
   private var labptyFeedByTabId: [Tab.ID: LabptyParserFeed] = [:]
+  private let labptyWakeQueue = DispatchQueue(
+    label: "com.laban.labpty.output-wake",
+    qos: .userInteractive)
+  private var labptyWakeSource: DispatchSourceRead?
+  private var labptyWakeFD: Int32 = -1
+  private var labptyWakeAttempted = false
+  private var labptyWakeAvailable = false
+  private var labptyActiveDrainSource: DispatchSourceTimer?
+  private var labptyWakeLastOutputNs = DispatchTime.now().uptimeNanoseconds
   private let labptyStateLock = NSLock()
   private var labptyDegradation = LabptyOutputDegradation(
     cooldown: AppSessionCoordinator.labptyOutputDegradedCooldown)
@@ -44,6 +53,10 @@ final class AppSessionCoordinator {
   /// that command instead of the login shell. Wired to
   /// `AppModel.launchArgv(forTab:)` by `MainWindowController`.
   var argvProvider: ((Tab.ID) -> [String]?)?
+
+  private static let labptyWakeFallbackPollMilliseconds = 1_000
+  private static let labptyActivePollMilliseconds = 8
+  private static let labptyActiveQuietNanoseconds: UInt64 = 50_000_000
 
   init(
     client: LabandTerminalSessionClient,
@@ -363,6 +376,8 @@ final class AppSessionCoordinator {
   func detach() {
     removeThemeChangeObserver()
     stopSnapshotGenerationMonitor()
+    cancelLabptyOutputWake()
+    cancelLabptyActiveDrain()
     for feed in labptyFeedByTabId.values {
       feed.stop()
     }
@@ -470,25 +485,201 @@ final class AppSessionCoordinator {
     }
     stopLabptyFeed(for: tab)
     let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+    let outputWakeAvailable = ensureLabptyOutputWake()
     let tabId = tab.id
     let feed = LabptyParserFeed(
       ptyHandle: descriptor.ptyHandle,
       reader: reader,
       session: session,
       onDirty: { [weak self] sessionId in
+        self?.noteLabptyOutputActivity()
         self?.onSessionDirty?(sessionId)
       },
       onOverflow: { [weak self] in
         self?.markLabptyOutputDegraded(for: tabId)
       })
     labptyFeedByTabId[tab.id] = feed
-    feed.start()
+    feed.start(
+      pollingIntervalMilliseconds: outputWakeAvailable
+        ? Self.labptyWakeFallbackPollMilliseconds
+        : 4)
+    if outputWakeAvailable && labptyActiveDrainSource != nil {
+      feed.wake()
+    }
   }
 
   private func stopLabptyFeed(for tab: Tab) {
     labptyFeedByTabId.removeValue(forKey: tab.id)?.stop()
     labptyDescriptorByTabId.removeValue(forKey: tab.id)
     clearLabptyOutputDegraded(for: tab.id)
+  }
+
+  private func ensureLabptyOutputWake() -> Bool {
+    if labptyWakeAvailable { return true }
+    if labptyWakeAttempted { return false }
+    labptyWakeAttempted = true
+    guard let labptyClient else { return false }
+    do {
+      guard let fd = try labptyClient.openOutputWakeFileDescriptor() else {
+        AppLog.app.info("labpty output wake unsupported by daemon; using timer polling")
+        return false
+      }
+      let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: labptyWakeQueue)
+      source.setEventHandler { [weak self] in
+        self?.handleLabptyOutputWake(fileDescriptor: fd)
+      }
+      source.setCancelHandler {
+        Darwin.close(fd)
+      }
+      labptyWakeFD = fd
+      labptyWakeSource = source
+      labptyWakeAvailable = true
+      source.resume()
+      return true
+    } catch {
+      AppLog.app.error("labpty output wake setup failed: \(String(describing: error))")
+      return false
+    }
+  }
+
+  private func cancelLabptyOutputWake(allowRetry: Bool = true) {
+    let source = labptyWakeSource
+    labptyWakeSource = nil
+    labptyWakeFD = -1
+    labptyWakeAvailable = false
+    labptyWakeAttempted = !allowRetry
+    source?.setEventHandler {}
+    source?.cancel()
+  }
+
+  private func fallbackToLabptyPolling() {
+    cancelLabptyActiveDrain()
+    cancelLabptyOutputWake(allowRetry: false)
+    for feed in labptyFeedByTabId.values {
+      feed.setPollingInterval(milliseconds: 4)
+    }
+  }
+
+  private func handleLabptyOutputWake(fileDescriptor fd: Int32) {
+    var didReceiveWake = false
+    var buffer = [UInt8](repeating: 0, count: 256)
+    let bufferCount = buffer.count
+    while true {
+      let n = buffer.withUnsafeMutableBytes { raw -> Int in
+        guard let base = raw.baseAddress else { return -1 }
+        return Darwin.read(fd, base, bufferCount)
+      }
+      if n > 0 {
+        didReceiveWake = true
+        continue
+      }
+      if n == 0 {
+        markLabptyOutputWakeClosed(fileDescriptor: fd)
+        return
+      }
+      if errno == EINTR { continue }
+      if errno == EAGAIN || errno == EWOULDBLOCK { break }
+      markLabptyOutputWakeClosed(fileDescriptor: fd)
+      return
+    }
+    guard didReceiveWake else { return }
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.labptyWakeFD == fd else { return }
+      self.labptyWakeLastOutputNs = DispatchTime.now().uptimeNanoseconds
+      self.startLabptyActiveDrain()
+      self.pollAllLabptyFeeds()
+    }
+  }
+
+  private func markLabptyOutputWakeClosed(fileDescriptor fd: Int32) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.labptyWakeFD == fd else { return }
+      self.fallbackToLabptyPolling()
+    }
+  }
+
+  private func noteLabptyOutputActivity() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.labptyWakeLastOutputNs = DispatchTime.now().uptimeNanoseconds
+      if self.labptyWakeAvailable {
+        self.startLabptyActiveDrain()
+      }
+    }
+  }
+
+  private func startLabptyActiveDrain() {
+    guard labptyWakeAvailable else { return }
+    guard labptyActiveDrainSource == nil else { return }
+    let source = DispatchSource.makeTimerSource(queue: .main)
+    source.schedule(
+      deadline: .now(),
+      repeating: .milliseconds(Self.labptyActivePollMilliseconds),
+      leeway: .milliseconds(2))
+    source.setEventHandler { [weak self] in
+      self?.labptyActiveDrainTick()
+    }
+    labptyActiveDrainSource = source
+    source.resume()
+  }
+
+  private func cancelLabptyActiveDrain() {
+    guard let source = labptyActiveDrainSource else { return }
+    labptyActiveDrainSource = nil
+    source.setEventHandler {}
+    source.cancel()
+  }
+
+  private func labptyActiveDrainTick() {
+    pollAllLabptyFeeds()
+    let now = DispatchTime.now().uptimeNanoseconds
+    guard now >= labptyWakeLastOutputNs else { return }
+    guard now - labptyWakeLastOutputNs >= Self.labptyActiveQuietNanoseconds else { return }
+    parkLabptyOutputWakeAfterQuiet()
+  }
+
+  private func pollAllLabptyFeeds() {
+    for feed in labptyFeedByTabId.values {
+      feed.wake()
+    }
+  }
+
+  private func parkLabptyOutputWakeAfterQuiet() {
+    guard labptyWakeAvailable, let labptyClient else { return }
+    cancelLabptyActiveDrain()
+    let feeds = Array(labptyFeedByTabId.values)
+    let group = DispatchGroup()
+    let entries = OSAllocatedUnfairLock(initialState: [LabptyOutputWakeParkEntry]())
+    for feed in feeds {
+      group.enter()
+      feed.observedWakeParkEntry { entry in
+        entries.withLock { state in
+          state.append(entry)
+        }
+        group.leave()
+      }
+    }
+    group.notify(queue: labptyWakeQueue) { [weak self, labptyClient] in
+      do {
+        let response = try labptyClient.parkOutputWake(entries: entries.withLock { $0 })
+        DispatchQueue.main.async {
+          self?.handleLabptyOutputWakeParkResponse(response.parked)
+        }
+      } catch {
+        AppLog.app.error("labpty output wake park failed: \(String(describing: error))")
+        DispatchQueue.main.async {
+          self?.fallbackToLabptyPolling()
+        }
+      }
+    }
+  }
+
+  private func handleLabptyOutputWakeParkResponse(_ parked: Bool) {
+    guard labptyWakeAvailable else { return }
+    if parked { return }
+    labptyWakeLastOutputNs = DispatchTime.now().uptimeNanoseconds
+    startLabptyActiveDrain()
+    pollAllLabptyFeeds()
   }
 
   private func refreshLabptyTabMetadata(
@@ -830,13 +1021,36 @@ private final class LabptyParserFeed {
     self.timer = DispatchSource.makeTimerSource(queue: queue)
   }
 
-  func start() {
+  func start(pollingIntervalMilliseconds: Int = 4) {
     timer.setEventHandler { [weak self] in
       self?.poll()
     }
-    timer.schedule(deadline: .now(), repeating: .milliseconds(4), leeway: .milliseconds(1))
+    scheduleTimer(pollingIntervalMilliseconds: pollingIntervalMilliseconds)
     IdleCounters.shared.noteLabptyFeedStarted()
     timer.resume()
+  }
+
+  func setPollingInterval(milliseconds: Int) {
+    queue.async { [weak self] in
+      self?.scheduleTimer(pollingIntervalMilliseconds: milliseconds)
+    }
+  }
+
+  func wake() {
+    queue.async { [weak self] in
+      self?.poll()
+    }
+  }
+
+  func observedWakeParkEntry(
+    _ completion: @escaping @Sendable (LabptyOutputWakeParkEntry) -> Void
+  ) {
+    queue.async {
+      completion(
+        LabptyOutputWakeParkEntry(
+          ptyHandle: self.ptyHandle,
+          observedOutputOffset: self.lastOffset))
+    }
   }
 
   func stop() {
@@ -850,6 +1064,15 @@ private final class LabptyParserFeed {
       timer.cancel()
       IdleCounters.shared.noteLabptyFeedStopped()
     }
+  }
+
+  private func scheduleTimer(pollingIntervalMilliseconds: Int) {
+    let interval = max(1, pollingIntervalMilliseconds)
+    let leeway = interval <= 4 ? 1 : max(50, interval / 10)
+    timer.schedule(
+      deadline: .now(),
+      repeating: .milliseconds(interval),
+      leeway: .milliseconds(leeway))
   }
 
   private func poll() {

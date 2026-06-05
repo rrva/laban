@@ -287,6 +287,31 @@ labpty_status_t labpty_decode_handle_request(
     return LABPTY_OK;
 }
 
+labpty_status_t labpty_decode_output_wake_park_request(
+    const uint8_t *payload __sized_by(len),
+    size_t len,
+    labpty_output_wake_park_request_t *out __single
+)
+    LABPTY_REQUIRES(__CPROVER_is_fresh(payload, len))
+    LABPTY_REQUIRES(__CPROVER_is_fresh(out, sizeof(*out)))
+    LABPTY_ASSIGNS(*out)
+{
+    assert(payload != NULL || len == 0);
+    assert(out != NULL);
+    memset(out, 0, sizeof(*out));
+    labpty_reader_t reader = { .cur = payload, .end = payload + len };
+    labpty_status_t status = labpty_read_u32(&reader, &out->count);
+    if (status != LABPTY_OK) return status;
+    if (out->count > LABPTY_MAX_SESSIONS) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    if ((len - 4) / 16 < out->count) return LABPTY_E_TRUNCATED_FRAME;
+    for (uint32_t i = 0; i < out->count; i++) {
+        if ((status = labpty_read_u64(&reader, &out->handles[i])) != LABPTY_OK) return status;
+        if ((status = labpty_read_u64(&reader, &out->observed_offsets[i])) != LABPTY_OK) return status;
+    }
+    /* Trailing bytes are tolerated for additive evolution. */
+    return LABPTY_OK;
+}
+
 /* Proven by proofs/labpty/frame_proof.c::proof_decode_write_input — the
  * decoded (bytes, len) slice is capped and lies entirely within the
  * request buffer before it reaches the PTY write path. */
@@ -390,6 +415,7 @@ labpty_status_t labpty_encode_hello_response(uint8_t *out __sized_by(cap), size_
         "write-input-rpc/v1",
         "heartbeat-shm/v1",
         "session-id-pinning/v1",
+        "output-wake/v1",
     };
     size_t cap_count = sizeof(caps) / sizeof(caps[0]);
     if ((status = labpty_write_u32(&writer, (uint32_t)cap_count)) != LABPTY_OK) return status;

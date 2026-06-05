@@ -27,6 +27,7 @@ the `proofs/labpty/coverage/*_cov.c` assertion harnesses.
 | `LabptyLifecycle.tla` | `Sources/Labpty/labpty_registry.c` session-slot state machine. | `EventualReleaseOfClosePending` (F2 fix), `DeadLeakNotPermanent` (commit 5420964 fix), `EventualReapOfZombie`. |
 | `LabptyByteRing.tla` | `Sources/Labpty/labpty_byte_ring.c` single-producer / single-consumer ring with safety margin. | `NoTornRead`, `WindowDoesNotContainFutureWrites`. |
 | `LabptyControlChannel.tla` | `Sources/Labpty/main.c` per-connection state machine (`labpty_client_t` slots, hello negotiation, slowloris reaper). | `EstablishedImpliesNegotiated` and `UnnegotiatedIdleIsNotPermanent` (commit 2aac41a fix). |
+| `LabptyOutputWake.tla` | `Sources/Labpty/main.c` output-wake parked/active readiness protocol (`output_wake`, `wake_armed`, `wake_pending`, `parkOutputWake`). | `ParkedImpliesObservedCurrent` and `NoMoreWakesThanBursts` — no stale-offset lost wake and no wake-per-drain churn while active. |
 | `LabptyStartup.tla` | `Sources/Labpty/main.c::listen_unix_socket` multi-daemon race on the `--socket` path. | `ServingDaemonOwnsPath`, `AtMostOneServing` (commit b5e7819 fix). |
 | `LabptyAttachment.tla` | `Sources/Labpty/main.c` per-session connected-client mask (`attached_clients`, `ATTACH`/`DETACH`, opener auto-attach, `client_release` scrub). | `AttachmentImpliesInUse` — no mask retains a departed client, so the count never overcounts an owner (ADR 0010). |
 | `LabptyReuse.tla` | `Sources/Labpty/labpty_registry.c` `logical_id` reuse: `labpty_session_request_close` relinquishes the id at terminate; `labpty_registry_open` rejects only a still-held id. | `NotAliveImpliesIdRelinquished` (mechanism) and `TerminatedIdIsReusable` (contract) — a terminated logical_id is immediately reusable, not just eventually. `LabptyLifecycle.tla` has no `logical_id`, so it could not state this. |
@@ -57,6 +58,7 @@ Update a spec when you change the state machine it models. In practice:
 | `labpty_registry.c` `logical_id` reuse (`request_close` relinquish / `open` duplicate rule) | `LabptyReuse.tla` |
 | `labpty_byte_ring.c` write/read or layout fields | `LabptyByteRing.tla` |
 | `main.c::labpty_client_t` fields, transitions, or expire policy | `LabptyControlChannel.tla` |
+| `main.c` output-wake parked/active readiness state | `LabptyOutputWake.tla` |
 | `main.c` session attachment (`attached_clients`, attach/detach, `client_release` scrub) | `LabptyAttachment.tla` |
 | `main.c::listen_unix_socket` startup sequence | `LabptyStartup.tla` |
 

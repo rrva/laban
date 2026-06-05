@@ -14,6 +14,14 @@
      - established   : 1 if the slot is exempt from the slowloris
                        idle-timeout (slot reclamation)
 
+   The output-wake extension (`output_wake`, `wake_pending`) is deliberately
+   abstracted away here. `OPEN_OUTPUT_WAKE` is a normal post-hello request up
+   through its framed response, so it follows `DispatchNonHelloNormal` ->
+   `WriteComplete` for the control-channel proof. Subsequent wake-byte
+   readiness state is modelled by LabptyOutputWake.tla. It does not change
+   frame parsing, negotiation, or expiry eligibility in this control-channel
+   model.
+
    The spec is parametrised by the boolean constant
    `EstablishOnAnyRoundTrip`:
 

@@ -20,6 +20,11 @@ typedef struct {
      * never-said-hello slowloris attackers. */
     int established;
     int negotiated;
+    int supports_output_wake;
+    int output_wake;
+    int wake_armed;
+    int wake_pending;
+    char client_id[LABPTY_LOGICAL_ID_BYTES + 1];
     size_t read_have;
     labpty_frame_header_t header;
     uint8_t read_buf[LABPTY_MAX_FRAME];
@@ -38,6 +43,7 @@ typedef struct {
 
 typedef struct {
     int listen_fd;
+    int output_wake_armed_count;
     /* Identity of the socket file we successfully bound at startup,
      * captured immediately after bind. cleanup_daemon's final unlink
      * compares against this so we don't clobber a successor daemon's
@@ -361,6 +367,9 @@ static void client_release(labpty_daemon_t *daemon, labpty_client_t *client) {
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         daemon->registry.sessions[i].attached_clients &= (uint8_t)~bit;
     }
+    if (client->wake_armed && daemon->output_wake_armed_count > 0) {
+        daemon->output_wake_armed_count--;
+    }
     if (client->fd >= 0) close(client->fd);
     memset(client, 0, sizeof(*client));
     client->fd = -1;
@@ -450,13 +459,70 @@ static size_t encode_list_payload(labpty_registry_t *registry, uint8_t *out, siz
     return (size_t)(writer.cur - out);
 }
 
-static labpty_status_t handle_hello(labpty_daemon_t *daemon, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
+static void arm_output_wake_clients(labpty_daemon_t *daemon, const char *client_id);
+
+static int hello_request_has_capability(const labpty_hello_request_t *request, const char *capability) {
+    assert(request != NULL);
+    assert(capability != NULL);
+    for (uint32_t i = 0; i < request->capability_count; i++) {
+        if (strcmp(request->capabilities[i], capability) == 0) return 1;
+    }
+    return 0;
+}
+
+static labpty_status_t handle_hello(labpty_daemon_t *daemon, labpty_client_t *client, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
     assert(daemon != NULL);
+    assert(client != NULL);
     labpty_status_t status = labpty_decode_hello_request(payload, len, &daemon->hello_request);
     if (status != LABPTY_OK) return status;
     status = labpty_negotiate_hello(&daemon->hello_request);
     if (status != LABPTY_OK) return status;
+    snprintf(client->client_id, sizeof(client->client_id), "%s", daemon->hello_request.client_id);
+    client->supports_output_wake = hello_request_has_capability(&daemon->hello_request, "output-wake/v1");
     return labpty_encode_hello_response(out, cap, out_len);
+}
+
+static labpty_status_t handle_open_output_wake(labpty_daemon_t *daemon, labpty_client_t *client, const uint8_t *payload, size_t len, size_t *out_len) {
+    assert(daemon != NULL);
+    assert(client != NULL);
+    assert(out_len != NULL);
+    if (payload == NULL && len > 0) return LABPTY_E_TRUNCATED_FRAME;
+    if (!client->supports_output_wake) return LABPTY_E_CAPABILITY_REQUIRED;
+    if (len != 0) return LABPTY_E_PAYLOAD_TOO_LARGE;
+    client->output_wake = 1;
+    if (!client->wake_armed) {
+        client->wake_armed = 1;
+        daemon->output_wake_armed_count++;
+    }
+    client->wake_pending = 0;
+    *out_len = 0;
+    return LABPTY_OK;
+}
+
+static labpty_status_t handle_park_output_wake(labpty_daemon_t *daemon, labpty_client_t *client, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
+    assert(daemon != NULL);
+    assert(client != NULL);
+    assert(out != NULL);
+    assert(out_len != NULL);
+    if (!client->supports_output_wake) return LABPTY_E_CAPABILITY_REQUIRED;
+    labpty_output_wake_park_request_t request;
+    labpty_status_t status = labpty_decode_output_wake_park_request(payload, len, &request);
+    if (status != LABPTY_OK) return status;
+    int parked = 1;
+    for (uint32_t i = 0; i < request.count; i++) {
+        labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handles[i]);
+        if (session == NULL) return LABPTY_E_SESSION_NOT_FOUND;
+        if (session->ring.output_offset != request.observed_offsets[i]) {
+            parked = 0;
+            break;
+        }
+    }
+    if (parked) arm_output_wake_clients(daemon, client->client_id);
+    labpty_writer_t writer = { .cur = out, .end = out + cap };
+    status = labpty_write_u8(&writer, (uint8_t)(parked ? 1 : 0));
+    if (status != LABPTY_OK) return status;
+    *out_len = (size_t)(writer.cur - out);
+    return LABPTY_OK;
 }
 
 static labpty_status_t handle_open(labpty_daemon_t *daemon, labpty_client_t *client, const uint8_t *payload, size_t len, uint8_t *out, size_t cap, size_t *out_len) {
@@ -739,11 +805,13 @@ static labpty_status_t dispatch_frame(labpty_daemon_t *daemon, labpty_client_t *
     size_t cap = LABPTY_MAX_FRAME - LABPTY_FRAME_HEADER_BYTES;
     *out_len = 0;
     if (header.op == LABPTY_OP_HELLO) {
-        labpty_status_t status = handle_hello(daemon, payload, len, out, cap, out_len);
+        labpty_status_t status = handle_hello(daemon, client, payload, len, out, cap, out_len);
         if (status == LABPTY_OK) client->negotiated = 1;
         return status;
     }
     if (!client->negotiated) return LABPTY_E_CAPABILITY_REQUIRED;
+    if (header.op == LABPTY_OP_OPEN_OUTPUT_WAKE) return handle_open_output_wake(daemon, client, payload, len, out_len);
+    if (header.op == LABPTY_OP_PARK_OUTPUT_WAKE) return handle_park_output_wake(daemon, client, payload, len, out, cap, out_len);
     if (header.op == LABPTY_OP_OPEN_SESSION) return handle_open(daemon, client, payload, len, out, cap, out_len);
     if (header.op == LABPTY_OP_LIST_SESSIONS) {
         *out_len = encode_list_payload(&daemon->registry, out, cap);
@@ -870,6 +938,88 @@ static void flush_pending_input(labpty_session_t *session) {
     session->pending_input_sent = 0;
 }
 
+static int client_id_matches(const labpty_client_t *client, const char *client_id) {
+    assert(client != NULL);
+    assert(client_id != NULL);
+    return client->in_use && client->client_id[0] != '\0' && strcmp(client->client_id, client_id) == 0;
+}
+
+static int session_has_attached_client_id(const labpty_daemon_t *daemon, const labpty_session_t *session, const char *client_id) {
+    assert(daemon != NULL);
+    assert(session != NULL);
+    assert(client_id != NULL);
+    for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
+        if ((session->attached_clients & (uint8_t)(1u << i)) == 0) continue;
+        if (client_id_matches(&daemon->clients[i], client_id)) return 1;
+    }
+    return 0;
+}
+
+static void arm_output_wake_clients(labpty_daemon_t *daemon, const char *client_id) {
+    assert(daemon != NULL);
+    assert(client_id != NULL);
+    for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
+        labpty_client_t *client = &daemon->clients[i];
+        if (!client->in_use || !client->output_wake) continue;
+        if (!client_id_matches(client, client_id)) continue;
+        if (!client->wake_armed) {
+            client->wake_armed = 1;
+            daemon->output_wake_armed_count++;
+        }
+    }
+}
+
+static int queue_output_wake(labpty_client_t *client) {
+    assert(client != NULL);
+    if (client->wake_pending) return 0;
+    if (client->write_total > client->write_sent) {
+        client->wake_pending = 1;
+        return 0;
+    }
+    uint8_t byte = 1;
+    for (;;) {
+        ssize_t n = write(client->fd, &byte, 1);
+        if (n == 1) return 0;
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            client->wake_pending = 1;
+            return 0;
+        }
+        return -1;
+    }
+}
+
+static int flush_output_wake(labpty_client_t *client) {
+    assert(client != NULL);
+    if (!client->wake_pending) return 0;
+    uint8_t byte = 1;
+    for (;;) {
+        ssize_t n = write(client->fd, &byte, 1);
+        if (n == 1) {
+            client->wake_pending = 0;
+            return 0;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+        return -1;
+    }
+}
+
+static void notify_output_wake_clients(labpty_daemon_t *daemon, labpty_session_t *session) {
+    assert(daemon != NULL);
+    assert(session != NULL);
+    if (daemon->output_wake_armed_count <= 0) return;
+    for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
+        labpty_client_t *client = &daemon->clients[i];
+        if (!client->in_use || !client->output_wake || client->client_id[0] == '\0') continue;
+        if (!client->wake_armed) continue;
+        if (!session_has_attached_client_id(daemon, session, client->client_id)) continue;
+        client->wake_armed = 0;
+        daemon->output_wake_armed_count--;
+        if (queue_output_wake(client) != 0) client_release(daemon, client);
+    }
+}
+
 static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
     assert(daemon != NULL);
     assert(session != NULL);
@@ -877,6 +1027,7 @@ static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
     ssize_t n = read(session->master_fd, daemon->read_buffer, sizeof(daemon->read_buffer));
     if (n > 0) {
         labpty_byte_ring_write(&session->ring, daemon->read_buffer, (size_t)n);
+        notify_output_wake_clients(daemon, session);
         return;
     }
     if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
@@ -905,7 +1056,13 @@ static void build_poll_set(labpty_daemon_t *daemon, labpty_poll_set_t *poll_set)
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use) continue;
-        short events = client->write_total > client->write_sent ? POLLOUT : POLLIN;
+        short events;
+        if (client->output_wake) {
+            events = POLLIN;
+            if (client->write_total > client->write_sent || client->wake_pending) events |= POLLOUT;
+        } else {
+            events = client->write_total > client->write_sent ? POLLOUT : POLLIN;
+        }
         add_poll_watch(poll_set, client->fd, events, LABPTY_POLL_CLIENT, i);
     }
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
@@ -935,6 +1092,24 @@ static int service_client_poll(labpty_daemon_t *daemon, int index, short revents
     int writing = client->write_total > client->write_sent;
     if (writing && (revents & POLLOUT)) {
         return client_pump_write(client);
+    }
+    if (client->output_wake) {
+        if (client->wake_pending && (revents & POLLOUT)) {
+            if (flush_output_wake(client) != 0) return -1;
+        }
+        if (poll_revents_faulted(revents)) return -1;
+        if (revents & POLLIN) {
+            uint8_t discard[64];
+            for (;;) {
+                ssize_t n = read(client->fd, discard, sizeof(discard));
+                if (n == 0) return -1;
+                if (n > 0) return -1;
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+                return -1;
+            }
+        }
+        return 0;
     }
     if (!writing && poll_revents_readable(revents)) {
         return client_pump_read(daemon, client);
