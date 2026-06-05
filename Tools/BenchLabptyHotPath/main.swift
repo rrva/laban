@@ -38,9 +38,11 @@ import LabanTerminalCore
 ///   --sessions N           parallel session count for daemon modes (default 1)
 ///   --producer cat|zero    child command emitting the payload (default cat).
 ///                          `zero` runs `dd if=/dev/zero bs=64k count=512`.
-///                          `flood` runs ~/laban-flood-output.sh for
+///                          `flood` runs the flood workload script for
 ///                          --flood-seconds and uses quiet-after-exit rather
-///                          than a fixed byte threshold.
+///                          than a fixed byte threshold. The script path comes
+///                          from $LABAN_FLOOD_OUTPUT, defaulting to
+///                          ~/laban-flood-output.sh.
 ///   --top-outliers N       print the N slowest consumer reads per iter
 ///                          for daemon-drain (default 0)
 ///   --control-probe-interval-us N
@@ -204,7 +206,18 @@ private func childArgv(producer: Producer, payload: URL, options: Options) -> [S
     let count = totalBytes / blockSize
     return ["/bin/sh", "-c", "exec dd if=/dev/zero bs=\(blockSize) count=\(count) 2>/dev/null"]
   case .flood:
-    return ["/bin/sh", "-c", "exec \"$HOME/laban-flood-output.sh\" \(options.floodSeconds)"]
+    // The flood workload script is not bundled in the repo, so resolve it from
+    // $LABAN_FLOOD_OUTPUT (set by CI / a clean checkout) and fall back to the
+    // conventional ~/laban-flood-output.sh for interactive use. Pass the path
+    // and duration as positional argv to `sh -c` rather than interpolating into
+    // the command string, so a path with spaces or shell metacharacters cannot
+    // break or inject into the workload invocation.
+    let floodScript =
+      ProcessInfo.processInfo.environment["LABAN_FLOOD_OUTPUT"]
+      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+        "laban-flood-output.sh"
+      ).path
+    return ["/bin/sh", "-c", "exec \"$0\" \"$1\"", floodScript, String(options.floodSeconds)]
   }
 }
 
