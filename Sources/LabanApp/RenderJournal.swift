@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LabanCore
 import LabanRenderer
@@ -27,6 +28,8 @@ final class RenderJournal {
     var transportMode: String?
     var renderer: RendererSnapshot?
     var surface: SurfaceSnapshot?
+    var window: WindowSnapshot?
+    var displayLink: DisplayLinkSnapshot?
     var frameState: FrameStateSnapshot?
     var viewport: ViewportSnapshot?
     var scroll: ScrollSnapshot?
@@ -35,6 +38,7 @@ final class RenderJournal {
     var payload: PayloadSnapshot?
     var diagnostics: TerminalSurfaceFrameDiagnostics?
     var metalInstances: MetalInstanceCounts?
+    var drawableAcquire: MetalDrawableAcquireDiagnostic?
     var gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure?
     var renderFailureReason: MetalRenderer.RenderFailureReason?
     var freeze: FreezeSnapshot?
@@ -57,6 +61,30 @@ final class RenderJournal {
     var width: Int
     var height: Int
     var scale: Double
+  }
+
+  struct WindowSnapshot: Codable, Equatable, Sendable {
+    var isVisible: Bool
+    var isKeyWindow: Bool
+    var isMainWindow: Bool
+    var isMiniaturized: Bool
+    var occlusionVisible: Bool
+    var visibleToUser: Bool
+    var backingScaleFactor: Double
+    var screenName: String?
+  }
+
+  struct DisplayLinkSnapshot: Codable, Equatable, Sendable {
+    var kind: String
+    var paused: Bool?
+    var preferredFramesPerSecond: Int?
+    var minimumFramesPerSecond: Int?
+    var maximumFramesPerSecond: Int?
+    var reason: String
+    var terminalOutputActive: Bool
+    var attentionAnimating: Bool
+    var scrollAnimating: Bool
+    var lastTickIntervalMs: Double?
   }
 
   struct FrameStateSnapshot: Codable, Equatable, Sendable {
@@ -170,15 +198,76 @@ final class RenderJournal {
     var generatedAt: Date
     var entryCount: Int
     var processID: Int?
+    var process: ProcessSnapshot?
     var firstFrame: Int?
     var lastFrame: Int?
     var pngFilename: String?
+  }
+
+  struct ProcessSnapshot: Codable, Equatable, Sendable {
+    var processID: Int
+    var processStartedAt: Date?
+    var executablePath: String?
+    var executableDevice: UInt64?
+    var executableInode: UInt64?
+    var buildCommit: String?
+
+    init(
+      processID: Int,
+      processStartedAt: Date? = nil,
+      executablePath: String? = nil,
+      executableDevice: UInt64? = nil,
+      executableInode: UInt64? = nil,
+      buildCommit: String? = nil
+    ) {
+      self.processID = processID
+      self.processStartedAt = processStartedAt
+      self.executablePath = executablePath
+      self.executableDevice = executableDevice
+      self.executableInode = executableInode
+      self.buildCommit = buildCommit
+    }
+
+    static func current(
+      processID: Int = Int(ProcessInfo.processInfo.processIdentifier)
+    ) -> ProcessSnapshot {
+      let executablePath =
+        Bundle.main.executableURL?.path
+        ?? ProcessInfo.processInfo.arguments.first
+      let executableIdentity = executablePath.flatMap(fileIdentity)
+      return ProcessSnapshot(
+        processID: processID,
+        processStartedAt: processStartedAt(pid: pid_t(processID)),
+        executablePath: executablePath,
+        executableDevice: executableIdentity?.device,
+        executableInode: executableIdentity?.inode,
+        buildCommit: Bundle.main.object(forInfoDictionaryKey: "LABANBuildCommit") as? String)
+    }
+
+    private static func processStartedAt(pid: pid_t) -> Date? {
+      var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+      var info = kinfo_proc()
+      var size = MemoryLayout<kinfo_proc>.stride
+      let result = sysctl(&mib, u_int(mib.count), &info, &size, nil, 0)
+      guard result == 0, size >= MemoryLayout<kinfo_proc>.stride else { return nil }
+      let seconds = info.kp_proc.p_starttime.tv_sec
+      guard seconds > 0 else { return nil }
+      let usec = info.kp_proc.p_starttime.tv_usec
+      return Date(timeIntervalSince1970: Double(seconds) + Double(usec) / 1_000_000.0)
+    }
+
+    private static func fileIdentity(_ path: String) -> (device: UInt64, inode: UInt64)? {
+      var st = stat()
+      guard stat(path, &st) == 0 else { return nil }
+      return (UInt64(st.st_dev), UInt64(st.st_ino))
+    }
   }
 
   private let capacity: Int
   private let dumpRoot: URL
   private let clock: () -> Date
   private let processID: Int
+  private let process: ProcessSnapshot
   private var entries: [Entry?]
   private var nextIndex = 0
   private var count = 0
@@ -187,12 +276,14 @@ final class RenderJournal {
     capacity: Int = 720,
     dumpRoot: URL = RenderJournal.defaultDumpRoot(),
     clock: @escaping () -> Date = Date.init,
-    processID: Int = Int(ProcessInfo.processInfo.processIdentifier)
+    processID: Int = Int(ProcessInfo.processInfo.processIdentifier),
+    process: ProcessSnapshot? = nil
   ) {
     self.capacity = max(1, capacity)
     self.dumpRoot = dumpRoot
     self.clock = clock
     self.processID = processID
+    self.process = process ?? .current(processID: processID)
     self.entries = Array(repeating: nil, count: max(1, capacity))
   }
 
@@ -249,6 +340,8 @@ final class RenderJournal {
     transportMode: String? = nil,
     rendererStatus: RendererStatus? = nil,
     surface: SurfaceSnapshot? = nil,
+    window: WindowSnapshot? = nil,
+    displayLink: DisplayLinkSnapshot? = nil,
     frameState: FrameStateSnapshot? = nil,
     viewport: ViewportSnapshot? = nil,
     scroll: ScrollSnapshot? = nil,
@@ -258,6 +351,7 @@ final class RenderJournal {
     payload: TerminalCellPayload? = nil,
     diagnostics: TerminalSurfaceFrameDiagnostics? = nil,
     metalInstances: MetalRenderer.RenderInstanceCounts? = nil,
+    drawableAcquire: MetalDrawableAcquireDiagnostic? = nil,
     gpuCellPayloadFailure: MetalRenderer.GPUCellPayloadBuildFailure? = nil,
     renderFailureReason: MetalRenderer.RenderFailureReason? = nil,
     freeze: FreezeSnapshot? = nil,
@@ -274,6 +368,8 @@ final class RenderJournal {
       transportMode: transportMode,
       renderer: rendererStatus.map(RendererSnapshot.init),
       surface: surface,
+      window: window,
+      displayLink: displayLink,
       frameState: frameState,
       viewport: viewport,
       scroll: scroll,
@@ -284,6 +380,7 @@ final class RenderJournal {
       payload: payload.map(Self.payloadSnapshot),
       diagnostics: diagnostics,
       metalInstances: metalInstances.map(MetalInstanceCounts.init),
+      drawableAcquire: drawableAcquire,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
       freeze: freeze,
@@ -326,6 +423,7 @@ final class RenderJournal {
       generatedAt: clock(),
       entryCount: entries.count,
       processID: processID,
+      process: process,
       firstFrame: entries.first?.frame,
       lastFrame: entries.last?.frame,
       pngFilename: pngFilename)

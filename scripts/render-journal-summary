@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Summarize a Laban render-journal dump.
+
+Usage:
+  scripts/render-journal-summary [dump-dir]
+
+When no dump directory is passed, the newest directory under
+~/Library/Logs/Laban/render-journal is used.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+from statistics import median
+from typing import Any
+
+
+def main() -> int:
+    dump_dir = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else latest_dump_dir()
+    if dump_dir is None:
+        print("render-journal-summary: no render journal dumps found", file=sys.stderr)
+        return 2
+    entries_path = dump_dir / "entries.jsonl"
+    summary_path = dump_dir / "summary.json"
+    if not entries_path.exists():
+        print(f"render-journal-summary: missing {entries_path}", file=sys.stderr)
+        return 2
+
+    summary = read_json(summary_path) if summary_path.exists() else {}
+    entries = read_jsonl(entries_path)
+    print_header(dump_dir, summary, entries)
+    print_counts(entries)
+    print_state(entries)
+    print_display_link(entries)
+    print_drawables(entries)
+    print_window(entries)
+    print_per_second(entries)
+    return 0
+
+
+def latest_dump_dir() -> Path | None:
+    root = Path.home() / "Library" / "Logs" / "Laban" / "render-journal"
+    if not root.exists():
+        return None
+    dirs = [path for path in root.iterdir() if path.is_dir()]
+    return max(dirs, key=lambda path: path.stat().st_mtime) if dirs else None
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    return value if isinstance(value, dict) else {}
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+    return entries
+
+
+def print_header(dump_dir: Path, summary: dict[str, Any], entries: list[dict[str, Any]]) -> None:
+    process = summary.get("process") or {}
+    print(f"path: {dump_dir}")
+    print(f"generatedAt: {summary.get('generatedAt', '-')}")
+    print(
+        "frames: "
+        f"{summary.get('firstFrame', frame(entries[0]) if entries else '-')}.."
+        f"{summary.get('lastFrame', frame(entries[-1]) if entries else '-')}"
+    )
+    print(f"entries: {summary.get('entryCount', len(entries))}")
+    print(f"pid: {summary.get('processID', process.get('processID', first(entries, 'processID', '-')))}")
+    if process:
+        print(f"processStartedAt: {process.get('processStartedAt', '-')}")
+        print(f"buildCommit: {process.get('buildCommit', '-')}")
+        print(f"executable: {process.get('executablePath', '-')}")
+        inode = process.get("executableInode")
+        device = process.get("executableDevice")
+        if inode is not None or device is not None:
+            print(f"executableDeviceInode: {device}:{inode}")
+    print()
+
+
+def print_counts(entries: list[dict[str, Any]]) -> None:
+    events = Counter(entry.get("event", "-") for entry in entries)
+    failures = Counter(
+        entry.get("renderFailureReason", "-")
+        for entry in entries
+        if entry.get("renderFailureReason") is not None
+    )
+    skips = Counter(
+        entry.get("reason", "-")
+        for entry in entries
+        if entry.get("event") == "skipped" and entry.get("reason") is not None
+    )
+    print_counter("events", events)
+    print_counter("failureReasons", failures)
+    print_counter("skipReasons", skips)
+    print()
+
+
+def print_state(entries: list[dict[str, Any]]) -> None:
+    dirty = sum(flag(entry, "frameState", "terminalDirty") for entry in entries)
+    active_dirty = sum(flag(entry, "frameState", "activeTerminalDirty") for entry in entries)
+    invalidated = sum(flag(entry, "frameState", "renderInvalidated") for entry in entries)
+    no_work = sum(not independent_work(entry) for entry in entries)
+    idle_backpressure = sum(
+        entry.get("event") == "renderFailed"
+        and entry.get("renderFailureReason") == "drawableUnavailable"
+        and flag(entry, "frameState", "renderInvalidated")
+        and not independent_work(entry)
+        for entry in entries
+    )
+    print("state:")
+    print(f"  terminalDirty: {dirty}")
+    print(f"  activeTerminalDirty: {active_dirty}")
+    print(f"  renderInvalidated: {invalidated}")
+    print(f"  noIndependentWork: {no_work}")
+    print(f"  idleBackpressureFailures: {idle_backpressure}")
+    print(f"  maxConsecutiveFailures: {max_streak(entries, lambda e: e.get('event') == 'renderFailed')}")
+    print(
+        "  maxConsecutiveNoWorkFailures: "
+        f"{max_streak(entries, lambda e: e.get('event') == 'renderFailed' and not independent_work(e))}"
+    )
+    print()
+
+
+def print_display_link(entries: list[dict[str, Any]]) -> None:
+    links = [entry.get("displayLink") for entry in entries if isinstance(entry.get("displayLink"), dict)]
+    print("displayLink:")
+    if not links:
+        print("  unavailable")
+        print()
+        return
+    print_counter("  kind", Counter(link.get("kind", "-") for link in links))
+    print_counter("  reason", Counter(link.get("reason", "-") for link in links))
+    print_counter(
+        "  preferredFramesPerSecond",
+        Counter(str(link.get("preferredFramesPerSecond", "-")) for link in links),
+    )
+    intervals = number_list(link.get("lastTickIntervalMs") for link in links)
+    if intervals:
+        print(
+            "  lastTickIntervalMs: "
+            f"p50={percentile(intervals, 50):.2f} "
+            f"p95={percentile(intervals, 95):.2f} "
+            f"max={max(intervals):.2f}"
+        )
+    print()
+
+
+def print_drawables(entries: list[dict[str, Any]]) -> None:
+    drawables = [
+        entry.get("drawableAcquire")
+        for entry in entries
+        if isinstance(entry.get("drawableAcquire"), dict)
+    ]
+    print("drawableAcquire:")
+    if not drawables:
+        print("  unavailable")
+        print()
+        return
+    print_counter("  outcome", Counter(drawable.get("outcome", "-") for drawable in drawables))
+    elapsed = number_list(drawable.get("elapsedMs") for drawable in drawables)
+    if elapsed:
+        print(
+            "  elapsedMs: "
+            f"p50={percentile(elapsed, 50):.2f} "
+            f"p95={percentile(elapsed, 95):.2f} "
+            f"max={max(elapsed):.2f}"
+        )
+    active_after = sum(bool(drawable.get("drawableRequestActiveAfter")) for drawable in drawables)
+    pending_after = sum(bool(drawable.get("pendingDrawablePresentAfter")) for drawable in drawables)
+    print(f"  drawableRequestActiveAfter: {active_after}")
+    print(f"  pendingDrawablePresentAfter: {pending_after}")
+    print()
+
+
+def print_window(entries: list[dict[str, Any]]) -> None:
+    windows = [entry.get("window") for entry in entries if isinstance(entry.get("window"), dict)]
+    print("window:")
+    if not windows:
+        print("  unavailable")
+        print()
+        return
+    print(f"  visibleToUser: {sum(bool(window.get('visibleToUser')) for window in windows)}")
+    print(f"  key: {sum(bool(window.get('isKeyWindow')) for window in windows)}")
+    print(f"  occlusionVisible: {sum(bool(window.get('occlusionVisible')) for window in windows)}")
+    print_counter(
+        "  backingScaleFactor",
+        Counter(str(window.get("backingScaleFactor", "-")) for window in windows),
+    )
+    print()
+
+
+def print_per_second(entries: list[dict[str, Any]]) -> None:
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        timestamp = str(entry.get("timestamp", ""))
+        buckets[timestamp[:19] + "Z"].append(entry)
+    if not buckets:
+        return
+    print("perSecond:")
+    print("  second\tentries\trendered\tfailed\tskipped\tdirty\tdirtyRendered\tdirtyFailed")
+    for second in sorted(buckets):
+        bucket = buckets[second]
+        rendered = sum(entry.get("event") == "rendered" for entry in bucket)
+        failed = sum(entry.get("event") == "renderFailed" for entry in bucket)
+        skipped = sum(entry.get("event") == "skipped" for entry in bucket)
+        dirty = sum(flag(entry, "frameState", "terminalDirty") for entry in bucket)
+        dirty_rendered = sum(
+            entry.get("event") == "rendered" and flag(entry, "frameState", "terminalDirty")
+            for entry in bucket
+        )
+        dirty_failed = sum(
+            entry.get("event") == "renderFailed" and flag(entry, "frameState", "terminalDirty")
+            for entry in bucket
+        )
+        print(
+            f"  {second}\t{len(bucket)}\t{rendered}\t{failed}\t{skipped}\t"
+            f"{dirty}\t{dirty_rendered}\t{dirty_failed}"
+        )
+    print()
+
+
+def print_counter(label: str, counter: Counter[Any]) -> None:
+    if not counter:
+        print(f"{label}: none")
+        return
+    print(f"{label}:")
+    for key, value in counter.most_common():
+        print(f"  {key}: {value}")
+
+
+def independent_work(entry: dict[str, Any]) -> bool:
+    state = entry.get("frameState")
+    if not isinstance(state, dict):
+        return False
+    fields = [
+        "terminalDirty",
+        "activeTerminalDirty",
+        "tabChanged",
+        "cursorBlinkFrame",
+        "attentionAnimating",
+        "scrollAnimating",
+        "renderingResizeFrame",
+        "gpuCellCommandFallbackPending",
+    ]
+    return any(bool(state.get(field)) for field in fields)
+
+
+def max_streak(entries: list[dict[str, Any]], predicate: Any) -> int:
+    best = 0
+    current = 0
+    for entry in entries:
+        if predicate(entry):
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
+
+
+def flag(entry: dict[str, Any], group: str, key: str) -> bool:
+    value = entry.get(group)
+    return bool(value.get(key)) if isinstance(value, dict) else False
+
+
+def frame(entry: dict[str, Any]) -> Any:
+    return entry.get("frame", "-")
+
+
+def first(entries: list[dict[str, Any]], key: str, default: Any) -> Any:
+    for entry in entries:
+        if key in entry:
+            return entry[key]
+    return default
+
+
+def number_list(values: Any) -> list[float]:
+    result = []
+    for value in values:
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            result.append(float(value))
+    return result
+
+
+def percentile(values: list[float], p: int) -> float:
+    if not values:
+        return 0.0
+    if p == 50:
+        return float(median(values))
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, math.ceil((p / 100) * len(ordered)) - 1))
+    return ordered[index]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

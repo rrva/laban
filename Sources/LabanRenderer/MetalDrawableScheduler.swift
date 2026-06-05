@@ -4,6 +4,7 @@ import QuartzCore
 
 final class MetalDrawableScheduler {
   private static let drawableAcquireTimeout: DispatchTimeInterval = .milliseconds(8)
+  private static let drawableAcquireBudgetMs = 8.0
 
   private let layer: CAMetalLayer
   private let drawableQueue = DispatchQueue(label: "laban.metal-drawable", qos: .userInteractive)
@@ -39,8 +40,14 @@ final class MetalDrawableScheduler {
     frameInFlight.signal()
   }
 
-  private func acquireDrawableWithinBudget() -> (any CAMetalDrawable)? {
+  private func acquireDrawableWithinBudget() -> DrawableAcquireResult {
+    let startedAt = DispatchTime.now().uptimeNanoseconds
+    let layerMaximumDrawableCount = layer.maximumDrawableCount
+    let layerAllowsNextDrawableTimeout = layer.allowsNextDrawableTimeout
+
     drawableRequestLock.lock()
+    let activeBefore = drawableRequestActive
+    let pendingBefore = pendingDrawable != nil
     // Carry-forward: a prior acquire that timed out left its drawable here once
     // `nextDrawable()` finally returned. Reuse it rather than fast-failing or
     // acquiring a second drawable from the pool. Caller validates size against
@@ -48,15 +55,39 @@ final class MetalDrawableScheduler {
     // `drawableSizeMismatch` guard), so a stale-sized carry-forward is safe.
     if let carried = pendingDrawable {
       pendingDrawable = nil
+      let activeAfter = drawableRequestActive
+      let pendingAfter = pendingDrawable != nil
       drawableRequestLock.unlock()
-      return carried
+      return DrawableAcquireResult(
+        drawable: carried,
+        diagnostic: diagnostic(
+          outcome: .carried,
+          startedAt: startedAt,
+          activeBefore: activeBefore,
+          activeAfter: activeAfter,
+          pendingBefore: pendingBefore,
+          pendingAfter: pendingAfter,
+          layerMaximumDrawableCount: layerMaximumDrawableCount,
+          layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout))
     }
     if drawableRequestActive {
       // A request is still parked in `nextDrawable()`. Don't start a second one
       // and don't poison subsequent frames — just miss this tick; the next one
       // picks up `pendingDrawable`.
+      let activeAfter = drawableRequestActive
+      let pendingAfter = pendingDrawable != nil
       drawableRequestLock.unlock()
-      return nil
+      return DrawableAcquireResult(
+        drawable: nil,
+        diagnostic: diagnostic(
+          outcome: .activeRequest,
+          startedAt: startedAt,
+          activeBefore: activeBefore,
+          activeAfter: activeAfter,
+          pendingBefore: pendingBefore,
+          pendingAfter: pendingAfter,
+          layerMaximumDrawableCount: layerMaximumDrawableCount,
+          layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout))
     }
     drawableRequestActive = true
     drawableRequestLock.unlock()
@@ -83,24 +114,79 @@ final class MetalDrawableScheduler {
     }
 
     if completed.wait(timeout: .now() + Self.drawableAcquireTimeout) == .success {
-      return state.take()
+      let drawable = state.take()
+      let (activeAfter, pendingAfter) = requestSnapshot()
+      return DrawableAcquireResult(
+        drawable: drawable,
+        diagnostic: diagnostic(
+          outcome: drawable == nil ? .returnedNil : .returnedDrawable,
+          startedAt: startedAt,
+          activeBefore: activeBefore,
+          activeAfter: activeAfter,
+          pendingBefore: pendingBefore,
+          pendingAfter: pendingAfter,
+          layerMaximumDrawableCount: layerMaximumDrawableCount,
+          layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout))
     }
 
     state.cancel()
-    return nil
+    let (activeAfter, pendingAfter) = requestSnapshot()
+    return DrawableAcquireResult(
+      drawable: nil,
+      diagnostic: diagnostic(
+        outcome: .timedOut,
+        startedAt: startedAt,
+        activeBefore: activeBefore,
+        activeAfter: activeAfter,
+        pendingBefore: pendingBefore,
+        pendingAfter: pendingAfter,
+        layerMaximumDrawableCount: layerMaximumDrawableCount,
+        layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout))
+  }
+
+  private func requestSnapshot() -> (active: Bool, pending: Bool) {
+    drawableRequestLock.lock()
+    defer { drawableRequestLock.unlock() }
+    return (drawableRequestActive, pendingDrawable != nil)
+  }
+
+  private func diagnostic(
+    outcome: MetalDrawableAcquireDiagnostic.Outcome,
+    startedAt: UInt64,
+    activeBefore: Bool,
+    activeAfter: Bool,
+    pendingBefore: Bool,
+    pendingAfter: Bool,
+    layerMaximumDrawableCount: Int,
+    layerAllowsNextDrawableTimeout: Bool
+  ) -> MetalDrawableAcquireDiagnostic {
+    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- startedAt
+    return MetalDrawableAcquireDiagnostic(
+      outcome: outcome,
+      budgetMs: Self.drawableAcquireBudgetMs,
+      elapsedMs: Double(elapsedNs) / 1_000_000.0,
+      drawableRequestActiveBefore: activeBefore,
+      drawableRequestActiveAfter: activeAfter,
+      pendingDrawablePresentBefore: pendingBefore,
+      pendingDrawablePresentAfter: pendingAfter,
+      layerMaximumDrawableCount: layerMaximumDrawableCount,
+      layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout)
   }
 
   final class Frame: @unchecked Sendable {
     private let scheduler: MetalDrawableScheduler
     private let lock = NSLock()
     private var finished = false
+    private(set) var lastDrawableAcquireDiagnostic: MetalDrawableAcquireDiagnostic?
 
     fileprivate init(scheduler: MetalDrawableScheduler) {
       self.scheduler = scheduler
     }
 
     func acquireDrawable() -> (any CAMetalDrawable)? {
-      scheduler.acquireDrawableWithinBudget()
+      let result = scheduler.acquireDrawableWithinBudget()
+      lastDrawableAcquireDiagnostic = result.diagnostic
+      return result.drawable
     }
 
     func finish() {
@@ -113,6 +199,11 @@ final class MetalDrawableScheduler {
       lock.unlock()
       scheduler.finishFrame()
     }
+  }
+
+  private struct DrawableAcquireResult {
+    var drawable: (any CAMetalDrawable)?
+    var diagnostic: MetalDrawableAcquireDiagnostic
   }
 
   private final class DrawableAcquisitionState: @unchecked Sendable {

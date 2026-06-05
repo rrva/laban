@@ -257,6 +257,7 @@ public final class MetalRenderer: RendererBackend {
   public private(set) var lastInstanceCounts = RenderInstanceCounts()
   public private(set) var lastGPUCellPayloadBuildFailure: GPUCellPayloadBuildFailure?
   public private(set) var lastRenderFailureReason: RenderFailureReason?
+  public private(set) var lastDrawableAcquireDiagnostic: MetalDrawableAcquireDiagnostic?
   /// Set off the main thread when a command buffer completes with `.error`;
   /// the next `render` consumes it to force a full repaint, recovering from a
   /// half-presented or dropped GPU frame. Guarded by `frameSampleLock`.
@@ -867,6 +868,7 @@ public final class MetalRenderer: RendererBackend {
   ) -> Bool {
     let cpuStart = ContinuousClock.now
     lastRenderFailureReason = nil
+    lastDrawableAcquireDiagnostic = nil
     // A GPU command buffer that completed with `.error` (recorded off-main by
     // the completion handler) means the persistent target may be half-painted,
     // so repaint the whole surface this frame instead of trusting damage.
@@ -944,7 +946,9 @@ public final class MetalRenderer: RendererBackend {
     }
     passSlots.contentActive = didContent
 
-    guard let drawable = scheduledFrame.acquireDrawable() else {
+    let drawable = scheduledFrame.acquireDrawable()
+    lastDrawableAcquireDiagnostic = scheduledFrame.lastDrawableAcquireDiagnostic
+    guard let drawable else {
       lastRenderFailureReason = .drawableUnavailable
       scheduledFrame.finish()
       return false

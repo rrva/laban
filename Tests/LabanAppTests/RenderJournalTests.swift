@@ -67,8 +67,16 @@ final class RenderJournalTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
 
     let fixedDate = Date(timeIntervalSince1970: 1_800_000_000)
+    let process = RenderJournal.ProcessSnapshot(
+      processID: 42_424,
+      processStartedAt: fixedDate.addingTimeInterval(-120),
+      executablePath: "/tmp/Laban.app/Contents/MacOS/LabanApp",
+      executableDevice: 1,
+      executableInode: 99,
+      buildCommit: "abc123+dirty")
     let journal = RenderJournal(
-      capacity: 2, dumpRoot: root, clock: { fixedDate }, processID: 42_424)
+      capacity: 2, dumpRoot: root, clock: { fixedDate }, processID: 42_424,
+      process: process)
     journal.record(journal.makeEntry(event: .rendered, frame: 1, tabId: "tab", sessionId: "s"))
     journal.record(journal.makeEntry(event: .rendered, frame: 2, tabId: "tab", sessionId: "s"))
     journal.record(journal.makeEntry(event: .renderFailed, frame: 3, tabId: "tab", sessionId: "s"))
@@ -90,6 +98,7 @@ final class RenderJournalTests: XCTestCase {
     let summary = try JSONDecoder.iso8601.decode(RenderJournal.DumpSummary.self, from: summaryData)
     XCTAssertEqual(summary.entryCount, 2)
     XCTAssertEqual(summary.processID, 42_424)
+    XCTAssertEqual(summary.process, process)
     XCTAssertEqual(summary.firstFrame, 2)
     XCTAssertEqual(summary.lastFrame, 3)
     XCTAssertEqual(summary.pngFilename, "current-frame.png")
@@ -128,18 +137,57 @@ final class RenderJournalTests: XCTestCase {
 
   func testRenderFailedEntryCarriesRenderFailureReasonThroughSerialization() throws {
     let journal = RenderJournal()
+    let drawableAcquire = MetalDrawableAcquireDiagnostic(
+      outcome: .timedOut,
+      budgetMs: 8,
+      elapsedMs: 8.5,
+      drawableRequestActiveBefore: false,
+      drawableRequestActiveAfter: true,
+      pendingDrawablePresentBefore: false,
+      pendingDrawablePresentAfter: false,
+      layerMaximumDrawableCount: 3,
+      layerAllowsNextDrawableTimeout: true)
+    let window = RenderJournal.WindowSnapshot(
+      isVisible: true,
+      isKeyWindow: true,
+      isMainWindow: true,
+      isMiniaturized: false,
+      occlusionVisible: true,
+      visibleToUser: true,
+      backingScaleFactor: 2,
+      screenName: "Built-in Display")
+    let displayLink = RenderJournal.DisplayLinkSnapshot(
+      kind: "caDisplayLink",
+      paused: false,
+      preferredFramesPerSecond: 60,
+      minimumFramesPerSecond: 8,
+      maximumFramesPerSecond: 120,
+      reason: "terminalOutputActive",
+      terminalOutputActive: true,
+      attentionAnimating: false,
+      scrollAnimating: false,
+      lastTickIntervalMs: 16.7)
     let entry = journal.makeEntry(
       event: .renderFailed,
       frame: 7,
       tabId: "tab",
       sessionId: "s",
+      window: window,
+      displayLink: displayLink,
+      drawableAcquire: drawableAcquire,
       renderFailureReason: .fullRedrawProducedNoContent)
     XCTAssertEqual(entry.renderFailureReason, .fullRedrawProducedNoContent)
+    XCTAssertEqual(entry.drawableAcquire, drawableAcquire)
+    XCTAssertEqual(entry.window, window)
+    XCTAssertEqual(entry.displayLink, displayLink)
 
     // The dump path serializes entries as JSONL, so the reason must round-trip.
     let encoded = try JSONEncoder().encode(entry)
     let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: encoded)
     XCTAssertEqual(decoded.renderFailureReason, .fullRedrawProducedNoContent)
+    XCTAssertEqual(decoded.drawableAcquire, drawableAcquire)
+    XCTAssertEqual(decoded.window, window)
+    XCTAssertEqual(decoded.displayLink, displayLink)
   }
 
   func testFreezeDetectedEntryCarriesDetectorSnapshotThroughSerialization() throws {

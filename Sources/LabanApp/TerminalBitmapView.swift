@@ -153,6 +153,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// motion-sensitive user gets a steady marker instead of a breathing one.
   private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
   private var terminalOutputActiveUntil = Date.distantPast
+  private var lastDisplayLinkTickAt: Date?
+  private var lastDisplayLinkTickIntervalMs: Double?
   private var lastRenderedActiveTabId: Tab.ID?
   private var remoteSnapshotRenderTracker = RemoteSnapshotRenderTracker()
   private var remoteMouseEncodingByTab: [Tab.ID: (trackingMode: Int, format: Int)] = [:]
@@ -807,7 +809,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         guard let view = proxy.view else { return kCVReturnSuccess }
         // Vsync callback runs on a dedicated high-priority thread; bounce to
         // main where AppKit, the model, and the renderer must be touched.
-        DispatchQueue.main.async { view.advanceFrame() }
+        DispatchQueue.main.async {
+          view.noteDisplayLinkTick()
+          view.advanceFrame()
+        }
         return kCVReturnSuccess
       },
       opaqueProxy
@@ -828,8 +833,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   /// CADisplayLink target/selector. Already on main, so no dispatch hop.
   @objc private func displayLinkTick(_ link: AnyObject) {
-    IdleCounters.shared.noteDisplayLinkTick()
+    noteDisplayLinkTick()
     advanceFrame()
+  }
+
+  private func noteDisplayLinkTick(now: Date = Date()) {
+    IdleCounters.shared.noteDisplayLinkTick()
+    if let lastDisplayLinkTickAt {
+      lastDisplayLinkTickIntervalMs = now.timeIntervalSince(lastDisplayLinkTickAt) * 1000.0
+    }
+    lastDisplayLinkTickAt = now
   }
 
   /// Called from a per-session reader thread (off main) when the
@@ -945,25 +958,57 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// is left running.
   private func updateDisplayLinkRunState() {
     guard #available(macOS 14.0, *), let link = caDisplayLink as? CADisplayLink else { return }
-    let visible =
-      (window?.isKeyWindow == true)
-      && (window?.occlusionState.contains(.visible) ?? false)
-    let now = Date()
-    let terminalOutputActive = visible && terminalOutputActiveUntil > now
-    let attentionAnimating =
-      visible && !reduceMotion
-      && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: model.activeTab?.id)
-    let preferred = TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
-      windowVisibleToUser: visible,
-      scrollAnimating: scrollAnimating,
-      attentionAnimating: attentionAnimating,
-      terminalOutputActive: terminalOutputActive)
+    let policy = displayLinkPolicyState()
     link.preferredFrameRateRange = CAFrameRateRange(
       minimum: Float(TerminalIdlePolicy.idleDisplayLinkFramesPerSecond),
       maximum: Float(TerminalIdlePolicy.activeDisplayLinkFramesPerSecond),
-      preferred: Float(preferred))
+      preferred: Float(policy.preferredFramesPerSecond))
     link.isPaused = !TerminalIdlePolicy.displayLinkShouldRun(
-      windowVisibleToUser: visible, scrollAnimating: scrollAnimating)
+      windowVisibleToUser: policy.windowVisibleToUser,
+      scrollAnimating: policy.scrollAnimating)
+  }
+
+  private struct DisplayLinkPolicyState {
+    var windowVisibleToUser: Bool
+    var terminalOutputActive: Bool
+    var attentionAnimating: Bool
+    var scrollAnimating: Bool
+    var preferredFramesPerSecond: Int
+    var reason: String
+  }
+
+  private func displayLinkPolicyState(now: Date = Date()) -> DisplayLinkPolicyState {
+    let windowVisibleToUser =
+      (window?.isKeyWindow == true)
+      && (window?.occlusionState.contains(.visible) ?? false)
+    let terminalOutputActive = windowVisibleToUser && terminalOutputActiveUntil > now
+    let attentionAnimating =
+      windowVisibleToUser && !reduceMotion
+      && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: model.activeTab?.id)
+    let preferred = TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+      windowVisibleToUser: windowVisibleToUser,
+      scrollAnimating: scrollAnimating,
+      attentionAnimating: attentionAnimating,
+      terminalOutputActive: terminalOutputActive)
+    let reason: String
+    if scrollAnimating {
+      reason = "scroll"
+    } else if attentionAnimating {
+      reason = "attention"
+    } else if terminalOutputActive {
+      reason = "terminalOutputActive"
+    } else if !windowVisibleToUser {
+      reason = "notVisible"
+    } else {
+      reason = "idle"
+    }
+    return DisplayLinkPolicyState(
+      windowVisibleToUser: windowVisibleToUser,
+      terminalOutputActive: terminalOutputActive,
+      attentionAnimating: attentionAnimating,
+      scrollAnimating: scrollAnimating,
+      preferredFramesPerSecond: preferred,
+      reason: reason)
   }
 
   deinit {
@@ -1751,6 +1796,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       transportMode: sessionCoordinator?.transportMode ?? "in-process",
       rendererStatus: backend.rendererStatus,
       surface: renderJournalSurfaceSnapshot(),
+      window: renderJournalWindowSnapshot(),
+      displayLink: renderJournalDisplayLinkSnapshot(),
       frameState: RenderJournal.FrameStateSnapshot(
         terminalDirty: terminalDirty,
         activeTerminalDirty: activeTerminalDirty,
@@ -1774,6 +1821,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       payload: surfaceFrame?.cellPayload,
       diagnostics: surfaceFrame?.diagnostics,
       metalInstances: metalRenderer?.lastInstanceCounts,
+      drawableAcquire: metalRenderer?.lastDrawableAcquireDiagnostic,
       gpuCellPayloadFailure: gpuCellPayloadFailure,
       renderFailureReason: renderFailureReason,
       freeze: freeze,
@@ -1990,6 +2038,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       width: backend.surfaceWidth,
       height: backend.surfaceHeight,
       scale: Double(backend.surfaceScale))
+  }
+
+  private func renderJournalWindowSnapshot() -> RenderJournal.WindowSnapshot {
+    let isKey = window?.isKeyWindow == true
+    let occlusionVisible = window?.occlusionState.contains(.visible) ?? false
+    return RenderJournal.WindowSnapshot(
+      isVisible: window?.isVisible ?? false,
+      isKeyWindow: isKey,
+      isMainWindow: window?.isMainWindow ?? false,
+      isMiniaturized: window?.isMiniaturized ?? false,
+      occlusionVisible: occlusionVisible,
+      visibleToUser: isKey && occlusionVisible,
+      backingScaleFactor: Double(window?.backingScaleFactor ?? backend.surfaceScale),
+      screenName: window?.screen?.localizedName)
+  }
+
+  private func renderJournalDisplayLinkSnapshot() -> RenderJournal.DisplayLinkSnapshot {
+    let policy = displayLinkPolicyState()
+    if #available(macOS 14.0, *), let link = caDisplayLink as? CADisplayLink {
+      let range = link.preferredFrameRateRange
+      return RenderJournal.DisplayLinkSnapshot(
+        kind: "caDisplayLink",
+        paused: link.isPaused,
+        preferredFramesPerSecond: policy.preferredFramesPerSecond,
+        minimumFramesPerSecond: Int(range.minimum.rounded()),
+        maximumFramesPerSecond: Int(range.maximum.rounded()),
+        reason: policy.reason,
+        terminalOutputActive: policy.terminalOutputActive,
+        attentionAnimating: policy.attentionAnimating,
+        scrollAnimating: policy.scrollAnimating,
+        lastTickIntervalMs: lastDisplayLinkTickIntervalMs)
+    }
+    return RenderJournal.DisplayLinkSnapshot(
+      kind: cvDisplayLink == nil ? "none" : "cvDisplayLink",
+      paused: nil,
+      preferredFramesPerSecond: policy.preferredFramesPerSecond,
+      minimumFramesPerSecond: nil,
+      maximumFramesPerSecond: nil,
+      reason: policy.reason,
+      terminalOutputActive: policy.terminalOutputActive,
+      attentionAnimating: policy.attentionAnimating,
+      scrollAnimating: policy.scrollAnimating,
+      lastTickIntervalMs: lastDisplayLinkTickIntervalMs)
   }
 
   private func renderJournalViewportSnapshot(for session: Session) -> RenderJournal
