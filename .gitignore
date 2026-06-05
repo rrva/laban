@@ -13,3 +13,4 @@ Sources/LabanApp/BuildInfo.generated.swift
 __pycache__/
 *.o
 *.d
+prompt-exports/
