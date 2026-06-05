@@ -67,7 +67,9 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
 
   public func hello() throws -> LabptyHelloResponse {
     try lock.withLock {
-      try helloLocked()
+      try withReconnectRetryLocked(operation: .hello) {
+        try helloLocked()
+      }
     }
   }
 
@@ -246,16 +248,106 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     }
   }
 
+  /// Idempotent control RPCs whose effect is safe to replay after a connection
+  /// drop. The daemon force-closes an established client mid-response when its
+  /// single-threaded event loop stalls past the 250 ms idle deadline (it has
+  /// staged a response but not flushed it — the `force-expiring established
+  /// client … write_total>0 write_sent=0` stderr line), which surfaces here as
+  /// ECONNRESET even though the daemon is alive and the socket is still bound.
+  /// A plain reconnect to the same socket then succeeds. openSession,
+  /// writeInput, signalSession and terminateSession are excluded: their
+  /// outcome after an unacknowledged drop is unknown, so replaying one could
+  /// duplicate a session, re-inject input, or double-deliver a signal.
+  private static let reconnectRetryableOperations: Set<LabptyOperation> = [
+    .hello, .listSessions, .ping, .attachSession, .detachSession, .resizeSession,
+  ]
+  /// Total control-RPC attempts before surfacing the drop. The 20/40/80/160/320
+  /// ms backoff between tries spans several daemon idle-deadline windows so a
+  /// transient event-loop stall (a blocking handler such as fork/reap in open)
+  /// clears before the final attempt.
+  private static let maxReconnectAttempts = 6
+
   private func send<T>(
     operation: LabptyOperation,
     payload: Data,
     decode: (Data) throws -> T
   ) throws -> T {
     try lock.withLock {
-      if operation != .hello && negotiatedCapabilities == nil {
-        _ = try helloLocked()
+      // Negotiate first, under hello's own idempotent retry policy. A transient
+      // reset during this implicit hello must be recovered even when the caller
+      // is a non-idempotent op (openSession/writeInput): re-negotiating is
+      // always safe; it's only the op itself we must never replay. Folding the
+      // hello into the op's wrapper would let .openSession's non-retryable
+      // policy swallow a recoverable negotiation drop.
+      if operation != .hello {
+        try ensureNegotiatedLocked()
       }
-      return try sendLocked(operation: operation, payload: payload, decode: decode)
+      return try withReconnectRetryLocked(operation: operation) {
+        // After an in-op reconnect, closeLocked cleared the negotiation, so a
+        // retryable op re-negotiates here before replaying. A non-retryable op
+        // never loops, so this runs at most once on the already-established
+        // link and is a no-op (capabilities still set from above).
+        if operation != .hello && negotiatedCapabilities == nil {
+          _ = try helloLocked()
+        }
+        return try sendLocked(operation: operation, payload: payload, decode: decode)
+      }
+    }
+  }
+
+  /// Negotiate hello if not already done, retrying the *negotiation itself*
+  /// under hello's idempotent reconnect policy. Must be called with `lock` held.
+  private func ensureNegotiatedLocked() throws {
+    guard negotiatedCapabilities == nil else { return }
+    try withReconnectRetryLocked(operation: .hello) {
+      _ = try helloLocked()
+    }
+  }
+
+  /// Run a control round-trip, transparently reconnecting and replaying it when
+  /// the daemon force-closes the connection mid-response (see
+  /// `reconnectRetryableOperations`). Must be called with `lock` held. Only
+  /// idempotent operations are replayed; everything else propagates the drop on
+  /// the first failure. Never respawns the daemon — a plain reconnect to the
+  /// still-bound socket is enough, since the loop stalled, it did not die.
+  private func withReconnectRetryLocked<T>(
+    operation: LabptyOperation,
+    _ body: () throws -> T
+  ) throws -> T {
+    var attempt = 0
+    while true {
+      do {
+        return try body()
+      } catch {
+        attempt += 1
+        guard attempt < Self.maxReconnectAttempts,
+          Self.reconnectRetryableOperations.contains(operation),
+          Self.isTransientConnectionDrop(error)
+        else { throw error }
+        // sendLocked already closed the fd on the failing read/write; force it
+        // shut regardless so the next iteration reconnects to the live socket.
+        // This never respawns the daemon: ensureConnectedLocked only invokes
+        // the respawn hook when connect() itself fails, and against a still-
+        // bound socket it won't. Back off first to let the stalled event loop
+        // drain its blocking handler and flush pending writes.
+        closeLocked()
+        usleep(UInt32(20_000) << (attempt - 1))
+      }
+    }
+  }
+
+  /// True for errors that mean "the connection dropped" rather than "the daemon
+  /// rejected the request": a force-close (ECONNRESET / EPIPE), an I/O timeout
+  /// against a stalled loop (ETIMEDOUT / EAGAIN), or a socket that went away
+  /// (ENOTCONN / ECONNREFUSED). A `LabptyResponseError` is an application-level
+  /// verdict (e.g. session-not-found) and is deliberately never retried here.
+  private static func isTransientConnectionDrop(_ error: Error) -> Bool {
+    guard let code = (error as? POSIXError)?.code else { return false }
+    switch code {
+    case .ECONNRESET, .EPIPE, .ENOTCONN, .ECONNREFUSED, .ETIMEDOUT, .EAGAIN:
+      return true
+    default:
+      return false
     }
   }
 
