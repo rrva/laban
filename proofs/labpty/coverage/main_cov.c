@@ -599,6 +599,55 @@ static void cover_handle_write(void) {
     s->master_fd = -1; s->slave_inspect_fd = -1;
 }
 
+/* A close_pending teardown session relinquishes its logical_id (set to "").
+ * encode_list_payload must omit such identity-less sessions: the app keys its
+ * tab-metadata dictionary by logical_id, and two concurrently-terminating
+ * HUP-ignoring children would otherwise emit two "" descriptors and trap the
+ * uniqueKeysWithValues initializer. */
+static void cover_list_payload_skips_identityless(void) {
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    labpty_registry_t *reg = &cov_daemon.registry;
+
+    reg->sessions[0].used = 1;
+    reg->sessions[0].alive = 0;
+    reg->sessions[0].handle = 10;
+    reg->sessions[0].logical_id[0] = '\0'; /* relinquished id, close_pending */
+
+    reg->sessions[1].used = 1;
+    reg->sessions[1].alive = 0;
+    reg->sessions[1].handle = 11;
+    reg->sessions[1].logical_id[0] = '\0'; /* a second relinquished id */
+
+    reg->sessions[2].used = 1;
+    reg->sessions[2].alive = 1;
+    reg->sessions[2].handle = 12;
+    snprintf(reg->sessions[2].logical_id, sizeof(reg->sessions[2].logical_id), "live-id");
+
+    uint8_t buf[4096];
+    size_t n = encode_list_payload(reg, buf, sizeof(buf));
+    assert(n >= 4);
+    labpty_reader_t reader = { buf, buf + n };
+    uint32_t count = 0;
+    assert(labpty_read_u32(&reader, &count) == LABPTY_OK);
+    assert(count == 1); /* only the identity-bearing session is listed */
+
+    /* No empty ids and no duplicate ids survive in the encoded list. */
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t record_len = 0;
+        assert(labpty_read_u32(&reader, &record_len) == LABPTY_OK);
+        uint64_t handle = 0; int32_t pid = 0; uint32_t rows = 0, cols = 0; uint8_t alive = 0;
+        assert(labpty_read_u64(&reader, &handle) == LABPTY_OK);
+        assert(labpty_read_i32(&reader, &pid) == LABPTY_OK);
+        assert(labpty_read_u32(&reader, &rows) == LABPTY_OK);
+        assert(labpty_read_u32(&reader, &cols) == LABPTY_OK);
+        assert(labpty_read_u8(&reader, &alive) == LABPTY_OK);
+        uint32_t id_len = 0;
+        assert(labpty_read_u32(&reader, &id_len) == LABPTY_OK);
+        assert(id_len > 0); /* never an empty logical id */
+        reader.cur += id_len;
+    }
+}
+
 int main(void) {
     cover_is_canonical_delimiter();
     cover_expire_stalled_clients();
@@ -610,6 +659,7 @@ int main(void) {
     cover_output_wake_paths();
     cover_drain_session();
     cover_handle_write();
+    cover_list_payload_skips_identityless();
     if (cov_temp_ready) rmdir(cov_temp_dir);
     return 0;
 }

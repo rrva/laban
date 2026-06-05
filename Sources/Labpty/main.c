@@ -454,6 +454,14 @@ static size_t encode_list_payload(labpty_registry_t *registry, uint8_t *out, siz
     for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) {
         labpty_session_t *s = &registry->sessions[i];
         if (!s->used) continue;
+        /* A session that has relinquished its logical_id (close_pending
+         * teardown via labpty_session_request_close, or the unreaped branch
+         * of labpty_session_close) has no usable identity. The app keys tabs
+         * by logical_id, so an empty-id descriptor can match no tab; worse,
+         * two HUP-ignoring children terminated within the same reap window
+         * would emit two "" descriptors that trap the app's id-keyed metadata
+         * dictionary. Omit them — they are mid-teardown and about to reap. */
+        if (s->logical_id[0] == '\0') continue;
         labpty_descriptor_view_t descriptor = labpty_session_descriptor(s);
         /* Each record is length-delimited so future descriptor
          * extensions can be appended without breaking decoders of

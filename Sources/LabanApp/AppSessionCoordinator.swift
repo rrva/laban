@@ -696,8 +696,14 @@ final class AppSessionCoordinator {
         "labpty listSessions failed during tab metadata refresh: \(String(describing: error))")
       return
     }
+    // A close_pending labpty session relinquishes its logical id (""), so a
+    // burst of HUP-ignoring terminations can surface several identity-less
+    // descriptors in one list. The daemon omits them, but key defensively: an
+    // empty id matches no tab, and uniquing keeps any duplicate id from
+    // trapping the initializer (uniqueKeysWithValues aborts on collision).
     let descriptorById = Dictionary(
-      uniqueKeysWithValues: descriptors.map { ($0.logicalSessionId, $0) })
+      descriptors.lazy.filter { !$0.logicalSessionId.isEmpty }.map { ($0.logicalSessionId, $0) },
+      uniquingKeysWith: { current, _ in current })
     // Kick off the off-main libproc walk for the live children so the next
     // poll reads warm metadata instead of blocking the render tick on syscalls.
     refreshProcMetadataCache(forChildPids: descriptors.map { $0.childPid })
