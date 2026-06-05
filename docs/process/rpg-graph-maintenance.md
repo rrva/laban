@@ -39,8 +39,21 @@ tokens only.
 
 ### Hard-won gotchas
 
+- **Dispatch the worker as a context fork, not a fresh agent that must
+  `ToolSearch`.** Load the `rpg` MCP tools in the orchestrator session first,
+  then spawn the Haiku worker as a *fork* so `get_entities_for_lifting` /
+  `submit_lift_results` / `lifting_status` are already directly callable in its
+  function set. A fresh `general-purpose` subagent only receives the tool
+  *schemas* from `ToolSearch`, and Haiku reliably talks itself into "I can't
+  invoke these" and rabbit-holes into bash/npm/HTTP workarounds (observed: 24
+  wasted turns, zero batches submitted). The fork removes that indirection.
+- **Pin the mechanism in the worker prompt.** State plainly: *"the only
+  mechanism is calling the `mcp__rpg__*` functions directly; if a call errors,
+  report it verbatim and stop — never try shell/npm/HTTP."* Open the prompt with
+  a STEP 0 that calls `lifting_status` to prove the tools work before the loop —
+  it doubles as the reachability check if a fork ever does lack the server.
 - **Persist + resume.** The graph is written to disk after *every* submit, so
-  work is fully resumable. Chain fresh Haiku workers — each handles ~10–18
+  work is fully resumable. Chain successive Haiku forks — each handles ~10–18
   batches (~25 entities/batch) before its own context fills.
 - **Give workers a hard batch floor.** Haiku tends to "hand off" after 1–2
   batches. Instruct: *"do not report until the tool says DONE or you have
