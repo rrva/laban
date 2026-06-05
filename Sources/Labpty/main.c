@@ -690,6 +690,19 @@ static labpty_status_t handle_terminate(labpty_daemon_t *daemon, const uint8_t *
             close(session->slave_inspect_fd);
             session->slave_inspect_fd = -1;
         }
+        /* The dead-leak still owns the pty master: labpty_registry_reap
+         * reaped the child but only closes the inspect fd, leaving the
+         * master open for drain_session to close on EOF. Collapsing the
+         * slot here pre-empts that drain, so close the master now — every
+         * other teardown path (labpty_session_close, request_close,
+         * drain_session) closes it, and skipping it here orphaned one pty
+         * master fd per natural-exit-then-terminate cycle (an unbounded
+         * /dev/ptmx leak under churn; the freed slot then carried a live
+         * fd that the open-path memset orphaned permanently). */
+        if (session->master_fd >= 0) {
+            close(session->master_fd);
+            session->master_fd = -1;
+        }
         labpty_byte_ring_close(&session->ring);
         session->used = 0;
         session->alive = 0;

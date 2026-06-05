@@ -648,6 +648,45 @@ static void cover_list_payload_skips_identityless(void) {
     }
 }
 
+/* Regression: handle_terminate's dead-leak branch must close the pty master.
+ * A naturally-exited session that reap left as a dead-leak (used=1, alive=0,
+ * child_pid=0, ring still open) still owns its master fd. The branch closed
+ * the inspect fd and the ring but skipped the master, so terminating such a
+ * session leaked one /dev/ptmx fd whenever terminate beat drain_session to the
+ * slot — an unbounded fd leak under churn. */
+static void cover_terminate_deadleak_closes_master(void) {
+    ensure_cov_temp_dir();
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    cov_daemon.registry.next_handle = 500;
+    labpty_session_t *s = &cov_daemon.registry.sessions[0];
+    s->used = 1;
+    s->alive = 0;        /* reap already flipped alive on natural exit */
+    s->child_pid = 0;    /* child reaped -> dead-leak, not close_pending */
+    s->close_pending = 0;
+    s->handle = 400;
+    s->rows = 24;
+    s->cols = 80;
+    s->slave_inspect_fd = -1;
+    snprintf(s->logical_id, sizeof(s->logical_id), "deadleak");
+    char ring_path[LABPTY_PATH_BYTES + 1];
+    snprintf(ring_path, sizeof(ring_path), "%s/deadleak.br", cov_temp_dir);
+    assert(labpty_byte_ring_create(ring_path, LABPTY_MIN_OUTPUT_CAPACITY, "deadleak", &s->ring) == LABPTY_OK);
+
+    int master = open("/dev/null", O_RDONLY);
+    assert(master >= 0);
+    s->master_fd = master;
+
+    uint8_t pay[64], out[512];
+    size_t out_len = 0;
+    size_t n = build_handle_payload(pay, sizeof(pay), 400);
+    assert(handle_terminate(&cov_daemon, pay, n, out, sizeof(out), &out_len) == LABPTY_OK);
+
+    assert(s->used == 0);                                    /* slot collapsed */
+    assert(s->master_fd == -1);                              /* master field cleared */
+    assert(fcntl(master, F_GETFD) == -1 && errno == EBADF);  /* fd actually closed, not leaked */
+    unlink(ring_path);
+}
+
 int main(void) {
     cover_is_canonical_delimiter();
     cover_expire_stalled_clients();
@@ -660,6 +699,7 @@ int main(void) {
     cover_drain_session();
     cover_handle_write();
     cover_list_payload_skips_identityless();
+    cover_terminate_deadleak_closes_master();
     if (cov_temp_ready) rmdir(cov_temp_dir);
     return 0;
 }
