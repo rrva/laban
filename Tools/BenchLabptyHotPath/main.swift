@@ -43,6 +43,10 @@ import LabanTerminalCore
 ///                          than a fixed byte threshold.
 ///   --top-outliers N       print the N slowest consumer reads per iter
 ///                          for daemon-drain (default 0)
+///   --control-probe-interval-us N
+///                          while daemon modes run, issue listSessions RPCs
+///                          from a separate client every N microseconds and
+///                          report control-plane latency percentiles.
 ///
 /// Usage:
 ///   bench-labpty-hot-path                                # all modes, defaults
@@ -76,6 +80,7 @@ struct Options {
   var sessions: Int = 1
   var producer: Producer = .cat
   var floodSeconds: Int = 8
+  var controlProbeIntervalUs: UInt32 = 0
   var topOutliers: Int = 0
   var modes: [Mode] = Mode.allCases
 }
@@ -104,6 +109,12 @@ private func parseOptions(_ args: [String]) throws -> Options {
         throw BenchError("--flood-seconds requires a positive integer")
       }
       options.floodSeconds = value
+      i += 2
+    case "--control-probe-interval-us":
+      guard i + 1 < args.count, let value = UInt32(args[i + 1]), value > 0 else {
+        throw BenchError("--control-probe-interval-us requires a positive integer")
+      }
+      options.controlProbeIntervalUs = value
       i += 2
     case "--top-outliers":
       guard i + 1 < args.count, let value = Int(args[i + 1]), value >= 0 else {
@@ -144,6 +155,8 @@ private struct Sample {
   /// Consumer per-read latencies (ns). Empty for noread / ring-write modes.
   /// Concatenated across all sessions in a multi-session iter.
   var consumerReadNs: [UInt64]
+  /// Control RPC latencies (ns). Empty unless --control-probe-interval-us is set.
+  var controlProbeNs: [UInt64]
   /// Total bytes the consumer actually copied across all sessions.
   var consumerBytes: UInt64
   var overflowed: Bool
@@ -291,6 +304,54 @@ private final class AtomicFlag {
   func isSet() -> Bool { OSAtomicAdd32(0, &raw) != 0 }
 }
 
+private final class ControlProbe {
+  private let stopFlag = AtomicFlag()
+  private let group = DispatchGroup()
+  private let lock = NSLock()
+  private var samples: [UInt64] = []
+  private var failure: String?
+
+  init(socketPath: String, intervalUs: UInt32) throws {
+    let client = try LabptyTerminalSessionClient(
+      socketPath: socketPath, rpcTimeoutMilliseconds: 5_000)
+    _ = try client.hello()
+    group.enter()
+    DispatchQueue.global(qos: .userInitiated).async { [client, stopFlag] in
+      defer {
+        client.close()
+        self.group.leave()
+      }
+      while !stopFlag.isSet() {
+        let t0 = clockMonotonicNs()
+        do {
+          _ = try client.listLabptySessions()
+        } catch {
+          self.lock.withLock {
+            if self.failure == nil { self.failure = "\(error)" }
+          }
+          break
+        }
+        let t1 = clockMonotonicNs()
+        self.lock.withLock {
+          self.samples.append(t1 &- t0)
+        }
+        usleep(intervalUs)
+      }
+    }
+  }
+
+  func stopAndWait() throws -> [UInt64] {
+    stopFlag.set()
+    group.wait()
+    return try lock.withLock {
+      if let failure {
+        throw BenchError("control probe failed: \(failure)")
+      }
+      return samples
+    }
+  }
+}
+
 private struct SessionResult {
   var producerBytes: UInt64
   var consumerBytes: UInt64
@@ -411,6 +472,11 @@ private func runDaemonDrain(
   }()
 
   let group = DispatchGroup()
+  let controlProbe = options.controlProbeIntervalUs > 0
+    ? try ControlProbe(
+        socketPath: harness.socketPath,
+        intervalUs: options.controlProbeIntervalUs)
+    : nil
   let startNs = clockMonotonicNs()
   for slot in 0..<options.sessions {
     group.enter()
@@ -426,6 +492,7 @@ private func runDaemonDrain(
   }
   group.wait()
   let endNs = clockMonotonicNs()
+  let controlProbeNs = try controlProbe?.stopAndWait() ?? []
 
   for descriptor in descriptors {
     _ = try? client.terminate(handle: descriptor.ptyHandle)
@@ -444,6 +511,7 @@ private func runDaemonDrain(
     producerWallNs: endNs &- startNs,
     childCpuNs: cpuAfter &- cpuBefore,
     consumerReadNs: mergedReads,
+    controlProbeNs: controlProbeNs,
     consumerBytes: totalConsumerBytes,
     overflowed: overflowed)
 }
@@ -484,6 +552,7 @@ private func runRingWrite() throws -> Sample {
     producerWallNs: endNs &- startNs,
     childCpuNs: 0,
     consumerReadNs: [],
+    controlProbeNs: [],
     consumerBytes: 0,
     overflowed: false)
 }
@@ -533,6 +602,18 @@ private func summarize(mode: Mode, samples: [Sample], options: Options) {
         "  read_n=%d  read_p50=%.1fµs  read_p95=%.1fµs  read_p99=%.1fµs  read_p99.9=%.1fµs  read_max=%.1fµs",
       allConsumerNs.count, p50, p95, p99, p999, maxUs)
   }
+  let allControlNs = samples.flatMap { $0.controlProbeNs }
+  if !allControlNs.isEmpty {
+    let p50 = Double(percentileNs(allControlNs, 0.50)) / 1000.0
+    let p95 = Double(percentileNs(allControlNs, 0.95)) / 1000.0
+    let p99 = Double(percentileNs(allControlNs, 0.99)) / 1000.0
+    let p999 = Double(percentileNs(allControlNs, 0.999)) / 1000.0
+    let maxUs = Double(allControlNs.max() ?? 0) / 1000.0
+    line += String(
+      format:
+        "  control_n=%d  control_p50=%.1fµs  control_p95=%.1fµs  control_p99=%.1fµs  control_p99.9=%.1fµs  control_max=%.1fµs",
+      allControlNs.count, p50, p95, p99, p999, maxUs)
+  }
   print(line)
 
   if options.topOutliers > 0 && !allConsumerNs.isEmpty {
@@ -565,21 +646,28 @@ private func runMode(_ mode: Mode, payload: URL, options: Options) {
       samples.append(s)
       let mbps = Double(s.producerBytes) / (Double(s.producerWallNs) / 1e9) / (1024.0 * 1024.0)
       let extra: String
+      let controlExtra: String
       if !s.consumerReadNs.isEmpty {
         extra = String(
           format: "  reads=%d  consumer_bytes=%llu", s.consumerReadNs.count, s.consumerBytes)
       } else {
         extra = ""
       }
+      if !s.controlProbeNs.isEmpty {
+        controlExtra = String(format: "  control_rpc=%d", s.controlProbeNs.count)
+      } else {
+        controlExtra = ""
+      }
       print(
         String(
-          format: "  iter %d: wall=%.1f ms  bytes=%llu  throughput=%.1f MiB/s%@%@",
+          format: "  iter %d: wall=%.1f ms  bytes=%llu  throughput=%.1f MiB/s%@%@%@",
           i,
           Double(s.producerWallNs) / 1_000_000.0,
           s.producerBytes,
           mbps,
           s.overflowed ? "  overflowed" : "",
-          extra))
+          extra,
+          controlExtra))
     } catch {
       FileHandle.standardError.write(
         Data("bench[\(mode.rawValue)] iter \(i) failed: \(error)\n".utf8))
