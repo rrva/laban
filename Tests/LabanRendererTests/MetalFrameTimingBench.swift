@@ -1559,7 +1559,7 @@ final class MetalFrameTimingBench: XCTestCase {
         for col in 0..<cols {
           let color = m6Color(style: workload.style, row: row, col: col, seed: seed)
           payload.backgroundRuns.append(.init(row: row, startCol: col, colCount: 1, color: color))
-          appendM6Glyph(
+          _ = appendM6Glyph(
             to: &payload,
             workload: workload,
             row: row,
@@ -1570,8 +1570,9 @@ final class MetalFrameTimingBench: XCTestCase {
       } else {
         let color = m6Color(style: workload.style, row: row, col: 0, seed: seed)
         payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: color))
-        for col in 0..<cols {
-          appendM6Glyph(
+        var col = 0
+        while col < cols {
+          col += appendM6Glyph(
             to: &payload,
             workload: workload,
             row: row,
@@ -1595,9 +1596,10 @@ final class MetalFrameTimingBench: XCTestCase {
     col: Int,
     seed: Int,
     background: UInt32
-  ) {
+  ) -> Int {
     let text = m6Text(style: workload.style, row: row, col: col, seed: seed)
     let scalars = Array(text.unicodeScalars)
+    let wide = m6WideFlag(for: text)
     payload.glyphs.append(
       .init(
         row: row,
@@ -1607,7 +1609,10 @@ final class MetalFrameTimingBench: XCTestCase {
         foreground: 0xFF_FF_FF_FF,
         background: background,
         attributes: [],
-        wide: m6WideFlag(for: text)))
+        wide: wide))
+    // Wide glyphs span the lead cell plus a trailing spacer the producer never
+    // fills, so advance two columns and leave the spacer empty.
+    return wide == 1 ? 2 : 1
   }
 
   private func m6Color(style: M6Workload.Style, row: Int, col: Int, seed: Int) -> UInt32 {
@@ -1637,9 +1642,16 @@ final class MetalFrameTimingBench: XCTestCase {
   }
 
   private func m6WideFlag(for text: String) -> UInt8 {
+    // 1 == LABAN_CELL_WIDE_WIDE: the wide lead cell. A wide glyph's trailing
+    // spacer cell (LABAN_CELL_WIDE_SPACER_TAIL == 2) carries no glyph in real
+    // snapshots — FrameProducer skips it — so the payload tags only the lead as
+    // wide and the builder leaves the spacer column empty. The previous value
+    // (2) tagged the glyph itself as a spacer tail, which the GPU-cell payload
+    // builder correctly rejects (unsupportedWideFlag), making this workload
+    // spuriously unrenderable on the gpuCell path.
     switch text {
     case "表", "界", "👩‍💻":
-      return 2
+      return 1
     default:
       return 0
     }
