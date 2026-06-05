@@ -99,16 +99,45 @@ static void cover_parse_args(void) {
 
 static void cover_maintenance_due_after_poll(void) {
     unsigned ready_ticks = 12;
-    assert(maintenance_due_after_poll(0, &ready_ticks) == 1);
+    uint64_t next = 0;
+    /* Idle (poll timed out): always due, counter and floor reset. */
+    assert(maintenance_due_after_poll(0, 1000, &ready_ticks, &next) == 1);
     assert(ready_ticks == 0);
-    assert(maintenance_due_after_poll(-1, &ready_ticks) == 0);
+    assert(next == 1000 + LABPTY_MAINTENANCE_INTERVAL_NS);
+    /* Poll error: never due, counter untouched. */
+    assert(maintenance_due_after_poll(-1, 2000, &ready_ticks, &next) == 0);
     assert(ready_ticks == 0);
+
+    /* Ready-iteration budget path in isolation: pin `now` below the floor so
+     * only the 64-iteration budget can fire maintenance. */
+    ready_ticks = 0;
+    next = 0;
+    assert(maintenance_due_after_poll(1, 0, &ready_ticks, &next) == 1); /* now(0) >= next(0) */
+    assert(ready_ticks == 0);
+    /* next is now the floor; hold `now` at 1 so the floor never trips. */
     for (unsigned i = 1; i < LABPTY_MAINTENANCE_READY_BUDGET; i++) {
-        assert(maintenance_due_after_poll(1, &ready_ticks) == 0);
+        assert(maintenance_due_after_poll(1, 1, &ready_ticks, &next) == 0);
         assert(ready_ticks == i);
     }
-    assert(maintenance_due_after_poll(1, &ready_ticks) == 1);
+    assert(maintenance_due_after_poll(1, 1, &ready_ticks, &next) == 1);
     assert(ready_ticks == 0);
+
+    /* Wall-clock floor path: continuous readiness, counter far below the
+     * budget, but the maintenance interval has elapsed — maintenance must
+     * still fire. This is the slowloris / SIGKILL-deadline regression guard
+     * that the pure ready-count gate cannot provide. */
+    ready_ticks = 0;
+    next = 0;
+    assert(maintenance_due_after_poll(1, 0, &ready_ticks, &next) == 1); /* primes the floor */
+    uint64_t floor = next;
+    assert(floor == LABPTY_MAINTENANCE_INTERVAL_NS);
+    /* One tick below the floor, only the 2nd ready iteration: withheld. */
+    assert(maintenance_due_after_poll(1, floor - 1, &ready_ticks, &next) == 0);
+    assert(ready_ticks == 1);
+    /* At the floor, still only a handful of ready iterations: due anyway. */
+    assert(maintenance_due_after_poll(1, floor, &ready_ticks, &next) == 1);
+    assert(ready_ticks == 0);
+    assert(next == floor + LABPTY_MAINTENANCE_INTERVAL_NS);
 }
 
 static size_t build_handle_payload(uint8_t *buf, size_t cap, uint64_t handle) {

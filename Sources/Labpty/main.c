@@ -70,6 +70,17 @@ typedef struct {
 
 static const uint64_t LABPTY_IO_IDLE_TIMEOUT_NS = 250000000ull;
 static const unsigned LABPTY_MAINTENANCE_READY_BUDGET = 64;
+/* Wall-clock floor on the maintenance cadence. The ready-iteration budget
+ * above is the fast-flood throttle, but it is wall-clock-unbounded: a client
+ * that keeps `poll` returning >0 just under its 100ms timeout (a one-byte
+ * trickle, or a session flooding output) can stretch 64 ready iterations to
+ * ~64*100ms before maintenance runs. That defers heartbeat freshness, the
+ * 200ms terminate->SIGKILL escalation, and the frame-arrival deadline far
+ * past their budgets. The floor caps the maintenance interval regardless of
+ * readiness, so those deadlines hold under continuous load. 50ms keeps the
+ * SIGKILL deadline within ~250ms and is tighter than the 100ms idle-poll
+ * cadence maintenance ran at before the budget gate existed. */
+static const uint64_t LABPTY_MAINTENANCE_INTERVAL_NS = 50000000ull;
 static const unsigned LABPTY_SESSION_DRAIN_READ_BUDGET = 256;
 static const size_t LABPTY_SESSION_DRAIN_BYTE_BUDGET = 256 * 1024;
 static const unsigned LABPTY_SESSION_DRAIN_EMPTY_YIELDS = 1;
@@ -1187,15 +1198,25 @@ static void tick_heartbeats(labpty_daemon_t *daemon) {
     }
 }
 
-static int maintenance_due_after_poll(int ready, unsigned *ready_iterations_since_maintenance) {
+static int maintenance_due_after_poll(int ready, uint64_t now,
+                                      unsigned *ready_iterations_since_maintenance,
+                                      uint64_t *next_maintenance_ns) {
     assert(ready_iterations_since_maintenance != NULL);
+    assert(next_maintenance_ns != NULL);
     if (ready == 0) {
         *ready_iterations_since_maintenance = 0;
+        *next_maintenance_ns = now + LABPTY_MAINTENANCE_INTERVAL_NS;
         return 1;
     }
     if (ready < 0) return 0;
-    if (*ready_iterations_since_maintenance + 1 >= LABPTY_MAINTENANCE_READY_BUDGET) {
+    /* Due on the wall-clock floor OR the ready-iteration budget. The floor
+     * bounds the maintenance interval under continuous readiness (a trickle
+     * or flood that never lets `poll` time out); the budget is the fast-path
+     * throttle and a fallback should the monotonic clock fail to advance. */
+    if (now >= *next_maintenance_ns ||
+        *ready_iterations_since_maintenance + 1 >= LABPTY_MAINTENANCE_READY_BUDGET) {
         *ready_iterations_since_maintenance = 0;
+        *next_maintenance_ns = now + LABPTY_MAINTENANCE_INTERVAL_NS;
         return 1;
     }
     (*ready_iterations_since_maintenance)++;
@@ -1272,6 +1293,7 @@ static int event_loop(labpty_daemon_t *daemon) {
     assert(daemon != NULL);
     assert(daemon->listen_fd >= 0);
     unsigned ready_iterations_since_maintenance = 0;
+    uint64_t next_maintenance_ns = 0;
     while (!shutdown_requested) {
         labpty_poll_set_t poll_set;
         build_poll_set(daemon, &poll_set);
@@ -1284,7 +1306,9 @@ static int event_loop(labpty_daemon_t *daemon) {
         for (nfds_t i = 0; i < poll_set.count; i++) {
             service_poll_watch(daemon, &poll_set, i);
         }
-        if (maintenance_due_after_poll(ready, &ready_iterations_since_maintenance)) {
+        if (maintenance_due_after_poll(ready, monotonic_ns(),
+                                       &ready_iterations_since_maintenance,
+                                       &next_maintenance_ns)) {
             tick_heartbeats(daemon);
             int used_before = 0;
             for (int i = 0; i < LABPTY_MAX_SESSIONS; i++) used_before += daemon->registry.sessions[i].used;
