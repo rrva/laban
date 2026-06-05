@@ -601,6 +601,12 @@ public final class LabandSnapshotRingReader {
   private let slotStride: Int
   private let logicalSessionId: String
   private let incarnationId: String
+  // A freshly attached reader's consumer (the renderer's persistent target) is
+  // not coherent with the ring: the newest slot carries only that publish's
+  // per-row dirty delta, so on reconnect/relaunch painting just those rows
+  // leaves the rest of the screen stale until a manual redraw. The first served
+  // frame therefore reports full damage; later frames resume incremental ranges.
+  private var hasServedFirstFrame = false
 
   public init(
     attachment: LabandSnapshotRingAttachment,
@@ -667,9 +673,13 @@ public final class LabandSnapshotRingReader {
       }
     }
     guard let best else { throw LabandSnapshotRingError.noCompletedSnapshot }
+    // Force a full repaint on the first frame after (re)attach (nil ⇒ full),
+    // then resume the ring's incremental per-publish dirty ranges.
+    let dirtyRanges = hasServedFirstFrame ? best.dirtyRanges : nil
+    hasServedFirstFrame = true
     return LabandSnapshotFrame(
       generation: best.generation,
-      dirtyRanges: best.dirtyRanges,
+      dirtyRanges: dirtyRanges,
       ptyDrainMonoNs: best.ptyDrainMonoNs,
       snapshotPublishMonoNs: best.snapshotPublishMonoNs,
       snapshot: best.snapshot)

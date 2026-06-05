@@ -84,6 +84,43 @@ final class LabandSnapshotRingReaderFuzzTests: XCTestCase {
     return true
   }
 
+  // MARK: - Reconnect / first-frame full repaint
+
+  /// On (re)attach the consumer's persistent target is incoherent with the ring,
+  /// whose newest slot carries only a per-publish dirty delta. The reader must
+  /// report full damage (nil dirtyRanges) for the first served frame so the whole
+  /// restored screen repaints, then resume the slot's incremental ranges.
+  func testFreshReaderForcesFullDamageThenResumesIncremental() throws {
+    let (base, bytes) = try validRing()
+    let dir = ".tmp/laband-ring-firstframe-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(
+      at: URL(fileURLWithPath: dir), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: URL(fileURLWithPath: dir)) }
+    let path = "\(dir)/ring.bin"
+    try Data(bytes).write(to: URL(fileURLWithPath: path))
+    var attachment = base
+    attachment.path = path
+
+    func attach() throws -> LabandSnapshotRingReader {
+      try LabandSnapshotRingReader(
+        attachment: attachment, logicalSessionId: "fuzz", incarnationId: "inc")
+    }
+
+    let reader = try attach()
+    let first = try reader.latestSnapshotFrame()
+    let second = try reader.latestSnapshotFrame()
+    XCTAssertNil(first.dirtyRanges, "first frame after attach must force a full repaint")
+    XCTAssertNotNil(
+      second.dirtyRanges, "later frames resume the ring's incremental per-publish dirty ranges")
+    XCTAssertEqual(
+      first.generation, second.generation, "same latest slot — only the reported damage differs")
+
+    // A reader re-created on reconnect/relaunch re-arms the forced full repaint.
+    XCTAssertNil(
+      try attach().latestSnapshotFrame().dirtyRanges,
+      "a reconnect attaches a fresh reader, which must force a full repaint again")
+  }
+
   // MARK: - Broad seeded fuzz (regression net)
 
   func testSnapshotRingReaderSurvivesAdversarialBytes() throws {
