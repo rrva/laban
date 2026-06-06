@@ -286,6 +286,15 @@ void labpty_session_close(labpty_session_t *session) {
  * a HUP-ignoring child doesn't sit in the registry for long. */
 #define LABPTY_TERMINATE_HUP_BUDGET_NS 200000000ull  /* 200 ms */
 
+/* Grace window between first observing a hung-up-but-still-running session
+ * (alive=1, master_fd<0, child running) in labpty_registry_reap and tearing it
+ * down. Comfortably longer than the microsecond window in which a child that is
+ * merely exiting has closed its tty (hanging up the master) but is not yet a
+ * reapable zombie, so a natural exit is reaped by the waitpid path instead of
+ * force-closed; short enough that a genuine degraded-mode hangup does not sit
+ * falsely-alive for long. See labpty_session_t::hangup_deadline_ns. (R1) */
+#define LABPTY_HANGUP_GRACE_NS 250000000ull  /* 250 ms */
+
 void labpty_session_request_close(labpty_session_t *session, uint64_t now_ns) {
     assert(session != NULL);
     assert(session->master_fd >= -1);
@@ -384,6 +393,7 @@ void labpty_registry_reap(labpty_registry_t *registry) {
         if (got == s->child_pid || (got < 0 && errno == ECHILD)) {
             s->child_pid = 0;
             s->alive = 0;
+            s->hangup_deadline_ns = 0;
             if (s->slave_inspect_fd >= 0) {
                 close(s->slave_inspect_fd);
                 s->slave_inspect_fd = -1;
@@ -395,6 +405,29 @@ void labpty_registry_reap(labpty_registry_t *registry) {
                 s->terminate_deadline_ns = 0;
                 s->used = 0;
             }
+        } else if (s->alive && s->master_fd < 0) {
+            /* The child is still running (waitpid did not reap it) but its pty
+             * master is gone — drain_session closed it on EOF/hard error. The
+             * waitpid above will never reap a live child, so without this the
+             * slot would sit used=1/alive=1/master_fd=-1 forever (false
+             * liveness: listed alive and heartbeating, while writeInput/resize
+             * reject it and its logical_id stays held). Arm a grace deadline on
+             * first sight and tear the slot down through the same async close a
+             * client terminate uses only if it is STILL hung-up-but-running
+             * once the deadline elapses — so a child merely caught in the
+             * window of its own exit() is reaped by the waitpid path above on a
+             * later tick instead of being force-closed. The resulting
+             * used=1->alive=0,close_pending=1 transition is the TerminateSlow
+             * action LabptyLifecycle.tla already models. (R1) */
+            if (s->hangup_deadline_ns == 0) {
+                s->hangup_deadline_ns = now + LABPTY_HANGUP_GRACE_NS;
+            } else if (now >= s->hangup_deadline_ns) {
+                labpty_session_request_close(s, now);
+            }
+        } else if (s->hangup_deadline_ns != 0) {
+            /* Running with a healthy master again (or otherwise no longer a
+             * hangup): drop any stale grace arming. */
+            s->hangup_deadline_ns = 0;
         }
     }
 }

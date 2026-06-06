@@ -139,6 +139,85 @@ static void cover_reap(void) {
     reclaim_dead_session(&reg.sessions[2]);
 }
 
+/* R1 regression: labpty_registry_reap must tear down a still-ALIVE session
+ * whose pty master closed (drain_session on EOF in the degraded no-inspect
+ * path) but whose child keeps running — but only AFTER a grace deadline, so a
+ * child caught in its own exit() window is reaped into a dead-leak (id kept)
+ * by the waitpid path instead of being force-closed. Drives: arm-on-first-
+ * sight, hold within the grace window, tear-down once it elapses, the natural-
+ * exit path that must NOT trip the hangup, and the stale-arming clear. */
+static void cover_reap_master_hangup(void) {
+    labpty_registry_t reg;
+    labpty_registry_init(&reg, "/tmp");
+
+    /* Hung-up but still running: first reap arms the grace deadline only. */
+    pid_t stubborn = fork_stubborn_child();
+    usleep(50000);
+    labpty_session_t *s = &reg.sessions[0];
+    s->used = 1; s->alive = 1; s->close_pending = 0;
+    s->child_pid = stubborn; s->master_fd = -1; s->slave_inspect_fd = -1;
+    snprintf(s->logical_id, sizeof(s->logical_id), "hangup");
+    char path[LABPTY_PATH_BYTES + 1];
+    snprintf(path, sizeof(path), "/tmp/labpty-regcov-hangup-%ld.br", (long)getpid());
+    unlink(path);
+    assert(labpty_byte_ring_create(path, LABPTY_MIN_OUTPUT_CAPACITY, "hangup", &s->ring) == LABPTY_OK);
+
+    labpty_registry_reap(&reg);
+    assert(s->hangup_deadline_ns != 0);              /* armed */
+    assert(s->alive == 1 && s->close_pending == 0);  /* not yet torn down */
+
+    /* Still hung up but within the grace window: no tear-down. */
+    s->hangup_deadline_ns = (uint64_t)-1;            /* far future -> now < deadline */
+    labpty_registry_reap(&reg);
+    assert(s->alive == 1 && s->close_pending == 0);
+
+    /* Grace elapsed and still hung up: tear down via the async close. */
+    s->hangup_deadline_ns = 1;                       /* long past */
+    labpty_registry_reap(&reg);
+    assert(s->alive == 0);                           /* no longer falsely alive */
+    assert(s->close_pending == 1);                   /* async reap armed */
+    assert(s->logical_id[0] == '\0');                /* id relinquished -> reopen unblocked */
+
+    /* Finish the stubborn child the way the event loop would (SIGKILL + reap). */
+    for (int i = 0; i < 300 && reg.sessions[0].used; i++) {
+        reg.sessions[0].terminate_deadline_ns = 1;
+        labpty_registry_reap(&reg);
+        if (reg.sessions[0].used) usleep(10000);
+    }
+    assert(reg.sessions[0].used == 0);
+    unlink(path);
+
+    /* A naturally-exiting child whose master also closed must NOT be torn down
+     * as a hangup: reap's waitpid reaps it into a dead-leak with its id KEPT,
+     * and the grace deadline is never armed. */
+    pid_t exiting = fork_exiting_child();
+    usleep(50000);
+    labpty_session_t *d = &reg.sessions[1];
+    d->used = 1; d->alive = 1; d->close_pending = 0;
+    d->child_pid = exiting; d->master_fd = -1; d->slave_inspect_fd = -1;
+    snprintf(d->logical_id, sizeof(d->logical_id), "natural");
+    labpty_registry_reap(&reg);
+    assert(d->used == 1 && d->child_pid == 0 && d->alive == 0);  /* dead-leak */
+    assert(d->hangup_deadline_ns == 0);                          /* never armed */
+    assert(strcmp(d->logical_id, "natural") == 0);               /* id KEPT -> reclaimable */
+    reclaim_dead_session(d);
+
+    /* A running child with a healthy master clears any stale grace arming
+     * (the master_fd >= 0 / non-hangup branch). */
+    pid_t healthy = fork_stubborn_child();
+    usleep(50000);
+    labpty_session_t *h = &reg.sessions[2];
+    h->used = 1; h->alive = 1; h->close_pending = 0;
+    h->child_pid = healthy; h->master_fd = 0;        /* >= 0: master present */
+    h->hangup_deadline_ns = 12345;                   /* stale arming */
+    labpty_registry_reap(&reg);
+    assert(h->hangup_deadline_ns == 0);              /* cleared */
+    assert(h->alive == 1 && h->used == 1);
+    kill(healthy, SIGKILL);
+    int st; waitpid(healthy, &st, 0);
+    h->used = 0;
+}
+
 /* labpty_session_request_close on a child-alive session relinquishes the id
  * AND removes the shm .br dir entry immediately, while keeping the mapping
  * alive for reap's final heartbeat. Without the unlink-at-terminate the file
@@ -180,6 +259,7 @@ int main(void) {
     cover_find_and_ring_path();
     cover_wait_for_child_exit();
     cover_reap();
+    cover_reap_master_hangup();
     cover_request_close_unlinks_ring_path();
     return 0;
 }

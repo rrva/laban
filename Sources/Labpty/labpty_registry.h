@@ -20,6 +20,20 @@ typedef struct {
      * close_pending child gets escalated to SIGKILL. Zero when no
      * close is in flight. */
     uint64_t terminate_deadline_ns;
+    /* Absolute deadline (monotonic_ns) at which a still-ALIVE session whose
+     * pty master has gone away (master_fd < 0, set by drain_session on EOF)
+     * but whose child is still running gets torn down by labpty_registry_reap.
+     * The waitpid in reap never reaps a live child, so without this such a
+     * slot would sit used=1/alive=1/master_fd=-1 forever — listed alive and
+     * heartbeating while writeInput/resize reject it, its logical_id held for
+     * the child's whole lifetime. This only arises in the degraded path where
+     * the slave-inspect fd failed to open (a held inspect fd keeps the master
+     * EAGAIN, not EOF, while the child lives). Armed on first sight and acted
+     * on only if the slot is STILL hung-up-but-running once it elapses, so a
+     * child caught in the microsecond window of its own exit() is reaped by
+     * the normal waitpid path instead of being force-closed. Zero when not
+     * armed. (R1) */
+    uint64_t hangup_deadline_ns;
     uint64_t handle;
     pid_t child_pid;
     int master_fd;
