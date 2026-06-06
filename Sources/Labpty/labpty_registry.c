@@ -321,6 +321,12 @@ void labpty_session_request_close(labpty_session_t *session, uint64_t now_ns) {
          * MC_ReusePreFix.cfg. LabptyLifecycle.tla has no logical_id, so it
          * could not catch this — see formal-specs.md. */
         session->logical_id[0] = '\0';
+        /* Remove the shm dir entry now rather than at reap. The ring stays
+         * mapped (its fd was closed at create) so reap still publishes a final
+         * heartbeat and munmaps it, but the .br file no longer lingers on disk
+         * for the SIGKILL/reap window — and, since a close_pending session is
+         * no longer advertised in listSessions, nothing reopens it by path. */
+        labpty_byte_ring_unlink_path(&session->ring);
     } else {
         /* Child already gone; collapse the slot in place. */
         labpty_byte_ring_close(&session->ring);

@@ -21,6 +21,14 @@ labpty_status_t labpty_byte_ring_create(
 );
 
 void labpty_byte_ring_close(labpty_byte_ring_writer_t *writer);
+/* Remove the ring's on-disk path while keeping its live mapping. The fd was
+ * already closed at create (MAP_SHARED keeps the mapping valid), so this only
+ * unlinks the directory entry: the producer can still publish a final
+ * heartbeat into the mapping and an attached reader's existing mmap is
+ * unaffected. Used at terminate so a close_pending session's shm file does not
+ * linger on disk for the reap/SIGKILL window; the eventual
+ * labpty_byte_ring_close then just munmaps (the path is already cleared). */
+void labpty_byte_ring_unlink_path(labpty_byte_ring_writer_t *writer);
 labpty_status_t labpty_byte_ring_write(labpty_byte_ring_writer_t *writer, const uint8_t *bytes, size_t len);
 void labpty_byte_ring_heartbeat(labpty_byte_ring_writer_t *writer);
 

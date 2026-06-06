@@ -231,6 +231,17 @@ void labpty_byte_ring_close(labpty_byte_ring_writer_t *writer) {
     writer->fd = -1;
 }
 
+void labpty_byte_ring_unlink_path(labpty_byte_ring_writer_t *writer) {
+    assert(writer != NULL);
+    if (writer->path[0]) {
+        unlink(writer->path);
+        /* Clear the path so the eventual labpty_byte_ring_close skips its own
+         * unlink (the dir entry is already gone) — the live mapping is
+         * untouched and is still torn down there. */
+        writer->path[0] = '\0';
+    }
+}
+
 /* Modelled by specs/labpty/LabptyByteRing.tla::WriteCells + WritePublish.
  * NoTornRead and WindowDoesNotContainFutureWrites hold whenever the
  * readable window leaves a margin of at least MaxWriteSize bytes;

@@ -139,6 +139,40 @@ static void cover_reap(void) {
     reclaim_dead_session(&reg.sessions[2]);
 }
 
+/* labpty_session_request_close on a child-alive session relinquishes the id
+ * AND removes the shm .br dir entry immediately, while keeping the mapping
+ * alive for reap's final heartbeat. Without the unlink-at-terminate the file
+ * lingered on disk for the whole SIGKILL/reap window — and since a
+ * close_pending session is no longer listed, the drain-to-quiescent sweep
+ * could finish before reap removed it, stranding the ring file. */
+static void cover_request_close_unlinks_ring_path(void) {
+    labpty_session_t s;
+    memset(&s, 0, sizeof(s));
+    s.used = 1; s.alive = 1; s.master_fd = -1; s.slave_inspect_fd = -1;
+    snprintf(s.logical_id, sizeof(s.logical_id), "regcov-unlink");
+    char path[LABPTY_PATH_BYTES + 1];
+    snprintf(path, sizeof(path), "/tmp/labpty-regcov-unlink-%ld.br", (long)getpid());
+    unlink(path); /* defensive: no stale file from a prior aborted run */
+    assert(labpty_byte_ring_create(path, LABPTY_MIN_OUTPUT_CAPACITY, "regcov", &s.ring) == LABPTY_OK);
+    assert(access(path, F_OK) == 0);             /* present while the session is live */
+
+    pid_t child = fork_stubborn_child();         /* own pgroup; child_pid > 0 */
+    s.child_pid = child;
+    labpty_session_request_close(&s, 1);
+
+    assert(s.close_pending == 1);                /* child still alive -> close_pending */
+    assert(s.logical_id[0] == '\0');             /* id relinquished at terminate */
+    assert(access(path, F_OK) != 0);             /* .br dir entry removed now, not at reap */
+    assert(s.ring.path[0] == '\0');              /* path cleared so reap won't double-unlink */
+    assert(s.ring.map != NULL);                  /* mapping kept for the final heartbeat */
+    labpty_byte_ring_heartbeat(&s.ring);         /* still usable on the live mapping */
+
+    int st; waitpid(child, &st, 0);              /* request_close's SIGHUP killed it; reap */
+    s.child_pid = 0;
+    labpty_byte_ring_close(&s.ring);             /* munmaps; path empty -> no second unlink */
+    assert(s.ring.map == NULL);
+}
+
 int main(void) {
     cover_valid_output_capacity();
     cover_make_logical_id();
@@ -146,5 +180,6 @@ int main(void) {
     cover_find_and_ring_path();
     cover_wait_for_child_exit();
     cover_reap();
+    cover_request_close_unlinks_ring_path();
     return 0;
 }
