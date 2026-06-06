@@ -679,6 +679,126 @@ final class AppSessionCoordinatorTests: XCTestCase {
     process.waitUntilExit()
   }
 
+  // Regression for the reattach "subrows missing until a keystroke" bug. On a
+  // quiet reattach the per-frame metadata refresh is gated by the ~0.25s idle
+  // throttle (and window visibility), so the sidebar subrows could stay empty
+  // until output re-drove a refresh. `MainWindowController.makeAndShow` now
+  // forces one refresh right after adopting sessions. This proves the `force`
+  // path applies inside the throttle window where a normal refresh is skipped.
+  func testForceRefreshAppliesEvenWhenThrottleWouldSkip() throws {
+    let labandURL = URL(fileURLWithPath: ".build/debug/laband")
+    guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {
+      throw XCTSkip("laband binary is not built")
+    }
+
+    let root = URL(
+      fileURLWithPath: ".tmp/lbn-force-\(UUID().uuidString.prefix(8))",
+      isDirectory: true)
+    let socketPath = root.appendingPathComponent("s.sock").path
+    let journalURL = root.appendingPathComponent("journal", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let process = Process()
+    process.executableURL = labandURL
+    process.arguments = ["--socket", socketPath, "--journal", journalURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    let seedClient = try waitForClient(socketPath: socketPath)
+    _ = try seedClient.createSession(
+      TerminalSessionLaunchRequest(
+        executable: "/bin/sh",
+        argv: ["/bin/sh", "-c", "sleep 30"],
+        cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+        rows: 24,
+        cols: 80,
+        logicalSessionId: "reattach-tab"
+      ))
+    seedClient.close()
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+
+    let coordinatorClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    let coordinator = AppSessionCoordinator(
+      client: coordinatorClient,
+      shellLaunch: .passthrough,
+      cwdByTabId: ["reattach-tab": FileManager.default.homeDirectoryForCurrentUser.path]
+    )
+    defer { coordinator.detach() }
+
+    func makeModel() throws -> AppModel {
+      let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+      model.replaceTabs(
+        from: WorkspaceState(
+          windows: [
+            WindowState(
+              id: "main-window",
+              selectedTabId: "reattach-tab",
+              tabs: [
+                TabState(
+                  id: "reattach-tab",
+                  cwd: FileManager.default.homeDirectoryForCurrentUser.path,
+                  launchCommand: "sh",
+                  lastActiveAt: Date())
+              ])
+          ]))
+      return model
+    }
+
+    func reportsSleep(_ model: AppModel) -> Bool {
+      (model.tabs.first?.titleMetadata.process.foregroundCommand ?? "").contains("sleep")
+    }
+
+    // Warm the daemon's foreground-process view until it reports `sleep`. The
+    // forced refresh here also exercises the happy path the fix uses at reattach.
+    let warm = try makeModel()
+    let deadline = Date().addingTimeInterval(5)
+    var warmed = false
+    while Date() < deadline {
+      coordinator.refreshTabMetadata(for: warm.tabs, into: warm, now: Date(), force: true)
+      if reportsSleep(warm) {
+        warmed = true
+        break
+      }
+      usleep(150_000)
+    }
+    try XCTSkipUnless(warmed, "daemon never reported foreground 'sleep' within timeout")
+
+    // A non-forced refresh issued immediately after the warm loop falls inside
+    // the ~0.25s throttle window, so it is skipped and the fresh model stays
+    // empty — this is the reattach failure mode the fix targets.
+    let base = Date()
+    let throttledModel = try makeModel()
+    coordinator.refreshTabMetadata(for: throttledModel.tabs, into: throttledModel, now: base)
+    XCTAssertFalse(
+      reportsSleep(throttledModel),
+      "a throttled (non-forced) refresh must not populate metadata within the window")
+
+    // The forced refresh at the same instant bypasses the throttle and
+    // populates the model — exactly the eager reattach refresh.
+    let forcedModel = try makeModel()
+    coordinator.refreshTabMetadata(for: forcedModel.tabs, into: forcedModel, now: base, force: true)
+    XCTAssertTrue(
+      reportsSleep(forcedModel),
+      "a forced refresh must populate metadata even inside the throttle window")
+
+    let cleanupClient = try LabandTerminalSessionClient(socketPath: socketPath)
+    _ = try? cleanupClient.terminate(sessionId: "reattach-tab")
+    _ = try? cleanupClient.shutdownWhenIdle()
+    cleanupClient.close()
+    process.waitUntilExit()
+  }
+
   private func waitForClient(socketPath: String) throws -> LabandTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?

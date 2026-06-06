@@ -249,6 +249,16 @@ final class MainWindowController: NSWindowController {
       Self.promptToAdoptUnclaimedLabptySessions(coordinator: sessionCoordinator, model: model)
     }
 
+    // Reattach resolves each tab's daemon-derived metadata (foreground process,
+    // cwd) lazily on the first *visible* render frame. But AppKit reports a
+    // restored window's occlusionState late and the idle policy parks the link
+    // until it does, so on a quiet reattach the sidebar subrows can stay empty
+    // (titles only) until a keystroke generates output that re-drives a refresh.
+    // Resolve once here — eagerly, before the terminal view is built, and ungated
+    // by the visibility/throttle gates the per-frame path applies — so the first
+    // frame paints real subrows instead of racing AppKit and the daemon.
+    sessionCoordinator?.refreshTabMetadata(for: model.tabs, into: model, force: true)
+
     let termView = TerminalBitmapView(
       model: model,
       fontAtlas: fontAtlas,

@@ -346,8 +346,14 @@ final class AppSessionCoordinator {
     return adopted
   }
 
-  func refreshTabMetadata(for tabs: [Tab], into model: AppModel, now: Date = Date()) {
-    if let last = lastTabMetadataRefreshAt, now.timeIntervalSince(last) < 0.25 {
+  /// - Parameter force: bypass the ~4 Hz idle throttle. The reattach path calls
+  ///   this once eagerly (see `MainWindowController.makeAndShow`) so the first
+  ///   frame paints real per-tab subrows instead of leaving them to a visible
+  ///   idle render frame that must win the occlusion/cold-metadata race.
+  func refreshTabMetadata(
+    for tabs: [Tab], into model: AppModel, now: Date = Date(), force: Bool = false
+  ) {
+    if !force, let last = lastTabMetadataRefreshAt, now.timeIntervalSince(last) < 0.25 {
       return
     }
     lastTabMetadataRefreshAt = now
