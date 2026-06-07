@@ -293,6 +293,64 @@ final class LabptyDaemonTests: XCTestCase {
         + "open→exit→terminate cycles — slave_inspect_fd leak (H-6)")
   }
 
+  func testLabptyClientFdsAreCloseOnExec() throws {
+    // R4: the Swift client's control socket, output-wake fd, and byte-ring fd
+    // must be close-on-exec. Darwin inherits fds across exec unless FD_CLOEXEC
+    // is set, and an inherited control/wake socket keeps a daemon client slot
+    // alive in a child after the app thinks it closed it (stale attachment/wake
+    // state, delayed client_release).
+    let harness = try launchHarness()
+
+    // Baseline count of fds a freshly exec'd child inherits, before we open any
+    // labpty client fds.
+    let before = try childInheritedFdCount()
+
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let wakeFD = try XCTUnwrap(client.openOutputWakeFileDescriptor())
+    defer { Darwin.close(wakeFD) }
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80, argv: ["/bin/cat"], logicalSessionId: "cloexec"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    // Direct check on the one publicly-reachable fd (proves Self.connect, which
+    // both the control socket and the wake fd go through, sets FD_CLOEXEC).
+    XCTAssertNotEqual(
+      fcntl(wakeFD, F_GETFD) & FD_CLOEXEC, 0,
+      "the output-wake fd must be close-on-exec")
+
+    // Comprehensive: opening the control socket + wake fd + ring fd must not
+    // increase the number of fds a newly exec'd child inherits.
+    let after = try childInheritedFdCount()
+    _ = reader  // keep the ring fd open across the measurement
+    XCTAssertEqual(
+      after, before,
+      "control/wake/ring fds leaked across exec (inherited fd count rose by "
+        + "\(after - before)) — a labpty client fd is not close-on-exec")
+
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
+  /// Number of open fds a freshly exec'd child inherits (`ls /dev/fd | wc -l`).
+  /// Only non-close-on-exec fds survive the exec, so the delta across opening
+  /// labpty client fds is exactly the count that failed to set FD_CLOEXEC.
+  private func childInheritedFdCount() throws -> Int {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = ["-c", "ls /dev/fd | wc -l"]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let text =
+      String(data: data, encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return Int(text) ?? -1
+  }
+
   func testEstablishedIdleClientStaysCounted() throws {
     let harness = try launchHarness()
     let owner = try waitForClient(socketPath: harness.socketPath)

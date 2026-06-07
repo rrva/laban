@@ -22,7 +22,10 @@ public final class LabptyByteRingReader {
 
   public init(path: String) throws {
     self.path = path
-    fd = Darwin.open(path, O_RDONLY)
+    // O_CLOEXEC: Darwin fds are inherited across exec unless close-on-exec is
+    // set (there is no SOCK_CLOEXEC-style default here). A child spawned while
+    // this ring fd is open must not inherit it. (R4)
+    fd = Darwin.open(path, O_RDONLY | O_CLOEXEC)
     guard fd >= 0 else {
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }

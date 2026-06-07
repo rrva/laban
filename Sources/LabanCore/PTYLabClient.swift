@@ -613,6 +613,13 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   private static func connect(socketPath: String, timeoutMilliseconds: Int) throws -> Int32 {
     let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    // Mark close-on-exec immediately: Darwin has no SOCK_CLOEXEC for socket(),
+    // and an inherited labpty control/wake socket would keep a daemon client
+    // slot alive in a child after the app thinks it closed it, delaying
+    // client_release cleanup and leaving stale attachment/wake state. This is
+    // the single chokepoint for both the control socket and the output-wake fd.
+    // (R4)
+    _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
     var one: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
     try setTimeout(fd: fd, option: SO_RCVTIMEO, milliseconds: timeoutMilliseconds)
