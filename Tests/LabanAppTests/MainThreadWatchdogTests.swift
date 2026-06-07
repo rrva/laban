@@ -55,8 +55,10 @@ final class MainThreadWatchdogTests: XCTestCase {
       decide(heartbeatAgeMs: 10_000_000, selfGapMs: 5000), .paused)
   }
 
-  /// The display link can stop on occlusion while the watchdog keeps ticking on
-  /// its own queue (small self-gap). The ceiling drops the oversized gap.
+  /// A confirmed wedge larger than the ceiling is dropped by `decide` as a
+  /// final backstop. Occlusion/idle gaps no longer reach here: the confirmation
+  /// probe in `tick` resolves a parked-but-healthy main thread before `decide`
+  /// is consulted — see the `probeStep` tests below.
   func testOversizedGapWithHealthyTimerHitsCeiling() {
     XCTAssertEqual(
       decide(heartbeatAgeMs: 120_000, selfGapMs: 50), .aboveCeiling)
@@ -73,6 +75,62 @@ final class MainThreadWatchdogTests: XCTestCase {
   func testSelfGapAtToleranceStillCaptures() {
     XCTAssertEqual(
       decide(heartbeatAgeMs: 800, selfGapMs: 1000), .capture(stalledForMs: 800))
+  }
+
+  // MARK: - Confirmation probe state machine
+
+  private func probeStep(
+    heartbeatAgeMs: Int,
+    thresholdMs: Int = 200,
+    probeInFlight: Bool = false,
+    probeOutstandingMs: Int = 0,
+    confirmTimeoutMs: Int = 200
+  ) -> MainThreadWatchdog.ProbeStep {
+    MainThreadWatchdog.probeStep(
+      heartbeatAgeMs: heartbeatAgeMs,
+      thresholdMs: thresholdMs,
+      probeInFlight: probeInFlight,
+      probeOutstandingMs: probeOutstandingMs,
+      confirmTimeoutMs: confirmTimeoutMs)
+  }
+
+  func testFreshHeartbeatIsHealthy() {
+    XCTAssertEqual(probeStep(heartbeatAgeMs: 100), .healthy)
+  }
+
+  /// The core false-positive fix: a stale heartbeat on its own only asks for a
+  /// confirmation probe — it never escalates straight to a capture. A parked or
+  /// occluded display link looks exactly like this and must not be recorded as
+  /// a stall.
+  func testStaleHeartbeatRequestsProbeNotCapture() {
+    XCTAssertEqual(probeStep(heartbeatAgeMs: 5000), .sendProbe)
+  }
+
+  /// A dispatched probe that is still within the confirm window is inconclusive
+  /// — the main thread may simply be about to service it.
+  func testOutstandingProbeWithinWindowAwaits() {
+    XCTAssertEqual(
+      probeStep(
+        heartbeatAgeMs: 5000, probeInFlight: true, probeOutstandingMs: 100),
+      .awaitingProbe)
+  }
+
+  /// Only when a dispatched probe has itself been unable to run for the confirm
+  /// window is the main thread declared genuinely wedged.
+  func testStuckProbeConfirmsWedge() {
+    XCTAssertEqual(
+      probeStep(
+        heartbeatAgeMs: 5000, probeInFlight: true, probeOutstandingMs: 250),
+      .confirmed)
+  }
+
+  /// The confirm window is inclusive at its edge: a probe outstanding for
+  /// exactly the window is treated as confirmed.
+  func testProbeOutstandingAtWindowConfirms() {
+    XCTAssertEqual(
+      probeStep(
+        heartbeatAgeMs: 5000, probeInFlight: true, probeOutstandingMs: 200),
+      .confirmed)
   }
 
   // MARK: - Retention cap
