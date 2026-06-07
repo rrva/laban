@@ -3,13 +3,14 @@ import LabanRenderer
 import LabanTerminalCore
 
 struct AppModelSurfaceSession {
-  var tab: Tab
+  var tabId: Tab.ID
   var tabIndex: Int
   var session: Session
 }
 
 struct AppModelSurfaceSessionSnapshot {
-  var activeTab: Tab?
+  var activeTabId: Tab.ID?
+  var activeSessionId: Session.ID?
   var tabSessions: [AppModelSurfaceSession]
 }
 
@@ -326,19 +327,23 @@ public final class AppModel {
 
   func surfaceSessionSnapshot() -> AppModelSurfaceSessionSnapshot {
     withModelLock {
-      var activeTab: Tab?
+      var activeTabId: Tab.ID?
+      var activeSessionId: Session.ID?
       var tabSessions: [AppModelSurfaceSession] = []
       tabSessions.reserveCapacity(_tabs.count)
       for (idx, tab) in _tabs.enumerated() {
         if tab.isActive {
-          activeTab = tab
+          activeTabId = tab.id
+          activeSessionId = tab.sessionId
         }
         if let session = sessionRegistry.session(id: tab.sessionId) {
-          tabSessions.append(AppModelSurfaceSession(tab: tab, tabIndex: idx, session: session))
+          tabSessions.append(
+            AppModelSurfaceSession(tabId: tab.id, tabIndex: idx, session: session))
         }
       }
       return AppModelSurfaceSessionSnapshot(
-        activeTab: activeTab,
+        activeTabId: activeTabId,
+        activeSessionId: activeSessionId,
         tabSessions: tabSessions
       )
     }

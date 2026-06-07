@@ -385,22 +385,21 @@ public final class TerminalSurfaceController {
     now: Date = Date()
   ) -> TerminalSurfaceSessionSyncResult {
     let snapshot = model.surfaceSessionSnapshot()
-    let active = snapshot.activeTab
-    let activeTabId = active?.id
-    let activeSessionId = active?.sessionId
+    let activeTabId = snapshot.activeTabId
+    let activeSessionId = snapshot.activeSessionId
     var activeTerminalDirty = false
     var modelChanged = false
     var dirtySessionIds = Set<Session.ID>()
 
     for item in snapshot.tabSessions {
-      let tab = item.tab
+      let tabId = item.tabId
       let session = item.session
       session.setCaptureFrame(captureFrame)
       if polling == .pollAllSessions {
         _ = session.poll()
       }
       let metadataSync = model.syncSurfaceMetadata(
-        forTab: tab.id,
+        forTab: tabId,
         tabIndex: item.tabIndex,
         from: session,
         now: now,
@@ -417,7 +416,7 @@ public final class TerminalSurfaceController {
       dirtySessionIds.insert(session.id)
       if noteOutputOnDirty,
         model.noteSurfaceOutput(
-          forTab: tab.id,
+          forTab: tabId,
           tabIndex: item.tabIndex,
           sessionId: session.id,
           at: now
@@ -425,7 +424,7 @@ public final class TerminalSurfaceController {
       {
         modelChanged = true
       }
-      if tab.id == activeTabId {
+      if tabId == activeTabId {
         activeTerminalDirty = true
       } else if markInactiveDirtyRendered {
         _ = session.markRendered()
