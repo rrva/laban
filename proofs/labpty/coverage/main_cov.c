@@ -541,7 +541,7 @@ static void cover_drain_session(void) {
     assert(write(data_pipe[1], payload, sizeof(payload) - 1) == (ssize_t)(sizeof(payload) - 1));
     init_drain_session(&s, data_pipe[0], "drain-data");
     drain_session(&cov_daemon, &s);
-    assert(s.master_fd == data_pipe[0]);           /* data then EAGAIN/yield: stay open */
+    assert(s.master_fd == data_pipe[0]);           /* data then EAGAIN: stay open */
     assert(s.ring.output_offset == sizeof(payload) - 1);
     close(data_pipe[1]);
     close_drain_session(&s);

@@ -1,7 +1,6 @@
 #include "labpty_registry.h"
 
 #include <poll.h>
-#include <sched.h>
 
 #define LABPTY_MAX_POLL_WATCHES (1 + LABPTY_MAX_CLIENTS + LABPTY_MAX_SESSIONS)
 
@@ -97,7 +96,6 @@ static const unsigned LABPTY_MAINTENANCE_READY_BUDGET = 64;
 static const uint64_t LABPTY_MAINTENANCE_INTERVAL_NS = 50000000ull;
 static const unsigned LABPTY_SESSION_DRAIN_READ_BUDGET = 256;
 static const size_t LABPTY_SESSION_DRAIN_BYTE_BUDGET = 256 * 1024;
-static const unsigned LABPTY_SESSION_DRAIN_EMPTY_YIELDS = 1;
 /* Maximum wall-clock time we'll wait for a single request frame to
  * arrive in full, measured from the first byte. Two seconds is well
  * above any legitimate round-trip on a local UNIX socket and below the
@@ -1135,7 +1133,6 @@ static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
     assert(session->master_fd >= 0);
     size_t drained = 0;
     unsigned reads = 0;
-    unsigned empty_yields = 0;
     int wrote_output = 0;
     while (reads < LABPTY_SESSION_DRAIN_READ_BUDGET && drained < LABPTY_SESSION_DRAIN_BYTE_BUDGET) {
         ssize_t n = read(session->master_fd, daemon->read_buffer, sizeof(daemon->read_buffer));
@@ -1143,19 +1140,11 @@ static void drain_session(labpty_daemon_t *daemon, labpty_session_t *session) {
             labpty_byte_ring_write(&session->ring, daemon->read_buffer, (size_t)n);
             drained += (size_t)n;
             reads++;
-            empty_yields = 0;
             wrote_output = 1;
             continue;
         }
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (wrote_output && empty_yields < LABPTY_SESSION_DRAIN_EMPTY_YIELDS) {
-                empty_yields++;
-                sched_yield();
-                continue;
-            }
-            break;
-        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
         close(session->master_fd);
         session->master_fd = -1;
         break;
