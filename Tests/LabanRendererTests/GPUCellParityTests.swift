@@ -548,7 +548,8 @@ final class GPUCellParityTests: XCTestCase {
     rFull.waitForLastFrame()
     XCTAssertTrue(
       rFull.render(
-        terminalAreaBackground, cellPayload: frameBFull, damage: .full, rendererFallbackReason: nil))
+        terminalAreaBackground, cellPayload: frameBFull, damage: .full,
+        rendererFallbackReason: nil))
     rFull.waitForLastFrame()
     let full = try readResult(renderer: rFull, label: "gapped-full")
 

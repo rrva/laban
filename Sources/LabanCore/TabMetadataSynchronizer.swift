@@ -271,8 +271,9 @@ final class TabMetadataSynchronizer {
     // nothing the sidebar renders. Short-circuit before the title struct copy,
     // re-resolve, and the `modelChanged` it would report — the per-output-tick
     // cost the profiler flagged.
-    guard tabs[idx].titleMetadata.unseenOutput != wantUnseen
-      || tabs[idx].titleMetadata.activityState != wantState
+    guard
+      tabs[idx].titleMetadata.unseenOutput != wantUnseen
+        || tabs[idx].titleMetadata.activityState != wantState
     else { return false }
     tabs[idx].titleMetadata.unseenOutput = wantUnseen
     tabs[idx].titleMetadata.activityState = wantState
