@@ -477,6 +477,129 @@ final class GPUCellParityTests: XCTestCase {
     return payload
   }
 
+  // Regression: a GPU-cell partial-damage frame must be pixel-identical to a full
+  // redraw of the same content. The cell-glyph pass draws the *persistent full
+  // grid*, clipped only by the damage scissor. When two dirty rows are
+  // non-contiguous (Claude Code's spinner far from its updating output line) the
+  // union bounding-box scissor spans the clean interior rows between them. Those
+  // rows carry no fresh background solid — the payload emits backgrounds only for
+  // dirty rows — so re-running the glyph pass over them re-composites their
+  // anti-aliased edges onto the loaded target each frame: the text accumulates
+  // and the screen shimmers. The fix scissors the glyph pass to each dirty Y
+  // range so clean interior rows stay untouched by the load action. Latent in the
+  // GPU-cell partial path (238beaf); surfaced once noteOutput stopped forcing full
+  // damage on every output tick (10289cf).
+  func testGPUCellPartialDamageMatchesFullRedrawWithGappedDirtyRows() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    if #unavailable(macOS 26) {
+      throw XCTSkip("GPU cell renderer is gated to macOS 26")
+    }
+    MetalRenderer.useGPUCellPath = true
+    MetalRenderer.useClassicDamageScoped = true
+
+    let defaultBg: UInt32 = 0x10_20_30_FF
+    let terminalAreaBackground: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+        color: defaultBg,
+        source: .terminal)
+    ]
+
+    // Two non-contiguous dirty rows leave clean rows between them, so the
+    // damage-union scissor spans the gap.
+    let dirtyRows = [1, rows - 2]
+    let baseSeed = 1
+    let changedSeed = 9
+    let allRows = Array(0..<rows)
+
+    // Frame A: every row at the base seed.
+    let frameA = griddedPayload(
+      includedRows: allRows, defaultBg: defaultBg, rowSeed: { _ in baseSeed })
+    // Frame B (full reference): only the dirty rows change; clean rows keep the
+    // base seed so they are byte-identical to frame A — exactly what a faithful
+    // partial frame must reproduce.
+    let frameBFull = griddedPayload(
+      includedRows: allRows, defaultBg: defaultBg,
+      rowSeed: { dirtyRows.contains($0) ? changedSeed : baseSeed })
+    // Frame B (partial payload): carries only the dirty rows, as FrameProducer
+    // emits a partial frame.
+    let frameBPartial = griddedPayload(
+      includedRows: dirtyRows, defaultBg: defaultBg, rowSeed: { _ in changedSeed })
+    let damage = RenderDamage.partial(yRanges: dirtyRows.map { dirtyRange(forRow: $0) })
+
+    let rPartial = try makeRenderer(label: "gapped-partial")
+    XCTAssertTrue(
+      rPartial.render(
+        terminalAreaBackground, cellPayload: frameA, damage: .full, rendererFallbackReason: nil))
+    rPartial.waitForLastFrame()
+    XCTAssertTrue(
+      rPartial.render(
+        terminalAreaBackground, cellPayload: frameBPartial, damage: damage,
+        rendererFallbackReason: nil))
+    rPartial.waitForLastFrame()
+    let partial = try readResult(renderer: rPartial, label: "gapped-partial")
+
+    let rFull = try makeRenderer(label: "gapped-full")
+    XCTAssertTrue(
+      rFull.render(
+        terminalAreaBackground, cellPayload: frameA, damage: .full, rendererFallbackReason: nil))
+    rFull.waitForLastFrame()
+    XCTAssertTrue(
+      rFull.render(
+        terminalAreaBackground, cellPayload: frameBFull, damage: .full, rendererFallbackReason: nil))
+    rFull.waitForLastFrame()
+    let full = try readResult(renderer: rFull, label: "gapped-full")
+
+    try assertPixelsEqual(
+      expected: full.image,
+      actual: partial.image,
+      fixture: "gpu-partial-gapped-vs-full",
+      expectedPNG: full.png,
+      actualPNG: partial.png)
+  }
+
+  /// A full-grid cell payload whose per-row glyphs and background colour are
+  /// derived deterministically from `rowSeed(row)`, so rows sharing a seed across
+  /// two payloads are byte-identical. `includedRows` controls which rows the
+  /// payload actually carries (the whole grid for a full frame, the dirty subset
+  /// for a partial one).
+  private func griddedPayload(
+    includedRows: [Int], defaultBg: UInt32, rowSeed: (Int) -> Int
+  ) -> TerminalCellPayload {
+    let ascii = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: defaultBg,
+      dirtyRows: includedRows)
+    let alpha = defaultBg & 0xFF
+    for row in includedRows {
+      let seed = rowSeed(row)
+      let base = UInt32((seed + row * 17) & 0x1F)
+      let bg: UInt32 =
+        ((0x20 + base) << 24) | ((0x30 + base) << 16) | ((0x40 + base) << 8) | alpha
+      payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+      for col in 0..<cols {
+        let scalar = ascii[(col + row + seed) % ascii.count]
+        payload.glyphs.append(
+          .init(
+            row: row,
+            col: col,
+            text: String(scalar),
+            scalarValue: scalar.unicodeScalars.first?.value,
+            foreground: 0xDD_EE_EE_FF,
+            background: bg,
+            attributes: []))
+      }
+    }
+    return payload
+  }
+
   func testRenderFailureReasonReportsFullRedrawNoContentAndClearsOnSuccess() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

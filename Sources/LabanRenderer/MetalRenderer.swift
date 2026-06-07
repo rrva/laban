@@ -1490,9 +1490,35 @@ public final class MetalRenderer: RendererBackend {
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(glyphAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
-      encoder.drawPrimitives(
-        type: .triangle, vertexStart: 0,
-        vertexCount: 6, instanceCount: cellGlyphs.count)
+      // The cell-glyph buffer is the persistent full grid, so this draw rasterizes
+      // every row that falls inside the active scissor. Under partial damage the
+      // union bounding-box scissor (set above for the background/sidebar passes)
+      // spans any clean rows lying between two disjoint dirty runs — e.g. an
+      // animated spinner far from updating output. Those interior rows carry no
+      // fresh background solid (the payload only emits backgrounds for dirty rows),
+      // so re-running the glyph pass over them re-composites their anti-aliased
+      // edges onto the loaded target every frame and the text slowly accumulates
+      // and shimmers. Scope the glyph rasterization to exactly the dirty Y ranges
+      // so clean rows stay untouched by the persistent target's load action.
+      if case .partial(let yRanges) = damage {
+        for range in yRanges {
+          guard
+            let rangeScissor = scissorRectFromYRanges(
+              [range],
+              surfacePxW: target.width,
+              surfacePxH: surfacePxH,
+              scale: layer.contentsScale)
+          else { continue }
+          encoder.setScissorRect(rangeScissor)
+          encoder.drawPrimitives(
+            type: .triangle, vertexStart: 0,
+            vertexCount: 6, instanceCount: cellGlyphs.count)
+        }
+      } else {
+        encoder.drawPrimitives(
+          type: .triangle, vertexStart: 0,
+          vertexCount: 6, instanceCount: cellGlyphs.count)
+      }
     }
     encoder.endEncoding()
     return true
