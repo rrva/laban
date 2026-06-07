@@ -25,6 +25,20 @@ typedef struct {
     int output_wake;
     int wake_armed;
     int wake_pending;
+    /* Session handles this wake-fd client is parked over, refreshed on every
+     * successful parkOutputWake. notify_output_wake_clients delivers a wake to
+     * an armed wake fd when output lands on a handle in this set — so wake
+     * ownership is self-contained on the wake connection, not inferred only
+     * from a sibling control connection's attachment. parkOutputWake travels on
+     * the control socket, which the Swift client reconnects independently of the
+     * persistent wake fd; the attachment-only gate therefore dropped a wake for
+     * output that arrived between the old control fd's release (client_release
+     * scrubs its attachment bit) and the new control fd re-attaching. The watch
+     * set survives that window because it lives on the wake fd. Handles are
+     * globally unique and monotonic, so a stale entry never matches a live
+     * session. (R2) */
+    uint32_t wake_watch_count;
+    uint64_t wake_watch_handles[LABPTY_MAX_SESSIONS];
     char client_id[LABPTY_LOGICAL_ID_BYTES + 1];
     size_t read_have;
     labpty_frame_header_t header;
@@ -483,7 +497,8 @@ static size_t encode_list_payload(labpty_registry_t *registry, uint8_t *out, siz
     return (size_t)(writer.cur - out);
 }
 
-static void arm_output_wake_clients(labpty_daemon_t *daemon, const char *client_id);
+static void arm_output_wake_clients(labpty_daemon_t *daemon, const char *client_id,
+                                    const uint64_t *handles, uint32_t count);
 
 static int hello_request_has_capability(const labpty_hello_request_t *request, const char *capability) {
     assert(request != NULL);
@@ -543,18 +558,18 @@ static labpty_status_t handle_park_output_wake(labpty_daemon_t *daemon, labpty_c
     }
     if (parked) {
         /* A control-socket reconnect scrubs the old connection slot from
-         * attached_clients before the app re-parks the already-open wake socket.
-         * Treat a successful park over handles this client is actively reading as
-         * an idempotent re-claim of those live sessions; otherwise the subsequent
-         * notify path suppresses the wake because no attached slot has the same
-         * logical client_id. */
+         * attached_clients before the app re-parks. Re-claim the parked-over
+         * live sessions for THIS (control) connection so the connected-client
+         * count (ADR 0010) reflects the reconnected owner. Wake DELIVERY no
+         * longer depends on this — arm_output_wake_clients records the watch set
+         * on the wake fd itself (R2) — but the count still should. */
         uint8_t bit = (uint8_t)(1u << client_index(daemon, client));
         for (uint32_t i = 0; i < request.count; i++) {
             labpty_session_t *session = labpty_registry_find(&daemon->registry, request.handles[i]);
             assert(session != NULL);
             if (session->alive) session->attached_clients |= bit;
         }
-        arm_output_wake_clients(daemon, client->client_id);
+        arm_output_wake_clients(daemon, client->client_id, request.handles, request.count);
     }
     labpty_writer_t writer = { .cur = out, .end = out + cap };
     status = labpty_write_u8(&writer, (uint8_t)(parked ? 1 : 0));
@@ -1006,18 +1021,37 @@ static int session_has_attached_client_id(const labpty_daemon_t *daemon, const l
     return 0;
 }
 
-static void arm_output_wake_clients(labpty_daemon_t *daemon, const char *client_id) {
+static void arm_output_wake_clients(labpty_daemon_t *daemon, const char *client_id,
+                                    const uint64_t *handles, uint32_t count) {
     assert(daemon != NULL);
     assert(client_id != NULL);
+    assert(count == 0 || handles != NULL);
+    /* count is bounded by LABPTY_MAX_SESSIONS at the decode boundary (the
+     * request's handles[] is sized to it and the decoder is CBMC-proven), the
+     * same trust the park loops above rely on. */
+    assert(count <= LABPTY_MAX_SESSIONS);
     for (int i = 0; i < LABPTY_MAX_CLIENTS; i++) {
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use || !client->output_wake) continue;
         if (!client_id_matches(client, client_id)) continue;
+        /* Record the watch set so notify_output_wake_clients can deliver wakes
+         * for these handles independently of any control connection's
+         * attachment, surviving a control-socket reconnect (R2). */
+        client->wake_watch_count = count;
+        for (uint32_t h = 0; h < count; h++) client->wake_watch_handles[h] = handles[h];
         if (!client->wake_armed) {
             client->wake_armed = 1;
             daemon->output_wake_armed_count++;
         }
     }
+}
+
+static int wake_client_watches_handle(const labpty_client_t *client, uint64_t handle) {
+    assert(client != NULL);
+    for (uint32_t i = 0; i < client->wake_watch_count; i++) {
+        if (client->wake_watch_handles[i] == handle) return 1;
+    }
+    return 0;
 }
 
 static int queue_output_wake(labpty_client_t *client) {
@@ -1064,7 +1098,12 @@ static void notify_output_wake_clients(labpty_daemon_t *daemon, labpty_session_t
         labpty_client_t *client = &daemon->clients[i];
         if (!client->in_use || !client->output_wake || client->client_id[0] == '\0') continue;
         if (!client->wake_armed) continue;
-        if (!session_has_attached_client_id(daemon, session, client->client_id)) continue;
+        /* Deliver if a sibling control connection with this client_id is
+         * attached (covers the initial pre-park arming) OR if this wake fd is
+         * itself parked over the session — the latter is independent of the
+         * control connection and so survives a control-socket reconnect (R2). */
+        if (!session_has_attached_client_id(daemon, session, client->client_id)
+            && !wake_client_watches_handle(client, session->handle)) continue;
         client->wake_armed = 0;
         daemon->output_wake_armed_count--;
         if (queue_output_wake(client) != 0) client_release(daemon, client);

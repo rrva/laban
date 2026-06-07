@@ -314,9 +314,16 @@ static void cover_output_wake_paths(void) {
     cov_daemon.clients[3].fd = -1; cov_daemon.clients[3].in_use = 1; cov_daemon.clients[3].output_wake = 1; cov_daemon.clients[3].wake_armed = 1; set_client_id(&cov_daemon.clients[3], "client-a");
     cov_daemon.clients[4].fd = -1; cov_daemon.clients[4].in_use = 1; cov_daemon.clients[4].output_wake = 1; set_client_id(&cov_daemon.clients[4], "client-a");
     cov_daemon.output_wake_armed_count = 1;
-    arm_output_wake_clients(&cov_daemon, "client-a");
+    uint64_t arm_handles[2] = { 100, 200 };
+    arm_output_wake_clients(&cov_daemon, "client-a", arm_handles, 2);
     assert(cov_daemon.clients[4].wake_armed == 1);
     assert(cov_daemon.output_wake_armed_count == 2);
+    /* arm records the watch set on every matching wake fd (R2). */
+    assert(cov_daemon.clients[3].wake_watch_count == 2 && cov_daemon.clients[3].wake_watch_handles[0] == 100);
+    assert(cov_daemon.clients[4].wake_watch_count == 2 && cov_daemon.clients[4].wake_watch_handles[1] == 200);
+    /* count == 0 path: empty watch set, still arms. */
+    arm_output_wake_clients(&cov_daemon, "client-a", NULL, 0);
+    assert(cov_daemon.clients[4].wake_watch_count == 0);
 
     labpty_client_t queue_client = {0};
     queue_client.fd = -1;
@@ -392,6 +399,36 @@ static void cover_output_wake_paths(void) {
     assert(read(wake_pair[1], &wake_byte, 1) == 1 && wake_byte == 1);
     close(wake_pair[0]);
     close(wake_pair[1]);
+
+    /* R2: an armed wake fd that is NOT attached via any control client but IS
+     * parked over the session's handle still receives a wake. The watch set,
+     * not control attachment, drives delivery here — so a wake survives a
+     * control-socket reconnect that scrubbed the attachment. Covers the OR's
+     * second operand (wake_client_watches_handle) being the deciding term. */
+    int watch_pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, watch_pair) == 0);
+    memset(&cov_daemon, 0, sizeof(cov_daemon));
+    session = &cov_daemon.registry.sessions[0];
+    session->used = 1;
+    session->alive = 1;
+    session->handle = 100;
+    session->attached_clients = 0;               /* no control client attached */
+    match = &cov_daemon.clients[0];
+    match->fd = watch_pair[0];
+    match->in_use = 1;
+    match->output_wake = 1;
+    match->wake_armed = 1;
+    set_client_id(match, "client-a");
+    match->wake_watch_count = 1;
+    match->wake_watch_handles[0] = 100;          /* parked over this handle */
+    cov_daemon.output_wake_armed_count = 1;
+    notify_output_wake_clients(&cov_daemon, session);
+    assert(match->wake_armed == 0);              /* delivered via the watch set */
+    assert(cov_daemon.output_wake_armed_count == 0);
+    uint8_t watch_byte = 0;
+    assert(read(watch_pair[1], &watch_byte, 1) == 1 && watch_byte == 1);
+    close(watch_pair[0]);
+    close(watch_pair[1]);
 
     memset(&cov_daemon, 0, sizeof(cov_daemon));
     session = &cov_daemon.registry.sessions[0];

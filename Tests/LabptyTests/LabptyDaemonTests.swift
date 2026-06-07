@@ -159,6 +159,66 @@ final class LabptyDaemonTests: XCTestCase {
     _ = try client.terminate(handle: descriptor.ptyHandle)
   }
 
+  func testParkedWakeSurvivesControlDropBeforeRepark() throws {
+    // R2: a parked wake fd must keep firing on output that arrives AFTER its
+    // sibling control socket drops but BEFORE the app re-parks. parkOutputWake
+    // travels on the control socket, which the Swift client reconnects
+    // independently of the persistent wake fd. The pre-fix notify gate only
+    // delivered when an in-use control client with the same client_id was
+    // attached, so output in the reconnect window found no attached client and
+    // the wake was dropped (UI fell back to the ~1s poll). The watch set now
+    // recorded on the wake fd itself delivers it regardless.
+    let harness = try launchHarness()
+    let client = try waitForClient(socketPath: harness.socketPath)
+    defer { client.close() }
+    let wakeFD = try XCTUnwrap(client.openOutputWakeFileDescriptor())
+    defer { Darwin.close(wakeFD) }
+
+    // Two output bursts with a gap so we can park between them and have the
+    // second burst land after the control socket has been dropped.
+    let descriptor = try client.openSession(
+      LabptyOpenSessionRequest(
+        rows: 24, cols: 80,
+        argv: [
+          "/bin/sh", "-c",
+          "printf first-burst; sleep 0.8; printf r2-second-burst; sleep 5",
+        ],
+        logicalSessionId: "r2-wake-control-drop"))
+    let reader = try LabptyByteRingReader(path: descriptor.byteRingShmPath)
+
+    // openOutputWake armed the wake; the first burst delivers one wake byte.
+    XCTAssertEqual(try readExactRaw(fd: wakeFD, count: 1).count, 1)
+
+    // Drain through the first burst and park at the current offset: the wake fd
+    // is re-armed AND records its watch set over this handle.
+    let drained = try waitForOutputWithOffset(reader: reader, contains: "first-burst")
+    XCTAssertTrue(
+      try client.parkOutputWake(
+        entries: [
+          LabptyOutputWakeParkEntry(
+            ptyHandle: descriptor.ptyHandle, observedOutputOffset: drained.offset)
+        ]
+      ).parked)
+
+    // Drop the control socket. The daemon scrubs its attachment bit on its next
+    // poll; the persistent wake fd and its watch set remain, and the app has NOT
+    // re-parked — exactly the window the pre-fix gate lost a wake in.
+    client.close()
+    usleep(150_000)  // let the daemon process the control disconnect
+
+    // The second burst arrives with no control client attached. Pre-fix this
+    // wake was suppressed and readExactRaw would time out; the watch set now
+    // delivers it.
+    XCTAssertEqual(
+      try readExactRaw(fd: wakeFD, count: 1).count, 1,
+      "a parked wake must survive a control-socket drop and fire on output that "
+        + "arrives before the app re-parks")
+    let output = try waitForOutput(reader: reader, contains: "r2-second-burst")
+    XCTAssertTrue(output.contains("r2-second-burst"))
+
+    _ = try client.terminate(handle: descriptor.ptyHandle)
+  }
+
   func testWakeOperationsRequireAdvertisedCapability() throws {
     let harness = try launchHarness()
     try waitForSocketFile(socketPath: harness.socketPath)
