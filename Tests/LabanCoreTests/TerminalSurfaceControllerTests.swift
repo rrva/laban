@@ -204,6 +204,39 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       controller.sidebarRebuildCountForTesting, expected, "metadata change must rebuild")
   }
 
+  func testSidebarMemoSurvivesOutputOnlyActivityChurn() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let tabId = model.tabs[0].id
+
+    _ = controller.sidebarCommands(activeTabId: tabId, viewportHeight: 200)
+    let baseline = controller.sidebarRebuildCountForTesting
+
+    // An output tick bumps only the per-tab activity timestamps, which live on
+    // Tab (not TabTitleMetadata) and are never drawn in the sidebar. The memo
+    // must survive it — this is the per-output-tick rebuild the profiler flagged.
+    try model.updateTitleMetadata(forTab: tabId, lastOutputAt: Date(timeIntervalSince1970: 500))
+    try model.updateTitleMetadata(forTab: tabId, lastActivityAt: Date(timeIntervalSince1970: 600))
+    _ = controller.sidebarCommands(activeTabId: tabId, viewportHeight: 200)
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting, baseline,
+      "output-only activity-timestamp churn must not invalidate the sidebar memo")
+
+    // A genuinely sidebar-visible change still rebuilds.
+    try model.updateTerminalTitle("renamed", forTab: tabId)
+    _ = controller.sidebarCommands(activeTabId: tabId, viewportHeight: 200)
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting, baseline + 1,
+      "a sidebar-visible metadata change must still rebuild")
+  }
+
   func testCellPayloadModeSkipsTerminalCommandsWhenCompatible() throws {
     var size = LabanTerminalSize()
     size.rows = 4
@@ -867,7 +900,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertFalse(secondSession.renderDirty(), "inactive dirty session is marked rendered")
 
     let updatedSecond = try XCTUnwrap(model.tabs.first { $0.id == secondTab.id })
-    XCTAssertEqual(updatedSecond.titleMetadata.lastOutputAt, now)
+    XCTAssertEqual(updatedSecond.lastOutputAt, now)
     XCTAssertTrue(updatedSecond.titleMetadata.unseenOutput)
     XCTAssertEqual(updatedSecond.titleMetadata.activityState, .unseenOutput)
   }

@@ -171,8 +171,6 @@ public struct TabTitleMetadata: Codable, Equatable {
   public var agent: TabAgentMetadata
   public var agentStatus: TabAgentStatus
   public var activityState: TabActivityState
-  public var lastActivityAt: Date?
-  public var lastOutputAt: Date?
   public var unseenOutput: Bool
   public var bellAttention: Bool
   /// Unseen OSC 9 desktop notification for this tab, or nil when none is
@@ -198,8 +196,6 @@ public struct TabTitleMetadata: Codable, Equatable {
     agent: TabAgentMetadata = TabAgentMetadata(),
     agentStatus: TabAgentStatus = TabAgentStatus(),
     activityState: TabActivityState = .running,
-    lastActivityAt: Date? = nil,
-    lastOutputAt: Date? = nil,
     unseenOutput: Bool = false,
     bellAttention: Bool = false,
     notification: TabNotification? = nil,
@@ -217,8 +213,6 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.agent = agent
     self.agentStatus = agentStatus
     self.activityState = activityState
-    self.lastActivityAt = lastActivityAt
-    self.lastOutputAt = lastOutputAt
     self.unseenOutput = unseenOutput
     self.bellAttention = bellAttention
     self.notification = notification
@@ -267,6 +261,7 @@ public enum TabTitleResolver {
     _ metadata: TabTitleMetadata,
     fallbackPosition: Int,
     now: Date = Date(),
+    lastActivity: Date? = nil,
     maxTitleScalars: Int? = nil,
     maxSubtitleScalars: Int? = nil
   ) -> ResolvedTabTitle {
@@ -276,6 +271,7 @@ public enum TabTitleResolver {
     let subtitle = secondaryLine(
       for: metadata,
       now: now,
+      lastActivity: lastActivity,
       title: choice.title,
       titleSource: choice.source
     )
@@ -487,6 +483,7 @@ public enum TabTitleResolver {
   private static func secondaryLine(
     for metadata: TabTitleMetadata,
     now: Date,
+    lastActivity: Date?,
     title: String,
     titleSource: TabTitleSource
   ) -> String? {
@@ -524,7 +521,7 @@ public enum TabTitleResolver {
     case .waiting:
       parts.append("waiting")
     default:
-      if let age = compactAge(from: metadata.lastOutputAt ?? metadata.lastActivityAt, now: now) {
+      if let age = compactAge(from: lastActivity, now: now) {
         parts.append(age)
       }
     }

@@ -140,6 +140,7 @@ public struct SidebarProducer {
       let resolved = TabTitleResolver.resolve(
         tab.titleMetadata,
         fallbackPosition: tab.position,
+        lastActivity: tab.lastOutputAt ?? tab.lastActivityAt,
         maxTitleScalars: titleMaxScalars,
         maxSubtitleScalars: infoMaxScalars
       )

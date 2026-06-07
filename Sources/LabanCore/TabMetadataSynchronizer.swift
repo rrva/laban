@@ -259,27 +259,32 @@ final class TabMetadataSynchronizer {
 
   @discardableResult
   func noteOutput(forTab tabId: Tab.ID, at idx: Int, date: Date, tabs: inout [Tab]) -> Bool {
-    let before = tabs[idx].titleMetadata
-    tabs[idx].titleMetadata.lastOutputAt = date
-    tabs[idx].titleMetadata.lastActivityAt = date
-    if tabs[idx].status == .running {
-      if tabs[idx].isActive {
-        tabs[idx].titleMetadata.unseenOutput = false
-        tabs[idx].titleMetadata.activityState = .active
-      } else {
-        tabs[idx].titleMetadata.unseenOutput = true
-        tabs[idx].titleMetadata.activityState = .unseenOutput
-      }
-    }
+    // Activity timestamps live on Tab, not titleMetadata: writing them here no
+    // longer mutates the title struct, so an output tick can't churn the
+    // sidebar's metadata-keyed cache.
+    tabs[idx].lastOutputAt = date
+    tabs[idx].lastActivityAt = date
+    guard tabs[idx].status == .running else { return false }
+    let wantUnseen = !tabs[idx].isActive
+    let wantState: TabActivityState = tabs[idx].isActive ? .active : .unseenOutput
+    // Steady streaming on an already-active or already-unseen tab changes
+    // nothing the sidebar renders. Short-circuit before the title struct copy,
+    // re-resolve, and the `modelChanged` it would report — the per-output-tick
+    // cost the profiler flagged.
+    guard tabs[idx].titleMetadata.unseenOutput != wantUnseen
+      || tabs[idx].titleMetadata.activityState != wantState
+    else { return false }
+    tabs[idx].titleMetadata.unseenOutput = wantUnseen
+    tabs[idx].titleMetadata.activityState = wantState
     Self.resolveTitle(in: &tabs, at: idx)
-    return tabs[idx].titleMetadata != before
+    return true
   }
 
   @discardableResult
   func noteBell(forTab tabId: Tab.ID, at date: Date, tabs: inout [Tab]) -> Bool {
     guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
     let before = tabs[idx].titleMetadata
-    tabs[idx].titleMetadata.lastActivityAt = date
+    tabs[idx].lastActivityAt = date
     if tabs[idx].status == .running {
       tabs[idx].titleMetadata.bellAttention = !tabs[idx].isActive
     }

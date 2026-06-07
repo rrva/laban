@@ -1085,7 +1085,7 @@ public final class AppModel {
       _tabs[idx].titleMetadata.userTitle = sanitized
       _tabs[idx].titleMetadata.displayTitle = sanitized
       _tabs[idx].titleMetadata.titleSource = .user
-      _tabs[idx].titleMetadata.lastActivityAt = Date()
+      _tabs[idx].lastActivityAt = Date()
     }
   }
 
@@ -1134,8 +1134,8 @@ public final class AppModel {
       if let process { _tabs[idx].titleMetadata.process = process }
       if let agent { _tabs[idx].titleMetadata.agent = agent }
       if let activityState { _tabs[idx].titleMetadata.activityState = activityState }
-      if let lastActivityAt { _tabs[idx].titleMetadata.lastActivityAt = lastActivityAt }
-      if let lastOutputAt { _tabs[idx].titleMetadata.lastOutputAt = lastOutputAt }
+      if let lastActivityAt { _tabs[idx].lastActivityAt = lastActivityAt }
+      if let lastOutputAt { _tabs[idx].lastOutputAt = lastOutputAt }
       if let unseenOutput { _tabs[idx].titleMetadata.unseenOutput = unseenOutput }
       if let bellAttention { _tabs[idx].titleMetadata.bellAttention = bellAttention }
       if let exitStatus { _tabs[idx].titleMetadata.exitStatus = exitStatus }

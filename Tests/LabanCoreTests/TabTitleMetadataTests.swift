@@ -290,6 +290,7 @@ final class TabTitleMetadataTests: XCTestCase {
 
   func testSubtitleIncludesWorkspaceProcessAgeAndExit() {
     let now = Date(timeIntervalSinceReferenceDate: 1_000)
+    let activity = now.addingTimeInterval(-14)
     var metadata = TabTitleMetadata(
       displayTitle: "Tab 1",
       titleSource: .fallback,
@@ -299,16 +300,17 @@ final class TabTitleMetadataTests: XCTestCase {
         branch: "main",
         isDirty: true
       ),
-      process: TabProcessMetadata(foregroundProcess: "claude"),
-      lastOutputAt: now.addingTimeInterval(-14)
+      process: TabProcessMetadata(foregroundProcess: "claude")
     )
 
-    var resolved = TabTitleResolver.resolve(metadata, fallbackPosition: 1, now: now)
+    var resolved = TabTitleResolver.resolve(
+      metadata, fallbackPosition: 1, now: now, lastActivity: activity)
     XCTAssertEqual(resolved.subtitle, "laban@cobra | main* | claude | 14s")
 
     metadata.activityState = .exited
     metadata.exitStatus = 7
-    resolved = TabTitleResolver.resolve(metadata, fallbackPosition: 1, now: now)
+    resolved = TabTitleResolver.resolve(
+      metadata, fallbackPosition: 1, now: now, lastActivity: activity)
     XCTAssertEqual(resolved.subtitle, "laban@cobra | main* | claude | exited 7")
     XCTAssertEqual(resolved.statusBadge, "!")
   }
