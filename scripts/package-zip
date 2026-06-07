@@ -91,8 +91,12 @@ fi
 # Final hygiene gate on the whole bundle (build-app already gates the
 # binary). Catches identifying strings that might land in xattrs, the
 # Info.plist, or the SwiftPM resource bundles that get copied in.
+# The `NSHumanReadableCopyright` notice (`© <year> Ragnar Rova`) is a
+# deliberate, public credit, so that exact form is exempt; the developer name
+# anywhere else — or a host path / team id — is still treated as a leak.
 forbidden=$(LC_ALL=C find "$app_bundle" -type f -print0 |
-  xargs -0 grep -aIlE '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' || true)
+  xargs -0 grep -aHInE '/Users/|Ragnar Rova|U34QC433V8|/private/var/folders/' |
+  grep -vE '©[[:space:]]+[0-9]{4}[[:space:]]+Ragnar Rova' || true)
 if [ -n "$forbidden" ]; then
   printf 'package-zip failed: identifying strings present in:\n%s\n' "$forbidden" >&2
   exit 1
