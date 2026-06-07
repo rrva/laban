@@ -986,7 +986,8 @@ static int client_pump_write(labpty_client_t *client) {
 
 /* Drain a session's staged writeInput tail to the master, non-blocking. The
  * event loop calls this on POLLOUT for a session with pending input. A hard
- * write error drops the tail — the reap path tears the dead session down. */
+ * write error (EIO: the slave/connection is gone; EBADF) closes the master so
+ * the session is torn down by the same reap path drain_session's EOF feeds. */
 static void flush_pending_input(labpty_session_t *session) {
     assert(session != NULL);
     while (session->pending_input_sent < session->pending_input_total) {
@@ -996,8 +997,26 @@ static void flush_pending_input(labpty_session_t *session) {
         if (n > 0) { session->pending_input_sent += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; /* retry next POLLOUT */
+        /* Hard error: the master can no longer accept this staged tail (the
+         * child closed its slave or exited before POLLOUT). The client already
+         * saw writeInput succeed for it under canonical backpressure (ADR
+         * 0008), so the suffix is unrecoverable. Trace the dropped byte count
+         * and close the master so the session goes through the same teardown
+         * drain_session's EOF feeds (reap reaps an exited child into a dead-leak,
+         * or the R1 grace tears down a still-running degraded hangup) — rather
+         * than staying alive having silently swallowed accepted input, which
+         * would weaken the externally-atomic guarantee of ADR 0008. (R3) */
+        size_t dropped = session->pending_input_total - session->pending_input_sent;
+        int werr = errno;
         session->pending_input_total = 0;
         session->pending_input_sent = 0;
+        fprintf(stderr,
+            "labpty: dropped %zu staged writeInput byte(s) on session %llu after a "
+            "master write error (%s) — the child hung up before the accepted tail "
+            "could flush; tearing the session down (ADR 0008)\n",
+            dropped, (unsigned long long)session->handle, strerror(werr));
+        close(session->master_fd);
+        session->master_fd = -1;
         return;
     }
     session->pending_input_total = 0;
@@ -1246,7 +1265,9 @@ static void service_poll_watch(labpty_daemon_t *daemon, const labpty_poll_set_t 
         labpty_session_t *s = &daemon->registry.sessions[index];
         if (!s->used || s->master_fd < 0) return;
         if (revents & POLLOUT) flush_pending_input(s);
-        if (poll_revents_readable(revents)) drain_session(daemon, s);
+        /* flush_pending_input may have closed the master on a hard write error
+         * (R3); re-check before draining, which asserts master_fd >= 0. */
+        if (s->master_fd >= 0 && poll_revents_readable(revents)) drain_session(daemon, s);
     }
 }
 

@@ -724,6 +724,43 @@ static void cover_terminate_deadleak_closes_master(void) {
     unlink(ring_path);
 }
 
+/* flush_pending_input: the staged-tail success path, and the R3 hard-error
+ * path that must drop the accepted tail AND close the master (so reap tears the
+ * session down) rather than silently swallowing input the client already saw
+ * acked under ADR 0008 backpressure. */
+static void cover_flush_pending_input(void) {
+    /* Success: the whole staged tail flushes to a writable peer. */
+    int ok_pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, ok_pair) == 0);
+    labpty_session_t s;
+    memset(&s, 0, sizeof(s));
+    s.used = 1; s.alive = 1; s.master_fd = ok_pair[0]; s.slave_inspect_fd = -1;
+    memcpy(s.pending_input, "abc", 3);
+    s.pending_input_total = 3; s.pending_input_sent = 0;
+    flush_pending_input(&s);
+    assert(s.pending_input_total == 0 && s.pending_input_sent == 0);
+    assert(s.master_fd == ok_pair[0]);              /* still open on success */
+    uint8_t got[3] = { 0 };
+    assert(read(ok_pair[1], got, 3) == 3 && memcmp(got, "abc", 3) == 0);
+    close(ok_pair[0]); close(ok_pair[1]);
+
+    /* Hard error (R3): a master write error drops the accepted tail and closes
+     * the master so the session is torn down, not left silently-alive. */
+    signal(SIGPIPE, SIG_IGN);                       /* the daemon ignores SIGPIPE */
+    int pipe_fds[2];
+    assert(pipe(pipe_fds) == 0);
+    close(pipe_fds[0]);                             /* read end closed -> write EPIPE */
+    memset(&s, 0, sizeof(s));
+    s.used = 1; s.alive = 1; s.handle = 77; s.master_fd = pipe_fds[1]; s.slave_inspect_fd = -1;
+    const char *tail = "staged-suffix";
+    size_t tlen = strlen(tail);
+    memcpy(s.pending_input, tail, tlen);
+    s.pending_input_total = tlen; s.pending_input_sent = 0;
+    flush_pending_input(&s);
+    assert(s.pending_input_total == 0 && s.pending_input_sent == 0);  /* tail dropped */
+    assert(s.master_fd == -1);                      /* master closed -> reap teardown */
+}
+
 int main(void) {
     cover_is_canonical_delimiter();
     cover_expire_stalled_clients();
@@ -734,6 +771,7 @@ int main(void) {
     cover_poll_dispatch();
     cover_output_wake_paths();
     cover_drain_session();
+    cover_flush_pending_input();
     cover_handle_write();
     cover_list_payload_skips_identityless();
     cover_terminate_deadleak_closes_master();
