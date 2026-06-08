@@ -208,6 +208,34 @@ final class AppModelTests: XCTestCase {
     XCTAssertNil(bgExit(), "the dot stays clear after switching away from a watched failure")
   }
 
+  func testSelectingTabClearsExplicitTabIndicatorColor() throws {
+    let model = try makeModel()
+    try model.createTab()  // tab[1] is active; tab[0] is a background tab
+    let bgTabId = model.tabs[0].id
+    guard let bgSession = model.session(forTab: bgTabId) else {
+      XCTFail("background tab must have a session")
+      return
+    }
+
+    bgSession.feedOutput(Array("\u{1B}]21337;indicator=#d33;status=failed\u{07}".utf8))
+    pumpMainQueue()
+
+    XCTAssertEqual(
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.agentStatus.indicatorColor,
+      "#d33")
+    XCTAssertEqual(
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.agentStatus.statusText,
+      "failed")
+
+    model.selectTab(bgTabId)
+
+    let status = model.tabs.first { $0.id == bgTabId }?.titleMetadata.agentStatus
+    XCTAssertNil(status?.indicatorColor, "selecting the tab must acknowledge its OSC indicator")
+    XCTAssertEqual(
+      status?.statusText, "failed",
+      "selection must not erase process-owned status text")
+  }
+
   func testNotificationsSuppressedDuringRestoreGraceWindow() throws {
     let model = try makeModel()
     try model.createTab()

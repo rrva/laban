@@ -940,6 +940,7 @@ public final class AppModel {
         _tabs[i].titleMetadata.unseenOutput = false
         _tabs[i].titleMetadata.bellAttention = false
         _tabs[i].titleMetadata.notification = nil
+        _tabs[i].titleMetadata.agentStatus.indicatorColor = nil
         // Viewing the tab acknowledges its last command's outcome: drop the
         // steady failed-command dot the same way we drop the other attention
         // signals. It re-arms only when a later command finishes non-zero
@@ -1009,6 +1010,7 @@ public final class AppModel {
           _tabs[newActiveIdx].titleMetadata.unseenOutput = false
           _tabs[newActiveIdx].titleMetadata.bellAttention = false
           _tabs[newActiveIdx].titleMetadata.notification = nil
+          _tabs[newActiveIdx].titleMetadata.agentStatus.indicatorColor = nil
           _tabs[newActiveIdx].titleMetadata.lastCommandExitCode = nil
           if _tabs[newActiveIdx].status == .running {
             _tabs[newActiveIdx].titleMetadata.activityState = .active
