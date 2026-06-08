@@ -94,7 +94,7 @@ struct DebugInputActions {
       for: key,
       modifiers: mods
     )
-    if appRoute == "appCommand" || mods.contains(.command) {
+    if appRoute == "appCommand" {
       runtime.appendInputEnvelope(
         InputEventEnvelope(
           inputId: inputId, seq: 0,
@@ -104,9 +104,64 @@ struct DebugInputActions {
           key: keyName, modifiers: request.modifiers, command: commandStr
         ))
       runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
-      if appRoute == "appCommand", let commandStr {
+      if let commandStr {
         executeCommandKey(commandStr, key: key)
       }
+      return runtime.actionResult(ok: true)
+    }
+
+    if mods.contains(.command),
+      !DebugRuntimeKeyInput.isCommandLineEditingKey(key, modifiers: mods)
+    {
+      runtime.appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: inputId, seq: 0,
+          source: "debug", kind: "key", route: "ignored",
+          frameBefore: frameBefore,
+          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          key: keyName, modifiers: request.modifiers
+        ))
+      runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
+      return runtime.actionResult(ok: true)
+    }
+
+    if let bytes = DebugRuntimeKeyInput.commandLineEditingBytes(for: key, modifiers: mods),
+      action != .release
+    {
+      var encodedHex: String? = nil
+      var encodedLength: Int? = nil
+      if let tab = activeTab, let session = runtime.model.session(forTab: tab.id) {
+        let deltaRows = session.scrollViewportToActiveBottom()
+        appendInputFollowBottom(deltaRows: deltaRows, frameBefore: frameBefore, tab: tab)
+        encodedHex = bytes.map { String(format: "%02x", $0) }.joined()
+        encodedLength = bytes.count
+        session.write(bytes)
+        runtime.appendTerminalLog(sessionId: session.id, direction: "input", bytes: bytes)
+      }
+      runtime.appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: inputId, seq: 0,
+          source: "debug", kind: "key", route: "terminal",
+          frameBefore: frameBefore,
+          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          key: keyName, modifiers: request.modifiers,
+          encodedHex: encodedHex, encodedLength: encodedLength
+        ))
+      runtime.renderFrameUnlocked()
+      runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
+      return runtime.actionResult(ok: true)
+    }
+
+    if DebugRuntimeKeyInput.isCommandLineEditingRelease(key, modifiers: mods, action: action) {
+      runtime.appendInputEnvelope(
+        InputEventEnvelope(
+          inputId: inputId, seq: 0,
+          source: "debug", kind: "key", route: "ignored",
+          frameBefore: frameBefore,
+          tabId: activeTab?.id, sessionId: activeTab?.sessionId,
+          key: keyName, modifiers: request.modifiers
+        ))
+      runtime.appendEvent(EventEntry(kind: "input.key", text: keyName, action: "key"))
       return runtime.actionResult(ok: true)
     }
 

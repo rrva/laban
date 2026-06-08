@@ -73,6 +73,34 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(previous.route(), .appCommand(.selectPreviousTab))
   }
 
+  func testCommandMRoutesToMinimize() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .m, modifiers: .command)
+    XCTAssertEqual(desc.route(), .appCommand(.minimize))
+  }
+
+  func testCommandArrowsRouteToReadlineC0Bytes() {
+    let left = TerminalKeyDescriptor(action: .press, key: .arrowLeft, modifiers: .command)
+    XCTAssertEqual(left.route(), .terminalBytes([0x01]))
+
+    let right = TerminalKeyDescriptor(action: .press, key: .arrowRight, modifiers: .command)
+    XCTAssertEqual(right.route(), .terminalBytes([0x05]))
+  }
+
+  func testCommandBackspaceRoutesToKillLineStartByte() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .backspace, modifiers: .command)
+    XCTAssertEqual(desc.route(), .terminalBytes([0x15]))
+  }
+
+  func testCommandLineEditingReleaseIsSwallowed() {
+    let release = TerminalKeyDescriptor(action: .release, key: .arrowLeft, modifiers: .command)
+    XCTAssertEqual(release.route(), .swallowCommand)
+  }
+
+  func testCommandLineEditingWithMarkedTextRoutesToNativeText() {
+    let desc = TerminalKeyDescriptor(action: .press, key: .arrowLeft, modifiers: .command)
+    XCTAssertEqual(desc.route(hasMarkedText: true), .nativeText)
+  }
+
   func testUnhandledCommandChordSwallows() {
     let desc = TerminalKeyDescriptor(action: .press, key: .x, modifiers: .command)
     XCTAssertEqual(desc.route(), .swallowCommand)

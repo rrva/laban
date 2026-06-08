@@ -33,6 +33,7 @@ enum TerminalInputCaptureMetadata {
     case .paste: return "paste"
     case .find: return "find"
     case .dumpRenderJournal: return "dumpRenderJournal"
+    case .minimize: return "minimize"
     }
   }
 }
