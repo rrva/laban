@@ -303,7 +303,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     let fm = NSFontManager.shared
     let currentName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey) ?? "Menlo"
     let currentSize = FontAtlas.persistedTerminalPointSize
-    let current = NSFont(name: currentName, size: currentSize) ?? NSFont.systemFont(ofSize: currentSize)
+    let current =
+      NSFont(name: currentName, size: currentSize)
+      ?? NSFont.systemFont(ofSize: currentSize)
     let new = fm.convert(current)
     UserDefaults.standard.set(new.fontName, forKey: FontAtlas.userFontKey)
     UserDefaults.standard.set(Double(new.pointSize), forKey: FontAtlas.userFontSizeKey)

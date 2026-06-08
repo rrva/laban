@@ -130,7 +130,8 @@ extension TerminalKeyDescriptor {
   /// Standard macOS line-editing chords translated to readline C0 bytes.
   /// Cmd+Option+arrows are tab switching and are excluded.
   private func commandLineEditingRoute() -> TerminalInputRoute? {
-    guard action != .release, let bytes = Self.commandLineEditingBytes(key: key, modifiers: modifiers)
+    guard action != .release,
+      let bytes = Self.commandLineEditingBytes(key: key, modifiers: modifiers)
     else { return nil }
     return .terminalBytes(bytes)
   }
