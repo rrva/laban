@@ -40,10 +40,22 @@ public enum ShellIntegrationAction: Sendable, Equatable {
 public struct ShellIntegrationState: Sendable, Equatable {
   public private(set) var phase: ShellIntegrationPhase
   public private(set) var lastExitCode: Int?
+  /// Monotonic count of commands that have *finished* (OSC 133 D) this
+  /// session. `lastExitCode` is a level that the reducer carries forward
+  /// across later markers, so it cannot tell a fresh failure from a prompt
+  /// re-emission of an old one; this counter gives each completion a distinct
+  /// identity, which the failed-command dot uses to decide whether a non-zero
+  /// exit is a *new*, still-unacknowledged failure (see `TabMetadataSynchronizer`).
+  public private(set) var completedCommandCount: Int
 
-  public init(phase: ShellIntegrationPhase = .idle, lastExitCode: Int? = nil) {
+  public init(
+    phase: ShellIntegrationPhase = .idle,
+    lastExitCode: Int? = nil,
+    completedCommandCount: Int = 0
+  ) {
     self.phase = phase
     self.lastExitCode = lastExitCode
+    self.completedCommandCount = completedCommandCount
   }
 
   /// Apply one OSC 133 action, advancing the phase.
@@ -55,6 +67,7 @@ public struct ShellIntegrationState: Sendable, Equatable {
       phase = .running
     case .commandEnd(let exitCode):
       phase = .finished
+      completedCommandCount += 1
       if let exitCode {
         lastExitCode = exitCode
       }

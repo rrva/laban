@@ -91,6 +91,12 @@ final class TabMetadataSynchronizer {
   private var lastProcessMetadataSyncAtByTab: [Tab.ID: Date] = [:]
   private var processIdentityByTab: [Tab.ID: ProcessIdentity] = [:]
   private var terminalTitleOwnerByTab: [Tab.ID: ProcessIdentity] = [:]
+  /// Per-tab high-water mark of `ShellIntegrationState.completedCommandCount`
+  /// the user has acknowledged by viewing the tab. The failed-command dot
+  /// only arms for a completion newer than this, so a dot dismissed by
+  /// focusing the tab stays dismissed across prompt re-emissions and metadata
+  /// syncs, yet a genuinely new failing command re-arms it.
+  private var acknowledgedCommandCountByTab: [Tab.ID: Int] = [:]
   private let processMetadataSyncInterval: TimeInterval = 0.25
   private let gitInfo = GitInfoTracker()
 
@@ -101,6 +107,35 @@ final class TabMetadataSynchronizer {
     lastProcessMetadataSyncAtByTab.removeAll()
     processIdentityByTab.removeAll()
     terminalTitleOwnerByTab.removeAll()
+    acknowledgedCommandCountByTab.removeAll()
+  }
+
+  /// Mark every command that has finished so far on `tabId` as acknowledged —
+  /// the user is now looking at (or has just left) the tab, so its last
+  /// command's outcome has been seen. Wired to tab selection in `AppModel`.
+  func acknowledgeShellCommands(forTab tabId: Tab.ID, upTo count: Int) {
+    acknowledgedCommandCountByTab[tabId] = count
+  }
+
+  /// The exit code the steady failed-command dot should show for `tabId`, or
+  /// nil for no dot. A non-zero exit only arms the dot while it is a *new*,
+  /// unacknowledged completion on a background tab. The active tab is the user
+  /// watching: every completion so far is acknowledged (so a foreground
+  /// failure never arms, and leaving the tab can't later reveal one).
+  func resolveFailedCommandDot(
+    forTab tabId: Tab.ID,
+    state: ShellIntegrationState,
+    isActive: Bool
+  ) -> Int? {
+    if isActive {
+      acknowledgedCommandCountByTab[tabId] = state.completedCommandCount
+      return nil
+    }
+    let acknowledged = acknowledgedCommandCountByTab[tabId] ?? 0
+    guard state.completedCommandCount > acknowledged,
+      let code = state.lastExitCode, code != 0
+    else { return nil }
+    return code
   }
 
   func forget(tab: Tab) {
@@ -110,6 +145,7 @@ final class TabMetadataSynchronizer {
     lastProcessMetadataSyncAtByTab.removeValue(forKey: tab.id)
     processIdentityByTab.removeValue(forKey: tab.id)
     terminalTitleOwnerByTab.removeValue(forKey: tab.id)
+    acknowledgedCommandCountByTab.removeValue(forKey: tab.id)
   }
 
   @discardableResult
@@ -380,11 +416,15 @@ final class TabMetadataSynchronizer {
 
     if let shellIntegrationState = signals.shellIntegrationState {
       let metadata = tabs[idx].titleMetadata
+      let exitCode = resolveFailedCommandDot(
+        forTab: tabId,
+        state: shellIntegrationState,
+        isActive: tabs[idx].isActive)
       if metadata.shellPhase != shellIntegrationState.phase
-        || metadata.lastCommandExitCode != shellIntegrationState.lastExitCode
+        || metadata.lastCommandExitCode != exitCode
       {
         tabs[idx].titleMetadata.shellPhase = shellIntegrationState.phase
-        tabs[idx].titleMetadata.lastCommandExitCode = shellIntegrationState.lastExitCode
+        tabs[idx].titleMetadata.lastCommandExitCode = exitCode
         result.modelChanged = true
       }
     }

@@ -943,9 +943,12 @@ public final class AppModel {
         _tabs[i].titleMetadata.agentStatus.indicatorColor = nil
         // Viewing the tab acknowledges its last command's outcome: drop the
         // steady failed-command dot the same way we drop the other attention
-        // signals. It re-arms only when a later command finishes non-zero
-        // while this tab is in the background (see applyShellIntegration).
+        // signals, and mark every completion seen so far as acknowledged so a
+        // later prompt re-emission or metadata sync can't restore it. It
+        // re-arms only when a *new* command finishes non-zero while this tab is
+        // backgrounded (see resolveFailedCommandDot).
         _tabs[i].titleMetadata.lastCommandExitCode = nil
+        acknowledgeShellCommands(forTabAt: i)
       }
       if _tabs[i].status == .running {
         _tabs[i].titleMetadata.activityState =
@@ -956,6 +959,18 @@ public final class AppModel {
     }
     let tab = _tabs[selectedIdx]
     recordTab(.tabSelected, tabId: tab.id, sessionId: tab.sessionId)
+  }
+
+  /// Record that the user has seen every command the tab's shell has finished,
+  /// so the failed-command dot stays dismissed until a genuinely new command
+  /// fails. Called when a tab becomes active; pairs with the dot's gate in
+  /// `TabMetadataSynchronizer.resolveFailedCommandDot`.
+  private func acknowledgeShellCommands(forTabAt idx: Int) {
+    guard _tabs.indices.contains(idx) else { return }
+    let count =
+      sessionRegistry.session(id: _tabs[idx].sessionId)?
+      .shellIntegrationState().completedCommandCount ?? 0
+    metadataSync.acknowledgeShellCommands(forTab: _tabs[idx].id, upTo: count)
   }
 
   public func closeTab(_ tabId: Tab.ID) throws {
@@ -1012,6 +1027,7 @@ public final class AppModel {
           _tabs[newActiveIdx].titleMetadata.notification = nil
           _tabs[newActiveIdx].titleMetadata.agentStatus.indicatorColor = nil
           _tabs[newActiveIdx].titleMetadata.lastCommandExitCode = nil
+          acknowledgeShellCommands(forTabAt: newActiveIdx)
           if _tabs[newActiveIdx].status == .running {
             _tabs[newActiveIdx].titleMetadata.activityState = .active
           }
@@ -1711,12 +1727,15 @@ public final class AppModel {
       // The failed-command dot is an attention signal for *background* tabs:
       // it tells you a tab you weren't watching finished a command non-zero.
       // A command that finishes while you're already on the tab earns no dot
-      // (you saw it), mirroring how `noteOutput` never marks the active tab
-      // unseen. This also keeps a focus-clear durable — a plain prompt
-      // re-emission carries the stale exit code, but it only reaches an
-      // active tab, so it can't re-arm a dot the user just dismissed.
+      // (you saw it). Crucially the dot keys on a *new* completion, not the
+      // raw exit code: the reducer carries the last exit code forward across
+      // later markers, so a bare prompt re-emission (OSC 133 A on every Enter)
+      // re-delivers a stale non-zero code — re-applying it here re-armed a dot
+      // the user had already dismissed. `resolveFailedCommandDot` gates on the
+      // acknowledged completion count so only a genuinely new failure arms.
       _tabs[idx].titleMetadata.lastCommandExitCode =
-        _tabs[idx].isActive ? nil : state.lastExitCode
+        metadataSync.resolveFailedCommandDot(
+          forTab: tabId, state: state, isActive: _tabs[idx].isActive)
     }
   }
 

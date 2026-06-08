@@ -208,6 +208,50 @@ final class AppModelTests: XCTestCase {
     XCTAssertNil(bgExit(), "the dot stays clear after switching away from a watched failure")
   }
 
+  func testFailedCommandDotStaysDismissedUntilANewCommandFails() throws {
+    // Regression (capture-confirmed): after the dot is dismissed by focusing
+    // the tab, a bare prompt redraw (OSC 133 A, emitted on every Enter) on the
+    // now-background tab re-delivered the reducer's stale exit code and
+    // re-armed the dot. Repro: run `false`, focus the tab, switch away, press
+    // Enter — the dot came back. It must stay dismissed until a *new* command
+    // fails.
+    let model = try makeModel()
+    try model.createTab()  // tab[1] active; tab[0] background
+    let bgTabId = model.tabs[0].id
+    let fgTabId = model.tabs[1].id
+    guard let bgSession = model.session(forTab: bgTabId) else {
+      XCTFail("background tab must have a session")
+      return
+    }
+    func bgExit() -> Int? {
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.lastCommandExitCode
+    }
+    func runCommand(exiting code: Int) {
+      bgSession.feedOutput(Array("\u{1B}]133;C\u{07}".utf8))
+      bgSession.feedOutput(Array("\u{1B}]133;D;\(code)\u{07}".utf8))
+      bgSession.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))  // next prompt
+      pumpMainQueue()
+    }
+
+    runCommand(exiting: 1)
+    XCTAssertEqual(bgExit(), 1, "a background command exiting non-zero arms the dot")
+
+    model.selectTab(bgTabId)
+    XCTAssertNil(bgExit(), "focusing the tab dismisses the dot")
+    model.selectTab(fgTabId)
+    XCTAssertNil(bgExit(), "the dot stays clear after switching away")
+
+    // The crux: a prompt redraw re-emits OSC 133 A carrying the stale exit
+    // code 1 to the background tab. It must NOT re-arm the dismissed dot.
+    bgSession.feedOutput(Array("\u{1B}]133;A\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertNil(bgExit(), "a bare prompt redraw must not re-arm a dismissed dot")
+
+    // But a genuinely new failing command does re-arm it.
+    runCommand(exiting: 1)
+    XCTAssertEqual(bgExit(), 1, "a new failing command re-arms the dot")
+  }
+
   func testSelectingTabClearsExplicitTabIndicatorColor() throws {
     let model = try makeModel()
     try model.createTab()  // tab[1] is active; tab[0] is a background tab

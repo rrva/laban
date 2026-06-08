@@ -65,7 +65,11 @@ final class ShellIntegrationEndpointTests: XCTestCase {
     let tabs = try XCTUnwrap(state["tabs"] as? [[String: Any]])
     let active = try XCTUnwrap(tabs.first { $0["active"] as? Bool == true })
     XCTAssertEqual(active["shellPhase"] as? String, "finished")
-    XCTAssertEqual(active["lastCommandExitCode"] as? Int, 3)
+    // The failed-command dot is a *background*-tab attention signal: a command
+    // that exits non-zero on the tab the user is watching earns no dot, so the
+    // active tab's lastCommandExitCode stays nil. The raw exit code is still
+    // observable via the shell-integration endpoint (see testNonZeroExitSurfaces).
+    XCTAssertNil(active["lastCommandExitCode"] as? Int)
   }
 
   func testMissingSessionReturns404() throws {
