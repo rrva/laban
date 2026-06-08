@@ -147,6 +147,48 @@ final class TabTitleMetadataTests: XCTestCase {
       "a login shell must not appear as a running program in the info lines")
   }
 
+  func testSpinnerDecoratedTitleSuppressesRepeatedFolderLine() {
+    // Codex sets its OSC 0 title to a progress spinner + project name ("⠴ laban")
+    // while active. The folder line must recognize that the title is really just
+    // the project name and not render "laban" a second time underneath it.
+    let cwd = (NSHomeDirectory() as NSString).appendingPathComponent("wrk/laban")
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        terminalTitle: "\u{2834} laban",
+        displayTitle: "Tab 6",
+        titleSource: .fallback,
+        workspace: TabWorkspaceMetadata(cwd: cwd),
+        process: TabProcessMetadata(foregroundProcess: "codex")
+      ),
+      fallbackPosition: 6
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "\u{2834} laban")
+    XCTAssertFalse(
+      resolved.infoLines.contains("laban"),
+      "the folder line must not repeat the project name already in the title")
+  }
+
+  func testSpinnerDecoratedTitleStillShowsADifferentFolder() {
+    // The decoration-stripping dedup must only drop an actual repeat — a folder
+    // whose name differs from the title's core still earns its info line.
+    let cwd = (NSHomeDirectory() as NSString).appendingPathComponent("wrk/laban")
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        terminalTitle: "\u{2834} building",
+        displayTitle: "Tab 7",
+        titleSource: .fallback,
+        workspace: TabWorkspaceMetadata(cwd: cwd),
+        process: TabProcessMetadata(foregroundProcess: "codex")
+      ),
+      fallbackPosition: 7
+    )
+
+    XCTAssertTrue(
+      resolved.infoLines.contains("laban"),
+      "a folder that differs from the title core must still be shown")
+  }
+
   func testCurrentTerminalTitleBeatsNonShellForegroundProcess() {
     let resolved = TabTitleResolver.resolve(
       TabTitleMetadata(

@@ -322,16 +322,20 @@ public enum TabTitleResolver {
     var lines: [String] = []
 
     // Line 1: folder. Repo@worktree wins (only set by the headless debug
-    // runtime today); otherwise the basename of cwd.
+    // runtime today); otherwise the basename of cwd. Compared against the
+    // title with leading decoration stripped, so an app that prefixes its OSC
+    // title with a progress spinner (Codex's "⠴ laban") doesn't slip a second
+    // copy of the project name past the redundancy guard.
+    let bareTitle = titleSansDecoration(title)
     if let repo = useful(metadata.workspace.repoName) {
       var folder = repo
       if let worktree = useful(metadata.workspace.worktreeName), worktree != repo {
         folder = "\(repo)@\(worktree)"
       }
-      if folder != title { lines.append(truncateMid(folder)) }
+      if folder != bareTitle { lines.append(truncateMid(folder)) }
     } else if let cwd = useful(metadata.workspace.cwd) {
       let folder = cwdDisplayName(cwd)
-      if folder != title { lines.append(truncatePath(folder)) }
+      if folder != bareTitle { lines.append(truncatePath(folder)) }
     }
 
     // Line 2: git branch (with dirty marker when known). Strip the
@@ -546,6 +550,22 @@ public enum TabTitleResolver {
     // needs to drop empty values rather than re-sanitize each field per frame.
     guard let value, !value.isEmpty else { return nil }
     return value
+  }
+
+  /// A title with any leading decoration stripped — a progress spinner glyph
+  /// and the spaces around it, e.g. Codex's active OSC 0 title "⠴ laban" ->
+  /// "laban". Used only to decide whether a folder/repo info line merely
+  /// repeats the title (so it can be dropped); never to change what's shown.
+  /// The exact-match guard alone misses this: "laban" != "⠴ laban", so without
+  /// it the project name renders twice — once in the title, once below.
+  private static func titleSansDecoration(_ title: String) -> String {
+    var view = Substring(title)
+    while let first = view.unicodeScalars.first,
+      !CharacterSet.alphanumerics.contains(first)
+    {
+      view = view.dropFirst()
+    }
+    return String(view)
   }
 
   private static func pathTail(_ path: String) -> String {
