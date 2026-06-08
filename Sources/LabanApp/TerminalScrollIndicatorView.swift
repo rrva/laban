@@ -1,5 +1,6 @@
 import AppKit
 import LabanCore
+import LabanRenderer
 
 /// SOTA overlay scroll indicator: invisible at the live bottom, fades in when
 /// the user scrolls back into history, holds while scrolled-up or hovered
@@ -55,6 +56,7 @@ final class TerminalScrollIndicatorView: NSView {
   private var isHoverEdge = false
   private var idleHideWorkItem: DispatchWorkItem?
   private var trackingArea: NSTrackingArea?
+  private var themeChangeObserver: NSObjectProtocol?
 
   // Drag-to-scrub state. While dragging the thumb, the view maps the pointer to
   // an absolute history position and reports it through `onScrubToFraction`; the
@@ -72,22 +74,19 @@ final class TerminalScrollIndicatorView: NSView {
     wantsLayer = true
     layer?.masksToBounds = false
 
-    thumbLayer.backgroundColor = TerminalScrollIndicatorView.thumbColor(hover: false)
+    thumbLayer.backgroundColor = Self.thumbColor(hover: false)
     thumbLayer.cornerRadius = Self.thumbWidthIdle / 2
     thumbLayer.opacity = 0
     layer?.addSublayer(thumbLayer)
 
     pillContainer.wantsLayer = true
     pillContainer.layer?.cornerRadius = 8
-    pillContainer.layer?.backgroundColor =
-      NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
-    pillContainer.layer?.borderColor = NSColor.separatorColor.cgColor
     pillContainer.layer?.borderWidth = 1
     pillContainer.alphaValue = 0
     pillContainer.translatesAutoresizingMaskIntoConstraints = true
+    applyThemeChrome()
 
     pillLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-    pillLabel.textColor = .secondaryLabelColor
     pillLabel.alignment = .center
     pillLabel.translatesAutoresizingMaskIntoConstraints = false
     pillContainer.addSubview(pillLabel)
@@ -98,10 +97,23 @@ final class TerminalScrollIndicatorView: NSView {
       pillLabel.bottomAnchor.constraint(equalTo: pillContainer.bottomAnchor, constant: -3),
     ])
     addSubview(pillContainer)
+
+    themeChangeObserver = NotificationCenter.default.addObserver(
+      forName: Theme.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.applyThemeChrome()
+      self?.layoutFromOutput()
+    }
   }
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
+  }
+
+  deinit {
+    if let themeChangeObserver {
+      NotificationCenter.default.removeObserver(themeChangeObserver)
+    }
   }
 
   // Grabbable only over the visible thumb (drag-to-scrub); everywhere else stays
@@ -293,7 +305,7 @@ final class TerminalScrollIndicatorView: NSView {
     case .hold:
       cancelIdleHide()
       setThumbOpacity(1, animated: !wasVisible)
-      setPillAlpha(output.pillVisible ? 1 : 0, animated: true)
+      setPillAlpha(output.pillVisible ? 1 : 0, animated: !wasVisible && output.pillVisible)
     case .armHide:
       // Scrolling just brought us back to the live bottom (or input snapped us
       // there): hold briefly so the user sees the snap, then fade. Streaming
@@ -320,8 +332,9 @@ final class TerminalScrollIndicatorView: NSView {
       ? lastOutput.thumbOffsetFraction / max(1 - lastOutput.thumbFraction, 0.001)
       : 0
     let offsetFromTop = availableTravel * CGFloat(normalized)
-    // Stay fat while dragging even if the pointer drifts off the hover zone.
-    let expanded = isHoverEdge || isDragging
+    // Stay fat while scrolled back, dragging, or edge-hovering so the thumb
+    // does not pulse between idle/hover widths during a scroll gesture.
+    let expanded = isHoverEdge || isDragging || lastLinesBack > 0
     let thumbWidth = expanded ? Self.thumbWidthHover : Self.thumbWidthIdle
 
     let thumbX = bounds.maxX - Self.edgeInset - thumbWidth
@@ -330,7 +343,7 @@ final class TerminalScrollIndicatorView: NSView {
     CATransaction.setDisableActions(true)
     thumbLayer.frame = NSRect(x: thumbX, y: thumbY, width: thumbWidth, height: thumbHeight)
     thumbLayer.cornerRadius = thumbWidth / 2
-    thumbLayer.backgroundColor = TerminalScrollIndicatorView.thumbColor(hover: expanded)
+    thumbLayer.backgroundColor = Self.thumbColor(hover: expanded)
     CATransaction.commit()
 
     // Pill: top-right, just under the titlebar reserve, left of the thumb.
@@ -354,23 +367,28 @@ final class TerminalScrollIndicatorView: NSView {
   }
 
   private func setThumbOpacity(_ value: Float, animated: Bool) {
+    guard abs(thumbLayer.opacity - value) > 0.001 else { return }
     if animated {
       let anim = CABasicAnimation(keyPath: "opacity")
       anim.fromValue = thumbLayer.opacity
       anim.toValue = value
       anim.duration = value > 0 ? Self.fadeInDuration : Self.fadeOutDuration
       thumbLayer.add(anim, forKey: "fade")
+    } else {
+      thumbLayer.removeAnimation(forKey: "fade")
     }
     thumbLayer.opacity = value
   }
 
   private func setPillAlpha(_ value: CGFloat, animated: Bool) {
+    guard abs(pillContainer.alphaValue - value) > 0.001 else { return }
     if animated {
       NSAnimationContext.runAnimationGroup { ctx in
         ctx.duration = value > 0 ? Self.fadeInDuration : Self.fadeOutDuration
         pillContainer.animator().alphaValue = value
       }
     } else {
+      NSAnimationContext.current.allowsImplicitAnimation = false
       pillContainer.alphaValue = value
     }
   }
@@ -391,10 +409,40 @@ final class TerminalScrollIndicatorView: NSView {
     idleHideWorkItem = nil
   }
 
+  /// Re-read chrome from `Theme.current` so the pill and thumb stay legible on
+  /// dark palettes (Selenized Dark, Gruvbox, etc.) even when macOS appearance
+  /// does not match the terminal theme.
+  private func applyThemeChrome() {
+    let theme = Theme.current
+    pillContainer.layer?.backgroundColor = Self.themedCGColor(theme.bg2, alpha: 0.94)
+    pillContainer.layer?.borderColor = Self.themedCGColor(theme.dim0, alpha: 0.55)
+    pillLabel.textColor = Self.themedNSColor(theme.fg0)
+  }
+
   private static func thumbColor(hover: Bool) -> CGColor {
-    let base: NSColor = hover ? .secondaryLabelColor : .tertiaryLabelColor
-    let alpha: CGFloat = hover ? 0.78 : 0.55
-    return base.withAlphaComponent(alpha).cgColor
+    let theme = Theme.current
+    let rgba = hover ? theme.fg0 : theme.dim0
+    let alpha: CGFloat = hover ? 0.82 : 0.62
+    return themedCGColor(rgba, alpha: alpha)
+  }
+
+  private static func themedNSColor(_ rgba: UInt32) -> NSColor {
+    NSColor(
+      red: CGFloat((rgba >> 24) & 0xFF) / 255.0,
+      green: CGFloat((rgba >> 16) & 0xFF) / 255.0,
+      blue: CGFloat((rgba >> 8) & 0xFF) / 255.0,
+      alpha: 1)
+  }
+
+  private static func themedCGColor(_ rgba: UInt32, alpha: CGFloat) -> CGColor {
+    CGColor(
+      colorSpace: CGColorSpaceCreateDeviceRGB(),
+      components: [
+        CGFloat((rgba >> 24) & 0xFF) / 255.0,
+        CGFloat((rgba >> 16) & 0xFF) / 255.0,
+        CGFloat((rgba >> 8) & 0xFF) / 255.0,
+        alpha,
+      ])!
   }
 }
 
@@ -432,6 +480,19 @@ extension TerminalScrollIndicatorView {
         "isHoverEdge": isHoverEdge, "pointerInZone": pointerInZone,
       ]
     }
+  }
+
+  struct ThemeChromeForTesting {
+    var pillBackground: CGColor?
+    var pillBorder: CGColor?
+    var pillText: NSColor?
+  }
+
+  func themeChromeForTesting() -> ThemeChromeForTesting {
+    ThemeChromeForTesting(
+      pillBackground: pillContainer.layer?.backgroundColor,
+      pillBorder: pillContainer.layer?.borderColor,
+      pillText: pillLabel.textColor)
   }
 
   func debugVisibility() -> DebugVisibility {

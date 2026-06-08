@@ -1,5 +1,6 @@
 import AppKit
 import LabanCore
+import LabanRenderer
 import XCTest
 
 @testable import LabanApp
@@ -107,5 +108,53 @@ final class TerminalScrollIndicatorHoverTests: XCTestCase {
       view.layoutPassCountForTesting, baseline, "becoming visible triggers a layout pass")
     XCTAssertGreaterThan(
       view.debugVisibility().thumbOpacity, 0, "a scrolled-back thumb is visible")
+  }
+
+  /// The scrollback pill must read palette slots from `Theme.current`, not
+  /// macOS system label/window colors, so it stays legible on dark themes.
+  func testPillAdaptsToThemeChange() {
+    let prior = Theme.current
+    defer { Theme.apply(prior) }
+
+    Theme.apply(.gruvboxDark)
+    let view = TerminalScrollIndicatorView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+    view.layoutSubtreeIfNeeded()
+
+    let chrome = view.themeChromeForTesting()
+    XCTAssertEqual(chrome.pillText, Self.themedNSColor(Theme.gruvboxDark.fg0))
+    XCTAssertTrue(
+      Self.cgColorsEqual(
+        chrome.pillBackground, Self.themedCGColor(Theme.gruvboxDark.bg2, alpha: 0.94)))
+    XCTAssertTrue(
+      Self.cgColorsEqual(
+        chrome.pillBorder, Self.themedCGColor(Theme.gruvboxDark.dim0, alpha: 0.55)))
+  }
+
+  private static func themedNSColor(_ rgba: UInt32) -> NSColor {
+    NSColor(
+      red: CGFloat((rgba >> 24) & 0xFF) / 255.0,
+      green: CGFloat((rgba >> 16) & 0xFF) / 255.0,
+      blue: CGFloat((rgba >> 8) & 0xFF) / 255.0,
+      alpha: 1)
+  }
+
+  private static func themedCGColor(_ rgba: UInt32, alpha: CGFloat) -> CGColor {
+    CGColor(
+      colorSpace: CGColorSpaceCreateDeviceRGB(),
+      components: [
+        CGFloat((rgba >> 24) & 0xFF) / 255.0,
+        CGFloat((rgba >> 16) & 0xFF) / 255.0,
+        CGFloat((rgba >> 8) & 0xFF) / 255.0,
+        alpha,
+      ])!
+  }
+
+  private static func cgColorsEqual(_ lhs: CGColor?, _ rhs: CGColor?) -> Bool {
+    guard let lhs, let rhs, let lc = lhs.components, let rc = rhs.components else {
+      return lhs == nil && rhs == nil
+    }
+    guard lc.count == rc.count else { return false }
+    for i in 0..<lc.count where abs(lc[i] - rc[i]) > 0.001 { return false }
+    return true
   }
 }
