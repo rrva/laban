@@ -1,5 +1,6 @@
 import AppKit
 import LabanCore
+import LabanRenderer
 
 final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
   private static let positionDefaultsKey = "FindChipOriginFraction"
@@ -11,6 +12,7 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
   private let closeButton = NSButton()
   private var dragStartInWindow: NSPoint?
   private var frameStart: NSRect = .zero
+  private var themeChangeObserver: NSObjectProtocol?
 
   var onNeedleChanged: ((String) -> Void)?
   var onStep: ((TerminalFindDirection) -> Void)?
@@ -21,11 +23,8 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
     translatesAutoresizingMaskIntoConstraints = true
     wantsLayer = true
     layer?.cornerRadius = 6
-    layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.94).cgColor
-    layer?.borderColor = NSColor.separatorColor.cgColor
     layer?.borderWidth = 1
 
-    searchField.placeholderString = "Find…"
     searchField.delegate = self
     searchField.controlSize = .small
     searchField.font = NSFont.systemFont(ofSize: 12)
@@ -34,9 +33,11 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
     searchField.translatesAutoresizingMaskIntoConstraints = false
     searchField.setAccessibilityRole(NSAccessibility.Role(rawValue: "AXSearchField"))
     searchField.setAccessibilityLabel("Find")
+    searchField.isBordered = false
+    searchField.drawsBackground = true
+    searchField.focusRingType = .none
 
     counterLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-    counterLabel.textColor = .secondaryLabelColor
     counterLabel.alignment = .center
     counterLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -71,10 +72,23 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
       closeButton.widthAnchor.constraint(equalToConstant: 22),
       closeButton.heightAnchor.constraint(equalToConstant: 22),
     ])
+
+    applyThemeChrome()
+    themeChangeObserver = NotificationCenter.default.addObserver(
+      forName: Theme.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.applyThemeChrome()
+    }
   }
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
+  }
+
+  deinit {
+    if let themeChangeObserver {
+      NotificationCenter.default.removeObserver(themeChangeObserver)
+    }
   }
 
   func update(with state: TerminalFindState, isSearching: Bool = false) {
@@ -92,6 +106,8 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
     }
     previousButton.isEnabled = state.total > 0
     nextButton.isEnabled = state.total > 0
+    applyButtonTint(previousButton, enabled: previousButton.isEnabled)
+    applyButtonTint(nextButton, enabled: nextButton.isEnabled)
     counterLabel.setAccessibilityValue(
       counterLabel.stringValue.replacingOccurrences(of: "/", with: " of "))
   }
@@ -133,6 +149,32 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
     next.origin.y = min(max(0, next.origin.y), max(0, superview.bounds.height - next.height))
     frame = next
     persistPosition()
+  }
+
+  /// Re-read chrome from `Theme.current` so the find chip stays legible on dark
+  /// palettes even when macOS appearance does not match the terminal theme.
+  private func applyThemeChrome() {
+    let theme = Theme.current
+    layer?.backgroundColor = Self.themedCGColor(theme.bg2, alpha: 0.94)
+    layer?.borderColor = Self.themedCGColor(theme.dim0, alpha: 0.55)
+    counterLabel.textColor = Self.themedNSColor(theme.fg0)
+    searchField.textColor = Self.themedNSColor(theme.fg1)
+    searchField.backgroundColor = Self.themedNSColor(theme.bg1)
+    searchField.placeholderAttributedString = NSAttributedString(
+      string: "Find…",
+      attributes: [.foregroundColor: Self.themedNSColor(theme.dim0)]
+    )
+    applyButtonTint(previousButton, enabled: previousButton.isEnabled)
+    applyButtonTint(nextButton, enabled: nextButton.isEnabled)
+    applyButtonTint(closeButton, enabled: true)
+  }
+
+  private func applyButtonTint(_ button: NSButton, enabled: Bool) {
+    let theme = Theme.current
+    let color = Self.themedNSColor(enabled ? theme.fg0 : theme.dim0)
+    if #available(macOS 10.14, *) {
+      button.contentTintColor = enabled ? color : color.withAlphaComponent(0.45)
+    }
   }
 
   private func configureButton(_ button: NSButton, symbol: String, action: Selector) {
@@ -203,5 +245,43 @@ final class TerminalFindChipView: NSView, NSSearchFieldDelegate {
       x: bounds.minX + CGFloat(parts[0]) * width,
       y: bounds.minY + CGFloat(parts[1]) * height
     )
+  }
+
+  private static func themedNSColor(_ rgba: UInt32) -> NSColor {
+    NSColor(
+      red: CGFloat((rgba >> 24) & 0xFF) / 255.0,
+      green: CGFloat((rgba >> 16) & 0xFF) / 255.0,
+      blue: CGFloat((rgba >> 8) & 0xFF) / 255.0,
+      alpha: 1)
+  }
+
+  private static func themedCGColor(_ rgba: UInt32, alpha: CGFloat) -> CGColor {
+    CGColor(
+      colorSpace: CGColorSpaceCreateDeviceRGB(),
+      components: [
+        CGFloat((rgba >> 24) & 0xFF) / 255.0,
+        CGFloat((rgba >> 16) & 0xFF) / 255.0,
+        CGFloat((rgba >> 8) & 0xFF) / 255.0,
+        alpha,
+      ])!
+  }
+}
+
+extension TerminalFindChipView {
+  struct ThemeChromeForTesting {
+    var background: CGColor?
+    var border: CGColor?
+    var counterText: NSColor?
+    var searchText: NSColor?
+    var searchBackground: NSColor?
+  }
+
+  func themeChromeForTesting() -> ThemeChromeForTesting {
+    ThemeChromeForTesting(
+      background: layer?.backgroundColor,
+      border: layer?.borderColor,
+      counterText: counterLabel.textColor,
+      searchText: searchField.textColor,
+      searchBackground: searchField.backgroundColor)
   }
 }

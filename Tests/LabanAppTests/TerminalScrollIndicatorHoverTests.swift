@@ -116,7 +116,7 @@ final class TerminalScrollIndicatorHoverTests: XCTestCase {
     let prior = Theme.current
     defer { Theme.apply(prior) }
 
-    Theme.apply(.gruvboxDark)
+    Theme.apply(Theme.gruvboxDark)
     let view = TerminalScrollIndicatorView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
     view.layoutSubtreeIfNeeded()
 
