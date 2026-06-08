@@ -126,6 +126,27 @@ final class TabTitleMetadataTests: XCTestCase {
     XCTAssertEqual(resolved.titleSource, .cwd)
   }
 
+  func testLoginShellDashNameIsRecognizedAsShell() {
+    // A login shell presents argv[0] as "-zsh"; it must be treated as a shell
+    // (fall through to the cwd) rather than surfaced as the tab's program.
+    let resolved = TabTitleResolver.resolve(
+      TabTitleMetadata(
+        displayTitle: "Tab 1",
+        titleSource: .fallback,
+        workspace: TabWorkspaceMetadata(
+          cwd: (NSHomeDirectory() as NSString).appendingPathComponent("wrk/laban")),
+        process: TabProcessMetadata(foregroundProcess: "-zsh")
+      ),
+      fallbackPosition: 1
+    )
+
+    XCTAssertEqual(resolved.displayTitle, "laban")
+    XCTAssertEqual(resolved.titleSource, .cwd)
+    XCTAssertFalse(
+      resolved.infoLines.contains("-zsh"),
+      "a login shell must not appear as a running program in the info lines")
+  }
+
   func testCurrentTerminalTitleBeatsNonShellForegroundProcess() {
     let resolved = TabTitleResolver.resolve(
       TabTitleMetadata(

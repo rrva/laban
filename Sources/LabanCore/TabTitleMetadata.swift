@@ -693,7 +693,12 @@ public enum TabTitleResolver {
   }
 
   private static func isShellProcess(_ process: String) -> Bool {
-    let name = pathTail(process).lowercased()
+    var name = pathTail(process).lowercased()
+    // A login shell presents argv[0] as "-zsh" / "-bash" (the leading-dash
+    // convention), so tolerate it — otherwise the login shell is mistaken for
+    // a running program and surfaced as the tab's title/detail. Mirrors the
+    // dash-tolerant shell-kind parsing in ShellIntegrationOverlay.
+    if name.hasPrefix("-") { name.removeFirst() }
     return ["sh", "bash", "dash", "fish", "ksh", "tcsh", "csh", "zsh"].contains(name)
   }
 
