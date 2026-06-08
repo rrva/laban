@@ -1365,6 +1365,130 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(renderer.cellGlyphUploadRangesForTesting, [0..<(rows * cols)])
   }
 
+  func testThemeChangeReconcilesViaRenderPath() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    let priorTheme = Theme.current
+    defer { Theme.apply(priorTheme) }
+
+    let renderer = try makeRenderer(label: "theme-reconcile")
+    guard renderer.effectiveRendererMode == .gpuDriven else {
+      throw XCTSkip("gpu-driven renderer is unavailable on this OS")
+    }
+
+    let initial = payload(seed: 7, changedRow: nil, includedRows: Array(0..<rows))
+    XCTAssertTrue(
+      renderer.render(
+        [],
+        cellPayload: initial,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "initial full gpu-cell render failed")
+    renderer.waitForLastFrame()
+    XCTAssertEqual(renderer.lastRenderedThemeRevisionForTesting, Theme.revision)
+
+    let revisionBefore = Theme.revision
+    Theme.apply(Theme.gruvboxDark)
+    XCTAssertGreaterThan(Theme.revision, revisionBefore)
+    XCTAssertNotEqual(renderer.lastRenderedThemeRevisionForTesting, Theme.revision)
+
+    // reconcileThemeRevision() has not run yet — the retained cache still accepts
+    // partial patches with the previous theme's colours.
+    let stalePartial = payload(seed: 7, changedRow: 4, includedRows: [4])
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: stalePartial,
+        commands: [],
+        damage: .partial(yRanges: [dirtyRange(forRow: 4)]),
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    // Trigger reconcile inside render(); do not call invalidateContentForThemeChange().
+    XCTAssertTrue(
+      renderer.render(
+        [],
+        cellPayload: initial,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "post-theme full gpu-cell render failed")
+    renderer.waitForLastFrame()
+    XCTAssertEqual(renderer.lastRenderedThemeRevisionForTesting, Theme.revision)
+  }
+
+  func testThemeChangeInvalidatesPersistentGPUCellCache() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    MetalRenderer.useGPUCellPath = true
+    let priorTheme = Theme.current
+    defer { Theme.apply(priorTheme) }
+
+    let renderer = try makeRenderer(label: "theme-invalidation")
+    guard renderer.effectiveRendererMode == .gpuDriven else {
+      throw XCTSkip("gpu-driven renderer is unavailable on this OS")
+    }
+
+    let initial = payload(seed: 7, changedRow: nil, includedRows: Array(0..<rows))
+    XCTAssertTrue(
+      renderer.render(
+        [],
+        cellPayload: initial,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "initial full gpu-cell render failed")
+    renderer.waitForLastFrame()
+    XCTAssertEqual(renderer.lastRenderedThemeRevisionForTesting, Theme.revision)
+
+    let revisionBefore = Theme.revision
+    Theme.apply(Theme.gruvboxDark)
+    XCTAssertGreaterThan(Theme.revision, revisionBefore)
+    XCTAssertNotEqual(renderer.lastRenderedThemeRevisionForTesting, Theme.revision)
+
+    // reconcileThemeRevision() runs at the top of render(). Feed a payload the
+    // GPU-cell builder rejects so the frame fails before the revision commits.
+    var incompatible = payload(seed: 7, changedRow: nil, includedRows: Array(0..<rows))
+    incompatible.fallbackReason = .hyperlink
+    XCTAssertFalse(
+      renderer.render(
+        [],
+        cellPayload: incompatible,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "expected incompatible payload to fail after theme reconcile")
+    XCTAssertEqual(renderer.lastRenderFailureReason, .fullRedrawProducedNoContent)
+    XCTAssertNotEqual(renderer.lastRenderedThemeRevisionForTesting, Theme.revision)
+
+    // A partial payload after reconcile invalidation must fail closed until a full
+    // frame arrives — the same guard that prevents stale pixels after resize.
+    let partial = payload(seed: 7, changedRow: 4, includedRows: [4])
+    XCTAssertNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: partial,
+        commands: [],
+        damage: .partial(yRanges: [dirtyRange(forRow: 4)]),
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    let full = payload(seed: 8, changedRow: nil, includedRows: Array(0..<rows))
+    XCTAssertTrue(
+      renderer.render(
+        [],
+        cellPayload: full,
+        damage: .full,
+        rendererFallbackReason: nil),
+      "recovery full gpu-cell render failed")
+    renderer.waitForLastFrame()
+    XCTAssertEqual(renderer.lastRenderedThemeRevisionForTesting, Theme.revision)
+    XCTAssertNotNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: full,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+  }
+
   func testGPUCellCursorOnlyFramePreservesCellCache() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

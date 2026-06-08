@@ -269,12 +269,18 @@ public enum Theme {
   /// so chrome reads the new colors.
   public static let didChangeNotification = Notification.Name("LabanThemeDidChange")
 
+  /// Monotonic counter bumped on every successful `apply`. Lets renderers
+  /// with persistent GPU caches detect a palette swap even when the next frame
+  /// arrives with partial terminal damage.
+  public private(set) static var revision: UInt64 = 0
+
   // MARK: Mutation
 
   /// Swap to `theme` and notify observers. No-op if already current.
   public static func apply(_ theme: ThemeData) {
     guard theme != current else { return }
     current = theme
+    revision &+= 1
     NotificationCenter.default.post(name: didChangeNotification, object: nil)
   }
 

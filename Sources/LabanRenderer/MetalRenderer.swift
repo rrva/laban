@@ -426,6 +426,7 @@ public final class MetalRenderer: RendererBackend {
   /// caller passed `.partial(empty)` but the surface size changed).
   private var targetTexture: MTLTexture?
   private var targetNeedsFullRedraw: Bool = true
+  private var lastRenderedThemeRevision: UInt64 = Theme.revision
   /// Set by the command-fed GPU-cell build when a partial update arrives after
   /// the terminal grid geometry changed (so the retained cell cache had to be
   /// fully rebuilt). The caller turns this into a full-target redraw rather than
@@ -607,6 +608,19 @@ public final class MetalRenderer: RendererBackend {
   ) -> Bool {
     buildGPUCellInstanceLists(commands: commands, surfacePxH: surfacePxH, damage: .full)
   }
+
+  /// Drop the GPU-cell persistent cache and mark the render target stale. Called
+  /// when the palette changes so partial damage cannot leave chrome coloured
+  /// from the previous theme.
+  public func invalidateContentForThemeChange() {
+    targetNeedsFullRedraw = true
+    cellGlyphGridGeometry = nil
+    cellGlyphs.removeAll(keepingCapacity: true)
+    cellGlyphUploadRanges.removeAll(keepingCapacity: true)
+  }
+
+  var targetNeedsFullRedrawForTesting: Bool { targetNeedsFullRedraw }
+  var lastRenderedThemeRevisionForTesting: UInt64 { lastRenderedThemeRevision }
 
   public var effectiveRendererMode: RendererMode {
     let requested = requestedRendererMode
@@ -885,6 +899,7 @@ public final class MetalRenderer: RendererBackend {
     let cpuStart = ContinuousClock.now
     lastRenderFailureReason = nil
     lastDrawableAcquireDiagnostic = nil
+    reconcileThemeRevision()
     // A GPU command buffer that completed with `.error` (recorded off-main by
     // the completion handler) means the persistent target may be half-painted,
     // so repaint the whole surface this frame instead of trusting damage.
@@ -1076,7 +1091,13 @@ public final class MetalRenderer: RendererBackend {
       cmdBuf.waitUntilCompleted()
     }
     targetNeedsFullRedraw = false
+    lastRenderedThemeRevision = Theme.revision
     return true
+  }
+
+  private func reconcileThemeRevision() {
+    guard Theme.revision != lastRenderedThemeRevision else { return }
+    invalidateContentForThemeChange()
   }
 
   private func noteCommandBufferCompletion(status: MTLCommandBufferStatus, error: Error?) {

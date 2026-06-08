@@ -370,7 +370,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     themeChangeObserver = NotificationCenter.default.addObserver(
       forName: Theme.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      self?.renderInvalidated = true
+      guard let self else { return }
+      (self.backend as? MetalRenderer)?.invalidateContentForThemeChange()
+      self.renderInvalidated = true
+      // The display link parks when Settings (or another window) is key, so
+      // invalidation alone is not enough — kick the frame loop the same way a
+      // renderer switch does.
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
     }
 
     // Track the system Reduce Motion setting so the sidebar needsAction pulse
