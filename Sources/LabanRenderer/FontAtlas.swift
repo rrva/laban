@@ -9,13 +9,28 @@ public final class FontAtlas {
   public let descent: CGFloat
   public let leading: CGFloat
 
-  /// UserDefaults key holding the user's chosen font face name. The size
-  /// is whatever the caller passed in (14 for terminal, 11 for sidebar)
-  /// — picking a font only changes the face, not the metrics, so the
-  /// quad-height tab layout stays balanced regardless of choice.
+  /// UserDefaults keys for the user's NSFontPanel picks.
   public static let userFontKey = "LabanFontName"
+  public static let userFontSizeKey = "LabanFontSize"
 
-  public init(pointSize: CGFloat = 14.0) {
+  public static let defaultTerminalPointSize: CGFloat = 14.0
+  private static let defaultSidebarPointSize: CGFloat = 11.0
+
+  /// Terminal point size from UserDefaults, or `defaultTerminalPointSize`.
+  public static var persistedTerminalPointSize: CGFloat {
+    let stored = UserDefaults.standard.object(forKey: userFontSizeKey) as? Double
+    guard let stored, stored > 0 else { return defaultTerminalPointSize }
+    return CGFloat(stored)
+  }
+
+  /// Sidebar point size scaled to keep the same ratio as the defaults.
+  public static var persistedSidebarPointSize: CGFloat {
+    persistedTerminalPointSize * (defaultSidebarPointSize / defaultTerminalPointSize)
+  }
+
+  public static let didChangeNotification = Notification.Name("LabanFontDidChange")
+
+  public init(pointSize: CGFloat = defaultTerminalPointSize) {
     self.pointSize = pointSize
 
     // Resolution order:

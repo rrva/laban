@@ -186,6 +186,24 @@ final class LabanRendererSmokeTests: XCTestCase {
     }
   }
 
+  func testPersistedFontSizeIsReadOnStartup() {
+    let defaults = UserDefaults.standard
+    let previousSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
+    defaults.set(18.0, forKey: FontAtlas.userFontSizeKey)
+    defer {
+      if let previousSize {
+        defaults.set(previousSize, forKey: FontAtlas.userFontSizeKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+      }
+    }
+
+    XCTAssertEqual(FontAtlas.persistedTerminalPointSize, 18)
+    XCTAssertEqual(FontAtlas.persistedSidebarPointSize, 18 * (11.0 / 14.0), accuracy: 0.001)
+    let fontAtlas = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
+    XCTAssertEqual(fontAtlas.pointSize, 18)
+  }
+
   func testNarrowTerminalArrowFallbackDoesNotPaintIntoNextCell() throws {
     let defaults = UserDefaults.standard
     let previousFont = defaults.object(forKey: FontAtlas.userFontKey)

@@ -35,8 +35,8 @@ final class MainWindowController: NSWindowController {
   ) throws
     -> MainWindowController
   {
-    let fontAtlas = FontAtlas(pointSize: 14)
-    let sidebarFontAtlas = FontAtlas(pointSize: 11)
+    let fontAtlas = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
+    let sidebarFontAtlas = FontAtlas(pointSize: FontAtlas.persistedSidebarPointSize)
     let cellSize = fontAtlas.cellSize
     let cellW = Int(cellSize.width)
     let cellH = Int(cellSize.height)

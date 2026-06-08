@@ -48,6 +48,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // next ⌘, would message a dead window.
     window.isReleasedWhenClosed = false
     super.init(window: window)
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(fontDidChange(_:)),
+      name: FontAtlas.didChangeNotification,
+      object: nil)
     window.delegate = self
     buildLayout()
     refresh()
@@ -196,6 +201,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     onChangeFont()
   }
 
+  @objc private func fontDidChange(_ notification: Notification) {
+    refresh()
+  }
+
   @objc private func rendererChanged(_ sender: NSPopUpButton) {
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < rendererOptions.count else { return }
@@ -245,7 +254,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   }
 
   private func currentFontDisplayName() -> String {
-    let name = UserDefaults.standard.string(forKey: "LabanFontName") ?? "JetBrains Mono"
-    return NSFont(name: name, size: 13)?.displayName ?? name
+    let name = UserDefaults.standard.string(forKey: FontAtlas.userFontKey) ?? "JetBrains Mono"
+    let size = FontAtlas.persistedTerminalPointSize
+    let displayName = NSFont(name: name, size: size)?.displayName ?? name
+    return "\(displayName), \(String(format: "%.0f pt", size))"
   }
 }

@@ -282,11 +282,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   /// for a setting most users change once.
   @objc func showFontPicker(_ sender: Any?) {
     let panel = NSFontPanel.shared
-    let currentName = UserDefaults.standard.string(forKey: "LabanFontName") ?? "JetBrains Mono"
+    let currentName =
+      UserDefaults.standard.string(forKey: FontAtlas.userFontKey) ?? "JetBrains Mono"
+    let currentSize = FontAtlas.persistedTerminalPointSize
     let initialFont =
-      NSFont(name: currentName, size: 14)
-      ?? NSFont(name: "Menlo", size: 14)
-      ?? NSFont.systemFont(ofSize: 14)
+      NSFont(name: currentName, size: currentSize)
+      ?? NSFont(name: "Menlo", size: currentSize)
+      ?? NSFont.systemFont(ofSize: currentSize)
     panel.setPanelFont(initialFont, isMultiple: false)
     NSFontManager.shared.target = self
     NSFontManager.shared.action = #selector(changeFont(_:))
@@ -294,19 +296,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   }
 
   /// AppKit calls this on the font-manager target whenever the user
-  /// picks a face in NSFontPanel. We save the face name only — the
-  /// pt-size is kept fixed (14 terminal / 11 sidebar) so the quad-
-  /// height tab layout stays balanced regardless of font choice.
+  /// picks a face or size in NSFontPanel. Persist both and ask for a
+  /// relaunch — live re-skinning would require recreating glyph atlases
+  /// and resizing every session's grid.
   @objc func changeFont(_ sender: Any?) {
     let fm = NSFontManager.shared
-    let currentName = UserDefaults.standard.string(forKey: "LabanFontName") ?? "Menlo"
-    let current = NSFont(name: currentName, size: 14) ?? NSFont.systemFont(ofSize: 14)
+    let currentName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey) ?? "Menlo"
+    let currentSize = FontAtlas.persistedTerminalPointSize
+    let current = NSFont(name: currentName, size: currentSize) ?? NSFont.systemFont(ofSize: currentSize)
     let new = fm.convert(current)
-    UserDefaults.standard.set(new.fontName, forKey: "LabanFontName")
-    AppLog.app.info("font picked: \(new.fontName)")
-    EventLog.shared.log("font.set", ["name": new.fontName])
+    UserDefaults.standard.set(new.fontName, forKey: FontAtlas.userFontKey)
+    UserDefaults.standard.set(Double(new.pointSize), forKey: FontAtlas.userFontSizeKey)
+    AppLog.app.info("font picked: \(new.fontName) @ \(new.pointSize) pt")
+    EventLog.shared.log(
+      "font.set", ["name": new.fontName, "size": String(format: "%.1f", new.pointSize)])
+    NotificationCenter.default.post(name: FontAtlas.didChangeNotification, object: nil)
+    let sizeText = String(format: "%.0f pt", new.pointSize)
     let alert = NSAlert()
-    alert.messageText = "Font set to \(new.displayName ?? new.fontName)"
+    alert.messageText = "Font set to \(new.displayName ?? new.fontName), \(sizeText)"
     alert.informativeText = "Restart Laban to apply."
     alert.addButton(withTitle: "Restart Now")  // .firstButtonReturn
     alert.addButton(withTitle: "Later")  // .secondButtonReturn
