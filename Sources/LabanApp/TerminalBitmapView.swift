@@ -2616,6 +2616,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       break
     case .encodedKey(let keyEvent):
       sendKeyEvent(keyEvent)
+    case .terminalBytes(let bytes):
+      sendBytes(bytes)
     case .nativeText:
       currentKeyDescriptor = descriptor
       defer { currentKeyDescriptor = nil }
@@ -2844,6 +2846,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       showFindChip(selectingExistingNeedle: true)
     case .dumpRenderJournal:
       dumpRenderJournal(nil)
+    case .minimize:
+      window?.miniaturize(nil)
     }
   }
 

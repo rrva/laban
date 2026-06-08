@@ -123,7 +123,12 @@ enum DebugRuntimeKeyInput {
 
     guard modifiers.contains(.command) else { return ("ignored", nil) }
 
+    if isCommandLineEditingKey(key, modifiers: modifiers) {
+      return ("terminal", nil)
+    }
+
     switch key {
+    case .m: return ("appCommand", "minimize")
     case .t: return ("appCommand", "newTab")
     case .w: return ("appCommand", "closeTab")
     case .c: return ("appCommand", "copy")
@@ -142,6 +147,33 @@ enum DebugRuntimeKeyInput {
     case .bracketLeft where modifiers.contains(.shift):
       return ("appCommand", "selectPreviousTab")
     default: return ("ignored", nil)
+    }
+  }
+
+  static func isCommandLineEditingKey(_ key: Key, modifiers: KeyModifiers) -> Bool {
+    commandLineEditingBytes(for: key, modifiers: modifiers) != nil
+  }
+
+  /// Mirror GUI M-2: a line-edit chord's release must not reach the PTY.
+  static func isCommandLineEditingRelease(
+    _ key: Key,
+    modifiers: KeyModifiers,
+    action: KeyAction
+  ) -> Bool {
+    action == .release && isCommandLineEditingKey(key, modifiers: modifiers)
+  }
+
+  static func commandLineEditingBytes(for key: Key, modifiers: KeyModifiers) -> [UInt8]? {
+    guard modifiers.contains(.command) else { return nil }
+    switch key {
+    case .arrowLeft where !modifiers.contains(.alt):
+      return [0x01]
+    case .arrowRight where !modifiers.contains(.alt):
+      return [0x05]
+    case .backspace:
+      return [0x15]
+    default:
+      return nil
     }
   }
 

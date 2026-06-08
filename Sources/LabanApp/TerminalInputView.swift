@@ -15,6 +15,7 @@ enum AppCommand: Equatable {
   case paste
   case find
   case dumpRenderJournal
+  case minimize
 }
 
 // MARK: - Key descriptor
@@ -54,7 +55,16 @@ enum TerminalInputRoute: Equatable {
   case swallowCommand
   case nativeText
   case encodedKey(KeyEvent)
+  /// macOS Natural Text Editing translation: Cmd+arrows/backspace become
+  /// readline C0 bytes (Ctrl+A/E/U) for shells and TUIs such as Codex CLI.
+  case terminalBytes([UInt8])
   case ignored
+}
+
+enum TerminalLineEditingBytes {
+  static let beginningOfLine: UInt8 = 0x01  // Ctrl+A
+  static let endOfLine: UInt8 = 0x05  // Ctrl+E
+  static let killToLineStart: UInt8 = 0x15  // Ctrl+U
 }
 
 // MARK: - Routing logic
@@ -76,7 +86,7 @@ extension TerminalKeyDescriptor {
         charactersIgnoringModifiers: charactersIgnoringModifiers
       ).route(hasMarkedText: false)
       switch pressRoute {
-      case .appCommand, .swallowCommand:
+      case .appCommand, .swallowCommand, .terminalBytes:
         return .swallowCommand
       default:
         return .encodedKey(KeyEvent(action: .release, key: key, modifiers: modifiers))
@@ -94,6 +104,9 @@ extension TerminalKeyDescriptor {
     }
 
     if modifiers.contains(.command) {
+      if let lineEdit = commandLineEditingRoute() {
+        return lineEdit
+      }
       return routeCommand()
     }
 
@@ -114,11 +127,34 @@ extension TerminalKeyDescriptor {
     return .nativeText
   }
 
+  /// Standard macOS line-editing chords translated to readline C0 bytes.
+  /// Cmd+Option+arrows are tab switching and are excluded.
+  private func commandLineEditingRoute() -> TerminalInputRoute? {
+    guard action != .release, let bytes = Self.commandLineEditingBytes(key: key, modifiers: modifiers)
+    else { return nil }
+    return .terminalBytes(bytes)
+  }
+
+  static func commandLineEditingBytes(key: Key?, modifiers: KeyModifiers) -> [UInt8]? {
+    guard modifiers.contains(.command), let key else { return nil }
+    switch key {
+    case .arrowLeft where !modifiers.contains(.alt):
+      return [TerminalLineEditingBytes.beginningOfLine]
+    case .arrowRight where !modifiers.contains(.alt):
+      return [TerminalLineEditingBytes.endOfLine]
+    case .backspace:
+      return [TerminalLineEditingBytes.killToLineStart]
+    default:
+      return nil
+    }
+  }
+
   private func routeCommand() -> TerminalInputRoute {
     guard let key else { return .swallowCommand }
     switch key {
     case .j where modifiers.contains(.control) && modifiers.contains(.alt):
       return .appCommand(.dumpRenderJournal)
+    case .m: return .appCommand(.minimize)
     case .t: return .appCommand(.newTab)
     case .w: return .appCommand(.closeTab)
     case .c: return .appCommand(.copy)

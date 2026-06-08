@@ -21,6 +21,7 @@ final class DebugRuntimeKeyInputTests: XCTestCase {
   }
 
   func testCommandRoutesMatchAppShortcuts() {
+    XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .m).command, "minimize")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .t).command, "newTab")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .w).command, "closeTab")
     XCTAssertEqual(DebugRuntimeKeyInput.commandRoute(for: .c).command, "copy")
@@ -47,6 +48,47 @@ final class DebugRuntimeKeyInputTests: XCTestCase {
       DebugRuntimeKeyInput.appCommandRoute(for: .tab, modifiers: [.control, .shift])
         .command,
       "selectPreviousTab")
+  }
+
+  func testCommandLineEditingKeysRouteToTerminal() {
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .arrowLeft, modifiers: .command).route,
+      "terminal")
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .arrowRight, modifiers: .command).route,
+      "terminal")
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.appCommandRoute(for: .backspace, modifiers: .command).route,
+      "terminal")
+  }
+
+  func testCommandLineEditingBytesMatchReadlineC0Sequences() {
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.commandLineEditingBytes(for: .arrowLeft, modifiers: .command),
+      [0x01])
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.commandLineEditingBytes(for: .arrowRight, modifiers: .command),
+      [0x05])
+    XCTAssertEqual(
+      DebugRuntimeKeyInput.commandLineEditingBytes(for: .backspace, modifiers: .command),
+      [0x15])
+    XCTAssertNil(
+      DebugRuntimeKeyInput.commandLineEditingBytes(for: .arrowLeft, modifiers: [.command, .alt]))
+  }
+
+  func testCommandLineEditingReleaseIsIgnoredInDebugPath() {
+    XCTAssertTrue(
+      DebugRuntimeKeyInput.isCommandLineEditingRelease(
+        .arrowLeft, modifiers: .command, action: .release))
+    XCTAssertTrue(
+      DebugRuntimeKeyInput.isCommandLineEditingRelease(
+        .backspace, modifiers: .command, action: .release))
+    XCTAssertFalse(
+      DebugRuntimeKeyInput.isCommandLineEditingRelease(
+        .arrowLeft, modifiers: .command, action: .press))
+    XCTAssertFalse(
+      DebugRuntimeKeyInput.isCommandLineEditingRelease(
+        .arrowLeft, modifiers: [.command, .alt], action: .release))
   }
 
   func testTabIndexUsesOneBasedCommandNumberKeysBeforeLastTabShortcut() {
