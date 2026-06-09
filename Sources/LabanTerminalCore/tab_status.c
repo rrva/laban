@@ -63,7 +63,9 @@ void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len) {
         uint8_t b = bytes[i];
         switch (sc->state) {
         case TS_NORMAL:
-            if (b == 0x1B) sc->state = TS_AFTER_ESC;
+            /* Plain text: jump to the next ESC instead of stepping per byte. */
+            i = laban_scan_skip_to_esc(bytes, len, i);
+            if (i < len) sc->state = TS_AFTER_ESC;
             break;
         case TS_AFTER_ESC:
             if (b == ']') {
@@ -118,8 +120,10 @@ void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len) {
             sc->state = TS_NORMAL;
             break;
         case TS_BODY_OTHER:
-            if (b == 0x07) sc->state = TS_NORMAL;
-            else if (b == 0x1B) sc->state = TS_BODY_OTHER_AFTER_ESC;
+            /* Uninteresting OSC body: jump to its BEL/ESC terminator. */
+            i = laban_scan_skip_to_esc_or_bel(bytes, len, i);
+            if (i >= len) break;
+            sc->state = (bytes[i] == 0x07) ? TS_NORMAL : TS_BODY_OTHER_AFTER_ESC;
             break;
         case TS_BODY_OTHER_AFTER_ESC:
             sc->state = TS_NORMAL;

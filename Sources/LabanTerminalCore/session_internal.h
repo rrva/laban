@@ -60,6 +60,32 @@
         __attribute__((cleanup(laban_session_unlock_cleanup_))) = (s);  \
     (void)_session_lock_guard
 
+/* Vectorized skip for the raw-output scanners below (tab_status.c, osc133.c,
+ * osc_host.c). In their bulk "skip" states the state machines react only to
+ * ESC — plus BEL inside OSC/DCS string bodies — so instead of stepping the
+ * switch per byte they jump straight to the next interesting byte with
+ * memchr (SIMD-accelerated in libsystem). On plain-text/SGR-heavy streams,
+ * the overwhelmingly common case, this collapses three per-byte passes over
+ * every PTY chunk into a few short vectorized scans (the scanners were ~25%
+ * of all CPU under a flood workload before this).
+ *
+ * Both helpers return the index of the first ESC (or BEL) at or after `i`,
+ * or `len` when the chunk has no such byte. The caller transitions on
+ * bytes[result] exactly as the per-byte loop would have. */
+static inline size_t laban_scan_skip_to_esc(
+    const uint8_t *bytes, size_t len, size_t i) {
+    const uint8_t *p = memchr(bytes + i, 0x1B, len - i);
+    return p ? (size_t)(p - bytes) : len;
+}
+
+static inline size_t laban_scan_skip_to_esc_or_bel(
+    const uint8_t *bytes, size_t len, size_t i) {
+    const uint8_t *esc = memchr(bytes + i, 0x1B, len - i);
+    size_t bound = esc ? (size_t)(esc - bytes) : len;
+    const uint8_t *bel = memchr(bytes + i, 0x07, bound - i);
+    return bel ? (size_t)(bel - bytes) : bound;
+}
+
 /* OSC 21337 scanner state. Sniffs `ESC ] 21337 ; key=value;... ST/BEL`
  * out of the PTY byte stream in parallel with libghostty's own parser
  * (libghostty has no generic "unknown OSC" callback and silently drops

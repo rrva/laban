@@ -444,6 +444,73 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertEqual(probe.status, "ok")
   }
 
+  /// The raw-output scanners' bulk skip states (tab_status.c, osc133.c,
+  /// osc_host.c) jump with memchr instead of stepping the state machine per
+  /// byte (laban_scan_skip_to_esc* in session_internal.h). The risk surface is
+  /// a marker straddling a write boundary mid-skip, so feed an SGR-heavy
+  /// stream containing an ignored OSC, a DCS string, a tab-status marker, and
+  /// an OSC 133 marker — split at every byte position, plus byte-at-a-time —
+  /// and require the scanners to fire exactly as they do for the unsplit
+  /// stream.
+  func testScannerMarkersSurviveChunkSplitsAtEveryByte() {
+    let stream = Array(
+      ("\u{1B}[31mplain text 0123456789 \u{1B}[0m"  // SGR runs: NORMAL-state skips
+        + "\u{1B}]4711;ignored-osc-payload\u{1B}\\"  // unknown OSC: BODY_OTHER skip
+        + "\u{1B}P+q544e\u{1B}\\"  // DCS: STRING skip (osc133/osc_host)
+        + "\u{1B}]21337;status=ok\u{1B}\\"  // tab-status marker, ST-terminated
+        + "\u{1B}]133;D;7\u{07}"  // OSC 133 command end, exit 7, BEL
+        + "tail text\u{1B}[0m\n").utf8)
+
+    final class OSC133Probe {
+      var actions: [LabanOSC133Action] = []
+      var exitCodes: [Int32?] = []
+    }
+
+    func run(_ chunks: [[UInt8]], _ label: String) {
+      guard let session = makeFixtureSession() else {
+        XCTFail("laban_session_create returned non-zero (\(label))")
+        return
+      }
+      defer { laban_session_destroy(session) }
+
+      let tabProbe = TabStatusProbe()
+      XCTAssertEqual(
+        laban_session_set_tab_status_callback(
+          session, tabStatusProbeCallback,
+          Unmanaged.passUnretained(tabProbe).toOpaque()),
+        0)
+
+      let oscProbe = OSC133Probe()
+      XCTAssertEqual(
+        laban_session_set_osc133_callback(
+          session,
+          { ud, _, action, hasExit, exit in
+            guard let ud else { return }
+            let probe = Unmanaged<OSC133Probe>.fromOpaque(ud).takeUnretainedValue()
+            probe.actions.append(action)
+            probe.exitCodes.append(hasExit != 0 ? exit : nil)
+          },
+          Unmanaged.passUnretained(oscProbe).toOpaque()),
+        0)
+
+      for chunk in chunks {
+        writeBytes(session, chunk)
+      }
+
+      XCTAssertEqual(tabProbe.calls, 1, "tab status must fire exactly once (\(label))")
+      XCTAssertEqual(tabProbe.status, "ok", "tab status payload (\(label))")
+      XCTAssertEqual(
+        oscProbe.actions, [LABAN_OSC133_COMMAND_END], "osc133 action (\(label))")
+      XCTAssertEqual(oscProbe.exitCodes, [7], "osc133 exit code (\(label))")
+    }
+
+    run([stream], "unsplit")
+    run(stream.map { [$0] }, "byte-at-a-time")
+    for cut in 1..<stream.count {
+      run([Array(stream[..<cut]), Array(stream[cut...])], "split@\(cut)")
+    }
+  }
+
   func testBellCallbackFiresAndCountTracksBel() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

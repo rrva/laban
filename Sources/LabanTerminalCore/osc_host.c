@@ -280,7 +280,9 @@ void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len) {
         uint8_t b = bytes[i];
         switch (sc->state) {
         case OH_NORMAL:
-            if (b == 0x1B) sc->state = OH_AFTER_ESC;
+            /* Plain text: jump to the next ESC instead of stepping per byte. */
+            i = laban_scan_skip_to_esc(bytes, len, i);
+            if (i < len) sc->state = OH_AFTER_ESC;
             break;
         case OH_AFTER_ESC:
             if (b == ']') {
@@ -360,8 +362,10 @@ void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len) {
             }
             break;
         case OH_BODY_OTHER:
-            if (b == 0x07) sc->state = OH_NORMAL;
-            else if (b == 0x1B) sc->state = OH_BODY_OTHER_AFTER_ESC;
+            /* Uninteresting OSC body: jump to its BEL/ESC terminator. */
+            i = laban_scan_skip_to_esc_or_bel(bytes, len, i);
+            if (i >= len) break;
+            sc->state = (bytes[i] == 0x07) ? OH_NORMAL : OH_BODY_OTHER_AFTER_ESC;
             break;
         case OH_BODY_OTHER_AFTER_ESC:
             if (b == '\\') sc->state = OH_NORMAL;
@@ -371,8 +375,10 @@ void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len) {
             else sc->state = OH_NORMAL;
             break;
         case OH_STRING:
-            if (b == 0x07) sc->state = OH_NORMAL;       /* BEL terminator */
-            else if (b == 0x1B) sc->state = OH_STRING_AFTER_ESC;
+            /* DCS/SOS/PM/APC body: jump to its BEL/ESC terminator. */
+            i = laban_scan_skip_to_esc_or_bel(bytes, len, i);
+            if (i >= len) break;
+            sc->state = (bytes[i] == 0x07) ? OH_NORMAL : OH_STRING_AFTER_ESC;
             break;
         case OH_STRING_AFTER_ESC:
             if (b == '\\') sc->state = OH_NORMAL;        /* ST */

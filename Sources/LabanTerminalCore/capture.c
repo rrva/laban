@@ -39,12 +39,26 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (s->persistence_callback && bytes && len > 0) {
         s->persistence_callback(s->persistence_userdata, s, bytes, len);
     }
-    laban_scan_tab_status(s, bytes, len);
-    laban_scan_osc133(s, bytes, len);
+    /* With all three scanners in their ground state, a chunk without a single
+     * ESC cannot move any of them: skip the scans outright. Bulk plain-text
+     * output (the dominant case) then costs one SIMD memchr instead of three
+     * per-byte state machines. */
+    bool scan_needed =
+        bytes != NULL && len > 0
+        && (s->tab_status_scanner.state != TS_NORMAL
+            || s->osc133_scanner.state != O133_NORMAL
+            || s->osc_host_scanner.state != OH_NORMAL
+            || memchr(bytes, 0x1B, len) != NULL);
+    if (scan_needed) {
+        laban_scan_tab_status(s, bytes, len);
+        laban_scan_osc133(s, bytes, len);
+    }
     ghostty_terminal_vt_write(s->terminal, bytes, len);
     /* After libghostty applies the chunk: answer OSC 10/11 color queries against
      * post-update color state and deliver OSC 9 notifications. See osc_host.c. */
-    laban_scan_osc_host(s, bytes, len);
+    if (scan_needed) {
+        laban_scan_osc_host(s, bytes, len);
+    }
     laban_session_note_terminal_dirty(s);
 }
 
