@@ -51,6 +51,22 @@ Core maps: `README.md`, `PLANS.md`, `execplans/`, `docs/adr/`, `docs/quality/`.
 Product and process truth: `docs/product/`, `docs/process/`, `docs/reference/`.
 Debug contracts and data: `schemas/`, `fixtures/`.
 
+## Build & Install
+
+- `./scripts/build-app` builds the three products (`LabanApp`, `laband`, `labpty`)
+  into `.build/laban/Laban.app` — debug by default (stripped, home-path scrubbed,
+  ad-hoc signed). `--profile` makes it a release build and emits a `.dSYM` beside
+  the bundle. Use this, not `swift build` (it also assembles the bundle).
+- `./scripts/install-app` runs `build-app --profile` and replaces `~/Laban.app`
+  (plus `~/Laban.app.dSYM`) in lockstep. This is how you refresh the installed
+  app. `LABAN_INSTALL_DIR=/Applications scripts/install-app` targets elsewhere.
+- Both stamp `Info.plist:LABANBuildCommit` with `<short-sha>[+dirty]`. A dirty
+  *tracked* tree stamps `+dirty` — note that a regenerated `.rpg/graph.json` alone
+  trips it. When a just-shipped fix "doesn't work", verify the running bundle's
+  stamp matches HEAD before debugging source.
+- Never `open`/launch the bundle from the shell: a windowless launch grabs the
+  single-instance lock. Quit and relaunch Laban yourself to pick up a new build.
+
 ## Runtime Artifacts (where to look — don't re-search)
 
 Under `~/Library/Logs/Laban/`:
