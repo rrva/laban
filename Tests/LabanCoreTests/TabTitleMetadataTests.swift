@@ -124,6 +124,7 @@ final class TabTitleMetadataTests: XCTestCase {
 
     XCTAssertEqual(resolved.displayTitle, "~")
     XCTAssertEqual(resolved.titleSource, .cwd)
+    XCTAssertEqual(resolved.infoLines, [])
   }
 
   func testLoginShellDashNameIsRecognizedAsShell() {

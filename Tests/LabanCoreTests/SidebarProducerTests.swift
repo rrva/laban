@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import LabanRenderer
 import XCTest
 
@@ -419,6 +420,25 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertTrue(
       texts.contains("claude"),
       "expected foreground process line; got \(texts)")
+  }
+
+  func testHomeCwdTitleDoesNotRenderDuplicateMetadataLine() {
+    var tab = Tab(id: "t", position: 1, title: "Tab 1", isActive: true, sessionId: "s")
+    tab.titleMetadata.workspace = TabWorkspaceMetadata(cwd: NSHomeDirectory())
+    tab.titleMetadata.process = TabProcessMetadata(
+      foregroundProcess: "bash",
+      foregroundCommand: "/bin/bash",
+      foregroundArguments: ["/bin/sh"]
+    )
+
+    let p = SidebarProducer(sidebarWidth: 320, cellWidth: 8, cellHeight: 16)
+    let cmds = p.commands(tabs: [tab], activeTabId: tab.id, height: 600)
+    let texts = cmds.compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+
+    XCTAssertEqual(texts.filter { $0 == "~" }.count, 1, "got \(texts)")
   }
 
   func testUnseenOutputRendersAttentionMarker() {

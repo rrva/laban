@@ -565,6 +565,7 @@ public enum TabTitleResolver {
     {
       view = view.dropFirst()
     }
+    guard !view.isEmpty else { return title }
     return String(view)
   }
 
