@@ -46,8 +46,9 @@ final class TerminalScrollIndicatorView: NSView {
   // as scroll activity that (re)arms the idle-hide countdown; output that grows
   // the buffer while the viewport stays pinned to the bottom must not.
   private var lastLinesBack = 0
-  // Cached pill measurement. `fittingSize` runs AppKit auto-layout, so it is
-  // only recomputed when the pill text actually changes.
+  // Cached pill measurement (cell size + the 8/3 pill insets). Measuring runs
+  // the typesetter, so it is only recomputed when the pill text actually
+  // changes.
   private var lastPillText: String?
   private var lastPillFittedSize: NSSize = .zero
   // Test hook: counts layoutFromOutput passes so a test can assert the
@@ -88,14 +89,13 @@ final class TerminalScrollIndicatorView: NSView {
 
     pillLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
     pillLabel.alignment = .center
-    pillLabel.translatesAutoresizingMaskIntoConstraints = false
+    // Manual frames throughout the pill. With the label under Auto Layout,
+    // every scroll tick's setStringValue invalidated its intrinsic size and
+    // dragged a window-wide constraint pass into the next CA commit —
+    // measured ~10% of all CPU during sustained scrolling. layoutFromOutput
+    // frames the label directly instead.
+    pillLabel.translatesAutoresizingMaskIntoConstraints = true
     pillContainer.addSubview(pillLabel)
-    NSLayoutConstraint.activate([
-      pillLabel.leadingAnchor.constraint(equalTo: pillContainer.leadingAnchor, constant: 8),
-      pillLabel.trailingAnchor.constraint(equalTo: pillContainer.trailingAnchor, constant: -8),
-      pillLabel.topAnchor.constraint(equalTo: pillContainer.topAnchor, constant: 3),
-      pillLabel.bottomAnchor.constraint(equalTo: pillContainer.bottomAnchor, constant: -3),
-    ])
     addSubview(pillContainer)
 
     themeChangeObserver = NotificationCenter.default.addObserver(
@@ -349,13 +349,20 @@ final class TerminalScrollIndicatorView: NSView {
     // Pill: top-right, just under the titlebar reserve, left of the thumb.
     // Opacity (not isHidden) controls visibility — keeps the view in the tree
     // so the fade animation can run when scrolledBack flips. Only measure and
-    // reposition while the pill is shown; `fittingSize` runs AppKit layout, so a
-    // held-visible pill reuses the cached size until its text changes.
+    // reposition while the pill is shown; the cell measurement runs the
+    // typesetter (no Auto Layout pass), and a held-visible pill reuses the
+    // cached size until its text changes.
     if lastOutput.pillVisible {
       if lastOutput.pillText != lastPillText {
         pillLabel.stringValue = lastOutput.pillText
         lastPillText = lastOutput.pillText
-        lastPillFittedSize = pillContainer.fittingSize
+        let textSize = pillLabel.cell?.cellSize ?? .zero
+        lastPillFittedSize = NSSize(
+          width: ceil(textSize.width) + 16, height: ceil(textSize.height) + 6)
+        pillLabel.frame = NSRect(
+          x: 8, y: 3,
+          width: lastPillFittedSize.width - 16,
+          height: lastPillFittedSize.height - 6)
       }
       let pillSize = lastPillFittedSize
       let pillX = bounds.maxX - Self.edgeInset - Self.thumbWidthHover - 6 - pillSize.width
