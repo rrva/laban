@@ -253,14 +253,73 @@ final review runs all of them.
       Sources/LabanCore/TerminalIdlePolicy.swift` — still present (the
       floor constant must survive for the parachute path).
 
-Review status: MILESTONE 1 REVIEW — FAILED (2026-06-10, fresh-state review
-agent, commit 9981626, diff 433401d..9981626). Scope: Milestone 1 only
-(tick-work gating via the C dirty-generation counter); Milestone 2–5 gate
-items are not yet reviewable and remain unchecked above. One M1 gate item
-failed (the exit-wake proof); every other M1-applicable item passed. The
-final full-gate review still runs all items per PLANS.md.
+Review status: MILESTONE 1 REVIEW — PASSED (2026-06-10, fresh-state
+re-review agent, commit efe9fbf, diff 433401d..efe9fbf). Scope: Milestone 1
+only (tick-work gating via the C dirty-generation counter); Milestone 2–5
+gate items are not yet reviewable and remain unchecked above. Per PLANS.md
+this was a FULL fresh re-run of every M1-applicable gate item, not a delta
+check; it supersedes the FAILED 9981626 review, whose record is preserved
+below. The final full-gate review still runs all items.
 
 Review findings (filled in by the review agent):
+
+Milestone-1 re-review at commit efe9fbf (2026-06-10), after the fix round:
+
+- PASS — `rtk swift test --filter TerminalSurfaceControllerTests`: 28
+  tests, 0 failures; 4 Generation-named tests pass, including
+  `testGenerationGatingSkipsMetadataSyncOnUnchangedGeneration` and the
+  rewritten `testGenerationGatingFlipsTabExitStateAfterZeroOutputChildExit`
+  (plan M1 step 5(d)), which now drives a REAL PTY child exit
+  (`/bin/sh -c "sleep 0.5; exit 7"`) through one gated `syncSessions` call
+  and asserts the tab flips to `.exited(code: 7)` — no `feedOutput`
+  simulation.
+- PASS — `rtk swift test --filter SessionRunnerTests`: 5 tests, 0 failures;
+  `testExitWakesOnDirtyWithNoOutput` passes in ~6 ms (sub-second fire, not
+  deadline exhaustion) and captures the XCTWaiter result BEFORE
+  `runner.stop()` (`Tests/LabanCoreTests/SessionRunnerTests.swift:87-88`),
+  so the unconditional teardown `onDirty` can no longer mask a missing
+  exit bump.
+- PASS — mutation check (the item that failed the 9981626 review), run
+  both ways: with the pty_io.c exit bump disabled
+  (`if (prev_status == 0 && s->status != 0)` → `if (0 && ...)` at
+  `Sources/LabanTerminalCore/pty_io.c:173`),
+  `testExitWakesOnDirtyWithNoOutput` FAILS with XCTWaiter `.timedOut`
+  after 3.196 s, and
+  `testGenerationGatingFlipsTabExitStateAfterZeroOutputChildExit` FAILS
+  with the tab stuck at `.running` instead of `.exited(code: 7)`. Mutation
+  reverted (`git diff -- Sources/LabanTerminalCore/pty_io.c` empty); both
+  suites re-run green (5/0, 28/0). The load-bearing exit bump now has
+  effective regression coverage at both the runner layer and the
+  exit→generation→syncSessions→tab-status chain.
+- PASS — `grep -n "laban_session_dirty_generation"
+  Sources/LabanTerminalCore/include/LabanTerminalCore.h`: hit at line 289.
+- PASS — `grep -n "note_terminal_dirty" Sources/LabanTerminalCore/pty_io.c`:
+  hit at line 174, inside the child-exit branch of
+  `laban_session_drain_locked_`, gated on the status 0→nonzero transition.
+- PASS — `grep -n "drained > 0" Sources/LabanCore/SessionRunner.swift`:
+  single hit at line 86, the `else if` fallback after the
+  generation-advance branch — the firing condition is no longer solely
+  `drained > 0`.
+- PASS — `grep -n "idleDisplayLinkFramesPerSecond = 8"
+  Sources/LabanCore/TerminalIdlePolicy.swift`: line 15; M1 makes no park
+  changes.
+- PASS — `swift build --build-tests` clean; full `swift test`: 1433 tests
+  executed, 12 skipped, 0 failures, exit 0.
+- PASS — plan-prose fix (a): the Decision Log's unbumped-metadata entry now
+  states a wake alone does NOT repair frozen metadata and names the actual
+  repair (the next terminal byte on that session or an explicit
+  `invalidateSessionSyncCache()`); the wrong "next wake or safety-net
+  tick" phrasing survives only as a quotation inside the preserved 9981626
+  findings record.
+- PASS — plan-prose fix (b): "Interfaces and Dependencies / Out of scope"
+  now states `HeadlessDebugRuntime` is deliberately EXEMPT from
+  Milestone-1 gating via the `.pollAllSessions` bypass, replacing the
+  stale "benefits automatically" claim.
+
+Verdict: Milestone 1 PASSED at commit efe9fbf. Both fix-round changes are
+adequate: the rewritten tests are mutation-killing (verified both ways in
+this review) and the two plan-prose corrections are in place. No new
+findings.
 
 Milestone-1 review at commit 9981626 (2026-06-10):
 
