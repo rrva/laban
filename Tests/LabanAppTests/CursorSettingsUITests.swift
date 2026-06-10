@@ -26,12 +26,14 @@ final class CursorSettingsUITests: XCTestCase {
   // MARK: - Defaults
 
   func testDefaultStyleIsBlock() {
-    XCTAssertEqual(CursorSettings.style, .block,
+    XCTAssertEqual(
+      CursorSettings.style, .block,
       "missing defaults key must return .block")
   }
 
   func testDefaultBlinkEnabledIsFalse() {
-    XCTAssertFalse(CursorSettings.blinkEnabled,
+    XCTAssertFalse(
+      CursorSettings.blinkEnabled,
       "missing defaults key must return false for blink")
   }
 
@@ -95,7 +97,8 @@ final class CursorSettingsUITests: XCTestCase {
     CursorSettings.setStyle(.bar)
     RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
 
-    XCTAssertEqual(count, 1,
+    XCTAssertEqual(
+      count, 1,
       "setStyle must fire exactly one didChangeNotification")
   }
 
@@ -110,7 +113,8 @@ final class CursorSettingsUITests: XCTestCase {
     CursorSettings.setBlinkEnabled(true)
     RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
 
-    XCTAssertEqual(count, 1,
+    XCTAssertEqual(
+      count, 1,
       "setBlinkEnabled must fire exactly one didChangeNotification")
   }
 
@@ -123,9 +127,11 @@ final class CursorSettingsUITests: XCTestCase {
       forKey: CursorSettings.styleKey)
     UserDefaults.standard.set(true, forKey: CursorSettings.blinkKey)
 
-    XCTAssertEqual(CursorSettings.style, .underline,
+    XCTAssertEqual(
+      CursorSettings.style, .underline,
       "external defaults write must be visible through CursorSettings.style")
-    XCTAssertTrue(CursorSettings.blinkEnabled,
+    XCTAssertTrue(
+      CursorSettings.blinkEnabled,
       "external defaults write must be visible through CursorSettings.blinkEnabled")
   }
 }

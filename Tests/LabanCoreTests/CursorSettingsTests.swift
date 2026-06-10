@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+
 @testable import LabanCore
 
 final class CursorSettingsTests: XCTestCase {
@@ -21,12 +22,14 @@ final class CursorSettingsTests: XCTestCase {
   // MARK: - Default values
 
   func testDefaultStyleIsBlock() {
-    XCTAssertEqual(CursorSettings.style, .block,
+    XCTAssertEqual(
+      CursorSettings.style, .block,
       "fresh install must default to block cursor")
   }
 
   func testDefaultBlinkIsOff() {
-    XCTAssertFalse(CursorSettings.blinkEnabled,
+    XCTAssertFalse(
+      CursorSettings.blinkEnabled,
       "fresh install must default to blink off so idle terminal needs no wakeups")
   }
 
@@ -62,17 +65,20 @@ final class CursorSettingsTests: XCTestCase {
   // MARK: - Int32 mapping
 
   func testBlockStyleValue() {
-    XCTAssertEqual(CursorSettings.Style.block.labanStyleValue, 0,
+    XCTAssertEqual(
+      CursorSettings.Style.block.labanStyleValue, 0,
       "block must map to LABAN_CURSOR_STYLE_BLOCK = 0")
   }
 
   func testBarStyleValue() {
-    XCTAssertEqual(CursorSettings.Style.bar.labanStyleValue, 1,
+    XCTAssertEqual(
+      CursorSettings.Style.bar.labanStyleValue, 1,
       "bar must map to LABAN_CURSOR_STYLE_BAR = 1")
   }
 
   func testUnderlineStyleValue() {
-    XCTAssertEqual(CursorSettings.Style.underline.labanStyleValue, 2,
+    XCTAssertEqual(
+      CursorSettings.Style.underline.labanStyleValue, 2,
       "underline must map to LABAN_CURSOR_STYLE_UNDERLINE = 2")
   }
 

@@ -58,7 +58,7 @@ final class CursorBlinkDriver {
   /// solid while typing.
   func noteInput() {
     phaseVisible = true
-    pendingFlip = false   // cancel any in-flight flip so the frame guard passes correctly
+    pendingFlip = false  // cancel any in-flight flip so the frame guard passes correctly
     if timerRunning {
       restartTimer()
     }

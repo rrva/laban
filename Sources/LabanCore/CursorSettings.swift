@@ -25,8 +25,8 @@ public enum CursorSettings {
     /// `FrameProducer.cursorRects(style:cellRect:)`.
     public var labanStyleValue: Int32 {
       switch self {
-      case .block:     return Int32(LABAN_CURSOR_STYLE_BLOCK)
-      case .bar:       return Int32(LABAN_CURSOR_STYLE_BAR)
+      case .block: return Int32(LABAN_CURSOR_STYLE_BLOCK)
+      case .bar: return Int32(LABAN_CURSOR_STYLE_BAR)
       case .underline: return Int32(LABAN_CURSOR_STYLE_UNDERLINE)
       }
     }
@@ -48,7 +48,7 @@ public enum CursorSettings {
   /// absent (fresh install or removed key).
   public static var style: Style {
     guard let raw = UserDefaults.standard.object(forKey: styleKey) as? String,
-          let parsed = Style(rawValue: raw)
+      let parsed = Style(rawValue: raw)
     else { return .block }
     return parsed
   }

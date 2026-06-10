@@ -874,7 +874,10 @@ final class FrameProducerTests: XCTestCase {
     let session = try Session.fixture(size: size)
     defer { session.close() }
     // No DECSCUSR written: user setting is bar
-    guard let snap = session.snapshot() else { XCTFail("snapshot nil"); return }
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
     defer { laban_snapshot_destroy(snap) }
 
     let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
@@ -896,7 +899,10 @@ final class FrameProducerTests: XCTestCase {
     size.cols = 10
     let session = try Session.fixture(size: size)
     defer { session.close() }
-    guard let snap = session.snapshot() else { XCTFail("snapshot nil"); return }
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
     defer { laban_snapshot_destroy(snap) }
 
     let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
@@ -918,7 +924,10 @@ final class FrameProducerTests: XCTestCase {
     size.cols = 10
     let session = try Session.fixture(size: size)
     defer { session.close() }
-    guard let snap = session.snapshot() else { XCTFail("snapshot nil"); return }
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
     defer { laban_snapshot_destroy(snap) }
 
     let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
@@ -995,7 +1004,8 @@ final class FrameProducerTests: XCTestCase {
     snapshot.cursorVisible = false
     let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
     let cmds = producer.commands(from: snapshot, userCursorStyle: .bar)
-    XCTAssertTrue(remoteCursorRects(cmds).isEmpty,
+    XCTAssertTrue(
+      remoteCursorRects(cmds).isEmpty,
       "an invisible remote cursor must emit no cursor rects regardless of user style")
   }
 }

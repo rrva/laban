@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import LabanCore
 
 /// Truth-table tests for `CursorBlinkPolicy.timerShouldRun`.
@@ -94,7 +95,8 @@ final class CursorBlinkPolicyTests: XCTestCase {
   // MARK: - blinkInterval sanity
 
   func testBlinkIntervalIsHalfSecond() {
-    XCTAssertEqual(CursorBlinkPolicy.blinkInterval, 0.5,
+    XCTAssertEqual(
+      CursorBlinkPolicy.blinkInterval, 0.5,
       "blink interval must be 0.5 seconds (2 Hz)")
   }
 }

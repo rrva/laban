@@ -1447,7 +1447,8 @@ public struct FrameProducer {
       )
       // Use the user's configured style for the remote cursor (ring snapshots
       // carry no explicit DECSCUSR override bits — Decision Log entry).
-      for rect in Self.cursorRects(style: Int(userCursorStyle.labanStyleValue), cellRect: cellRect) {
+      for rect in Self.cursorRects(style: Int(userCursorStyle.labanStyleValue), cellRect: cellRect)
+      {
         cmds.append(.cursor(rect, color: Theme.current.cursor))
       }
     }

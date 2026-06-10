@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import LabanApp
 
 /// Unit tests for `CursorBlinkDriver`.
@@ -22,7 +23,8 @@ final class CursorBlinkDriverTests: XCTestCase {
 
   func testInitialPendingFlipFalse() {
     let driver = CursorBlinkDriver()
-    XCTAssertFalse(driver.consumePendingFlip(),
+    XCTAssertFalse(
+      driver.consumePendingFlip(),
       "no pending flip before any timer tick")
   }
 
@@ -50,7 +52,8 @@ final class CursorBlinkDriverTests: XCTestCase {
     XCTAssertTrue(driver.timerRunning)
 
     driver.sync(blinkActive: false, windowVisibleToUser: true, cursorVisible: true)
-    XCTAssertFalse(driver.timerRunning,
+    XCTAssertFalse(
+      driver.timerRunning,
       "timer must stop when blinkActive gate opens")
   }
 
@@ -60,7 +63,8 @@ final class CursorBlinkDriverTests: XCTestCase {
     XCTAssertTrue(driver.timerRunning)
 
     driver.sync(blinkActive: true, windowVisibleToUser: false, cursorVisible: true)
-    XCTAssertFalse(driver.timerRunning,
+    XCTAssertFalse(
+      driver.timerRunning,
       "timer must stop when window-visible gate opens")
   }
 
@@ -72,7 +76,8 @@ final class CursorBlinkDriverTests: XCTestCase {
     driver.simulateTimerFireForTesting()  // reach the hidden phase deterministically
     XCTAssertFalse(driver.phaseVisible)
     driver.sync(blinkActive: false, windowVisibleToUser: true, cursorVisible: true)
-    XCTAssertTrue(driver.phaseVisible,
+    XCTAssertTrue(
+      driver.phaseVisible,
       "phase must reset to visible (solid cursor) when timer stops")
   }
 
@@ -101,7 +106,8 @@ final class CursorBlinkDriverTests: XCTestCase {
     XCTAssertTrue(driver.phaseVisible, "phase must reset to visible on stop")
     XCTAssertFalse(driver.timerRunning, "timer must stop when window not visible")
     XCTAssertEqual(flips, 2, "stopping mid-off-phase must fire onPhaseFlip to repaint")
-    XCTAssertTrue(driver.consumePendingFlip(),
+    XCTAssertTrue(
+      driver.consumePendingFlip(),
       "the repaint frame must see a pending flip so advanceFrame's guard passes")
   }
 
@@ -123,7 +129,8 @@ final class CursorBlinkDriverTests: XCTestCase {
   func testSimulateTimerFireIsNoOpWhenTimerStopped() {
     let driver = CursorBlinkDriver()
     driver.simulateTimerFireForTesting()
-    XCTAssertTrue(driver.phaseVisible,
+    XCTAssertTrue(
+      driver.phaseVisible,
       "the hook must mirror the real handler, which cannot fire with no timer")
     XCTAssertFalse(driver.consumePendingFlip())
   }
@@ -136,7 +143,8 @@ final class CursorBlinkDriverTests: XCTestCase {
     driver.sync(blinkActive: true, windowVisibleToUser: true, cursorVisible: true)
     // Phase starts visible, but let's call noteInput directly to ensure it is still visible
     driver.noteInput()
-    XCTAssertTrue(driver.phaseVisible,
+    XCTAssertTrue(
+      driver.phaseVisible,
       "noteInput must force phase to visible")
   }
 
@@ -144,7 +152,8 @@ final class CursorBlinkDriverTests: XCTestCase {
     let driver = CursorBlinkDriver()
     driver.sync(blinkActive: true, windowVisibleToUser: true, cursorVisible: true)
     driver.noteInput()
-    XCTAssertFalse(driver.consumePendingFlip(),
+    XCTAssertFalse(
+      driver.consumePendingFlip(),
       "noteInput must clear any pending flip so the next frame doesn't see a stale flip")
   }
 
@@ -164,9 +173,11 @@ final class CursorBlinkDriverTests: XCTestCase {
 
     wait(for: [flipExpectation], timeout: 2.0)
     // After the first flip, phase must have toggled (false) and pendingFlip set
-    XCTAssertFalse(driver.phaseVisible,
+    XCTAssertFalse(
+      driver.phaseVisible,
       "phase must toggle to hidden on first timer tick")
-    XCTAssertTrue(driver.consumePendingFlip(),
+    XCTAssertTrue(
+      driver.consumePendingFlip(),
       "pendingFlip must be set after timer fires")
   }
 
@@ -175,7 +186,8 @@ final class CursorBlinkDriverTests: XCTestCase {
   func testConsumePendingFlipIsIdempotent() {
     let driver = CursorBlinkDriver()
     _ = driver.consumePendingFlip()
-    XCTAssertFalse(driver.consumePendingFlip(),
+    XCTAssertFalse(
+      driver.consumePendingFlip(),
       "consumePendingFlip must return false on second call without an intervening flip")
   }
 }

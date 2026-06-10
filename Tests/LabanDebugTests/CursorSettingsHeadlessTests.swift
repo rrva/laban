@@ -74,9 +74,11 @@ final class CursorSettingsHeadlessTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: artifacts) }
 
     let settings = try stateCursorSettings(runtime)
-    XCTAssertEqual(settings["style"] as? String, "block",
+    XCTAssertEqual(
+      settings["style"] as? String, "block",
       "missing defaults must report block style")
-    XCTAssertEqual(settings["blinkEnabled"] as? Bool, false,
+    XCTAssertEqual(
+      settings["blinkEnabled"] as? Bool, false,
       "missing defaults must report blink disabled")
   }
 
