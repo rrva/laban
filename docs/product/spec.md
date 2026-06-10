@@ -179,3 +179,31 @@ Deferred features include regex needles, Unicode case folding, pinned match
 anchors that survive arbitrary output mutation, explicit case-mode controls,
 workspace-wide search across sessions, OSC 133 command-block grouping, and
 threaded background search.
+
+## 23. Cursor appearance settings
+
+The Settings window (⌘,) exposes a "Cursor:" popup (Block / Bar / Underline)
+and a "Blink cursor" checkbox. The defaults are solid block, blink off. Changes
+apply immediately and persist across relaunches via UserDefaults keys
+`LabanCursorStyle` (string) and `LabanCursorBlink` (bool).
+
+A program's DECSCUSR escape sequence (`CSI Ps SP q`) overrides the cursor style
+and/or blink while active. `CSI 0 SP q` (or an absent parameter) reverts to the
+user's setting. RIS (`ESC c`), DECSTR (`CSI ! p`), and alternate-screen exit
+also clear any program override. The user setting governs the quiescent
+(no-override) state; programs such as vim signal editing mode through DECSCUSR
+and must continue to work correctly.
+
+Blink is an owned, gated wake source: a dedicated ~2 Hz
+(`CursorBlinkPolicy.blinkInterval` = 0.5 s) timer that runs only when blink is
+enabled AND the window is visible to the user AND the cursor is visible. The
+timer never runs when any gate is false. The cursor phase resets to visible
+whenever the timer stops (window hidden, blink disabled, cursor hidden) so the
+cursor is always solid when the terminal is not key or is fully idle with blink
+off. With default settings (solid block, blink off) a fully idle focused
+terminal needs zero blink wakeups.
+
+The debug server `/debug/state` endpoint includes a `cursorSettings` object with
+`style`, `blinkEnabled`, `styleOverridden`, and `blinkOverridden` fields for
+the active session. Headless runs accept `-LabanCursorStyle <value>` and
+`-LabanCursorBlink <YES|NO>` argument-domain defaults.
