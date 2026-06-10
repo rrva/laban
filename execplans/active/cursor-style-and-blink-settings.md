@@ -140,45 +140,97 @@ Implementation decisions made while executing this plan:
 A separate agent with fresh state must verify the following before this
 ExecPlan is considered complete. Run all commands from the repository root.
 
-- [ ] `rtk swift test --filter CursorSettingsTests` exits 0, 0 failures.
-- [ ] `rtk swift test --filter CursorStyleResolverTests` exits 0; the suite
+- [x] `rtk swift test --filter CursorSettingsTests` exits 0, 0 failures.
+  (13 tests, 0 failures.)
+- [x] `rtk swift test --filter CursorStyleResolverTests` exits 0; the suite
   contains test names containing `ExplicitOverrideWins` and
   `UserDefaultAppliesWhenNoOverride`.
-- [ ] `rtk swift test --filter CursorBlinkPolicyTests` exits 0; a test name
+  (11 tests, 0 failures; 4 `ExplicitOverrideWins*` and 5
+  `UserDefaultAppliesWhenNoOverride*` test names present.)
+- [x] `rtk swift test --filter CursorBlinkPolicyTests` exits 0; a test name
   contains `TimerOffWhenBlinkDisabled`.
-- [ ] `rtk swift test --filter CursorOverrideScannerTests` exits 0; the
+  (9 tests, 0 failures; `testTimerOffWhenBlinkDisabled` at line 12.)
+- [x] `rtk swift test --filter CursorOverrideScannerTests` exits 0; the
   suite covers DECSCUSR set, DECSCUSR 0 clear, RIS clear, and a sequence
   split across two writes.
-- [ ] `rtk swift test --filter FrameProducerTests` exits 0 (including the
+  (12 tests, 0 failures; set Ps1/Ps2/Ps5, clear Ps0/no-param, RIS, DECSTR,
+  two split-across-writes cases, mode-12 h/l, plain-text negative.)
+- [x] `rtk swift test --filter FrameProducerTests` exits 0 (including the
   pre-existing `testFrameProducerShapesAndBlinksCursorStyles`).
-- [ ] `rtk swift test --filter CrossBackendBitmapTests` exits 0 (pins that
+  (26 tests, 0 failures; the pre-existing test ran and passed.)
+- [x] `rtk swift test --filter CrossBackendBitmapTests` exits 0 (pins that
   the default configuration changes no rendered pixels).
-- [ ] `rtk swift test` (full suite) exits 0.
-- [ ] `grep -n "advanceCursorBlinkState" Sources/LabanApp/TerminalBitmapView.swift`
+  (3 tests, 0 failures.)
+- [x] `rtk swift test` (full suite) exits 0.
+  (1421 tests, 12 skipped, 0 failures.)
+- [x] `grep -n "advanceCursorBlinkState" Sources/LabanApp/TerminalBitmapView.swift`
   returns zero hits.
-- [ ] `grep -n "cursorBlinkInterval" Sources/LabanApp/TerminalBitmapView.swift`
+- [x] `grep -n "cursorBlinkInterval" Sources/LabanApp/TerminalBitmapView.swift`
   returns zero hits (the 0.5 s constant lives in
   `Sources/LabanCore/CursorBlinkPolicy.swift`).
-- [ ] `grep -n "^## 23" docs/product/spec.md` returns one hit whose heading
+  (Zero hits; `blinkInterval = 0.5` at `CursorBlinkPolicy.swift:19`.)
+- [x] `grep -n "^## 23" docs/product/spec.md` returns one hit whose heading
   mentions cursor.
-- [ ] `grep -n "cursorSettings" schemas/debug/state.schema.json` returns at
+  (One hit: `## 23. Cursor appearance settings` at spec.md:183.)
+- [x] `grep -n "cursorSettings" schemas/debug/state.schema.json` returns at
   least one hit.
-- [ ] `./scripts/build-app` exits 0 and produces `.build/laban/Laban.app`.
-- [ ] Mutation check: in `Sources/LabanCore/CursorSettings.swift`, flip the
+  (3 hits: required list, property ref, `$defs` entry.)
+- [x] `./scripts/build-app` exits 0 and produces `.build/laban/Laban.app`.
+- [x] Mutation check: in `Sources/LabanCore/CursorSettings.swift`, flip the
   blink default from `false` to `true`; run
   `rtk swift test --filter CursorSettingsTests`; expect at least one
   failure; revert.
-- [ ] Headless check: `swift build --product laban-agent`, run
+  (Mutated `?? false` -> `?? true` in `blinkEnabled`; 2 failures incl.
+  `testDefaultBlinkIsOff`; reverted; `git status` clean afterwards.)
+- [x] Headless check: `swift build --product laban-agent`, run
   `.build/debug/laban-agent --headless --debug-server=127.0.0.1:0` in the
   background, `curl` the printed `/debug/state` URL; the JSON contains a
   `cursorSettings` object with `style` and `blinkEnabled` keys. Kill the
   agent afterwards.
+  (Probed `/debug/state` with the printed bearer token; response contained
+  `{"style":"block","blinkEnabled":false,"styleOverridden":false,
+  "blinkOverridden":false}`. Agent killed; no stray processes.)
 
-Review status: NOT REVIEWED
+Review status: PASSED 2026-06-10, reviewed at commit 49c3748. All 14 gate
+items pass mechanically: focused suites green (13/11/9/12/26/3 tests), full
+suite 1421 tests 0 failures, legacy blink symbols absent from
+TerminalBitmapView, spec.md section 23 present, schema carries
+cursorSettings, build-app clean, blink-default mutation killed by
+`testDefaultBlinkIsOff`, headless `/debug/state` exposes the cursorSettings
+contract.
 
 Review findings (filled in by the review agent):
 
-(none yet)
+Non-blocking observations — no gate item fails on these; recorded for the
+next contributor:
+
+1. Dead repaint branch on timer stop: in
+   `Sources/LabanApp/CursorBlinkDriver.swift`, `sync()`'s stop path calls
+   `stopTimer()` (which already resets `phaseVisible = true`) before its
+   `if !phaseVisible` check, so the `onPhaseFlip?()` repaint on
+   stop-from-hidden-phase is unreachable. With blink ON, resigning key
+   mid-off-phase (the `didResignKeyNotification` handler in
+   `TerminalBitmapView.swift` calls `syncBlinkDriverFromWindowState()` but
+   never `advanceFrame()`, and the display link parks) can leave the
+   on-screen cursor hidden in a still-visible non-key window until refocus
+   — at odds with spec.md §23 "always solid when the terminal is not key".
+   Default config (blink off) unaffected.
+   `testSyncStopResetsPhaseToVisible` notes it cannot force the hidden
+   phase, so this path is untested.
+2. Missing test from Milestone 2 prose: no "remote styled-cursor case"
+   exists — no test passes `userCursorStyle` into the remote
+   `FrameProducer.commands(from: LabandSnapshotResponse, ...)` overload;
+   the new per-style cases cover bar and underline but not block geometry
+   via `resolvedCursor`.
+3. Remote (laband) frames leave `TerminalSurfaceFrame.cursorVisible` at its
+   default `false`, so the blink timer never runs for remote sessions and
+   the remote cursor is now always solid (previously it blinked
+   unconditionally); a user blink-on setting does not blink remotely.
+   Consistent with the Decision Log's deliberate laband deferral.
+4. Plan prose says the override fields are "zeroed in session init
+   (`session_lifecycle.c`)"; no explicit zeroing was added — the session is
+   `calloc`'d (`session_lifecycle.c:321`), which zero-initializes them.
+   Benign.
 
 ## Context and Orientation
 
