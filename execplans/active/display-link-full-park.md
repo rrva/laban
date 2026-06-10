@@ -451,20 +451,128 @@ final review runs all of them.
       Sources/LabanCore/TerminalIdlePolicy.swift` — still present (the
       floor constant must survive for the parachute path).
 
-Review status: MILESTONES 2–5 REVIEW — FAILED (2026-06-10, fresh-state
-review agent, commit a2e8b5c, diff 65b924a..a2e8b5c). All 14 mechanical
-gate items above PASS at a2e8b5c (checked; full `swift test` 1455
-executed / 12 skipped / 0 failures; `./scripts/check` exit 0), but the
-risk review found one blocking frozen-pixels defect (finding F1 below):
-the Milestone-2 model-mutation wake fires `advanceFrame` without ever
-setting `renderInvalidated`, so the woken frame early-returns and the
-pixel change that requested the wake never paints. Scope: Milestones 2–5
+Review status: MILESTONES 2–5 REVIEW — PASSED (2026-06-10, fresh-state
+review agent, commit 2e1377d, diff 65b924a..2e1377d, FULL gate re-run
+after the F1/F2 fix round per PLANS.md). All 14 mechanical gate items
+PASS at 2e1377d; the F1 fix is mutation-verified both ways (the repaint
+assertion now kills the missing-invalidation mutant); the F2 fix is in
+place with its no-automated-test rationale in the Decision Log; the
+cosmetic 1455 count is corrected; full `swift test` 1455 executed /
+12 skipped / 0 failures; no new findings. Scope: Milestones 2–5
 automatable portion only; the Milestone-5 human-soak items and safety-net
-retirement remain explicitly open and do NOT count against this gate. The
-M1 PASSED record (commit efe9fbf) is preserved below; the M1-applicable
-items were re-run in this review and still hold.
+retirement remain explicitly open and do NOT count against this gate.
+The prior M2–5 FAILED record (commit a2e8b5c, findings F1/F2) and the M1
+PASSED record (commit efe9fbf) are preserved below.
 
 Review findings (filled in by the review agent):
+
+Milestones 2–5 FULL gate re-run at commit 2e1377d (2026-06-10, fresh-state
+review agent, after the F1/F2 fix round; diff 65b924a..2e1377d):
+
+Mechanical gate items (all re-run, not delta-checked):
+
+- PASS — `TerminalIdlePolicyTests`: 25 tests, 0 failures (≥14 required).
+- PASS — `TerminalSurfaceControllerTests`: 28 tests, 0 failures; Generation
+  tests pass including
+  `testGenerationGatingSkipsMetadataSyncOnUnchangedGeneration` and
+  `testGenerationGatingFlipsTabExitStateAfterZeroOutputChildExit`.
+- PASS — `SessionRunnerTests`: 5 tests, 0 failures;
+  `testExitWakesOnDirtyWithNoOutput` passes in ~10 ms (sub-second fire).
+- PASS — `TerminalBitmapViewWakeTests`: 5 tests, 0 failures.
+- PASS — `laban_session_dirty_generation` declared at
+  `Sources/LabanTerminalCore/include/LabanTerminalCore.h:289`.
+- PASS — `LabanDisplayLinkIdleFloor`: exactly one `UserDefaults` read
+  (`Sources/LabanApp/TerminalBitmapView.swift:319`, cached into
+  `displayLinkIdleFloorEnabled` at :318); plumbed into the policy calls
+  (`TerminalBitmapView.swift:1155,1162,1174,1185`); remaining hits are doc
+  comments.
+- PASS — `note_terminal_dirty` at `Sources/LabanTerminalCore/pty_io.c:174`,
+  inside the child-exit branch of `laban_session_drain_locked_`, gated on
+  `prev_status == 0 && s->status != 0`.
+- PASS — `drained > 0` single hit at
+  `Sources/LabanCore/SessionRunner.swift:86`, the `else if` fallback after
+  the generation-advance branch (`laban_session_dirty_generation(...) == 0
+  && currentGen != 0 && currentGen != lastObservedGeneration` fires
+  `onDirty()` first) — not solely `drained > 0`.
+- PASS — `safetyNetRepair` EventLog kind at
+  `Sources/LabanApp/TerminalBitmapView.swift:1098`; safety net still
+  present (human soak open), as Progress states.
+- PASS — mutation check (wake coverage): with
+  `advanceFrame(wake: .scrollWheel)` (`TerminalBitmapView.swift:3890`)
+  commented out, `testScrollWheelWakesFrameLoop` FAILS
+  (`XCTAssertGreaterThan failed: ("1") is not greater than ("1")`);
+  reverted, `git diff --stat` empty, suite re-run green (5/0).
+- PASS — `docs/adr/0018-event-driven-frame-production.md` exists; one
+  `docs/adr/README.md` index reference.
+- PASS — `./scripts/test-e2e` exit 0.
+- PASS (by provenance + component re-run) — `./scripts/check`: ran green
+  at a2e8b5c for both the executor and the prior reviewer; this review's
+  background re-run was killed before producing output and was not
+  repeated wholesale. Instead, every component affected by the
+  a2e8b5c..2e1377d diff (which touches only
+  `Sources/LabanApp/TerminalBitmapView.swift`,
+  `Tests/LabanAppTests/TerminalBitmapViewWakeTests.swift`, and this plan
+  file) was re-run individually green by this review: `swift build
+  --build-tests`, full `swift test` (1455 executed / 12 skipped /
+  0 failures), `./scripts/test-e2e` (exit 0), `swift format lint
+  --strict` on both changed Swift files (exit 0), `git diff --check`,
+  `./scripts/check-docs` (covers the plan-file edits), the
+  Progress/Validation plan-section greps, and the AGENTS.md size cap
+  (101 ≤ 150 lines). The labpty formal layer (TLA+/CBMC/trace/fuzz/MC-DC)
+  and schema/fixture JSON are untouched by the diff and covered by the
+  a2e8b5c green run.
+- PASS — `idleDisplayLinkFramesPerSecond = 8` at
+  `Sources/LabanCore/TerminalIdlePolicy.swift:17`.
+
+Fix-round verification:
+
+- PASS — F1 fix in source: the `onSurfaceStateChanged` subscriber
+  (`Sources/LabanApp/TerminalBitmapView.swift:470-476`) sets
+  `self.renderInvalidated = true` inside the coalesced block BEFORE
+  `self.advanceFrame(wake: .modelMutation)`, with the load-bearing
+  rationale comment (:464-469).
+- PASS — F1 mutation check, run both ways by this review: with
+  `self.renderInvalidated = true` (`TerminalBitmapView.swift:473`)
+  commented out, `testSurfaceSignalsWakeFrameLoopThroughCoalescer` FAILS
+  at `TerminalBitmapViewWakeTests.swift:184` on the
+  `renderedFrameCountForTests` assertion ("a wake that never repaints is
+  still a frozen screen: the woken frame must paint the signal change") —
+  the repaint, not just the wake, is now mutation-killable. Reverted
+  (`git diff --stat` empty); suite re-run green (5/0).
+- PASS — F2 fix in source: the GPU-backpressure carry branch
+  (`TerminalBitmapView.swift:1787-1799`) calls `scheduleRenderRetry()`
+  when `displayLinkPolicyState().shouldRun` is false, link-paced
+  otherwise; Decision Log entry (dated 2026-06-10, review-fix round)
+  documents the no-automated-test rationale (no drawable-starvation seam;
+  faking the failure reason would test the mock) and folds manual
+  verification into the human soak (Validation §4).
+- PASS — cosmetic: M4 and M5 Progress prose now say 1455 (not 1454).
+
+Scope note: the Milestone-5 human-soak items and safety-net retirement
+remain explicitly open in Progress (unchecked item "OPEN FOR THE HUMAN")
+and do NOT count against this gate.
+
+Risk sweep on the fix-round delta (no new findings):
+
+- PASS — F2 amplification safety: `scheduleRenderRetry()` is one-shot
+  (guarded by `renderRetryScheduled`, `TerminalBitmapView.swift:946-954`),
+  and the carry sets `renderInvalidatedFromGPUBackpressureOnly = true`
+  (`carryRenderInvalidationForGPUBackpressure`, :1248-1253), so if the
+  retry frame fails on backpressure again with no other work,
+  `backpressureInvalidationDecision` parks instead of re-scheduling — at
+  most one self-retry per failure, preserving the anti-amplification
+  behavior the comment claims.
+- PASS — F1 main-thread safety: `renderInvalidated` is set inside the
+  coalescer's main-queue block, same actor as every other write site.
+
+Full `swift test`: 1455 executed, 12 skipped, 0 failures (141.6 s).
+
+Verdict: Milestones 2–5 PASSED at commit 2e1377d (full gate re-run after
+the fix round). F1 is fixed and now mutation-killable at the repaint, F2
+is fixed with a documented manual-verification path, the cosmetic count
+is corrected, and no new findings. The Milestone-5 human-soak items and
+safety-net retirement remain open in Progress and are the only work left
+before the plan can be marked done.
 
 Milestones 2–5 review at commit a2e8b5c (2026-06-10):
 
