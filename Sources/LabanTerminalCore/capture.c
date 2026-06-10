@@ -52,12 +52,15 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (scan_needed) {
         laban_scan_tab_status(s, bytes, len);
         laban_scan_osc133(s, bytes, len);
-    }
-    ghostty_terminal_vt_write(s->terminal, bytes, len);
-    /* After libghostty applies the chunk: answer OSC 10/11 color queries against
-     * post-update color state and deliver OSC 9 notifications. See osc_host.c. */
-    if (scan_needed) {
-        laban_scan_osc_host(s, bytes, len);
+        /* The osc_host scan owns the vt_write: it flushes bytes into libghostty
+         * up to each interesting OSC terminator before answering, so an OSC
+         * 10/11 color reply still reads post-update state but lands in stream
+         * order relative to replies the parser emits inline (CPR/DA). A
+         * termenv-style `OSC 11;?` + `CSI 6n` fence probe must see the color
+         * reply first (gh auth login aborts on the stray reply otherwise). */
+        laban_scan_osc_host_vt_write(s, bytes, len);
+    } else {
+        ghostty_terminal_vt_write(s->terminal, bytes, len);
     }
     laban_session_note_terminal_dirty(s);
 }

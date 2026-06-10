@@ -369,7 +369,11 @@ void laban_emit_capture_bytes(
 );
 void laban_scan_tab_status(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_scan_osc133(LabanSession *s, const uint8_t *bytes, size_t len);
-void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len);
+/* Scans for host-integration OSCs AND owns the ghostty_terminal_vt_write of
+ * the chunk: bytes are flushed into the parser up to each interesting OSC
+ * terminator before its dispatch so replies land in stream order relative to
+ * parser-emitted replies (CPR/DA). The caller must NOT vt_write the chunk. */
+void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len);
 void laban_session_note_terminal_dirty(LabanSession *s);
 int laban_write_pty_bytes(

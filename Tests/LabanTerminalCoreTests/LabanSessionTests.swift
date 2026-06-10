@@ -2676,6 +2676,29 @@ final class LabanSessionTests: XCTestCase {
       "OSC 11;? must reply with the effective background")
   }
 
+  func testOSCColorReplyPrecedesCursorPositionReplyWithinOneChunk() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // gh auth login's startup probe (go-termenv): an OSC 11 color query
+    // immediately fenced by DSR 6n, written as ONE chunk. termenv reads the
+    // first reply; when the CPR fence arrives before the color reply it stops
+    // listening and the stray OSC reply corrupts the next prompt reader
+    // (survey aborts with `unexpected escape sequence: ['\x1b' ']']`).
+    // Replies must come back in query order.
+    writeBytes(session, Array("\u{1b}]11;?\u{1b}\\\u{1b}[6n".utf8))
+    let reply = String(bytes: drainResponse(session), encoding: .utf8) ?? ""
+    XCTAssertTrue(
+      reply.hasPrefix("\u{1b}]11;rgb:"),
+      "the OSC 11 reply must precede the CPR fence reply; got \(reply.debugDescription)")
+    XCTAssertTrue(
+      reply.hasSuffix("R"),
+      "the CPR reply must still follow the OSC 11 reply; got \(reply.debugDescription)")
+  }
+
   func testOSCColorQueryFallsBackToColorScheme() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

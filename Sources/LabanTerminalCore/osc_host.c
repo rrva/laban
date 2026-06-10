@@ -16,9 +16,15 @@
  *   - adopts `OSC 7 ; file://<host>/<path>` (local host only) as the session's
  *     authoritative cwd and delivers it to the working-directory callback.
  *
- * Every byte still flows unchanged into libghostty via ghostty_terminal_vt_write
- * (capture.c). This scanner runs AFTER that write so a color *set* earlier in
- * the same read chunk is applied before a query later in the chunk reads it. */
+ * Every byte still flows unchanged into libghostty: this scanner owns the
+ * ghostty_terminal_vt_write for chunks it scans (capture.c), flushing bytes
+ * into the parser up to each interesting OSC terminator before dispatching.
+ * A color *set* earlier in the same read chunk is therefore applied before a
+ * query later in the chunk reads it, and the reply is emitted in stream order
+ * relative to replies libghostty generates inline (CPR/DA): a termenv fence
+ * probe (`OSC 11;?` then `CSI 6n`) must see the color reply first, or the
+ * client takes the CPR as its fence and the stray OSC reply corrupts the
+ * next reader (gh: "unexpected escape sequence ['\x1b' ']']"). */
 
 /* Reply to OSC 10;? (foreground) / OSC 11;? (background) with the session's
  * effective theme color. ghostty_terminal_get returns the OSC override or the
@@ -273,9 +279,19 @@ static int osc_host_interesting(int n) {
     return n == 7 || n == 9 || n == 10 || n == 11 || n == 52;
 }
 
-void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len) {
+/* Write any not-yet-flushed bytes [*flushed, upto) into the VT parser. */
+static void flush_vt_pending(LabanSession *s, const uint8_t *bytes,
+                             size_t upto, size_t *flushed) {
+    if (upto > *flushed) {
+        ghostty_terminal_vt_write(s->terminal, bytes + *flushed, upto - *flushed);
+        *flushed = upto;
+    }
+}
+
+void laban_scan_osc_host_vt_write(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (!s) return;
     LabanOSCHostScanner *sc = &s->osc_host_scanner;
+    size_t flushed = 0;
     for (size_t i = 0; i < len; i++) {
         uint8_t b = bytes[i];
         switch (sc->state) {
@@ -323,6 +339,10 @@ void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len) {
             break;
         case OH_BODY:
             if (b == 0x07) {
+                /* Apply the chunk up to and including this terminator before
+                 * dispatching: a reply must read post-update state and land in
+                 * stream order relative to parser-emitted replies (CPR). */
+                flush_vt_pending(s, bytes, i + 1, &flushed);
                 if (sc->osc_number == 52) {
                     if (!sc->osc52_overflow) dispatch_osc52(s);
                 } else if (!sc->payload_overflow) {
@@ -344,6 +364,7 @@ void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len) {
              * new sequence; route it the same way OH_AFTER_ESC would so a
              * back-to-back OSC is not lost. */
             if (b == '\\') {
+                flush_vt_pending(s, bytes, i + 1, &flushed);
                 if (sc->osc_number == 52) {
                     if (!sc->osc52_overflow) dispatch_osc52(s);
                 } else if (!sc->payload_overflow) {
@@ -387,6 +408,7 @@ void laban_scan_osc_host(LabanSession *s, const uint8_t *bytes, size_t len) {
             break;
         }
     }
+    flush_vt_pending(s, bytes, len, &flushed);
 }
 
 int laban_session_set_osc_notification_callback(
