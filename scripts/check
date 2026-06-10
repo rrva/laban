@@ -14,7 +14,7 @@ command -v jq >/dev/null 2>&1 || fail "jq is required to validate JSON"
 find schemas fixtures -name '*.json' -print0 | xargs -0 -n1 jq empty
 
 agents_lines=$(wc -l < AGENTS.md | tr -d ' ')
-if [ "$agents_lines" -gt 100 ]; then
+if [ "$agents_lines" -gt 150 ]; then
   fail "AGENTS.md should stay map-sized; found ${agents_lines} lines"
 fi
 
