@@ -282,6 +282,21 @@ struct LabanSession {
     void *osc133_userdata;
 
     LabanOSCHostScanner osc_host_scanner;
+
+    /* DECSCUSR / DEC-mode-12 cursor-override scanner (decscusr.c).
+     * cursor_style_overridden: 1 when a program has sent DECSCUSR 1-6 (or
+     *   CSI ? 12 h for blink only) and has not yet reset it.
+     * cursor_blink_overridden: 1 when a program has explicitly set DEC mode 12
+     *   or DECSCUSR with a blink-carrying code.
+     * Both cleared on DECSCUSR 0, RIS, DECSTR, and alt-screen exit. */
+    struct {
+        int state;
+        char param[16];
+        size_t param_len;
+    } cursor_override_scanner;
+    int cursor_style_overridden;
+    int cursor_blink_overridden;
+
     LabanOSCNotificationCallback osc_notification_callback;
     void *osc_notification_userdata;
 
@@ -390,6 +405,8 @@ int laban_write_terminal_response(LabanSession *s, const uint8_t *data, size_t l
 int laban_session_spawn_now_(LabanSession *s, const char *override_cwd,
                              const char *exe_override,
                              const char *const *argv_override);
+
+void laban_scan_cursor_override(LabanSession *s, const uint8_t *bytes, size_t len);
 
 void laban_title_changed_cb(GhosttyTerminal terminal, void *userdata);
 void laban_bell_cb(GhosttyTerminal terminal, void *userdata);

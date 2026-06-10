@@ -124,7 +124,8 @@ public struct FrameProducer {
     viewportRowOffset: Int = 0,
     cursorBlinkVisible: Bool,
     preedit: String? = nil,
-    preeditCaretCells: Int = 0
+    preeditCaretCells: Int = 0,
+    resolvedCursor: (style: Int32, blinking: Bool)? = nil
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -281,8 +282,12 @@ public struct FrameProducer {
     }
 
     // Cursor
+    let effectiveCursorBlinking =
+      resolvedCursor?.blinking ?? (snapshot.cursor_blinking != 0)
+    let effectiveCursorStyle =
+      resolvedCursor?.style ?? snapshot.cursor_style
     if snapshot.cursor_visible != 0,
-      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      !effectiveCursorBlinking || cursorBlinkVisible,
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
@@ -293,7 +298,7 @@ public struct FrameProducer {
       let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+      for rect in Self.cursorRects(style: Int(effectiveCursorStyle), cellRect: cellRect) {
         cmds.append(.cursor(rect, color: Theme.current.cursor))
       }
     }
@@ -324,7 +329,8 @@ public struct FrameProducer {
     viewportRowOffset: Int = 0,
     cursorBlinkVisible: Bool,
     preedit: String? = nil,
-    preeditCaretCells: Int = 0
+    preeditCaretCells: Int = 0,
+    resolvedCursor: (style: Int32, blinking: Bool)? = nil
   ) -> [FrameCommand] {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -386,8 +392,12 @@ public struct FrameProducer {
       }
     }
 
+    let overlayEffectiveBlinking =
+      resolvedCursor?.blinking ?? (snapshot.cursor_blinking != 0)
+    let overlayEffectiveStyle =
+      resolvedCursor?.style ?? snapshot.cursor_style
     if snapshot.cursor_visible != 0,
-      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      !overlayEffectiveBlinking || cursorBlinkVisible,
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
@@ -398,7 +408,7 @@ public struct FrameProducer {
       let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+      for rect in Self.cursorRects(style: Int(overlayEffectiveStyle), cellRect: cellRect) {
         cmds.append(.cursor(rect, color: Theme.current.cursor))
       }
     }
@@ -598,7 +608,8 @@ public struct FrameProducer {
     findState: TerminalFindState? = nil,
     viewportRowOffset: Int = 0,
     cursorBlinkVisible: Bool = true,
-    includeCursor: Bool = true
+    includeCursor: Bool = true,
+    resolvedCursor: (style: Int32, blinking: Bool)? = nil
   ) {
     let snapshot = snap.pointee
     let rows = Int(snapshot.rows)
@@ -854,16 +865,20 @@ public struct FrameProducer {
       }
     }
 
+    let payloadEffectiveBlinking =
+      resolvedCursor?.blinking ?? (snapshot.cursor_blinking != 0)
+    let payloadEffectiveStyle =
+      resolvedCursor?.style ?? snapshot.cursor_style
     if includeCursor,
       snapshot.cursor_visible != 0,
-      snapshot.cursor_blinking == 0 || cursorBlinkVisible,
+      !payloadEffectiveBlinking || cursorBlinkVisible,
       Int(snapshot.cursor_row) < rows,
       Int(snapshot.cursor_col) < cols
     {
       let cx = originX + CGFloat(snapshot.cursor_col) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      for rect in Self.cursorRects(style: Int(snapshot.cursor_style), cellRect: cellRect) {
+      for rect in Self.cursorRects(style: Int(payloadEffectiveStyle), cellRect: cellRect) {
         payload.cursorRects.append(
           TerminalCellPayload.CursorRect(rect: rect, color: Theme.current.cursor))
       }
@@ -1231,7 +1246,8 @@ public struct FrameProducer {
     selection: TerminalSelection? = nil,
     cursorBlinkVisible: Bool = true,
     preedit: String? = nil,
-    preeditCaretCells: Int = 0
+    preeditCaretCells: Int = 0,
+    userCursorStyle: CursorSettings.Style = .block
   ) -> [FrameCommand] {
     let rows = max(snapshot.rows, 0)
     let cols = max(snapshot.cols, 0)
@@ -1423,13 +1439,17 @@ public struct FrameProducer {
       // Advance the caret past any in-flight composition (preedit) so it
       // tracks the end of the marked text, matching the local snapshot path.
       let caretCol = min(snapshot.cursorCol + preeditCaretCells, cols - 1)
-      let rect = CGRect(
+      let cellRect = CGRect(
         x: originX + CGFloat(caretCol) * cw,
         y: originY + CGFloat(rows - 1 - snapshot.cursorRow) * ch + contentYOffset,
         width: cw,
         height: ch
       )
-      cmds.append(.cursor(rect, color: Theme.current.cursor))
+      // Use the user's configured style for the remote cursor (ring snapshots
+      // carry no explicit DECSCUSR override bits — Decision Log entry).
+      for rect in Self.cursorRects(style: Int(userCursorStyle.labanStyleValue), cellRect: cellRect) {
+        cmds.append(.cursor(rect, color: Theme.current.cursor))
+      }
     }
 
     if let preedit {

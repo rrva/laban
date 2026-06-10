@@ -48,10 +48,12 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
         && (s->tab_status_scanner.state != TS_NORMAL
             || s->osc133_scanner.state != O133_NORMAL
             || s->osc_host_scanner.state != OH_NORMAL
+            || s->cursor_override_scanner.state != 0  /* DS_NORMAL = 0 */
             || memchr(bytes, 0x1B, len) != NULL);
     if (scan_needed) {
         laban_scan_tab_status(s, bytes, len);
         laban_scan_osc133(s, bytes, len);
+        laban_scan_cursor_override(s, bytes, len);
         /* The osc_host scan owns the vt_write: it flushes bytes into libghostty
          * up to each interesting OSC terminator before answering, so an OSC
          * 10/11 color reply still reads post-update state but lands in stream

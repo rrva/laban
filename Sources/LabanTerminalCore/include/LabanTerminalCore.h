@@ -145,6 +145,13 @@ typedef struct {
      * clean rows. dirty_row_count == rows on success. */
     const uint8_t *dirty_rows;
     size_t dirty_row_count;
+    /* DECSCUSR / DEC-mode-12 explicit override flags (decscusr.c).
+     * 1 when a program has overridden the respective cursor attribute and
+     * has not yet reset it. In-memory only — not an ABI-stable ring field.
+     * CursorStyleResolver uses these to decide whether to apply the user's
+     * setting or the program's libghostty-reported value. */
+    int cursor_style_explicit;
+    int cursor_blink_explicit;
 } LabanSnapshot;
 
 /* Creates a terminal session. On failure, *out_session is set to NULL. */

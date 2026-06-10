@@ -107,6 +107,12 @@ public struct TerminalSurfaceFrameRequest {
   /// its start), so the cursor can sit at the IME's insertion point inside the
   /// marked text rather than always at its end.
   public var preeditCaretCells: Int
+  /// User-configured cursor style (from `CursorSettings`). Overridden per frame
+  /// by the snapshot's DECSCUSR-reported style when `cursor_style_explicit != 0`.
+  public var userCursorStyle: CursorSettings.Style
+  /// User-configured blink preference (from `CursorSettings`). Overridden per
+  /// frame by the snapshot's blink flag when `cursor_blink_explicit != 0`.
+  public var userCursorBlinkEnabled: Bool
 
   public init(
     frame: Int,
@@ -130,7 +136,9 @@ public struct TerminalSurfaceFrameRequest {
     captureBackend: String = "software",
     contentMode: TerminalSurfaceFrameContentMode = .commands,
     preedit: String? = nil,
-    preeditCaretCells: Int = 0
+    preeditCaretCells: Int = 0,
+    userCursorStyle: CursorSettings.Style = .block,
+    userCursorBlinkEnabled: Bool = false
   ) {
     self.frame = frame
     self.viewportWidth = viewportWidth
@@ -154,6 +162,8 @@ public struct TerminalSurfaceFrameRequest {
     self.contentMode = contentMode
     self.preedit = preedit
     self.preeditCaretCells = preeditCaretCells
+    self.userCursorStyle = userCursorStyle
+    self.userCursorBlinkEnabled = userCursorBlinkEnabled
   }
 }
 
@@ -206,7 +216,12 @@ public struct TerminalSurfaceFrame {
   public var overlayCommands: [FrameCommand]
   public var rows: Int?
   public var cols: Int?
+  /// Resolved blink flag: true when blink is active for this frame (accounts for
+  /// both the user setting and any program DECSCUSR / mode-12 override).
   public var cursorBlinking: Bool
+  /// Whether the cursor is visible in this frame (cursor_visible from the snapshot,
+  /// or false when there is no session). Used by the blink timer gate.
+  public var cursorVisible: Bool
   public var gridOriginY: CGFloat
   public var damage: RenderDamage
   public var snapshotMs: Double
@@ -222,6 +237,7 @@ public struct TerminalSurfaceFrame {
     rows: Int?,
     cols: Int?,
     cursorBlinking: Bool,
+    cursorVisible: Bool = false,
     gridOriginY: CGFloat,
     damage: RenderDamage,
     snapshotMs: Double = 0,
@@ -236,6 +252,7 @@ public struct TerminalSurfaceFrame {
     self.rows = rows
     self.cols = cols
     self.cursorBlinking = cursorBlinking
+    self.cursorVisible = cursorVisible
     self.gridOriginY = gridOriginY
     self.damage = damage
     self.snapshotMs = snapshotMs
@@ -552,6 +569,16 @@ public final class TerminalSurfaceController {
       forceFull: request.forceFullDamage,
       cellHeight: CGFloat(cellHeight),
       originY: gridOriginY)
+    // Pre-resolve cursor for use in both cell-payload and overlay paths below.
+    let preResolvedCursor = CursorStyleResolver.resolve(
+      userStyle: request.userCursorStyle,
+      userBlinkEnabled: request.userCursorBlinkEnabled,
+      snapshotStyle: snapshot.cursor_style,
+      snapshotBlinking: snapshot.cursor_blinking != 0,
+      styleExplicit: snapshot.cursor_style_explicit,
+      blinkExplicit: snapshot.cursor_blink_explicit
+    )
+
     let cellPayload: TerminalCellPayload?
     let overlayCommands: [FrameCommand]
     if request.contentMode == .cellPayloadPreferred {
@@ -567,7 +594,8 @@ public final class TerminalSurfaceController {
         findState: findState,
         viewportRowOffset: viewportOffset,
         cursorBlinkVisible: request.cursorBlinkVisible,
-        includeCursor: false)
+        includeCursor: false,
+        resolvedCursor: preResolvedCursor)
       cellPayload = reusableCellPayload
       overlayCommands = producer.overlayCommands(
         from: UnsafePointer(snap),
@@ -576,7 +604,8 @@ public final class TerminalSurfaceController {
         viewportRowOffset: viewportOffset,
         cursorBlinkVisible: request.cursorBlinkVisible,
         preedit: request.preedit,
-        preeditCaretCells: request.preeditCaretCells)
+        preeditCaretCells: request.preeditCaretCells,
+        resolvedCursor: preResolvedCursor)
     } else {
       cellPayload = nil
       overlayCommands = []
@@ -595,7 +624,8 @@ public final class TerminalSurfaceController {
         viewportRowOffset: viewportOffset,
         cursorBlinkVisible: request.cursorBlinkVisible,
         preedit: request.preedit,
-        preeditCaretCells: request.preeditCaretCells)
+        preeditCaretCells: request.preeditCaretCells,
+        resolvedCursor: preResolvedCursor)
     }
 
     snapshotCommandsHook?(UnsafePointer(snap), commands)
@@ -609,7 +639,8 @@ public final class TerminalSurfaceController {
       overlayCommands: canSkipTerminalCommands ? overlayCommands : [],
       rows: rows,
       cols: cols,
-      cursorBlinking: snapshot.cursor_blinking != 0,
+      cursorBlinking: preResolvedCursor.blinking,
+      cursorVisible: snapshot.cursor_visible != 0,
       gridOriginY: gridOriginY,
       damage: damage,
       snapshotMs: snapshotMs,
@@ -688,7 +719,8 @@ public final class TerminalSurfaceController {
       selection: request.selection,
       cursorBlinkVisible: request.cursorBlinkVisible,
       preedit: request.preedit,
-      preeditCaretCells: request.preeditCaretCells
+      preeditCaretCells: request.preeditCaretCells,
+      userCursorStyle: request.userCursorStyle
     )
     recordFrameCommands(request, commands: commands)
 

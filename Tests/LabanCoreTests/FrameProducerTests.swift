@@ -864,4 +864,72 @@ final class FrameProducerTests: XCTestCase {
     }
     return nil
   }
+
+  // MARK: - resolvedCursor parameter
+
+  func testResolvedCursorStyle_UserBarAppliesWhenNoOverride() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    // No DECSCUSR written: user setting is bar
+    guard let snap = session.snapshot() else { XCTFail("snapshot nil"); return }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    let cmds = producer.commands(
+      from: UnsafePointer(snap),
+      selection: nil,
+      cursorBlinkVisible: true,
+      resolvedCursor: (style: CursorSettings.Style.bar.labanStyleValue, blinking: false))
+    let cursorRects = cmds.compactMap { cmd -> CGRect? in
+      if case .cursor(let r, _) = cmd { return r } else { return nil }
+    }
+    XCTAssertEqual(cursorRects.count, 1, "resolved bar style must emit one cursor rect")
+    XCTAssertEqual(cursorRects.first?.width, 2, "bar cursor width must be ~2 px at cw=10")
+  }
+
+  func testResolvedCursorStyle_UserUnderlineAppliesWhenNoOverride() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    guard let snap = session.snapshot() else { XCTFail("snapshot nil"); return }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    let cmds = producer.commands(
+      from: UnsafePointer(snap),
+      selection: nil,
+      cursorBlinkVisible: true,
+      resolvedCursor: (style: CursorSettings.Style.underline.labanStyleValue, blinking: false))
+    let cursorRects = cmds.compactMap { cmd -> CGRect? in
+      if case .cursor(let r, _) = cmd { return r } else { return nil }
+    }
+    XCTAssertEqual(cursorRects.count, 1)
+    XCTAssertEqual(cursorRects.first?.height, 2, "underline cursor height must be ~2 px at ch=20")
+  }
+
+  func testResolvedCursorBlink_HidesWhenResolved() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+    guard let snap = session.snapshot() else { XCTFail("snapshot nil"); return }
+    defer { laban_snapshot_destroy(snap) }
+
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    // resolvedCursor.blinking = true, cursorBlinkVisible = false -> hidden
+    let cmds = producer.commands(
+      from: UnsafePointer(snap),
+      selection: nil,
+      cursorBlinkVisible: false,
+      resolvedCursor: (style: CursorSettings.Style.block.labanStyleValue, blinking: true))
+    XCTAssertFalse(
+      cmds.contains { if case .cursor = $0 { return true } else { return false } },
+      "resolved blinking cursor must be hidden when cursorBlinkVisible is false")
+  }
 }

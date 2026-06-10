@@ -666,6 +666,12 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     snap->dirty_rows      = dirty_rows;
     snap->dirty_row_count = dirty_rows ? (size_t)rows : 0;
 
+    /* DECSCUSR override flags: copied from the session's scanner state so
+     * CursorStyleResolver can decide whether to apply the user setting or the
+     * program-reported libghostty value. */
+    snap->cursor_style_explicit = s->cursor_style_overridden;
+    snap->cursor_blink_explicit = s->cursor_blink_overridden;
+
     *out_snapshot = snap;
     return 0;
 }
