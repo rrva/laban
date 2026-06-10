@@ -148,6 +148,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var lastGPUCellPayloadFailureAutoDumpAt: Date?
   private var themeChangeObserver: NSObjectProtocol?
   private var reduceMotionObserver: NSObjectProtocol?
+  private var cursorSettingsObserver: NSObjectProtocol?
   /// Cached system Reduce Motion setting, refreshed via NSWorkspace
   /// accessibility notifications. Freezes the sidebar needsAction pulse so a
   /// motion-sensitive user gets a steady marker instead of a breathing one.
@@ -381,6 +382,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // The display link parks when Settings (or another window) is key, so
       // invalidation alone is not enough — kick the frame loop the same way a
       // renderer switch does.
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    // Re-sync the blink driver and repaint whenever the user changes cursor
+    // settings so the new style and blink state take effect immediately.
+    cursorSettingsObserver = NotificationCenter.default.addObserver(
+      forName: CursorSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      self.renderInvalidated = true
+      self.syncBlinkDriverFromWindowState()
       if self.window != nil {
         self.scheduleRenderRetry()
       }
@@ -1059,6 +1073,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let reduceMotionObserver {
       NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+    }
+    if let cursorSettingsObserver {
+      NotificationCenter.default.removeObserver(cursorSettingsObserver)
     }
   }
 

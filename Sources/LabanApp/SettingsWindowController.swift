@@ -21,12 +21,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let backendPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let restoreCheckbox = NSButton(
     checkboxWithTitle: "Restore tabs on launch", target: nil, action: nil)
+  private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let blinkCheckbox = NSButton(
+    checkboxWithTitle: "Blink cursor", target: nil, action: nil)
 
   /// Theme index (into `themeController.orderedThemes`) behind each popup row,
   /// or -1 for the dark/light separator. Maps a popup selection back to a theme.
   private var themeRowIndices: [Int] = []
   private let rendererOptions: [RendererSelection] = RendererSelection.allCases
   private let backendOptions: [TerminalSessionBackend] = [.inProcess, .labpty, .laband]
+  private let cursorStyleOptions: [CursorSettings.Style] = CursorSettings.Style.allCases
 
   init(
     theme: ThemeMenuController,
@@ -116,10 +120,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     restoreCheckbox.target = self
     restoreCheckbox.action = #selector(restoreChanged(_:))
 
+    cursorStylePopUp.target = self
+    cursorStylePopUp.action = #selector(cursorStyleChanged(_:))
+    for option in cursorStyleOptions {
+      cursorStylePopUp.addItem(withTitle: cursorStyleTitle(option))
+    }
+
+    blinkCheckbox.target = self
+    blinkCheckbox.action = #selector(blinkChanged(_:))
+
     let grid = NSGridView(views: [
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
       [makeLabel("Font:"), fontRow],
+      [makeLabel("Cursor:"), cursorStylePopUp],
+      [NSGridCell.emptyContentView, blinkCheckbox],
       [makeLabel("Renderer:"), rendererPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
@@ -178,6 +193,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       backendPopUp.selectItem(at: row)
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
+    if let row = cursorStyleOptions.firstIndex(of: CursorSettings.style) {
+      cursorStylePopUp.selectItem(at: row)
+    }
+    blinkCheckbox.state = CursorSettings.blinkEnabled ? .on : .off
   }
 
   // MARK: Actions
@@ -228,6 +247,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     RestoreOnLaunchSettings.set(sender.state == .on)
   }
 
+  @objc private func cursorStyleChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < cursorStyleOptions.count else { return }
+    CursorSettings.setStyle(cursorStyleOptions[row])
+  }
+
+  @objc private func blinkChanged(_ sender: NSButton) {
+    CursorSettings.setBlinkEnabled(sender.state == .on)
+  }
+
   // MARK: Titles
 
   private func rendererTitle(_ selection: RendererSelection) -> String {
@@ -250,6 +279,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       return "Background"
     case .laband:
       return "Detached"
+    }
+  }
+
+  private func cursorStyleTitle(_ style: CursorSettings.Style) -> String {
+    switch style {
+    case .block: return "Block"
+    case .bar: return "Bar"
+    case .underline: return "Underline"
     }
   }
 
