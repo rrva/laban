@@ -39,16 +39,16 @@ void laban_vt_write_capture(LabanSession *s, const uint8_t *bytes, size_t len) {
     if (s->persistence_callback && bytes && len > 0) {
         s->persistence_callback(s->persistence_userdata, s, bytes, len);
     }
-    /* With all three scanners in their ground state, a chunk without a single
+    /* With all four scanners in their ground state, a chunk without a single
      * ESC cannot move any of them: skip the scans outright. Bulk plain-text
-     * output (the dominant case) then costs one SIMD memchr instead of three
+     * output (the dominant case) then costs one SIMD memchr instead of four
      * per-byte state machines. */
     bool scan_needed =
         bytes != NULL && len > 0
         && (s->tab_status_scanner.state != TS_NORMAL
             || s->osc133_scanner.state != O133_NORMAL
             || s->osc_host_scanner.state != OH_NORMAL
-            || s->cursor_override_scanner.state != 0  /* DS_NORMAL = 0 */
+            || s->cursor_override_scanner.state != DS_NORMAL
             || memchr(bytes, 0x1B, len) != NULL);
     if (scan_needed) {
         laban_scan_tab_status(s, bytes, len);

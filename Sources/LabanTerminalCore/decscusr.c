@@ -25,29 +25,9 @@
 #include "session_internal.h"
 #include <string.h>
 
-/* -------------------------------------------------------------------------
- * States
- * -------------------------------------------------------------------------*/
-
-typedef enum {
-    DS_NORMAL = 0,
-    DS_AFTER_ESC,          /* seen ESC, waiting for [ or c */
-    DS_CSI_PARAM,          /* inside CSI, accumulating digits (no ? prefix) */
-    DS_CSI_SP,             /* seen the SP (0x20) that gates DECSCUSR */
-    DS_CSI_PRIV,           /* seen CSI ?, accumulating digits */
-    DS_CSI_PRIV_H,         /* CSI ? <digits> h  (only 12 h handled) */
-    DS_CSI_PRIV_L,         /* CSI ? <digits> l  (1049/1047/47 l handled) */
-    DS_CSI_BANG,           /* CSI ! — look for 'p' (DECSTR) */
-    DS_SKIP,               /* inside an escape/sequence we don't care about */
-} DecscsrState;
-
-#define DS_PARAM_MAX 16    /* "0" up to "1049" + room */
-
-typedef struct {
-    DecscsrState state;
-    char param[DS_PARAM_MAX];
-    size_t param_len;
-} LabanDecscsrScanner;
+/* DS_* states, DS_PARAM_MAX, and LabanDecscsrScanner are declared in
+ * session_internal.h beside the sibling scanners (TS_, O133_, OH_) so
+ * capture.c can name DS_NORMAL in its scan gate. */
 
 /* -------------------------------------------------------------------------
  * Helpers

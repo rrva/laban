@@ -208,6 +208,36 @@ typedef struct {
     int osc52_overflow;
 } LabanOSCHostScanner;
 
+/* DECSCUSR / DEC-mode-12 cursor-override scanner state (decscusr.c). Sniffs
+ * cursor-style and cursor-blink override sequences out of the PTY byte stream
+ * in parallel with libghostty's VT parser:
+ *   DECSCUSR `CSI Ps SP q`: Ps 1-6 sets both override flags; Ps 0 / absent
+ *     clears both (revert to the user setting).
+ *   DEC private mode 12 `CSI ? 12 h/l`: blink override flag only.
+ * Clear-on-reset: RIS (ESC c), DECSTR (CSI ! p), alt-screen exit
+ * (CSI ? 1049/1047/47 l). libghostty collapses DECSCUSR 0 to steady block, so
+ * "program explicitly overrode" cannot be recovered from its state — Laban
+ * tracks it here. Observe-only, same design as the sibling scanners above. */
+typedef enum {
+    DS_NORMAL = 0,
+    DS_AFTER_ESC,          /* seen ESC, waiting for [ or c */
+    DS_CSI_PARAM,          /* inside CSI, accumulating digits (no ? prefix) */
+    DS_CSI_SP,             /* seen the SP (0x20) that gates DECSCUSR */
+    DS_CSI_PRIV,           /* seen CSI ?, accumulating digits */
+    DS_CSI_PRIV_H,         /* CSI ? <digits> h  (only 12 h handled) */
+    DS_CSI_PRIV_L,         /* CSI ? <digits> l  (1049/1047/47 l handled) */
+    DS_CSI_BANG,           /* CSI ! — look for 'p' (DECSTR) */
+    DS_SKIP,               /* inside an escape/sequence we don't care about */
+} DecscsrState;
+
+#define DS_PARAM_MAX 16    /* "0" up to "1049" + room */
+
+typedef struct {
+    DecscsrState state;
+    char param[DS_PARAM_MAX];
+    size_t param_len;
+} LabanDecscsrScanner;
+
 struct LabanSession {
     /* Serializes access to every field below. Recursive (PTHREAD_MUTEX_RECURSIVE). */
     pthread_mutex_t lock;
@@ -289,11 +319,7 @@ struct LabanSession {
      * cursor_blink_overridden: 1 when a program has explicitly set DEC mode 12
      *   or DECSCUSR with a blink-carrying code.
      * Both cleared on DECSCUSR 0, RIS, DECSTR, and alt-screen exit. */
-    struct {
-        int state;
-        char param[16];
-        size_t param_len;
-    } cursor_override_scanner;
+    LabanDecscsrScanner cursor_override_scanner;
     int cursor_style_overridden;
     int cursor_blink_overridden;
 
