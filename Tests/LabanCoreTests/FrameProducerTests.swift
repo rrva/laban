@@ -932,4 +932,70 @@ final class FrameProducerTests: XCTestCase {
       cmds.contains { if case .cursor = $0 { return true } else { return false } },
       "resolved blinking cursor must be hidden when cursorBlinkVisible is false")
   }
+
+  // MARK: - Remote (laband) snapshot cursor styling
+
+  private func remoteSnapshotFixture(rows: Int = 5, cols: Int = 10) -> LabandSnapshotResponse {
+    LabandSnapshotResponse(
+      logicalSessionId: "remote-test",
+      incarnationId: "inc-1",
+      rows: rows,
+      cols: cols,
+      cursorRow: 0,
+      cursorCol: 0,
+      cursorVisible: true,
+      title: "",
+      lifecycleState: .running,
+      exitStatus: nil,
+      dirty: false,
+      visibleText: "",
+      cells: [])
+  }
+
+  private func remoteCursorRects(_ cmds: [FrameCommand]) -> [CGRect] {
+    cmds.compactMap { cmd -> CGRect? in
+      if case .cursor(let r, _) = cmd { return r } else { return nil }
+    }
+  }
+
+  /// The user-default path: omitting `userCursorStyle` must draw the default
+  /// full-cell block on a remote (laband) snapshot.
+  func testRemoteCursor_DefaultStyleDrawsFullCellBlock() {
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    let cmds = producer.commands(from: remoteSnapshotFixture())
+    let rects = remoteCursorRects(cmds)
+    XCTAssertEqual(rects.count, 1, "remote default cursor must emit one rect")
+    XCTAssertEqual(rects.first?.width, 10, "default block must span the full cell width")
+    XCTAssertEqual(rects.first?.height, 20, "default block must span the full cell height")
+  }
+
+  func testRemoteCursor_UserBarShapesRemoteCursor() {
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    let cmds = producer.commands(from: remoteSnapshotFixture(), userCursorStyle: .bar)
+    let rects = remoteCursorRects(cmds)
+    XCTAssertEqual(rects.count, 1)
+    XCTAssertEqual(rects.first?.width, 2, "user bar must shape the remote cursor (~2 px at cw=10)")
+    XCTAssertEqual(rects.first?.height, 20, "bar spans the full cell height")
+  }
+
+  func testRemoteCursor_UserUnderlineShapesRemoteCursor() {
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    let cmds = producer.commands(from: remoteSnapshotFixture(), userCursorStyle: .underline)
+    let rects = remoteCursorRects(cmds)
+    XCTAssertEqual(rects.count, 1)
+    XCTAssertEqual(
+      rects.first?.height, 2, "user underline must shape the remote cursor (~2 px at ch=20)")
+    XCTAssertEqual(rects.first?.width, 10, "underline spans the full cell width")
+  }
+
+  /// Remote frames hide the cursor entirely when the daemon says so —
+  /// styling must not resurrect it.
+  func testRemoteCursor_HiddenWhenSnapshotCursorInvisible() {
+    var snapshot = remoteSnapshotFixture()
+    snapshot.cursorVisible = false
+    let producer = FrameProducer(cellWidth: 10, cellHeight: 20)
+    let cmds = producer.commands(from: snapshot, userCursorStyle: .bar)
+    XCTAssertTrue(remoteCursorRects(cmds).isEmpty,
+      "an invisible remote cursor must emit no cursor rects regardless of user style")
+  }
 }
