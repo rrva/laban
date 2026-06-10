@@ -20,6 +20,15 @@ final class IdleCounters: @unchecked Sendable {
   private var timer: DispatchSourceTimer?
   private var sequence: UInt64 = 0
 
+  // Sidecar lines are buffered and hit the disk once per batch instead of
+  // per second — the per-second open/write/close was itself a top-3 idle
+  // CPU consumer, which defeats the point of an idle-measurement tool. Each
+  // line keeps its own ts/seq, so batching loses no fidelity. Guarded by
+  // `lock`; flushed on batch fill, at quit (AppDelegate), and by tests.
+  private let sidecarFlushBatchSize: Int
+  private var pendingSidecarLines = Data()
+  private var pendingSidecarCount = 0
+
   private var displayLinkTicks: UInt64 = 0
   private var advanceFrames: UInt64 = 0
   private var labptyPolls: UInt64 = 0
@@ -31,8 +40,10 @@ final class IdleCounters: @unchecked Sendable {
     defaults: UserDefaults = .standard,
     environment: [String: String] = ProcessInfo.processInfo.environment,
     sidecarURL: URL? = nil,
-    startsTimer: Bool = true
+    startsTimer: Bool = true,
+    sidecarFlushBatchSize: Int = 30
   ) {
+    self.sidecarFlushBatchSize = max(1, sidecarFlushBatchSize)
     self.enabled = Self.isEnabled(defaults: defaults, environment: environment)
     if enabled {
       let resolvedSidecarURL = sidecarURL ?? Self.defaultSidecarURL()
@@ -44,8 +55,11 @@ final class IdleCounters: @unchecked Sendable {
     guard enabled else { return }
     guard startsTimer else { return }
     let timer = DispatchSource.makeTimerSource(queue: queue)
+    // Generous leeway: per-second sampling jitter is irrelevant to the
+    // diagnostics, and it lets the kernel coalesce this wake with the other
+    // ~1 Hz timers instead of spinning up a workqueue thread per firing.
     timer.schedule(
-      deadline: .now() + .seconds(1), repeating: .seconds(1), leeway: .milliseconds(100))
+      deadline: .now() + .seconds(1), repeating: .seconds(1), leeway: .milliseconds(250))
     timer.setEventHandler { [weak self] in
       self?.emitAndReset()
     }
@@ -140,6 +154,13 @@ final class IdleCounters: @unchecked Sendable {
 
   func flushForTesting() {
     emitAndReset()
+    flushPending()
+  }
+
+  /// Emit one snapshot into the batch buffer without forcing it to disk —
+  /// lets tests observe the batching behavior itself.
+  func emitWithoutFlushForTesting() {
+    emitAndReset()
   }
 
   private static func isTruthy(_ value: String) -> Bool {
@@ -173,7 +194,36 @@ final class IdleCounters: @unchecked Sendable {
     }
     var line = data
     line.append(0x0A)
-    Self.appendAtomically(line, to: sidecarURL)
+    var batch: Data?
+    lock.lock()
+    pendingSidecarLines.append(line)
+    pendingSidecarCount += 1
+    if pendingSidecarCount >= sidecarFlushBatchSize {
+      batch = pendingSidecarLines
+      pendingSidecarLines = Data()
+      pendingSidecarCount = 0
+    }
+    lock.unlock()
+    if let batch {
+      Self.appendAtomically(batch, to: sidecarURL)
+    }
+  }
+
+  /// Force buffered sidecar lines to disk. Called at quit (so the tail of a
+  /// session is not lost to batching) and by tests.
+  func flushPending() {
+    guard let sidecarURL else { return }
+    var batch: Data?
+    lock.lock()
+    if !pendingSidecarLines.isEmpty {
+      batch = pendingSidecarLines
+      pendingSidecarLines = Data()
+      pendingSidecarCount = 0
+    }
+    lock.unlock()
+    if let batch {
+      Self.appendAtomically(batch, to: sidecarURL)
+    }
   }
 
   private static func prepareSidecar(at url: URL) -> Bool {

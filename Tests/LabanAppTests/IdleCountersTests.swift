@@ -90,4 +90,43 @@ final class IdleCountersTests: XCTestCase {
     XCTAssertNil(object["environment"])
     XCTAssertNil(object["terminalText"])
   }
+
+  /// Sidecar lines batch in memory and only hit the disk when the batch
+  /// fills (or on an explicit flush) — the per-second open/write/close was
+  /// itself a measurable idle cost.
+  func testSidecarLinesBatchUntilThreshold() throws {
+    let suiteName = "IdleCountersTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("IdleCountersTests.\(UUID().uuidString)", isDirectory: true)
+    let url = dir.appendingPathComponent(IdleCounters.sidecarFileName)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let counters = IdleCounters(
+      defaults: defaults,
+      environment: [IdleCounters.enabledEnvironmentKey: "1"],
+      sidecarURL: url,
+      startsTimer: false,
+      sidecarFlushBatchSize: 3)
+
+    counters.emitWithoutFlushForTesting()
+    counters.emitWithoutFlushForTesting()
+    let sizeBeforeThreshold =
+      (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+    XCTAssertEqual(sizeBeforeThreshold, 0, "below-threshold emits must not hit the disk")
+
+    counters.emitWithoutFlushForTesting()
+    let contents = try String(contentsOf: url, encoding: .utf8)
+    XCTAssertEqual(
+      contents.split(separator: "\n").count, 3,
+      "filling the batch must flush all buffered lines")
+
+    counters.emitWithoutFlushForTesting()
+    counters.flushPending()
+    let after = try String(contentsOf: url, encoding: .utf8)
+    XCTAssertEqual(
+      after.split(separator: "\n").count, 4,
+      "flushPending must force the partial batch to disk")
+  }
 }

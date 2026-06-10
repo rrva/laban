@@ -232,6 +232,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // discard the last few hundred ms of state. `flushSync` no-ops when
     // the toggle is off, so disabled persistence costs nothing here.
     windowController?.persistenceCoordinator?.flushSync()
+    // Idle-counter sidecar lines are batched in memory; flush so the last
+    // ~30s of diagnostics survive quit. No-ops when the tool is disabled.
+    IdleCounters.shared.flushPending()
     // M2: snapshot every tracked agent JSONL so a post-quit reboot
     // still has the conversation available even if the user's
     // ~/.claude or ~/.codex directory loses its sessions.
