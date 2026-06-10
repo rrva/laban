@@ -52,7 +52,8 @@ solid while typing.
   `/debug/state` exposes `cursorSettings` (style/blinkEnabled/styleOverridden/
   blinkOverridden); `state.schema.json` mirrored;
   `CursorSettingsHeadlessTests` E2E (bar -> DECSCUSR 2 block -> DECSCUSR 0
-  revert) 2/2 green.
+  revert) 2/2 green. Commit beb16cd. Full suite: 1421 tests, 0 failures;
+  `./scripts/build-app` clean.
 - [ ] Review Gate passed.
 
 ## Decision Log
