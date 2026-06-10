@@ -68,12 +68,64 @@ final class CursorBlinkDriverTests: XCTestCase {
 
   func testSyncStopResetsPhaseToVisible() {
     let driver = CursorBlinkDriver()
-    // Force phase to hidden by direct manipulation isn't possible (private),
-    // but we can verify that stopping a running timer always results in phaseVisible=true.
     driver.sync(blinkActive: true, windowVisibleToUser: true, cursorVisible: true)
+    driver.simulateTimerFireForTesting()  // reach the hidden phase deterministically
+    XCTAssertFalse(driver.phaseVisible)
     driver.sync(blinkActive: false, windowVisibleToUser: true, cursorVisible: true)
     XCTAssertTrue(driver.phaseVisible,
       "phase must reset to visible (solid cursor) when timer stops")
+  }
+
+  // MARK: - sync stop mid-off-phase must request a repaint
+
+  /// Regression (review finding): resigning key while the cursor is in the
+  /// hidden half of the blink cycle must repaint a solid cursor. The display
+  /// link parks on resign, so the stop path itself has to fire `onPhaseFlip`
+  /// (which the view wires to `advanceFrame()`) and leave a pending flip so
+  /// that frame's guard passes — otherwise the non-key window keeps showing
+  /// a hidden cursor until refocus, violating spec.md §23's "always solid
+  /// when the terminal is not key".
+  func testSyncStopMidHiddenPhaseFiresRepaintAndResetsVisible() {
+    let driver = CursorBlinkDriver()
+    var flips = 0
+    driver.onPhaseFlip = { flips += 1 }
+    driver.sync(blinkActive: true, windowVisibleToUser: true, cursorVisible: true)
+    driver.simulateTimerFireForTesting()
+    XCTAssertFalse(driver.phaseVisible, "test precondition: cursor hidden mid-off-phase")
+    XCTAssertEqual(flips, 1)
+    _ = driver.consumePendingFlip()  // the off-phase frame already painted
+
+    // Window resigns key: visibility gate opens, timer must stop.
+    driver.sync(blinkActive: true, windowVisibleToUser: false, cursorVisible: true)
+
+    XCTAssertTrue(driver.phaseVisible, "phase must reset to visible on stop")
+    XCTAssertFalse(driver.timerRunning, "timer must stop when window not visible")
+    XCTAssertEqual(flips, 2, "stopping mid-off-phase must fire onPhaseFlip to repaint")
+    XCTAssertTrue(driver.consumePendingFlip(),
+      "the repaint frame must see a pending flip so advanceFrame's guard passes")
+  }
+
+  func testSyncStopMidVisiblePhaseDoesNotRepaint() {
+    let driver = CursorBlinkDriver()
+    var flips = 0
+    driver.onPhaseFlip = { flips += 1 }
+    driver.sync(blinkActive: true, windowVisibleToUser: true, cursorVisible: true)
+    // Phase is visible (no timer fire); stopping must not request a repaint —
+    // the on-screen cursor is already solid.
+    driver.sync(blinkActive: true, windowVisibleToUser: false, cursorVisible: true)
+    XCTAssertTrue(driver.phaseVisible)
+    XCTAssertEqual(flips, 0, "stopping while already solid must not waste a repaint")
+    XCTAssertFalse(driver.consumePendingFlip())
+  }
+
+  // MARK: - Test hook is gated on a running timer
+
+  func testSimulateTimerFireIsNoOpWhenTimerStopped() {
+    let driver = CursorBlinkDriver()
+    driver.simulateTimerFireForTesting()
+    XCTAssertTrue(driver.phaseVisible,
+      "the hook must mirror the real handler, which cannot fire with no timer")
+    XCTAssertFalse(driver.consumePendingFlip())
   }
 
   // MARK: - noteInput forces phase visible and cancels pending flip

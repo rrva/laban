@@ -85,15 +85,39 @@ final class CursorBlinkDriver {
     if shouldRun, !timerRunning {
       startTimer()
     } else if !shouldRun, timerRunning {
+      // Capture the phase BEFORE stopTimer resets it: stopping mid-off-phase
+      // must repaint, or a resigning window freezes with the cursor hidden
+      // (the display link parks, so no later tick would fix it).
+      let wasHidden = !phaseVisible
       stopTimer()
-      if !phaseVisible {
-        phaseVisible = true
+      if wasHidden {
+        // Re-arm the pending flip after stopTimer cleared it so the repaint
+        // frame's `consumePendingFlip()` guard passes and actually paints
+        // the now-solid cursor.
+        pendingFlip = true
         onPhaseFlip?()
       }
     }
   }
 
   // MARK: - Timer management
+
+  /// The timer's event-handler body. Toggles the phase, marks the flip
+  /// pending for the next frame guard, and requests an immediate repaint.
+  private func timerFired() {
+    phaseVisible.toggle()
+    pendingFlip = true
+    onPhaseFlip?()
+  }
+
+  /// Test hook: run the production timer handler synchronously, as if the
+  /// 500 ms interval had elapsed. Lets tests reach the hidden phase
+  /// deterministically without real waits. Only valid while the timer is
+  /// running (mirrors when the real handler can fire).
+  func simulateTimerFireForTesting() {
+    guard timerRunning else { return }
+    timerFired()
+  }
 
   private func startTimer() {
     timerRunning = true
@@ -104,10 +128,7 @@ final class CursorBlinkDriver {
       repeating: interval,
       leeway: .milliseconds(20))
     t.setEventHandler { [weak self] in
-      guard let self else { return }
-      self.phaseVisible.toggle()
-      self.pendingFlip = true
-      self.onPhaseFlip?()
+      self?.timerFired()
     }
     t.resume()
     timer = t
