@@ -1,0 +1,34 @@
+{
+  "name": "debug-script-exit-wake",
+  "description": "A child exit must surface as the tab's exited state through the model signal chain (exit bumps the dirty generation; the gated syncSessions flips tab status). Headless has no display link, so this proves the model-level half of the full-park exit wake; the link-level half is TerminalBitmapViewWakeTests plus the live render journal.",
+  "deterministic": false,
+  "steps": [
+    {
+      "op": "wait",
+      "label": "live shell running",
+      "timeoutMs": 10000,
+      "condition": {"kind": "sessionStatus", "status": "running"}
+    },
+    {
+      "op": "action",
+      "label": "exit the shell with code 3",
+      "body": {"action": "typeText", "text": "exit 3\n"}
+    },
+    {
+      "op": "wait",
+      "label": "session snapshot reports exited",
+      "timeoutMs": 10000,
+      "condition": {"kind": "sessionStatus", "status": "exited"}
+    },
+    {
+      "op": "get",
+      "label": "tab state shows exited with code 3",
+      "path": "/debug/state",
+      "expectJson": [
+        {"path": "tabs[0].status", "equals": "exited"},
+        {"path": "tabs[0].exitStatus", "equals": 3}
+      ],
+      "saveAs": "state-after-exit.json"
+    }
+  ]
+}

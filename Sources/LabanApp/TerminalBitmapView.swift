@@ -301,6 +301,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// the reader threads and the main thread.
   private let displayKickCoalescer = TerminalDisplayKickCoalescer()
 
+  /// Wake source of the in-flight `advanceFrame(wake:)` call; stamped at the
+  /// top of every frame so each render-journal entry the frame records can
+  /// carry it.
+  private var lastWakeSource: FrameWakeSource = .other
+  /// Counts every `advanceFrame(wake:)` entry. Lets wake tests assert that an
+  /// input handler actually kicked the frame loop, synchronously, without
+  /// depending on render side effects.
+  private(set) var advanceFrameCallCountForTesting = 0
+
   // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
   // renderer's onFrameCompleted callback. Bounded ring buffer.
   private var pendingInputAt: ContinuousClock.Instant?
@@ -366,7 +375,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // directly so the cursor toggles immediately instead of waiting up to
     // 125 ms for the next 8 Hz display-link tick.
     blinkDriver.onPhaseFlip = { [weak self] in
-      self?.advanceFrame()
+      self?.advanceFrame(wake: .blinkTimer)
     }
 
     // Force a full redraw on every theme swap so chrome (sidebar bg, cursor,
@@ -402,13 +411,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     // Track the system Reduce Motion setting so the sidebar needsAction pulse
     // can freeze when it changes mid-session, and force a frame so the change
-    // takes effect immediately.
+    // takes effect immediately. The wake matters: with a parked display link
+    // the invalidation alone would sit unpainted until some other source
+    // produced a frame.
     reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
       object: nil, queue: .main
     ) { [weak self] _ in
       self?.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-      self?.renderInvalidated = true
+      self?.invalidateRenderAndWake()
     }
 
     // The per-session reader thread fires this callback whenever it drained
@@ -420,7 +431,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let displayKickCoalescer = displayKickCoalescer
     model.onSessionDirty = { [weak self, displayKickCoalescer] _ in
       displayKickCoalescer.requestFrameAdvance {
-        self?.advanceFrame()
+        self?.advanceFrame(wake: .sessionDirty)
+      }
+    }
+
+    // Model mutations that change pixels without terminal bytes (tab
+    // select/open/close/reorder, resolved git branches, daemon surface
+    // signals, agent status) wake the frame loop here. Same coalescer as
+    // onSessionDirty so a burst of mutations folds into one frame. The policy
+    // and gating live in LabanCore and are shared with HeadlessDebugRuntime;
+    // this hook is AppKit-only plumbing (headless frames are endpoint-driven
+    // and leave it unset).
+    model.onSurfaceStateChanged = { [weak self, displayKickCoalescer] in
+      displayKickCoalescer.requestFrameAdvance {
+        self?.advanceFrame(wake: .modelMutation)
       }
     }
 
@@ -713,7 +737,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     } else {
       recreateSurface()
     }
-    renderInvalidated = true
+    invalidateRenderAndWake()
     window?.makeFirstResponder(self)
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
     startLabandSnapshotGenerationMonitor()
@@ -724,7 +748,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     sessionCoordinator?.startSnapshotGenerationMonitor {
       [weak self, displayKickCoalescer] _, now in
       displayKickCoalescer.requestFrameAdvance(now: now) {
-        self?.advanceFrame()
+        self?.advanceFrame(wake: .labandGeneration)
       }
     }
   }
@@ -737,7 +761,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       ) { [weak self] _ in
         self?.syncActiveSessionFocus(windowFocused: true)
         // Wake the (possibly parked) display link and repaint on refocus.
-        self?.advanceFrame()
+        self?.advanceFrame(wake: .focus)
       })
     windowFocusObservers.append(
       center.addObserver(
@@ -756,7 +780,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       center.addObserver(
         forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
       ) { [weak self] _ in
-        self?.advanceFrame()
+        self?.advanceFrame(wake: .occlusion)
       })
   }
 
@@ -841,7 +865,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         // main where AppKit, the model, and the renderer must be touched.
         DispatchQueue.main.async {
           view.noteDisplayLinkTick()
-          view.advanceFrame()
+          view.advanceFrame(wake: .displayLink)
         }
         return kCVReturnSuccess
       },
@@ -864,7 +888,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// CADisplayLink target/selector. Already on main, so no dispatch hop.
   @objc private func displayLinkTick(_ link: AnyObject) {
     noteDisplayLinkTick()
-    advanceFrame()
+    advanceFrame(wake: .displayLink)
   }
 
   private func noteDisplayLinkTick(now: Date = Date()) {
@@ -888,7 +912,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
       guard let self else { return }
       self.outputSettleWakeScheduled = false
-      self.advanceFrame()
+      self.advanceFrame(wake: .settleWake)
     }
   }
 
@@ -898,8 +922,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.renderRetryScheduled = false
-      self.advanceFrame()
+      self.advanceFrame(wake: .renderRetry)
     }
+  }
+
+  /// Invalidate the current frame AND kick the frame loop. With a fully
+  /// parked display link, a bare `renderInvalidated = true` is a frozen-frame
+  /// bug waiting to happen: nothing repaints until some unrelated wake fires.
+  /// Every invalidation site outside `advanceFrame`'s own flow must use this
+  /// (or be directly followed by its own wake) so future sites cannot regress
+  /// silently. The retry is coalesced — a handler that invalidates several
+  /// times still produces one frame.
+  private func invalidateRenderAndWake() {
+    renderInvalidated = true
+    scheduleRenderRetry()
   }
 
   private func scrollViewport(
@@ -1008,7 +1044,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     blinkDriver.sync(
       blinkActive: lastRenderedCursorBlinking,
       windowVisibleToUser: windowVisibleToUser,
-      cursorVisible: true)   // conservative: cursor treated as visible when we lack a fresh snapshot
+      cursorVisible: true)  // conservative: cursor treated as visible when we lack a fresh snapshot
   }
 
   private struct DisplayLinkPolicyState {
@@ -1082,7 +1118,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   override func viewDidChangeBackingProperties() {
     super.viewDidChangeBackingProperties()
     if recreateSurface() {
-      renderInvalidated = true
+      invalidateRenderAndWake()
     }
   }
 
@@ -1109,10 +1145,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       software.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
     }
     return true
-  }
-
-  private func invalidateFrame() {
-    renderInvalidated = true
   }
 
   private func carryRenderInvalidationForGPUBackpressure() {
@@ -1155,7 +1187,35 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   // MARK: - Frame loop
 
+  /// Every code path that can wake the frame loop, so the render journal can
+  /// attribute each frame to the state change that asked for it. With a fully
+  /// parked display link this is the wake-source audit's runtime evidence: a
+  /// frozen frame plus a missing expected tag names the broken wake.
+  enum FrameWakeSource: String {
+    case displayLink
+    case sessionDirty
+    case labandGeneration
+    case keyboard
+    case scrollWheel
+    case modelMutation
+    case focus
+    case occlusion
+    case settleWake
+    case renderRetry
+    case blinkTimer
+    case safetyNet
+    case other
+  }
+
+  /// Compatibility shim for selector-based and untagged callers; counts as a
+  /// generic wake. Tagged paths call `advanceFrame(wake:)` directly.
   @objc func advanceFrame() {
+    advanceFrame(wake: .other)
+  }
+
+  func advanceFrame(wake: FrameWakeSource) {
+    advanceFrameCallCountForTesting += 1
+    lastWakeSource = wake
     IdleCounters.shared.noteAdvanceFrame()
     // Heartbeat the stall watchdog at the top of every tick. If
     // advanceFrame stops returning (or takes very long), the background
@@ -1829,6 +1889,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       tabId: tab.id,
       sessionId: session.id,
       reason: reason,
+      wakeSource: lastWakeSource.rawValue,
       transportMode: sessionCoordinator?.transportMode ?? "in-process",
       rendererStatus: backend.rendererStatus,
       surface: renderJournalSurfaceSnapshot(),
@@ -2264,7 +2325,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func setHoveredSidebarTab(_ id: Tab.ID?) {
     guard hoveredSidebarTabId != id else { return }
     hoveredSidebarTabId = id
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   /// Sidebar drag-reorder snapshot consumed by the renderer to draw the
@@ -2305,7 +2366,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       at: pt, tabs: model.tabs, height: bounds.height,
       topInset: Self.titlebarReservedHeight)
     sidebarDragState = state
-    renderInvalidated = true
+    invalidateRenderAndWake()
     return true
   }
 
@@ -2339,7 +2400,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }()
       _ = try? model.moveTab(state.tabId, to: targetIndex)
     }
-    renderInvalidated = true
+    invalidateRenderAndWake()
     return true
   }
 
@@ -2398,7 +2459,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func selectTab(at index: Int) {
     guard index >= 0, index < model.tabs.count else { return }
     selectTabPreservingSelection(model.tabs[index].id)
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   private func selectLastTab() {
@@ -2634,7 +2695,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // The full scrollback find rescan was deferred during the drag (H-5);
     // run it once now that the size has settled.
     model.refreshActiveFindsAfterResize()
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   override func keyDown(with event: NSEvent) {
@@ -2663,6 +2724,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       recordInput(kind: "key", route: "ignored", key: descriptor.key.map(String.init(describing:)))
       break
     }
+    // Wake the (possibly parked) frame loop for every keystroke. Echo rides
+    // the PTY-output push, but no-echo cases (stty -echo, an app ignoring the
+    // key) and the blink-phase reset above would otherwise paint nothing.
+    advanceFrame(wake: .keyboard)
   }
 
   override func keyUp(with event: NSEvent) {
@@ -2716,7 +2781,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // at the cursor by FrameProducer; force a fresh full-damage frame so the
     // updated marked text repaints the cursor row immediately as the user
     // speaks or composes, rather than waiting for the program to emit output.
-    renderInvalidated = true
+    // Dictation drives this without any keyDown, so it must wake itself.
+    invalidateRenderAndWake()
   }
 
   func unmarkText() {
@@ -2724,7 +2790,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     markedTextCaretCells = 0
     // Composition ended (committed or abandoned): repaint so the preedit run is
     // cleared from the cursor row on the next frame.
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   /// Finalize/abandon any in-flight IME composition. Safe to call when
@@ -2827,7 +2893,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
       encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
     )
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   private func sendBytes(_ bytes: [UInt8]) {
@@ -2865,7 +2931,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     switch command {
     case .newTab:
       _ = try? createTabPreservingSelection()
-      renderInvalidated = true
+      invalidateRenderAndWake()
     case .closeTab:
       closeTab(nil)
     case .selectTab(let index):
@@ -3486,7 +3552,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
       encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
     )
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   private func pasteDroppedFilePaths(_ urls: [URL], sourceKinds: [String]) {
@@ -3534,7 +3600,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       encodedHex: TerminalInputCaptureMetadata.encodedHex(sent.bytes),
       encodedLength: TerminalInputCaptureMetadata.encodedLength(sent.bytes)
     )
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   // MARK: - Mouse (selection + sidebar hits + mouse tracking)
@@ -3601,7 +3667,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
         encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
       )
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
 
@@ -3644,7 +3710,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes),
         deltaRows: decision.rowsDelta
       )
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
 
@@ -3708,6 +3774,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
       renderInvalidated = true
     }
+    // The single scroll wake: starts the glide immediately on a parked link.
+    // The frame it produces sets `scrollAnimating`, whose defer-reconcile
+    // un-parks the link at the active rate until the PD controller settles.
+    advanceFrame(wake: .scrollWheel)
   }
 
   private func externalHyperlinkURI(at pt: NSPoint) -> String? {
@@ -3847,7 +3917,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     selectionOriginCell = nil
     persistSelectionStateForCurrentTab()
     recordInput(kind: "selection", route: "terminal", command: "clearSelection")
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   private static func pointDistance(_ lhs: NSPoint, _ rhs: NSPoint) -> CGFloat {
@@ -3890,7 +3960,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       {
       case .newTab:
         _ = try? createTabPreservingSelection()
-        renderInvalidated = true
+        invalidateRenderAndWake()
       case .selectTab(let id):
         selectTabPreservingSelection(id)
         // Arm the drag tracker. We do not activate until the cursor
@@ -3898,7 +3968,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         // click-to-select still feels instant.
         sidebarDragState = SidebarDragState(
           tabId: id, origin: pt, activated: false, currentSlot: nil)
-        renderInvalidated = true
+        invalidateRenderAndWake()
       case .closeTab(let id):
         do {
           try closeTabAndRemoteSession(id)
@@ -3907,7 +3977,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           pruneClosedTabState(id)
           window?.close()
         } catch {}
-        renderInvalidated = true
+        invalidateRenderAndWake()
       case .none: break
       }
       return
@@ -3925,7 +3995,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     if event.modifierFlags.contains(.shift) {
       beginLocalSelectionMouseGesture(at: pt, clickCount: event.clickCount)
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
     localSelectionMouseGestureActive = false
@@ -3963,7 +4033,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // selects the entire row.
       beginSelection(at: pt, clickCount: event.clickCount)
     }
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   override func mouseDragged(with event: NSEvent) {
@@ -3992,13 +4062,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           focus: (row: focus.row, col: focus.col)
         )
       }
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
 
     if localSelectionMouseGestureActive {
       updateLocalSelectionMouseGesture(to: pt)
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
 
@@ -4041,11 +4111,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
         encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
       )
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
     updateLocalSelectionMouseGesture(to: pt)
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   /// Forward a left-button press to the active mouse-tracking app as an SGR
@@ -4103,13 +4173,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         route: "appCommand",
         text: pending.uri,
         command: "openHyperlink")
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
 
     if localSelectionMouseGestureActive {
       finishLocalSelectionMouseGesture(at: pt)
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
 
@@ -4153,7 +4223,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       )
       if trackedMouseButton == .left { trackedMouseButton = .none }
       stopTrackedMouseDragFramePump()
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
     if trackedMouseButton == .left {
@@ -4161,7 +4231,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       stopTrackedMouseDragFramePump()
     }
     finishLocalSelectionMouseGesture(at: pt)
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   override func rightMouseDown(with event: NSEvent) {
@@ -4193,7 +4263,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       )
       let sent = session.sendMouseCapturingBytes(pressEvent)
       forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
-      renderInvalidated = true
+      invalidateRenderAndWake()
     }
   }
 
@@ -4228,7 +4298,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       )
       let sent = session.sendMouseCapturingBytes(motionEvent)
       forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
-      renderInvalidated = true
+      invalidateRenderAndWake()
     }
   }
 
@@ -4263,7 +4333,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let sent = session.sendMouseCapturingBytes(releaseEvent)
       forwardEncodedMouseToDaemon(sent.result == 0 ? sent.bytes : [], session: session)
       if trackedMouseButton == .right { trackedMouseButton = .none }
-      renderInvalidated = true
+      invalidateRenderAndWake()
     }
     if trackedMouseButton == .right { trackedMouseButton = .none }
   }
@@ -4603,7 +4673,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     displayedScrollRows = Double(appliedScrollRows)
     targetScrollRows = Double(appliedScrollRows)
     scrollVelocityRowsPerSec = 0
-    renderInvalidated = true
+    invalidateRenderAndWake()
     needsDisplay = true
   }
 
@@ -4622,7 +4692,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     scrollResidualPx = 0
     scrollAnimating = false
     if deltaRows > 0 || hadPendingScrollState {
-      renderInvalidated = true
+      invalidateRenderAndWake()
     }
     return deltaRows
   }
@@ -4788,7 +4858,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let pt = lastDragPoint {
       selectionFocus = clampedSelectionPoint(at: pt)
     }
-    renderInvalidated = true
+    // The 20 Hz autoscroll pump must paint each step itself: with a parked
+    // link there is no other frame source while the pointer holds still past
+    // the content edge.
+    invalidateRenderAndWake()
   }
 
   private func terminalMouseGeometry(at pt: NSPoint) -> (
@@ -4812,7 +4885,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   @objc func newTab(_ sender: Any?) {
     _ = try? createTabPreservingSelection()
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   @objc func closeTab(_ sender: Any?) {
@@ -4825,7 +4898,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       window?.close()
       return
     } catch {}
-    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   @objc func selectTabByIndex(_ sender: Any?) {
@@ -5103,7 +5176,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       (backend as? MetalRenderer)?.captureMode = false
       model.captureSink = nil
       updateCaptureIndicator()
-      renderInvalidated = true
+      invalidateRenderAndWake()
       return
     }
 
@@ -5127,7 +5200,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       updateCaptureIndicator()
       AppLog.capture.info("started \(recorder.directoryURL.path)")
       EventLog.shared.log("capture.start", ["path": recorder.directoryURL.path])
-      renderInvalidated = true
+      invalidateRenderAndWake()
     } catch {
       AppLog.capture.error("failed to start: \(error)")
     }
@@ -5274,7 +5347,7 @@ extension TerminalBitmapView {
       tab: activeTab, session: session, resetOnClamp: true)
     displayedScrollRows = Double(appliedScrollRows)
     scrollVelocityRowsPerSec = 0
-    renderInvalidated = true
+    invalidateRenderAndWake()
     needsDisplay = true
   }
 
@@ -5283,7 +5356,7 @@ extension TerminalBitmapView {
       let session = model.session(forTab: activeTab.id)
     else { return }
     snapScrollToActiveBottom(tab: activeTab, session: session)
-    renderInvalidated = true
+    invalidateRenderAndWake()
     needsDisplay = true
   }
 
@@ -5299,7 +5372,7 @@ extension TerminalBitmapView {
   /// CGImage). Costs a per-frame blit, acceptable for a debug session.
   func debugEnableScreenshotReadback() {
     (backend as? MetalRenderer)?.captureMode = true
-    renderInvalidated = true
+    invalidateRenderAndWake()
     needsDisplay = true
   }
 

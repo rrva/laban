@@ -75,6 +75,20 @@ public final class AppModel {
   /// Set by `PersistenceCoordinator.attach(_:)` in normal operation.
   public var onWorkspaceMutation: (() -> Void)?
 
+  /// Fires after any model mutation that can change rendered pixels — tab
+  /// open/close/reorder/select (every `notifyWorkspaceMutation` site),
+  /// background git-branch resolution (`applyResolvedBranch`), daemon surface
+  /// signals (`applySurfaceSignals`), and agent-status updates
+  /// (`applyTabStatusUpdate`). The AppKit view subscribes this through its
+  /// display-kick coalescer so a fully parked display link still produces a
+  /// frame for model-only changes; mutations that arrive as terminal bytes are
+  /// additionally covered by `onSessionDirty`. Deliberately separate from
+  /// `onWorkspaceMutation`, which is single-cast and owned by
+  /// `PersistenceCoordinator.attach(_:)`. Runs on the mutating thread outside
+  /// the model lock; implementations MUST be cheap, non-blocking, and must not
+  /// call back into the model synchronously.
+  public var onSurfaceStateChanged: (@Sendable () -> Void)?
+
   /// Fires after every successful tab creation (default, fresh, or
   /// restored). Lets LabanApp wire up per-tab subsystems like the
   /// agent-session detector that depend on a real shell PID.
@@ -916,9 +930,22 @@ public final class AppModel {
 
   /// Fires `onWorkspaceMutation` outside the model lock. Callers must
   /// invoke this AFTER `withModelLock` returns so the callback chain
-  /// cannot re-enter the model under the same lock.
+  /// cannot re-enter the model under the same lock. Every workspace
+  /// mutation is also a surface-state change (the sidebar renders tabs),
+  /// so the frame-loop wake hook co-fires here — one fire point keeps
+  /// every tab open/close/reorder/select entry point waking a parked
+  /// display link without each call site remembering to.
   private func notifyWorkspaceMutation() {
     onWorkspaceMutation?()
+    onSurfaceStateChanged?()
+  }
+
+  /// Fires `onSurfaceStateChanged` outside the model lock for mutations that
+  /// change rendered pixels without being workspace mutations (no persistence
+  /// debounce wanted): resolved git branches, daemon surface signals, agent
+  /// status. Same re-entrancy contract as `notifyWorkspaceMutation`.
+  private func notifySurfaceStateChanged() {
+    onSurfaceStateChanged?()
   }
 
   public func selectTab(_ tabId: Tab.ID) {
@@ -1291,7 +1318,7 @@ public final class AppModel {
     forTab tabId: Tab.ID,
     now: Date = Date()
   ) -> Bool {
-    runSurfaceMetadataSync(
+    let modelChanged = runSurfaceMetadataSync(
       forTab: tabId,
       tabIndex: -1,
       sessionId: "",
@@ -1308,6 +1335,11 @@ public final class AppModel {
         )
       }
     ).modelChanged
+    // Daemon-sourced signals arrive off the local session's output path (no
+    // dirty-generation bump), so a parked display link needs this model-level
+    // wake to paint the change.
+    if modelChanged { notifySurfaceStateChanged() }
+    return modelChanged
   }
 
   /// Clears a tab's surface-owned agent status, but only when it still holds
@@ -1842,8 +1874,8 @@ public final class AppModel {
   }
 
   private func applyTabStatusUpdate(_ update: Session.TabStatusUpdate, forTab tabId: Tab.ID) {
-    withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    let changed: Bool = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
       var status = _tabs[idx].titleMetadata.agentStatus
       let before = status
 
@@ -1857,9 +1889,14 @@ public final class AppModel {
         status.statusTextColor = v.isEmpty ? nil : v
       }
 
-      guard status != before else { return }
+      guard status != before else { return false }
       _tabs[idx].titleMetadata.agentStatus = status
+      return true
     }
+    // The OSC 21337 bytes that carried this update woke the frame loop via
+    // onSessionDirty, but this model write lands on a later main-queue hop and
+    // can miss that frame; with a parked link only this wake repaints it.
+    if changed { notifySurfaceStateChanged() }
   }
 
   /// Completion target for `TabMetadataSynchronizer` git refresh. Writes the resolved branch into
@@ -1867,9 +1904,14 @@ public final class AppModel {
   /// cwd that was queried — avoids a stale background result clobbering a
   /// fresh `cd` that happened mid-flight.
   private func applyResolvedBranch(_ branch: String?, forTab tabId: Tab.ID, cwd: String) {
-    withModelLock {
-      _ = metadataSync.applyResolvedBranch(branch, forTab: tabId, cwd: cwd, tabs: &_tabs)
+    let changed: Bool = withModelLock {
+      metadataSync.applyResolvedBranch(branch, forTab: tabId, cwd: cwd, tabs: &_tabs)
     }
+    // Background git resolution completes off the output path: nothing bumps
+    // the session's dirty generation, so without this model-level wake a
+    // parked display link would freeze the sidebar's branch label until the
+    // tab's next terminal byte.
+    if changed { notifySurfaceStateChanged() }
   }
 
   private func resolveTitle(at idx: Int) {

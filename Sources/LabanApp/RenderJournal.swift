@@ -25,6 +25,10 @@ final class RenderJournal {
     var tabId: String?
     var sessionId: String?
     var reason: String?
+    /// Which wake source triggered the `advanceFrame` that produced this
+    /// entry (`FrameWakeSource.rawValue`). Optional so old dumps still decode;
+    /// the primary forensic field for full-park missed-wake hunts.
+    var wakeSource: String?
     var transportMode: String?
     var renderer: RendererSnapshot?
     var surface: SurfaceSnapshot?
@@ -340,6 +344,7 @@ final class RenderJournal {
     tabId: String?,
     sessionId: String?,
     reason: String? = nil,
+    wakeSource: String? = nil,
     transportMode: String? = nil,
     rendererStatus: RendererStatus? = nil,
     surface: SurfaceSnapshot? = nil,
@@ -380,6 +385,7 @@ final class RenderJournal {
       tabId: tabId,
       sessionId: sessionId,
       reason: reason,
+      wakeSource: wakeSource,
       transportMode: transportMode,
       renderer: rendererStatus.map(RendererSnapshot.init),
       surface: surface,

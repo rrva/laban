@@ -85,6 +85,7 @@
         "op": {"const": "get"},
         "label": {"type": "string"},
         "path": {"type": "string", "pattern": "^/debug"},
+        "expectJson": {"$ref": "#/$defs/expectJson"},
         "saveAs": {"type": "string"}
       }
     },
@@ -98,7 +99,32 @@
         "path": {"type": "string", "pattern": "^/debug"},
         "body": {"type": "object"},
         "expectOk": {"type": "boolean"},
+        "expectJson": {"$ref": "#/$defs/expectJson"},
         "saveAs": {"type": "string"}
+      }
+    },
+    "expectJson": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string"},
+          "equals": {},
+          "equalsEnv": {"type": "string"},
+          "nonEmpty": {"type": "boolean"},
+          "greaterThan": {"type": "number"},
+          "whenEnvEquals": {
+            "type": "object",
+            "required": ["name", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "value": {"type": "string"}
+            }
+          }
+        },
+        "additionalProperties": false
       }
     },
     "action": {

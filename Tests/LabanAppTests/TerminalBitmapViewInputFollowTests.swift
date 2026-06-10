@@ -63,11 +63,18 @@ final class TerminalBitmapViewInputFollowTests: XCTestCase {
     )
     view.scrollWheel(with: event)
 
+    // The wheel handler now wakes the frame loop itself (full-park display
+    // link: there is no later tick to start the glide), so the first PD
+    // integration step may already have applied a row or two. The smoothing
+    // contract is that the full target is NOT snapped in that first frame —
+    // the glide is still mid-flight with a pending target for typing to
+    // cancel below.
     viewport = try XCTUnwrap(session.viewportState())
-    XCTAssertEqual(
+    XCTAssertGreaterThan(
       viewport.viewportOffset,
-      viewport.scrollbackRows,
-      "large non-precise wheel input queues smooth scroll before the C viewport moves")
+      viewport.scrollbackRows - 4,
+      "large non-precise wheel input glides via the PD controller; the wake frame must not snap the full 4-row target"
+    )
 
     view.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
     view.advanceFrame()

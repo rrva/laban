@@ -888,6 +888,26 @@ SCRIPT_SCREENSHOT=$(jq -r '.steps[] | select(.op=="screenshot") | .path // empty
 [ -f "$SCRIPT_SNAPSHOT" ] || fail "debug script snapshot missing: $SCRIPT_SNAPSHOT"
 [ -f "$SCRIPT_SCREENSHOT" ] || fail "debug script screenshot missing: $SCRIPT_SCREENSHOT"
 
+# 33. Exit-wake scenario — a child exit with no trailing output must flip the
+# tab's exited state through the model signal chain (dirty-generation bump →
+# gated syncSessions → tab status). Guards the full-park display-link work:
+# headless has no link, so this pins the model-level half of the exit wake.
+EXIT_WAKE_ARTIFACTS="$RUN_ARTIFACTS/debug-script-exit-wake"
+EXIT_WAKE_TMP="$RUN_TMP/debug-script-exit-wake"
+if ! EXIT_WAKE_OUTPUT=$(LABAN_AGENT_BIN="$AGENT_BIN" ./scripts/run-debug-script \
+  --no-build \
+  --artifacts "$EXIT_WAKE_ARTIFACTS" \
+  --temp-dir "$EXIT_WAKE_TMP" \
+  fixtures/debug-script-exit-wake.scenario.json 2>&1); then
+  fail "exit-wake debug script failed: $EXIT_WAKE_OUTPUT"
+fi
+printf '%s' "$EXIT_WAKE_OUTPUT" | grep -q "debug script passed" \
+  || fail "exit-wake debug script did not report success: $EXIT_WAKE_OUTPUT"
+EXIT_WAKE_REPORT="$EXIT_WAKE_ARTIFACTS/debug-script-report.json"
+[ -f "$EXIT_WAKE_REPORT" ] || fail "exit-wake debug script report missing: $EXIT_WAKE_REPORT"
+jq -e '.ok == true and (.steps | length) == 4' "$EXIT_WAKE_REPORT" >/dev/null 2>&1 \
+  || fail "exit-wake debug script report invalid: $(cat "$EXIT_WAKE_REPORT")"
+
 # Success — clean up and remove trap
 trap - EXIT
 cleanup_success

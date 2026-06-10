@@ -122,8 +122,37 @@ proven. The mitigations baked into this plan:
       new generation-gating tests) + 5 `SessionRunnerTests` (1 new
       `testExitWakesOnDirtyWithNoOutput`) all pass; `swift build --build-tests`
       and `./scripts/build-app` clean.
-- [ ] Milestone 2: wake-source audit complete; missing wakes wired;
-      per-wake instrumentation and tests green.
+- [x] (2026-06-10) Milestone 2: wake-source audit complete; missing wakes
+      wired; per-wake instrumentation and tests green. `FrameWakeSource` +
+      `advanceFrame(wake:)` (with `@objc` `.other` shim) land in
+      `TerminalBitmapView`; all tagged call sites pass their source
+      (displayLink/sessionDirty/labandGeneration/keyboard/scrollWheel/
+      modelMutation/focus/occlusion/settleWake/renderRetry/blinkTimer);
+      `RenderJournal.Entry.wakeSource` (optional) records it. Row 3: wake at
+      end of `keyDown`. Row 4: single direct wake at end of `scrollWheel`
+      (mouse-tracking and alt-scroll early-return branches use
+      `invalidateRenderAndWake()`). Rows 5+9: `AppModel.onSurfaceStateChanged`
+      co-fires from `notifyWorkspaceMutation()` (all tab
+      open/close/reorder/select entry points) plus direct fires from
+      `applyTabStatusUpdate`, `applyResolvedBranch`, and
+      `applySurfaceSignals` (the M1-contract residual model-level mutations);
+      view subscribes through the kick coalescer. Row 10 landed in M1
+      (generation-advance `onDirty`). Row 13: Reduce Motion observer now
+      wakes. Audit closing rule: every `renderInvalidated = true` site outside
+      `advanceFrame`'s flow either has a direct wake on the next line or was
+      converted to the new `invalidateRenderAndWake()` (≈35 sites: IME
+      marked-text, hover, sidebar drag, mouse selection handlers, drag
+      autoscroll pump, menu newTab/closeTab, capture toggle, debug scroll
+      endpoints, viewDidMoveToWindow, backing-properties change); the dead
+      no-wake `invalidateFrame()` helper was deleted. Tests: 5 new
+      `TerminalBitmapViewWakeTests` (keyDown, scrollWheel, tab mutation via
+      coalescer, surface signals via coalescer, Reduce Motion), scroll-wake
+      mutation verified to fail the suite both ways. E2E: new
+      `fixtures/debug-script-exit-wake.scenario.json` (live shell `exit 3` →
+      `/debug/state` `tabs[0].status == "exited"`, `exitStatus == 3`) wired
+      into `scripts/test-e2e` (step 33); `schemas/debug-script.schema.json`
+      `get`/`post` now admit the runner's already-supported `expectJson`.
+      Full `swift test`: 1438 tests, 12 skipped, 0 failures.
 - [ ] Milestone 3: full-park policy in `TerminalIdlePolicy` + plumbing,
       `LabanDisplayLinkIdleFloor` parachute, safety-net poll, ADR 0018.
 - [ ] Milestone 4: animation budget rates (attention 30 fps).
@@ -193,6 +222,42 @@ them without recording a superseding entry here.
   2026-06-10 after the M1 review: the original "may lag until the next wake
   or safety-net tick" was wrong under gating — wakes re-skip on unchanged
   generation, so a wake by itself never refreshes unbumped metadata.
+- Decision: Stage 1 (cursor-style-and-blink-settings) is fully landed, so the
+  "fallback if implementing before Stage 1" path in the Prerequisite section
+  is dead. The park-policy input `cursorBlinkActive` is fed from the real
+  blink driver: `blinkDriver.timerRunning` (`CursorBlinkDriver` runs only
+  while blink is enabled in Settings AND the window is visible AND the cursor
+  is visible, and its `onPhaseFlip` already calls
+  `advanceFrame(wake: .blinkTimer)` directly). Blink-off (the default) feeds
+  `false`, which is what achieves the 0–2 wakeups/s target; blink-on keeps
+  the link at the 8 Hz blink floor exactly as today.
+  Rationale: the executing brief confirmed the prerequisite landed on this
+  branch's base; carrying dead fallback text would mislead the next reader.
+  Date/Author: 2026-06-10 / Claude (M2 execution).
+- Decision: `onSurfaceStateChanged` co-fires inside
+  `notifyWorkspaceMutation()` (one fire point covering every tab
+  open/close/reorder/select/cwd entry point, including debug endpoints that
+  go through the public model API) instead of being called from each
+  individual mutation site; the non-workspace mutations
+  (`applyTabStatusUpdate`, `applyResolvedBranch`, `applySurfaceSignals`) fire
+  it directly. This is NOT piggybacking `onWorkspaceMutation` — that hook
+  stays single-cast and owned by `PersistenceCoordinator.attach(_:)`.
+  Rationale: per-site fires rot; the existing post-lock fire point already
+  has the right re-entrancy contract and call coverage. A rare redundant
+  coalesced frame (e.g. cwd change detected inside a frame's own sync) is an
+  early-return no-op.
+  Date/Author: 2026-06-10 / Claude (M2 execution).
+- Decision: `testInputCancelsPendingSmoothScrollWhenViewportStillAtBottom`'s
+  intermediate assertion was relaxed from "the C viewport has not moved at
+  all after `scrollWheel` returns" to "the full wheel target is not snapped"
+  (`viewportOffset > scrollbackRows - 4`).
+  Rationale: the old assertion pinned a timing artifact of the poll-driven
+  design (glide started on the *next* link tick). With the Row-4 wake the
+  handler itself produces the first frame, whose PD integration step may
+  legitimately apply the first row. The test's real contract — typing cancels
+  the pending glide and stays at the live bottom — is unchanged and still
+  asserted.
+  Date/Author: 2026-06-10 / Claude (M2 execution).
 - Decision: Write ADR 0018 for this change.
   Rationale: this reverses the settled poll-with-floor frame-driving
   architecture (the link as a guaranteed periodic repaint) in favor of
@@ -544,14 +609,16 @@ absent or unimplemented, treat the fallback below as binding):
   is due, armed only while the window is visible and key) — not by the
   display link's idle floor.
 
-Fallback if implementing before Stage 1 lands: keep the link running at
-8 fps whenever the rendered cursor is blinking
-(`lastRenderedCursorBlinking`, set from the snapshot at
-`TerminalBitmapView.swift` ~line 1524) and the window is visible. The park
-policy input `cursorBlinkActive` (Milestone 3) carries this; once Stage 1
-lands, the blink timer owns the wake and `cursorBlinkActive` is fed `false`
-when the setting is off (the default), which is what achieves the
-0–2 wakeups/s target.
+Stage 1 IS landed on this branch (see Decision Log): `CursorBlinkDriver`
+(`Sources/LabanApp/CursorBlinkDriver.swift`) owns a main-queue 0.5 s
+`DispatchSourceTimer` that runs only while blink is enabled + window visible
++ cursor visible, and its `onPhaseFlip` calls
+`advanceFrame(wake: .blinkTimer)` directly. The park policy input
+`cursorBlinkActive` (Milestone 3) is fed `blinkDriver.timerRunning`: blink
+off (the default) feeds `false` — which is what achieves the 0–2 wakeups/s
+target — while blink on keeps the link at the 8 Hz blink floor exactly as
+today. (The pre-Stage-1 fallback this section used to describe is dead and
+has been removed.)
 
 ## Wake-Source Audit Table
 
@@ -565,17 +632,17 @@ numbers before editing.
 |---|--------|-----------|-------|--------|
 | 1 | PTY output (child output, key echo, OSC title/status/notification bytes) | reader thread → `onDirty` → `AppModel.onSessionDirty` → coalescer → `advanceFrame` | `SessionRunner.swift:69-81`, `SessionRegistry.swift:64-73`, `TerminalBitmapView.swift:402-406` | exists (proven machinery — paints occluded windows today) |
 | 2 | laband snapshot generation (remote tier) | `LabandSnapshotGenerationMonitor` → coalescer → `advanceFrame` | `TerminalBitmapView.swift:704-711` | exists |
-| 3 | Keyboard input | `keyDown` writes to PTY; echo rides #1, but no-echo cases (echo off, app ignoring keys) and blink-phase reset get no wake | `TerminalBitmapView.swift:2607` (`keyDown`) | **needs wiring**: kick at end of `keyDown` |
-| 4 | Scroll wheel | `scrollWheel` sets `targetScrollRows` + `renderInvalidated` and returns; relies on the running link to start the glide | `TerminalBitmapView.swift:~3607-3675` | **needs wiring**: kick at end of `scrollWheel`; the first frame sets `scrollAnimating`, whose defer-reconcile un-parks the link at 120 fps until the PD controller settles |
-| 5 | Tab switch / open / close (sidebar click, Cmd-digit, menus, debug endpoints) | `model.selectTab` etc. mutate the model; today the next 8 Hz tick notices `tabChanged` | `AppModel.swift:924` (`selectTab`), view entry points `TerminalBitmapView.swift:2359-2428` | **needs wiring**: model-level hook (see Milestone 2) so *all* mutation entry points wake, not just view-local ones |
+| 3 | Keyboard input | `keyDown` writes to PTY; echo rides #1, but no-echo cases (echo off, app ignoring keys) and blink-phase reset get no wake | `TerminalBitmapView.swift` (`keyDown`) | **wired+proven (M2)**: `advanceFrame(wake: .keyboard)` at end of `keyDown`; `testKeyDownWakesFrameLoop` |
+| 4 | Scroll wheel | `scrollWheel` sets `targetScrollRows` + `renderInvalidated`; the handler itself must start the glide | `TerminalBitmapView.swift` (`scrollWheel`) | **wired+proven (M2)**: single `advanceFrame(wake: .scrollWheel)` at end of `scrollWheel` (early-return branches use `invalidateRenderAndWake()`); `testScrollWheelWakesFrameLoop`, mutation-verified |
+| 5 | Tab switch / open / close (sidebar click, Cmd-digit, menus, debug endpoints) | `model.selectTab` etc. mutate the model | `AppModel.notifyWorkspaceMutation` co-fires `onSurfaceStateChanged` | **wired+proven (M2)**: hook → kick coalescer → `advanceFrame(wake: .modelMutation)`; `testTabMutationWakesFrameLoopThroughCoalescer` |
 | 6 | Focus / occlusion | `didBecomeKey` → `advanceFrame`; `didResignKey` → `updateDisplayLinkRunState`; occlusion change → `advanceFrame` | `installWindowFocusObservers`, `TerminalBitmapView.swift:713-739` | exists |
 | 7 | One-shot render gates | `scheduleOutputSettleWake` (output-settle defer) and `scheduleRenderRetry` (theme/renderer-switch/backpressure) call `advanceFrame` directly | `TerminalBitmapView.swift:863-881` | exists — these MUST remain direct calls; with a parked link they are the only continuation after a deferred frame |
 | 8 | Attention transitions carried by output (OSC 133 / agent status / notifications) | bytes bump generation → row #1 | `tab_status.c`, `osc133.c`, `osc_host.c` | exists via #1 |
-| 9 | Model metadata written off the output path (background git-branch resolution, daemon surface signals, agent status updates) | `applyResolvedBranch` (`AppModel.swift:1869`), `applySurfaceSignals` (`AppModel.swift:~1290`) write tabs with no wake; today the floor repaints | `AppModel.swift` | **needs wiring**: fire the Milestone-2 model hook from these mutation sites |
-| 10 | Child exit with no trailing bytes | exit branch in `laban_session_drain_locked_` sets `s->status` only; runner fires `onDirty` only when `drained > 0` | `pty_io.c:135-171`, `SessionRunner.swift:75` | **needs wiring**: bump generation on exit transition; runner fires on generation change (Milestone 1+2) |
-| 11 | Cursor blink | Stage-1 owned ~2 Hz one-shot wake while enabled+visible (default off); fallback: link runs at 8 fps while `cursorBlinkActive` | prerequisite plan; `TerminalBitmapView.swift:293,1120-1133,1524` | dependency (see Prerequisite section) |
+| 9 | Model metadata written off the output path (background git-branch resolution, daemon surface signals, agent status updates) | `applyResolvedBranch`, `applySurfaceSignals`, `applyTabStatusUpdate` fire `onSurfaceStateChanged` when they changed the model | `AppModel.swift` | **wired+proven (M2)**: `testSurfaceSignalsWakeFrameLoopThroughCoalescer`; branch/agent paths share the same fire helper |
+| 10 | Child exit with no trailing bytes | exit branch in `laban_session_drain_locked_` bumps the dirty generation; runner fires `onDirty` on generation advance | `pty_io.c`, `SessionRunner.swift` | **wired+proven (M1)**: `testExitWakesOnDirtyWithNoOutput` (mutation-verified in the M1 re-review); E2E `debug-script-exit-wake.scenario.json` (M2) pins the model chain |
+| 11 | Cursor blink | Stage-1 `CursorBlinkDriver` (landed): owned 0.5 s timer while enabled+visible (default off); `onPhaseFlip` → `advanceFrame(wake: .blinkTimer)` | `Sources/LabanApp/CursorBlinkDriver.swift`; wiring in `TerminalBitmapView.init` | exists+proven (CursorBlinkDriverTests; Stage-1 plan) |
 | 12 | Theme change | observer → `scheduleRenderRetry` | `TerminalBitmapView.swift:370-382` | exists |
-| 13 | Reduce Motion change | observer sets `renderInvalidated = true` only; today repaired by the floor | `TerminalBitmapView.swift:387-393` | **needs wiring**: add `scheduleRenderRetry()` |
+| 13 | Reduce Motion change | observer sets `reduceMotion` + invalidates | `TerminalBitmapView` reduce-motion observer | **wired+proven (M2)**: observer calls `invalidateRenderAndWake()`; `testReduceMotionChangeWakesFrameLoop` |
 | 14 | Find, selection, renderer switch, live-resize frames | direct `advanceFrame()` calls | `TerminalBitmapView.swift:2586,2893-2986,3145` | exists |
 | 15 | Tracked-mouse drag autoscroll | dedicated 20 Hz `Timer` pump, link-independent | `TerminalBitmapView.swift:4649-4656` | exists |
 | 16 | Capture indicator / window-title updates | computed inside `advanceFrame`; inputs all arrive via rows above | `TerminalBitmapView.swift:1174-1180` | covered |
