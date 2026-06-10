@@ -276,6 +276,20 @@ int laban_session_render_dirty(LabanSession *session, int *out_dirty);
 int laban_session_mark_rendered(LabanSession *session);
 
 /*
+ * laban_session_dirty_generation:
+ *   Returns the current dirty-generation counter in *out_generation.
+ *   The counter is incremented at every terminal-content mutation (VT write,
+ *   resize, replay, viewport scroll, child exit) and wraps past 0 to 1,
+ *   so it is never 0 after the first mutation. Callers can compare the
+ *   returned value against a stored previous value to determine whether
+ *   any session content has changed since the last comparison — without
+ *   taking a full snapshot. Returns 0 on success, -1 on NULL session or
+ *   NULL out_generation.
+ */
+int laban_session_dirty_generation(
+    LabanSession *session, uint64_t *out_generation);
+
+/*
  * PTY-byte capture: mirrors every byte fed into the VT parser (PTY drain,
  * direct vt_write, paste injection, and feedOutput palette injection) to a
  * file. The file is opened with O_WRONLY|O_CREAT|O_TRUNC; existing contents

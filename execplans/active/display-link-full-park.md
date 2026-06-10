@@ -109,8 +109,19 @@ proven. The mitigations baked into this plan:
 
 ## Progress
 
-- [ ] Milestone 1: dirty-generation accessor + tick-work gating
-      (independently shippable).
+- [x] (2026-06-10) Milestone 1: dirty-generation accessor + tick-work gating
+      (independently shippable). `laban_session_dirty_generation` exported in
+      `LabanTerminalCore.h` and implemented in `capture.c`; exit-branch
+      generation bump in `pty_io.c`; `Session.dirtyGeneration()` Swift
+      accessor; `syncSessions` gated on `lastSyncedGeneration` map with
+      `metadataSyncCountForTesting` seam; `invalidateSessionSyncCache()` and
+      `hasUnseenSessionActivity()` added; `SessionRunner` fires `onDirty` on
+      generation advance (covers zero-output child exit) with final `onDirty`
+      on loop exit. Cache invalidation wired into `createTabPreservingSelection`
+      and `closeTabAndRemoteSession`. 28 `TerminalSurfaceControllerTests` (4
+      new generation-gating tests) + 5 `SessionRunnerTests` (1 new
+      `testExitWakesOnDirtyWithNoOutput`) all pass; `swift build --build-tests`
+      and `./scripts/build-app` clean.
 - [ ] Milestone 2: wake-source audit complete; missing wakes wired;
       per-wake instrumentation and tests green.
 - [ ] Milestone 3: full-park policy in `TerminalIdlePolicy` + plumbing,

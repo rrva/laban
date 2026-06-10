@@ -75,6 +75,13 @@ void laban_session_note_terminal_dirty(LabanSession *s) {
     }
 }
 
+int laban_session_dirty_generation(LabanSession *s, uint64_t *out_generation) {
+    if (!s || !out_generation) return -1;
+    SESSION_LOCK(s);
+    *out_generation = s->dirty_generation;
+    return 0;
+}
+
 int laban_session_capture_start(LabanSession *s, const char *path) {
     if (!s || !path) return -1;
     SESSION_LOCK(s);

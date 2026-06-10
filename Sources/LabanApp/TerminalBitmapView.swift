@@ -2421,6 +2421,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func createTabPreservingSelection() throws -> Tab {
     syncSelectionStateToActiveTab()
     persistSelectionStateForCurrentTab()
+    // Invalidate the generation cache so a newly-created (or recycled)
+    // Session.ID cannot alias a stale generation entry and cause sync
+    // work to be incorrectly skipped on the first tick after creation.
+    surfaceController.invalidateSessionSyncCache()
     let previousActiveTabId = model.activeTab?.id
     let tab = try model.createTab()
     do {
@@ -2452,6 +2456,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     remoteSnapshotRenderTracker.clear(tabId: tabId)
     remoteMouseEncodingByTab.removeValue(forKey: tabId)
     try model.closeTab(tabId)
+    // Prune the stale generation entry so a recycled Session.ID cannot
+    // alias this closed session's last-synced generation.
+    surfaceController.invalidateSessionSyncCache()
   }
 
   private func clearAllSelectionState() {

@@ -595,6 +595,22 @@ public final class Session {
     return dirty != 0
   }
 
+  /// Returns the current dirty-generation counter. The counter is
+  /// incremented at every terminal-content mutation (VT write, resize,
+  /// replay, viewport scroll, child exit) and wraps past 0 to 1, so it
+  /// is never 0 after the first mutation. Callers can compare successive
+  /// values to determine whether any content changed since the last
+  /// comparison — without taking a full snapshot. Returns 0 on C failure
+  /// or closed session; callers should treat 0 as "unknown, assume dirty".
+  public func dirtyGeneration() -> UInt64 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return 0 }
+    var gen: UInt64 = 0
+    guard laban_session_dirty_generation(h, &gen) == 0 else { return 0 }
+    return gen
+  }
+
   /// Mark the most recent snapshot as rendered, preserving later row dirties.
   /// Returns -1 on C failure, 0 on success.
   @discardableResult

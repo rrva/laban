@@ -157,12 +157,21 @@ static size_t laban_session_drain_locked_(LabanSession *s) {
             int ws = 0;
             pid_t ret = laban_waitpid_retry(s->child_pid, &ws, WNOHANG);
             if (ret == s->child_pid) {
+                int prev_status = s->status;
                 if (WIFEXITED(ws)) {
                     s->status = 1;
                     s->exit_status = WEXITSTATUS(ws);
                 } else if (WIFSIGNALED(ws)) {
                     s->status = 2;
                     s->exit_status = WTERMSIG(ws);
+                }
+                /* Bump the generation when the child transitions from
+                 * running (status == 0) to exited so that SessionRunner
+                 * detects the exit even when no output bytes were drained.
+                 * This makes child exit a generation event — the same
+                 * currency as all other terminal-content mutations. */
+                if (prev_status == 0 && s->status != 0) {
+                    laban_session_note_terminal_dirty(s);
                 }
             }
         }

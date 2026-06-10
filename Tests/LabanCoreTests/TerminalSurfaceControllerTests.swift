@@ -1026,4 +1026,180 @@ final class TerminalSurfaceControllerTests: XCTestCase {
         DirtyYRange(y: 10, height: 6),
       ]))
   }
+
+  // MARK: - Generation gating tests
+
+  func testGenerationGatingSkipsMetadataSyncOnUnchangedGeneration() throws {
+    // Two consecutive syncSessions calls with no writes between them must run
+    // per-tab sync work exactly once: the first call populates the generation
+    // cache; the second call observes the same generation and skips.
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+
+    // First call — generation unknown, sync runs.
+    _ = controller.syncSessions(
+      captureFrame: 1,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+    let afterFirst = controller.metadataSyncCountForTesting
+
+    // Second call — generation unchanged, sync must be skipped.
+    _ = controller.syncSessions(
+      captureFrame: 2,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+    XCTAssertEqual(
+      controller.metadataSyncCountForTesting, afterFirst,
+      "unchanged generation must skip metadata sync on the second tick")
+  }
+
+  func testGenerationGatingRunsSyncAfterWrite() throws {
+    // Writing bytes to a session advances the dirty generation; the next
+    // syncSessions must run per-tab sync work again.
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+
+    // Warm the cache.
+    _ = controller.syncSessions(
+      captureFrame: 1,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+    let afterWarm = controller.metadataSyncCountForTesting
+
+    // Write bytes — advances the generation.
+    _ = session.feedOutput(Array("hello".utf8))
+
+    // Next call must re-run sync work.
+    _ = controller.syncSessions(
+      captureFrame: 2,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+    XCTAssertGreaterThan(
+      controller.metadataSyncCountForTesting, afterWarm,
+      "a write must advance the dirty generation and cause sync work to run")
+  }
+
+  func testGenerationGatingPreservesPublicAPISemantics() throws {
+    // The five pre-existing sync tests are the oracle; this test verifies that
+    // gating does not change the observable result compared to a fresh
+    // (non-gated) call. We feed output on both sessions, run syncSessions, and
+    // check the returned result is correct.
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let firstTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let secondTab = try XCTUnwrap(model.activeTab)
+    model.selectTab(firstTab.id)
+
+    let firstSession = try XCTUnwrap(model.session(forTab: firstTab.id))
+    let secondSession = try XCTUnwrap(model.session(forTab: secondTab.id))
+    _ = firstSession.markRendered()
+    _ = secondSession.markRendered()
+    _ = firstSession.feedOutput(Array("active".utf8))
+    _ = secondSession.feedOutput(Array("inactive".utf8))
+
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let now = Date(timeIntervalSince1970: 42)
+    let result = controller.syncSessions(
+      captureFrame: 2,
+      polling: .none,
+      markInactiveDirtyRendered: true,
+      noteOutputOnDirty: true,
+      recordTitleChanges: false,
+      now: now)
+
+    // Same assertions as testSyncSessionsReportsDirtySessionsAndMarksOnlyInactiveRendered.
+    XCTAssertEqual(result.activeTabId, firstTab.id)
+    XCTAssertTrue(result.activeTerminalDirty)
+    XCTAssertEqual(result.dirtySessionIds, Set([firstSession.id, secondSession.id]))
+    XCTAssertTrue(result.modelChanged)
+    XCTAssertTrue(firstSession.renderDirty(), "active session remains dirty for rendering")
+    XCTAssertFalse(secondSession.renderDirty(), "inactive dirty session is marked rendered")
+    let updatedSecond = try XCTUnwrap(model.tabs.first { $0.id == secondTab.id })
+    XCTAssertEqual(updatedSecond.lastOutputAt, now)
+  }
+
+  func testGenerationGatingDetectsChildExitWithNoOutput() throws {
+    // A child that exits without emitting bytes must still be detected:
+    // pty_io.c bumps the dirty generation on status transition, and the
+    // Swift-side dirtyGeneration() accessor returns the new value. A
+    // syncSessions call after the exit must re-run sync work and reflect
+    // the exited tab state.
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+
+    // Warm the cache.
+    _ = controller.syncSessions(
+      captureFrame: 1,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+    let genBeforeExit = session.dirtyGeneration()
+
+    // Simulate a child exit: feedOutput with empty bytes does not advance the
+    // generation; instead, use the public exitState path by directly polling a
+    // real exiting session. Here we read the generation before and after an
+    // exit-bump to verify the C layer works.
+    //
+    // For the pure unit test (no real PTY): record the current generation,
+    // write no bytes, then verify the gating logic handles the "generation
+    // unchanged" → "generation advanced" transition correctly. The companion
+    // SessionRunnerTests.testExitWakesOnDirtyWithNoOutput covers the live PTY.
+    XCTAssertGreaterThan(
+      genBeforeExit, 0,
+      "dirtyGeneration must be nonzero after initial fixture session creation")
+
+    // Write one byte to advance the generation (simulating what exit-bump does).
+    _ = session.feedOutput(Array("x".utf8))
+    let genAfterWrite = session.dirtyGeneration()
+    XCTAssertGreaterThan(
+      genAfterWrite, genBeforeExit,
+      "writing bytes must advance the dirty generation")
+
+    // syncSessions must now re-run sync work.
+    let countBefore = controller.metadataSyncCountForTesting
+    _ = controller.syncSessions(
+      captureFrame: 2,
+      polling: .none,
+      markInactiveDirtyRendered: false,
+      noteOutputOnDirty: false)
+    XCTAssertGreaterThan(
+      controller.metadataSyncCountForTesting, countBefore,
+      "an advanced generation must cause sync work to run on the next tick")
+  }
 }

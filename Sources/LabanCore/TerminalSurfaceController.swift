@@ -364,6 +364,17 @@ public final class TerminalSurfaceController {
   // hits without exposing the cached buffer.
   private(set) var sidebarRebuildCountForTesting = 0
 
+  // Generation-gating: stores the dirty_generation value at the point each
+  // session last had its metadata sync and renderDirty work run. When a tab's
+  // generation is unchanged (and polling has already had a chance to drain the
+  // PTY and advance it), the per-tab work cluster is skipped. Pruned on
+  // invalidateSessionSyncCache() (tab open/close/restore).
+  private var lastSyncedGeneration: [Session.ID: UInt64] = [:]
+
+  // Counts per-tab metadata sync runs; lets tests assert gating correctness
+  // without relying on side effects visible only via model state.
+  private(set) var metadataSyncCountForTesting = 0
+
   public var cellWidth: Int
   public var cellHeight: Int
   public var sidebarWidth: CGFloat
@@ -412,9 +423,34 @@ public final class TerminalSurfaceController {
       let tabId = item.tabId
       let session = item.session
       session.setCaptureFrame(captureFrame)
+      // Poll first: draining the PTY may advance the dirty generation so the
+      // generation check below sees an up-to-date value.
       if polling == .pollAllSessions {
         _ = session.poll()
       }
+
+      // Generation gating: read the current generation *after* any poll, then
+      // compare against the last value at which we ran per-tab sync work. If
+      // the generation is unchanged the session content cannot have changed, so
+      // skip the metadata-sync/renderDirty cluster entirely. The stored value is
+      // updated whenever we do run sync work so the next tick re-evaluates.
+      // `polling == .pollAllSessions` bypasses gating (used by the headless
+      // harness which drives frames on demand and must always reflect current
+      // state regardless of generation).
+      let currentGen = session.dirtyGeneration()
+      let lastGen = lastSyncedGeneration[session.id]
+      let generationUnchanged =
+        polling != .pollAllSessions && currentGen != 0 && lastGen == currentGen
+
+      if generationUnchanged {
+        // Nothing has changed for this session; skip all per-tab work.
+        continue
+      }
+
+      // Run the per-tab metadata sync and render-dirty cluster.
+      lastSyncedGeneration[session.id] = currentGen
+      metadataSyncCountForTesting += 1
+
       let metadataSync = model.syncSurfaceMetadata(
         forTab: tabId,
         tabIndex: item.tabIndex,
@@ -455,6 +491,27 @@ public final class TerminalSurfaceController {
       modelChanged: modelChanged,
       dirtySessionIds: dirtySessionIds
     )
+  }
+
+  /// Clears the per-session generation cache. Must be called on tab
+  /// open/close/restore so a recycled Session.ID cannot alias a stale
+  /// generation and cause sync work to be incorrectly skipped.
+  public func invalidateSessionSyncCache() {
+    lastSyncedGeneration.removeAll()
+  }
+
+  /// Returns true if any tracked session has a dirty generation that
+  /// differs from the last synced generation. Used by the safety-net poll
+  /// (Milestone 3) to detect missed wakes without taking a full snapshot.
+  public func hasUnseenSessionActivity() -> Bool {
+    let snapshot = model.surfaceSessionSnapshot()
+    for item in snapshot.tabSessions {
+      let current = item.session.dirtyGeneration()
+      if current == 0 { continue }  // unknown; treat as not unseen
+      let last = lastSyncedGeneration[item.session.id]
+      if last != current { return true }
+    }
+    return false
   }
 
   public func makeFrame(

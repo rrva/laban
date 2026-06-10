@@ -70,11 +70,27 @@ public final class SessionRunner {
       Thread.current.name = "laban.session.reader"
       pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0)
       defer { exited.signal() }
+      var lastObservedGeneration: UInt64 = 0
       while !shouldStop.withLock({ $0 }) {
         let drained = laban_session_poll_blocking(ref.pointer, timeout)
-        if drained > 0 { onDirty() }
+        // Fire onDirty when bytes were drained (the classic path) OR when the
+        // dirty generation advanced without any bytes — which happens on child
+        // exit, where pty_io.c bumps the generation but the drain returns 0.
+        var currentGen: UInt64 = 0
+        if laban_session_dirty_generation(ref.pointer, &currentGen) == 0
+          && currentGen != 0
+          && currentGen != lastObservedGeneration
+        {
+          lastObservedGeneration = currentGen
+          onDirty()
+        } else if drained > 0 {
+          onDirty()
+        }
         if drained < 0 { break }  // permanent error from select; bail
       }
+      // Fire one final onDirty on loop exit so teardown (error path, stop())
+      // always repaints — e.g. a permanent PTY error that sets exit state.
+      onDirty()
     }
     thread = t
     t.start()

@@ -56,6 +56,58 @@ final class SessionRunnerTests: XCTestCase {
     runner.stop()
   }
 
+  func testExitWakesOnDirtyWithNoOutput() throws {
+    // A child that exits with zero output must still fire onDirty: pty_io.c
+    // bumps dirty_generation on the status transition, and SessionRunner now
+    // fires onDirty on any generation advance, not only when drained > 0.
+    let exe = strdup("/bin/sh")!
+    var ptrs: [UnsafeMutablePointer<CChar>?] = [
+      strdup("/bin/sh"), strdup("-c"), strdup("exit 0"),
+    ]
+    ptrs.append(nil)
+    defer {
+      free(exe)
+      for p in ptrs { if let p { free(p) } }
+    }
+    let count = ptrs.count
+    var config = LabanLaunchConfig()
+    config.executable = UnsafePointer(exe)
+    config.fixture_mode = 0
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try ptrs.withUnsafeMutableBufferPointer { mbuf -> Session in
+      try mbuf.baseAddress!.withMemoryRebound(
+        to: UnsafePointer<CChar>?.self, capacity: count
+      ) { rebound -> Session in
+        config.argv = UnsafePointer(rebound)
+        return try Session(config: &config, size: size)
+      }
+    }
+    defer { session.close() }
+
+    let dirtyFired = OSAllocatedUnfairLock(initialState: false)
+    guard
+      let runner = session.makeRunner(onDirty: {
+        dirtyFired.withLock { $0 = true }
+      })
+    else {
+      XCTFail("makeRunner returned nil for real session")
+      return
+    }
+    runner.start()
+
+    let deadline = Date().addingTimeInterval(3.0)
+    while Date() < deadline {
+      if dirtyFired.withLock({ $0 }) { break }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    runner.stop()
+    XCTAssertTrue(
+      dirtyFired.withLock { $0 },
+      "onDirty must fire after a zero-output child exits (generation bump on exit)")
+  }
+
   func testRunnerOnDirtyFiresWhenRealShellOutputs() throws {
     // Build a real-shell session that prints something. Using the C API
     // directly because Session.realShell takes no argv.
