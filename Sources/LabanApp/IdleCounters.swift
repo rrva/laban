@@ -20,14 +20,14 @@ final class IdleCounters: @unchecked Sendable {
   private var timer: DispatchSourceTimer?
   private var sequence: UInt64 = 0
 
-  // Sidecar lines are buffered and hit the disk once per batch instead of
-  // per second — the per-second open/write/close was itself a top-3 idle
-  // CPU consumer, which defeats the point of an idle-measurement tool. Each
-  // line keeps its own ts/seq, so batching loses no fidelity. Guarded by
-  // `lock`; flushed on batch fill, at quit (AppDelegate), and by tests.
+  // Sidecar snapshots are buffered raw and only formatted + written when the
+  // batch fills — both the per-second open/write/close and the per-second
+  // JSON/ISO-date formatting were themselves top idle CPU consumers, which
+  // defeats the point of an idle-measurement tool. Each snapshot carries its
+  // own capture date, so batching loses no fidelity. Guarded by `lock`;
+  // flushed on batch fill, at quit (AppDelegate), and by tests.
   private let sidecarFlushBatchSize: Int
-  private var pendingSidecarLines = Data()
-  private var pendingSidecarCount = 0
+  private var pendingSnapshots: [(capturedAt: Date, snapshot: Snapshot)] = []
 
   private var displayLinkTicks: UInt64 = 0
   private var advanceFrames: UInt64 = 0
@@ -173,57 +173,63 @@ final class IdleCounters: @unchecked Sendable {
   }
 
   private func writeSidecar(_ snapshot: Snapshot) {
-    guard let sidecarURL else { return }
-    let entry: [String: Any] = [
-      "ts": Self.isoMs(Date()),
-      "kind": "idle.counters",
-      "seq": snapshot.sequence,
-      "pid": Int(getpid()),
-      "tMs": snapshot.tMs,
-      "displayLinkTicks": snapshot.displayLinkTicks,
-      "advanceFrames": snapshot.advanceFrames,
-      "labptyPolls": snapshot.labptyPolls,
-      "emptyLabptyPolls": snapshot.emptyLabptyPolls,
-      "dirtyLabptyPolls": snapshot.dirtyLabptyPolls,
-      "activeFeeds": snapshot.activeFeeds,
-    ]
-    guard
-      let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
-    else {
-      return
-    }
-    var line = data
-    line.append(0x0A)
-    var batch: Data?
+    guard sidecarURL != nil else { return }
+    var full: [(capturedAt: Date, snapshot: Snapshot)]?
     lock.lock()
-    pendingSidecarLines.append(line)
-    pendingSidecarCount += 1
-    if pendingSidecarCount >= sidecarFlushBatchSize {
-      batch = pendingSidecarLines
-      pendingSidecarLines = Data()
-      pendingSidecarCount = 0
+    pendingSnapshots.append((capturedAt: Date(), snapshot: snapshot))
+    if pendingSnapshots.count >= sidecarFlushBatchSize {
+      full = pendingSnapshots
+      pendingSnapshots = []
     }
     lock.unlock()
-    if let batch {
-      Self.appendAtomically(batch, to: sidecarURL)
+    if let full {
+      formatAndAppend(full)
     }
   }
 
-  /// Force buffered sidecar lines to disk. Called at quit (so the tail of a
-  /// session is not lost to batching) and by tests.
+  /// Force buffered sidecar snapshots to disk. Called at quit (so the tail of
+  /// a session is not lost to batching) and by tests.
   func flushPending() {
-    guard let sidecarURL else { return }
-    var batch: Data?
+    var batch: [(capturedAt: Date, snapshot: Snapshot)]?
     lock.lock()
-    if !pendingSidecarLines.isEmpty {
-      batch = pendingSidecarLines
-      pendingSidecarLines = Data()
-      pendingSidecarCount = 0
+    if !pendingSnapshots.isEmpty {
+      batch = pendingSnapshots
+      pendingSnapshots = []
     }
     lock.unlock()
     if let batch {
-      Self.appendAtomically(batch, to: sidecarURL)
+      formatAndAppend(batch)
     }
+  }
+
+  /// JSON + ISO-date formatting happens here, once per batch, not per emit —
+  /// the per-second formatting alone was a measurable idle cost.
+  private func formatAndAppend(_ batch: [(capturedAt: Date, snapshot: Snapshot)]) {
+    guard let sidecarURL else { return }
+    let pid = Int(getpid())
+    var lines = Data()
+    for (capturedAt, snapshot) in batch {
+      let entry: [String: Any] = [
+        "ts": Self.isoMs(capturedAt),
+        "kind": "idle.counters",
+        "seq": snapshot.sequence,
+        "pid": pid,
+        "tMs": snapshot.tMs,
+        "displayLinkTicks": snapshot.displayLinkTicks,
+        "advanceFrames": snapshot.advanceFrames,
+        "labptyPolls": snapshot.labptyPolls,
+        "emptyLabptyPolls": snapshot.emptyLabptyPolls,
+        "dirtyLabptyPolls": snapshot.dirtyLabptyPolls,
+        "activeFeeds": snapshot.activeFeeds,
+      ]
+      guard
+        let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
+      else { continue }
+      lines.append(data)
+      lines.append(0x0A)
+    }
+    guard !lines.isEmpty else { return }
+    Self.appendAtomically(lines, to: sidecarURL)
   }
 
   private static func prepareSidecar(at url: URL) -> Bool {
