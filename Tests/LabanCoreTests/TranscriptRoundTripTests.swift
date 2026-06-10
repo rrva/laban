@@ -39,6 +39,51 @@ final class TranscriptRoundTripTests: XCTestCase {
     XCTAssertEqual(writer.droppedBytes, 0)
   }
 
+  /// The drain is event-driven (armed by the first chunk of a burst), not a
+  /// standing periodic timer. A write must reach disk on its own via the
+  /// debounce — without flushSync — or bytes would strand in the ring
+  /// between bursts.
+  func testWriterDebouncedDrainFlushesWithoutExplicitFlush() throws {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let file = dir.appendingPathComponent("t.bin")
+    let writer = TranscriptWriter(
+      tabId: "t",
+      fileURL: file,
+      ringCapacity: 1024,
+      fileCapacity: 1_000_000,
+      debounceInterval: .milliseconds(10)
+    )
+
+    let payload = Array("debounced\n".utf8)
+    payload.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: payload.count)
+    }
+
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+      if let data = try? Data(contentsOf: file), data.count == payload.count { break }
+      usleep(10_000)
+    }
+    let data = try Data(contentsOf: file)
+    XCTAssertEqual(Array(data), payload)
+
+    // A second burst after the first drain must re-arm its own drain.
+    let second = Array("again\n".utf8)
+    second.withUnsafeBufferPointer { buf in
+      writer.writeChunk(bytes: buf.baseAddress!, count: second.count)
+    }
+    let deadline2 = Date().addingTimeInterval(2)
+    while Date() < deadline2 {
+      if let data = try? Data(contentsOf: file), data.count == payload.count + second.count {
+        break
+      }
+      usleep(10_000)
+    }
+    let after = try Data(contentsOf: file)
+    XCTAssertEqual(Array(after), payload + second)
+  }
+
   func testWriterRingOverflowDropsOldest() throws {
     let dir = makeTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
