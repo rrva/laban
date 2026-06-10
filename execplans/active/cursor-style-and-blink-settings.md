@@ -35,14 +35,24 @@ solid while typing.
 ## Progress
 
 - [x] (2026-06-10) Researched code paths and authored this plan.
-- [ ] Milestone 1: `CursorSettings` model in LabanCore + spec.md scope.
-- [ ] Milestone 2: DECSCUSR override tracking + style resolution + all four
-  FrameProducer cursor paths render the resolved style.
-- [ ] Milestone 3: blink extracted from `advanceFrame` into a gated 500 ms
-  timer; phase resets on keyboard input.
-- [ ] Milestone 4: Settings window UI rows + persistence.
-- [ ] Milestone 5: headless parity, `/debug/state` exposure, schema update,
-  end-to-end verification artifacts.
+- [x] (2026-06-10) Milestone 1: `CursorSettings` model in LabanCore + spec.md
+  scope. `CursorSettingsTests` 13/13 green. Commit 02d1bad.
+- [x] (2026-06-10) Milestone 2: DECSCUSR override tracking + style resolution
+  + all four FrameProducer cursor paths render the resolved style.
+  `CursorStyleResolverTests` 11/11, `CursorOverrideScannerTests` 12/12,
+  `FrameProducerTests` 26/26 green. Commit 107a2c2.
+- [x] (2026-06-10) Milestone 3: blink extracted from `advanceFrame` into a
+  gated 500 ms timer (`CursorBlinkDriver`); phase resets on keyboard input;
+  `cursorBlinkTimerActive` journaled. `CursorBlinkPolicyTests` 9/9,
+  `CursorBlinkDriverTests` 12/12 green. Commit cc58305.
+- [x] (2026-06-10) Milestone 4: Settings window cursor-style popup + blink
+  checkbox; `CursorSettings.didChangeNotification` observer repaints and
+  re-gates the timer. `CursorSettingsUITests` 12/12 green. Commit d730fc3.
+- [x] (2026-06-10) Milestone 5: headless request passes user cursor settings;
+  `/debug/state` exposes `cursorSettings` (style/blinkEnabled/styleOverridden/
+  blinkOverridden); `state.schema.json` mirrored;
+  `CursorSettingsHeadlessTests` E2E (bar -> DECSCUSR 2 block -> DECSCUSR 0
+  revert) 2/2 green.
 - [ ] Review Gate passed.
 
 ## Decision Log
@@ -102,6 +112,26 @@ Implementation decisions made while writing this plan:
   the display link is parked when invisible, so the phase actually freezes
   arbitrarily. Deterministic "solid when unfocused" matches today's default
   look; Laban has no hollow/hidden unfocused cursor and this plan adds none.
+  Date/Author: 2026-06-10 / Claude.
+
+Implementation decisions made while executing this plan:
+
+- Decision: The resign-key/settings-change sync path
+  (`syncBlinkDriverFromWindowState`) passes `cursorVisible: true` when no
+  fresh snapshot is at hand.
+  Rationale: That sync runs outside a rendered frame, so the latest
+  `surfaceFrame.cursorVisible` is unavailable; treating the cursor as
+  visible is conservative (the window-visibility gate is false on resign,
+  so the timer still stops), and the next rendered frame re-syncs with the
+  real snapshot value.
+  Date/Author: 2026-06-10 / Claude.
+- Decision: "Driver flipped since last rendered frame" is a `pendingFlip`
+  flag on `CursorBlinkDriver`, consumed once per `advanceFrame`
+  (`consumePendingFlip()`); `noteInput()` and timer stop clear it.
+  Rationale: The flip closure calls `advanceFrame()` directly for immediate
+  paint, but the frame guard still needs a per-frame edge signal that
+  survives the call ordering; a consumed flag gives exactly-once semantics
+  without timestamps.
   Date/Author: 2026-06-10 / Claude.
 
 ## Review Gate
