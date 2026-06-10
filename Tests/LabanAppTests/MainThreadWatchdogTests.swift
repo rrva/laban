@@ -133,6 +133,38 @@ final class MainThreadWatchdogTests: XCTestCase {
       .confirmed)
   }
 
+  // MARK: - Tick cadence policy
+
+  private func cadence(step: MainThreadWatchdog.ProbeStep, coarse: Bool) -> Int {
+    MainThreadWatchdog.nextTickIntervalMs(
+      step: step, coarse: coarse, fastMs: 50, freshMs: 500, idleMs: 2000)
+  }
+
+  /// A flowing heartbeat already proves liveness; the tick only needs the
+  /// cruising cadence — 20 Hz vigilance on a healthy main thread was the
+  /// largest single source of idle wakeups.
+  func testHealthyHeartbeatCruises() {
+    XCTAssertEqual(cadence(step: .healthy, coarse: false), 500)
+  }
+
+  /// Any stall suspicion — probe to send, probe outstanding, or a confirmed
+  /// wedge — restores the fast vigil so escalation keeps 50 ms granularity.
+  func testStaleHeartbeatRestoresFastVigil() {
+    XCTAssertEqual(cadence(step: .sendProbe, coarse: false), 50)
+    XCTAssertEqual(cadence(step: .awaitingProbe, coarse: false), 50)
+    XCTAssertEqual(cadence(step: .confirmed, coarse: false), 50)
+  }
+
+  /// Parked-idle coarse mode owns its cadence regardless of probe state —
+  /// the per-tick probes there are the designed slow liveness check, not a
+  /// stall suspicion that should re-arm the fast vigil.
+  func testCoarseModeKeepsIdleCadence() {
+    XCTAssertEqual(cadence(step: .healthy, coarse: true), 2000)
+    XCTAssertEqual(cadence(step: .sendProbe, coarse: true), 2000)
+    XCTAssertEqual(cadence(step: .awaitingProbe, coarse: true), 2000)
+    XCTAssertEqual(cadence(step: .confirmed, coarse: true), 2000)
+  }
+
   // MARK: - Retention cap
 
   /// `dates[i]` is item `i`'s mtime; larger = newer. Returns the ids the policy

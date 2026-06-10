@@ -116,8 +116,21 @@ final class MainThreadWatchdog {
   /// scheduling gap. Touched only on `queue`, so it needs no lock.
   private var lastObservedNs: Int64 = 0
 
+  /// Tick cadences. `intervalMs` (50 ms) is the stall-suspicion vigil — used
+  /// only while the heartbeat is stale or a probe is in flight, so escalation
+  /// to a confirmed capture keeps its original latency. `freshIntervalMs` is
+  /// the cruising cadence while heartbeats are demonstrably flowing: the
+  /// display link already proves liveness several times a second, so ticking
+  /// at 20 Hz just to re-read a fresh timestamp was the largest single source
+  /// of idle wakeups. `idleIntervalMs` is the parked-idle coarse mode. The
+  /// cost: a stall can begin just after a fresh-cadence tick, so the capture
+  /// floor for very short stalls rises by up to `freshIntervalMs` — long
+  /// hangs, the ones worth a `sample`, are unaffected.
   private let intervalMs = 50
+  private let freshIntervalMs = 500
   private let idleIntervalMs = 2000
+  /// Cadence currently programmed into `timer`. Queue-confined.
+  private var currentIntervalMs = 50
 
   private let queue = DispatchQueue(label: "laban.watchdog", qos: .utility)
   private var timer: DispatchSourceTimer?
@@ -170,9 +183,10 @@ final class MainThreadWatchdog {
     if wasCoarse {
       queue.async { [weak self] in
         guard let self else { return }
-        self.timer?.schedule(
-          deadline: .now() + .milliseconds(self.intervalMs),
-          repeating: .milliseconds(self.intervalMs))
+        // The link just resumed, so heartbeats are flowing again — the
+        // cruising vigil is the right cadence; a stale heartbeat escalates
+        // to the fast vigil from the next tick.
+        self.applyCadence(self.freshIntervalMs)
       }
     }
   }
@@ -216,6 +230,21 @@ final class MainThreadWatchdog {
     return .confirmed
   }
 
+  /// Pure tick-cadence policy. Coarse (parked) mode keeps its own slow
+  /// cadence; a fresh heartbeat needs only the cruising vigil; anything
+  /// stale — probe pending or confirmed — gets the fast vigil so escalation
+  /// latency stays at the original 50 ms granularity.
+  static func nextTickIntervalMs(
+    step: ProbeStep,
+    coarse: Bool,
+    fastMs: Int,
+    freshMs: Int,
+    idleMs: Int
+  ) -> Int {
+    if coarse { return idleMs }
+    return step == .healthy ? freshMs : fastMs
+  }
+
   private func tick() {
     let now = uptimeNs()
     let prevObserved = lastObservedNs
@@ -251,13 +280,23 @@ final class MainThreadWatchdog {
     let heartbeatAgeMs = Int((now - last) / 1_000_000)
     let probeOutstandingMs = inFlight ? Int((now - sentNs) / 1_000_000) : 0
 
-    switch Self.probeStep(
+    let step = Self.probeStep(
       heartbeatAgeMs: heartbeatAgeMs,
       thresholdMs: stallThresholdMs,
       probeInFlight: inFlight,
       probeOutstandingMs: probeOutstandingMs,
       confirmTimeoutMs: stallThresholdMs
-    ) {
+    )
+    defer {
+      applyCadence(
+        Self.nextTickIntervalMs(
+          step: step,
+          coarse: coarse,
+          fastMs: intervalMs,
+          freshMs: freshIntervalMs,
+          idleMs: idleIntervalMs))
+    }
+    switch step {
     case .healthy:
       // Heartbeat is fresh again; retire any probe we no longer need.
       if inFlight { cancelConfirmProbe() }
@@ -289,6 +328,20 @@ final class MainThreadWatchdog {
         captureSample(stalledForMs: ms)
       }
     }
+  }
+
+  /// Program the tick timer's cadence. Queue-confined; no-op when unchanged.
+  /// The fast vigil keeps tight scheduling; slower cadences take generous
+  /// leeway so the kernel coalesces the wake with other ~1 Hz timers.
+  private func applyCadence(_ ms: Int) {
+    guard ms != currentIntervalMs else { return }
+    currentIntervalMs = ms
+    let leeway: DispatchTimeInterval =
+      ms <= intervalMs ? .milliseconds(0) : .milliseconds(ms / 4)
+    timer?.schedule(
+      deadline: .now() + .milliseconds(ms),
+      repeating: .milliseconds(ms),
+      leeway: leeway)
   }
 
   /// Dispatch a liveness probe onto the main queue. A responsive main thread
@@ -337,10 +390,7 @@ final class MainThreadWatchdog {
     if enterCoarse {
       queue.async { [weak self] in
         guard let self else { return }
-        self.timer?.schedule(
-          deadline: .now() + .milliseconds(self.idleIntervalMs),
-          repeating: .milliseconds(self.idleIntervalMs),
-          leeway: .milliseconds(self.idleIntervalMs / 4))
+        self.applyCadence(self.idleIntervalMs)
       }
     }
   }
