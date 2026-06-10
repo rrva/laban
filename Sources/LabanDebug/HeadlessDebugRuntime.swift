@@ -693,7 +693,9 @@ public final class HeadlessDebugRuntime {
         forceFullDamage: true,
         surfaceWidth: surface.width,
         surfaceHeight: surface.height,
-        surfaceScale: Double(surface.scale))
+        surfaceScale: Double(surface.scale),
+        userCursorStyle: CursorSettings.style,
+        userCursorBlinkEnabled: CursorSettings.blinkEnabled)
     )
     let surfaceBuildMs = elapsedMs(since: timer)
     snapshotMs = surfaceFrame?.snapshotMs ?? 0

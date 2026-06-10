@@ -10,7 +10,8 @@
     "tabs",
     "activeTabId",
     "activeSessionId",
-    "findStateBySession"
+    "findStateBySession",
+    "cursorSettings"
   ],
   "additionalProperties": true,
   "properties": {
@@ -45,7 +46,8 @@
     "findStateBySession": {
       "type": "object",
       "additionalProperties": {"$ref": "#/$defs/findState"}
-    }
+    },
+    "cursorSettings": {"$ref": "#/$defs/cursorSettings"}
   },
   "$defs": {
     "tab": {
@@ -126,6 +128,20 @@
           "items": {"$ref": "#/$defs/findMatch"}
         },
         "viewportScrollOffsetAtStart": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "cursorSettings": {
+      "type": "object",
+      "required": ["style", "blinkEnabled"],
+      "additionalProperties": true,
+      "properties": {
+        "style": {
+          "type": "string",
+          "enum": ["block", "bar", "underline"]
+        },
+        "blinkEnabled": {"type": "boolean"},
+        "styleOverridden": {"type": ["boolean", "null"]},
+        "blinkOverridden": {"type": ["boolean", "null"]}
       }
     }
   }

@@ -24,8 +24,30 @@ extension HeadlessDebugRuntime {
         tabs: tabs,
         activeTabId: activeTab?.id,
         activeSessionId: activeTab?.sessionId,
-        findStateBySession: findStateResponsesUnlocked()
+        findStateBySession: findStateResponsesUnlocked(),
+        cursorSettings: cursorSettingsResponseUnlocked(activeTab: activeTab)
       ))
+  }
+
+  /// User cursor preferences plus the active session's DECSCUSR / mode-12
+  /// override flags from a fresh snapshot. Override flags are nil when the
+  /// active session has no in-process snapshot (remote transport).
+  private func cursorSettingsResponseUnlocked(activeTab: Tab?) -> CursorSettingsResponse {
+    var styleOverridden: Bool?
+    var blinkOverridden: Bool?
+    if let activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snapshot = session.snapshot()
+    {
+      defer { laban_snapshot_destroy(snapshot) }
+      styleOverridden = snapshot.pointee.cursor_style_explicit != 0
+      blinkOverridden = snapshot.pointee.cursor_blink_explicit != 0
+    }
+    return CursorSettingsResponse(
+      style: CursorSettings.style.rawValue,
+      blinkEnabled: CursorSettings.blinkEnabled,
+      styleOverridden: styleOverridden,
+      blinkOverridden: blinkOverridden)
   }
 
   public func sessions() -> DebugResponse {

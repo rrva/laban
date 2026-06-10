@@ -129,6 +129,17 @@ struct TabResponse: Encodable {
   var sessionId: String
 }
 
+/// User cursor preferences plus the active session's program-override flags
+/// (DECSCUSR / DEC mode 12) from its latest snapshot. `styleOverridden` /
+/// `blinkOverridden` are nil when there is no active in-process session to
+/// snapshot (e.g. remote transport).
+struct CursorSettingsResponse: Encodable {
+  var style: String
+  var blinkEnabled: Bool
+  var styleOverridden: Bool?
+  var blinkOverridden: Bool?
+}
+
 struct StateResponse: Encodable {
   var mode: String
   var frame: Int
@@ -137,6 +148,7 @@ struct StateResponse: Encodable {
   var activeTabId: String?
   var activeSessionId: String?
   var findStateBySession: [String: FindStateResponse]
+  var cursorSettings: CursorSettingsResponse
 }
 
 struct ActionResult: Encodable {
