@@ -190,6 +190,34 @@ final class RenderJournalTests: XCTestCase {
     XCTAssertEqual(decoded.displayLink, displayLink)
   }
 
+  func testWakeSourceRoundTripsAndOldDumpsWithoutItStillDecode() throws {
+    let journal = RenderJournal()
+
+    // The full-park forensic field round-trips through the JSONL dump path.
+    let entry = journal.makeEntry(
+      event: .rendered,
+      frame: 1,
+      tabId: "tab",
+      sessionId: "s",
+      wakeSource: "keyboard")
+    XCTAssertEqual(entry.wakeSource, "keyboard")
+    let encoded = try JSONEncoder().encode(entry)
+    let decoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: encoded)
+    XCTAssertEqual(decoded.wakeSource, "keyboard")
+
+    // Pre-M2 dumps have no wakeSource key; they must keep decoding (the
+    // field is optional, mirroring the modelChanged precedent).
+    let legacy = journal.makeEntry(event: .rendered, frame: 2, tabId: "tab", sessionId: "s")
+    XCTAssertNil(legacy.wakeSource)
+    var legacyJSON = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+    legacyJSON.removeValue(forKey: "wakeSource")
+    let legacyData = try JSONSerialization.data(withJSONObject: legacyJSON)
+    let legacyDecoded = try JSONDecoder().decode(RenderJournal.Entry.self, from: legacyData)
+    XCTAssertNil(legacyDecoded.wakeSource)
+    XCTAssertEqual(legacyDecoded.frame, 2)
+  }
+
   func testSkippedEntryDropsCarriedDrawableAcquireDiagnostic() {
     let journal = RenderJournal()
     let diagnostic = MetalDrawableAcquireDiagnostic(

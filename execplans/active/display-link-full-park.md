@@ -190,8 +190,52 @@ proven. The mitigations baked into this plan:
       and attention+output / attention+scroll → 120.
       `TerminalIdlePolicyTests` now 25. Full `swift test`: 1454 tests,
       12 skipped, 0 failures.
-- [ ] Milestone 5: soak validation (render journal, bench, Instruments,
-      E2E), safety-net removal criteria evaluated.
+- [x] (2026-06-10) Milestone 5 — automatable portion complete:
+      instrumentation in place (`wakeSource` journal field + round-trip and
+      legacy-decode unit test in `RenderJournalTests`; `safetyNetRepair`
+      EventLog kind; `"parked"`/`"cursorBlink"` reason ladder);
+      `./scripts/test-e2e` exit 0 (including the new
+      `debug-script-exit-wake` scenario); full `./scripts/check` exit 0
+      (swift test 1454/0, smoke-runtime, test-e2e, labpty MC/DC 46.29% ≥
+      45% floor); `./scripts/build-app` clean; scroll-wake mutation check
+      verified both ways during M2. `scripts/bench-idle-cpu` was NOT run by
+      the executing agent: it `open`s the bundle from the shell while a
+      live Laban instance is running (forbidden by AGENTS.md / the
+      single-instance lock) — it belongs to the human soak below.
+- [ ] Milestone 5 — OPEN FOR THE HUMAN (live-app soak; the safety net stays
+      in place until ALL of these pass):
+      1. Install (`./scripts/install-app`), relaunch Laban yourself, verify
+         `LABANBuildCommit` matches HEAD.
+      2. Tick-work gating observed (Validation §2): 60 s Instruments Time
+         Profiler on a focused quiet prompt — the
+         `syncSurfaceMetadata`/`snapshot`/`renderDirty` cluster gone from
+         main-thread samples.
+      3. Full park observed (Validation §3): with
+         `LabanIdleCountersEnabled` + `LabanRenderJournalEnabled`,
+         focused-idle `displayLinkTicks`/`advanceFrames` deltas of 0;
+         `top` idle wakeups ≤ ~2/s; `scripts/bench-idle-cpu 60` ≤ ~0.08%
+         (vs ~0.67% baseline); journal shows
+         `displayLink.reason == "parked"`, `paused == true`,
+         `window.visibleToUser == true`.
+      4. Wake coverage observed (Validation §4): live loop output
+         (`wakeSource: "sessionDirty"`), typing echo (`"keyboard"`),
+         wheel glide (`reason: "scroll"` at 120, then re-park), Cmd-digit
+         tab switch (`"modelMutation"`), `sh -c 'sleep 2; exit 3'` exited
+         state within ~1 s (exit wake, not safety net), background-tab
+         attention pulse breathing at preferred 30 and stopping when
+         attended. Throughout: `grep -r safetyNetRepair
+         ~/Library/Logs/Laban/` and the EventLog stay empty.
+      5. Parachute (Validation §5): `defaults write com.rrva.Laban
+         LabanDisplayLinkIdleFloor -bool YES` + relaunch restores
+         `reason: "idle"`, `paused: false`, ~125 ms tick interval; delete
+         the default afterwards.
+      6. MVP regression sweep (Validation §6) plus blink-enabled cursor
+         still blinking at 0.5 s.
+      7. Safety-net retirement: 7 consecutive days of normal daily use with
+         the journal on and ZERO `render.displayLink.safetyNetRepair`
+         events; then remove the safety-net timer in its own commit
+         (`Soak proved wake coverage; the safety net poll has no job
+         left`), update Progress + Outcomes, and re-run the Review Gate.
 - [x] (2026-06-10) Plan authored after source research; no implementation
       started.
 
