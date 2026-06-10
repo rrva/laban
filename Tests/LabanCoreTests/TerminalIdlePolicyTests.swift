@@ -43,14 +43,16 @@ final class TerminalIdlePolicyTests: XCTestCase {
       TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
   }
 
-  func testAttentionAnimationPrefersActiveFrameRate() {
+  func testAttentionAnimationPrefersAnimationBudgetFrameRate() {
+    // Milestone 4: a breathing sidebar dot does not justify 120 Hz frame
+    // production — attention-only frames run at the 30 fps animation budget.
     XCTAssertEqual(
       TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
         windowVisibleToUser: true,
         scrollAnimating: false,
         attentionAnimating: true,
         terminalOutputActive: false),
-      TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+      TerminalIdlePolicy.animationDisplayLinkFramesPerSecond)
   }
 
   func testVisibleTerminalOutputPrefersActiveFrameRate() {
@@ -207,6 +209,43 @@ final class TerminalIdlePolicyTests: XCTestCase {
         windowVisibleToUser: true,
         scrollAnimating: true,
         attentionAnimating: false,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false),
+      TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+  }
+
+  func testAttentionOnlyPrefersAnimationBudgetUnderFullParkPolicy() {
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: true,
+        terminalOutputActive: false,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false),
+      TerminalIdlePolicy.animationDisplayLinkFramesPerSecond)
+  }
+
+  func testAttentionWithActiveOutputPrefersActiveFrameRate() {
+    // Live output outranks the decorative budget: the stream keeps 120.
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: false,
+        attentionAnimating: true,
+        terminalOutputActive: true,
+        cursorBlinkActive: false,
+        idleFloorEnabled: false),
+      TerminalIdlePolicy.activeDisplayLinkFramesPerSecond)
+  }
+
+  func testAttentionWithScrollPrefersActiveFrameRate() {
+    XCTAssertEqual(
+      TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
+        windowVisibleToUser: true,
+        scrollAnimating: true,
+        attentionAnimating: true,
         terminalOutputActive: false,
         cursorBlinkActive: false,
         idleFloorEnabled: false),

@@ -177,7 +177,19 @@ proven. The mitigations baked into this plan:
       `TerminalIdlePolicyTests` now 22 (9 pre-existing unchanged + 13 new
       park/floor/blink/attention/output/scroll/rate-ladder tests). Full
       `swift test`: 1451 tests, 12 skipped, 0 failures.
-- [ ] Milestone 4: animation budget rates (attention 30 fps).
+- [x] (2026-06-10) Milestone 4: animation budget rates.
+      `animationDisplayLinkFramesPerSecond = 30` added to
+      `TerminalIdlePolicy`; the rate ladder is now scroll/output → 120,
+      attention-only → 30, blink-/floor-only → 8.
+      `AttentionPulse.alpha(at:)` is a continuous function of wall-clock
+      time (verified — `Sources/LabanCore/TabAttention.swift`), so the lower
+      sample rate cannot drift phase. Tests:
+      `testAttentionAnimationPrefersActiveFrameRate` renamed/updated to
+      `testAttentionAnimationPrefersAnimationBudgetFrameRate` asserting 30
+      via the legacy shim; new full-signature tests for attention-only → 30
+      and attention+output / attention+scroll → 120.
+      `TerminalIdlePolicyTests` now 25. Full `swift test`: 1454 tests,
+      12 skipped, 0 failures.
 - [ ] Milestone 5: soak validation (render journal, bench, Instruments,
       E2E), safety-net removal criteria evaluated.
 - [x] (2026-06-10) Plan authored after source research; no implementation

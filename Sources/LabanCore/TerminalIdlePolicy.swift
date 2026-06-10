@@ -16,6 +16,13 @@
 public enum TerminalIdlePolicy {
   public static let idleDisplayLinkFramesPerSecond = 8
   public static let activeDisplayLinkFramesPerSecond = 120
+  /// Budget rate for decorative animation (the breathing sidebar attention
+  /// marker). `AttentionPulse.period` is a 1.5 s raised-cosine breath and
+  /// `alpha(at:)` is a continuous function of wall-clock time, so 30 fps gives
+  /// 45 phase-correct samples per breath — visually smooth at a quarter of the
+  /// 120 fps energy. Smooth scroll keeps the active rate because
+  /// finger-tracking latency is user-perceivable.
+  public static let animationDisplayLinkFramesPerSecond = 30
 
   /// Whether the per-frame display link should keep ticking (full-park
   /// policy).
@@ -66,8 +73,9 @@ public enum TerminalIdlePolicy {
   }
 
   /// Preferred frame rate while the link runs: the active rate for scroll and
-  /// live output, the idle rate for blink-only or floor-only operation (and as
-  /// the don't-care value while parked).
+  /// live output, the animation budget rate for attention-only frames, the
+  /// idle rate for blink-only or floor-only operation (and as the don't-care
+  /// value while parked).
   public static func preferredDisplayLinkFramesPerSecond(
     windowVisibleToUser: Bool,
     scrollAnimating: Bool,
@@ -87,8 +95,11 @@ public enum TerminalIdlePolicy {
     else {
       return idleDisplayLinkFramesPerSecond
     }
-    if scrollAnimating || terminalOutputActive || attentionAnimating {
+    if scrollAnimating || terminalOutputActive {
       return activeDisplayLinkFramesPerSecond
+    }
+    if attentionAnimating {
+      return animationDisplayLinkFramesPerSecond
     }
     return idleDisplayLinkFramesPerSecond
   }
