@@ -240,11 +240,132 @@ final review runs all of them.
       Sources/LabanCore/TerminalIdlePolicy.swift` — still present (the
       floor constant must survive for the parachute path).
 
-Review status: NOT REVIEWED
+Review status: MILESTONE 1 REVIEW — FAILED (2026-06-10, fresh-state review
+agent, commit 9981626, diff 433401d..9981626). Scope: Milestone 1 only
+(tick-work gating via the C dirty-generation counter); Milestone 2–5 gate
+items are not yet reviewable and remain unchecked above. One M1 gate item
+failed (the exit-wake proof); every other M1-applicable item passed. The
+final full-gate review still runs all items per PLANS.md.
 
 Review findings (filled in by the review agent):
 
-(none yet)
+Milestone-1 review at commit 9981626 (2026-06-10):
+
+M1-applicable gate items, run mechanically:
+
+- PASS — `rtk swift test --filter TerminalSurfaceControllerTests`: 28
+  tests, 0 failures; 4 Generation-named tests including
+  `testGenerationGatingSkipsMetadataSyncOnUnchangedGeneration` (proves the
+  unchanged-generation skip via the `metadataSyncCountForTesting` seam).
+- FAIL — `rtk swift test --filter SessionRunnerTests`: exits 0 (5 tests)
+  and `testExitWakesOnDirtyWithNoOutput` exists, but it does NOT prove
+  that a zero-output child exit fires `onDirty`. The test's assertion runs
+  after `runner.stop()`; `stop()` blocks on `exited.wait()`
+  (`Sources/LabanCore/SessionRunner.swift:107-117`), and the reader
+  thread's unconditional final `onDirty()` (`SessionRunner.swift:91-93`,
+  added in this same diff) executes before the `defer { exited.signal() }`
+  — so `dirtyFired` is always true by assertion time; the test cannot
+  fail. Mutation evidence: with the `pty_io.c:173` exit bump disabled
+  (`if (prev_status == 0 && s->status != 0)` → `if (0)`), the test still
+  passes, burning its full 3.0 s deadline (vs. sub-second when the bump
+  fires; mutation reverted, tree clean). The load-bearing exit bump —
+  the wake that Milestone 3's full park relies on for the "process
+  exited" UI — has zero effective regression coverage. Fix direction:
+  assert the fire happened *before* `stop()` (snapshot the flag before
+  calling stop, or fail when the poll deadline was exhausted), or make
+  the teardown fire distinguishable from in-loop fires.
+- PASS — `grep -n "laban_session_dirty_generation"
+  Sources/LabanTerminalCore/include/LabanTerminalCore.h`: hit at line 289.
+- PASS — `grep -n "note_terminal_dirty" Sources/LabanTerminalCore/pty_io.c`:
+  hit at line 174, inside the child-exit branch of
+  `laban_session_drain_locked_`, gated on the status 0→nonzero transition
+  and covering both `WIFEXITED` and `WIFSIGNALED`.
+- PASS — `grep -n "drained > 0" Sources/LabanCore/SessionRunner.swift`:
+  single hit at line 86, now the `else if` fallback after the
+  generation-advance branch (lines 78–88): `if
+  laban_session_dirty_generation(ref.pointer, &currentGen) == 0 &&
+  currentGen != 0 && currentGen != lastObservedGeneration { … onDirty() }
+  else if drained > 0 { onDirty() }` — the firing condition is no longer
+  solely `drained > 0`.
+- PASS — `grep -n "idleDisplayLinkFramesPerSecond = 8"
+  Sources/LabanCore/TerminalIdlePolicy.swift`: line 15; M1 makes no park
+  changes.
+- PASS — `swift build --build-tests` clean; full `swift test`: 1433 tests,
+  0 failures (12 skipped), exit 0 — the render-path hot loop change keeps
+  the whole suite green.
+
+Risk review beyond the gate (M1 risk classes), all verified at 9981626:
+
+- Generation race: `laban_session_dirty_generation`
+  (`Sources/LabanTerminalCore/capture.c:78-83`) takes the session lock
+  (`SESSION_LOCK` is a scoped lock with automatic release,
+  `session_internal.h:53-58,402`). `syncSessions` reads the generation
+  after the optional poll (`TerminalSurfaceController.swift:440`) and
+  stores that PRE-sync value into `lastSyncedGeneration` (line 451)
+  *before* running the sync cluster — a bump landing mid-sync makes the
+  next tick's read differ from the stored value and re-sync. No lost-bump
+  window. `SessionRunner` reads the generation after each
+  `laban_session_poll_blocking` return; worst-case detection latency for
+  a bump that does not wake `select` is one poll timeout (100 ms).
+- Headless parity (AGENTS.md hard rule): `HeadlessDebugRuntime.swift:675`
+  and `DebugStateEndpoints.swift:100` pass `.pollAllSessions`, which
+  bypasses gating entirely (`TerminalSurfaceController.swift:443-445`) —
+  headless sync behavior is byte-identical to pre-M1. NOTE plan-text
+  divergence: "Interfaces and Dependencies / Out of scope" claims headless
+  "benefits from Milestone-1 gating automatically"; the implementation
+  deliberately exempts it. Conservative and parity-preserving, but the
+  plan text is stale — update it.
+- Cache lifecycle: `Session.ID` is a UUID string (`Session.swift:22,216`)
+  and the C handle is never reassigned (set at init :224, cleared at
+  close :476), so a recycled or restored session can never alias a stale
+  cache entry; unknown IDs always sync on first sight. The
+  `invalidateSessionSyncCache()` calls in `TerminalBitmapView.swift`
+  (~2421 create, ~2456 close) are belt-and-suspenders; workspace-restore
+  and laband-attach paths create fresh Session objects and are naturally
+  safe. Closed-session map entries linger until the next create/close
+  `removeAll()` — bounded and cosmetic only.
+- Stale-screen audit of the gated cluster
+  (`syncSurfaceMetadata`/`renderDirty`): title (OSC bytes), exit state
+  (new pty_io bump), shell-integration phase (OSC 133 bytes), bell and
+  OSC notifications (bytes + direct session callbacks,
+  `AppModel.attachSessionCallbacks`), resize
+  (`session_lifecycle.c:767`), replay (`:814`), and viewport scroll
+  (`snapshot.c:806,835`) are all generation events or model-direct
+  writes. `isActive`-dependent transitions (unseen/bell/dot clearing,
+  activityState) are written model-directly in `selectTabUnlocked`
+  (`AppModel.swift:934-961`), not via the gated cluster. Two residual
+  classes change with NO generation bump and are now frozen for quiescent
+  tabs even while the 8 Hz link still ticks: (a) `session.processMetadata()`
+  polling (foreground process/pid/cwd,
+  `TabMetadataSynchronizer.swift:352-359`) and (b) the git-branch dot
+  (`GitInfoTracker.refresh` is pull-based stat and is only triggered
+  inside the gated cluster). Both match the Decision Log's accepted
+  trade, BUT that entry's wording "may lag until the next wake or
+  safety-net tick" is wrong under generation gating: a wake re-runs
+  `syncSessions` and still skips (generation unchanged), and the M3
+  safety net fires only on generation advance — the real repair is the
+  next terminal byte on that session. Milestones 2/3 must not assume
+  wakes restore metadata polling; clarify the Decision Log entry.
+- Plan M1 step 5 test (d) — "a child that exits with no output flips the
+  tab's exit state within one `syncSessions` call after exit" — is not
+  implemented as specified: `testGenerationGatingDetectsChildExitWithNoOutput`
+  (`Tests/LabanCoreTests/TerminalSurfaceControllerTests.swift:1148-1206`)
+  simulates the generation advance with `feedOutput("x")`, never
+  exercises a child exit, and never asserts tab exit state; its own
+  comment defers the live proof to the (vacuous) runner test. Combined
+  with the FAIL above: nothing in the suite fails if the
+  exit→generation→syncSessions→tab-status chain breaks.
+- Minor: the unconditional final `onDirty()` on loop exit
+  (`SessionRunner.swift:91-93`) also fires on every normal tab close and
+  shutdown — safe (ID-string forwarding via weak self,
+  `SessionRegistry.swift:66-69`), just one spurious coalescer kick per
+  close; it is also exactly what makes the ExitWakes test vacuous.
+
+Verdict: Milestone 1 FAILED on the ExitWakes proof item. The
+implementation logic itself reviewed sound — the exit bump demonstrably
+works (sub-second fire on the green run vs. 3 s deadline exhaustion on
+the mutant); the failure is test adequacy plus the unimplemented step-5(d)
+exit-state test, with two non-blocking plan-text corrections noted above.
 
 ## Context and Orientation
 
