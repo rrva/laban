@@ -73,7 +73,8 @@ solid while typing.
   scanners; the session field is now properly typed and `capture.c` gates
   on `DS_NORMAL` by name. `CursorOverrideScannerTests` 12/12.
   Commit 79bc5cd.
-- [ ] Review Gate passed.
+- [x] (2026-06-10) Review Gate passed: full fresh-state re-run at 3a585ce
+  after the fix round (see Review status).
 
 ## Decision Log
 
@@ -188,12 +189,14 @@ ExecPlan is considered complete. Run all commands from the repository root.
   two split-across-writes cases, mode-12 h/l, plain-text negative.)
 - [x] `rtk swift test --filter FrameProducerTests` exits 0 (including the
   pre-existing `testFrameProducerShapesAndBlinksCursorStyles`).
-  (26 tests, 0 failures; the pre-existing test ran and passed.)
+  (Re-run at 3a585ce: 30 tests, 0 failures; the pre-existing test ran and
+  passed; includes the four fix-round `testRemoteCursor_*` cases.)
 - [x] `rtk swift test --filter CrossBackendBitmapTests` exits 0 (pins that
   the default configuration changes no rendered pixels).
   (3 tests, 0 failures.)
 - [x] `rtk swift test` (full suite) exits 0.
-  (1421 tests, 12 skipped, 0 failures.)
+  (Re-run at 3a585ce: 1428 tests, 12 skipped, 0 failures — 1421 from the
+  first review plus the 7 fix-round tests.)
 - [x] `grep -n "advanceCursorBlinkState" Sources/LabanApp/TerminalBitmapView.swift`
   returns zero hits.
 - [x] `grep -n "cursorBlinkInterval" Sources/LabanApp/TerminalBitmapView.swift`
@@ -211,8 +214,9 @@ ExecPlan is considered complete. Run all commands from the repository root.
   blink default from `false` to `true`; run
   `rtk swift test --filter CursorSettingsTests`; expect at least one
   failure; revert.
-  (Mutated `?? false` -> `?? true` in `blinkEnabled`; 2 failures incl.
-  `testDefaultBlinkIsOff`; reverted; `git status` clean afterwards.)
+  (Re-run at 3a585ce: mutated `?? false` -> `?? true` at
+  `CursorSettings.swift:59`; 2 failures — `testDefaultBlinkIsOff` and
+  `testDefaultBlinkMutationWouldBeDetectable`; reverted; tree clean.)
 - [x] Headless check: `swift build --product laban-agent`, run
   `.build/debug/laban-agent --headless --debug-server=127.0.0.1:0` in the
   background, `curl` the printed `/debug/state` URL; the JSON contains a
@@ -222,13 +226,26 @@ ExecPlan is considered complete. Run all commands from the repository root.
   `{"style":"block","blinkEnabled":false,"styleOverridden":false,
   "blinkOverridden":false}`. Agent killed; no stray processes.)
 
-Review status: PASSED 2026-06-10, reviewed at commit 49c3748. All 14 gate
-items pass mechanically: focused suites green (13/11/9/12/26/3 tests), full
-suite 1421 tests 0 failures, legacy blink symbols absent from
-TerminalBitmapView, spec.md section 23 present, schema carries
-cursorSettings, build-app clean, blink-default mutation killed by
-`testDefaultBlinkIsOff`, headless `/debug/state` exposes the cursorSettings
-contract.
+Review status: PASSED 2026-06-10 at commit 3a585ce — full fresh-state
+re-run of all 14 gate items after the review-fix round (PLANS.md step 6;
+first review PASSED 2026-06-10 at 49c3748). Focused suites green
+(13/11/9/12/30/3 tests), full suite 1428 tests 0 failures, legacy blink
+symbols absent from TerminalBitmapView, spec.md section 23 present, schema
+carries cursorSettings (3 hits), build-app clean, blink-default mutation
+killed by 2 test failures and reverted, headless `/debug/state` returns the
+cursorSettings contract. Fix-round resolution verified at HEAD: finding 1 —
+`CursorBlinkDriver.sync` captures `wasHidden` *before* `stopTimer()` resets
+the phase and re-arms `pendingFlip` on the stop-repaint path;
+`testSyncStopMidHiddenPhaseFiresRepaintAndResetsVisible` passes
+(`CursorBlinkDriverTests` 15/15, incl. no-spurious-repaint and hook-gating
+companions). Finding 2 — four `testRemoteCursor_*` cases drive
+`commands(from: LabandSnapshotResponse, ...)` with `userCursorStyle`
+(default full-cell block, bar, underline, hidden-cursor). Finding 3 —
+closed by the Decision Log entry (deliberate remote solid cursor; no code).
+Finding 4 — benign as recorded; no change needed. The fix-round DS_-enum
+cleanup (79bc5cd) also verified: `capture.c` has zero `!= 0` hits and gates
+on `state != DS_NORMAL` (capture.c:51); `DecscsrState`, `DS_PARAM_MAX`, and
+`LabanDecscsrScanner` live in `session_internal.h` (lines 222–239).
 
 Review findings (filled in by the review agent):
 
@@ -248,20 +265,30 @@ next contributor:
    Default config (blink off) unaffected.
    `testSyncStopResetsPhaseToVisible` notes it cannot force the hidden
    phase, so this path is untested.
+   [Resolved in 7bf0e36; verified at 3a585ce by the re-review.]
 2. Missing test from Milestone 2 prose: no "remote styled-cursor case"
    exists — no test passes `userCursorStyle` into the remote
    `FrameProducer.commands(from: LabandSnapshotResponse, ...)` overload;
    the new per-style cases cover bar and underline but not block geometry
    via `resolvedCursor`.
+   [Resolved in 30cd6d1; verified at 3a585ce by the re-review.]
 3. Remote (laband) frames leave `TerminalSurfaceFrame.cursorVisible` at its
    default `false`, so the blink timer never runs for remote sessions and
    the remote cursor is now always solid (previously it blinked
    unconditionally); a user blink-on setting does not blink remotely.
    Consistent with the Decision Log's deliberate laband deferral.
+   [Closed by the review-fix round's Decision Log entry; deliberate, no
+   code change.]
 4. Plan prose says the override fields are "zeroed in session init
    (`session_lifecycle.c`)"; no explicit zeroing was added — the session is
    `calloc`'d (`session_lifecycle.c:321`), which zero-initializes them.
    Benign.
+5. (Re-review at 3a585ce) Label mismatch in the Progress fix-round entry:
+   it calls the file-local DS_-enum cleanup "Finding 3", but recorded
+   finding 3 above is the remote solid-cursor observation (closed by a
+   Decision Log entry, not code). The DS_ cleanup (79bc5cd) was an extra
+   fix-round improvement not in this list. Cross-reference accordingly;
+   documentation only, no gate impact.
 
 ## Context and Orientation
 
