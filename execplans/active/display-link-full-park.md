@@ -379,59 +379,219 @@ done until this gate has passed. Run all commands from the repository root
 (the worktree being reviewed). Checks are per-milestone where marked; the
 final review runs all of them.
 
-- [ ] `rtk swift test --filter TerminalIdlePolicyTests` exits 0 with
+- [x] `rtk swift test --filter TerminalIdlePolicyTests` exits 0 with
       0 failures and executes **at least 14** tests (9 pre-existing + the
       new park/budget/floor tests named in Milestone 3/4).
-- [ ] `rtk swift test --filter TerminalSurfaceControllerTests` exits 0 with
+- [x] `rtk swift test --filter TerminalSurfaceControllerTests` exits 0 with
       0 failures, including a test whose name contains `Generation` proving
       unchanged-generation ticks skip metadata sync.
-- [ ] `rtk swift test --filter SessionRunnerTests` (or
+- [x] `rtk swift test --filter SessionRunnerTests` (or
       `LabanSessionTests` if placed there) exits 0 and includes a test whose
       name contains `ExitWakes` proving a zero-output child exit fires
       `onDirty`.
-- [ ] `rtk swift test --filter TerminalBitmapViewWakeTests` exits 0 with
+- [x] `rtk swift test --filter TerminalBitmapViewWakeTests` exits 0 with
       0 failures.
-- [ ] `grep -n "laban_session_dirty_generation"
+- [x] `grep -n "laban_session_dirty_generation"
       Sources/LabanTerminalCore/include/LabanTerminalCore.h` — at least one
       hit (the new exported accessor).
-- [ ] `grep -rn "LabanDisplayLinkIdleFloor" Sources/` — hits in both the
+- [x] `grep -rn "LabanDisplayLinkIdleFloor" Sources/` — hits in both the
       policy input plumbing (`Sources/LabanApp/TerminalBitmapView.swift`)
       and exactly one place that reads `UserDefaults`.
-- [ ] `grep -n "note_terminal_dirty"
+- [x] `grep -n "note_terminal_dirty"
       Sources/LabanTerminalCore/pty_io.c` — at least one hit inside the
       child-exit branch of `laban_session_drain_locked_`.
-- [ ] `grep -n "drained > 0" Sources/LabanCore/SessionRunner.swift` — the
+- [x] `grep -n "drained > 0" Sources/LabanCore/SessionRunner.swift` — the
       `onDirty` firing condition is no longer solely `drained > 0` (either
       the grep has zero hits, or the surrounding code also fires on a
       generation change; quote the lines in findings).
-- [ ] `grep -n "safetyNetRepair" Sources/LabanApp/` recursively — at least
+- [x] `grep -n "safetyNetRepair" Sources/LabanApp/` recursively — at least
       one hit (EventLog kind) — UNLESS the Progress section shows the
       safety net was already removed post-soak, in which case verify the
       removal commit is referenced in `Outcomes & Retrospective`.
-- [ ] Mutation check (wake coverage): in
+- [x] Mutation check (wake coverage): in
       `Sources/LabanApp/TerminalBitmapView.swift`, comment out the single
       wake call added at the end of `override func scrollWheel` (Milestone 2
       names it; it reads `advanceFrame(wake: .scrollWheel)` or equivalent).
       Run `rtk swift test --filter TerminalBitmapViewWakeTests`; expect at
       least one failure. Revert the mutation. Confirm
       `git diff --stat` is empty afterwards.
-- [ ] `ls docs/adr/ | grep 0018` — one file; and
+- [x] `ls docs/adr/ | grep 0018` — one file; and
       `grep -c "0018" docs/adr/README.md` ≥ 1 (index entry added).
-- [ ] `./scripts/test-e2e` exits 0.
-- [ ] `rtk ./scripts/check` exits 0 (full repository gate).
-- [ ] `grep -n "idleDisplayLinkFramesPerSecond = 8"
+- [x] `./scripts/test-e2e` exits 0.
+- [x] `rtk ./scripts/check` exits 0 (full repository gate).
+- [x] `grep -n "idleDisplayLinkFramesPerSecond = 8"
       Sources/LabanCore/TerminalIdlePolicy.swift` — still present (the
       floor constant must survive for the parachute path).
 
-Review status: MILESTONE 1 REVIEW — PASSED (2026-06-10, fresh-state
-re-review agent, commit efe9fbf, diff 433401d..efe9fbf). Scope: Milestone 1
-only (tick-work gating via the C dirty-generation counter); Milestone 2–5
-gate items are not yet reviewable and remain unchecked above. Per PLANS.md
-this was a FULL fresh re-run of every M1-applicable gate item, not a delta
-check; it supersedes the FAILED 9981626 review, whose record is preserved
-below. The final full-gate review still runs all items.
+Review status: MILESTONES 2–5 REVIEW — FAILED (2026-06-10, fresh-state
+review agent, commit a2e8b5c, diff 65b924a..a2e8b5c). All 14 mechanical
+gate items above PASS at a2e8b5c (checked; full `swift test` 1455
+executed / 12 skipped / 0 failures; `./scripts/check` exit 0), but the
+risk review found one blocking frozen-pixels defect (finding F1 below):
+the Milestone-2 model-mutation wake fires `advanceFrame` without ever
+setting `renderInvalidated`, so the woken frame early-returns and the
+pixel change that requested the wake never paints. Scope: Milestones 2–5
+automatable portion only; the Milestone-5 human-soak items and safety-net
+retirement remain explicitly open and do NOT count against this gate. The
+M1 PASSED record (commit efe9fbf) is preserved below; the M1-applicable
+items were re-run in this review and still hold.
 
 Review findings (filled in by the review agent):
+
+Milestones 2–5 review at commit a2e8b5c (2026-06-10):
+
+Gate items, run mechanically — all 14 PASS:
+
+- PASS — `TerminalIdlePolicyTests`: 25 tests, 0 failures (≥14 required).
+- PASS — `TerminalSurfaceControllerTests`: 28 tests, 0 failures; 4
+  Generation-named tests including
+  `testGenerationGatingSkipsMetadataSyncOnUnchangedGeneration`.
+- PASS — `SessionRunnerTests`: 5 tests, 0 failures;
+  `testExitWakesOnDirtyWithNoOutput` passes in ~9 ms (sub-second fire).
+- PASS — `TerminalBitmapViewWakeTests`: 5 tests, 0 failures.
+- PASS — `laban_session_dirty_generation` declared at
+  `Sources/LabanTerminalCore/include/LabanTerminalCore.h:289`.
+- PASS — `LabanDisplayLinkIdleFloor`: exactly one `UserDefaults` read
+  (`Sources/LabanApp/TerminalBitmapView.swift:319`, cached at view init);
+  plumbed into both policy calls via `displayLinkIdleFloorEnabled`
+  (`TerminalBitmapView.swift:1146,1153`); remaining hits are doc comments.
+- PASS — `note_terminal_dirty` at
+  `Sources/LabanTerminalCore/pty_io.c:174`, inside the child-exit branch
+  of `laban_session_drain_locked_`, gated on
+  `prev_status == 0 && s->status != 0`.
+- PASS — `drained > 0` single hit at
+  `Sources/LabanCore/SessionRunner.swift:86`, the `else if` fallback after
+  the generation-advance branch (lines 78–88): `if
+  laban_session_dirty_generation(ref.pointer, &currentGen) == 0 &&
+  currentGen != 0 && currentGen != lastObservedGeneration { … onDirty() }
+  else if drained > 0 { onDirty() }` — not solely `drained > 0`.
+- PASS — `safetyNetRepair` EventLog kind at
+  `Sources/LabanApp/TerminalBitmapView.swift:1089`; safety net still
+  present (soak not done), as Progress states.
+- PASS — mutation check: with `advanceFrame(wake: .scrollWheel)`
+  (`TerminalBitmapView.swift:3869`) commented out,
+  `testScrollWheelWakesFrameLoop` FAILS ("1 is not greater than 1");
+  mutation reverted, `git diff --stat` empty, suite re-run green (5/0).
+- PASS — `docs/adr/0018-event-driven-frame-production.md` exists; one
+  `docs/adr/README.md` index reference.
+- PASS — `./scripts/test-e2e` exit 0, including the
+  `debug-script-exit-wake` scenario (wired at `scripts/test-e2e:895-909`).
+- PASS — `./scripts/check` exit 0 (swift test green inside it;
+  smoke-runtime passed; test-e2e passed; labpty MC/DC 46.29% ≥ 45% floor).
+- PASS — `idleDisplayLinkFramesPerSecond = 8` at
+  `Sources/LabanCore/TerminalIdlePolicy.swift:17`.
+- PASS — full `swift test` foreground: 1455 executed, 12 skipped,
+  0 failures. (Cosmetic: the M4/M5 Progress entries say 1454 — the count
+  drifted by one; update the prose.)
+
+Risk review beyond the gate:
+
+- **FAIL — F1 (BLOCKING, frozen-pixels class): the Row-5/9 model-mutation
+  wake proves the call, not the repaint.** The single
+  `onSurfaceStateChanged` subscriber
+  (`Sources/LabanApp/TerminalBitmapView.swift:463-467`) calls
+  `advanceFrame(wake: .modelMutation)` through the coalescer but never
+  sets `renderInvalidated`. On the woken frame, generation gating skips
+  the unchanged tab (`Sources/LabanCore/TerminalSurfaceController.swift:
+  440-449`), so `sync.modelChanged` is false, and the render guard
+  (`TerminalBitmapView.swift:1568-1569`: `terminalDirty ||
+  renderInvalidated || tabChanged || cursorBlinkFrame ||
+  attentionAnimating`) early-returns without painting. Empirical proof
+  (temporary test in `TerminalBitmapViewWakeTests`, mutation-check style,
+  reverted afterwards): after a quiescent baseline,
+  `model.applySurfaceSignals(titleDirty: true, titleRaw: …)` returned
+  modelChanged=true and fired the wake (`advanceFrameCallCountForTesting`
+  +1) but the `renderedFrameCountForTests` delta was **0**; the control
+  (`createTab` → tabChanged) rendered (+1) in the same harness. Affected
+  producers — each of whose comments claims the wake is its repaint under
+  park: `applyTabStatusUpdate` (`Sources/LabanCore/AppModel.swift:
+  1876-1900`, "with a parked link only this wake repaints it"),
+  `applyResolvedBranch` (`AppModel.swift:1906-1916` — branch label frozen
+  until the tab's next byte), `applySurfaceSignals`
+  (`AppModel.swift:1316-1343`, daemon tier). The safety net cannot repair
+  this either: `hasUnseenSessionActivity()` is generation-based and these
+  writes bump no generation — the staleness is silent AND unbounded on a
+  parked focused window. This is exactly the residual the M1 review
+  flagged ("wire ... model-level mutations plus wakes ... rather than
+  assuming a wake restores metadata polling"); M2's Row 9 "wired+proven"
+  covers only the wake call — the M2 tests assert
+  `advanceFrameCallCountForTesting`, never a render. MVP behaviors are
+  NOT affected (titles/exit/output ride generation bumps); the affected
+  surfaces are agent status, the git-branch label, and daemon-tier
+  metadata. Fix direction: make the `onSurfaceStateChanged` subscription
+  invalidate before advancing (set `renderInvalidated = true` inside the
+  coalesced main-actor block, or route it through
+  `invalidateRenderAndWake()` semantics), and upgrade at least one wake
+  test to assert `renderedFrameCountForTests` advances so the repaint —
+  not just the wake — is mutation-killable.
+- ADVISORY — F2 (pre-existing branch, newly exposed by the park): the GPU
+  backpressure carry (`TerminalBitmapView.swift:1762-1780`) deliberately
+  schedules no retry, relying on a "display-link-paced retry". Frames
+  with `terminalDirty` arm the 150 ms output hold before rendering
+  (`TerminalBitmapView.swift:1473-1477`) so output-triggered backpressure
+  keeps the link alive, but a `tabChanged`-only (or
+  fallback-pending-only) failing frame on an otherwise-parked link
+  strands the carried invalidation until the next unrelated wake — the
+  park policy does not consider `renderInvalidated`. Low probability
+  (drawable starvation while quiescent); consider `scheduleRenderRetry()`
+  in the carry branch when the policy would park. Not blocking.
+- PASS — stale-screen sweep: all 18 `renderInvalidated = true` sites in
+  `Sources/` audited; every site outside `advanceFrame`'s own flow is
+  wake-adjacent (`scheduleRenderRetry`, `advanceFrame`, or one of the 44
+  `invalidateRenderAndWake()` calls). Theme/cursor-settings/Reduce-Motion
+  observers, IME `setMarkedText`/`unmarkText`, find chip, selection,
+  `setFrameSize` (the wake fires whenever `surfaceChanged`),
+  `viewDidChangeBackingProperties`, and `viewDidMoveToWindow` all wake.
+  Font changes require relaunch (`AppDelegate.changeFont`) — no live
+  repaint needed.
+- PASS — park/unpark races: every policy input is main-thread state;
+  `advanceFrame`'s `defer { updateDisplayLinkRunState() }` is registered
+  before the first early return, so every exit path re-reconciles pause
+  state. The kick coalescer clears `pendingDisplayKick` BEFORE invoking
+  `advanceFrame`, so a kick landing mid-frame schedules a fresh task —
+  no lost-wake window.
+- PASS — safety net: armed only on the `!shouldRun` transition inside
+  `updateDisplayLinkRunState` (`TerminalBitmapView.swift:1058-1060`),
+  idempotent arm/cancel (`setSafetyNetArmed`, :1064-1082), cancelled on
+  resume, in `stopDisplayLink` (:1036-1037), and via deinit; main-queue
+  timer so no re-entrancy; 30 s interval / 5 s leeway match the plan
+  (:329, :1068-1071); the fire path logs EventLog
+  `render.displayLink.safetyNetRepair` + AppLog.render error AND repairs
+  via `advanceFrame(wake: .safetyNet)` (:1086-1100). (Its
+  generation-based check cannot see F1-class staleness — noted above.)
+- PASS — policy shims are exact: the 2-arg `displayLinkShouldRun` ==
+  `scrolling || visible` == the full policy with `idleFloorEnabled: true`
+  and `cursorBlinkActive: false`; the 4-arg
+  `preferredDisplayLinkFramesPerSecond` delegates identically. Rate
+  ladder verified: scroll/output → 120, attention-only → 30,
+  blink-/floor-only → 8.
+- PASS — blink integration: `cursorBlinkActive = blinkDriver.timerRunning`
+  (`TerminalBitmapView.swift:1138`); `onPhaseFlip` →
+  `advanceFrame(wake: .blinkTimer)` (:395-397); flip frames pass the
+  render guard via `cursorBlinkFrame = blinkDriver.consumePendingFlip()`
+  (:1372). Blink-on holds the 8 Hz floor while parked-otherwise; blink-off
+  (default) allows true park.
+- PASS — headless parity: `HeadlessDebugRuntime` has zero references to
+  the display link, `TerminalIdlePolicy`, `advanceFrame`, or
+  `onSurfaceStateChanged`; both headless sync sites pass
+  `.pollAllSessions` (`Sources/LabanDebug/HeadlessDebugRuntime.swift:675`,
+  `Sources/LabanDebug/DebugStateEndpoints.swift:100`), which bypasses
+  gating entirely — headless behavior unchanged by the park.
+- PASS — schema/E2E: the `schemas/debug-script.schema.json` change is
+  purely additive (+26 lines: optional `expectJson` on `get`/`post` plus
+  the `$defs/expectJson` definition; no removals, no new required
+  fields); the exit-wake scenario runs as a `test-e2e` step and passed.
+- PASS — MVP spot-check by policy reading: visible output → 150 ms hold →
+  link at 120; smooth scroll → `scrollAnimating` overrides everything →
+  120; attention pulse → 30 and passes the render guard; exited state →
+  `pty_io.c:174` generation bump → `sessionDirty` wake → gated sync runs;
+  IME paths self-wake.
+
+Verdict: Milestones 2–5 FAILED at commit a2e8b5c on finding F1. The park
+policy, parachute, safety net, instrumentation, and all mechanical gate
+items are sound; the defect is confined to the model-mutation wake not
+carrying a render invalidation (plus its wake-only test coverage). After
+the fix, re-run the FULL gate fresh per PLANS.md.
 
 Milestone-1 re-review at commit efe9fbf (2026-06-10), after the fix round:
 
