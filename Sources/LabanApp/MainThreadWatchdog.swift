@@ -103,6 +103,13 @@ final class MainThreadWatchdog {
   private var confirmSentNs: Int64 = 0
   private var confirmGen: UInt64 = 0
   private var capturedGen: UInt64 = 0
+  /// True while the main thread is provably alive but parked (heartbeats come
+  /// only from serviced probes, not the display link). The watchdog then ticks
+  /// at `idleIntervalMs` instead of `intervalMs` — a parked-idle app needs no
+  /// 20 Hz stall vigil, and the 50 ms tick was the largest remaining source of
+  /// idle wakeups. The first real display-link heartbeat restores the fast
+  /// cadence. Guarded by `heartbeatLock`.
+  private var coarseMode = false
   private var heartbeatLock = os_unfair_lock()
 
   /// Uptime at the previous watchdog tick, used to measure the timer's own
@@ -110,6 +117,7 @@ final class MainThreadWatchdog {
   private var lastObservedNs: Int64 = 0
 
   private let intervalMs = 50
+  private let idleIntervalMs = 2000
 
   private let queue = DispatchQueue(label: "laban.watchdog", qos: .utility)
   private var timer: DispatchSourceTimer?
@@ -153,7 +161,20 @@ final class MainThreadWatchdog {
     let now = uptimeNs()
     os_unfair_lock_lock(&heartbeatLock)
     lastTickNs = now
+    let wasCoarse = coarseMode
+    coarseMode = false
     os_unfair_lock_unlock(&heartbeatLock)
+    // A real display-link heartbeat ends the parked episode: restore the fast
+    // stall vigil. Dispatch only on the transition, so the steady-state cost
+    // of this hot path stays one lock + two stores.
+    if wasCoarse {
+      queue.async { [weak self] in
+        guard let self else { return }
+        self.timer?.schedule(
+          deadline: .now() + .milliseconds(self.intervalMs),
+          repeating: .milliseconds(self.intervalMs))
+      }
+    }
   }
 
   // MARK: - Watchdog tick
@@ -208,13 +229,17 @@ final class MainThreadWatchdog {
     let sentNs = confirmSentNs
     let gen = confirmGen
     let capGen = capturedGen
+    let coarse = coarseMode
     os_unfair_lock_unlock(&heartbeatLock)
 
     // Whole-process suspension (system sleep, App Nap, throttling): the
     // watchdog timer's own schedule slipped, so the heartbeat gap is an
     // artifact. Reset the baseline and drop any in-flight probe so the next
-    // tick measures from now instead of immediately re-firing.
-    if selfGapMs > pauseGapMs {
+    // tick measures from now instead of immediately re-firing. In coarse mode
+    // the tick itself runs at `idleIntervalMs`, so its normal self-gap must
+    // not read as a suspension.
+    let effectivePauseGapMs = coarse ? idleIntervalMs * 2 : pauseGapMs
+    if selfGapMs > effectivePauseGapMs {
       os_unfair_lock_lock(&heartbeatLock)
       lastTickNs = now
       confirmInFlight = false
@@ -295,12 +320,29 @@ final class MainThreadWatchdog {
   /// that drains after a reset or after its episode ended is ignored.
   private func confirmAlive(generation: UInt64) {
     let now = uptimeNs()
+    var enterCoarse = false
     os_unfair_lock_lock(&heartbeatLock)
     if generation == confirmGen {
       lastTickNs = now
       confirmInFlight = false
+      // The heartbeat went stale yet this probe ran promptly: the main thread
+      // is alive but parked (display link stopped). Drop to the coarse vigil —
+      // probing a parked-idle app several times a second is pure wakeup churn.
+      if !coarseMode {
+        coarseMode = true
+        enterCoarse = true
+      }
     }
     os_unfair_lock_unlock(&heartbeatLock)
+    if enterCoarse {
+      queue.async { [weak self] in
+        guard let self else { return }
+        self.timer?.schedule(
+          deadline: .now() + .milliseconds(self.idleIntervalMs),
+          repeating: .milliseconds(self.idleIntervalMs),
+          leeway: .milliseconds(self.idleIntervalMs / 4))
+      }
+    }
   }
 
   private func captureSample(stalledForMs: Int) {
