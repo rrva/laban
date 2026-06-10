@@ -354,6 +354,23 @@ them without recording a superseding entry here.
   what `docs/adr/README.md` says warrants an ADR.
   Date/Author: 2026-06-10 / Claude.
 
+## Surprises & Discoveries
+
+- Observation: the Stage-1 cursor-blink files landed on this base unformatted
+  — `./scripts/lint` (part of `./scripts/check`) failed at the base commit on
+  11 files this plan never touches (`CursorBlinkDriver.swift`,
+  `CursorSettings.swift`, `FrameProducer.swift`, and their test files).
+  Evidence: `swift format lint --strict` errors at 65b924a; fixed in its own
+  commit (`The cursor-blink files landed unformatted and fail the formatter
+  gate`) so the M2 changeset stayed atomic and the final-gate `check` can
+  pass.
+- Observation: the end-of-`scrollWheel` wake (Row 4) runs the first PD
+  integration step synchronously, which legitimately moves the C viewport by
+  the first row before `scrollWheel` returns.
+  Evidence: `testInputCancelsPendingSmoothScrollWhenViewportStillAtBottom`
+  failed at "15 is not equal to 16"; its intermediate assertion pinned the
+  poll-driven timing, not the smoothing contract (see Decision Log).
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this
