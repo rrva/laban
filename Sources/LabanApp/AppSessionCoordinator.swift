@@ -503,6 +503,18 @@ final class AppSessionCoordinator {
       },
       onOverflow: { [weak self] in
         self?.markLabptyOutputDegraded(for: tabId)
+      },
+      onResponse: { [weak self] bytes in
+        guard let client = self?.labptyClient else { return }
+        do {
+          try client.writeInput(handle: descriptor.ptyHandle, bytes: bytes)
+        } catch {
+          AppLog.app.error(
+            """
+            labpty terminal response write failed for pty handle \
+            \(descriptor.ptyHandle): \(error)
+            """)
+        }
       })
     labptyFeedByTabId[tab.id] = feed
     feed.start(
@@ -1009,6 +1021,7 @@ private final class LabptyParserFeed {
   private let session: Session
   private let onDirty: @Sendable (Session.ID) -> Void
   private let onOverflow: @Sendable () -> Void
+  private let onResponse: @Sendable ([UInt8]) -> Void
   private let queue: DispatchQueue
   private let timer: DispatchSourceTimer
   private let lock = NSLock()
@@ -1022,13 +1035,15 @@ private final class LabptyParserFeed {
     reader: LabptyByteRingReader,
     session: Session,
     onDirty: @escaping @Sendable (Session.ID) -> Void,
-    onOverflow: @escaping @Sendable () -> Void
+    onOverflow: @escaping @Sendable () -> Void,
+    onResponse: @escaping @Sendable ([UInt8]) -> Void
   ) {
     self.ptyHandle = ptyHandle
     self.reader = reader
     self.session = session
     self.onDirty = onDirty
     self.onOverflow = onOverflow
+    self.onResponse = onResponse
     self.queue = DispatchQueue(label: "com.laban.labpty.parser.\(ptyHandle)", qos: .userInteractive)
     self.timer = DispatchSource.makeTimerSource(queue: queue)
   }
@@ -1126,6 +1141,14 @@ private final class LabptyParserFeed {
         totalBefore: diagBefore?.totalRows ?? after.totalRows,
         off: after.viewportOffset, total: after.totalRows, vp: after.viewportRows,
         sb: after.scrollbackRows, alt: after.altScreen, mouse: after.mouseTracking)
+    }
+    // The daemon owns the PTY, so replies the parser generated while consuming
+    // this chunk (CPR/DA/OSC color queries) exist only in the session's
+    // response buffer. Ship them back over the daemon socket or the querying
+    // child blocks forever (gh auth login's survey size probe).
+    let responses = session.drainResponse()
+    if !responses.isEmpty {
+      onResponse(responses)
     }
     onDirty(session.id)
   }

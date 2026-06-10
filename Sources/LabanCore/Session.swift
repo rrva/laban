@@ -531,6 +531,31 @@ public final class Session {
     }
   }
 
+  /// Drain terminal responses (CPR, DA, OSC 10/11 color replies, ...) the VT
+  /// parser generated while consuming output. For a PTY-backed session the C
+  /// layer already wrote these to the PTY and this buffer is inspection-only;
+  /// for a parser-only viewer session (labpty/laband tier) this buffer is the
+  /// ONLY copy — the feed loop must forward the drained bytes to the daemon as
+  /// input, or a child blocking on a query reply (gh auth login's ESC[6n size
+  /// probe) hangs forever.
+  public func drainResponse() -> [UInt8] {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return [] }
+    var out: [UInt8] = []
+    var chunk = [UInt8](repeating: 0, count: 1024)
+    while true {
+      var len = 0
+      let rc = chunk.withUnsafeMutableBufferPointer { buf in
+        laban_session_drain_response(h, buf.baseAddress, buf.count, &len)
+      }
+      guard rc == 0, len > 0 else { break }
+      out.append(contentsOf: chunk[0..<len])
+      if len < chunk.count { break }
+    }
+    return out
+  }
+
   /// Feed captured PTY output into the terminal parser during deterministic replay.
   /// This bypasses PTY input semantics and does not emit capture callbacks.
   @discardableResult

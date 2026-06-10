@@ -592,6 +592,65 @@ final class LabanAppTests: XCTestCase {
       """)
   }
 
+  func testLabptyViewerSessionAnswersCursorPositionQuery() throws {
+    let (root, socketPath, process) = try startLabptyDaemon(prefix: "lbn-app-labpty-cpr")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer {
+      if process.isRunning {
+        process.terminate()
+        process.waitUntilExit()
+      }
+    }
+
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 67
+    let tabId = "cpr-reply-tab"
+    let model = try parserModel(tabId: tabId, size: size)
+    let tab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: tab.id))
+    // gh auth login's survey library probes the terminal size by entering raw
+    // mode, emitting DECSC + CUP 999;999 + DSR-CPR (ESC[6n), then BLOCKING on
+    // a read of the ESC[rows;colsR reply with no timeout. In the labpty tier
+    // the daemon owns the PTY and the app-side viewer session parses the byte
+    // ring, so the viewer's generated reply must travel back over the daemon
+    // socket — otherwise the child hangs forever (the reported gh freeze).
+    let command = [
+      "/bin/sh", "-lc",
+      """
+      python3 -c '
+      import os, sys, tty
+      tty.setraw(sys.stdin.fileno())
+      os.write(1, b"\\x1b7\\x1b[999;999f\\x1b[6n")
+      reply = b""
+      while not reply.endswith(b"R"):
+          reply += os.read(0, 1)
+      os.write(1, b"\\x1b8GOT:" + reply[2:] + b"\\r\\n")
+      '
+      exec cat
+      """,
+    ]
+    let coordinator = AppSessionCoordinator(
+      labptyClient: try waitForLabptyClient(socketPath: socketPath),
+      shellLaunch: ShellIntegrationLaunch(argv: command),
+      cwdByTabId: [tabId: FileManager.default.currentDirectoryPath])
+    defer {
+      coordinator.terminate(tab: tab)
+      coordinator.detach()
+      model.closeAllSessions()
+    }
+
+    _ = try coordinator.ensureSession(for: tab, session: session, size: size)
+    _ = try waitForLocalSnapshotText(
+      model: model,
+      tab: tab,
+      text: "GOT:24;67R",
+      message: """
+        the viewer session's CPR reply (ESC[24;67R) must reach the labpty child; \
+        a child blocking on that read with no timeout is the gh auth login freeze
+        """)
+  }
+
   private func waitForLabptyClient(socketPath: String) throws -> LabptyTerminalSessionClient {
     let deadline = Date().addingTimeInterval(5)
     var lastError: Error?
