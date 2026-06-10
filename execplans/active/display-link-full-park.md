@@ -153,8 +153,30 @@ proven. The mitigations baked into this plan:
       into `scripts/test-e2e` (step 33); `schemas/debug-script.schema.json`
       `get`/`post` now admit the runner's already-supported `expectJson`.
       Full `swift test`: 1438 tests, 12 skipped, 0 failures.
-- [ ] Milestone 3: full-park policy in `TerminalIdlePolicy` + plumbing,
-      `LabanDisplayLinkIdleFloor` parachute, safety-net poll, ADR 0018.
+- [x] (2026-06-10) Milestone 3: full-park policy in `TerminalIdlePolicy` +
+      plumbing, `LabanDisplayLinkIdleFloor` parachute, safety-net poll,
+      ADR 0018. `displayLinkShouldRun`/`preferredDisplayLinkFramesPerSecond`
+      take the six full-park inputs (scroll overrides everything; else
+      visible AND any of output/attention/blink/floor); the old 2-arg and
+      4-arg signatures remain as exact compatibility shims (new policy with
+      `idleFloorEnabled: true`). Plumbing: `displayLinkIdleFloorEnabled`
+      read once at view init (the single `UserDefaults` read);
+      `displayLinkPolicyState()` feeds `cursorBlinkActive =
+      blinkDriver.timerRunning` and carries `shouldRun`; reason ladder gains
+      `"cursorBlink"` and `"parked"` (visible+quiescent+floor-off);
+      `updateDisplayLinkRunState()` pauses on `!shouldRun` and arms/cancels
+      the safety net on the same transition. Safety net: 30 s main-queue
+      `DispatchSourceTimer` (5 s leeway), armed only while parked, cancelled
+      on resume/`stopDisplayLink`/deinit; on fire it checks
+      `hasUnseenSessionActivity()` and, only on a missed wake, logs
+      `render.displayLink.safetyNetRepair` to EventLog (+ AppLog.render
+      error) and repairs via `advanceFrame(wake: .safetyNet)` (whose journal
+      entries carry the `safetyNet` tag). ADR 0018 written
+      (`docs/adr/0018-event-driven-frame-production.md`) + index entry.
+      `CVDisplayLink` fallback untouched. Tests:
+      `TerminalIdlePolicyTests` now 22 (9 pre-existing unchanged + 13 new
+      park/floor/blink/attention/output/scroll/rate-ladder tests). Full
+      `swift test`: 1451 tests, 12 skipped, 0 failures.
 - [ ] Milestone 4: animation budget rates (attention 30 fps).
 - [ ] Milestone 5: soak validation (render journal, bench, Instruments,
       E2E), safety-net removal criteria evaluated.
@@ -258,6 +280,16 @@ them without recording a superseding entry here.
   the pending glide and stays at the live bottom — is unchanged and still
   asserted.
   Date/Author: 2026-06-10 / Claude (M2 execution).
+- Decision: Keep the old two-argument `displayLinkShouldRun` and
+  four-argument `preferredDisplayLinkFramesPerSecond` as compatibility shims
+  delegating to the full-park signatures with `idleFloorEnabled: true` and
+  `cursorBlinkActive: false`, rather than migrating or deleting them.
+  Rationale: the mapping is semantically exact (`visible || scrolling` ==
+  full-park policy with the floor forced on), so the 9 pre-existing policy
+  tests keep passing unmodified — which is itself a regression proof that the
+  parachute path reproduces pre-park behavior. Production plumbing
+  (`displayLinkPolicyState()`) passes the full input set.
+  Date/Author: 2026-06-10 / Claude (M3 execution).
 - Decision: Write ADR 0018 for this change.
   Rationale: this reverses the settled poll-with-floor frame-driving
   architecture (the link as a guaranteed periodic repaint) in favor of

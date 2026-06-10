@@ -310,6 +310,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// depending on render side effects.
   private(set) var advanceFrameCallCountForTesting = 0
 
+  /// Rollout parachute for the full-park display link (ADR 0018): when the
+  /// `LabanDisplayLinkIdleFloor` user default is true, the pre-park 8 Hz
+  /// visible-idle floor is restored — an instant, no-rebuild rollback for the
+  /// frozen-frame risk class. Read once at view init; relaunch applies a
+  /// change. This is the single UserDefaults read for the flag.
+  private let displayLinkIdleFloorEnabled =
+    UserDefaults.standard.bool(forKey: "LabanDisplayLinkIdleFloor")
+
+  /// TEMPORARY missed-wake safety net (full-park Milestone 3): a 30 s
+  /// main-queue timer armed only while the link is parked. If a session's
+  /// dirty generation advanced past its last-synced generation with no frame
+  /// produced, the net repairs the screen and logs
+  /// `render.displayLink.safetyNetRepair` — every such event is a missed wake
+  /// to root-cause. Removed by a follow-up commit once the Milestone-5 soak
+  /// criteria are met.
+  private var safetyNetTimer: DispatchSourceTimer?
+  private static let safetyNetIntervalSeconds: TimeInterval = 30
+
   // Input-to-photon latency tracking. Stamped on keyDown; closed out by the
   // renderer's onFrameCompleted callback. Bounded ring buffer.
   private var pendingInputAt: ContinuousClock.Instant?
@@ -1013,15 +1031,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       CVDisplayLinkStop(link)
     }
     cvDisplayLink = nil
+    // No link means nothing to repair into; the net re-arms on the next
+    // parked transition after a link exists again.
+    safetyNetTimer?.cancel()
+    safetyNetTimer = nil
   }
 
-  /// Park the per-frame display link when the window is not visible to the user
-  /// (unfocused or fully occluded) and nothing is mid-animation. The link only
-  /// drives on-screen animation (cursor blink, smooth scroll, the attention
-  /// pulse); terminal output is painted through the `onSessionDirty` push, so a
-  /// backgrounded window keeps updating without the link running. Only the
-  /// macOS-14 CADisplayLink supports cheap pausing; the CVDisplayLink fallback
-  /// is left running.
+  /// Park the per-frame display link whenever nothing on screen can change —
+  /// including a focused, visible, quiescent window (full park, ADR 0018). The
+  /// link is a transient animation timer (smooth scroll, attention pulse,
+  /// post-output hold, the legacy blink/idle floors); everything else is
+  /// event-driven through the wake sources tagged in `FrameWakeSource`.
+  /// Terminal output is painted through the `onSessionDirty` push, so a parked
+  /// link never delays output. Only the macOS-14 CADisplayLink supports cheap
+  /// pausing; the CVDisplayLink fallback (pre-macOS-14) is left running and
+  /// keeps the pre-park behavior. While parked, the temporary safety-net timer
+  /// watches for missed wakes.
   private func updateDisplayLinkRunState() {
     guard #available(macOS 14.0, *), let link = caDisplayLink as? CADisplayLink else { return }
     let policy = displayLinkPolicyState()
@@ -1029,9 +1054,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       minimum: Float(TerminalIdlePolicy.idleDisplayLinkFramesPerSecond),
       maximum: Float(TerminalIdlePolicy.activeDisplayLinkFramesPerSecond),
       preferred: Float(policy.preferredFramesPerSecond))
-    link.isPaused = !TerminalIdlePolicy.displayLinkShouldRun(
-      windowVisibleToUser: policy.windowVisibleToUser,
-      scrollAnimating: policy.scrollAnimating)
+    link.isPaused = !policy.shouldRun
+    setSafetyNetArmed(!policy.shouldRun)
+  }
+
+  /// Arm (parked) or cancel (running) the temporary missed-wake safety net.
+  /// Idempotent; transitions only. See `safetyNetTimer`.
+  private func setSafetyNetArmed(_ armed: Bool) {
+    if armed {
+      guard safetyNetTimer == nil else { return }
+      let timer = DispatchSource.makeTimerSource(queue: .main)
+      timer.schedule(
+        deadline: .now() + Self.safetyNetIntervalSeconds,
+        repeating: Self.safetyNetIntervalSeconds,
+        leeway: .seconds(5))
+      timer.setEventHandler { [weak self] in
+        self?.safetyNetTimerFired()
+      }
+      timer.resume()
+      safetyNetTimer = timer
+    } else if let timer = safetyNetTimer {
+      timer.cancel()
+      safetyNetTimer = nil
+    }
+  }
+
+  /// Safety-net check: with the link parked, did any session's dirty
+  /// generation advance without a frame syncing it? If yes, every wake source
+  /// failed — repair the screen and leave a bug signal naming the miss. A
+  /// clean check does zero render work.
+  private func safetyNetTimerFired() {
+    guard surfaceController.hasUnseenSessionActivity() else { return }
+    EventLog.shared.log(
+      "render.displayLink.safetyNetRepair",
+      [
+        "intervalSeconds": Self.safetyNetIntervalSeconds,
+        "lastWakeSource": lastWakeSource.rawValue,
+      ])
+    AppLog.render.error(
+      "display-link safety net repaired a missed wake (lastWakeSource=\(self.lastWakeSource.rawValue))"
+    )
+    // The frame this produces journals with wakeSource "safetyNet", which is
+    // the render-journal half of the bug signal.
+    advanceFrame(wake: .safetyNet)
   }
 
   /// Synchronise the blink driver with the current window-visibility state,
@@ -1052,6 +1117,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     var terminalOutputActive: Bool
     var attentionAnimating: Bool
     var scrollAnimating: Bool
+    var cursorBlinkActive: Bool
+    var idleFloorEnabled: Bool
+    var shouldRun: Bool
     var preferredFramesPerSecond: Int
     var reason: String
   }
@@ -1064,11 +1132,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let attentionAnimating =
       windowVisibleToUser && !reduceMotion
       && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: model.activeTab?.id)
+    // The owned blink timer (Stage 1) runs only while blink is enabled in
+    // Settings AND the window is visible AND the cursor is visible — exactly
+    // the legacy-blink condition the policy's blink floor carries. Blink off
+    // (the default) feeds false, so a quiescent focused terminal parks.
+    let cursorBlinkActive = blinkDriver.timerRunning
+    let shouldRun = TerminalIdlePolicy.displayLinkShouldRun(
+      windowVisibleToUser: windowVisibleToUser,
+      scrollAnimating: scrollAnimating,
+      attentionAnimating: attentionAnimating,
+      terminalOutputActive: terminalOutputActive,
+      cursorBlinkActive: cursorBlinkActive,
+      idleFloorEnabled: displayLinkIdleFloorEnabled)
     let preferred = TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
       windowVisibleToUser: windowVisibleToUser,
       scrollAnimating: scrollAnimating,
       attentionAnimating: attentionAnimating,
-      terminalOutputActive: terminalOutputActive)
+      terminalOutputActive: terminalOutputActive,
+      cursorBlinkActive: cursorBlinkActive,
+      idleFloorEnabled: displayLinkIdleFloorEnabled)
     let reason: String
     if scrollAnimating {
       reason = "scroll"
@@ -1078,14 +1160,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       reason = "terminalOutputActive"
     } else if !windowVisibleToUser {
       reason = "notVisible"
-    } else {
+    } else if cursorBlinkActive {
+      reason = "cursorBlink"
+    } else if displayLinkIdleFloorEnabled {
       reason = "idle"
+    } else {
+      reason = "parked"
     }
     return DisplayLinkPolicyState(
       windowVisibleToUser: windowVisibleToUser,
       terminalOutputActive: terminalOutputActive,
       attentionAnimating: attentionAnimating,
       scrollAnimating: scrollAnimating,
+      cursorBlinkActive: cursorBlinkActive,
+      idleFloorEnabled: displayLinkIdleFloorEnabled,
+      shouldRun: shouldRun,
       preferredFramesPerSecond: preferred,
       reason: reason)
   }
