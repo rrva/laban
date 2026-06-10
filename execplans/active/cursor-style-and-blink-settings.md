@@ -54,6 +54,25 @@ solid while typing.
   `CursorSettingsHeadlessTests` E2E (bar -> DECSCUSR 2 block -> DECSCUSR 0
   revert) 2/2 green. Commit beb16cd. Full suite: 1421 tests, 0 failures;
   `./scripts/build-app` clean.
+- [x] (2026-06-10) Review-fix round: all three findings from the first
+  review addressed.
+  Finding 1 (unreachable stop-repaint): `sync()` now captures the hidden
+  phase before `stopTimer()` resets it, re-arms `pendingFlip`, and fires
+  `onPhaseFlip` so the resign-key path repaints a solid cursor while the
+  link is parked; timer handler body extracted to `timerFired()` with a
+  `simulateTimerFireForTesting()` hook; regression test
+  `testSyncStopMidHiddenPhaseFiresRepaintAndResetsVisible` plus
+  no-spurious-repaint and hook-gating tests. `CursorBlinkDriverTests`
+  15/15. Commit 7bf0e36.
+  Finding 2 (remote styled-cursor gap): four remote-overload tests pin the
+  user-default block (full cell), bar, underline, and hidden-cursor paths
+  through `commands(from: LabandSnapshotResponse, ...)`.
+  `FrameProducerTests` 30/30. Commit 30cd6d1.
+  Finding 3 (file-local DS_ enum): `DecscsrState`/`DS_PARAM_MAX`/
+  `LabanDecscsrScanner` moved into `session_internal.h` beside the sibling
+  scanners; the session field is now properly typed and `capture.c` gates
+  on `DS_NORMAL` by name. `CursorOverrideScannerTests` 12/12.
+  Commit 79bc5cd.
 - [ ] Review Gate passed.
 
 ## Decision Log
@@ -134,6 +153,18 @@ Implementation decisions made while executing this plan:
   survives the call ordering; a consumed flag gives exactly-once semantics
   without timestamps.
   Date/Author: 2026-06-10 / Claude.
+- Decision: Remote (laband) sessions now render a solid, non-blinking
+  cursor in the user's configured style — a user blink-on setting does not
+  blink remotely. (Previously the remote cursor blinked unconditionally.)
+  Rationale: Remote frames leave `TerminalSurfaceFrame.cursorVisible` at
+  its default `false`, so `CursorBlinkDriver.sync`'s cursor-visible gate
+  never opens and the timer never runs for remote sessions. This is the
+  documented laband deferral (the snapshot ring carries no cursor
+  style/blink/override bits) and will be revisited with the ring ABI
+  follow-up; solid-in-your-chosen-style is a strict improvement over the
+  old unconditional filled-block blink. Confirmed by review observation 3;
+  no code change.
+  Date/Author: 2026-06-10 / Claude (review-fix round).
 
 ## Review Gate
 
