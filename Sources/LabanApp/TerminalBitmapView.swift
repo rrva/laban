@@ -1166,7 +1166,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       onViewportUnavailable?()
       return
     }
-    frameMetadataSignature = renderJournalMetadataSignature(for: activeTab)
+    // Only worth building when the journal can record it: the interpolation
+    // otherwise burns CPU on every display-link tick of an idle terminal.
+    frameMetadataSignature =
+      renderJournalEnabled ? renderJournalMetadataSignature(for: activeTab) : nil
 
     let windowTitle =
       model.windowTitle + TerminalCaptureIndicator.windowTitleSuffix(active: isCaptureActive)
