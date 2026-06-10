@@ -38,7 +38,20 @@ final class TerminalScrollIndicatorView: NSView {
 
   private let thumbLayer = CALayer()
   private let pillContainer = NSView()
-  private let pillLabel = NSTextField(labelWithString: "")
+  // The pill text is a CATextLayer, deliberately not an NSTextField: a text
+  // field's setStringValue invalidates intrinsic size and schedules window
+  // constraint layout, which at scroll cadence (every display-link tick)
+  // cost ~10% of all CPU. A text layer renders via CoreText with no view
+  // layout involvement.
+  private let pillTextLayer = CATextLayer()
+  private let pillFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+  private var pillTextColor = NSColor.labelColor
+  // Measured pill sizes keyed by text length. Valid because the pill text is
+  // always "<digits> / <digits>" in a monospaced-digit font: every string of
+  // the same length has the same glyph-advance multiset, so length fully
+  // determines width. Lets a scroll (where the number changes every tick but
+  // the length rarely does) skip the typesetter entirely.
+  private var pillSizeByTextLength: [Int: NSSize] = [:]
 
   private var lastInput: TerminalScrollIndicator.Input?
   private var lastOutput: TerminalScrollIndicator.Output = .hidden
@@ -87,15 +100,13 @@ final class TerminalScrollIndicatorView: NSView {
     pillContainer.translatesAutoresizingMaskIntoConstraints = true
     applyThemeChrome()
 
-    pillLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-    pillLabel.alignment = .center
-    // Manual frames throughout the pill. With the label under Auto Layout,
-    // every scroll tick's setStringValue invalidated its intrinsic size and
-    // dragged a window-wide constraint pass into the next CA commit —
-    // measured ~10% of all CPU during sustained scrolling. layoutFromOutput
-    // frames the label directly instead.
-    pillLabel.translatesAutoresizingMaskIntoConstraints = true
-    pillContainer.addSubview(pillLabel)
+    pillTextLayer.font = pillFont
+    pillTextLayer.fontSize = pillFont.pointSize
+    pillTextLayer.alignmentMode = .center
+    pillTextLayer.isWrapped = false
+    pillTextLayer.truncationMode = .none
+    pillTextLayer.contentsScale = 2
+    pillContainer.layer?.addSublayer(pillTextLayer)
     addSubview(pillContainer)
 
     themeChangeObserver = NotificationCenter.default.addObserver(
@@ -199,6 +210,18 @@ final class TerminalScrollIndicatorView: NSView {
       isHoverEdge = false
       if let lastInput { apply(input: lastInput.withHover(false)) }
     }
+  }
+
+  /// CATextLayer does not inherit the backing scale the way an NSTextField
+  /// would — without this the pill text rasterizes at 1x and blurs on Retina.
+  override func viewDidChangeBackingProperties() {
+    super.viewDidChangeBackingProperties()
+    pillTextLayer.contentsScale = window?.backingScaleFactor ?? 2
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    pillTextLayer.contentsScale = window?.backingScaleFactor ?? 2
   }
 
   override func mouseEntered(with event: NSEvent) {
@@ -344,22 +367,18 @@ final class TerminalScrollIndicatorView: NSView {
     thumbLayer.frame = NSRect(x: thumbX, y: thumbY, width: thumbWidth, height: thumbHeight)
     thumbLayer.cornerRadius = thumbWidth / 2
     thumbLayer.backgroundColor = Self.thumbColor(hover: expanded)
-    CATransaction.commit()
 
     // Pill: top-right, just under the titlebar reserve, left of the thumb.
     // Opacity (not isHidden) controls visibility — keeps the view in the tree
-    // so the fade animation can run when scrolledBack flips. Only measure and
-    // reposition while the pill is shown; the cell measurement runs the
-    // typesetter (no Auto Layout pass), and a held-visible pill reuses the
-    // cached size until its text changes.
+    // so the fade animation can run when scrolledBack flips. Only reposition
+    // while the pill is shown; the length-keyed size cache means a scroll
+    // (text changes every tick, length rarely) skips the typesetter too.
     if lastOutput.pillVisible {
       if lastOutput.pillText != lastPillText {
-        pillLabel.stringValue = lastOutput.pillText
+        pillTextLayer.string = lastOutput.pillText
         lastPillText = lastOutput.pillText
-        let textSize = pillLabel.cell?.cellSize ?? .zero
-        lastPillFittedSize = NSSize(
-          width: ceil(textSize.width) + 16, height: ceil(textSize.height) + 6)
-        pillLabel.frame = NSRect(
+        lastPillFittedSize = pillSize(for: lastOutput.pillText)
+        pillTextLayer.frame = NSRect(
           x: 8, y: 3,
           width: lastPillFittedSize.width - 16,
           height: lastPillFittedSize.height - 6)
@@ -371,6 +390,18 @@ final class TerminalScrollIndicatorView: NSView {
         x: max(pillX, 0), y: max(pillY, 0),
         width: pillSize.width, height: pillSize.height)
     }
+    CATransaction.commit()
+  }
+
+  /// Measure (or recall) the pill size for a text. Cached by length — see
+  /// `pillSizeByTextLength` for why length fully determines width here.
+  private func pillSize(for text: String) -> NSSize {
+    if let cached = pillSizeByTextLength[text.count] { return cached }
+    let measured = (text as NSString).size(withAttributes: [.font: pillFont])
+    let size = NSSize(
+      width: ceil(measured.width) + 16, height: ceil(measured.height) + 6)
+    pillSizeByTextLength[text.count] = size
+    return size
   }
 
   private func setThumbOpacity(_ value: Float, animated: Bool) {
@@ -423,7 +454,8 @@ final class TerminalScrollIndicatorView: NSView {
     let theme = Theme.current
     pillContainer.layer?.backgroundColor = Self.themedCGColor(theme.bg2, alpha: 0.94)
     pillContainer.layer?.borderColor = Self.themedCGColor(theme.dim0, alpha: 0.55)
-    pillLabel.textColor = Self.themedNSColor(theme.fg0)
+    pillTextColor = Self.themedNSColor(theme.fg0)
+    pillTextLayer.foregroundColor = pillTextColor.cgColor
   }
 
   private static func thumbColor(hover: Bool) -> CGColor {
@@ -499,7 +531,7 @@ extension TerminalScrollIndicatorView {
     ThemeChromeForTesting(
       pillBackground: pillContainer.layer?.backgroundColor,
       pillBorder: pillContainer.layer?.borderColor,
-      pillText: pillLabel.textColor)
+      pillText: pillTextColor)
   }
 
   func debugVisibility() -> DebugVisibility {
