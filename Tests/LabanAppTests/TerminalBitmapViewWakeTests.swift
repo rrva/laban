@@ -139,13 +139,19 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
     let harness = try makeHarness()
     // Creating a tab is a workspace mutation; AppModel fires
     // onSurfaceStateChanged, which the view subscribes through the
-    // display-kick coalescer.
-    let baseline = harness.view.advanceFrameCallCountForTesting
+    // display-kick coalescer. The wake must produce a RENDERED frame, not
+    // just an advanceFrame call (M2-5 review finding F1).
+    let wakeBaseline = harness.view.advanceFrameCallCountForTesting
+    let renderBaseline = harness.view.renderedFrameCountForTests
     _ = try harness.model.createTab()
 
     XCTAssertTrue(
-      drainMainQueue { harness.view.advanceFrameCallCountForTesting > baseline },
+      drainMainQueue { harness.view.advanceFrameCallCountForTesting > wakeBaseline },
       "a tab mutation must wake the frame loop via onSurfaceStateChanged -> coalescer -> advanceFrame"
+    )
+    XCTAssertTrue(
+      drainMainQueue { harness.view.renderedFrameCountForTests > renderBaseline },
+      "the model-mutation wake must repaint, not just call advanceFrame"
     )
   }
 
@@ -153,13 +159,31 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
     let harness = try makeHarness()
     let tab = try XCTUnwrap(harness.model.activeTab)
 
+    // Render to a quiescent baseline first: the next advanceFrame must
+    // early-return (no dirty output, no invalidation), proving any later
+    // render is attributable to the surface-signals wake alone. This is the
+    // F1 repaint proof: applySurfaceSignals bumps NO dirty generation, so
+    // the woken frame's gated syncSessions reports the tab unchanged — only
+    // the subscriber's own renderInvalidated can make that frame paint.
+    harness.view.advanceFrame()
+    let renderBaseline = harness.view.renderedFrameCountForTests
+    XCTAssertGreaterThan(renderBaseline, 0, "baseline frame must render")
+    harness.view.advanceFrame()
+    XCTAssertEqual(
+      harness.view.renderedFrameCountForTests, renderBaseline,
+      "harness must be quiescent before the mutation so the render delta is attributable")
+
     let signals = TabSurfaceSignals(titleDirty: true, titleRaw: "daemon title")
-    let baseline = harness.view.advanceFrameCallCountForTesting
+    let wakeBaseline = harness.view.advanceFrameCallCountForTesting
     XCTAssertTrue(harness.model.applySurfaceSignals(signals, forTab: tab.id))
 
     XCTAssertTrue(
-      drainMainQueue { harness.view.advanceFrameCallCountForTesting > baseline },
+      drainMainQueue { harness.view.advanceFrameCallCountForTesting > wakeBaseline },
       "daemon surface signals change pixels with no terminal bytes; the model-level hook is the only wake"
+    )
+    XCTAssertTrue(
+      drainMainQueue { harness.view.renderedFrameCountForTests > renderBaseline },
+      "a wake that never repaints is still a frozen screen: the woken frame must paint the signal change"
     )
   }
 

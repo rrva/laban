@@ -188,20 +188,33 @@ proven. The mitigations baked into this plan:
       `testAttentionAnimationPrefersAnimationBudgetFrameRate` asserting 30
       via the legacy shim; new full-signature tests for attention-only → 30
       and attention+output / attention+scroll → 120.
-      `TerminalIdlePolicyTests` now 25. Full `swift test`: 1454 tests,
-      12 skipped, 0 failures.
+      `TerminalIdlePolicyTests` now 25. Full `swift test` at the M2-5
+      review commit: 1455 tests, 12 skipped, 0 failures.
 - [x] (2026-06-10) Milestone 5 — automatable portion complete:
       instrumentation in place (`wakeSource` journal field + round-trip and
       legacy-decode unit test in `RenderJournalTests`; `safetyNetRepair`
       EventLog kind; `"parked"`/`"cursorBlink"` reason ladder);
       `./scripts/test-e2e` exit 0 (including the new
       `debug-script-exit-wake` scenario); full `./scripts/check` exit 0
-      (swift test 1454/0, smoke-runtime, test-e2e, labpty MC/DC 46.29% ≥
+      (swift test 1455/0, smoke-runtime, test-e2e, labpty MC/DC 46.29% ≥
       45% floor); `./scripts/build-app` clean; scroll-wake mutation check
       verified both ways during M2. `scripts/bench-idle-cpu` was NOT run by
       the executing agent: it `open`s the bundle from the shell while a
       live Laban instance is running (forbidden by AGENTS.md / the
       single-instance lock) — it belongs to the human soak below.
+- [x] (2026-06-10) Review-fix round for the M2-5 FAILED verdict (findings at
+      review commit 8db2905): F1 — the `onSurfaceStateChanged` subscriber now
+      sets `renderInvalidated = true` inside the coalesced block before
+      `advanceFrame(wake: .modelMutation)`, and both model-mutation wake
+      tests assert `renderedFrameCountForTests` advances (the repaint, not
+      just the wake); mutation-verified both ways — with the invalidation
+      commented out, `testSurfaceSignalsWakeFrameLoopThroughCoalescer` FAILS
+      (the quiescent-baseline F1 isolation; the createTab variant
+      legitimately repaints via `tabChanged`), reverted → 5/5 green. F2 —
+      the GPU-backpressure carry branch schedules its own one-shot
+      `scheduleRenderRetry()` when the park policy would not keep the link
+      running (no automated test; see Decision Log). Cosmetic test-count
+      prose corrected to 1455.
 - [ ] Milestone 5 — OPEN FOR THE HUMAN (live-app soak; the safety net stays
       in place until ALL of these pass):
       1. Install (`./scripts/install-app`), relaunch Laban yourself, verify
@@ -353,6 +366,21 @@ them without recording a superseding entry here.
   timer. That is a durable architectural policy reversal, which is exactly
   what `docs/adr/README.md` says warrants an ADR.
   Date/Author: 2026-06-10 / Claude.
+- Decision: review finding F2 (backpressure carry stranded on a parked link)
+  is fixed in code — the carry branch calls `scheduleRenderRetry()` whenever
+  `displayLinkPolicyState().shouldRun` is false — but ships WITHOUT an
+  automated test.
+  Rationale: a faithful test must produce a real GPU-backpressure render
+  failure (`lastRenderFailureReason.isGPUBackpressure`) on an
+  otherwise-quiescent window; the unit harness has no seam to starve
+  drawables, and faking the failure reason would test the mock, not the
+  branch. Manual verification path (folded into the human soak, Validation
+  §4): with the render journal enabled, after any backpressure-reason render
+  failure while the window is quiescent, a `renderRetry`-wake frame must
+  appear within the retry interval and `render.displayLink.safetyNetRepair`
+  must stay silent. If a drawable-starvation seam is ever added to the
+  renderer test harness, add the automated case then.
+  Date/Author: 2026-06-10 / Claude (review-fix round).
 
 ## Surprises & Discoveries
 

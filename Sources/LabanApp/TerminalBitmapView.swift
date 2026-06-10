@@ -460,9 +460,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // and gating live in LabanCore and are shared with HeadlessDebugRuntime;
     // this hook is AppKit-only plumbing (headless frames are endpoint-driven
     // and leave it unset).
+    //
+    // The invalidation is load-bearing (M2-5 review finding F1): these
+    // mutations bump no dirty generation, so the woken frame's gated
+    // syncSessions reports the tab unchanged and the render guard would
+    // early-return — a wake without `renderInvalidated` paints nothing and
+    // the change stays frozen on a parked window. This is
+    // `invalidateRenderAndWake()` semantics routed through the coalescer.
     model.onSurfaceStateChanged = { [weak self, displayKickCoalescer] in
       displayKickCoalescer.requestFrameAdvance {
-        self?.advanceFrame(wake: .modelMutation)
+        guard let self else { return }
+        self.renderInvalidated = true
+        self.advanceFrame(wake: .modelMutation)
       }
     }
 
@@ -1776,6 +1785,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           renderInvalidated = false
         } else {
           carryRenderInvalidationForGPUBackpressure()
+          // The "display-link-paced retry" above only exists while the link
+          // runs. A tabChanged-only or fallback-pending-only failure on an
+          // otherwise-quiescent window parks the link (the policy does not
+          // consider renderInvalidated), stranding the carried invalidation
+          // until an unrelated wake — M2-5 review finding F2. Schedule the
+          // one-shot retry ourselves exactly in that case; while the link
+          // keeps running we stay link-paced, preserving the anti-amplification
+          // behavior the GPU-freeze plan introduced (an unconditional
+          // immediate retry is what turned one slow drawable into bursts).
+          if !displayLinkPolicyState().shouldRun {
+            scheduleRenderRetry()
+          }
         }
       } else {
         renderInvalidated = true
