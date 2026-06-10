@@ -57,55 +57,39 @@ final class SessionRunnerTests: XCTestCase {
   }
 
   func testExitWakesOnDirtyWithNoOutput() throws {
-    // A child that exits with zero output must still fire onDirty: pty_io.c
-    // bumps dirty_generation on the status transition, and SessionRunner now
-    // fires onDirty on any generation advance, not only when drained > 0.
-    let exe = strdup("/bin/sh")!
-    var ptrs: [UnsafeMutablePointer<CChar>?] = [
-      strdup("/bin/sh"), strdup("-c"), strdup("exit 0"),
-    ]
-    ptrs.append(nil)
-    defer {
-      free(exe)
-      for p in ptrs { if let p { free(p) } }
-    }
-    let count = ptrs.count
-    var config = LabanLaunchConfig()
-    config.executable = UnsafePointer(exe)
-    config.fixture_mode = 0
+    // A child that exits with zero output must fire onDirty WHILE the runner
+    // loop is still running: pty_io.c bumps dirty_generation on the
+    // status 0→nonzero transition, and the runner fires on any generation
+    // advance, not only when drained > 0. This is the wake Milestone 3's
+    // full park relies on for the "process exited" UI.
+    //
+    // The wait result MUST be captured before stop(): the reader thread
+    // fires one final unconditional onDirty during teardown, so any
+    // post-stop assertion is vacuous (it passes even with the exit bump
+    // removed). Capturing the XCTWaiter result first makes this test fail
+    // when the pty_io.c exit bump is disabled — verified by mutation.
     var size = LabanTerminalSize()
     size.rows = 24
     size.cols = 80
-    let session = try ptrs.withUnsafeMutableBufferPointer { mbuf -> Session in
-      try mbuf.baseAddress!.withMemoryRebound(
-        to: UnsafePointer<CChar>?.self, capacity: count
-      ) { rebound -> Session in
-        config.argv = UnsafePointer(rebound)
-        return try Session(config: &config, size: size)
-      }
-    }
+    let session = try Session.realShell(
+      size: size, launchArgv: ["/bin/sh", "-c", "exit 0"])
     defer { session.close() }
 
-    let dirtyFired = OSAllocatedUnfairLock(initialState: false)
-    guard
-      let runner = session.makeRunner(onDirty: {
-        dirtyFired.withLock { $0 = true }
-      })
-    else {
+    let exitWake = expectation(description: "onDirty fires for zero-output child exit")
+    // The teardown fire after stop() may fulfill a second time; that is
+    // expected and must not crash the test.
+    exitWake.assertForOverFulfill = false
+    guard let runner = session.makeRunner(onDirty: { exitWake.fulfill() }) else {
       XCTFail("makeRunner returned nil for real session")
       return
     }
     runner.start()
-
-    let deadline = Date().addingTimeInterval(3.0)
-    while Date() < deadline {
-      if dirtyFired.withLock({ $0 }) { break }
-      Thread.sleep(forTimeInterval: 0.02)
-    }
+    let result = XCTWaiter.wait(for: [exitWake], timeout: 3.0)
     runner.stop()
-    XCTAssertTrue(
-      dirtyFired.withLock { $0 },
-      "onDirty must fire after a zero-output child exits (generation bump on exit)")
+    XCTAssertEqual(
+      result, .completed,
+      "onDirty must fire for a zero-output child exit before stop()/teardown; "
+        + "the pty_io.c exit-transition generation bump is the only wake source here")
   }
 
   func testRunnerOnDirtyFiresWhenRealShellOutputs() throws {

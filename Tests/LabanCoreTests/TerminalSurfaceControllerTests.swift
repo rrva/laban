@@ -1145,16 +1145,26 @@ final class TerminalSurfaceControllerTests: XCTestCase {
     XCTAssertEqual(updatedSecond.lastOutputAt, now)
   }
 
-  func testGenerationGatingDetectsChildExitWithNoOutput() throws {
-    // A child that exits without emitting bytes must still be detected:
-    // pty_io.c bumps the dirty generation on status transition, and the
-    // Swift-side dirtyGeneration() accessor returns the new value. A
-    // syncSessions call after the exit must re-run sync work and reflect
-    // the exited tab state.
+  func testGenerationGatingFlipsTabExitStateAfterZeroOutputChildExit() throws {
+    // Plan M1 step 5(d), end-to-end with a REAL exit (no feedOutput
+    // simulation): the child exits with zero output → the registry's reader
+    // thread drains EOF and pty_io.c bumps the dirty generation on the
+    // status 0→nonzero transition → the next gated syncSessions sees the
+    // generation advance, runs the sync cluster, and the tab's exit state
+    // flips — within ONE syncSessions call.
+    //
+    // Mutation-killing property: with the pty_io.c exit bump disabled, the
+    // generation never advances after the warm-up, the gated sync skips the
+    // tab, and the final assertion fails because the tab stays .running.
     var size = LabanTerminalSize()
     size.rows = 4
     size.cols = 20
-    let model = try AppModel(initialSize: size)
+    // The child sleeps long enough for the warm-up sync below to run while
+    // it is still alive, then exits emitting nothing.
+    let model = try AppModel(initialSize: size) { size in
+      try Session.realShell(
+        size: size, launchArgv: ["/bin/sh", "-c", "sleep 0.5; exit 7"])
+    }
     let tab = try XCTUnwrap(model.activeTab)
     let session = try XCTUnwrap(model.session(forTab: tab.id))
     let controller = TerminalSurfaceController(
@@ -1163,43 +1173,42 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       cellHeight: 16,
       sidebarWidth: 200)
 
-    // Warm the cache.
+    // Warm the gating cache while the child is alive. Theme-palette
+    // injection at session creation has already advanced the generation
+    // past 0, so the gate is active (a 0 generation is treated as unknown
+    // and bypasses gating, which would defeat the mutation-killing check).
+    XCTAssertGreaterThan(
+      session.dirtyGeneration(), 0,
+      "setup: generation must be nonzero so gating is active")
     _ = controller.syncSessions(
       captureFrame: 1,
       polling: .none,
       markInactiveDirtyRendered: false,
       noteOutputOnDirty: false)
-    let genBeforeExit = session.dirtyGeneration()
+    XCTAssertEqual(
+      model.tabs.first?.status, .running,
+      "setup: the tab must still be running at warm-up time")
 
-    // Simulate a child exit: feedOutput with empty bytes does not advance the
-    // generation; instead, use the public exitState path by directly polling a
-    // real exiting session. Here we read the generation before and after an
-    // exit-bump to verify the C layer works.
-    //
-    // For the pure unit test (no real PTY): record the current generation,
-    // write no bytes, then verify the gating logic handles the "generation
-    // unchanged" → "generation advanced" transition correctly. The companion
-    // SessionRunnerTests.testExitWakesOnDirtyWithNoOutput covers the live PTY.
-    XCTAssertGreaterThan(
-      genBeforeExit, 0,
-      "dirtyGeneration must be nonzero after initial fixture session creation")
+    // Wait for the registry's reader thread (the production drain path) to
+    // observe the exit; exitState() reads the C status the drain sets.
+    let deadline = Date().addingTimeInterval(5.0)
+    while session.exitState() == .running && Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    XCTAssertEqual(
+      session.exitState(), .exited(code: 7),
+      "setup: the child must have exited within the deadline")
 
-    // Write one byte to advance the generation (simulating what exit-bump does).
-    _ = session.feedOutput(Array("x".utf8))
-    let genAfterWrite = session.dirtyGeneration()
-    XCTAssertGreaterThan(
-      genAfterWrite, genBeforeExit,
-      "writing bytes must advance the dirty generation")
-
-    // syncSessions must now re-run sync work.
-    let countBefore = controller.metadataSyncCountForTesting
+    // ONE gated syncSessions call must flip the tab status: the exit bump
+    // advanced the generation, so gating lets the sync cluster run.
     _ = controller.syncSessions(
       captureFrame: 2,
       polling: .none,
       markInactiveDirtyRendered: false,
       noteOutputOnDirty: false)
-    XCTAssertGreaterThan(
-      controller.metadataSyncCountForTesting, countBefore,
-      "an advanced generation must cause sync work to run on the next tick")
+    XCTAssertEqual(
+      model.tabs.first?.status, .exited(code: 7),
+      "a zero-output child exit must flip the tab's exit state within one "
+        + "gated syncSessions call (exit → generation bump → sync runs)")
   }
 }

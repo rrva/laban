@@ -171,15 +171,28 @@ them without recording a superseding entry here.
   full park would freeze the "process exited" UI. One counter becomes the
   single currency for both gating and waking.
   Date/Author: 2026-06-10 / Claude.
-- Decision: While parked, per-tab metadata freshness (foreground process,
-  git branch dot) becomes event-driven; a quiescent tab's metadata may lag
-  until the next wake or safety-net tick.
+- Decision: Under generation gating, per-tab metadata that changes with no
+  generation bump — `session.processMetadata()` polling (foreground
+  process/pid/cwd, `TabMetadataSynchronizer`) and the pull-based git-branch
+  dot (`GitInfoTracker.refresh`, triggered only inside the gated cluster) —
+  is frozen for a quiescent tab. A wake alone does NOT repair it: a woken
+  `syncSessions` still skips the tab while its generation is unchanged, and
+  the Milestone-3 safety net fires only on generation advance. The actual
+  repair is the next terminal byte on that session (any generation bump) or
+  an explicit `invalidateSessionSyncCache()`. Milestones 2/3 must therefore
+  wire the residual cases (background git refresh completion,
+  foreground-process change without output) as model-level mutations plus
+  wakes that do not depend on the gated cluster re-running — or accompany
+  the wake with a cache invalidation — rather than assuming a wake restores
+  metadata polling. Accepted trade.
   Rationale: practically every user-visible metadata change arrives as
   terminal bytes (OSC title, OSC 7 cwd, OSC 133/agent status) and therefore
-  bumps the generation; the residual cases (background git refresh,
-  foreground-process change without output) are wired as explicit wakes in
-  Milestone 2. Accepted trade.
-  Date/Author: 2026-06-10 / settled with product owner.
+  bumps the generation; the residual lag is bounded by the tab's next
+  output byte or interaction.
+  Date/Author: 2026-06-10 / settled with product owner. Wording corrected
+  2026-06-10 after the M1 review: the original "may lag until the next wake
+  or safety-net tick" was wrong under gating — wakes re-skip on unchanged
+  generation, so a wake by itself never refreshes unbumped metadata.
 - Decision: Write ADR 0018 for this change.
   Rationale: this reverses the settled poll-with-floor frame-driving
   architecture (the link as a guaranteed periodic repaint) in favor of
@@ -924,7 +937,8 @@ measurement once on `main` before Milestone 1 so deltas are attributable.
   `cursorBlinkActive` fallback described above, but the 0–2 wakeups/s
   acceptance number assumes Stage-1's blink-off default.
 - Out of scope: `CVDisplayLink` fallback behavior (pre-macOS-14),
-  `HeadlessDebugRuntime` frame cadence (it has no link; it benefits from
-  Milestone-1 gating automatically via the shared
-  `TerminalSurfaceController`), and any change to the laband snapshot
-  publishing protocol.
+  `HeadlessDebugRuntime` frame cadence (it has no link; it is deliberately
+  EXEMPT from Milestone-1 gating — its `syncSessions` calls pass
+  `.pollAllSessions`, which bypasses the generation check entirely, keeping
+  headless sync behavior byte-identical to pre-M1), and any change to the
+  laband snapshot publishing protocol.
