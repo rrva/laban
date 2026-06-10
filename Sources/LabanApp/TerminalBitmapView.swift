@@ -290,9 +290,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     trackedMouseDragFrameTimer?.isValid == true
   }
 
-  private static let cursorBlinkInterval: TimeInterval = 0.5
-  private var cursorBlinkVisible = true
-  private var lastCursorBlinkToggleAt = Date()
+  private let blinkDriver = CursorBlinkDriver()
   private var lastRenderedCursorBlinking = false
 
   /// Coalesces wake-ups from per-session reader threads. Set to true
@@ -362,6 +360,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // callback fires on a Metal-internal queue; bounce to main before
     // touching shared state.
     installFrameCompletionHook()
+
+    // When the blink driver fires a phase flip it calls advanceFrame()
+    // directly so the cursor toggles immediately instead of waiting up to
+    // 125 ms for the next 8 Hz display-link tick.
+    blinkDriver.onPhaseFlip = { [weak self] in
+      self?.advanceFrame()
+    }
 
     // Force a full redraw on every theme swap so chrome (sidebar bg, cursor,
     // selection) re-reads `Theme.current`. AppModel re-injects the OSC
@@ -726,6 +731,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       ) { [weak self] _ in
         self?.syncActiveSessionFocus(windowFocused: false)
         self?.updateDisplayLinkRunState()
+        // Window no longer visible to user: stop the blink timer immediately
+        // so the cursor freezes solid rather than blinking behind a covered window.
+        self?.syncBlinkDriverFromWindowState()
       })
     // Occlusion changes don't fire key notifications, so observe them too:
     // becoming un-occluded must wake the parked link; becoming occluded parks
@@ -976,6 +984,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       scrollAnimating: policy.scrollAnimating)
   }
 
+  /// Synchronise the blink driver with the current window-visibility state,
+  /// without requiring a full rendered frame. Called from resign-key and
+  /// occlusion observers so the timer stops promptly when the window hides.
+  private func syncBlinkDriverFromWindowState() {
+    let windowVisibleToUser =
+      (window?.isKeyWindow == true)
+      && (window?.occlusionState.contains(.visible) ?? false)
+    blinkDriver.sync(
+      blinkActive: lastRenderedCursorBlinking,
+      windowVisibleToUser: windowVisibleToUser,
+      cursorVisible: true)   // conservative: cursor treated as visible when we lack a fresh snapshot
+  }
+
   private struct DisplayLinkPolicyState {
     var windowVisibleToUser: Bool
     var terminalOutputActive: Bool
@@ -1117,21 +1138,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   // MARK: - Frame loop
 
-  private func advanceCursorBlinkState(now: Date = Date()) -> Bool {
-    guard lastRenderedCursorBlinking else {
-      let changed = !cursorBlinkVisible
-      cursorBlinkVisible = true
-      lastCursorBlinkToggleAt = now
-      return changed
-    }
-    guard now.timeIntervalSince(lastCursorBlinkToggleAt) >= Self.cursorBlinkInterval else {
-      return false
-    }
-    cursorBlinkVisible.toggle()
-    lastCursorBlinkToggleAt = now
-    return true
-  }
-
   @objc func advanceFrame() {
     IdleCounters.shared.noteAdvanceFrame()
     // Heartbeat the stall watchdog at the top of every tick. If
@@ -1189,16 +1195,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
 
-    // Only let cursor blink drive a frame when the window is actually
-    // visible to the user. A backgrounded/occluded terminal otherwise
-    // rebuilds its frame command list twice a second purely to toggle a
-    // cursor nobody can see — measurable idle battery/thermal cost. The
-    // blink phase still advances internally so it resumes coherently on
-    // refocus. (M-7)
     let windowVisibleToUser =
       (window?.isKeyWindow == true)
       && (window?.occlusionState.contains(.visible) ?? false)
-    let cursorBlinkFrame = advanceCursorBlinkState() && windowVisibleToUser
+    // cursorBlinkFrame is true when the driver fired a phase flip since the
+    // last advanceFrame call. The driver's onPhaseFlip closure also calls
+    // advanceFrame() directly so a flip always paints immediately rather than
+    // waiting up to 125 ms for the next 8 Hz display-link tick. Here we only
+    // consume the pending-flip flag to record it in the journal and allow the
+    // guard below to proceed even when the display link is parked.
+    let cursorBlinkFrame = blinkDriver.consumePendingFlip()
 
     // Tab change interrupts any in-flight scroll animation: snap the
     // displayed position to whatever the new session is showing so the PD
@@ -1443,7 +1449,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       hoveredSidebarTabId: hoveredSidebarTabId,
       sidebarDragIndicator: sidebarDragIndicator,
       contentYOffset: scrollContentYOffset,
-      cursorBlinkVisible: cursorBlinkVisible,
+      cursorBlinkVisible: blinkDriver.phaseVisible,
       now: Date(),
       reduceMotion: reduceMotion,
       selection: currentTerminalSelection(sessionId: session.id),
@@ -1459,7 +1465,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       surfaceScale: Double(backend.surfaceScale),
       contentMode: canRequestCellPayload ? .cellPayloadPreferred : .commands,
       preedit: hasMarkedText() ? markedText.string : nil,
-      preeditCaretCells: hasMarkedText() ? markedTextCaretCells : 0
+      preeditCaretCells: hasMarkedText() ? markedTextCaretCells : 0,
+      userCursorStyle: CursorSettings.style,
+      userCursorBlinkEnabled: CursorSettings.blinkEnabled
     )
     if remoteFrame == nil, let sessionCoordinator, sessionCoordinator.usesRemoteSnapshots {
       do {
@@ -1522,10 +1530,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     lastRows = surfaceFrame.rows ?? lastRows
     let snapshotCursorBlinking = surfaceFrame.cursorBlinking
     lastRenderedCursorBlinking = snapshotCursorBlinking
-    if !snapshotCursorBlinking {
-      cursorBlinkVisible = true
-      lastCursorBlinkToggleAt = Date()
-    }
+    blinkDriver.sync(
+      blinkActive: snapshotCursorBlinking,
+      windowVisibleToUser: windowVisibleToUser,
+      cursorVisible: surfaceFrame.cursorVisible)
     let cmds = surfaceFrame.commands + surfaceFrame.overlayCommands
     // Compute damage hint from libghostty's per-row dirty bits. Tab changes
     // and renderInvalidated force .full because we may be drawing different
@@ -1823,7 +1831,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         cellPayloadRequested: cellPayloadRequested,
         gpuCellCommandFallbackPending: gpuCellCommandFallbackPending,
         modelChanged: frameModelChanged,
-        metadataSignature: frameMetadataSignature),
+        metadataSignature: frameMetadataSignature,
+        cursorBlinkTimerActive: blinkDriver.timerRunning),
       viewport: renderJournalViewportSnapshot(for: session),
       scroll: renderJournalScrollSnapshot(contentYOffset: contentYOffset),
       damage: surfaceFrame?.damage,
@@ -2610,6 +2619,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // keystroke is tracked; if you mash keys we attribute the eventual
     // visible frame to the latest one (closer to user-perceived latency).
     pendingInputAt = ContinuousClock.now
+    blinkDriver.noteInput()
     let descriptor = TerminalKeyDescriptor(keyDown: event)
     switch descriptor.route(hasMarkedText: hasMarkedText()) {
     case .appCommand(let cmd):
@@ -2641,6 +2651,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   // MARK: - NSTextInputClient
 
   func insertText(_ string: Any, replacementRange: NSRange) {
+    blinkDriver.noteInput()
     unmarkText()
     let text: String
     if let s = string as? String {

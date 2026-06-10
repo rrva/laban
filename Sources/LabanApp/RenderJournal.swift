@@ -108,6 +108,9 @@ final class RenderJournal {
     /// agentStatus/shell/exit). Diff it across consecutive entries to see which
     /// field flips and keeps re-invalidating an otherwise idle frame.
     var metadataSignature: String?
+    /// Diagnostic: whether the cursor-blink `DispatchSourceTimer` is running
+    /// this frame. Optional so old journal dumps still decode.
+    var cursorBlinkTimerActive: Bool?
   }
 
   struct ViewportSnapshot: Codable, Equatable, Sendable {
