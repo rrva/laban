@@ -1537,6 +1537,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // kills the animation (and, mid-gesture, the accumulated input).
       let desiredApplied = TerminalScrollInput.gestureDesiredAppliedRows(
         displayedRows: displayedScrollRows, targetRows: targetScrollRows)
+      let appliedBefore = appliedScrollRows
       applyScrollStep(
         toDesiredApplied: desiredApplied,
         tab: activeTab,
@@ -1544,7 +1545,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         resetOnClamp: false)
 
       renderInvalidated = true
-      activeTerminalDirty = true
+      // The grid content only changes when the integer viewport moved;
+      // fraction-only ticks repaint the cached grid at a new sub-cell
+      // offset. Marking the terminal dirty on every tick forces the full
+      // snapshot/production path ~120 times a second for the whole length
+      // of a gesture, which costs enough per frame to halve the render
+      // cadence on a 120 Hz panel.
+      if appliedScrollRows != appliedBefore {
+        activeTerminalDirty = true
+      }
       scrollAnimating = true
     } else {
       lastScrollTickAt = nil
