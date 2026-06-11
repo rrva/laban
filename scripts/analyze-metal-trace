@@ -59,6 +59,19 @@ DEEP_GPU_SCHEMAS = [
     "gpu-performance-state-intervals",
 ]
 
+RAW_NUMERIC_KEYS = {
+    "sample-time",
+    "start",
+    "start-time",
+    "end",
+    "end-time",
+    "time",
+    "timestamp",
+    "duration",
+    "elapsed-time",
+    "weight",
+}
+
 CPU_SYMBOLS = [
     "buildGPUCellPayloadInstanceListsOnce",
     "buildGPUCellInstanceLists",
@@ -140,6 +153,19 @@ class Column:
     mnemonic: str
     name: str
     engineering_type: str
+
+
+@dataclass(frozen=True)
+class TableDescriptor:
+    schema: str
+    run_number: str
+    xpath: str
+
+
+@dataclass(frozen=True)
+class StackInfo:
+    frames: list[str]
+    address_count: int = 0
 
 
 @dataclass
@@ -237,16 +263,78 @@ def table_schemas_from_toc(path: Path) -> list[str]:
     return schemas
 
 
+def xpath_literal(value: str) -> str:
+    if '"' not in value:
+        return f'"{value}"'
+    if "'" not in value:
+        return f"'{value}'"
+    parts = value.split("'")
+    return "concat(" + ", ".join(
+        [f"'{parts[0]}'"]
+        + [part for piece in parts[1:] for part in ('"\'"', f"'{piece}'")]
+    ) + ")"
+
+
+def xpath_segment(element: ET.Element) -> str:
+    tag = local_name(element.tag)
+    schema = element.attrib.get("schema")
+    if schema:
+        return f"{tag}[@schema={xpath_literal(schema)}]"
+    name = element.attrib.get("name")
+    if name:
+        return f"{tag}[@name={xpath_literal(name)}]"
+    return tag
+
+
+def table_descriptors_from_toc(path: Path) -> dict[str, list[TableDescriptor]]:
+    root = ET.parse(path).getroot()
+    descriptors: dict[str, list[TableDescriptor]] = defaultdict(list)
+    seen: set[tuple[str, str, str]] = set()
+
+    def visit(element: ET.Element, run_number: str, path_parts: list[str]) -> None:
+        tag = local_name(element.tag)
+        current = path_parts + [xpath_segment(element)]
+        if tag == "table":
+            schema = element.attrib.get("schema")
+            if schema:
+                xpath = "/" + "/".join(current)
+                key = (run_number, schema, xpath)
+                if key not in seen:
+                    seen.add(key)
+                    descriptors[schema].append(TableDescriptor(schema, run_number, xpath))
+        for child in list(element):
+            visit(child, run_number, current)
+
+    for index, run in enumerate(root):
+        if local_name(run.tag) != "run":
+            continue
+        run_number = run.attrib.get("number") or str(index + 1)
+        for child in list(run):
+            visit(child, run_number, [local_name(root.tag), f"run[@number={xpath_literal(run_number)}]"])
+    return descriptors
+
+
 def local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def child_text(element: ET.Element) -> str:
-    if element.attrib.get("fmt"):
-        return element.attrib["fmt"]
+def element_raw_text(element: ET.Element) -> str:
     pieces = [part.strip() for part in element.itertext() if part and part.strip()]
     if pieces:
         return " ".join(pieces)
+    return ""
+
+
+def child_text(element: ET.Element, key: str | None = None) -> str:
+    if key in RAW_NUMERIC_KEYS or local_name(element.tag) in RAW_NUMERIC_KEYS:
+        raw = element_raw_text(element)
+        if raw:
+            return raw
+    if element.attrib.get("fmt"):
+        return element.attrib["fmt"]
+    raw = element_raw_text(element)
+    if raw:
+        return raw
     return element.attrib.get("id") or element.attrib.get("ref") or ""
 
 
@@ -259,21 +347,91 @@ def parse_col(element: ET.Element) -> Column:
     )
 
 
+def cached_child_text(
+    element: ET.Element,
+    key: str,
+    value_cache: dict[str, str],
+) -> str:
+    ref = element.attrib.get("ref")
+    if ref is not None and ref in value_cache:
+        return value_cache[ref]
+    value = child_text(element, key)
+    element_id = element.attrib.get("id")
+    if element_id is not None:
+        value_cache[element_id] = value
+    return value
+
+
+def stack_info(
+    element: ET.Element,
+    frame_cache: dict[str, str],
+    stack_cache: dict[str, StackInfo],
+    value_cache: dict[str, str],
+) -> StackInfo:
+    stack_ref = element.attrib.get("ref")
+    if stack_ref is not None and stack_ref in stack_cache:
+        return stack_cache[stack_ref]
+
+    frames: list[str] = []
+    address_count = 0
+    for child in element.iter():
+        tag = local_name(child.tag)
+        if tag == "frame":
+            frame_ref = child.attrib.get("ref")
+            if frame_ref is not None:
+                name = frame_cache.get(frame_ref, "")
+            else:
+                name = child.attrib.get("name") or child_text(child)
+                frame_id = child.attrib.get("id")
+                if frame_id is not None:
+                    frame_cache[frame_id] = name
+            if name:
+                frames.append(name)
+        elif tag == "text-addresses":
+            text = cached_child_text(child, tag, value_cache)
+            for token in text.split():
+                try:
+                    int(token, 0)
+                except ValueError:
+                    continue
+                address_count += 1
+
+    info = StackInfo(frames=frames, address_count=address_count)
+    stack_id = element.attrib.get("id")
+    if stack_id is not None:
+        stack_cache[stack_id] = info
+    return info
+
+
 def iter_table_rows(path: Path, max_rows: int = 0) -> Iterable[tuple[list[Column], dict[str, str]]]:
     columns: list[Column] = []
+    value_cache: dict[str, str] = {}
+    frame_cache: dict[str, str] = {}
+    stack_cache: dict[str, StackInfo] = {}
     rows = 0
-    for event, element in ET.iterparse(path, events=("end",)):
+    for event, element in ET.iterparse(path, events=("start", "end")):
         tag = local_name(element.tag)
-        if tag == "col":
+        if event == "start" and tag == "table":
+            columns = []
+            value_cache = {}
+            frame_cache = {}
+            stack_cache = {}
+        elif event == "end" and tag == "col":
             columns.append(parse_col(element))
             element.clear()
-        elif tag == "row":
+        elif event == "end" and tag == "row":
             row: dict[str, str] = {}
             children = list(element)
             for index, child in enumerate(children):
                 column = columns[index] if index < len(columns) else None
                 key = column.mnemonic if column and column.mnemonic else local_name(child.tag)
-                row[key] = child_text(child)
+                row[key] = cached_child_text(child, key, value_cache)
+                if key == "stack" or local_name(child.tag) in {"tagged-backtrace", "backtrace"}:
+                    info = stack_info(child, frame_cache, stack_cache, value_cache)
+                    if info.frames:
+                        row["_stackFrames"] = "\n".join(info.frames)
+                    if info.address_count:
+                        row["_stackAddressCount"] = str(info.address_count)
             rows += 1
             yield columns, row
             element.clear()
@@ -283,6 +441,8 @@ def iter_table_rows(path: Path, max_rows: int = 0) -> Iterable[tuple[list[Column
 
 def parse_duration_ms(text: str) -> float | None:
     value = redact(text, max_len=80)
+    if re.fullmatch(r"-?\d+", value):
+        return float(value) / 1_000_000.0
     numeric_part = re.search(r"-?\d[\d,.]*", value)
     if numeric_part:
         token = numeric_part.group(0)
@@ -325,8 +485,7 @@ def process_allowed(row: dict[str, str], process_re: re.Pattern[str] | None) -> 
 
 
 def extract_frames(stack: str) -> list[str]:
-    text = redact(stack, max_len=5000)
-    chunks = re.split(r"(?:\n|\\n| {2,}|\t+| > )", text)
+    chunks = re.split(r"(?:\n|\\n| {2,}|\t+| > )", stack)
     frames: list[str] = []
     interesting = re.compile(
         r"(Laban|MetalRenderer|FrameProducer|TerminalCellPayload|MetalGlyphAtlas|"
@@ -339,6 +498,14 @@ def extract_frames(stack: str) -> list[str]:
         if len(frames) >= 8:
             break
     return frames
+
+
+def stack_text_for_row(row: dict[str, str]) -> str:
+    frames = row.get("_stackFrames", "")
+    summary = row.get("stack", "")
+    if frames:
+        return f"{frames}\n{summary}"
+    return summary
 
 
 def analyze_time_profile(
@@ -354,6 +521,8 @@ def analyze_time_profile(
     kept_processes: Counter[str] = Counter()
     candidate_processes: Counter[str] = Counter()
     stack_examples: dict[str, list[str]] = defaultdict(list)
+    rows_with_nested_frames = 0
+    rows_with_raw_backtrace_addresses = 0
 
     for row in rows:
         process_label = row.get("process") or ""
@@ -367,8 +536,11 @@ def analyze_time_profile(
         kept_processes[redact(process_label, max_len=140)] += 1
         weight_ms = parse_duration_ms(row.get("weight", "")) or 1.0
         total_weight_ms += weight_ms
-        stack = row.get("stack", "")
-        stack_text = redact(stack, max_len=8000)
+        stack_text = stack_text_for_row(row)
+        if row.get("_stackFrames"):
+            rows_with_nested_frames += 1
+        if row.get("_stackAddressCount"):
+            rows_with_raw_backtrace_addresses += 1
 
         frames = extract_frames(stack_text)
         if frames:
@@ -400,6 +572,8 @@ def analyze_time_profile(
 
     return {
         "rows": kept_rows,
+        "rowsWithNestedFrames": rows_with_nested_frames,
+        "rowsWithRawBacktraceAddresses": rows_with_raw_backtrace_addresses,
         "skippedRowsByProcessFilter": skipped_rows,
         "totalWeightMs": round(total_weight_ms, 6),
         "symbolHits": render_counter(symbol_hits, 30),
@@ -492,27 +666,48 @@ def analyze_interval_rows(
     }
 
 
-def load_table_rows(path: Path, max_rows: int) -> tuple[list[Column], list[dict[str, str]]]:
-    columns: list[Column] = []
-    rows: list[dict[str, str]] = []
-    for table_columns, row in iter_table_rows(path, max_rows=max_rows):
-        if not columns:
-            columns = list(table_columns)
-        rows.append(row)
-    return columns, rows
-
-
 def analyze_schema(
     trace: Path,
     scratch: Path,
     schema: str,
     process_re: re.Pattern[str] | None,
     max_rows: int,
+    descriptors: list[TableDescriptor],
 ) -> dict[str, Any]:
-    output = scratch / f"{schema}.xml"
-    xpath = f"/trace-toc/run/data/table[@schema='{schema}']"
-    run_xctrace_export(trace, ["--xpath", xpath], output)
-    columns, rows = load_table_rows(output, max_rows=max_rows)
+    if not descriptors:
+        descriptors = [
+            TableDescriptor(
+                schema=schema,
+                run_number="1",
+                xpath=f"/trace-toc/run/data/table[@schema={xpath_literal(schema)}]",
+            )
+        ]
+    output_paths: list[Path] = []
+    for index, descriptor in enumerate(descriptors):
+        output = scratch / f"{schema}-{index}.xml"
+        run_xctrace_export(trace, ["--xpath", descriptor.xpath], output)
+        output_paths.append(output)
+
+    columns: list[Column] = []
+
+    def rows() -> Iterable[dict[str, str]]:
+        nonlocal columns
+        remaining = max_rows
+        for output in output_paths:
+            row_limit = remaining if max_rows else 0
+            for table_columns, row in iter_table_rows(output, max_rows=row_limit):
+                if not columns:
+                    columns = list(table_columns)
+                yield row
+                if max_rows:
+                    remaining -= 1
+                    if remaining <= 0:
+                        return
+
+    if schema == "time-profile":
+        summary = analyze_time_profile(rows(), process_re)
+    else:
+        summary = analyze_interval_rows(schema, rows(), process_re)
     column_summary = [
         {
             "mnemonic": redact(col.mnemonic),
@@ -521,12 +716,9 @@ def analyze_schema(
         }
         for col in columns
     ]
-    if schema == "time-profile":
-        summary = analyze_time_profile(rows, process_re)
-    else:
-        summary = analyze_interval_rows(schema, rows, process_re)
     summary["columns"] = column_summary
-    summary["exportBytes"] = output.stat().st_size if output.exists() else 0
+    summary["exportBytes"] = sum(path.stat().st_size for path in output_paths if path.exists())
+    summary["tableExports"] = len(output_paths)
     return summary
 
 
@@ -700,6 +892,8 @@ def write_markdown(summary: dict[str, Any]) -> str:
     lines.append("")
     lines.append(
         f"Kept rows: {cpu.get('rows', 0)}; total sample weight: {cpu.get('totalWeightMs', 0.0)} ms; "
+        f"nested-frame rows: {cpu.get('rowsWithNestedFrames', 0)}; "
+        f"raw-address backtrace rows: {cpu.get('rowsWithRawBacktraceAddresses', 0)}; "
         f"process-filter skipped rows: {cpu.get('skippedRowsByProcessFilter', 0)}."
     )
     rows = [
@@ -838,6 +1032,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--all-processes", action="store_true", help="Do not filter rows by process name.")
     parser.add_argument(
+        "--cpu-only",
+        action="store_true",
+        help="Only export/analyze Time Profiler. Use with --max-rows for fast CPU hot-path iteration.",
+    )
+    parser.add_argument(
         "--schema",
         action="append",
         default=[],
@@ -871,8 +1070,8 @@ def main() -> int:
     markdown_output.parent.mkdir(parents=True, exist_ok=True)
 
     process_re = None if args.all_processes else re.compile(args.process)
-    schemas_to_request = list(DEFAULT_SCHEMAS)
-    if args.deep_gpu:
+    schemas_to_request = ["time-profile"] if args.cpu_only else list(DEFAULT_SCHEMAS)
+    if args.deep_gpu and not args.cpu_only:
         schemas_to_request.extend(DEEP_GPU_SCHEMAS)
     schemas_to_request.extend(args.schema)
 
@@ -889,6 +1088,7 @@ def main() -> int:
         run_xctrace_export(trace, ["--toc"], toc_path)
         available = table_schemas_from_toc(toc_path)
         available_set = set(available)
+        descriptors_by_schema = table_descriptors_from_toc(toc_path)
         if args.list_schemas:
             for schema in sorted(available_set):
                 print(redact(schema))
@@ -899,6 +1099,8 @@ def main() -> int:
         metal_tables: list[dict[str, Any]] = []
         cpu_summary: dict[str, Any] = {
             "rows": 0,
+            "rowsWithNestedFrames": 0,
+            "rowsWithRawBacktraceAddresses": 0,
             "skippedRowsByProcessFilter": 0,
             "totalWeightMs": 0.0,
             "symbolHits": [],
@@ -916,7 +1118,14 @@ def main() -> int:
                 continue
             try:
                 print(f"analyze-metal-trace: exporting {schema}", file=sys.stderr)
-                result = analyze_schema(trace, scratch_root, schema, process_re, args.max_rows)
+                result = analyze_schema(
+                    trace,
+                    scratch_root,
+                    schema,
+                    process_re,
+                    args.max_rows,
+                    descriptors_by_schema.get(schema, []),
+                )
             except Exception as exc:  # Keep the rest of the report useful.
                 skipped.append(f"{schema}:error:{redact(type(exc).__name__)}")
                 continue

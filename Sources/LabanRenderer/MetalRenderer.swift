@@ -1848,6 +1848,10 @@ public final class MetalRenderer: RendererBackend {
 
   private static let gpuCellActiveFlag: UInt32 = 1
   private static let gpuCellSupportedAttributes = TextAttributes.gpuCellRenderableMask
+  private static let gpuCellFontAttributes: TextAttributes = [.bold, .italic]
+  private static let gpuCellDecorationAttributes: TextAttributes = [
+    .underline, .strikethrough, .overline,
+  ]
   private static let gridAlignmentEpsilon: CGFloat = 0.001
 
   private struct TerminalGridGeometry: Equatable {
@@ -2102,12 +2106,23 @@ public final class MetalRenderer: RendererBackend {
       return false
     }
 
-    let fullCellRebuild =
-      damage == .full || geometry != cellGlyphGridGeometry
-      || geometry.cellCount != cellGlyphs.count
+    let payloadRowsAreValid = payload.dirtyRows.allSatisfy { $0 >= 0 && $0 < payload.rows }
+    let payloadFillsAllIncludedRows =
+      payloadRowsAreValid && payload.glyphs.count == payload.dirtyRows.count * geometry.cols
+    let payloadFillsEntireGrid =
+      payloadFillsAllIncludedRows && payload.dirtyRows.count == geometry.rows
+    let geometryChanged =
+      geometry != cellGlyphGridGeometry || geometry.cellCount != cellGlyphs.count
+    let fullCellRebuild = damage == .full || geometryChanged
     if fullCellRebuild, damage != .full { return false }
     if fullCellRebuild {
-      cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
+      if geometryChanged {
+        cellGlyphs = Array(repeating: Self.emptyCellGlyph, count: geometry.cellCount)
+      } else if !payloadFillsEntireGrid {
+        for index in cellGlyphs.indices {
+          cellGlyphs[index] = Self.emptyCellGlyph
+        }
+      }
       cellGlyphGridGeometry = geometry
       if !cellGlyphs.isEmpty {
         appendCellGlyphUploadRange(0..<cellGlyphs.count)
@@ -2116,8 +2131,7 @@ public final class MetalRenderer: RendererBackend {
 
     let dirtyRowsFillAllCells =
       !fullCellRebuild
-      && payload.dirtyRows.allSatisfy { $0 >= 0 && $0 < payload.rows }
-      && payload.glyphs.count == payload.dirtyRows.count * geometry.cols
+      && payloadFillsAllIncludedRows
 
     if !fullCellRebuild, case .partial = damage {
       for topDownRow in payload.dirtyRows {
@@ -2369,6 +2383,12 @@ public final class MetalRenderer: RendererBackend {
     }
 
     @inline(__always)
+    func payloadGlyphDrawsDecoration(_ glyph: TerminalCellPayload.Glyph) -> Bool {
+      glyph.underlineStyle != .none
+        || (glyph.attributes.rawValue & Self.gpuCellDecorationAttributes.rawValue) != 0
+    }
+
+    @inline(__always)
     func terminalFontInfo(
       for attributes: TextAttributes
     ) -> (font: CTFont, needsBoldFallback: Bool, needsItalicFallback: Bool) {
@@ -2389,6 +2409,8 @@ public final class MetalRenderer: RendererBackend {
       cachedPayloadNeedsItalicFallback = needsItalicFallback
       return (font, needsBoldFallback, needsItalicFallback)
     }
+
+    let defaultTerminalFontInfo = terminalFontInfo(for: [])
 
     @inline(__always)
     func recordPayloadFailure(
@@ -2416,13 +2438,21 @@ public final class MetalRenderer: RendererBackend {
     }
 
     let invAtlasSize = 1.0 / Float(glyphAtlas.textureSize)
+    let payloadOriginX = payload.origin.x
+    let payloadOriginY = payload.origin.y
+    let payloadCellWidth = payload.cellSize.width
+    let payloadCellHeight = payload.cellSize.height
+    let payloadContentYOffset = payload.contentYOffset
+    let payloadRows = payload.rows
+    let payloadCols = payload.cols
+    let maxLogicalWidth = payloadCellWidth * 2.5
     scalarEntryCacheGeneration &+= 1
     for glyph in payload.glyphs {
-      guard glyph.row >= 0, glyph.row < payload.rows else {
+      guard glyph.row >= 0, glyph.row < payloadRows else {
         recordPayloadFailure("rowOutOfBounds", glyph: glyph)
         return false
       }
-      guard glyph.col >= 0, glyph.col < payload.cols else {
+      guard glyph.col >= 0, glyph.col < payloadCols else {
         recordPayloadFailure("colOutOfBounds", glyph: glyph)
         return false
       }
@@ -2441,18 +2471,18 @@ public final class MetalRenderer: RendererBackend {
         recordPayloadFailure("missingGlyphText", glyph: glyph)
         return false
       }
-      let cellY =
-        payload.origin.y + CGFloat(payload.rows - 1 - glyph.row) * payload.cellSize.height
-        + payload.contentYOffset
-      let bottomRow = payload.rows - 1 - glyph.row
-      let cellX = payload.origin.x + CGFloat(glyph.col) * payload.cellSize.width
-      let fontInfo = terminalFontInfo(for: glyph.attributes)
+      let bottomRow = payloadRows - 1 - glyph.row
+      let cellY = payloadOriginY + CGFloat(bottomRow) * payloadCellHeight + payloadContentYOffset
+      let cellX = payloadOriginX + CGFloat(glyph.col) * payloadCellWidth
+      let fontAttrsKey = glyph.attributes.rawValue & Self.gpuCellFontAttributes.rawValue
+      let fontInfo =
+        fontAttrsKey == 0 ? defaultTerminalFontInfo : terminalFontInfo(for: glyph.attributes)
       let entry: MetalGlyphAtlas.Entry?
       if let scalarValue = glyph.scalarValue, let scalar = Unicode.Scalar(scalarValue) {
         entry = cachedScalarEntry(
           scalarValue: scalarValue,
           scalar: scalar,
-          attrsKey: UInt64(glyph.attributes.rawValue),
+          attrsKey: UInt64(fontAttrsKey),
           fontInfo: fontInfo)
       } else if glyph.scalarValue != nil {
         recordPayloadFailure("invalidScalar", glyph: glyph)
@@ -2487,7 +2517,6 @@ public final class MetalRenderer: RendererBackend {
       // Match the command-driven GPU-cell builder: some single-cell terminal UI
       // symbols (for example U+23BF/U+21B3 in fallback fonts) have two-cell ink
       // metrics even when libghostty marks the cell as narrow.
-      let maxLogicalWidth = payload.cellSize.width * 2.5
       guard let entry else {
         recordPayloadFailure("atlasEntryMissing", glyph: glyph)
         return false
@@ -2520,7 +2549,9 @@ public final class MetalRenderer: RendererBackend {
           Float(entry.pixelWidth) * invAtlasSize, Float(entry.pixelHeight) * invAtlasSize),
         flags: Self.gpuCellActiveFlag,
         fg: rgbaToFloat4(glyph.foreground))
-      appendPayloadDecorationCell(glyph)
+      if payloadGlyphDrawsDecoration(glyph) {
+        appendPayloadDecorationCell(glyph)
+      }
     }
     flushPayloadDecorationRun()
 
@@ -3179,11 +3210,12 @@ public final class MetalRenderer: RendererBackend {
     guard !ranges.isEmpty else { return target }
     cellGlyphs.withUnsafeBufferPointer { src in
       guard let base = src.baseAddress else { return }
+      let dst = target.contents()
       for range in ranges {
         guard range.lowerBound >= 0, range.upperBound <= src.count else { continue }
         let byteOffset = range.lowerBound * stride
         memcpy(
-          target.contents().advanced(by: byteOffset),
+          dst.advanced(by: byteOffset),
           base.advanced(by: range.lowerBound),
           range.count * stride)
       }

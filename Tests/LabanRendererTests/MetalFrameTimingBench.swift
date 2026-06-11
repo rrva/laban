@@ -45,6 +45,91 @@ final class MetalFrameTimingBench: XCTestCase {
     try benchMetal4EncodeOverheadSpike()
   }
 
+  func testGPUCellPayloadBuilderMicrobench() throws {
+    guard enabled() else { return }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let cols = 160
+    let rows = 48
+    let cellW: CGFloat = 9
+    let cellH: CGFloat = 19
+    let scale: CGFloat = 2
+    let surfacePxH = Int(CGFloat(rows) * cellH * scale)
+    let cases: [PayloadBuilderMicroCase] = [
+      .init(
+        label: "plain 1 row",
+        workload: .init(label: "plain 1 row", style: .ascii, dirtyRows: [rows - 1])),
+      .init(
+        label: "plain 5 rows",
+        workload: .init(label: "plain 5 rows", style: .ascii, dirtyRows: Array(20..<25))),
+      .init(
+        label: "sparse full-union",
+        workload: .init(label: "sparse full-union", style: .ascii, dirtyRows: [0, rows - 1])),
+      .init(
+        label: "dense colors",
+        workload: .init(label: "dense colors", style: .denseColor, dirtyRows: Array(20..<25))),
+      .init(
+        label: "decorated 5 rows",
+        workload: .init(label: "decorated 5 rows", style: .ascii, dirtyRows: Array(20..<25)),
+        decorateEvery: 5),
+      .init(
+        label: "sidebar active",
+        workload: .init(label: "sidebar active", style: .ascii, dirtyRows: Array(20..<25)),
+        commandMix: .sidebar),
+      .init(
+        label: "overlay+preedit",
+        workload: .init(label: "overlay+preedit", style: .ascii, dirtyRows: Array(20..<25)),
+        commandMix: .overlayPreedit),
+      .init(
+        label: "sidebar+overlay",
+        workload: .init(label: "sidebar+overlay", style: .ascii, dirtyRows: [0, 12, 23, rows - 1]),
+        commandMix: .sidebarOverlayPreedit),
+      .init(
+        label: "full repaint",
+        workload: .init(
+          label: "full repaint", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true)),
+      .init(
+        label: "fast scroll",
+        workload: .init(
+          label: "fast scroll", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true,
+          contentYOffset: -cellH / 2)),
+    ]
+
+    let samples =
+      ProcessInfo.processInfo.environment["LABAN_BENCH_PAYLOAD_SAMPLES"].flatMap(Int.init)
+      ?? 240
+    print("\n=== GPU-cell payload builder microbench (160x48, release, us) ===")
+    print("  case                  path       p50/p95/p99 us      cellGlyphs solids sidebar")
+    for benchCase in cases {
+      let build = try measureGPUCellPayloadBuilderMicroCase(
+        benchCase,
+        includeUpload: false,
+        samples: samples,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        surfacePxH: surfacePxH,
+        fontAtlas: fontAtlas)
+      let upload = try measureGPUCellPayloadBuilderMicroCase(
+        benchCase,
+        includeUpload: true,
+        samples: samples,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        surfacePxH: surfacePxH,
+        fontAtlas: fontAtlas)
+      printPayloadBuilderMicroRow(label: benchCase.label, path: "build", result: build)
+      printPayloadBuilderMicroRow(label: benchCase.label, path: "+upload", result: upload)
+    }
+  }
+
   private func benchAt(
     label: String, cols: Int, rows: Int, fontAtlas: FontAtlas
   ) throws {
@@ -638,6 +723,20 @@ final class MetalFrameTimingBench: XCTestCase {
     var fullDamage: Bool = false
     var contentYOffset: CGFloat = 0
     var rendererFallbackReason: String? = nil
+  }
+
+  private enum PayloadCommandMix {
+    case none
+    case sidebar
+    case overlayPreedit
+    case sidebarOverlayPreedit
+  }
+
+  private struct PayloadBuilderMicroCase {
+    var label: String
+    var workload: M6Workload
+    var commandMix: PayloadCommandMix = .none
+    var decorateEvery = 0
   }
 
   private struct M6HeadToHeadResult {
@@ -1297,6 +1396,211 @@ final class MetalFrameTimingBench: XCTestCase {
       counts: counts)
   }
 
+  private func measureGPUCellPayloadBuilderMicroCase(
+    _ benchCase: PayloadBuilderMicroCase,
+    includeUpload: Bool,
+    samples sampleCount: Int,
+    cols: Int,
+    rows: Int,
+    cellW: CGFloat,
+    cellH: CGFloat,
+    scale: CGFloat,
+    surfacePxH: Int,
+    fontAtlas: FontAtlas
+  ) throws -> InstanceBuildBenchResult {
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale) else {
+      XCTFail("MetalRenderer.init returned nil")
+      throw XCTSkip("MetalRenderer unavailable")
+    }
+
+    let initial = m6Payload(
+      workload: benchCase.workload,
+      cols: cols,
+      rows: rows,
+      cellW: cellW,
+      cellH: cellH,
+      seed: 0,
+      includedRows: Array(0..<rows))
+    guard
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: initial,
+        commands: [],
+        damage: .full,
+        surfacePxH: surfacePxH) != nil
+    else {
+      XCTFail("GPU cell payload builder rejected initial frame")
+      throw XCTSkip("GPU cell payload builder unavailable")
+    }
+
+    let includedRows =
+      benchCase.workload.fullDamage ? Array(0..<rows) : benchCase.workload.dirtyRows
+    let damage: RenderDamage =
+      benchCase.workload.fullDamage
+      ? .full
+      : .partial(
+        yRanges: includedRows.map { row in
+          DirtyYRange(y: CGFloat(rows - 1 - row) * cellH, height: cellH)
+        })
+
+    let poolSize = min(max(1, sampleCount), 24)
+    var pool: [(payload: TerminalCellPayload, commands: [FrameCommand])] = []
+    pool.reserveCapacity(poolSize)
+    for k in 0..<poolSize {
+      let seed = 11 + k
+      var payload = m6Payload(
+        workload: benchCase.workload,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        seed: seed,
+        includedRows: includedRows)
+      applyPayloadBuilderDecoration(to: &payload, every: benchCase.decorateEvery)
+      pool.append(
+        (
+          payload,
+          payloadBuilderCommands(
+            mix: benchCase.commandMix,
+            cols: cols,
+            rows: rows,
+            cellW: cellW,
+            cellH: cellH,
+            seed: seed,
+            dirtyRows: includedRows)
+        ))
+    }
+
+    for frame in pool {
+      if includeUpload {
+        _ = renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
+          payload: frame.payload,
+          commands: frame.commands,
+          damage: damage,
+          surfacePxH: surfacePxH)
+      } else {
+        _ = renderer.rebuildGPUCellPayloadInstancesForTesting(
+          payload: frame.payload,
+          commands: frame.commands,
+          damage: damage,
+          surfacePxH: surfacePxH)
+      }
+    }
+
+    var samples: [Double] = []
+    samples.reserveCapacity(sampleCount)
+    var counts = MetalRenderer.RenderInstanceCounts()
+    for index in 0..<sampleCount {
+      let frame = pool[index % pool.count]
+      let start = DispatchTime.now().uptimeNanoseconds
+      if includeUpload {
+        counts =
+          renderer.rebuildAndPrepareGPUCellPayloadInstancesForTesting(
+            payload: frame.payload,
+            commands: frame.commands,
+            damage: damage,
+            surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
+      } else {
+        counts =
+          renderer.rebuildGPUCellPayloadInstancesForTesting(
+            payload: frame.payload,
+            commands: frame.commands,
+            damage: damage,
+            surfacePxH: surfacePxH) ?? MetalRenderer.RenderInstanceCounts()
+      }
+      let end = DispatchTime.now().uptimeNanoseconds
+      samples.append(Double(end - start) / 1_000.0)
+    }
+    return InstanceBuildBenchResult(
+      p50Us: percentile(samples, 0.50),
+      p95Us: percentile(samples, 0.95),
+      p99Us: percentile(samples, 0.99),
+      counts: counts)
+  }
+
+  private func applyPayloadBuilderDecoration(
+    to payload: inout TerminalCellPayload,
+    every stride: Int
+  ) {
+    guard stride > 0 else { return }
+    for index in payload.glyphs.indices where index.isMultiple(of: stride) {
+      payload.glyphs[index].attributes.insert(.underline)
+      payload.glyphs[index].underlineStyle = .single
+      payload.glyphs[index].underlineColor = 0xFF_CC_33_FF
+      payload.glyphs[index].hasHyperlink = true
+    }
+  }
+
+  private func payloadBuilderCommands(
+    mix: PayloadCommandMix,
+    cols: Int,
+    rows: Int,
+    cellW: CGFloat,
+    cellH: CGFloat,
+    seed: Int,
+    dirtyRows: [Int]
+  ) -> [FrameCommand] {
+    guard mix != .none else { return [] }
+    var commands: [FrameCommand] = []
+    let surfaceRect = CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH)
+    commands.append(.rect(surfaceRect, color: 0x10_20_30_FF, source: .terminal))
+
+    let sidebarNeeded = mix == .sidebar || mix == .sidebarOverlayPreedit
+    let overlayNeeded = mix == .overlayPreedit || mix == .sidebarOverlayPreedit
+    if sidebarNeeded {
+      let sidebarX = CGFloat(cols) * cellW
+      for (offset, row) in dirtyRows.prefix(8).enumerated() {
+        let y = CGFloat(rows - 1 - row) * cellH
+        commands.append(
+          .rect(
+            CGRect(x: sidebarX, y: y, width: 144, height: cellH),
+            color: 0x21_27_35_FF,
+            source: .sidebar))
+        commands.append(
+          .glyphRun(
+            origin: CGPoint(x: sidebarX + 6, y: y),
+            text: "tab\(offset)-\(seed % 10)",
+            foreground: 0xEE_F2_FF_FF,
+            background: 0x21_27_35_FF,
+            attributes: offset.isMultiple(of: 2) ? [.bold] : [],
+            source: .sidebar,
+            underlineStyle: offset.isMultiple(of: 3) ? .single : .none,
+            underlineColor: 0x7D_BA_FF_FF))
+      }
+    }
+
+    if overlayNeeded {
+      for row in dirtyRows.prefix(4) {
+        let y = CGFloat(rows - 1 - row) * cellH
+        commands.append(
+          .selection(
+            CGRect(x: 12 * cellW, y: y, width: 18 * cellW, height: cellH),
+            color: 0x3D_5A_80_99))
+        commands.append(
+          .findMatch(
+            CGRect(x: 44 * cellW, y: y, width: 10 * cellW, height: cellH),
+            color: 0xFF_CC_33_88))
+      }
+      let preeditRow = dirtyRows.last ?? max(0, rows - 1)
+      let preeditY = CGFloat(rows - 1 - preeditRow) * cellH
+      commands.append(
+        .rect(
+          CGRect(x: 3 * cellW, y: preeditY, width: 8 * cellW, height: cellH),
+          color: 0x00_00_00_FF,
+          source: .preedit))
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: 3 * cellW, y: preeditY),
+          text: "input\(seed % 10)",
+          foreground: 0xFF_FF_FF_FF,
+          background: 0x00_00_00_FF,
+          attributes: [.underline],
+          source: .preedit,
+          underlineStyle: .single,
+          underlineColor: 0xFF_FF_FF_FF))
+    }
+    return commands
+  }
+
   private func printGPUCellBuildRow(
     label: String,
     path: String,
@@ -1312,6 +1616,24 @@ final class MetalFrameTimingBench: XCTestCase {
         result.p99Us,
         result.counts.cellGlyphs,
         result.counts.solids))
+  }
+
+  private func printPayloadBuilderMicroRow(
+    label: String,
+    path: String,
+    result: InstanceBuildBenchResult
+  ) {
+    print(
+      String(
+        format: "  %-21@ %-8@ %.1f/%.1f/%.1f        %10d %5d %7d",
+        label as NSString,
+        path as NSString,
+        result.p50Us,
+        result.p95Us,
+        result.p99Us,
+        result.counts.cellGlyphs,
+        result.counts.solids,
+        result.counts.sidebarGlyphs))
   }
 
   private func printInstanceBuildRow(
