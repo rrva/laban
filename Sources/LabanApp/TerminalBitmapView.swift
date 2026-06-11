@@ -165,6 +165,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// motion-sensitive user gets a steady marker instead of a breathing one.
   private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
   private var terminalOutputActiveUntil = Date.distantPast
+  /// While a precise scroll stream is flowing, the display link paces
+  /// rendering at the panel rate instead of a synchronous render per wheel
+  /// event: per-event full-damage renders saturate the main loop at larger
+  /// window sizes, which coalesces a 120 Hz event stream (and the frames
+  /// with it) down to ~60 fps. Stamped forward by every precise event;
+  /// expiry parks the link via the normal policy reconcile once the settle
+  /// finishes.
+  private var preciseScrollStreamActiveUntil = Date.distantPast
+  private static let preciseScrollStreamLinkHoldSeconds: TimeInterval = 0.25
   private var lastDisplayLinkTickAt: Date?
   private var lastDisplayLinkTickIntervalMs: Double?
   private var lastRenderedActiveTabId: Tab.ID?
@@ -1100,6 +1109,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// pausing; the CVDisplayLink fallback (pre-macOS-14) is left running and
   /// keeps the pre-park behavior. While parked, the temporary safety-net timer
   /// watches for missed wakes.
+  /// Whether the CADisplayLink exists and is actively ticking. False on the
+  /// macOS 13 CVDisplayLink fallback (which cannot pause, so per-event scroll
+  /// wakes remain the pacing mechanism there).
+  private var displayLinkIsTicking: Bool {
+    guard #available(macOS 14.0, *), let link = caDisplayLink as? CADisplayLink else {
+      return false
+    }
+    return !link.isPaused
+  }
+
   private func updateDisplayLinkRunState() {
     guard #available(macOS 14.0, *), let link = caDisplayLink as? CADisplayLink else { return }
     let policy = displayLinkPolicyState()
@@ -1190,16 +1209,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // the legacy-blink condition the policy's blink floor carries. Blink off
     // (the default) feeds false, so a quiescent focused terminal parks.
     let cursorBlinkActive = blinkDriver.timerRunning
+    // An active precise scroll stream keeps the link at the panel rate so
+    // the link, not per-event synchronous renders, paces frames (see
+    // `preciseScrollStreamActiveUntil`). Same policy lever as a settling
+    // scroll animation.
+    let preciseScrollStreamActive =
+      windowVisibleToUser && preciseScrollStreamActiveUntil > now
+    let scrollLinkActive = scrollAnimating || preciseScrollStreamActive
     let shouldRun = TerminalIdlePolicy.displayLinkShouldRun(
       windowVisibleToUser: windowVisibleToUser,
-      scrollAnimating: scrollAnimating,
+      scrollAnimating: scrollLinkActive,
       attentionAnimating: attentionAnimating,
       terminalOutputActive: terminalOutputActive,
       cursorBlinkActive: cursorBlinkActive,
       idleFloorEnabled: displayLinkIdleFloorEnabled)
     let preferred = TerminalIdlePolicy.preferredDisplayLinkFramesPerSecond(
       windowVisibleToUser: windowVisibleToUser,
-      scrollAnimating: scrollAnimating,
+      scrollAnimating: scrollLinkActive,
       attentionAnimating: attentionAnimating,
       terminalOutputActive: terminalOutputActive,
       cursorBlinkActive: cursorBlinkActive,
@@ -1207,6 +1233,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let reason: String
     if scrollAnimating {
       reason = "scroll"
+    } else if preciseScrollStreamActive {
+      reason = "preciseScroll"
     } else if attentionAnimating {
       reason = "attention"
     } else if terminalOutputActive {
@@ -4036,10 +4064,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       case .none:
         break
       }
-      // Single scroll wake, same as the quantized path below: the frame it
-      // produces sets `scrollAnimating` whenever a settle retarget left an
-      // error, and the defer-reconcile un-parks the link until convergence.
-      advanceFrame(wake: .scrollWheel)
+      // Let the display link pace rendering at the panel rate while the
+      // stream flows: a synchronous full-damage render per event saturates
+      // the main loop at larger window sizes and coalesces a 120 Hz event
+      // stream (and the frames with it) down to ~60 fps. The first event of
+      // a gesture finds the link parked and renders + un-parks explicitly
+      // (ADR 0018 wake discipline); subsequent events only update state and
+      // the next tick paints it. macOS 13's CVDisplayLink fallback reports
+      // not-ticking and keeps the per-event wake.
+      preciseScrollStreamActiveUntil = Date().addingTimeInterval(
+        Self.preciseScrollStreamLinkHoldSeconds)
+      if displayLinkIsTicking {
+        updateDisplayLinkRunState()
+      } else {
+        advanceFrame(wake: .scrollWheel)
+      }
       return
     }
 
