@@ -1630,15 +1630,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     // Sub-cell pixel offset for smooth scroll. Fractional remainder of the
     // PD-controlled displayed position is rendered as a vertical pixel
-    // shift on the terminal cells; sign matches the existing scrollViewport
-    // direction so positive = same direction as a positive scrollViewport
-    // delta. Zero when no scroll is in flight.
+    // shift on the terminal cells. Sign: FrameProducer's cell coordinates
+    // are Y-up (`cellY = originY + (rows-1-row)*ch + offset`), and the
+    // continuity requirement fixes the sign — rendering the same `displayed`
+    // position through adjacent applied/fraction splits must place the same
+    // content line at the same screen Y, which holds only for
+    // `+subCellRows * cellHeight`. The previous negative sign made the glass
+    // creep half a row backward through each fraction sweep and leap two
+    // rows at every applied step (invisible at ≥1 row/frame, a sawtooth at
+    // slow momentum tails). Zero when no scroll is in flight.
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     // Snapped to whole device pixels so glyphs never rasterize at subpixel
     // positions while content is in motion (text stays sharp mid-scroll).
     let surfaceScale = max(1, CGFloat(backend.surfaceScale))
     let scrollContentYOffset =
-      (-CGFloat(subCellRows) * CGFloat(cellHeight) * surfaceScale).rounded() / surfaceScale
+      (CGFloat(subCellRows) * CGFloat(cellHeight) * surfaceScale).rounded() / surfaceScale
     let insets = Self.contentInsets
     let metalRenderer = backend as? MetalRenderer
     let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
