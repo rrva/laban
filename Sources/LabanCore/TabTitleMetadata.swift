@@ -595,8 +595,14 @@ public enum TabTitleResolver {
     return String(view)
   }
 
+  /// Hoisted: `CharacterSet(charactersIn:)` allocates per call, and pathTail
+  /// runs per tab per frame whenever the sidebar rebuilds (every frame while
+  /// an attention marker pulses) — Instruments showed the allocation as a
+  /// top main-thread cost during streaming-load typing latency.
+  private static let pathSeparatorSet = CharacterSet(charactersIn: "/")
+
   private static func pathTail(_ path: String) -> String {
-    let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let trimmed = path.trimmingCharacters(in: pathSeparatorSet)
     if trimmed.isEmpty { return "/" }
     return String(trimmed.split(separator: "/").last ?? Substring(trimmed))
   }
