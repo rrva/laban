@@ -286,6 +286,35 @@ final class TerminalScrollInputTests: XCTestCase {
     XCTAssertEqual(TerminalScrollInput.settledTargetRows(displayedRows: 0.4), 0)
   }
 
+  func testInputVelocityEstimateSmoothsTowardInstantaneous() {
+    // 0.5 rows in 10 ms = 50 rows/s instantaneous; EMA moves 30% per event.
+    let v1 = TerminalScrollInput.updatedInputVelocityEstimate(
+      previous: 0, deltaRows: -0.5, dtSeconds: 0.010)
+    XCTAssertEqual(v1, -15.0, accuracy: 1e-9)
+    let v2 = TerminalScrollInput.updatedInputVelocityEstimate(
+      previous: v1, deltaRows: -0.5, dtSeconds: 0.010)
+    XCTAssertEqual(v2, -25.5, accuracy: 1e-9)
+  }
+
+  func testInputVelocityEstimateIgnoresDegenerateGaps() {
+    XCTAssertEqual(
+      TerminalScrollInput.updatedInputVelocityEstimate(
+        previous: -10, deltaRows: -0.5, dtSeconds: 0),
+      -10, "a zero/near-zero event gap must not produce an infinite velocity")
+  }
+
+  func testAdaptiveScrollOmegaScalesWithSpeedAndCaps() {
+    XCTAssertEqual(
+      TerminalScrollInput.adaptiveScrollOmega(inputRowsPerSec: 0, baseOmega: 50), 50,
+      "slow input keeps the base stiffness (maximum smoothing window)")
+    XCTAssertEqual(
+      TerminalScrollInput.adaptiveScrollOmega(inputRowsPerSec: -20, baseOmega: 50), 190,
+      "stiffness scales with input speed to keep follower lag bounded")
+    XCTAssertEqual(
+      TerminalScrollInput.adaptiveScrollOmega(inputRowsPerSec: 200, baseOmega: 50), 400,
+      "capped so the stiffness stays a smoothing filter, not a pass-through")
+  }
+
   func testPreciseSettleActionMomentumEndSettlesNow() {
     XCTAssertEqual(
       TerminalScrollInput.preciseSettleAction(

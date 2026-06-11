@@ -7,9 +7,12 @@ import XCTest
 
 @testable import LabanApp
 
-/// Pixel-smooth precise scrolling: trackpad input tracks the finger in
-/// fractional rows (integer part on the libghostty viewport, remainder as the
-/// sub-cell render offset) and quantizes onto a whole row only at rest.
+/// Pixel-smooth precise scrolling: trackpad input accumulates a fractional
+/// target that the rendered position chases through the per-tick PD resampler
+/// (velocity-continuous even when macOS quantizes slow deltas to whole
+/// points); the integer part lands on the libghostty viewport, the remainder
+/// renders as the sub-cell offset, and the position quantizes onto a whole
+/// row only at rest.
 final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
 
   override func setUp() {
@@ -106,10 +109,11 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
         view.scrollWheel(with: preciseWheel(rowsUp: 0.25, cellHeight: cellHeight))
       }
 
-      let snap = view.debugScrollSnapshot()
       XCTAssertEqual(
-        snap.displayed, -2.5, accuracy: 1e-9,
+        view.debugScrollSnapshot().target, -2.5, accuracy: 1e-9,
         "ten quarter-row events must accumulate to 2.5 rows of history")
+      settleAnimation(view)
+      XCTAssertEqual(view.debugScrollSnapshot().displayed, -2.5, accuracy: 1e-9)
       XCTAssertGreaterThan(
         try linesBack(session), 0,
         "slow sub-row scrolling must actually leave the live bottom")
@@ -130,9 +134,12 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
 
       view.scrollWheel(with: preciseWheel(rowsUp: 1.5, cellHeight: cellHeight))
 
+      XCTAssertEqual(
+        view.debugScrollSnapshot().target, -1.5, accuracy: 1e-9,
+        "the target accumulates the input 1:1")
+      settleAnimation(view)
       let snap = view.debugScrollSnapshot()
-      XCTAssertEqual(snap.displayed, -1.5, accuracy: 1e-9)
-      XCTAssertEqual(snap.target, -1.5, accuracy: 1e-9, "gesture tracks 1:1, no controller lag")
+      XCTAssertEqual(snap.displayed, -1.5, accuracy: 1e-9, "the resampler converges on the target")
       XCTAssertEqual(
         snap.applied,
         TerminalScrollInput.gestureDesiredAppliedRows(displayedRows: -1.5, targetRows: -1.5),
@@ -152,7 +159,7 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
       view.advanceFrame()
 
       view.scrollWheel(with: preciseWheel(rowsUp: 1.25, cellHeight: cellHeight))
-      XCTAssertEqual(view.debugScrollSnapshot().displayed, -1.25, accuracy: 1e-9)
+      XCTAssertEqual(view.debugScrollSnapshot().target, -1.25, accuracy: 1e-9)
 
       view.scrollWheel(
         with: preciseWheel(rowsUp: 0, cellHeight: cellHeight, momentumPhase: .ended))
@@ -180,10 +187,11 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
 
       stream(0..<120)
       view.scrollWheel(with: preciseWheel(rowsUp: 5.5, cellHeight: cellHeight))
+      settleAnimation(view)
       XCTAssertGreaterThan(try linesBack(session), 0, "scrolled back into history")
 
       view.scrollWheel(with: preciseWheel(rowsUp: -6, cellHeight: cellHeight))
-      view.advanceFrame()
+      settleAnimation(view)
       XCTAssertEqual(
         try linesBack(session), 0,
         "a fractional gesture overshooting the bottom clamps to the live bottom")
@@ -210,6 +218,7 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
 
       view.scrollWheel(
         with: preciseWheel(rowsUp: 1.4, cellHeight: cellHeight, phase: .changed))
+      settleAnimation(view)
       XCTAssertEqual(view.debugScrollSnapshot().displayed, -1.4, accuracy: 1e-9)
 
       // Let any (wrongly) armed quiescence timer fire and animate.
@@ -222,10 +231,10 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
     }
   }
 
-  /// A gesture resuming after a settle retarget must continue from the
-  /// on-glass position, not the rounded target — otherwise the finger's
-  /// first delta is partially eaten by the rounding distance (a jump).
-  func testResumedGestureContinuesFromOnGlassPosition() throws {
+  /// A gesture resuming after a momentum-end settle accumulates on the
+  /// settled whole-row target; glass continuity across the retarget is the
+  /// resampler's job (displayed chases, it never jumps).
+  func testResumedGestureAccumulatesOnSettledTarget() throws {
     try withSoftwareRenderer {
       let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)
       let activeTab = try XCTUnwrap(model.activeTab)
@@ -237,17 +246,16 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
       view.scrollWheel(with: preciseWheel(rowsUp: 1.25, cellHeight: cellHeight))
       view.scrollWheel(
         with: preciseWheel(rowsUp: 0, cellHeight: cellHeight, momentumPhase: .ended))
-      // Settle retargeted to -1 while displayed sits near -1.25 (the PD may
-      // have nudged it slightly toward the target already).
+      // Settle retargeted the accumulated -1.25 onto the whole row -1.
 
       view.scrollWheel(
         with: preciseWheel(rowsUp: 0.25, cellHeight: cellHeight, phase: .changed))
 
-      // From the rounded target the result would be -1.25 (motion eaten);
-      // from the on-glass position it is ≈ -1.5 minus one PD tick.
-      XCTAssertLessThan(
-        view.debugScrollSnapshot().displayed, -1.4,
-        "the resumed delta must move content from the on-glass position, not the settle target")
+      XCTAssertEqual(
+        view.debugScrollSnapshot().target, -1.25, accuracy: 1e-9,
+        "the resumed delta accumulates on the settled whole-row target")
+      settleAnimation(view)
+      XCTAssertEqual(view.debugScrollSnapshot().displayed, -1.25, accuracy: 1e-9)
     }
   }
 
@@ -263,7 +271,7 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
       view.advanceFrame()
 
       view.scrollWheel(with: preciseWheel(rowsUp: 1.4, cellHeight: cellHeight))
-      XCTAssertEqual(view.debugScrollSnapshot().displayed, -1.4, accuracy: 1e-9)
+      XCTAssertEqual(view.debugScrollSnapshot().target, -1.4, accuracy: 1e-9)
 
       // No phases, no momentum end: only the quiescence timer can settle.
       RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))

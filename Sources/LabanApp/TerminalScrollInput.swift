@@ -122,6 +122,34 @@ enum TerminalScrollInput {
     return hasFraction ? .armQuiescence : .none
   }
 
+  /// Exponentially-smoothed input velocity estimate (rows/sec) updated from
+  /// one precise event's delta and inter-event gap. Drives the resampler
+  /// stiffness only — never positions — so estimate noise cannot move
+  /// content.
+  static func updatedInputVelocityEstimate(
+    previous: Double,
+    deltaRows: Double,
+    dtSeconds: Double
+  ) -> Double {
+    guard dtSeconds > 0.0005 else { return previous }
+    let instantaneous = deltaRows / dtSeconds
+    return previous + 0.3 * (instantaneous - previous)
+  }
+
+  /// Speed-adaptive stiffness for the precise-input resampler. A critically
+  /// damped follower trails its target by ≈ 2·v/ω, so a fixed ω is either
+  /// too soft at flick speed (rubber-band lag) or too stiff at reading
+  /// speed (reproduces the whole-point input pulses it exists to smooth).
+  /// Scaling ω with input speed keeps lag under ~a quarter row everywhere
+  /// while giving slow scrolling a ~15-20 ms smoothing window — enough to
+  /// turn macOS's quantized 1-pt momentum deltas into continuous motion.
+  static func adaptiveScrollOmega(
+    inputRowsPerSec: Double,
+    baseOmega: Double
+  ) -> Double {
+    min(400, baseOmega + 7.0 * abs(inputRowsPerSec))
+  }
+
   static func mouseTrackingWheelDirection(event: Event) -> WheelDirection? {
     let signedDelta =
       event.hasPreciseScrollingDeltas

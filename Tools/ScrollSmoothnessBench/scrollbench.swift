@@ -45,6 +45,7 @@ struct Config {
     var outDir: String?
     var list = false
     var flick = false
+    var observeSeconds = 0.0
 }
 
 func die(_ msg: String) -> Never {
@@ -74,6 +75,7 @@ func parseArgs() -> Config {
         case "--out": c.outDir = next(a)
         case "--list": c.list = true
         case "--flick": c.flick = true
+        case "--observe": c.observeSeconds = Double(next(a)) ?? 0
         case "-h", "--help":
             print(
                 """
@@ -92,6 +94,9 @@ func parseArgs() -> Config {
                                           --velocity) then momentum events decaying exp(t/0.65s),
                                           with scroll/momentum phase fields set. Prints the
                                           tail displacement series to spot end-of-gesture jank.
+                  --observe <s>           inject nothing; capture the window for <s> seconds while
+                                          a human scrolls it manually, then run the same analysis.
+                                          Needs only Screen Recording (no Accessibility).
                 """)
             exit(0)
         default: die("unknown arg \(a) (try --help)")
@@ -349,13 +354,15 @@ struct Scrollbench {
         }
         let scApp = win.owningApplication!
 
-        // Accessibility needed to post scroll events.
-        let axOpts =
-            [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(axOpts) {
-            die(
-                "no Accessibility permission (needed to inject scroll events). Grant it to your terminal app in System Settings > Privacy & Security > Accessibility, then re-run."
-            )
+        // Accessibility needed to post scroll events (not in observe mode).
+        if cfg.observeSeconds <= 0 {
+            let axOpts =
+                [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            if !AXIsProcessTrustedWithOptions(axOpts) {
+                die(
+                    "no Accessibility permission (needed to inject scroll events). Grant it to your terminal app in System Settings > Privacy & Security > Accessibility, then re-run."
+                )
+            }
         }
 
         // Display timing.
@@ -363,11 +370,14 @@ struct Scrollbench {
         if refresh < 1 { refresh = Double(NSScreen.main?.maximumFramesPerSecond ?? 60) }
         let captureFps = cfg.fps > 0 ? cfg.fps : Int(refresh.rounded())
 
-        // Bring target frontmost, park the cursor over it.
-        NSRunningApplication(processIdentifier: pid_t(scApp.processID))?.activate()
+        // Bring target frontmost, park the cursor over it (the human owns
+        // the cursor in observe mode).
         let center = CGPoint(x: win.frame.midX, y: win.frame.midY)
-        CGWarpMouseCursorPosition(center)
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        if cfg.observeSeconds <= 0 {
+            NSRunningApplication(processIdentifier: pid_t(scApp.processID))?.activate()
+            CGWarpMouseCursorPosition(center)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
 
         // Capture setup.
         let filter = SCContentFilter(desktopIndependentWindow: win)
@@ -404,22 +414,32 @@ struct Scrollbench {
             var value: (gestureEndS: Double, momentumEndS: Double)?
         }
         let flickMarkers = FlickMarkers()
+        if cfg.observeSeconds > 0 {
+            print(
+                "observe mode: scroll the target window manually NOW — capturing for \(Int(cfg.observeSeconds))s…"
+            )
+        }
         let tInjStart = CACurrentMediaTime()
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            let th = Thread {
-                if cfg.flick {
-                    flickMarkers.value = injectFlick(
-                        velocityPxPerS: cfg.velocity, eventHz: cfg.eventHz,
-                        sign: cfg.directionUp ? 1 : -1, at: center)
-                } else {
-                    injectScroll(
-                        durationS: cfg.duration, velocityPxPerS: cfg.velocity, eventHz: cfg.eventHz,
-                        sign: cfg.directionUp ? 1 : -1, at: center)
+        if cfg.observeSeconds > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(cfg.observeSeconds * 1e9))
+        } else {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                let th = Thread {
+                    if cfg.flick {
+                        flickMarkers.value = injectFlick(
+                            velocityPxPerS: cfg.velocity, eventHz: cfg.eventHz,
+                            sign: cfg.directionUp ? 1 : -1, at: center)
+                    } else {
+                        injectScroll(
+                            durationS: cfg.duration, velocityPxPerS: cfg.velocity,
+                            eventHz: cfg.eventHz,
+                            sign: cfg.directionUp ? 1 : -1, at: center)
+                    }
+                    cont.resume()
                 }
-                cont.resume()
+                th.qualityOfService = .userInteractive
+                th.start()
             }
-            th.qualityOfService = .userInteractive
-            th.start()
         }
         let tInjEnd = CACurrentMediaTime()
 
@@ -428,9 +448,13 @@ struct Scrollbench {
         collector.queue.sync {}
 
         // Analysis window: skip ramp-in/out. A flick wants the whole gesture
-        // including the momentum tail and the post-input settle.
-        let w0 = cfg.flick ? tInjStart + 0.05 : tInjStart + 0.3
-        let w1 = cfg.flick ? tInjEnd + 0.45 : tInjEnd - 0.1
+        // including the momentum tail and the post-input settle; observe mode
+        // takes everything the human did.
+        let w0 = (cfg.flick || cfg.observeSeconds > 0) ? tInjStart + 0.05 : tInjStart + 0.3
+        let w1 =
+            cfg.observeSeconds > 0
+            ? tInjEnd
+            : (cfg.flick ? tInjEnd + 0.45 : tInjEnd - 0.1)
         let samples = collector.samples
         guard samples.count > 10 else {
             die("only \(samples.count) frames captured — is the window visible and unoccluded?")

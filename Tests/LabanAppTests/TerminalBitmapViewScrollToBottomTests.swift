@@ -59,6 +59,18 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
     )
   }
 
+  /// Precise input drives the target accumulator; the rendered position
+  /// chases it through the per-tick PD resampler. Run ticks until it
+  /// converges so the assertions below stay about destinations, not lag.
+  private func converge(_ view: TerminalBitmapView) {
+    for _ in 0..<500 {
+      view.advanceFrame()
+      let snap = view.debugScrollSnapshot()
+      if !snap.animating && snap.displayed == snap.target { return }
+      usleep(2000)
+    }
+  }
+
   func testScrollToBottomReengagesActiveAfterStreamingWhileScrolledBack() throws {
     try withSoftwareRenderer {
       let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)
@@ -80,7 +92,7 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
 
       // User scrolls up ~30 rows to re-read earlier output.
       view.scrollWheel(with: wheel(rowsUp: 30, cellHeight: cellHeight))
-      view.advanceFrame()
+      converge(view)
       XCTAssertGreaterThan(try linesBack(), 0, "scrolled back into history")
 
       // Codex keeps streaming while the user is scrolled back — this pushes the
@@ -93,7 +105,7 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
       // them ~80 rows short of the live bottom; the snap-to-active makes it land
       // on the bottom regardless of how far output moved it.
       view.scrollWheel(with: wheel(rowsUp: -30, cellHeight: cellHeight))
-      view.advanceFrame()
+      converge(view)
       XCTAssertEqual(
         try linesBack(), 0,
         "scroll-to-bottom must reach the live bottom even though output streamed past it")
@@ -150,7 +162,7 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
 
       // User scrolls up a few rows to re-read recent output.
       view.scrollWheel(with: wheel(rowsUp: 3, cellHeight: cellHeight))
-      view.advanceFrame()
+      converge(view)
       XCTAssertGreaterThan(try linesBack(), 0, "scrolled back into history")
 
       // Now nudge down one row per frame while output streams one row per frame.
@@ -161,6 +173,7 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
         view.scrollWheel(with: wheel(rowsUp: -1, cellHeight: cellHeight))
         view.advanceFrame()
       }
+      converge(view)
       XCTAssertEqual(
         try linesBack(), 0,
         "incremental scroll-down during streaming must reach and follow the live bottom")
@@ -191,7 +204,7 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
 
       // Scroll far up into history.
       view.scrollWheel(with: wheel(rowsUp: 60, cellHeight: cellHeight))
-      view.advanceFrame()
+      converge(view)
       // App streams a large burst while the user reads deep in history, moving
       // the live bottom far past where a small down-scroll would land.
       session.write(Array((120..<180).map { "line \($0)\r\n" }.joined().utf8))
@@ -203,7 +216,7 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
       // its aim because output streamed — but it is nowhere near the bottom, so
       // it must stay in history rather than snapping to follow.
       view.scrollWheel(with: wheel(rowsUp: -5, cellHeight: cellHeight))
-      view.advanceFrame()
+      converge(view)
       XCTAssertGreaterThan(
         try linesBack(), 30,
         "a small down-scroll deep in history must not snap to the live bottom")
@@ -223,10 +236,10 @@ final class TerminalBitmapViewScrollToBottomTests: XCTestCase {
       view.advanceFrame()
 
       view.scrollWheel(with: wheel(rowsUp: 40, cellHeight: cellHeight))
-      view.advanceFrame()
+      converge(view)
       // Scroll back down only 10 of the 40 rows.
       view.scrollWheel(with: wheel(rowsUp: -10, cellHeight: cellHeight))
-      view.advanceFrame()
+      converge(view)
 
       let vs = try XCTUnwrap(session.viewportState())
       let linesBack = max(0, max(0, vs.totalRows - vs.viewportRows) - vs.viewportOffset)
