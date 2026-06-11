@@ -39,6 +39,36 @@ static int laban_session_encode_paste_locked(
     bool bracketed = false;
     ghostty_terminal_mode_get(s->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &bracketed);
 
+    if (bracketed) {
+        /* Inside the 200~/201~ fence the payload is delivered byte-for-byte:
+         * apps expect pasted escape sequences (e.g. an ANSI-colored snippet)
+         * as literal content, and the fence already stops the terminal from
+         * interpreting them. ghostty_paste_encode would replace ESC (and
+         * other control bytes) with spaces, so the fence is built here
+         * instead. The one sequence that must not survive verbatim is an
+         * embedded end fence ESC[201~ — it would close the bracket early and
+         * let the remainder inject commands — so its ESC becomes a space. */
+        static const char fence_start[] = "\x1b[200~";
+        static const char fence_end[] = "\x1b[201~";
+        const size_t fence_len = sizeof(fence_start) - 1;
+        size_t total = len + 2 * fence_len;
+        if (total > out_capacity) return -1;
+
+        memcpy(out_bytes, fence_start, fence_len);
+        uint8_t *payload = out_bytes + fence_len;
+        if (len > 0) memcpy(payload, bytes, len);
+        for (size_t i = 0; i + fence_len <= len; i++) {
+            if (memcmp(payload + i, fence_end, fence_len) == 0) {
+                payload[i] = ' ';
+            }
+        }
+        memcpy(payload + len, fence_end, fence_len);
+
+        *out_len = total;
+        *out_bracketed = 1;
+        return 0;
+    }
+
     /* ghostty_paste_encode mutates input in place; make a writable copy. */
     char *mutable_input = NULL;
     if (len > 0) {
@@ -49,14 +79,14 @@ static int laban_session_encode_paste_locked(
 
     size_t written = 0;
     GhosttyResult r = ghostty_paste_encode(
-        mutable_input, len, bracketed,
+        mutable_input, len, false,
         (char *)out_bytes, out_capacity, &written);
 
     free(mutable_input);
 
     if (r != GHOSTTY_SUCCESS) return -1;
     *out_len = written;
-    *out_bracketed = bracketed ? 1 : 0;
+    *out_bracketed = 0;
     return 0;
 }
 

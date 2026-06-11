@@ -2353,6 +2353,127 @@ final class LabanSessionTests: XCTestCase {
     XCTAssertTrue(result.contains("hello mvp"), "encoded output must contain original text")
   }
 
+  func testEncodePasteBracketedModeDeliversEscapeBytesLiterally() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1b}[?2004h".utf8))
+
+    // Pasted escape sequences are content, not terminal styling: the fence
+    // protects them, so they must arrive byte-for-byte.
+    let input = Array("hello \u{1b}[31m world".utf8)
+    var outBuf = [UInt8](repeating: 0, count: 128)
+    var outLen: size_t = 0
+    var bracketed: Int32 = 0
+
+    let r = input.withUnsafeBytes { buf in
+      laban_session_encode_paste(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        input.count,
+        &outBuf, outBuf.count,
+        &outLen, &bracketed)
+    }
+
+    XCTAssertEqual(r, 0)
+    XCTAssertEqual(bracketed, 1)
+    XCTAssertEqual(
+      String(bytes: outBuf.prefix(Int(outLen)), encoding: .utf8),
+      "\u{1b}[200~hello \u{1b}[31m world\u{1b}[201~",
+      "bracketed paste must deliver embedded escape bytes literally")
+  }
+
+  func testEncodePasteBracketedModeNeutralizesEmbeddedEndFence() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1b}[?2004h".utf8))
+
+    // An embedded end fence would close the bracket early and inject the
+    // remainder as keyboard input; only its ESC is replaced by a space.
+    let input = Array("safe\u{1b}[201~rm -rf /".utf8)
+    var outBuf = [UInt8](repeating: 0, count: 128)
+    var outLen: size_t = 0
+    var bracketed: Int32 = 0
+
+    let r = input.withUnsafeBytes { buf in
+      laban_session_encode_paste(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        input.count,
+        &outBuf, outBuf.count,
+        &outLen, &bracketed)
+    }
+
+    XCTAssertEqual(r, 0)
+    XCTAssertEqual(bracketed, 1)
+    XCTAssertEqual(
+      String(bytes: outBuf.prefix(Int(outLen)), encoding: .utf8),
+      "\u{1b}[200~safe [201~rm -rf /\u{1b}[201~",
+      "an embedded end fence must be neutralized, everything else preserved")
+  }
+
+  func testEncodePasteBracketedModeEmptyPasteStillSendsBothFences() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    writeBytes(session, Array("\u{1b}[?2004h".utf8))
+
+    var outBuf = [UInt8](repeating: 0, count: 32)
+    var outLen: size_t = 0
+    var bracketed: Int32 = 0
+
+    XCTAssertEqual(
+      laban_session_encode_paste(
+        session, nil, 0, &outBuf, outBuf.count, &outLen, &bracketed),
+      0)
+    XCTAssertEqual(bracketed, 1)
+    XCTAssertEqual(
+      String(bytes: outBuf.prefix(Int(outLen)), encoding: .utf8),
+      "\u{1b}[200~\u{1b}[201~",
+      "an empty bracketed paste must still send both fences")
+  }
+
+  func testEncodePastePlainModeStillStripsEscapes() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // Without the fence there is nothing stopping interpretation, so the
+    // legacy strip (ESC and friends become spaces) must stay.
+    let input = Array("a\u{1b}b".utf8)
+    var outBuf = [UInt8](repeating: 0, count: 32)
+    var outLen: size_t = 0
+    var bracketed: Int32 = 1
+
+    let r = input.withUnsafeBytes { buf in
+      laban_session_encode_paste(
+        session,
+        buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        input.count,
+        &outBuf, outBuf.count,
+        &outLen, &bracketed)
+    }
+
+    XCTAssertEqual(r, 0)
+    XCTAssertEqual(bracketed, 0)
+    XCTAssertEqual(
+      String(bytes: outBuf.prefix(Int(outLen)), encoding: .utf8),
+      "a b",
+      "plain-mode paste must keep stripping escape bytes")
+  }
+
   func testEncodePasteRejectsNullInputWhenLenIsNonZero() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")
