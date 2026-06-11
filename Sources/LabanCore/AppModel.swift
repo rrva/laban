@@ -1271,6 +1271,14 @@ public final class AppModel {
     return changed
   }
 
+  /// Test hook: overrides the probe that decides whether a terminal title's
+  /// recorded owner process is still running.
+  func setTitleOwnerLivenessProbeForTesting(_ probe: @escaping (Int?) -> Bool) {
+    withModelLock {
+      metadataSync.processIsAlive = probe
+    }
+  }
+
   /// Read exit state from the session and record it in the tab.
   /// Exit state is monotonic: once a tab is non-running, this is a no-op.
   /// Returns true if the tab status changed.

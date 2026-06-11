@@ -98,6 +98,15 @@ final class TabMetadataSynchronizer {
   /// syncs, yet a genuinely new failing command re-arms it.
   private var acknowledgedCommandCountByTab: [Tab.ID: Int] = [:]
   private let processMetadataSyncInterval: TimeInterval = 0.25
+
+  /// Probes whether the recorded title-owner pid is still running. kill(pid, 0)
+  /// checks existence without delivering a signal; EPERM still proves liveness.
+  /// Injectable so unit tests can pin the owner's fate deterministically.
+  var processIsAlive: (Int?) -> Bool = { pid in
+    guard let pid, pid > 0 else { return false }
+    if kill(pid_t(pid), 0) == 0 { return true }
+    return errno == EPERM
+  }
   private let gitInfo = GitInfoTracker()
 
   func reset(closedCwds: [String]) {
@@ -227,13 +236,16 @@ final class TabMetadataSynchronizer {
     _ = now
     let before = tabs[idx].titleMetadata
     let newIdentity = ProcessIdentity(metadata)
-    let oldIdentity = processIdentityByTab[tabId]
-    let processChanged = oldIdentity != nil && oldIdentity != newIdentity
 
-    if processChanged {
-      tabs[idx].titleMetadata.terminalTitle = nil
-      terminalTitleOwnerByTab.removeValue(forKey: tabId)
-    } else if let owner = terminalTitleOwnerByTab[tabId], owner != newIdentity {
+    // A foreground-identity change alone must not destroy the title: agents
+    // flutter the foreground pid on every tool subprocess while the title's
+    // owner keeps running and only re-sends sporadically, so wiping on change
+    // made the displayed title a race between the last wipe and the last
+    // re-send. Staleness is an ownership-liveness question: clear the title
+    // only once the recorded owner process is actually gone.
+    if let owner = terminalTitleOwnerByTab[tabId], owner != newIdentity,
+      !processIsAlive(owner.pid)
+    {
       tabs[idx].titleMetadata.terminalTitle = nil
       terminalTitleOwnerByTab.removeValue(forKey: tabId)
     } else if terminalTitleOwnerByTab[tabId] == nil,

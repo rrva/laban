@@ -48,6 +48,42 @@ final class TabTitleEndToEndTests: XCTestCase {
     XCTAssertEqual(tab.titleSource, "terminal")
   }
 
+  // MARK: - Title survives foreground-identity flutter
+
+  func testFreshTitleSurvivesProcessIdentityRefresh() throws {
+    // The historical "title lottery": a title consumed during a pass whose
+    // process-metadata refresh was throttled got attributed to a stale owner,
+    // and the next refresh — seeing a different foreground identity — wiped
+    // it. Whether a tab kept its title depended on which pass the title bytes
+    // landed in. With ownership-liveness wipes it must survive both orders.
+    let harness = try TitleHarness(runId: "title-e2e-lottery")
+    defer { harness.tearDown() }
+
+    // Anchor the throttle window on a fresh, unthrottled pass.
+    Thread.sleep(forTimeInterval: 0.3)
+    _ = try harness.syncPass()
+
+    try harness.runClient("osc0 E2E-LOTTERY-TITLE 30")
+
+    // Consume the title inside the throttle window: this pass skips the
+    // process refresh, so the title is attributed to the pre-launch identity.
+    Thread.sleep(forTimeInterval: 0.15)
+    _ = try harness.syncPass()
+
+    // Let the throttle elapse, then refresh: the foreground is now /bin/sleep,
+    // a different identity than the recorded owner — which is still alive.
+    Thread.sleep(forTimeInterval: 0.3)
+    let tab = try harness.syncPass()
+    XCTAssertEqual(
+      tab.terminalTitle, "E2E-LOTTERY-TITLE",
+      "a fresh title must survive a foreground-identity refresh while its owner lives")
+
+    let settled = try harness.waitForTabState {
+      $0.displayTitle == "E2E-LOTTERY-TITLE" && $0.foregroundProcess == "sleep"
+    }
+    XCTAssertEqual(settled.displayTitle, "E2E-LOTTERY-TITLE")
+  }
+
   // MARK: - OSC 21337 tab status reaches agent metadata
 
   func testOscTabStatusReachesAgentMetadata() throws {

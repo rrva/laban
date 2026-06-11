@@ -783,9 +783,10 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "* Claude Code")
   }
 
-  func testProcessIdentityChangeClearsOwnedTerminalTitle() throws {
+  func testProcessIdentityChangeClearsTitleOnceOwnerIsGone() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
+    model.setTitleOwnerLivenessProbeForTesting { _ in false }
 
     _ = model.applyProcessMetadata(
       processMetadata(
@@ -814,9 +815,43 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .process)
   }
 
+  func testProcessIdentityChangeKeepsTitleWhileOwnerIsAlive() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    model.setTitleOwnerLivenessProbeForTesting { _ in true }
+
+    _ = model.applyProcessMetadata(
+      processMetadata(
+        pid: 1001,
+        process: "2.1.126",
+        command: "/opt/homebrew/bin/2.1.126",
+        cwd: NSHomeDirectory()
+      ),
+      forTab: tabId
+    )
+    try model.updateTerminalTitle("* Claude Code", forTab: tabId)
+
+    // An agent runs tool subprocesses that flutter the foreground identity
+    // while the agent itself keeps running; its title must survive that.
+    _ = model.applyProcessMetadata(
+      processMetadata(
+        pid: 1002,
+        process: "git",
+        command: "/usr/bin/git",
+        cwd: NSHomeDirectory()
+      ),
+      forTab: tabId
+    )
+
+    XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "* Claude Code")
+    XCTAssertEqual(model.tabs[0].title, "* Claude Code")
+    XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .terminal)
+  }
+
   func testShellProcessIdentityChangeFallsBackToHomeCwd() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
+    model.setTitleOwnerLivenessProbeForTesting { _ in false }
 
     _ = model.applyProcessMetadata(
       processMetadata(
