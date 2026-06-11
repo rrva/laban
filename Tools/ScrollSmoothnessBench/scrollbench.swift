@@ -44,6 +44,7 @@ struct Config {
     var bandBottom = 0.95
     var outDir: String?
     var list = false
+    var flick = false
 }
 
 func die(_ msg: String) -> Never {
@@ -72,6 +73,7 @@ func parseArgs() -> Config {
         case "--band-bottom": c.bandBottom = Double(next(a)) ?? c.bandBottom
         case "--out": c.outDir = next(a)
         case "--list": c.list = true
+        case "--flick": c.flick = true
         case "-h", "--help":
             print(
                 """
@@ -86,6 +88,10 @@ func parseArgs() -> Config {
                   --band-top <f>          analysis band top, fraction of height (default 0.25, skips browser chrome)
                   --band-bottom <f>       analysis band bottom (default 0.95)
                   --out <dir>             artifact directory (default /tmp/scrollbench/<app>-<ts>)
+                  --flick                 emulate a trackpad flick: phased gesture (0.4s at
+                                          --velocity) then momentum events decaying exp(t/0.65s),
+                                          with scroll/momentum phase fields set. Prints the
+                                          tail displacement series to spot end-of-gesture jank.
                 """)
             exit(0)
         default: die("unknown arg \(a) (try --help)")
@@ -177,6 +183,67 @@ func injectScroll(durationS: Double, velocityPxPerS: Double, eventHz: Double, si
     }
 }
 
+/// Emulate a real trackpad flick: a phased finger-down gesture at constant
+/// velocity, phase-ended, then a momentum stream with exponentially decaying
+/// deltas and proper momentum phase markers. Returns (gestureEnd, momentumEnd)
+/// offsets in seconds from the first event, so the analysis can localize
+/// end-of-gesture artifacts.
+func injectFlick(
+    velocityPxPerS: Double, eventHz: Double, sign: Int32, at location: CGPoint
+) -> (gestureEndS: Double, momentumEndS: Double) {
+    let src = CGEventSource(stateID: .hidSystemState)
+    var tb = mach_timebase_info_data_t()
+    mach_timebase_info(&tb)
+    func ticks(_ s: Double) -> UInt64 {
+        UInt64(s * 1e9 * Double(tb.denom) / Double(tb.numer))
+    }
+    let start = mach_absolute_time()
+    let dt = 1.0 / eventHz
+    var acc = 0.0
+    var i = 0
+    // CGScrollPhase: began=1 changed=2 ended=4; CGMomentumScrollPhase: begin=1 continue=2 end=3.
+    func post(_ deltaPx: Double, scrollPhase: Int64, momentumPhase: Int64) {
+        mach_wait_until(start &+ ticks(Double(i) * dt))
+        i += 1
+        acc += deltaPx
+        let d = Int32(acc.rounded())
+        acc -= Double(d)
+        guard
+            let ev = CGEvent(
+                scrollWheelEvent2Source: src, units: .pixel, wheelCount: 1,
+                wheel1: sign * d, wheel2: 0, wheel3: 0)
+        else { return }
+        ev.location = location
+        ev.setIntegerValueField(.scrollWheelEventScrollPhase, value: scrollPhase)
+        ev.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentumPhase)
+        ev.post(tap: .cghidEventTap)
+    }
+
+    let gestureEvents = max(2, Int(0.4 * eventHz))
+    let deltaPerEvent = velocityPxPerS / eventHz
+    post(deltaPerEvent, scrollPhase: 1, momentumPhase: 0)
+    for _ in 1..<gestureEvents {
+        post(deltaPerEvent, scrollPhase: 2, momentumPhase: 0)
+    }
+    post(0, scrollPhase: 4, momentumPhase: 0)
+    let gestureEnd = Double(i) * dt
+
+    // The WindowServer applies the natural-scroll inversion to the momentum
+    // phase of synthetic scroll events but not to the gesture phase
+    // (observed empirically: gesture deltas arrive as posted, momentum
+    // deltas arrive sign-flipped). Pre-invert so the target app receives a
+    // directionally consistent flick.
+    var v = velocityPxPerS
+    var first = true
+    while v > 30 {
+        post(-v / eventHz, scrollPhase: 0, momentumPhase: first ? 1 : 2)
+        first = false
+        v *= exp(-dt / 0.65)
+    }
+    post(0, scrollPhase: 0, momentumPhase: 3)
+    return (gestureEnd, Double(i) * dt)
+}
+
 // MARK: - Analysis
 
 struct PairStat {
@@ -188,7 +255,7 @@ struct PairStat {
 
 func displacement(prev: [Float], cur: [Float], yTop: Int, yBot: Int, maxShift: Int) -> Int {
     let n = min(prev.count, cur.count)
-    var bestS = 0
+    var sads = [Float](repeating: .greatestFiniteMagnitude, count: 2 * maxShift + 1)
     var bestSAD = Float.greatestFiniteMagnitude
     var s = -maxShift
     while s <= maxShift {
@@ -205,14 +272,22 @@ func displacement(prev: [Float], cur: [Float], yTop: Int, yBot: Int, maxShift: I
         }
         if cnt > 50 {
             let norm = sad / Float(cnt)
-            if norm < bestSAD {
-                bestSAD = norm
-                bestS = s
-            }
+            sads[s + maxShift] = norm
+            if norm < bestSAD { bestSAD = norm }
         }
         s += 1
     }
-    return bestS
+    // Tie-break toward the smallest |shift|: repetitive text (e.g. similar
+    // adjacent ps-output rows) produces near-equal SAD minima at whole-row
+    // multiples; without this, sub-pixel true motion can read as phantom
+    // ±N-row jumps.
+    let threshold = bestSAD * 1.02 + 1e-3
+    var bestS = Int.max
+    for (idx, v) in sads.enumerated() where v <= threshold {
+        let shift = idx - maxShift
+        if bestS == Int.max || abs(shift) < abs(bestS) { bestS = shift }
+    }
+    return bestS == Int.max ? 0 : bestS
 }
 
 func percentile(_ sorted: [Double], _ p: Double) -> Double {
@@ -324,12 +399,22 @@ struct Scrollbench {
 
         try? await Task.sleep(nanoseconds: 800_000_000)  // capture warm-up
 
+        final class FlickMarkers {
+            var value: (gestureEndS: Double, momentumEndS: Double)?
+        }
+        let flickMarkers = FlickMarkers()
         let tInjStart = CACurrentMediaTime()
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             let th = Thread {
-                injectScroll(
-                    durationS: cfg.duration, velocityPxPerS: cfg.velocity, eventHz: cfg.eventHz,
-                    sign: cfg.directionUp ? 1 : -1, at: center)
+                if cfg.flick {
+                    flickMarkers.value = injectFlick(
+                        velocityPxPerS: cfg.velocity, eventHz: cfg.eventHz,
+                        sign: cfg.directionUp ? 1 : -1, at: center)
+                } else {
+                    injectScroll(
+                        durationS: cfg.duration, velocityPxPerS: cfg.velocity, eventHz: cfg.eventHz,
+                        sign: cfg.directionUp ? 1 : -1, at: center)
+                }
                 cont.resume()
             }
             th.qualityOfService = .userInteractive
@@ -341,9 +426,10 @@ struct Scrollbench {
         try? await stream.stopCapture()
         collector.queue.sync {}
 
-        // Analysis window: skip ramp-in/out.
-        let w0 = tInjStart + 0.3
-        let w1 = tInjEnd - 0.1
+        // Analysis window: skip ramp-in/out. A flick wants the whole gesture
+        // including the momentum tail and the post-input settle.
+        let w0 = cfg.flick ? tInjStart + 0.05 : tInjStart + 0.3
+        let w1 = cfg.flick ? tInjEnd + 0.45 : tInjEnd - 0.1
         let samples = collector.samples
         guard samples.count > 10 else {
             die("only \(samples.count) frames captured — is the window visible and unoccluded?")
@@ -448,6 +534,17 @@ struct Scrollbench {
         }
         if clipped > 0 {
             print("WARNING: \(clipped) measurements hit the shift search limit (\(maxShift) px) — jumps may be underestimated")
+        }
+        if cfg.flick, let fm = flickMarkers.value {
+            let mEnd = tInjStart + fm.momentumEndS
+            print(
+                "flick: gesture ended at +\(String(format: "%.2f", fm.gestureEndS))s, momentum ended at +\(String(format: "%.2f", fm.momentumEndS))s"
+            )
+            let tail = pairs.filter { $0.t >= mEnd - 1.0 }
+            print("tail per-frame displacements (last 1.0s of momentum; '*' = after momentum end):")
+            print(
+                tail.map { p in "\(p.disp)\(p.t >= mEnd ? "*" : "")" }
+                    .joined(separator: " "))
         }
         print("artifacts: \(outDir)")
     }
