@@ -307,9 +307,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private func identityTitle(_ identity: TerminalIdentity) -> String {
     switch identity {
     case .laban:
-      return "Laban (new sessions)"
+      return "Laban"
     case .ghosttyCompat:
-      return "ghostty 1.3.1 — compatibility (new sessions)"
+      return "ghostty"
     }
   }
 
