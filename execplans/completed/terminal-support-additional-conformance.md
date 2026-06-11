@@ -209,8 +209,11 @@ test that observes the user-visible bytes:
 - DECXCPR is answered inside libghostty-vt (vendored patch 0003, ADR 0019) so
   origin-mode handling and reply ordering are inherited rather than
   re-derived; red/green verified by reverse-applying the patch and rebuilding.
-- Bracketed paste delivers payload bytes literally; only an embedded end
-  fence is neutralized, and plain-mode pastes keep the strict strip.
+- Bracketed paste delivers payload bytes literally at the C encoder seam;
+  only an embedded end fence is neutralized, and plain-mode pastes keep the
+  strict strip. NOTE: end-to-end through the macOS pasteboard the spec's
+  Test 8 deliberately does NOT hold — see the Surprises entry below and
+  ADR 0020.
 - `mouseMoved` forwards no-button motion that the libghostty encoder gates
   per tracking mode (1000/1002 silent, 1003 reports as button code 35), with
   view-level per-cell dedup so a pointer crossing a cell emits one report.
@@ -229,3 +232,12 @@ Surprises:
 - SwiftPM does not track the vendored `.a` as a build input (known from ADR
   0011); touching any file in `LabanTerminalCore` is enough to force the
   relink when red/green-verifying a vendored patch.
+- (post-merge) The AppKit pasteboard path runs `TerminalPaste.sanitize`
+  (post-CVE-2026-26982 baseline) before the paste encoder, stripping ESC in
+  bracketed and non-bracketed mode alike, because bracketed paste does not
+  stop the echo-back attack (the app echoes pasted CSI/OSC and the terminal
+  interprets it). So spec Test 8 holds at the C encoder seam (debug/headless
+  and programmatic `writePaste` callers) but deliberately NOT end-to-end
+  through ⌘V. Decision kept after review and recorded in ADR 0020; this was
+  surfaced while auditing the Claude-Code multiline-paste-warning commit
+  (`d8ed764`), whose reasoning leans on the sanitize invariant.
