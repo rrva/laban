@@ -1,0 +1,954 @@
+#!/usr/bin/env python3
+"""Analyze a macOS Instruments Metal trace for Laban renderer work.
+
+The input .trace bundle can contain process metadata, launch arguments, logs, and
+environment variables. This script intentionally exports only selected timing
+tables, deletes raw XML exports by default, and redacts text before writing any
+report.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable
+
+
+DANGEROUS_SCHEMAS = {
+    "dyld-library-load",
+    "kdebug",
+    "kdebug-strings",
+    "os-log",
+    "process-info",
+}
+
+DEFAULT_SCHEMAS = [
+    "time-profile",
+    "metal-application-intervals",
+    "metal-driver-intervals",
+    "metal-driver-event-intervals",
+    "metal-application-event-interval",
+    "metal-application-command-buffer-submissions",
+    "metal-command-buffer-completed",
+    "ca-client-buffer-wait-interval",
+    "display-vsyncs-interval",
+    "metal-shader-profiler-intervals",
+]
+
+DEEP_GPU_SCHEMAS = [
+    "metal-gpu-intervals",
+    "metal-gpu-counter-intervals",
+    "gpu-counter-value",
+    "gpu-shader-profiler-interval",
+    "gpu-shader-profiler-sample",
+    "metal-resource-allocations",
+    "metal-current-allocated-size",
+    "metal-residency-set-interval",
+    "metal-residency-set-resource-event",
+    "gpu-performance-state-intervals",
+]
+
+CPU_SYMBOLS = [
+    "buildGPUCellPayloadInstanceListsOnce",
+    "buildGPUCellInstanceLists",
+    "prepareCellGlyphBuffer",
+    "prepareInstanceBuffer",
+    "encodeGPUCellContentPass",
+    "MetalRenderer.render",
+    "FrameProducer.terminalCellPayload",
+    "FrameProducer.fillTerminalCellPayload",
+    "TerminalCellPayload",
+    "MetalGlyphAtlas.entry",
+    "cachedScalarEntry",
+    "glyphAtlas.entry",
+    "CTFontGetSymbolicTraits",
+    "styledFont",
+    "BoxDrawing.proceduralCellElementRects",
+    "emitDecorations",
+    "appendCellGlyphUploadRange",
+    "memcpy",
+    "swift_array",
+    "Array._copyContents",
+]
+
+CPU_CATEGORIES = {
+    "payload builder": [
+        "buildGPUCellPayloadInstanceListsOnce",
+        "TerminalCellPayload",
+        "FrameProducer.terminalCellPayload",
+        "FrameProducer.fillTerminalCellPayload",
+    ],
+    "glyph atlas/font lookup": [
+        "MetalGlyphAtlas.entry",
+        "glyphAtlas.entry",
+        "cachedScalarEntry",
+        "CTFontGetSymbolicTraits",
+        "styledFont",
+        "CTFont",
+    ],
+    "buffer upload/copy": [
+        "prepareCellGlyphBuffer",
+        "prepareInstanceBuffer",
+        "memcpy",
+        "swift_array",
+        "Array._copyContents",
+    ],
+    "decoration/procedural": [
+        "emitDecorations",
+        "BoxDrawing.proceduralCellElementRects",
+        "proceduralCellElementRects",
+    ],
+    "metal command encode": [
+        "encodeGPUCellContentPass",
+        "makeRenderCommandEncoder",
+        "drawPrimitives",
+        "present-blit",
+        "commandBuffer",
+    ],
+}
+
+METAL_LABELS_OF_INTEREST = [
+    "terminal-content-gpu-cell",
+    "present-blit",
+    "cursor-overlay",
+    "laban.frame",
+    "laban.cell-glyph-quad",
+    "laban.glyph-quad",
+    "laban.solid-quad",
+    "display",
+    "drawable",
+    "blit",
+    "render",
+    "fragment",
+    "vertex",
+]
+
+
+@dataclass
+class Column:
+    mnemonic: str
+    name: str
+    engineering_type: str
+
+
+@dataclass
+class NumericStats:
+    count: int = 0
+    total: float = 0.0
+    values: list[float] = field(default_factory=list)
+
+    def add(self, value: float) -> None:
+        if math.isfinite(value):
+            self.count += 1
+            self.total += value
+            self.values.append(value)
+
+    def percentile(self, percentile: float) -> float:
+        if not self.values:
+            return 0.0
+        ordered = sorted(self.values)
+        rank = (len(ordered) - 1) * percentile
+        low = int(math.floor(rank))
+        high = int(math.ceil(rank))
+        if low == high:
+            return ordered[low]
+        return ordered[low] + (ordered[high] - ordered[low]) * (rank - low)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "count": self.count,
+            "totalMs": round(self.total, 6),
+            "meanMs": round(self.total / self.count, 6) if self.count else 0.0,
+            "p50Ms": round(self.percentile(0.50), 6),
+            "p95Ms": round(self.percentile(0.95), 6),
+            "p99Ms": round(self.percentile(0.99), 6),
+            "maxMs": round(max(self.values), 6) if self.values else 0.0,
+        }
+
+
+@dataclass
+class WeightedCounter:
+    samples: int = 0
+    weight_ms: float = 0.0
+
+    def add(self, weight_ms: float) -> None:
+        self.samples += 1
+        self.weight_ms += weight_ms
+
+
+def redact(text: Any, *, max_len: int = 240) -> str:
+    raw = "" if text is None else str(text)
+    home = str(Path.home())
+    raw = raw.replace(home, "~")
+    raw = re.sub(r"/private/var/folders/[^ \t\n\r\"']+", "/private/var/folders/<redacted>", raw)
+    raw = re.sub(r"/var/folders/[^ \t\n\r\"']+", "/var/folders/<redacted>", raw)
+    raw = re.sub(r"(?i)\b(bearer)\s+[a-z0-9._~+/=-]+", r"\1 <redacted>", raw)
+    raw = re.sub(
+        r"(?i)\b([a-z_][a-z0-9_.-]*(?:secret|token|key|password|passwd|pwd|auth|cookie|credential)[a-z0-9_.-]*)"
+        r"\s*[:=]\s*[^ \t\n\r,;\"']+",
+        r"\1=<redacted>",
+        raw,
+    )
+    raw = re.sub(
+        r"\b[A-Z_][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|PWD|AUTH|COOKIE|CREDENTIAL)[A-Z0-9_]*"
+        r"=[^ \t\n\r,;\"']+",
+        lambda m: m.group(0).split("=", 1)[0] + "=<redacted>",
+        raw,
+    )
+    raw = re.sub(r"(?i)[a-z0-9_.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+", "<email>", raw)
+    raw = re.sub(r"\b[0-9a-f]{32,}\b", lambda m: m.group(0)[:8] + "...", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if len(raw) > max_len:
+        return raw[: max_len - 1] + "..."
+    return raw
+
+
+def run_xctrace_export(trace: Path, mode_args: list[str], output: Path) -> None:
+    xcrun = shutil.which("xcrun")
+    if xcrun is None:
+        raise SystemExit("xcrun is required to export Instruments .trace bundles")
+    cmd = [xcrun, "xctrace", "export", "--quiet", "--input", str(trace), *mode_args, "--output", str(output)]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        stderr = redact(proc.stderr, max_len=1200)
+        raise RuntimeError(f"xctrace export failed for {' '.join(mode_args)}: {stderr}")
+
+
+def table_schemas_from_toc(path: Path) -> list[str]:
+    root = ET.parse(path).getroot()
+    schemas: list[str] = []
+    for table in root.iter():
+        if local_name(table.tag) != "table":
+            continue
+        schema = table.attrib.get("schema")
+        if schema:
+            schemas.append(schema)
+    return schemas
+
+
+def local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def child_text(element: ET.Element) -> str:
+    if element.attrib.get("fmt"):
+        return element.attrib["fmt"]
+    pieces = [part.strip() for part in element.itertext() if part and part.strip()]
+    if pieces:
+        return " ".join(pieces)
+    return element.attrib.get("id") or element.attrib.get("ref") or ""
+
+
+def parse_col(element: ET.Element) -> Column:
+    data = {local_name(child.tag): child_text(child) for child in list(element)}
+    return Column(
+        mnemonic=data.get("mnemonic", ""),
+        name=data.get("name", ""),
+        engineering_type=data.get("engineering-type", ""),
+    )
+
+
+def iter_table_rows(path: Path, max_rows: int = 0) -> Iterable[tuple[list[Column], dict[str, str]]]:
+    columns: list[Column] = []
+    rows = 0
+    for event, element in ET.iterparse(path, events=("end",)):
+        tag = local_name(element.tag)
+        if tag == "col":
+            columns.append(parse_col(element))
+            element.clear()
+        elif tag == "row":
+            row: dict[str, str] = {}
+            children = list(element)
+            for index, child in enumerate(children):
+                column = columns[index] if index < len(columns) else None
+                key = column.mnemonic if column and column.mnemonic else local_name(child.tag)
+                row[key] = child_text(child)
+            rows += 1
+            yield columns, row
+            element.clear()
+            if max_rows and rows >= max_rows:
+                return
+
+
+def parse_duration_ms(text: str) -> float | None:
+    value = redact(text, max_len=80)
+    numeric_part = re.search(r"-?\d[\d,.]*", value)
+    if numeric_part:
+        token = numeric_part.group(0)
+        if "," in token and "." not in token:
+            # Instruments uses locale-formatted decimals on some systems, e.g. "27,573 ms".
+            value = value.replace(token, token.replace(",", "."), 1)
+        else:
+            value = value.replace(token, token.replace(",", ""), 1)
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*(ns|nanoseconds?|us|microseconds?|µs|ms|milliseconds?|s|sec|seconds?)?", value, re.I)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "ms").lower()
+    if unit in {"ns", "nanosecond", "nanoseconds"}:
+        return number / 1_000_000.0
+    if unit in {"us", "µs", "microsecond", "microseconds"}:
+        return number / 1000.0
+    if unit in {"s", "sec", "second", "seconds"}:
+        return number * 1000.0
+    return number
+
+
+def process_allowed(row: dict[str, str], process_re: re.Pattern[str] | None) -> bool:
+    if process_re is None:
+        return True
+    haystack = " ".join(
+        row.get(key, "")
+        for key in (
+            "process",
+            "thread",
+            "event-label",
+            "track-label",
+            "event-type",
+            "gpu-driver-name",
+        )
+    )
+    if not haystack.strip():
+        return True
+    return bool(process_re.search(haystack))
+
+
+def extract_frames(stack: str) -> list[str]:
+    text = redact(stack, max_len=5000)
+    chunks = re.split(r"(?:\n|\\n| {2,}|\t+| > )", text)
+    frames: list[str] = []
+    interesting = re.compile(
+        r"(Laban|MetalRenderer|FrameProducer|TerminalCellPayload|MetalGlyphAtlas|"
+        r"buildGPU|prepareCell|encodeGPU|glyphAtlas|CTFont|memcpy|swift_array|drawPrimitives)"
+    )
+    for chunk in chunks:
+        clean = redact(chunk, max_len=180)
+        if clean and interesting.search(clean) and clean not in frames:
+            frames.append(clean)
+        if len(frames) >= 8:
+            break
+    return frames
+
+
+def analyze_time_profile(
+    rows: Iterable[dict[str, str]],
+    process_re: re.Pattern[str] | None,
+) -> dict[str, Any]:
+    total_weight_ms = 0.0
+    kept_rows = 0
+    skipped_rows = 0
+    symbol_hits: dict[str, WeightedCounter] = defaultdict(WeightedCounter)
+    category_hits: dict[str, WeightedCounter] = defaultdict(WeightedCounter)
+    top_frames: dict[str, WeightedCounter] = defaultdict(WeightedCounter)
+    kept_processes: Counter[str] = Counter()
+    candidate_processes: Counter[str] = Counter()
+    stack_examples: dict[str, list[str]] = defaultdict(list)
+
+    for row in rows:
+        process_label = row.get("process") or ""
+        if process_label.isdigit() or not process_label:
+            process_label = row.get("thread") or process_label or "<unknown>"
+        candidate_processes[redact(process_label, max_len=140)] += 1
+        if not process_allowed(row, process_re):
+            skipped_rows += 1
+            continue
+        kept_rows += 1
+        kept_processes[redact(process_label, max_len=140)] += 1
+        weight_ms = parse_duration_ms(row.get("weight", "")) or 1.0
+        total_weight_ms += weight_ms
+        stack = row.get("stack", "")
+        stack_text = redact(stack, max_len=8000)
+
+        frames = extract_frames(stack_text)
+        if frames:
+            top_frames[frames[0]].add(weight_ms)
+
+        for symbol in CPU_SYMBOLS:
+            if symbol in stack_text:
+                symbol_hits[symbol].add(weight_ms)
+                if len(stack_examples[symbol]) < 3:
+                    stack_examples[symbol].append(" | ".join(frames[:5]) if frames else symbol)
+
+        for category, needles in CPU_CATEGORIES.items():
+            if any(needle in stack_text for needle in needles):
+                category_hits[category].add(weight_ms)
+
+    def render_counter(counter: dict[str, WeightedCounter], limit: int) -> list[dict[str, Any]]:
+        rows_out = []
+        for name, stats in sorted(counter.items(), key=lambda item: item[1].weight_ms, reverse=True)[:limit]:
+            percent = (stats.weight_ms / total_weight_ms * 100.0) if total_weight_ms else 0.0
+            rows_out.append(
+                {
+                    "name": redact(name),
+                    "samples": stats.samples,
+                    "weightMs": round(stats.weight_ms, 6),
+                    "percent": round(percent, 3),
+                }
+            )
+        return rows_out
+
+    return {
+        "rows": kept_rows,
+        "skippedRowsByProcessFilter": skipped_rows,
+        "totalWeightMs": round(total_weight_ms, 6),
+        "symbolHits": render_counter(symbol_hits, 30),
+        "categoryHits": render_counter(category_hits, 10),
+        "topFrames": render_counter(top_frames, 20),
+        "topProcesses": kept_processes.most_common(20),
+        "candidateProcessLabels": candidate_processes.most_common(20),
+        "stackExamples": {redact(k): v for k, v in stack_examples.items()},
+    }
+
+
+def row_duration_ms(row: dict[str, str]) -> float | None:
+    for key in ("duration", "weight", "time", "elapsed-time"):
+        if key in row:
+            parsed = parse_duration_ms(row[key])
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def row_label(row: dict[str, str]) -> str:
+    parts = []
+    for key in (
+        "event-label",
+        "event-type",
+        "track-label",
+        "label",
+        "name",
+        "lane",
+        "channel-name",
+        "channel-subtitle",
+        "state",
+        "gpu-driver-name",
+        "gpu",
+        "thread",
+    ):
+        value = row.get(key)
+        if value:
+            parts.append(redact(value, max_len=100))
+    return " / ".join(part for part in parts if part) or "<unlabeled>"
+
+
+def analyze_interval_rows(
+    schema: str,
+    rows: Iterable[dict[str, str]],
+    process_re: re.Pattern[str] | None,
+) -> dict[str, Any]:
+    labels: dict[str, NumericStats] = defaultdict(NumericStats)
+    interest: dict[str, NumericStats] = defaultdict(NumericStats)
+    rows_seen = 0
+    rows_with_duration = 0
+    skipped_rows = 0
+    command_buffers: Counter[str] = Counter()
+
+    for row in rows:
+        rows_seen += 1
+        if not process_allowed(row, process_re):
+            skipped_rows += 1
+            continue
+        duration = row_duration_ms(row)
+        label = row_label(row)
+        cmdbuf = row.get("cmdbuffer-id") or row.get("metal-command-buffer-id") or row.get("object-id")
+        if cmdbuf:
+            command_buffers[redact(cmdbuf, max_len=80)] += 1
+        if duration is None:
+            continue
+        rows_with_duration += 1
+        labels[label].add(duration)
+        label_lc = label.lower()
+        for needle in METAL_LABELS_OF_INTEREST:
+            if needle.lower() in label_lc:
+                interest[needle].add(duration)
+
+    def render(stats_by_label: dict[str, NumericStats], limit: int) -> list[dict[str, Any]]:
+        result = []
+        for label, stats in sorted(stats_by_label.items(), key=lambda item: item[1].total, reverse=True)[:limit]:
+            item = {"label": redact(label, max_len=180)}
+            item.update(stats.as_dict())
+            result.append(item)
+        return result
+
+    return {
+        "schema": schema,
+        "rows": rows_seen,
+        "rowsWithDuration": rows_with_duration,
+        "skippedRowsByProcessFilter": skipped_rows,
+        "topLabels": render(labels, 20),
+        "labelsOfInterest": render(interest, 20),
+        "topCommandBufferIds": command_buffers.most_common(10),
+    }
+
+
+def load_table_rows(path: Path, max_rows: int) -> tuple[list[Column], list[dict[str, str]]]:
+    columns: list[Column] = []
+    rows: list[dict[str, str]] = []
+    for table_columns, row in iter_table_rows(path, max_rows=max_rows):
+        if not columns:
+            columns = list(table_columns)
+        rows.append(row)
+    return columns, rows
+
+
+def analyze_schema(
+    trace: Path,
+    scratch: Path,
+    schema: str,
+    process_re: re.Pattern[str] | None,
+    max_rows: int,
+) -> dict[str, Any]:
+    output = scratch / f"{schema}.xml"
+    xpath = f"/trace-toc/run/data/table[@schema='{schema}']"
+    run_xctrace_export(trace, ["--xpath", xpath], output)
+    columns, rows = load_table_rows(output, max_rows=max_rows)
+    column_summary = [
+        {
+            "mnemonic": redact(col.mnemonic),
+            "name": redact(col.name),
+            "engineeringType": redact(col.engineering_type),
+        }
+        for col in columns
+    ]
+    if schema == "time-profile":
+        summary = analyze_time_profile(rows, process_re)
+    else:
+        summary = analyze_interval_rows(schema, rows, process_re)
+    summary["columns"] = column_summary
+    summary["exportBytes"] = output.stat().st_size if output.exists() else 0
+    return summary
+
+
+def pct_for_symbol(cpu: dict[str, Any], symbol: str) -> float:
+    for item in cpu.get("symbolHits", []):
+        if item["name"] == symbol:
+            return float(item["percent"])
+    return 0.0
+
+
+def total_for_interest(tables: list[dict[str, Any]], label: str) -> float:
+    total = 0.0
+    for table in tables:
+        for item in table.get("labelsOfInterest", []):
+            if item.get("label") == label:
+                total += float(item.get("totalMs", 0.0))
+    return total
+
+
+def build_findings(summary: dict[str, Any]) -> list[dict[str, str]]:
+    cpu = summary.get("cpu", {})
+    metal_tables = summary.get("metalTables", [])
+    findings: list[dict[str, str]] = []
+
+    payload_pct = pct_for_symbol(cpu, "buildGPUCellPayloadInstanceListsOnce")
+    if payload_pct:
+        findings.append(
+            {
+                "area": "CPU payload builder",
+                "evidence": f"buildGPUCellPayloadInstanceListsOnce accounts for {payload_pct:.2f}% of kept Time Profiler sample weight.",
+                "action": (
+                    "Split the function with os_signpost subspans for command rect prepass, dirty-row clears, "
+                    "background runs, procedural cells, sidebar glyphs, payload glyph loop, preedit, and upload-range bookkeeping. "
+                    "Then optimize the dominant subspan first."
+                ),
+                "verification": (
+                    "Run LABAN_RUN_PERF_BENCH=1 swift test -c release --filter MetalFrameTimingBench and "
+                    "TerminalCellPayloadAllocationBench after each isolated change."
+                ),
+            }
+        )
+        findings.append(
+            {
+                "area": "CPU payload builder",
+                "evidence": "Source review shows the payload path scans commands multiple times and then walks every payload glyph.",
+                "action": (
+                    "Prepartition frame commands once per frame into terminal rects, overlays, sidebar glyphs, and preedit. "
+                    "For the glyph loop, batch by dirty row and write CellGlyphs through an UnsafeMutableBufferPointer using precomputed row base, "
+                    "cellY, scale, and inverse atlas size."
+                ),
+                "verification": (
+                    "Keep GPUCellParityTests green; compare one dirty row, contiguous 5-row, sparse rows, and heavy scroll rows in MetalFrameTimingBench."
+                ),
+            }
+        )
+    else:
+        findings.append(
+            {
+                "area": "CPU payload builder",
+                "evidence": "buildGPUCellPayloadInstanceListsOnce was not visible in kept Time Profiler samples.",
+                "action": (
+                    "If this trace was captured from an optimized or symbol-stripped build, rerun with dSYM loaded or add os_signpost spans "
+                    "inside buildGPUCellPayloadInstanceListsOnce before judging CPU work."
+                ),
+                "verification": "Confirm the Time Profiler table shows LabanRenderer symbols before making source changes.",
+            }
+        )
+
+    upload_pct = pct_for_symbol(cpu, "prepareCellGlyphBuffer") + pct_for_symbol(cpu, "memcpy")
+    if upload_pct:
+        findings.append(
+            {
+                "area": "CPU upload path",
+                "evidence": f"prepareCellGlyphBuffer/memcpy account for {upload_pct:.2f}% of kept Time Profiler sample weight.",
+                "action": (
+                    "Treat upload range count and total bytes as first-class metrics. Sort and coalesce dirty row ranges, avoid per-cell upload ranges "
+                    "from preedit when possible, and keep full-row contiguous writes for heavy scroll."
+                ),
+                "verification": "Use the payload+upload path in MetalFrameTimingBench and assert GPUCellParityTests upload-range cases still pass.",
+            }
+        )
+
+    gpu_cell_ms = total_for_interest(metal_tables, "terminal-content-gpu-cell")
+    if gpu_cell_ms:
+        findings.append(
+            {
+                "area": "GPU cell draw",
+                "evidence": f"Metal interval labels include terminal-content-gpu-cell with {gpu_cell_ms:.3f} ms total duration.",
+                "action": (
+                    "The current partial path redraws instanceCount=cellGlyphs.count once for every dirty Y range. Prototype drawing only the contiguous "
+                    "cell range for each dirty row band with drawPrimitives(... instanceCount: rangeCellCount, baseInstance: rowStart). "
+                    "The shader indexes cells by instance_id, so this should cut vertex work for sparse damage if Metal's instance_id includes baseInstance."
+                ),
+                "verification": (
+                    "Add a parity test for sparse dirty ranges plus a release MetalFrameTimingBench row that reports cell-glyph draw count, "
+                    "dirty ranges, and GPU content-pass timing."
+                ),
+            }
+        )
+
+    present_ms = total_for_interest(metal_tables, "present-blit") + total_for_interest(metal_tables, "drawable")
+    if present_ms:
+        findings.append(
+            {
+                "area": "Present/drawable pacing",
+                "evidence": f"Present/drawable-related Metal labels account for {present_ms:.3f} ms total duration.",
+                "action": (
+                    "If this dominates p95/p99, the renderer is compositor/drawable limited rather than payload limited. Preserve late drawable acquisition, "
+                    "watch ca-client-buffer-wait-interval, and avoid holding CAMetalDrawable while doing CPU payload work."
+                ),
+                "verification": "Compare dropped frames, drawableUnavailable, and display-vsync intervals in the same trace window.",
+            }
+        )
+
+    atlas_pct = (
+        pct_for_symbol(cpu, "MetalGlyphAtlas.entry")
+        + pct_for_symbol(cpu, "glyphAtlas.entry")
+        + pct_for_symbol(cpu, "CTFontGetSymbolicTraits")
+        + pct_for_symbol(cpu, "styledFont")
+    )
+    if atlas_pct:
+        findings.append(
+            {
+                "area": "Glyph atlas/font lookup",
+                "evidence": f"Atlas/font lookup symbols account for {atlas_pct:.2f}% of kept Time Profiler sample weight.",
+                "action": (
+                    "Keep the scalar entry cache hot and add counters for scalar fast-path hit rate versus UTF-8 range decoding. "
+                    "If CTFont trait checks still show up, memoize terminal/sidebar font info per TextAttributes across the whole frame."
+                ),
+                "verification": "Use TerminalCellPayloadAllocationBench for scalar/cluster payload cases and GPUCellParityTests for fallback glyphs.",
+            }
+        )
+
+    findings.append(
+        {
+            "area": "State-of-the-art target",
+            "evidence": "ADR 0017 says Laban is CPU-render-bound and GPU-driven remains opt-in until release p50/p99, full redraw, parity, and energy gates are met.",
+            "action": (
+                "Optimize one candidate at a time: first instrument, then change CPU payload construction, then upload coalescing, then sparse GPU draw. "
+                "Do not batch changes, because the existing perf history depends on attributable measurements."
+            ),
+            "verification": (
+                "Use release-only benches plus a fresh Instruments trace of heavy scroll/sidebar activity. Keep GPUCellParityTests at zero pixel diff."
+            ),
+        }
+    )
+    return findings
+
+
+def markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
+    out = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
+    for row in rows:
+        out.append("| " + " | ".join(redact(value, max_len=140) for value in row) + " |")
+    return "\n".join(out)
+
+
+def write_markdown(summary: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# Laban Metal Trace Analysis")
+    lines.append("")
+    lines.append(f"- trace: `{redact(summary['tracePath'])}`")
+    lines.append(f"- process filter: `{summary['processFilter'] or '<all processes>'}`")
+    lines.append(f"- parsed schemas: {', '.join(summary['parsedSchemas']) or '<none>'}")
+    if summary.get("skippedSchemas"):
+        lines.append(f"- skipped schemas: {', '.join(summary['skippedSchemas'])}")
+    lines.append("- raw xctrace XML exports: deleted after analysis")
+    lines.append("")
+
+    cpu = summary.get("cpu", {})
+    lines.append("## CPU Time Profiler")
+    lines.append("")
+    lines.append(
+        f"Kept rows: {cpu.get('rows', 0)}; total sample weight: {cpu.get('totalWeightMs', 0.0)} ms; "
+        f"process-filter skipped rows: {cpu.get('skippedRowsByProcessFilter', 0)}."
+    )
+    rows = [
+        [item["name"], item["samples"], item["weightMs"], f"{item['percent']}%"]
+        for item in cpu.get("symbolHits", [])[:15]
+    ]
+    if rows:
+        lines.append("")
+        lines.append(markdown_table(["Symbol", "Samples", "Weight ms", "Percent"], rows))
+    rows = [
+        [item["name"], item["samples"], item["weightMs"], f"{item['percent']}%"]
+        for item in cpu.get("categoryHits", [])[:10]
+    ]
+    if rows:
+        lines.append("")
+        lines.append(markdown_table(["Category", "Samples", "Weight ms", "Percent"], rows))
+    rows = [
+        [item["name"], item["samples"], item["weightMs"], f"{item['percent']}%"]
+        for item in cpu.get("topFrames", [])[:10]
+    ]
+    if rows:
+        lines.append("")
+        lines.append(markdown_table(["Top visible frame", "Samples", "Weight ms", "Percent"], rows))
+    if cpu.get("topProcesses"):
+        lines.append("")
+        lines.append(
+            markdown_table(
+                ["Kept process/thread labels", "Rows"],
+                [[name, count] for name, count in cpu.get("topProcesses", [])[:8]],
+            )
+        )
+    elif cpu.get("candidateProcessLabels"):
+        lines.append("")
+        lines.append(
+            markdown_table(
+                ["Candidate process/thread labels before filtering", "Rows"],
+                [[name, count] for name, count in cpu.get("candidateProcessLabels", [])[:8]],
+            )
+        )
+
+    lines.append("")
+    lines.append("## Metal Intervals")
+    for table in summary.get("metalTables", []):
+        top = table.get("topLabels", [])[:8]
+        interest = table.get("labelsOfInterest", [])[:8]
+        if not top and not interest:
+            continue
+        lines.append("")
+        lines.append(f"### {table['schema']}")
+        lines.append(
+            f"Rows: {table.get('rows', 0)}; with duration: {table.get('rowsWithDuration', 0)}; "
+            f"process-filter skipped rows: {table.get('skippedRowsByProcessFilter', 0)}."
+        )
+        if interest:
+            lines.append("")
+            lines.append(
+                markdown_table(
+                    ["Interesting label", "Count", "Total ms", "P50", "P95", "P99", "Max"],
+                    [
+                        [
+                            item["label"],
+                            item["count"],
+                            item["totalMs"],
+                            item["p50Ms"],
+                            item["p95Ms"],
+                            item["p99Ms"],
+                            item["maxMs"],
+                        ]
+                        for item in interest
+                    ],
+                )
+            )
+        elif top:
+            lines.append("")
+            lines.append(
+                markdown_table(
+                    ["Top label", "Count", "Total ms", "P50", "P95", "P99", "Max"],
+                    [
+                        [
+                            item["label"],
+                            item["count"],
+                            item["totalMs"],
+                            item["p50Ms"],
+                            item["p95Ms"],
+                            item["p99Ms"],
+                            item["maxMs"],
+                        ]
+                        for item in top
+                    ],
+                )
+            )
+
+    lines.append("")
+    lines.append("## Optimization Findings")
+    for index, finding in enumerate(summary.get("findings", []), start=1):
+        lines.append("")
+        lines.append(f"{index}. **{redact(finding['area'])}**")
+        lines.append(f"   - Evidence: {redact(finding['evidence'], max_len=500)}")
+        lines.append(f"   - Action: {redact(finding['action'], max_len=700)}")
+        lines.append(f"   - Verification: {redact(finding['verification'], max_len=500)}")
+
+    lines.append("")
+    lines.append("## Next Experiments")
+    lines.append("")
+    lines.append("1. Add os_signpost subspans inside `buildGPUCellPayloadInstanceListsOnce` and rerun this script.")
+    lines.append("2. Prototype sparse cell-glyph draws with per-dirty-row `baseInstance` and instance counts.")
+    lines.append("3. Batch the payload glyph loop by row with precomputed row bases and cell coordinates.")
+    lines.append("4. Keep each candidate isolated and gate it with release `MetalFrameTimingBench`, `TerminalCellPayloadAllocationBench`, and `GPUCellParityTests`.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def default_output_paths(trace: Path) -> tuple[Path, Path]:
+    build_dir = Path(".build") / "laban"
+    stem = trace.name.removesuffix(".trace")
+    return build_dir / f"{stem}-metal-trace-analysis.json", build_dir / f"{stem}-metal-trace-analysis.md"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Analyze an Instruments .trace bundle for Laban Metal renderer CPU/GPU optimization.",
+    )
+    parser.add_argument(
+        "trace",
+        nargs="?",
+        type=Path,
+        default=Path("~/Downloads/Untitled.trace").expanduser(),
+        help="Path to the .trace bundle. Defaults to ~/Downloads/Untitled.trace.",
+    )
+    parser.add_argument("--json-output", type=Path, help="Write JSON summary to this path.")
+    parser.add_argument("--markdown-output", type=Path, help="Write Markdown report to this path.")
+    parser.add_argument(
+        "--process",
+        default=r"Laban|laband|labpty",
+        help="Regex for process-owner rows to keep. Use --all-processes to disable.",
+    )
+    parser.add_argument("--all-processes", action="store_true", help="Do not filter rows by process name.")
+    parser.add_argument(
+        "--schema",
+        action="append",
+        default=[],
+        help="Additional table schema to export. Dangerous schemas are refused unless --allow-sensitive-schemas is set.",
+    )
+    parser.add_argument("--deep-gpu", action="store_true", help="Also export heavier GPU counter/resource tables.")
+    parser.add_argument(
+        "--allow-sensitive-schemas",
+        action="store_true",
+        help="Allow schemas that can contain launch metadata or logs. Reports are still redacted, but raw temp XML may contain secrets.",
+    )
+    parser.add_argument("--keep-exports", action="store_true", help="Keep raw exported XML in --scratch-dir for local inspection.")
+    parser.add_argument("--scratch-dir", type=Path, help="Directory for raw XML exports. Defaults to a temporary directory.")
+    parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to parse per table; 0 means all rows.")
+    parser.add_argument("--list-schemas", action="store_true", help="Only list sanitized table schemas in the trace.")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    trace = args.trace.expanduser()
+    if not trace.exists():
+        raise SystemExit(f"trace not found: {redact(trace)}")
+
+    json_output, markdown_output = default_output_paths(trace)
+    if args.json_output:
+        json_output = args.json_output
+    if args.markdown_output:
+        markdown_output = args.markdown_output
+    json_output.parent.mkdir(parents=True, exist_ok=True)
+    markdown_output.parent.mkdir(parents=True, exist_ok=True)
+
+    process_re = None if args.all_processes else re.compile(args.process)
+    schemas_to_request = list(DEFAULT_SCHEMAS)
+    if args.deep_gpu:
+        schemas_to_request.extend(DEEP_GPU_SCHEMAS)
+    schemas_to_request.extend(args.schema)
+
+    if args.scratch_dir:
+        scratch_root = args.scratch_dir
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        temp_context: Any = None
+    else:
+        temp_context = tempfile.TemporaryDirectory(prefix="laban-metal-trace-")
+        scratch_root = Path(temp_context.name)
+
+    try:
+        toc_path = scratch_root / "toc.xml"
+        run_xctrace_export(trace, ["--toc"], toc_path)
+        available = table_schemas_from_toc(toc_path)
+        available_set = set(available)
+        if args.list_schemas:
+            for schema in sorted(available_set):
+                print(redact(schema))
+            return 0
+
+        parsed: list[str] = []
+        skipped: list[str] = []
+        metal_tables: list[dict[str, Any]] = []
+        cpu_summary: dict[str, Any] = {
+            "rows": 0,
+            "skippedRowsByProcessFilter": 0,
+            "totalWeightMs": 0.0,
+            "symbolHits": [],
+            "categoryHits": [],
+            "topFrames": [],
+            "stackExamples": {},
+        }
+
+        for schema in dict.fromkeys(schemas_to_request):
+            if schema not in available_set:
+                skipped.append(f"{schema}:not-present")
+                continue
+            if schema in DANGEROUS_SCHEMAS and not args.allow_sensitive_schemas:
+                skipped.append(f"{schema}:sensitive")
+                continue
+            try:
+                print(f"analyze-metal-trace: exporting {schema}", file=sys.stderr)
+                result = analyze_schema(trace, scratch_root, schema, process_re, args.max_rows)
+            except Exception as exc:  # Keep the rest of the report useful.
+                skipped.append(f"{schema}:error:{redact(type(exc).__name__)}")
+                continue
+            parsed.append(schema)
+            if schema == "time-profile":
+                cpu_summary = result
+            else:
+                metal_tables.append(result)
+
+        summary = {
+            "tracePath": redact(trace),
+            "processFilter": None if args.all_processes else args.process,
+            "availableSchemas": sorted(redact(schema) for schema in available_set),
+            "parsedSchemas": parsed,
+            "skippedSchemas": skipped,
+            "cpu": cpu_summary,
+            "metalTables": metal_tables,
+        }
+        summary["findings"] = build_findings(summary)
+
+        json_output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        markdown_output.write_text(write_markdown(summary), encoding="utf-8")
+
+        print(f"wrote {json_output}")
+        print(f"wrote {markdown_output}")
+        if args.keep_exports:
+            print(f"kept raw exports in {scratch_root}")
+        return 0
+    finally:
+        if temp_context is not None and not args.keep_exports:
+            temp_context.cleanup()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
