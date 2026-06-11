@@ -3569,19 +3569,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // can recognise paste boundaries explicitly, so we trust it and
     // skip the prompt. Raw shells (no bracketed paste) get the
     // prompt because a multi-line paste runs each line as a command.
+    // Claude Code is exempt: it never enables bracketed paste, but its
+    // chunk-arrival paste heuristic inserts pasted newlines into the
+    // prompt buffer instead of submitting, so the warning is a false
+    // alarm there (sanitizePaste already stripped everything except
+    // tab / LF / CR, so "unsafe" can only mean newlines by this point).
     if !session.bracketedPasteEnabled(),
       !Session.pasteIsSafe(bytes)
     {
-      let alert = NSAlert()
-      alert.alertStyle = .warning
-      alert.messageText = "Paste contains control characters or newlines"
-      alert.informativeText =
-        "The active program isn't using bracketed paste. Pasting may run each line as a command. Continue?"
-      alert.addButton(withTitle: "Paste")
-      alert.addButton(withTitle: "Cancel")
-      if alert.runModal() != .alertFirstButtonReturn {
-        EventLog.shared.log("paste.cancelled.unsafe", ["bytes": bytes.count])
-        return
+      if TerminalClipboard.tabRunsClaudeCode(activeTab) {
+        EventLog.shared.log("paste.unsafe.exempt.claude", ["bytes": bytes.count])
+      } else {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Paste contains control characters or newlines"
+        alert.informativeText =
+          "The active program isn't using bracketed paste. Pasting may run each line as a command. Continue?"
+        alert.addButton(withTitle: "Paste")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() != .alertFirstButtonReturn {
+          EventLog.shared.log("paste.cancelled.unsafe", ["bytes": bytes.count])
+          return
+        }
       }
     }
 

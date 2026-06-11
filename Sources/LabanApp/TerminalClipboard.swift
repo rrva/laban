@@ -56,6 +56,16 @@ enum TerminalClipboard {
   }
 
   static func shouldForwardImagePasteToTerminal(for tab: Tab) -> Bool {
+    tabRunsClaudeCode(tab)
+  }
+
+  /// True when the tab's foreground process or title metadata identifies
+  /// Claude Code. Claude Code never enables bracketed paste (its paste
+  /// handling is a chunk-arrival heuristic that inserts pasted newlines
+  /// into the prompt buffer instead of submitting), so callers use this
+  /// both to forward image pastes and to skip the multi-line unsafe-paste
+  /// warning that exists for raw shells.
+  static func tabRunsClaudeCode(_ tab: Tab) -> Bool {
     let metadata = tab.titleMetadata
     if executableLooksLikeClaude(metadata.process.foregroundProcess) {
       return true

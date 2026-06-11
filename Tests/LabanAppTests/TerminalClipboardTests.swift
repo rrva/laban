@@ -82,6 +82,40 @@ final class TerminalClipboardTests: XCTestCase {
     XCTAssertFalse(TerminalClipboard.shouldForwardImagePasteToTerminal(for: tab))
   }
 
+  func testUnsafePasteWarningExemptionMatchesClaudeTabsOnly() {
+    // Claude Code never enables bracketed paste; its paste heuristic
+    // inserts newlines instead of submitting, so a multi-line paste into
+    // a Claude tab must not trigger the unsafe-paste warning.
+    let claude = Tab(
+      id: "tab-1",
+      position: 1,
+      title: "Tab 1",
+      isActive: true,
+      sessionId: "session-1",
+      titleMetadata: TabTitleMetadata(
+        displayTitle: "claude",
+        titleSource: .process,
+        process: TabProcessMetadata(foregroundProcess: "claude")
+      )
+    )
+    XCTAssertTrue(TerminalClipboard.tabRunsClaudeCode(claude))
+
+    // A raw shell keeps the warning: each pasted line would run as a command.
+    let shell = Tab(
+      id: "tab-2",
+      position: 2,
+      title: "Tab 2",
+      isActive: true,
+      sessionId: "session-2",
+      titleMetadata: TabTitleMetadata(
+        displayTitle: "zsh",
+        titleSource: .process,
+        process: TabProcessMetadata(foregroundProcess: "zsh", foregroundCommand: "-zsh")
+      )
+    )
+    XCTAssertFalse(TerminalClipboard.tabRunsClaudeCode(shell))
+  }
+
   func testMixedTextAndImageClipboardKeepsTextReadable() throws {
     // Regression for H-7: paste(_:) used to short-circuit to an image-read
     // Ctrl+V on any Claude tab whenever the clipboard contained an image,
