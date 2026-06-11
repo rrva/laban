@@ -61,9 +61,23 @@ final class MetalDrawableScheduler {
     // `drawableSizeMismatch` guard), so a stale-sized carry-forward is safe.
     if let carried = pendingDrawable {
       pendingDrawable = nil
+      // Prefetch-on-carry: a non-blocking caller consuming the parked
+      // drawable immediately posts the next async request, so the next tick
+      // finds a drawable waiting instead of posting-and-missing. Without
+      // this, saturation settles into a stable render/miss alternation —
+      // carried ticks never request, requesting ticks never have one — and
+      // a 120 Hz panel locks at exactly half rate.
+      var prefetch = false
+      if nonBlocking && !drawableRequestActive {
+        drawableRequestActive = true
+        prefetch = true
+      }
       let activeAfter = drawableRequestActive
       let pendingAfter = pendingDrawable != nil
       drawableRequestLock.unlock()
+      if prefetch {
+        prefetchNextDrawable()
+      }
       return DrawableAcquireResult(
         drawable: carried,
         diagnostic: diagnostic(
@@ -152,6 +166,21 @@ final class MetalDrawableScheduler {
         pendingAfter: pendingAfter,
         layerMaximumDrawableCount: layerMaximumDrawableCount,
         layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout))
+  }
+
+  /// Background `nextDrawable()` whose result parks directly in
+  /// `pendingDrawable` for the next acquire. Caller must have set
+  /// `drawableRequestActive` under the lock before invoking.
+  private func prefetchNextDrawable() {
+    drawableQueue.async { [self] in
+      let drawable = layer.nextDrawable()
+      drawableRequestLock.lock()
+      if let drawable {
+        pendingDrawable = drawable
+      }
+      drawableRequestActive = false
+      drawableRequestLock.unlock()
+    }
   }
 
   private func requestSnapshot() -> (active: Bool, pending: Bool) {
