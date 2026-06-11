@@ -20,6 +20,12 @@ public struct MetalDrawableAcquireDiagnostic: Codable, Equatable, Sendable {
   public var pendingDrawablePresentAfter: Bool
   public var layerMaximumDrawableCount: Int
   public var layerAllowsNextDrawableTimeout: Bool
+  /// Wall-clock latency of the most recent background `nextDrawable()` call
+  /// (post → return), regardless of which acquire consumed the result. The
+  /// discriminating metric for present-pipeline stalls: a sharp ~16.7 ms
+  /// means drawable recycling is locked to display swaps at half rate; ~9-12
+  /// ms means the GPU frame itself is the bottleneck.
+  public var lastRequestLatencyMs: Double?
 
   public init(
     outcome: Outcome,
@@ -30,7 +36,8 @@ public struct MetalDrawableAcquireDiagnostic: Codable, Equatable, Sendable {
     pendingDrawablePresentBefore: Bool,
     pendingDrawablePresentAfter: Bool,
     layerMaximumDrawableCount: Int,
-    layerAllowsNextDrawableTimeout: Bool
+    layerAllowsNextDrawableTimeout: Bool,
+    lastRequestLatencyMs: Double? = nil
   ) {
     self.outcome = outcome
     self.budgetMs = budgetMs
@@ -41,5 +48,6 @@ public struct MetalDrawableAcquireDiagnostic: Codable, Equatable, Sendable {
     self.pendingDrawablePresentAfter = pendingDrawablePresentAfter
     self.layerMaximumDrawableCount = layerMaximumDrawableCount
     self.layerAllowsNextDrawableTimeout = layerAllowsNextDrawableTimeout
+    self.lastRequestLatencyMs = lastRequestLatencyMs
   }
 }

@@ -17,6 +17,11 @@ final class MetalDrawableScheduler {
   /// frames — it is parked here and handed to the next acquire. Always touched
   /// under `drawableRequestLock`.
   private var pendingDrawable: (any CAMetalDrawable)?
+  /// Post→return latency of the most recent background `nextDrawable()`.
+  /// Touched under `drawableRequestLock`; surfaced through the acquire
+  /// diagnostic so the render journal can tell display-locked recycling
+  /// (~16.7 ms sharp) from GPU-bound frames (~9-12 ms).
+  private var lastRequestLatencyMs: Double?
 
   /// Limits frames in flight to 1. CAMetalLayer hands out up to 3 drawables
   /// in parallel, but MetalRenderer's persistent target + scratch textures are
@@ -115,14 +120,18 @@ final class MetalDrawableScheduler {
     let completed = DispatchSemaphore(value: 0)
     let state = DrawableAcquisitionState()
 
+    let requestPostedAt = DispatchTime.now().uptimeNanoseconds
     drawableQueue.async { [self] in
       let drawable = layer.nextDrawable()
+      let latencyMs =
+        Double(DispatchTime.now().uptimeNanoseconds &- requestPostedAt) / 1_000_000.0
       let claimedByWaiter = state.fulfill(drawable)
       if claimedByWaiter {
         completed.signal()
       }
 
       drawableRequestLock.lock()
+      lastRequestLatencyMs = latencyMs
       // The caller already gave up: stash the late drawable for the next acquire
       // instead of dropping it. Clearing `drawableRequestActive` in the same
       // critical section keeps the stash visible before a new request can start.
@@ -172,9 +181,13 @@ final class MetalDrawableScheduler {
   /// `pendingDrawable` for the next acquire. Caller must have set
   /// `drawableRequestActive` under the lock before invoking.
   private func prefetchNextDrawable() {
+    let requestPostedAt = DispatchTime.now().uptimeNanoseconds
     drawableQueue.async { [self] in
       let drawable = layer.nextDrawable()
+      let latencyMs =
+        Double(DispatchTime.now().uptimeNanoseconds &- requestPostedAt) / 1_000_000.0
       drawableRequestLock.lock()
+      lastRequestLatencyMs = latencyMs
       if let drawable {
         pendingDrawable = drawable
       }
@@ -200,6 +213,9 @@ final class MetalDrawableScheduler {
     layerAllowsNextDrawableTimeout: Bool
   ) -> MetalDrawableAcquireDiagnostic {
     let elapsedNs = DispatchTime.now().uptimeNanoseconds &- startedAt
+    drawableRequestLock.lock()
+    let requestLatencyMs = lastRequestLatencyMs
+    drawableRequestLock.unlock()
     return MetalDrawableAcquireDiagnostic(
       outcome: outcome,
       budgetMs: Self.drawableAcquireBudgetMs,
@@ -209,7 +225,8 @@ final class MetalDrawableScheduler {
       pendingDrawablePresentBefore: pendingBefore,
       pendingDrawablePresentAfter: pendingAfter,
       layerMaximumDrawableCount: layerMaximumDrawableCount,
-      layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout)
+      layerAllowsNextDrawableTimeout: layerAllowsNextDrawableTimeout,
+      lastRequestLatencyMs: requestLatencyMs)
   }
 
   final class Frame: @unchecked Sendable {
