@@ -1703,6 +1703,7 @@ public final class AppModel {
 
   private func attachSessionCallbacks(session: Session, tabId: Tab.ID) {
     attachTabStatus(session: session, tabId: tabId)
+    attachProgress(session: session, tabId: tabId)
     attachBellAttention(session: session, tabId: tabId)
     attachOSCNotification(session: session, tabId: tabId)
     attachClipboard(session: session, tabId: tabId)
@@ -1798,6 +1799,33 @@ public final class AppModel {
     }
   }
 
+  /// Subscribe to OSC 9;4 progress pushes. Same main-queue hop as
+  /// `attachTabStatus` and for the same lock-inversion reason.
+  private func attachProgress(session: Session, tabId: Tab.ID) {
+    session.onProgress = { [weak self] update in
+      DispatchQueue.main.async { [weak self] in
+        self?.applyProgressUpdate(update, forTab: tabId)
+      }
+    }
+  }
+
+  private func applyProgressUpdate(_ update: Session.ProgressUpdate, forTab tabId: Tab.ID) {
+    let changed: Bool = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      let next: TabProgress?
+      switch update.operation {
+      case 1: next = TabProgress(state: .determinate, percent: update.percent)
+      case 2: next = TabProgress(state: .error, percent: update.percent)
+      case 3: next = TabProgress(state: .indeterminate)
+      default: next = nil  // 0 = clear
+      }
+      guard _tabs[idx].titleMetadata.progress != next else { return false }
+      _tabs[idx].titleMetadata.progress = next
+      return true
+    }
+    if changed { notifySurfaceStateChanged() }
+  }
+
   private func attachBellAttention(session: Session, tabId: Tab.ID) {
     session.onBell = { [weak self] _ in
       let date = Date()
@@ -1866,6 +1894,7 @@ public final class AppModel {
     return t.contains("approval") || t.contains("approve")
       || t.contains("wants to") || t.contains("needs input")
       || t.contains("requested") || t.contains("waiting")
+      || t.contains("permission") || t.contains("needs you")
   }
 
   /// Clear the notification on the active tab — the user has returned to the

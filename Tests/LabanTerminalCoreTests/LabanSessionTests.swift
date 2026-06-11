@@ -2792,6 +2792,153 @@ final class LabanSessionTests: XCTestCase {
       "OSC 9;4 progress reports must not fire the notification callback")
   }
 
+  // MARK: - Terminal-support spec conformance (escape-level)
+  //
+  // Byte-level cases from the terminal signalling spec's test list. The
+  // multiplexer passthrough case (spec 9.18) is intentionally absent: Laban
+  // is a terminal emulator, not a multiplexer, and that section is
+  // informative for it.
+
+  /// Spec 9.9-9.12: OSC 9;4 progress operations parse, percent clamps
+  /// leniently, and a missing value reaches the callback as -1.
+  func testProgressCallbackParsesOperationsAndClampsPercent() {
+    final class ProgressSink {
+      var events: [(op: Int32, percent: Int32)] = []
+    }
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = ProgressSink()
+    let userdata = Unmanaged.passUnretained(sink).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_progress_callback(
+        session,
+        { ud, op, percent in
+          guard let ud else { return }
+          let sink = Unmanaged<ProgressSink>.fromOpaque(ud).takeUnretainedValue()
+          sink.events.append((op, percent))
+        },
+        userdata),
+      0)
+
+    writeBytes(session, Array("\u{1b}]9;4;1;42\u{07}".utf8))
+    writeBytes(session, Array("\u{1b}]9;4;3;\u{07}".utf8))
+    writeBytes(session, Array("\u{1b}]9;4;2;80\u{1b}\\".utf8))
+    writeBytes(session, Array("\u{1b}]9;4;1;250\u{07}".utf8))
+    writeBytes(session, Array("\u{1b}]9;4;0;\u{07}".utf8))
+    writeBytes(session, Array("\u{1b}]9;4;7;10\u{07}".utf8))  // unknown op: ignored
+
+    XCTAssertEqual(sink.events.map { $0.op }, [1, 3, 2, 1, 0])
+    XCTAssertEqual(sink.events.map { $0.percent }, [42, -1, 80, 100, -1])
+  }
+
+  /// Spec 9.15: kitty OSC 99 chunks sharing an id assemble into one
+  /// notification, delivered through the same callback as OSC 9.
+  func testKittyNotificationAssemblesChunksAndDeliversOnce() {
+    final class Sink { var messages: [String] = [] }
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = Sink()
+    let userdata = Unmanaged.passUnretained(sink).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_osc_notification_callback(
+        session,
+        { ud, _, text, len in
+          guard let ud, let text else { return }
+          let sink = Unmanaged<Sink>.fromOpaque(ud).takeUnretainedValue()
+          let bytes = UnsafeBufferPointer(start: text, count: len)
+          sink.messages.append(String(decoding: bytes, as: UTF8.self))
+        },
+        userdata),
+      0)
+
+    writeBytes(session, Array("\u{1b}]99;i=123:d=0:p=title;Agent App\u{07}".utf8))
+    XCTAssertEqual(sink.messages, [], "an unfinished chunk must not notify")
+    writeBytes(session, Array("\u{1b}]99;i=123:p=body;Permission needed\u{07}".utf8))
+    XCTAssertEqual(sink.messages, ["Agent App: Permission needed"])
+    // A trailing finalize for the already-delivered id must not duplicate.
+    writeBytes(session, Array("\u{1b}]99;i=123:d=1:a=focus;\u{07}".utf8))
+    XCTAssertEqual(sink.messages, ["Agent App: Permission needed"])
+  }
+
+  /// Spec 9.16: Ghostty-style OSC 777 notify joins title and body.
+  func testOsc777NotificationJoinsTitleAndBody() {
+    final class Sink { var messages: [String] = [] }
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let sink = Sink()
+    let userdata = Unmanaged.passUnretained(sink).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_osc_notification_callback(
+        session,
+        { ud, _, text, len in
+          guard let ud, let text else { return }
+          let sink = Unmanaged<Sink>.fromOpaque(ud).takeUnretainedValue()
+          let bytes = UnsafeBufferPointer(start: text, count: len)
+          sink.messages.append(String(decoding: bytes, as: UTF8.self))
+        },
+        userdata),
+      0)
+
+    writeBytes(session, Array("\u{1b}]777;notify;Agent App;Permission needed\u{07}".utf8))
+    XCTAssertEqual(sink.messages, ["Agent App: Permission needed"])
+
+    // Non-notify 777 subcommands are not notifications.
+    writeBytes(session, Array("\u{1b}]777;something;else\u{07}".utf8))
+    XCTAssertEqual(sink.messages, ["Agent App: Permission needed"])
+  }
+
+  /// Spec 9.8: `\;` is a literal semicolon inside a tab-status value and
+  /// `\\` a literal backslash — neither splits a new key/value pair.
+  func testTabStatusEscapedSemicolonAndBackslash() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let probe = TabStatusProbe()
+    let userdata = Unmanaged.passUnretained(probe).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_tab_status_callback(session, tabStatusProbeCallback, userdata), 0)
+
+    writeBytes(
+      session, Array("\u{1b}]21337;status=Waiting\\; approve C:\\\\tmp\u{07}".utf8))
+    XCTAssertEqual(probe.calls, 1)
+    XCTAssertEqual(probe.status, "Waiting; approve C:\\tmp")
+  }
+
+  /// Spec 9.19: an unknown OSC is ignored without corrupting later parsing.
+  func testUnknownOscIsIgnoredAndParsingRecovers() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let probe = TabStatusProbe()
+    let userdata = Unmanaged.passUnretained(probe).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_tab_status_callback(session, tabStatusProbeCallback, userdata), 0)
+
+    writeBytes(session, Array("\u{1b}]99999;anything\u{07}".utf8))
+    XCTAssertEqual(probe.calls, 0)
+    writeBytes(session, Array("\u{1b}]21337;status=ok\u{07}".utf8))
+    XCTAssertEqual(probe.calls, 1)
+    XCTAssertEqual(probe.status, "ok")
+  }
+
   // MARK: - OSC 52 clipboard bridge
   //
   // libghostty-vt parses OSC 52 but its VT-only API registers no clipboard

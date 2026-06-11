@@ -55,6 +55,9 @@ static char **build_spawn_env(const char *const *overrides) {
          * backends from it). Scrub and assert our own identity below. */
         if (env_entry_has_name(entry, "TERM_PROGRAM")) continue;
         if (env_entry_has_name(entry, "TERM_PROGRAM_VERSION")) continue;
+        /* A leaked Windows Terminal marker makes tools suppress features
+         * (OSC 9;4 progress checks WT_SESSION explicitly). Never inherit. */
+        if (env_entry_has_name(entry, "WT_SESSION")) continue;
         if (envp_overrides_entry(overrides, entry)) continue;
         env[out++] = (char *)entry;
     }

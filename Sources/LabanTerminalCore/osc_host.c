@@ -235,6 +235,126 @@ static void dispatch_osc7(LabanSession *s, const char *payload, size_t len) {
 
 /* Act on a fully-buffered OSC payload for a number we track (7/9/10/11). OSC 52
  * accumulates in its own buffer and is dispatched via dispatch_osc52. */
+/* OSC 9 ; 4 ; <operation> ; <value> — ConEmu/iTerm2 progress reporting.
+ * `payload` starts after the "4;" marker. Operations: 0 clear, 1 determinate,
+ * 2 error, 3 indeterminate. The percent value applies to 1 and 2 and is
+ * clamped leniently to [0, 100]; -1 reaches the callback when absent. */
+static void dispatch_progress(LabanSession *s, const char *payload, size_t len) {
+    if (!s->progress_callback) return;
+    size_t i = 0;
+    int op = -1;
+    while (i < len && payload[i] >= '0' && payload[i] <= '9') {
+        if (op < 0) op = 0;
+        if (op > 100) break;
+        op = op * 10 + (payload[i] - '0');
+        i++;
+    }
+    if (op < 0 || op > 3) return;
+    int percent = -1;
+    if (i < len && payload[i] == ';') {
+        i++;
+        while (i < len && payload[i] >= '0' && payload[i] <= '9') {
+            if (percent < 0) percent = 0;
+            if (percent > 1000) break;
+            percent = percent * 10 + (payload[i] - '0');
+            i++;
+        }
+        if (percent > 100) percent = 100;
+    }
+    s->progress_callback(s->progress_userdata, op, percent);
+}
+
+/* Kitty desktop notifications — `ESC ] 99 ; <metadata> ; <payload> BEL/ST`.
+ * Metadata is colon-separated k=v: `i` correlates chunks of one notification,
+ * `p` selects the part (title or body, body by default), `d=0` marks "more
+ * chunks follow" (anything else, or no `d`, finalizes). Finalizing delivers
+ * "<title>: <body>" through the OSC 9 notification callback and resets the
+ * assembly state. Unknown metadata keys (a=, o=, u=, ...) are ignored. */
+static void dispatch_kitty_notify(LabanSession *s, const char *payload, size_t len) {
+    if (!s->osc_notification_callback) return;
+
+    const char *meta = payload;
+    size_t meta_len = len;
+    const char *text = NULL;
+    size_t text_len = 0;
+    const char *sep = memchr(payload, ';', len);
+    if (sep) {
+        meta_len = (size_t)(sep - payload);
+        text = sep + 1;
+        text_len = len - meta_len - 1;
+    }
+
+    char id[64] = {0};
+    char part = 'b';
+    int done = 1;
+    size_t i = 0;
+    while (i < meta_len) {
+        size_t key_start = i;
+        while (i < meta_len && meta[i] != '=' && meta[i] != ':') i++;
+        size_t key_len = i - key_start;
+        const char *value = NULL;
+        size_t value_len = 0;
+        if (i < meta_len && meta[i] == '=') {
+            i++;
+            value = meta + i;
+            while (i < meta_len && meta[i] != ':') i++;
+            value_len = (size_t)(meta + i - value);
+        }
+        if (i < meta_len && meta[i] == ':') i++;
+        if (key_len == 1 && meta[key_start] == 'i' && value) {
+            size_t n = value_len < sizeof(id) - 1 ? value_len : sizeof(id) - 1;
+            memcpy(id, value, n);
+            id[n] = '\0';
+        } else if (key_len == 1 && meta[key_start] == 'd' && value) {
+            done = !(value_len == 1 && value[0] == '0');
+        } else if (key_len == 1 && meta[key_start] == 'p' && value) {
+            part = value_len > 0 ? value[0] : 'b';
+        }
+    }
+
+    if (strncmp(s->kitty_notify_id, id, sizeof(id)) != 0) {
+        /* New notification id: drop any half-assembled predecessor. */
+        memcpy(s->kitty_notify_id, id, sizeof(id));
+        s->kitty_notify_title[0] = '\0';
+        s->kitty_notify_body[0] = '\0';
+    }
+
+    if (text && text_len > 0) {
+        char *target = part == 't' ? s->kitty_notify_title : s->kitty_notify_body;
+        size_t cap = part == 't'
+            ? sizeof(s->kitty_notify_title) : sizeof(s->kitty_notify_body);
+        size_t n = text_len < cap - 1 ? text_len : cap - 1;
+        memcpy(target, text, n);
+        target[n] = '\0';
+    }
+
+    if (!done) return;
+
+    char joined[800];
+    size_t title_len = strlen(s->kitty_notify_title);
+    size_t body_len = strlen(s->kitty_notify_body);
+    size_t out = 0;
+    if (title_len > 0) {
+        memcpy(joined, s->kitty_notify_title, title_len);
+        out = title_len;
+        if (body_len > 0) {
+            memcpy(joined + out, ": ", 2);
+            out += 2;
+        }
+    }
+    if (body_len > 0) {
+        memcpy(joined + out, s->kitty_notify_body, body_len);
+        out += body_len;
+    }
+    s->kitty_notify_id[0] = '\0';
+    s->kitty_notify_title[0] = '\0';
+    s->kitty_notify_body[0] = '\0';
+    if (out == 0) return;
+    s->osc_notification_callback(
+        s->osc_notification_userdata, s,
+        (const uint8_t *)joined, out);
+}
+
 static void dispatch_osc_host(
     LabanSession *s, int osc_number, const char *payload, size_t len) {
     if (osc_number == 7) {
@@ -251,13 +371,21 @@ static void dispatch_osc_host(
     }
     if (osc_number == 9) {
         if (len == 0) return;
-        /* ConEmu progress (OSC 9 ; 4 ; ...) is not a desktop notification. */
-        if (len >= 2 && payload[0] == '4' && payload[1] == ';') return;
+        /* ConEmu/iTerm2 progress (OSC 9 ; 4 ; <op> ; <value>) is progress
+         * metadata, never a desktop notification. */
+        if (len >= 2 && payload[0] == '4' && payload[1] == ';') {
+            dispatch_progress(s, payload + 2, len - 2);
+            return;
+        }
         if (s->osc_notification_callback) {
             s->osc_notification_callback(
                 s->osc_notification_userdata, s,
                 (const uint8_t *)payload, len);
         }
+        return;
+    }
+    if (osc_number == 99) {
+        dispatch_kitty_notify(s, payload, len);
         return;
     }
     if (osc_number == 777) {
@@ -312,7 +440,7 @@ static int parse_osc_number(const char *num, size_t len) {
 }
 
 static int osc_host_interesting(int n) {
-    return n == 7 || n == 9 || n == 10 || n == 11 || n == 52 || n == 777;
+    return n == 7 || n == 9 || n == 10 || n == 11 || n == 52 || n == 99 || n == 777;
 }
 
 /* Write any not-yet-flushed bytes [*flushed, upto) into the VT parser. */
@@ -456,6 +584,18 @@ int laban_session_set_osc_notification_callback(
     SESSION_LOCK(s);
     s->osc_notification_callback = callback;
     s->osc_notification_userdata = userdata;
+    return 0;
+}
+
+int laban_session_set_progress_callback(
+    LabanSession *s,
+    LabanProgressCallback callback,
+    void *userdata
+) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    s->progress_callback = callback;
+    s->progress_userdata = userdata;
     return 0;
 }
 

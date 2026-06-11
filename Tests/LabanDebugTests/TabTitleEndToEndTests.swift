@@ -110,15 +110,33 @@ final class TabTitleEndToEndTests: XCTestCase {
   func testTermProgramIdentityReachesChildren() throws {
     // Children must see TERM_PROGRAM=Laban — not an inherited identity from
     // whatever terminal happened to launch the Laban process. Codex picks its
-    // notification backend from this variable.
+    // notification backend from this variable; other tools gate progress
+    // bars on it.
     let harness = try TitleHarness(runId: "title-e2e-term-program")
     defer { harness.tearDown() }
 
     try harness.runClient("titleenv 30")
 
-    let tab = try harness.waitForTabState { $0.terminalTitle == "Laban" }
-    XCTAssertEqual(tab.terminalTitle, "Laban")
-    XCTAssertEqual(tab.displayTitle, "Laban")
+    let tab = try harness.waitForTabState { $0.terminalTitle?.hasPrefix("Laban/") == true }
+    let title = try XCTUnwrap(tab.terminalTitle)
+    XCTAssertTrue(title.hasPrefix("Laban/"), "unexpected identity: \(title)")
+    XCTAssertFalse(title.hasSuffix("/unset"), "TERM_PROGRAM_VERSION must be set: \(title)")
+  }
+
+  func testGhosttyCompatIdentityReachesChildren() throws {
+    // The ghostty-compat setting claims TERM_PROGRAM=ghostty 1.3.1 so
+    // identity-gated features (OSC 9;4 progress bars) light up in tools
+    // that only recognize known terminals.
+    TerminalIdentitySettings.set(.ghosttyCompat)
+    defer { UserDefaults.standard.removeObject(forKey: TerminalIdentitySettings.defaultsKey) }
+
+    let harness = try TitleHarness(runId: "title-e2e-ghostty-compat")
+    defer { harness.tearDown() }
+
+    try harness.runClient("titleenv 30")
+
+    let tab = try harness.waitForTabState { $0.terminalTitle == "ghostty/1.3.1" }
+    XCTAssertEqual(tab.terminalTitle, "ghostty/1.3.1")
   }
 
   // MARK: - Attention: agent wants the user
@@ -190,6 +208,175 @@ final class TabTitleEndToEndTests: XCTestCase {
     XCTAssertEqual(tab.terminalTitle, "[ ! ] Action Required | codex")
   }
 
+  // MARK: - Terminal-support spec conformance (full pipeline)
+
+  /// Spec 9.2: an empty title payload clears the app-provided override and
+  /// the tab reverts to the terminal's default title policy.
+  func testEmptyTitlePayloadRevertsToDefaultTitlePolicy() throws {
+    let harness = try TitleHarness(runId: "title-e2e-title-clear")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]0;Debug failing tests\\007'\n")
+    let titled = try harness.waitForTabState { $0.terminalTitle == "Debug failing tests" }
+    XCTAssertEqual(titled.displayTitle, "Debug failing tests")
+
+    try harness.type("printf '\\033]0;\\007'\n")
+    let cleared = try harness.waitForTabState { $0.terminalTitle == nil }
+    XCTAssertNil(cleared.terminalTitle)
+    XCTAssertNotEqual(cleared.displayTitle, "Debug failing tests")
+    XCTAssertNotEqual(cleared.displayTitle, "")
+  }
+
+  /// Spec 9.6 + 9.7: omitted tab-status keys preserve the stored fields,
+  /// empty values clear them.
+  func testTabStatusOmittedFieldsPreservedAndEmptyFieldsClear() throws {
+    let harness = try TitleHarness(runId: "title-e2e-status-merge")
+    defer { harness.tearDown() }
+
+    try harness.type(
+      "printf '\\033]21337;indicator=#ff9500;status=Working;status-color=#ff9500\\007'\n")
+    var deadline = Date().addingTimeInterval(4.0)
+    while harness.agentStatus().statusText != "Working", Date() < deadline {
+      _ = try harness.syncPass()
+      harness.pumpMainQueue()
+    }
+    XCTAssertEqual(harness.agentStatus().indicatorColor, "#ff9500")
+
+    try harness.type("printf '\\033]21337;status=Waiting\\007'\n")
+    deadline = Date().addingTimeInterval(4.0)
+    while harness.agentStatus().statusText != "Waiting", Date() < deadline {
+      _ = try harness.syncPass()
+      harness.pumpMainQueue()
+    }
+    let merged = harness.agentStatus()
+    XCTAssertEqual(merged.statusText, "Waiting")
+    XCTAssertEqual(merged.indicatorColor, "#ff9500", "omitted key must preserve the field")
+    XCTAssertEqual(merged.statusTextColor, "#ff9500")
+
+    try harness.type("printf '\\033]21337;indicator=;status=;status-color=\\007'\n")
+    deadline = Date().addingTimeInterval(4.0)
+    while !harness.agentStatus().isEmpty, Date() < deadline {
+      _ = try harness.syncPass()
+      harness.pumpMainQueue()
+    }
+    XCTAssertTrue(harness.agentStatus().isEmpty, "empty values must clear every field")
+  }
+
+  /// Spec 9.9-9.12: progress states reach the tab metadata and clear.
+  func testProgressReportingReachesTabAndClears() throws {
+    let harness = try TitleHarness(runId: "title-e2e-progress")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]9;4;1;42\\007'\n")
+    var tab = try harness.waitForTabState { $0.progressState == "determinate" }
+    XCTAssertEqual(tab.progressState, "determinate")
+    XCTAssertEqual(tab.progressPercent, 42)
+
+    try harness.type("printf '\\033]9;4;3;\\007'\n")
+    tab = try harness.waitForTabState { $0.progressState == "indeterminate" }
+    XCTAssertEqual(tab.progressState, "indeterminate")
+    XCTAssertNil(tab.progressPercent)
+
+    try harness.type("printf '\\033]9;4;2;80\\007'\n")
+    tab = try harness.waitForTabState { $0.progressState == "error" }
+    XCTAssertEqual(tab.progressState, "error")
+    XCTAssertEqual(tab.progressPercent, 80)
+
+    try harness.type("printf '\\033]9;4;0;\\007'\n")
+    tab = try harness.waitForTabState { $0.progressState == nil }
+    XCTAssertNil(tab.progressState)
+  }
+
+  /// Spec 9.13: a raw BEL on a background tab earns a quiet marker.
+  func testRawBellMarksBackgroundTabPassive() throws {
+    let harness = try TitleHarness(runId: "title-e2e-bell")
+    defer { harness.tearDown() }
+
+    // Arm a delayed bell, then background the tab before it rings: a bell on
+    // the focused tab is intentionally silent (the user is already looking).
+    try harness.type("( sleep 1; printf '\\007' ) &\n")
+    try harness.newTab()
+
+    let after = try harness.waitForTabState(timeout: 6.0) { $0.attention == "passive" }
+    XCTAssertEqual(after.attention, "passive")
+  }
+
+  /// Spec 9.15 end-to-end: a kitty notification with "Permission needed"
+  /// body lands as a blocking request on a background tab.
+  func testKittyNotificationRaisesNeedsActionOnBackgroundTab() throws {
+    let harness = try TitleHarness(runId: "title-e2e-kitty")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]99;i=123:d=0:p=title;Agent App\\007'\n")
+    try harness.type("printf '\\033]99;i=123:p=body;Permission needed\\007'\n")
+    try harness.newTab()
+    let tab = try harness.waitForTabState { $0.attention == "needsAction" }
+    XCTAssertEqual(tab.attention, "needsAction")
+  }
+
+  /// Spec 9.20: the combined cleanup sequence clears progress, tab status,
+  /// and the title override.
+  func testCombinedCleanupClearsEverything() throws {
+    let harness = try TitleHarness(runId: "title-e2e-cleanup")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]0;Fix login bug\\007'\n")
+    try harness.type(
+      "printf '\\033]21337;indicator=#ff9500;status=Working;status-color=#ff9500\\007'\n")
+    try harness.type("printf '\\033]9;4;3;\\007'\n")
+    _ = try harness.waitForTabState {
+      $0.terminalTitle == "Fix login bug" && $0.progressState == "indeterminate"
+    }
+    var deadline = Date().addingTimeInterval(4.0)
+    while harness.agentStatus().statusText != "Working", Date() < deadline {
+      _ = try harness.syncPass()
+      harness.pumpMainQueue()
+    }
+
+    try harness.type("printf '\\033]9;4;0;\\007'\n")
+    try harness.type("printf '\\033]21337;indicator=;status=;status-color=\\007'\n")
+    try harness.type("printf '\\033]0;\\007'\n")
+
+    let tab = try harness.waitForTabState {
+      $0.terminalTitle == nil && $0.progressState == nil
+    }
+    XCTAssertNil(tab.terminalTitle)
+    XCTAssertNil(tab.progressState)
+    deadline = Date().addingTimeInterval(4.0)
+    while !harness.agentStatus().isEmpty, Date() < deadline {
+      _ = try harness.syncPass()
+      harness.pumpMainQueue()
+    }
+    XCTAssertTrue(harness.agentStatus().isEmpty)
+  }
+
+  /// Spec §3: activity metadata must not outlive the session — status,
+  /// awaiting-input, and progress all clear when the child exits.
+  func testTabStatusAndProgressClearWhenSessionExits() throws {
+    let harness = try TitleHarness(runId: "title-e2e-exit-clear")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]21337;status=Working;awaiting=1\\007'\n")
+    try harness.type("printf '\\033]9;4;1;42\\007'\n")
+    _ = try harness.waitForTabState {
+      $0.awaitingInput == true && $0.progressState == "determinate"
+    }
+
+    try harness.type("exit\n")
+    let tab = try harness.waitForTabState {
+      $0.awaitingInput == false && $0.progressState == nil
+    }
+    XCTAssertEqual(tab.awaitingInput, false)
+    XCTAssertNil(tab.progressState)
+    var deadline = Date().addingTimeInterval(4.0)
+    while !harness.agentStatus().isEmpty, Date() < deadline {
+      _ = try harness.syncPass()
+      harness.pumpMainQueue()
+    }
+    XCTAssertTrue(harness.agentStatus().isEmpty)
+    _ = deadline
+  }
+
   // MARK: - OSC 21337 tab status reaches agent metadata
 
   func testOscTabStatusReachesAgentMetadata() throws {
@@ -247,6 +434,8 @@ final class TitleHarness {
     var foregroundProcess: String?
     var attention: String?
     var awaitingInput: Bool?
+    var progressState: String?
+    var progressPercent: Int?
   }
 
   init(runId: String) throws {
@@ -275,7 +464,7 @@ final class TitleHarness {
         osc0)   printf '\\033]0;%s\\007' "$1"; exec /bin/sleep "$2" ;;
         osc2st) printf '\\033]2;%s\\033\\\\' "$1"; exec /bin/sleep "$2" ;;
         status) printf '\\033]21337;%s\\007' "$1"; exec /bin/sleep "$2" ;;
-        titleenv) printf '\\033]0;%s\\007' "${TERM_PROGRAM:-unset}"; exec /bin/sleep "$1" ;;
+        titleenv) printf '\\033]0;%s/%s\\007' "${TERM_PROGRAM:-unset}" "${TERM_PROGRAM_VERSION:-unset}"; exec /bin/sleep "$1" ;;
         *)      echo "unknown mode: $mode" >&2; exit 64 ;;
       esac
       """
@@ -310,13 +499,16 @@ final class TitleHarness {
     let tab = tabs[tabIndex]
     let process = tab["process"] as? [String: Any]
     let agent = tab["agent"] as? [String: Any]
+    let progress = tab["progress"] as? [String: Any]
     return TabState(
       displayTitle: tab["displayTitle"] as? String,
       titleSource: tab["titleSource"] as? String,
       terminalTitle: tab["terminalTitle"] as? String,
       foregroundProcess: process?["foregroundProcess"] as? String,
       attention: tab["attention"] as? String,
-      awaitingInput: agent?["awaitingInput"] as? Bool
+      awaitingInput: agent?["awaitingInput"] as? Bool,
+      progressState: progress?["state"] as? String,
+      progressPercent: progress?["percent"] as? Int
     )
   }
 

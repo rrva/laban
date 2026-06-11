@@ -156,6 +156,24 @@ public struct TabNotification: Codable, Equatable, Sendable {
   }
 }
 
+/// Live OSC 9;4 progress (ConEmu/iTerm2 style) for this tab's session.
+/// Runtime UI state: cleared on an explicit `9;4;0` or when the child exits.
+public struct TabProgress: Codable, Equatable, Sendable {
+  public enum State: String, Codable, Sendable {
+    case determinate
+    case error
+    case indeterminate
+  }
+  public var state: State
+  /// 0...100; meaningful for `.determinate` and `.error`.
+  public var percent: Int?
+
+  public init(state: State, percent: Int? = nil) {
+    self.state = state
+    self.percent = percent
+  }
+}
+
 public struct TabTitleMetadata: Codable, Equatable {
   public var userTitle: String? { didSet { userTitle = TerminalTitle.sanitize(userTitle) } }
   public var titleFrozen: Bool
@@ -170,6 +188,8 @@ public struct TabTitleMetadata: Codable, Equatable {
   public var process: TabProcessMetadata
   public var agent: TabAgentMetadata
   public var agentStatus: TabAgentStatus
+  /// Live OSC 9;4 progress, or nil when none is active.
+  public var progress: TabProgress?
   public var activityState: TabActivityState
   public var unseenOutput: Bool
   public var bellAttention: Bool
@@ -195,6 +215,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     process: TabProcessMetadata = TabProcessMetadata(),
     agent: TabAgentMetadata = TabAgentMetadata(),
     agentStatus: TabAgentStatus = TabAgentStatus(),
+    progress: TabProgress? = nil,
     activityState: TabActivityState = .running,
     unseenOutput: Bool = false,
     bellAttention: Bool = false,
@@ -212,6 +233,7 @@ public struct TabTitleMetadata: Codable, Equatable {
     self.process = process
     self.agent = agent
     self.agentStatus = agentStatus
+    self.progress = progress
     self.activityState = activityState
     self.unseenOutput = unseenOutput
     self.bellAttention = bellAttention

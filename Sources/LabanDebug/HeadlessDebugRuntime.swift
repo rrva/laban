@@ -397,10 +397,11 @@ public final class HeadlessDebugRuntime {
   private static func installShellIntegrationOverlay() -> ShellIntegrationLaunch {
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-headless-shell-integration-\(UUID().uuidString)")
-    return
+    let launch =
       (try? ShellIntegrationOverlay.install(
         shellPath: "/bin/sh", baseDirectory: base,
         environment: ProcessInfo.processInfo.environment)) ?? .passthrough
+    return launch.withTerminalIdentity(TerminalIdentitySettings.identity())
   }
 
   // MARK: - Terminal session client backend

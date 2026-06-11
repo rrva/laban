@@ -164,7 +164,10 @@ public struct SidebarProducer {
           ?? Theme.current.fg0
         displayLines.append((st, color))
       }
-      for line in resolved.infoLines.prefix(3 - displayLines.count) {
+      if let progress = meta.progress {
+        displayLines.append(Self.progressDisplayLine(progress))
+      }
+      for line in resolved.infoLines.prefix(max(0, 3 - displayLines.count)) {
         displayLines.append((line, Theme.current.dim0))
       }
 
@@ -483,6 +486,24 @@ public struct SidebarProducer {
   /// expects. Accepts the iTerm-observed `#rrggbb` form and the X11/CSS
   /// `rgb:R/G/B` form (each channel 1–4 hex chars). Alpha is forced to
   /// fully opaque since the OSC spec doesn't carry alpha.
+  /// Compact textual progress for the OSC 9;4 contract: a five-cell bar plus
+  /// percent for determinate/error states (error renders red), a plain
+  /// activity label for indeterminate.
+  static func progressDisplayLine(_ progress: TabProgress) -> (String, UInt32) {
+    switch progress.state {
+    case .indeterminate:
+      return ("working…", Theme.current.fg0)
+    case .determinate, .error:
+      let percent = max(0, min(progress.percent ?? 0, 100))
+      let filled = Int((Double(percent) / 100.0 * 5.0).rounded())
+      let bar =
+        String(repeating: "▰", count: filled)
+        + String(repeating: "▱", count: 5 - filled)
+      let color = progress.state == .error ? Theme.current.red : Theme.current.fg0
+      return ("\(bar) \(percent)%", color)
+    }
+  }
+
   static func parseHexColor(_ raw: String) -> UInt32? {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }

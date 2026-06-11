@@ -96,6 +96,18 @@
         "workspace": {"type": "object", "additionalProperties": true},
         "process": {"type": "object", "additionalProperties": true},
         "agent": {"type": "object", "additionalProperties": true},
+        "progress": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": ["determinate", "error", "indeterminate"]
+            },
+            "percent": {"type": ["integer", "null"], "minimum": 0, "maximum": 100}
+          }
+        },
         "active": {"type": "boolean"},
         "status": {
           "type": "string",

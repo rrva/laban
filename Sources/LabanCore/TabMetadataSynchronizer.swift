@@ -299,6 +299,12 @@ final class TabMetadataSynchronizer {
     case .running:
       break
     }
+    // Per the tab-status contract, activity metadata must not outlive the
+    // process that reported it: a dead session showing a live indicator,
+    // an awaiting-input pulse, or a progress bar would be lying.
+    tabs[idx].titleMetadata.agentStatus = TabAgentStatus()
+    tabs[idx].titleMetadata.agent.awaitingInput = false
+    tabs[idx].titleMetadata.progress = nil
     return true
   }
 

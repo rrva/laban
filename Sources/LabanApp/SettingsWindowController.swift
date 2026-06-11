@@ -19,6 +19,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let fontLabel = NSTextField(labelWithString: "")
   private let rendererPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let backendPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let identityPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let restoreCheckbox = NSButton(
     checkboxWithTitle: "Restore tabs on launch", target: nil, action: nil)
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -30,6 +31,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private var themeRowIndices: [Int] = []
   private let rendererOptions: [RendererSelection] = RendererSelection.allCases
   private let backendOptions: [TerminalSessionBackend] = [.inProcess, .labpty, .laband]
+  private let identityOptions: [TerminalIdentity] = [.laban, .ghosttyCompat]
   private let cursorStyleOptions: [CursorSettings.Style] = CursorSettings.Style.allCases
 
   init(
@@ -117,6 +119,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       backendPopUp.addItem(withTitle: backendTitle(option))
     }
 
+    identityPopUp.target = self
+    identityPopUp.action = #selector(identityChanged(_:))
+    for option in identityOptions {
+      identityPopUp.addItem(withTitle: identityTitle(option))
+    }
+    identityPopUp.toolTip =
+      "What new sessions report as TERM_PROGRAM. Some programs only enable "
+      + "features like OSC 9;4 progress bars for terminals they recognize; "
+      + "the ghostty option claims that identity for compatibility."
+
     restoreCheckbox.target = self
     restoreCheckbox.action = #selector(restoreChanged(_:))
 
@@ -138,6 +150,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [makeLabel("Renderer:"), rendererPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
+      [makeLabel("Identity:"), identityPopUp],
     ])
     grid.translatesAutoresizingMaskIntoConstraints = false
     grid.column(at: 0).xPlacement = .trailing
@@ -193,6 +206,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       backendPopUp.selectItem(at: row)
     }
     restoreCheckbox.state = RestoreOnLaunchSettings.isEnabled ? .on : .off
+    if let row = identityOptions.firstIndex(of: TerminalIdentitySettings.identity()) {
+      identityPopUp.selectItem(at: row)
+    }
     if let row = cursorStyleOptions.firstIndex(of: CursorSettings.style) {
       cursorStylePopUp.selectItem(at: row)
     }
@@ -247,6 +263,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     RestoreOnLaunchSettings.set(sender.state == .on)
   }
 
+  @objc private func identityChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < identityOptions.count else { return }
+    TerminalIdentitySettings.set(identityOptions[row])
+  }
+
   @objc private func cursorStyleChanged(_ sender: NSPopUpButton) {
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < cursorStyleOptions.count else { return }
@@ -279,6 +301,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       return "Background"
     case .laband:
       return "Detached"
+    }
+  }
+
+  private func identityTitle(_ identity: TerminalIdentity) -> String {
+    switch identity {
+    case .laban:
+      return "Laban (new sessions)"
+    case .ghosttyCompat:
+      return "ghostty 1.3.1 — compatibility (new sessions)"
     }
   }
 

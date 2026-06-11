@@ -326,6 +326,15 @@ struct LabanSession {
     LabanOSCNotificationCallback osc_notification_callback;
     void *osc_notification_userdata;
 
+    LabanProgressCallback progress_callback;
+    void *progress_userdata;
+
+    /* Kitty OSC 99 notification assembly (osc_host.c): chunks sharing the
+     * same i=<id> accumulate title/body until a chunk arrives without d=0. */
+    char kitty_notify_id[64];
+    char kitty_notify_title[256];
+    char kitty_notify_body[512];
+
     /* OSC 52 clipboard bridge (osc_host.c). Write is always honored when a
      * write callback is set; read fires only when osc52_read_enabled is set
      * (default 0 — a remote query cannot read the host clipboard unasked). */

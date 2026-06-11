@@ -126,6 +126,7 @@ extension HeadlessDebugRuntime {
       workspace: metadata.workspace,
       process: metadata.process,
       agent: metadata.agent,
+      progress: metadata.progress,
       active: tab.isActive,
       status: status,
       sessionId: tab.sessionId

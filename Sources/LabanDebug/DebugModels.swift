@@ -124,6 +124,8 @@ struct TabResponse: Encodable {
   var workspace: TabWorkspaceMetadata
   var process: TabProcessMetadata
   var agent: TabAgentMetadata
+  /// Live OSC 9;4 progress, or nil when none is active.
+  var progress: TabProgress?
   var active: Bool
   var status: String
   var sessionId: String

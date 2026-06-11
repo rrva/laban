@@ -495,6 +495,27 @@ int laban_session_set_osc_notification_callback(
 );
 
 /*
+ * OSC 9 ; 4 progress reporting (ConEmu/iTerm2 style) —
+ * `ESC ] 9 ; 4 ; <operation> ; <value> BEL/ST`.
+ *
+ * `operation`: 0 clear, 1 determinate, 2 error, 3 indeterminate.
+ * `percent` is the parsed value clamped to [0, 100], or -1 when the payload
+ * carried none. Fires on whichever thread drove `laban_session_poll` /
+ * `laban_session_feed_output`. Pass NULL for `callback` to disable.
+ */
+typedef void (*LabanProgressCallback)(
+    void *userdata,
+    int operation,
+    int percent
+);
+
+int laban_session_set_progress_callback(
+    LabanSession *session,
+    LabanProgressCallback callback,
+    void *userdata
+);
+
+/*
  * OSC 52 clipboard bridge — `ESC ] 52 ; <Pc> ; <Pd> BEL/ST`.
  *
  * libghostty-vt parses OSC 52 (as `clipboard_contents`) but its VT-only C API

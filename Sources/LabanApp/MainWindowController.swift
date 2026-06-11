@@ -561,15 +561,17 @@ final class MainWindowController: NSWindowController {
     let shellPath = LoginShell.resolvePath()
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-shell-integration-\(UUID().uuidString)", isDirectory: true)
+    let launch: ShellIntegrationLaunch
     do {
-      return try ShellIntegrationOverlay.install(
+      launch = try ShellIntegrationOverlay.install(
         shellPath: shellPath,
         baseDirectory: base,
         environment: ProcessInfo.processInfo.environment)
     } catch {
       AppLog.app.error("shell integration overlay install failed: \(String(describing: error))")
-      return .passthrough
+      launch = .passthrough
     }
+    return launch.withTerminalIdentity(TerminalIdentitySettings.identity())
   }
 
   func detachTerminalSessions() {

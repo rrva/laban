@@ -75,6 +75,7 @@ public final class Session {
   private let callbackState: SessionCallbackState
   private var captureCallbackUserdata: UnsafeMutableRawPointer?
   private var tabStatusCallbackUserdata: UnsafeMutableRawPointer?
+  private var progressCallbackUserdata: UnsafeMutableRawPointer?
   private var bellCallbackUserdata: UnsafeMutableRawPointer?
   private var oscNotificationCallbackUserdata: UnsafeMutableRawPointer?
   private var clipboardCallbackUserdata: UnsafeMutableRawPointer?
@@ -105,6 +106,23 @@ public final class Session {
     didSet {
       callbackState.setTabStatusHandler(onTabStatus)
       updateTabStatusCallback()
+    }
+  }
+
+  /// One OSC 9;4 progress report (ConEmu/iTerm2 style). `operation` 0 clears,
+  /// 1 is determinate, 2 error, 3 indeterminate; `percent` applies to 1 and 2
+  /// and is nil when the payload carried none.
+  public struct ProgressUpdate: Sendable {
+    public var operation: Int
+    public var percent: Int?
+  }
+
+  /// Set once per Session at the call site (AppModel) to receive parsed
+  /// OSC 9;4 progress updates. Fires on the same thread that drove `poll()`.
+  public var onProgress: ((ProgressUpdate) -> Void)? {
+    didSet {
+      callbackState.setProgressHandler(onProgress)
+      updateProgressCallback()
     }
   }
 
@@ -470,6 +488,7 @@ public final class Session {
     if let h = handle {
       clearCaptureCallback(handle: h)
       clearTabStatusCallback(handle: h)
+      clearProgressCallback(handle: h)
       clearBellCallback(handle: h)
       clearOSCNotificationCallback(handle: h)
       clearClipboardCallbacks(handle: h)
@@ -1328,6 +1347,22 @@ public final class Session {
     }
   }
 
+  private func updateProgressCallback() {
+    guard !isClosed, let h = handle else { return }
+    if callbackState.hasProgressHandler {
+      if progressCallbackUserdata == nil {
+        progressCallbackUserdata = Unmanaged.passRetained(callbackState).toOpaque()
+      }
+      laban_session_set_progress_callback(
+        h,
+        sessionProgressCallback,
+        progressCallbackUserdata
+      )
+    } else {
+      clearProgressCallback(handle: h)
+    }
+  }
+
   private func updateBellCallback() {
     guard !isClosed, let h = handle else { return }
     if callbackState.hasBellHandler {
@@ -1396,6 +1431,14 @@ public final class Session {
     }
   }
 
+  private func clearProgressCallback(handle h: OpaquePointer) {
+    laban_session_set_progress_callback(h, nil, nil)
+    if let userdata = progressCallbackUserdata {
+      Unmanaged<SessionCallbackState>.fromOpaque(userdata).release()
+      progressCallbackUserdata = nil
+    }
+  }
+
   private func clearBellCallback(handle h: OpaquePointer) {
     laban_session_set_bell_callback(h, nil, nil)
     if let userdata = bellCallbackUserdata {
@@ -1443,6 +1486,7 @@ private final class SessionCallbackState {
   private weak var captureSink: CaptureSink?
   private var captureFrame = 0
   private var tabStatusHandler: ((Session.TabStatusUpdate) -> Void)?
+  private var progressHandler: ((Session.ProgressUpdate) -> Void)?
   private var bellHandler: ((UInt64) -> Void)?
   private var oscNotificationHandler: ((String) -> Void)?
   private var clipboardWriteHandler: ((Data) -> Void)?
@@ -1465,6 +1509,12 @@ private final class SessionCallbackState {
     lock.lock()
     defer { lock.unlock() }
     return tabStatusHandler != nil
+  }
+
+  var hasProgressHandler: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return progressHandler != nil
   }
 
   var hasBellHandler: Bool {
@@ -1506,6 +1556,12 @@ private final class SessionCallbackState {
   func setTabStatusHandler(_ handler: ((Session.TabStatusUpdate) -> Void)?) {
     lock.lock()
     tabStatusHandler = handler
+    lock.unlock()
+  }
+
+  func setProgressHandler(_ handler: ((Session.ProgressUpdate) -> Void)?) {
+    lock.lock()
+    progressHandler = handler
     lock.unlock()
   }
 
@@ -1574,6 +1630,12 @@ private final class SessionCallbackState {
     lock.lock()
     defer { lock.unlock() }
     return tabStatusHandler
+  }
+
+  func progressTarget() -> ((Session.ProgressUpdate) -> Void)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return progressHandler
   }
 
   func bellTarget() -> ((UInt64) -> Void)? {
@@ -1720,6 +1782,21 @@ private let sessionTabStatusCallback:
       awaiting: awaiting.map { String(cString: $0) }
     )
     state.tabStatusTarget()?(update)
+  }
+
+private let sessionProgressCallback:
+  @convention(c) (
+    UnsafeMutableRawPointer?,
+    Int32,
+    Int32
+  ) -> Void = { userdata, operation, percent in
+    guard let userdata else { return }
+    let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
+    let update = Session.ProgressUpdate(
+      operation: Int(operation),
+      percent: percent >= 0 ? Int(percent) : nil
+    )
+    state.progressTarget()?(update)
   }
 
 private let sessionCaptureCallback:
