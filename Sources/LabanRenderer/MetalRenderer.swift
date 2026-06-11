@@ -395,12 +395,17 @@ public final class MetalRenderer: RendererBackend {
   // O(1) without clearing, and a cached Entry is only reused within one build
   // (the atlas only appends within a build, never moves existing glyphs).
   private static let scalarEntryCacheSize = 1024
+  private static let defaultASCIIEntryCacheSize = 128
   private var scalarEntryCacheKeys = [UInt64](
     repeating: 0, count: MetalRenderer.scalarEntryCacheSize)
   private var scalarEntryCacheEntries = [MetalGlyphAtlas.Entry?](
     repeating: nil, count: MetalRenderer.scalarEntryCacheSize)
   private var scalarEntryCacheStamp = [UInt32](
     repeating: 0, count: MetalRenderer.scalarEntryCacheSize)
+  private var defaultASCIIEntryCacheEntries = [MetalGlyphAtlas.Entry?](
+    repeating: nil, count: MetalRenderer.defaultASCIIEntryCacheSize)
+  private var defaultASCIIEntryCacheStamp = [UInt32](
+    repeating: 0, count: MetalRenderer.defaultASCIIEntryCacheSize)
   private var scalarEntryCacheGeneration: UInt32 = 0
   /// Glyphs that draw against the sidebar atlas. Kept separate so we can
   /// issue one draw call per atlas — the sidebar's R8 texture holds glyphs
@@ -2412,12 +2417,6 @@ public final class MetalRenderer: RendererBackend {
     }
 
     @inline(__always)
-    func payloadGlyphDrawsDecoration(_ glyph: TerminalCellPayload.Glyph) -> Bool {
-      glyph.underlineStyle != .none
-        || (glyph.attributes.rawValue & Self.gpuCellDecorationAttributes.rawValue) != 0
-    }
-
-    @inline(__always)
     func terminalFontInfo(
       for attributes: TextAttributes
     ) -> (font: CTFont, needsBoldFallback: Bool, needsItalicFallback: Bool) {
@@ -2478,114 +2477,159 @@ public final class MetalRenderer: RendererBackend {
     var cachedPayloadForeground: UInt32?
     var cachedPayloadForegroundFloat = SIMD4<Float>.zero
     scalarEntryCacheGeneration &+= 1
-    for glyph in payload.glyphs {
-      guard glyph.row >= 0, glyph.row < payloadRows else {
-        recordPayloadFailure("rowOutOfBounds", glyph: glyph)
-        return false
-      }
-      guard glyph.col >= 0, glyph.col < payloadCols else {
-        recordPayloadFailure("colOutOfBounds", glyph: glyph)
-        return false
-      }
-      guard glyph.wide == 0 || glyph.wide == 1 else {
-        recordPayloadFailure("unsupportedWideFlag", glyph: glyph)
-        return false
-      }
-      guard (glyph.attributes.rawValue & ~Self.gpuCellSupportedAttributes.rawValue) == 0 else {
-        recordPayloadFailure("unsupportedAttributes", glyph: glyph)
-        return false
-      }
-      guard
-        glyph.scalarValue != nil || glyph.utf8Range != nil
-          || (glyph.text.first != nil && glyph.text.count == 1)
-      else {
-        recordPayloadFailure("missingGlyphText", glyph: glyph)
-        return false
-      }
-      let bottomRow = payloadRows - 1 - glyph.row
-      let cellY = payloadOriginY + CGFloat(bottomRow) * payloadCellHeight + payloadContentYOffset
-      let cellX = payloadOriginX + CGFloat(glyph.col) * payloadCellWidth
-      let fontAttrsKey = glyph.attributes.rawValue & Self.gpuCellFontAttributes.rawValue
-      let fontInfo =
-        fontAttrsKey == 0 ? defaultTerminalFontInfo : terminalFontInfo(for: glyph.attributes)
-      let entry: MetalGlyphAtlas.Entry?
-      if let scalarValue = glyph.scalarValue, let scalar = Unicode.Scalar(scalarValue) {
-        entry = cachedScalarEntry(
-          scalarValue: scalarValue,
-          scalar: scalar,
-          attrsKey: UInt64(fontAttrsKey),
-          fontInfo: fontInfo)
-      } else if glyph.scalarValue != nil {
-        recordPayloadFailure("invalidScalar", glyph: glyph)
-        return false
-      } else if let range = glyph.utf8Range {
-        guard range.lowerBound >= 0, range.upperBound <= payload.utf8Bytes.count else {
-          recordPayloadFailure("utf8RangeOutOfBounds", glyph: glyph)
-          return false
+    var payloadGlyphLoopFailed = false
+    payload.glyphs.withUnsafeBufferPointer { glyphsBuffer in
+      guard let glyphsBase = glyphsBuffer.baseAddress else { return }
+      cellGlyphs.withUnsafeMutableBufferPointer { cells in
+        var lastBottomRow = Int.min
+        var cellYPx: Float = 0
+        for glyphIndex in 0..<glyphsBuffer.count {
+          // Field loads through the pointer avoid copying the ~100-byte Glyph
+          // (and retain/releasing its String) for every cell of the grid.
+          let glyph = glyphsBase + glyphIndex
+          let row = glyph.pointee.row
+          guard row >= 0, row < payloadRows else {
+            recordPayloadFailure("rowOutOfBounds", glyph: glyph.pointee)
+            payloadGlyphLoopFailed = true
+            return
+          }
+          let col = glyph.pointee.col
+          guard col >= 0, col < payloadCols else {
+            recordPayloadFailure("colOutOfBounds", glyph: glyph.pointee)
+            payloadGlyphLoopFailed = true
+            return
+          }
+          let wide = glyph.pointee.wide
+          guard wide == 0 || wide == 1 else {
+            recordPayloadFailure("unsupportedWideFlag", glyph: glyph.pointee)
+            payloadGlyphLoopFailed = true
+            return
+          }
+          let attributes = glyph.pointee.attributes
+          guard (attributes.rawValue & ~Self.gpuCellSupportedAttributes.rawValue) == 0 else {
+            recordPayloadFailure("unsupportedAttributes", glyph: glyph.pointee)
+            payloadGlyphLoopFailed = true
+            return
+          }
+          let scalarValue = glyph.pointee.scalarValue
+          guard
+            scalarValue != nil || glyph.pointee.utf8Range != nil
+              || (glyph.pointee.text.first != nil && glyph.pointee.text.count == 1)
+          else {
+            recordPayloadFailure("missingGlyphText", glyph: glyph.pointee)
+            payloadGlyphLoopFailed = true
+            return
+          }
+          let bottomRow = payloadRows - 1 - row
+          if bottomRow != lastBottomRow {
+            lastBottomRow = bottomRow
+            cellYPx =
+              Float(
+                payloadOriginY + CGFloat(bottomRow) * payloadCellHeight + payloadContentYOffset)
+              * scale
+          }
+          let cellX = payloadOriginX + CGFloat(col) * payloadCellWidth
+          let fontAttrsKey = attributes.rawValue & Self.gpuCellFontAttributes.rawValue
+          let entry: MetalGlyphAtlas.Entry?
+          if let scalarValue {
+            if fontAttrsKey == 0, scalarValue < UInt32(Self.defaultASCIIEntryCacheSize) {
+              entry = cachedDefaultASCIIEntry(
+                scalarValue: scalarValue,
+                fontInfo: defaultTerminalFontInfo)
+            } else if let scalar = Unicode.Scalar(scalarValue) {
+              entry = cachedScalarEntry(
+                scalarValue: scalarValue,
+                scalar: scalar,
+                attrsKey: UInt64(fontAttrsKey),
+                fontInfo: fontAttrsKey == 0
+                  ? defaultTerminalFontInfo : terminalFontInfo(for: attributes))
+            } else {
+              recordPayloadFailure("invalidScalar", glyph: glyph.pointee)
+              payloadGlyphLoopFailed = true
+              return
+            }
+          } else if let range = glyph.pointee.utf8Range {
+            guard range.lowerBound >= 0, range.upperBound <= payload.utf8Bytes.count else {
+              recordPayloadFailure("utf8RangeOutOfBounds", glyph: glyph.pointee)
+              payloadGlyphLoopFailed = true
+              return
+            }
+            let text = String(decoding: payload.utf8Bytes[range], as: UTF8.self)
+            guard text.count == 1, let character = text.first else {
+              recordPayloadFailure(
+                "utf8ClusterNotSingleCharacter",
+                glyph: glyph.pointee,
+                textPreview: Self.debugEscapedPreview(text))
+              payloadGlyphLoopFailed = true
+              return
+            }
+            let fontInfo =
+              fontAttrsKey == 0 ? defaultTerminalFontInfo : terminalFontInfo(for: attributes)
+            entry = glyphAtlas.entry(
+              character: character,
+              font: fontInfo.font,
+              boldFallback: fontInfo.needsBoldFallback,
+              italicFallback: fontInfo.needsItalicFallback)
+          } else if let character = glyph.pointee.text.first {
+            let fontInfo =
+              fontAttrsKey == 0 ? defaultTerminalFontInfo : terminalFontInfo(for: attributes)
+            entry = glyphAtlas.entry(
+              character: character,
+              font: fontInfo.font,
+              boldFallback: fontInfo.needsBoldFallback,
+              italicFallback: fontInfo.needsItalicFallback)
+          } else {
+            entry = nil
+          }
+          // Match the command-driven GPU-cell builder: some single-cell terminal UI
+          // symbols (for example U+23BF/U+21B3 in fallback fonts) have two-cell ink
+          // metrics even when libghostty marks the cell as narrow.
+          guard let entry else {
+            recordPayloadFailure("atlasEntryMissing", glyph: glyph.pointee)
+            payloadGlyphLoopFailed = true
+            return
+          }
+          guard entry.logicalWidth <= maxLogicalWidth else {
+            recordPayloadFailure(
+              "logicalWidthTooWide",
+              glyph: glyph.pointee,
+              logicalWidth: entry.logicalWidth,
+              maxLogicalWidth: maxLogicalWidth)
+            payloadGlyphLoopFailed = true
+            return
+          }
+          // `terminalGridGeometry(payload:)` mirrors payload rows/cols, so the row/col
+          // guards above prove this index is in the retained full-grid buffer.
+          let index = bottomRow * geometry.cols + col
+          let foreground = glyph.pointee.foreground
+          let foregroundFloat: SIMD4<Float>
+          if cachedPayloadForeground == foreground {
+            foregroundFloat = cachedPayloadForegroundFloat
+          } else {
+            foregroundFloat = rgbaToFloat4(foreground)
+            cachedPayloadForeground = foreground
+            cachedPayloadForegroundFloat = foregroundFloat
+          }
+          cells[index] = CellGlyph(
+            originPx: SIMD2<Float>(
+              Float(cellX + entry.logicalOriginX) * scale,
+              cellYPx),
+            sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+            uvOrigin: SIMD2<Float>(
+              Float(entry.originX) * invAtlasSize, Float(entry.originY) * invAtlasSize),
+            uvSize: SIMD2<Float>(
+              Float(entry.pixelWidth) * invAtlasSize, Float(entry.pixelHeight) * invAtlasSize),
+            flags: Self.gpuCellActiveFlag,
+            fg: foregroundFloat)
+          if glyph.pointee.underlineStyle != .none
+            || (attributes.rawValue & Self.gpuCellDecorationAttributes.rawValue) != 0
+          {
+            appendPayloadDecorationCell(glyph.pointee)
+          }
         }
-        let text = String(decoding: payload.utf8Bytes[range], as: UTF8.self)
-        guard text.count == 1, let character = text.first else {
-          recordPayloadFailure(
-            "utf8ClusterNotSingleCharacter",
-            glyph: glyph,
-            textPreview: Self.debugEscapedPreview(text))
-          return false
-        }
-        entry = glyphAtlas.entry(
-          character: character,
-          font: fontInfo.font,
-          boldFallback: fontInfo.needsBoldFallback,
-          italicFallback: fontInfo.needsItalicFallback)
-      } else if let character = glyph.text.first {
-        entry = glyphAtlas.entry(
-          character: character,
-          font: fontInfo.font,
-          boldFallback: fontInfo.needsBoldFallback,
-          italicFallback: fontInfo.needsItalicFallback)
-      } else {
-        entry = nil
-      }
-      // Match the command-driven GPU-cell builder: some single-cell terminal UI
-      // symbols (for example U+23BF/U+21B3 in fallback fonts) have two-cell ink
-      // metrics even when libghostty marks the cell as narrow.
-      guard let entry else {
-        recordPayloadFailure("atlasEntryMissing", glyph: glyph)
-        return false
-      }
-      guard entry.logicalWidth <= maxLogicalWidth else {
-        recordPayloadFailure(
-          "logicalWidthTooWide",
-          glyph: glyph,
-          logicalWidth: entry.logicalWidth,
-          maxLogicalWidth: maxLogicalWidth)
-        return false
-      }
-      // `terminalGridGeometry(payload:)` mirrors payload rows/cols, so the row/col
-      // guards above prove this index is in the retained full-grid buffer.
-      let index = bottomRow * geometry.cols + glyph.col
-      let foregroundFloat: SIMD4<Float>
-      if cachedPayloadForeground == glyph.foreground {
-        foregroundFloat = cachedPayloadForegroundFloat
-      } else {
-        foregroundFloat = rgbaToFloat4(glyph.foreground)
-        cachedPayloadForeground = glyph.foreground
-        cachedPayloadForegroundFloat = foregroundFloat
-      }
-      cellGlyphs[index] = CellGlyph(
-        originPx: SIMD2<Float>(
-          Float(cellX + entry.logicalOriginX) * scale,
-          Float(cellY) * scale),
-        sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
-        uvOrigin: SIMD2<Float>(
-          Float(entry.originX) * invAtlasSize, Float(entry.originY) * invAtlasSize),
-        uvSize: SIMD2<Float>(
-          Float(entry.pixelWidth) * invAtlasSize, Float(entry.pixelHeight) * invAtlasSize),
-        flags: Self.gpuCellActiveFlag,
-        fg: foregroundFloat)
-      if payloadGlyphDrawsDecoration(glyph) {
-        appendPayloadDecorationCell(glyph)
       }
     }
+    if payloadGlyphLoopFailed { return false }
     flushPayloadDecorationRun()
 
     // IME/dictation preedit. Drawn AFTER the payload has filled the cell grid
@@ -2696,6 +2740,26 @@ public final class MetalRenderer: RendererBackend {
   // font, bold-fallback, and italic-fallback the atlas keys on are all derived
   // from the attributes via `terminalFontInfo`). A hit skips the atlas
   // dictionary's hashing entirely.
+  @inline(__always)
+  private func cachedDefaultASCIIEntry(
+    scalarValue: UInt32,
+    fontInfo: (font: CTFont, needsBoldFallback: Bool, needsItalicFallback: Bool)
+  ) -> MetalGlyphAtlas.Entry? {
+    let index = Int(scalarValue)
+    if defaultASCIIEntryCacheStamp[index] == scalarEntryCacheGeneration {
+      return defaultASCIIEntryCacheEntries[index]
+    }
+    guard let scalar = Unicode.Scalar(scalarValue) else { return nil }
+    let entry = glyphAtlas.entry(
+      scalar: scalar,
+      font: fontInfo.font,
+      boldFallback: fontInfo.needsBoldFallback,
+      italicFallback: fontInfo.needsItalicFallback)
+    defaultASCIIEntryCacheEntries[index] = entry
+    defaultASCIIEntryCacheStamp[index] = scalarEntryCacheGeneration
+    return entry
+  }
+
   @inline(__always)
   private func cachedScalarEntry(
     scalarValue: UInt32,
