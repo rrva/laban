@@ -266,21 +266,30 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       }.first
     }
 
-    let trough = controller.sidebarCommands(
+    // First call records the tab's needsAction entry time → announce begins.
+    let entering = controller.sidebarCommands(
       activeTabId: nil, viewportHeight: 200,
       now: Date(timeIntervalSinceReferenceDate: 0))
     let builds = controller.sidebarRebuildCountForTesting
-    let peak = controller.sidebarCommands(
+    let midEntrance = controller.sidebarCommands(
       activeTabId: nil, viewportHeight: 200,
-      now: Date(timeIntervalSinceReferenceDate: AttentionPulse.period / 2))
+      now: Date(timeIntervalSinceReferenceDate: AttentionPulse.entranceDuration / 2))
+    let resting = controller.sidebarCommands(
+      activeTabId: nil, viewportHeight: 200,
+      now: Date(timeIntervalSinceReferenceDate: 10))
 
     XCTAssertEqual(
       controller.sidebarRebuildCountForTesting, builds,
-      "a breathing pulse must be served from the memo, not rebuilt per frame")
-    let troughAlpha = try XCTUnwrap(markerAlpha(trough), "needsAction must render a marker")
-    let peakAlpha = try XCTUnwrap(markerAlpha(peak))
-    XCTAssertLessThan(troughAlpha, peakAlpha, "the memoized marker must still breathe")
-    XCTAssertEqual(peakAlpha, 0xFF, "the breath peaks at full opacity")
+      "the announce animation must be served from the memo, not rebuilt per frame")
+    let enteringAlpha = try XCTUnwrap(markerAlpha(entering), "needsAction must render a marker")
+    XCTAssertEqual(enteringAlpha, 0, "the marker fades in from invisible at entry")
+    let midAlpha = try XCTUnwrap(markerAlpha(midEntrance))
+    XCTAssertGreaterThan(midAlpha, 0)
+    XCTAssertLessThan(midAlpha, 0xFF, "mid-entrance the marker is still fading in")
+    XCTAssertGreaterThan(
+      midEntrance.count, resting.count, "the entrance appends a halo bloom rect")
+    XCTAssertEqual(
+      markerAlpha(resting), 0xFF, "after the announce the marker rests at full opacity")
 
     // Reduce Motion serves the frozen full-opacity form, also from the memo.
     let steady = controller.sidebarCommands(

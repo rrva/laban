@@ -79,21 +79,66 @@ public enum TabAttentionClassifier {
 /// app-independent so it is unit-testable without a running render loop; the
 /// AppKit layer feeds it a per-frame `now` and gates it on Reduce Motion.
 public enum AttentionPulse {
-  /// Seconds per breath. ~1.5s reads as calm; sub-second on/off reads as alarm.
-  public static let period: TimeInterval = 1.5
-  /// The marker never fully fades — it breathes between `floor` and full so it
-  /// reads as a pulse, not a blink. A 0.55 floor proved too subtle to catch
-  /// the eye ("the hues it shifts between are too little"); 0.25 nearly
-  /// extinguishes the dot at the trough so each breath has a visible swing.
-  public static let floor: Double = 0.25
+  /// Announce-once timeline. A continuous breathing loop in the peripheral
+  /// sidebar reads as blinking — the pattern the HIG and the peripheral-motion
+  /// literature warn against, and one no 2026 peer ships (Ghostty, VS Code,
+  /// Zed all announce once, then rest). Instead: a brief entrance bloom when a
+  /// tab starts needing the user, a static marker at rest, and one gentle dip
+  /// every `pingPeriod` while still unattended. Between windows no frames are
+  /// needed, so the render loop parks.
+  public static let entranceDuration: TimeInterval = 0.6
+  public static let pingPeriod: TimeInterval = 45
+  public static let pingDuration: TimeInterval = 0.8
+  /// The re-ping dips to this alpha and back — shallow enough to never read
+  /// as a blink, deep enough for peripheral vision to catch the motion.
+  public static let pingFloor: Double = 0.55
+  public static let haloMaxScale: Double = 1.8
+  public static let haloPeakAlpha: Double = 0.35
 
-  /// Alpha in `[floor, 1.0]` following a raised-cosine ("ease in/out") breath.
-  /// Anchored to an absolute clock so every `needsAction` tab pulses in unison.
-  public static func alpha(at now: Date) -> Double {
-    let t = now.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
-    let phase = t / period * 2 * Double.pi
-    let unit = (1 - cos(phase)) / 2  // 0 → 1 → 0, smooth at both ends
-    return floor + (1 - floor) * unit
+  /// Marker alpha at `elapsed` seconds since the tab entered needsAction.
+  public static func markerAlpha(elapsed: TimeInterval) -> Double {
+    guard elapsed > 0 else { return 0 }
+    if elapsed < entranceDuration {
+      return (1 - cos(.pi * elapsed / entranceDuration)) / 2
+    }
+    let rest = elapsed - entranceDuration
+    let cycle = rest.truncatingRemainder(dividingBy: pingPeriod)
+    // The first ping fires one full period after the entrance, so a freshly
+    // announced tab stays quiet for `pingPeriod` before its first reminder.
+    if rest >= pingPeriod, cycle < pingDuration {
+      let bump = (1 - cos(2 * .pi * cycle / pingDuration)) / 2  // 0 → 1 → 0
+      return 1 - (1 - pingFloor) * bump
+    }
+    return 1
+  }
+
+  /// Entrance halo: a square bloom behind the marker that expands and fades
+  /// through the announce. nil outside the entrance window.
+  public static func halo(elapsed: TimeInterval) -> (scale: Double, alpha: Double)? {
+    guard elapsed >= 0, elapsed < entranceDuration else { return nil }
+    let eased = 1 - pow(1 - elapsed / entranceDuration, 3)  // ease-out cubic
+    let alpha = haloPeakAlpha * (1 - eased)
+    guard alpha > 0.001 else { return nil }
+    return (scale: 1 + (haloMaxScale - 1) * eased, alpha: alpha)
+  }
+
+  /// True while the marker sits inside an animation window (entrance or
+  /// ping). Between windows the marker is static and no frames are needed.
+  public static func isAnimating(elapsed: TimeInterval) -> Bool {
+    guard elapsed >= 0 else { return true }
+    if elapsed < entranceDuration { return true }
+    let rest = elapsed - entranceDuration
+    let cycle = rest.truncatingRemainder(dividingBy: pingPeriod)
+    return rest >= pingPeriod && cycle < pingDuration
+  }
+
+  /// Seconds until the next animation window opens; 0 while inside one. Lets
+  /// the frame loop schedule a single wake instead of polling while resting.
+  public static func delayToNextAnimation(elapsed: TimeInterval) -> TimeInterval {
+    guard elapsed >= 0, !isAnimating(elapsed: elapsed) else { return 0 }
+    let rest = elapsed - entranceDuration
+    if rest < pingPeriod { return pingPeriod - rest }
+    return pingPeriod - rest.truncatingRemainder(dividingBy: pingPeriod)
   }
 
   /// Replace the low alpha byte of a `0xRRGGBBAA` colour with `a` (clamped to

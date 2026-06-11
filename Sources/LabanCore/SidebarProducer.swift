@@ -69,35 +69,56 @@ public struct SidebarProducer {
     let out = output(
       tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
       hoveredTabId: hoveredTabId, dragIndicator: dragIndicator)
-    return reduceMotion ? out.commands : Self.retintPulseMarkers(out, at: now)
+    // Legacy entry point with no per-tab entry times: markers render in
+    // their static full-opacity rest form.
+    return out.commands
   }
 
-  /// Sidebar commands plus the indices of needsAction pulse markers. The
-  /// markers are emitted at FULL opacity and the whole output is independent
-  /// of `now`, so callers can memoize it and re-tint only the marker entries
-  /// per frame while the pulse breathes — rebuilding the sidebar (and
-  /// re-resolving every tab title) at the display rate just to animate one
-  /// dot is what saturated the main thread under streaming load.
+  /// A needsAction marker in the memoized command list: which command to
+  /// re-tint, and whose entry timestamp drives its announce-once timeline.
+  public struct PulseMarker {
+    public var commandIndex: Int
+    public var tabId: Tab.ID
+  }
+
+  /// Sidebar commands plus the needsAction markers. Markers are emitted at
+  /// FULL opacity and the whole output is independent of `now`, so callers
+  /// can memoize it and re-tint only the marker entries per frame while the
+  /// announce animation runs — rebuilding the sidebar (and re-resolving every
+  /// tab title) at the display rate just to animate one dot is what
+  /// saturated the main thread under streaming load.
   public struct Output {
     public var commands: [FrameCommand]
-    public var pulseMarkerIndices: [Int]
+    public var pulseMarkers: [PulseMarker]
   }
 
-  /// Apply the breathing-pulse alpha to the memoized marker entries. A
-  /// no-op (returns the cached array untouched) when nothing needs action.
+  /// Apply the announce-once timeline to the memoized marker entries: an
+  /// entrance fade + halo bloom when a tab just entered needsAction, a static
+  /// full-opacity marker at rest, a gentle dip on each re-ping. A no-op when
+  /// nothing needs action, and markers with no recorded entry render static.
   /// Reduce Motion callers skip this — the full-opacity base IS the frozen
   /// form.
-  public static func retintPulseMarkers(_ output: Output, at now: Date) -> [FrameCommand] {
-    guard !output.pulseMarkerIndices.isEmpty else { return output.commands }
+  public static func retintPulseMarkers(
+    _ output: Output,
+    at now: Date,
+    entryTimes: [Tab.ID: Date],
+    cellWidth: CGFloat,
+    cellHeight: CGFloat,
+    maxX: CGFloat
+  ) -> [FrameCommand] {
+    guard !output.pulseMarkers.isEmpty else { return output.commands }
     var cmds = output.commands
-    let color = AttentionPulse.applyAlpha(Theme.current.attention, AttentionPulse.alpha(at: now))
-    for i in output.pulseMarkerIndices {
+    for marker in output.pulseMarkers {
+      guard let since = entryTimes[marker.tabId] else { continue }
+      let elapsed = now.timeIntervalSince(since)
       guard
         case .glyphRun(
           let origin, let text, _, let background, let attributes, let source,
-          let underlineStyle, let underlineColor, let hyperlink) = cmds[i]
+          let underlineStyle, let underlineColor, let hyperlink) = cmds[marker.commandIndex]
       else { continue }
-      cmds[i] = .glyphRun(
+      let color = AttentionPulse.applyAlpha(
+        Theme.current.attention, AttentionPulse.markerAlpha(elapsed: elapsed))
+      cmds[marker.commandIndex] = .glyphRun(
         origin: origin,
         text: text,
         foreground: color,
@@ -107,6 +128,26 @@ public struct SidebarProducer {
         underlineStyle: underlineStyle,
         underlineColor: underlineColor,
         hyperlink: hyperlink)
+      if let halo = AttentionPulse.halo(elapsed: elapsed) {
+        let side = max(cellWidth, cellHeight) * CGFloat(halo.scale)
+        let rect = CGRect(
+          x: origin.x + cellWidth / 2 - side / 2,
+          y: origin.y + cellHeight / 2 - side / 2,
+          width: side, height: side)
+        // Appending keeps the memoized indices stable, and the bloom still
+        // lands UNDER the ◆: the renderer issues all solid rects before
+        // sidebar glyphs regardless of command order. Clamped to the strip
+        // so the bloom can't widen the sidebar-strip scissor mid-entrance.
+        let clamped = rect.intersection(
+          CGRect(x: 0, y: rect.origin.y, width: maxX, height: rect.height))
+        if !clamped.isEmpty {
+          cmds.append(
+            .rect(
+              clamped,
+              color: AttentionPulse.applyAlpha(Theme.current.attention, halo.alpha),
+              source: .sidebar))
+        }
+      }
     }
     return cmds
   }
@@ -116,7 +157,7 @@ public struct SidebarProducer {
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: DragIndicator? = nil
   ) -> Output {
-    var pulseMarkerIndices: [Int] = []
+    var pulseMarkers: [PulseMarker] = []
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(tabs.count * 7 + 6)
 
@@ -281,7 +322,7 @@ public struct SidebarProducer {
           // `retintPulseMarkers(_:at:)` so memoized callers animate the dot
           // without rebuilding the sidebar. Reduce Motion shows exactly this
           // full-opacity form (still distinct by colour + shape).
-          pulseMarkerIndices.append(cmds.count)
+          pulseMarkers.append(PulseMarker(commandIndex: cmds.count, tabId: tab.id))
           cmds.append(
             .glyphRun(
               origin: slot,
@@ -409,7 +450,7 @@ public struct SidebarProducer {
         ))
     }
 
-    return Output(commands: cmds, pulseMarkerIndices: pulseMarkerIndices)
+    return Output(commands: cmds, pulseMarkers: pulseMarkers)
   }
 
   /// 0xRRGGBBAA — a low-alpha black overlay used to dim the row that the

@@ -241,12 +241,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// backend swaps re-install onto the new renderer.
   private weak var drawableWakeInstalledRenderer: MetalRenderer?
 
-  /// Whether the previous frame animated the attention pulse. The pulse never
-  /// touches terminal damage: it repaints via the renderer's dedicated
+  /// Whether the previous frame animated the attention marker. The animation
+  /// never touches terminal damage: it repaints via the renderer's dedicated
   /// sidebar-strip pass (`repaintSidebarStrip`). One trailing strip frame
-  /// after the pulse stops parks the marker's final state on glass — gone,
-  /// or held at full opacity — instead of freezing it mid-breath.
+  /// after an animation window closes parks the marker's final state on
+  /// glass — gone, or resting at full opacity — instead of freezing mid-step.
   private var attentionWasAnimating = false
+
+  /// When each tab entered needsAction, driving the announce-once timeline
+  /// for frame pacing. The controller keeps its own equivalent map for
+  /// rendering; the two are rebuilt from the same classifier on the same
+  /// frames, so they agree to within a frame.
+  private var attentionEntryTimes: [Tab.ID: Date] = [:]
+  private var attentionPingWakeScheduled = false
 
   /// Scroll-position signature of the most recently journaled idle park, so a
   /// sustained off-bottom park logs one `noFrameNeeded` entry instead of one
@@ -991,6 +998,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  /// Wake the frame loop when the next attention re-ping window opens. While
+  /// a needsAction marker rests (static, no frames) the display link parks,
+  /// so without an explicit wake the re-ping would wait on unrelated
+  /// activity. Same shape as the output-settle wake above.
+  private func scheduleAttentionPingWake(after delay: TimeInterval) {
+    guard !attentionPingWakeScheduled else { return }
+    attentionPingWakeScheduled = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      self.attentionPingWakeScheduled = false
+      self.advanceFrame(wake: .settleWake)
+    }
+  }
+
   /// Re-evaluate a frame held by DEC synchronized output after a bounded delay,
   /// independent of the display link. A synchronized-output defer presents the
   /// last completed frame; the only timer that resolves the gate on its own is
@@ -1698,15 +1719,39 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       outputSettleHold = nil
     }
 
-    // Keep ticking while a background tab needs the user, so its sidebar marker
-    // can breathe. Gated on a visible window and off under Reduce Motion, so an
-    // idle (or motion-reduced) terminal still parks the render loop and holds
-    // the idle-CPU budget. Cheap: a field-only classification, no render work.
+    // Track when each tab entered needsAction. The announce-once timeline
+    // (entrance bloom → static rest → gentle re-ping) animates only inside
+    // its windows, so the link parks for the long rests between pings instead
+    // of ticking the whole time a tab waits. Cheap: field-only classification.
+    let attentionNow = Date()
+    var attentionLive: Set<Tab.ID> = []
+    for tab in model.tabs
+    where TabAttentionClassifier.classify(tab.titleMetadata, isActive: tab.id == activeTab.id)
+      == .needsAction
+    {
+      attentionLive.insert(tab.id)
+      if attentionEntryTimes[tab.id] == nil { attentionEntryTimes[tab.id] = attentionNow }
+    }
+    if !attentionEntryTimes.isEmpty {
+      attentionEntryTimes = attentionEntryTimes.filter { attentionLive.contains($0.key) }
+    }
     let attentionAnimating =
       windowVisibleToUser && !reduceMotion
-      && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: activeTab.id)
-    // Pulse frames plus one trailing frame after the pulse stops, so the
-    // marker's final state lands on glass instead of freezing mid-breath.
+      && attentionEntryTimes.values.contains {
+        AttentionPulse.isAnimating(elapsed: attentionNow.timeIntervalSince($0))
+      }
+    // A resting marker needs no frames, but the next re-ping must still
+    // arrive after the link parks: schedule a one-shot wake for the earliest
+    // upcoming animation window.
+    if !attentionEntryTimes.isEmpty, !attentionAnimating, windowVisibleToUser, !reduceMotion {
+      let delay =
+        attentionEntryTimes.values
+        .map { AttentionPulse.delayToNextAnimation(elapsed: attentionNow.timeIntervalSince($0)) }
+        .min() ?? 0
+      scheduleAttentionPingWake(after: delay + 0.02)
+    }
+    // Animation frames plus one trailing frame after the window closes, so
+    // the marker's final state lands on glass instead of freezing mid-step.
     let attentionStripFrame = attentionAnimating || attentionWasAnimating
     attentionWasAnimating = attentionAnimating
 

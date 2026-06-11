@@ -359,10 +359,16 @@ public final class TerminalSurfaceController {
   // `now`). When nothing is pulsing we skip the rebuild on frames where no
   // input changed. `nil` signature means "recompute, do not cache".
   private var sidebarCacheSignature: SidebarCacheSignature?
-  private var sidebarCacheOutput = SidebarProducer.Output(commands: [], pulseMarkerIndices: [])
+  private var sidebarCacheOutput = SidebarProducer.Output(commands: [], pulseMarkers: [])
   // Increments on every actual SidebarProducer build; lets tests assert cache
   // hits without exposing the cached buffer.
   private(set) var sidebarRebuildCountForTesting = 0
+
+  // When each tab entered needsAction, so the announce-once marker timeline
+  // (entrance bloom → static rest → re-ping) is computable per frame without
+  // storing animation state in the model. Maintained on every sidebar build
+  // request; entries vanish the moment a tab stops needing the user.
+  private var attentionEntryTimes: [Tab.ID: Date] = [:]
 
   // Generation-gating: stores the dirty_generation value at the point each
   // session last had its metadata sync and renderDirty work run. When a tab's
@@ -861,11 +867,29 @@ public final class TerminalSurfaceController {
       sidebarCacheSignature = signature
       sidebarCacheOutput = output
     }
-    // Animate the pulse on the memoized commands. No-op when nothing needs
+    // Track per-tab needsAction entry times for the announce-once timeline.
+    var live: Set<Tab.ID> = []
+    for tab in tabs
+    where TabAttentionClassifier.classify(tab.titleMetadata, isActive: tab.id == activeTabId)
+      == .needsAction
+    {
+      live.insert(tab.id)
+      if attentionEntryTimes[tab.id] == nil { attentionEntryTimes[tab.id] = now }
+    }
+    if !attentionEntryTimes.isEmpty {
+      attentionEntryTimes = attentionEntryTimes.filter { live.contains($0.key) }
+    }
+
+    // Animate the markers on the memoized commands. No-op when nothing needs
     // action; Reduce Motion shows the full-opacity base form unmodified.
     return reduceMotion
       ? output.commands
-      : SidebarProducer.retintPulseMarkers(output, at: now)
+      : SidebarProducer.retintPulseMarkers(
+        output, at: now,
+        entryTimes: attentionEntryTimes,
+        cellWidth: sidebarCellWidth,
+        cellHeight: sidebarCellHeight,
+        maxX: sidebarWidth)
   }
 
   public static func terminalGridOriginY(

@@ -661,18 +661,26 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertEqual(marker, Theme.current.dim0, "passive marker is dim, not red")
   }
 
-  /// The needsAction marker breathes (its alpha varies with `now`) unless
-  /// Reduce Motion is on, where it is steady at full opacity.
-  func testNeedsActionMarkerPulsesUnlessReduceMotion() {
+  /// The needsAction marker follows the announce-once timeline: fading in
+  /// (with a halo bloom) through the entrance, resting static at full
+  /// opacity, dipping to the ping floor on each re-ping — and rendering the
+  /// static rest form when no entry time is recorded.
+  func testNeedsActionMarkerFollowsAnnounceOnceTimeline() {
     var tab = Tab(id: "t", position: 1, title: "claude", isActive: false, sessionId: "s")
     tab.titleMetadata.activityState = .waiting
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let out = p.output(tabs: [tab], activeTabId: "other", height: 600)
+    XCTAssertEqual(out.pulseMarkers.count, 1)
+    XCTAssertEqual(out.pulseMarkers.first?.tabId, "t")
 
-    func markerAlpha(now: Date, reduceMotion: Bool) -> UInt32? {
-      p.commands(
-        tabs: [tab], activeTabId: "other", height: 600, now: now, reduceMotion: reduceMotion
-      )
-      .compactMap { cmd -> UInt32? in
+    let entry = Date(timeIntervalSinceReferenceDate: 0)
+    func retint(at t: TimeInterval, entryTimes: [Tab.ID: Date] = ["t": entry]) -> [FrameCommand] {
+      SidebarProducer.retintPulseMarkers(
+        out, at: Date(timeIntervalSinceReferenceDate: t),
+        entryTimes: entryTimes, cellWidth: 8, cellHeight: 16, maxX: 200)
+    }
+    func markerAlpha(_ cmds: [FrameCommand]) -> UInt32? {
+      cmds.compactMap { cmd -> UInt32? in
         if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "◆" {
           return fg & 0xFF
         }
@@ -680,16 +688,25 @@ final class SidebarProducerTests: XCTestCase {
       }.first
     }
 
-    let trough = markerAlpha(now: Date(timeIntervalSinceReferenceDate: 0), reduceMotion: false)
-    let peak = markerAlpha(
-      now: Date(timeIntervalSinceReferenceDate: AttentionPulse.period / 2), reduceMotion: false)
-    XCTAssertNotNil(trough)
-    XCTAssertNotNil(peak)
-    XCTAssertLessThan(trough ?? 0, peak ?? 0, "the marker alpha breathes over time")
-    XCTAssertEqual(peak, 0xFF, "the breath peaks at full opacity")
+    let mid = retint(at: AttentionPulse.entranceDuration / 2)
+    let midAlpha = markerAlpha(mid) ?? 0
+    XCTAssertGreaterThan(midAlpha, 0)
+    XCTAssertLessThan(midAlpha, 0xFF, "mid-entrance the marker is still fading in")
+    XCTAssertGreaterThan(mid.count, out.commands.count, "the entrance appends a halo bloom rect")
 
-    let steady = markerAlpha(now: Date(timeIntervalSinceReferenceDate: 0), reduceMotion: true)
-    XCTAssertEqual(steady, 0xFF, "Reduce Motion freezes the marker at full opacity")
+    let rest = retint(at: 10)
+    XCTAssertEqual(markerAlpha(rest), 0xFF, "at rest the marker is static at full opacity")
+    XCTAssertEqual(rest.count, out.commands.count, "no halo outside the entrance")
+
+    let ping = retint(
+      at: AttentionPulse.entranceDuration + AttentionPulse.pingPeriod
+        + AttentionPulse.pingDuration / 2)
+    XCTAssertEqual(
+      markerAlpha(ping), UInt32((AttentionPulse.pingFloor * 255).rounded()),
+      "the re-ping dips to its floor at the bump midpoint")
+
+    let unknown = retint(at: 0.1, entryTimes: [:])
+    XCTAssertEqual(markerAlpha(unknown), 0xFF, "no recorded entry renders the static rest form")
   }
 
   // MARK: - drag-reorder
