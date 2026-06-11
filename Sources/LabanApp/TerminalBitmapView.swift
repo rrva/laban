@@ -1492,7 +1492,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let dt: Double
       if let last = lastScrollTickAt {
         let dur = now - last
-        dt = max(1.0 / 240.0, min(1.0 / 30.0, Double(dur.components.attoseconds) / 1e18))
+        // No lower clamp: every advanceFrame call is a controller tick, and
+        // wakes from other subsystems (PTY feeds, blink flips) can land
+        // sub-millisecond after a link tick. Inflating those gaps to a fake
+        // minimum advances simulated time faster than wall time and wobbles
+        // the chase velocity; the closed-form update is exact at any dt, so
+        // a near-zero gap simply advances the position by near-zero.
+        dt = max(0, min(1.0 / 30.0, Double(dur.components.attoseconds) / 1e18))
       } else {
         dt = 1.0 / 120.0
       }
