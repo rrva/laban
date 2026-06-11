@@ -66,6 +66,57 @@ public struct SidebarProducer {
     now: Date = Date(),
     reduceMotion: Bool = false
   ) -> [FrameCommand] {
+    let out = output(
+      tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
+      hoveredTabId: hoveredTabId, dragIndicator: dragIndicator)
+    return reduceMotion ? out.commands : Self.retintPulseMarkers(out, at: now)
+  }
+
+  /// Sidebar commands plus the indices of needsAction pulse markers. The
+  /// markers are emitted at FULL opacity and the whole output is independent
+  /// of `now`, so callers can memoize it and re-tint only the marker entries
+  /// per frame while the pulse breathes — rebuilding the sidebar (and
+  /// re-resolving every tab title) at the display rate just to animate one
+  /// dot is what saturated the main thread under streaming load.
+  public struct Output {
+    public var commands: [FrameCommand]
+    public var pulseMarkerIndices: [Int]
+  }
+
+  /// Apply the breathing-pulse alpha to the memoized marker entries. A
+  /// no-op (returns the cached array untouched) when nothing needs action.
+  /// Reduce Motion callers skip this — the full-opacity base IS the frozen
+  /// form.
+  public static func retintPulseMarkers(_ output: Output, at now: Date) -> [FrameCommand] {
+    guard !output.pulseMarkerIndices.isEmpty else { return output.commands }
+    var cmds = output.commands
+    let color = AttentionPulse.applyAlpha(Theme.current.red, AttentionPulse.alpha(at: now))
+    for i in output.pulseMarkerIndices {
+      guard
+        case .glyphRun(
+          let origin, let text, _, let background, let attributes, let source,
+          let underlineStyle, let underlineColor, let hyperlink) = cmds[i]
+      else { continue }
+      cmds[i] = .glyphRun(
+        origin: origin,
+        text: text,
+        foreground: color,
+        background: background,
+        attributes: attributes,
+        source: source,
+        underlineStyle: underlineStyle,
+        underlineColor: underlineColor,
+        hyperlink: hyperlink)
+    }
+    return cmds
+  }
+
+  public func output(
+    tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
+    hoveredTabId: Tab.ID? = nil,
+    dragIndicator: DragIndicator? = nil
+  ) -> Output {
+    var pulseMarkerIndices: [Int] = []
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(tabs.count * 7 + 6)
 
@@ -222,18 +273,17 @@ public struct SidebarProducer {
         let slot = CGPoint(x: slotX, y: titleY)
         switch attention {
         case .needsAction:
-          // The one place that pulses: the marker breathes between a floor and
-          // full opacity so it reads as "act here", calmly. Reduce Motion
-          // freezes it at full opacity (still distinct by colour + shape).
-          let markerColor =
-            reduceMotion
-            ? Theme.current.red
-            : AttentionPulse.applyAlpha(Theme.current.red, AttentionPulse.alpha(at: now))
+          // The one place that pulses. Emitted at full opacity and recorded
+          // by index: the breathing alpha is applied by
+          // `retintPulseMarkers(_:at:)` so memoized callers animate the dot
+          // without rebuilding the sidebar. Reduce Motion shows exactly this
+          // full-opacity form (still distinct by colour + shape).
+          pulseMarkerIndices.append(cmds.count)
           cmds.append(
             .glyphRun(
               origin: slot,
               text: "◆",
-              foreground: markerColor,
+              foreground: Theme.current.red,
               background: bg,
               attributes: [],
               source: .sidebar
@@ -356,7 +406,7 @@ public struct SidebarProducer {
         ))
     }
 
-    return cmds
+    return Output(commands: cmds, pulseMarkerIndices: pulseMarkerIndices)
   }
 
   /// 0xRRGGBBAA — a low-alpha black overlay used to dim the row that the

@@ -359,7 +359,7 @@ public final class TerminalSurfaceController {
   // `now`). When nothing is pulsing we skip the rebuild on frames where no
   // input changed. `nil` signature means "recompute, do not cache".
   private var sidebarCacheSignature: SidebarCacheSignature?
-  private var sidebarCacheCommands: [FrameCommand] = []
+  private var sidebarCacheOutput = SidebarProducer.Output(commands: [], pulseMarkerIndices: [])
   // Increments on every actual SidebarProducer build; lets tests assert cache
   // hits without exposing the cached buffer.
   private(set) var sidebarRebuildCountForTesting = 0
@@ -817,34 +817,23 @@ public final class TerminalSurfaceController {
       sidebarWidth: sidebarWidth,
       cellWidth: sidebarCellWidth,
       cellHeight: sidebarCellHeight)
-    func build() -> [FrameCommand] {
+    func build() -> SidebarProducer.Output {
       sidebarRebuildCountForTesting += 1
-      return producer.commands(
+      return producer.output(
         tabs: tabs,
         activeTabId: activeTabId,
         height: viewportHeight,
         topInset: topInset,
         hoveredTabId: hoveredTabId,
-        dragIndicator: dragIndicator,
-        now: now,
-        reduceMotion: reduceMotion)
+        dragIndicator: dragIndicator)
     }
 
-    // The only `now`-dependent output is the attention pulse, drawn only for a
-    // `needsAction` tab while motion is allowed. While anything is pulsing the
-    // sidebar must rebuild every frame; otherwise it is a pure function of the
-    // signature below and can be served from the memo.
-    let pulsing =
-      !reduceMotion
-      && tabs.contains {
-        TabAttentionClassifier.classify($0.titleMetadata, isActive: $0.id == activeTabId)
-          == .needsAction
-      }
-    guard !pulsing else {
-      sidebarCacheSignature = nil
-      return build()
-    }
-
+    // The producer's output is independent of `now` — needsAction pulse
+    // markers are emitted at full opacity with their indices recorded — so
+    // the memo holds even while a marker breathes. The pulse animates by
+    // re-tinting the cached marker entries below; rebuilding the sidebar
+    // (and re-resolving every tab title) at the display rate to animate one
+    // dot is what saturated the main thread under streaming load.
     let signature = SidebarCacheSignature(
       tabs: tabs.map {
         SidebarCacheSignature.Entry(
@@ -864,13 +853,19 @@ public final class TerminalSurfaceController {
       cellWidth: sidebarCellWidth,
       cellHeight: sidebarCellHeight,
       theme: Theme.current)
+    let output: SidebarProducer.Output
     if sidebarCacheSignature == signature {
-      return sidebarCacheCommands
+      output = sidebarCacheOutput
+    } else {
+      output = build()
+      sidebarCacheSignature = signature
+      sidebarCacheOutput = output
     }
-    let commands = build()
-    sidebarCacheSignature = signature
-    sidebarCacheCommands = commands
-    return commands
+    // Animate the pulse on the memoized commands. No-op when nothing needs
+    // action; Reduce Motion shows the full-opacity base form unmodified.
+    return reduceMotion
+      ? output.commands
+      : SidebarProducer.retintPulseMarkers(output, at: now)
   }
 
   public static func terminalGridOriginY(

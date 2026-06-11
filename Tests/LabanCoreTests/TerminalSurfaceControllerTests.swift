@@ -237,6 +237,58 @@ final class TerminalSurfaceControllerTests: XCTestCase {
       "a sidebar-visible metadata change must still rebuild")
   }
 
+  /// The needsAction pulse must animate WITHOUT rebuilding the sidebar:
+  /// re-resolving every tab title at the display rate just to breathe one
+  /// marker is what saturated the main thread (and queued keystrokes for
+  /// hundreds of ms) whenever an agent tab was pulsing under streaming load.
+  /// The memoized commands are re-tinted per frame at the recorded marker
+  /// indices instead.
+  func testPulsingAttentionMarkerAnimatesWithoutRebuildingSidebar() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let model = try AppModel(initialSize: size)
+    let controller = TerminalSurfaceController(
+      model: model,
+      cellWidth: 8,
+      cellHeight: 16,
+      sidebarWidth: 200)
+    let tabId = model.tabs[0].id
+    // A waiting tab that is NOT the active tab classifies as needsAction.
+    try model.updateTitleMetadata(forTab: tabId, activityState: .waiting)
+
+    func markerAlpha(_ cmds: [FrameCommand]) -> UInt32? {
+      cmds.compactMap { cmd -> UInt32? in
+        if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "◆" {
+          return fg & 0xFF
+        }
+        return nil
+      }.first
+    }
+
+    let trough = controller.sidebarCommands(
+      activeTabId: nil, viewportHeight: 200,
+      now: Date(timeIntervalSinceReferenceDate: 0))
+    let builds = controller.sidebarRebuildCountForTesting
+    let peak = controller.sidebarCommands(
+      activeTabId: nil, viewportHeight: 200,
+      now: Date(timeIntervalSinceReferenceDate: AttentionPulse.period / 2))
+
+    XCTAssertEqual(
+      controller.sidebarRebuildCountForTesting, builds,
+      "a breathing pulse must be served from the memo, not rebuilt per frame")
+    let troughAlpha = try XCTUnwrap(markerAlpha(trough), "needsAction must render a marker")
+    let peakAlpha = try XCTUnwrap(markerAlpha(peak))
+    XCTAssertLessThan(troughAlpha, peakAlpha, "the memoized marker must still breathe")
+    XCTAssertEqual(peakAlpha, 0xFF, "the breath peaks at full opacity")
+
+    // Reduce Motion serves the frozen full-opacity form, also from the memo.
+    let steady = controller.sidebarCommands(
+      activeTabId: nil, viewportHeight: 200,
+      now: Date(timeIntervalSinceReferenceDate: 0), reduceMotion: true)
+    XCTAssertEqual(markerAlpha(steady), 0xFF)
+  }
+
   func testCellPayloadModeSkipsTerminalCommandsWhenCompatible() throws {
     var size = LabanTerminalSize()
     size.rows = 4
