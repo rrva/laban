@@ -117,7 +117,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     backendPopUp.action = #selector(backendChanged(_:))
     for option in backendOptions {
       backendPopUp.addItem(withTitle: backendTitle(option))
+      backendPopUp.lastItem?.toolTip = backendTooltip(option)
     }
+    backendPopUp.toolTip = "Where terminal sessions live. Applies to new sessions."
 
     identityPopUp.target = self
     identityPopUp.action = #selector(identityChanged(_:))
@@ -301,6 +303,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       return "Background"
     case .laband:
       return "Detached"
+    }
+  }
+
+  private func backendTooltip(_ backend: TerminalSessionBackend) -> String {
+    switch backend {
+    case .inProcess:
+      return "Sessions run inside the Laban process. Simplest, "
+        + "but every session ends when Laban quits."
+    case .labpty:
+      return "PTYs live in the labpty daemon: sessions keep running "
+        + "across Laban relaunches and upgrades, and reattach on launch."
+    case .laband:
+      return "Sessions run in the laband daemon, which can serve multiple "
+        + "clients and keeps sessions alive while no window is attached."
     }
   }
 
