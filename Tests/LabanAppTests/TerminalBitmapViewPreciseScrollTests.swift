@@ -195,6 +195,86 @@ final class TerminalBitmapViewPreciseScrollTests: XCTestCase {
     }
   }
 
+  /// A finger resting mid-gesture (active phase, no events flowing) is
+  /// holding the page: the settle timer must NOT fire under it. Pre-fix the
+  /// quiescence timer armed on every event regardless of phase, so a slow
+  /// or paused gesture settled mid-scroll and the next movement jumped.
+  func testRestingFingerMidGestureHoldsFraction() throws {
+    try withSoftwareRenderer {
+      let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)
+      let activeTab = try XCTUnwrap(model.activeTab)
+      let session = try XCTUnwrap(model.session(forTab: activeTab.id))
+
+      session.write(Array((0..<120).map { "line \($0)\r\n" }.joined().utf8))
+      view.advanceFrame()
+
+      view.scrollWheel(
+        with: preciseWheel(rowsUp: 1.4, cellHeight: cellHeight, phase: .changed))
+      XCTAssertEqual(view.debugScrollSnapshot().displayed, -1.4, accuracy: 1e-9)
+
+      // Let any (wrongly) armed quiescence timer fire and animate.
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+      for _ in 0..<10 { view.advanceFrame() }
+
+      XCTAssertEqual(
+        view.debugScrollSnapshot().displayed, -1.4, accuracy: 1e-9,
+        "an active gesture phase must hold the fractional position — no settle under a finger")
+    }
+  }
+
+  /// A gesture resuming after a settle retarget must continue from the
+  /// on-glass position, not the rounded target — otherwise the finger's
+  /// first delta is partially eaten by the rounding distance (a jump).
+  func testResumedGestureContinuesFromOnGlassPosition() throws {
+    try withSoftwareRenderer {
+      let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)
+      let activeTab = try XCTUnwrap(model.activeTab)
+      let session = try XCTUnwrap(model.session(forTab: activeTab.id))
+
+      session.write(Array((0..<120).map { "line \($0)\r\n" }.joined().utf8))
+      view.advanceFrame()
+
+      view.scrollWheel(with: preciseWheel(rowsUp: 1.25, cellHeight: cellHeight))
+      view.scrollWheel(
+        with: preciseWheel(rowsUp: 0, cellHeight: cellHeight, momentumPhase: .ended))
+      // Settle retargeted to -1 while displayed sits near -1.25 (the PD may
+      // have nudged it slightly toward the target already).
+
+      view.scrollWheel(
+        with: preciseWheel(rowsUp: 0.25, cellHeight: cellHeight, phase: .changed))
+
+      // From the rounded target the result would be -1.25 (motion eaten);
+      // from the on-glass position it is ≈ -1.5 minus one PD tick.
+      XCTAssertLessThan(
+        view.debugScrollSnapshot().displayed, -1.4,
+        "the resumed delta must move content from the on-glass position, not the settle target")
+    }
+  }
+
+  /// Phaseless precise streams (synthetic events, some mice) still settle
+  /// onto a whole row via the quiescence timer once the stream goes quiet.
+  func testPhaselessStreamSettlesAfterQuiescence() throws {
+    try withSoftwareRenderer {
+      let (view, model, cellHeight) = try makeView(rows: 6, cols: 40)
+      let activeTab = try XCTUnwrap(model.activeTab)
+      let session = try XCTUnwrap(model.session(forTab: activeTab.id))
+
+      session.write(Array((0..<120).map { "line \($0)\r\n" }.joined().utf8))
+      view.advanceFrame()
+
+      view.scrollWheel(with: preciseWheel(rowsUp: 1.4, cellHeight: cellHeight))
+      XCTAssertEqual(view.debugScrollSnapshot().displayed, -1.4, accuracy: 1e-9)
+
+      // No phases, no momentum end: only the quiescence timer can settle.
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+      settleAnimation(view)
+
+      let snap = view.debugScrollSnapshot()
+      XCTAssertEqual(snap.displayed, -1.0, "quiet phaseless stream must settle on a whole row")
+      XCTAssertEqual(snap.displayed, Double(snap.applied), "no sub-cell offset at rest")
+    }
+  }
+
   /// Line-quantized mode preserves the original behavior for precise input:
   /// sub-row deltas accumulate in the residual without moving the viewport,
   /// whole rows snap with no fractional state left behind.

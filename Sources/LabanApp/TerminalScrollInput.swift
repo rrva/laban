@@ -101,18 +101,24 @@ enum TerminalScrollInput {
   }
 
   /// Decide how a precise event affects the settle-to-whole-row machinery.
-  /// Momentum end/cancel is an authoritative "input is over" signal. Any
-  /// other event with a pending fraction re-arms the quiescence timer: while
-  /// a stream is active the next event (~8 ms away) re-arms long before the
-  /// timer fires, so it only ever fires after real quiet — gesture over,
-  /// momentum died without an end marker, phaseless devices, synthetic
-  /// events, or a finger resting mid-gesture (which should sit on a whole
-  /// row too).
+  /// Momentum end/cancel is an authoritative "input is over" signal. While
+  /// the gesture or momentum is active (fingers down or inertia flowing)
+  /// the settle must never run: a slow or resting finger produces event
+  /// gaps longer than any quiescence window, and a timer firing under it
+  /// creeps the content to a whole row and shifts the base the next finger
+  /// movement accumulates from — mid-gesture jank. A resting finger is
+  /// holding the page; whole-row alignment applies to lifted fingers only.
+  /// An inactive stream with a pending fraction arms the quiescence timer:
+  /// the gap between gesture end and a possible momentum start, momentum
+  /// that dies without an end marker, phaseless precise devices, and
+  /// synthetic event streams.
   static func preciseSettleAction(
     momentumEnded: Bool,
+    gestureOrMomentumActive: Bool,
     hasFraction: Bool
   ) -> SettleAction {
     if momentumEnded { return .settleNow }
+    if gestureOrMomentumActive { return .none }
     return hasFraction ? .armQuiescence : .none
   }
 

@@ -283,22 +283,36 @@ final class TerminalScrollInputTests: XCTestCase {
 
   func testPreciseSettleActionMomentumEndSettlesNow() {
     XCTAssertEqual(
-      TerminalScrollInput.preciseSettleAction(momentumEnded: true, hasFraction: true),
+      TerminalScrollInput.preciseSettleAction(
+        momentumEnded: true, gestureOrMomentumActive: false, hasFraction: true),
       .settleNow)
     XCTAssertEqual(
-      TerminalScrollInput.preciseSettleAction(momentumEnded: true, hasFraction: false),
+      TerminalScrollInput.preciseSettleAction(
+        momentumEnded: true, gestureOrMomentumActive: false, hasFraction: false),
       .settleNow)
+  }
+
+  func testPreciseSettleActionActiveGestureNeverSettles() {
+    // A slow or resting finger produces event gaps longer than any
+    // quiescence window; a settle firing under it creeps the content and
+    // makes the next finger movement jump — never settle while active.
+    XCTAssertEqual(
+      TerminalScrollInput.preciseSettleAction(
+        momentumEnded: false, gestureOrMomentumActive: true, hasFraction: true),
+      .none)
   }
 
   func testPreciseSettleActionFractionArmsQuiescence() {
     XCTAssertEqual(
-      TerminalScrollInput.preciseSettleAction(momentumEnded: false, hasFraction: true),
+      TerminalScrollInput.preciseSettleAction(
+        momentumEnded: false, gestureOrMomentumActive: false, hasFraction: true),
       .armQuiescence)
   }
 
   func testPreciseSettleActionWholeRowMotionStaysTimerFree() {
     XCTAssertEqual(
-      TerminalScrollInput.preciseSettleAction(momentumEnded: false, hasFraction: false),
+      TerminalScrollInput.preciseSettleAction(
+        momentumEnded: false, gestureOrMomentumActive: false, hasFraction: false),
       .none)
   }
 

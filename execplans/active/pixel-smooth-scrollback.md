@@ -17,8 +17,9 @@ After this change, precise (trackpad/pixel) scrolling tracks the finger continuo
 - [x] Damage safety (`fractionalScrollOffset`) + device-pixel alignment of `contentYOffset`.
 - [x] View-level tests (sticky-bottom regression, tracking, settle, quantized parity — `TerminalBitmapViewPreciseScrollTests`: 5 green; ScrollToBottom 4 + AttentionDamage 3 + SpanParity 14 + IdlePolicy 25 all green).
 - [x] Full test suite (`swift test` exit 0) + `./scripts/build-app` green.
+- [x] Committed and merged to `main` (0237d14) and installed; owner field-tested both modes.
+- [x] Field-test fix: settle gated on gesture/momentum phases + on-glass re-base for resumed gestures (mid-gesture settle jank; 3 new view tests, 1 new helper test).
 - [ ] On-glass scrollbench A/B captured (pixel-smooth vs line-quantized).
-- [ ] Committed and merged to `main`.
 
 ## Context and Orientation
 
@@ -90,6 +91,9 @@ On-glass A/B (after `./scripts/install-app` and a user relaunch of Laban; fill s
 - Decision: Default `pixelSmooth`, user-visible toggle in Settings (not a hidden default).
   Rationale: owner finds readability-while-scrolling subjective and wants easy A/B; hidden defaults are "too hidden".
   Date/Author: 2026-06-11 / rrj.
+- Decision: The settle never runs while gesture or momentum phases are active, and a resuming gesture re-bases its accumulation on the on-glass position (`targetScrollRows = displayedScrollRows` before applying a delta when they diverge).
+  Rationale: field test — the per-event quiescence timer fired under a slow/resting finger (event gaps > 150 ms with fingers still down), crept the content to a whole row mid-gesture, and the rounded retarget shifted the base so the next finger movement jumped. Whole-row alignment applies to lifted fingers only; phaseless streams still settle via the timer.
+  Date/Author: 2026-06-11 / rrj field test + fix.
 
 ## Surprises & Discoveries
 

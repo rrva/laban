@@ -3936,6 +3936,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // stale carry must not leak into a later notched-wheel click.
       scrollResidualPx = 0
       if event.scrollingDeltaY != 0 {
+        // Abandon any in-flight settle at the current visual position:
+        // finger deltas apply to what is on glass, not to the settle's
+        // rounded target — accumulating from the retargeted value would
+        // jump the content by the rounding distance.
+        if targetScrollRows != displayedScrollRows {
+          targetScrollRows = displayedScrollRows
+        }
         targetScrollRows = TerminalScrollInput.clampedFractionalTarget(
           targetScrollRows
             + TerminalScrollInput.preciseRowsDelta(
@@ -3977,11 +3984,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
       let momentumEnded =
         event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled)
+      // Fingers down or inertia flowing: the settle must wait. Phaseless
+      // streams (synthetic events, some precise mice) report empty phases
+      // and fall through to the quiescence timer.
+      let gestureOrMomentumActive =
+        !event.phase.intersection([.mayBegin, .began, .stationary, .changed]).isEmpty
+        || !event.momentumPhase.intersection([.began, .changed]).isEmpty
       let hasFraction =
         displayedScrollRows
         != TerminalScrollInput.settledTargetRows(displayedRows: displayedScrollRows)
       switch TerminalScrollInput.preciseSettleAction(
-        momentumEnded: momentumEnded, hasFraction: hasFraction)
+        momentumEnded: momentumEnded,
+        gestureOrMomentumActive: gestureOrMomentumActive,
+        hasFraction: hasFraction)
       {
       case .settleNow:
         targetScrollRows = TerminalScrollInput.settledTargetRows(
