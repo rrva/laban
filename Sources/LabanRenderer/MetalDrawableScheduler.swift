@@ -28,8 +28,14 @@ final class MetalDrawableScheduler {
     self.layer = layer
   }
 
-  func beginFrame(needsFullFrame: Bool) -> Frame? {
-    let timeout: DispatchTime = needsFullFrame ? .now() + .milliseconds(16) : .now()
+  func beginFrame(needsFullFrame: Bool, dropIfBusy: Bool = false) -> Frame? {
+    // dropIfBusy: resampled smooth-scroll frames must never block the main
+    // thread waiting for pipeline capacity — a skipped tick is repainted one
+    // tick later from newer state, while a blocked tick delays the *next*
+    // tick and locks the cadence at half rate (the demand-over-capacity
+    // queueing cliff: ~120 frames/s demanded vs ~117 sustainable).
+    let timeout: DispatchTime =
+      (needsFullFrame && !dropIfBusy) ? .now() + .milliseconds(16) : .now()
     guard frameInFlight.wait(timeout: timeout) == .success else {
       return nil
     }
@@ -40,7 +46,7 @@ final class MetalDrawableScheduler {
     frameInFlight.signal()
   }
 
-  private func acquireDrawableWithinBudget() -> DrawableAcquireResult {
+  private func acquireDrawableWithinBudget(nonBlocking: Bool = false) -> DrawableAcquireResult {
     let startedAt = DispatchTime.now().uptimeNanoseconds
     let layerMaximumDrawableCount = layer.maximumDrawableCount
     let layerAllowsNextDrawableTimeout = layer.allowsNextDrawableTimeout
@@ -113,7 +119,11 @@ final class MetalDrawableScheduler {
       drawableRequestLock.unlock()
     }
 
-    if completed.wait(timeout: .now() + Self.drawableAcquireTimeout) == .success {
+    // Non-blocking callers take an instantly-available drawable but never
+    // wait: a late drawable parks in `pendingDrawable` (the existing
+    // carry-forward) and the next tick picks it up.
+    let waitDeadline: DispatchTime = nonBlocking ? .now() : .now() + Self.drawableAcquireTimeout
+    if completed.wait(timeout: waitDeadline) == .success {
       let drawable = state.take()
       let (activeAfter, pendingAfter) = requestSnapshot()
       return DrawableAcquireResult(
@@ -183,8 +193,8 @@ final class MetalDrawableScheduler {
       self.scheduler = scheduler
     }
 
-    func acquireDrawable() -> (any CAMetalDrawable)? {
-      let result = scheduler.acquireDrawableWithinBudget()
+    func acquireDrawable(nonBlocking: Bool = false) -> (any CAMetalDrawable)? {
+      let result = scheduler.acquireDrawableWithinBudget(nonBlocking: nonBlocking)
       lastDrawableAcquireDiagnostic = result.diagnostic
       return result.drawable
     }

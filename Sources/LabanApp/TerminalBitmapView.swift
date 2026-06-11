@@ -1737,6 +1737,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       (CGFloat(subCellRows) * CGFloat(cellHeight) * surfaceScale).rounded() / surfaceScale
     let insets = Self.contentInsets
     let metalRenderer = backend as? MetalRenderer
+    // Resampled scroll frames are drop-don't-block: when the present
+    // pipeline is at capacity, skipping this tick costs nothing (the next
+    // tick repaints from newer state) while blocking on it delays the next
+    // tick and halves the cadence. Only scroll animation frames opt in —
+    // output-driven frames keep the blocking guarantees.
+    metalRenderer?.dropNextFrameWhenBusy = scrollAnimating || subCellRows != 0
     let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
     let rendererFallbackReason =
       usingRemoteSessions && gpuCellRequested ? "remoteSnapshotPayloadIncomplete" : nil

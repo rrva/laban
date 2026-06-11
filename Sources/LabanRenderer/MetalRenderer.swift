@@ -875,6 +875,15 @@ public final class MetalRenderer: RendererBackend {
 
   // MARK: - render
 
+  /// One-shot pacing hint from the frame loop: the next frame belongs to a
+  /// resampled smooth-scroll animation, so when the pipeline is at capacity
+  /// it should be DROPPED immediately instead of blocking the main thread —
+  /// the next display-link tick repaints from newer state anyway. Blocking
+  /// here is what locks a 120 Hz panel at 60: the wait delays the next tick,
+  /// so demand permanently exceeds the pipeline's ~117 frames/s capacity.
+  /// Consumed (reset to false) by the next render call.
+  public var dropNextFrameWhenBusy = false
+
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     render(commands, cellPayload: nil, damage: damage, rendererFallbackReason: nil)
@@ -899,6 +908,8 @@ public final class MetalRenderer: RendererBackend {
     let cpuStart = ContinuousClock.now
     lastRenderFailureReason = nil
     lastDrawableAcquireDiagnostic = nil
+    let dropIfBusy = dropNextFrameWhenBusy
+    dropNextFrameWhenBusy = false
     reconcileThemeRevision()
     // A GPU command buffer that completed with `.error` (recorded off-main by
     // the completion handler) means the persistent target may be half-painted,
@@ -913,7 +924,10 @@ public final class MetalRenderer: RendererBackend {
     // is acquired later, after offscreen work is encoded, so Core Animation's
     // limited drawable pool is held for the shortest useful interval.
     let needsFullFrame = targetNeedsFullRedraw || damage == .full
-    guard let scheduledFrame = drawableScheduler.beginFrame(needsFullFrame: needsFullFrame) else {
+    guard
+      let scheduledFrame = drawableScheduler.beginFrame(
+        needsFullFrame: needsFullFrame, dropIfBusy: dropIfBusy)
+    else {
       lastRenderFailureReason = .previousFrameInFlight
       return false
     }
@@ -977,7 +991,7 @@ public final class MetalRenderer: RendererBackend {
     }
     passSlots.contentActive = didContent
 
-    let drawable = scheduledFrame.acquireDrawable()
+    let drawable = scheduledFrame.acquireDrawable(nonBlocking: dropIfBusy)
     lastDrawableAcquireDiagnostic = scheduledFrame.lastDrawableAcquireDiagnostic
     guard let drawable else {
       lastRenderFailureReason = .drawableUnavailable
