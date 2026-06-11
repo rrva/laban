@@ -128,11 +128,18 @@ Four gaps remain. After this change:
 - [x] (2026-06-11) Audit of spec vs codebase; gap list confirmed (4 items).
 - [x] (2026-06-11) Worktree rebased onto local main (terminal-identity work
       landed there and closed the spec §17 gap before this plan started).
-- [ ] OSC 12 cursor-color query responder + tests.
-- [ ] Bracketed paste literal passthrough + tests.
-- [ ] DECXCPR vendored patch 0003 + fetch-script line + rebuild + ADR + tests.
-- [ ] Hover motion forwarding under mode 1003 + tests.
-- [ ] `./scripts/build-app` green; full `swift test` green.
+- [x] (2026-06-11) OSC 12 cursor-color query responder + tests
+      (`testOSCCursorColorQuery*`).
+- [x] (2026-06-11) Bracketed paste literal passthrough + tests
+      (`testEncodePasteBracketedMode*`, `testEncodePastePlainModeStillStripsEscapes`).
+- [x] (2026-06-11) DECXCPR vendored patch 0003 + fetch-script line + rebuild +
+      ADR 0019 + test (`testDECXCPRRepliesWithDECPrivateMarker`, red/green
+      verified by reverse-applying the patch and rebuilding).
+- [x] (2026-06-11) Hover motion forwarding under mode 1003 + tests
+      (`testHoverMotionUnderAnyMotionTrackingForwardsPerCellReports`,
+      `testHoverMotionUnderButtonTrackingStaysSilent`).
+- [x] (2026-06-11) `./scripts/build-app` green; full `swift test` green
+      (1501 tests, 12 skipped, 0 failures).
 
 ## Decision Log
 
@@ -194,4 +201,31 @@ raw-mode probe receives `\x1b[?row;colR`.
 
 ## Outcomes & Retrospective
 
-(to be filled in when the plan completes)
+All four gaps are closed at the seam where each behavior lives, each with a
+test that observes the user-visible bytes:
+
+- OSC 12 is answered by the OSC host scanner exactly like 10/11, including
+  the scheme fallback (an unset cursor color tracks the ink).
+- DECXCPR is answered inside libghostty-vt (vendored patch 0003, ADR 0019) so
+  origin-mode handling and reply ordering are inherited rather than
+  re-derived; red/green verified by reverse-applying the patch and rebuilding.
+- Bracketed paste delivers payload bytes literally; only an embedded end
+  fence is neutralized, and plain-mode pastes keep the strict strip.
+- `mouseMoved` forwards no-button motion that the libghostty encoder gates
+  per tracking mode (1000/1002 silent, 1003 reports as button code 35), with
+  view-level per-cell dedup so a pointer crossing a cell emits one report.
+
+Surprises:
+
+- Most of the audit's "gaps" had already been closed on `main` while this
+  spec was being audited: the terminal-identity work covered §17
+  (TERM_PROGRAM advertising) and the interleaved-flush ordering work made
+  query replies arrive in request order (§16), including a regression test.
+  Rebasing the worktree onto local `main` before implementing avoided
+  re-doing both.
+- ghostty's paste encoder strips ESC even in bracketed mode (its tests pin
+  that), so spec conformance required building the fence in Laban's paste.c
+  rather than passing a flag.
+- SwiftPM does not track the vendored `.a` as a build input (known from ADR
+  0011); touching any file in `LabanTerminalCore` is enough to force the
+  relink when red/green-verifying a vendored patch.
