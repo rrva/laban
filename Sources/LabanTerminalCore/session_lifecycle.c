@@ -39,7 +39,7 @@ static char **build_spawn_env(const char *const *overrides) {
     size_t override_count = 0;
     while (overrides && overrides[override_count]) override_count++;
 
-    char **env = calloc(inherited_count + override_count + 3, sizeof(char *));
+    char **env = calloc(inherited_count + override_count + 4, sizeof(char *));
     if (!env) return NULL;
 
     size_t out = 0;
@@ -48,6 +48,13 @@ static char **build_spawn_env(const char *const *overrides) {
         if (env_entry_has_name(entry, "TERM")) continue;
         if (env_entry_has_name(entry, "COLORTERM")) continue;
         if (env_entry_has_name(entry, "NO_COLOR")) continue;
+        /* The child runs inside Laban regardless of where the Laban process
+         * itself was launched from; an inherited TERM_PROGRAM (e.g. the
+         * terminal that started a dev build) would misidentify the host to
+         * terminal-detection logic in children (Codex picks notification
+         * backends from it). Scrub and assert our own identity below. */
+        if (env_entry_has_name(entry, "TERM_PROGRAM")) continue;
+        if (env_entry_has_name(entry, "TERM_PROGRAM_VERSION")) continue;
         if (envp_overrides_entry(overrides, entry)) continue;
         env[out++] = (char *)entry;
     }
@@ -57,6 +64,9 @@ static char **build_spawn_env(const char *const *overrides) {
     }
     if (!envp_has_name(overrides, "COLORTERM")) {
         env[out++] = (char *)"COLORTERM=truecolor";
+    }
+    if (!envp_has_name(overrides, "TERM_PROGRAM")) {
+        env[out++] = (char *)"TERM_PROGRAM=Laban";
     }
 
     for (size_t i = 0; i < override_count; i++) {
