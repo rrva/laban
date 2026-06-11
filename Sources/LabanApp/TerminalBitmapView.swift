@@ -241,6 +241,35 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// backend swaps re-install onto the new renderer.
   private weak var drawableWakeInstalledRenderer: MetalRenderer?
 
+  /// Last time an attention pulse forced a full-damage repaint. The pulse is
+  /// designed for 30 fps sampling (`animationDisplayLinkFramesPerSecond`),
+  /// but while terminal output also drives the link at 120 fps, forcing FULL
+  /// damage on every output frame multiplied the per-frame cost ~5x and
+  /// saturated the main thread — the "typing is molasses whenever a tab
+  /// needs me" report. Rate-limiting the forcing to the pulse's design rate
+  /// lets the interleaved output frames keep their cheap partial damage;
+  /// sidebar pixels go at most ~33 ms stale, imperceptible on a 1.5 s
+  /// breathing animation.
+  private var lastAttentionFullDamageAt: ContinuousClock.Instant?
+  private static let attentionFullDamageInterval: Double =
+    1.0 / Double(TerminalIdlePolicy.animationDisplayLinkFramesPerSecond)
+
+  private func attentionFullDamageDue(attentionAnimating: Bool) -> Bool {
+    guard attentionAnimating else {
+      lastAttentionFullDamageAt = nil
+      return false
+    }
+    let now = ContinuousClock.now
+    if let last = lastAttentionFullDamageAt,
+      Double((now - last).components.attoseconds) / 1e18 < Self.attentionFullDamageInterval,
+      (now - last).components.seconds < 1
+    {
+      return false
+    }
+    lastAttentionFullDamageAt = now
+    return true
+  }
+
   /// Scroll-position signature of the most recently journaled idle park, so a
   /// sustained off-bottom park logs one `noFrameNeeded` entry instead of one
   /// per vsync. Reset to `nil` whenever the viewport sits at the live bottom.
@@ -1783,7 +1812,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         renderInvalidated: renderInvalidated,
         tabChanged: tabChanged,
         scrollAnimating: scrollAnimating,
-        attentionAnimating: attentionAnimating,
+        attentionAnimating: attentionFullDamageDue(attentionAnimating: attentionAnimating),
         fractionalScrollOffset: subCellRows != 0),
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
