@@ -87,6 +87,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     [Tab.ID: (anchor: TerminalSelectionPoint, focus: TerminalSelectionPoint?)] = [:]
   private var activeSelectionTabId: Tab.ID?
   private var trackedMouseButton: MouseButton = .none
+  /// Last terminal cell a no-button hover motion was forwarded for, so a
+  /// mouse-tracking app sees one report per cell entered instead of one per
+  /// pixel of pointer travel.
+  private var lastHoverMotionCell: (tab: Tab.ID, col: Int, row: Int)?
+  /// Most recent encoded hover report, observable by tests (fixture sessions
+  /// have no PTY whose input side a test could read).
+  private var lastForwardedHoverReport: [UInt8]?
+  var lastForwardedHoverReportForTests: [UInt8]? {
+    get { lastForwardedHoverReport }
+    set { lastForwardedHoverReport = newValue }
+  }
 
   /// Active drag-edge auto-scroll. `direction` matches
   /// `Session.scrollViewport(deltaRows:)`: negative rows scroll back toward
@@ -2381,6 +2392,58 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let pt = convert(event.locationInWindow, from: nil)
     updateHoveredSidebarTab(at: pt)
     updateHoverCursor(at: pt, modifierFlags: event.modifierFlags)
+    forwardHoverMotion(at: pt, modifiers: event.labanModifiers)
+  }
+
+  /// Forward a no-button pointer motion to a mouse-tracking app as an SGR
+  /// mouse report (button code 35). The libghostty mouse encoder owns the
+  /// per-mode rules — normal tracking (1000) drops motion, button tracking
+  /// (1002) requires a held button, any-motion tracking (1003) reports hover —
+  /// so this only gates on tracking being active and dedups per cell so an
+  /// app sees one report per cell entered, not one per pixel.
+  private func forwardHoverMotion(at pt: NSPoint, modifiers: Int) {
+    guard trackedMouseButton == .none, !localSelectionMouseGestureActive,
+      let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      mouseTrackingActive(for: activeTab, session: session),
+      pt.x >= sidebarWidth
+    else { return }
+
+    let geom = terminalMouseGeometry(at: pt)
+    let col = cellWidth > 0 ? Int(geom.x) / cellWidth : 0
+    let row = cellHeight > 0 ? Int(geom.y) / cellHeight : 0
+    if let last = lastHoverMotionCell,
+      last.tab == activeTab.id, last.col == col, last.row == row
+    {
+      return
+    }
+    lastHoverMotionCell = (tab: activeTab.id, col: col, row: row)
+
+    let mouseEncoding = remoteMouseEncoding(for: activeTab)
+    let motionEvent = MouseEvent(
+      action: .motion,
+      button: .none,
+      x: geom.x, y: geom.y,
+      screenWidth: geom.screenWidth,
+      screenHeight: geom.screenHeight,
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      modifiers: modifiers,
+      trackingMode: mouseEncoding?.trackingMode ?? 0,
+      format: mouseEncoding?.format ?? 0
+    )
+    let sent = session.sendMouseCapturingBytes(motionEvent)
+    let bytes = sent.result == 0 ? sent.bytes : []
+    guard !bytes.isEmpty else { return }
+    lastForwardedHoverReport = bytes
+    forwardEncodedMouseToDaemon(bytes, session: session)
+    recordInput(
+      kind: "mouse",
+      route: "terminal",
+      command: "mouseMoved",
+      encodedHex: TerminalInputCaptureMetadata.encodedHex(bytes),
+      encodedLength: TerminalInputCaptureMetadata.encodedLength(bytes)
+    )
   }
 
   override func mouseExited(with event: NSEvent) {

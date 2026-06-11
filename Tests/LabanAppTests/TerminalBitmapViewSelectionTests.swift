@@ -401,6 +401,63 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testHoverMotionUnderAnyMotionTrackingForwardsPerCellReports() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+
+    // Any-motion tracking (mode 1003) + SGR encoding (1006): a no-button
+    // hover must be reported as CSI < 35 ; col ; row M, one report per cell.
+    session.write(Array("\u{1B}[?1003h\u{1B}[?1006h".utf8))
+    session.poll()
+    XCTAssertEqual(session.viewportState()?.mouseTracking, true)
+
+    harness.view.mouseMoved(
+      with: mouseEvent(type: .mouseMoved, at: point(row: 4, col: 9, in: harness)))
+    XCTAssertEqual(
+      harness.view.lastForwardedHoverReportForTests.flatMap { String(bytes: $0, encoding: .utf8) },
+      "\u{1B}[<35;10;5M",
+      "a no-button hover under mode 1003 must forward an SGR motion report")
+
+    // A second move within the same cell must not repeat the report.
+    harness.view.lastForwardedHoverReportForTests = nil
+    harness.view.mouseMoved(
+      with: mouseEvent(type: .mouseMoved, at: point(row: 4, col: 9, in: harness)))
+    XCTAssertNil(
+      harness.view.lastForwardedHoverReportForTests,
+      "hover motion within one cell must be deduplicated")
+
+    // Entering a different cell reports again.
+    harness.view.mouseMoved(
+      with: mouseEvent(type: .mouseMoved, at: point(row: 2, col: 3, in: harness)))
+    XCTAssertEqual(
+      harness.view.lastForwardedHoverReportForTests.flatMap { String(bytes: $0, encoding: .utf8) },
+      "\u{1B}[<35;4;3M",
+      "entering a new cell must forward a fresh motion report")
+  }
+
+  func testHoverMotionUnderButtonTrackingStaysSilent() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+
+    // Button-motion tracking (1002) reports motion only while a button is
+    // held; the libghostty encoder must drop a no-button hover.
+    session.write(Array("\u{1B}[?1002h\u{1B}[?1006h".utf8))
+    session.poll()
+    XCTAssertEqual(session.viewportState()?.mouseTracking, true)
+
+    harness.view.mouseMoved(
+      with: mouseEvent(type: .mouseMoved, at: point(row: 1, col: 1, in: harness)))
+    XCTAssertNil(
+      harness.view.lastForwardedHoverReportForTests,
+      "a no-button hover under mode 1002 must not be reported")
+  }
+
   func testShiftClickExtendsSelectionWhenMouseTrackingIsActive() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
