@@ -46,10 +46,13 @@ public enum TerminalIdentitySettings {
       ?? "dev"
   }
 
+  /// ghostty-compat is the out-of-the-box default: until the ecosystem
+  /// recognizes Laban, an honest-but-unknown identity costs users real
+  /// features (progress bars, smarter notification channels) with no upside.
   public static func identity(defaults: UserDefaults = .standard) -> TerminalIdentity {
     guard let raw = defaults.string(forKey: defaultsKey),
       let parsed = TerminalIdentity(rawValue: raw)
-    else { return .laban }
+    else { return .ghosttyCompat }
     return parsed
   }
 

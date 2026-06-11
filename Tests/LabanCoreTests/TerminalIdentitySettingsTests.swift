@@ -18,13 +18,13 @@ final class TerminalIdentitySettingsTests: XCTestCase {
     super.tearDown()
   }
 
-  func testDefaultIdentityIsLaban() {
-    XCTAssertEqual(TerminalIdentitySettings.identity(defaults: defaults), .laban)
+  func testDefaultIdentityIsGhosttyCompat() {
+    XCTAssertEqual(TerminalIdentitySettings.identity(defaults: defaults), .ghosttyCompat)
   }
 
-  func testGarbageValueFallsBackToLaban() {
+  func testGarbageValueFallsBackToTheDefault() {
     defaults.set("warp", forKey: TerminalIdentitySettings.defaultsKey)
-    XCTAssertEqual(TerminalIdentitySettings.identity(defaults: defaults), .laban)
+    XCTAssertEqual(TerminalIdentitySettings.identity(defaults: defaults), .ghosttyCompat)
   }
 
   func testRoundTrip() {
