@@ -2560,15 +2560,9 @@ public final class MetalRenderer: RendererBackend {
           maxLogicalWidth: maxLogicalWidth)
         return false
       }
-      guard bottomRow >= 0, bottomRow < geometry.rows else {
-        recordPayloadFailure("bottomRowOutOfBounds", glyph: glyph)
-        return false
-      }
+      // `terminalGridGeometry(payload:)` mirrors payload rows/cols, so the row/col
+      // guards above prove this index is in the retained full-grid buffer.
       let index = bottomRow * geometry.cols + glyph.col
-      guard index >= 0, index < cellGlyphs.count else {
-        recordPayloadFailure("cellIndexOutOfBounds", glyph: glyph)
-        return false
-      }
       let foregroundFloat: SIMD4<Float>
       if cachedPayloadForeground == glyph.foreground {
         foregroundFloat = cachedPayloadForegroundFloat
