@@ -386,7 +386,13 @@ public final class HeadlessDebugRuntime {
       // overlay env into the spawned shell. The headless harness runs
       // /bin/sh, which has no overlay, so this is `.passthrough` in
       // practice — but the subsystem is wired into both runtimes.
-      return try Session.debugShell(size: size, extraEnvironment: shellLaunch.environmentOverrides)
+      // Identity is a live setting: resolve per spawn, matching
+      // MainWindowController's spawn-time merge.
+      return try Session.debugShell(
+        size: size,
+        extraEnvironment:
+          shellLaunch.withTerminalIdentity(TerminalIdentitySettings.identity())
+          .environmentOverrides)
     }
   }
 
@@ -397,11 +403,10 @@ public final class HeadlessDebugRuntime {
   private static func installShellIntegrationOverlay() -> ShellIntegrationLaunch {
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-headless-shell-integration-\(UUID().uuidString)")
-    let launch =
+    return
       (try? ShellIntegrationOverlay.install(
         shellPath: "/bin/sh", baseDirectory: base,
         environment: ProcessInfo.processInfo.environment)) ?? .passthrough
-    return launch.withTerminalIdentity(TerminalIdentitySettings.identity())
   }
 
   // MARK: - Terminal session client backend

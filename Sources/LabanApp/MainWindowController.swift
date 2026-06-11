@@ -63,6 +63,9 @@ final class MainWindowController: NSWindowController {
     // a passthrough launch, so the shell starts unchanged.
     // See `ShellIntegrationOverlay` and `docs/product/spec.md` §7.
     let shellLaunch = Self.installShellIntegrationOverlay()
+    // Terminal identity is a live setting: resolve it per spawn so flipping
+    // it in Settings reaches the next new tab without relaunching Laban.
+    let spawnLaunch = { shellLaunch.withTerminalIdentity(TerminalIdentitySettings.identity()) }
     let backendSelection = try terminalBackendSelection ?? Self.configuredAppTerminalBackend()
     let terminalBackend = backendSelection.backend
     let restoredCwdByTabId = Self.restoredCwdByTabId(from: restoredState)
@@ -78,7 +81,7 @@ final class MainWindowController: NSWindowController {
         case .inProcess:
           return try Session.realShell(
             size: $0,
-            environment: shellLaunch.environmentOverrides,
+            environment: spawnLaunch().environmentOverrides,
             launchArgv: shellLaunch.argv)
         case .laband:
           return try Session.fixture(size: $0)
@@ -118,7 +121,7 @@ final class MainWindowController: NSWindowController {
         return try Session.fixture(size: spec.size)
       }
       let session = try Session.makeDeferred(
-        size: spec.size, cwd: spec.cwd, environment: shellLaunch.environmentOverrides)
+        size: spec.size, cwd: spec.cwd, environment: spawnLaunch().environmentOverrides)
       // Agent tabs that were running at quit launch the shell with the
       // resume command as its own argument (`$SHELL -l -i -c '<resume>;
       // exec $SHELL -l -i'`) instead of typing it into a live prompt. The
@@ -160,7 +163,7 @@ final class MainWindowController: NSWindowController {
       case .inProcess:
         return try Session.realShell(
           size: size, cwd: cwd,
-          environment: shellLaunch.environmentOverrides,
+          environment: spawnLaunch().environmentOverrides,
           launchArgv: shellLaunch.argv)
       }
     }
@@ -176,7 +179,7 @@ final class MainWindowController: NSWindowController {
       case .inProcess:
         return try Session.realShell(
           size: size, cwd: cwd,
-          environment: shellLaunch.environmentOverrides,
+          environment: spawnLaunch().environmentOverrides,
           launchArgv: shellLaunch.argv)
       }
     }
@@ -193,12 +196,12 @@ final class MainWindowController: NSWindowController {
         if let cwd {
           return try Session.realShell(
             size: size, cwd: cwd,
-            environment: shellLaunch.environmentOverrides,
+            environment: spawnLaunch().environmentOverrides,
             launchArgv: argv)
         }
         return try Session.realShell(
           size: size,
-          environment: shellLaunch.environmentOverrides,
+          environment: spawnLaunch().environmentOverrides,
           launchArgv: argv)
       }
     }
@@ -561,17 +564,15 @@ final class MainWindowController: NSWindowController {
     let shellPath = LoginShell.resolvePath()
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-shell-integration-\(UUID().uuidString)", isDirectory: true)
-    let launch: ShellIntegrationLaunch
     do {
-      launch = try ShellIntegrationOverlay.install(
+      return try ShellIntegrationOverlay.install(
         shellPath: shellPath,
         baseDirectory: base,
         environment: ProcessInfo.processInfo.environment)
     } catch {
       AppLog.app.error("shell integration overlay install failed: \(String(describing: error))")
-      launch = .passthrough
+      return .passthrough
     }
-    return launch.withTerminalIdentity(TerminalIdentitySettings.identity())
   }
 
   func detachTerminalSessions() {

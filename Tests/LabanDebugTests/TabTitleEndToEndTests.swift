@@ -108,10 +108,12 @@ final class TabTitleEndToEndTests: XCTestCase {
   // MARK: - Terminal identity
 
   func testTermProgramIdentityReachesChildren() throws {
-    // Children must see TERM_PROGRAM=Laban — not an inherited identity from
+    // Children must see the configured identity — not one inherited from
     // whatever terminal happened to launch the Laban process. Codex picks its
     // notification backend from this variable; other tools gate progress
     // bars on it.
+    TerminalIdentitySettings.set(.laban)
+    defer { UserDefaults.standard.removeObject(forKey: TerminalIdentitySettings.defaultsKey) }
     let harness = try TitleHarness(runId: "title-e2e-term-program")
     defer { harness.tearDown() }
 
@@ -137,6 +139,28 @@ final class TabTitleEndToEndTests: XCTestCase {
 
     let tab = try harness.waitForTabState { $0.terminalTitle == "ghostty/1.3.1" }
     XCTAssertEqual(tab.terminalTitle, "ghostty/1.3.1")
+  }
+
+  func testIdentityChangeAppliesToNextTabWithoutRelaunch() throws {
+    // Identity is resolved at spawn time, not captured at launch: flipping
+    // the setting must reach the next new tab of the running app.
+    defer { UserDefaults.standard.removeObject(forKey: TerminalIdentitySettings.defaultsKey) }
+    TerminalIdentitySettings.set(.laban)
+
+    let harness = try TitleHarness(runId: "title-e2e-identity-flip")
+    defer { harness.tearDown() }
+
+    TerminalIdentitySettings.set(.ghosttyCompat)
+    try harness.newTab()
+    try harness.runClient("titleenv 30")
+
+    let deadline = Date().addingTimeInterval(5.0)
+    var title: String?
+    while title != "ghostty/1.3.1", Date() < deadline {
+      harness.pumpMainQueue(0.3)
+      title = try harness.syncPass(tabIndex: 1).terminalTitle
+    }
+    XCTAssertEqual(title, "ghostty/1.3.1")
   }
 
   // MARK: - Attention: agent wants the user

@@ -974,6 +974,13 @@ final class AppSessionCoordinator {
     }
   }
 
+  /// The launch with the *current* terminal identity merged in. Identity is a
+  /// live setting; resolving it per spawn means flipping it in Settings
+  /// reaches the next new session without relaunching Laban.
+  private var spawnShellLaunch: ShellIntegrationLaunch {
+    shellLaunch.withTerminalIdentity(TerminalIdentitySettings.identity())
+  }
+
   private func labptyOpenRequest(
     for tab: Tab,
     size: LabanTerminalSize
@@ -982,7 +989,7 @@ final class AppSessionCoordinator {
       rows: UInt32(max(1, Int(size.rows))),
       cols: UInt32(max(1, Int(size.cols))),
       argv: (argvProvider?(tab.id) ?? shellLaunch.argv) ?? [],
-      envp: shellLaunch.environmentOverrides.map { "\($0.key)=\($0.value)" }.sorted(),
+      envp: spawnShellLaunch.environmentOverrides.map { "\($0.key)=\($0.value)" }.sorted(),
       cwd: cwdByTabId[tab.id] ?? FileManager.default.homeDirectoryForCurrentUser.path,
       logicalSessionId: tab.id)
   }
@@ -996,7 +1003,7 @@ final class AppSessionCoordinator {
       executable: argv?.first,
       argv: argv,
       cwd: cwdByTabId[tab.id] ?? FileManager.default.homeDirectoryForCurrentUser.path,
-      environmentPatch: shellLaunch.environmentOverrides,
+      environmentPatch: spawnShellLaunch.environmentOverrides,
       rows: Int(size.rows),
       cols: Int(size.cols),
       logicalSessionId: tab.id
