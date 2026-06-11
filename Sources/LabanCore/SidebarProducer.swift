@@ -90,7 +90,7 @@ public struct SidebarProducer {
   public static func retintPulseMarkers(_ output: Output, at now: Date) -> [FrameCommand] {
     guard !output.pulseMarkerIndices.isEmpty else { return output.commands }
     var cmds = output.commands
-    let color = AttentionPulse.applyAlpha(Theme.current.red, AttentionPulse.alpha(at: now))
+    let color = AttentionPulse.applyAlpha(Theme.current.attention, AttentionPulse.alpha(at: now))
     for i in output.pulseMarkerIndices {
       guard
         case .glyphRun(
@@ -146,12 +146,14 @@ public struct SidebarProducer {
       let meta = tab.titleMetadata
       let agentStatus = meta.agentStatus
       // How urgently this background tab wants the user (a focused tab is always
-      // `.none`). `needsAction` additionally washes the whole row a faint red.
+      // `.none`). `needsAction` additionally washes the whole row faintly toward
+      // the theme's attention accent.
       let attention = TabAttentionClassifier.classify(meta, isActive: isActive)
       let baseBg = isActive ? Theme.current.bg2 : Theme.current.bg1
       let bg =
         attention == .needsAction
-        ? Self.tint(baseBg, toward: Theme.current.red, fraction: Self.needsActionTintFraction)
+        ? Self.tint(
+          baseBg, toward: Theme.current.attention, fraction: Self.needsActionTintFraction)
         : baseBg
       let fg = isActive ? Theme.current.fg1 : Theme.current.fg0
 
@@ -207,7 +209,7 @@ public struct SidebarProducer {
         // agent's full notification text (the native banner already has that).
         let label = notif.urgent ? "needs you" : "done"
         let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
-        displayLines.append((line, notif.urgent ? Theme.current.red : Theme.current.cursor))
+        displayLines.append((line, notif.urgent ? Theme.current.attention : Theme.current.cursor))
       }
       if let st = agentStatus.statusText {
         let color =
@@ -259,7 +261,8 @@ public struct SidebarProducer {
       // Right-edge attention marker — one per tab, chosen by attention level.
       // Rendered only when the tab is not hovered (the close X takes the slot
       // on hover) and never on the focused tab (always `.none`):
-      //   needsAction → red ◆ over the row tint applied above ("act here")
+      //   needsAction → attention-accent ◆ over the row tint applied above
+      //                  ("act here" — yellow, not red: red means failure)
       //   done        → accent ◆ ("a task finished")
       //   passive/none → an explicit OSC 21337 agent dot, else a failed-command
       //                  red dot, else a muted unseen/bell badge, else nothing
@@ -283,7 +286,7 @@ public struct SidebarProducer {
             .glyphRun(
               origin: slot,
               text: "◆",
-              foreground: Theme.current.red,
+              foreground: Theme.current.attention,
               background: bg,
               attributes: [],
               source: .sidebar

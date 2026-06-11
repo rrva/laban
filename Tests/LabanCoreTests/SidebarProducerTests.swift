@@ -546,23 +546,29 @@ final class SidebarProducerTests: XCTestCase {
 
   // MARK: - attention tiers (needs-you vs done vs passive)
 
-  func testNeedsActionRendersRedDiamondAndRowTint() {
+  func testNeedsActionRendersAttentionDiamondAndRowTint() {
     var tab = Tab(id: "t", position: 1, title: "claude", isActive: false, sessionId: "s")
     tab.titleMetadata.activityState = .waiting
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let cmds = p.commands(tabs: [tab], activeTabId: "other", height: 600)
 
-    // A ◆ marker whose RGB is red. Compare RGB only — M3 modulates the alpha
-    // byte for the breathing pulse.
+    // A ◆ marker whose RGB is the theme's attention accent (yellow — red is
+    // reserved for failures). Compare RGB only — M3 modulates the alpha byte
+    // for the breathing pulse.
     let marker = cmds.compactMap { cmd -> UInt32? in
       if case .glyphRun(_, let text, let fg, _, _, _, _, _, _) = cmd, text == "◆" { return fg }
       return nil
     }.first
     XCTAssertNotNil(marker, "needsAction must render a ◆ marker")
-    XCTAssertEqual((marker ?? 0) | 0xFF, Theme.current.red | 0xFF, "marker RGB must be red")
+    XCTAssertEqual(
+      (marker ?? 0) | 0xFF, Theme.current.attention | 0xFF,
+      "marker RGB must be the theme's attention accent")
+    XCTAssertNotEqual(
+      Theme.current.attention | 0xFF, Theme.current.red | 0xFF,
+      "attention accent must stay distinct from the failure red")
 
-    // The full-width row rect is washed toward red — neither the plain inactive
-    // bg nor the active-tab bg.
+    // The full-width row rect is washed toward the attention accent — neither
+    // the plain inactive bg nor the active-tab bg.
     let rowColors = cmds.compactMap { cmd -> UInt32? in
       if case .rect(let r, let c, _) = cmd, r.width == p.sidebarWidth, r.height == p.rowHeight {
         return c

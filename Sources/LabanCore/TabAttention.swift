@@ -82,8 +82,10 @@ public enum AttentionPulse {
   /// Seconds per breath. ~1.5s reads as calm; sub-second on/off reads as alarm.
   public static let period: TimeInterval = 1.5
   /// The marker never fully fades — it breathes between `floor` and full so it
-  /// reads as a gentle pulse, not a blink.
-  public static let floor: Double = 0.55
+  /// reads as a pulse, not a blink. A 0.55 floor proved too subtle to catch
+  /// the eye ("the hues it shifts between are too little"); 0.25 nearly
+  /// extinguishes the dot at the trough so each breath has a visible swing.
+  public static let floor: Double = 0.25
 
   /// Alpha in `[floor, 1.0]` following a raised-cosine ("ease in/out") breath.
   /// Anchored to an absolute clock so every `needsAction` tab pulses in unison.
