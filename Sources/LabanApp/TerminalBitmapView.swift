@@ -169,8 +169,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   // (cumulative target). A critically-damped PD controller advances
   // `displayedScrollRows` toward the target each frame, applying the
   // integer delta to libghostty's viewport and the sub-cell remainder as
-  // a vertical pixel shift in the renderer. Trackpad (precise) input
-  // bypasses smoothing — macOS already smoothed it. Reset on tab switch.
+  // a vertical pixel shift in the renderer. Precise (trackpad) input in
+  // pixel-smooth mode tracks the finger 1:1 with fractional rows and only
+  // quantizes at rest: a settle work item rounds the target onto a whole
+  // row once input goes quiet. In line-quantized mode precise input snaps
+  // whole rows per event (macOS already smoothed it). Reset on tab switch.
   //
   // Algorithm matches Neovide's PD scroll controller (proven well-tuned
   // for text-grid UIs). omega = 25 rad/s gives a critically-damped
@@ -203,6 +206,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// damage = .full so the persistent target is fully repainted at the
   /// new fractional position.
   private var scrollAnimating: Bool = false
+
+  /// Pending settle-to-whole-row for precise pixel-smooth scrolling. Re-armed
+  /// by every precise event, so it fires only after real input quiet. The
+  /// work item is the explicit future wake ADR 0018 requires — a static
+  /// fraction changes no pixels, so no frames run until the settle retargets.
+  private var preciseScrollSettleWork: DispatchWorkItem?
+  private static let preciseScrollSettleQuiescenceSeconds: TimeInterval = 0.15
 
   /// Scroll-position signature of the most recently journaled idle park, so a
   /// sustained off-bottom park logs one `noFrameNeeded` entry instead of one
@@ -799,6 +809,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         // Window no longer visible to user: stop the blink timer immediately
         // so the cursor freezes solid rather than blinking behind a covered window.
         self?.syncBlinkDriverFromWindowState()
+        // A precise gesture interrupted by an app switch must not freeze the
+        // grid on a fractional row.
+        self?.settlePreciseScrollToWholeRow()
       })
     // Occlusion changes don't fire key notifications, so observe them too:
     // becoming un-occluded must wake the parked link; becoming occluded parks
@@ -1193,6 +1206,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     stopTrackedMouseDragFramePump()
     sessionCoordinator?.stopSnapshotGenerationMonitor()
     removeWindowFocusObservers()
+    preciseScrollSettleWork?.cancel()
     resizeBackgroundReset?.cancel()
     if let view = resizeBackgroundView,
       let originalWantsLayer = normalResizeBackgroundWantsLayer
@@ -1278,9 +1292,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     renderInvalidated: Bool,
     tabChanged: Bool,
     scrollAnimating: Bool,
-    attentionAnimating: Bool
+    attentionAnimating: Bool,
+    fractionalScrollOffset: Bool
   ) -> Bool {
+    // fractionalScrollOffset: while rows sit at a sub-cell offset, a
+    // partial-damage frame (output, blink, attention) would composite its
+    // damaged rows against stale pixels at every undamaged row — the offset
+    // shifts everything, so any repaint must be a full repaint.
     renderInvalidated || tabChanged || scrollAnimating || attentionAnimating
+      || fractionalScrollOffset
   }
 
   // MARK: - Frame loop
@@ -1295,6 +1315,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case labandGeneration
     case keyboard
     case scrollWheel
+    case scrollSettle
     case modelMutation
     case focus
     case occlusion
@@ -1602,7 +1623,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // direction so positive = same direction as a positive scrollViewport
     // delta. Zero when no scroll is in flight.
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
-    let scrollContentYOffset = -CGFloat(subCellRows) * CGFloat(cellHeight)
+    // Snapped to whole device pixels so glyphs never rasterize at subpixel
+    // positions while content is in motion (text stays sharp mid-scroll).
+    let surfaceScale = max(1, CGFloat(backend.surfaceScale))
+    let scrollContentYOffset =
+      (-CGFloat(subCellRows) * CGFloat(cellHeight) * surfaceScale).rounded() / surfaceScale
     let insets = Self.contentInsets
     let metalRenderer = backend as? MetalRenderer
     let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
@@ -1634,7 +1659,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         renderInvalidated: renderInvalidated,
         tabChanged: tabChanged,
         scrollAnimating: scrollAnimating,
-        attentionAnimating: attentionAnimating),
+        attentionAnimating: attentionAnimating,
+        fractionalScrollOffset: subCellRows != 0),
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
       surfaceScale: Double(backend.surfaceScale),
@@ -3824,6 +3850,82 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
 
+    if event.hasPreciseScrollingDeltas && ScrollSettings.mode == .pixelSmooth {
+      // Precise pixel-smooth path: track the finger 1:1 in fractional rows.
+      // The integer part goes to libghostty's viewport (held at ≤ -1 while
+      // the target is in history so the active-bottom snap cannot reset the
+      // gesture's accumulation on every sub-row event); the remainder
+      // renders as the sub-cell contentYOffset. Quantization happens only
+      // at rest: once input goes quiet, the settle rounds the target onto a
+      // whole row and the PD controller glides the last sub-cell distance.
+      preciseScrollSettleWork?.cancel()
+      preciseScrollSettleWork = nil
+      // The notch-residual accumulator belongs to the quantized paths; a
+      // stale carry must not leak into a later notched-wheel click.
+      scrollResidualPx = 0
+      if event.scrollingDeltaY != 0 {
+        targetScrollRows = TerminalScrollInput.clampedFractionalTarget(
+          targetScrollRows
+            + TerminalScrollInput.preciseRowsDelta(
+              scrollingDeltaY: event.scrollingDeltaY,
+              cellHeightPx: CGFloat(cellHeight)),
+          maxScrollbackRows: max(0, vs.totalRows - vs.viewportRows))
+        // Displayed tracks target before the step so a clamp-induced
+        // resetSmoothScrollState wins over the gesture.
+        displayedScrollRows = targetScrollRows
+        scrollVelocityRowsPerSec = 0
+        let appliedBefore = appliedScrollRows
+        applyScrollStep(
+          toDesiredApplied: TerminalScrollInput.gestureDesiredAppliedRows(
+            displayedRows: displayedScrollRows, targetRows: targetScrollRows),
+          tab: activeTab,
+          session: session,
+          resetOnClamp: true)
+        if ScrollDiagnostics.shared.isEnabled, let vs = session.viewportState() {
+          ScrollDiagnostics.shared.event(
+            kind: "scroll",
+            off: vs.viewportOffset, total: vs.totalRows, vp: vs.viewportRows,
+            sb: vs.scrollbackRows, alt: vs.altScreen, mouse: vs.mouseTracking,
+            deltaRows: appliedScrollRows - appliedBefore, applied: appliedScrollRows,
+            note: "preciseWheel; target=\(targetScrollRows)")
+        }
+        if appliedScrollRows != appliedBefore {
+          recordInput(
+            kind: "scroll",
+            route: "terminal",
+            command: "scrollViewport",
+            deltaRows: appliedScrollRows - appliedBefore
+          )
+          // Drag-extend through scroll, same as the quantized path below.
+          if selectionFocus != nil, let pt = lastDragPoint {
+            extendSelection(to: pt)
+          }
+        }
+        renderInvalidated = true
+      }
+      let momentumEnded =
+        event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled)
+      let hasFraction =
+        displayedScrollRows
+        != TerminalScrollInput.settledTargetRows(displayedRows: displayedScrollRows)
+      switch TerminalScrollInput.preciseSettleAction(
+        momentumEnded: momentumEnded, hasFraction: hasFraction)
+      {
+      case .settleNow:
+        targetScrollRows = TerminalScrollInput.settledTargetRows(
+          displayedRows: displayedScrollRows)
+      case .armQuiescence:
+        armPreciseScrollSettle()
+      case .none:
+        break
+      }
+      // Single scroll wake, same as the quantized path below: the frame it
+      // produces sets `scrollAnimating` whenever a settle retarget left an
+      // error, and the defer-reconcile un-parks the link until convergence.
+      advanceFrame(wake: .scrollWheel)
+      return
+    }
+
     let decision = TerminalScrollInput.decide(
       event: TerminalScrollInput.Event(
         deltaY: event.deltaY,
@@ -3840,7 +3942,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // via a downward scroll then routes through applyScrollStep's
       // snap-to-active, so scroll-to-bottom follows output that streamed past
       // the old bottom while the user was scrolled up.
-      targetScrollRows = min(0, targetScrollRows + Double(decision.rowsDelta))
+      // The rounding keeps this path's whole-row invariant after a
+      // pixel-smooth gesture on another device left a fractional target.
+      targetScrollRows = min(
+        0, (targetScrollRows + Double(decision.rowsDelta)).rounded(.toNearestOrAwayFromZero))
       if ScrollDiagnostics.shared.isEnabled,
         let session = model.activeTab.flatMap({ model.session(forTab: $0.id) }),
         let vs = session.viewportState()
@@ -4630,6 +4735,37 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       totalRows: vs.totalRows,
       viewportRows: vs.viewportRows
     )
+  }
+
+  /// Re-arm the quiescence timer that settles a precise pixel-smooth gesture
+  /// onto a whole row. Cancelled and re-armed by every precise event, so it
+  /// fires only after ~150 ms of real input quiet — covering gestures that
+  /// end without a momentum-end marker, momentum streams that die silently,
+  /// phaseless precise devices, synthetic event streams, and a finger
+  /// resting mid-gesture (which should sit on a whole row too).
+  private func armPreciseScrollSettle() {
+    preciseScrollSettleWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.preciseScrollSettleWork = nil
+      self.settlePreciseScrollToWholeRow()
+    }
+    preciseScrollSettleWork = work
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + Self.preciseScrollSettleQuiescenceSeconds, execute: work)
+  }
+
+  /// Retarget the smooth-scroll controller onto the nearest whole row and
+  /// wake the frame loop so the existing PD controller animates the
+  /// remaining sub-cell distance (~80 ms at scrollOmega). The explicit wake
+  /// is what un-parks an idle display link (ADR 0018).
+  private func settlePreciseScrollToWholeRow() {
+    preciseScrollSettleWork?.cancel()
+    preciseScrollSettleWork = nil
+    let settled = TerminalScrollInput.settledTargetRows(displayedRows: displayedScrollRows)
+    guard targetScrollRows != settled || displayedScrollRows != settled else { return }
+    targetScrollRows = settled
+    advanceFrame(wake: .scrollSettle)
   }
 
   private func resetSmoothScrollState(to appliedRows: Int) {

@@ -23,6 +23,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let restoreCheckbox = NSButton(
     checkboxWithTitle: "Restore tabs on launch", target: nil, action: nil)
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: "Blink cursor", target: nil, action: nil)
 
@@ -33,6 +34,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let backendOptions: [TerminalSessionBackend] = [.inProcess, .labpty, .laband]
   private let identityOptions: [TerminalIdentity] = [.laban, .ghosttyCompat]
   private let cursorStyleOptions: [CursorSettings.Style] = CursorSettings.Style.allCases
+  private let scrollModeOptions: [ScrollSettings.Mode] = ScrollSettings.Mode.allCases
 
   init(
     theme: ThemeMenuController,
@@ -143,12 +145,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     blinkCheckbox.target = self
     blinkCheckbox.action = #selector(blinkChanged(_:))
 
+    scrollModePopUp.target = self
+    scrollModePopUp.action = #selector(scrollModeChanged(_:))
+    for option in scrollModeOptions {
+      scrollModePopUp.addItem(withTitle: scrollModeTitle(option))
+    }
+    scrollModePopUp.toolTip =
+      "How trackpad scrolling moves the scrollback. Pixel-smooth tracks the "
+      + "finger continuously and settles on a whole line at rest; "
+      + "line-quantized moves in whole lines only."
+
     let grid = NSGridView(views: [
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
       [makeLabel("Font:"), fontRow],
       [makeLabel("Cursor:"), cursorStylePopUp],
       [NSGridCell.emptyContentView, blinkCheckbox],
+      [makeLabel("Scroll:"), scrollModePopUp],
       [makeLabel("Renderer:"), rendererPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
@@ -215,6 +228,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       cursorStylePopUp.selectItem(at: row)
     }
     blinkCheckbox.state = CursorSettings.blinkEnabled ? .on : .off
+    if let row = scrollModeOptions.firstIndex(of: ScrollSettings.mode) {
+      scrollModePopUp.selectItem(at: row)
+    }
   }
 
   // MARK: Actions
@@ -277,6 +293,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     CursorSettings.setStyle(cursorStyleOptions[row])
   }
 
+  @objc private func scrollModeChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < scrollModeOptions.count else { return }
+    ScrollSettings.setMode(scrollModeOptions[row])
+  }
+
   @objc private func blinkChanged(_ sender: NSButton) {
     CursorSettings.setBlinkEnabled(sender.state == .on)
   }
@@ -334,6 +356,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     case .block: return "Block"
     case .bar: return "Bar"
     case .underline: return "Underline"
+    }
+  }
+
+  private func scrollModeTitle(_ mode: ScrollSettings.Mode) -> String {
+    switch mode {
+    case .pixelSmooth: return "Pixel-smooth"
+    case .lineQuantized: return "Line-quantized"
     }
   }
 

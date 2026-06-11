@@ -231,6 +231,77 @@ final class TerminalScrollInputTests: XCTestCase {
     )
   }
 
+  // MARK: - Precise fractional scrolling
+
+  func testPreciseRowsDeltaProducesFractionalRows() {
+    let delta = TerminalScrollInput.preciseRowsDelta(scrollingDeltaY: 8, cellHeightPx: 24)
+    XCTAssertEqual(delta, -1.0 / 3.0, accuracy: 1e-9, "8px up over 24px cells is a third of a row toward history")
+  }
+
+  func testPreciseRowsDeltaZeroCellHeightIsInert() {
+    XCTAssertEqual(TerminalScrollInput.preciseRowsDelta(scrollingDeltaY: 10, cellHeightPx: 0), 0)
+    XCTAssertEqual(TerminalScrollInput.preciseRowsDelta(scrollingDeltaY: 10, cellHeightPx: -3), 0)
+  }
+
+  func testClampedFractionalTargetBoundsBottomAndTop() {
+    XCTAssertEqual(TerminalScrollInput.clampedFractionalTarget(0.7, maxScrollbackRows: 100), 0, "cannot scroll below the live bottom")
+    XCTAssertEqual(TerminalScrollInput.clampedFractionalTarget(-42.25, maxScrollbackRows: 100), -42.25)
+    XCTAssertEqual(
+      TerminalScrollInput.clampedFractionalTarget(-150.5, maxScrollbackRows: 100), -100,
+      "phantom distance past the top of history must not accumulate")
+    XCTAssertEqual(TerminalScrollInput.clampedFractionalTarget(-3, maxScrollbackRows: 0), 0)
+  }
+
+  func testGestureDesiredAppliedRowsHoldsBelowBottomWhileTargetInHistory() {
+    // The sticky-bottom regression at the pure level: a small fraction must
+    // not round to 0 (the active-bottom snap resets gesture accumulation).
+    XCTAssertEqual(
+      TerminalScrollInput.gestureDesiredAppliedRows(displayedRows: -0.2, targetRows: -0.2), -1)
+    XCTAssertEqual(
+      TerminalScrollInput.gestureDesiredAppliedRows(displayedRows: -0.5, targetRows: -0.5), -1)
+  }
+
+  func testGestureDesiredAppliedRowsRoundsToNearestInHistory() {
+    XCTAssertEqual(
+      TerminalScrollInput.gestureDesiredAppliedRows(displayedRows: -10.4, targetRows: -10.4), -10)
+    XCTAssertEqual(
+      TerminalScrollInput.gestureDesiredAppliedRows(displayedRows: -10.6, targetRows: -10.6), -11)
+  }
+
+  func testGestureDesiredAppliedRowsAtBottomTargetSnapsToZero() {
+    XCTAssertEqual(
+      TerminalScrollInput.gestureDesiredAppliedRows(displayedRows: 0, targetRows: 0), 0,
+      "a true return to 0 routes through the active-bottom snap")
+  }
+
+  func testSettledTargetRowsRoundsToWholeRowAndNeverPositive() {
+    XCTAssertEqual(TerminalScrollInput.settledTargetRows(displayedRows: -0.3), 0)
+    XCTAssertEqual(TerminalScrollInput.settledTargetRows(displayedRows: -10.5), -11)
+    XCTAssertEqual(TerminalScrollInput.settledTargetRows(displayedRows: -10.4), -10)
+    XCTAssertEqual(TerminalScrollInput.settledTargetRows(displayedRows: 0.4), 0)
+  }
+
+  func testPreciseSettleActionMomentumEndSettlesNow() {
+    XCTAssertEqual(
+      TerminalScrollInput.preciseSettleAction(momentumEnded: true, hasFraction: true),
+      .settleNow)
+    XCTAssertEqual(
+      TerminalScrollInput.preciseSettleAction(momentumEnded: true, hasFraction: false),
+      .settleNow)
+  }
+
+  func testPreciseSettleActionFractionArmsQuiescence() {
+    XCTAssertEqual(
+      TerminalScrollInput.preciseSettleAction(momentumEnded: false, hasFraction: true),
+      .armQuiescence)
+  }
+
+  func testPreciseSettleActionWholeRowMotionStaysTimerFree() {
+    XCTAssertEqual(
+      TerminalScrollInput.preciseSettleAction(momentumEnded: false, hasFraction: false),
+      .none)
+  }
+
   // MARK: - Fixture loader
 
   private struct CapturedEvent: Decodable {

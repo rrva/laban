@@ -6,19 +6,25 @@ final class TestScrollWheelEvent: NSEvent {
   private let testScrollingDeltaY: CGFloat
   private let testHasPreciseScrollingDeltas: Bool
   private let testModifierFlags: NSEvent.ModifierFlags
+  private let testPhase: NSEvent.Phase
+  private let testMomentumPhase: NSEvent.Phase
 
   init(
     locationInWindow: NSPoint,
     deltaY: CGFloat,
     scrollingDeltaY: CGFloat = 0,
     hasPreciseScrollingDeltas: Bool = false,
-    modifierFlags: NSEvent.ModifierFlags = []
+    modifierFlags: NSEvent.ModifierFlags = [],
+    phase: NSEvent.Phase = [],
+    momentumPhase: NSEvent.Phase = []
   ) {
     testLocationInWindow = locationInWindow
     testDeltaY = deltaY
     testScrollingDeltaY = scrollingDeltaY
     testHasPreciseScrollingDeltas = hasPreciseScrollingDeltas
     testModifierFlags = modifierFlags
+    testPhase = phase
+    testMomentumPhase = momentumPhase
     super.init()
   }
 
@@ -33,4 +39,6 @@ final class TestScrollWheelEvent: NSEvent {
   override var scrollingDeltaY: CGFloat { testScrollingDeltaY }
   override var hasPreciseScrollingDeltas: Bool { testHasPreciseScrollingDeltas }
   override var modifierFlags: NSEvent.ModifierFlags { testModifierFlags }
+  override var phase: NSEvent.Phase { testPhase }
+  override var momentumPhase: NSEvent.Phase { testMomentumPhase }
 }

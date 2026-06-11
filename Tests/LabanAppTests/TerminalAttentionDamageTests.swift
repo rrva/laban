@@ -14,7 +14,22 @@ final class TerminalAttentionDamageTests: XCTestCase {
         renderInvalidated: false,
         tabChanged: false,
         scrollAnimating: false,
-        attentionAnimating: true))
+        attentionAnimating: true,
+        fractionalScrollOffset: false))
+  }
+
+  // A frame produced while rows sit at a sub-cell scroll offset (precise
+  // gesture paused mid-fraction, settle pending) must force a full repaint:
+  // the offset shifts every row, so partial damage would composite damaged
+  // rows against stale pixels everywhere else.
+  func testFractionalScrollOffsetForcesFullDamage() {
+    XCTAssertTrue(
+      TerminalBitmapView.shouldForceFullDamage(
+        renderInvalidated: false,
+        tabChanged: false,
+        scrollAnimating: false,
+        attentionAnimating: false,
+        fractionalScrollOffset: true))
   }
 
   // An otherwise-idle clean frame must NOT force full damage, so the render loop
@@ -25,6 +40,7 @@ final class TerminalAttentionDamageTests: XCTestCase {
         renderInvalidated: false,
         tabChanged: false,
         scrollAnimating: false,
-        attentionAnimating: false))
+        attentionAnimating: false,
+        fractionalScrollOffset: false))
   }
 }
