@@ -237,6 +237,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// adaptive stiffness. Reset by stream gaps; never used for positions.
   private var preciseInputRowsPerSec: Double = 0
   private var lastPreciseInputEventAt: ContinuousClock.Instant?
+  /// Renderer instance whose drawable catch-up wake has been installed, so
+  /// backend swaps re-install onto the new renderer.
+  private weak var drawableWakeInstalledRenderer: MetalRenderer?
 
   /// Scroll-position signature of the most recently journaled idle park, so a
   /// sustained off-bottom park logs one `noFrameNeeded` entry instead of one
@@ -1743,6 +1746,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // tick and halves the cadence. Only scroll animation frames opt in —
     // output-driven frames keep the blocking guarantees.
     metalRenderer?.dropNextFrameWhenBusy = scrollAnimating || subCellRows != 0
+    if let metalRenderer, drawableWakeInstalledRenderer !== metalRenderer {
+      drawableWakeInstalledRenderer = metalRenderer
+      metalRenderer.onDrawableReadyAfterMiss = { [weak self] in
+        DispatchQueue.main.async {
+          self?.advanceFrame(wake: .renderRetry)
+        }
+      }
+    }
     let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
     let rendererFallbackReason =
       usingRemoteSessions && gpuCellRequested ? "remoteSnapshotPayloadIncomplete" : nil

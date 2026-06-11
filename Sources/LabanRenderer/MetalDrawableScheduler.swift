@@ -22,6 +22,18 @@ final class MetalDrawableScheduler {
   /// diagnostic so the render journal can tell display-locked recycling
   /// (~16.7 ms sharp) from GPU-bound frames (~9-12 ms).
   private var lastRequestLatencyMs: Double?
+  /// True when a non-blocking acquire came up empty since the last
+  /// successful hand-off. Touched under `drawableRequestLock`.
+  private var consumerMissedSinceLastAcquire = false
+  /// Fired (on the drawable queue) when a prefetched drawable parks while a
+  /// consumer is known to have missed — the escape hatch from the half-rate
+  /// equilibrium. In the 60 Hz basin, drawables recycle only per display
+  /// swap (~16.7 ms), so a request posted after each carry always misses the
+  /// next 8.3 ms tick; rendering immediately when the drawable lands
+  /// presents a second frame into the same swap interval, doubling the swap
+  /// rate and flipping the pipeline back into the self-sustaining 120 Hz
+  /// basin. The receiver must hop to its own queue/thread.
+  var onDrawableReadyAfterMiss: (() -> Void)?
 
   /// Limits frames in flight to 1. CAMetalLayer hands out up to 3 drawables
   /// in parallel, but MetalRenderer's persistent target + scratch textures are
@@ -66,6 +78,7 @@ final class MetalDrawableScheduler {
     // `drawableSizeMismatch` guard), so a stale-sized carry-forward is safe.
     if let carried = pendingDrawable {
       pendingDrawable = nil
+      consumerMissedSinceLastAcquire = false
       // Prefetch-on-carry: a non-blocking caller consuming the parked
       // drawable immediately posts the next async request, so the next tick
       // finds a drawable waiting instead of posting-and-missing. Without
@@ -99,6 +112,9 @@ final class MetalDrawableScheduler {
       // A request is still parked in `nextDrawable()`. Don't start a second one
       // and don't poison subsequent frames — just miss this tick; the next one
       // picks up `pendingDrawable`.
+      if nonBlocking {
+        consumerMissedSinceLastAcquire = true
+      }
       let activeAfter = drawableRequestActive
       let pendingAfter = pendingDrawable != nil
       drawableRequestLock.unlock()
@@ -135,11 +151,17 @@ final class MetalDrawableScheduler {
       // The caller already gave up: stash the late drawable for the next acquire
       // instead of dropping it. Clearing `drawableRequestActive` in the same
       // critical section keeps the stash visible before a new request can start.
+      var catchUp: (() -> Void)?
       if !claimedByWaiter, let drawable {
         pendingDrawable = drawable
+        if consumerMissedSinceLastAcquire {
+          consumerMissedSinceLastAcquire = false
+          catchUp = onDrawableReadyAfterMiss
+        }
       }
       drawableRequestActive = false
       drawableRequestLock.unlock()
+      catchUp?()
     }
 
     // Non-blocking callers take an instantly-available drawable but never
@@ -163,6 +185,11 @@ final class MetalDrawableScheduler {
     }
 
     state.cancel()
+    if nonBlocking {
+      drawableRequestLock.lock()
+      consumerMissedSinceLastAcquire = true
+      drawableRequestLock.unlock()
+    }
     let (activeAfter, pendingAfter) = requestSnapshot()
     return DrawableAcquireResult(
       drawable: nil,
@@ -188,11 +215,17 @@ final class MetalDrawableScheduler {
         Double(DispatchTime.now().uptimeNanoseconds &- requestPostedAt) / 1_000_000.0
       drawableRequestLock.lock()
       lastRequestLatencyMs = latencyMs
+      var catchUp: (() -> Void)?
       if let drawable {
         pendingDrawable = drawable
+        if consumerMissedSinceLastAcquire {
+          consumerMissedSinceLastAcquire = false
+          catchUp = onDrawableReadyAfterMiss
+        }
       }
       drawableRequestActive = false
       drawableRequestLock.unlock()
+      catchUp?()
     }
   }
 

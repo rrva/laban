@@ -884,6 +884,16 @@ public final class MetalRenderer: RendererBackend {
   /// Consumed (reset to false) by the next render call.
   public var dropNextFrameWhenBusy = false
 
+  /// Catch-up wake: a prefetched drawable landed after a drop-when-busy
+  /// frame missed. Rendering immediately (instead of waiting for the next
+  /// display-link tick) presents a second frame into the current swap
+  /// interval, which is the only escape from the half-rate drawable-recycle
+  /// equilibrium. Called on a background queue — hop before touching UI.
+  public var onDrawableReadyAfterMiss: (() -> Void)? {
+    get { drawableScheduler.onDrawableReadyAfterMiss }
+    set { drawableScheduler.onDrawableReadyAfterMiss = newValue }
+  }
+
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
     render(commands, cellPayload: nil, damage: damage, rendererFallbackReason: nil)
