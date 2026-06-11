@@ -1120,6 +1120,59 @@ The debug hooks should evolve with the product. If an agent gets stuck because
 it cannot see enough state, improve the debug hook instead of adding brittle
 sleep-based tests or relying on manual screenshots.
 
+## Metal Trace Perf Loop
+
+`scripts/analyze-metal-trace` turns Instruments `.trace` bundles into a
+self-checking perf iteration loop (this block is regenerable via
+`scripts/analyze-metal-trace --print-agent-docs`).
+
+Verify the tool first (no trace or macOS needed):
+
+    scripts/analyze-metal-trace --self-test
+
+Standard loop (each step is one command):
+
+1. Establish a baseline from a recorded trace (exports are cached; reruns skip
+   xctrace but still pay XML parse time):
+
+       scripts/analyze-metal-trace path/to/run.trace --json-output .build/baseline.json
+
+2. Make ONE code change, rebuild, then record + analyze + compare in one shot:
+
+       scripts/analyze-metal-trace --record 10 --attach Laban \
+           --baseline .build/baseline.json --fail-on-regression
+
+   (or: `--launch -- ./build/Laban --bench-scroll`)
+   Exit 0 = no regression beyond thresholds; exit 3 = regression or unreliable
+   comparison -> revert or fix.
+3. Read ONLY stdout (brief report + verdict). Full details are in the JSON/MD
+   files if a finding needs evidence.
+
+Refocusing on the code you just changed:
+
+    scripts/analyze-metal-trace --print-config > trace-focus.json
+    # edit cpuSymbols / metalLabels to include your function or signpost label,
+    # then rerun; trace-focus.json is auto-discovered in the cwd.
+
+Fast paths:
+
+    --cpu-only --max-rows 50000     # quick CPU hot-path check
+    --list-schemas                  # what tables exist in this trace
+    --no-cache / --clear-cache      # force fresh exports
+
+Thresholds: `--threshold-pp` (CPU pp, default 1.0), `--threshold-pct`
+(GPU p95 %, default 10.0).
+
+Rules of thumb:
+
+- One change per trace; the compare verdict is only attributable if you do.
+- If brief output warns about missing symbolicated frames, fix dSYMs before
+  trusting CPU numbers.
+- Never pass `--allow-sensitive-schemas` unless explicitly asked; raw exports
+  can contain launch env vars and logs.
+- Cached exports persist in `~/.cache/analyze-metal-trace` (never for
+  sensitive schemas); `--clear-cache` removes them.
+
 ## Definition Of Done
 
 A behavior is done when an agent can:

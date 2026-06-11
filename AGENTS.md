@@ -33,7 +33,7 @@ task matches them.
 | --- | --- |
 | `docs/product/mvp.md` | You are checking whether a change risks breaking shipped behavior. |
 | `docs/product/spec.md` | You are expanding product scope or need long-term direction. |
-| `docs/process/dev-process.md` | You are implementing or changing debug hooks, headless mode, screenshots, capture/replay artifacts, fixtures, CI E2E tests, or autonomous verification. |
+| `docs/process/dev-process.md` | You are implementing or changing debug hooks, headless mode, screenshots, capture/replay artifacts, fixtures, CI E2E tests, or autonomous verification — or iterating on renderer perf with Instruments traces (§Metal Trace Perf Loop, `scripts/analyze-metal-trace`). |
 | `docs/process/worktree-isolation.md` | You are adding run commands, artifact directories, temp dirs, debug ports, or multi-worktree execution support. |
 | `docs/process/observability.md` | You are adding logs, debug events, metrics, traces, or failure artifacts. |
 | `docs/reference/prototype-implementation-notes.md` | You need prototype lessons, known pitfalls, or reusable terminal-core behavior. |
