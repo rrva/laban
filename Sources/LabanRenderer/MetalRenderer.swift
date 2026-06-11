@@ -1584,7 +1584,6 @@ public final class MetalRenderer: RendererBackend {
     }
     if let buf = cellGlyphFrameBuffer {
       encoder.setRenderPipelineState(cellGlyphPipeline)
-      encoder.setVertexBuffer(buf, offset: 0, index: 0)
       encoder.setFragmentTexture(glyphAtlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
       // The cell-glyph buffer is the persistent full grid, so this draw rasterizes
@@ -1597,7 +1596,35 @@ public final class MetalRenderer: RendererBackend {
       // edges onto the loaded target every frame and the text slowly accumulates
       // and shimmers. Scope the glyph rasterization to exactly the dirty Y ranges
       // so clean rows stay untouched by the persistent target's load action.
-      if case .partial(let yRanges) = damage {
+      if cellPayload != nil, case .partial = damage,
+        let geometry = cellGlyphGridGeometry,
+        !cellGlyphUploadRanges.isEmpty
+      {
+        let stride = MemoryLayout<CellGlyph>.stride
+        for range in cellGlyphUploadRanges {
+          guard range.lowerBound >= 0, range.upperBound <= cellGlyphs.count,
+            !range.isEmpty
+          else { continue }
+          let startRow = range.lowerBound / geometry.cols
+          let endRow = (range.upperBound - 1) / geometry.cols
+          guard startRow >= 0, endRow < geometry.rows else { continue }
+          let rowRange = DirtyYRange(
+            y: geometry.originY + CGFloat(startRow) * geometry.cellHeight,
+            height: CGFloat(endRow - startRow + 1) * geometry.cellHeight)
+          guard
+            let rangeScissor = scissorRectFromYRanges(
+              [rowRange],
+              surfacePxW: target.width,
+              surfacePxH: surfacePxH,
+              scale: layer.contentsScale)
+          else { continue }
+          encoder.setScissorRect(rangeScissor)
+          encoder.setVertexBuffer(buf, offset: range.lowerBound * stride, index: 0)
+          encoder.drawPrimitives(
+            type: .triangle, vertexStart: 0,
+            vertexCount: 6, instanceCount: range.count)
+        }
+      } else if case .partial(let yRanges) = damage {
         for range in yRanges {
           guard
             let rangeScissor = scissorRectFromYRanges(
@@ -1607,11 +1634,13 @@ public final class MetalRenderer: RendererBackend {
               scale: layer.contentsScale)
           else { continue }
           encoder.setScissorRect(rangeScissor)
+          encoder.setVertexBuffer(buf, offset: 0, index: 0)
           encoder.drawPrimitives(
             type: .triangle, vertexStart: 0,
             vertexCount: 6, instanceCount: cellGlyphs.count)
         }
       } else {
+        encoder.setVertexBuffer(buf, offset: 0, index: 0)
         encoder.drawPrimitives(
           type: .triangle, vertexStart: 0,
           vertexCount: 6, instanceCount: cellGlyphs.count)

@@ -14,6 +14,20 @@ import XCTest
 /// one-dirty-row path must not grow any payload arrays; ASCII glyph cells also
 /// stay on the scalar fast path and do not materialize per-cell String text.
 final class TerminalCellPayloadAllocationBench: XCTestCase {
+  private enum PayloadFillStyle {
+    case ascii
+    case denseColor
+    case decorated
+    case hyperlink
+    case wide
+  }
+
+  private struct PayloadFillMicroCase {
+    var label: String
+    var style: PayloadFillStyle
+    var dirtyRows: [Int]
+  }
+
   private func enabled() -> Bool {
     ProcessInfo.processInfo.environment["LABAN_RUN_PERF_BENCH"] == "1"
   }
@@ -86,6 +100,91 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
       XCTAssertEqual(payload.capacitySnapshot, warmed)
       XCTAssertEqual(payload.dirtyRows, dirtyRows)
       XCTAssertNil(payload.fallbackReason)
+    #endif
+  }
+
+  func testPayloadFillMicrobench() throws {
+    guard enabled() else { return }
+    #if DEBUG
+      throw XCTSkip("payload fill microbench must run with -c release")
+    #else
+      let rows = 48
+      let cols = 160
+      let cases: [PayloadFillMicroCase] = [
+        .init(label: "ascii 1 row", style: .ascii, dirtyRows: [rows - 1]),
+        .init(label: "ascii 5 rows", style: .ascii, dirtyRows: Array(20..<25)),
+        .init(label: "ascii full", style: .ascii, dirtyRows: Array(0..<rows)),
+        .init(label: "dense colors", style: .denseColor, dirtyRows: Array(20..<25)),
+        .init(label: "decorated", style: .decorated, dirtyRows: Array(20..<25)),
+        .init(label: "hyperlink", style: .hyperlink, dirtyRows: Array(20..<25)),
+        .init(label: "wide glyphs", style: .wide, dirtyRows: Array(20..<25)),
+      ]
+      let samples =
+        ProcessInfo.processInfo.environment["LABAN_BENCH_PAYLOAD_FILL_SAMPLES"].flatMap(Int.init)
+        ?? 800
+      let producer = FrameProducer(
+        cellWidth: 9,
+        cellHeight: 19,
+        originX: 0,
+        originY: 0,
+        contentYOffset: 0)
+
+      print("\n=== TerminalCellPayload fill microbench (160x48, release, us) ===")
+      print("  case             p50/p95/p99 us   growth glyphs bgRuns utf8 fallback")
+      for benchCase in cases {
+        let fixture = try payloadFillSnapshot(
+          rows: rows,
+          cols: cols,
+          style: benchCase.style)
+        defer {
+          laban_snapshot_destroy(fixture.snapshot)
+          fixture.session.close()
+        }
+
+        var payload = TerminalCellPayload(
+          rows: rows,
+          cols: cols,
+          origin: .zero,
+          cellSize: CGSize(width: 9, height: 19),
+          contentYOffset: 0,
+          defaultBackground: fixture.snapshot.pointee.default_background_rgba)
+        producer.fillTerminalCellPayload(
+          into: &payload,
+          from: UnsafePointer(fixture.snapshot),
+          includedRows: benchCase.dirtyRows,
+          cursorBlinkVisible: false)
+        let warmedCapacity = payload.capacitySnapshot
+
+        var timings: [Double] = []
+        timings.reserveCapacity(samples)
+        var storageGrowthEvents = 0
+        for _ in 0..<samples {
+          let before = payload.capacitySnapshot
+          let start = DispatchTime.now().uptimeNanoseconds
+          producer.fillTerminalCellPayload(
+            into: &payload,
+            from: UnsafePointer(fixture.snapshot),
+            includedRows: benchCase.dirtyRows,
+            cursorBlinkVisible: false)
+          let end = DispatchTime.now().uptimeNanoseconds
+          timings.append(Double(end - start) / 1_000.0)
+          storageGrowthEvents += before.storageGrowthEvents(to: payload.capacitySnapshot)
+        }
+
+        XCTAssertEqual(payload.capacitySnapshot, warmedCapacity)
+        print(
+          String(
+            format: "  %-16@ %.1f/%.1f/%.1f    %6d %6d %6d %4d %@",
+            benchCase.label as NSString,
+            percentile(timings, 0.50),
+            percentile(timings, 0.95),
+            percentile(timings, 0.99),
+            storageGrowthEvents,
+            payload.glyphs.count,
+            payload.backgroundRuns.count,
+            payload.utf8Bytes.count,
+            String(describing: payload.fallbackReason) as NSString))
+      }
     #endif
   }
 
@@ -241,6 +340,124 @@ final class TerminalCellPayloadAllocationBench: XCTestCase {
       throw XCTSkip("missing snapshot")
     }
     return (session, snapshot)
+  }
+
+  private func payloadFillSnapshot(
+    rows: Int,
+    cols: Int,
+    style: PayloadFillStyle
+  ) throws -> (session: Session, snapshot: UnsafeMutablePointer<LabanSnapshot>) {
+    var size = LabanTerminalSize()
+    size.rows = Int32(rows)
+    size.cols = Int32(cols)
+    let session = try Session.fixture(size: size)
+    let bytes = payloadFillBytes(rows: rows, cols: cols, style: style)
+    _ = session.write(bytes)
+    _ = session.poll()
+    guard let snapshot = session.snapshot() else {
+      session.close()
+      throw XCTSkip("missing snapshot")
+    }
+    return (session, snapshot)
+  }
+
+  private func payloadFillBytes(
+    rows: Int,
+    cols: Int,
+    style: PayloadFillStyle
+  ) -> [UInt8] {
+    var bytes = Array("\u{1B}[?7l\u{1B}[0m".utf8)
+    for row in 1...rows {
+      bytes += Array("\u{1B}[\(row);1H".utf8)
+      switch style {
+      case .ascii:
+        appendASCIIRow(row: row, cols: cols, into: &bytes)
+      case .denseColor:
+        appendDenseColorRow(row: row, cols: cols, into: &bytes)
+      case .decorated:
+        appendDecoratedRow(row: row, cols: cols, into: &bytes)
+      case .hyperlink:
+        appendHyperlinkRow(row: row, cols: cols, into: &bytes)
+      case .wide:
+        appendWideRow(row: row, cols: cols, into: &bytes)
+      }
+    }
+    bytes += Array("\u{1B}[0m".utf8)
+    return bytes
+  }
+
+  private func appendASCIIRow(row: Int, cols: Int, into bytes: inout [UInt8]) {
+    for col in 0..<cols {
+      bytes.append(asciiByte(row: row, col: col))
+    }
+  }
+
+  private func appendDenseColorRow(row: Int, cols: Int, into bytes: inout [UInt8]) {
+    for col in 0..<cols {
+      let seed = row * 17 + col * 29
+      let fg = rgb(seed: seed + 5)
+      let bg = rgb(seed: seed + 23)
+      bytes += Array(
+        "\u{1B}[38;2;\(fg.r);\(fg.g);\(fg.b);48;2;\(bg.r);\(bg.g);\(bg.b)m".utf8)
+      bytes.append(asciiByte(row: row, col: col))
+    }
+    bytes += Array("\u{1B}[0m".utf8)
+  }
+
+  private func appendDecoratedRow(row: Int, cols: Int, into bytes: inout [UInt8]) {
+    for col in 0..<cols {
+      switch col % 12 {
+      case 0:
+        bytes += Array("\u{1B}[1;4m".utf8)
+      case 4:
+        bytes += Array("\u{1B}[3;9m".utf8)
+      case 8:
+        bytes += Array("\u{1B}[53m".utf8)
+      default:
+        break
+      }
+      bytes.append(asciiByte(row: row, col: col))
+    }
+    bytes += Array("\u{1B}[0m".utf8)
+  }
+
+  private func appendHyperlinkRow(row: Int, cols: Int, into bytes: inout [UInt8]) {
+    var col = 0
+    while col < cols {
+      if col % 32 == 0 {
+        bytes += Array("\u{1B}]8;;https://example.test/\(row)/\(col)\u{1B}\\".utf8)
+        for offset in 0..<min(8, cols - col) {
+          bytes.append(asciiByte(row: row, col: col + offset))
+        }
+        bytes += Array("\u{1B}]8;;\u{1B}\\".utf8)
+        col += 8
+      } else {
+        bytes.append(asciiByte(row: row, col: col))
+        col += 1
+      }
+    }
+  }
+
+  private func appendWideRow(row: Int, cols: Int, into bytes: inout [UInt8]) {
+    let wideScalar = String(UnicodeScalar(0x754C)!)
+    var col = 0
+    while col < cols {
+      if col + 1 < cols, (row + col).isMultiple(of: 16) {
+        bytes += Array(wideScalar.utf8)
+        col += 2
+      } else {
+        bytes.append(asciiByte(row: row, col: col))
+        col += 1
+      }
+    }
+  }
+
+  private func asciiByte(row: Int, col: Int) -> UInt8 {
+    UInt8(0x21 + ((row + col) % 94))
+  }
+
+  private func rgb(seed: Int) -> (r: Int, g: Int, b: Int) {
+    ((seed * 37) & 0xFF, (seed * 89) & 0xFF, (seed * 167) & 0xFF)
   }
 }
 

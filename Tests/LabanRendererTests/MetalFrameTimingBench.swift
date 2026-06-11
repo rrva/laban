@@ -130,6 +130,56 @@ final class MetalFrameTimingBench: XCTestCase {
     }
   }
 
+  func testGPUCellRenderMicrobench() throws {
+    guard enabled() else { return }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    let cols = 160
+    let rows = 48
+    let cellW: CGFloat = 9
+    let cellH: CGFloat = 19
+    let scale: CGFloat = 2
+    let pixelW = Int(CGFloat(cols) * cellW * scale)
+    let pixelH = Int(CGFloat(rows) * cellH * scale)
+    let reps =
+      ProcessInfo.processInfo.environment["LABAN_BENCH_RENDER_REPS"].flatMap(Int.init) ?? 2
+    let frames =
+      ProcessInfo.processInfo.environment["LABAN_BENCH_RENDER_FRAMES"].flatMap(Int.init) ?? 40
+    let workloads: [M6Workload] = [
+      .init(label: "1-row append", style: .ascii, dirtyRows: [rows - 1]),
+      .init(label: "5-row contiguous", style: .ascii, dirtyRows: Array(20..<25)),
+      .init(label: "sparse rows", style: .ascii, dirtyRows: [0, 23, rows - 1]),
+      .init(label: "full repaint", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true),
+      .init(
+        label: "fast scroll", style: .ascii, dirtyRows: Array(0..<rows), fullDamage: true,
+        contentYOffset: -cellH / 2),
+    ]
+
+    print(
+      "\n=== GPU-cell render microbench (160x48, release; median of \(reps)x\(frames)) ===")
+    print(
+      "  workload             path       cpu p50/p95/p99 ms   pCPU/fr  drop  taskuJ/fr wk/fr  socGPUuJ/fr socCPUuJ/fr"
+    )
+    for workload in workloads {
+      let result = try measureM6HeadToHead(
+        workload: workload,
+        useGPUCell: true,
+        cols: cols,
+        rows: rows,
+        cellW: cellW,
+        cellH: cellH,
+        scale: scale,
+        pixelW: pixelW,
+        pixelH: pixelH,
+        fontAtlas: fontAtlas,
+        repsOverride: reps,
+        targetOverride: frames)
+      printM6HeadToHeadRow(label: workload.label, path: "gpuCell", result: result)
+    }
+  }
+
   private func benchAt(
     label: String, cols: Int, rows: Int, fontAtlas: FontAtlas
   ) throws {
@@ -919,7 +969,9 @@ final class MetalFrameTimingBench: XCTestCase {
     scale: CGFloat,
     pixelW: Int,
     pixelH: Int,
-    fontAtlas: FontAtlas
+    fontAtlas: FontAtlas,
+    repsOverride: Int? = nil,
+    targetOverride: Int? = nil
   ) throws -> M6HeadToHeadResult {
     let mode: RendererMode = useGPUCell ? .gpuDriven : .classic
     guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale, rendererMode: mode)
@@ -954,9 +1006,11 @@ final class MetalFrameTimingBench: XCTestCase {
     renderer.waitForLastFrame()
 
     let reps = max(
-      1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_REPS"].flatMap(Int.init) ?? 7)
+      1, repsOverride
+        ?? ProcessInfo.processInfo.environment["LABAN_BENCH_M6_REPS"].flatMap(Int.init) ?? 7)
     let target = max(
-      1, ProcessInfo.processInfo.environment["LABAN_BENCH_M6_FRAMES"].flatMap(Int.init) ?? 80)
+      1, targetOverride
+        ?? ProcessInfo.processInfo.environment["LABAN_BENCH_M6_FRAMES"].flatMap(Int.init) ?? 80)
 
     // Pre-build the frame inputs OUTSIDE the timing brackets. The bench's
     // per-cell payload/command construction (thousands of Glyph structs, each
