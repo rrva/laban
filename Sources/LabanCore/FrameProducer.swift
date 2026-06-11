@@ -67,6 +67,14 @@ public struct FrameProducer {
     for cell: LabanCell,
     hyperlinkURIs: [String]
   ) -> ResolvedCellVisuals {
+    hyperlinkURIs.withUnsafeBufferPointer { resolvedVisuals(for: cell, hyperlinkURIs: $0) }
+  }
+
+  @inline(__always)
+  private static func resolvedVisuals(
+    for cell: LabanCell,
+    hyperlinkURIs: UnsafeBufferPointer<String>
+  ) -> ResolvedCellVisuals {
     var attrsRaw = (cell.flags & renderableMaskRaw) & ~inverseRaw
     let background = cell.background_rgba
     let foreground =
@@ -648,219 +656,220 @@ public struct FrameProducer {
       markFallback(.exitBanner)
     }
 
+    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
     payload.backgroundRuns.reserveCapacity(payload.dirtyRows.count * 2)
-    for row in payload.dirtyRows {
-      let rowStart = row * cols
-      var bgStart: Int?
-      var bgColor: UInt32 = 0
-      for col in 0..<cols {
-        let cell = cells[rowStart + col]
-        let cellBg = cell.background_rgba
-        if bgStart == nil {
-          if cellBg != defaultBg {
-            bgStart = col
+    payload.glyphs.reserveCapacity(payload.dirtyRows.count * cols)
+    payload.proceduralCells.reserveCapacity(payload.dirtyRows.count)
+    // One pass per dirty row: the background-run scan shares the cell load with
+    // the glyph scan instead of walking the row twice. The run logic must stay
+    // ahead of every glyph-path `continue`; per-array append order is unchanged.
+    hyperlinkURIs.withUnsafeBufferPointer { uriTable in
+      for row in payload.dirtyRows {
+        let rowStart = row * cols
+        var pendingSpacerAfterLastGlyph = false
+        var bgStart: Int?
+        var bgColor: UInt32 = 0
+
+        func glyphBytes(_ glyph: TerminalCellPayload.Glyph) -> [UInt8]? {
+          if let range = glyph.utf8Range {
+            guard range.lowerBound >= 0, range.upperBound <= payload.utf8Bytes.count else {
+              return nil
+            }
+            return Array(payload.utf8Bytes[range])
+          }
+          if let scalarValue = glyph.scalarValue,
+            let scalar = Unicode.Scalar(scalarValue)
+          {
+            return Array(String(scalar).utf8)
+          }
+          if !glyph.text.isEmpty {
+            return Array(glyph.text.utf8)
+          }
+          return nil
+        }
+
+        func samePayloadGlyphStyle(
+          _ lhs: TerminalCellPayload.Glyph, _ rhs: TerminalCellPayload.Glyph
+        )
+          -> Bool
+        {
+          lhs.row == rhs.row
+            && lhs.foreground == rhs.foreground
+            && lhs.background == rhs.background
+            && lhs.attributes == rhs.attributes
+            && lhs.underlineStyle == rhs.underlineStyle
+            && lhs.underlineColor == rhs.underlineColor
+            && lhs.hasHyperlink == rhs.hasHyperlink
+        }
+
+        func appendGlyphOrMergeAfterSpacer(
+          _ glyph: TerminalCellPayload.Glyph,
+          bytes: [UInt8],
+          forceUTF8Storage: Bool
+        ) {
+          if pendingSpacerAfterLastGlyph,
+            let previousIndex = payload.glyphs.indices.last,
+            samePayloadGlyphStyle(payload.glyphs[previousIndex], glyph),
+            let previousBytes = glyphBytes(payload.glyphs[previousIndex])
+          {
+            let previousText = String(decoding: previousBytes, as: UTF8.self)
+            let currentText = String(decoding: bytes, as: UTF8.self)
+            let mergedBytes = previousBytes + bytes
+            let mergedText = String(decoding: mergedBytes, as: UTF8.self)
+            if mergedText.count < previousText.count + currentText.count {
+              let start = payload.utf8Bytes.count
+              payload.utf8Bytes.append(contentsOf: mergedBytes)
+              payload.glyphs[previousIndex].text = ""
+              payload.glyphs[previousIndex].scalarValue = nil
+              payload.glyphs[previousIndex].utf8Range = start..<payload.utf8Bytes.count
+              pendingSpacerAfterLastGlyph = false
+              return
+            }
+          }
+
+          var storedGlyph = glyph
+          if forceUTF8Storage {
+            let start = payload.utf8Bytes.count
+            payload.utf8Bytes.append(contentsOf: bytes)
+            storedGlyph.utf8Range = start..<payload.utf8Bytes.count
+          }
+          payload.glyphs.append(storedGlyph)
+          pendingSpacerAfterLastGlyph = false
+        }
+
+        for col in 0..<cols {
+          let cell = cells[rowStart + col]
+          let cellBg = cell.background_rgba
+          if bgStart == nil {
+            if cellBg != defaultBg {
+              bgStart = col
+              bgColor = cellBg
+            }
+          } else if cellBg != bgColor || cellBg == defaultBg {
+            payload.backgroundRuns.append(
+              TerminalCellPayload.BackgroundRun(
+                row: row,
+                startCol: bgStart!,
+                colCount: col - bgStart!,
+                color: bgColor))
+            bgStart = cellBg != defaultBg ? col : nil
             bgColor = cellBg
           }
-        } else if cellBg != bgColor || cellBg == defaultBg {
+
+          let isSpacerTail = cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL)
+          if isSpacerTail {
+            if payload.glyphs.last?.row == row {
+              pendingSpacerAfterLastGlyph = true
+            }
+            continue
+          }
+
+          let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: uriTable)
+          let cellAttrs = visuals.attributes
+
+          if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {
+            markFallback(.unsupportedAttributes)
+          }
+          if visuals.isInvisible {
+            pendingSpacerAfterLastGlyph = false
+            continue
+          }
+          let scalarResult: SingleUTF8ScalarResult
+          let utf8Bytes: UnsafeBufferPointer<UInt8>?
+          if cell.codepoint != 0 {
+            scalarResult = .scalar(cell.codepoint)
+            utf8Bytes = nil
+          } else {
+            guard cell.utf8_length > 0, let storage = snapshot.utf8_storage else { continue }
+            let offset = Int(cell.utf8_offset)
+            let length = Int(cell.utf8_length)
+            let ptr = UnsafeRawPointer(storage).advanced(by: offset)
+            scalarResult = Self.singleUTF8ScalarValue(
+              ptr.assumingMemoryBound(to: UInt8.self),
+              length: length)
+            utf8Bytes = UnsafeBufferPointer<UInt8>(
+              start: ptr.assumingMemoryBound(to: UInt8.self),
+              count: length)
+          }
+          switch scalarResult {
+          case .scalar(let scalarValue):
+            guard let scalar = Unicode.Scalar(scalarValue) else {
+              pendingSpacerAfterLastGlyph = false
+              markFallback(.invalidUTF8)
+              continue
+            }
+            if BoxDrawing.isProceduralCellElement(scalar) {
+              pendingSpacerAfterLastGlyph = false
+              payload.proceduralCells.append(
+                TerminalCellPayload.ProceduralCell(
+                  row: row,
+                  col: col,
+                  scalarValue: scalarValue,
+                  foreground: visuals.foreground))
+              continue
+            }
+            let glyph = TerminalCellPayload.Glyph(
+              row: row,
+              col: col,
+              text: "",
+              scalarValue: scalarValue,
+              foreground: visuals.foreground,
+              background: visuals.background,
+              attributes: cellAttrs,
+              underlineStyle: visuals.underlineStyle,
+              underlineColor: visuals.underlineColor,
+              hasHyperlink: visuals.hasHyperlink,
+              wide: cell.wide)
+            if pendingSpacerAfterLastGlyph {
+              appendGlyphOrMergeAfterSpacer(
+                glyph,
+                bytes: Array(String(scalar).utf8),
+                forceUTF8Storage: false)
+            } else {
+              payload.glyphs.append(glyph)
+            }
+          case .multiScalar:
+            guard let utf8Bytes else {
+              pendingSpacerAfterLastGlyph = false
+              markFallback(.invalidUTF8)
+              continue
+            }
+            let glyph = TerminalCellPayload.Glyph(
+              row: row,
+              col: col,
+              text: "",
+              scalarValue: nil,
+              foreground: visuals.foreground,
+              background: visuals.background,
+              attributes: cellAttrs,
+              underlineStyle: visuals.underlineStyle,
+              underlineColor: visuals.underlineColor,
+              hasHyperlink: visuals.hasHyperlink,
+              wide: cell.wide)
+            if pendingSpacerAfterLastGlyph {
+              appendGlyphOrMergeAfterSpacer(
+                glyph,
+                bytes: Array(utf8Bytes),
+                forceUTF8Storage: true)
+            } else {
+              let start = payload.utf8Bytes.count
+              payload.utf8Bytes.append(contentsOf: utf8Bytes)
+              var storedGlyph = glyph
+              storedGlyph.utf8Range = start..<payload.utf8Bytes.count
+              payload.glyphs.append(storedGlyph)
+            }
+          case .invalid:
+            pendingSpacerAfterLastGlyph = false
+            markFallback(.invalidUTF8)
+          }
+        }
+        if let start = bgStart {
           payload.backgroundRuns.append(
             TerminalCellPayload.BackgroundRun(
               row: row,
-              startCol: bgStart!,
-              colCount: col - bgStart!,
+              startCol: start,
+              colCount: cols - start,
               color: bgColor))
-          bgStart = cellBg != defaultBg ? col : nil
-          bgColor = cellBg
-        }
-      }
-      if let start = bgStart {
-        payload.backgroundRuns.append(
-          TerminalCellPayload.BackgroundRun(
-            row: row,
-            startCol: start,
-            colCount: cols - start,
-            color: bgColor))
-      }
-    }
-
-    let hyperlinkURIs = FrameProducer.hyperlinkURIs(from: snapshot)
-    payload.glyphs.reserveCapacity(payload.dirtyRows.count * cols)
-    payload.proceduralCells.reserveCapacity(payload.dirtyRows.count)
-    for row in payload.dirtyRows {
-      let rowStart = row * cols
-      var pendingSpacerAfterLastGlyph = false
-
-      func glyphBytes(_ glyph: TerminalCellPayload.Glyph) -> [UInt8]? {
-        if let range = glyph.utf8Range {
-          guard range.lowerBound >= 0, range.upperBound <= payload.utf8Bytes.count else {
-            return nil
-          }
-          return Array(payload.utf8Bytes[range])
-        }
-        if let scalarValue = glyph.scalarValue,
-          let scalar = Unicode.Scalar(scalarValue)
-        {
-          return Array(String(scalar).utf8)
-        }
-        if !glyph.text.isEmpty {
-          return Array(glyph.text.utf8)
-        }
-        return nil
-      }
-
-      func samePayloadGlyphStyle(_ lhs: TerminalCellPayload.Glyph, _ rhs: TerminalCellPayload.Glyph)
-        -> Bool
-      {
-        lhs.row == rhs.row
-          && lhs.foreground == rhs.foreground
-          && lhs.background == rhs.background
-          && lhs.attributes == rhs.attributes
-          && lhs.underlineStyle == rhs.underlineStyle
-          && lhs.underlineColor == rhs.underlineColor
-          && lhs.hasHyperlink == rhs.hasHyperlink
-      }
-
-      func appendGlyphOrMergeAfterSpacer(
-        _ glyph: TerminalCellPayload.Glyph,
-        bytes: [UInt8],
-        forceUTF8Storage: Bool
-      ) {
-        if pendingSpacerAfterLastGlyph,
-          let previousIndex = payload.glyphs.indices.last,
-          samePayloadGlyphStyle(payload.glyphs[previousIndex], glyph),
-          let previousBytes = glyphBytes(payload.glyphs[previousIndex])
-        {
-          let previousText = String(decoding: previousBytes, as: UTF8.self)
-          let currentText = String(decoding: bytes, as: UTF8.self)
-          let mergedBytes = previousBytes + bytes
-          let mergedText = String(decoding: mergedBytes, as: UTF8.self)
-          if mergedText.count < previousText.count + currentText.count {
-            let start = payload.utf8Bytes.count
-            payload.utf8Bytes.append(contentsOf: mergedBytes)
-            payload.glyphs[previousIndex].text = ""
-            payload.glyphs[previousIndex].scalarValue = nil
-            payload.glyphs[previousIndex].utf8Range = start..<payload.utf8Bytes.count
-            pendingSpacerAfterLastGlyph = false
-            return
-          }
-        }
-
-        var storedGlyph = glyph
-        if forceUTF8Storage {
-          let start = payload.utf8Bytes.count
-          payload.utf8Bytes.append(contentsOf: bytes)
-          storedGlyph.utf8Range = start..<payload.utf8Bytes.count
-        }
-        payload.glyphs.append(storedGlyph)
-        pendingSpacerAfterLastGlyph = false
-      }
-
-      for col in 0..<cols {
-        let cell = cells[rowStart + col]
-        let isSpacerTail = cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL)
-        if isSpacerTail {
-          if payload.glyphs.last?.row == row {
-            pendingSpacerAfterLastGlyph = true
-          }
-          continue
-        }
-
-        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
-        let cellAttrs = visuals.attributes
-
-        if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {
-          markFallback(.unsupportedAttributes)
-        }
-        if visuals.isInvisible {
-          pendingSpacerAfterLastGlyph = false
-          continue
-        }
-        let scalarResult: SingleUTF8ScalarResult
-        let utf8Bytes: UnsafeBufferPointer<UInt8>?
-        if cell.codepoint != 0 {
-          scalarResult = .scalar(cell.codepoint)
-          utf8Bytes = nil
-        } else {
-          guard cell.utf8_length > 0, let storage = snapshot.utf8_storage else { continue }
-          let offset = Int(cell.utf8_offset)
-          let length = Int(cell.utf8_length)
-          let ptr = UnsafeRawPointer(storage).advanced(by: offset)
-          scalarResult = Self.singleUTF8ScalarValue(
-            ptr.assumingMemoryBound(to: UInt8.self),
-            length: length)
-          utf8Bytes = UnsafeBufferPointer<UInt8>(
-            start: ptr.assumingMemoryBound(to: UInt8.self),
-            count: length)
-        }
-        switch scalarResult {
-        case .scalar(let scalarValue):
-          guard let scalar = Unicode.Scalar(scalarValue) else {
-            pendingSpacerAfterLastGlyph = false
-            markFallback(.invalidUTF8)
-            continue
-          }
-          if BoxDrawing.isProceduralCellElement(scalar) {
-            pendingSpacerAfterLastGlyph = false
-            payload.proceduralCells.append(
-              TerminalCellPayload.ProceduralCell(
-                row: row,
-                col: col,
-                scalarValue: scalarValue,
-                foreground: visuals.foreground))
-            continue
-          }
-          let glyph = TerminalCellPayload.Glyph(
-            row: row,
-            col: col,
-            text: "",
-            scalarValue: scalarValue,
-            foreground: visuals.foreground,
-            background: visuals.background,
-            attributes: cellAttrs,
-            underlineStyle: visuals.underlineStyle,
-            underlineColor: visuals.underlineColor,
-            hasHyperlink: visuals.hasHyperlink,
-            wide: cell.wide)
-          if pendingSpacerAfterLastGlyph {
-            appendGlyphOrMergeAfterSpacer(
-              glyph,
-              bytes: Array(String(scalar).utf8),
-              forceUTF8Storage: false)
-          } else {
-            payload.glyphs.append(glyph)
-          }
-        case .multiScalar:
-          guard let utf8Bytes else {
-            pendingSpacerAfterLastGlyph = false
-            markFallback(.invalidUTF8)
-            continue
-          }
-          let glyph = TerminalCellPayload.Glyph(
-            row: row,
-            col: col,
-            text: "",
-            scalarValue: nil,
-            foreground: visuals.foreground,
-            background: visuals.background,
-            attributes: cellAttrs,
-            underlineStyle: visuals.underlineStyle,
-            underlineColor: visuals.underlineColor,
-            hasHyperlink: visuals.hasHyperlink,
-            wide: cell.wide)
-          if pendingSpacerAfterLastGlyph {
-            appendGlyphOrMergeAfterSpacer(
-              glyph,
-              bytes: Array(utf8Bytes),
-              forceUTF8Storage: true)
-          } else {
-            let start = payload.utf8Bytes.count
-            payload.utf8Bytes.append(contentsOf: utf8Bytes)
-            var storedGlyph = glyph
-            storedGlyph.utf8Range = start..<payload.utf8Bytes.count
-            payload.glyphs.append(storedGlyph)
-          }
-        case .invalid:
-          pendingSpacerAfterLastGlyph = false
-          markFallback(.invalidUTF8)
         }
       }
     }
