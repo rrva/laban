@@ -107,7 +107,11 @@ final class TabTitleMetadataTests: XCTestCase {
     XCTAssertEqual(fallback.titleSource, .fallback)
   }
 
-  func testShellForegroundUsesCwdInsteadOfStaleTerminalTitle() {
+  func testLiveTerminalTitleDisplaysEvenWithShellForeground() {
+    // Foreground detection regularly lands on the shell while the title's
+    // owner is alive (agent tabs especially). A present terminal title is a
+    // current title — ownership clearing removes stale ones — so it must not
+    // be demoted to the bare folder name just because a shell is foreground.
     let resolved = TabTitleResolver.resolve(
       TabTitleMetadata(
         terminalTitle: "Claude Code",
@@ -122,9 +126,12 @@ final class TabTitleMetadataTests: XCTestCase {
       fallbackPosition: 1
     )
 
-    XCTAssertEqual(resolved.displayTitle, "~")
-    XCTAssertEqual(resolved.titleSource, .cwd)
-    XCTAssertEqual(resolved.infoLines, [])
+    XCTAssertEqual(resolved.displayTitle, "Claude Code")
+    XCTAssertEqual(resolved.titleSource, .terminal)
+    XCTAssertEqual(resolved.infoLines, ["~"])
+    XCTAssertFalse(
+      resolved.infoLines.contains("zsh"),
+      "the shell must not appear as a running program in the info lines")
   }
 
   func testLoginShellDashNameIsRecognizedAsShell() {

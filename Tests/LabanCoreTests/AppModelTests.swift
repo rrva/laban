@@ -915,7 +915,10 @@ final class AppModelTests: XCTestCase {
     )
     try model.updateTerminalTitle("* Claude Code", forTab: tabId)
 
-    XCTAssertEqual(model.tabs[0].title, "~")
+    // The freeze captured the displayed title at freeze time — the terminal
+    // title "zsh" under live-title precedence — and must survive both the
+    // process change and the newer terminal title.
+    XCTAssertEqual(model.tabs[0].title, "zsh")
     XCTAssertEqual(model.tabs[0].titleMetadata.titleSource, .user)
   }
 

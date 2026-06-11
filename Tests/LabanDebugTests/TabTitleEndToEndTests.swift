@@ -84,6 +84,27 @@ final class TabTitleEndToEndTests: XCTestCase {
     XCTAssertEqual(settled.displayTitle, "E2E-LOTTERY-TITLE")
   }
 
+  func testLiveTitleDisplaysWhileShellIsForeground() throws {
+    // The regression that made agent tabs anonymous: a title set while the
+    // foreground process classifies as a shell was demoted below the cwd
+    // folder name, so every tab in the same directory looked identical even
+    // though a rich OSC title had been received and stored.
+    let harness = try TitleHarness(runId: "title-e2e-shell-fg")
+    defer { harness.tearDown() }
+
+    // Set the title from the interactive shell itself: the foreground stays
+    // /bin/sh the whole time, so the title's only path to the sidebar is
+    // winning the precedence fight against the cwd.
+    try harness.type("printf '\\033]0;E2E-SHELL-FG-TITLE\\007'\n")
+
+    let tab = try harness.waitForTabState {
+      $0.terminalTitle == "E2E-SHELL-FG-TITLE" && $0.foregroundProcess == "sh"
+    }
+    XCTAssertEqual(tab.terminalTitle, "E2E-SHELL-FG-TITLE")
+    XCTAssertEqual(tab.displayTitle, "E2E-SHELL-FG-TITLE")
+    XCTAssertEqual(tab.titleSource, "terminal")
+  }
+
   // MARK: - OSC 21337 tab status reaches agent metadata
 
   func testOscTabStatusReachesAgentMetadata() throws {

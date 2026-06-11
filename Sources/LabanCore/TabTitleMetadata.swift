@@ -453,6 +453,16 @@ public enum TabTitleResolver {
     if let title = useful(metadata.agent.taskLabel) ?? useful(metadata.agent.sessionName) {
       return (title, .agent)
     }
+    // A program-set OSC title is the most specific live signal a tab has.
+    // It used to be gated on a non-shell foreground process, but foreground
+    // detection regularly reports the login shell while the title's owner is
+    // alive (agent tabs especially), which demoted rich titles to the bare
+    // folder name. Staleness is an ownership question — the synchronizer
+    // clears a title once its owner process is gone — so a present title is
+    // a current title and outranks workspace- and process-derived names.
+    if let terminal = useful(metadata.terminalTitle) {
+      return (terminal, .terminal)
+    }
     if let repo = useful(metadata.workspace.repoName) {
       if let worktree = useful(metadata.workspace.worktreeName), worktree != repo {
         return ("\(repo)@\(worktree)", .repo)
@@ -464,9 +474,6 @@ public enum TabTitleResolver {
       ?? commandName(metadata.process.foregroundCommand),
       !isShellProcess(process)
     {
-      if let terminal = useful(metadata.terminalTitle) {
-        return (terminal, .terminal)
-      }
       return (process, .process)
     }
     if let cwd = useful(metadata.workspace.cwd) {
@@ -477,9 +484,6 @@ public enum TabTitleResolver {
       ?? commandName(metadata.process.foregroundCommand)
     {
       return (process, .process)
-    }
-    if let terminal = useful(metadata.terminalTitle) {
-      return (terminal, .terminal)
     }
     return ("Tab \(fallbackPosition)", .fallback)
   }
