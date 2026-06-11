@@ -296,6 +296,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private var outputSettleHold: TerminalRenderGate.OutputSettleHold?
   private var outputSettleWakeScheduled = false
+  private var synchronizedOutputWakeScheduled = false
   var outputSettleHoldForTests: TerminalRenderGate.OutputSettleHold? {
     get { outputSettleHold }
     set { outputSettleHold = newValue }
@@ -967,6 +968,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  /// Re-evaluate a frame held by DEC synchronized output after a bounded delay,
+  /// independent of the display link. A synchronized-output defer presents the
+  /// last completed frame; the only timer that resolves the gate on its own is
+  /// the one-second watchdog. The display link normally re-ticks during the hold
+  /// (the terminal-output hold re-arms it), but if it has parked — window blur,
+  /// occlusion, or a tick where terminalDirty momentarily cleared — nothing else
+  /// drives the watchdog and the held frame freezes until the user scrolls. This
+  /// guarantees the gate is re-evaluated, so the reset (or a now-clean render) is
+  /// reached within the watchdog window regardless of link state.
+  private func scheduleSynchronizedOutputWake(after delay: TimeInterval) {
+    guard !synchronizedOutputWakeScheduled else { return }
+    synchronizedOutputWakeScheduled = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      self.synchronizedOutputWakeScheduled = false
+      self.advanceFrame(wake: .synchronizedOutputWake)
+    }
+  }
+
   private func scheduleRenderRetry() {
     guard !renderRetryScheduled else { return }
     renderRetryScheduled = true
@@ -1331,6 +1351,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case focus
     case occlusion
     case settleWake
+    case synchronizedOutputWake
     case renderRetry
     case blinkTimer
     case safetyNet
@@ -1539,7 +1560,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if syncGate.shouldDefer {
       // Hold the previous completed frame during DEC synchronized output. Laban
       // uses libghostty-vt without Ghostty's termio timer, so this mirrors
-      // Ghostty's one-second watchdog before rendering anyway.
+      // Ghostty's one-second watchdog before rendering anyway. Schedule a re-wake
+      // so the watchdog is reached even if the display link parks mid-hold.
+      scheduleSynchronizedOutputWake(
+        after: syncGate.wakeAfter ?? TerminalRenderGate.synchronizedOutputMaxHoldSeconds)
       recordRenderJournal(
         event: .skipped,
         frame: captureFrame,

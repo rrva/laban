@@ -11,6 +11,7 @@ enum TerminalRenderGate {
     var shouldDefer: Bool
     var shouldResetMode: Bool
     var hold: SynchronizedOutputHold?
+    var wakeAfter: TimeInterval?
   }
 
   struct OutputSettleHold: Equatable {
@@ -51,7 +52,8 @@ enum TerminalRenderGate {
     timeout: TimeInterval = synchronizedOutputMaxHoldSeconds
   ) -> SynchronizedOutputDecision {
     guard terminalDirty && synchronizedOutputActive else {
-      return SynchronizedOutputDecision(shouldDefer: false, shouldResetMode: false, hold: nil)
+      return SynchronizedOutputDecision(
+        shouldDefer: false, shouldResetMode: false, hold: nil, wakeAfter: nil)
     }
 
     let currentHold: SynchronizedOutputHold
@@ -61,12 +63,19 @@ enum TerminalRenderGate {
       currentHold = SynchronizedOutputHold(sessionId: sessionId, startedAt: now)
     }
 
-    if now.timeIntervalSince(currentHold.startedAt) >= timeout {
-      return SynchronizedOutputDecision(shouldDefer: false, shouldResetMode: true, hold: nil)
+    let elapsed = now.timeIntervalSince(currentHold.startedAt)
+    if elapsed >= timeout {
+      return SynchronizedOutputDecision(
+        shouldDefer: false, shouldResetMode: true, hold: nil, wakeAfter: nil)
     }
 
+    // Carry the time remaining to the watchdog so a deferred frame can schedule
+    // its own re-wake. Without it the held frame relies entirely on the display
+    // link still ticking; if the link parks the watchdog reset is never reached
+    // and the frame freezes until the user scrolls.
+    let wakeAfter = max(0.001, timeout - elapsed)
     return SynchronizedOutputDecision(
-      shouldDefer: true, shouldResetMode: false, hold: currentHold)
+      shouldDefer: true, shouldResetMode: false, hold: currentHold, wakeAfter: wakeAfter)
   }
 
   static func outputSettleDecision(

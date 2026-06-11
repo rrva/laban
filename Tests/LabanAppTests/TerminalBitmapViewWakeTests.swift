@@ -202,4 +202,45 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
       "a Reduce Motion flip must schedule a frame; invalidation alone never paints on a parked link"
     )
   }
+
+  // MARK: - Synchronized output (DEC 2026) defer must self-schedule a re-wake
+
+  /// A frame deferred by DEC synchronized output (mode 2026) must schedule its
+  /// own bounded re-wake. Otherwise the held frame relies entirely on the
+  /// display link continuing to tick; if the link parks (window blur/occlusion,
+  /// or a tick where terminalDirty flips false) the one-second watchdog reset is
+  /// never reached and the frame is frozen until the user scrolls — the reported
+  /// "claude code progress bar stalls until I scroll" signature. This harness has
+  /// no window, so the display link never ticks: the only thing that can bump the
+  /// call count after the manual frame is the defer path's own scheduled re-wake.
+  func testSynchronizedOutputDeferSchedulesReWake() throws {
+    let harness = try makeHarness()
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+
+    // Render a clean baseline so the measured frame's only reason to act is the
+    // synchronized-output defer.
+    harness.view.advanceFrame()
+
+    // Enter an active synchronized-output window with dirty content, then seed
+    // the hold near the watchdog deadline so the scheduled re-wake fires inside
+    // the drain budget instead of a full second out.
+    session.write(Array("\u{1B}[?2026h\u{1B}[H\u{1B}[Kin-progress redraw".utf8))
+    XCTAssertTrue(session.synchronizedOutputActive)
+    harness.view.synchronizedOutputHoldForTests = TerminalRenderGate.SynchronizedOutputHold(
+      sessionId: session.id,
+      startedAt: Date(
+        timeIntervalSinceNow: -(TerminalRenderGate.synchronizedOutputMaxHoldSeconds - 0.05)))
+
+    let afterManual = harness.view.advanceFrameCallCountForTesting + 1
+    harness.view.advanceFrame()  // defers on synchronized output
+    XCTAssertEqual(
+      harness.view.advanceFrameCallCountForTesting, afterManual,
+      "the manual advanceFrame is exactly one call; no display link ticks in this harness")
+
+    XCTAssertTrue(
+      drainMainQueue { harness.view.advanceFrameCallCountForTesting > afterManual },
+      "a synchronized-output defer must schedule a bounded re-wake; without it a parked link strands the held frame until the user scrolls"
+    )
+  }
 }

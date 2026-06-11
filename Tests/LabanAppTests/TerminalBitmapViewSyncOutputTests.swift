@@ -22,7 +22,8 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
       TerminalRenderGate.SynchronizedOutputDecision(
         shouldDefer: true,
         shouldResetMode: false,
-        hold: TerminalRenderGate.SynchronizedOutputHold(sessionId: "session-1", startedAt: start)))
+        hold: TerminalRenderGate.SynchronizedOutputHold(sessionId: "session-1", startedAt: start),
+        wakeAfter: TerminalRenderGate.synchronizedOutputMaxHoldSeconds))
 
     let beforeTimeout = TerminalRenderGate.synchronizedOutputDecision(
       terminalDirty: true,
@@ -53,6 +54,57 @@ final class TerminalBitmapViewSyncOutputTests: XCTestCase {
     XCTAssertFalse(reset.shouldDefer)
     XCTAssertFalse(reset.shouldResetMode)
     XCTAssertNil(reset.hold)
+  }
+
+  func testSynchronizedOutputDeferReportsBoundedWakeAfter() throws {
+    let start = Date(timeIntervalSinceReferenceDate: 1_000)
+    let timeout = TerminalRenderGate.synchronizedOutputMaxHoldSeconds
+
+    // A deferred synchronized-output frame must carry its own re-wake delay so a
+    // parked display link still reaches the watchdog; nil here is the stranded-
+    // frame bug ("progress bar frozen until I scroll").
+    let fresh = TerminalRenderGate.synchronizedOutputDecision(
+      terminalDirty: true,
+      synchronizedOutputActive: true,
+      sessionId: "session-1",
+      now: start,
+      hold: nil)
+    XCTAssertTrue(fresh.shouldDefer)
+    let freshWake = try XCTUnwrap(
+      fresh.wakeAfter, "a deferred synchronized-output frame must schedule its own re-wake")
+    XCTAssertEqual(freshWake, timeout, accuracy: 0.000_001)
+    XCTAssertGreaterThan(freshWake, 0)
+
+    // Closer to the deadline the re-wake shrinks to the remaining window, so the
+    // reset lands right at the watchdog rather than a fixed interval later.
+    let near = TerminalRenderGate.synchronizedOutputDecision(
+      terminalDirty: true,
+      synchronizedOutputActive: true,
+      sessionId: "session-1",
+      now: start.addingTimeInterval(0.95),
+      hold: fresh.hold)
+    XCTAssertTrue(near.shouldDefer)
+    let nearWake = try XCTUnwrap(near.wakeAfter)
+    XCTAssertEqual(nearWake, timeout - 0.95, accuracy: 0.000_001)
+
+    // Non-deferring outcomes schedule no re-wake.
+    let inactive = TerminalRenderGate.synchronizedOutputDecision(
+      terminalDirty: true,
+      synchronizedOutputActive: false,
+      sessionId: "session-1",
+      now: start,
+      hold: nil)
+    XCTAssertFalse(inactive.shouldDefer)
+    XCTAssertNil(inactive.wakeAfter)
+
+    let timedOut = TerminalRenderGate.synchronizedOutputDecision(
+      terminalDirty: true,
+      synchronizedOutputActive: true,
+      sessionId: "session-1",
+      now: start.addingTimeInterval(timeout + 0.001),
+      hold: fresh.hold)
+    XCTAssertTrue(timedOut.shouldResetMode)
+    XCTAssertNil(timedOut.wakeAfter)
   }
 
   func testOutputSettleGateDefersBrieflyAfterRecentDrain() {
