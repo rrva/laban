@@ -99,3 +99,7 @@ Git worktrees do not clone `.external/`; if missing, symlink it from the main re
 - Native text input wins over raw modifier interpretation.
 - Keep changesets focused on one behavioral reason.
 - Git commits are atomic. Commit messages are single-line reason statements: why the change exists, not what changed. Bad: `Update plans`. Good: `Agents need bounded execution shards`.
+
+## Self-Improvement Loop
+
+After completing a task, debugging an issue, or identifying a mistake, pattern, or gotcha: reflect on what was learned, abstract/generalize it, and update this file (AGENTS.md) in the relevant section with the new rule, example, or guidance so future sessions inherit the improvement. Keep entries concise, concrete, and actionable. Prefer sharpening or merging an existing entry over appending a near-duplicate, and remove entries that no longer hold.
