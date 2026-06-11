@@ -63,7 +63,8 @@ final class FrameProducerScrollOffsetContinuityTests: XCTestCase {
       let yB = try XCTUnwrap(glyphY(commandsB, lineText: line), "\(line) missing in split B")
       XCTAssertEqual(
         yA, yB, accuracy: 0.001,
-        "\(line): the same displayed position rendered via adjacent applied/fraction splits must coincide on screen")
+        "\(line): the same displayed position rendered via adjacent applied/fraction splits must coincide on screen"
+      )
     }
   }
 }
