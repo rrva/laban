@@ -1295,10 +1295,11 @@ this plan's Progress + Outcomes, and re-run the Review Gate.
 ## Concrete Steps
 
 Working directory: the repository root. Prefer a worktree for this work
-(AGENTS.md "Worktree Setup"): symlink `.external` if missing and run
-`git update-index --skip-worktree .rpg/graph.json` in the worktree. Note
-the worktree base may lag local `main` — rebase onto local `main` before
-building or measuring.
+(AGENTS.md "Worktree Setup"): symlink `.external` if missing. Do **not** set
+`skip-worktree` on `.rpg/graph.json` — the pre-commit hook stages it and the
+flag blocks the commit (see `docs/process/rpg-graph-maintenance.md`,
+"Per-clone setup"). Note the worktree base may lag local `main` — rebase onto
+local `main` before building or measuring.
 
 Build and focused tests (run after each milestone):
 

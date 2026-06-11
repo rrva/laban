@@ -4,10 +4,52 @@
 [rpg-encoder](https://github.com/userFRM/rpg-encoder) and served to agents via
 the `rpg` MCP server. It maps every function/class/method to *what it does*
 (verb-object "features"), plus dependency and containment edges. It is committed
-on purpose: a fresh clone or worktree inherits a fully-lifted graph for free.
+on purpose — upstream's own guidance — so a fresh clone or worktree inherits a
+fully-lifted graph for free.
 
-This doc is the playbook for keeping it fresh **cheaply** and for living with it
-across many git worktrees.
+This doc is the playbook for keeping it fresh **cheaply** and **without merge
+pain** across many git worktrees. Durable policy is in
+`docs/adr/0013-rpg-graph-committed-generated-artifact.md`.
+
+## Per-clone setup — two commands, once per clone
+
+Both classic failure modes — textual merge conflicts on the 10 MB JSON, and
+structural drift piling into a lift backlog — come from skipping this setup.
+Both commands write to the clone's shared `.git`, so one run covers every
+worktree of that clone.
+
+```bash
+git config merge.ours.driver true   # activate the merge=ours declared in .gitattributes
+rpg-encoder hook install            # pre-commit hook: structural sync on every commit
+```
+
+- **The merge driver is mandatory, not cosmetic.** `.gitattributes` declares
+  `merge=ours` for the graph, but git ignores the attribute unless the clone
+  defines the driver. Without it, a two-sided edit falls back to a textual
+  3-way conflict inside generated JSON.
+- **The hook kills structural drift.** It runs `rpg-encoder update` —
+  tree-sitter structure extraction only: deterministic, no LLM, no API key,
+  a true no-op when no source changed — and auto-stages `.rpg/graph.json`,
+  so every commit carries a graph whose entities, edges, and `base_commit`
+  match that commit.
+
+Verify (from any worktree):
+
+```bash
+git config --get merge.ours.driver                       # → true (empty = merge=ours is inert)
+ls "$(git rev-parse --git-common-dir)/hooks/pre-commit"  # hook installed
+```
+
+**Remove any `skip-worktree` flag.** An earlier version of this doc recommended
+`git update-index --skip-worktree .rpg/graph.json` per feature worktree. That
+flag is incompatible with the hook: `git add` fails on skip-worktree paths, so
+the hook aborts and **the commit is blocked**. Clear it in every worktree that
+has it:
+
+```bash
+git ls-files -v .rpg/graph.json                       # 'S' prefix = flag set
+git update-index --no-skip-worktree .rpg/graph.json
+```
 
 ## Lifting is the only expensive step — use a small model
 
@@ -69,6 +111,12 @@ tokens only.
 
 ## The treadmill: lift at a quiescent checkpoint, not continuously
 
+With the pre-commit hook installed, structural drift is gone: every commit
+ships a graph whose entities and edges match the tree, and `base_commit`
+tracks `HEAD`. What goes stale is **semantics only** — an edited entity keeps
+its old feature phrases until the next lift, and stale features are still
+usable.
+
 `main` is a live-moving checkout. Re-lifting against a moving tree never
 converges — each pass takes minutes, and edits/commits made meanwhile create the
 next stale set. (Observed in practice: 893 stale → re-lifted → 275 *new* stale
@@ -87,16 +135,20 @@ Committing the graph is an asset, not a liability:
 
 - **Shared, pre-paid lift cache.** A new worktree checks out the fully-lifted
   graph and pays nothing to re-lift. Lift once on `main`; N worktrees inherit it.
-- **`main` is the canonical owner.** Refresh (`update_rpg` → Haiku lift →
-  commit) on `main`. Feature worktrees *read* the graph; they should not commit
-  per-branch drift.
-- **Neutralize local churn per feature worktree:**
-  ```bash
-  git update-index --skip-worktree .rpg/graph.json
-  ```
-  This is stored in that worktree's own index, so `main` keeps tracking the file
-  while the worktree ignores the MCP's local re-sync churn — clean `git status`,
-  no accidental 10MB commits.
+- **Feature branches carry structural graph updates by design.** With the hook,
+  a commit that adds a function updates the graph in the same commit. That is
+  the intended behavior, not per-branch drift — do not strip those hunks out.
+- **Divergence self-heals.** Two branches each carrying hook-updated graphs do
+  not conflict in *local* merges and rebases (`merge=ours` keeps one side
+  whole). GitHub's server-side PR merge does **not** run custom merge drivers,
+  so when two open PRs both carry graph updates, the second shows a conflict
+  after the first lands — resolve locally: rebase onto `main` (where
+  `merge=ours` applies) and push. Whichever side "wins", the next commit's hook
+  regenerates structure from the actual merged tree; entities dropped in the
+  race reappear as a small unlifted set for the next lift pass.
+- **`main` owns semantic refreshes.** Full lift passes (`update_rpg` → Haiku
+  subagents → `finalize_lifting`) run against `main` at a quiet checkpoint, not
+  on feature branches.
 - **Caches don't travel.** `.rpg/.gitignore` excludes `models/`,
   `embeddings.bin`, `pending_routing.json`, `config.toml`. A fresh worktree
   inherits the lifted *features* (in `graph.json`) for free but rebuilds
@@ -114,10 +166,10 @@ The root `.gitattributes` treats the graph as the generated artifact it is:
 ```
 
 - `merge=ours` — never 3-way-merge the 10MB JSON; keep our side and regenerate.
-  Requires once per clone (lives in shared `.git/config`, so it covers all
-  worktrees): `git config merge.ours.driver true`.
+  Inert until the per-clone driver config (see Per-clone setup) is applied.
 - `-diff` — no textual diff, so reviews don't dump ~100k lines of churn.
 - `linguist-generated` — GitHub collapses it in PRs.
 
-Verify: `git check-attr -a .rpg/graph.json` → `diff: unset`, `merge: ours`,
-`linguist-generated: set`.
+Beware that `git check-attr -a .rpg/graph.json` reports the *attribute*, not
+the driver — it prints `merge: ours` even in a clone where `merge=ours` is
+inert. The authoritative check is `git config --get merge.ours.driver`.

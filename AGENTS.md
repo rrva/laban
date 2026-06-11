@@ -87,8 +87,11 @@ boundaries, or any decision that looks previously settled.
 Git worktrees do not clone `.external/`; if missing, symlink it from the main repo:
 `ln -s "$LABAN_MAIN_REPO/.external" .external`. It holds shared vendored libs.
 
-`.rpg/graph.json` is a committed, generated artifact owned by `main`; in feature worktrees run
-`git update-index --skip-worktree .rpg/graph.json` so local graph re-syncs stay out of commits. See `docs/process/rpg-graph-maintenance.md`.
+`.rpg/graph.json` is a committed, generated artifact: the pre-commit hook keeps
+structure current on every branch (do not strip those hunks from commits, and do
+not set `skip-worktree` — it makes the hook's `git add` fail, blocking the
+commit); `main` owns semantic refreshes (lifting). See
+`docs/process/rpg-graph-maintenance.md`.
 
 ## Hard Rules
 
