@@ -235,7 +235,9 @@ final class TerminalScrollInputTests: XCTestCase {
 
   func testPreciseRowsDeltaProducesFractionalRows() {
     let delta = TerminalScrollInput.preciseRowsDelta(scrollingDeltaY: 8, cellHeightPx: 24)
-    XCTAssertEqual(delta, -1.0 / 3.0, accuracy: 1e-9, "8px up over 24px cells is a third of a row toward history")
+    XCTAssertEqual(
+      delta, -1.0 / 3.0, accuracy: 1e-9, "8px up over 24px cells is a third of a row toward history"
+    )
   }
 
   func testPreciseRowsDeltaZeroCellHeightIsInert() {
@@ -244,8 +246,11 @@ final class TerminalScrollInputTests: XCTestCase {
   }
 
   func testClampedFractionalTargetBoundsBottomAndTop() {
-    XCTAssertEqual(TerminalScrollInput.clampedFractionalTarget(0.7, maxScrollbackRows: 100), 0, "cannot scroll below the live bottom")
-    XCTAssertEqual(TerminalScrollInput.clampedFractionalTarget(-42.25, maxScrollbackRows: 100), -42.25)
+    XCTAssertEqual(
+      TerminalScrollInput.clampedFractionalTarget(0.7, maxScrollbackRows: 100), 0,
+      "cannot scroll below the live bottom")
+    XCTAssertEqual(
+      TerminalScrollInput.clampedFractionalTarget(-42.25, maxScrollbackRows: 100), -42.25)
     XCTAssertEqual(
       TerminalScrollInput.clampedFractionalTarget(-150.5, maxScrollbackRows: 100), -100,
       "phantom distance past the top of history must not accumulate")
