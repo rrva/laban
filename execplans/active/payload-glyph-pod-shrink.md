@@ -40,7 +40,7 @@ the ARC/destroy frames disappear from fresh traces.
 - [x] (2026-06-11) Add POD/stride layout assertion test (`Tests/LabanCoreTests/PayloadGlyphLayoutTests.swift`).
 - [x] (2026-06-11) Follow-up forced by profile: hoist `FrameProducer` raw attribute masks from `static let` to instance properties and make the gpuCell-renderable check raw (see Surprises).
 - [x] (2026-06-11) Run full verification matrix and record before/after bench numbers (Artifacts).
-- [ ] Commit; then pass Review Gate via a fresh agent.
+- [x] (2026-06-11) Committed; Review Gate passed via fresh agent (GATE PASS, all six checks).
 
 ## Decision Log
 
@@ -174,16 +174,21 @@ From the repository root:
 
 ## Review Gate
 
-- [ ] Run `rg -n "var text" Sources/LabanRenderer/TerminalCellPayload.swift`; expect zero hits.
-- [ ] Run `rg -n "glyph\.text|\.text = " Sources/LabanCore/FrameProducer.swift Sources/LabanRenderer/MetalRenderer.swift`; expect zero hits.
-- [ ] Run the five commands in Concrete Steps; expect exit 0 each, with both bench tables printed and no case >10% above the baselines listed in Validation.
-- [ ] Run the layout assertion test; expect pass.
+- [x] Run `rg -n "var text" Sources/LabanRenderer/TerminalCellPayload.swift`; expect zero hits.
+- [x] Run `rg -n "glyph\.text|\.text = " Sources/LabanCore/FrameProducer.swift Sources/LabanRenderer/MetalRenderer.swift`; expect zero hits.
+- [x] Run the five commands in Concrete Steps; expect exit 0 each, with both bench tables printed and no case >10% above the baselines listed in Validation.
+- [x] Run the layout assertion test; expect pass.
 
-Review status: NOT REVIEWED
+Review status: REVIEWED — GATE PASS (2026-06-11, fresh review agent)
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- Checks 1-2: zero hits, exit 1 as expected.
+- Check 3 (layout test): 1 test, 0 failures.
+- Check 4 (focused suites): 133 tests, 0 failures.
+- Check 5 (fill bench): every case p50 30-50% BELOW the +10% acceptance
+  ceiling (ascii full 46.5 vs ceiling 89.3 µs; wide glyphs 13.6 vs 20.2).
+- Check 6 (LabanRendererTests): 89 tests, 0 failures.
 
 ## Surprises & Discoveries
 
