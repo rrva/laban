@@ -228,15 +228,16 @@ func injectFlick(
     post(0, scrollPhase: 4, momentumPhase: 0)
     let gestureEnd = Double(i) * dt
 
-    // The WindowServer applies the natural-scroll inversion to the momentum
-    // phase of synthetic scroll events but not to the gesture phase
-    // (observed empirically: gesture deltas arrive as posted, momentum
-    // deltas arrive sign-flipped). Pre-invert so the target app receives a
-    // directionally consistent flick.
+    // Momentum deltas are posted with the same sign as the gesture: the
+    // WindowServer does NOT natural-scroll-invert synthetic momentum events
+    // (verified against the app-side ScrollDiagnostics trace — a pre-inverted
+    // stream dragged the viewport straight back to the bottom). An earlier
+    // suspicion of inversion was a misread of interleaved manual scrolling
+    // plus SAD-matcher phantoms.
     var v = velocityPxPerS
     var first = true
     while v > 30 {
-        post(-v / eventHz, scrollPhase: 0, momentumPhase: first ? 1 : 2)
+        post(v / eventHz, scrollPhase: 0, momentumPhase: first ? 1 : 2)
         first = false
         v *= exp(-dt / 0.65)
     }
