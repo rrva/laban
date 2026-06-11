@@ -26,29 +26,34 @@
  * client takes the CPR as its fence and the stray OSC reply corrupts the
  * next reader (gh: "unexpected escape sequence ['\x1b' ']']"). */
 
-/* Reply to OSC 10;? (foreground) / OSC 11;? (background) with the session's
- * effective theme color. ghostty_terminal_get returns the OSC override or the
- * configured default WITHOUT touching render-state dirtiness (unlike
- * ghostty_render_state_colors_get, which would steal frames from the renderer).
- * Laban's ThemePaletteInjector feeds OSC 10/11 sets at session start, so this is
- * the exact theme fg/bg. When no color is configured, synthesize a
- * scheme-appropriate black/white pair so the querying app always receives a
- * usable value (Codex requires BOTH replies or it defaults to a dark theme). */
+/* Reply to OSC 10;? (foreground) / OSC 11;? (background) / OSC 12;? (cursor)
+ * with the session's effective theme color. ghostty_terminal_get returns the
+ * OSC override or the configured default WITHOUT touching render-state
+ * dirtiness (unlike ghostty_render_state_colors_get, which would steal frames
+ * from the renderer). Laban's ThemePaletteInjector feeds OSC 10/11 sets at
+ * session start, so this is the exact theme fg/bg. When no color is
+ * configured, synthesize a scheme-appropriate black/white value so the
+ * querying app always receives a usable reply (Codex requires BOTH 10 and 11
+ * or it defaults to a dark theme); an unset cursor color tracks the ink, so
+ * its fallback follows the foreground. */
 static void respond_osc_color_query(LabanSession *s, int osc_number) {
     GhosttyColorRgb rgb;
     GhosttyResult r;
     if (osc_number == 10) {
         r = ghostty_terminal_get(
             s->terminal, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND, &rgb);
-    } else {
+    } else if (osc_number == 11) {
         r = ghostty_terminal_get(
             s->terminal, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND, &rgb);
+    } else {
+        r = ghostty_terminal_get(
+            s->terminal, GHOSTTY_TERMINAL_DATA_COLOR_CURSOR, &rgb);
     }
     if (r != GHOSTTY_SUCCESS) {
         int light = (s->color_scheme == LABAN_COLOR_SCHEME_LIGHT);
         uint8_t fg = light ? 0x00 : 0xff;  /* dark on light / light on dark */
         uint8_t bg = light ? 0xff : 0x00;
-        uint8_t v = (osc_number == 10) ? fg : bg;
+        uint8_t v = (osc_number == 11) ? bg : fg;
         rgb.r = rgb.g = rgb.b = v;
     }
 
@@ -361,7 +366,7 @@ static void dispatch_osc_host(
         dispatch_osc7(s, payload, len);
         return;
     }
-    if (osc_number == 10 || osc_number == 11) {
+    if (osc_number == 10 || osc_number == 11 || osc_number == 12) {
         /* Query form is a lone '?'. Sets ("rgb:...", "#rrggbb") belong to
          * libghostty and must be ignored here. */
         if (len >= 1 && payload[0] == '?') {
@@ -440,7 +445,8 @@ static int parse_osc_number(const char *num, size_t len) {
 }
 
 static int osc_host_interesting(int n) {
-    return n == 7 || n == 9 || n == 10 || n == 11 || n == 52 || n == 99 || n == 777;
+    return n == 7 || n == 9 || n == 10 || n == 11 || n == 12 || n == 52 ||
+           n == 99 || n == 777;
 }
 
 /* Write any not-yet-flushed bytes [*flushed, upto) into the VT parser. */

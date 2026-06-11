@@ -2755,6 +2755,50 @@ final class LabanSessionTests: XCTestCase {
       "light scheme with no configured color must report a white background")
   }
 
+  func testOSCCursorColorQueryEchoesEffectiveCursorColor() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // An OSC 12 set is libghostty's job and must not produce a reply.
+    writeBytes(session, Array("\u{1b}]12;#112233\u{07}".utf8))
+    XCTAssertEqual(drainResponse(session), [], "an OSC 12 set must not produce a reply")
+
+    writeBytes(session, Array("\u{1b}]12;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]12;rgb:1111/2222/3333\u{1b}\\",
+      "OSC 12;? must reply with the effective cursor color in rgb:RRRR/GGGG/BBBB")
+  }
+
+  func testOSCCursorColorQueryFallsBackToSchemeInk() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // No cursor color configured: the cursor tracks the ink, so the fallback
+    // follows the foreground for the active scheme. Dark -> white cursor.
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_DARK)), 0)
+    writeBytes(session, Array("\u{1b}]12;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]12;rgb:ffff/ffff/ffff\u{1b}\\",
+      "dark scheme with no configured cursor color must report a white cursor")
+
+    XCTAssertEqual(
+      laban_session_set_color_scheme(session, Int32(LABAN_COLOR_SCHEME_LIGHT)), 0)
+    writeBytes(session, Array("\u{1b}]12;?\u{07}".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}]12;rgb:0000/0000/0000\u{1b}\\",
+      "light scheme with no configured cursor color must report a black cursor")
+  }
+
   func testOSC9NotificationFiresCallbackAndIgnoresProgress() {
     final class Sink { var messages: [String] = [] }
     guard let session = makeFixtureSession() else {
