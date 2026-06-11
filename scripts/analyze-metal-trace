@@ -5,11 +5,31 @@ The input .trace bundle can contain process metadata, launch arguments, logs, an
 environment variables. This script intentionally exports only selected timing
 tables, deletes raw XML exports by default, and redacts text before writing any
 report.
+
+Agent-iteration features (v3):
+  * brief stdout report (token-cheap, deterministic, stable ordering)
+  * export cache keyed by trace fingerprint -> near-instant re-analysis
+    (writes are atomic; interrupted exports can no longer poison the cache)
+  * --baseline compare with IMPROVED/REGRESSED/UNRELIABLE verdict;
+    --fail-on-regression makes regressed *and* unreliable exit 3 so
+    agents/CI can gate on it (unreliable = symbolication lost, wildly
+    different recording length, or schema-version mismatch)
+  * --record N --attach/--launch closes the loop: record -> analyze -> verdict
+  * --config externalizes focus symbols/labels (edit trace-focus.json to
+    refocus analysis on the code you just changed; topFrames now follows it)
+  * --self-test validates parse/analyze/compare without a trace or xcrun
+  * --print-agent-docs emits a CLAUDE.md/AGENTS.md-ready usage block
+
+Exit codes: 0 ok / no regression; 2 usage or trace error; 3 regression or
+unreliable comparison (only with --fail-on-regression); 1 unexpected failure.
 """
 
 from __future__ import annotations
 
+SCHEMA_VERSION = 3
+
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -18,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -181,25 +202,18 @@ class NumericStats:
             self.values.append(value)
 
     def percentile(self, percentile: float) -> float:
-        if not self.values:
-            return 0.0
-        ordered = sorted(self.values)
-        rank = (len(ordered) - 1) * percentile
-        low = int(math.floor(rank))
-        high = int(math.ceil(rank))
-        if low == high:
-            return ordered[low]
-        return ordered[low] + (ordered[high] - ordered[low]) * (rank - low)
+        return _percentile_sorted(sorted(self.values), percentile)
 
     def as_dict(self) -> dict[str, Any]:
+        ordered = sorted(self.values)
         return {
             "count": self.count,
             "totalMs": round(self.total, 6),
             "meanMs": round(self.total / self.count, 6) if self.count else 0.0,
-            "p50Ms": round(self.percentile(0.50), 6),
-            "p95Ms": round(self.percentile(0.95), 6),
-            "p99Ms": round(self.percentile(0.99), 6),
-            "maxMs": round(max(self.values), 6) if self.values else 0.0,
+            "p50Ms": round(_percentile_sorted(ordered, 0.50), 6),
+            "p95Ms": round(_percentile_sorted(ordered, 0.95), 6),
+            "p99Ms": round(_percentile_sorted(ordered, 0.99), 6),
+            "maxMs": round(ordered[-1], 6) if ordered else 0.0,
         }
 
 
@@ -211,6 +225,18 @@ class WeightedCounter:
     def add(self, weight_ms: float) -> None:
         self.samples += 1
         self.weight_ms += weight_ms
+
+
+def _percentile_sorted(ordered: list[float], percentile: float) -> float:
+    """Linear-interpolated percentile over an already-sorted list."""
+    if not ordered:
+        return 0.0
+    rank = (len(ordered) - 1) * percentile
+    low = int(math.floor(rank))
+    high = int(math.ceil(rank))
+    if low == high:
+        return ordered[low]
+    return ordered[low] + (ordered[high] - ordered[low]) * (rank - low)
 
 
 def redact(text: Any, *, max_len: int = 240) -> str:
@@ -335,7 +361,10 @@ def child_text(element: ET.Element, key: str | None = None) -> str:
     raw = element_raw_text(element)
     if raw:
         return raw
-    return element.attrib.get("id") or element.attrib.get("ref") or ""
+    # No fmt, no text: this is a pure id/ref node. Returning the raw id/ref
+    # string here would poison numeric parsing (e.g. ref="3" -> 3 ns), so an
+    # unresolved reference deliberately reads as empty.
+    return ""
 
 
 def parse_col(element: ET.Element) -> Column:
@@ -409,17 +438,40 @@ def iter_table_rows(path: Path, max_rows: int = 0) -> Iterable[tuple[list[Column
     frame_cache: dict[str, str] = {}
     stack_cache: dict[str, StackInfo] = {}
     rows = 0
+    # Ancestor stack so completed <row>/<col> elements can be detached from
+    # their parent; element.clear() alone leaks O(rows) empty Elements because
+    # iterparse keeps appending children to the still-open <table>.
+    ancestors: list[ET.Element] = []
+
+    def detach(element: ET.Element) -> None:
+        if not ancestors:
+            return
+        # iterparse buffers events, so by the time <row N> ends the parser may
+        # already have appended rows N+1..N+k to the parent; the ended element
+        # is therefore the *first* still-attached child, not the last. remove()
+        # compares by identity (Element defines no __eq__) and finds it at
+        # index ~0, so this is O(1) per row in practice.
+        try:
+            ancestors[-1].remove(element)
+        except ValueError:
+            pass
+
     for event, element in ET.iterparse(path, events=("start", "end")):
+        if event == "start":
+            if local_name(element.tag) == "table":
+                columns = []
+                value_cache = {}
+                frame_cache = {}
+                stack_cache = {}
+            ancestors.append(element)
+            continue
+        ancestors.pop()
         tag = local_name(element.tag)
-        if event == "start" and tag == "table":
-            columns = []
-            value_cache = {}
-            frame_cache = {}
-            stack_cache = {}
-        elif event == "end" and tag == "col":
+        if tag == "col":
             columns.append(parse_col(element))
             element.clear()
-        elif event == "end" and tag == "row":
+            detach(element)
+        elif tag == "row":
             row: dict[str, str] = {}
             children = list(element)
             for index, child in enumerate(children):
@@ -435,6 +487,7 @@ def iter_table_rows(path: Path, max_rows: int = 0) -> Iterable[tuple[list[Column
             rows += 1
             yield columns, row
             element.clear()
+            detach(element)
             if max_rows and rows >= max_rows:
                 return
 
@@ -484,13 +537,33 @@ def process_allowed(row: dict[str, str], process_re: re.Pattern[str] | None) -> 
     return bool(process_re.search(haystack))
 
 
+_FRAME_INTEREST_RE: re.Pattern[str] | None = None
+
+
+def _frame_interest_pattern() -> re.Pattern[str]:
+    """Regex over the *active* focus config (CPU symbols + category needles),
+    so --config refocusing also changes which frames surface in topFrames."""
+    global _FRAME_INTEREST_RE
+    if _FRAME_INTEREST_RE is None:
+        needles = list(dict.fromkeys(
+            CPU_SYMBOLS + [n for ns in CPU_CATEGORIES.values() for n in ns]
+        ))
+        if needles:
+            _FRAME_INTEREST_RE = re.compile("|".join(re.escape(n) for n in needles))
+        else:
+            _FRAME_INTEREST_RE = re.compile(r"(?!)")  # match nothing
+    return _FRAME_INTEREST_RE
+
+
+def _invalidate_frame_interest_pattern() -> None:
+    global _FRAME_INTEREST_RE
+    _FRAME_INTEREST_RE = None
+
+
 def extract_frames(stack: str) -> list[str]:
     chunks = re.split(r"(?:\n|\\n| {2,}|\t+| > )", stack)
     frames: list[str] = []
-    interesting = re.compile(
-        r"(Laban|MetalRenderer|FrameProducer|TerminalCellPayload|MetalGlyphAtlas|"
-        r"buildGPU|prepareCell|encodeGPU|glyphAtlas|CTFont|memcpy|swift_array|drawPrimitives)"
-    )
+    interesting = _frame_interest_pattern()
     for chunk in chunks:
         clean = redact(chunk, max_len=180)
         if clean and interesting.search(clean) and clean not in frames:
@@ -534,7 +607,8 @@ def analyze_time_profile(
             continue
         kept_rows += 1
         kept_processes[redact(process_label, max_len=140)] += 1
-        weight_ms = parse_duration_ms(row.get("weight", "")) or 1.0
+        parsed_weight = parse_duration_ms(row.get("weight", ""))
+        weight_ms = 1.0 if parsed_weight is None else parsed_weight
         total_weight_ms += weight_ms
         stack_text = stack_text_for_row(row)
         if row.get("_stackFrames"):
@@ -684,8 +758,26 @@ def analyze_schema(
         ]
     output_paths: list[Path] = []
     for index, descriptor in enumerate(descriptors):
-        output = scratch / f"{schema}-{index}.xml"
-        run_xctrace_export(trace, ["--xpath", descriptor.xpath], output)
+        cached = cache_lookup(schema, index)
+        if cached is not None:
+            print(f"analyze-metal-trace: cache hit {schema}-{index}", file=sys.stderr)
+            output_paths.append(cached)
+            continue
+        target = cache_target(schema, index)
+        if target is not None:
+            # Export to a same-directory temp file and promote atomically so an
+            # interrupted xctrace never leaves a truncated XML that
+            # cache_lookup would accept (size > 0) and poison later runs.
+            tmp = target.with_name(target.name + ".tmp")
+            try:
+                run_xctrace_export(trace, ["--xpath", descriptor.xpath], tmp)
+                os.replace(tmp, target)
+            finally:
+                tmp.unlink(missing_ok=True)
+            output = target
+        else:
+            output = scratch / f"{schema}-{index}.xml"
+            run_xctrace_export(trace, ["--xpath", descriptor.xpath], output)
         output_paths.append(output)
 
     columns: list[Column] = []
@@ -884,7 +976,7 @@ def write_markdown(summary: dict[str, Any]) -> str:
     lines.append(f"- parsed schemas: {', '.join(summary['parsedSchemas']) or '<none>'}")
     if summary.get("skippedSchemas"):
         lines.append(f"- skipped schemas: {', '.join(summary['skippedSchemas'])}")
-    lines.append("- raw xctrace XML exports: deleted after analysis")
+    lines.append(f"- raw xctrace XML exports: {summary.get('rawExports', 'deleted')} after analysis")
     lines.append("")
 
     cpu = summary.get("cpu", {})
@@ -1006,6 +1098,579 @@ def write_markdown(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# Export cache - xctrace export dominates wall time (often 10-100x the parse
+# cost); .trace bundles are immutable once recorded, so a fingerprint of the
+# bundle contents safely keys cached XML. Sensitive schemas are never cached.
+# --------------------------------------------------------------------------- #
+
+_CACHE: dict[str, Any] = {"dir": None, "fingerprint": None}
+
+
+def trace_fingerprint(trace: Path) -> str:
+    digest = hashlib.sha256(str(trace.resolve()).encode())
+    count = 0
+    total = 0
+    newest = 0
+    for root, _dirs, files in os.walk(trace):
+        for name in files:
+            try:
+                st = os.stat(os.path.join(root, name))
+            except OSError:
+                continue
+            count += 1
+            total += st.st_size
+            newest = max(newest, st.st_mtime_ns)
+    digest.update(f"{count}:{total}:{newest}".encode())
+    return digest.hexdigest()[:16]
+
+
+def configure_cache(trace: Path, cache_dir: Path | None, enabled: bool) -> None:
+    if not enabled:
+        _CACHE["dir"] = None
+        return
+    base = cache_dir or Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "analyze-metal-trace"
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _CACHE["dir"] = base
+    _CACHE["fingerprint"] = trace_fingerprint(trace)
+
+
+def _cache_path(schema: str, index: int) -> Path | None:
+    if _CACHE["dir"] is None or schema in DANGEROUS_SCHEMAS:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", schema)
+    return _CACHE["dir"] / f"{_CACHE['fingerprint']}-{safe}-{index}.xml"
+
+
+def cache_lookup(schema: str, index: int) -> Path | None:
+    path = _cache_path(schema, index)
+    if path is not None and path.exists() and path.stat().st_size > 0:
+        return path
+    return None
+
+
+def cache_target(schema: str, index: int) -> Path | None:
+    return _cache_path(schema, index)
+
+
+def clear_cache(cache_dir: Path | None) -> int:
+    base = cache_dir or Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "analyze-metal-trace"
+    removed = 0
+    if base.exists():
+        for path in list(base.glob("*.xml")) + list(base.glob("*.xml.tmp")):
+            path.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+# --------------------------------------------------------------------------- #
+# Focus config - externalizes the project-specific symbol/label lists so an
+# agent can refocus the analysis on the code it just changed by editing a
+# small JSON file instead of this script. Missing keys keep built-in defaults.
+# --------------------------------------------------------------------------- #
+
+DEFAULT_CONFIG_NAME = "trace-focus.json"
+
+
+def apply_config(path: Path | None) -> Path | None:
+    """Load focus config; auto-discovers ./trace-focus.json when not given.
+    Mutates the module-level focus lists in place (single-file CLI pragmatism)."""
+    chosen = path
+    if chosen is None:
+        candidate = Path(DEFAULT_CONFIG_NAME)
+        chosen = candidate if candidate.exists() else None
+    if chosen is None:
+        return None
+    try:
+        data = json.loads(chosen.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"could not read focus config {redact(chosen)}: {redact(exc)}\n"
+            f"hint: run with --print-config > {DEFAULT_CONFIG_NAME} to regenerate a valid file"
+        )
+    if isinstance(data.get("cpuSymbols"), list):
+        CPU_SYMBOLS[:] = [str(s) for s in data["cpuSymbols"]]
+    if isinstance(data.get("cpuCategories"), dict):
+        CPU_CATEGORIES.clear()
+        CPU_CATEGORIES.update({str(k): [str(v) for v in vs] for k, vs in data["cpuCategories"].items()})
+    if isinstance(data.get("metalLabels"), list):
+        METAL_LABELS_OF_INTEREST[:] = [str(s) for s in data["metalLabels"]]
+    _invalidate_frame_interest_pattern()
+    return chosen
+
+
+def current_config_json() -> str:
+    return json.dumps(
+        {
+            "cpuSymbols": CPU_SYMBOLS,
+            "cpuCategories": CPU_CATEGORIES,
+            "metalLabels": METAL_LABELS_OF_INTEREST,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Brief report - the agent-facing stdout surface. Deterministic ordering,
+# ~30 lines, no prose. Cheap to read, cheap to diff.
+# --------------------------------------------------------------------------- #
+
+def brief_report(summary: dict[str, Any], top: int = 8) -> str:
+    lines: list[str] = []
+    cpu = summary.get("cpu", {})
+    lines.append(
+        f"trace={summary.get('tracePath', '?')} kept_rows={cpu.get('rows', 0)} "
+        f"weight_ms={cpu.get('totalWeightMs', 0.0)} filter={summary.get('processFilter') or '<all>'}"
+    )
+    if summary.get("skippedSchemas"):
+        lines.append("skipped=" + ",".join(summary["skippedSchemas"]))
+    if cpu.get("categoryHits"):
+        lines.append("cpu_categories:")
+        for item in cpu["categoryHits"][:top]:
+            lines.append(f"  {item['percent']:7.2f}% {item['name']} (n={item['samples']})")
+    if cpu.get("symbolHits"):
+        lines.append("cpu_symbols:")
+        for item in cpu["symbolHits"][:top]:
+            lines.append(f"  {item['percent']:7.2f}% {item['name']} (n={item['samples']})")
+    if cpu.get("rows", 0) and not cpu.get("rowsWithNestedFrames", 0):
+        lines.append(
+            "warn: no symbolicated frames in kept samples -> build may be stripped; "
+            "record with dSYMs or add os_signpost spans before trusting CPU numbers"
+        )
+    for table in summary.get("metalTables", []):
+        items = table.get("labelsOfInterest") or table.get("topLabels") or []
+        if not items:
+            continue
+        lines.append(f"gpu {table['schema']} (rows={table.get('rows', 0)}):")
+        for item in items[:top]:
+            lines.append(
+                f"  {item['label']}: n={item['count']} total={item['totalMs']}ms "
+                f"p50={item['p50Ms']} p95={item['p95Ms']} p99={item['p99Ms']} max={item['maxMs']}"
+            )
+    findings = summary.get("findings", [])
+    if findings:
+        lines.append(f"findings={len(findings)} (top: {redact(findings[0]['area'])}) -> see json/md for actions")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Baseline compare - turns two analysis JSONs into a verdict an agent can act
+# on. CPU symbols compare in percentage points; Metal labels compare p95 in
+# percent. Regression gating is what makes the iterate loop self-checking.
+# --------------------------------------------------------------------------- #
+
+def _cpu_pct_map(summary: dict[str, Any]) -> dict[str, float]:
+    return {i["name"]: float(i["percent"]) for i in summary.get("cpu", {}).get("symbolHits", [])}
+
+
+def _gpu_p95_map(summary: dict[str, Any]) -> dict[tuple[str, str], dict[str, float]]:
+    out: dict[tuple[str, str], dict[str, float]] = {}
+    for table in summary.get("metalTables", []):
+        for item in table.get("labelsOfInterest", []):
+            out[(table["schema"], item["label"])] = {
+                "p95Ms": float(item["p95Ms"]),
+                "totalMs": float(item["totalMs"]),
+                "count": float(item["count"]),
+            }
+    return out
+
+
+def compare_summaries(
+    baseline: dict[str, Any],
+    current: dict[str, Any],
+    threshold_pp: float,
+    threshold_pct: float,
+) -> dict[str, Any]:
+    deltas: list[dict[str, Any]] = []
+
+    base_cpu, cur_cpu = _cpu_pct_map(baseline), _cpu_pct_map(current)
+    for name in sorted(set(base_cpu) | set(cur_cpu)):
+        b, c = base_cpu.get(name, 0.0), cur_cpu.get(name, 0.0)
+        delta = round(c - b, 3)
+        status = "regressed" if delta > threshold_pp else "improved" if delta < -threshold_pp else "neutral"
+        deltas.append(
+            {"kind": "cpu", "name": name, "metric": "percent", "base": b, "current": c,
+             "delta": delta, "unit": "pp", "status": status}
+        )
+
+    base_gpu, cur_gpu = _gpu_p95_map(baseline), _gpu_p95_map(current)
+    for key in sorted(set(base_gpu) | set(cur_gpu)):
+        schema, label = key
+        b = base_gpu.get(key, {}).get("p95Ms")
+        c = cur_gpu.get(key, {}).get("p95Ms")
+        if b is None or c is None:
+            deltas.append(
+                {"kind": "gpu", "name": f"{schema}/{label}", "metric": "p95Ms",
+                 "base": b, "current": c, "delta": None, "unit": "ms",
+                 "status": "new" if b is None else "gone"}
+            )
+            continue
+        if b > 0:
+            delta_pct = round((c - b) / b * 100.0, 2)
+            status = "regressed" if delta_pct > threshold_pct else "improved" if delta_pct < -threshold_pct else "neutral"
+        else:
+            delta_pct = None
+            status = "neutral" if c == 0 else "regressed"
+        deltas.append(
+            {"kind": "gpu", "name": f"{schema}/{label}", "metric": "p95Ms",
+             "base": b, "current": c, "delta": delta_pct, "unit": "%", "status": status}
+        )
+
+    regressed = [d for d in deltas if d["status"] == "regressed"]
+    improved = [d for d in deltas if d["status"] == "improved"]
+    verdict = "regressed" if regressed else "improved" if improved else "neutral"
+
+    # Sanity guards: a broken comparison must not masquerade as IMPROVED.
+    warnings: list[str] = []
+    base_cpu_meta = baseline.get("cpu", {})
+    cur_cpu_meta = current.get("cpu", {})
+    if (
+        base_cpu_meta.get("rowsWithNestedFrames", 0)
+        and cur_cpu_meta.get("rows", 0)
+        and not cur_cpu_meta.get("rowsWithNestedFrames", 0)
+    ):
+        warnings.append(
+            "current trace has no symbolicated frames (baseline did): CPU deltas are meaningless; "
+            "fix dSYMs before trusting this comparison"
+        )
+    base_weight = float(base_cpu_meta.get("totalWeightMs", 0.0) or 0.0)
+    cur_weight = float(cur_cpu_meta.get("totalWeightMs", 0.0) or 0.0)
+    if base_weight > 0 and cur_weight > 0:
+        ratio = cur_weight / base_weight
+        if ratio > 5.0 or ratio < 0.2:
+            warnings.append(
+                f"kept CPU sample weight differs {ratio:.1f}x from baseline; "
+                "record equal-length sessions of the same workload for an attributable verdict"
+            )
+    base_version = baseline.get("schemaVersion")
+    if base_version is not None and base_version != SCHEMA_VERSION:
+        warnings.append(
+            f"baseline schemaVersion={base_version} != current {SCHEMA_VERSION}; regenerate the baseline"
+        )
+    if warnings:
+        verdict = "unreliable"
+
+    return {
+        "thresholdPp": threshold_pp,
+        "thresholdPct": threshold_pct,
+        "verdict": verdict,
+        "regressedCount": len(regressed),
+        "improvedCount": len(improved),
+        "warnings": warnings,
+        "deltas": deltas,
+    }
+
+
+def render_compare_brief(cmp: dict[str, Any], baseline_path: str, top: int = 12) -> str:
+    lines = [
+        f"compare vs {baseline_path} (cpu>{cmp['thresholdPp']}pp, gpu p95>{cmp['thresholdPct']}%):"
+    ]
+    notable = [d for d in cmp["deltas"] if d["status"] in {"regressed", "improved", "new", "gone"}]
+    notable.sort(key=lambda d: (d["status"] != "regressed", -(abs(d["delta"]) if d["delta"] is not None else 0)))
+    for d in notable[:top]:
+        delta = "n/a" if d["delta"] is None else f"{d['delta']:+}{d['unit']}"
+        lines.append(
+            f"  {d['status'].upper():9s} {d['kind']} {d['name']} {d['metric']} "
+            f"{d['base']}->{d['current']} ({delta})"
+        )
+    if not notable:
+        lines.append("  no deltas beyond thresholds")
+    for warning in cmp.get("warnings", []):
+        lines.append(f"  WARNING   {warning}")
+    lines.append(
+        f"verdict={cmp['verdict'].upper()} improved={cmp['improvedCount']} regressed={cmp['regressedCount']}"
+    )
+    return "\n".join(lines)
+
+
+def load_baseline(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"could not load baseline {redact(path)}: {redact(exc)}\n"
+            "hint: a baseline is the JSON this tool wrote on a previous run "
+            "(use --json-output to control its path)"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Recording - closes the loop: build -> record -> analyze -> verdict.
+# --------------------------------------------------------------------------- #
+
+def record_trace(
+    seconds: int,
+    template: str,
+    attach: str | None,
+    launch: list[str] | None,
+    output: Path | None,
+) -> Path:
+    xcrun = shutil.which("xcrun")
+    if xcrun is None:
+        raise SystemExit(
+            "xcrun is required to record; install Xcode command line tools "
+            "(xcode-select --install) or pass an existing .trace path instead"
+        )
+    if (attach is None) == (not launch):
+        raise SystemExit("recording needs exactly one of --attach NAME or --launch -- <cmd> [args...]")
+    out = output or Path(".build/traces") / f"trace-{time.strftime('%Y%m%d-%H%M%S')}.trace"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [xcrun, "xctrace", "record", "--template", template,
+           "--time-limit", f"{seconds}s", "--output", str(out)]
+    if attach:
+        cmd += ["--attach", attach]
+    else:
+        argv = list(launch or [])
+        if argv and argv[0] == "--":
+            argv = argv[1:]
+        if not argv:
+            raise SystemExit("--launch given but no command followed; use --launch -- ./app args")
+        cmd += ["--launch", "--", *argv]
+    print(f"analyze-metal-trace: recording {seconds}s -> {redact(out)}", file=sys.stderr)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        raise SystemExit(f"xctrace record failed: {redact(proc.stderr, max_len=1200)}")
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Agent docs + self-test
+# --------------------------------------------------------------------------- #
+
+AGENT_DOCS = """\
+## analyze-metal-trace - perf iteration loop (for coding agents)
+
+Verify the tool first (no trace or macOS needed):
+    ./analyze-metal-trace --self-test
+
+Standard loop (each step is one command):
+1. Establish a baseline from a recorded trace (exports are cached; reruns are fast):
+       ./analyze-metal-trace path/to/run.trace --json-output .build/baseline.json
+2. Make ONE code change, rebuild, then record + analyze + compare in one shot:
+       ./analyze-metal-trace --record 10 --attach Laban \\
+           --baseline .build/baseline.json --fail-on-regression
+   (or: --launch -- ./build/Laban --bench-scroll)
+   Exit 0 = no regression beyond thresholds; exit 3 = regression -> revert or fix.
+3. Read ONLY stdout (brief report + verdict). Full details are in the JSON/MD
+   files if a finding needs evidence.
+
+Refocusing on the code you just changed:
+    ./analyze-metal-trace --print-config > trace-focus.json
+    # edit cpuSymbols / metalLabels to include your function or signpost label,
+    # then rerun; trace-focus.json is auto-discovered in the cwd.
+
+Fast paths:
+    --cpu-only --max-rows 50000     # quick CPU hot-path check
+    --list-schemas                  # what tables exist in this trace
+    --no-cache / --clear-cache      # force fresh exports
+Thresholds: --threshold-pp (CPU pp, default 1.0), --threshold-pct (GPU p95 %, default 10.0).
+
+Rules of thumb:
+- One change per trace; the compare verdict is only attributable if you do.
+- If brief output warns about missing symbolicated frames, fix dSYMs before
+  trusting CPU numbers.
+- Never pass --allow-sensitive-schemas unless explicitly asked; raw exports can
+  contain launch env vars and logs.
+"""
+
+_SELF_TEST_TIME_PROFILE = """<?xml version="1.0"?>
+<trace-query-result><node><table schema="time-profile">
+<col><mnemonic>sample-time</mnemonic><name>Sample Time</name><engineering-type>sample-time</engineering-type></col>
+<col><mnemonic>process</mnemonic><name>Process</name><engineering-type>process</engineering-type></col>
+<col><mnemonic>weight</mnemonic><name>Weight</name><engineering-type>weight</engineering-type></col>
+<col><mnemonic>stack</mnemonic><name>Backtrace</name><engineering-type>backtrace</engineering-type></col>
+<row>
+  <sample-time id="1" fmt="00:00.001.000">1000000</sample-time>
+  <process id="2" fmt="Laban (123)">Laban</process>
+  <weight id="3" fmt="1.00 ms">1000000</weight>
+  <backtrace id="4" fmt="buildGPUCellPayloadInstanceListsOnce">
+    <frame id="5" name="buildGPUCellPayloadInstanceListsOnce"/>
+    <frame id="6" name="MetalRenderer.render"/>
+  </backtrace>
+</row>
+<row>
+  <sample-time id="7" fmt="00:00.002.000">2000000</sample-time>
+  <process ref="2"/>
+  <weight ref="3"/>
+  <backtrace ref="4"/>
+</row>
+<row>
+  <sample-time id="8" fmt="00:00.003.000">3000000</sample-time>
+  <process id="9" fmt="WindowServer (88)">WindowServer</process>
+  <weight ref="3"/>
+  <backtrace id="10" fmt="other"><frame id="11" name="otherWork"/></backtrace>
+</row>
+</table></node></trace-query-result>
+"""
+
+_SELF_TEST_METAL = """<?xml version="1.0"?>
+<trace-query-result><node><table schema="metal-driver-event-intervals">
+<col><mnemonic>start</mnemonic><name>Start</name><engineering-type>start-time</engineering-type></col>
+<col><mnemonic>duration</mnemonic><name>Duration</name><engineering-type>duration</engineering-type></col>
+<col><mnemonic>event-label</mnemonic><name>Label</name><engineering-type>string</engineering-type></col>
+<col><mnemonic>process</mnemonic><name>Process</name><engineering-type>process</engineering-type></col>
+<row>
+  <start id="1" fmt="00:00.000.000">0</start>
+  <duration id="2" fmt="2,00 ms">2000000</duration>
+  <event-label id="3" fmt="terminal-content-gpu-cell">terminal-content-gpu-cell</event-label>
+  <process id="4" fmt="Laban (123)">Laban</process>
+</row>
+<row>
+  <start id="5" fmt="00:00.005.000">5000000</start>
+  <duration id="6" fmt="4.00 ms">4000000</duration>
+  <event-label ref="3"/>
+  <process ref="4"/>
+</row>
+</table></node></trace-query-result>
+"""
+
+
+def self_test() -> int:
+    failures: list[str] = []
+
+    def check(name: str, condition: bool) -> None:
+        if not condition:
+            failures.append(name)
+
+    with tempfile.TemporaryDirectory(prefix="amt-selftest-") as tmp:
+        tp = Path(tmp) / "tp.xml"
+        tp.write_text(_SELF_TEST_TIME_PROFILE, encoding="utf-8")
+        rows = [row for _cols, row in iter_table_rows(tp)]
+        check("3 time-profile rows parsed", len(rows) == 3)
+        check("ref-row inherits process via id/ref", rows[1].get("process") == rows[0].get("process"))
+        check("raw ns preferred over fmt for weight", rows[0].get("weight") == "1000000")
+        check("nested frames extracted", "buildGPUCellPayloadInstanceListsOnce" in rows[0].get("_stackFrames", ""))
+
+        cpu = analyze_time_profile(iter(rows), re.compile(r"Laban"))
+        check("process filter keeps 2 of 3", cpu["rows"] == 2 and cpu["skippedRowsByProcessFilter"] == 1)
+        check("weight summed from raw ns", abs(cpu["totalWeightMs"] - 2.0) < 1e-6)
+        check(
+            "focus symbol attributed 100% of kept weight",
+            any(i["name"] == "buildGPUCellPayloadInstanceListsOnce" and abs(i["percent"] - 100.0) < 1e-6
+                for i in cpu["symbolHits"]),
+        )
+
+        mt = Path(tmp) / "metal.xml"
+        mt.write_text(_SELF_TEST_METAL, encoding="utf-8")
+        metal = analyze_interval_rows(
+            "metal-driver-event-intervals",
+            (row for _c, row in iter_table_rows(mt)),
+            re.compile(r"Laban"),
+        )
+        interest = {i["label"]: i for i in metal["labelsOfInterest"]}
+        check("metal label of interest found", "terminal-content-gpu-cell" in interest)
+        if "terminal-content-gpu-cell" in interest:
+            item = interest["terminal-content-gpu-cell"]
+            check("metal durations summed in ms", abs(item["totalMs"] - 6.0) < 1e-6)
+            check("metal p95 between samples", 2.0 <= item["p95Ms"] <= 4.0)
+
+        check("locale comma duration", parse_duration_ms("2,00 ms") == 2.0)
+        check("thousands separator duration", parse_duration_ms("1,234.5 ms") == 1234.5)
+        check("bare ns integer duration", parse_duration_ms("2000000") == 2.0)
+        check("empty duration is None", parse_duration_ms("") is None)
+
+        # F1: a genuine 0-weight sample must not be coerced to 1 ms.
+        zero = analyze_time_profile(
+            iter([{"process": "Laban", "weight": "0", "_stackFrames": "buildGPUCellPayloadInstanceListsOnce"}]),
+            re.compile(r"Laban"),
+        )
+        check("zero weight stays zero", zero["rows"] == 1 and zero["totalWeightMs"] == 0.0)
+
+        # F2: an unresolved <elem ref="..."/> must read as empty, not as the
+        # literal ref id (which numeric parsing would treat as nanoseconds).
+        dangling = Path(tmp) / "dangling.xml"
+        dangling.write_text(
+            """<r><table schema="x">
+            <col><mnemonic>duration</mnemonic><name>D</name><engineering-type>duration</engineering-type></col>
+            <row><duration ref="999"/></row>
+            </table></r>""",
+            encoding="utf-8",
+        )
+        dangling_rows = [row for _c, row in iter_table_rows(dangling)]
+        check("unresolved ref reads empty", dangling_rows and dangling_rows[0].get("duration") == "")
+
+        # F4: completed rows must be detached from the still-open <table>.
+        many = Path(tmp) / "many.xml"
+        many.write_text(
+            "<r><table schema=\"x\"><col><mnemonic>v</mnemonic><name>V</name>"
+            "<engineering-type>string</engineering-type></col>"
+            + "".join(f"<row><v fmt=\"x{i}\"/></row>" for i in range(500))
+            + "</table></r>",
+            encoding="utf-8",
+        )
+        seen = 0
+        for _cols, _row in iter_table_rows(many):
+            seen += 1
+        check("streaming parse yields all rows after detach", seen == 500)
+
+        # F5: topFrames interest pattern follows the active focus config.
+        CPU_SYMBOLS.append("totallyCustomHotFunction")
+        _invalidate_frame_interest_pattern()
+        custom = analyze_time_profile(
+            iter([{"process": "Laban", "weight": "1000000", "_stackFrames": "totallyCustomHotFunction"}]),
+            re.compile(r"Laban"),
+        )
+        check(
+            "config symbol surfaces in topFrames",
+            any(i["name"] == "totallyCustomHotFunction" for i in custom["topFrames"]),
+        )
+        CPU_SYMBOLS.remove("totallyCustomHotFunction")
+        _invalidate_frame_interest_pattern()
+
+        # F9: as_dict percentile parity with the reference implementation.
+        stats = NumericStats()
+        for v in (5.0, 1.0, 3.0, 2.0, 4.0):
+            stats.add(v)
+        d = stats.as_dict()
+        check("p50 over sorted values", d["p50Ms"] == 3.0)
+        check("max over sorted values", d["maxMs"] == 5.0)
+
+        base = {"cpu": {"symbolHits": [{"name": "f", "samples": 1, "weightMs": 5.0, "percent": 50.0}]},
+                "metalTables": [{"schema": "s", "labelsOfInterest": [
+                    {"label": "L", "count": 10, "totalMs": 10.0, "p50Ms": 1.0, "p95Ms": 2.0, "p99Ms": 2.0, "maxMs": 2.0}]}]}
+        better = {"cpu": {"symbolHits": [{"name": "f", "samples": 1, "weightMs": 4.0, "percent": 40.0}]},
+                  "metalTables": [{"schema": "s", "labelsOfInterest": [
+                      {"label": "L", "count": 10, "totalMs": 8.0, "p50Ms": 0.9, "p95Ms": 1.5, "p99Ms": 1.6, "maxMs": 1.7}]}]}
+        worse = {"cpu": {"symbolHits": [{"name": "f", "samples": 1, "weightMs": 6.0, "percent": 62.0}]},
+                 "metalTables": base["metalTables"]}
+        check("compare detects improvement", compare_summaries(base, better, 1.0, 10.0)["verdict"] == "improved")
+        check("compare detects regression", compare_summaries(base, worse, 1.0, 10.0)["verdict"] == "regressed")
+        check("compare neutral vs self", compare_summaries(base, base, 1.0, 10.0)["verdict"] == "neutral")
+
+        # F7: losing symbolication or comparing wildly different recordings
+        # must yield UNRELIABLE rather than a fake IMPROVED.
+        sym_base = {"schemaVersion": SCHEMA_VERSION,
+                    "cpu": {"rows": 100, "rowsWithNestedFrames": 100, "totalWeightMs": 100.0,
+                            "symbolHits": [{"name": "f", "samples": 1, "weightMs": 5.0, "percent": 50.0}]},
+                    "metalTables": []}
+        sym_lost = {"schemaVersion": SCHEMA_VERSION,
+                    "cpu": {"rows": 100, "rowsWithNestedFrames": 0, "totalWeightMs": 100.0,
+                            "symbolHits": []},
+                    "metalTables": []}
+        cmp_lost = compare_summaries(sym_base, sym_lost, 1.0, 10.0)
+        check("symbolication loss -> unreliable", cmp_lost["verdict"] == "unreliable" and cmp_lost["warnings"])
+        short = {"schemaVersion": SCHEMA_VERSION,
+                 "cpu": {"rows": 5, "rowsWithNestedFrames": 5, "totalWeightMs": 5.0,
+                         "symbolHits": [{"name": "f", "samples": 1, "weightMs": 2.5, "percent": 50.0}]},
+                 "metalTables": []}
+        check("10x shorter recording -> unreliable",
+              compare_summaries(sym_base, short, 1.0, 10.0)["verdict"] == "unreliable")
+
+        brief = brief_report({"tracePath": "t.trace", "processFilter": "Laban",
+                              "cpu": cpu, "metalTables": [metal], "findings": []})
+        check("brief mentions focus symbol", "buildGPUCellPayloadInstanceListsOnce" in brief)
+        check("brief stays compact", len(brief.splitlines()) < 60)
+
+        check("redaction strips bearer token", "<redacted>" in redact("Authorization: Bearer abc.def-123"))
+
+    if failures:
+        print("SELF-TEST FAILED:\n  " + "\n  ".join(failures))
+        return 1
+    print(f"self-test OK (schema_version={SCHEMA_VERSION}, all checks passed)")
+    return 0
+
+
 def default_output_paths(trace: Path) -> tuple[Path, Path]:
     build_dir = Path(".build") / "laban"
     stem = trace.name.removesuffix(".trace")
@@ -1052,22 +1717,80 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scratch-dir", type=Path, help="Directory for raw XML exports. Defaults to a temporary directory.")
     parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to parse per table; 0 means all rows.")
     parser.add_argument("--list-schemas", action="store_true", help="Only list sanitized table schemas in the trace.")
+
+    agent = parser.add_argument_group("agent iteration loop")
+    agent.add_argument("--format", choices=["brief", "json", "md", "none"], default="brief",
+                       help="What to print to stdout (files are still written unless --no-files). Default: brief.")
+    agent.add_argument("--top", type=int, default=8, help="Rows per section in brief output.")
+    agent.add_argument("--no-files", action="store_true", help="Skip writing JSON/Markdown files (stdout only).")
+    agent.add_argument("--baseline", type=Path,
+                       help="Previous JSON output to compare against; prints deltas and a verdict.")
+    agent.add_argument("--threshold-pp", type=float, default=1.0,
+                       help="CPU regression threshold in percentage points (default 1.0).")
+    agent.add_argument("--threshold-pct", type=float, default=10.0,
+                       help="GPU p95 regression threshold in percent (default 10.0).")
+    agent.add_argument("--fail-on-regression", action="store_true",
+                       help="Exit 3 when --baseline compare detects a regression beyond thresholds.")
+    agent.add_argument("--config", type=Path,
+                       help=f"Focus config JSON (cpuSymbols/cpuCategories/metalLabels). Auto-discovers ./{DEFAULT_CONFIG_NAME}.")
+    agent.add_argument("--print-config", action="store_true", help="Print the active focus config as JSON and exit.")
+    agent.add_argument("--no-cache", action="store_true", help="Disable the export cache (always re-export).")
+    agent.add_argument("--cache-dir", type=Path, help="Export cache directory (default: ~/.cache/analyze-metal-trace).")
+    agent.add_argument("--clear-cache", action="store_true", help="Delete cached exports and exit.")
+    agent.add_argument("--record", type=int, metavar="SECONDS",
+                       help="Record a new trace for SECONDS before analyzing (needs --attach or --launch).")
+    agent.add_argument("--attach", help="Process name or pid to attach to when recording.")
+    agent.add_argument("--launch", nargs=argparse.REMAINDER,
+                       help="Command to launch when recording; must be last: --launch -- ./app args")
+    agent.add_argument("--template", default="Metal System Trace", help="xctrace template for --record.")
+    agent.add_argument("--record-output", type=Path, help="Where to write the recorded .trace bundle.")
+    agent.add_argument("--self-test", action="store_true", help="Run built-in tests (no trace or xcrun needed) and exit.")
+    agent.add_argument("--print-agent-docs", action="store_true",
+                       help="Print a CLAUDE.md/AGENTS.md-ready usage block and exit.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    trace = args.trace.expanduser()
+
+    # Short-circuit commands that need no trace.
+    if args.self_test:
+        return self_test()
+    if args.print_agent_docs:
+        print(AGENT_DOCS)
+        return 0
+    if args.clear_cache:
+        removed = clear_cache(args.cache_dir)
+        print(f"cleared {removed} cached export(s)", file=sys.stderr)
+        return 0
+
+    config_path = apply_config(args.config)
+    if args.print_config:
+        print(current_config_json())
+        return 0
+    if config_path is not None:
+        print(f"analyze-metal-trace: focus config {redact(config_path)}", file=sys.stderr)
+
+    if args.record is not None:
+        trace = record_trace(args.record, args.template, args.attach, args.launch, args.record_output)
+    else:
+        trace = args.trace.expanduser()
     if not trace.exists():
-        raise SystemExit(f"trace not found: {redact(trace)}")
+        raise SystemExit(
+            f"trace not found: {redact(trace)}\n"
+            "hint: pass a .trace path, or record one with --record 10 --attach <ProcessName>"
+        )
 
     json_output, markdown_output = default_output_paths(trace)
     if args.json_output:
         json_output = args.json_output
     if args.markdown_output:
         markdown_output = args.markdown_output
-    json_output.parent.mkdir(parents=True, exist_ok=True)
-    markdown_output.parent.mkdir(parents=True, exist_ok=True)
+    if not args.no_files:
+        json_output.parent.mkdir(parents=True, exist_ok=True)
+        markdown_output.parent.mkdir(parents=True, exist_ok=True)
+
+    configure_cache(trace, args.cache_dir, enabled=not args.no_cache)
 
     process_re = None if args.all_processes else re.compile(args.process)
     schemas_to_request = ["time-profile"] if args.cpu_only else list(DEFAULT_SCHEMAS)
@@ -1085,7 +1808,12 @@ def main() -> int:
 
     try:
         toc_path = scratch_root / "toc.xml"
-        run_xctrace_export(trace, ["--toc"], toc_path)
+        try:
+            run_xctrace_export(trace, ["--toc"], toc_path)
+        except RuntimeError as exc:
+            raise SystemExit(
+                f"{exc}\nhint: is {redact(trace)} a valid Instruments .trace bundle for this Xcode version?"
+            )
         available = table_schemas_from_toc(toc_path)
         available_set = set(available)
         descriptors_by_schema = table_descriptors_from_toc(toc_path)
@@ -1128,6 +1856,10 @@ def main() -> int:
                 )
             except Exception as exc:  # Keep the rest of the report useful.
                 skipped.append(f"{schema}:error:{redact(type(exc).__name__)}")
+                print(
+                    f"analyze-metal-trace: {schema} failed: {redact(exc, max_len=400)}",
+                    file=sys.stderr,
+                )
                 continue
             parsed.append(schema)
             if schema == "time-profile":
@@ -1135,24 +1867,61 @@ def main() -> int:
             else:
                 metal_tables.append(result)
 
+        if not parsed:
+            raise SystemExit(
+                "no requested schemas could be parsed from this trace "
+                f"(skipped: {', '.join(skipped) or '<none>'})\n"
+                "hint: run --list-schemas to see what the trace contains, or pass --schema NAME"
+            )
+
         summary = {
+            "schemaVersion": SCHEMA_VERSION,
             "tracePath": redact(trace),
             "processFilter": None if args.all_processes else args.process,
+            "focusConfig": redact(config_path) if config_path else None,
             "availableSchemas": sorted(redact(schema) for schema in available_set),
             "parsedSchemas": parsed,
             "skippedSchemas": skipped,
+            "rawExports": "cached" if not args.no_cache else ("kept" if args.keep_exports else "deleted"),
             "cpu": cpu_summary,
             "metalTables": metal_tables,
         }
         summary["findings"] = build_findings(summary)
 
-        json_output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        markdown_output.write_text(write_markdown(summary), encoding="utf-8")
+        compare = None
+        if args.baseline:
+            baseline = load_baseline(args.baseline)
+            compare = compare_summaries(baseline, summary, args.threshold_pp, args.threshold_pct)
+            summary["compare"] = compare
 
-        print(f"wrote {json_output}")
-        print(f"wrote {markdown_output}")
+        if not args.no_files:
+            json_output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            markdown = write_markdown(summary)
+            if compare is not None:
+                markdown += "\n## Baseline Compare\n\n```\n" + render_compare_brief(
+                    compare, str(args.baseline)
+                ) + "\n```\n"
+            markdown_output.write_text(markdown, encoding="utf-8")
+            print(f"wrote {json_output}", file=sys.stderr)
+            print(f"wrote {markdown_output}", file=sys.stderr)
+
+        if args.format == "brief":
+            print(brief_report(summary, top=args.top))
+            if compare is not None:
+                print(render_compare_brief(compare, str(args.baseline)))
+        elif args.format == "json":
+            print(json.dumps(summary, indent=2, sort_keys=True))
+        elif args.format == "md":
+            print(write_markdown(summary))
+
         if args.keep_exports:
-            print(f"kept raw exports in {scratch_root}")
+            print(f"kept raw exports in {scratch_root}", file=sys.stderr)
+        if (
+            compare is not None
+            and args.fail_on_regression
+            and compare["verdict"] in {"regressed", "unreliable"}
+        ):
+            return 3
         return 0
     finally:
         if temp_context is not None and not args.keep_exports:
@@ -1160,4 +1929,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit as exc:
+        # int codes pass through; string messages are usage/trace errors -> exit 2
+        if isinstance(exc.code, str):
+            print(exc.code, file=sys.stderr)
+            raise SystemExit(2)
+        raise
