@@ -90,10 +90,13 @@ public final class Session {
   /// One snapshot of the iTerm2 OSC 21337 tab-status fields. Per the spec,
   /// `nil` means "key was absent in this update — preserve the prior
   /// value", `""` means "clear the field", anything else is a new value.
+  /// `awaiting` is a Laban extension: agents set `awaiting=1` from hooks to
+  /// flag the tab as blocked on user input.
   public struct TabStatusUpdate: Sendable {
     public var indicator: String?
     public var status: String?
     public var statusColor: String?
+    public var awaiting: String?
   }
 
   /// Set once per Session at the call site (AppModel) to receive parsed
@@ -1705,14 +1708,16 @@ private let sessionTabStatusCallback:
     UnsafeMutableRawPointer?,
     UnsafePointer<CChar>?,
     UnsafePointer<CChar>?,
+    UnsafePointer<CChar>?,
     UnsafePointer<CChar>?
-  ) -> Void = { userdata, indicator, status, statusColor in
+  ) -> Void = { userdata, indicator, status, statusColor, awaiting in
     guard let userdata else { return }
     let state = Unmanaged<SessionCallbackState>.fromOpaque(userdata).takeUnretainedValue()
     let update = Session.TabStatusUpdate(
       indicator: indicator.map { String(cString: $0) },
       status: status.map { String(cString: $0) },
-      statusColor: statusColor.map { String(cString: $0) }
+      statusColor: statusColor.map { String(cString: $0) },
+      awaiting: awaiting.map { String(cString: $0) }
     )
     state.tabStatusTarget()?(update)
   }

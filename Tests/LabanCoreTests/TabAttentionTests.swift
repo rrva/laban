@@ -4,6 +4,7 @@ import XCTest
 
 final class TabAttentionTests: XCTestCase {
   private func meta(
+    terminalTitle: String? = nil,
     activityState: TabActivityState = .running,
     awaitingInput: Bool = false,
     notification: TabNotification? = nil,
@@ -11,6 +12,7 @@ final class TabAttentionTests: XCTestCase {
     bellAttention: Bool = false
   ) -> TabTitleMetadata {
     TabTitleMetadata(
+      terminalTitle: terminalTitle,
       displayTitle: "t",
       titleSource: .fallback,
       agent: TabAgentMetadata(awaitingInput: awaitingInput),
@@ -46,6 +48,18 @@ final class TabAttentionTests: XCTestCase {
 
   func testAwaitingInputIsNeedsAction() {
     XCTAssertEqual(classify(meta(awaitingInput: true)), .needsAction)
+  }
+
+  /// Codex prefixes its terminal title with "[ ! ]" while blocked on the user
+  /// — its only unconditional cross-terminal signal — so the prefix counts as
+  /// a blocking request.
+  func testActionRequiredTitlePrefixIsNeedsAction() {
+    let m = meta(terminalTitle: "[ ! ] Action Required | codex | main")
+    XCTAssertEqual(classify(m), .needsAction)
+  }
+
+  func testOrdinaryTerminalTitleIsNotNeedsAction() {
+    XCTAssertEqual(classify(meta(terminalTitle: "vim README.md")), .none)
   }
 
   func testNonUrgentNotificationIsDone() {

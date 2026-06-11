@@ -260,6 +260,42 @@ static void dispatch_osc_host(
         }
         return;
     }
+    if (osc_number == 777) {
+        /* urxvt/Ghostty desktop-notification form: 777;notify;<title>;<body>.
+         * Other 777 subcommands exist and are not notifications. Delivered
+         * through the same callback as OSC 9, joined as "<title>: <body>". */
+        if (len <= 7 || memcmp(payload, "notify;", 7) != 0) return;
+        const char *text = payload + 7;
+        size_t text_len = len - 7;
+        if (s->osc_notification_callback) {
+            char joined[512];
+            size_t out = 0;
+            const char *semi = memchr(text, ';', text_len);
+            if (semi && semi != text + text_len - 1) {
+                size_t title_len = (size_t)(semi - text);
+                size_t body_len = text_len - title_len - 1;
+                if (title_len > 200) title_len = 200;
+                memcpy(joined, text, title_len);
+                out = title_len;
+                if (title_len > 0) {
+                    memcpy(joined + out, ": ", 2);
+                    out += 2;
+                }
+                if (body_len > sizeof(joined) - out) body_len = sizeof(joined) - out;
+                memcpy(joined + out, semi + 1, body_len);
+                out += body_len;
+            } else {
+                out = text_len < sizeof(joined) ? text_len : sizeof(joined);
+                memcpy(joined, text, out);
+                if (semi) out -= 1; /* drop a trailing ';' from an empty body */
+            }
+            if (out == 0) return;
+            s->osc_notification_callback(
+                s->osc_notification_userdata, s,
+                (const uint8_t *)joined, out);
+        }
+        return;
+    }
 }
 
 /* Parse the collected OSC number digits. Returns -1 for empty, non-numeric, or
@@ -276,7 +312,7 @@ static int parse_osc_number(const char *num, size_t len) {
 }
 
 static int osc_host_interesting(int n) {
-    return n == 7 || n == 9 || n == 10 || n == 11 || n == 52;
+    return n == 7 || n == 9 || n == 10 || n == 11 || n == 52 || n == 777;
 }
 
 /* Write any not-yet-flushed bytes [*flushed, upto) into the VT parser. */

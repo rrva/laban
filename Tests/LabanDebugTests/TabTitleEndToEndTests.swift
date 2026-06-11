@@ -105,6 +105,91 @@ final class TabTitleEndToEndTests: XCTestCase {
     XCTAssertEqual(tab.titleSource, "terminal")
   }
 
+  // MARK: - Terminal identity
+
+  func testTermProgramIdentityReachesChildren() throws {
+    // Children must see TERM_PROGRAM=Laban — not an inherited identity from
+    // whatever terminal happened to launch the Laban process. Codex picks its
+    // notification backend from this variable.
+    let harness = try TitleHarness(runId: "title-e2e-term-program")
+    defer { harness.tearDown() }
+
+    try harness.runClient("titleenv 30")
+
+    let tab = try harness.waitForTabState { $0.terminalTitle == "Laban" }
+    XCTAssertEqual(tab.terminalTitle, "Laban")
+    XCTAssertEqual(tab.displayTitle, "Laban")
+  }
+
+  // MARK: - Attention: agent wants the user
+
+  func testOscNineApprovalNotificationRaisesNeedsActionOnBackgroundTab() throws {
+    let harness = try TitleHarness(runId: "title-e2e-osc9")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]9;agent needs your approval\\007'\n")
+    try harness.newTab()
+    let tab = try harness.waitForTabState { $0.attention == "needsAction" }
+    XCTAssertEqual(
+      tab.attention, "needsAction",
+      "an approval-flavored OSC 9 on a background tab must demand action")
+  }
+
+  func testOscNineInformationalNotificationMarksDone() throws {
+    let harness = try TitleHarness(runId: "title-e2e-osc9-done")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]9;turn complete\\007'\n")
+    try harness.newTab()
+    let tab = try harness.waitForTabState { $0.attention == "done" }
+    XCTAssertEqual(tab.attention, "done")
+  }
+
+  func testOsc777NotificationRaisesNeedsActionOnBackgroundTab() throws {
+    let harness = try TitleHarness(runId: "title-e2e-osc777")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]777;notify;Codex;approval requested\\007'\n")
+    try harness.newTab()
+    let tab = try harness.waitForTabState { $0.attention == "needsAction" }
+    XCTAssertEqual(tab.attention, "needsAction")
+  }
+
+  func testAwaitingInputTabStatusRaisesNeedsAction() throws {
+    let harness = try TitleHarness(runId: "title-e2e-awaiting")
+    defer { harness.tearDown() }
+
+    try harness.type("printf '\\033]21337;awaiting=1\\007'\n")
+    var tab = try harness.waitForTabState { $0.awaitingInput == true }
+    XCTAssertEqual(tab.awaitingInput, true)
+
+    // An explicit empty value clears the flag; an absent key would preserve it.
+    try harness.type("printf '\\033]21337;awaiting=\\007'\n")
+    tab = try harness.waitForTabState { $0.awaitingInput == false }
+    XCTAssertEqual(tab.awaitingInput, false)
+
+    try harness.type("printf '\\033]21337;awaiting=1\\007'\n")
+    _ = try harness.waitForTabState { $0.awaitingInput == true }
+    try harness.newTab()
+    tab = try harness.waitForTabState { $0.attention == "needsAction" }
+    XCTAssertEqual(tab.attention, "needsAction")
+  }
+
+  func testActionRequiredTitleRaisesNeedsActionOnBackgroundTab() throws {
+    // Codex's only unconditional signal in unrecognized terminals: it prefixes
+    // the terminal title with "[ ! ]" while blocked on the user.
+    let harness = try TitleHarness(runId: "title-e2e-action-required")
+    defer { harness.tearDown() }
+
+    try harness.runClient("osc0 '[ ! ] Action Required | codex' 30")
+    _ = try harness.waitForTabState { $0.terminalTitle?.hasPrefix("[ ! ]") == true }
+
+    try harness.newTab()
+    let tab = try harness.waitForTabState { $0.attention == "needsAction" }
+    XCTAssertEqual(tab.attention, "needsAction")
+    XCTAssertEqual(tab.terminalTitle, "[ ! ] Action Required | codex")
+  }
+
   // MARK: - OSC 21337 tab status reaches agent metadata
 
   func testOscTabStatusReachesAgentMetadata() throws {
@@ -160,6 +245,8 @@ final class TitleHarness {
     var titleSource: String?
     var terminalTitle: String?
     var foregroundProcess: String?
+    var attention: String?
+    var awaitingInput: Bool?
   }
 
   init(runId: String) throws {
@@ -188,6 +275,7 @@ final class TitleHarness {
         osc0)   printf '\\033]0;%s\\007' "$1"; exec /bin/sleep "$2" ;;
         osc2st) printf '\\033]2;%s\\033\\\\' "$1"; exec /bin/sleep "$2" ;;
         status) printf '\\033]21337;%s\\007' "$1"; exec /bin/sleep "$2" ;;
+        titleenv) printf '\\033]0;%s\\007' "${TERM_PROGRAM:-unset}"; exec /bin/sleep "$1" ;;
         *)      echo "unknown mode: $mode" >&2; exit 64 ;;
       esac
       """
@@ -212,21 +300,31 @@ final class TitleHarness {
     try type("sh \(clientScript.path) \(arguments)\n")
   }
 
-  /// One explicit metadata-sync pass; returns the first tab's title state.
+  /// One explicit metadata-sync pass; returns the indexed tab's title state.
   @discardableResult
-  func syncPass() throws -> TabState {
+  func syncPass(tabIndex: Int = 0) throws -> TabState {
     let state = runtime.state()
     XCTAssertEqual(state.status, 200)
     let obj = try JSONSerialization.jsonObject(with: state.body) as! [String: Any]
     let tabs = obj["tabs"] as! [[String: Any]]
-    let tab = tabs[0]
+    let tab = tabs[tabIndex]
     let process = tab["process"] as? [String: Any]
+    let agent = tab["agent"] as? [String: Any]
     return TabState(
       displayTitle: tab["displayTitle"] as? String,
       titleSource: tab["titleSource"] as? String,
       terminalTitle: tab["terminalTitle"] as? String,
-      foregroundProcess: process?["foregroundProcess"] as? String
+      foregroundProcess: process?["foregroundProcess"] as? String,
+      attention: tab["attention"] as? String,
+      awaitingInput: agent?["awaitingInput"] as? Bool
     )
+  }
+
+  /// Open a fresh tab (which becomes active), pushing the current tab into the
+  /// background so attention classification on it becomes observable.
+  func newTab() throws {
+    let body = try JSONSerialization.data(withJSONObject: ["action": "newTab"])
+    XCTAssertEqual(runtime.applyAction(body).status, 200)
   }
 
   /// Drive sync passes spaced wider than the process-metadata throttle so
@@ -239,7 +337,11 @@ final class TitleHarness {
     let deadline = Date().addingTimeInterval(timeout)
     var last = try syncPass()
     while !predicate(last), Date() < deadline {
-      Thread.sleep(forTimeInterval: pollInterval)
+      // Spin the main runloop rather than Thread.sleep: session callbacks
+      // (OSC 9/777 notifications, OSC 21337 tab status) hop through the main
+      // queue before they land on the model, and a blocked main thread would
+      // park them forever.
+      pumpMainQueue(pollInterval)
       last = try syncPass()
     }
     return last

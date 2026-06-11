@@ -44,12 +44,23 @@ public enum TabAttentionClassifier {
     if (m.notification?.urgent ?? false)
       || m.activityState == .waiting
       || m.agent.awaitingInput
+      || hasActionRequiredTitle(m)
     {
       return .needsAction
     }
     if m.notification != nil { return .done }
     if m.unseenOutput || m.bellAttention { return .passive }
     return .none
+  }
+
+  /// Codex prefixes its terminal title with "[ ! ]" (its
+  /// `ACTION_REQUIRED_PREVIEW_PREFIX`) for as long as a view is blocked on
+  /// the user — approvals, questions, input — and restores the normal title
+  /// when unblocked. It is the only signal Codex emits unconditionally in
+  /// terminals it does not recognize (its OSC 9 path is gated on terminal
+  /// detection), so the title prefix doubles as a blocking-request flag.
+  private static func hasActionRequiredTitle(_ m: TabTitleMetadata) -> Bool {
+    m.terminalTitle?.hasPrefix("[ ! ]") ?? false
   }
 
   /// Whether any *unfocused* tab needs the user — i.e. whether the sidebar is

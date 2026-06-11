@@ -5,7 +5,8 @@ static void parse_tab_status_payload(LabanSession *s, const char *payload, size_
     char indicator[64] = {0};
     char status_text[256] = {0};
     char status_color[64] = {0};
-    int has_indicator = 0, has_status = 0, has_status_color = 0;
+    char awaiting[16] = {0};
+    int has_indicator = 0, has_status = 0, has_status_color = 0, has_awaiting = 0;
 
     size_t i = 0;
     while (i < len) {
@@ -26,6 +27,8 @@ static void parse_tab_status_payload(LabanSession *s, const char *payload, size_
             target = status_text; cap = sizeof(status_text); flag = &has_status;
         } else if (strcmp(key, "status-color") == 0) {
             target = status_color; cap = sizeof(status_color); flag = &has_status_color;
+        } else if (strcmp(key, "awaiting") == 0) {
+            target = awaiting; cap = sizeof(awaiting); flag = &has_awaiting;
         }
 
         if (i < len && payload[i] == '=') {
@@ -52,7 +55,8 @@ static void parse_tab_status_payload(LabanSession *s, const char *payload, size_
         s->tab_status_userdata,
         has_indicator ? indicator : NULL,
         has_status ? status_text : NULL,
-        has_status_color ? status_color : NULL
+        has_status_color ? status_color : NULL,
+        has_awaiting ? awaiting : NULL
     );
 }
 

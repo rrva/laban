@@ -69,17 +69,19 @@ private func waitForProcessExit(_ pid: pid_t, timeout: TimeInterval = 2.0) -> Bo
 private final class TabStatusProbe {
   var calls = 0
   var status: String?
+  var awaiting: String?
 }
 
 private final class BellProbe {
   var counts: [UInt64] = []
 }
 
-private let tabStatusProbeCallback: LabanTabStatusCallback = { userdata, _, status, _ in
+private let tabStatusProbeCallback: LabanTabStatusCallback = { userdata, _, status, _, awaiting in
   guard let userdata else { return }
   let probe = Unmanaged<TabStatusProbe>.fromOpaque(userdata).takeUnretainedValue()
   probe.calls += 1
   probe.status = status.map { String(cString: $0) }
+  probe.awaiting = awaiting.map { String(cString: $0) }
 }
 
 private let bellProbeCallback: LabanBellCallback = { userdata, _, count in
@@ -442,6 +444,34 @@ final class LabanSessionTests: XCTestCase {
     writeBytes(session, Array(valid.utf8))
     XCTAssertEqual(probe.calls, 1)
     XCTAssertEqual(probe.status, "ok")
+  }
+
+  func testTabStatusAwaitingFieldIsParsedAndAbsentWhenOmitted() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    let probe = TabStatusProbe()
+    let userdata = Unmanaged.passUnretained(probe).toOpaque()
+    XCTAssertEqual(
+      laban_session_set_tab_status_callback(session, tabStatusProbeCallback, userdata), 0)
+
+    writeBytes(session, Array("\u{1B}]21337;awaiting=1;status=needs input\u{07}".utf8))
+    XCTAssertEqual(probe.calls, 1)
+    XCTAssertEqual(probe.awaiting, "1")
+    XCTAssertEqual(probe.status, "needs input")
+
+    // Omitted key: NULL through the callback (preserve semantics upstream).
+    writeBytes(session, Array("\u{1B}]21337;status=ok\u{07}".utf8))
+    XCTAssertEqual(probe.calls, 2)
+    XCTAssertNil(probe.awaiting)
+
+    // Explicit clear: empty string, distinct from absent.
+    writeBytes(session, Array("\u{1B}]21337;awaiting=\u{07}".utf8))
+    XCTAssertEqual(probe.calls, 3)
+    XCTAssertEqual(probe.awaiting, "")
   }
 
   /// The raw-output scanners' bulk skip states (tab_status.c, osc133.c,

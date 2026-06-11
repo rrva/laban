@@ -1897,9 +1897,23 @@ public final class AppModel {
         status.statusTextColor = v.isEmpty ? nil : v
       }
 
-      guard status != before else { return false }
-      _tabs[idx].titleMetadata.agentStatus = status
-      return true
+      var changed = false
+      // Laban extension: `awaiting=1` marks the tab blocked on user input
+      // (drives the needsAction attention level and the "!" badge); an empty
+      // or falsy value clears it; an absent key preserves the prior state.
+      if let v = update.awaiting {
+        let awaiting = v == "1" || v.lowercased() == "true"
+        if _tabs[idx].titleMetadata.agent.awaitingInput != awaiting {
+          _tabs[idx].titleMetadata.agent.awaitingInput = awaiting
+          changed = true
+        }
+      }
+
+      if status != before {
+        _tabs[idx].titleMetadata.agentStatus = status
+        changed = true
+      }
+      return changed
     }
     // The OSC 21337 bytes that carried this update woke the frame loop via
     // onSessionDirty, but this model write lands on a later main-queue hop and

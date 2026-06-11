@@ -391,7 +391,11 @@ typedef void (*LabanTabStatusCallback)(
     void *userdata,
     const char *indicator,
     const char *status,
-    const char *status_color
+    const char *status_color,
+    /* Laban extension to the OSC 21337 payload: `awaiting=1` flags the tab
+     * as blocked on user input (agents emit it from hooks). NULL when the
+     * payload omitted the field, "" when it was explicitly cleared. */
+    const char *awaiting
 );
 
 int laban_session_set_tab_status_callback(
