@@ -884,6 +884,11 @@ public final class MetalRenderer: RendererBackend {
   /// Consumed (reset to false) by the next render call.
   public var dropNextFrameWhenBusy = false
 
+  /// Minimum on-glass duration declared by paced scroll presents (1/120 s):
+  /// the compositor reads the cadence from consistent paced presents, which
+  /// is what holds a ProMotion panel at its full refresh rate.
+  private static let scrollPresentMinimumDuration: CFTimeInterval = 1.0 / 120.0
+
   /// Catch-up wake: a prefetched drawable landed after a drop-when-busy
   /// frame missed. Rendering immediately (instead of waiting for the next
   /// display-link tick) presents a second frame into the current swap
@@ -1083,7 +1088,19 @@ public final class MetalRenderer: RendererBackend {
       counterBlitSupported: counterBlitSupported)
 
     self.lastFramePassSlots = passSlots
-    cmdBuf.present(drawable)
+    if dropIfBusy {
+      // Paced present for scroll-animation frames: declare the intended
+      // 120 Hz cadence to the compositor so a ProMotion panel holds its
+      // refresh rate instead of inferring a lower one from observed
+      // presents. Without the hint, one missed-frame episode lets the panel
+      // settle at 60 Hz; drawable recycling then locks to the slower swap
+      // rate and the pipeline cannot climb back out (the half-rate basin —
+      // see the smooth-scroll ExecPlan). On non-VRR panels a 1/120 minimum
+      // is weaker than vsync and changes nothing.
+      cmdBuf.present(drawable, afterMinimumDuration: Self.scrollPresentMinimumDuration)
+    } else {
+      cmdBuf.present(drawable)
+    }
     let cpuEncodeMs = msSince(cpuStart)
     // Strong-self capture keeps the renderer alive until the GPU work
     // completes. The same handler closes out per-frame timing and releases
