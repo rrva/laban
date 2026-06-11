@@ -79,6 +79,14 @@ git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0002-stream-log-scope-and
 git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0001-alt-screen-clear-uses-primary-pen.patch" \
     || fail "failed to apply alt-screen clear patch (libghostty-vt-0001)"
 
+# 0003 (device_status.zig, stream_terminal.zig, stream_handler.zig): answer
+# DECXCPR (CSI ? 6 n) with the DEC-private form CSI ? row ; col R. Upstream
+# only answers the plain CSI 6 n; apps prefer the ? form because a plain
+# CSI row;col R reply is ambiguous with modified function-key input.
+# See docs/adr/0019-libghostty-answers-decxcpr.md.
+git -C "$DEST" apply "$repo_root/patches/libghostty-vt-0003-decxcpr-cursor-position-report.patch" \
+    || fail "failed to apply DECXCPR patch (libghostty-vt-0003)"
+
 # Build libghostty-vt. Zig fetches its own dependencies on first build
 # (~3-10 min). Subsequent builds use ~/.cache/zig and are fast.
 #

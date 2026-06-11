@@ -2757,6 +2757,29 @@ final class LabanSessionTests: XCTestCase {
       "light color-scheme query must return CSI ? 997 ; 2 n")
   }
 
+  func testDECXCPRRepliesWithDECPrivateMarker() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    // DECXCPR (CSI ? 6 n) must reply with the DEC-private marker so the
+    // report cannot be confused with modified function-key input. The plain
+    // DSR form (CSI 6 n) keeps the unmarked reply.
+    writeBytes(session, Array("\u{1b}[4;7H\u{1b}[?6n".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}[?4;7R",
+      "DECXCPR must reply CSI ? row ; col R")
+
+    writeBytes(session, Array("\u{1b}[6n".utf8))
+    XCTAssertEqual(
+      String(bytes: drainResponse(session), encoding: .utf8),
+      "\u{1b}[4;7R",
+      "plain CPR must stay unmarked")
+  }
+
   func testColorSchemeModeReportsThemeChanges() {
     guard let session = makeFixtureSession() else {
       XCTFail("laban_session_create returned non-zero")

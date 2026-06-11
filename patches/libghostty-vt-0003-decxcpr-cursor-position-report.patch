@@ -1,0 +1,88 @@
+diff --git a/src/terminal/device_status.zig b/src/terminal/device_status.zig
+index 42b4bf0..3abed6f 100644
+--- a/src/terminal/device_status.zig
++++ b/src/terminal/device_status.zig
+@@ -70,5 +70,6 @@ const Entry = struct {
+ const entries: []const Entry = &.{
+     .{ .name = "operating_status", .value = 5 },
+     .{ .name = "cursor_position", .value = 6 },
++    .{ .name = "cursor_position_dec", .value = 6, .question = true },
+     .{ .name = "color_scheme", .value = 996, .question = true },
+ };
+diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
+index f68f088..ccb0d87 100644
+--- a/src/terminal/stream_terminal.zig
++++ b/src/terminal/stream_terminal.zig
+@@ -302,7 +302,7 @@ pub const Handler = struct {
+         switch (req) {
+             .operating_status => self.writePty("\x1B[0n"),
+ 
+-            .cursor_position => {
++            .cursor_position, .cursor_position_dec => {
+                 const pos: struct {
+                     x: usize,
+                     y: usize,
+@@ -314,11 +314,20 @@ pub const Handler = struct {
+                     .y = self.terminal.screens.active.cursor.y,
+                 };
+ 
++                // DECXCPR (CSI ? 6 n) replies with the DEC-private marker so
++                // the report cannot be confused with modified function-key
++                // input (plain CSI row;col R is ambiguous with CSI-u keys).
+                 var buf: [64]u8 = undefined;
+-                const resp = std.fmt.bufPrintZ(&buf, "\x1B[{};{}R", .{
+-                    pos.y + 1,
+-                    pos.x + 1,
+-                }) catch return;
++                const resp = if (req == .cursor_position_dec)
++                    (std.fmt.bufPrintZ(&buf, "\x1B[?{};{}R", .{
++                        pos.y + 1,
++                        pos.x + 1,
++                    }) catch return)
++                else
++                    (std.fmt.bufPrintZ(&buf, "\x1B[{};{}R", .{
++                        pos.y + 1,
++                        pos.x + 1,
++                    }) catch return);
+                 self.writePty(resp);
+             },
+ 
+diff --git a/src/termio/stream_handler.zig b/src/termio/stream_handler.zig
+index fb3a6b3..c71f296 100644
+--- a/src/termio/stream_handler.zig
++++ b/src/termio/stream_handler.zig
+@@ -841,7 +841,7 @@ pub const StreamHandler = struct {
+         switch (req) {
+             .operating_status => self.messageWriter(.{ .write_stable = "\x1B[0n" }),
+ 
+-            .cursor_position => {
++            .cursor_position, .cursor_position_dec => {
+                 const pos: struct {
+                     x: usize,
+                     y: usize,
+@@ -856,11 +856,21 @@ pub const StreamHandler = struct {
+                 // Response always is at least 4 chars, so this leaves the
+                 // remainder for the row/column as base-10 numbers. This
+                 // will support a very large terminal.
++                //
++                // DECXCPR (CSI ? 6 n) replies with the DEC-private marker so
++                // the report cannot be confused with modified function-key
++                // input (plain CSI row;col R is ambiguous with CSI-u keys).
+                 var msg: termio.Message = .{ .write_small = .{} };
+-                const resp = try std.fmt.bufPrint(&msg.write_small.data, "\x1B[{};{}R", .{
+-                    pos.y + 1,
+-                    pos.x + 1,
+-                });
++                const resp = if (req == .cursor_position_dec)
++                    try std.fmt.bufPrint(&msg.write_small.data, "\x1B[?{};{}R", .{
++                        pos.y + 1,
++                        pos.x + 1,
++                    })
++                else
++                    try std.fmt.bufPrint(&msg.write_small.data, "\x1B[{};{}R", .{
++                        pos.y + 1,
++                        pos.x + 1,
++                    });
+                 msg.write_small.len = @intCast(resp.len);
+ 
+                 self.messageWriter(msg);
