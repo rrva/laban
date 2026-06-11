@@ -4117,9 +4117,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         hasFraction: hasFraction)
       {
       case .settleNow:
-        // Round the accumulated destination: the chase finishes the full
-        // commanded distance and lands on a whole row.
-        targetScrollRows = settledTarget
+        if settledTarget == 0 {
+          // A gesture/momentum that lands on (or overshoots into) the live
+          // bottom pins immediately: chasing the last sub-row toward 0
+          // leaves a window where streamed output lands below a
+          // not-yet-pinned viewport and follow-output never re-engages —
+          // the labpty-drift stall (bottom rows stale until a keystroke).
+          applyScrollStep(
+            toDesiredApplied: 0, tab: activeTab, session: session, resetOnClamp: true)
+        } else {
+          // Round the accumulated destination: the chase finishes the full
+          // commanded distance and lands on a whole row.
+          targetScrollRows = settledTarget
+        }
       case .armQuiescence:
         armPreciseScrollSettle()
       case .none:
@@ -4984,7 +4994,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // lands on a whole row.
     let settled = TerminalScrollInput.settledTargetRows(displayedRows: targetScrollRows)
     guard targetScrollRows != settled || displayedScrollRows != settled else { return }
-    targetScrollRows = settled
+    if settled == 0, let tab = model.activeTab, let session = model.session(forTab: tab.id) {
+      // Landing on the live bottom pins immediately (no sub-row chase):
+      // an animated approach leaves a window where streamed output lands
+      // below a not-yet-pinned viewport — the labpty-drift stall.
+      applyScrollStep(toDesiredApplied: 0, tab: tab, session: session, resetOnClamp: true)
+    } else {
+      targetScrollRows = settled
+    }
     advanceFrame(wake: .scrollSettle)
   }
 
