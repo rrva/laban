@@ -313,7 +313,6 @@ final class GPUCellParityTests: XCTestCase {
     MetalRenderer.useGPUCellPath = true
     let renderer = try makeRenderer(label: "payload-build-failure")
     var badPayload = payload(seed: 23, changedRow: nil, includedRows: Array(0..<rows))
-    badPayload.glyphs[0].text = ""
     badPayload.glyphs[0].scalarValue = nil
     badPayload.glyphs[0].utf8Range = nil
 
@@ -591,7 +590,6 @@ final class GPUCellParityTests: XCTestCase {
           .init(
             row: row,
             col: col,
-            text: String(scalar),
             scalarValue: scalar.unicodeScalars.first?.value,
             foreground: 0xDD_EE_EE_FF,
             background: bg,
@@ -616,7 +614,6 @@ final class GPUCellParityTests: XCTestCase {
     // content. The frame is dropped, but with a specific, inspectable reason
     // instead of a bare `false`.
     var badPayload = payload(seed: 5, changedRow: nil, includedRows: Array(0..<rows))
-    badPayload.glyphs[0].text = ""
     badPayload.glyphs[0].scalarValue = nil
     badPayload.glyphs[0].utf8Range = nil
     XCTAssertFalse(
@@ -1909,7 +1906,6 @@ final class GPUCellParityTests: XCTestCase {
       .init(
         row: row,
         col: 0,
-        text: "",
         scalarValue: "中".unicodeScalars.first?.value,
         foreground: fg,
         background: bg,
@@ -1921,7 +1917,6 @@ final class GPUCellParityTests: XCTestCase {
       .init(
         row: row,
         col: 2,
-        text: "",
         scalarValue: nil,
         foreground: fg,
         background: bg,
@@ -1932,7 +1927,6 @@ final class GPUCellParityTests: XCTestCase {
       .init(
         row: row,
         col: 4,
-        text: "A",
         scalarValue: "A".unicodeScalars.first?.value,
         foreground: fg,
         background: bg,
@@ -1989,7 +1983,6 @@ final class GPUCellParityTests: XCTestCase {
         .init(
           row: row,
           col: 2 + offset * 4,
-          text: "",
           scalarValue: scalarValue,
           foreground: fg,
           background: bg,
@@ -2040,7 +2033,6 @@ final class GPUCellParityTests: XCTestCase {
       .init(
         row: row,
         col: 4,
-        text: "",
         scalarValue: scalarValue,
         foreground: edgeProbeForeground(seed: labelSeed),
         background: edgeProbeBackground(seed: labelSeed),
@@ -2071,7 +2063,6 @@ final class GPUCellParityTests: XCTestCase {
       .init(
         row: row,
         col: 4,
-        text: "",
         scalarValue: nil,
         foreground: edgeProbeForeground(seed: labelSeed),
         background: edgeProbeBackground(seed: labelSeed),
@@ -2127,7 +2118,6 @@ final class GPUCellParityTests: XCTestCase {
           .init(
             row: row,
             col: col,
-            text: text,
             scalarValue: scalar.unicodeScalars.first?.value,
             foreground: changed ? 0xFF_FF_00_FF : 0xDD_EE_EE_FF,
             background: bg,
@@ -2162,7 +2152,6 @@ final class GPUCellParityTests: XCTestCase {
           .init(
             row: row,
             col: col,
-            text: "",
             scalarValue: scalar.unicodeScalars.first?.value,
             foreground: fg,
             background: bg,
@@ -2198,7 +2187,6 @@ final class GPUCellParityTests: XCTestCase {
           .init(
             row: row,
             col: col,
-            text: "",
             scalarValue: scalar.unicodeScalars.first?.value,
             foreground: fg,
             background: bg,

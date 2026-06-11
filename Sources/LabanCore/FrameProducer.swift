@@ -43,12 +43,17 @@ public struct FrameProducer {
   // Raw bitmasks so the hot loop avoids cross-module OptionSet method calls.
   // TextAttributes lives in LabanRenderer; `.intersection`/`.subtracting` do
   // not inline across the module boundary, so they showed up as real cost in
-  // the profile. Bitwise ops on the raw UInt16 are free.
-  private static let renderableMaskRaw: UInt16 = TextAttributes.renderableMask.rawValue
-  private static let inverseRaw: UInt16 = TextAttributes.inverse.rawValue
-  private static let faintRaw: UInt16 = TextAttributes.faint.rawValue
-  private static let invisibleRaw: UInt16 = TextAttributes.invisible.rawValue
-  private static let underlineRaw: UInt16 = TextAttributes.underline.rawValue
+  // the profile. Bitwise ops on the raw UInt16 are free. These are INSTANCE
+  // stored properties, not `static let`: a struct `static let` is a lazy
+  // global whose swift_once-guarded accessor showed up per cell in the fill
+  // profile once the loop moved inside a closure; instance lets are plain
+  // loads.
+  private let renderableMaskRaw: UInt16 = TextAttributes.renderableMask.rawValue
+  private let inverseRaw: UInt16 = TextAttributes.inverse.rawValue
+  private let faintRaw: UInt16 = TextAttributes.faint.rawValue
+  private let invisibleRaw: UInt16 = TextAttributes.invisible.rawValue
+  private let underlineRaw: UInt16 = TextAttributes.underline.rawValue
+  private let gpuCellUnsupportedMaskRaw: UInt16 = ~TextAttributes.gpuCellRenderableMask.rawValue
 
   private struct ResolvedCellVisuals {
     var foreground: UInt32
@@ -60,10 +65,10 @@ public struct FrameProducer {
 
     var attributes: TextAttributes { TextAttributes(rawValue: attrsRaw) }
     var hasHyperlink: Bool { hyperlink != nil }
-    var isInvisible: Bool { (attrsRaw & FrameProducer.invisibleRaw) != 0 }
+    var isInvisible: Bool
   }
 
-  private static func resolvedVisuals(
+  private func resolvedVisuals(
     for cell: LabanCell,
     hyperlinkURIs: [String]
   ) -> ResolvedCellVisuals {
@@ -71,7 +76,7 @@ public struct FrameProducer {
   }
 
   @inline(__always)
-  private static func resolvedVisuals(
+  private func resolvedVisuals(
     for cell: LabanCell,
     hyperlinkURIs: UnsafeBufferPointer<String>
   ) -> ResolvedCellVisuals {
@@ -79,7 +84,7 @@ public struct FrameProducer {
     let background = cell.background_rgba
     let foreground =
       (attrsRaw & faintRaw) != 0
-      ? blend(cell.foreground_rgba, toward: background, foregroundWeight: 0.50)
+      ? Self.blend(cell.foreground_rgba, toward: background, foregroundWeight: 0.50)
       : cell.foreground_rgba
     var underlineStyle = UnderlineStyle(rawValue: cell.underline_style) ?? .none
     var underlineColor = cell.underline_color_rgba == 0 ? nil : cell.underline_color_rgba
@@ -103,7 +108,8 @@ public struct FrameProducer {
       attrsRaw: attrsRaw,
       underlineStyle: underlineStyle,
       underlineColor: underlineColor,
-      hyperlink: hyperlink)
+      hyperlink: hyperlink,
+      isInvisible: (attrsRaw & invisibleRaw) != 0)
   }
 
   // Caller owns the snapshot lifetime; FrameProducer does not retain it.
@@ -663,6 +669,7 @@ public struct FrameProducer {
     // One pass per dirty row: the background-run scan shares the cell load with
     // the glyph scan instead of walking the row twice. The run logic must stay
     // ahead of every glyph-path `continue`; per-array append order is unchanged.
+    let gpuCellUnsupportedMask = gpuCellUnsupportedMaskRaw
     hyperlinkURIs.withUnsafeBufferPointer { uriTable in
       for row in payload.dirtyRows {
         let rowStart = row * cols
@@ -681,9 +688,6 @@ public struct FrameProducer {
             let scalar = Unicode.Scalar(scalarValue)
           {
             return Array(String(scalar).utf8)
-          }
-          if !glyph.text.isEmpty {
-            return Array(glyph.text.utf8)
           }
           return nil
         }
@@ -719,7 +723,6 @@ public struct FrameProducer {
             if mergedText.count < previousText.count + currentText.count {
               let start = payload.utf8Bytes.count
               payload.utf8Bytes.append(contentsOf: mergedBytes)
-              payload.glyphs[previousIndex].text = ""
               payload.glyphs[previousIndex].scalarValue = nil
               payload.glyphs[previousIndex].utf8Range = start..<payload.utf8Bytes.count
               pendingSpacerAfterLastGlyph = false
@@ -764,10 +767,10 @@ public struct FrameProducer {
             continue
           }
 
-          let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: uriTable)
+          let visuals = resolvedVisuals(for: cell, hyperlinkURIs: uriTable)
           let cellAttrs = visuals.attributes
 
-          if !cellAttrs.subtracting(.gpuCellRenderableMask).isEmpty {
+          if (visuals.attrsRaw & gpuCellUnsupportedMask) != 0 {
             markFallback(.unsupportedAttributes)
           }
           if visuals.isInvisible {
@@ -811,7 +814,6 @@ public struct FrameProducer {
             let glyph = TerminalCellPayload.Glyph(
               row: row,
               col: col,
-              text: "",
               scalarValue: scalarValue,
               foreground: visuals.foreground,
               background: visuals.background,
@@ -837,7 +839,6 @@ public struct FrameProducer {
             let glyph = TerminalCellPayload.Glyph(
               row: row,
               col: col,
-              text: "",
               scalarValue: nil,
               foreground: visuals.foreground,
               background: visuals.background,
@@ -980,7 +981,7 @@ public struct FrameProducer {
           continue
         }
 
-        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+        let visuals = resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
 
         guard hasContent, !visuals.isInvisible, let storage else {
           flushRun()
@@ -1159,7 +1160,7 @@ public struct FrameProducer {
           continue
         }
 
-        let visuals = FrameProducer.resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
+        let visuals = resolvedVisuals(for: cell, hyperlinkURIs: hyperlinkURIs)
         let cellAttrs = visuals.attributes
 
         if hasContent, !visuals.isInvisible, let storage = snapshot.utf8_storage {

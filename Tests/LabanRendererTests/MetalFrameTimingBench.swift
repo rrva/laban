@@ -1984,18 +1984,15 @@ final class MetalFrameTimingBench: XCTestCase {
     background: UInt32
   ) -> Int {
     let text = m6Text(style: workload.style, row: row, col: col, seed: seed)
-    let scalars = Array(text.unicodeScalars)
     let wide = m6WideFlag(for: text)
-    payload.glyphs.append(
-      .init(
-        row: row,
-        col: col,
-        text: text,
-        scalarValue: scalars.count == 1 ? scalars[0].value : nil,
-        foreground: 0xFF_FF_FF_FF,
-        background: background,
-        attributes: [],
-        wide: wide))
+    payload.appendGlyph(
+      row: row,
+      col: col,
+      cluster: text,
+      foreground: 0xFF_FF_FF_FF,
+      background: background,
+      attributes: [],
+      wide: wide)
     // Wide glyphs span the lead cell plus a trailing spacer the producer never
     // fills, so advance two columns and leave the spacer empty.
     return wide == 1 ? 2 : 1
@@ -2119,7 +2116,6 @@ final class MetalFrameTimingBench: XCTestCase {
           .init(
             row: r,
             col: c,
-            text: text,
             scalarValue: text.unicodeScalars.first?.value,
             foreground: 0xFF_FF_FF_FF,
             background: color,

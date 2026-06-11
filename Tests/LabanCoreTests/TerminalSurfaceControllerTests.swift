@@ -679,7 +679,7 @@ final class TerminalSurfaceControllerTests: XCTestCase {
           contentMode: .cellPayloadPreferred)))
 
     let glyph = try XCTUnwrap(frame.cellPayload?.glyphs.first { $0.scalarValue == 0xE9 })
-    XCTAssertEqual(glyph.text, "")
+    XCTAssertNil(glyph.utf8Range)
     XCTAssertNil(frame.cellPayload?.fallbackReason)
   }
 

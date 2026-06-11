@@ -2043,8 +2043,7 @@ public final class MetalRenderer: RendererBackend {
     {
       return debugEscapedPreview(String(decoding: payload.utf8Bytes[range], as: UTF8.self))
     }
-    guard !glyph.text.isEmpty else { return nil }
-    return debugEscapedPreview(glyph.text)
+    return nil
   }
 
   private static func debugEscapedPreview(_ text: String, limit: Int = 24) -> String {
@@ -2512,10 +2511,7 @@ public final class MetalRenderer: RendererBackend {
             return
           }
           let scalarValue = glyph.pointee.scalarValue
-          guard
-            scalarValue != nil || glyph.pointee.utf8Range != nil
-              || (glyph.pointee.text.first != nil && glyph.pointee.text.count == 1)
-          else {
+          guard scalarValue != nil || glyph.pointee.utf8Range != nil else {
             recordPayloadFailure("missingGlyphText", glyph: glyph.pointee)
             payloadGlyphLoopFailed = true
             return
@@ -2563,14 +2559,6 @@ public final class MetalRenderer: RendererBackend {
               payloadGlyphLoopFailed = true
               return
             }
-            let fontInfo =
-              fontAttrsKey == 0 ? defaultTerminalFontInfo : terminalFontInfo(for: attributes)
-            entry = glyphAtlas.entry(
-              character: character,
-              font: fontInfo.font,
-              boldFallback: fontInfo.needsBoldFallback,
-              italicFallback: fontInfo.needsItalicFallback)
-          } else if let character = glyph.pointee.text.first {
             let fontInfo =
               fontAttrsKey == 0 ? defaultTerminalFontInfo : terminalFontInfo(for: attributes)
             entry = glyphAtlas.entry(

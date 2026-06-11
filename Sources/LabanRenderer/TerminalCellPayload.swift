@@ -32,23 +32,59 @@ public struct TerminalCellPayload: Equatable, Sendable {
   }
 
   public struct Glyph: Equatable, Sendable {
+    /// Sentinel for "no single scalar": valid Unicode scalar values end at
+    /// 0x10FFFF, so this can never collide with real content.
+    @usableFromInline internal static let noScalar: UInt32 = 0xFFFF_FFFF
+
     public var row: Int
     public var col: Int
-    public var text: String
-    public var scalarValue: UInt32?
     public var foreground: UInt32
     public var background: UInt32
+    @usableFromInline internal var scalarRaw: UInt32
+    @usableFromInline internal var underlineColorRaw: UInt32
+    @usableFromInline internal var utf8Start: Int32
+    @usableFromInline internal var utf8Length: Int32
     public var attributes: TextAttributes
     public var underlineStyle: UnderlineStyle
-    public var underlineColor: UInt32?
     public var hasHyperlink: Bool
     public var wide: UInt8
-    public var utf8Range: Range<Int>?
 
+    /// POD storage: cluster text lives in the payload's `utf8Bytes` side
+    /// buffer (`utf8Range`) or as a single scalar — never inline, so arrays
+    /// of `Glyph` copy with memcpy and destroy without ARC. Accessors are
+    /// `@inlinable` so the producer (LabanCore) and renderer keep these as
+    /// register ops instead of cross-module calls in their per-cell loops.
+    public var scalarValue: UInt32? {
+      @inlinable @inline(__always) get { scalarRaw == Self.noScalar ? nil : scalarRaw }
+      @inlinable @inline(__always) set { scalarRaw = newValue ?? Self.noScalar }
+    }
+
+    /// 0 means "no explicit underline color", matching the producer, which
+    /// maps `cell.underline_color_rgba == 0` to nil before constructing.
+    public var underlineColor: UInt32? {
+      @inlinable @inline(__always) get { underlineColorRaw == 0 ? nil : underlineColorRaw }
+      @inlinable @inline(__always) set { underlineColorRaw = newValue ?? 0 }
+    }
+
+    public var utf8Range: Range<Int>? {
+      @inlinable @inline(__always) get {
+        utf8Length == 0 ? nil : Int(utf8Start)..<Int(utf8Start) + Int(utf8Length)
+      }
+      @inlinable @inline(__always) set {
+        if let newValue, !newValue.isEmpty {
+          utf8Start = Int32(newValue.lowerBound)
+          utf8Length = Int32(newValue.count)
+        } else {
+          utf8Start = 0
+          utf8Length = 0
+        }
+      }
+    }
+
+    @inlinable
     public init(
       row: Int,
       col: Int,
-      text: String,
       scalarValue: UInt32? = nil,
       foreground: UInt32,
       background: UInt32,
@@ -61,16 +97,21 @@ public struct TerminalCellPayload: Equatable, Sendable {
     ) {
       self.row = row
       self.col = col
-      self.text = text
-      self.scalarValue = scalarValue
       self.foreground = foreground
       self.background = background
+      self.scalarRaw = scalarValue ?? Self.noScalar
+      self.underlineColorRaw = underlineColor ?? 0
+      if let utf8Range, !utf8Range.isEmpty {
+        self.utf8Start = Int32(utf8Range.lowerBound)
+        self.utf8Length = Int32(utf8Range.count)
+      } else {
+        self.utf8Start = 0
+        self.utf8Length = 0
+      }
       self.attributes = attributes
       self.underlineStyle = underlineStyle
-      self.underlineColor = underlineColor
       self.hasHyperlink = hasHyperlink
       self.wide = wide
-      self.utf8Range = utf8Range
     }
   }
 
@@ -205,5 +246,43 @@ public struct TerminalCellPayload: Equatable, Sendable {
     proceduralCells.removeAll(keepingCapacity: true)
     cursorRects.removeAll(keepingCapacity: true)
     utf8Bytes.removeAll(keepingCapacity: true)
+  }
+
+  /// Appends a glyph for `cluster` using the same storage rule as
+  /// `FrameProducer.fillTerminalCellPayload`: a single Unicode scalar is
+  /// stored inline as `scalarValue`; any other cluster is appended to
+  /// `utf8Bytes` and referenced by `utf8Range`. Intended for test fixtures
+  /// that previously stored arbitrary text on the glyph itself.
+  public mutating func appendGlyph(
+    row: Int,
+    col: Int,
+    cluster: String,
+    foreground: UInt32,
+    background: UInt32,
+    attributes: TextAttributes,
+    underlineStyle: UnderlineStyle = .none,
+    underlineColor: UInt32? = nil,
+    hasHyperlink: Bool = false,
+    wide: UInt8 = 0
+  ) {
+    var glyph = Glyph(
+      row: row,
+      col: col,
+      foreground: foreground,
+      background: background,
+      attributes: attributes,
+      underlineStyle: underlineStyle,
+      underlineColor: underlineColor,
+      hasHyperlink: hasHyperlink,
+      wide: wide)
+    let scalars = cluster.unicodeScalars
+    if scalars.count == 1, let scalar = scalars.first {
+      glyph.scalarValue = scalar.value
+    } else if !cluster.isEmpty {
+      let start = utf8Bytes.count
+      utf8Bytes.append(contentsOf: cluster.utf8)
+      glyph.utf8Range = start..<utf8Bytes.count
+    }
+    glyphs.append(glyph)
   }
 }
