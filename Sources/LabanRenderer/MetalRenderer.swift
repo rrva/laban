@@ -2475,6 +2475,8 @@ public final class MetalRenderer: RendererBackend {
     let payloadRows = payload.rows
     let payloadCols = payload.cols
     let maxLogicalWidth = payloadCellWidth * 2.5
+    var cachedPayloadForeground: UInt32?
+    var cachedPayloadForegroundFloat = SIMD4<Float>.zero
     scalarEntryCacheGeneration &+= 1
     for glyph in payload.glyphs {
       guard glyph.row >= 0, glyph.row < payloadRows else {
@@ -2567,6 +2569,14 @@ public final class MetalRenderer: RendererBackend {
         recordPayloadFailure("cellIndexOutOfBounds", glyph: glyph)
         return false
       }
+      let foregroundFloat: SIMD4<Float>
+      if cachedPayloadForeground == glyph.foreground {
+        foregroundFloat = cachedPayloadForegroundFloat
+      } else {
+        foregroundFloat = rgbaToFloat4(glyph.foreground)
+        cachedPayloadForeground = glyph.foreground
+        cachedPayloadForegroundFloat = foregroundFloat
+      }
       cellGlyphs[index] = CellGlyph(
         originPx: SIMD2<Float>(
           Float(cellX + entry.logicalOriginX) * scale,
@@ -2577,7 +2587,7 @@ public final class MetalRenderer: RendererBackend {
         uvSize: SIMD2<Float>(
           Float(entry.pixelWidth) * invAtlasSize, Float(entry.pixelHeight) * invAtlasSize),
         flags: Self.gpuCellActiveFlag,
-        fg: rgbaToFloat4(glyph.foreground))
+        fg: foregroundFloat)
       if payloadGlyphDrawsDecoration(glyph) {
         appendPayloadDecorationCell(glyph)
       }
