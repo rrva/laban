@@ -153,6 +153,77 @@ final class MetalRendererSmokeTests: XCTestCase {
       "removing the cursor must change visible pixels even when damage is empty")
   }
 
+  func testSidebarStripRepaintPaintsStripWithoutTerminalDamage() throws {
+    // The attention pulse contract: a pulse-only frame carries empty terminal
+    // damage plus the one-shot `repaintSidebarStrip`, and the renderer's
+    // dedicated strip pass repaints the sidebar while the terminal target
+    // keeps its prior pixels — no full-surface repaint anywhere.
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: 1) else {
+      XCTFail("MetalRenderer.init returned nil")
+      return
+    }
+    renderer.captureMode = true
+    renderer.resize(pixelWidth: 360, pixelHeight: 152, scale: 1)
+
+    func frame(marker: UInt32, terminal: UInt32) -> [FrameCommand] {
+      [
+        .rect(
+          CGRect(x: 0, y: 0, width: 40, height: 152),
+          color: 0x20_20_20_FF, source: .sidebar),
+        .rect(
+          CGRect(x: 8, y: 60, width: 10, height: 10),
+          color: marker, source: .sidebar),
+        .glyphRun(
+          origin: CGPoint(x: 4, y: 100),
+          text: "1",
+          foreground: 0xAD_BC_BC_FF,
+          background: 0x20_20_20_FF,
+          attributes: [],
+          source: .sidebar),
+        .rect(
+          CGRect(x: 40, y: 0, width: 320, height: 152),
+          color: terminal, source: .terminal),
+      ]
+    }
+
+    XCTAssertTrue(
+      renderer.render(
+        frame(marker: 0xFF_00_00_FF, terminal: 0x10_3C_48_FF), damage: .full))
+    let pngA = renderer.pngData
+    XCTAssertNotNil(pngA)
+
+    // Pulse frame: marker re-tinted AND the terminal command changed colour,
+    // but terminal damage is empty. Only the strip may move.
+    renderer.repaintSidebarStrip = true
+    XCTAssertTrue(
+      renderer.render(
+        frame(marker: 0x00_FF_00_FF, terminal: 0xFF_FF_FF_FF),
+        damage: .partial(yRanges: [])))
+    XCTAssertFalse(
+      renderer.repaintSidebarStrip, "flag is one-shot, consumed by render")
+    let pngB = renderer.pngData
+    XCTAssertNotEqual(
+      pngA, pngB,
+      "strip pass must repaint the breathing marker on an empty-damage frame")
+
+    // Marker back to frame A's colour on another empty-damage strip frame:
+    // if the changed terminal command had leaked into the target, this could
+    // not reproduce frame A byte-for-byte.
+    renderer.repaintSidebarStrip = true
+    XCTAssertTrue(
+      renderer.render(
+        frame(marker: 0xFF_00_00_FF, terminal: 0xFF_FF_FF_FF),
+        damage: .partial(yRanges: [])))
+    let pngC = renderer.pngData
+    XCTAssertEqual(
+      pngA, pngC,
+      "terminal pixels must survive strip-only frames untouched")
+  }
+
   func testEmptyDamageDoesNotRasterizeContentGlyphs() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

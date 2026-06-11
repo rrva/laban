@@ -410,6 +410,13 @@ public final class MetalRenderer: RendererBackend {
   // the persistent target, never IN it, so cursor blinks don't dirty the
   // terminal cells underneath.
   private var cursorInstances: [SolidInstance] = []
+  /// Sidebar-strip pass instances, separate from the content-pass lists.
+  /// The content pass damage-scopes its sidebar instances to the dirty band
+  /// (or skips building them entirely on an empty-damage frame); the strip
+  /// pass must always cover the whole strip, so it rebuilds from the
+  /// sidebar-source commands into its own lists and buffers.
+  private var stripSolidInstances: [SolidInstance] = []
+  private var stripGlyphInstances: [GlyphInstance] = []
   // setVertexBytes has a hard 4 KB limit, which one 80×24 frame can blow
   // past easily (one solid instance is 32 B, one glyph instance is 48 B).
   // We size MTLBuffers on demand and reuse them frame-to-frame.
@@ -418,6 +425,8 @@ public final class MetalRenderer: RendererBackend {
   private var cellGlyphBuffer: MTLBuffer?
   private var sidebarGlyphBuffer: MTLBuffer?
   private var cursorBuffer: MTLBuffer?
+  private var stripSolidBuffer: MTLBuffer?
+  private var stripGlyphBuffer: MTLBuffer?
 
   /// Persistent terminal-content render target. Holds the most recent fully
   /// rendered terminal cells (no cursor). Damage-driven updates write into
@@ -884,6 +893,14 @@ public final class MetalRenderer: RendererBackend {
   /// Consumed (reset to false) by the next render call.
   public var dropNextFrameWhenBusy = false
 
+  /// One-shot: repaint the sidebar strip this frame in a dedicated scissored
+  /// pass, regardless of terminal damage. Set by the view while the attention
+  /// pulse animates, so the breathing marker never has to force full-damage
+  /// terminal repaints — forcing those at the output-driven 120 Hz link rate
+  /// is what saturated the main thread ("typing is molasses whenever a tab
+  /// needs me"). Consumed (reset to false) by the next render call.
+  public var repaintSidebarStrip = false
+
   /// Minimum on-glass duration declared by paced scroll presents (1/120 s):
   /// the compositor reads the cadence from consistent paced presents, which
   /// is what holds a ProMotion panel at its full refresh rate.
@@ -925,6 +942,8 @@ public final class MetalRenderer: RendererBackend {
     lastDrawableAcquireDiagnostic = nil
     let dropIfBusy = dropNextFrameWhenBusy
     dropNextFrameWhenBusy = false
+    let stripRepaint = repaintSidebarStrip
+    repaintSidebarStrip = false
     reconcileThemeRevision()
     // A GPU command buffer that completed with `.error` (recorded off-main by
     // the completion handler) means the persistent target may be half-painted,
@@ -1005,6 +1024,22 @@ public final class MetalRenderer: RendererBackend {
       return false
     }
     passSlots.contentActive = didContent
+
+    // ---------- Pass 1b: sidebar strip ----------
+    // The strip owns its pixels this frame: encoded after the content pass,
+    // scissored to the sidebar's width, fed only by sidebar-source commands.
+    // A pulse frame over a clean terminal repaints a narrow strip instead of
+    // the whole surface, and a band-damage frame can't leave the marker
+    // half-stale (the strip pass overdraws the band's sidebar slice with the
+    // same frame's commands). A full redraw already repaints the strip.
+    if stripRepaint, effectiveDamage != .full {
+      encodeSidebarStripPass(
+        commands: commands,
+        target: target,
+        surfacePxH: surfaceHPx,
+        uniforms: &u,
+        cmdBuf: cmdBuf)
+    }
 
     let drawable = scheduledFrame.acquireDrawable(nonBlocking: dropIfBusy)
     lastDrawableAcquireDiagnostic = scheduledFrame.lastDrawableAcquireDiagnostic
@@ -1584,6 +1619,169 @@ public final class MetalRenderer: RendererBackend {
     }
     encoder.endEncoding()
     return true
+  }
+
+  /// Width of the sidebar strip in device pixels, taken from the widest
+  /// sidebar-source rect. The producer's first sidebar command is a
+  /// full-strip background rect, so this is the strip's true extent — no
+  /// extra plumbing from the layout layer needed.
+  private static func sidebarStripWidthPx(commands: [FrameCommand], scale: CGFloat) -> Int {
+    var maxX: CGFloat = 0
+    for cmd in commands {
+      if case .rect(let rect, _, .sidebar) = cmd {
+        maxX = max(maxX, rect.maxX)
+      }
+    }
+    guard maxX > 0 else { return 0 }
+    return Int((maxX * scale).rounded(.up))
+  }
+
+  /// Repaint only the sidebar strip on the persistent target. Shared by both
+  /// renderer modes: instances are rebuilt from sidebar-source commands into
+  /// dedicated buffers, so the pass neither depends on what the content pass
+  /// built (its sidebar instances may be damage-scoped to a band, or absent)
+  /// nor disturbs the terminal cells right of the strip (scissor).
+  @discardableResult
+  private func encodeSidebarStripPass(
+    commands: [FrameCommand],
+    target: MTLTexture,
+    surfacePxH: Int,
+    uniforms u: inout Uniforms,
+    cmdBuf: MTLCommandBuffer
+  ) -> Bool {
+    let widthPx = Self.sidebarStripWidthPx(commands: commands, scale: layer.contentsScale)
+    guard widthPx > 0 else { return false }
+    guard buildSidebarStripInstanceLists(commands: commands) else { return false }
+    guard !stripSolidInstances.isEmpty || !stripGlyphInstances.isEmpty else { return false }
+
+    let solidFrameBuffer: MTLBuffer?
+    if stripSolidInstances.isEmpty {
+      solidFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&stripSolidBuffer, for: stripSolidInstances)
+      else { return false }
+      solidFrameBuffer = buffer
+    }
+    let glyphFrameBuffer: MTLBuffer?
+    if stripGlyphInstances.isEmpty {
+      glyphFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&stripGlyphBuffer, for: stripGlyphInstances)
+      else { return false }
+      glyphFrameBuffer = buffer
+    }
+
+    let pass = MTLRenderPassDescriptor()
+    let attach = pass.colorAttachments[0]!
+    attach.texture = target
+    attach.loadAction = .load  // terminal pixels right of the scissor survive
+    attach.storeAction = .store
+    guard let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: pass) else { return false }
+    encoder.label = "sidebar-strip"
+    encoder.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+    encoder.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+    encoder.setScissorRect(
+      MTLScissorRect(
+        x: 0, y: 0,
+        width: min(widthPx, target.width),
+        height: min(surfacePxH, target.height)))
+    if let buf = solidFrameBuffer {
+      encoder.setRenderPipelineState(solidPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: stripSolidInstances.count)
+    }
+    if let buf = glyphFrameBuffer {
+      encoder.setRenderPipelineState(glyphPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.setFragmentTexture(sidebarGlyphAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: stripGlyphInstances.count)
+    }
+    encoder.endEncoding()
+    return true
+  }
+
+  private func buildSidebarStripInstanceLists(commands: [FrameCommand]) -> Bool {
+    var attempts = 0
+    while true {
+      sidebarGlyphAtlas.clearOverflowFlag()
+      buildSidebarStripInstanceListsOnce(commands: commands)
+      guard sidebarGlyphAtlas.didOverflow else { return true }
+      attempts += 1
+      guard attempts < 4, growGlyphAtlas(forSidebar: true) else { return false }
+      // A shared atlas relocated the terminal glyphs too — the persistent
+      // cell-glyph cache's UVs are stale, so force its rebuild next frame.
+      if sidebarGlyphAtlas === glyphAtlas {
+        cellGlyphGridGeometry = nil
+      }
+    }
+  }
+
+  private func buildSidebarStripInstanceListsOnce(commands: [FrameCommand]) {
+    stripSolidInstances.removeAll(keepingCapacity: true)
+    stripGlyphInstances.removeAll(keepingCapacity: true)
+    let scale = Float(layer.contentsScale)
+
+    @inline(__always)
+    func appendSolid(rect: CGRect, color: UInt32) {
+      guard rect.width > 0, rect.height > 0 else { return }
+      stripSolidInstances.append(
+        SolidInstance(
+          origin: SIMD2<Float>(Float(rect.origin.x) * scale, Float(rect.origin.y) * scale),
+          size: SIMD2<Float>(Float(rect.width) * scale, Float(rect.height) * scale),
+          color: rgbaToFloat4(color)))
+    }
+
+    for cmd in commands {
+      switch cmd {
+      case .rect(let rect, let color, .sidebar):
+        appendSolid(rect: rect, color: color)
+      case .glyphRun(
+        let origin, let text, let fg, _, let attrs, .sidebar,
+        let underlineStyle, let underlineColor, _
+      ):
+        let font = styledFont(for: attrs, in: sidebarFontAtlas)
+        let traits = CTFontGetSymbolicTraits(font)
+        let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
+        let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+        let atlasW = Float(sidebarGlyphAtlas.textureSize)
+        let atlasH = Float(sidebarGlyphAtlas.textureSize)
+        for (cellIndex, cluster) in text.enumerated() {
+          guard
+            let entry = sidebarGlyphAtlas.entry(
+              character: cluster, font: font,
+              boldFallback: needsBoldFallback,
+              italicFallback: needsItalicFallback)
+          else { continue }
+          let cellX = origin.x + CGFloat(cellIndex) * sidebarCellAdvance
+          stripGlyphInstances.append(
+            GlyphInstance(
+              origin: SIMD2<Float>(
+                Float(cellX + entry.logicalOriginX) * scale,
+                Float(origin.y) * scale),
+              size: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+              uvOrigin: SIMD2<Float>(
+                Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
+              uvSize: SIMD2<Float>(
+                Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+              color: rgbaToFloat4(fg)))
+        }
+        emitDecorations(
+          for: text, at: origin, attributes: attrs,
+          cellAdvance: sidebarCellAdvance,
+          cellHeight: sidebarCellHeight,
+          descent: sidebarFontAtlas.descent,
+          fg: fg,
+          underlineStyle: underlineStyle, underlineColor: underlineColor,
+          appendSolid: appendSolid)
+      default:
+        break
+      }
+    }
   }
 
   /// Compute the union bounding-box scissor rect (in device pixels) covering

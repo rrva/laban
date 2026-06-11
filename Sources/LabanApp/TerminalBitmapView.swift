@@ -241,34 +241,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// backend swaps re-install onto the new renderer.
   private weak var drawableWakeInstalledRenderer: MetalRenderer?
 
-  /// Last time an attention pulse forced a full-damage repaint. The pulse is
-  /// designed for 30 fps sampling (`animationDisplayLinkFramesPerSecond`),
-  /// but while terminal output also drives the link at 120 fps, forcing FULL
-  /// damage on every output frame multiplied the per-frame cost ~5x and
-  /// saturated the main thread — the "typing is molasses whenever a tab
-  /// needs me" report. Rate-limiting the forcing to the pulse's design rate
-  /// lets the interleaved output frames keep their cheap partial damage;
-  /// sidebar pixels go at most ~33 ms stale, imperceptible on a 1.5 s
-  /// breathing animation.
-  private var lastAttentionFullDamageAt: ContinuousClock.Instant?
-  private static let attentionFullDamageInterval: Double =
-    1.0 / Double(TerminalIdlePolicy.animationDisplayLinkFramesPerSecond)
-
-  private func attentionFullDamageDue(attentionAnimating: Bool) -> Bool {
-    guard attentionAnimating else {
-      lastAttentionFullDamageAt = nil
-      return false
-    }
-    let now = ContinuousClock.now
-    if let last = lastAttentionFullDamageAt,
-      Double((now - last).components.attoseconds) / 1e18 < Self.attentionFullDamageInterval,
-      (now - last).components.seconds < 1
-    {
-      return false
-    }
-    lastAttentionFullDamageAt = now
-    return true
-  }
+  /// Whether the previous frame animated the attention pulse. The pulse never
+  /// touches terminal damage: it repaints via the renderer's dedicated
+  /// sidebar-strip pass (`repaintSidebarStrip`). One trailing strip frame
+  /// after the pulse stops parks the marker's final state on glass — gone,
+  /// or held at full opacity — instead of freezing it mid-breath.
+  private var attentionWasAnimating = false
 
   /// Scroll-position signature of the most recently journaled idle park, so a
   /// sustained off-bottom park logs one `noFrameNeeded` entry instead of one
@@ -1377,24 +1355,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   /// Whether a frame must repaint the whole terminal rather than only its dirty
-  /// rows. A pulse-only frame (a background tab needs attention) advances no
-  /// terminal rows, so the snapshot is clean and `damage` resolves to
-  /// `.partial([])` — which the renderer honours by skipping the entire content
-  /// pass, freezing the sidebar attention marker. Forcing full damage for such a
-  /// frame lets the content pass run so the marker keeps breathing. Hover and
-  /// drag already set `renderInvalidated`, so they need no entry here.
+  /// rows. The attention pulse is deliberately NOT an input: pulse frames
+  /// repaint via the renderer's dedicated sidebar-strip pass
+  /// (`repaintSidebarStrip`), so a breathing marker costs a ~200 pt strip, not
+  /// full-surface repaints at the 120 Hz output link rate — the structural fix
+  /// for "typing is molasses whenever a tab needs me". Hover and drag already
+  /// set `renderInvalidated`, so they need no entry here.
   nonisolated static func shouldForceFullDamage(
     renderInvalidated: Bool,
     tabChanged: Bool,
     scrollAnimating: Bool,
-    attentionAnimating: Bool,
     fractionalScrollOffset: Bool
   ) -> Bool {
     // fractionalScrollOffset: while rows sit at a sub-cell offset, a
     // partial-damage frame (output, blink, attention) would composite its
     // damaged rows against stale pixels at every undamaged row — the offset
     // shifts everything, so any repaint must be a full repaint.
-    renderInvalidated || tabChanged || scrollAnimating || attentionAnimating
+    renderInvalidated || tabChanged || scrollAnimating
       || fractionalScrollOffset
   }
 
@@ -1728,9 +1705,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let attentionAnimating =
       windowVisibleToUser && !reduceMotion
       && TabAttentionClassifier.anyNeedsAction(tabs: model.tabs, activeTabId: activeTab.id)
+    // Pulse frames plus one trailing frame after the pulse stops, so the
+    // marker's final state lands on glass instead of freezing mid-breath.
+    let attentionStripFrame = attentionAnimating || attentionWasAnimating
+    attentionWasAnimating = attentionAnimating
 
     // Return early when nothing changed
-    guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame || attentionAnimating
+    guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame
+      || attentionStripFrame
     else {
       recordParkedFrameIfInteresting(
         frame: captureFrame,
@@ -1775,6 +1757,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // tick and halves the cadence. Only scroll animation frames opt in —
     // output-driven frames keep the blocking guarantees.
     metalRenderer?.dropNextFrameWhenBusy = scrollAnimating || subCellRows != 0
+    // Attention pulse frames repaint the sidebar in the renderer's dedicated
+    // scissored strip pass instead of forcing full-damage terminal repaints.
+    // (The software backend ignores damage and repaints every command, so it
+    // needs no flag — reaching the render call below is enough.)
+    metalRenderer?.repaintSidebarStrip = attentionStripFrame
     if let metalRenderer, drawableWakeInstalledRenderer !== metalRenderer {
       drawableWakeInstalledRenderer = metalRenderer
       metalRenderer.onDrawableReadyAfterMiss = { [weak self] in
@@ -1812,7 +1799,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         renderInvalidated: renderInvalidated,
         tabChanged: tabChanged,
         scrollAnimating: scrollAnimating,
-        attentionAnimating: attentionFullDamageDue(attentionAnimating: attentionAnimating),
         fractionalScrollOffset: subCellRows != 0),
       surfaceWidth: backend.surfaceWidth,
       surfaceHeight: backend.surfaceHeight,
