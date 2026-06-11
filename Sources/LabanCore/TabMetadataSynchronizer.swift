@@ -150,9 +150,12 @@ final class TabMetadataSynchronizer {
 
   @discardableResult
   func syncTitle(forTab tabId: Tab.ID, from session: Session, tabs: inout [Tab]) -> Bool {
+    // Resolve the tab before consuming: consumeTitle clears the C-side dirty
+    // flag, so consuming first permanently drops a title that arrives while
+    // the tab is mid-rebuild and not present in the array yet.
+    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
     let (dirty, raw) = session.consumeTitle()
     guard dirty else { return false }
-    guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return false }
     return syncTitle(raw: raw, forTab: tabId, at: idx, tabs: &tabs)
   }
 

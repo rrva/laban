@@ -542,6 +542,20 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.tabs[0].sessionId, sessionId, "session id unchanged after title update")
   }
 
+  func testSyncTitleAgainstUnknownTabDoesNotConsumeThePendingTitle() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    let session = try XCTUnwrap(model.session(forTab: tabId))
+    XCTAssertEqual(session.feedOutput(Array("\u{1B}]0;vim README.md\u{07}".utf8)), 0)
+
+    // A sync routed at a tab that is not in the array (mid-rebuild window)
+    // must not clear the C-side dirty flag, or the title is dropped forever.
+    XCTAssertFalse(model.syncTitle(forTab: "no-such-tab", from: session))
+
+    XCTAssertTrue(model.syncTitle(forTab: tabId, from: session))
+    XCTAssertEqual(model.tabs[0].titleMetadata.terminalTitle, "vim README.md")
+  }
+
   func testResizeAppliesToBackgroundSessions() throws {
     let model = try makeModel(rows: 24, cols: 80)
     try model.createTab()
