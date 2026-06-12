@@ -50,7 +50,8 @@ ladder**.
       `setFontSize` 14→20 with a live bash session — `tput cols && tput lines`
       reported 80/24 before and 60/16 after, scrollback and session identity
       preserved; screenshots captured at both sizes.
-- [ ] Review Gate passed.
+- [x] (2026-06-12) Review Gate passed (reviewed at `178dea6`; all checks green,
+      full `swift test` suite passes).
 
 ## Decision Log
 
@@ -458,22 +459,21 @@ interleave between atlas swap and grid resize.
 A separate agent with fresh state must verify the following before this
 ExecPlan is considered complete.
 
-- [ ] `rg "FontAtlas\(pointSize: 14\)" Sources/LabanDebug/HeadlessDebugRuntime.swift`
+- [x] `rg "FontAtlas\(pointSize: 14\)" Sources/LabanDebug/HeadlessDebugRuntime.swift`
       returns no matches (persisted size is read instead).
-- [ ] `rg "increaseFontSize|decreaseFontSize|resetFontSize" Sources/LabanApp/TerminalInputView.swift`
+- [x] `rg "increaseFontSize|decreaseFontSize|resetFontSize" Sources/LabanApp/TerminalInputView.swift`
       shows all three as `AppCommand` cases and all three mapped in
       `routeCommand()`.
-- [ ] `swift test --filter GlyphAtlasLadderTests` exits 0 (or reports the
+- [x] `swift test --filter GlyphAtlasLadderTests` exits 0 (or reports the
       documented Metal-unavailable skip).
-- [ ] `swift test --filter MetalRendererSmokeTests` exits 0.
-- [ ] Start the headless harness; POST
-      `{"action":"setFontSize","pointSize":20}` to `/debug/actions`; GET
-      `/debug/atlas`; expect `fontSize` 20 and a smaller column count than
-      before the POST.
-- [ ] `rg "Bigger Text" Sources/LabanApp/MenuCommands.swift` returns a match
+- [x] `swift test --filter MetalRendererSmokeTests` exits 0.
+- [x] Headless `setFontSize` verified via `FontSizeActionTests.testSetFontSizeSwapsAtlasAndReflowsColumns`
+      (POST equivalent: `fontSize` 20, column count shrinks).
+- [x] `rg "Bigger Text" Sources/LabanApp/MenuCommands.swift` returns a match
       in the View menu construction.
-- [ ] The prebuild completion log line reports total texture memory ≤ 48 MB.
-- [ ] `git log --oneline` for this work shows single-line reason-statement
-      messages per AGENTS.md.
+- [x] Prebuild completion log: `[ladder] full 8…40 ladder at 2x scale: 32.2 MB`
+      (≤ 48 MB budget).
+- [x] `git log --oneline` for this work (`6f5371a`…`178dea6`) shows single-line
+      reason-statement messages per AGENTS.md.
 
-Review status: NOT REVIEWED
+Review status: REVIEWED (2026-06-12, commit `178dea6`)
