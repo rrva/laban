@@ -37,12 +37,19 @@ ladder**.
       keeps reference-counted per-size font grids created on demand; neither
       precomputes — Laban deliberately goes further and prebuilds, trading
       bounded memory for guaranteed zero raster work per step).
-- [ ] M1: live zoom mechanics end-to-end (synchronous atlas build, no ladder
-      yet); Cmd+= / Cmd+- / Cmd+0 work; persistence; menu items.
-- [ ] M2: prebuilt atlas ladder + ASCII prewarm + rasterization counter;
-      perf acceptance met.
-- [ ] M3: headless/debug parity (`setFontSize` action, persisted size read),
-      schema updates, tests green, capture/replay sanity.
+- [x] (2026-06-12) M1: live zoom mechanics end-to-end (synchronous atlas
+      build, no ladder yet); Cmd+= / Cmd+- / Cmd+0 work; persistence; menu
+      items; Settings size-only changes apply live.
+- [x] (2026-06-12) M2: prebuilt atlas ladder + ASCII prewarm + rasterization
+      counter; perf acceptance met (full 8…40 ladder at 2× scale measured
+      32.2 MB ≤ 48 MB budget; prewarmed atlas serves all printable ASCII with
+      zero new rasterizations — `GlyphAtlasLadderTests`).
+- [x] (2026-06-12) M3: headless/debug parity (`setFontSize` action, persisted
+      size read, Cmd+=/-/0 key routes mirrored), schema + discovery updates,
+      tests green (full `swift test` suite passes). Headless behavioral proof:
+      `setFontSize` 14→20 with a live bash session — `tput cols && tput lines`
+      reported 80/24 before and 60/16 after, scrollback and session identity
+      preserved; screenshots captured at both sizes.
 - [ ] Review Gate passed.
 
 ## Decision Log
@@ -92,6 +99,14 @@ ladder**.
   in place while the render thread reads it. Laban's existing pattern
   (replace the whole `MetalGlyphAtlas` object on backing-scale change)
   avoids that class of bug; the ladder keeps the pattern.
+  Date/Author: 2026-06-12 / agent.
+- Decision: Ladder texture sizing uses candidates 512/768/1024/1536/2048 with
+  2× prewarm headroom (not the originally drafted 512/1024/2048 with 3×).
+  Rationale: Measured, not estimated: the coarse steps put most mid sizes
+  into 2048² textures and the full 8…40 ladder hit 69.3 MB at 2× scale,
+  blowing the 48 MB budget. Finer steps with 2× headroom measure 32.2 MB;
+  the renderer's overflow-grow path still covers any underestimate. Per the
+  plan's own rule: shrink per-size textures, not the range.
   Date/Author: 2026-06-12 / agent.
 
 ## Context and Orientation
@@ -292,9 +307,10 @@ Behavior:
 1. `beginPrebuild` walks sizes 8…40 (skipping the active size, which already
    has a live atlas) on a `DispatchQueue(label:"laban.atlas-ladder",
    qos:.utility)`. For each size: build both `FontAtlas` instances, compute
-   cell metrics, choose a texture size (smallest of 512/1024/2048 whose area
-   is ≥ 3× the estimated prewarm area — 95 glyphs × cellW×scale ×
-   cellH×scale; the existing overflow-grow path covers underestimates), and
+   cell metrics, choose a texture size (smallest of 512/768/1024/1536/2048
+   whose area is ≥ 2× the estimated prewarm area — 95 glyphs × cellW×scale ×
+   cellH×scale; the existing overflow-grow path covers underestimates; see
+   Decision Log for why the steps are this fine), and
    construct both `MetalGlyphAtlas` instances. **Prewarm** by requesting
    `entry(scalar:font:)` for every scalar in U+0020…U+007E on both atlases.
    Publish the finished `Entry` into a lock-protected dictionary. CPU-side
@@ -430,10 +446,12 @@ interleave between atlas swap and grid resize.
 - New `AppCommand` cases: `increaseFontSize`, `decreaseFontSize`,
   `resetFontSize`.
 - New debug action: `setFontSize` (schema in `schemas/debug/action.schema.json`).
-- Memory budget: ladder ≤ 48 MB of `r8Unorm` textures at 2× scale (33 sizes;
-  estimate: sizes ≤16 fit 512² = 0.25 MB, mid sizes 1024² = 1 MB, largest
-  sizes at most 2048² = 4 MB). `totalTextureBytes` is the measured truth;
-  if the budget is exceeded, shrink per-size textures, not the range.
+- Memory budget: ladder ≤ 48 MB of `r8Unorm` textures at 2× scale (33 sizes).
+  `totalTextureBytes` is the measured truth; if the budget is exceeded,
+  shrink per-size textures, not the range. Measured 2026-06-12 with the
+  512/768/1024/1536/2048 × 2 sizing: 32.2 MB
+  (`GlyphAtlasLadderTests.testFullLadderBuildsAllSizesWithinMemoryBudget`
+  prints the figure).
 
 ## Review Gate
 
