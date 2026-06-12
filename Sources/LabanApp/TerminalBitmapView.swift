@@ -409,6 +409,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private(set) var sidebarCellWidth: Int
   private(set) var sidebarCellHeight: Int
 
+  /// Prebuilt per-size atlas ladder so a zoom step swaps pointers instead of
+  /// rasterizing. Created after the first frame (`ensureAtlasLadder`),
+  /// discarded and rebuilt on backing-scale change. Nil (or still warming)
+  /// means `applyFontSize` builds atlases synchronously — the ladder is an
+  /// accelerator, never a correctness dependency.
+  private(set) var atlasLadder: GlyphAtlasLadder?
+
   init(
     model: AppModel,
     fontAtlas: FontAtlas,
@@ -852,6 +859,32 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     syncActiveSessionFocus(windowFocused: window?.isKeyWindow == true)
     startLabandSnapshotGenerationMonitor()
     scheduleResizeAutomationIfRequested()
+    // Defer ladder prebuild past the first frame so startup latency never
+    // pays for it; until it lands, zoom uses the synchronous fallback.
+    DispatchQueue.main.async { [weak self] in
+      self?.ensureAtlasLadder()
+    }
+  }
+
+  /// Create (or recreate after a backing-scale change) the prebuilt atlas
+  /// ladder and kick off its background prebuild. On the software backend the
+  /// ladder still serves `FontAtlas` metrics; its GPU atlases are simply
+  /// unused.
+  private func ensureAtlasLadder() {
+    guard let window else { return }
+    let scale = window.backingScaleFactor
+    if let ladder = atlasLadder, abs(ladder.scale - scale) < 0.0001 { return }
+    let device = (backend as? MetalRenderer)?.device ?? MTLCreateSystemDefaultDevice()
+    guard let device else {
+      atlasLadder = nil
+      return
+    }
+    let ladder = GlyphAtlasLadder(
+      device: device,
+      scale: scale,
+      fontName: UserDefaults.standard.string(forKey: FontAtlas.userFontKey))
+    atlasLadder = ladder
+    ladder.beginPrebuild(excluding: Int(FontAtlas.clampedZoomPointSize(fontAtlas.pointSize)))
   }
 
   private func startLabandSnapshotGenerationMonitor() {
@@ -1385,6 +1418,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       metal.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
     } else if let software = backend as? SoftwareBackend {
       software.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
+    }
+    // Ladder textures were rasterized for the old backing scale; discard and
+    // rebuild for the new one (the renderer's own scale-change branch already
+    // rebuilt the active size synchronously above).
+    if let ladder = atlasLadder, abs(ladder.scale - scale) > 0.0001 {
+      atlasLadder = nil
+      DispatchQueue.main.async { [weak self] in
+        self?.ensureAtlasLadder()
+      }
     }
     return true
   }
@@ -3240,9 +3282,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let clamped = FontAtlas.clampedZoomPointSize(requested)
     guard clamped != fontAtlas.pointSize else { return }
 
-    let newFontAtlas = FontAtlas(pointSize: clamped)
-    let newSidebarFontAtlas = FontAtlas(
-      pointSize: FontAtlas.sidebarPointSize(forTerminalPointSize: clamped))
+    // Prefer prebuilt ladder atlases — a pure pointer swap. Fall back to a
+    // synchronous build (a few ms) when the ladder is absent, still warming,
+    // or stale against the persisted font family; correctness never depends
+    // on the ladder.
+    let ladderEntry: GlyphAtlasLadder.Entry? = {
+      guard let ladder = atlasLadder,
+        ladder.fontName == UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
+      else { return nil }
+      return ladder.entry(forPointSize: Int(clamped))
+    }()
+    let newFontAtlas = ladderEntry?.fontAtlas ?? FontAtlas(pointSize: clamped)
+    let newSidebarFontAtlas =
+      ladderEntry?.sidebarFontAtlas
+      ?? FontAtlas(pointSize: FontAtlas.sidebarPointSize(forTerminalPointSize: clamped))
     let cell = newFontAtlas.cellSize
     let sidebarCell = newSidebarFontAtlas.cellSize
 
@@ -3256,7 +3309,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let metal = backend as? MetalRenderer {
       metal.reconfigureFonts(
         fontAtlas: newFontAtlas,
-        sidebarFontAtlas: newSidebarFontAtlas)
+        sidebarFontAtlas: newSidebarFontAtlas,
+        prebuiltTerminalAtlas: ladderEntry?.terminalAtlas,
+        prebuiltSidebarAtlas: ladderEntry?.sidebarAtlas)
     } else {
       // SoftwareRenderer rasterizes from its FontAtlas every frame and is
       // wired to one surface; recreate the backend with the new atlases at

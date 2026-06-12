@@ -1,0 +1,81 @@
+import CoreGraphics
+import Metal
+import XCTest
+
+@testable import LabanRenderer
+
+final class GlyphAtlasLadderTests: XCTestCase {
+
+  func testLadderEntryMatchesDirectFontAtlasMetrics() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let ladder = GlyphAtlasLadder(device: device, scale: 2, fontName: nil)
+    guard let entry = ladder.makeEntry(forPointSize: 16) else {
+      return XCTFail("makeEntry(forPointSize: 16) returned nil")
+    }
+
+    let reference = FontAtlas(pointSize: 16)
+    XCTAssertEqual(entry.fontAtlas.pointSize, 16)
+    XCTAssertEqual(entry.fontAtlas.cellSize.width, reference.cellSize.width)
+    XCTAssertEqual(entry.fontAtlas.cellSize.height, reference.cellSize.height)
+    XCTAssertEqual(
+      entry.sidebarFontAtlas.pointSize,
+      FontAtlas.sidebarPointSize(forTerminalPointSize: 16))
+  }
+
+  func testPrewarmedEntryServesASCIIWithoutNewRasterization() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let ladder = GlyphAtlasLadder(device: device, scale: 2, fontName: nil)
+    guard let entry = ladder.makeEntry(forPointSize: 16) else {
+      return XCTFail("makeEntry(forPointSize: 16) returned nil")
+    }
+
+    let countAfterPrewarm = entry.terminalAtlas.rasterizedGlyphCount
+    XCTAssertGreaterThan(countAfterPrewarm, 0, "prewarm must rasterize ASCII")
+
+    // The acceptance bar for the ladder: adopting a prewarmed atlas and then
+    // drawing the whole printable ASCII range rasterizes nothing new.
+    for value in 0x20...0x7E {
+      let scalar = Unicode.Scalar(value)!
+      XCTAssertNotNil(
+        entry.terminalAtlas.entry(
+          scalar: scalar,
+          font: entry.fontAtlas.font,
+          boldFallback: false,
+          italicFallback: false),
+        "prewarmed atlas must serve U+\(String(value, radix: 16))")
+    }
+    XCTAssertEqual(
+      entry.terminalAtlas.rasterizedGlyphCount, countAfterPrewarm,
+      "ASCII lookups after prewarm must not rasterize")
+  }
+
+  func testFullLadderBuildsAllSizesWithinMemoryBudget() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let activeSize = Int(FontAtlas.defaultTerminalPointSize)
+    let ladder = GlyphAtlasLadder(device: device, scale: 2, fontName: nil)
+    ladder.prebuild(excluding: activeSize)
+
+    let lo = Int(FontAtlas.zoomMinimumPointSize)
+    let hi = Int(FontAtlas.zoomMaximumPointSize)
+    for size in lo...hi {
+      if size == activeSize {
+        XCTAssertNil(ladder.entry(forPointSize: size), "active size is excluded")
+      } else {
+        XCTAssertNotNil(ladder.entry(forPointSize: size), "missing ladder entry for \(size) pt")
+      }
+    }
+
+    let budget = 48 * 1024 * 1024
+    let megabytes = Double(ladder.totalTextureBytes) / (1024 * 1024)
+    print(String(format: "[ladder] full 8…40 ladder at 2x scale: %.1f MB", megabytes))
+    XCTAssertLessThanOrEqual(
+      ladder.totalTextureBytes, budget,
+      "ladder texture memory exceeds the 48 MB budget at 2x scale")
+  }
+}

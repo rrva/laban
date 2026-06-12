@@ -94,6 +94,12 @@ public final class MetalGlyphAtlas {
   private var advanceForGlyph: [ObjectIdentifier: [CGGlyph: CGFloat]] = [:]
   private(set) var didOverflow = false
 
+  /// Number of glyph tiles actually rasterized (CoreText draw + texture
+  /// upload) into this atlas. Observability hook for the atlas ladder: a
+  /// prewarmed atlas swap must leave this unchanged — only genuinely new
+  /// glyphs rasterize after the swap.
+  public private(set) var rasterizedGlyphCount = 0
+
   // Shelf packer state.
   private var shelfX: Int = 0
   private var shelfY: Int = 0
@@ -203,6 +209,18 @@ public final class MetalGlyphAtlas {
     didOverflow = false
   }
 
+  /// Rasterize every printable ASCII scalar (U+0020…U+007E) for `font` into
+  /// the texture so a later renderer adopting this atlas finds the common
+  /// alphabet already cached. Safe off the main thread while no renderer
+  /// references the atlas (CPU CoreText drawing plus
+  /// `MTLTexture.replaceRegion` uploads).
+  public func prewarmASCII(font: CTFont) {
+    for value in 0x20...0x7E {
+      guard let scalar = Unicode.Scalar(value) else { continue }
+      _ = entry(scalar: scalar, font: font, boldFallback: false, italicFallback: false)
+    }
+  }
+
   // MARK: - Internal
 
   private func rasterizeAndPack(
@@ -310,6 +328,7 @@ public final class MetalGlyphAtlas {
       }
     }
 
+    rasterizedGlyphCount += 1
     return Entry(
       pixelWidth: pixelW, pixelHeight: pixelH,
       originX: originX, originY: originY,
