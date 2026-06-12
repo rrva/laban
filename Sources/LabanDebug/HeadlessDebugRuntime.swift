@@ -57,9 +57,9 @@ public final class HeadlessDebugRuntime {
   let deterministic: Bool
 
   var model: AppModel
-  let fontAtlas: FontAtlas
-  let cellWidth: Int
-  let cellHeight: Int
+  var fontAtlas: FontAtlas
+  var cellWidth: Int
+  var cellHeight: Int
   let sidebarWidth: Int = 200
   var windowWidth: Int
   var windowHeight: Int
@@ -145,7 +145,9 @@ public final class HeadlessDebugRuntime {
     let configuredBackend = try TerminalSessionBackend.configured()
     self.terminalBackend = fixtureURL == nil ? configuredBackend : .inProcess
 
-    let fa = FontAtlas(pointSize: 14)
+    // Parity with MainWindowController: honor the persisted font size
+    // (UserDefaults `LabanFontSize`) instead of hardcoding the default.
+    let fa = FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize)
     let cs = fa.cellSize
     self.fontAtlas = fa
     self.cellWidth = Int(cs.width)

@@ -43,6 +43,18 @@ final class DebugActionDecodingTests: XCTestCase {
     XCTAssertEqual(request.paths, ["/tmp/a.png", "/tmp/file with spaces.pdf"])
   }
 
+  func testDecodesSetFontSizePayloadFromFlatWireShape() throws {
+    guard
+      case .setFontSize(let request) = try decode(
+        #"{"action":"setFontSize","pointSize":20}"#
+      )
+    else {
+      return XCTFail("Expected setFontSize action")
+    }
+
+    XCTAssertEqual(request.pointSize, 20)
+  }
+
   func testDecodesPayloadFreeActions() throws {
     guard case .paste = try decode(#"{"action":"paste","ignored":true}"#) else {
       return XCTFail("Expected paste action")

@@ -11,6 +11,7 @@
     {"$ref": "#/$defs/clearTabTitle"},
     {"$ref": "#/$defs/setTabMetadata"},
     {"$ref": "#/$defs/resizeWindow"},
+    {"$ref": "#/$defs/setFontSize"},
     {"$ref": "#/$defs/typeText"},
     {"$ref": "#/$defs/feedOutput"},
     {"$ref": "#/$defs/key"},
@@ -119,6 +120,15 @@
         "action": {"const": "resizeWindow"},
         "width": {"type": "integer", "minimum": 1},
         "height": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "setFontSize": {
+      "type": "object",
+      "required": ["action", "pointSize"],
+      "properties": {
+        "action": {"const": "setFontSize"},
+        "pointSize": {"type": "number", "minimum": 1}
       },
       "additionalProperties": false
     },

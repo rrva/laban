@@ -9,6 +9,9 @@ enum DebugDiscoveryCatalog {
       name: "moveTab",
       summary: "Reorder a tab by id to a new zero-based index (clamped to the tab range)."),
     DebugDiscoveryControl(name: "resizeWindow", summary: "Resize the headless window surface."),
+    DebugDiscoveryControl(
+      name: "setFontSize",
+      summary: "Apply a live font-size zoom step; grid renegotiates at unchanged window pixels."),
     DebugDiscoveryControl(name: "typeText", summary: "Send text through terminal input."),
     DebugDiscoveryControl(name: "feedOutput", summary: "Inject fixture terminal output bytes."),
     DebugDiscoveryControl(name: "advanceFrames", summary: "Render one or more additional frames."),

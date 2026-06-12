@@ -31,6 +31,8 @@ extension HeadlessDebugRuntime {
       return DebugTabActions(runtime: self).moveTab(request)
     case .resizeWindow(let request):
       return DebugWindowActions(runtime: self).resizeWindow(request)
+    case .setFontSize(let request):
+      return DebugWindowActions(runtime: self).setFontSize(request)
     case .advanceFrames(let request):
       return DebugWindowActions(runtime: self).advanceFrames(request)
     case .windowFocus(let request):

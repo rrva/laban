@@ -52,6 +52,8 @@ enum DebugRuntimeKeyInput {
     case "pagedown": return .pageDown
     case "[", "bracketleft": return .bracketLeft
     case "]", "bracketright": return .bracketRight
+    case "=", "equal": return .equal
+    case "-", "minus": return .minus
     case "insert": return .insert
     case "arrowup": return .arrowUp
     case "arrowdown": return .arrowDown
@@ -138,6 +140,12 @@ enum DebugRuntimeKeyInput {
       return ("appCommand", "selectTab")
     case .digit9:
       return ("appCommand", "selectLastTab")
+    case .equal:
+      return ("appCommand", "increaseFontSize")
+    case .minus:
+      return ("appCommand", "decreaseFontSize")
+    case .digit0:
+      return ("appCommand", "resetFontSize")
     case .arrowRight where modifiers.contains(.alt):
       return ("appCommand", "selectNextTab")
     case .arrowLeft where modifiers.contains(.alt):

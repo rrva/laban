@@ -15,6 +15,7 @@ enum DebugAction: Decodable {
   case setTabMetadata(TabMetadataActionRequest)
   case moveTab(MoveTabActionRequest)
   case resizeWindow(ResizeWindowActionRequest)
+  case setFontSize(SetFontSizeActionRequest)
   case typeText(TextActionRequest)
   case feedOutput(TextActionRequest)
   case advanceFrames(AdvanceFramesActionRequest)
@@ -60,6 +61,8 @@ enum DebugAction: Decodable {
       self = .moveTab(try MoveTabActionRequest(from: decoder))
     case "resizeWindow":
       self = .resizeWindow(try ResizeWindowActionRequest(from: decoder))
+    case "setFontSize":
+      self = .setFontSize(try SetFontSizeActionRequest(from: decoder))
     case "typeText":
       self = .typeText(try TextActionRequest(from: decoder))
     case "feedOutput":
@@ -143,6 +146,13 @@ struct TabMetadataActionRequest: Decodable {
 struct ResizeWindowActionRequest: Decodable {
   var width: Int?
   var height: Int?
+}
+
+/// Live font-size zoom (headless counterpart of Cmd+= / Cmd+- / Cmd+0).
+/// The point size is clamped to the zoom range and applied with unchanged
+/// window pixels, so columns/rows renegotiate like the app's zoom step.
+struct SetFontSizeActionRequest: Decodable {
+  var pointSize: Double?
 }
 
 struct TextActionRequest: Decodable {

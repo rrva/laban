@@ -879,6 +879,7 @@ Example actions:
 {"action":"closeTab","tabId":"tab-2"}
 {"action":"selectTab","tabId":"tab-1"}
 {"action":"resizeWindow","width":1280,"height":800}
+{"action":"setFontSize","pointSize":20}
 {"action":"typeText","text":"printf '$HOME\\n'\\n"}
 {"action":"key","key":"t","modifiers":["command"]}
 {"action":"mouseWheel","x":400,"y":300,"deltaY":-3}

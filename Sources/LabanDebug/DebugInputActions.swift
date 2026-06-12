@@ -1,5 +1,6 @@
 import Foundation
 import LabanCore
+import LabanRenderer
 import LabanTerminalCore
 
 struct DebugInputActions {
@@ -236,6 +237,15 @@ struct DebugInputActions {
       if let index = DebugRuntimeKeyInput.tabIndex(for: key) {
         selectTab(at: index)
       }
+    case "increaseFontSize":
+      _ = DebugWindowActions(runtime: runtime).setFontSize(
+        SetFontSizeActionRequest(pointSize: Double(runtime.fontAtlas.pointSize) + 1))
+    case "decreaseFontSize":
+      _ = DebugWindowActions(runtime: runtime).setFontSize(
+        SetFontSizeActionRequest(pointSize: Double(runtime.fontAtlas.pointSize) - 1))
+    case "resetFontSize":
+      _ = DebugWindowActions(runtime: runtime).setFontSize(
+        SetFontSizeActionRequest(pointSize: Double(FontAtlas.defaultTerminalPointSize)))
     default:
       return
     }

@@ -1,3 +1,5 @@
+import CoreGraphics
+import Foundation
 import LabanRenderer
 
 struct DebugWindowActions {
@@ -46,6 +48,64 @@ struct DebugWindowActions {
     runtime.renderFrameUnlocked()
     runtime.appendEvent(
       EventEntry(kind: "window.resized", width: runtime.windowWidth, height: runtime.windowHeight)
+    )
+    return runtime.actionResult(ok: true)
+  }
+
+  /// Headless counterpart of the app's live font-size zoom (Cmd+= / Cmd+- /
+  /// Cmd+0 → `TerminalBitmapView.applyFontSize`): swap the font atlas and
+  /// renderer, adopt the new cell metrics, and renegotiate the grid with
+  /// unchanged window pixels so sessions reflow exactly like the app's zoom.
+  func setFontSize(_ request: SetFontSizeActionRequest) -> DebugResponse {
+    guard let pointSize = request.pointSize else {
+      return jsonError("setFontSize requires pointSize")
+    }
+    let clamped = FontAtlas.clampedZoomPointSize(CGFloat(pointSize))
+    if clamped != runtime.fontAtlas.pointSize {
+      let fontAtlas = FontAtlas(pointSize: clamped)
+      let cell = fontAtlas.cellSize
+      runtime.fontAtlas = fontAtlas
+      runtime.cellWidth = max(1, Int(cell.width))
+      runtime.cellHeight = max(1, Int(cell.height))
+      runtime.renderer = SoftwareRenderer(surface: runtime.surface, fontAtlas: fontAtlas)
+      // Init parity: the headless sidebar shares the terminal metrics.
+      runtime.surfaceController.updateCellMetrics(
+        cellWidth: runtime.cellWidth,
+        cellHeight: runtime.cellHeight,
+        sidebarCellWidth: cell.width,
+        sidebarCellHeight: cell.height)
+      runtime.model.resize(
+        viewportWidth: runtime.windowWidth - runtime.sidebarWidth,
+        viewportHeight: runtime.windowHeight,
+        cellWidth: runtime.cellWidth,
+        cellHeight: runtime.cellHeight
+      )
+      if let client = runtime.terminalSessionClient {
+        let size = runtime.model.terminalSize
+        for tab in runtime.model.tabs {
+          do {
+            try runtime.ensureTerminalClientSessionUnlocked(for: tab)
+            runtime.terminalClientSessionInfoById[tab.sessionId] =
+              try client.resize(
+                sessionId: runtime.terminalClientRemoteSessionId(for: tab.sessionId),
+                rows: Int(size.rows),
+                cols: Int(size.cols)
+              )
+          } catch {
+            runtime.appendError(
+              kind: "laband.resize.failed",
+              message: String(describing: error),
+              sessionId: tab.sessionId,
+              tabId: tab.id
+            )
+            return jsonError("setFontSize failed: \(error)")
+          }
+        }
+      }
+    }
+    runtime.renderFrameUnlocked()
+    runtime.appendEvent(
+      EventEntry(kind: "font.size.set", text: String(format: "%g", Double(clamped)))
     )
     return runtime.actionResult(ok: true)
   }
