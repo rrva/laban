@@ -73,6 +73,7 @@ Under `~/Library/Logs/Laban/`:
 
 - **PTY capture** — `captures/appkit-<UTC>/streams/`: `pty-output.bin` (child→terminal), `pty-input.bin` (keys), `terminal-response.bin` (Laban's replies back to the child — **confirm a responder fired here**: CPR/DA/kitty/OSC 10-11). Also `manifest.json`, `frames/`, `snapshots/`. Headless: `/debug` `startCapture` (`docs/process/dev-process.md`).
 - **Asciinema cast** — `casts/laban-<UTC>-lastNs.cast` (`LABAN_CAST_DIR` overrides).
+- **Tab-state journal** — always-on in-memory history of what each tab showed (title/status/selection/badge + banner notes), capture-clock timestamps. Query `GET /debug/tab-journal`, dump via Debug ▸ Dump Tab Journal (`tab-journal/` here), mirrored into capture `timeline.ndjson` as `tab.metadata`. First stop for "the badge/banner came late" questions.
 - **Main-thread stall stacks** — `~/laban-watchdog/inproc-stall-*.txt`.
 
 ## Decision Index

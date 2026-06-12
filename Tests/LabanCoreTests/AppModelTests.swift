@@ -289,6 +289,9 @@ final class AppModelTests: XCTestCase {
       return
     }
 
+    var banners: [String] = []
+    model.onAgentNotification = { _, text in banners.append(text) }
+
     // `replaceTabs` opens this window so a restored agent's resume-time OSC 9
     // doesn't badge every tab on launch.
     model.notificationSuppressionDeadline = Date().addingTimeInterval(60)
@@ -297,6 +300,9 @@ final class AppModelTests: XCTestCase {
     XCTAssertNil(
       model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
       "OSC 9 during the restore grace window must not badge the tab")
+    XCTAssertTrue(
+      banners.isEmpty,
+      "the restore-burst must not banner either — a relaunch posted ~40 stale banners")
 
     // After the window closes, notifications badge normally.
     model.notificationSuppressionDeadline = nil
@@ -305,6 +311,204 @@ final class AppModelTests: XCTestCase {
     XCTAssertNotNil(
       model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
       "OSC 9 after the grace window must badge normally")
+  }
+
+  // MARK: - Awaiting-input title marker -> early banner (episodes)
+
+  func testAwaitMarkerPostsBannerOncePerEpisode() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    var banners: [(tab: Tab.ID, text: String)] = []
+    model.onAgentNotification = { id, text in banners.append((id, text)) }
+
+    try model.updateTerminalTitle("⠂ Claude Code", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertTrue(banners.isEmpty, "a working spinner title must not banner")
+
+    try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertEqual(banners.count, 1, "the title flip to the awaiting marker banners once")
+    XCTAssertEqual(banners.first?.tab, tabId)
+    XCTAssertEqual(banners.first?.text, AppModel.awaitingInputNotificationText)
+    let badge = model.tabs.first { $0.id == tabId }?.titleMetadata.notification
+    XCTAssertEqual(badge?.text, AppModel.awaitingInputNotificationText)
+    XCTAssertEqual(badge?.urgent, true)
+    XCTAssertEqual(badge?.count, 1)
+
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertEqual(banners.count, 1, "re-detection inside the same episode must not re-banner")
+
+    // Flip back to working: the unseen synthetic badge is stale (the agent
+    // resumed without its own notification) and must retire.
+    try model.updateTerminalTitle("⠂ Claude Code", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    XCTAssertNil(
+      model.tabs.first { $0.id == tabId }?.titleMetadata.notification,
+      "a synthetic-only unseen badge must clear when the agent resumes working")
+
+    // Waiting again is a new episode: badge and banner fire again.
+    try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertEqual(banners.count, 2)
+    XCTAssertNotNil(model.tabs.first { $0.id == tabId }?.titleMetadata.notification)
+  }
+
+  func testRealNotificationDuringCoveredEpisodeSkipsSecondBanner() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+    var banners: [String] = []
+    model.onAgentNotification = { _, text in banners.append(text) }
+
+    try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertEqual(banners, [AppModel.awaitingInputNotificationText])
+    XCTAssertEqual(
+      model.tabs.first { $0.id == tabId }?.titleMetadata.notification?.text,
+      AppModel.awaitingInputNotificationText)
+
+    // The agent's own debounced notification ~6s later merges into the
+    // synthetic badge: text refreshes, count does not inflate, no banner.
+    session.feedOutput(Array("\u{1b}]9;Claude needs your permission\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(banners.count, 1, "a covered episode must swallow the duplicate banner")
+    let badge = model.tabs.first { $0.id == tabId }?.titleMetadata.notification
+    XCTAssertEqual(badge?.text, "Claude needs your permission")
+    XCTAssertEqual(badge?.urgent, true)
+    XCTAssertEqual(badge?.count, 1, "the merge must not inflate the unread count")
+
+    // A further notification in the same episode banners normally.
+    session.feedOutput(Array("\u{1b}]9;Still waiting on you\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(banners.count, 2)
+  }
+
+  func testAwaitMarkerBannerSkippedForFrontmostTab() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    model.isTabFrontmost = { _ in true }
+    var banners: [String] = []
+    model.onAgentNotification = { _, text in banners.append(text) }
+
+    try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertTrue(banners.isEmpty, "no banner for the tab the user is already watching")
+    XCTAssertNil(
+      model.tabs.first { $0.id == tabId }?.titleMetadata.notification,
+      "no badge for the tab the user is already watching")
+  }
+
+  func testViewedAwaitTabStaysClearAfterUnfocus() throws {
+    let model = try makeModel()
+    try model.createTab()  // tab[1] is now active; tab[0] is a background tab
+    let bgTabId = model.tabs[0].id
+    var banners: [String] = []
+    model.onAgentNotification = { _, text in banners.append(text) }
+
+    try model.updateTerminalTitle("✳ Pick an option", forTab: bgTabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertEqual(banners.count, 1)
+    XCTAssertNotNil(model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification)
+
+    // Viewing the tab clears the badge...
+    model.selectTab(bgTabId)
+    XCTAssertNil(model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification)
+
+    // ...and backgrounding it again must NOT relight it: the marker is still
+    // in the title, but this wait was already announced and seen.
+    let otherId = model.tabs.first { $0.id != bgTabId }!.id
+    model.selectTab(otherId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertNil(
+      model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
+      "a seen await episode must not re-badge when the tab is backgrounded again")
+    XCTAssertEqual(banners.count, 1, "and it must not re-banner either")
+  }
+
+  func testAwaitMarkerBannerSuppressedDuringRestoreGraceWindow() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    model.notificationSuppressionDeadline = Date().addingTimeInterval(60)
+    var banners: [String] = []
+    model.onAgentNotification = { _, text in banners.append(text) }
+
+    try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+    XCTAssertTrue(banners.isEmpty, "a restored agent's resume-time title must not banner")
+    XCTAssertNil(
+      model.tabs.first { $0.id == tabId }?.titleMetadata.notification,
+      "a restored wall of idle agent tabs must not all light up")
+  }
+
+  // MARK: - Tab-state journal
+
+  func testJournalRecordsNotificationBadgeTransition() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+    let cursor = model.tabJournal.snapshot().next
+
+    session.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
+    pumpMainQueue()
+
+    let entries = model.tabJournal.snapshot(since: cursor).entries
+    XCTAssertTrue(
+      entries.contains {
+        $0.tabId == tabId && $0.kind == "state"
+          && $0.metadata?.notification?.text == "Agent turn complete"
+      },
+      "the badge transition must land in the tab journal")
+  }
+
+  func testJournalMirrorsIntoCaptureSinkAsTabMetadata() throws {
+    final class CollectingSink: CaptureSink {
+      var events: [CaptureTimelineEvent] = []
+      private var seq = 0
+      func nextSequence() -> Int {
+        defer { seq += 1 }
+        return seq
+      }
+      func record(_ event: CaptureTimelineEvent) { events.append(event) }
+      func recordBytes(
+        direction: CaptureByteDirection,
+        sessionId: Session.ID?,
+        frame: Int,
+        bytes: UnsafeRawBufferPointer,
+        preview: String?
+      ) -> CaptureByteRef? { nil }
+    }
+
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+    let sink = CollectingSink()
+    model.captureSink = sink
+
+    session.feedOutput(Array("\u{1b}]9;Claude needs your permission\u{07}".utf8))
+    pumpMainQueue()
+
+    let mirrored = sink.events.filter { $0.kind == "tab.metadata" && $0.tabId == tabId }
+    XCTAssertFalse(mirrored.isEmpty, "journal entries must mirror into a running capture")
+    XCTAssertEqual(mirrored.last?.text, "Claude needs your permission")
+    XCTAssertEqual(mirrored.last?.urgent, true)
   }
 
   func testCreateTabAddsTabAndSelectsIt() throws {

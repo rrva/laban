@@ -253,6 +253,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     SendDiagnostics.run()
   }
 
+  @objc func dumpTabJournal(_ sender: Any?) {
+    guard let model = windowController?.model else { return }
+    let root = RenderJournal.defaultDumpRoot()
+      .deletingLastPathComponent()
+      .appendingPathComponent("tab-journal")
+    do {
+      let url = try model.tabJournal.dump(to: root)
+      AppLog.app.info("tab journal dumped \(url.path)")
+      EventLog.shared.log("tab.journal.dumped", ["path": url.path])
+    } catch {
+      AppLog.app.error("tab journal dump failed: \(String(describing: error))")
+      EventLog.shared.log("tab.journal.dump.failed", ["error": String(describing: error)])
+    }
+  }
+
   @objc func checkForUpdates(_ sender: Any?) {
     guard !updateCheckInFlight else { return }
     guard let manifestURL = UpdateChecker.configuredManifestURL() else {

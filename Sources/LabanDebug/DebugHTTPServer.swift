@@ -371,6 +371,20 @@ public final class DebugHTTPServer {
     },
     DebugHTTPRoute(
       method: "GET",
+      path: "/debug/tab-journal",
+      category: "logs",
+      summary:
+        "Return the bounded journal of per-tab visible state transitions after a sequence number.",
+      queryParameters: ["since", "tabId"],
+      responseSchema: "schemas/debug/tab-journal.schema.json"
+    ) { runtime, request, _ in
+      json(
+        runtime.tabJournalResponse(
+          since: request.query["since"].flatMap { Int($0) } ?? 0,
+          tabId: request.query["tabId"]))
+    },
+    DebugHTTPRoute(
+      method: "GET",
       path: "/debug/input-log",
       category: "logs",
       summary: "Return keyboard/text routing diagnostics after a sequence number.",

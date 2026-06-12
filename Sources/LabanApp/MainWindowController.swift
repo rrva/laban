@@ -390,12 +390,25 @@ final class MainWindowController: NSWindowController {
     // front of the user. Headless parity lives in HeadlessDebugRuntime, which
     // records the same notification as a debug event.
     let agentNotificationPoster = AgentNotificationPoster()
-    agentNotificationPoster.isTabFrontmost = { [weak model] tabId in
+    let isTabFrontmost: (Tab.ID) -> Bool = { [weak model] tabId in
       guard NSApplication.shared.isActive, let model else { return false }
       return model.tabs.first(where: { $0.isActive })?.id == tabId
     }
+    agentNotificationPoster.isTabFrontmost = isTabFrontmost
+    // The model uses the same attention check to skip raising the synthetic
+    // awaiting-input badge on the tab the user is already watching.
+    model.isTabFrontmost = isTabFrontmost
     model.onAgentNotification = { [weak model] tabId, text in
-      let title = model?.tabs.first(where: { $0.id == tabId })?.title
+      guard let model else { return }
+      // Journal the banner decision so post-hoc timing questions ("when did
+      // the user actually get told?") are answerable from the tab journal.
+      model.tabJournal.note(
+        tabId: tabId,
+        note: isTabFrontmost(tabId)
+          ? TabStateJournal.bannerSuppressedFrontmostNote
+          : TabStateJournal.bannerPostedNote,
+        text: text)
+      let title = model.tabs.first(where: { $0.id == tabId })?.title
       agentNotificationPoster.post(tabId: tabId, tabTitle: title, text: text)
     }
     // Returning to the app means the user is now looking at the active tab, so

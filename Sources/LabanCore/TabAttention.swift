@@ -53,12 +53,39 @@ public enum TabAttentionClassifier {
     return .none
   }
 
+  /// Leading terminal-title scalars that mark an agent awaiting user input.
+  /// Claude Code flips its OSC 0 title from a braille spinner ("⠂ Claude
+  /// Code") to "✳ <task label>" the instant it starts waiting — ~6 seconds
+  /// before it emits its own debounced OSC 9/777 notification (verified
+  /// against capture appkit-2026-06-12T06-21-05Z), so the title flip is the
+  /// earliest blocked-on-the-user signal available.
+  ///
+  /// Deliberately NOT part of `classify`: unlike Codex's transient "[ ! ]",
+  /// "✳" is the *resting* state of every idle Claude Code tab (it persists
+  /// until the user answers), so deriving `needsAction` from it statelessly
+  /// turned every restored or long-idle agent tab permanently yellow. The
+  /// marker matters as an *edge*: `AppModel.detectAwaitMarkerTransitions`
+  /// reacts to the flip by raising the urgent notification badge (which this
+  /// classifier already maps to `needsAction`) and posting the banner — both
+  /// inherit seen-clearing and restore-grace suppression.
+  public static let awaitingInputTitleMarkers: Set<Character> = ["✳"]
+
+  /// Title states that signal "blocked on the user" for the edge-triggered
+  /// attention episodes in `AppModel.detectAwaitMarkerTransitions`.
+  public static func titleSignalsAwaitingInput(_ m: TabTitleMetadata) -> Bool {
+    guard let title = m.terminalTitle else { return false }
+    if title.hasPrefix("[ ! ]") { return true }
+    if let first = title.first, awaitingInputTitleMarkers.contains(first) { return true }
+    return false
+  }
+
   /// Codex prefixes its terminal title with "[ ! ]" (its
   /// `ACTION_REQUIRED_PREVIEW_PREFIX`) for as long as a view is blocked on
   /// the user — approvals, questions, input — and restores the normal title
   /// when unblocked. It is the only signal Codex emits unconditionally in
   /// terminals it does not recognize (its OSC 9 path is gated on terminal
   /// detection), so the title prefix doubles as a blocking-request flag.
+  /// Safe to classify statelessly because Codex removes it when unblocked.
   private static func hasActionRequiredTitle(_ m: TabTitleMetadata) -> Bool {
     m.terminalTitle?.hasPrefix("[ ! ]") ?? false
   }

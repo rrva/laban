@@ -7,6 +7,7 @@ public enum CaptureEventKind: String, Codable, Hashable, Sendable {
   case tabCreated = "tab.created"
   case tabSelected = "tab.selected"
   case tabClosed = "tab.closed"
+  case tabMetadata = "tab.metadata"
   case tabMoved = "tab.moved"
   case sessionCreated = "session.created"
   case sessionResized = "session.resized"
@@ -191,6 +192,10 @@ public struct CaptureTimelineEvent: Codable, Equatable, Sendable {
   public var cursorVisible: Bool?
   public var title: String?
   public var status: String?
+  public var urgent: Bool?
+  public var count: Int?
+  public var selected: Bool?
+  public var note: String?
   public var mouseTracking: Bool?
   public var focusReporting: Bool?
   public var dirty: Bool?

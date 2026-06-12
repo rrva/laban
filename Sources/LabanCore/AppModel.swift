@@ -68,6 +68,12 @@ public final class AppModel {
     }
   }
 
+  /// Always-on journal of what each tab visibly showed over time. Fed by the
+  /// notify funnels (see `recordTabJournal`), queryable via
+  /// `GET /debug/tab-journal`, dumpable from the Debug menu, and mirrored into
+  /// capture timelines as `tab.metadata` events.
+  public let tabJournal = TabStateJournal()
+
   /// Fires after every workspace mutation (tab add/remove/reorder, tab
   /// select, cwd update) so the persistence coordinator can debounce a
   /// save. The callback runs on the calling thread under no lock;
@@ -112,6 +118,13 @@ public final class AppModel {
   /// notification; the debug runtime records it. Single broadcast point so
   /// `Session.onOSCNotification` stays owned by AppModel.
   public var onAgentNotification: ((Tab.ID, String) -> Void)?
+
+  /// Host-provided check for "is the user looking at this tab right now"
+  /// (AppKit: app active AND tab selected — the same closure the banner
+  /// poster uses for suppression). The synthetic awaiting-input attention
+  /// (see `detectAwaitMarkerTransitions`) skips tabs the user is watching;
+  /// nil means "never attended" (headless), so detection always raises.
+  public var isTabFrontmost: ((Tab.ID) -> Bool)?
 
   /// Broadcast when a tab's program copies to the clipboard via OSC 52
   /// (`ESC ] 52 ; c ; <base64> ST`) — e.g. a coding agent reached over SSH,
@@ -936,6 +949,7 @@ public final class AppModel {
   /// every tab open/close/reorder/select entry point waking a parked
   /// display link without each call site remembering to.
   private func notifyWorkspaceMutation() {
+    recordTabJournal()
     onWorkspaceMutation?()
     onSurfaceStateChanged?()
   }
@@ -945,7 +959,26 @@ public final class AppModel {
   /// debounce wanted): resolved git branches, daemon surface signals, agent
   /// status. Same re-entrancy contract as `notifyWorkspaceMutation`.
   private func notifySurfaceStateChanged() {
+    recordTabJournal()
     onSurfaceStateChanged?()
+  }
+
+
+  /// Diffs the current tab projections into `tabJournal` and mirrors any new
+  /// entries into a running capture. Hooked into both notify funnels — those
+  /// are exactly the UI-invalidation signals, so a journal entry means "what
+  /// some tab showed changed". Diff-dedupe makes the double funnel harmless.
+  private func recordTabJournal() {
+    let (snapshot, activeId): ([Tab], Tab.ID?) = withModelLock {
+      (_tabs, _tabs.first(where: { $0.isActive })?.id)
+    }
+    let entries = tabJournal.recordDiff(tabs: snapshot, activeTabId: activeId)
+    guard let captureSink, !entries.isEmpty else { return }
+    let sessionByTab = Dictionary(
+      snapshot.map { ($0.id, $0.sessionId) }, uniquingKeysWith: { first, _ in first })
+    for entry in entries {
+      captureSink.record(entry.captureEvent(sessionId: sessionByTab[entry.tabId]))
+    }
   }
 
   public func selectTab(_ tabId: Tab.ID) {
@@ -1420,6 +1453,13 @@ public final class AppModel {
     if shouldNotifyWorkspaceMutation {
       notifyWorkspaceMutation()
     }
+    if result.modelChanged {
+      // Title/metadata changes land here without passing a notify funnel (the
+      // local path syncs inside the frame loop), so journal them directly and
+      // check for awaiting-input title transitions.
+      recordTabJournal()
+      detectAwaitMarkerTransitions()
+    }
     return result
   }
 
@@ -1852,8 +1892,16 @@ public final class AppModel {
         // Surface it on the tab (sidebar badge + text) so a backgrounded Codex
         // tab visibly shows it finished / needs the user, even if the native
         // banner is dismissed or notification permission was denied.
-        self.applyAgentNotification(forTab: tabId, text: text)
-        self.onAgentNotification?(tabId, text)
+        let outcome = self.applyAgentNotification(forTab: tabId, text: text)
+        // Broadcast (and hence banner) only when the badge actually applied:
+        // a merge means the title-flip banner already covered this wait, and
+        // .ignored means the restore-grace window is open — resumed agents
+        // re-emit their notifications in a burst at relaunch, and bannering
+        // all of them buried the user in stale macOS notifications (seen in
+        // the tab journal: ~40 banner notes in the first 200ms of a launch).
+        if outcome == .applied {
+          self.onAgentNotification?(tabId, text)
+        }
       }
     }
   }
@@ -1872,19 +1920,43 @@ public final class AppModel {
   /// `selectTabUnlocked` (open another-then-this tab) and
   /// `markActiveTabNotificationSeen` (return to the app). Repeat notifications
   /// before the tab is viewed accumulate an unread count.
-  private func applyAgentNotification(forTab tabId: Tab.ID, text: String) {
-    let changed: Bool = withModelLock {
+  enum AgentNotificationOutcome {
+    case ignored
+    case applied
+    /// Folded into the pending synthetic awaiting-input badge raised at the
+    /// title flip (see `detectAwaitMarkerTransitions`): text/urgency refresh,
+    /// but no count bump and no second banner — the user was already told
+    /// about this wait when the prompt appeared.
+    case mergedIntoAwaitEpisode
+  }
+
+  @discardableResult
+  func applyAgentNotification(forTab tabId: Tab.ID, text: String) -> AgentNotificationOutcome {
+    let outcome: AgentNotificationOutcome = withModelLock {
       // Ignore the restore-time resume burst (see notificationSuppressionDeadline).
-      if let deadline = notificationSuppressionDeadline, Date() < deadline { return false }
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      if let deadline = notificationSuppressionDeadline, Date() < deadline { return .ignored }
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return .ignored }
       let prior = _tabs[idx].titleMetadata.notification
+      if var episode = awaitEpisodeByTab[tabId] {
+        let merge = episode.raised && !episode.realArrived && prior != nil
+        episode.realArrived = true
+        awaitEpisodeByTab[tabId] = episode
+        if merge, let prior {
+          _tabs[idx].titleMetadata.notification = TabNotification(
+            text: text,
+            urgent: Self.isUrgentNotification(text) || prior.urgent,
+            count: prior.count)
+          return .mergedIntoAwaitEpisode
+        }
+      }
       _tabs[idx].titleMetadata.notification = TabNotification(
         text: text,
         urgent: Self.isUrgentNotification(text) || (prior?.urgent ?? false),
         count: (prior?.count ?? 0) + 1)
-      return true
+      return .applied
     }
-    if changed { notifyWorkspaceMutation() }
+    if outcome != .ignored { notifyWorkspaceMutation() }
+    return outcome
   }
 
   /// Heuristic: approval / edit / input requests need user action (urgent
@@ -1895,6 +1967,105 @@ public final class AppModel {
       || t.contains("wants to") || t.contains("needs input")
       || t.contains("requested") || t.contains("waiting")
       || t.contains("permission") || t.contains("needs you")
+  }
+
+
+  public static let awaitingInputNotificationText = "Awaiting your input"
+
+  struct AwaitEpisode {
+    /// The flip raised the synthetic badge + banner (it was backgrounded and
+    /// outside the restore-grace window).
+    var raised = false
+    /// The agent's own OSC notification arrived during this episode.
+    var realArrived = false
+  }
+
+  /// Active blocked-on-the-user episodes keyed by tab; an episode spans from
+  /// the terminal title gaining an awaiting-input marker (Claude Code's
+  /// leading "✳", Codex's "[ ! ]" prefix — see
+  /// `TabAttentionClassifier.titleSignalsAwaitingInput`) to the title losing
+  /// it. Guarded by `modelLock`.
+  ///
+  /// The marker is meaningful as an *edge*, not a state: "✳" is the resting
+  /// title of every idle Claude Code tab, so a stateless needsAction
+  /// classification turned every restored or viewed-then-backgrounded agent
+  /// tab permanently yellow. Instead the flip raises the urgent notification
+  /// badge (which the classifier already maps to needsAction) and posts the
+  /// banner once — both inherit seen-clearing (select / app-active) and the
+  /// restore-grace suppression, and the agent's own debounced OSC
+  /// notification ~6s later merges into the badge without a second banner.
+  private var awaitEpisodeByTab: [Tab.ID: AwaitEpisode] = [:]
+
+  /// Diffs each tab's terminal title against the awaiting-input predicate
+  /// and drives attention episodes. Called after every surface-metadata sync
+  /// that changed the model — the single chokepoint both the local parse
+  /// path and the laband poll path go through.
+  func detectAwaitMarkerTransitions() {
+    var started: [Tab.ID] = []
+    var endedRaised: [Tab.ID] = []
+    withModelLock {
+      var live = Set<Tab.ID>(minimumCapacity: _tabs.count)
+      for tab in _tabs {
+        live.insert(tab.id)
+        let blocked = TabAttentionClassifier.titleSignalsAwaitingInput(tab.titleMetadata)
+        if blocked, awaitEpisodeByTab[tab.id] == nil {
+          awaitEpisodeByTab[tab.id] = AwaitEpisode()
+          started.append(tab.id)
+        } else if !blocked, let episode = awaitEpisodeByTab.removeValue(forKey: tab.id) {
+          if episode.raised, !episode.realArrived { endedRaised.append(tab.id) }
+        }
+      }
+      let closed = awaitEpisodeByTab.keys.filter { !live.contains($0) }
+      for id in closed { awaitEpisodeByTab.removeValue(forKey: id) }
+    }
+    for tabId in started { raiseSyntheticAttention(forTab: tabId) }
+    for tabId in endedRaised { clearStaleSyntheticBadge(forTab: tabId) }
+  }
+
+  /// Sets the awaiting-input badge and posts the banner through the same
+  /// broadcast as a real OSC notification. Skipped when the user is already
+  /// watching the tab (`isTabFrontmost`), when a notification is already
+  /// pending (the user has an unseen badge either way), or during the
+  /// restore-time suppression window (a relaunch restores a wall of idle "✳"
+  /// agent tabs that must not all light up).
+  private func raiseSyntheticAttention(forTab tabId: Tab.ID) {
+    if isTabFrontmost?(tabId) == true { return }
+    let raised: Bool = withModelLock {
+      if let deadline = notificationSuppressionDeadline, Date() < deadline { return false }
+      guard var episode = awaitEpisodeByTab[tabId] else { return false }
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      guard _tabs[idx].titleMetadata.notification == nil else { return false }
+      episode.raised = true
+      awaitEpisodeByTab[tabId] = episode
+      _tabs[idx].titleMetadata.notification = TabNotification(
+        text: Self.awaitingInputNotificationText, urgent: true)
+      return true
+    }
+    guard raised else { return }
+    notifyWorkspaceMutation()
+    // Hop to main like the real OSC path: onAgentNotification is documented
+    // as main-queue, and detection can run under a host's own lock (the
+    // headless runtime holds its runtime lock through sync passes — a
+    // synchronous broadcast would re-enter it).
+    DispatchQueue.main.async { [weak self] in
+      self?.onAgentNotification?(tabId, Self.awaitingInputNotificationText)
+    }
+  }
+
+  /// The agent resumed working without its own notification ever arriving,
+  /// so an unseen synthetic badge is stale (e.g. the user answered from
+  /// another device) — retire it rather than leave a lying "needs you".
+  private func clearStaleSyntheticBadge(forTab tabId: Tab.ID) {
+    let cleared: Bool = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      guard let notification = _tabs[idx].titleMetadata.notification,
+        notification.text == Self.awaitingInputNotificationText,
+        notification.count == 1
+      else { return false }
+      _tabs[idx].titleMetadata.notification = nil
+      return true
+    }
+    if cleared { notifyWorkspaceMutation() }
   }
 
   /// Clear the notification on the active tab — the user has returned to the

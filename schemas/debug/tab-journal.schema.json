@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laban.local/schemas/debug/tab-journal.schema.json",
+  "title": "Debug Tab Journal Response",
+  "type": "object",
+  "required": ["entries", "next"],
+  "additionalProperties": true,
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "timeNs", "tabId", "kind"],
+        "additionalProperties": true,
+        "properties": {
+          "seq": {"type": "integer", "minimum": 0},
+          "timeNs": {"type": "integer", "minimum": 0},
+          "tabId": {"type": "string"},
+          "kind": {"type": "string", "enum": ["state", "note"]},
+          "isSelected": {"type": "boolean"},
+          "status": {"type": "string"},
+          "metadata": {"type": "object"},
+          "note": {"type": "string"},
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "next": {"type": "integer", "minimum": 0}
+  }
+}

@@ -30,6 +30,18 @@ Events should cover:
 - screenshot captures
 - fixture step transitions
 
+### Tab-State Journal
+
+The model keeps an always-on, bounded in-memory journal of what each tab
+visibly showed over time (title metadata, status, selection, notification
+badge) plus banner-decision notes, timestamped on the capture-timeline
+clock. Exposed by `GET /debug/tab-journal` (see
+`docs/process/dev-process.md` and `schemas/debug/tab-journal.schema.json`),
+mirrored into capture `timeline.ndjson` as `tab.metadata` events, and
+dumpable from the app's Debug menu. This is the primary signal for
+attention-timing bugs: it answers "when did Laban change what this tab
+showed" without a human watching the sidebar.
+
 ### Structured Logs
 
 Logs should be structured records, not only prose strings. A future

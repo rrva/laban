@@ -197,7 +197,9 @@ Artifact shape:
 
 - `manifest.json` describes the run, privacy flags, streams, and frame count.
 - `timeline.ndjson` is the ordered sequence of input, PTY, session, snapshot,
-  frame-command, render, screenshot, and capture lifecycle events.
+  frame-command, render, screenshot, tab-metadata (`tab.metadata`: mirrored
+  tab-state journal entries — title, status, selection, notification badge),
+  and capture lifecycle events.
 - `streams/*.bin` stores PTY input, PTY output, and terminal response bytes.
 - `frames/*.snapshot.json` stores visible terminal snapshots and hashes.
 - `frames/*.commands.json` stores the frame-command stream for renderer replay.
@@ -832,6 +834,36 @@ Returns a bounded event stream for agent diagnosis:
 Events should include tab creation/close/select, session spawn/exit, resize,
 title change, focus report, input delivery, render failure, and screenshot
 capture.
+
+### Tab-State Journal
+
+`GET /debug/tab-journal?since=<sequence>&tabId=<id>`
+
+Returns the model's always-on, bounded journal of what each tab visibly
+showed over time: one `state` entry per change to a tab's title metadata,
+status, selection, or notification badge, plus `note` entries for banner
+decisions (`banner.posted`, `banner.suppressed.frontmost`). Entry `timeNs`
+shares the capture-timeline clock, so journal entries line up with
+`timeline.ndjson` pty/frame events when diagnosing attention-timing bugs
+(e.g. "when did the tab actually show needs-you relative to the prompt
+bytes?"). While a capture runs, the same entries are mirrored into
+`timeline.ndjson` as `tab.metadata` events. In the AppKit app the journal is
+dumped via Debug ▸ Dump Tab Journal (ndjson under
+`~/Library/Logs/Laban/tab-journal/`).
+
+```json
+{
+  "entries": [
+    {"seq": 12, "timeNs": 1781245288433020928, "tabId": "tab-1", "kind": "state",
+     "isSelected": false, "status": "running", "metadata": {"displayTitle": "✳ Pick an option"}},
+    {"seq": 13, "timeNs": 1781245288433520928, "tabId": "tab-1", "kind": "note",
+     "note": "banner.posted", "text": "Awaiting your input"}
+  ],
+  "next": 14
+}
+```
+
+Schema: `schemas/debug/tab-journal.schema.json`.
 
 ### Control Actions
 

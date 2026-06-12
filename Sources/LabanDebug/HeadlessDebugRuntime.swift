@@ -347,7 +347,14 @@ public final class HeadlessDebugRuntime {
     }
     model.onAgentNotification = { [weak self] tabId, text in
       self?.recordAgentNotificationEvent(tabId: tabId, text: text)
+      // Headless parity with MainWindowController's banner journaling: no
+      // banner is posted, but the broadcast itself is the observable event.
+      self?.model.tabJournal.note(
+        tabId: tabId, note: TabStateJournal.bannerPostedNote, text: text)
     }
+    // Headless has no user attention; never treat a tab as frontmost so the
+    // synthetic awaiting-input badge always raises (tests rely on this).
+    model.isTabFrontmost = { _ in false }
     // OSC 52 clipboard parity: a program copying via `ESC ] 52 ; c ; <base64>`
     // mirrors into the debug clipboard and the event stream (the headless
     // counterpart of MainWindowController's NSPasteboard write). The read

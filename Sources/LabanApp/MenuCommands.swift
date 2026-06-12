@@ -234,6 +234,13 @@ enum MenuCommands {
     renderJournalItem.keyEquivalentModifierMask = [.command, .control, .option]
     debugMenu.addItem(renderJournalItem)
 
+    debugMenu.addItem(
+      NSMenuItem(
+        title: "Dump Tab Journal",
+        action: #selector(AppDelegate.dumpTabJournal(_:)),
+        keyEquivalent: ""
+      ))
+
     debugMenu.addItem(NSMenuItem.separator())
     debugMenu.addItem(
       NSMenuItem(
