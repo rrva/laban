@@ -51,7 +51,13 @@ final class RendererModeSettingsTests: XCTestCase {
           ? "GPU-driven Renderer" : "GPU-driven Renderer (requires macOS 26)",
       ])
     XCTAssertEqual(submenu.items[0].state, .off)
-    XCTAssertEqual(submenu.items[1].state, .on)
+    if RendererMode.gpuDriven.isAvailableOnCurrentOS {
+      XCTAssertEqual(submenu.items[1].state, .off)
+      XCTAssertEqual(submenu.items[2].state, .on)
+    } else {
+      XCTAssertEqual(submenu.items[1].state, .on)
+      XCTAssertEqual(submenu.items[2].state, .off)
+    }
 
     controller.selectSoftware(nil)
 

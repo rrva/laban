@@ -19,12 +19,16 @@ final class GPUCellParityTests: XCTestCase {
     super.tearDown()
   }
 
-  func testRendererModeDefaultsToClassicAndGatesGPUAvailability() {
+  func testRendererModeDefaultsToGPUDrivenWhereAvailableAndGatesAvailability() {
     let suiteName = "GPUCellParityTests.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suiteName)!
     defer { defaults.removePersistentDomain(forName: suiteName) }
 
-    XCTAssertEqual(RendererMode.persisted(defaults: defaults), .classic)
+    if #available(macOS 26, *) {
+      XCTAssertEqual(RendererMode.persisted(defaults: defaults), .gpuDriven)
+    } else {
+      XCTAssertEqual(RendererMode.persisted(defaults: defaults), .classic)
+    }
 
     RendererMode.set(.gpuDriven, defaults: defaults)
     if #available(macOS 26, *) {
@@ -32,6 +36,9 @@ final class GPUCellParityTests: XCTestCase {
     } else {
       XCTAssertEqual(RendererMode.persisted(defaults: defaults), .classic)
     }
+
+    RendererMode.set(.classic, defaults: defaults)
+    XCTAssertEqual(RendererMode.persisted(defaults: defaults), .classic)
   }
 
   func testClassicDamageScopedMatchesFullRebuildForOneDirtyRow() throws {

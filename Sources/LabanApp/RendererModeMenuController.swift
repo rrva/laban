@@ -33,7 +33,7 @@ enum RendererSelection: String, Codable, CaseIterable, Sendable {
       let selection = RendererSelection(rawValue: raw),
       selection.isAvailableOnCurrentOS
     else {
-      return .classic
+      return RendererSelection(metalMode: RendererMode.defaultMode)
     }
     return selection
   }

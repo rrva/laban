@@ -22,12 +22,18 @@ public enum RendererMode: String, Codable, CaseIterable, Sendable {
     allCases.filter(\.isAvailableOnCurrentOS)
   }
 
+  /// The mode new users get when no preference is persisted: GPU-driven where
+  /// the OS supports it, classic otherwise.
+  public static var defaultMode: RendererMode {
+    RendererMode.gpuDriven.isAvailableOnCurrentOS ? .gpuDriven : .classic
+  }
+
   public static func persisted(defaults: UserDefaults = .standard) -> RendererMode {
     guard let raw = defaults.string(forKey: defaultsKey),
       let mode = RendererMode(rawValue: raw),
       mode.isAvailableOnCurrentOS
     else {
-      return .classic
+      return defaultMode
     }
     return mode
   }
