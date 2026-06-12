@@ -709,6 +709,67 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertEqual(markerAlpha(unknown), 0xFF, "no recorded entry renders the static rest form")
   }
 
+  // MARK: - scroll overflow
+
+  func testMaxScrollOffsetOnlyAppearsWhenRowsOverflow() {
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    XCTAssertEqual(p.maxScrollOffset(tabCount: 2, height: 600), 0)
+
+    let overflowingHeight = p.rowHeight * 3
+    XCTAssertEqual(
+      p.maxScrollOffset(tabCount: 5, height: overflowingHeight),
+      p.rowHeight * 2,
+      accuracy: 0.001)
+  }
+
+  func testScrollOffsetRevealsOverflowRowsWithoutDrawingHiddenRows() {
+    let tabs = makeTabs(count: 12)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let height = p.rowHeight * 3
+    let offset = p.maxScrollOffset(tabCount: tabs.count, height: height)
+    let texts = p.commands(
+      tabs: tabs,
+      activeTabId: tabs[11].id,
+      height: height,
+      scrollOffset: offset
+    ).compactMap { cmd -> String? in
+      if case .glyphRun(_, let text, _, _, _, _, _, _, _) = cmd { return text }
+      return nil
+    }
+
+    XCTAssertTrue(texts.contains("Tab 12"), "bottom overflow row should be visible")
+    XCTAssertFalse(texts.contains("Tab 1"), "top row should be clipped away after scrolling")
+  }
+
+  func testHitTestUsesScrollOffset() {
+    let tabs = makeTabs(count: 5)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let height = p.rowHeight * 2
+    let offset = p.maxScrollOffset(tabCount: tabs.count, height: height)
+
+    let result = p.hitTest(
+      at: CGPoint(x: 50, y: p.rowHeight / 2),
+      tabs: tabs,
+      height: height,
+      scrollOffset: offset)
+    XCTAssertEqual(result, .selectTab(tabs[4].id))
+  }
+
+  func testDropSlotUsesScrollOffset() {
+    let tabs = makeTabs(count: 5)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let height = p.rowHeight * 2
+    let offset = p.maxScrollOffset(tabCount: tabs.count, height: height)
+
+    XCTAssertEqual(
+      p.dropSlot(
+        at: CGPoint(x: 50, y: 1),
+        tabs: tabs,
+        height: height,
+        scrollOffset: offset),
+      5)
+  }
+
   // MARK: - drag-reorder
 
   func testDropSlotAboveFirstRowReturnsZero() {

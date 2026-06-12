@@ -20,8 +20,7 @@ public struct SidebarProducer {
     self.sidebarWidth = sidebarWidth
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
-    // Four lines per tab: title + workspace + command + status. Padding kept
-    // tight so 9 tabs still fit in a typical window without a scrollbar.
+    // Four lines per tab: title + workspace + command + status.
     self.rowHeight = ceil(cellHeight * 4) + 10
   }
 
@@ -63,12 +62,13 @@ public struct SidebarProducer {
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: DragIndicator? = nil,
+    scrollOffset: CGFloat = 0,
     now: Date = Date(),
     reduceMotion: Bool = false
   ) -> [FrameCommand] {
     let out = output(
       tabs: tabs, activeTabId: activeTabId, height: height, topInset: topInset,
-      hoveredTabId: hoveredTabId, dragIndicator: dragIndicator)
+      hoveredTabId: hoveredTabId, dragIndicator: dragIndicator, scrollOffset: scrollOffset)
     // Legacy entry point with no per-tab entry times: markers render in
     // their static full-opacity rest form.
     return out.commands
@@ -155,11 +155,16 @@ public struct SidebarProducer {
   public func output(
     tabs: [Tab], activeTabId: Tab.ID?, height: CGFloat, topInset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
-    dragIndicator: DragIndicator? = nil
+    dragIndicator: DragIndicator? = nil,
+    scrollOffset: CGFloat = 0
   ) -> Output {
     var pulseMarkers: [PulseMarker] = []
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(tabs.count * 7 + 6)
+    let visibleTop = max(0, height - topInset)
+    let visibleRect = CGRect(x: 0, y: 0, width: sidebarWidth, height: visibleTop)
+    let scrollOffset = clampedScrollOffset(
+      scrollOffset, tabCount: tabs.count, height: height, topInset: topInset)
 
     // Sidebar background
     cmds.append(
@@ -181,7 +186,10 @@ public struct SidebarProducer {
 
     // Tab rows
     for (i, tab) in tabs.enumerated() {
-      let tabY = height - CGFloat(i + 1) * rowHeight - topInset
+      let tabY = height - CGFloat(i + 1) * rowHeight - topInset + scrollOffset
+      let rowRect = CGRect(x: 0, y: tabY, width: sidebarWidth, height: rowHeight)
+        .intersection(visibleRect)
+      guard !rowRect.isEmpty else { continue }
       let isActive = tab.id == activeTabId
       let isDragging = (draggingIndex == i)
       let meta = tab.titleMetadata
@@ -200,15 +208,17 @@ public struct SidebarProducer {
 
       cmds.append(
         .rect(
-          CGRect(x: 0, y: tabY, width: sidebarWidth, height: rowHeight),
+          rowRect,
           color: bg,
           source: .sidebar
         ))
 
       if isActive {
+        let stripe = CGRect(x: 0, y: tabY, width: 3, height: rowHeight)
+          .intersection(visibleRect)
         cmds.append(
           .rect(
-            CGRect(x: 0, y: tabY, width: 3, height: rowHeight),
+            stripe,
             color: Theme.current.blue,
             source: .sidebar
           ))
@@ -279,25 +289,28 @@ public struct SidebarProducer {
         tabY + edgePad + yOffset + CGFloat(drawnLines - 1 - idx) * cellHeight
       }
       let titleY = lineY(0)
+      let appendGlyph:
+        (
+          _ origin: CGPoint, _ text: String, _ foreground: UInt32, _ background: UInt32
+        ) -> Void = { origin, text, foreground, background in
+          let cellRect = CGRect(
+            x: origin.x, y: origin.y,
+            width: CGFloat(max(1, text.count)) * cellWidth,
+            height: cellHeight)
+          guard visibleRect.contains(cellRect) else { return }
+          cmds.append(
+            .glyphRun(
+              origin: origin,
+              text: text,
+              foreground: foreground,
+              background: background,
+              attributes: [],
+              source: .sidebar
+            ))
+        }
 
-      cmds.append(
-        .glyphRun(
-          origin: CGPoint(x: indexX, y: titleY),
-          text: indexText,
-          foreground: Theme.current.dim0,
-          background: bg,
-          attributes: [],
-          source: .sidebar
-        ))
-      cmds.append(
-        .glyphRun(
-          origin: CGPoint(x: titleX, y: titleY),
-          text: resolved.displayTitle,
-          foreground: labelFg,
-          background: bg,
-          attributes: [],
-          source: .sidebar
-        ))
+      appendGlyph(CGPoint(x: indexX, y: titleY), indexText, Theme.current.dim0, bg)
+      appendGlyph(CGPoint(x: titleX, y: titleY), resolved.displayTitle, labelFg, bg)
 
       // Right-edge attention marker — one per tab, chosen by attention level.
       // Rendered only when the tab is not hovered (the close X takes the slot
@@ -322,63 +335,26 @@ public struct SidebarProducer {
           // `retintPulseMarkers(_:at:)` so memoized callers animate the dot
           // without rebuilding the sidebar. Reduce Motion shows exactly this
           // full-opacity form (still distinct by colour + shape).
-          pulseMarkers.append(PulseMarker(commandIndex: cmds.count, tabId: tab.id))
-          cmds.append(
-            .glyphRun(
-              origin: slot,
-              text: "◆",
-              foreground: Theme.current.attention,
-              background: bg,
-              attributes: [],
-              source: .sidebar
-            ))
+          let markerIndex = cmds.count
+          appendGlyph(slot, "◆", Theme.current.attention, bg)
+          if markerIndex < cmds.count {
+            pulseMarkers.append(PulseMarker(commandIndex: markerIndex, tabId: tab.id))
+          }
         case .done:
-          cmds.append(
-            .glyphRun(
-              origin: slot,
-              text: "◆",
-              foreground: Theme.current.cursor,
-              background: bg,
-              attributes: [],
-              source: .sidebar
-            ))
+          appendGlyph(slot, "◆", Theme.current.cursor, bg)
         case .passive, .none:
           if let hex = agentStatus.indicatorColor, let color = Self.parseHexColor(hex) {
             // An agent that explicitly pushed a colour (OSC 21337) owns the slot.
-            cmds.append(
-              .glyphRun(
-                origin: slot,
-                text: "●",
-                foreground: color,
-                background: bg,
-                attributes: [],
-                source: .sidebar
-              ))
+            appendGlyph(slot, "●", color, bg)
           } else if let shellColor = Self.shellPhaseIndicatorColor(meta) {
             // A failed last command: a steady red dot — it finished, it is not
             // waiting on the user, so it does not earn the needsAction pulse.
-            cmds.append(
-              .glyphRun(
-                origin: slot,
-                text: "●",
-                foreground: shellColor,
-                background: bg,
-                attributes: [],
-                source: .sidebar
-              ))
+            appendGlyph(slot, "●", shellColor, bg)
           } else if let badge = resolved.statusBadge {
             // Low-salience activity: an exited-nonzero "!" stays red; bell/
             // unseen ("•"/"*") are muted so they inform without shouting.
             let color = badge == "!" ? Theme.current.red : Theme.current.dim0
-            cmds.append(
-              .glyphRun(
-                origin: slot,
-                text: badge,
-                foreground: color,
-                background: bg,
-                attributes: [],
-                source: .sidebar
-              ))
+            appendGlyph(slot, badge, color, bg)
           }
         }
       }
@@ -387,15 +363,7 @@ public struct SidebarProducer {
       // line one cell below the previous. Status/notification slots already
       // took priority over folder/branch/command when the stack was built.
       for (offset, entry) in displayLines.enumerated() {
-        cmds.append(
-          .glyphRun(
-            origin: CGPoint(x: titleX, y: lineY(offset + 1)),
-            text: entry.0,
-            foreground: entry.1,
-            background: bg,
-            attributes: [],
-            source: .sidebar
-          ))
+        appendGlyph(CGPoint(x: titleX, y: lineY(offset + 1)), entry.0, entry.1, bg)
       }
 
       // Close glyph: rendered only when this tab is hovered AND not the
@@ -405,24 +373,18 @@ public struct SidebarProducer {
       // slot in hitTest. Drag suppression prevents an accidental close
       // when the user is already mid-gesture on the row.
       if showCloseX {
-        cmds.append(
-          .glyphRun(
-            origin: CGPoint(x: slotX, y: titleY),
-            text: "✕",
-            foreground: Theme.current.dim0,
-            background: bg,
-            attributes: [],
-            source: .sidebar
-          ))
+        appendGlyph(CGPoint(x: slotX, y: titleY), "✕", Theme.current.dim0, bg)
       }
 
       // Dim the row that the user is currently dragging so it reads as
       // "lifted". Drawn after the title text so it tints everything in
       // the row uniformly.
       if isDragging {
+        let overlayRect = CGRect(x: 0, y: tabY, width: sidebarWidth, height: rowHeight)
+          .intersection(visibleRect)
         cmds.append(
           .rect(
-            CGRect(x: 0, y: tabY, width: sidebarWidth, height: rowHeight),
+            overlayRect,
             color: Self.dragSourceOverlayColor,
             source: .sidebar
           ))
@@ -439,18 +401,41 @@ public struct SidebarProducer {
         tabCount: tabs.count,
         height: height,
         topInset: topInset,
+        scrollOffset: scrollOffset,
         draggingIndex: draggingIndex
       )
     {
+      let accentRect = CGRect(x: 0, y: accentY, width: sidebarWidth, height: 2)
+        .intersection(visibleRect)
+      if accentRect.isEmpty { return Output(commands: cmds, pulseMarkers: pulseMarkers) }
       cmds.append(
         .rect(
-          CGRect(x: 0, y: accentY, width: sidebarWidth, height: 2),
+          accentRect,
           color: Theme.current.blue,
           source: .sidebar
         ))
     }
 
     return Output(commands: cmds, pulseMarkers: pulseMarkers)
+  }
+
+  public func maxScrollOffset(
+    tabCount: Int,
+    height: CGFloat,
+    topInset: CGFloat = 0
+  ) -> CGFloat {
+    let visibleHeight = max(0, height - topInset)
+    let contentHeight = CGFloat(max(0, tabCount)) * rowHeight
+    return max(0, contentHeight - visibleHeight)
+  }
+
+  public func clampedScrollOffset(
+    _ offset: CGFloat,
+    tabCount: Int,
+    height: CGFloat,
+    topInset: CGFloat = 0
+  ) -> CGFloat {
+    min(max(0, offset), maxScrollOffset(tabCount: tabCount, height: height, topInset: topInset))
   }
 
   /// 0xRRGGBBAA — a low-alpha black overlay used to dim the row that the
@@ -484,6 +469,7 @@ public struct SidebarProducer {
     tabCount: Int,
     height: CGFloat,
     topInset: CGFloat,
+    scrollOffset: CGFloat,
     draggingIndex: Int?
   ) -> CGFloat? {
     guard slot >= 0, slot <= tabCount else { return nil }
@@ -493,7 +479,7 @@ public struct SidebarProducer {
     // Top of the row currently at index `slot` (or bottom of the last
     // row when `slot == tabCount`). Two pixels tall, centered on the
     // boundary, clamped to the visible column.
-    let topOfSlot = height - CGFloat(slot) * rowHeight - topInset
+    let topOfSlot = height - CGFloat(slot) * rowHeight - topInset + scrollOffset
     return max(0, topOfSlot - 1)
   }
 
@@ -510,10 +496,13 @@ public struct SidebarProducer {
   /// the macOS convention that a drag is "owned" by the originating
   /// view until release.
   public func dropSlot(
-    at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0
+    at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0,
+    scrollOffset: CGFloat = 0
   ) -> Int? {
     guard !tabs.isEmpty else { return nil }
-    let firstTabTop = height - topInset
+    let scrollOffset = clampedScrollOffset(
+      scrollOffset, tabCount: tabs.count, height: height, topInset: topInset)
+    let firstTabTop = height - topInset + scrollOffset
     if point.y >= firstTabTop { return 0 }
     let lastTabBottom = firstTabTop - CGFloat(tabs.count) * rowHeight
     if point.y < lastTabBottom { return tabs.count }
@@ -531,12 +520,16 @@ public struct SidebarProducer {
   // CG coordinates (y=0 at bottom). The "+" button is a titlebar
   // accessory now — sidebar hits are exclusively tab select / close.
   public func hitTest(
-    at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0
+    at point: CGPoint, tabs: [Tab], height: CGFloat, topInset: CGFloat = 0,
+    scrollOffset: CGFloat = 0
   ) -> HitResult {
     guard point.x >= 0, point.x < sidebarWidth else { return .none }
+    guard point.y >= 0, point.y < height - topInset else { return .none }
+    let scrollOffset = clampedScrollOffset(
+      scrollOffset, tabCount: tabs.count, height: height, topInset: topInset)
 
     for (i, tab) in tabs.enumerated() {
-      let tabY = height - CGFloat(i + 1) * rowHeight - topInset
+      let tabY = height - CGFloat(i + 1) * rowHeight - topInset + scrollOffset
       guard point.y >= tabY, point.y < tabY + rowHeight else { continue }
       // Close-X box covers the right-edge slot — the same slot the status
       // indicator occupies when not hovered. Scope is tight enough that a

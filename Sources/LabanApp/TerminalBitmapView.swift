@@ -112,6 +112,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// only affordances (close glyph). Updated from mouseMoved /
   /// mouseExited; nil when the cursor isn't inside any sidebar tab row.
   private var hoveredSidebarTabId: Tab.ID?
+  private var sidebarScrollResidualPx: CGFloat = 0
+  private var targetSidebarScrollOffset: Double = 0
+  private var displayedSidebarScrollOffset: Double = 0
+  private var sidebarScrollVelocityPointsPerSec: Double = 0
+  private var lastSidebarScrollTickAt: ContinuousClock.Instant?
+  private var sidebarScrollAnimating: Bool = false
+  private static let sidebarScrollOmega: Double = 55.0
 
   /// In-progress sidebar drag-reorder. Armed in `mouseDown` when the
   /// hit lands on `.selectTab`; promoted to `activated = true` once the
@@ -1250,7 +1257,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // scroll animation.
     let preciseScrollStreamActive =
       windowVisibleToUser && preciseScrollStreamActiveUntil > now
-    let scrollLinkActive = scrollAnimating || preciseScrollStreamActive
+    let scrollLinkActive = scrollAnimating || sidebarScrollAnimating || preciseScrollStreamActive
     let shouldRun = TerminalIdlePolicy.displayLinkShouldRun(
       windowVisibleToUser: windowVisibleToUser,
       scrollAnimating: scrollLinkActive,
@@ -1268,6 +1275,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let reason: String
     if scrollAnimating {
       reason = "scroll"
+    } else if sidebarScrollAnimating {
+      reason = "sidebarScroll"
     } else if preciseScrollStreamActive {
       reason = "preciseScroll"
     } else if attentionAnimating {
@@ -1501,6 +1510,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // controller doesn't keep ticking against the wrong viewport.
     if tabChanged {
       resetSmoothScrollState(to: authoritativeAppliedRows(for: session) ?? 0)
+      ensureSidebarTabVisible(activeTab.id, animated: true)
       lastParkSignature = nil
       syncSelectionStateToActiveTab()
       // Drop the shared overlay indicator's outgoing-tab state before the new
@@ -1758,7 +1768,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // Return early when nothing changed
     guard
       terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame
-        || attentionStripFrame
+        || attentionStripFrame || sidebarScrollAnimating
     else {
       recordParkedFrameIfInteresting(
         frame: captureFrame,
@@ -1778,6 +1788,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     let h = bounds.height
 
+    let insets = Self.contentInsets
+    let metalRenderer = backend as? MetalRenderer
+    let surfaceScale = max(1, CGFloat(backend.surfaceScale))
+    let sidebarScrollFrame = advanceSidebarScrollFrame(surfaceScale: surfaceScale)
+
     // Sub-cell pixel offset for smooth scroll. Fractional remainder of the
     // PD-controlled displayed position is rendered as a vertical pixel
     // shift on the terminal cells. Sign: FrameProducer's cell coordinates
@@ -1792,22 +1807,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     // Snapped to whole device pixels so glyphs never rasterize at subpixel
     // positions while content is in motion (text stays sharp mid-scroll).
-    let surfaceScale = max(1, CGFloat(backend.surfaceScale))
     let scrollContentYOffset =
       (CGFloat(subCellRows) * CGFloat(cellHeight) * surfaceScale).rounded() / surfaceScale
-    let insets = Self.contentInsets
-    let metalRenderer = backend as? MetalRenderer
     // Resampled scroll frames are drop-don't-block: when the present
     // pipeline is at capacity, skipping this tick costs nothing (the next
     // tick repaints from newer state) while blocking on it delays the next
     // tick and halves the cadence. Only scroll animation frames opt in —
     // output-driven frames keep the blocking guarantees.
-    metalRenderer?.dropNextFrameWhenBusy = scrollAnimating || subCellRows != 0
+    metalRenderer?.dropNextFrameWhenBusy =
+      scrollAnimating || subCellRows != 0 || sidebarScrollFrame.animating
     // Attention pulse frames repaint the sidebar in the renderer's dedicated
     // scissored strip pass instead of forcing full-damage terminal repaints.
     // (The software backend ignores damage and repaints every command, so it
     // needs no flag — reaching the render call below is enough.)
-    metalRenderer?.repaintSidebarStrip = attentionStripFrame
+    let sidebarStripFrame = attentionStripFrame || sidebarScrollFrame.animating
+    metalRenderer?.repaintSidebarStrip = sidebarStripFrame
     if let metalRenderer, drawableWakeInstalledRenderer !== metalRenderer {
       drawableWakeInstalledRenderer = metalRenderer
       metalRenderer.onDrawableReadyAfterMiss = { [weak self] in
@@ -1832,6 +1846,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       insets: TerminalSurfaceInsets(
         top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right),
       sidebarTopInset: Self.titlebarReservedHeight,
+      sidebarScrollOffset: sidebarScrollFrame.offset,
       hoveredSidebarTabId: hoveredSidebarTabId,
       sidebarDragIndicator: sidebarDragIndicator,
       contentYOffset: scrollContentYOffset,
@@ -2686,7 +2701,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     )
     switch sp.hitTest(
       at: pt, tabs: model.tabs, height: bounds.height,
-      topInset: Self.titlebarReservedHeight)
+      topInset: Self.titlebarReservedHeight,
+      scrollOffset: currentSidebarScrollOffsetForHitTesting())
     {
     case .selectTab(let id), .closeTab(let id):
       setHoveredSidebarTab(id)
@@ -2699,6 +2715,123 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     guard hoveredSidebarTabId != id else { return }
     hoveredSidebarTabId = id
     invalidateRenderAndWake()
+  }
+
+  private func makeSidebarProducer() -> SidebarProducer {
+    SidebarProducer(
+      sidebarWidth: sidebarWidth,
+      cellWidth: CGFloat(sidebarCellWidth),
+      cellHeight: CGFloat(sidebarCellHeight))
+  }
+
+  private func sidebarMaxScrollOffset() -> CGFloat {
+    makeSidebarProducer().maxScrollOffset(
+      tabCount: model.tabs.count,
+      height: bounds.height,
+      topInset: Self.titlebarReservedHeight)
+  }
+
+  private func clampedSidebarScrollOffset(_ offset: Double) -> Double {
+    Double(min(max(0, CGFloat(offset)), sidebarMaxScrollOffset()))
+  }
+
+  private func currentSidebarScrollOffsetForHitTesting() -> CGFloat {
+    CGFloat(clampedSidebarScrollOffset(displayedSidebarScrollOffset))
+  }
+
+  private func resetSidebarScrollState(to offset: Double = 0) {
+    let clamped = clampedSidebarScrollOffset(offset)
+    targetSidebarScrollOffset = clamped
+    displayedSidebarScrollOffset = clamped
+    sidebarScrollVelocityPointsPerSec = 0
+    lastSidebarScrollTickAt = nil
+    sidebarScrollResidualPx = 0
+    sidebarScrollAnimating = false
+  }
+
+  private func advanceSidebarScrollFrame(surfaceScale: CGFloat) -> (
+    offset: CGFloat, animating: Bool
+  ) {
+    let maxOffset = Double(sidebarMaxScrollOffset())
+    guard maxOffset > 0 else {
+      resetSidebarScrollState()
+      return (0, false)
+    }
+
+    targetSidebarScrollOffset = min(max(0, targetSidebarScrollOffset), maxOffset)
+    displayedSidebarScrollOffset = min(max(0, displayedSidebarScrollOffset), maxOffset)
+    let before = displayedSidebarScrollOffset
+    var shouldContinue = false
+    let error = targetSidebarScrollOffset - displayedSidebarScrollOffset
+    if abs(error) > 0.01 || abs(sidebarScrollVelocityPointsPerSec) > 0.1 {
+      let now = ContinuousClock.now
+      let dt: Double
+      if let last = lastSidebarScrollTickAt {
+        let dur = now - last
+        dt = max(0, min(1.0 / 30.0, Double(dur.components.attoseconds) / 1e18))
+      } else {
+        dt = 1.0 / 120.0
+      }
+      lastSidebarScrollTickAt = now
+
+      let omega = Self.sidebarScrollOmega
+      let e0 = -error
+      let c2 = sidebarScrollVelocityPointsPerSec + omega * e0
+      let decay = exp(-omega * dt)
+      displayedSidebarScrollOffset = targetSidebarScrollOffset + (e0 + c2 * dt) * decay
+      sidebarScrollVelocityPointsPerSec = (c2 - omega * (e0 + c2 * dt)) * decay
+      displayedSidebarScrollOffset = min(max(0, displayedSidebarScrollOffset), maxOffset)
+
+      if abs(targetSidebarScrollOffset - displayedSidebarScrollOffset) < 0.01,
+        abs(sidebarScrollVelocityPointsPerSec) < 0.1
+      {
+        displayedSidebarScrollOffset = targetSidebarScrollOffset
+        sidebarScrollVelocityPointsPerSec = 0
+      } else {
+        shouldContinue = true
+      }
+    } else {
+      lastSidebarScrollTickAt = nil
+    }
+
+    let scale = max(1, surfaceScale)
+    let snapped = (CGFloat(displayedSidebarScrollOffset) * scale).rounded() / scale
+    let movedThisFrame = abs(displayedSidebarScrollOffset - before) > 0.001
+    sidebarScrollAnimating = shouldContinue
+    return (snapped, shouldContinue || movedThisFrame)
+  }
+
+  private func ensureSidebarTabVisible(_ tabId: Tab.ID, animated: Bool) {
+    let tabs = model.tabs
+    guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+    let producer = makeSidebarProducer()
+    let visibleTop = max(0, bounds.height - Self.titlebarReservedHeight)
+    let maxOffset = producer.maxScrollOffset(
+      tabCount: tabs.count,
+      height: bounds.height,
+      topInset: Self.titlebarReservedHeight)
+    guard maxOffset > 0 else {
+      resetSidebarScrollState()
+      return
+    }
+
+    let rowTopAtZero = visibleTop - CGFloat(index) * producer.rowHeight
+    let rowBottomAtZero = rowTopAtZero - producer.rowHeight
+    var desired = CGFloat(targetSidebarScrollOffset)
+    if rowTopAtZero + desired > visibleTop {
+      desired = visibleTop - rowTopAtZero
+    }
+    if rowBottomAtZero + desired < 0 {
+      desired = -rowBottomAtZero
+    }
+    desired = min(max(0, desired), maxOffset)
+    guard abs(Double(desired) - targetSidebarScrollOffset) > 0.001 else { return }
+    targetSidebarScrollOffset = Double(desired)
+    if animated {
+      sidebarScrollAnimating = true
+    } else {
+      resetSidebarScrollState(to: Double(desired))
+    }
   }
 
   /// Sidebar drag-reorder snapshot consumed by the renderer to draw the
@@ -2737,7 +2870,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     )
     state.currentSlot = sp.dropSlot(
       at: pt, tabs: model.tabs, height: bounds.height,
-      topInset: Self.titlebarReservedHeight)
+      topInset: Self.titlebarReservedHeight,
+      scrollOffset: currentSidebarScrollOffsetForHitTesting())
     sidebarDragState = state
     invalidateRenderAndWake()
     return true
@@ -2760,7 +2894,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let slot =
       sp.dropSlot(
         at: pt, tabs: model.tabs, height: bounds.height,
-        topInset: Self.titlebarReservedHeight) ?? state.currentSlot
+        topInset: Self.titlebarReservedHeight,
+        scrollOffset: currentSidebarScrollOffsetForHitTesting()) ?? state.currentSlot
     if let slot {
       // `dropSlot` returns an insertion index in [0, count]; AppModel
       // works in [0, count-1]. When the drop is past the last row, the
@@ -2826,6 +2961,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     discardMarkedComposition()
     persistSelectionStateForCurrentTab()
     model.selectTab(tabId)
+    ensureSidebarTabVisible(tabId, animated: true)
     restoreSelectionState(for: model.activeTab?.id)
   }
 
@@ -2880,6 +3016,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       throw error
     }
     restoreSelectionState(for: tab.id)
+    ensureSidebarTabVisible(tab.id, animated: true)
     return tab
   }
 
@@ -2999,12 +3136,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       lastDragPoint = nil
     }
     syncSelectionStateToActiveTab()
+    if let active = model.activeTab {
+      ensureSidebarTabVisible(active.id, animated: true)
+    } else {
+      resetSidebarScrollState()
+    }
   }
 
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
     layoutFindChip()
     layoutCaptureIndicator()
+    if let active = model.activeTab {
+      ensureSidebarTabVisible(active.id, animated: false)
+    } else {
+      resetSidebarScrollState()
+    }
     let w = Int(newSize.width)
     let h = Int(newSize.height)
     guard w > 0, h > 0 else { return }
@@ -3988,18 +4135,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   // MARK: - Mouse (selection + sidebar hits + mouse tracking)
 
   override func scrollWheel(with event: NSEvent) {
+    let pt = convert(event.locationInWindow, from: nil)
+    guard pt.y <= bounds.height - Self.titlebarReservedHeight else { return }
+    if pt.x < sidebarWidth {
+      scrollSidebar(with: event)
+      return
+    }
+
     guard
       let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)
     else {
       return
     }
-
-    let pt = convert(event.locationInWindow, from: nil)
-
-    // Sidebar and titlebar-strip scrolls are window chrome, not terminal input.
-    guard pt.x >= sidebarWidth else { return }
-    guard pt.y <= bounds.height - Self.titlebarReservedHeight else { return }
 
     guard let vs = session.viewportState() else { return }
     let mouseTracking = mouseTrackingActive(for: activeTab, session: session)
@@ -4283,6 +4431,44 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     advanceFrame(wake: .scrollWheel)
   }
 
+  private func scrollSidebar(with event: NSEvent) {
+    let producer = makeSidebarProducer()
+    let maxOffset = producer.maxScrollOffset(
+      tabCount: model.tabs.count,
+      height: bounds.height,
+      topInset: Self.titlebarReservedHeight)
+    guard maxOffset > 0 else {
+      resetSidebarScrollState()
+      return
+    }
+
+    let delta: CGFloat
+    if event.hasPreciseScrollingDeltas && ScrollSettings.mode == .pixelSmooth {
+      sidebarScrollResidualPx = 0
+      delta = CGFloat(
+        TerminalScrollInput.preciseRowsDelta(
+          scrollingDeltaY: event.scrollingDeltaY,
+          cellHeightPx: 1))
+    } else {
+      let decision = TerminalScrollInput.decide(
+        event: TerminalScrollInput.Event(
+          deltaY: event.deltaY,
+          scrollingDeltaY: event.scrollingDeltaY,
+          hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas),
+        residualPx: sidebarScrollResidualPx,
+        cellHeightPx: producer.rowHeight)
+      sidebarScrollResidualPx = decision.newResidualPx
+      delta = CGFloat(decision.rowsDelta) * producer.rowHeight
+    }
+
+    guard delta != 0 else { return }
+    let next = min(max(0, CGFloat(targetSidebarScrollOffset) + delta), maxOffset)
+    guard abs(Double(next) - targetSidebarScrollOffset) > 0.001 else { return }
+    targetSidebarScrollOffset = Double(next)
+    sidebarScrollAnimating = true
+    advanceFrame(wake: .scrollWheel)
+  }
+
   private func externalHyperlinkURI(at pt: NSPoint) -> String? {
     guard let cell = termCell(at: pt),
       let activeTab = model.activeTab,
@@ -4459,7 +4645,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       )
       switch sp.hitTest(
         at: pt, tabs: model.tabs, height: bounds.height,
-        topInset: Self.titlebarReservedHeight)
+        topInset: Self.titlebarReservedHeight,
+        scrollOffset: currentSidebarScrollOffsetForHitTesting())
       {
       case .newTab:
         _ = try? createTabPreservingSelection()

@@ -723,15 +723,13 @@ final class AppModelTests: XCTestCase {
     model.closeAllSessions()
   }
 
-  func testMaxNineEnforcement() throws {
+  func testCanCreateMoreThanNineTabs() throws {
     let model = try makeModel()
-    for _ in 2...AppModel.maxTabs {
+    for _ in 2...12 {
       try model.createTab()
     }
-    XCTAssertEqual(model.tabs.count, AppModel.maxTabs)
-    XCTAssertThrowsError(try model.createTab()) { error in
-      XCTAssertEqual(error as? AppError, AppError.tabLimitReached)
-    }
+    XCTAssertEqual(model.tabs.count, 12)
+    XCTAssertEqual(model.tabs.map(\.position), Array(1...12))
   }
 
   func testTitleUpdatePreservesIdentity() throws {

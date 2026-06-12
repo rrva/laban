@@ -20,8 +20,6 @@ struct AppModelSurfaceMetadataSyncResult {
 }
 
 public final class AppModel {
-  public static let maxTabs = 9
-
   private let modelLock = NSRecursiveLock()
   private var _tabs: [Tab] = []
   public var tabs: [Tab] { withModelLock { _tabs } }
@@ -595,7 +593,6 @@ public final class AppModel {
   public func createTab() throws -> Tab {
     let (tab, session) = try withModelLock {
       () -> (Tab, Session) in
-      guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
       // A new tab opens in the active tab's working directory when one is known
       // and a cwd-aware factory is wired; otherwise spawn at the default
       // location, exactly as before. `selectTabUnlocked` below moves activeness
@@ -641,7 +638,6 @@ public final class AppModel {
   @discardableResult
   public func createTab(runningArgv argv: [String], cwd: String? = nil) throws -> Tab {
     let (tab, session) = try withModelLock { () -> (Tab, Session) in
-      guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
       let session: Session
       if !argv.isEmpty, let factory = commandSessionFactory {
         session = try factory(currentSize, cwd, argv)
@@ -771,7 +767,6 @@ public final class AppModel {
     let resolved = resolveRestoredCwd(persistedTab.cwd)
     let (tab, session) = try withModelLock {
       () -> (Tab, Session) in
-      guard _tabs.count < AppModel.maxTabs else { throw AppError.tabLimitReached }
       let session: Session
       if let deferredFactory = restoredDeferredSessionFactory {
         let spec = RestoredSessionSpec(
@@ -962,7 +957,6 @@ public final class AppModel {
     recordTabJournal()
     onSurfaceStateChanged?()
   }
-
 
   /// Diffs the current tab projections into `tabJournal` and mirrors any new
   /// entries into a running capture. Hooked into both notify funnels — those
@@ -1968,7 +1962,6 @@ public final class AppModel {
       || t.contains("requested") || t.contains("waiting")
       || t.contains("permission") || t.contains("needs you")
   }
-
 
   public static let awaitingInputNotificationText = "Awaiting your input"
 

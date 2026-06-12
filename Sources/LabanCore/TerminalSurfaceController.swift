@@ -82,6 +82,7 @@ public struct TerminalSurfaceFrameRequest {
   public var viewportHeight: CGFloat
   public var insets: TerminalSurfaceInsets
   public var sidebarTopInset: CGFloat
+  public var sidebarScrollOffset: CGFloat
   public var hoveredSidebarTabId: Tab.ID?
   public var sidebarDragIndicator: SidebarProducer.DragIndicator?
   public var contentYOffset: CGFloat
@@ -120,6 +121,7 @@ public struct TerminalSurfaceFrameRequest {
     viewportHeight: CGFloat,
     insets: TerminalSurfaceInsets = .zero,
     sidebarTopInset: CGFloat = 0,
+    sidebarScrollOffset: CGFloat = 0,
     hoveredSidebarTabId: Tab.ID? = nil,
     sidebarDragIndicator: SidebarProducer.DragIndicator? = nil,
     contentYOffset: CGFloat = 0,
@@ -145,6 +147,7 @@ public struct TerminalSurfaceFrameRequest {
     self.viewportHeight = viewportHeight
     self.insets = insets
     self.sidebarTopInset = sidebarTopInset
+    self.sidebarScrollOffset = sidebarScrollOffset
     self.hoveredSidebarTabId = hoveredSidebarTabId
     self.sidebarDragIndicator = sidebarDragIndicator
     self.contentYOffset = contentYOffset
@@ -328,6 +331,7 @@ private struct SidebarCacheSignature: Equatable {
   var activeTabId: Tab.ID?
   var viewportHeight: CGFloat
   var topInset: CGFloat
+  var scrollOffset: CGFloat
   var hoveredTabId: Tab.ID?
   var dragIndicator: SidebarProducer.DragIndicator?
   var reduceMotion: Bool
@@ -543,6 +547,7 @@ public final class TerminalSurfaceController {
       activeTabId: activeTab.id,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
+      scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
@@ -737,6 +742,7 @@ public final class TerminalSurfaceController {
       activeTabId: activeTab.id,
       viewportHeight: request.viewportHeight,
       topInset: request.sidebarTopInset,
+      scrollOffset: request.sidebarScrollOffset,
       hoveredTabId: request.hoveredSidebarTabId,
       dragIndicator: request.sidebarDragIndicator,
       now: request.now,
@@ -813,6 +819,7 @@ public final class TerminalSurfaceController {
     activeTabId: Tab.ID?,
     viewportHeight: CGFloat,
     topInset: CGFloat = 0,
+    scrollOffset: CGFloat = 0,
     hoveredTabId: Tab.ID? = nil,
     dragIndicator: SidebarProducer.DragIndicator? = nil,
     now: Date = Date(),
@@ -831,7 +838,8 @@ public final class TerminalSurfaceController {
         height: viewportHeight,
         topInset: topInset,
         hoveredTabId: hoveredTabId,
-        dragIndicator: dragIndicator)
+        dragIndicator: dragIndicator,
+        scrollOffset: scrollOffset)
     }
 
     // The producer's output is independent of `now` — needsAction pulse
@@ -852,6 +860,7 @@ public final class TerminalSurfaceController {
       activeTabId: activeTabId,
       viewportHeight: viewportHeight,
       topInset: topInset,
+      scrollOffset: scrollOffset,
       hoveredTabId: hoveredTabId,
       dragIndicator: dragIndicator,
       reduceMotion: reduceMotion,
