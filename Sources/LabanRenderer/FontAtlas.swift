@@ -4,10 +4,13 @@ import Foundation
 
 public final class FontAtlas {
   public let font: CTFont
+  public let fontPostScriptName: String
   public let pointSize: CGFloat
   public let ascent: CGFloat
   public let descent: CGFloat
   public let leading: CGFloat
+  private var styledVariantCache:
+    [UInt8: (font: CTFont, boldFallback: Bool, italicFallback: Bool)] = [:]
 
   /// UserDefaults keys for the user's NSFontPanel picks.
   public static let userFontKey = "LabanFontName"
@@ -48,9 +51,28 @@ public final class FontAtlas {
 
   public static let didChangeNotification = Notification.Name("LabanFontDidChange")
 
-  public init(pointSize: CGFloat = defaultTerminalPointSize) {
-    self.pointSize = pointSize
+  public convenience init(pointSize: CGFloat = defaultTerminalPointSize) {
+    self.init(
+      font: Self.makeFont(
+        pointSize: pointSize,
+        fontName: UserDefaults.standard.string(forKey: Self.userFontKey)),
+      pointSize: pointSize)
+  }
 
+  public convenience init(pointSize: CGFloat, fontName: String?) {
+    self.init(font: Self.makeFont(pointSize: pointSize, fontName: fontName), pointSize: pointSize)
+  }
+
+  private init(font: CTFont, pointSize: CGFloat) {
+    self.font = font
+    self.fontPostScriptName = Self.postScriptName(of: font)
+    self.pointSize = pointSize
+    self.ascent = CTFontGetAscent(font)
+    self.descent = CTFontGetDescent(font)
+    self.leading = CTFontGetLeading(font)
+  }
+
+  private static func makeFont(pointSize: CGFloat, fontName: String?) -> CTFont {
     // Resolution order:
     //   1. The user's NSFontPanel pick, if any (UserDefaults).
     //   2. The bundled JetBrainsMono TTF (Package resource).
@@ -58,22 +80,71 @@ public final class FontAtlas {
     //
     // Falling back rather than crashing means a missing bundled font
     // or a since-uninstalled user pick can't brick the terminal.
-    if let userName = UserDefaults.standard.string(forKey: Self.userFontKey),
-      !userName.isEmpty
-    {
-      self.font = CTFontCreateWithName(userName as CFString, pointSize, nil)
+    if let fontName, !fontName.isEmpty {
+      return CTFontCreateWithName(fontName as CFString, pointSize, nil)
     } else if let url = LabanRendererResources.bundle?.url(
       forResource: "JetBrainsMono-Regular", withExtension: "ttf"),
       let provider = CGDataProvider(url: url as CFURL),
       let cgFont = CGFont(provider)
     {
-      self.font = CTFontCreateWithGraphicsFont(cgFont, pointSize, nil, nil)
+      return CTFontCreateWithGraphicsFont(cgFont, pointSize, nil, nil)
     } else {
-      self.font = CTFontCreateWithName("Menlo" as CFString, pointSize, nil)
+      return CTFontCreateWithName("Menlo" as CFString, pointSize, nil)
     }
-    self.ascent = CTFontGetAscent(self.font)
-    self.descent = CTFontGetDescent(self.font)
-    self.leading = CTFontGetLeading(self.font)
+  }
+
+  public static func postScriptName(of font: CTFont) -> String {
+    CTFontCopyPostScriptName(font) as String
+  }
+
+  public static func postScriptName(
+    forFontName fontName: String?,
+    pointSize: CGFloat = defaultTerminalPointSize
+  ) -> String? {
+    guard let fontName, !fontName.isEmpty else { return nil }
+    return postScriptName(of: CTFontCreateWithName(fontName as CFString, pointSize, nil))
+  }
+
+  public func matches(fontName: String?) -> Bool {
+    guard let candidate = Self.postScriptName(forFontName: fontName, pointSize: pointSize) else {
+      return false
+    }
+    return candidate == fontPostScriptName
+  }
+
+  public func withPointSize(_ pointSize: CGFloat) -> FontAtlas {
+    FontAtlas(
+      font: CTFontCreateCopyWithAttributes(font, pointSize, nil, nil),
+      pointSize: pointSize)
+  }
+
+  public func styledFontVariant(
+    bold: Bool,
+    italic: Bool
+  ) -> (font: CTFont, boldFallback: Bool, italicFallback: Bool) {
+    let key = (bold ? UInt8(1) : 0) | (italic ? UInt8(2) : 0)
+    if let cached = styledVariantCache[key] {
+      return cached
+    }
+    var desired: CTFontSymbolicTraits = []
+    if bold { desired.insert(.traitBold) }
+    if italic { desired.insert(.traitItalic) }
+    let styled: CTFont
+    if desired.isEmpty {
+      styled = font
+    } else {
+      styled =
+        CTFontCreateCopyWithSymbolicTraits(font, pointSize, nil, desired, desired)
+        ?? font
+    }
+    let traits = CTFontGetSymbolicTraits(styled)
+    let variant = (
+      font: styled,
+      boldFallback: bold && !traits.contains(.traitBold),
+      italicFallback: italic && !traits.contains(.traitItalic)
+    )
+    styledVariantCache[key] = variant
+    return variant
   }
 
   // Nominal cell size (width = advance of 'M', height = ascent + descent + leading).

@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreText
 import CoreVideo
 import LabanCore
 import LabanDebug
@@ -510,7 +511,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     ) { [weak self] _ in
       guard let self else { return }
       let persistedName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
-      if persistedName == self.lastObservedPersistedFontName {
+      if self.persistedFontNameMatchesActive(persistedName) {
         self.applyFontSize(FontAtlas.persistedTerminalPointSize)
       } else {
         self.lastObservedPersistedFontName = persistedName
@@ -771,6 +772,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     backend is MetalRenderer
   }
 
+  var terminalFontPostScriptName: String {
+    fontAtlas.fontPostScriptName
+  }
+
+  var terminalFontPanelFont: NSFont? {
+    let descriptor = CTFontCopyFontDescriptor(fontAtlas.font) as NSFontDescriptor
+    return NSFont(descriptor: descriptor, size: fontAtlas.pointSize)
+  }
+
   func applyRendererMode(_ mode: RendererMode) {
     applyRendererSelection(RendererSelection(metalMode: mode))
   }
@@ -882,9 +892,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let ladder = GlyphAtlasLadder(
       device: device,
       scale: scale,
-      fontName: UserDefaults.standard.string(forKey: FontAtlas.userFontKey))
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas)
     atlasLadder = ladder
     ladder.beginPrebuild(excluding: Int(FontAtlas.clampedZoomPointSize(fontAtlas.pointSize)))
+  }
+
+  private func persistedFontNameMatchesActive(_ persistedName: String?) -> Bool {
+    guard let persistedName, !persistedName.isEmpty else {
+      return lastObservedPersistedFontName == nil
+    }
+    return fontAtlas.matches(fontName: persistedName)
   }
 
   private func startLabandSnapshotGenerationMonitor() {
@@ -3284,18 +3302,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     // Prefer prebuilt ladder atlases — a pure pointer swap. Fall back to a
     // synchronous build (a few ms) when the ladder is absent, still warming,
-    // or stale against the persisted font family; correctness never depends
+    // or stale against the active font family; correctness never depends
     // on the ladder.
     let ladderEntry: GlyphAtlasLadder.Entry? = {
       guard let ladder = atlasLadder,
-        ladder.fontName == UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
+        ladder.fontName == fontAtlas.fontPostScriptName,
+        ladder.sidebarFontName == sidebarFontAtlas.fontPostScriptName
       else { return nil }
       return ladder.entry(forPointSize: Int(clamped))
     }()
-    let newFontAtlas = ladderEntry?.fontAtlas ?? FontAtlas(pointSize: clamped)
+    let newFontAtlas = ladderEntry?.fontAtlas ?? fontAtlas.withPointSize(clamped)
     let newSidebarFontAtlas =
       ladderEntry?.sidebarFontAtlas
-      ?? FontAtlas(pointSize: FontAtlas.sidebarPointSize(forTerminalPointSize: clamped))
+      ?? sidebarFontAtlas.withPointSize(FontAtlas.sidebarPointSize(forTerminalPointSize: clamped))
     let cell = newFontAtlas.cellSize
     let sidebarCell = newSidebarFontAtlas.cellSize
 

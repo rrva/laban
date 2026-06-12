@@ -221,6 +221,26 @@ public final class MetalGlyphAtlas {
     }
   }
 
+  /// Prewarm printable ASCII for the font variants the renderer can request
+  /// from terminal attributes. The atlas key includes both the CTFont identity
+  /// and synthetic bold/italic fallback flags, so regular ASCII alone does not
+  /// cover styled prompt/status text.
+  public func prewarmASCII(fontAtlas: FontAtlas) {
+    for bold in [false, true] {
+      for italic in [false, true] {
+        let variant = fontAtlas.styledFontVariant(bold: bold, italic: italic)
+        for value in 0x20...0x7E {
+          guard let scalar = Unicode.Scalar(value) else { continue }
+          _ = entry(
+            scalar: scalar,
+            font: variant.font,
+            boldFallback: variant.boldFallback,
+            italicFallback: variant.italicFallback)
+        }
+      }
+    }
+  }
+
   // MARK: - Internal
 
   private func rasterizeAndPack(

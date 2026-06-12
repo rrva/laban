@@ -3496,18 +3496,10 @@ public final class MetalRenderer: RendererBackend {
     let atlasBit: UInt32 = (atlas === fontAtlas) ? 0 : 0x1_0000
     let key = attrKey | atlasBit
     if let cached = fontCache[key] { return cached }
-    var desired: CTFontSymbolicTraits = []
-    if attributes.contains(.bold) { desired.insert(.traitBold) }
-    if attributes.contains(.italic) { desired.insert(.traitItalic) }
-    let font: CTFont
-    if desired.isEmpty {
-      font = atlas.font
-    } else {
-      font =
-        CTFontCreateCopyWithSymbolicTraits(
-          atlas.font, atlas.pointSize, nil, desired, desired)
-        ?? atlas.font
-    }
+    let font = atlas.styledFontVariant(
+      bold: attributes.contains(.bold),
+      italic: attributes.contains(.italic)
+    ).font
     fontCache[key] = font
     return font
   }

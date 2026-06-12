@@ -294,19 +294,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   /// Open NSFontPanel, primed with the current pick. The panel is
   /// non-modal — the user picks a font, AppKit fires `changeFont(_:)`
   /// on the responder chain (us, since we're the menu target). We
-  /// persist the choice and ask the user to relaunch; live re-skinning
-  /// the renderer would require recreating the Metal glyph atlases and
-  /// resizing every session's grid, which isn't worth the complexity
-  /// for a setting most users change once.
+  /// persist the choice; size changes apply live through the zoom path,
+  /// while family changes still require a restart.
   @objc func showFontPicker(_ sender: Any?) {
     let panel = NSFontPanel.shared
-    let currentName =
-      UserDefaults.standard.string(forKey: FontAtlas.userFontKey) ?? "JetBrains Mono"
-    let currentSize = FontAtlas.persistedTerminalPointSize
-    let initialFont =
-      NSFont(name: currentName, size: currentSize)
-      ?? NSFont(name: "Menlo", size: currentSize)
-      ?? NSFont.systemFont(ofSize: currentSize)
+    let initialFont = Self.currentFontForFontPanel(
+      activeFont: windowController?.terminalView?.terminalFontPanelFont,
+      persistedName: UserDefaults.standard.string(forKey: FontAtlas.userFontKey),
+      size: FontAtlas.persistedTerminalPointSize)
     panel.setPanelFont(initialFont, isMultiple: false)
     NSFontManager.shared.target = self
     NSFontManager.shared.action = #selector(changeFont(_:))
@@ -321,14 +316,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   /// change does not.
   @objc func changeFont(_ sender: Any?) {
     let fm = NSFontManager.shared
-    let persistedName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
-    let currentName = persistedName ?? "Menlo"
-    let currentSize = FontAtlas.persistedTerminalPointSize
-    let current =
-      NSFont(name: currentName, size: currentSize)
-      ?? NSFont.systemFont(ofSize: currentSize)
+    let current = Self.currentFontForFontPanel(
+      activeFont: windowController?.terminalView?.terminalFontPanelFont,
+      persistedName: UserDefaults.standard.string(forKey: FontAtlas.userFontKey),
+      size: FontAtlas.persistedTerminalPointSize)
     let new = fm.convert(current)
-    let familyChanged = persistedName != new.fontName
+    let activeFontName =
+      windowController?.terminalView?.terminalFontPostScriptName ?? current.fontName
+    let familyChanged = Self.fontFamilyChanged(
+      activeFontPostScriptName: activeFontName,
+      selectedFont: new)
     UserDefaults.standard.set(new.fontName, forKey: FontAtlas.userFontKey)
     UserDefaults.standard.set(Double(new.pointSize), forKey: FontAtlas.userFontSizeKey)
     AppLog.app.info("font picked: \(new.fontName) @ \(new.pointSize) pt")
@@ -345,6 +342,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     if alert.runModal() == .alertFirstButtonReturn {
       Self.restartApp()
     }
+  }
+
+  static func currentFontForFontPanel(
+    activeFont: NSFont?,
+    persistedName: String?,
+    size: CGFloat
+  ) -> NSFont {
+    if let activeFont {
+      return activeFont
+    }
+    if let persistedName, !persistedName.isEmpty,
+      let persisted = NSFont(name: persistedName, size: size)
+    {
+      return persisted
+    }
+    return NSFont(name: "Menlo", size: size) ?? NSFont.systemFont(ofSize: size)
+  }
+
+  static func fontFamilyChanged(
+    activeFontPostScriptName: String,
+    selectedFont: NSFont
+  ) -> Bool {
+    activeFontPostScriptName != selectedFont.fontName
   }
 
   /// Menu/selector entry for "Restart Laban". The relaunched LabanApp

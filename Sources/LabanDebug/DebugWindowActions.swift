@@ -62,7 +62,7 @@ struct DebugWindowActions {
     }
     let clamped = FontAtlas.clampedZoomPointSize(CGFloat(pointSize))
     if clamped != runtime.fontAtlas.pointSize {
-      let fontAtlas = FontAtlas(pointSize: clamped)
+      let fontAtlas = runtime.fontAtlas.withPointSize(clamped)
       let cell = fontAtlas.cellSize
       runtime.fontAtlas = fontAtlas
       runtime.cellWidth = max(1, Int(cell.width))

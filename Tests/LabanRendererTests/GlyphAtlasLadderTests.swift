@@ -33,6 +33,7 @@ final class GlyphAtlasLadderTests: XCTestCase {
       return XCTFail("makeEntry(forPointSize: 16) returned nil")
     }
 
+    XCTAssertFalse(entry.terminalAtlas.didOverflow)
     let countAfterPrewarm = entry.terminalAtlas.rasterizedGlyphCount
     XCTAssertGreaterThan(countAfterPrewarm, 0, "prewarm must rasterize ASCII")
 
@@ -53,6 +54,68 @@ final class GlyphAtlasLadderTests: XCTestCase {
       "ASCII lookups after prewarm must not rasterize")
   }
 
+  func testPrewarmedEntryServesStyledASCIIWithoutNewRasterization() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let ladder = GlyphAtlasLadder(device: device, scale: 2, fontName: nil)
+    guard let entry = ladder.makeEntry(forPointSize: 16) else {
+      return XCTFail("makeEntry(forPointSize: 16) returned nil")
+    }
+
+    let countAfterPrewarm = entry.terminalAtlas.rasterizedGlyphCount
+    for bold in [false, true] {
+      for italic in [false, true] {
+        let variant = entry.fontAtlas.styledFontVariant(bold: bold, italic: italic)
+        for value in 0x20...0x7E {
+          let scalar = Unicode.Scalar(value)!
+          XCTAssertNotNil(
+            entry.terminalAtlas.entry(
+              scalar: scalar,
+              font: variant.font,
+              boldFallback: variant.boldFallback,
+              italicFallback: variant.italicFallback),
+            "prewarmed atlas must serve styled U+\(String(value, radix: 16))")
+        }
+      }
+    }
+    XCTAssertEqual(
+      entry.terminalAtlas.rasterizedGlyphCount, countAfterPrewarm,
+      "styled ASCII lookups after prewarm must not rasterize")
+  }
+
+  func testLadderUsesActiveFontWhenDefaultsChangeBeforeZoom() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let defaults = UserDefaults.standard
+    let previousFont = defaults.object(forKey: FontAtlas.userFontKey)
+    defaults.removeObject(forKey: FontAtlas.userFontKey)
+    let active = FontAtlas(pointSize: 14)
+    let activeSidebar = FontAtlas(pointSize: 11)
+    defaults.set("Helvetica", forKey: FontAtlas.userFontKey)
+    defer {
+      if let previousFont {
+        defaults.set(previousFont, forKey: FontAtlas.userFontKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontKey)
+      }
+    }
+
+    let ladder = GlyphAtlasLadder(
+      device: device,
+      scale: 2,
+      fontAtlas: active,
+      sidebarFontAtlas: activeSidebar)
+    guard let entry = ladder.makeEntry(forPointSize: 20) else {
+      return XCTFail("makeEntry(forPointSize: 20) returned nil")
+    }
+
+    XCTAssertEqual(entry.fontAtlas.fontPostScriptName, active.fontPostScriptName)
+    XCTAssertNotEqual(
+      entry.fontAtlas.fontPostScriptName, FontAtlas(pointSize: 20).fontPostScriptName)
+  }
+
   func testFullLadderBuildsAllSizesWithinMemoryBudget() throws {
     guard let device = MTLCreateSystemDefaultDevice() else {
       throw XCTSkip("no Metal device available")
@@ -64,11 +127,11 @@ final class GlyphAtlasLadderTests: XCTestCase {
     let lo = Int(FontAtlas.zoomMinimumPointSize)
     let hi = Int(FontAtlas.zoomMaximumPointSize)
     for size in lo...hi {
-      if size == activeSize {
-        XCTAssertNil(ladder.entry(forPointSize: size), "active size is excluded")
-      } else {
-        XCTAssertNotNil(ladder.entry(forPointSize: size), "missing ladder entry for \(size) pt")
-      }
+      let entry = try XCTUnwrap(
+        ladder.entry(forPointSize: size),
+        "missing ladder entry for \(size) pt")
+      XCTAssertFalse(entry.terminalAtlas.didOverflow, "terminal atlas overflowed at \(size) pt")
+      XCTAssertFalse(entry.sidebarAtlas.didOverflow, "sidebar atlas overflowed at \(size) pt")
     }
 
     let budget = 48 * 1024 * 1024

@@ -42,6 +42,34 @@ final class FontSizeActionTests: XCTestCase {
       Double(runtime.fontAtlas.pointSize), Double(FontAtlas.zoomMaximumPointSize))
   }
 
+  func testSetFontSizePreservesActiveFontWhenDefaultsChange() throws {
+    let (runtime, artifacts) = try makeRuntime()
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let activeFontName = runtime.fontAtlas.fontPostScriptName
+    let defaults = UserDefaults.standard
+    let previousFont = defaults.object(forKey: FontAtlas.userFontKey)
+    defaults.set("Helvetica", forKey: FontAtlas.userFontKey)
+    defer {
+      if let previousFont {
+        defaults.set(previousFont, forKey: FontAtlas.userFontKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontKey)
+      }
+    }
+    let defaultsResolved = FontAtlas(pointSize: 20)
+    guard defaultsResolved.fontPostScriptName != activeFontName else {
+      throw XCTSkip("probe font resolved to the active font")
+    }
+
+    let response = runtime.applyAction(
+      Data(#"{"action":"setFontSize","pointSize":20}"#.utf8))
+
+    XCTAssertEqual(response.status, 200)
+    XCTAssertEqual(Double(runtime.fontAtlas.pointSize), 20)
+    XCTAssertEqual(runtime.fontAtlas.fontPostScriptName, activeFontName)
+    XCTAssertNotEqual(runtime.fontAtlas.fontPostScriptName, defaultsResolved.fontPostScriptName)
+  }
+
   func testSetFontSizeWithoutPointSizeFails() throws {
     let (runtime, artifacts) = try makeRuntime()
     defer { try? FileManager.default.removeItem(at: artifacts) }

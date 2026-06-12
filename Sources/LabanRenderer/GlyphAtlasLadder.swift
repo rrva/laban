@@ -45,23 +45,48 @@ public final class GlyphAtlasLadder {
   /// A font-family change invalidates the ladder; the owner skips it until
   /// the restart that family changes require.
   public let fontName: String?
+  public let sidebarFontName: String
 
   private let device: MTLDevice
+  private let templateFontAtlas: FontAtlas
+  private let templateSidebarFontAtlas: FontAtlas
   private let lock = NSLock()
   private var entriesBySize: [Int: Entry] = [:]
   private let buildQueue = DispatchQueue(label: "laban.atlas-ladder", qos: .utility)
 
   public init(device: MTLDevice, scale: CGFloat, fontName: String?) {
+    let fontAtlas = FontAtlas(pointSize: FontAtlas.defaultTerminalPointSize, fontName: fontName)
     self.device = device
     self.scale = max(scale, 1)
-    self.fontName = fontName
+    self.templateFontAtlas = fontAtlas
+    self.templateSidebarFontAtlas = FontAtlas(
+      pointSize: FontAtlas.sidebarPointSize(
+        forTerminalPointSize: FontAtlas.defaultTerminalPointSize),
+      fontName: fontName)
+    self.fontName = fontAtlas.fontPostScriptName
+    self.sidebarFontName = templateSidebarFontAtlas.fontPostScriptName
   }
 
-  /// Build every reachable zoom size on the background queue, skipping the
-  /// active size (which already has a live atlas in the renderer). CPU-side
-  /// CoreText drawing and `MTLTexture.replaceRegion` uploads are safe
-  /// off-main for textures no renderer references yet; entries become
-  /// visible only once fully built.
+  public init(
+    device: MTLDevice,
+    scale: CGFloat,
+    fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas
+  ) {
+    self.device = device
+    self.scale = max(scale, 1)
+    self.templateFontAtlas = fontAtlas
+    self.templateSidebarFontAtlas = sidebarFontAtlas
+    self.fontName = fontAtlas.fontPostScriptName
+    self.sidebarFontName = sidebarFontAtlas.fontPostScriptName
+  }
+
+  /// Build every reachable zoom size on the background queue. CPU-side
+  /// CoreText drawing and `MTLTexture.replaceRegion` uploads are safe off-main
+  /// for textures no renderer references yet; entries become visible only once
+  /// fully built. The `activeSize` argument is kept at the call site to make the
+  /// caller's current-size intent explicit, but the ladder now also builds it
+  /// so returning to the default/launch size is still a prebuilt swap.
   public func beginPrebuild(excluding activeSize: Int) {
     buildQueue.async { [self] in
       prebuild(excluding: activeSize)
@@ -70,12 +95,12 @@ public final class GlyphAtlasLadder {
 
   /// Synchronous body of `beginPrebuild`; the test seam for exercising the
   /// full ladder build without queue timing.
-  func prebuild(excluding activeSize: Int) {
+  func prebuild(excluding _: Int) {
     let start = ContinuousClock.now
     var built = 0
     let lo = Int(FontAtlas.zoomMinimumPointSize)
     let hi = Int(FontAtlas.zoomMaximumPointSize)
-    for size in lo...hi where size != activeSize {
+    for size in lo...hi {
       guard entry(forPointSize: size) == nil else { continue }
       guard let entry = makeEntry(forPointSize: size) else { continue }
       lock.lock()
@@ -116,31 +141,13 @@ public final class GlyphAtlasLadder {
   /// atlases (texture sized to the prewarm estimate), printable ASCII
   /// prewarmed into the textures.
   func makeEntry(forPointSize size: Int) -> Entry? {
-    let fontAtlas = FontAtlas(pointSize: CGFloat(size))
-    let sidebarFontAtlas = FontAtlas(
-      pointSize: FontAtlas.sidebarPointSize(forTerminalPointSize: CGFloat(size)))
-    let cell = fontAtlas.cellSize
-    let sidebarCell = sidebarFontAtlas.cellSize
+    let fontAtlas = templateFontAtlas.withPointSize(CGFloat(size))
+    let sidebarFontAtlas = templateSidebarFontAtlas.withPointSize(
+      FontAtlas.sidebarPointSize(forTerminalPointSize: CGFloat(size)))
     guard
-      let terminalAtlas = MetalGlyphAtlas(
-        device: device,
-        cellWidth: cell.width,
-        cellHeight: cell.height,
-        descent: fontAtlas.descent,
-        scale: scale,
-        textureSize: Self.textureSize(
-          cellWidth: cell.width, cellHeight: cell.height, scale: scale)),
-      let sidebarAtlas = MetalGlyphAtlas(
-        device: device,
-        cellWidth: sidebarCell.width,
-        cellHeight: sidebarCell.height,
-        descent: sidebarFontAtlas.descent,
-        scale: scale,
-        textureSize: Self.textureSize(
-          cellWidth: sidebarCell.width, cellHeight: sidebarCell.height, scale: scale))
+      let terminalAtlas = makePrewarmedAtlas(fontAtlas: fontAtlas),
+      let sidebarAtlas = makePrewarmedAtlas(fontAtlas: sidebarFontAtlas)
     else { return nil }
-    terminalAtlas.prewarmASCII(font: fontAtlas.font)
-    sidebarAtlas.prewarmASCII(font: sidebarFontAtlas.font)
     return Entry(
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas,
@@ -148,18 +155,52 @@ public final class GlyphAtlasLadder {
       sidebarAtlas: sidebarAtlas)
   }
 
-  /// Smallest of 512/768/1024/1536/2048 whose area is at least 2× the
-  /// estimated prewarm footprint (95 printable ASCII glyphs at device-pixel
-  /// cell size). The 2× headroom leaves room for the live alphabet beyond
-  /// ASCII; the renderer's overflow-grow path covers underestimates. Measured
-  /// at 2× scale the full 8…40 ladder is ~33 MB — coarser steps (512/1024/2048
-  /// with 3× headroom) blew the 48 MB budget at 69 MB.
+  private func makePrewarmedAtlas(fontAtlas: FontAtlas) -> MetalGlyphAtlas? {
+    let cell = fontAtlas.cellSize
+    let startSize = Self.textureSize(
+      cellWidth: cell.width,
+      cellHeight: cell.height,
+      scale: scale)
+    func build(textureSize: Int) -> MetalGlyphAtlas? {
+      guard
+        let atlas = MetalGlyphAtlas(
+          device: device,
+          cellWidth: cell.width,
+          cellHeight: cell.height,
+          descent: fontAtlas.descent,
+          scale: scale,
+          textureSize: textureSize)
+      else { return nil }
+      atlas.prewarmASCII(fontAtlas: fontAtlas)
+      return atlas.didOverflow ? nil : atlas
+    }
+
+    let maxTextureSize = Self.maximumTextureSize
+    guard var best = build(textureSize: maxTextureSize) else { return nil }
+    var low = min(startSize, maxTextureSize)
+    var high = maxTextureSize - 1
+    while low <= high {
+      let mid = low + (high - low) / 2
+      if let atlas = build(textureSize: mid) {
+        best = atlas
+        high = mid - 1
+      } else {
+        low = mid + 1
+      }
+    }
+    return best
+  }
+
+  private static let maximumTextureSize = 2048
+
+  /// Lower-bound estimate at 2× the single-style printable ASCII footprint.
+  /// Styled prewarm can need more room depending on real font variants and
+  /// fallback slop, so `makePrewarmedAtlas` treats this as a starting point and
+  /// binary-searches upward until prewarm completes without overflow.
   static func textureSize(cellWidth: CGFloat, cellHeight: CGFloat, scale: CGFloat) -> Int {
     let prewarmArea = 95.0 * Double(cellWidth * scale) * Double(cellHeight * scale)
-    for candidate in [512, 768, 1024, 1536, 2048]
-    where Double(candidate * candidate) >= prewarmArea * 2 {
-      return candidate
-    }
-    return 2048
+    return min(
+      maximumTextureSize,
+      max(1, Int(ceil(sqrt(prewarmArea * 2)))))
   }
 }
