@@ -1006,10 +1006,12 @@ final class MetalFrameTimingBench: XCTestCase {
     renderer.waitForLastFrame()
 
     let reps = max(
-      1, repsOverride
+      1,
+      repsOverride
         ?? ProcessInfo.processInfo.environment["LABAN_BENCH_M6_REPS"].flatMap(Int.init) ?? 7)
     let target = max(
-      1, targetOverride
+      1,
+      targetOverride
         ?? ProcessInfo.processInfo.environment["LABAN_BENCH_M6_FRAMES"].flatMap(Int.init) ?? 80)
 
     // Pre-build the frame inputs OUTSIDE the timing brackets. The bench's
@@ -1595,7 +1597,8 @@ final class MetalFrameTimingBench: XCTestCase {
   ) -> [FrameCommand] {
     guard mix != .none else { return [] }
     var commands: [FrameCommand] = []
-    let surfaceRect = CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH)
+    let surfaceRect = CGRect(
+      x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH)
     commands.append(.rect(surfaceRect, color: 0x10_20_30_FF, source: .terminal))
 
     let sidebarNeeded = mix == .sidebar || mix == .sidebarOverlayPreedit

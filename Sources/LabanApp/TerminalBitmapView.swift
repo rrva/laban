@@ -1756,8 +1756,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     attentionWasAnimating = attentionAnimating
 
     // Return early when nothing changed
-    guard terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame
-      || attentionStripFrame
+    guard
+      terminalDirty || renderInvalidated || tabChanged || cursorBlinkFrame
+        || attentionStripFrame
     else {
       recordParkedFrameIfInteresting(
         frame: captureFrame,
