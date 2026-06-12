@@ -314,23 +314,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   }
 
   /// AppKit calls this on the font-manager target whenever the user
-  /// picks a face or size in NSFontPanel. Persist both and ask for a
-  /// relaunch — live re-skinning would require recreating glyph atlases
-  /// and resizing every session's grid.
+  /// picks a face or size in NSFontPanel. Persist both. A size-only
+  /// change applies live (TerminalBitmapView observes the notification
+  /// and re-runs the zoom path); a family change still asks for a
+  /// relaunch — it invalidates fallback-font discovery in ways a size
+  /// change does not.
   @objc func changeFont(_ sender: Any?) {
     let fm = NSFontManager.shared
-    let currentName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey) ?? "Menlo"
+    let persistedName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
+    let currentName = persistedName ?? "Menlo"
     let currentSize = FontAtlas.persistedTerminalPointSize
     let current =
       NSFont(name: currentName, size: currentSize)
       ?? NSFont.systemFont(ofSize: currentSize)
     let new = fm.convert(current)
+    let familyChanged = persistedName != new.fontName
     UserDefaults.standard.set(new.fontName, forKey: FontAtlas.userFontKey)
     UserDefaults.standard.set(Double(new.pointSize), forKey: FontAtlas.userFontSizeKey)
     AppLog.app.info("font picked: \(new.fontName) @ \(new.pointSize) pt")
     EventLog.shared.log(
       "font.set", ["name": new.fontName, "size": String(format: "%.1f", new.pointSize)])
     NotificationCenter.default.post(name: FontAtlas.didChangeNotification, object: nil)
+    guard familyChanged else { return }
     let sizeText = String(format: "%.0f pt", new.pointSize)
     let alert = NSAlert()
     alert.messageText = "Font set to \(new.displayName ?? new.fontName), \(sizeText)"

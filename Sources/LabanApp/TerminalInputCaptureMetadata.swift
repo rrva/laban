@@ -34,6 +34,9 @@ enum TerminalInputCaptureMetadata {
     case .find: return "find"
     case .dumpRenderJournal: return "dumpRenderJournal"
     case .minimize: return "minimize"
+    case .increaseFontSize: return "increaseFontSize"
+    case .decreaseFontSize: return "decreaseFontSize"
+    case .resetFontSize: return "resetFontSize"
     }
   }
 }

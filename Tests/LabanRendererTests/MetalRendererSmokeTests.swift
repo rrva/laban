@@ -301,6 +301,54 @@ final class MetalRendererSmokeTests: XCTestCase {
     XCTAssertNotNil(renderer.pngData, "pngData should produce a PNG after the first render")
   }
 
+  func testReconfigureFontsSwapsMetricsAndKeepsRendering() throws {
+    // Live font-size zoom: a renderer running at 14 pt must adopt a 20 pt
+    // FontAtlas pair mid-flight (new cell metrics, fresh atlases, full-target
+    // redraw) and keep producing frames with visible glyph pixels.
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: 1) else {
+      XCTFail("MetalRenderer.init returned nil")
+      return
+    }
+    renderer.captureMode = true
+    renderer.resize(pixelWidth: 640, pixelHeight: 200, scale: 1)
+
+    let bg: UInt32 = 0xFFFF_FFFF
+    let fg: UInt32 = 0x0000_00FF
+    func frame() -> [FrameCommand] {
+      [
+        .rect(CGRect(x: 0, y: 0, width: 640, height: 200), color: bg, source: .terminal),
+        .glyphRun(
+          origin: CGPoint(x: 0, y: 0), text: "zoom test",
+          foreground: fg, background: bg, attributes: [], source: .terminal),
+      ]
+    }
+    renderer.render(frame(), damage: .full)
+    let smallPNG = renderer.pngData
+    XCTAssertNotNil(smallPNG)
+
+    let bigAtlas = FontAtlas(pointSize: 20)
+    let bigSidebar = FontAtlas(
+      pointSize: FontAtlas.sidebarPointSize(forTerminalPointSize: 20))
+    renderer.reconfigureFonts(fontAtlas: bigAtlas, sidebarFontAtlas: bigSidebar)
+
+    XCTAssertEqual(renderer.glyphCellAdvanceForTesting, bigAtlas.cellSize.width)
+    XCTAssertEqual(renderer.glyphCellHeightForTesting, bigAtlas.cellSize.height)
+    XCTAssertTrue(renderer.fontAtlas === bigAtlas)
+
+    // Empty damage would normally re-present the old target; reconfigure must
+    // force a full repaint so no frame mixes old-atlas pixels with new metrics.
+    renderer.render(frame(), damage: .partial(yRanges: []))
+    let bigPNG = renderer.pngData
+    XCTAssertNotNil(bigPNG)
+    XCTAssertNotEqual(
+      smallPNG, bigPNG,
+      "20 pt glyphs must change pixels even when the caller reports no damage")
+  }
+
   func testMetalRendererConfiguresDrawablePoolForStarvationTolerance() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

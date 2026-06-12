@@ -78,6 +78,22 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertEqual(desc.route(), .appCommand(.minimize))
   }
 
+  func testCommandZoomChordsRouteToFontSizeCommands() {
+    let increase = TerminalKeyDescriptor(action: .press, key: .equal, modifiers: .command)
+    XCTAssertEqual(increase.route(), .appCommand(.increaseFontSize))
+
+    // Cmd+Shift+= is Cmd+plus on a US layout; same key, same command.
+    let increaseShifted = TerminalKeyDescriptor(
+      action: .press, key: .equal, modifiers: [.command, .shift])
+    XCTAssertEqual(increaseShifted.route(), .appCommand(.increaseFontSize))
+
+    let decrease = TerminalKeyDescriptor(action: .press, key: .minus, modifiers: .command)
+    XCTAssertEqual(decrease.route(), .appCommand(.decreaseFontSize))
+
+    let reset = TerminalKeyDescriptor(action: .press, key: .digit0, modifiers: .command)
+    XCTAssertEqual(reset.route(), .appCommand(.resetFontSize))
+  }
+
   func testCommandArrowsRouteToReadlineC0Bytes() {
     let left = TerminalKeyDescriptor(action: .press, key: .arrowLeft, modifiers: .command)
     XCTAssertEqual(left.route(), .terminalBytes([0x01]))

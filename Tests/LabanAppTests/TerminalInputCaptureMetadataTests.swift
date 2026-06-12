@@ -35,5 +35,14 @@ final class TerminalInputCaptureMetadataTests: XCTestCase {
     XCTAssertEqual(
       TerminalInputCaptureMetadata.captureName(for: .dumpRenderJournal),
       "dumpRenderJournal")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .increaseFontSize),
+      "increaseFontSize")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .decreaseFontSize),
+      "decreaseFontSize")
+    XCTAssertEqual(
+      TerminalInputCaptureMetadata.captureName(for: .resetFontSize),
+      "resetFontSize")
   }
 }

@@ -5,6 +5,7 @@ import LabanCore
 import LabanDebug
 import LabanRenderer
 import LabanTerminalCore
+import Metal
 import Quartz
 import QuartzCore
 import UserNotifications
@@ -22,7 +23,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   private let model: AppModel
   private let urlOpener: any ExternalURLOpening
-  private let fontAtlas: FontAtlas
+  private(set) var fontAtlas: FontAtlas
   /// Either a SoftwareBackend (legacy path: blits a CGImage in `draw(_:)`)
   /// or a MetalRenderer (self-presents into its own CAMetalLayer). The menu
   /// can swap this live; LABAN_RENDERER=software/cpu still forces the initial
@@ -31,8 +32,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// True when `backend` self-presents — TerminalBitmapView skips its own
   /// draw() blit and lets the layer composite directly.
   private var backendSelfPresents: Bool
-  private let cellWidth: Int
-  private let cellHeight: Int
+  private(set) var cellWidth: Int
+  private(set) var cellHeight: Int
   private let sidebarWidth: CGFloat = SidebarLayout.defaultWidth
   private let surfaceController: TerminalSurfaceController
   private let sessionCoordinator: AppSessionCoordinator?
@@ -167,6 +168,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var themeChangeObserver: NSObjectProtocol?
   private var reduceMotionObserver: NSObjectProtocol?
   private var cursorSettingsObserver: NSObjectProtocol?
+  private var fontChangeObserver: NSObjectProtocol?
+  /// Persisted font name as of the last time this view reconciled with
+  /// UserDefaults. The Settings live-apply path compares against it: an
+  /// unchanged name means only the size moved (safe to apply live); a changed
+  /// name means a family change, which still requires a restart.
+  private var lastObservedPersistedFontName: String? =
+    UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
   /// Cached system Reduce Motion setting, refreshed via NSWorkspace
   /// accessibility notifications. Freezes the sidebar needsAction pulse so a
   /// motion-sensitive user gets a steady marker instead of a breathing one.
@@ -397,9 +405,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Smaller font for sidebar chrome — different visual weight from the
   /// terminal content (matches what every modern editor + terminal does)
   /// and fits ~25 % more chars per line so worktree paths stop truncating.
-  private let sidebarFontAtlas: FontAtlas
-  private let sidebarCellWidth: Int
-  private let sidebarCellHeight: Int
+  private(set) var sidebarFontAtlas: FontAtlas
+  private(set) var sidebarCellWidth: Int
+  private(set) var sidebarCellHeight: Int
 
   init(
     model: AppModel,
@@ -483,6 +491,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       self.syncBlinkDriverFromWindowState()
       if self.window != nil {
         self.scheduleRenderRetry()
+      }
+    }
+
+    // Settings font panel live-apply: a size-only change applies immediately
+    // through the zoom path (applyFontSize no-ops when it posted this
+    // notification itself — the clamped size already matches). A family
+    // change is recorded but not applied; restart remains the contract.
+    fontChangeObserver = NotificationCenter.default.addObserver(
+      forName: FontAtlas.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      let persistedName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
+      if persistedName == self.lastObservedPersistedFontName {
+        self.applyFontSize(FontAtlas.persistedTerminalPointSize)
+      } else {
+        self.lastObservedPersistedFontName = persistedName
       }
     }
 
@@ -1327,6 +1351,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let cursorSettingsObserver {
       NotificationCenter.default.removeObserver(cursorSettingsObserver)
+    }
+    if let fontChangeObserver {
+      NotificationCenter.default.removeObserver(fontChangeObserver)
     }
   }
 
@@ -3201,6 +3228,97 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
+  // MARK: - Live font-size zoom
+
+  /// Apply a new terminal font size live — the inverse of a window resize:
+  /// viewport pixels stay fixed while the cell size changes, so cols/rows
+  /// renegotiate with libghostty and every session's PTY receives a
+  /// TIOCSWINSZ (SIGWINCH), exactly like a window-resize reflow. The sidebar
+  /// font scales together with the terminal (same 11/14 ratio the restart
+  /// path applies). The chosen size persists to UserDefaults on every step.
+  func applyFontSize(_ requested: CGFloat) {
+    let clamped = FontAtlas.clampedZoomPointSize(requested)
+    guard clamped != fontAtlas.pointSize else { return }
+
+    let newFontAtlas = FontAtlas(pointSize: clamped)
+    let newSidebarFontAtlas = FontAtlas(
+      pointSize: FontAtlas.sidebarPointSize(forTerminalPointSize: clamped))
+    let cell = newFontAtlas.cellSize
+    let sidebarCell = newSidebarFontAtlas.cellSize
+
+    fontAtlas = newFontAtlas
+    sidebarFontAtlas = newSidebarFontAtlas
+    cellWidth = max(1, Int(cell.width))
+    cellHeight = max(1, Int(cell.height))
+    sidebarCellWidth = max(1, Int(sidebarCell.width))
+    sidebarCellHeight = max(1, Int(sidebarCell.height))
+
+    if let metal = backend as? MetalRenderer {
+      metal.reconfigureFonts(
+        fontAtlas: newFontAtlas,
+        sidebarFontAtlas: newSidebarFontAtlas)
+    } else {
+      // SoftwareRenderer rasterizes from its FontAtlas every frame and is
+      // wired to one surface; recreate the backend with the new atlases at
+      // the current pixel size (the applyRendererSelection pattern).
+      backend = SoftwareBackend(
+        fontAtlas: newFontAtlas,
+        sidebarFontAtlas: newSidebarFontAtlas,
+        pixelWidth: lastPixelWidth,
+        pixelHeight: lastPixelHeight,
+        scale: lastSurfaceScale)
+      configurePresentationForCurrentBackend()
+    }
+
+    surfaceController.updateCellMetrics(
+      cellWidth: cellWidth,
+      cellHeight: cellHeight,
+      sidebarCellWidth: sidebarCell.width,
+      sidebarCellHeight: sidebarCell.height)
+
+    // Renegotiate the grid with the unchanged viewport pixels. Mirrors
+    // setFrameSize's interaction invalidation: a column change invalidates
+    // grid-anchored selection coordinates, and the find rescan runs
+    // synchronously (deferFindRescan: false).
+    let w = Int(bounds.width)
+    let h = Int(bounds.height)
+    if w > 0, h > 0 {
+      let insets = Self.contentInsets
+      let termW = max(1, w - Int(sidebarWidth) - Int(insets.left) - Int(insets.right))
+      let termH = max(1, h - Int(insets.top) - Int(insets.bottom))
+      let cols = max(1, termW / cellWidth)
+      if cols != lastAppliedCols, lastAppliedCols != 0 {
+        clearAllSelectionState()
+      }
+      lastAppliedCols = cols
+      model.resize(
+        viewportWidth: termW, viewportHeight: termH,
+        cellWidth: cellWidth, cellHeight: cellHeight,
+        deferFindRescan: false)
+      sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalSize)
+    }
+
+    UserDefaults.standard.set(Double(clamped), forKey: FontAtlas.userFontSizeKey)
+    lastObservedPersistedFontName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
+    NotificationCenter.default.post(name: FontAtlas.didChangeNotification, object: nil)
+
+    // One synchronous frame so no presented frame mixes the old atlas with
+    // the new grid (the live-resize pattern).
+    renderInvalidated = true
+    renderingResizeFrame = true
+    let metal = backend as? MetalRenderer
+    let previousWaitForFrameCompletion = metal?.waitForFrameCompletion ?? false
+    metal?.waitForFrameCompletion = true
+    defer {
+      metal?.waitForFrameCompletion = previousWaitForFrameCompletion
+      renderingResizeFrame = false
+    }
+    advanceFrame()
+    if !backendSelfPresents {
+      needsDisplay = true
+    }
+  }
+
   // MARK: - Responder
 
   override var acceptsFirstResponder: Bool { true }
@@ -3472,6 +3590,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       dumpRenderJournal(nil)
     case .minimize:
       window?.miniaturize(nil)
+    case .increaseFontSize:
+      applyFontSize(fontAtlas.pointSize + 1)
+    case .decreaseFontSize:
+      applyFontSize(fontAtlas.pointSize - 1)
+    case .resetFontSize:
+      applyFontSize(FontAtlas.defaultTerminalPointSize)
     }
   }
 
@@ -5639,6 +5763,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   @objc func selectLastTab(_ sender: Any?) {
     selectLastTab()
+  }
+
+  @objc func increaseFontSize(_ sender: Any?) {
+    applyFontSize(fontAtlas.pointSize + 1)
+  }
+
+  @objc func decreaseFontSize(_ sender: Any?) {
+    applyFontSize(fontAtlas.pointSize - 1)
+  }
+
+  @objc func resetFontSize(_ sender: Any?) {
+    applyFontSize(FontAtlas.defaultTerminalPointSize)
   }
 
   @objc func selectNextTab(_ sender: Any?) {

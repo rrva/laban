@@ -413,6 +413,22 @@ public final class TerminalSurfaceController {
     self.captureSink = captureSink
   }
 
+  /// Adopt new cell geometry after a live font-size change. Per-frame
+  /// `FrameProducer`/`SidebarProducer` instances are constructed from these
+  /// values, so frames built after this call use the new metrics. The sidebar
+  /// memo includes cell metrics in its signature and self-invalidates.
+  public func updateCellMetrics(
+    cellWidth: Int,
+    cellHeight: Int,
+    sidebarCellWidth: CGFloat,
+    sidebarCellHeight: CGFloat
+  ) {
+    self.cellWidth = max(1, cellWidth)
+    self.cellHeight = max(1, cellHeight)
+    self.sidebarCellWidth = max(1, sidebarCellWidth)
+    self.sidebarCellHeight = max(1, sidebarCellHeight)
+  }
+
   @discardableResult
   public func syncSessions(
     captureFrame: Int,

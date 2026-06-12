@@ -161,6 +161,29 @@ enum MenuCommands {
     mainMenu.addItem(viewItem)
     let viewMenu = NSMenu(title: "View")
     viewItem.submenu = viewMenu
+
+    // Live font-size zoom — mirrors the Cmd+= / Cmd+- / Cmd+0 key chords
+    // routed through TerminalKeyDescriptor.routeCommand().
+    viewMenu.addItem(
+      NSMenuItem(
+        title: "Bigger Text",
+        action: #selector(TerminalBitmapView.increaseFontSize(_:)),
+        keyEquivalent: "="
+      ))
+    viewMenu.addItem(
+      NSMenuItem(
+        title: "Smaller Text",
+        action: #selector(TerminalBitmapView.decreaseFontSize(_:)),
+        keyEquivalent: "-"
+      ))
+    viewMenu.addItem(
+      NSMenuItem(
+        title: "Default Text Size",
+        action: #selector(TerminalBitmapView.resetFontSize(_:)),
+        keyEquivalent: "0"
+      ))
+    viewMenu.addItem(NSMenuItem.separator())
+
     let fullScreenItem = NSMenuItem(
       title: "Enter Full Screen",
       action: #selector(NSWindow.toggleFullScreen(_:)),

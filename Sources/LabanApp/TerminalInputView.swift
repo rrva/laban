@@ -16,6 +16,9 @@ enum AppCommand: Equatable {
   case find
   case dumpRenderJournal
   case minimize
+  case increaseFontSize
+  case decreaseFontSize
+  case resetFontSize
 }
 
 // MARK: - Key descriptor
@@ -170,6 +173,10 @@ extension TerminalKeyDescriptor {
     case .digit7: return .appCommand(.selectTab(index: 6))
     case .digit8: return .appCommand(.selectTab(index: 7))
     case .digit9: return .appCommand(.selectLastTab)
+    // .equal covers both Cmd+= and Cmd+Shift+= (Cmd+plus).
+    case .equal: return .appCommand(.increaseFontSize)
+    case .minus: return .appCommand(.decreaseFontSize)
+    case .digit0: return .appCommand(.resetFontSize)
     case .arrowRight where modifiers.contains(.alt): return .appCommand(.selectNextTab)
     case .arrowLeft where modifiers.contains(.alt): return .appCommand(.selectPreviousTab)
     case .bracketRight where modifiers.contains(.shift): return .appCommand(.selectNextTab)

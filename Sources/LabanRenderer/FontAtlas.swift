@@ -16,6 +16,24 @@ public final class FontAtlas {
   public static let defaultTerminalPointSize: CGFloat = 14.0
   private static let defaultSidebarPointSize: CGFloat = 11.0
 
+  /// Live-zoom bounds (Cmd+= / Cmd+-). Integer point sizes only, so the
+  /// prebuilt atlas ladder is finite (8…40 → 33 sizes).
+  public static let zoomMinimumPointSize: CGFloat = 8
+  public static let zoomMaximumPointSize: CGFloat = 40
+
+  /// Round to the nearest integer point size and clamp into the zoom range.
+  /// Fractional persisted sizes (possible via `defaults write`) normalize to
+  /// the ladder grid on their first pass through here.
+  public static func clampedZoomPointSize(_ size: CGFloat) -> CGFloat {
+    min(max(size.rounded(), zoomMinimumPointSize), zoomMaximumPointSize)
+  }
+
+  /// Sidebar point size derived from a terminal point size, preserving the
+  /// default 11/14 ratio (same derivation as `persistedSidebarPointSize`).
+  public static func sidebarPointSize(forTerminalPointSize size: CGFloat) -> CGFloat {
+    size * (defaultSidebarPointSize / defaultTerminalPointSize)
+  }
+
   /// Terminal point size from UserDefaults, or `defaultTerminalPointSize`.
   public static var persistedTerminalPointSize: CGFloat {
     let stored = UserDefaults.standard.object(forKey: userFontSizeKey) as? Double

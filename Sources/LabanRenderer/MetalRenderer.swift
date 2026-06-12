@@ -105,10 +105,10 @@ public final class MetalRenderer: RendererBackend {
 
   public let device: MTLDevice
   public let layer: CAMetalLayer
-  public let fontAtlas: FontAtlas
+  public private(set) var fontAtlas: FontAtlas
   /// Optional smaller font for sidebar chrome. When the caller provides
   /// nil at init time, sidebar text uses the same atlas as the terminal.
-  public let sidebarFontAtlas: FontAtlas
+  public private(set) var sidebarFontAtlas: FontAtlas
   public var configuredRendererMode: RendererMode
   public var requestedRendererMode: RendererMode {
     Self.useGPUCellPath ? .gpuDriven : configuredRendererMode
@@ -516,10 +516,13 @@ public final class MetalRenderer: RendererBackend {
   /// Nanoseconds per GPU timestamp tick, computed from a CPU/GPU anchor
   /// pair. ~1 on Apple silicon but read instead of assumed.
   private var gpuNsPerTick: Double = 1.0
-  private let glyphCellAdvance: CGFloat
-  private let glyphCellHeight: CGFloat
-  private let sidebarCellAdvance: CGFloat
-  private let sidebarCellHeight: CGFloat
+  private var glyphCellAdvance: CGFloat
+  private var glyphCellHeight: CGFloat
+  private var sidebarCellAdvance: CGFloat
+  private var sidebarCellHeight: CGFloat
+
+  var glyphCellAdvanceForTesting: CGFloat { glyphCellAdvance }
+  var glyphCellHeightForTesting: CGFloat { glyphCellHeight }
 
   var terminalGlyphAtlasTextureSizeForTesting: Int { glyphAtlas.textureSize }
   func noteCommandBufferCompletionForTesting(status: MTLCommandBufferStatus, error: Error?) {
@@ -885,6 +888,75 @@ public final class MetalRenderer: RendererBackend {
       targetTexture = nil
       targetNeedsFullRedraw = true
     }
+  }
+
+  /// Swap both font atlases (and their GPU glyph atlases) for a live font-size
+  /// change. Modeled on the backing-scale branch of `resize`, with one
+  /// difference: cell dimensions change too. Prebuilt `MetalGlyphAtlas`
+  /// instances (from the atlas ladder) are adopted when supplied and created on
+  /// this renderer's device; otherwise fresh empty atlases are constructed
+  /// synchronously from the new metrics. Every glyph-derived cache is dropped
+  /// and the next frame repaints the full target — no frame can mix the old
+  /// atlas with the new grid.
+  public func reconfigureFonts(
+    fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas,
+    prebuiltTerminalAtlas: MetalGlyphAtlas? = nil,
+    prebuiltSidebarAtlas: MetalGlyphAtlas? = nil
+  ) {
+    let cell = fontAtlas.cellSize
+    let sidebarCell = sidebarFontAtlas.cellSize
+
+    func usable(_ atlas: MetalGlyphAtlas?) -> MetalGlyphAtlas? {
+      guard let atlas, atlas.texture.device === device else { return nil }
+      return atlas
+    }
+
+    if let prebuilt = usable(prebuiltTerminalAtlas) {
+      glyphAtlas = prebuilt
+    } else if let fresh = MetalGlyphAtlas(
+      device: device,
+      cellWidth: cell.width,
+      cellHeight: cell.height,
+      descent: fontAtlas.descent,
+      scale: layer.contentsScale,
+      textureSize: glyphAtlas.textureSize)
+    {
+      glyphAtlas = fresh
+    }
+
+    if sidebarFontAtlas === fontAtlas {
+      sidebarGlyphAtlas = glyphAtlas
+    } else if let prebuilt = usable(prebuiltSidebarAtlas) {
+      sidebarGlyphAtlas = prebuilt
+    } else if let fresh = MetalGlyphAtlas(
+      device: device,
+      cellWidth: sidebarCell.width,
+      cellHeight: sidebarCell.height,
+      descent: sidebarFontAtlas.descent,
+      scale: layer.contentsScale,
+      textureSize: sidebarGlyphAtlas.textureSize)
+    {
+      sidebarGlyphAtlas = fresh
+    }
+
+    self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarFontAtlas
+    glyphCellAdvance = cell.width
+    glyphCellHeight = cell.height
+    sidebarCellAdvance = sidebarCell.width
+    sidebarCellHeight = sidebarCell.height
+
+    // Cached entries point into the replaced textures (and cached CTFonts
+    // carry the old point size); invalidate everything glyph-derived and
+    // force a full-target repaint.
+    fontCache.removeAll(keepingCapacity: true)
+    scalarEntryCacheGeneration &+= 1
+    cellGlyphGridGeometry = nil
+    cellGlyphs.removeAll(keepingCapacity: true)
+    cellGlyphUploadRanges.removeAll(keepingCapacity: true)
+    cellGlyphBuffer = nil
+    targetNeedsFullRedraw = true
   }
 
   // MARK: - render
