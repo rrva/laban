@@ -2549,6 +2549,7 @@ public final class MetalRenderer: RendererBackend {
     var cachedPayloadForegroundFloat = SIMD4<Float>.zero
     scalarEntryCacheGeneration &+= 1
     var payloadGlyphLoopFailed = false
+    var payloadGlyphAtlasOverflow = false
     payload.glyphs.withUnsafeBufferPointer { glyphsBuffer in
       guard let glyphsBase = glyphsBuffer.baseAddress else { return }
       cellGlyphs.withUnsafeMutableBufferPointer { cells in
@@ -2597,6 +2598,9 @@ public final class MetalRenderer: RendererBackend {
               * scale
           }
           let cellX = payloadOriginX + CGFloat(col) * payloadCellWidth
+          // `terminalGridGeometry(payload:)` mirrors payload rows/cols, so the row/col
+          // guards above prove this index is in the retained full-grid buffer.
+          let index = bottomRow * geometry.cols + col
           let fontAttrsKey = attributes.rawValue & Self.gpuCellFontAttributes.rawValue
           let entry: MetalGlyphAtlas.Entry?
           if let scalarValue {
@@ -2645,9 +2649,12 @@ public final class MetalRenderer: RendererBackend {
           // symbols (for example U+23BF/U+21B3 in fallback fonts) have two-cell ink
           // metrics even when libghostty marks the cell as narrow.
           guard let entry else {
-            recordPayloadFailure("atlasEntryMissing", glyph: glyph.pointee)
-            payloadGlyphLoopFailed = true
-            return
+            if glyphAtlas.didOverflow {
+              payloadGlyphAtlasOverflow = true
+              return
+            }
+            cells[index] = Self.emptyCellGlyph
+            continue
           }
           guard entry.logicalWidth <= maxLogicalWidth else {
             recordPayloadFailure(
@@ -2658,9 +2665,6 @@ public final class MetalRenderer: RendererBackend {
             payloadGlyphLoopFailed = true
             return
           }
-          // `terminalGridGeometry(payload:)` mirrors payload rows/cols, so the row/col
-          // guards above prove this index is in the retained full-grid buffer.
-          let index = bottomRow * geometry.cols + col
           let foreground = glyph.pointee.foreground
           let foregroundFloat: SIMD4<Float>
           if cachedPayloadForeground == foreground {
@@ -2689,6 +2693,7 @@ public final class MetalRenderer: RendererBackend {
         }
       }
     }
+    if payloadGlyphAtlasOverflow { return true }
     if payloadGlyphLoopFailed { return false }
     flushPayloadDecorationRun()
 

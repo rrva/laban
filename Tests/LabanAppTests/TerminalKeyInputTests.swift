@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import LabanCore
 import XCTest
 
@@ -92,6 +93,60 @@ final class TerminalKeyInputTests: XCTestCase {
 
     let reset = TerminalKeyDescriptor(action: .press, key: .digit0, modifiers: .command)
     XCTAssertEqual(reset.route(), .appCommand(.resetFontSize))
+  }
+
+  func testCommandPlusEventRoutesToIncreaseByPrintedCharacter() throws {
+    let plusOnMinusKey = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: [.command],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: "+",
+        charactersIgnoringModifiers: "+",
+        isARepeat: false,
+        keyCode: UInt16(kVK_ANSI_Minus)))
+
+    let desc = TerminalKeyDescriptor(keyDown: plusOnMinusKey)
+    XCTAssertEqual(desc.key, .equal)
+    XCTAssertEqual(desc.route(), .appCommand(.increaseFontSize))
+  }
+
+  func testFontSizeMenuShortcutsMatchCommandRouter() throws {
+    let app = NSApplication.shared
+    let oldMainMenu = app.mainMenu
+    let oldWindowsMenu = app.windowsMenu
+    let oldHelpMenu = app.helpMenu
+    defer {
+      app.mainMenu = oldMainMenu
+      app.windowsMenu = oldWindowsMenu
+      app.helpMenu = oldHelpMenu
+    }
+
+    MenuCommands.setupMenuBar()
+
+    let viewMenu = try XCTUnwrap(app.mainMenu?.item(withTitle: "View")?.submenu)
+    let bigger = try XCTUnwrap(viewMenu.item(withTitle: "Bigger Text"))
+    let smaller = try XCTUnwrap(viewMenu.item(withTitle: "Smaller Text"))
+    let reset = try XCTUnwrap(viewMenu.item(withTitle: "Default Text Size"))
+
+    XCTAssertEqual(bigger.action, #selector(TerminalBitmapView.increaseFontSize(_:)))
+    XCTAssertEqual(bigger.keyEquivalent, "+")
+    XCTAssertEqual(commandShortcutModifiers(for: bigger), .command)
+
+    XCTAssertEqual(smaller.action, #selector(TerminalBitmapView.decreaseFontSize(_:)))
+    XCTAssertEqual(smaller.keyEquivalent, "-")
+    XCTAssertEqual(commandShortcutModifiers(for: smaller), .command)
+
+    XCTAssertEqual(reset.action, #selector(TerminalBitmapView.resetFontSize(_:)))
+    XCTAssertEqual(reset.keyEquivalent, "0")
+    XCTAssertEqual(commandShortcutModifiers(for: reset), .command)
+  }
+
+  private func commandShortcutModifiers(for item: NSMenuItem) -> NSEvent.ModifierFlags {
+    item.keyEquivalentModifierMask.intersection([.command, .shift, .option, .control])
   }
 
   func testCommandArrowsRouteToReadlineC0Bytes() {

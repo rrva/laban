@@ -276,13 +276,28 @@ extension TerminalKeyDescriptor {
 
   static func resolveKey(keyCode: UInt16, charactersIgnoringModifiers: String?) -> Key? {
     if let chars = charactersIgnoringModifiers,
-      let scalar = chars.unicodeScalars.first,
-      scalar.value >= 0xF700 && scalar.value <= 0xF8FF,
-      let key = keyFromPUA(scalar)
+      let scalar = chars.unicodeScalars.first
     {
-      return key
+      if scalar.value >= 0xF700 && scalar.value <= 0xF8FF,
+        let key = keyFromPUA(scalar)
+      {
+        return key
+      }
+      if let key = keyFromPrintableScalar(scalar) {
+        return key
+      }
     }
     return keyFromCode(keyCode)
+  }
+
+  static func keyFromPrintableScalar(_ scalar: UnicodeScalar) -> Key? {
+    switch scalar {
+    case "=",
+      "+":
+      return .equal
+    case "-": return .minus
+    default: return nil
+    }
   }
 
   static func keyFromPUA(_ scalar: UnicodeScalar) -> Key? {

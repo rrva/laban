@@ -797,6 +797,61 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(counts.cellGlyphs, rows * cols)
   }
 
+  func testGPUCellPayloadAtlasOverflowGrowsAndRetries() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let fontAtlas = FontAtlas(pointSize: 14)
+    guard
+      let renderer = MetalRenderer(
+        fontAtlas: fontAtlas,
+        scale: scale,
+        glyphAtlasTextureSize: 32)
+    else {
+      XCTFail("payload-atlas-overflow: MetalRenderer.init returned nil")
+      throw TestFailure()
+    }
+    renderer.captureMode = true
+    renderer.waitForFrameCompletion = true
+    renderer.resize(
+      pixelWidth: Int(CGFloat(cols) * cellW * scale),
+      pixelHeight: Int(CGFloat(rows) * cellH * scale),
+      scale: scale)
+
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: Array(0..<rows))
+    payload.backgroundRuns.append(
+      .init(row: 0, startCol: 0, colCount: cols, color: 0x10_20_30_FF))
+    for col in 0..<cols {
+      payload.glyphs.append(
+        .init(
+          row: 0,
+          col: col,
+          scalarValue: UInt32(0x41 + col),
+          foreground: 0xDD_EE_EE_FF,
+          background: 0x10_20_30_FF,
+          attributes: []))
+    }
+
+    let counts = try XCTUnwrap(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: payload,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+
+    XCTAssertNil(renderer.lastGPUCellPayloadBuildFailure)
+    XCTAssertGreaterThan(renderer.terminalGlyphAtlasTextureSizeForTesting, 32)
+    XCTAssertEqual(counts.cellGlyphs, rows * cols)
+  }
+
   func testGPUCellPayloadMatchesClassicForTwoCellMetricNarrowSymbols() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
