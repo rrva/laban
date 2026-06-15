@@ -61,8 +61,8 @@ final class TabAttentionTests: XCTestCase {
   /// Claude Code's "✳" is the *resting* title of every idle agent tab, so it
   /// must NOT classify needsAction statelessly — that turned every restored
   /// or viewed-then-backgrounded agent tab permanently yellow. The flip is
-  /// handled as an edge in AppModel (urgent badge + banner), which clears on
-  /// viewing and stays cleared.
+  /// handled as an edge in AppModel (informational badge; urgency from OSC),
+  /// which clears on viewing and stays cleared.
   func testAwaitingInputTitleMarkerAloneDoesNotClassify() {
     XCTAssertEqual(classify(meta(terminalTitle: "✳ Test AskUserQuestion tool")), .none)
     XCTAssertEqual(classify(meta(terminalTitle: "⠂ Claude Code")), .none)

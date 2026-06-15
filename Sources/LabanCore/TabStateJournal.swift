@@ -29,7 +29,7 @@ public struct TabStateJournalEntry: Codable, Equatable {
 ///
 /// `AppModel` records a diff on every UI-invalidation notify, so the journal
 /// is exactly the history of "what the tabs showed at what timestamp" — the
-/// signal captures lacked when diagnosing late "needs you" notifications.
+/// signal captures lacked when diagnosing late attention notifications.
 /// Queryable via `GET /debug/tab-journal`, dumpable from the Debug menu, and
 /// mirrored into capture timelines as `tab.metadata` events.
 public final class TabStateJournal {

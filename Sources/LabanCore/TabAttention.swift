@@ -58,20 +58,20 @@ public enum TabAttentionClassifier {
   /// Code") to "✳ <task label>" the instant it starts waiting — ~6 seconds
   /// before it emits its own debounced OSC 9/777 notification (verified
   /// against capture appkit-2026-06-12T06-21-05Z), so the title flip is the
-  /// earliest blocked-on-the-user signal available.
+  /// earliest at-prompt signal available (turn-complete and blocked states
+  /// share the same title form).
   ///
   /// Deliberately NOT part of `classify`: unlike Codex's transient "[ ! ]",
   /// "✳" is the *resting* state of every idle Claude Code tab (it persists
   /// until the user answers), so deriving `needsAction` from it statelessly
   /// turned every restored or long-idle agent tab permanently yellow. The
   /// marker matters as an *edge*: `AppModel.detectAwaitMarkerTransitions`
-  /// reacts to the flip by raising the urgent notification badge (which this
-  /// classifier already maps to `needsAction`) and posting the banner — both
-  /// inherit seen-clearing and restore-grace suppression.
+  /// reacts to the flip by raising an informational badge; urgency and banners
+  /// follow when the agent's OSC arrives (`isUrgentNotification`).
   public static let awaitingInputTitleMarkers: Set<Character> = ["✳"]
 
-  /// Title states that signal "blocked on the user" for the edge-triggered
-  /// attention episodes in `AppModel.detectAwaitMarkerTransitions`.
+  /// Title states that signal "at prompt" for the edge-triggered attention
+  /// episodes in `AppModel.detectAwaitMarkerTransitions`.
   public static func titleSignalsAwaitingInput(_ m: TabTitleMetadata) -> Bool {
     guard let title = m.terminalTitle else { return false }
     if title.hasPrefix("[ ! ]") { return true }

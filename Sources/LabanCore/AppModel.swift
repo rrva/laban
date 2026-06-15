@@ -1893,9 +1893,7 @@ public final class AppModel {
         // re-emit their notifications in a burst at relaunch, and bannering
         // all of them buried the user in stale macOS notifications (seen in
         // the tab journal: ~40 banner notes in the first 200ms of a launch).
-        if outcome == .applied {
-          self.onAgentNotification?(tabId, text)
-        }
+        self.broadcastAgentNotificationIfNeeded(tabId: tabId, text: text, outcome: outcome)
       }
     }
   }
@@ -1919,8 +1917,8 @@ public final class AppModel {
     case applied
     /// Folded into the pending synthetic awaiting-input badge raised at the
     /// title flip (see `detectAwaitMarkerTransitions`): text/urgency refresh,
-    /// but no count bump and no second banner — the user was already told
-    /// about this wait when the prompt appeared.
+    /// but no count bump. Banners fire only when the merged OSC is urgent
+    /// (see `broadcastAgentNotificationIfNeeded`).
     case mergedIntoAwaitEpisode
   }
 
@@ -1953,21 +1951,54 @@ public final class AppModel {
     return outcome
   }
 
-  /// Heuristic: approval / edit / input requests need user action (urgent
-  /// style); a turn-complete summary is informational.
-  private static func isUrgentNotification(_ text: String) -> Bool {
+  /// Heuristic: permission / approval prompts need user action (urgent style).
+  /// Claude Code's turn-complete OSC ("waiting for your input") and Codex
+  /// summaries are informational — ready at the prompt, not blocked.
+  /// Heuristic: is this agent OSC a blocking request (urgent style + native
+  /// banner) or an informational turn-complete?
+  ///
+  /// An unambiguous blocking keyword (permission / approval / "wants to") wins
+  /// even when the message also mentions waiting or completion — a real
+  /// "needs permission" must never be silenced by an echoed "…waiting for your
+  /// input". Only with no blocking keyword present do Claude Code's
+  /// turn-complete OSC ("waiting for your input") and Codex's "turn complete"
+  /// summaries read as informational (ready at the prompt, not blocked); softer
+  /// action words still defer to those completion markers.
+  static func isUrgentNotification(_ text: String) -> Bool {
     let t = text.lowercased()
-    return t.contains("approval") || t.contains("approve")
-      || t.contains("wants to") || t.contains("needs input")
-      || t.contains("requested") || t.contains("waiting")
-      || t.contains("permission") || t.contains("needs you")
+    if t.contains("approval") || t.contains("approve")
+      || t.contains("permission") || t.contains("wants to")
+    {
+      return true
+    }
+    if t.contains("waiting for your input") || t.contains("turn complete")
+      || t.contains("task complete")
+    {
+      return false
+    }
+    return t.contains("needs your") || t.contains("needs input")
+      || t.contains("requested")
+  }
+
+  /// Native banners are reserved for blocking requests. Informational
+  /// turn-complete OSC and the early title-flip badge stay sidebar-only.
+  private func broadcastAgentNotificationIfNeeded(
+    tabId: Tab.ID, text: String, outcome: AgentNotificationOutcome
+  ) {
+    switch outcome {
+    case .applied, .mergedIntoAwaitEpisode:
+      guard Self.isUrgentNotification(text) else { return }
+      onAgentNotification?(tabId, text)
+    case .ignored:
+      break
+    }
   }
 
   public static let awaitingInputNotificationText = "Awaiting your input"
 
   struct AwaitEpisode {
-    /// The flip raised the synthetic badge + banner (it was backgrounded and
-    /// outside the restore-grace window).
+    /// The flip raised the informational synthetic badge (it was backgrounded
+    /// and outside the restore-grace window).
     var raised = false
     /// The agent's own OSC notification arrived during this episode.
     var realArrived = false
@@ -1982,11 +2013,12 @@ public final class AppModel {
   /// The marker is meaningful as an *edge*, not a state: "✳" is the resting
   /// title of every idle Claude Code tab, so a stateless needsAction
   /// classification turned every restored or viewed-then-backgrounded agent
-  /// tab permanently yellow. Instead the flip raises the urgent notification
-  /// badge (which the classifier already maps to needsAction) and posts the
-  /// banner once — both inherit seen-clearing (select / app-active) and the
-  /// restore-grace suppression, and the agent's own debounced OSC
-  /// notification ~6s later merges into the badge without a second banner.
+  /// tab permanently yellow. Instead the flip raises an informational
+  /// `TabNotification` badge (~6s before the agent's OSC); urgency and native
+  /// banners come from `isUrgentNotification` when the OSC arrives. Both
+  /// inherit seen-clearing (select / app-active) and restore-grace
+  /// suppression; the debounced OSC merges into the badge without inflating
+  /// the unread count.
   private var awaitEpisodeByTab: [Tab.ID: AwaitEpisode] = [:]
 
   /// Diffs each tab's terminal title against the awaiting-input predicate
@@ -2015,12 +2047,13 @@ public final class AppModel {
     for tabId in endedRaised { clearStaleSyntheticBadge(forTab: tabId) }
   }
 
-  /// Sets the awaiting-input badge and posts the banner through the same
-  /// broadcast as a real OSC notification. Skipped when the user is already
-  /// watching the tab (`isTabFrontmost`), when a notification is already
-  /// pending (the user has an unseen badge either way), or during the
-  /// restore-time suppression window (a relaunch restores a wall of idle "✳"
-  /// agent tabs that must not all light up).
+  /// Sets an informational awaiting-input badge on a background tab. Native
+  /// banners are reserved for urgent OSC (permission/approval); the flip
+  /// itself does not broadcast. Skipped when the user is already watching the
+  /// tab (`isTabFrontmost`), when a notification is already pending (the user
+  /// has an unseen badge either way), or during the restore-time suppression
+  /// window (a relaunch restores a wall of idle "✳" agent tabs that must not
+  /// all light up).
   private func raiseSyntheticAttention(forTab tabId: Tab.ID) {
     if isTabFrontmost?(tabId) == true { return }
     let raised: Bool = withModelLock {
@@ -2031,23 +2064,16 @@ public final class AppModel {
       episode.raised = true
       awaitEpisodeByTab[tabId] = episode
       _tabs[idx].titleMetadata.notification = TabNotification(
-        text: Self.awaitingInputNotificationText, urgent: true)
+        text: Self.awaitingInputNotificationText, urgent: false)
       return true
     }
     guard raised else { return }
     notifyWorkspaceMutation()
-    // Hop to main like the real OSC path: onAgentNotification is documented
-    // as main-queue, and detection can run under a host's own lock (the
-    // headless runtime holds its runtime lock through sync passes — a
-    // synchronous broadcast would re-enter it).
-    DispatchQueue.main.async { [weak self] in
-      self?.onAgentNotification?(tabId, Self.awaitingInputNotificationText)
-    }
   }
 
   /// The agent resumed working without its own notification ever arriving,
   /// so an unseen synthetic badge is stale (e.g. the user answered from
-  /// another device) — retire it rather than leave a lying "needs you".
+  /// another device) — retire it rather than leave a lying "ready".
   private func clearStaleSyntheticBadge(forTab tabId: Tab.ID) {
     let cleared: Bool = withModelLock {
       guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }

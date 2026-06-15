@@ -605,7 +605,7 @@ final class SidebarProducerTests: XCTestCase {
   /// info lines was sized from `resolved.infoLines.count`, which excludes
   /// those extra lines. The row then rendered more lines than it was sized
   /// for, so the bottom line dropped below the row edge and crowded the next
-  /// tab (the "done ×2" screenshot). Every rendered line must stay within its
+  /// tab (the "ready ×2" screenshot). Every rendered line must stay within its
   /// own row.
   func testNotificationStackDoesNotSpillIntoNextTab() {
     var tab = Tab(id: "t", position: 1, title: "gpu-work", isActive: false, sessionId: "s")
@@ -632,7 +632,7 @@ final class SidebarProducerTests: XCTestCase {
   }
 
   /// An explicit OSC 21337 agent colour beats passive activity for the slot,
-  /// but a real "needs you" state beats the agent colour.
+  /// but a real needsAction state beats the agent colour.
   func testNeedsActionBeatsExplicitAgentDot() {
     var tab = Tab(id: "t", position: 1, title: "codex", isActive: false, sessionId: "s")
     tab.titleMetadata.agentStatus = TabAgentStatus(indicatorColor: "#00ff00")

@@ -258,7 +258,8 @@ public struct SidebarProducer {
         // Keep it short and glanceable: the ◆ badge carries the signal, so the
         // line is just a short urgency label plus an unread count — not the
         // agent's full notification text (the native banner already has that).
-        let label = notif.urgent ? "needs you" : "done"
+        // "action" = blocked on approval/input; "ready" = turn finished.
+        let label = notif.urgent ? "action" : "ready"
         let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
         displayLines.append((line, notif.urgent ? Theme.current.attention : Theme.current.cursor))
       }
@@ -317,7 +318,7 @@ public struct SidebarProducer {
       // on hover) and never on the focused tab (always `.none`):
       //   needsAction → attention-accent ◆ over the row tint applied above
       //                  ("act here" — yellow, not red: red means failure)
-      //   done        → accent ◆ ("a task finished")
+      //   done        → accent ◆ ("ready at prompt" / turn finished)
       //   passive/none → an explicit OSC 21337 agent dot, else a failed-command
       //                  red dot, else a muted unseen/bell badge, else nothing
       //

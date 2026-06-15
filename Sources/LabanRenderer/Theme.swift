@@ -40,7 +40,7 @@ public struct ThemeData: Equatable, Sendable {
   /// 8–15: bright equivalents.
   public let ansi16: [UInt32]
 
-  /// Attention accent for "needs you" chrome: the palette's bright yellow.
+  /// Attention accent for needsAction chrome: the palette's bright yellow.
   /// Deliberately not `red` — red already means *failure* in the sidebar
   /// (exited process, failed command), and a tab waiting for input is an
   /// invitation, not an error. Every bundled palette tunes its yellow against

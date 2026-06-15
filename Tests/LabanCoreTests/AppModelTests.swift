@@ -112,18 +112,64 @@ final class AppModelTests: XCTestCase {
     var received: [(tab: Tab.ID, text: String)] = []
     model.onAgentNotification = { id, text in received.append((id, text)) }
 
-    // A Codex turn-complete notification: ESC ] 9 ; <text> BEL.
+    // Informational turn-complete OSC badges the tab but does not banner.
     session.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
     pumpMainQueue()
+    XCTAssertTrue(received.isEmpty, "informational OSC must not reach the banner hook")
+    XCTAssertEqual(
+      model.tabs.first { $0.id == tabId }?.titleMetadata.notification?.text,
+      "Agent turn complete")
 
-    XCTAssertEqual(received.count, 1, "OSC 9 must fire onAgentNotification exactly once")
+    // Blocking approval OSC banners once.
+    session.feedOutput(Array("\u{1b}]9;Approval requested: rm -rf /\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertEqual(received.count, 1, "urgent OSC must fire onAgentNotification exactly once")
     XCTAssertEqual(received.first?.tab, tabId)
-    XCTAssertEqual(received.first?.text, "Agent turn complete")
+    XCTAssertEqual(received.first?.text, "Approval requested: rm -rf /")
 
     // A ConEmu progress report (OSC 9;4) must not be surfaced as a notification.
     session.feedOutput(Array("\u{1b}]9;4;1;75\u{07}".utf8))
     pumpMainQueue()
     XCTAssertEqual(received.count, 1, "OSC 9;4 progress must not reach the notification hook")
+  }
+
+  func testClaudeWaitingForInputNotificationIsInformational() throws {
+    let model = try makeModel()
+    let tabId = model.tabs[0].id
+    guard let session = model.session(forTab: tabId) else {
+      XCTFail("initial tab must have a session")
+      return
+    }
+    var banners: [String] = []
+    model.onAgentNotification = { _, text in banners.append(text) }
+
+    session.feedOutput(
+      Array("\u{1b}]9;Claude Code: Claude is waiting for your input\u{07}".utf8))
+    pumpMainQueue()
+
+    let badge = model.tabs.first { $0.id == tabId }?.titleMetadata.notification
+    XCTAssertEqual(badge?.urgent, false)
+    XCTAssertTrue(banners.isEmpty)
+  }
+
+
+  func testIsUrgentNotificationClassification() {
+    // Unambiguous blocking requests are urgent.
+    XCTAssertTrue(AppModel.isUrgentNotification("Claude needs your permission"))
+    XCTAssertTrue(AppModel.isUrgentNotification("Approval requested: rm -rf /"))
+    XCTAssertTrue(AppModel.isUrgentNotification("Codex wants to run a command"))
+
+    // Turn-complete / ready-at-prompt phrasings are informational.
+    XCTAssertFalse(AppModel.isUrgentNotification("Agent turn complete"))
+    XCTAssertFalse(
+      AppModel.isUrgentNotification("Claude Code: Claude is waiting for your input"))
+    // A bare "still waiting on you" carries no blocking keyword: informational.
+    XCTAssertFalse(AppModel.isUrgentNotification("Still waiting on you"))
+
+    // A blocking keyword wins even when the message also echoes a completion
+    // phrase — a real block must never be silenced.
+    XCTAssertTrue(
+      AppModel.isUrgentNotification("Approval needed — waiting for your input"))
   }
 
   func testOSC9NotificationBadgesTabAndClearsOnViewing() throws {
@@ -315,7 +361,7 @@ final class AppModelTests: XCTestCase {
 
   // MARK: - Awaiting-input title marker -> early banner (episodes)
 
-  func testAwaitMarkerPostsBannerOncePerEpisode() throws {
+  func testAwaitMarkerRaisesInformationalBadgeWithoutBanner() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
     var banners: [(tab: Tab.ID, text: String)] = []
@@ -329,17 +375,15 @@ final class AppModelTests: XCTestCase {
     try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
     model.detectAwaitMarkerTransitions()
     pumpMainQueue()
-    XCTAssertEqual(banners.count, 1, "the title flip to the awaiting marker banners once")
-    XCTAssertEqual(banners.first?.tab, tabId)
-    XCTAssertEqual(banners.first?.text, AppModel.awaitingInputNotificationText)
+    XCTAssertTrue(banners.isEmpty, "the title flip must not banner — wait for OSC urgency")
     let badge = model.tabs.first { $0.id == tabId }?.titleMetadata.notification
     XCTAssertEqual(badge?.text, AppModel.awaitingInputNotificationText)
-    XCTAssertEqual(badge?.urgent, true)
+    XCTAssertEqual(badge?.urgent, false)
     XCTAssertEqual(badge?.count, 1)
 
     model.detectAwaitMarkerTransitions()
     pumpMainQueue()
-    XCTAssertEqual(banners.count, 1, "re-detection inside the same episode must not re-banner")
+    XCTAssertTrue(banners.isEmpty, "re-detection inside the same episode must not re-banner")
 
     // Flip back to working: the unseen synthetic badge is stale (the agent
     // resumed without its own notification) and must retire.
@@ -349,15 +393,15 @@ final class AppModelTests: XCTestCase {
       model.tabs.first { $0.id == tabId }?.titleMetadata.notification,
       "a synthetic-only unseen badge must clear when the agent resumes working")
 
-    // Waiting again is a new episode: badge and banner fire again.
+    // Waiting again is a new episode: informational badge only, still no banner.
     try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
     model.detectAwaitMarkerTransitions()
     pumpMainQueue()
-    XCTAssertEqual(banners.count, 2)
+    XCTAssertTrue(banners.isEmpty)
     XCTAssertNotNil(model.tabs.first { $0.id == tabId }?.titleMetadata.notification)
   }
 
-  func testRealNotificationDuringCoveredEpisodeSkipsSecondBanner() throws {
+  func testRealNotificationDuringCoveredEpisodeBannersOnlyWhenUrgent() throws {
     let model = try makeModel()
     let tabId = model.tabs[0].id
     guard let session = model.session(forTab: tabId) else {
@@ -370,23 +414,30 @@ final class AppModelTests: XCTestCase {
     try model.updateTerminalTitle("✳ Pick an option", forTab: tabId)
     model.detectAwaitMarkerTransitions()
     pumpMainQueue()
-    XCTAssertEqual(banners, [AppModel.awaitingInputNotificationText])
+    XCTAssertTrue(banners.isEmpty, "the title flip alone must not banner")
     XCTAssertEqual(
       model.tabs.first { $0.id == tabId }?.titleMetadata.notification?.text,
       AppModel.awaitingInputNotificationText)
 
-    // The agent's own debounced notification ~6s later merges into the
-    // synthetic badge: text refreshes, count does not inflate, no banner.
+    // Turn-complete OSC merges quietly — no banner, stays informational.
+    session.feedOutput(
+      Array("\u{1b}]9;Claude Code: Claude is waiting for your input\u{07}".utf8))
+    pumpMainQueue()
+    XCTAssertTrue(banners.isEmpty, "informational turn-complete OSC must not banner")
+    let informational = model.tabs.first { $0.id == tabId }?.titleMetadata.notification
+    XCTAssertEqual(informational?.text, "Claude Code: Claude is waiting for your input")
+    XCTAssertEqual(informational?.urgent, false)
+    XCTAssertEqual(informational?.count, 1, "the merge must not inflate the unread count")
+
+    // A blocking OSC during the same episode upgrades urgency and banners once.
     session.feedOutput(Array("\u{1b}]9;Claude needs your permission\u{07}".utf8))
     pumpMainQueue()
-    XCTAssertEqual(banners.count, 1, "a covered episode must swallow the duplicate banner")
-    let badge = model.tabs.first { $0.id == tabId }?.titleMetadata.notification
-    XCTAssertEqual(badge?.text, "Claude needs your permission")
-    XCTAssertEqual(badge?.urgent, true)
-    XCTAssertEqual(badge?.count, 1, "the merge must not inflate the unread count")
+    XCTAssertEqual(banners, ["Claude needs your permission"])
+    let urgent = model.tabs.first { $0.id == tabId }?.titleMetadata.notification
+    XCTAssertEqual(urgent?.urgent, true)
 
-    // A further notification in the same episode banners normally.
-    session.feedOutput(Array("\u{1b}]9;Still waiting on you\u{07}".utf8))
+    // A further urgent notification in the same episode banners normally.
+    session.feedOutput(Array("\u{1b}]9;Still needs your approval\u{07}".utf8))
     pumpMainQueue()
     XCTAssertEqual(banners.count, 2)
   }
@@ -417,7 +468,7 @@ final class AppModelTests: XCTestCase {
     try model.updateTerminalTitle("✳ Pick an option", forTab: bgTabId)
     model.detectAwaitMarkerTransitions()
     pumpMainQueue()
-    XCTAssertEqual(banners.count, 1)
+    XCTAssertTrue(banners.isEmpty)
     XCTAssertNotNil(model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification)
 
     // Viewing the tab clears the badge...
@@ -433,7 +484,7 @@ final class AppModelTests: XCTestCase {
     XCTAssertNil(
       model.tabs.first { $0.id == bgTabId }?.titleMetadata.notification,
       "a seen await episode must not re-badge when the tab is backgrounded again")
-    XCTAssertEqual(banners.count, 1, "and it must not re-banner either")
+    XCTAssertTrue(banners.isEmpty, "and it must not re-banner either")
   }
 
   func testAwaitMarkerBannerSuppressedDuringRestoreGraceWindow() throws {
