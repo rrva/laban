@@ -253,28 +253,7 @@ public struct SidebarProducer {
       // `resolved.infoLines`, so sizing the row from `infoLines` alone
       // undercounts the rendered lines and the surplus line drops below the
       // row edge into the next tab. Size off the stack that is actually drawn.
-      var displayLines: [(String, UInt32)] = []
-      if let notif = meta.notification {
-        // Keep it short and glanceable: the ◆ badge carries the signal, so the
-        // line is just a short urgency label plus an unread count — not the
-        // agent's full notification text (the native banner already has that).
-        // "action" = blocked on approval/input; "ready" = turn finished.
-        let label = notif.urgent ? "action" : "ready"
-        let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
-        displayLines.append((line, notif.urgent ? Theme.current.attention : Theme.current.cursor))
-      }
-      if let st = agentStatus.statusText {
-        let color =
-          agentStatus.statusTextColor.flatMap(Self.parseHexColor)
-          ?? Theme.current.fg0
-        displayLines.append((st, color))
-      }
-      if let progress = meta.progress {
-        displayLines.append(Self.progressDisplayLine(progress))
-      }
-      for line in resolved.infoLines.prefix(max(0, 3 - displayLines.count)) {
-        displayLines.append((line, Theme.current.dim0))
-      }
+      let displayLines = Self.displayLines(for: tab, resolved: resolved)
 
       // Vertical layout: title + the info-line stack, centered inside the
       // fixed quad-height row. Centering keeps geometry stable across status
@@ -533,12 +512,15 @@ public struct SidebarProducer {
       let tabY = height - CGFloat(i + 1) * rowHeight - topInset + scrollOffset
       guard point.y >= tabY, point.y < tabY + rowHeight else { continue }
       // Close-X box covers the right-edge slot — the same slot the status
-      // indicator occupies when not hovered. Scope is tight enough that a
-      // click on the trailing edge of the title still selects, while the
-      // slot itself (dot or X) closes the tab. Upper half only, so the
-      // lower info lines remain select targets along their full width.
-      let closeBoxBottom = tabY + rowHeight / 2
-      if point.x >= sidebarWidth - 22, point.y >= closeBoxBottom {
+      // indicator occupies when not hovered. The hit target is anchored to
+      // the rendered title baseline so it follows the X whether the tab is
+      // sparsely populated (fresh) or has multiple info lines, and its left
+      // edge lines up with the 4 pt gutter the renderer reserves past the
+      // truncated title so it never overlaps rendered text. Clicks outside the
+      // slot still select the tab.
+      let layout = titleLayout(tab: tab, tabY: tabY)
+      let closeBoxBottom = layout.baselineY - cellHeight / 2
+      if point.x >= layout.closeBoxLeft, point.y >= closeBoxBottom {
         return .closeTab(tab.id)
       }
       return .selectTab(tab.id)
@@ -568,6 +550,66 @@ public struct SidebarProducer {
       return Theme.current.red
     }
     return nil
+  }
+
+  /// Builds the info-line stack that `output()` renders below the title.
+  /// Kept separate from rendering so `hitTest()` can compute the same
+  /// vertical geometry and keep the close target aligned with the glyph.
+  private static func displayLines(
+    for tab: Tab, resolved: ResolvedTabTitle
+  ) -> [(String, UInt32)] {
+    let meta = tab.titleMetadata
+    let agentStatus = meta.agentStatus
+    var displayLines: [(String, UInt32)] = []
+    if let notif = meta.notification {
+      // Keep it short and glanceable: the ◆ badge carries the signal, so the
+      // line is just a short urgency label plus an unread count — not the
+      // agent's full notification text (the native banner already has that).
+      // "action" = blocked on approval/input; "ready" = turn finished.
+      let label = notif.urgent ? "action" : "ready"
+      let line = notif.count > 1 ? "\(label) ×\(notif.count)" : label
+      displayLines.append((line, notif.urgent ? Theme.current.attention : Theme.current.cursor))
+    }
+    if let st = agentStatus.statusText {
+      let color =
+        agentStatus.statusTextColor.flatMap(Self.parseHexColor)
+        ?? Theme.current.fg0
+      displayLines.append((st, color))
+    }
+    if let progress = meta.progress {
+      displayLines.append(Self.progressDisplayLine(progress))
+    }
+    for line in resolved.infoLines.prefix(max(0, 3 - displayLines.count)) {
+      displayLines.append((line, Theme.current.dim0))
+    }
+    return displayLines
+  }
+
+  /// Title baseline Y and the left edge of the close hit box for a tab row,
+  /// using the same layout as `output()`. The close box starts at the same
+  /// 4 pt gutter the renderer reserves past the truncated title, so it never
+  /// overlaps rendered text.
+  private func titleLayout(tab: Tab, tabY: CGFloat) -> (baselineY: CGFloat, closeBoxLeft: CGFloat) {
+    let labelX: CGFloat = 12
+    let slotX = sidebarWidth - 18
+    let titleX = labelX + 3 * cellWidth
+    let titleMaxScalars = max(1, Int(floor((slotX - titleX - 4) / cellWidth)))
+    let resolved = TabTitleResolver.resolve(
+      tab.titleMetadata,
+      fallbackPosition: tab.position,
+      lastActivity: tab.lastOutputAt ?? tab.lastActivityAt,
+      maxTitleScalars: titleMaxScalars,
+      maxSubtitleScalars: titleMaxScalars
+    )
+    let displayLines = Self.displayLines(for: tab, resolved: resolved)
+    let drawnLines = 1 + displayLines.count
+    let edgePad: CGFloat = 4
+    let stackHeight = CGFloat(drawnLines) * cellHeight
+    let availableHeight = rowHeight - 2 * edgePad
+    let yOffset = max(0, (availableHeight - stackHeight) / 2)
+    let titleY = tabY + edgePad + yOffset + CGFloat(drawnLines - 1) * cellHeight
+    let closeBoxLeft = titleX + CGFloat(titleMaxScalars) * cellWidth + 4
+    return (titleY, closeBoxLeft)
   }
 
   /// Parse OSC 21337 color values into the 0xRRGGBBAA format the renderer

@@ -133,10 +133,71 @@ final class SidebarProducerTests: XCTestCase {
     XCTAssertEqual(result, .closeTab(tabs[0].id))
   }
 
+  func testHitTestCloseTabOnSparseFreshTab() {
+    // A freshly started tab has no info lines, so the title (and therefore
+    // the hover X) is centered vertically in the row — below the midpoint.
+    // The close box must still cover the glyph; previously only the upper
+    // half of the row closed, so clicks on the lower portion of the X
+    // selected the tab instead.
+    let tabs = makeTabs(count: 1)
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let tabBottomY = h - p.rowHeight
+    let titleBaselineY = tabBottomY + (p.rowHeight - p.cellHeight) / 2
+    let result = p.hitTest(at: CGPoint(x: 190, y: titleBaselineY), tabs: tabs, height: h)
+    XCTAssertEqual(result, .closeTab(tabs[0].id))
+  }
+
+  func testHitTestCloseTabOnPopulatedTab() {
+    // With info lines the title/close glyph moves up; the hit target must
+    // follow it rather than staying low and swallowing metadata-line clicks.
+    var tab = Tab(id: "t", position: 1, title: "auth", isActive: false, sessionId: "s")
+    tab.titleMetadata.workspace = TabWorkspaceMetadata(
+      repoName: "laban", worktreeName: "cobra", branch: "main", isDirty: true)
+    tab.titleMetadata.process = TabProcessMetadata(foregroundProcess: "claude")
+
+    let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let tabBottomY = h - p.rowHeight
+    // Three info lines => drawnLines = 4; compute the same title baseline as
+    // the producer so the test hits the actual glyph position.
+    let drawnLines: CGFloat = 4
+    let edgePad: CGFloat = 4
+    let yOffset = max(0, (p.rowHeight - 2 * edgePad - drawnLines * p.cellHeight) / 2)
+    let titleBaselineY = tabBottomY + edgePad + yOffset + (drawnLines - 1) * p.cellHeight
+    let result = p.hitTest(at: CGPoint(x: 190, y: titleBaselineY), tabs: [tab], height: h)
+    XCTAssertEqual(result, .closeTab(tab.id))
+  }
+
+  func testHitTestCloseBoxReservesTitleGutterAtNarrowWidth() {
+    // At narrow widths the truncated title ends very close to the close
+    // slot; the hit target must stay inside the renderer's 4 pt gutter so
+    // clicks on the trailing title pixels select rather than close.
+    var tab = Tab(
+      id: "t",
+      position: 1,
+      title: String(repeating: "long-title-", count: 20),
+      isActive: false,
+      sessionId: "s"
+    )
+    let p = SidebarProducer(sidebarWidth: 140, cellWidth: 8, cellHeight: 16)
+    let h: CGFloat = 600
+    let tabBottomY = h - p.rowHeight
+    let titleBaselineY = tabBottomY + (p.rowHeight - p.cellHeight) / 2
+    // titleMaxScalars = 10 => title ends at 36 + 80 = 116, gutter ends at 120.
+    XCTAssertEqual(
+      p.hitTest(at: CGPoint(x: 118, y: titleBaselineY), tabs: [tab], height: h),
+      .selectTab(tab.id),
+      "click inside the title gutter should select, not close")
+    XCTAssertEqual(
+      p.hitTest(at: CGPoint(x: 122, y: titleBaselineY), tabs: [tab], height: h),
+      .closeTab(tab.id),
+      "click past the gutter in the close slot should close")
+  }
+
   func testHitTestRightEdgeBelowCloseSelectsTab() {
-    // With quad-height tabs, the close X only covers the title band. A click
-    // on the right edge in the lower three lines should select the tab, not
-    // close it.
+    // The close slot covers the title band and a half cell of padding below
+    // it, but the bottom strip of the row is still for selecting the tab.
     let tabs = makeTabs(count: 1)
     let p = SidebarProducer(sidebarWidth: 200, cellWidth: 8, cellHeight: 16)
     let h: CGFloat = 600
