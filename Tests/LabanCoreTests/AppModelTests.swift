@@ -152,7 +152,6 @@ final class AppModelTests: XCTestCase {
     XCTAssertTrue(banners.isEmpty)
   }
 
-
   func testIsUrgentNotificationClassification() {
     // Unambiguous blocking requests are urgent.
     XCTAssertTrue(AppModel.isUrgentNotification("Claude needs your permission"))
