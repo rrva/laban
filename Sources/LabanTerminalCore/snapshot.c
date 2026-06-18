@@ -268,6 +268,13 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
      * already pull GHOSTTY_ROW_DATA_RAW for the hyperlink check. */
     uint8_t *dirty_rows = calloc((size_t)rows, sizeof(uint8_t));
 
+    /* Per-row soft-wrap bytes — one byte per terminal row, 1 = this row is
+     * soft-wrapped (its text continues onto the next row with no program
+     * newline). Read from libghostty's GHOSTTY_ROW_DATA_WRAP on the same raw
+     * row we already pull for the hyperlink check. Selection/copy uses these to
+     * rejoin a wrapped logical line. NULL-tolerant like dirty_rows. */
+    uint8_t *wrapped_rows = calloc((size_t)rows, sizeof(uint8_t));
+
     /* Populate the pre-allocated row iterator from the render state. */
     ghostty_render_state_get(s->render_state,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &s->row_iter);
@@ -301,11 +308,16 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         }
 
         bool row_has_hyperlink = false;
+        bool row_wrapped = false;
         const GhosttyRowData row_keys[] = {
             GHOSTTY_ROW_DATA_HYPERLINK,
+            GHOSTTY_ROW_DATA_WRAP,
         };
-        void *row_values[] = { &row_has_hyperlink };
-        (void)ghostty_row_get_multi(raw_row, 1, row_keys, row_values, NULL);
+        void *row_values[] = { &row_has_hyperlink, &row_wrapped };
+        (void)ghostty_row_get_multi(raw_row, 2, row_keys, row_values, NULL);
+        if (wrapped_rows) {
+            wrapped_rows[row_idx] = row_wrapped ? 1 : 0;
+        }
 
         static const GhosttyRenderStateRowCellsData cell_keys[] = {
             GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
@@ -497,6 +509,7 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         snap->hyperlink_uris = (const char *const *)hyperlink_uris;
         snap->hyperlink_count = hyperlink_count;
         snap->dirty_rows = dirty_rows;
+        snap->wrapped_rows = wrapped_rows;
         laban_snapshot_destroy(snap);
         return -1;
     }
@@ -659,12 +672,15 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
         snap->hyperlink_uris = (const char *const *)hyperlink_uris;
         snap->hyperlink_count = hyperlink_count;
         snap->dirty_rows = dirty_rows;
+        snap->wrapped_rows = wrapped_rows;
         laban_snapshot_destroy(snap);
         return -1;
     }
 
     snap->dirty_rows      = dirty_rows;
     snap->dirty_row_count = dirty_rows ? (size_t)rows : 0;
+    snap->wrapped_rows    = wrapped_rows;
+    snap->wrapped_row_count = wrapped_rows ? (size_t)rows : 0;
 
     /* DECSCUSR override flags: copied from the session's scanner state so
      * CursorStyleResolver can decide whether to apply the user setting or the
@@ -688,6 +704,7 @@ void laban_snapshot_destroy(LabanSnapshot *snap) {
         free((void *)snap->hyperlink_uris);
     }
     free((void *)snap->dirty_rows);
+    free((void *)snap->wrapped_rows);
     free(snap);
 }
 

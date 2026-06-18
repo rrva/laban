@@ -145,6 +145,15 @@ typedef struct {
      * clean rows. dirty_row_count == rows on success. */
     const uint8_t *dirty_rows;
     size_t dirty_row_count;
+    /* Per-row soft-wrap flags read from libghostty (one byte per terminal row,
+     * 1 = this row is soft-wrapped: its text continues onto the next row because
+     * the line exceeded the terminal width and the program emitted no newline.
+     * 0 = the row ends at a real (program-emitted) line break. NULL when the
+     * snapshot couldn't query row state. Selection/copy uses these to rejoin a
+     * wrapped logical line instead of inserting a hard newline at every visual
+     * wrap. wrapped_row_count == rows on success. */
+    const uint8_t *wrapped_rows;
+    size_t wrapped_row_count;
     /* DECSCUSR / DEC-mode-12 explicit override flags (decscusr.c).
      * 1 when a program has overridden the respective cursor attribute and
      * has not yet reset it. In-memory only — not an ABI-stable ring field.

@@ -206,6 +206,67 @@ final class TerminalSelectionTests: XCTestCase {
     XCTAssertEqual(text, "hello mvp", "trailing spaces must be right-trimmed; got '\(text)'")
   }
 
+  func testSelectedTextJoinsSoftWrappedRowsWithoutNewline() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    // 15 chars with no newline on a 10-column terminal: "abcdefghij" fills row
+    // 0 and the cursor soft-wraps "klmno" onto row 1. The program sent no
+    // newline, so a copy spanning both rows must read as one logical line.
+    session.write(Array("abcdefghijklmno".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: 0, col: 0),
+      focus: TerminalCellCoordinate(row: 1, col: 4)
+    )
+    let text = sel.selectedText(from: snap.pointee)
+    XCTAssertEqual(
+      text, "abcdefghijklmno",
+      "soft-wrapped rows must rejoin into one logical line; got '\(text)'")
+  }
+
+  func testSelectedTextKeepsNewlineBetweenHardBreakRows() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    // The colored-box fixture is three rows separated by real CR/LF. None are
+    // soft-wrapped, so copying all three must preserve the program's newlines
+    // (guards against over-unwrapping).
+    session.write(selectionFixtureBytes)
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: 0, col: 0),
+      focus: TerminalCellCoordinate(row: 2, col: 79)
+    )
+    let text = sel.selectedText(from: snap.pointee)
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+    XCTAssertEqual(
+      lines.count, 3, "three hard-break rows must stay three lines; got '\(text)'")
+    XCTAssertTrue(text.contains("hello mvp"), "middle row content must survive; got '\(text)'")
+  }
+
   func testSelectedTextClampsOutOfRangeColumnsBeforeIndexingCells() throws {
     var size = LabanTerminalSize()
     size.rows = 24

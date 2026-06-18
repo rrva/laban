@@ -94,17 +94,35 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
     let rows = Int(snap.rows)
     let cols = Int(snap.cols)
 
-    var lines: [String] = []
-    for seg in segments(rows: rows, cols: cols) {
-      lines.append(
-        Self.snapshotLineText(
-          from: snap,
-          row: seg.row,
-          startCol: seg.startCol,
-          endCol: seg.endCol
-        ))
+    let segs = segments(rows: rows, cols: cols)
+    var result = ""
+    for (index, seg) in segs.enumerated() {
+      let isLast = index == segs.count - 1
+      // libghostty marks a row soft-wrapped when its text ran past the right
+      // margin and continued onto the next row with no newline from the
+      // program. Rejoin those rows into one logical line: keep the wrapped
+      // row's trailing cells (they are real content, not display padding) and
+      // emit no separator before the continuation row. A row that ends at a
+      // real line break still gets a "\n".
+      let wrapped = !isLast && Self.rowIsSoftWrapped(snap, row: seg.row)
+      result += Self.snapshotLineText(
+        from: snap,
+        row: seg.row,
+        startCol: seg.startCol,
+        endCol: seg.endCol,
+        trimTrailing: !wrapped
+      )
+      if !isLast && !wrapped {
+        result += "\n"
+      }
     }
-    return lines.joined(separator: "\n")
+    return result
+  }
+
+  private static func rowIsSoftWrapped(_ snap: LabanSnapshot, row: Int) -> Bool {
+    guard row >= 0, let flags = snap.wrapped_rows, row < snap.wrapped_row_count
+    else { return false }
+    return flags[row] != 0
   }
 
   public func selectedText(
@@ -204,7 +222,8 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
     from snap: LabanSnapshot,
     row: Int,
     startCol: Int,
-    endCol: Int
+    endCol: Int,
+    trimTrailing: Bool = true
   ) -> String {
     let rows = Int(snap.rows)
     let cols = Int(snap.cols)
@@ -234,7 +253,7 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
         line += " "
       }
     }
-    return rightTrim(line)
+    return trimTrailing ? rightTrim(line) : line
   }
 
   private static func scrollbackLineText(
