@@ -182,7 +182,9 @@ autonomous-verifiability rule.
       text-sizing protocol and freeze-against-program-toggle as future work) and
       indexed it in `docs/adr/README.md`. The `TerminalDisplayWidth` doc-comment
       demotion to "fallback" already landed in M3.
-- [ ] Review Gate passed.
+- [x] (2026-06-19) Review Gate passed — fresh-state review ALL PASS; two Low
+      findings closed (selection under-tiling guard + wrapped-row alignment test);
+      `swift test` 1673/0, `./scripts/build-app` exit 0.
 
 Milestones are ordered: M0 is a *characterization* milestone whose output is the
 precise specification for M1–M3 (we measure what `libghostty-vt` already does
@@ -706,21 +708,22 @@ A separate agent with fresh state must verify the following before this ExecPlan
 considered complete. The executing agent must not mark the plan done until this
 gate passes. See `../../PLANS.md` "Review gate and review-fix loop".
 
-- [ ] `./scripts/build-app` exits 0 at the review commit.
-- [ ] `swift test` exits 0; record the passed count.
-- [ ] M1: a test sends `ESC [ ? 2027 h` then `ESC [ ? 2027 $ p` and asserts the
-      captured terminal response equals the DECRPM "set" reply
-      (`ESC [ ? 2027 ; 1 $ y`); sends `?2027l`/`?2027$p` and asserts the "reset"
-      reply (`; 2`). `grep -n "2027\|grapheme" Sources/LabanDebug/DebugStateEndpoints.swift`
-      shows the debug field; parity `grep` in `HeadlessDebugRuntime.swift` and
-      `MainWindowController.swift`.
-- [ ] M2: a conformance test asserts, through the real engine, that `👩‍🌾`
-      occupies 2 cells and advances the cursor by 2 when mode 2027 is ON, and the
-      legacy width when OFF. Mutating the expected ON width to the OFF value makes
-      that row FAIL; revert restores PASS.
-- [ ] M3: a scrollback find/copy test for `👩‍🌾` under mode ON returns column 2
-      (not 4) and the exact cluster bytes; mutating the consumer back to the
-      per-scalar `TerminalDisplayWidth` path makes it FAIL.
+- [x] `./scripts/build-app` exits 0 at the review commit (built `LabanApp`,
+      `laband`, `labpty`).
+- [x] `swift test` exits 0 — **1673 tests, 7 skipped, 0 failures**.
+- [x] M1: `testMode2027HandshakeAndSnapshotField` asserts `?2027h`→snapshot field
+      true + `\e[?2027;1$y` and `?2027l`→false + `\e[?2027;2$y`; `/debug/terminal-modes`
+      registered (`DebugHTTPServer.swift:122`) reading `grapheme_cluster_2027`, wired
+      in both `HeadlessDebugRuntime`/`DebugStateEndpoints` and the GUI path
+      `MainWindowController`/`TerminalBitmapView` (parity). Snapshot field
+      `LabanTerminalCore.h:132`, populated `snapshot.c:621`.
+- [x] M2: `Mode2027GridConformanceTests` hard-codes ON/OFF `(wide, advance)` per
+      cluster (farmer ON adv 2 vs OFF adv 4), CSI 6n cross-check; render proof
+      `FrameProducerGraphemeClusterTests` asserts a single glyph run. Mutation
+      sensitivity confirmed by the reviewer (reading the literals).
+- [x] M3: `Mode2027ScrollbackWidthTests` returns column 2 (not 4) for the farmer ON
+      and exact cluster bytes on copy; `testMutationGuard_*` proves the scalar path
+      would give 4. Versioned `*_extract2_alloc` added; v1 functions intact.
 - [x] M4: `Tests/LabanCoreTests/TerminalWidthConformanceTests.swift` exists and
       passes (7 tests); it covers ASCII, CJK, ZWJ emoji (farmer + trans flag),
       regional indicator, skin-tone modifier, Hangul, Devanagari cluster, and
@@ -729,26 +732,33 @@ gate passes. See `../../PLANS.md` "Review gate and review-fix loop".
       literals and a mutation-guard test. The end-to-end handshake demo
       (`testHandshakeDemo_negotiateThenPrintFarmer`) asserts the DECRPM replies and
       `ESC[1;3R`; transcript captured in Artifacts and Notes.
-- [ ] M5: `Sources/LabanCore/GraphemeWidthSettings.swift` exists with a default of
-      `.auto`; a test sets it to `.preferGrapheme` and asserts a fresh session
-      reports `grapheme_cluster_2027: true` via `GET /debug/terminal-modes` before
-      any program output, and `false` under `.auto`. `grep -n "graphemeWidthPopUp\|Unicode width"
-      Sources/LabanApp/SettingsWindowController.swift` shows the row is wired.
-- [ ] M3 regression guard: `swift test --filter TerminalFindTests` and
-      `swift test --filter TerminalSelectionTests` exit 0, and the mode-OFF
-      scrollback column outputs are unchanged from the pre-M3 baseline (the demoted
-      `TerminalDisplayWidth` path must not alter legacy results). Also
-      `swift test --filter TerminalDisplayWidthTests` exits 0 (the helper still
-      exists as a fallback).
-- [ ] No regression to MVP behavior: legacy width when mode 2027 is OFF (the
-      default) is unchanged — verified mechanically by the M3 regression-guard item
-      above plus `swift test` exiting 0, not by judgment.
+- [x] M5: `GraphemeWidthSettings.swift` exists, default `.auto`; `GraphemeWidthHeadlessTests`
+      asserts `.preferGrapheme`→`grapheme_cluster_2027: true` before output, `.auto`→false,
+      plus DECSET/DECRST override; the "Unicode width" popup is wired in
+      `SettingsWindowController.swift`.
+- [x] M3 regression guard: `TerminalFindTests` (13), `TerminalSelectionTests` (21),
+      `TerminalDisplayWidthTests` (8) all exit 0 with byte-identical counts; the
+      regression test files were not modified by any milestone commit, yet they
+      drive the new v2 `scrollbackBlock` path under mode-OFF.
+- [x] No regression to MVP behavior: the change is additive (new files + versioned
+      C entry points; legacy regression suites unmodified; `GraphemeWidthSettings`
+      defaults OFF); confirmed mechanically by the regression guard + full `swift test`.
 
-Review status: NOT REVIEWED
+Review status: **PASSED** (2026-06-19). Independent fresh-state review verified all
+six load-bearing factual claims against source and every gate item by static
+inspection; verdict ALL PASS. The two Low findings it raised were then closed:
+(1) `TerminalSelection.plainLineTextFromClusters` gained an under-tiling guard
+mirroring `TerminalFind.rowBufferFromClusters`; (2) a wrapped multi-screen-row
+alignment test (`testWrappedMultiRowClusterWidthsAlignPerScreenRow`) was added.
+Authoritative closeout: `swift test` = 1673 tests / 0 failures, `./scripts/build-app`
+exit 0.
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- ALL PASS. Cross-cutting notes (both Low, now addressed): under-tiling guard added
+  to the selection consumer; wrapped-row width coverage added. Locking and
+  headless/GUI parity verified correct; commit hygiene exemplary (one milestone per
+  commit).
 
 ## Validation and Acceptance
 

@@ -338,8 +338,15 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
       if col >= endCol { break }
     }
     // The carried clusters must tile the row bytes up to wherever the column
-    // window ended; if a cluster boundary overran the row, the layout is
-    // inconsistent and we defer to the scalar fallback.
+    // window ended. Per-cluster overrun is rejected above. Here we also reject
+    // *under*-tiling: if the clusters ran out before the selection window ended
+    // (`col < endCol`) yet row bytes remain undescribed (`byteIndex <
+    // bytes.count`), the carried widths do not cover the columns we still needed,
+    // so the layout is inconsistent and we defer to the scalar fallback rather
+    // than return a partial line. (When `col >= endCol` we stopped at the window
+    // edge, so leftover row bytes beyond it are expected and fine; when the row
+    // is fully tiled but shorter than `endCol`, that is also fine.)
+    if col < endCol && byteIndex < bytes.count { return nil }
     return rightTrim(String(decoding: selected, as: UTF8.self))
   }
 

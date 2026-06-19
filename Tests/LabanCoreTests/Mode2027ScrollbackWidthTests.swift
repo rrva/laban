@@ -229,4 +229,66 @@ final class Mode2027ScrollbackWidthTests: XCTestCase {
       "engine width (2) must differ from the scalar fallback (4); this is the "
         + "drift M3 fixes")
   }
+
+  // MARK: - Wrapped (multi-screen-row) alignment
+
+  /// A logical line wider than the terminal soft-wraps onto multiple screen
+  /// rows. The scrollback width metadata is sourced by walking the engine grid
+  /// per SCREEN row and aligning grid screen-row R to formatter row R (the
+  /// formatter runs with unwrap=false, one text row per screen row). Earlier
+  /// tests only place a single cluster on one row; this one drives a hard-wrapped
+  /// CJK line (each 中 = 2 columns) through a narrow terminal so the line occupies
+  /// a first row plus a continuation row, then asserts the carried widths describe
+  /// EACH wrapped row correctly. If the continuation row inherited another row's
+  /// metadata, either the global tiling check would drop all metadata
+  /// (`graphemeWidths == nil`) or the per-cluster widths/count would be wrong —
+  /// so this catches a row-alignment regression across a wrap.
+  func testWrappedMultiRowClusterWidthsAlignPerScreenRow() throws {
+    let session = try Session.fixture(size: size(rows: 4, cols: 4))
+    defer { session.close() }
+    XCTAssertEqual(session.write(Array("\u{1b}[?2027h".utf8)), 0)
+    // Three CJK ideographs = 6 columns; at cols=4 the engine wraps after two, so
+    // screen row 0 holds 中中 (4 cols) and the continuation row holds 中 (2 cols).
+    XCTAssertEqual(session.write(cjkBytes + cjkBytes + cjkBytes), 0)
+    XCTAssertEqual(session.write([0x0D]), 0)
+    XCTAssertEqual(session.write(Array(repeating: 0x0A, count: 12)), 0)
+
+    guard let block = session.scrollbackBlock() else {
+      XCTFail("scrollbackBlock nil")
+      return
+    }
+    XCTAssertNotNil(
+      block.graphemeWidths,
+      "wrapped rows must still carry engine widths (nil ⇒ a row mis-tiled ⇒ "
+        + "grid/formatter row alignment broke across the wrap)")
+
+    let textBytes = Array(block.text.utf8)
+    var cjkRowCount = 0
+    var cjkClusters: [ScrollbackBlock.ClusterWidth] = []
+    for row in 0..<block.rowOffsets.count {
+      let start = block.rowOffsets[row]
+      let end = (row + 1 < block.rowOffsets.count) ? block.rowOffsets[row + 1] : textBytes.count
+      guard start <= end, end <= textBytes.count else { continue }
+      let slice = Array(textBytes[start..<end])
+      guard containsSubsequence(slice, cjkBytes) else { continue }
+      cjkRowCount += 1
+      cjkClusters.append(contentsOf: (block.graphemeWidths?[row] ?? []).filter { $0.byteLength == 3 })
+    }
+
+    XCTAssertGreaterThanOrEqual(
+      cjkRowCount, 2, "the 6-column line must wrap onto a continuation row at cols=4")
+    XCTAssertEqual(
+      cjkClusters.count, 3,
+      "all three 中 must be carried as clusters across the wrapped rows; got \(cjkClusters.count)")
+    for c in cjkClusters {
+      XCTAssertEqual(c.columns, 2, "each 中 is a 2-column cluster on every wrapped row")
+    }
+
+    // Find must report 2-column matches on the continuation row too.
+    let matches = TerminalFind.search(needle: cjk, in: block)
+    XCTAssertFalse(matches.isEmpty, "find locates the wrapped CJK")
+    for m in matches {
+      XCTAssertEqual(m.endColumn - m.startColumn, 2, "each CJK match spans the engine's 2 columns")
+    }
+  }
 }
