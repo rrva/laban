@@ -1,5 +1,11 @@
 import Foundation
 
+/// East-Asian display-width model matching libghostty's terminal layout with
+/// DEC mode 2027 (grapheme_cluster) DISABLED — Laban's configuration (libghostty
+/// default; Laban never enables 2027). Width is summed per Unicode scalar, so
+/// callers that walk scalars get the same column advance the terminal grid uses.
+/// If mode 2027 is ever enabled, these per-scalar-width consumers (scrollback
+/// find/copy, IME preedit) must switch to per-grapheme-head width instead.
 public enum TerminalDisplayWidth {
   public static func cells<S: StringProtocol>(of text: S) -> Int {
     text.reduce(0) { $0 + cells(of: $1) }
@@ -54,6 +60,7 @@ public enum TerminalDisplayWidth {
       0x2B1B...0x2B1C,
       0x2B50,
       0x2B55,
+      0x2E3A...0x2E3B,
       0x2E80...0xA4CF,
       0xAC00...0xD7A3,
       0xF900...0xFAFF,
