@@ -53,8 +53,12 @@ greenfield in the terminal space:
   **architecture-fit** decision (a terminal redraws mostly-static glyphs every
   frame, so a cached accumulation atlas amortizes cost where Slug recomputes
   per-pixel per-frame), **not** a legal one. Slug's reference shaders are prior
-  art worth studying. (A prior draft cited "US 9,710,310, ~2035" — wrong number
-  and term; corrected.)
+  art worth studying, and a direct Slug-style renderer is a credible **future
+  (v2)** option — but not the first integration target, because it is a larger
+  architectural departure (direct curve rendering rather than atlas-first, more
+  shader/data complexity, harder headless/debug/capture integration, less
+  incremental migration from current code). (A prior draft cited "US 9,710,310,
+  ~2035" — wrong number and term; corrected.)
 - No Metal reference implementation of the osor.io recipe exists; that renderer
   is Vulkan/HLSL on Windows. The Metal compute kernel is written from scratch.
 - The other SOTA contender, Linebender's vello / vello_hybrid GPU-compute 2D
@@ -73,6 +77,19 @@ greenfield in the terminal space:
   unresolved), so the layout is user-configurable.
 
 ## Decision
+
+**osor-style first, Slug-informed.** Laban's first vector glyph renderer is an
+osor-inspired runtime outline rasterizer into a glyph atlas, chosen for
+**architectural fit** with the existing renderer/backend/atlas model — not for
+Slug patent avoidance (Slug is patent-free). Slug is reference material
+(robustness, shader/data-layout, correctness test cases) and a possible future
+direct-vector renderer; Vello is a heavy Rust/wgpu general-2D integration not
+suited to the first Swift/Metal terminal path; the CoreText raster atlas stays
+the baseline/fallback. Ranked by effort-to-impact: (1) osor-style vector-to-atlas
+first, (2) Slug-style direct renderer as a studied v2, (3) Vello not first, (4)
+CoreText raster atlas baseline. The full comparison table lives in the execplan
+(`execplans/active/vector-glyph-renderer.md`, "Architecture decision: osor-style
+first, Slug-informed").
 
 Add a fourth, opt-in renderer — `vectorGlyph` — implemented as a new
 `RendererBackend` peer (`VectorGlyphRenderer`), not as a third mode inside

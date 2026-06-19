@@ -105,8 +105,12 @@ fresh contributor does not re-derive it. Verified sources:
   handles with tolerance instead. The earlier "~2035 / US 9,710,310" framing in
   prior drafts of this plan was wrong on the patent number, grant year, and term
   and has been removed. Laban still chooses the osor.io resident-atlas +
-  temporal-accumulation route — but for **architecture-fit / terminal-workload**
-  reasons (see the Decision Log), **not** any legal one.
+  temporal-accumulation route **as the first implementation** — but for
+  **architecture-fit / terminal-workload** reasons (see "Architecture decision:
+  osor-style first, Slug-informed" and the Decision Log), **not** any legal one.
+  Slug remains the natural candidate for a *future* **direct-vector** renderer (a
+  v2 path) once the atlas backend's selection, debug/capture, and fallback
+  surfaces are stable.
 - **No Metal reference implementation exists.** osor.io's author (Rubén Osorio)
   publishes only Jai helper modules on Codeberg (including `osor_vulkan`); the
   article's renderer is Vulkan/D3D12-HLSL on a 9070 (Windows), not Metal. The
@@ -148,6 +152,95 @@ fresh contributor does not re-derive it. Verified sources:
 4. **macOS exposes no arbitrary subpixel-layout API.** The article's "A Plea"
    is unresolved; user-configurable layout (RGB stripe default + custom for
    OLED) is the best achievable. The plan specifies exactly this.
+
+## Architecture decision: osor-style first, Slug-informed
+
+**Decision: osor-style first, Slug-informed.** Laban's first vector glyph
+renderer is an osor-inspired runtime outline rasterizer into a glyph atlas. The
+decision rests on **architectural fit** with Laban's current renderer/backend
+model, **not** on Slug patent avoidance (Slug is patent-free as of 2026-03-17;
+see Research / SOTA). Slug is treated as **viable prior art** — a source of
+robustness ideas, shader/data-layout lessons, correctness test cases, and a
+plausible long-term *direct-vector* renderer — rather than the first integration
+target.
+
+Why osor-style is the better *first* fit for Laban (integration reasons):
+
+- Laban already has backend selection, Metal rendering, a software fallback, and
+  glyph-**atlas**-oriented rendering assumptions throughout the draw path.
+- A vector-to-atlas path changes only **glyph production** (how the atlas cell is
+  filled) while preserving the existing draw / composite / presentation model,
+  the `[FrameCommand]` contract, and the capture/debug plumbing.
+- Terminal workloads reuse the same glyphs heavily, so atlas caching plus
+  temporal refinement is a natural fit and amortizes cost to ~0 per frame.
+- It is **lower integration risk** than a direct vector renderer: incremental,
+  reversible, and selectable beside the shipping backends.
+
+What this decision does **not** claim:
+
+- It does **not** claim osor is better because Slug is legally unavailable — Slug
+  is available; the choice is architectural.
+- It does **not** claim osor is the best renderer in isolation — Slug-style direct
+  rendering may be technically superior on quality/atlas-pressure grounds.
+- It does **not** claim osor can be copied blindly — it still needs explicit
+  contour metadata, glyph fallback, accumulation math, and headless/debug work
+  (see "Caveats the osor-first decision does not remove").
+
+### Option comparison
+
+| Option | Strength | Weakness | Decision |
+|---|---|---|---|
+| **osor-style vector-to-atlas** | Best incremental fit with Laban's current renderer and atlas model; good terminal glyph reuse; easier rollout | Needs careful contour metadata, accumulation math, cold-glyph quality, fallback handling | **First implementation** |
+| **Slug-style direct vector renderer** | Strong long-term quality model; avoids some atlas pressure; robust text-specific algorithm; now patent-free | Larger architecture shift; more complex shader/data model; harder initial integration (headless/debug/capture, fallback reporting) | Study / reference; possible v2 |
+| **Vello / vello_hybrid** | Mature general-2D direction; active ecosystem | Rust/wgpu-oriented; heavy integration for a Swift/Metal terminal; not a focused terminal-glyph solution; glyph cache still maturing | Not the first path |
+| **CoreText raster atlas only** (today's `classic`/software) | Stable, shipped baseline | Does not advance the scalable/vector-glyph quality goal | Keep as fallback / baseline |
+
+### Recommended path ranking (effort-to-impact)
+
+1. **osor-inspired vector-to-atlas, Slug-informed** — first implementation (this
+   plan).
+2. **Slug-style direct vector renderer** — possible future research / v2 path,
+   revisited only after backend selection, debug/capture, fallback reporting, and
+   the atlas/vector test suites are stable.
+3. **Vello integration** — not suitable as the first Swift/Metal terminal-specific
+   integration.
+4. **Existing CoreText raster atlas only** — fallback / baseline, retained
+   unchanged.
+
+### Why Slug is not the first target (and stays relevant)
+
+Slug-style direct vector rendering may be technically superior in isolation —
+especially for immediate high-quality glyph rendering and avoiding atlas pressure
+— but it is a larger departure from Laban's current atlas/backend architecture:
+direct curve rendering rather than atlas-first integration, more shader/data
+complexity, harder headless/debug/capture integration, and a less incremental
+migration from the current code. For the first implementation Laban uses Slug as
+a **reference** for curve handling, floating-point robustness, test cases, and
+possible future renderer design — not as the initial integration strategy. A
+direct Slug-style backend remains a credible **v2** once the osor backend's
+selection/debug/fallback surfaces have proven out.
+
+### Caveats the osor-first decision does not remove
+
+Choosing osor-style first does **not** waive any of the review fixes already in
+this plan. They remain hard requirements:
+
+- Store contour/subpath metadata explicitly; one seed/start point **per contour**,
+  not per glyph; defined close-subpath and winding/fill-rule behavior
+  (see "Curves and contours").
+- Exact accumulation texture format and normalization math, with the
+  **binary-vs-fractional** coverage question stated explicitly (see item 6).
+- Acceptable cold-glyph quality before temporal refinement converges (item 6 /
+  M3).
+- Glyph fallback for clusters without usable outlines — nil
+  `CTFontCreatePathForGlyph`, bitmap glyphs, color emoji, ZWJ clusters, complex
+  CTLine fallback, missing glyphs, styled fallback fonts (see "Glyph fallback").
+- Strict vector-geometry tests split from looser CoreText visual parity; no exact
+  CoreText pixel equality for unhinted vector output (see "Test thresholds").
+- Headless/debug screenshots treated as explicit work, not automatic
+  (see "Headless / debug vector support").
+- Report requested renderer, effective renderer, fallback reason, and per-glyph
+  fallback occurrence where practical (see "Fallback cascade and status").
 
 ## Reference summary of the osor.io technique
 
@@ -300,6 +393,19 @@ above: every item here matches the established method.
      `rgba32Float` accumulator would be ~equally precise but float addition is
      non-associative, so two runs could differ in the low bits; rejected for
      determinism, not precision.)
+   - **Coverage model — FRACTIONAL, not binary (stated explicitly).** Each sample
+     contributes a *fractional* coverage in `[0,1]`, not a binary inside/outside
+     0/1. The fractional value comes from the pixel-window AA rule (item 2): a
+     curve intersection within one pixel-width of the ray contributes a fractional
+     weight, so `cov = saturate(abs(W))` is a *windowed* winding value in `[0,1]`,
+     not the integer winding count. This is why the fixed-point `round(cov*65535)`
+     quantization is required. **Integer 0/1 accumulation would be valid only for
+     pure binary point sampling** (accumulate inside-count, divide by total
+     count); Laban does **not** use that model — binary point sampling needs far
+     more samples to reach the same edge quality and produces noisier cold
+     glyphs. If a future milestone switches to binary point sampling, the format
+     must be re-stated (a plain count buffer) — the two models are not
+     interchangeable under the same normalization.
    - **Per-frame update (plain read-modify-write, no atomics):** each texel is
      written by exactly one thread per frame, and frames are serialized, so
      `sum.rgb += uint3(round(covRGB * 65535)); sum.a += sampleCountThisFrame`.
@@ -317,6 +423,16 @@ above: every item here matches the established method.
      the 512 cap; tests and headless captures read the atlas only at a fixed
      sample index where every resident glyph has `count ≥ 256` (see M3's
      determinism protocol), never mid-convergence against a wall clock.
+   - **Cold glyphs (must be legible at frame 1, before convergence).** A
+     freshly-seeded glyph has only its first-frame budget (8 samples), which is
+     enough to read but visibly less smooth than the converged result. The
+     first-frame burst (8) and the front-loaded 8/4/2/1 schedule exist precisely
+     so a newly-typed/scrolled-in glyph is immediately acceptable. To avoid
+     first-frame stochastic noise, the **initial burst uses a fixed low-
+     discrepancy sample set** (the first N points of the $R_2$ sequence, which are
+     deterministic and well-distributed) rather than random jitter, so a cold
+     glyph is smooth-but-slightly-soft, not speckled. The cold→converged delta is
+     captured as an M3 artifact (first-frame vs converged screenshot pair).
 
 7. **Subpixel AA.** Instead of one coverage value per pixel, compute three
    coverage values — one per R/G/B subpixel element — by sampling the winding
@@ -1107,9 +1223,12 @@ acceptable outcome.)
 
 ## Decision Log
 
-- Decision: use the osor.io resident-atlas + temporal-accumulation approach
-  rather than Slug — for architecture fit, **not** legal reasons. The four
-  dimensions kept deliberately separate:
+- Decision: **osor-style first, Slug-informed.** Use the osor.io resident-atlas +
+  temporal-accumulation approach as the **first** vector renderer; treat Slug as
+  viable prior art (robustness/shader/data-layout/test-case reference) and a
+  possible **v2** direct-vector renderer, not the first integration target. The
+  choice is architecture fit, **not** legal. The four dimensions kept
+  deliberately separate:
   - **Legal risk: none (changed in 2026).** Slug was covered by **US Patent
     10,373,352** (Eric Lengyel; granted 2019; nominal term to ~2038). On
     **2026-03-17** Lengyel dedicated it to the public domain via a USPTO terminal
@@ -1133,8 +1252,15 @@ acceptable outcome.)
     heavy glyph reuse, and pixel-aligned columns mean the atlas working set is
     small (low hundreds of unique glyph+size entries) and cache hit rates are
     high — exactly where caching beats per-pixel recompute.
+  - **Ranking / sequencing:** (1) osor-style vector-to-atlas first; (2) Slug-style
+    direct renderer as a studied v2, revisited only after backend selection,
+    debug/capture, fallback reporting, and the atlas/vector tests are stable;
+    (3) Vello not the first Swift/Metal terminal integration; (4) CoreText raster
+    atlas retained as baseline/fallback. Full comparison table in "Architecture
+    decision: osor-style first, Slug-informed".
   Date/Author: 2026-06-19 / planning + research; 2026-06-20 / corrected Slug
-  legal status and split into four dimensions.
+  legal status and split into four dimensions; 2026-06-20 / explicit "osor-style
+  first, Slug-informed" framing + option ranking.
 
 - Decision: ship `vectorGlyph` knowing no terminal currently ships GPU curve
   rasterization (greenfield, not catch-up).
@@ -1142,9 +1268,13 @@ acceptable outcome.)
   alpha-mask atlas (`src/font/Atlas.zig`), same as kitty/WezTerm/Alacritty and
   Laban's own `MetalGlyphAtlas`. The osor.io recipe is the 2026 SOTA for this
   technique family and is purpose-fit for a terminal's mostly-static, single-
-  font, heavy-reuse workload. vello/sparse-strips solve general 2D vector
-  graphics but have an open glyph-caching gap and are not production-ready.
-  Date/Author: 2026-06-19 / planning + research.
+  font, heavy-reuse workload. Vello / vello_hybrid solve general 2D vector
+  graphics and are a maturing ecosystem, but they are a heavy Rust/wgpu/general-2D
+  integration relative to Laban's Swift/Metal terminal-specific needs — not
+  selected for the first path on integration grounds (re-verify upstream state
+  before citing it; do not assert "not production-ready" as a fixed fact).
+  Date/Author: 2026-06-19 / planning + research; 2026-06-20 / Vello wording
+  softened to integration-fit, not maturity claim.
 
 - Decision: implement as a new `RendererBackend` peer, not a third mode inside
   `MetalRenderer`.
