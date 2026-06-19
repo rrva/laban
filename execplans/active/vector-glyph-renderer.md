@@ -252,10 +252,17 @@ Read these files first to orient:
   and the `RendererSelection` enum (`software`/`classic`/`gpuDriven`). Gains a
   `vectorGlyph` item.
 - `Sources/LabanRenderer/Shaders.metal` — the classic/gpuDriven shaders. The
-  vector renderer gets its **own** `.metal` file (`VectorGlyphShaders.metal`)
-  compiled into the same `Laban_LabanRenderer.bundle` resource bundle (see
-  `Sources/LabanRenderer/ResourceBundle.swift`); it does not edit the existing
-  shaders.
+  vector renderer gets its **own** `.metal` file (`VectorGlyphShaders.metal`).
+  **Bundling is not automatic:** `Package.swift` only `.process("Shaders.metal")`
+  today (`Package.swift:49`), and the loader reads that one file by name and
+  compiles it from source at startup (~1 ms, `MetalRenderer.swift:668`). So M2
+  must (a) add `.process("VectorGlyphShaders.metal")` to the `LabanRenderer`
+  target's `resources` in `Package.swift`, and (b) give `VectorGlyphRenderer`
+  its own loader that reads `"VectorGlyphShaders".metal` from
+  `LabanRendererResources.bundle` and compiles a separate `MTLLibrary`. SwiftPM
+  does not pre-compile `.metal` to `.metallib`; both files ship as source in
+  the bundle. The Review Gate proves the new file is bundled and compiled.
+  The vector renderer does not edit the existing shaders.
 - `Sources/LabanDebug/HeadlessDebugRuntime.swift` — must gain feature parity
   with the live window path (ADR / AGENTS.md hard rule). The renderer is
   selectable headless and exposes debug endpoints.
@@ -281,6 +288,79 @@ sample-count channel, a compute rasterizer, temporal state). Inlining it would
 entangle the classic path. Both backends implement the same
 `RendererBackend` protocol, so the host view, `AppModel`, and `Session` are
 unaware of which one is active — which is what makes live switching safe.
+
+### Factory, selection, and status wiring (load-bearing — not free)
+
+"Peer backend" does **not** mean the existing plumbing already routes to it.
+Today `TerminalBitmapView.makeBackend`
+(`Sources/LabanApp/TerminalBitmapView.swift:825`) routes **every**
+`selection.metalMode != nil` case into `MetalRenderer`, and `MetalRenderer`'s
+`effectiveRendererMode` (`MetalRenderer.swift:642`) forces any non-`gpuDriven`
+requested mode to `.classic`. So `vectorGlyph` **cannot** be a fourth
+`RendererSelection.metalMode` value — `metalMode` must return `nil` for it
+exactly as it does for `.software`, otherwise it would be silently collapsed
+to classic. The required edits:
+
+- `RendererSelection` (`Sources/LabanApp/RendererModeMenuController.swift`):
+  add `.vectorGlyph`. Its `metalMode` returns `nil` (like `.software`), so the
+  existing `makeBackend` metal branch is untouched. `isAvailableOnCurrentOS`
+  returns `true` unconditionally.
+- `RendererMode` (`Sources/LabanRenderer/RendererMode.swift`): add
+  `.vectorGlyph`. `isAvailableOnCurrentOS` returns `true` (no macOS-26 gate).
+  `defaultMode` unchanged (still `.gpuDriven ?? .classic`).
+- `TerminalBitmapView.makeBackend`: add a branch **before** the metal branch —
+  `if selection == .vectorGlyph { return VectorGlyphRenderer(fontAtlas:...,
+  sidebarFontAtlas:...) }`. (Or, cleaner: `switch selection` with explicit
+  cases so a future mode can't fall through.)
+- `TerminalBitmapView.rendererMode` / `rendererSelection` accessors
+  (`TerminalBitmapView.swift:874`): currently `guard let metal = backend as?
+  MetalRenderer else { return .classic / .software }`. Add a `backend as?
+  VectorGlyphRenderer` arm returning `.vectorGlyph` so the menu and Settings
+  reflect the live backend instead of misreporting `classic`.
+- `TerminalBitmapView.installFrameCompletionHook` (`TerminalBitmapView.swift`):
+  currently `guard let metal = backend as? MetalRenderer else { return }`. The
+  vector path needs its own frame-completion callback (for the GPU freeze
+  detector and input-latency recording) — either a shared protocol requirement
+  or a parallel `backend as? VectorGlyphRenderer` arm. Decide in M2 and record
+  in the Decision Log.
+- Live switching: `RendererModeMenuController.applySelection` already rebuilds
+  the backend on selection change; verify `VectorGlyphRenderer` is constructed
+  and that switching classic↔vectorGlyph preserves the `AppModel`, active tab
+  id, and `Session` (the M5 session-identity test pins this).
+
+These are M2 work, and the Review Gate checks them mechanically.
+
+### Headless renderer selection (load-bearing — parity with the live path)
+
+AGENTS.md's hard rule: `HeadlessDebugRuntime` stays in feature parity with
+`MainWindowController.makeAndShow`. Today the headless runtime renders only
+through `SoftwareBackend`, and `DebugRenderEndpoints.renderState()` hard-codes
+the software strings — it does not reflect any selectable renderer. So M2 must:
+
+- Give `HeadlessDebugRuntime` a `rendererSelection` parameter (default
+  `.software` to preserve every existing test and fixture byte-for-byte) and
+  construct the same backend `TerminalBitmapView.makeBackend` would, via a
+  shared factory (do not duplicate the routing logic — call the same
+  `makeBackend(selection:fontAtlas:sidebarFontAtlas:)` or lift it to a
+  `LabanRenderer`-level helper both the view and the runtime call).
+- Make `renderState()` read `configuredRenderer`/`effectiveRenderer`/
+  `fallbackReason` from the live backend's `rendererStatus` (`RendererBackend`
+  already exposes `rendererStatus: RendererStatus`; `VectorGlyphRenderer` and
+  `MetalRenderer` populate it, `SoftwareBackend` keeps the software default).
+  Delete the hard-coded `"software"` literals in favor of the backend's report.
+- Add `testRuntimeRenderStateReportsVectorGlyphRendererStatus` to
+  `Tests/LabanDebugTests/LabanDebugSmokeTests.swift` that constructs
+  `HeadlessDebugRuntime` with `rendererSelection: .vectorGlyph` (gated on a
+  Metal device being present; skip otherwise) and asserts
+  `configuredRenderer == "vectorGlyph"`, `effectiveRenderer == "vectorGlyph"`,
+  `fallbackReason == nil`. When Metal is absent it asserts the classic
+  fallback + reason instead. The existing
+  `testRuntimeRenderStateReportsRendererStatus` (software) stays green.
+- `GET /debug/screenshot` must work through `VectorGlyphRenderer` (it reads
+  `presentationImage`/`pngData` from the protocol, so this is free once the
+  backend is selected, but M5's headless E2E pins it).
+
+This is the headless half of the same selection work the live path does above.
 
 ## Getting curves on macOS (no offline bake)
 
@@ -332,10 +412,18 @@ Acceptance:
   - `c1 = lerp(p3,p2,0.75) = (4,3)`
   - `m  = lerp(c0,c1,0.5) = (2,3)`
   - Output curves: `Q1 = (0,0),(0,3),(2,3)` and `Q2 = (2,3),(4,3),(4,0)`.
-  The test asserts `c0`, `c1`, `m` to 1e-6, that `Q1`'s end equals `Q2`'s start
-  (`m`, i.e. C0-continuous), and that the midpoint of each output quadratic
-  lies on the original cubic (tangent-preserving spot check at t=0.25 and
-  t=0.75 of the source cubic).
+  The test asserts `c0`, `c1`, `m` to 1e-6 and that `Q1`'s end equals `Q2`'s
+  start (`m`, i.e. C0-continuous). It does **not** assert the output
+  quadratics lie exactly on the source cubic — this order-lowering is
+  **lossy** by construction (the osor.io article says so explicitly). Instead
+  it asserts a **bounded approximation error**: the Hausdorff distance between
+  the two output quadratics and the source cubic over `[0,1]` is below a fixed
+  epsilon (e.g. 0.05 em), verified by sampling both at 33 t-values. Concretely
+  for this example the test pins the known deviation: cubic@t=0.25 = (0.625,
+  2.25) while Q1@t=0.5 = (0.5, 2.25) — Δx = 0.125, within epsilon — and
+  cubic@t=0.75 = (3.375, 2.25) while Q2@t=0.5 = (3.5, 2.25) — Δx = 0.125,
+  within epsilon. The test records the max observed deviation, not a
+  tangent-preserving spot check (which is false here).
 - Winding-number unit test on a synthetic unit square (4 line-segments → 4
   quadratics) asserts `|W| = 1` for an interior sample and `|W| = 0` for an
   exterior one, using the embedded kernel (coefficients `a,b,c`, root
@@ -395,13 +483,17 @@ Acceptance:
   restores the classic look. Session identity survives (verified by the
   M5 session-identity check, but exercised here manually).
 - `GET /debug/render` returns a `RenderResponse` whose `configuredRenderer`
-  and `effectiveRenderer` are both `"vectorGlyph"` (this endpoint already
-  exists — `Sources/LabanDebug/DebugRenderEndpoints.swift:29`, route
-  `/debug/render` at `DebugHTTPServer.swift:323`; the headless parity test is
-  `testRuntimeRenderStateReportsRendererStatus` in
-  `Tests/LabanDebugTests/LabanDebugSmokeTests.swift`). When the Metal device
-  is unavailable, `effectiveRenderer` falls back to `"classic"` with a
-  non-nil `fallbackReason`.
+  and `effectiveRenderer` are both `"vectorGlyph"` when that backend is
+  selected. **This is new work, not a pre-existing property:** today
+  `DebugRenderEndpoints.renderState()` hard-codes `backend/configuredRenderer/
+  effectiveRenderer = "software"` (`Sources/LabanDebug/DebugRenderEndpoints.swift:33`),
+  and the existing `testRuntimeRenderStateReportsRendererStatus`
+  (`Tests/LabanDebugTests/LabanDebugSmokeTests.swift:543`) only asserts the
+  software case. M2 must make `HeadlessDebugRuntime` carry a selectable
+  renderer (see "Headless renderer selection" below) and report the live
+  backend's configured/effective/fallback; the existing software assertions
+  must stay green (regression). When the Metal device is unavailable,
+  `effectiveRenderer` falls back to `"classic"` with a non-nil `fallbackReason`.
 - Coverage parity for a plain-ASCII fixture vs the **M0/M1 single-sample CPU/GPU
   oracle** within ±2/255 per pixel over ink (both are single-sample point
   tests, so they agree by construction; this proves the on-screen path wires
@@ -446,8 +538,10 @@ Acceptance:
 - Perf: `scripts/analyze-metal-trace --record 10 --attach Laban` on a 4K-full
   of static ASCII reports the vector content pass at **≤0.3 ms p50** once
   converged (the article reports ~0.1 ms on a 9070; the gate is generous for an
-  Apple GPU first pass). Record the baseline JSON under
-  `.build/vector-glyph-trace/m3.json`.
+  Apple GPU first pass). Emit the trace JSON to a local temp path for
+  inspection (`.build/` is gitignored, so it cannot be the evidence store);
+  record the quoted p50/p95/p99 numbers in the Decision Log as the committed
+  evidence, mirroring how ADR 0017 records its M5/M6 numbers in prose.
 
 ### M4 — Subpixel anti-aliasing + layout editor
 
@@ -524,9 +618,13 @@ Acceptance (the gate — all must pass):
   M2; the headless assertion is
   `testRuntimeRenderStateReportsRendererStatus` in
   `Tests/LabanDebugTests/LabanDebugSmokeTests.swift`).
-- Release timing JSON committed under `.build/vector-glyph-trace/m5.json`; the
-  Decision Log records whether `vectorGlyph` met the ADR-0017 default-enable
-  threshold (it is expected **not** to, this plan ships it opt-in regardless).
+- Release timing: run the matrix via `scripts/analyze-metal-trace`; emit the
+  JSON locally for inspection, then record the quoted p50/p95/p99 numbers in
+  the Decision Log (and ADR 0022's Evidence section) as the committed
+  evidence — `.build/`, `.artifacts/`, and `.tmp/` are all gitignored, so a
+  committed JSON file is not an option. The Decision Log records whether
+  `vectorGlyph` met the ADR-0017 default-enable threshold (it is expected
+  **not** to, this plan ships it opt-in regardless).
 
 ## Validation and Acceptance
 
@@ -549,11 +647,18 @@ verify completion by:
 5. `scripts/analyze-metal-trace` produces the M5 timing JSON; the numbers are
    recorded in the Decision Log.
 
-If any gate fails, the renderer stays opt-in and the failure is recorded; it
-does not block shipping the opt-in mode unless the failure is a correctness
-regression in another renderer (which, by design, this plan cannot cause — it
-adds files and adds enum cases, it does not edit `MetalRenderer`'s content
-passes or the existing shaders).
+If any gate fails, the failure is recorded in the Decision Log and blocks
+completing M5. The only gates that may fail **without** blocking the opt-in
+ship are the **perf/default-enable** thresholds (the M3 ≤0.3 ms p50 trace and
+the ADR-0017 default-enable comparison): a missed perf target means the
+renderer ships opt-in at whatever quality/speed it achieved, with the numbers
+recorded. The **correctness** gates — parity (`VectorGlyphParityTests`),
+headless/screenshot E2E, session-identity live switch, the M0/M1 oracle, and
+no regression in `classic`/`gpuDriven`/software — are hard blockers; M5 is
+not done until they pass. (This plan adds files and enum cases; it does not
+edit `MetalRenderer`'s content passes or the existing shaders, so a
+correctness regression in another renderer would be a bug to fix, not an
+acceptable outcome.)
 
 ## Progress
 
@@ -694,13 +799,38 @@ A fresh review agent must confirm, against the commit SHA under review:
      `Sources/LabanRenderer/MetalRenderer.swift` and confirm no behavioral edit
      to the two existing content passes.
 - [ ] `rg "Shaders.metal" Sources/LabanRenderer/` — `Shaders.metal` is
-     untouched; the vector shaders live in a separate `VectorGlyphShaders.metal`.
+     untouched; the vector shaders live in a separate `VectorGlyphShaders.metal`,
+     and `Package.swift` has `.process("VectorGlyphShaders.metal")` in the
+     `LabanRenderer` target `resources` (without it SwiftPM will not bundle the
+     file and the renderer's loader will return nil at startup).
+- [ ] The new shader is actually bundled and loadable:
+     `LabanRendererResources.bundle?.url(forResource: "VectorGlyphShaders",
+     withExtension: "metal")` resolves inside `.build/laban/Laban.app`, and
+     `VectorGlyphRenderer` compiles a non-nil `MTLLibrary` from it.
+- [ ] **Factory/selection routing** (the "peer backend" is actually wired):
+     `RendererSelection.vectorGlyph.metalMode` is `nil` (like `.software`, so
+     it is not silently collapsed to classic by `MetalRenderer.effectiveRendererMode`);
+     `TerminalBitmapView.makeBackend` has an explicit `VectorGlyphRenderer`
+     branch **before** the metal branch; and `TerminalBitmapView.rendererMode`/
+     `rendererSelection` have a `backend as? VectorGlyphRenderer` arm returning
+     `.vectorGlyph` (otherwise the menu misreports `classic`).
+- [ ] **Headless renderer selection**: `HeadlessDebugRuntime` takes a
+     `rendererSelection` and `DebugRenderEndpoints.renderState()` reads
+     configured/effective/fallback from the live backend's `rendererStatus`
+     (no hard-coded `"software"` literal for the vector path);
+     `testRuntimeRenderStateReportsVectorGlyphRendererStatus` in
+     `Tests/LabanDebugTests/LabanDebugSmokeTests.swift` passes, and the existing
+     `testRuntimeRenderStateReportsRendererStatus` (software) still passes.
 - [ ] `swift test --filter VectorGlyphParityTests` exits 0 and leaves no
      `*.diff.png` under `.build/vector-glyph-parity/`.
 - [ ] `swift test --filter RendererModeSettingsTests` exits 0, including the
      new `testVectorGlyphSwitchPreservesActiveSessionIdentity`.
-- [ ] `./scripts/build-app` exits 0; `rg "Vector Glyph Renderer"` on the
-     installed `~/Laban.app` bundle resources finds the menu title string.
+- [ ] `./scripts/build-app` exits 0 and `rg "Vector Glyph Renderer"` on the
+     built bundle `.build/laban/Laban.app` (the `build-app` output,
+     `scripts/build-app:76`) finds the menu title string. (Do not grep
+     `~/Laban.app` — that is refreshed only by `scripts/install-app` and may be
+     stale; either check `.build/laban/Laban.app` directly or run
+     `./scripts/install-app` first.)
 - [ ] `docs/adr/0022-vector-glyph-renderer.md` exists and `docs/adr/README.md`
      contains a one-line entry for it.
 - [ ] `RendererMode.defaultMode` and `RendererMode.gpuDriven.isAvailableOnCurrentOS`
@@ -711,8 +841,10 @@ A fresh review agent must confirm, against the commit SHA under review:
      is no `RendererModeTests`).
 - [ ] `GET /debug/render` returns `configuredRenderer: "vectorGlyph"`,
      `effectiveRenderer: "vectorGlyph"` when selected (asserted headless by
-     `testRuntimeRenderStateReportsRendererStatus` in
-     `Tests/LabanDebugTests/LabanDebugSmokeTests.swift`); there is no
+     the new `testRuntimeRenderStateReportsVectorGlyphRendererStatus` in
+     `Tests/LabanDebugTests/LabanDebugSmokeTests.swift` — the existing
+     `testRuntimeRenderStateReportsRendererStatus` only covers software, since
+     `renderState()` previously hard-coded it); there is no
      `/debug/renderer-status` route — do not invent one.
 
 Review findings:
