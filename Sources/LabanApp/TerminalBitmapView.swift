@@ -22,40 +22,52 @@ struct GPUCellPayloadFailureNotificationPolicy {
 
   static let identifier = "gpu-cell-payload-failure"
   static let notificationsDisabledDefaultsKey = "LabanDisableGPUFailureNotifications"
-  static let lastNotificationDefaultsKey = "LabanGPUFailureNotificationLastPostedAt"
   static let defaultRateLimit: TimeInterval = 5 * 60
+
+  /// Monotonic "now" in nanoseconds. Wall-clock is deliberately avoided: a
+  /// backward system-clock jump (NTP/manual/DST) must never suppress a real
+  /// failure notification, so the throttle reads an uptime-based clock instead.
+  static func monotonicNowNanoseconds() -> UInt64 {
+    DispatchTime.now().uptimeNanoseconds
+  }
 
   private let defaults: UserDefaults
   private let rateLimit: TimeInterval
+  private let monotonicNow: () -> UInt64
+
+  /// Throttle anchor, in monotonic nanoseconds. In-memory and per-process: it
+  /// resets every launch, so the first failure after a relaunch is always
+  /// surfaced even if a prior session posted moments earlier.
+  private var lastNotificationUptimeNanoseconds: UInt64?
 
   init(
     defaults: UserDefaults = .standard,
-    rateLimit: TimeInterval = Self.defaultRateLimit
+    rateLimit: TimeInterval = Self.defaultRateLimit,
+    monotonicNow: @escaping () -> UInt64 = GPUCellPayloadFailureNotificationPolicy
+      .monotonicNowNanoseconds
   ) {
     self.defaults = defaults
     self.rateLimit = rateLimit
+    self.monotonicNow = monotonicNow
   }
 
   mutating func notificationRequest(
     for failure: MetalRenderer.GPUCellPayloadBuildFailure,
-    dumpPath: String?,
-    now: Date = Date()
+    dumpPath: String?
   ) -> Request? {
     guard !defaults.bool(forKey: Self.notificationsDisabledDefaultsKey) else {
       return nil
     }
-    if let lastNotificationInterval = defaults.object(
-      forKey: Self.lastNotificationDefaultsKey) as? Double,
+    let now = monotonicNow()
+    if let last = lastNotificationUptimeNanoseconds,
       rateLimit > 0,
-      now.timeIntervalSince(
-        Date(timeIntervalSinceReferenceDate: lastNotificationInterval)) < rateLimit
+      now >= last,
+      Double(now - last) / 1_000_000_000 < rateLimit
     {
       return nil
     }
 
-    defaults.set(
-      now.timeIntervalSinceReferenceDate,
-      forKey: Self.lastNotificationDefaultsKey)
+    lastNotificationUptimeNanoseconds = now
     return Request(
       identifier: Self.identifier,
       title: "Laban GPU renderer fallback",

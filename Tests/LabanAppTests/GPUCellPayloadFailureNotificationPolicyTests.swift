@@ -17,16 +17,20 @@ final class GPUCellPayloadFailureNotificationPolicyTests: XCTestCase {
 
   func testDistinctFailuresAreGloballyRateLimited() throws {
     let defaults = try makeDefaults()
-    let now = Date(timeIntervalSinceReferenceDate: 1_000)
+    // Drive the injected monotonic clock deterministically: advance it 1s
+    // between five distinct-signature failures, all within the 60s limit.
+    var uptimeNanoseconds: UInt64 = 1_000_000_000
+    var policy = GPUCellPayloadFailureNotificationPolicy(
+      defaults: defaults,
+      rateLimit: 60,
+      monotonicNow: { uptimeNanoseconds })
 
-    let requests = (0..<5).compactMap { index in
-      var policy = GPUCellPayloadFailureNotificationPolicy(
-        defaults: defaults,
-        rateLimit: 60)
-      return policy.notificationRequest(
+    let requests = (0..<5).compactMap { index -> GPUCellPayloadFailureNotificationPolicy.Request? in
+      let request = policy.notificationRequest(
         for: failure(reason: "failure-\(index)", row: index, col: index + 1),
-        dumpPath: "/tmp/dump-\(index)",
-        now: now.addingTimeInterval(Double(index)))
+        dumpPath: "/tmp/dump-\(index)")
+      uptimeNanoseconds += 1_000_000_000
+      return request
     }
 
     XCTAssertEqual(requests.count, 1)
@@ -40,14 +44,44 @@ final class GPUCellPayloadFailureNotificationPolicyTests: XCTestCase {
       forKey: GPUCellPayloadFailureNotificationPolicy.notificationsDisabledDefaultsKey)
     var policy = GPUCellPayloadFailureNotificationPolicy(
       defaults: defaults,
-      rateLimit: 60)
+      rateLimit: 60,
+      monotonicNow: { 1_000_000_000 })
 
     let request = policy.notificationRequest(
       for: failure(reason: "unsupported-scalar"),
-      dumpPath: "/tmp/dump",
-      now: Date(timeIntervalSinceReferenceDate: 1_000))
+      dumpPath: "/tmp/dump")
 
     XCTAssertNil(request)
+  }
+
+  func testRelaunchAllowsFirstFailureAfterPriorPost() throws {
+    let defaults = try makeDefaults()
+    // First "launch": post a failure, then confirm a second within the limit
+    // is throttled — the in-memory anchor is live.
+    var firstLaunch = GPUCellPayloadFailureNotificationPolicy(
+      defaults: defaults,
+      rateLimit: 60,
+      monotonicNow: { 10_000_000_000 })
+    XCTAssertNotNil(
+      firstLaunch.notificationRequest(
+        for: failure(reason: "first"),
+        dumpPath: "/tmp/dump"))
+    XCTAssertNil(
+      firstLaunch.notificationRequest(
+        for: failure(reason: "second"),
+        dumpPath: "/tmp/dump"))
+
+    // "Relaunch": a fresh policy instance starts with no in-memory anchor, so
+    // the first failure is surfaced even though a prior instance just posted
+    // (same defaults, monotonic clock barely advanced).
+    var secondLaunch = GPUCellPayloadFailureNotificationPolicy(
+      defaults: defaults,
+      rateLimit: 60,
+      monotonicNow: { 10_000_000_001 })
+    XCTAssertNotNil(
+      secondLaunch.notificationRequest(
+        for: failure(reason: "after-relaunch"),
+        dumpPath: "/tmp/dump"))
   }
 
   private func makeDefaults(
