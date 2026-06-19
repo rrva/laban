@@ -67,7 +67,8 @@ final class Mode2027ScrollbackWidthTests: XCTestCase {
 
   private func containsSubsequence(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
     guard !needle.isEmpty, haystack.count >= needle.count else { return false }
-    for i in 0...(haystack.count - needle.count) where Array(haystack[i..<i + needle.count]) == needle {
+    for i in 0...(haystack.count - needle.count)
+    where Array(haystack[i..<i + needle.count]) == needle {
       return true
     }
     return false
@@ -88,7 +89,8 @@ final class Mode2027ScrollbackWidthTests: XCTestCase {
       return
     }
     let clusters = block.graphemeWidths?[row] ?? []
-    let leading = clusters.prefix(3).map { "(\($0.byteLength)b,\($0.columns)c)" }.joined(separator: " ")
+    let leading = clusters.prefix(3).map { "(\($0.byteLength)b,\($0.columns)c)" }.joined(
+      separator: " ")
     print("M3 diag ON: row=\(row) firstClusters=\(leading) totalClusters=\(clusters.count)")
   }
 
@@ -272,7 +274,8 @@ final class Mode2027ScrollbackWidthTests: XCTestCase {
       let slice = Array(textBytes[start..<end])
       guard containsSubsequence(slice, cjkBytes) else { continue }
       cjkRowCount += 1
-      cjkClusters.append(contentsOf: (block.graphemeWidths?[row] ?? []).filter { $0.byteLength == 3 })
+      cjkClusters.append(
+        contentsOf: (block.graphemeWidths?[row] ?? []).filter { $0.byteLength == 3 })
     }
 
     XCTAssertGreaterThanOrEqual(

@@ -123,7 +123,8 @@ public final class DebugHTTPServer {
       method: "GET",
       path: "/debug/terminal-modes",
       category: "state",
-      summary: "Return active-session DEC private mode state (grapheme cluster 2027, sync output, focus, mouse)."
+      summary:
+        "Return active-session DEC private mode state (grapheme cluster 2027, sync output, focus, mouse)."
     ) { runtime, _, _ in
       json(runtime.terminalModes())
     },

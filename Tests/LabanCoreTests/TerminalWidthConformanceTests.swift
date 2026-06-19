@@ -168,7 +168,9 @@ final class TerminalWidthConformanceTests: XCTestCase {
   }
 
   /// Occupied cells of row 0 (text-carrying or spacer), plus cursor column.
-  private func occupiedRow0(_ session: Session) -> (cursorCol: Int, cells: [(wide: UInt8, utf8: [UInt8])])? {
+  private func occupiedRow0(_ session: Session) -> (
+    cursorCol: Int, cells: [(wide: UInt8, utf8: [UInt8])]
+  )? {
     guard let snapPtr = session.snapshot() else { return nil }
     defer { laban_snapshot_destroy(snapPtr) }
     let snap = snapPtr.pointee
@@ -293,8 +295,12 @@ final class TerminalWidthConformanceTests: XCTestCase {
       let onRow = occupiedRow0(on)
       on.close()
 
-      let offLayout = (offRow?.cells ?? []).map { Wide(rawValue: $0.wide)?.description ?? "?(\($0.wide))" }
-      let onLayout = (onRow?.cells ?? []).map { Wide(rawValue: $0.wide)?.description ?? "?(\($0.wide))" }
+      let offLayout = (offRow?.cells ?? []).map {
+        Wide(rawValue: $0.wide)?.description ?? "?(\($0.wide))"
+      }
+      let onLayout = (onRow?.cells ?? []).map {
+        Wide(rawValue: $0.wide)?.description ?? "?(\($0.wide))"
+      }
       let offCpr = try cprColumnAfter(c.bytes, modeOn: false)
       let onCpr = try cprColumnAfter(c.bytes, modeOn: true)
 
@@ -309,7 +315,8 @@ final class TerminalWidthConformanceTests: XCTestCase {
       print("M4 [\(c.name)] bytes=\(hex(c.bytes))")
       print(
         "M4   OFF grid=\(offLayout.joined()) adv=\(offRow?.cursorCol ?? -1) cpr=\(offCpr ?? -1) "
-          + "findEnd=\(offFind.map(String.init) ?? "nil") copyHex=\(offCopy.map { hex(Array($0.utf8)) } ?? "nil")")
+          + "findEnd=\(offFind.map(String.init) ?? "nil") copyHex=\(offCopy.map { hex(Array($0.utf8)) } ?? "nil")"
+      )
       print(
         "M4   ON  grid=\(onLayout.joined()) adv=\(onRow?.cursorCol ?? -1) cpr=\(onCpr ?? -1) "
           + "findEnd=\(onFind.map(String.init) ?? "nil") copyHex=\(onCopy.map { hex(Array($0.utf8)) } ?? "nil") "
@@ -340,7 +347,9 @@ final class TerminalWidthConformanceTests: XCTestCase {
       let off = try makeSession()
       _ = off.write(c.bytes)
       guard let offRow = occupiedRow0(off) else {
-        XCTFail("OFF snapshot \(c.name)"); off.close(); continue
+        XCTFail("OFF snapshot \(c.name)")
+        off.close()
+        continue
       }
       off.close()
       XCTAssertEqual(
@@ -353,7 +362,9 @@ final class TerminalWidthConformanceTests: XCTestCase {
       _ = on.write(Array("\u{1b}[?2027h".utf8))
       _ = on.write(c.bytes)
       guard let onRow = occupiedRow0(on) else {
-        XCTFail("ON snapshot \(c.name)"); on.close(); continue
+        XCTFail("ON snapshot \(c.name)")
+        on.close()
+        continue
       }
       on.close()
       XCTAssertEqual(
@@ -380,20 +391,24 @@ final class TerminalWidthConformanceTests: XCTestCase {
   func testScrollbackFindColumns() throws {
     for c in cases {
       guard let offBlock = try scrollbackFor(c.bytes, modeOn: false) else {
-        XCTFail("OFF scrollback \(c.name)"); continue
+        XCTFail("OFF scrollback \(c.name)")
+        continue
       }
       guard let offMatch = firstMatch(c.string, in: offBlock) else {
-        XCTFail("OFF find \(c.name) not found"); continue
+        XCTFail("OFF find \(c.name) not found")
+        continue
       }
       XCTAssertEqual(offMatch.startColumn, 0, "OFF \(c.name): find start col")
       XCTAssertEqual(offMatch.endColumn, c.offFindEndColumn, "OFF \(c.name): find end col")
 
       guard let onBlock = try scrollbackFor(c.bytes, modeOn: true) else {
-        XCTFail("ON scrollback \(c.name)"); continue
+        XCTFail("ON scrollback \(c.name)")
+        continue
       }
       XCTAssertNotNil(onBlock.graphemeWidths, "ON \(c.name): engine width metadata carried")
       guard let onMatch = firstMatch(c.string, in: onBlock) else {
-        XCTFail("ON find \(c.name) not found"); continue
+        XCTFail("ON find \(c.name) not found")
+        continue
       }
       XCTAssertEqual(onMatch.startColumn, 0, "ON \(c.name): find start col")
       XCTAssertEqual(onMatch.endColumn, c.onFindEndColumn, "ON \(c.name): find end col")
@@ -407,11 +422,13 @@ final class TerminalWidthConformanceTests: XCTestCase {
   func testScrollbackCopyBytes() throws {
     for c in cases {
       guard let offCopy = try copyScrolledOffRow(c.bytes, modeOn: false) else {
-        XCTFail("OFF copy \(c.name)"); continue
+        XCTFail("OFF copy \(c.name)")
+        continue
       }
       XCTAssertEqual(Array(offCopy.utf8), c.bytes, "OFF \(c.name): copy bytes")
       guard let onCopy = try copyScrolledOffRow(c.bytes, modeOn: true) else {
-        XCTFail("ON copy \(c.name)"); continue
+        XCTFail("ON copy \(c.name)")
+        continue
       }
       XCTAssertEqual(Array(onCopy.utf8), c.bytes, "ON \(c.name): copy bytes")
     }
@@ -485,7 +502,8 @@ final class TerminalWidthConformanceTests: XCTestCase {
       guard let onBlock = try scrollbackFor(c.bytes, modeOn: true),
         let onMatch = firstMatch(c.string, in: onBlock)
       else {
-        XCTFail("ON scrollback/find \(c.name)"); continue
+        XCTFail("ON scrollback/find \(c.name)")
+        continue
       }
       XCTAssertEqual(onMatch.endColumn, c.onFindEndColumn, "ON \(c.name): pinned ON width")
       XCTAssertNotEqual(

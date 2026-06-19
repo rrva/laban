@@ -120,8 +120,12 @@ final class Mode2027CharacterizationTests: XCTestCase {
     return (cursorCol, cursorRow, cols, out)
   }
 
-  private func logCells(_ label: String, _ result: (cursorCol: Int, cursorRow: Int, cols: Int, cells: [CellInfo])) {
-    print("M0 \(label): cursor_col=\(result.cursorCol) cursor_row=\(result.cursorRow) cols=\(result.cols)")
+  private func logCells(
+    _ label: String, _ result: (cursorCol: Int, cursorRow: Int, cols: Int, cells: [CellInfo])
+  ) {
+    print(
+      "M0 \(label): cursor_col=\(result.cursorCol) cursor_row=\(result.cursorRow) cols=\(result.cols)"
+    )
     if result.cells.isEmpty {
       print("M0 \(label):   (no printed/spacer cells in row 0)")
     }
