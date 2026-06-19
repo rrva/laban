@@ -105,7 +105,14 @@ autonomous-verifiability rule.
       was added to M2; the "genuine gap" consumer list was split into true
       scrollback bugs vs. legitimate fallbacks; and M0/M1 now cite the existing
       `testDECRQMModeQueryUsesTerminalState` proof as a template.
-- [ ] M0 — Characterization harness (discover exactly what already works).
+- [x] (2026-06-19) M0 — Characterization harness. Result: **every assumption
+      confirmed, no gaps.** Mode toggles via passthrough; DECRQM answers
+      `?2027;1$y`(ON)/`?2027;2$y`(OFF); snapshot carries the full cluster; ON lays
+      one WIDE+spacer (cursor +2), OFF lays two WIDE+spacer clusters (cursor +4).
+      Probe E: scrollback extraction is String-only and carries **no** width
+      (not re-derived) — so M3 adds width at extraction time; no scroll-off
+      snapshot needed. Test `Tests/LabanTerminalCoreTests/Mode2027CharacterizationTests.swift`
+      (5 tests). nm confirms grapheme tables compiled into the vendored `.a`.
 - [ ] M1 — Lock the engine handshake (DECSET/DECRST/DECRQM 2027) + debug
       observability.
 - [ ] M2 — Grid & cursor-advance conformance under both modes.
@@ -757,7 +764,18 @@ provenance only — the plan is self-contained without them):
   `Sources/LabanTerminalCore/snapshot.c:325-407`;
   `Sources/LabanTerminalCore/terminal_effects.c` (mode get/set + response drain);
   `.external/libghostty-vt/include/ghostty/vt/terminal.h:~409` (WRITE_PTY callback).
-  (M0 will confirm the exact current cursor/handshake numbers.)
+- Observation (M0 measured, 2026-06-19 — every assumption CONFIRMED, no gaps).
+  Farmer emoji `👩‍🌾` (`F0 9F A7 91 E2 80 8D F0 9F 8C BE`) through the real bridge:
+  | Measure | Mode OFF (default) | Mode ON (`\e[?2027h`) |
+  |---|---|---|
+  | cursor advance | 4 cols (two WIDE+spacer clusters: `[👩‍ZWJ]`, `[🌾]`) | 2 cols (one WIDE+spacer, full 11 bytes in head cell) |
+  | DECRQM `\e[?2027$p` reply | `\e[?2027;2$y` (RESET=2) | `\e[?2027;1$y` (SET=1) |
+  | `\e[6n` cursor report | `\e[1;5R` (col 5) | `\e[1;3R` (col 3) |
+  Evidence: `Tests/LabanTerminalCoreTests/Mode2027CharacterizationTests.swift`.
+  Sharpening for M2: OFF is **not** strictly per-codepoint — the engine forms two
+  grapheme clusters (`[👩‍ZWJ]` and `[🌾]`), each one WIDE cell + spacer tail; the
+  ZWJ rides with the head cluster rather than becoming its own zero-width cell.
+  M2's OFF-mode assertions must expect this layout, not four singleton cells.
 - Observation: The DECRQM drain is already proven for another mode. The test
   `Tests/LabanTerminalCoreTests/LabanSessionTests.swift:~2659`
   (`testDECRQMModeQueryUsesTerminalState`) writes `\e[?7$p` and asserts the engine
@@ -765,9 +783,10 @@ provenance only — the plan is self-contained without them):
   verified end-to-end; only 2027-specific support is unmeasured. This is the
   copy-paste template for M0/M1.
   Evidence: independent review of this plan, 2026-06-19.
-- Open question (resolve in M0 Probe E): when mode 2027 is toggled mid-session, do
-  already-scrolled-off rows retain the width the engine laid them down with, or does
-  the scrollback extraction re-derive width under the now-current mode? If the
-  latter, M3 must snapshot per-row width at the moment a row scrolls off, not at
-  extraction time. This is the single place the "engine is the single source of
-  truth" claim could silently fail.
+- Resolved (M0 Probe E, 2026-06-19): the scrollback extraction
+  (`laban_session_scrollback_extract`) is **String-only — it carries no width at
+  all**, and crucially it does **not** re-derive width under the current mode (it
+  simply has none). So M3 can capture the engine's width at extraction time and
+  thread it through; it does **not** need to snapshot per-row width at the moment a
+  row scrolls off. This is the cleaner of the two possible outcomes and removes the
+  one place the "single source of truth" claim could have silently failed.
