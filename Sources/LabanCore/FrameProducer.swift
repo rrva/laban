@@ -574,10 +574,7 @@ public struct FrameProducer {
     let ch = CGFloat(cellHeight)
     let cx = originX + CGFloat(col) * cw
     let cy = originY + CGFloat(rows - 1 - row) * ch + contentYOffset
-    // One cell advance per grapheme cluster, matching how the renderers lay out
-    // a glyph run; the mask covers that span so underlying cells don't bleed
-    // through the composition.
-    let runWidth = CGFloat(text.count) * cw
+    let runWidth = CGFloat(TerminalDisplayWidth.cells(of: text)) * cw
     cmds.append(
       .rect(
         CGRect(x: cx, y: cy, width: runWidth, height: ch),

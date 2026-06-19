@@ -134,42 +134,82 @@ enum TerminalSelectionInput {
       let storage = snapshot.utf8_storage
     else { return (col, col) }
 
-    var startCol = col
-    var endCol = col
-    while startCol > 0,
-      isWord(cellScalar(at: startCol - 1, row: row, cols: cols, cells: cells, storage: storage))
-    {
-      startCol -= 1
+    guard
+      let current = cellWordUnit(at: col, row: row, cols: cols, cells: cells, storage: storage),
+      isWord(current.text)
+    else { return (col, col) }
+
+    var startCol = current.startCol
+    var endCol = current.endCol
+    while startCol > 0 {
+      guard
+        let unit = cellWordUnit(
+          at: startCol - 1, row: row, cols: cols, cells: cells, storage: storage),
+        isWord(unit.text)
+      else { break }
+      startCol = unit.startCol
     }
-    while endCol < cols - 1,
-      isWord(cellScalar(at: endCol + 1, row: row, cols: cols, cells: cells, storage: storage))
-    {
-      endCol += 1
+    while endCol < cols - 1 {
+      guard
+        let unit = cellWordUnit(
+          at: endCol + 1, row: row, cols: cols, cells: cells, storage: storage),
+        isWord(unit.text)
+      else { break }
+      endCol = unit.endCol
     }
     return (startCol, endCol)
   }
 
-  private static func cellScalar(
+  private struct CellWordUnit {
+    var startCol: Int
+    var endCol: Int
+    var text: String
+  }
+
+  private static func cellWordUnit(
     at col: Int,
     row: Int,
     cols: Int,
     cells: UnsafePointer<LabanCell>,
     storage: UnsafePointer<CChar>
-  ) -> Unicode.Scalar? {
+  ) -> CellWordUnit? {
+    var headCol = col
     let cell = cells[row * cols + col]
-    guard cell.utf8_length > 0 else { return nil }
+    if cell.wide == UInt8(LABAN_CELL_WIDE_SPACER_TAIL) {
+      guard col > 0 else { return nil }
+      let previous = cells[row * cols + col - 1]
+      guard previous.wide == UInt8(LABAN_CELL_WIDE_WIDE) else { return nil }
+      headCol = col - 1
+    }
+
+    let headCell = cells[row * cols + headCol]
+    guard headCell.utf8_length > 0 else { return nil }
     let buffer = UnsafeBufferPointer<UInt8>(
       start: UnsafeRawPointer(storage)
-        .advanced(by: Int(cell.utf8_offset))
+        .advanced(by: Int(headCell.utf8_offset))
         .assumingMemoryBound(to: UInt8.self),
-      count: Int(cell.utf8_length))
-    let text = String(bytes: buffer, encoding: .utf8) ?? ""
-    return text.unicodeScalars.first
+      count: Int(headCell.utf8_length))
+    guard let text = String(bytes: buffer, encoding: .utf8), !text.isEmpty else {
+      return nil
+    }
+    let endCol =
+      headCell.wide == UInt8(LABAN_CELL_WIDE_WIDE)
+      ? min(cols - 1, headCol + 1)
+      : headCol
+    return CellWordUnit(startCol: headCol, endCol: endCol, text: text)
   }
 
-  private static func isWord(_ scalar: Unicode.Scalar?) -> Bool {
-    guard let scalar else { return false }
-    if CharacterSet.alphanumerics.contains(scalar) { return true }
-    return "-_./:~@".unicodeScalars.contains(scalar)
+  private static func isWord(_ text: String) -> Bool {
+    var hasWordScalar = false
+    for scalar in text.unicodeScalars {
+      if CharacterSet.whitespacesAndNewlines.contains(scalar) { return false }
+      if CharacterSet.alphanumerics.contains(scalar)
+        || "-_./:~@".unicodeScalars.contains(scalar)
+        || TerminalDisplayWidth.isWide(scalar)
+      {
+        hasWordScalar = true
+      }
+    }
+    return hasWordScalar
   }
 }

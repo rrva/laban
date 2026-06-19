@@ -116,6 +116,37 @@ final class TerminalSelectionInputTests: XCTestCase {
     XCTAssertEqual(bounds.end, 14)
   }
 
+  func testWordBoundsIncludesCJKEmojiAndWideSpacerTail() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 40
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("go 中👩\u{200D}💻dev now\r\n".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let headBounds = TerminalSelectionInput.wordBounds(row: 0, col: 3, in: snap.pointee)
+    XCTAssertEqual(headBounds.start, 3)
+    XCTAssertEqual(headBounds.end, 11)
+    let tailBounds = TerminalSelectionInput.wordBounds(row: 0, col: 4, in: snap.pointee)
+    XCTAssertEqual(
+      [tailBounds.start, tailBounds.end],
+      [headBounds.start, headBounds.end],
+      "clicking a wide glyph spacer tail must select the same word as its head cell")
+    let emojiBounds = TerminalSelectionInput.wordBounds(row: 0, col: 5, in: snap.pointee)
+    XCTAssertEqual(
+      [emojiBounds.start, emojiBounds.end],
+      [headBounds.start, headBounds.end],
+      "clicking an emoji head cell must keep the CJK/emoji word together")
+  }
+
   private func geometry() -> TerminalSelectionInput.GridGeometry {
     TerminalSelectionInput.GridGeometry(
       boundsWidth: 500,

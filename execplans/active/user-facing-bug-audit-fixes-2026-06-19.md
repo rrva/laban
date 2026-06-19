@@ -88,8 +88,11 @@ crash in normal use; they are bundled into M3 as a single low-risk
       wheel, alt-scroll, row-only resize, and row-count-changing font zoom;
       implemented row-aware selection invalidation and forwarded-wheel
       dismissal.
-- [ ] M2 — Wide-character / emoji fidelity in find, copy, word-select, IME
-      (BUG-12, 13, 24, 25).
+- [x] (2026-06-19) M2 — Wide-character / emoji fidelity in find, copy,
+      word-select, IME (BUG-12, 13, 24, 25). Added a shared pinned
+      display-cell helper and wired it into scrollback find/copy, word bounds,
+      and preedit caret/mask sizing. Focused tests:
+      `swift test --filter 'TerminalFindTests/testScrollbackUnicodeFallbackUsesDisplayColumnsAfterWidePrefix|TerminalSelectionTests/testScrollbackSelectionUsesDisplayColumnsAfterWidePrefix|TerminalSelectionTests/testScrollbackSelectionUsesDisplayColumnsAfterEmojiPrefix|FrameProducerPreeditTests/testPreeditMaskUsesDisplayCellWidthForWideText|TerminalSelectionInputTests/testWordBoundsIncludesCJKEmojiAndWideSpacerTail|TerminalBitmapViewSelectionTests/testMarkedTextCaretCellsUseDisplayWidth'`.
 - [x] (2026-06-19) M3 — Crash & robustness hardening (BUG-03, 19, 20)
       + defensive-clarity sweep (BUG-17, 18, 26, 28). Added bitmap invalid-
       dimension and selection zero-cell regression coverage; hardened cast/
@@ -492,6 +495,15 @@ preference toggle suppresses them entirely.
   workspace restore/persistence code, so it closes the BUG-04 window even though
   ordinary Finder/dock launches already tend to activate the running instance.
   Date/Author: 2026-06-19, M5 executor.
+- Decision: Use a pinned Swift display-cell width helper for M2 fallback text
+  paths.
+  Rationale: scrollback blocks expose only `String` plus row offsets, not the
+  live snapshot's per-cell width flags, so exact cell metadata cannot be
+  threaded through M2 without changing the scrollback extraction contract. The
+  helper sums non-zero-width Unicode scalars into terminal grid cells, preserving
+  CJK width, emoji/ZWJ grid spans, and combining-mark zero width for find/copy
+  fallback, word selection, and IME preedit sizing.
+  Date/Author: 2026-06-19, M2 executor.
 
 ## Review Gate
 

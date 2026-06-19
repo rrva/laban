@@ -281,8 +281,8 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
     var col = 0
     var line = ""
     for character in row {
-      let nextCol = col + 1
-      if nextCol > startCol && col < endCol {
+      let nextCol = col + TerminalDisplayWidth.cells(of: character)
+      if col >= startCol && col < endCol {
         line.append(character)
       }
       col = nextCol

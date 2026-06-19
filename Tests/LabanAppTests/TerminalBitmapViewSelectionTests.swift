@@ -118,6 +118,22 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "caret must sit within the marked composition range")
   }
 
+  func testMarkedTextCaretCellsUseDisplayWidth() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let prefix = "中👩\u{200D}💻"
+    harness.view.setMarkedText(
+      prefix + "a",
+      selectedRange: NSRange(location: (prefix as NSString).length, length: 0),
+      replacementRange: NSRange(location: NSNotFound, length: 0))
+
+    XCTAssertEqual(
+      harness.view.markedTextCaretCellsForTesting,
+      6,
+      "IME caret cells must follow the terminal grid width of wide text")
+  }
+
   func testColumnChangingResizeClearsCachedInactiveSelections() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }

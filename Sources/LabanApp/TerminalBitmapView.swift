@@ -373,6 +373,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   // start), derived from the IME's selectedRange so the on-screen caret sits at
   // the composition's insertion point rather than always at its end.
   private var markedTextCaretCells: Int = 0
+  var markedTextCaretCellsForTesting: Int { markedTextCaretCells }
 
   // Active key descriptor during interpretKeyEvents dispatch
   private var currentKeyDescriptor: TerminalKeyDescriptor?
@@ -3680,14 +3681,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // selectedRange is the actively-edited segment in UTF-16 units relative to
     // the marked text; its end (NSMaxRange) is the caret for both a zero-length
     // insertion point and an active selection, and is also where macOS
-    // dictation parks the caret (end of the transcript). Convert that UTF-16
-    // offset to a cell count (grapheme clusters), since the terminal grid and
-    // FrameProducer advance one cell per cluster.
+    // dictation parks the caret (end of the transcript).
     let ns = markedText.string as NSString
     let caretUTF16 =
       selectedRange.location == NSNotFound
       ? ns.length : min(max(NSMaxRange(selectedRange), 0), ns.length)
-    markedTextCaretCells = ns.substring(to: caretUTF16).count
+    markedTextCaretCells = TerminalDisplayWidth.cells(of: ns.substring(to: caretUTF16))
     // The live composition (dictation transcript / IME preedit) is drawn inline
     // at the cursor by FrameProducer; force a fresh full-damage frame so the
     // updated marked text repaints the cursor row immediately as the user

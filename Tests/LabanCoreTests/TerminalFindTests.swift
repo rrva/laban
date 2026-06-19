@@ -99,6 +99,26 @@ final class TerminalFindTests: XCTestCase {
     )
   }
 
+  func testScrollbackUnicodeFallbackUsesDisplayColumnsAfterWidePrefix() {
+    let cjk = ScrollbackBlock(
+      text: "中apple",
+      rowOffsets: [0]
+    )
+    XCTAssertEqual(
+      TerminalFind.search(needle: "apple", in: cjk),
+      [TerminalFindMatch(row: 0, startColumn: 2, endColumn: 7)]
+    )
+
+    let emoji = ScrollbackBlock(
+      text: "👩\u{200D}💻apple",
+      rowOffsets: [0]
+    )
+    XCTAssertEqual(
+      TerminalFind.search(needle: "apple", in: emoji),
+      [TerminalFindMatch(row: 0, startColumn: 4, endColumn: 9)]
+    )
+  }
+
   func testSessionFastScrollbackFindMatchesExtractedScrollback() throws {
     var size = LabanTerminalSize()
     size.rows = 4

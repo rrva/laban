@@ -366,6 +366,80 @@ final class TerminalSelectionTests: XCTestCase {
     )
   }
 
+  func testScrollbackSelectionUsesDisplayColumnsAfterWidePrefix() throws {
+    var size = LabanTerminalSize()
+    size.rows = 3
+    size.cols = 16
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("中Alpha\r\nplain-1\r\nplain-2\r\nplain-3\r\n".utf8))
+    session.poll()
+
+    let viewport = try XCTUnwrap(session.viewportState())
+    XCTAssertGreaterThan(viewport.viewportOffset, 0)
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(
+        row: -viewport.viewportOffset,
+        col: 2
+      ),
+      focus: TerminalCellCoordinate(
+        row: -viewport.viewportOffset,
+        col: 6
+      )
+    )
+
+    XCTAssertEqual(
+      sel.selectedText(from: session, viewportSnapshot: snap.pointee, viewportState: viewport),
+      "Alpha"
+    )
+  }
+
+  func testScrollbackSelectionUsesDisplayColumnsAfterEmojiPrefix() throws {
+    var size = LabanTerminalSize()
+    size.rows = 3
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("👩\u{200D}💻Alpha\r\nplain-1\r\nplain-2\r\nplain-3\r\n".utf8))
+    session.poll()
+
+    let viewport = try XCTUnwrap(session.viewportState())
+    XCTAssertGreaterThan(viewport.viewportOffset, 0)
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(
+        row: -viewport.viewportOffset,
+        col: 4
+      ),
+      focus: TerminalCellCoordinate(
+        row: -viewport.viewportOffset,
+        col: 8
+      )
+    )
+
+    XCTAssertEqual(
+      sel.selectedText(from: session, viewportSnapshot: snap.pointee, viewportState: viewport),
+      "Alpha"
+    )
+  }
+
   func testSelectionFrameCommandsAppearsInProducerOutput() throws {
     var size = LabanTerminalSize()
     size.rows = 24

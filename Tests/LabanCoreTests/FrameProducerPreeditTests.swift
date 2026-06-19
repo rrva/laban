@@ -162,6 +162,31 @@ final class FrameProducerPreeditTests: XCTestCase {
       "the caret stays on the cursor row while composing")
   }
 
+  func testPreeditMaskUsesDisplayCellWidthForWideText() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+    let cw = 8
+    let ch = 16
+    let composition = "中👩\u{200D}💻a"
+
+    let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
+      .commands(from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
+
+    let mask = try XCTUnwrap(cmds.compactMap { command -> CGRect? in
+      if case .rect(let rect, _, .preedit) = command { return rect }
+      return nil
+    }.first)
+
+    XCTAssertEqual(
+      mask.width,
+      CGFloat(7 * cw),
+      accuracy: 0.5,
+      "preedit mask width must follow the terminal grid width of wide text")
+  }
+
   func testCaretHonorsImeInsertionPointWithinComposition() throws {
     let (session, snap) = try snapshotAfterWriting("echo ")
     defer {
