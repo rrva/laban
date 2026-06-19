@@ -121,7 +121,16 @@ autonomous-verifiability rule.
       DECRST→`?2027;2$y`+field false) and
       `testDebugHTTPServerTerminalModesReflectsMode2027Handshake`. `swift build` +
       `swift test --filter Mode2027`/debug-smoke green.
-- [ ] M2 — Grid & cursor-advance conformance under both modes.
+- [x] (2026-06-19) M2 — Grid & cursor-advance conformance. Test-only (no source
+      change — re-confirms the engine). `Mode2027GridConformanceTests` pins
+      `(wide layout, cursor advance, CSI 6n col)` for `a`, `中`, farmer, VS16/VS15,
+      regional pair, ZWJ family under both modes; `FrameProducerGraphemeClusterTests`
+      proves a wide cluster renders as ONE glyph run. Mutation check verified
+      (farmer ON→OFF expectation makes exactly that row fail). Two measured nuances:
+      (a) VS16 is NARROW in mode-OFF — it only widens to 2 cells under clustering
+      (the glossary's "VS16 forces width 2" is the mode-ON behavior); (b) the
+      canonical farmer bytes `F0 9F A7 91…` decode to U+1F9D1 🧑 (person), not 👩
+      (woman) — prose elsewhere writes 👩‍🌾 but the bytes/tests are authoritative.
 - [ ] M3 — Swift width-consumer coherence (scrollback find/copy, word select, IME)
       under both modes.
 - [ ] M4 — Conformance fixture + end-to-end handshake demo.
