@@ -698,6 +698,7 @@ public final class MetalRenderer: RendererBackend {
     solidDesc.label = "laban.solid-quad"
     solidDesc.vertexFunction = solidVS
     solidDesc.fragmentFunction = solidFS
+    // Metal render pipeline descriptors always provide color attachment slot 0.
     let solidAttachment = solidDesc.colorAttachments[0]!
     solidAttachment.pixelFormat = layer.pixelFormat
     solidAttachment.isBlendingEnabled = true
@@ -712,6 +713,7 @@ public final class MetalRenderer: RendererBackend {
     glyphDesc.label = "laban.glyph-quad"
     glyphDesc.vertexFunction = glyphVS
     glyphDesc.fragmentFunction = glyphFS
+    // Metal render pipeline descriptors always provide color attachment slot 0.
     let glyphAttachment = glyphDesc.colorAttachments[0]!
     glyphAttachment.pixelFormat = layer.pixelFormat
     glyphAttachment.isBlendingEnabled = true
@@ -726,6 +728,7 @@ public final class MetalRenderer: RendererBackend {
     cellGlyphDesc.label = "laban.cell-glyph-quad"
     cellGlyphDesc.vertexFunction = cellGlyphVS
     cellGlyphDesc.fragmentFunction = glyphFS
+    // Metal render pipeline descriptors always provide color attachment slot 0.
     let cellGlyphAttachment = cellGlyphDesc.colorAttachments[0]!
     cellGlyphAttachment.pixelFormat = layer.pixelFormat
     cellGlyphAttachment.isBlendingEnabled = true
@@ -1163,6 +1166,7 @@ public final class MetalRenderer: RendererBackend {
       let buf = prepareInstanceBuffer(&cursorBuffer, for: cursorInstances)
     {
       let cursorPass = MTLRenderPassDescriptor()
+      // Metal render pass descriptors always provide color attachment slot 0.
       let attach = cursorPass.colorAttachments[0]!
       attach.texture = drawableTex
       attach.loadAction = .load
@@ -1431,6 +1435,7 @@ public final class MetalRenderer: RendererBackend {
     }
 
     let pass = MTLRenderPassDescriptor()
+    // Metal render pass descriptors always provide color attachment slot 0.
     let attach = pass.colorAttachments[0]!
     attach.texture = target
     attach.storeAction = .store
@@ -1583,6 +1588,7 @@ public final class MetalRenderer: RendererBackend {
     }
 
     let pass = MTLRenderPassDescriptor()
+    // Metal render pass descriptors always provide color attachment slot 0.
     let attach = pass.colorAttachments[0]!
     attach.texture = target
     attach.storeAction = .store
@@ -1778,6 +1784,7 @@ public final class MetalRenderer: RendererBackend {
     }
 
     let pass = MTLRenderPassDescriptor()
+    // Metal render pass descriptors always provide color attachment slot 0.
     let attach = pass.colorAttachments[0]!
     attach.texture = target
     attach.loadAction = .load  // terminal pixels right of the scissor survive

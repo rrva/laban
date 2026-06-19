@@ -1,5 +1,6 @@
 #include "labpty_registry.h"
 
+#include <assert.h>
 #include <poll.h>
 
 #define LABPTY_MAX_POLL_WATCHES (1 + LABPTY_MAX_CLIENTS + LABPTY_MAX_SESSIONS)
@@ -817,6 +818,7 @@ static labpty_status_t handle_write(labpty_daemon_t *daemon, const uint8_t *payl
     }
     if (sent < request.len) {
         size_t tail = request.len - sent;
+        assert(tail <= LABPTY_WRITE_INPUT_MAX);
         memcpy(session->pending_input, request.bytes + sent, tail);
         session->pending_input_total = tail;
         session->pending_input_sent = 0;

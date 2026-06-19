@@ -7,6 +7,13 @@ import Foundation
 // Coordinate system: standard CoreGraphics — (0,0) at bottom-left.
 // Producers must convert row→y accordingly.
 public final class BitmapSurface {
+  private struct Layout {
+    var width: Int
+    var height: Int
+    var bytesPerRow: Int
+    var byteCount: Int
+  }
+
   public let width: Int
   public let height: Int
   public let scale: CGFloat
@@ -19,27 +26,69 @@ public final class BitmapSurface {
   public var logicalSize: CGSize { CGSize(width: logicalWidth, height: logicalHeight) }
 
   public init(width: Int, height: Int, scale: CGFloat = 1) {
-    precondition(width > 0 && height > 0)
     precondition(scale.isFinite && scale > 0)
-    self.width = width
-    self.height = height
-    self.scale = scale
-    self.bytesPerRow = width * 4
-    let byteCount = height * width * 4
-    pixelData = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 64)
-    pixelData.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+    let layout = Self.validLayout(width: width, height: height) ?? Self.fallbackLayout
+    let storage = Self.makeStorage(layout: layout) ?? Self.makeFallbackStorage()
 
-    let bitmapInfo =
-      CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-    context = CGContext(
-      data: pixelData,
+    self.width = storage.layout.width
+    self.height = storage.layout.height
+    self.scale = scale
+    self.bytesPerRow = storage.layout.bytesPerRow
+    pixelData = storage.pixelData
+    context = storage.context
+  }
+
+  private static var fallbackLayout: Layout {
+    Layout(width: 1, height: 1, bytesPerRow: 4, byteCount: 4)
+  }
+
+  private static func validLayout(width: Int, height: Int) -> Layout? {
+    guard width > 0, height > 0 else { return nil }
+    let row = width.multipliedReportingOverflow(by: 4)
+    guard !row.overflow else { return nil }
+    let bytes = row.partialValue.multipliedReportingOverflow(by: height)
+    guard !bytes.overflow else { return nil }
+    return Layout(
       width: width,
       height: height,
+      bytesPerRow: row.partialValue,
+      byteCount: bytes.partialValue)
+  }
+
+  private static func makeStorage(layout: Layout) -> (
+    layout: Layout,
+    pixelData: UnsafeMutableRawPointer,
+    context: CGContext
+  )? {
+    let pixelData = UnsafeMutableRawPointer.allocate(byteCount: layout.byteCount, alignment: 64)
+    pixelData.initializeMemory(as: UInt8.self, repeating: 0, count: layout.byteCount)
+    let bitmapInfo =
+      CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    guard let context = CGContext(
+      data: pixelData,
+      width: layout.width,
+      height: layout.height,
       bitsPerComponent: 8,
-      bytesPerRow: width * 4,
+      bytesPerRow: layout.bytesPerRow,
       space: CGColorSpaceCreateDeviceRGB(),
       bitmapInfo: bitmapInfo
-    )!
+    ) else {
+      pixelData.deallocate()
+      return nil
+    }
+    return (layout, pixelData, context)
+  }
+
+  private static func makeFallbackStorage() -> (
+    layout: Layout,
+    pixelData: UnsafeMutableRawPointer,
+    context: CGContext
+  ) {
+    let layout = fallbackLayout
+    guard let storage = makeStorage(layout: layout) else {
+      fatalError("BitmapSurface could not create fallback 1x1 CGContext")
+    }
+    return storage
   }
 
   deinit {
@@ -75,5 +124,9 @@ public func cgColorFrom(_ rgba: UInt32) -> CGColor {
     CGFloat((rgba >> 8) & 0xFF) / 255.0,
     CGFloat(rgba & 0xFF) / 255.0,
   ]
-  return CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: components)!
+  guard let color = CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: components) else {
+    assertionFailure("BitmapSurface could not create device RGB color")
+    return CGColor(gray: 0, alpha: components[3])
+  }
+  return color
 }

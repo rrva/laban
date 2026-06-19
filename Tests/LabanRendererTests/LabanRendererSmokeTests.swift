@@ -55,6 +55,24 @@ final class LabanRendererSmokeTests: XCTestCase {
 
   // MARK: - BitmapSurface
 
+  func testBitmapSurfaceInvalidDimensionsFallBackToOnePixel() {
+    let zeroWidth = BitmapSurface(width: 0, height: 8)
+    XCTAssertEqual(zeroWidth.width, 1)
+    XCTAssertEqual(zeroWidth.height, 1)
+    XCTAssertEqual(zeroWidth.bytesPerRow, 4)
+    XCTAssertEqual(zeroWidth.pixel(x: 0, y: 0), 0)
+    XCTAssertNotNil(zeroWidth.cgImage)
+
+    let zeroHeight = BitmapSurface(width: 8, height: 0)
+    XCTAssertEqual(zeroHeight.width, 1)
+    XCTAssertEqual(zeroHeight.height, 1)
+
+    let overflowing = BitmapSurface(width: Int.max / 2 + 1, height: 2)
+    XCTAssertEqual(overflowing.width, 1)
+    XCTAssertEqual(overflowing.height, 1)
+    XCTAssertEqual(overflowing.bytesPerRow, 4)
+  }
+
   func testRectCommandChangesPixels() {
     let surface = BitmapSurface(width: 16, height: 16)
     let before = surface.pixel(x: 8, y: 8)!

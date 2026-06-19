@@ -35,7 +35,8 @@ enum TerminalSelectionInput {
     var clampedRows: Int { max(rows, 1) }
 
     var cols: Int {
-      max(1, Int((boundsWidth - sidebarWidth - insets.left - insets.right) / cellWidth))
+      guard cellWidth > 0 else { return 1 }
+      return max(1, Int((boundsWidth - sidebarWidth - insets.left - insets.right) / cellWidth))
     }
 
     var gridOriginY: CGFloat {
@@ -57,6 +58,7 @@ enum TerminalSelectionInput {
     geometry: GridGeometry
   ) -> TerminalCellCoordinate? {
     let x = point.x - geometry.sidebarWidth - geometry.insets.left
+    guard geometry.cellWidth > 0, geometry.cellHeight > 0 else { return nil }
     let yLocal = point.y - geometry.gridOriginY
     guard x >= 0, yLocal >= 0 else { return nil }
 
@@ -72,6 +74,9 @@ enum TerminalSelectionInput {
     geometry: GridGeometry,
     viewportOffset: Int
   ) -> TerminalSelectionPoint {
+    guard geometry.cellWidth > 0, geometry.cellHeight > 0 else {
+      return TerminalSelectionPoint(row: 0, col: 0, viewportOffsetAtCapture: viewportOffset)
+    }
     let x = max(0, point.x - geometry.sidebarWidth - geometry.insets.left)
     let yLocal = point.y - geometry.gridOriginY
     let col = min(geometry.cols - 1, max(0, Int(x / geometry.cellWidth)))

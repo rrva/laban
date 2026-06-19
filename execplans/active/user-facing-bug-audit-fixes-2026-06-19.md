@@ -84,8 +84,12 @@ crash in normal use; they are bundled into M3 as a single low-risk
       dismissal.
 - [ ] M2 — Wide-character / emoji fidelity in find, copy, word-select, IME
       (BUG-12, 13, 24, 25).
-- [ ] M3 — Crash & robustness hardening (BUG-03, 19, 20) + defensive-clarity
-      sweep (BUG-17, 18, 26, 28).
+- [x] (2026-06-19) M3 — Crash & robustness hardening (BUG-03, 19, 20)
+      + defensive-clarity sweep (BUG-17, 18, 26, 28). Added bitmap invalid-
+      dimension and selection zero-cell regression coverage; hardened cast/
+      capture directory fallback, bitmap layout/context creation, selection
+      geometry, mmap guards, menu key scalars, and labpty pending-input
+      invariant documentation.
 - [ ] M4 — Accessibility for the terminal surface (BUG-02, 22, 23).
 - [ ] M5 — App lifecycle & data safety (BUG-04, 05, 14, 16, 27).
 - [ ] M6 — Raw→canonical input-drop integrity (BUG-06; ADR + formal-spec gated).
@@ -533,5 +537,16 @@ Review findings (filled in by the review agent):
 - M1 executor validation (2026-06-19): `swift test --filter
   TerminalBitmapViewSelectionTests` failed before the fix with the new M1
   assertions, then passed after the fix (23 tests, 0 failures);
+- M3 executor validation (2026-06-19): red test confirmed
+  `LabanRendererSmokeTests/testBitmapSurfaceInvalidDimensionsFallBackToOnePixel`
+  trapped on the old precondition; after the fix,
+  `swift test --filter LabanRendererSmokeTests`, `swift test --filter
+  TerminalSelectionInputTests`, `git diff --check`, and `./scripts/build-app`
+  passed. Static checks: `mapped!` is absent from the labpty byte-ring reader/
+  writer; Metal `colorAttachments[0]!` sites now carry the documented descriptor
+  invariant; `TerminalBitmapView` Library-directory lookups use `.first` with a
+  temporary-directory fallback and logged fallback path. No injectable
+  `FileManager.urls` provider exists for a BUG-03 unit test, so coverage is the
+  source-level static check plus build validation.
   `./scripts/build-app` exited 0. Review Gate remains unchecked for the required
   separate verifier.

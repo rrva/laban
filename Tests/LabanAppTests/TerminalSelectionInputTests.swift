@@ -28,6 +28,30 @@ final class TerminalSelectionInputTests: XCTestCase {
       ))
   }
 
+  func testZeroCellWidthAndHeightReturnDefaultSelectionGeometry() {
+    let geometry = TerminalSelectionInput.GridGeometry(
+      boundsWidth: 100,
+      boundsHeight: 80,
+      sidebarWidth: 16,
+      cellWidth: 0,
+      cellHeight: 0,
+      rows: 5,
+      insets: NSEdgeInsets(top: 2, left: 3, bottom: 4, right: 5))
+
+    XCTAssertEqual(geometry.cols, 1)
+    XCTAssertNil(
+      TerminalSelectionInput.terminalCell(
+        at: NSPoint(x: 20, y: 20),
+        geometry: geometry))
+
+    XCTAssertEqual(
+      TerminalSelectionInput.clampedPoint(
+        at: NSPoint(x: 20, y: 20),
+        geometry: geometry,
+        viewportOffset: 7),
+      TerminalSelectionPoint(row: 0, col: 0, viewportOffsetAtCapture: 7))
+  }
+
   func testClampedPointCapturesViewportOffsetAndClampsToEdges() {
     let bottomLeft = TerminalSelectionInput.clampedPoint(
       at: NSPoint(x: 0, y: 0),

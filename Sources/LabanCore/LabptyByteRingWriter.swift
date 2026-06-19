@@ -32,11 +32,11 @@ public final class LabptyByteRingWriter {
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
     let mapped = mmap(nil, mapLength, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
-    guard mapped != MAP_FAILED else {
+    guard let mapped, mapped != MAP_FAILED else {
       Darwin.close(fd)
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
-    map = mapped!
+    map = mapped
     memset(map, 0, mapLength)
     initializeHeader(logicalSessionId: logicalSessionId)
     heartbeat()

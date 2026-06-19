@@ -40,11 +40,11 @@ public final class LabptyByteRingReader {
     }
     mapLength = Int(statBuffer.st_size)
     let mapped = mmap(nil, mapLength, PROT_READ, MAP_SHARED, fd, 0)
-    guard mapped != MAP_FAILED else {
+    guard let mapped, mapped != MAP_FAILED else {
       Darwin.close(fd)
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
-    map = mapped!
+    map = mapped
     let bytes = map.assumingMemoryBound(to: UInt8.self)
     guard Array(UnsafeBufferPointer(start: bytes, count: 8)) == LabptyByteRingLayout.magic else {
       munmap(map, mapLength)

@@ -5947,8 +5947,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let env = ProcessInfo.processInfo.environment["LABAN_CAST_DIR"], !env.isEmpty {
       return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
     }
-    return FileManager.default
-      .urls(for: .libraryDirectory, in: .userDomainMask).first!
+    let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+    if library == nil {
+      AppLog.capture.error("Library directory unavailable; writing cast under temporary directory")
+    }
+    return (library ?? FileManager.default.temporaryDirectory)
       .appendingPathComponent("Logs/Laban/casts", isDirectory: true)
   }
 
@@ -6209,8 +6212,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let env = ProcessInfo.processInfo.environment["LABAN_CAPTURE_DIR"], !env.isEmpty {
       return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
     }
-    let logs = FileManager.default
-      .urls(for: .libraryDirectory, in: .userDomainMask).first!
+    let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+    if library == nil {
+      AppLog.capture.error("Library directory unavailable; writing capture under temporary directory")
+    }
+    let logs = (library ?? FileManager.default.temporaryDirectory)
       .appendingPathComponent("Logs/Laban/captures", isDirectory: true)
     return logs
   }

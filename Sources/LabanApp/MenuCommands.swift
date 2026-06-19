@@ -201,7 +201,7 @@ enum MenuCommands {
     let previousItem = NSMenuItem(
       title: "Previous Tab",
       action: #selector(TerminalBitmapView.selectPreviousTab(_:)),
-      keyEquivalent: String(UnicodeScalar(UInt32(NSLeftArrowFunctionKey))!)
+      keyEquivalent: UnicodeScalar(UInt32(NSLeftArrowFunctionKey)).map(String.init) ?? ""
     )
     previousItem.keyEquivalentModifierMask = [.command, .option]
     tabMenu.addItem(previousItem)
@@ -209,7 +209,7 @@ enum MenuCommands {
     let nextItem = NSMenuItem(
       title: "Next Tab",
       action: #selector(TerminalBitmapView.selectNextTab(_:)),
-      keyEquivalent: String(UnicodeScalar(UInt32(NSRightArrowFunctionKey))!)
+      keyEquivalent: UnicodeScalar(UInt32(NSRightArrowFunctionKey)).map(String.init) ?? ""
     )
     nextItem.keyEquivalentModifierMask = [.command, .option]
     tabMenu.addItem(nextItem)
