@@ -64,15 +64,17 @@ public final class BitmapSurface {
     pixelData.initializeMemory(as: UInt8.self, repeating: 0, count: layout.byteCount)
     let bitmapInfo =
       CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-    guard let context = CGContext(
-      data: pixelData,
-      width: layout.width,
-      height: layout.height,
-      bitsPerComponent: 8,
-      bytesPerRow: layout.bytesPerRow,
-      space: CGColorSpaceCreateDeviceRGB(),
-      bitmapInfo: bitmapInfo
-    ) else {
+    guard
+      let context = CGContext(
+        data: pixelData,
+        width: layout.width,
+        height: layout.height,
+        bitsPerComponent: 8,
+        bytesPerRow: layout.bytesPerRow,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: bitmapInfo
+      )
+    else {
       pixelData.deallocate()
       return nil
     }
@@ -124,7 +126,8 @@ public func cgColorFrom(_ rgba: UInt32) -> CGColor {
     CGFloat((rgba >> 8) & 0xFF) / 255.0,
     CGFloat(rgba & 0xFF) / 255.0,
   ]
-  guard let color = CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: components) else {
+  guard let color = CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: components)
+  else {
     assertionFailure("BitmapSurface could not create device RGB color")
     return CGColor(gray: 0, alpha: components[3])
   }

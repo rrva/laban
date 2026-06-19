@@ -993,7 +993,8 @@ public struct FrameProducer {
       let cx = originX + CGFloat(snapshot.cursor_col) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      appendPayloadCursorRects(style: Int(payloadEffectiveStyle), cellRect: cellRect, into: &payload)
+      appendPayloadCursorRects(
+        style: Int(payloadEffectiveStyle), cellRect: cellRect, into: &payload)
     }
   }
 
@@ -1370,10 +1371,11 @@ public struct FrameProducer {
     // `cells.first?.backgroundRGBA` here — it can be 0 (transparent black) on
     // an unstyled first cell and used to leak the underlying view color
     // through as a black border between the sidebar and the terminal area.
-    let defaultBg: UInt32 = terminalBackgroundColor({
-      if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
-      return Theme.current.bg0
-    }())
+    let defaultBg: UInt32 = terminalBackgroundColor(
+      {
+        if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
+        return Theme.current.bg0
+      }())
 
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(rows * 2 + 4)
@@ -1406,7 +1408,8 @@ public struct FrameProducer {
       var bgColor: UInt32 = 0
 
       for col in 0..<cols {
-        let cellBg = cellAt(row: row, col: col).map { terminalBackgroundColor($0.backgroundRGBA) }
+        let cellBg =
+          cellAt(row: row, col: col).map { terminalBackgroundColor($0.backgroundRGBA) }
           ?? defaultBg
         if bgStart == nil {
           if cellBg != defaultBg {

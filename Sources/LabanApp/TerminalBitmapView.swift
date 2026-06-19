@@ -82,8 +82,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   static let titlebarReservedHeight: CGFloat = 28
   static let contentInsets = NSEdgeInsets(
     top: 8 + titlebarReservedHeight, left: 14, bottom: 8, right: 8)
-  static var accessibilityDisplayOptionsProviderForTests:
-    (() -> AccessibilityDisplayOptions)?
+  static var accessibilityDisplayOptionsProviderForTests: (() -> AccessibilityDisplayOptions)?
 
   private static func currentAccessibilityDisplayOptions() -> AccessibilityDisplayOptions {
     if let provider = accessibilityDisplayOptionsProviderForTests {
@@ -3418,7 +3417,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let cols = max(1, termW / cellWidth)
     let rows = max(1, termH / cellHeight)
     if lastAppliedCols != 0, lastAppliedRows != 0,
-      (cols != lastAppliedCols || rows != lastAppliedRows)
+      cols != lastAppliedCols || rows != lastAppliedRows
     {
       // Reflow invalidates grid-anchored selection coordinates.
       clearAllSelectionState()
@@ -3528,7 +3527,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let cols = max(1, termW / cellWidth)
       let rows = max(1, termH / cellHeight)
       if lastAppliedCols != 0, lastAppliedRows != 0,
-        (cols != lastAppliedCols || rows != lastAppliedRows)
+        cols != lastAppliedCols || rows != lastAppliedRows
       {
         clearAllSelectionState()
       }
@@ -6403,7 +6402,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
     if library == nil {
-      AppLog.capture.error("Library directory unavailable; writing capture under temporary directory")
+      AppLog.capture.error(
+        "Library directory unavailable; writing capture under temporary directory")
     }
     let logs = (library ?? FileManager.default.temporaryDirectory)
       .appendingPathComponent("Logs/Laban/captures", isDirectory: true)

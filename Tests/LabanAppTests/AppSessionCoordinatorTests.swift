@@ -30,7 +30,8 @@ final class AppSessionCoordinatorTests: XCTestCase {
       $0.note == TabStateJournal.daemonRecoveryNote
     }
     XCTAssertEqual(entries.count, 2)
-    XCTAssertTrue(entries.allSatisfy { $0.text?.contains("Restart the affected shell tabs") == true })
+    XCTAssertTrue(
+      entries.allSatisfy { $0.text?.contains("Restart the affected shell tabs") == true })
     XCTAssertTrue(
       model.tabs.allSatisfy { $0.titleMetadata.notification?.urgent == true },
       "daemon recovery must surface as visible tab notifications, not only logs")

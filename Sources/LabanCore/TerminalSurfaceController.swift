@@ -783,10 +783,11 @@ public final class TerminalSurfaceController {
     // Treat nil and 0 as "unknown" and fall back to the theme — `cells.first
     // ?.backgroundRGBA` can be 0 (transparent black) and would leak the
     // layer-backed view's underlying color through as a black border.
-    let defaultBg: UInt32 = request.accessibilityVisualOptions.terminalBackgroundColor({
-      if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
-      return Theme.current.bg0
-    }())
+    let defaultBg: UInt32 = request.accessibilityVisualOptions.terminalBackgroundColor(
+      {
+        if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
+        return Theme.current.bg0
+      }())
 
     if request.includeTerminalAreaBackground {
       let terminalAreaWidth = max(0, request.viewportWidth - sidebarWidth)

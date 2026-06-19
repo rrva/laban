@@ -175,10 +175,11 @@ final class FrameProducerPreeditTests: XCTestCase {
     let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
       .commands(from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
 
-    let mask = try XCTUnwrap(cmds.compactMap { command -> CGRect? in
-      if case .rect(let rect, _, .preedit) = command { return rect }
-      return nil
-    }.first)
+    let mask = try XCTUnwrap(
+      cmds.compactMap { command -> CGRect? in
+        if case .rect(let rect, _, .preedit) = command { return rect }
+        return nil
+      }.first)
 
     XCTAssertEqual(
       mask.width,
