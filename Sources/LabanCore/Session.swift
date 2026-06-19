@@ -846,39 +846,98 @@ public final class Session {
 
     var textBuffer: UnsafeMutablePointer<CChar>?
     var rowOffsets: UnsafeMutablePointer<UInt32>?
+    var clusterByteLengths: UnsafeMutablePointer<UInt8>?
+    var clusterWidths: UnsafeMutablePointer<UInt8>?
+    var rowClusterCounts: UnsafeMutablePointer<UInt32>?
     var outRows: size_t = 0
     var outTextLen: size_t = 0
+    var outClusterCount: size_t = 0
     guard
-      laban_session_scrollback_extract_alloc(
+      laban_session_scrollback_extract2_alloc(
         h,
         size_t(safeOffset),
         size_t(safeMaxRows),
         &textBuffer,
         &rowOffsets,
+        &clusterByteLengths,
+        &clusterWidths,
+        &rowClusterCounts,
         &outRows,
-        &outTextLen
+        &outTextLen,
+        &outClusterCount
       ) == 0,
       let textBuffer
     else { return nil }
     defer { laban_session_scrollback_extract_free(textBuffer) }
     defer {
-      if let rowOffsets {
-        laban_session_scrollback_extract_free(rowOffsets)
-      }
+      if let rowOffsets { laban_session_scrollback_extract_free(rowOffsets) }
+    }
+    defer {
+      if let clusterByteLengths { laban_session_scrollback_extract_free(clusterByteLengths) }
+    }
+    defer {
+      if let clusterWidths { laban_session_scrollback_extract_free(clusterWidths) }
+    }
+    defer {
+      if let rowClusterCounts { laban_session_scrollback_extract_free(rowClusterCounts) }
     }
 
     let byteCount = Int(outTextLen)
     let raw = UnsafeRawBufferPointer(start: textBuffer, count: byteCount)
     let text = String(decoding: raw, as: UTF8.self)
+    let rowCount = Int(outRows)
     let offsets: [Int]
-    if let rowOffsets, outRows > 0 {
-      offsets = UnsafeBufferPointer(start: rowOffsets, count: Int(outRows)).map(Int.init)
+    if let rowOffsets, rowCount > 0 {
+      offsets = UnsafeBufferPointer(start: rowOffsets, count: rowCount).map(Int.init)
     } else {
       offsets = []
     }
+
+    // Engine width metadata is present only when the C side carried it for every
+    // row (out_cluster_count > 0). Slice the flat per-cluster arrays into per-row
+    // lists using the per-row cluster counts. Absent metadata leaves
+    // graphemeWidths nil and consumers fall back to the scalar table.
+    var graphemeWidths: [[ScrollbackBlock.ClusterWidth]]?
+    if Int(outClusterCount) > 0,
+      rowCount > 0,
+      let clusterByteLengths,
+      let clusterWidths,
+      let rowClusterCounts
+    {
+      let counts = UnsafeBufferPointer(start: rowClusterCounts, count: rowCount)
+      let lengths = UnsafeBufferPointer(start: clusterByteLengths, count: Int(outClusterCount))
+      let widths = UnsafeBufferPointer(start: clusterWidths, count: Int(outClusterCount))
+      var perRow: [[ScrollbackBlock.ClusterWidth]] = []
+      perRow.reserveCapacity(rowCount)
+      var cursor = 0
+      var consistent = true
+      for r in 0..<rowCount {
+        let n = Int(counts[r])
+        guard cursor + n <= Int(outClusterCount) else {
+          consistent = false
+          break
+        }
+        var row: [ScrollbackBlock.ClusterWidth] = []
+        row.reserveCapacity(n)
+        for i in 0..<n {
+          row.append(
+            ScrollbackBlock.ClusterWidth(
+              byteLength: Int(lengths[cursor + i]),
+              columns: Int(widths[cursor + i])
+            ))
+        }
+        perRow.append(row)
+        cursor += n
+      }
+      if consistent {
+        graphemeWidths = perRow
+      }
+    }
+
     return ScrollbackBlock(
       text: text,
-      rowOffsets: offsets
+      rowOffsets: offsets,
+      graphemeWidths: graphemeWidths
     )
   }
 

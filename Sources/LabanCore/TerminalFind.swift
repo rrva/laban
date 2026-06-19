@@ -19,12 +19,40 @@ public enum TerminalFindCaseMode: Sendable {
 }
 
 public struct ScrollbackBlock: Equatable, Sendable {
+  /// One grapheme cluster as the engine laid it out: its UTF-8 byte length
+  /// within the row, and the display columns it occupies (1 narrow, 2 wide).
+  /// The byte length lets a consumer walk row bytes by the *engine's* cluster
+  /// boundaries — which differ from Swift's `Character` segmentation under DEC
+  /// mode 2027 — and assign each cluster the width the engine actually used.
+  public struct ClusterWidth: Equatable, Sendable {
+    public let byteLength: Int
+    public let columns: Int
+
+    public init(byteLength: Int, columns: Int) {
+      self.byteLength = byteLength
+      self.columns = columns
+    }
+  }
+
   public let text: String
   public let rowOffsets: [Int]
+
+  /// Per-row engine width metadata, indexed parallel to `rowOffsets`. When
+  /// present (mode 2027 coherent path), consumers map display columns through
+  /// the engine's actual layout; when `nil` they fall back to the pinned
+  /// `TerminalDisplayWidth` scalar table (legacy mode-2027-OFF behavior).
+  public let graphemeWidths: [[ClusterWidth]]?
 
   public init(text: String, rowOffsets: [Int]) {
     self.text = text
     self.rowOffsets = rowOffsets
+    self.graphemeWidths = nil
+  }
+
+  public init(text: String, rowOffsets: [Int], graphemeWidths: [[ClusterWidth]]?) {
+    self.text = text
+    self.rowOffsets = rowOffsets
+    self.graphemeWidths = graphemeWidths
   }
 
   public var rows: Int { rowOffsets.count }
@@ -125,7 +153,10 @@ public enum TerminalFind {
         )
       } else {
         let rowBytes = Array(textBytes[start..<end])
-        let buffer = rowBuffer(fromUTF8Row: rowBytes)
+        let clusters = scrollback.graphemeWidths.flatMap {
+          row < $0.count ? $0[row] : nil
+        }
+        let buffer = rowBuffer(fromUTF8Row: rowBytes, clusters: clusters)
         appendPreparedNeedleMatches(
           preparedNeedle,
           in: buffer,
@@ -191,7 +222,19 @@ public enum TerminalFind {
     return result
   }
 
-  private static func rowBuffer(fromUTF8Row bytes: [UInt8]) -> RowBuffer {
+  private static func rowBuffer(
+    fromUTF8Row bytes: [UInt8],
+    clusters: [ScrollbackBlock.ClusterWidth]? = nil
+  ) -> RowBuffer {
+    // Engine-width path: when the scrollback block carried the engine's actual
+    // per-cluster layout, walk the row by the engine's cluster byte boundaries
+    // and assign each cluster the width the engine used. This is mode-2027
+    // coherent and does not consult the pinned scalar table. Fall through to the
+    // scalar path if the carried boundaries do not align with the row bytes.
+    if let clusters, let engineBuffer = rowBufferFromClusters(bytes: bytes, clusters: clusters) {
+      return engineBuffer
+    }
+
     var result = RowBuffer()
     result.bytes.reserveCapacity(bytes.count)
     result.startColumnByByte.reserveCapacity(bytes.count)
@@ -207,6 +250,41 @@ public enum TerminalFind {
       }
       column = nextColumn
     }
+    return result
+  }
+
+  /// Build a RowBuffer using the engine's carried cluster boundaries/widths.
+  /// Returns nil (signaling the caller to fall back to the scalar table) when
+  /// the carried byte lengths do not cleanly tile the row bytes — e.g. if the
+  /// formatter trimmed trailing blanks the engine still reported, the leading
+  /// clusters must still sum exactly to a prefix of `bytes`.
+  private static func rowBufferFromClusters(
+    bytes: [UInt8],
+    clusters: [ScrollbackBlock.ClusterWidth]
+  ) -> RowBuffer? {
+    var result = RowBuffer()
+    result.bytes.reserveCapacity(bytes.count)
+    result.startColumnByByte.reserveCapacity(bytes.count)
+    result.endColumnByByte.reserveCapacity(bytes.count)
+
+    var byteIndex = 0
+    var column = 0
+    for cluster in clusters {
+      if byteIndex >= bytes.count { break }
+      guard cluster.byteLength > 0, byteIndex + cluster.byteLength <= bytes.count else {
+        return nil
+      }
+      let nextColumn = column + cluster.columns
+      for _ in 0..<cluster.byteLength {
+        appendByte(bytes[byteIndex], startColumn: column, endColumn: nextColumn, to: &result)
+        byteIndex += 1
+      }
+      column = nextColumn
+    }
+    // Every byte of the row must have been assigned a column; if carried
+    // clusters ran out before the row bytes did, the layout is inconsistent and
+    // we must not silently mis-column the remainder.
+    guard byteIndex == bytes.count else { return nil }
     return result
   }
 

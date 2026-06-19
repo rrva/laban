@@ -776,6 +776,50 @@ int laban_session_scrollback_extract_alloc(
 
 void laban_session_scrollback_extract_free(void *ptr);
 
+/*
+ * Versioned scrollback extraction that additionally carries the engine's actual
+ * per-grapheme-cluster display width for each row, so Swift consumers can map a
+ * display column to the right cluster without re-deriving width from a pinned
+ * scalar table (which is only correct with DEC mode 2027 disabled).
+ *
+ * text_buffer + row_offsets + out_rows + out_text_len are byte-for-byte
+ * identical to laban_session_scrollback_extract_alloc. The added outputs are:
+ *
+ *   out_cluster_byte_lengths : flat array, one entry per emitted grapheme
+ *                              cluster across ALL rows in order; the cluster's
+ *                              UTF-8 byte length (1..255).
+ *   out_cluster_widths       : flat array, parallel to the above; the engine's
+ *                              display width for that cluster (1 for NARROW,
+ *                              2 for WIDE) under the current mode 2027 state.
+ *   out_row_cluster_counts   : one entry per returned row; the number of
+ *                              clusters that row contributed to the flat arrays.
+ *   out_cluster_count        : total number of clusters across all rows
+ *                              (== sum of out_row_cluster_counts).
+ *
+ * If the engine width walk fails for any row, the width metadata is dropped
+ * entirely: out_cluster_byte_lengths and out_cluster_widths are NULL,
+ * out_cluster_count is 0, and out_row_cluster_counts is all-zero. Callers then
+ * fall back to the legacy scalar-width path, matching the v1 behavior.
+ *
+ * Release out_text_buffer, out_row_offsets, out_cluster_byte_lengths,
+ * out_cluster_widths, and out_row_cluster_counts (each, when non-NULL) with
+ * laban_session_scrollback_extract_free. Returns 0 on success and -1 on
+ * permanent error.
+ */
+int laban_session_scrollback_extract2_alloc(
+    LabanSession *session,
+    size_t row_offset,
+    size_t max_rows,
+    char **out_text_buffer,
+    uint32_t **out_row_offsets,
+    uint8_t **out_cluster_byte_lengths,
+    uint8_t **out_cluster_widths,
+    uint32_t **out_row_cluster_counts,
+    size_t *out_rows,
+    size_t *out_text_len,
+    size_t *out_cluster_count
+);
+
 typedef struct {
     int row;
     int start_column;

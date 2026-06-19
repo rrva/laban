@@ -131,8 +131,20 @@ autonomous-verifiability rule.
       (the glossary's "VS16 forces width 2" is the mode-ON behavior); (b) the
       canonical farmer bytes `F0 9F A7 91…` decode to U+1F9D1 🧑 (person), not 👩
       (woman) — prose elsewhere writes 👩‍🌾 but the bytes/tests are authoritative.
-- [ ] M3 — Swift width-consumer coherence (scrollback find/copy, word select, IME)
-      under both modes.
+- [x] (2026-06-19) M3 — Swift width-consumer coherence. Added a versioned C
+      extraction `laban_session_scrollback_extract2_alloc` (v1 text path byte-
+      identical) that walks the engine grid to emit per-grapheme
+      `(byteLength, displayWidth)`; `ScrollbackBlock` gained an optional
+      `graphemeWidths`; the class-A scrollback consumers (`TerminalFind.rowBuffer`,
+      `TerminalSelection.plainLineText`) now advance columns by the engine's width
+      and fall back to `TerminalDisplayWidth` only when metadata is absent (self-
+      correcting per row). Class-B consumers (IME preedit, word classification)
+      keep the fallback by design. New `Mode2027ScrollbackWidthTests` (7) prove
+      farmer = 2 cols ON / 4 OFF and exact copy bytes; mutation guard confirmed.
+      Regression suites byte-identical green (TerminalFindTests 13,
+      TerminalSelectionTests 21, TerminalDisplayWidthTests 8). Discovery: extraction
+      uses ghostty's formatter (not engine cells), so width is sourced via a
+      parallel grid-ref walk aligning grid screen-row R to formatter row R.
 - [ ] M4 — Conformance fixture + end-to-end handshake demo.
 - [ ] M5 — Settings UI: a user-facing "Unicode width" preference (Auto /
       Prefer grapheme width) wired into the native Settings window + the engine.

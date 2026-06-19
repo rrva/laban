@@ -369,6 +369,320 @@ int laban_session_scrollback_extract_alloc(
     return 0;
 }
 
+/*
+ * UTF-8 byte length of a single Unicode scalar, without encoding it.
+ */
+static size_t laban_utf8_len_of_cp(uint32_t cp) {
+    if (cp < 0x80) return 1;
+    if (cp < 0x800) return 2;
+    if (cp < 0x10000) return 3;
+    return 4;
+}
+
+/*
+ * Walk one screen row (history + active are addressable via
+ * GHOSTTY_POINT_TAG_SCREEN) and append, for each non-spacer-tail cell that
+ * carries text, the cluster's (UTF-8 byte length, engine display width) to the
+ * caller's flat metadata arrays. SPACER_TAIL cells are skipped (they belong to
+ * the preceding wide head cell); a WIDE head cell contributes width 2, every
+ * other text-bearing cell width 1 — exactly the layout the engine chose under
+ * the current DEC mode 2027 state. *out_count receives the number of clusters
+ * appended for this row.
+ *
+ * This deliberately mirrors the engine's authoritative per-cell `wide` value
+ * rather than re-deriving width from the scalar table, so scrollback consumers
+ * stay coherent whether mode 2027 is on or off.
+ */
+static int laban_extract_row_widths(
+    LabanSession *s,
+    uint32_t screen_row,
+    uint16_t cols,
+    uint8_t **byte_lengths,
+    uint8_t **widths,
+    size_t *capacity,
+    size_t *used,
+    size_t *out_count
+) {
+    *out_count = 0;
+    uint32_t stack_cp[64];
+
+    for (uint16_t x = 0; x < cols; x++) {
+        GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+        GhosttyPoint pt = {
+            .tag = GHOSTTY_POINT_TAG_SCREEN,
+            .value.coordinate = { .x = x, .y = screen_row },
+        };
+        if (ghostty_terminal_grid_ref(s->terminal, pt, &ref) != GHOSTTY_SUCCESS) {
+            return -1;
+        }
+
+        GhosttyCell cell = 0;
+        if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS) {
+            return -1;
+        }
+        GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+        (void)ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &wide);
+
+        /* Spacer cells carry no cluster of their own; the head cell already
+         * accounts for the full display width. */
+        if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL ||
+            wide == GHOSTTY_CELL_WIDE_SPACER_HEAD) {
+            continue;
+        }
+
+        size_t cp_len = 0;
+        uint32_t *cps = stack_cp;
+        GhosttyResult gr = ghostty_grid_ref_graphemes(
+            &ref, stack_cp, sizeof(stack_cp) / sizeof(stack_cp[0]), &cp_len);
+        if (gr == GHOSTTY_OUT_OF_SPACE) {
+            if (cp_len == 0 || cp_len > SIZE_MAX / sizeof(uint32_t)) return -1;
+            cps = (uint32_t *)malloc(cp_len * sizeof(uint32_t));
+            if (!cps) return -1;
+            if (ghostty_grid_ref_graphemes(&ref, cps, cp_len, &cp_len)
+                    != GHOSTTY_SUCCESS) {
+                free(cps);
+                return -1;
+            }
+        } else if (gr != GHOSTTY_SUCCESS) {
+            return -1;
+        }
+
+        /* A blank cell (no text) is laid out by the formatter as a single
+         * space when it precedes meaningful content, contributing one display
+         * column and one UTF-8 byte. Empty trailing cells are trimmed by the
+         * formatter and therefore must not emit metadata; we emit a width-1,
+         * 1-byte cluster only when the cell actually carries text. */
+        if (cp_len == 0) {
+            if (cps != stack_cp) free(cps);
+            /* Represent a blank interior cell as a single space cluster. The
+             * Swift side validates total byte length against the row text and
+             * falls back if our reconstruction diverges, so emitting a space
+             * here is safe and keeps column accounting aligned. */
+            size_t byte_len = 1;
+            uint8_t disp = 1;
+            if (*used == *capacity) {
+                size_t next = *capacity == 0 ? 64 : *capacity * 2;
+                if (next < *capacity) return -1;
+                uint8_t *nb = (uint8_t *)realloc(*byte_lengths, next);
+                if (!nb) return -1;
+                *byte_lengths = nb;
+                uint8_t *nw = (uint8_t *)realloc(*widths, next);
+                if (!nw) return -1;
+                *widths = nw;
+                *capacity = next;
+            }
+            (*byte_lengths)[*used] = (uint8_t)byte_len;
+            (*widths)[*used] = disp;
+            (*used)++;
+            (*out_count)++;
+            continue;
+        }
+
+        size_t byte_len = 0;
+        for (size_t i = 0; i < cp_len; i++) {
+            byte_len += laban_utf8_len_of_cp(cps[i]);
+        }
+        if (cps != stack_cp) free(cps);
+        if (byte_len == 0 || byte_len > 255) {
+            /* Defensive: a cluster longer than a byte can encode here means the
+             * Swift fallback must take over for this row. Signal misalignment
+             * by emitting a sentinel the validator rejects. */
+            byte_len = byte_len > 255 ? 255 : 1;
+        }
+
+        uint8_t disp = (wide == GHOSTTY_CELL_WIDE_WIDE) ? 2 : 1;
+
+        if (*used == *capacity) {
+            size_t next = *capacity == 0 ? 64 : *capacity * 2;
+            if (next < *capacity) return -1;
+            uint8_t *nb = (uint8_t *)realloc(*byte_lengths, next);
+            if (!nb) return -1;
+            *byte_lengths = nb;
+            uint8_t *nw = (uint8_t *)realloc(*widths, next);
+            if (!nw) return -1;
+            *widths = nw;
+            *capacity = next;
+        }
+        (*byte_lengths)[*used] = (uint8_t)byte_len;
+        (*widths)[*used] = disp;
+        (*used)++;
+        (*out_count)++;
+    }
+    return 0;
+}
+
+int laban_session_scrollback_extract2_alloc(
+    LabanSession *s,
+    size_t row_offset,
+    size_t max_rows,
+    char **out_text_buffer,
+    uint32_t **out_row_offsets,
+    uint8_t **out_cluster_byte_lengths,
+    uint8_t **out_cluster_widths,
+    uint32_t **out_row_cluster_counts,
+    size_t *out_rows,
+    size_t *out_text_len,
+    size_t *out_cluster_count
+) {
+    if (out_text_buffer) *out_text_buffer = NULL;
+    if (out_row_offsets) *out_row_offsets = NULL;
+    if (out_cluster_byte_lengths) *out_cluster_byte_lengths = NULL;
+    if (out_cluster_widths) *out_cluster_widths = NULL;
+    if (out_row_cluster_counts) *out_row_cluster_counts = NULL;
+    if (out_rows) *out_rows = 0;
+    if (out_text_len) *out_text_len = 0;
+    if (out_cluster_count) *out_cluster_count = 0;
+    if (!s || !out_text_buffer || !out_row_offsets ||
+        !out_cluster_byte_lengths || !out_cluster_widths ||
+        !out_row_cluster_counts || !out_rows || !out_text_len ||
+        !out_cluster_count) {
+        return -1;
+    }
+    SESSION_LOCK(s);
+
+    uint8_t *formatted = NULL;
+    size_t formatted_len = 0;
+    if (laban_format_plain_locked(s, &formatted, &formatted_len) != 0) {
+        return -1;
+    }
+
+    size_t required_rows = 0;
+    size_t required_capacity = 0;
+    if (laban_measure_rows(
+            formatted, formatted_len, row_offset, max_rows,
+            &required_rows, &required_capacity) != 0) {
+        ghostty_free(NULL, formatted, formatted_len);
+        return -1;
+    }
+
+    /* Grid dimensions: cluster widths are read from the screen grid, which is
+     * addressed in SCREEN coordinates (history rows first, then active). The
+     * formatter (unwrap=false, trim=false) emits one text row per screen row in
+     * the same order, so source_row index aligns with the SCREEN point row. */
+    size_t grid_cols = 0;
+    {
+        uint16_t cols16 = 0;
+        if (ghostty_terminal_get(s->terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols16)
+                == GHOSTTY_SUCCESS) {
+            grid_cols = cols16;
+        }
+    }
+    if (grid_cols == 0) grid_cols = s->cols;
+    if (grid_cols == 0) grid_cols = 80;
+    if (grid_cols > UINT16_MAX) grid_cols = UINT16_MAX;
+
+    char *text_buffer = (char *)malloc(required_capacity > 0 ? required_capacity : 1);
+    if (!text_buffer) {
+        ghostty_free(NULL, formatted, formatted_len);
+        return -1;
+    }
+    uint32_t *row_offsets = NULL;
+    uint32_t *row_cluster_counts = NULL;
+    if (required_rows > 0) {
+        if (required_rows > SIZE_MAX / sizeof(uint32_t)) {
+            free(text_buffer);
+            ghostty_free(NULL, formatted, formatted_len);
+            return -1;
+        }
+        row_offsets = (uint32_t *)malloc(required_rows * sizeof(uint32_t));
+        row_cluster_counts = (uint32_t *)calloc(required_rows, sizeof(uint32_t));
+        if (!row_offsets || !row_cluster_counts) {
+            free(row_offsets);
+            free(row_cluster_counts);
+            free(text_buffer);
+            ghostty_free(NULL, formatted, formatted_len);
+            return -1;
+        }
+    }
+
+    uint8_t *cluster_byte_lengths = NULL;
+    uint8_t *cluster_widths = NULL;
+    size_t cluster_cap = 0;
+    size_t cluster_used = 0;
+    int widths_ok = 1;
+
+    const int bounded = max_rows != 0;
+    size_t source_row = 0;
+    size_t dest_len = 0;
+    size_t rows_written = 0;
+    size_t pos = 0;
+    while (pos < formatted_len) {
+        size_t row_start = pos;
+        while (pos < formatted_len && formatted[pos] != '\n' && formatted[pos] != '\0') {
+            pos++;
+        }
+        size_t row_len = pos - row_start;
+        if (source_row >= row_offset && (!bounded || rows_written < max_rows)) {
+            if (dest_len > UINT32_MAX) {
+                free(cluster_byte_lengths);
+                free(cluster_widths);
+                free(row_cluster_counts);
+                free(row_offsets);
+                free(text_buffer);
+                ghostty_free(NULL, formatted, formatted_len);
+                return -1;
+            }
+            if (rows_written > 0) {
+                text_buffer[dest_len++] = '\n';
+            }
+            row_offsets[rows_written] = (uint32_t)dest_len;
+            if (row_len > 0) {
+                memcpy(text_buffer + dest_len, formatted + row_start, row_len);
+                dest_len += row_len;
+            }
+
+            /* Width metadata for this row, read from the engine grid. On any
+             * failure we mark widths_ok = 0 and the whole metadata block is
+             * dropped, leaving the v1 (text-only) behavior — callers then fall
+             * back to the scalar table. */
+            if (widths_ok) {
+                size_t this_count = 0;
+                if (laban_extract_row_widths(
+                        s, (uint32_t)source_row, (uint16_t)grid_cols,
+                        &cluster_byte_lengths, &cluster_widths,
+                        &cluster_cap, &cluster_used, &this_count) != 0) {
+                    widths_ok = 0;
+                } else {
+                    row_cluster_counts[rows_written] = (uint32_t)this_count;
+                }
+            }
+
+            rows_written++;
+        }
+        if (bounded && rows_written >= max_rows) break;
+        while (pos < formatted_len && (formatted[pos] == '\n' || formatted[pos] == '\0')) {
+            pos++;
+            if (formatted[pos - 1] == '\n') break;
+        }
+        source_row++;
+    }
+
+    text_buffer[dest_len] = '\0';
+    ghostty_free(NULL, formatted, formatted_len);
+
+    if (!widths_ok) {
+        free(cluster_byte_lengths);
+        free(cluster_widths);
+        cluster_byte_lengths = NULL;
+        cluster_widths = NULL;
+        cluster_used = 0;
+        /* Zero the counts so the Swift side treats metadata as absent. */
+        if (row_cluster_counts && rows_written > 0) {
+            memset(row_cluster_counts, 0, rows_written * sizeof(uint32_t));
+        }
+    }
+
+    *out_text_buffer = text_buffer;
+    *out_row_offsets = row_offsets;
+    *out_cluster_byte_lengths = cluster_byte_lengths;
+    *out_cluster_widths = cluster_widths;
+    *out_row_cluster_counts = row_cluster_counts;
+    *out_rows = rows_written;
+    *out_text_len = dest_len;
+    *out_cluster_count = widths_ok ? cluster_used : 0;
+    return 0;
+}
+
 void laban_session_scrollback_extract_free(void *ptr) {
     free(ptr);
 }

@@ -174,11 +174,16 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
         bytes: scrollbackBytes,
         row: segment.row - firstRow
       ) {
+        let rowIndex = segment.row - firstRow
+        let clusters = scrollback.graphemeWidths.flatMap {
+          rowIndex >= 0 && rowIndex < $0.count ? $0[rowIndex] : nil
+        }
         lines.append(
           Self.plainLineText(
             from: line,
             startCol: segment.startCol,
-            endCol: segment.endCol
+            endCol: segment.endCol,
+            clusters: clusters
           ))
       } else {
         lines.append("")
@@ -276,8 +281,26 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
     return String(decoding: bytes[start..<end], as: UTF8.self)
   }
 
-  private static func plainLineText(from row: String, startCol: Int, endCol: Int) -> String {
+  private static func plainLineText(
+    from row: String,
+    startCol: Int,
+    endCol: Int,
+    clusters: [ScrollbackBlock.ClusterWidth]? = nil
+  ) -> String {
     guard endCol > startCol else { return "" }
+
+    // Engine-width path: walk the row by the engine's carried cluster byte
+    // boundaries and widths, so a wide cluster that mode 2027 collapsed to two
+    // columns is selected by its two-column span — not the scalar table's
+    // re-derivation. Falls back to the scalar walk if the carried boundaries do
+    // not tile the row bytes.
+    if let clusters,
+      let engineLine = plainLineTextFromClusters(
+        row: row, startCol: startCol, endCol: endCol, clusters: clusters)
+    {
+      return engineLine
+    }
+
     var col = 0
     var line = ""
     for character in row {
@@ -289,6 +312,35 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
       if col >= endCol { break }
     }
     return rightTrim(line)
+  }
+
+  private static func plainLineTextFromClusters(
+    row: String,
+    startCol: Int,
+    endCol: Int,
+    clusters: [ScrollbackBlock.ClusterWidth]
+  ) -> String? {
+    let bytes = Array(row.utf8)
+    var byteIndex = 0
+    var col = 0
+    var selected: [UInt8] = []
+    for cluster in clusters {
+      if byteIndex >= bytes.count { break }
+      guard cluster.byteLength > 0, byteIndex + cluster.byteLength <= bytes.count else {
+        return nil
+      }
+      let nextCol = col + cluster.columns
+      if col >= startCol && col < endCol {
+        selected.append(contentsOf: bytes[byteIndex..<(byteIndex + cluster.byteLength)])
+      }
+      byteIndex += cluster.byteLength
+      col = nextCol
+      if col >= endCol { break }
+    }
+    // The carried clusters must tile the row bytes up to wherever the column
+    // window ended; if a cluster boundary overran the row, the layout is
+    // inconsistent and we defer to the scalar fallback.
+    return rightTrim(String(decoding: selected, as: UTF8.self))
   }
 
   private static func rightTrim(_ text: String) -> String {

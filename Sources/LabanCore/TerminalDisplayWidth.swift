@@ -1,11 +1,16 @@
 import Foundation
 
-/// East-Asian display-width model matching libghostty's terminal layout with
-/// DEC mode 2027 (grapheme_cluster) DISABLED — Laban's configuration (libghostty
-/// default; Laban never enables 2027). Width is summed per Unicode scalar, so
-/// callers that walk scalars get the same column advance the terminal grid uses.
-/// If mode 2027 is ever enabled, these per-scalar-width consumers (scrollback
-/// find/copy, IME preedit) must switch to per-grapheme-head width instead.
+/// East-Asian display-width FALLBACK model. This is the legacy per-Unicode-scalar
+/// width rule that matches libghostty's terminal layout with DEC mode 2027
+/// (grapheme_cluster) DISABLED. It is **no longer the source of truth** for
+/// grid-derived text: scrollback find/copy now carry the engine's actual
+/// per-grapheme display width through the scrollback extraction
+/// (`ScrollbackBlock.graphemeWidths`) and consult this table only when that
+/// carried metadata is genuinely absent (e.g. IME preedit text that never
+/// entered the grid, or an extraction whose carried boundaries failed to align).
+/// Width is summed per Unicode scalar, so under mode 2027 it would over-count a
+/// clustered emoji (farmer = 4 instead of 2) — which is exactly why the engine
+/// width is preferred when available.
 public enum TerminalDisplayWidth {
   public static func cells<S: StringProtocol>(of text: S) -> Int {
     text.reduce(0) { $0 + cells(of: $1) }
