@@ -112,7 +112,10 @@ autonomous-verifiability rule.
 - [ ] M3 — Swift width-consumer coherence (scrollback find/copy, word select, IME)
       under both modes.
 - [ ] M4 — Conformance fixture + end-to-end handshake demo.
-- [ ] M5 (optional, elite polish) — ADR, config surface, kitty-protocol non-goal.
+- [ ] M5 — Settings UI: a user-facing "Unicode width" preference (Auto /
+      Prefer grapheme width) wired into the native Settings window + the engine.
+- [ ] M6 (optional, elite polish) — ADR, kitty-protocol non-goal, doc-comment
+      demotion.
 - [ ] Review Gate passed.
 
 Milestones are ordered: M0 is a *characterization* milestone whose output is the
@@ -287,8 +290,10 @@ answers". Concretely:
    selection, copy, find, and IME preedit — including the scrollback fallback.
 4. It is **autonomously verifiable**: a debug endpoint reports mode state, and a
    conformance fixture pins the spec's hard examples under *both* modes.
-5. The **default is OFF** (opt-in by the program), matching every correct
-   implementation and avoiding the `fish` breakage (Decision Log).
+5. The **factory default is OFF** (opt-in by the program), matching every correct
+   implementation and avoiding the `fish` breakage (Decision Log) — with a
+   first-class **Settings UI** (M5) letting a user choose a "prefer grapheme width"
+   default for sessions, which a program's DECSET/DECRST still overrides.
 
 Non-goals (explicitly out of scope, record as decisions, do not implement here):
 
@@ -298,7 +303,10 @@ Non-goals (explicitly out of scope, record as decisions, do not implement here):
 - **Reimplementing UAX #29 segmentation in Swift.** The engine is the single source
   of truth. The Swift side must *consume* the engine's width, never re-derive
   grapheme boundaries itself (see Decision Log).
-- **Defaulting mode 2027 ON.** Stays opt-in.
+- **Shipping with mode 2027 forced ON out of the box.** The factory default stays
+  OFF/opt-in. A user *may* opt into a "prefer grapheme width" default via the new
+  Settings UI (M5), but Laban never forces it on without the user choosing it, and
+  a program's DECSET/DECRST still overrides the per-session default.
 
 ## Plan of Work
 
@@ -482,16 +490,97 @@ the pinned table is no longer the source of truth for grid-derived text.
 documented demo transcript shows Laban replying `ESC [ ? 2027 ; 1 $ y` after
 `?2027h` and the emoji occupying 2 columns.
 
-### M5 — Elite polish (optional)
+### M5 — Settings UI for Unicode width
+
+**Why it matters:** mode 2027 is normally negotiated by the running program, but a
+user has no way to express a *default* preference or to make modern TUIs that
+*don't* negotiate (or that assume an always-on terminal, like programs tuned for
+wezterm) render emoji correctly. This milestone adds a first-class, discoverable
+preference in Laban's native Settings window. A user can open Settings, pick how
+Laban should treat Unicode width, and see emoji line up — without any program
+sending an escape sequence.
+
+**Where the settings UI lives (orientation, so this milestone is self-contained):**
+Laban has one native settings window, `Sources/LabanApp/SettingsWindowController.swift`
+(~375 lines). Each preference is a row built from either an `NSPopUpButton` (multi-
+choice, e.g. `cursorStylePopUp`, `scrollModePopUp`, `identityPopUp`) or an
+`NSButton(checkboxWithTitle:)` (toggle, e.g. `restoreCheckbox`, `blinkCheckbox`),
+labelled with the `makeLabel(_:)` helper, and a `@objc` change handler that writes
+to a typed settings store. The typed stores live in `Sources/LabanCore/*Settings.swift`
+(e.g. `CursorSettings.swift`, `ScrollSettings.swift`, `TerminalIdentitySettings.swift`,
+`Persistence/RestoreOnLaunchSettings.swift`); each wraps a `UserDefaults` key with
+static `current`/`set(...)` accessors over a small enum. Copy that exact pattern.
+
+**What to build:**
+
+1. **New typed store** `Sources/LabanCore/GraphemeWidthSettings.swift` mirroring
+   `TerminalIdentitySettings.swift`: an enum
+   `GraphemeWidthMode { case auto, preferGrapheme }` persisted under a
+   `UserDefaults` key (e.g. `"LabanGraphemeWidthMode"`), default `.auto`. Plain
+   English of each option:
+   - **Auto (recommended, default):** a new terminal session starts with mode 2027
+     OFF; programs opt in by sending `ESC [ ? 2027 h`. This is today's behavior and
+     the safe default (see the `fish` rationale in the Decision Log).
+   - **Prefer grapheme width:** a new session starts with mode 2027 ON, so emoji and
+     clusters use grapheme width immediately; a program can still turn it off with
+     `ESC [ ? 2027 l` (the per-session default is a starting point, not a lock — this
+     matches Ghostty, where a program's DECSET/DECRST overrides the configured
+     default).
+   - (A third "force legacy / ignore program toggles" lock is intentionally **not**
+     shipped here — it needs an engine "frozen mode" capability, like Contour's
+     `frozen_dec_modes`, that the current C API does not expose. Note it as future
+     work in M6.)
+
+2. **New Settings row.** In `SettingsWindowController.swift`, add a
+   `graphemeWidthPopUp = NSPopUpButton(...)` with the two titles ("Auto
+   (recommended)", "Prefer grapheme width"), a `makeLabel("Unicode width")`, an
+   `@objc graphemeWidthChanged(_:)` handler calling `GraphemeWidthSettings.set(...)`,
+   and initialize its selection from `GraphemeWidthSettings.current` in the same
+   place the other popups are populated. Place it logically near the cursor/scroll
+   rows.
+
+3. **Apply the preference to the engine at session start.** When a session is
+   created (the C entry is `laban_session_create` in
+   `Sources/LabanTerminalCore/include/LabanTerminalCore.h`; the Swift backend
+   wiring is around `TerminalBackendSettings.swift` / session setup in
+   `LabanCore`), if the mode is `.preferGrapheme`, set the engine mode ON right
+   after creation using the same call `terminal_effects.c` already uses for other
+   modes — `ghostty_terminal_mode_set(terminal, GHOSTTY_MODE_GRAPHEME_CLUSTER,
+   true)`. For `.auto`, do nothing (engine default is OFF). Either add an initial-
+   mode field to `LabanLaunchConfig` or set it immediately post-create; pick one in
+   a Decision Log entry. Existing sessions are unaffected until they restart (state
+   the preference applies to *new* sessions; do not retroactively toggle live
+   sessions, to avoid the mid-session reflow the Decision Log warns about).
+
+4. **Observability/parity (hard rule):** the `GET /debug/terminal-modes` endpoint
+   from M1 already reports the effective 2027 state; that is sufficient to verify
+   the setting's effect headlessly (a fresh session under `.preferGrapheme` reports
+   2027 active before any program output).
+
+**Acceptance (observable):**
+- A `LabanAppTests` test constructs `SettingsWindowController`, selects "Prefer
+  grapheme width", and asserts `GraphemeWidthSettings.current == .preferGrapheme`
+  and the `UserDefaults` key is written (mirror the existing settings tests, e.g.
+  the cursor/restore settings tests).
+- A headless test sets `GraphemeWidthSettings` to `.preferGrapheme`, starts a fresh
+  session, and asserts `GET /debug/terminal-modes` reports `grapheme_cluster_2027:
+  true` **before** any program sends a sequence; with `.auto` it reports `false`
+  until a program sends `ESC [ ? 2027 h`.
+- Manual: open Settings, switch "Unicode width" to "Prefer grapheme width", open a
+  new tab, `printf '👩‍🌾'`, and observe a single 2-cell emoji (capture screenshot
+  in Artifacts).
+
+### M6 — Elite polish (optional)
 
 - Write/append an ADR under `docs/adr/` recording the mode-2027 contract: engine is
-  the single source of truth, default OFF/opt-in, DECRPM semantics, and the
-  kitty-text-sizing-protocol non-goal. (Check `docs/adr/README.md` first.)
-- Optionally expose a Laban config to default-enable 2027 for power users (default
-  stays OFF). Ghostty itself has a `grapheme-width-method`; do **not** wire a
-  conflicting Laban setting without an ADR.
+  the single source of truth, factory default OFF/opt-in with a user-selectable
+  "prefer grapheme width" default, DECRPM semantics, and the kitty-text-sizing-
+  protocol non-goal. (Check `docs/adr/README.md` first.)
+- Note as future work: a "force legacy / freeze mode against program toggles"
+  setting option, which needs an engine frozen-mode capability (cf. Contour
+  `frozen_dec_modes`) not in the current C API.
 - Update `Sources/LabanCore/TerminalDisplayWidth.swift` doc comment to reflect its
-  demoted role.
+  demoted role (fallback, not the model).
 
 ## Decision Log
 
@@ -532,6 +621,18 @@ documented demo transcript shows Laban replying `ESC [ ? 2027 ; 1 $ y` after
   recorded here and treated as authoritative; if the engine reports 3/4 for its own
   reasons, defer to it rather than overriding.
   Date/Author: 2026-06-19, plan author (folded in from independent review).
+- Decision: The "Unicode width" Settings preference (M5) sets the **per-session
+  starting default** for mode 2027; a program's `DECSET/DECRST 2027` still
+  overrides it at runtime. Laban ships two options (Auto = start OFF; Prefer
+  grapheme width = start ON). A hard "freeze / ignore the program's toggle" option
+  is deferred.
+  Rationale: Setting-as-default-with-program-override matches Ghostty's model and is
+  implementable with the existing C API (`ghostty_terminal_mode_set` at session
+  start). A true freeze would need an engine frozen-mode capability (cf. Contour's
+  `frozen_dec_modes`) the vendored C API does not expose, so it is out of scope for
+  this plan. The preference applies to *new* sessions only — live sessions are not
+  retroactively toggled, to avoid a mid-session grid reflow.
+  Date/Author: 2026-06-19, plan author (settings UI added per user request).
 
 ## Review Gate
 
@@ -558,6 +659,11 @@ gate passes. See `../../PLANS.md` "Review gate and review-fix loop".
       equivalent) exists and passes; it covers ASCII, CJK, ZWJ emoji, regional
       indicator, skin-tone modifier, Hangul, Devanagari cluster, and VS15/VS16
       under both modes.
+- [ ] M5: `Sources/LabanCore/GraphemeWidthSettings.swift` exists with a default of
+      `.auto`; a test sets it to `.preferGrapheme` and asserts a fresh session
+      reports `grapheme_cluster_2027: true` via `GET /debug/terminal-modes` before
+      any program output, and `false` under `.auto`. `grep -n "graphemeWidthPopUp\|Unicode width"
+      Sources/LabanApp/SettingsWindowController.swift` shows the row is wired.
 - [ ] M3 regression guard: `swift test --filter TerminalFindTests` and
       `swift test --filter TerminalSelectionTests` exit 0, and the mode-OFF
       scrollback column outputs are unchanged from the pre-M3 baseline (the demoted
