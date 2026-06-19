@@ -146,8 +146,20 @@ autonomous-verifiability rule.
       uses ghostty's formatter (not engine cells), so width is sourced via a
       parallel grid-ref walk aligning grid screen-row R to formatter row R.
 - [ ] M4 — Conformance fixture + end-to-end handshake demo.
-- [ ] M5 — Settings UI: a user-facing "Unicode width" preference (Auto /
-      Prefer grapheme width) wired into the native Settings window + the engine.
+- [x] (2026-06-19) M5 — Settings UI. New `Sources/LabanCore/GraphemeWidthSettings.swift`
+      (`enum GraphemeWidthMode { auto, preferGrapheme }`, default `.auto`, key
+      `LabanGraphemeWidthMode`); an "Unicode width" `NSPopUpButton` row in
+      `SettingsWindowController`; engine wiring via a new C bridge
+      `laban_session_set_grapheme_cluster_mode` called from `Session.init`
+      `applyGraphemeWidthPreference()` — the single creation funnel both the app
+      and the headless runtime route through (new sessions only; `.auto` leaves the
+      engine OFF). **Decision (chosen): post-create bridge call from `Session.init`,
+      not a `LabanLaunchConfig` field** — reaches both runtimes with no per-factory
+      duplication. Tests: store (13), settings-UI (4), headless (4) — the headless
+      test proves `.preferGrapheme` → fresh session reports `grapheme_cluster_2027:
+      true` before any output via `GET /debug/terminal-modes`, `.auto` → false, and
+      a program's DECSET/DECRST overrides either default. `swift build` +
+      `Mode2027`/`GraphemeWidth`/`LabanDebugSmokeTests` green.
 - [ ] M6 (optional, elite polish) — ADR, kitty-protocol non-goal, doc-comment
       demotion.
 - [ ] Review Gate passed.

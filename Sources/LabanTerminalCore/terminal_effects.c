@@ -194,6 +194,14 @@ int laban_session_reset_synchronized_output(LabanSession *s) {
     return r == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
+int laban_session_set_grapheme_cluster_mode(LabanSession *s, int enabled) {
+    if (!s) return -1;
+    SESSION_LOCK(s);
+    GhosttyResult r = ghostty_terminal_mode_set(
+        s->terminal, GHOSTTY_MODE_GRAPHEME_CLUSTER, enabled ? true : false);
+    return r == GHOSTTY_SUCCESS ? 0 : -1;
+}
+
 int laban_session_set_color_scheme(LabanSession *s, int color_scheme) {
     if (!s) return -1;
     if (color_scheme != LABAN_COLOR_SCHEME_LIGHT &&

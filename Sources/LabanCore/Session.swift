@@ -244,6 +244,20 @@ public final class Session {
     }
     self.handle = h
     installShellIntegrationCallback()
+    applyGraphemeWidthPreference()
+  }
+
+  /// Seed the new session's DEC mode 2027 starting state from the user's
+  /// "Unicode width" preference. This is the single shared funnel every
+  /// session-creation path (`fixture`, `realShell`, `debugShell`,
+  /// `makeDeferred`) routes through, so both the app and the headless runtime
+  /// pick the preference up here with no per-factory duplication. `.auto`
+  /// leaves the engine default (OFF) untouched; `.preferGrapheme` enables the
+  /// mode immediately so emoji/clusters use grapheme width before any program
+  /// output. Applies to NEW sessions only — live sessions are never toggled.
+  private func applyGraphemeWidthPreference() {
+    guard GraphemeWidthSettings.current() == .preferGrapheme else { return }
+    setGraphemeClusterMode(true)
   }
 
   /// Register the OSC 133 observer once at creation. Unlike the bell and
@@ -1027,6 +1041,18 @@ public final class Session {
     defer { handleLock.unlock() }
     guard !isClosed, let h = handle else { return -1 }
     return laban_session_reset_synchronized_output(h)
+  }
+
+  /// Enable or disable DEC private mode 2027 (grapheme-cluster width) on the
+  /// engine. Used at session creation to seed the per-session starting default
+  /// from the "Unicode width" preference; a running program's
+  /// `ESC [ ? 2027 h/l` still overrides it afterward.
+  @discardableResult
+  public func setGraphemeClusterMode(_ enabled: Bool) -> Int32 {
+    handleLock.lock()
+    defer { handleLock.unlock() }
+    guard !isClosed, let h = handle else { return -1 }
+    return laban_session_set_grapheme_cluster_mode(h, enabled ? 1 : 0)
   }
 
   public func bellCount() -> UInt64 {

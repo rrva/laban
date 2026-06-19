@@ -949,6 +949,17 @@ int laban_session_synchronized_output_active(LabanSession *session, int *out_act
 /* Resets synchronized output mode (DEC private 2026), matching the renderer watchdog. */
 int laban_session_reset_synchronized_output(LabanSession *session);
 
+/*
+ * Enable (non-zero) or disable (zero) DEC private mode 2027 (grapheme-cluster /
+ * "Unicode core" width) on the session's engine, under the session lock. This
+ * is how the "Unicode width" user preference seeds a NEW session's starting
+ * mode: the app/headless session setup calls it with enabled=1 right after
+ * create when the preference is "prefer grapheme width". A running program's
+ * `ESC [ ? 2027 h` / `l` still overrides it afterward (the engine owns the live
+ * mode state). Returns 0 on success, -1 on a NULL session or engine error.
+ */
+int laban_session_set_grapheme_cluster_mode(LabanSession *session, int enabled);
+
 /* Store the host light/dark scheme used for color-scheme DSR replies. */
 int laban_session_set_color_scheme(LabanSession *session, int color_scheme);
 

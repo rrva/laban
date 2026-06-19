@@ -24,6 +24,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     checkboxWithTitle: "Restore tabs on launch", target: nil, action: nil)
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: "Blink cursor", target: nil, action: nil)
 
@@ -35,6 +36,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let identityOptions: [TerminalIdentity] = [.laban, .ghosttyCompat]
   private let cursorStyleOptions: [CursorSettings.Style] = CursorSettings.Style.allCases
   private let scrollModeOptions: [ScrollSettings.Mode] = ScrollSettings.Mode.allCases
+  private let graphemeWidthOptions: [GraphemeWidthMode] = GraphemeWidthMode.allCases
 
   init(
     theme: ThemeMenuController,
@@ -155,6 +157,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       + "finger continuously and settles on a whole line at rest; "
       + "line-quantized moves in whole lines only."
 
+    graphemeWidthPopUp.target = self
+    graphemeWidthPopUp.action = #selector(graphemeWidthChanged(_:))
+    for option in graphemeWidthOptions {
+      graphemeWidthPopUp.addItem(withTitle: graphemeWidthTitle(option))
+    }
+    graphemeWidthPopUp.toolTip =
+      "How new sessions start measuring Unicode width (DEC mode 2027). Auto "
+      + "starts off and lets programs opt in; prefer grapheme width starts on "
+      + "so emoji and clusters line up immediately. A program can still toggle "
+      + "it at runtime. Applies to new sessions."
+
     let grid = NSGridView(views: [
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
@@ -162,6 +175,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [makeLabel("Cursor:"), cursorStylePopUp],
       [NSGridCell.emptyContentView, blinkCheckbox],
       [makeLabel("Scroll:"), scrollModePopUp],
+      [makeLabel("Unicode width:"), graphemeWidthPopUp],
       [makeLabel("Renderer:"), rendererPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
@@ -231,6 +245,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     if let row = scrollModeOptions.firstIndex(of: ScrollSettings.mode) {
       scrollModePopUp.selectItem(at: row)
     }
+    if let row = graphemeWidthOptions.firstIndex(of: GraphemeWidthSettings.current()) {
+      graphemeWidthPopUp.selectItem(at: row)
+    }
   }
 
   // MARK: Actions
@@ -299,6 +316,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     ScrollSettings.setMode(scrollModeOptions[row])
   }
 
+  @objc private func graphemeWidthChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < graphemeWidthOptions.count else { return }
+    GraphemeWidthSettings.set(graphemeWidthOptions[row])
+  }
+
   @objc private func blinkChanged(_ sender: NSButton) {
     CursorSettings.setBlinkEnabled(sender.state == .on)
   }
@@ -363,6 +386,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     switch mode {
     case .pixelSmooth: return "Pixel-smooth"
     case .lineQuantized: return "Line-quantized"
+    }
+  }
+
+  private func graphemeWidthTitle(_ mode: GraphemeWidthMode) -> String {
+    switch mode {
+    case .auto: return "Auto (recommended)"
+    case .preferGrapheme: return "Prefer grapheme width"
     }
   }
 
