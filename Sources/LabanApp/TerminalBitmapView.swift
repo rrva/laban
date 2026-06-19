@@ -11,6 +11,61 @@ import Quartz
 import QuartzCore
 import UserNotifications
 
+struct GPUCellPayloadFailureNotificationPolicy {
+  struct Request: Equatable {
+    var identifier: String
+    var title: String
+    var subtitle: String?
+    var body: String
+    var playsSound: Bool
+  }
+
+  static let identifier = "gpu-cell-payload-failure"
+  static let notificationsDisabledDefaultsKey = "LabanDisableGPUFailureNotifications"
+  static let lastNotificationDefaultsKey = "LabanGPUFailureNotificationLastPostedAt"
+  static let defaultRateLimit: TimeInterval = 5 * 60
+
+  private let defaults: UserDefaults
+  private let rateLimit: TimeInterval
+
+  init(
+    defaults: UserDefaults = .standard,
+    rateLimit: TimeInterval = Self.defaultRateLimit
+  ) {
+    self.defaults = defaults
+    self.rateLimit = rateLimit
+  }
+
+  mutating func notificationRequest(
+    for failure: MetalRenderer.GPUCellPayloadBuildFailure,
+    dumpPath: String?,
+    now: Date = Date()
+  ) -> Request? {
+    guard !defaults.bool(forKey: Self.notificationsDisabledDefaultsKey) else {
+      return nil
+    }
+    if let lastNotificationInterval = defaults.object(
+      forKey: Self.lastNotificationDefaultsKey) as? Double,
+      rateLimit > 0,
+      now.timeIntervalSince(
+        Date(timeIntervalSinceReferenceDate: lastNotificationInterval)) < rateLimit
+    {
+      return nil
+    }
+
+    defaults.set(
+      now.timeIntervalSinceReferenceDate,
+      forKey: Self.lastNotificationDefaultsKey)
+    return Request(
+      identifier: Self.identifier,
+      title: "Laban GPU renderer fallback",
+      subtitle: dumpPath == nil ? nil : "Render journal dumped",
+      body:
+        "Payload build failed: \(failure.reason) at row \(failure.row), col \(failure.col).",
+      playsSound: true)
+  }
+}
+
 final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   QLPreviewPanelDataSource, QLPreviewPanelDelegate
 {
@@ -166,6 +221,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var gpuCellCommandFallbackPending = false
   private var lastAutoDumpedGPUCellPayloadFailureSignature: String?
   private var lastGPUCellPayloadFailureAutoDumpAt: Date?
+  private var gpuCellPayloadFailureNotificationPolicy =
+    GPUCellPayloadFailureNotificationPolicy()
   private var themeChangeObserver: NSObjectProtocol?
   private var reduceMotionObserver: NSObjectProtocol?
   private var cursorSettingsObserver: NSObjectProtocol?
@@ -2534,18 +2591,25 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     _ failure: MetalRenderer.GPUCellPayloadBuildFailure,
     dumpPath: String?
   ) {
+    guard
+      let notification = gpuCellPayloadFailureNotificationPolicy.notificationRequest(
+        for: failure,
+        dumpPath: dumpPath)
+    else { return }
+
     NSSound.beep()
     guard Bundle.main.bundleIdentifier != nil else { return }
     let content = UNMutableNotificationContent()
-    content.title = "Laban GPU renderer fallback"
-    content.body =
-      "Payload build failed: \(failure.reason) at row \(failure.row), col \(failure.col)."
-    if dumpPath != nil {
-      content.subtitle = "Render journal dumped"
+    content.title = notification.title
+    content.body = notification.body
+    if let subtitle = notification.subtitle {
+      content.subtitle = subtitle
     }
-    content.sound = .default
+    if notification.playsSound {
+      content.sound = .default
+    }
     let request = UNNotificationRequest(
-      identifier: "gpu-cell-payload-\(UUID().uuidString)",
+      identifier: notification.identifier,
       content: content,
       trigger: nil)
     let center = UNUserNotificationCenter.current()

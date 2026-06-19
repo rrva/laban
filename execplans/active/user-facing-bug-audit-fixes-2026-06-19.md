@@ -93,7 +93,9 @@ crash in normal use; they are bundled into M3 as a single low-risk
 - [ ] M4 — Accessibility for the terminal surface (BUG-02, 22, 23).
 - [ ] M5 — App lifecycle & data safety (BUG-04, 05, 14, 16, 27).
 - [ ] M6 — Raw→canonical input-drop integrity (BUG-06; ADR + formal-spec gated).
-- [ ] M7 — GPU-failure notification rate limiting (BUG-21).
+- [x] (2026-06-19) M7 — GPU-failure notification rate limiting
+      (BUG-21). Added defaults-backed global throttling and disable preference
+      for GPU cell payload failure notifications.
 - [ ] Review Gate passed.
 
 Milestones are independently shippable; M1–M4 are highest user value and have no
@@ -550,3 +552,10 @@ Review findings (filled in by the review agent):
   source-level static check plus build validation.
   `./scripts/build-app` exited 0. Review Gate remains unchecked for the required
   separate verifier.
+- M7 executor validation (2026-06-19): `swift test --filter
+  GPUCellPayloadFailureNotificationPolicyTests`, `git diff --check`, and
+  `./scripts/build-app` passed. The notification request identifier is now
+  stable (`gpu-cell-payload-failure`), the global throttle timestamp is shared
+  through `UserDefaults`, and `LabanDisableGPUFailureNotifications` suppresses
+  GPU-failure notification requests before the beep/banner path. Review Gate
+  remains unchecked for the required separate verifier.
