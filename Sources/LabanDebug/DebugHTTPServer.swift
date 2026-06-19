@@ -121,6 +121,14 @@ public final class DebugHTTPServer {
     },
     DebugHTTPRoute(
       method: "GET",
+      path: "/debug/terminal-modes",
+      category: "state",
+      summary: "Return active-session DEC private mode state (grapheme cluster 2027, sync output, focus, mouse)."
+    ) { runtime, _, _ in
+      json(runtime.terminalModes())
+    },
+    DebugHTTPRoute(
+      method: "GET",
       path: "/debug/screenshot",
       category: "artifacts",
       summary: "Return the current rendered surface as PNG bytes."

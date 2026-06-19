@@ -2673,6 +2673,56 @@ final class LabanSessionTests: XCTestCase {
       "DECRQM wraparound reply mismatch; got \(asString.debugDescription)")
   }
 
+  /// M1 handshake regression: DECSET/DECRST 2027 toggles the engine's grapheme
+  /// cluster mode, the snapshot reflects it via `grapheme_cluster_2027`, and the
+  /// DECRQM `?2027$p` query returns the matching DECRPM reply (SET=1 / RESET=2).
+  /// Pins the behavior M0 measured. Modeled on
+  /// `testDECRQMModeQueryUsesTerminalState`.
+  func testMode2027HandshakeAndSnapshotField() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("laban_session_create returned non-zero")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    func graphemeClusterActive() -> Bool {
+      var snapPtr: UnsafeMutablePointer<LabanSnapshot>?
+      guard laban_session_snapshot(session, &snapPtr) == 0, let snapPtr else {
+        XCTFail("snapshot failed")
+        return false
+      }
+      defer { laban_snapshot_destroy(snapPtr) }
+      return snapPtr.pointee.grapheme_cluster_2027 != 0
+    }
+
+    // Default: mode 2027 OFF.
+    XCTAssertFalse(
+      graphemeClusterActive(),
+      "mode 2027 should default OFF in the snapshot")
+
+    // DECSET 2027 → snapshot reports ON, DECRQM reply is SET (1).
+    writeBytes(session, Array("\u{1b}[?2027h".utf8))
+    XCTAssertTrue(
+      graphemeClusterActive(),
+      "after DECSET ?2027h the snapshot should report grapheme_cluster_2027 ON")
+    writeBytes(session, Array("\u{1b}[?2027$p".utf8))
+    let setReply = String(bytes: drainResponse(session), encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      setReply, "\u{1b}[?2027;1$y",
+      "DECRQM ?2027$p reply when SET mismatch; got \(setReply.debugDescription)")
+
+    // DECRST 2027 → snapshot reports OFF, DECRQM reply is RESET (2).
+    writeBytes(session, Array("\u{1b}[?2027l".utf8))
+    XCTAssertFalse(
+      graphemeClusterActive(),
+      "after DECRST ?2027l the snapshot should report grapheme_cluster_2027 OFF")
+    writeBytes(session, Array("\u{1b}[?2027$p".utf8))
+    let resetReply = String(bytes: drainResponse(session), encoding: .utf8) ?? ""
+    XCTAssertEqual(
+      resetReply, "\u{1b}[?2027;2$y",
+      "DECRQM ?2027$p reply when RESET mismatch; got \(resetReply.debugDescription)")
+  }
+
   func testInBandResizeReportIsEmittedWhenMode2048IsEnabled() {
     guard let session = makeFixtureSession(rows: 24, cols: 80) else {
       XCTFail("laban_session_create returned non-zero")

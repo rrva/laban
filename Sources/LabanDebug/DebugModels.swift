@@ -168,6 +168,24 @@ struct AccessibilityResponse: Encodable {
   var display: AccessibilityDisplayFlagsResponse
 }
 
+/// Effective DEC private mode state for the active session, read from a fresh
+/// snapshot. Lets autonomous verification observe the mode-2027 handshake
+/// (`ESC [ ? 2027 h/l`) and the sibling per-snapshot mode booleans without
+/// driving a real program.
+struct TerminalModesResponse: Encodable {
+  var graphemeCluster2027: Bool
+  var synchronizedOutput: Bool
+  var focusReporting: Bool
+  var mouseTracking: Bool
+
+  enum CodingKeys: String, CodingKey {
+    case graphemeCluster2027 = "grapheme_cluster_2027"
+    case synchronizedOutput = "synchronized_output"
+    case focusReporting = "focus_reporting"
+    case mouseTracking = "mouse_tracking"
+  }
+}
+
 struct ActionResult: Encodable {
   var ok: Bool
   var frame: Int

@@ -125,6 +125,11 @@ typedef struct {
        presentation of this snapshot until the program ends the synchronized
        update, so multi-client (laband) clients don't show half-drawn frames. */
     int synchronized_output;
+    /* DEC private mode 2027 (grapheme-cluster / Unicode core width) active: the
+       engine segments output into grapheme clusters and assigns each cluster a
+       single display width. A program opts in with `ESC [ ? 2027 h`. Reported so
+       width consumers and debug observability can see the negotiated mode. */
+    int grapheme_cluster_2027;
     int dirty;
     uint32_t default_foreground_rgba;
     uint32_t default_background_rgba;

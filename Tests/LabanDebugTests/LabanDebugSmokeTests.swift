@@ -101,6 +101,43 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(display["reduceTransparency"] as? Bool, true)
   }
 
+  func testDebugHTTPServerTerminalModesReflectsMode2027Handshake() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-terminal-modes")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let server = DebugHTTPServer(runtime: runtime)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+    let url = URL(string: readiness.debugServer + "/debug/terminal-modes")!
+
+    func modes() throws -> [String: Any] {
+      let ok = try httpGet(url, token: readiness.debugToken)
+      XCTAssertEqual(ok.status, 200)
+      return try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
+    }
+
+    func feed(_ text: String) throws {
+      let action = try JSONSerialization.data(
+        withJSONObject: ["action": "feedOutput", "text": text])
+      XCTAssertEqual(runtime.applyAction(action).status, 200)
+    }
+
+    // Default: mode 2027 OFF.
+    XCTAssertEqual(try modes()["grapheme_cluster_2027"] as? Bool, false)
+
+    // DECSET 2027 → endpoint reports ON.
+    try feed("\u{1b}[?2027h")
+    XCTAssertEqual(
+      try modes()["grapheme_cluster_2027"] as? Bool, true,
+      "GET /debug/terminal-modes should report grapheme_cluster_2027 ON after DECSET")
+
+    // DECRST 2027 → endpoint reports OFF again.
+    try feed("\u{1b}[?2027l")
+    XCTAssertEqual(
+      try modes()["grapheme_cluster_2027"] as? Bool, false,
+      "GET /debug/terminal-modes should report grapheme_cluster_2027 OFF after DECRST")
+  }
+
   func testDebugHTTPServerWaitDoesNotBlockHealthRequest() throws {
     let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-wait-concurrent")
     defer { try? FileManager.default.removeItem(at: artifacts) }

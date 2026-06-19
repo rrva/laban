@@ -32,6 +32,14 @@ final class MainWindowController: NSWindowController {
     terminalView?.debugAccessibilityState()
   }
 
+  /// GUI parity for the headless `/debug/terminal-modes` endpoint: the active
+  /// session's effective DEC private mode state (grapheme cluster 2027 + sync
+  /// output, focus, mouse), so the mode-2027 handshake is queryable from the
+  /// headful path too.
+  func terminalModesDebugState() -> [String: Any]? {
+    terminalView?.debugTerminalModesState()
+  }
+
   static func makeAndShow(
     restoring restoredState: WorkspaceState? = nil,
     persistenceSyncEnabled: Bool = true,

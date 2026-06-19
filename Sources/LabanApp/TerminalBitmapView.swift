@@ -6528,6 +6528,30 @@ extension TerminalBitmapView {
     ]
   }
 
+  /// Effective DEC private mode state for the active session, read from a fresh
+  /// snapshot. GUI parity for the headless `/debug/terminal-modes` endpoint so
+  /// the mode-2027 (grapheme cluster) handshake is observable from both paths.
+  func debugTerminalModesState() -> [String: Any] {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snap = session.snapshot()
+    else {
+      return [
+        "grapheme_cluster_2027": false,
+        "synchronized_output": false,
+        "focus_reporting": false,
+        "mouse_tracking": false,
+      ]
+    }
+    defer { laban_snapshot_destroy(snap) }
+    return [
+      "grapheme_cluster_2027": snap.pointee.grapheme_cluster_2027 != 0,
+      "synchronized_output": snap.pointee.synchronized_output != 0,
+      "focus_reporting": snap.pointee.focus_reporting != 0,
+      "mouse_tracking": snap.pointee.mouse_tracking != 0,
+    ]
+  }
+
   /// Enable the Metal drawable→CPU readback so `/scroll/screenshot.png` returns a
   /// fresh frame. A no-op on the software backend (which always keeps the last
   /// CGImage). Costs a per-frame blit, acceptable for a debug session.

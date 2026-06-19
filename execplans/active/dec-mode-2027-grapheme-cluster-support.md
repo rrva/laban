@@ -113,8 +113,14 @@ autonomous-verifiability rule.
       (not re-derived) — so M3 adds width at extraction time; no scroll-off
       snapshot needed. Test `Tests/LabanTerminalCoreTests/Mode2027CharacterizationTests.swift`
       (5 tests). nm confirms grapheme tables compiled into the vendored `.a`.
-- [ ] M1 — Lock the engine handshake (DECSET/DECRST/DECRQM 2027) + debug
-      observability.
+- [x] (2026-06-19) M1 — Locked the handshake + observability. Added
+      `LabanSnapshot.grapheme_cluster_2027` (mirrors the mode-2026
+      `synchronized_output` field) and a `GET /debug/terminal-modes` endpoint wired
+      into both `HeadlessDebugRuntime` and `MainWindowController` (parity). Tests:
+      `testMode2027HandshakeAndSnapshotField` (DECSET→`?2027;1$y`+field true;
+      DECRST→`?2027;2$y`+field false) and
+      `testDebugHTTPServerTerminalModesReflectsMode2027Handshake`. `swift build` +
+      `swift test --filter Mode2027`/debug-smoke green.
 - [ ] M2 — Grid & cursor-advance conformance under both modes.
 - [ ] M3 — Swift width-consumer coherence (scrollback find/copy, word select, IME)
       under both modes.

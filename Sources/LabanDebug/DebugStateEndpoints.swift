@@ -44,6 +44,36 @@ extension HeadlessDebugRuntime {
     }
   }
 
+  /// Effective DEC private mode state for the active session, read from a fresh
+  /// in-process snapshot. Reports the mode-2027 (grapheme cluster) handshake
+  /// result plus the sibling per-snapshot mode booleans. Defaults to all-false
+  /// when the active session has no in-process snapshot (e.g. remote transport).
+  public func terminalModes() -> DebugResponse {
+    withRuntimeLock {
+      syncSessionMetadataUnlocked()
+      var graphemeCluster2027 = false
+      var synchronizedOutput = false
+      var focusReporting = false
+      var mouseTracking = false
+      if let activeTab = model.activeTab,
+        let session = model.session(forTab: activeTab.id),
+        let snapshot = session.snapshot()
+      {
+        defer { laban_snapshot_destroy(snapshot) }
+        graphemeCluster2027 = snapshot.pointee.grapheme_cluster_2027 != 0
+        synchronizedOutput = snapshot.pointee.synchronized_output != 0
+        focusReporting = snapshot.pointee.focus_reporting != 0
+        mouseTracking = snapshot.pointee.mouse_tracking != 0
+      }
+      return jsonEncode(
+        TerminalModesResponse(
+          graphemeCluster2027: graphemeCluster2027,
+          synchronizedOutput: synchronizedOutput,
+          focusReporting: focusReporting,
+          mouseTracking: mouseTracking))
+    }
+  }
+
   /// User cursor preferences plus the active session's DECSCUSR / mode-12
   /// override flags from a fresh snapshot. Override flags are nil when the
   /// active session has no in-process snapshot (remote transport).

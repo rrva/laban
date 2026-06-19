@@ -618,6 +618,9 @@ int laban_session_snapshot(LabanSession *s, LabanSnapshot **out_snapshot) {
     int synchronized_output = 0;
     (void)laban_session_mode_active_locked(s, GHOSTTY_MODE_SYNC_OUTPUT, &synchronized_output);
     snap->synchronized_output    = synchronized_output;
+    int grapheme_cluster_2027 = 0;
+    (void)laban_session_mode_active_locked(s, GHOSTTY_MODE_GRAPHEME_CLUSTER, &grapheme_cluster_2027);
+    snap->grapheme_cluster_2027  = grapheme_cluster_2027;
     snap->dirty                  = (dirty_state != GHOSTTY_RENDER_STATE_DIRTY_FALSE) ? 1 : 0;
     snap->default_foreground_rgba = default_fg;
     snap->default_background_rgba = default_bg;
