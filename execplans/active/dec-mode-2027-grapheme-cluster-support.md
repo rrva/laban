@@ -176,8 +176,12 @@ autonomous-verifiability rule.
       true` before any output via `GET /debug/terminal-modes`, `.auto` → false, and
       a program's DECSET/DECRST overrides either default. `swift build` +
       `Mode2027`/`GraphemeWidth`/`LabanDebugSmokeTests` green.
-- [ ] M6 (optional, elite polish) — ADR, kitty-protocol non-goal, doc-comment
-      demotion.
+- [x] (2026-06-19) M6 — Elite polish. Wrote `docs/adr/0021-dec-mode-2027-grapheme-cluster-width.md`
+      (engine = single source of truth; default OFF/opt-in + user-selectable
+      default; DECRQM SET/RESET; scrollback width via versioned extraction; kitty
+      text-sizing protocol and freeze-against-program-toggle as future work) and
+      indexed it in `docs/adr/README.md`. The `TerminalDisplayWidth` doc-comment
+      demotion to "fallback" already landed in M3.
 - [ ] Review Gate passed.
 
 Milestones are ordered: M0 is a *characterization* milestone whose output is the
