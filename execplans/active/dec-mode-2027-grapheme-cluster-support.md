@@ -145,7 +145,23 @@ autonomous-verifiability rule.
       TerminalSelectionTests 21, TerminalDisplayWidthTests 8). Discovery: extraction
       uses ghostty's formatter (not engine cells), so width is sourced via a
       parallel grid-ref walk aligning grid screen-row R to formatter row R.
-- [ ] M4 — Conformance fixture + end-to-end handshake demo.
+- [x] (2026-06-19) M4 — Conformance fixture + end-to-end handshake demo.
+      Test-only (no engine/source change — re-confirms the engine). New
+      `Tests/LabanCoreTests/TerminalWidthConformanceTests.swift` (7 tests) drives
+      the real fixture session and pins, in BOTH modes, the grid `wide` layout +
+      cursor advance (cross-checked against the engine's own `CSI 6n`), the
+      scrollback find columns (M3 `graphemeWidths` v2 path), and the scrollback
+      copy bytes — for ASCII, CJK, ZWJ farmer, ZWJ trans flag, regional pair,
+      skin-tone, Hangul, Devanagari conjunct, VS16, VS15. ON widths are hard
+      literals; a measurement test prints the full table (see Artifacts → M4
+      conformance table). Two measured surprises (documented, NOT gaps — each
+      agrees with CSI 6n): trans-flag OFF lays two NARROW cells (VS16 only widens
+      under clustering); Devanagari `क्षि` OFF lays THREE narrow cells (advance 3),
+      ON folds to one WIDE+tail (advance 2). The end-to-end demo is
+      `testHandshakeDemo_negotiateThenPrintFarmer` (asserts `ESC[?2027;2$y` →
+      `ESC[?2027;1$y` → `ESC[1;3R`) plus a reproducible `printf` transcript in
+      Artifacts. `swift build` + `swift test --filter TerminalWidthConformance`
+      (7) / `Mode2027` (19) green.
 - [x] (2026-06-19) M5 — Settings UI. New `Sources/LabanCore/GraphemeWidthSettings.swift`
       (`enum GraphemeWidthMode { auto, preferGrapheme }`, default `.auto`, key
       `LabanGraphemeWidthMode`); an "Unicode width" `NSPopUpButton` row in
@@ -701,10 +717,14 @@ gate passes. See `../../PLANS.md` "Review gate and review-fix loop".
 - [ ] M3: a scrollback find/copy test for `👩‍🌾` under mode ON returns column 2
       (not 4) and the exact cluster bytes; mutating the consumer back to the
       per-scalar `TerminalDisplayWidth` path makes it FAIL.
-- [ ] M4: `Tests/LabanCoreTests/TerminalWidthConformanceTests.swift` (or the C
-      equivalent) exists and passes; it covers ASCII, CJK, ZWJ emoji, regional
-      indicator, skin-tone modifier, Hangul, Devanagari cluster, and VS15/VS16
-      under both modes.
+- [x] M4: `Tests/LabanCoreTests/TerminalWidthConformanceTests.swift` exists and
+      passes (7 tests); it covers ASCII, CJK, ZWJ emoji (farmer + trans flag),
+      regional indicator, skin-tone modifier, Hangul, Devanagari cluster, and
+      VS15/VS16 under both modes (grid layout + cursor advance + CSI 6n cross-check
+      + scrollback find columns + scrollback copy bytes), with hard-coded ON
+      literals and a mutation-guard test. The end-to-end handshake demo
+      (`testHandshakeDemo_negotiateThenPrintFarmer`) asserts the DECRPM replies and
+      `ESC[1;3R`; transcript captured in Artifacts and Notes.
 - [ ] M5: `Sources/LabanCore/GraphemeWidthSettings.swift` exists with a default of
       `.auto`; a test sets it to `.preferGrapheme` and asserts a fresh session
       reports `grapheme_cluster_2027: true` via `GET /debug/terminal-modes` before
@@ -759,6 +779,78 @@ Review findings (filled in by the review agent):
   debugging source.
 
 ## Artifacts and Notes
+
+### M4 — End-to-end handshake demo (manual transcript + automated stand-in)
+
+A human reproduces the negotiation against an installed debug build
+(`LABAN_INSTALL_PATH="$HOME/Laban-2027.app" ./scripts/install-app`, then launch
+Laban yourself — never `open` it from a shell). In a Laban tab:
+
+```sh
+# 1) Ask whether mode 2027 is active (DECRQM). Default is OFF, so the reply is
+#    ESC [ ? 2027 ; 2 $ y  (";2" = RESET). Pipe through cat -v to see the bytes.
+printf '\e[?2027$p' ; sleep 0.1 ; echo        # reply: ^[[?2027;2$y
+
+# 2) Enable mode 2027 (DECSET), re-query — now SET (";1").
+printf '\e[?2027h' ; printf '\e[?2027$p' ; sleep 0.1 ; echo   # reply: ^[[?2027;1$y
+
+# 3) With mode 2027 ON, print the farmer emoji then ask the cursor position
+#    (CSI 6n). It reports column 3 — the cursor after a 2-cell cluster printed
+#    at column 1, i.e. the emoji occupied exactly 2 columns.
+printf '\e[?2027h\xF0\x9F\xA7\x91\xE2\x80\x8D\xF0\x9F\x8C\xBE\e[6n' ; sleep 0.1 ; echo
+#    reply: ^[[1;3R
+```
+
+Expected transcript (DECRPM reply bytes / cursor report), based on M0's measured
+values and confirmed by the automated test below:
+
+| Step | Sent | Laban replies |
+|---|---|---|
+| DECRQM (OFF) | `ESC [ ? 2027 $ p` | `ESC [ ? 2027 ; 2 $ y` (RESET) |
+| DECSET | `ESC [ ? 2027 h` | (none) |
+| DECRQM (ON) | `ESC [ ? 2027 $ p` | `ESC [ ? 2027 ; 1 $ y` (SET) |
+| print 👩‍🌾 + DSR | `…F09FA791E2808DF09F8CBE… ESC [ 6 n` | `ESC [ 1 ; 3 R` (col 3 ⇒ 2-cell advance) |
+
+Because a GUI run is not scriptable here, the automated stand-in is
+`TerminalWidthConformanceTests.testHandshakeDemo_negotiateThenPrintFarmer`
+(`Tests/LabanCoreTests/TerminalWidthConformanceTests.swift`): it runs the exact
+sequence through a real fixture session and asserts the DECRQM reply bytes
+(`ESC[?2027;2$y` then `ESC[?2027;1$y`) AND the resulting cursor report
+(`ESC[1;3R`). Result: **PASS**.
+
+### M4 — Conformance table (measured 2026-06-19 through the real bridge)
+
+Per grapheme, OFF (default) vs ON (`ESC[?2027h`). Grid = per-cell `wide` (`N`
+narrow, `W` wide head, `T` spacer tail); adv = `cursor_col` advance, which equals
+the engine's own `CSI 6n` column − 1 in every row (grid agrees with what a
+program is told); find = scrollback find end-column. Copy returns the exact input
+bytes in both modes (carries text, not width). Pinned as literals in
+`TerminalWidthConformanceTests`.
+
+| Grapheme | OFF grid / adv / find | ON grid / adv / find |
+|---|---|---|
+| `a` U+0061 | N / 1 / 1 | N / 1 / 1 |
+| `中` U+4E2D | W T / 2 / 2 | W T / 2 / 2 |
+| farmer U+1F9D1 ZWJ U+1F33E | W T W T / 4 / 4 | W T / 2 / 2 |
+| trans flag U+1F3F3 FE0F ZWJ U+26A7 FE0F | N N / 2 / 2 | W T / 2 / 2 |
+| regional `🇸🇪` U+1F1F8 U+1F1EA | W T W T / 4 / 4 | W T / 2 / 2 |
+| skin-tone `👋🏽` U+1F44B U+1F3FD | W T W T / 4 / 4 | W T / 2 / 2 |
+| Hangul `각` U+AC01 | W T / 2 / 2 | W T / 2 / 2 |
+| Devanagari `क्षि` U+0915 U+094D U+0937 U+093F | N N N / 3 / 3 | W T / 2 / 2 |
+| VS16 `▶️` U+25B6 U+FE0F | N / 1 / 1 | W T / 2 / 2 |
+| VS15 `▶︎` U+25B6 U+FE0E | N / 1 / 1 | N / 1 / 1 |
+
+Measured nuances (NOT engine gaps — each agrees with the engine's own CSI 6n):
+- **Trans flag OFF = two NARROW cells (advance 2).** Both emoji bases (🏳 U+1F3F3,
+  ⚧ U+26A7) stay narrow with mode OFF because their VS16 emoji-presentation only
+  widens under clustering — the same VS16 nuance the standalone `▶️` row shows.
+- **Devanagari OFF = three NARROW cells (advance 3), ON = one WIDE+tail (advance
+  2).** The legacy rule does not collapse the conjunct (the virama U+094D combines
+  to 0, but the two consonants + the vowel sign each take a cell); clustering folds
+  the whole human-perceived grapheme into one 2-cell unit. So Devanagari is
+  *narrower-per-cell but more cells* OFF, and a compact 2-cell cluster ON.
+- **Hangul precomposed U+AC01 = WIDE+tail in both modes** — no surprise, a single
+  2-cell syllable; clustering does not change it.
 
 Research sources consulted while authoring (knowledge embedded above; links for
 provenance only — the plan is self-contained without them):
