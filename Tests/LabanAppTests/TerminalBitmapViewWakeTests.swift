@@ -156,6 +156,68 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
     )
   }
 
+  func testCloseTabUndoRestoresTabWithSameCommandAndCwd() throws {
+    let harness = try makeHarness()
+    let undoManager = UndoManager()
+    harness.view.undoManagerForTesting = undoManager
+
+    let cwd = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-close-undo-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: cwd) }
+    let argv = ["/bin/zsh", "-l"]
+    var launches: [(cwd: String?, argv: [String])] = []
+    harness.model.commandSessionFactory = { size, cwd, argv in
+      launches.append((cwd, argv))
+      return try Session.fixture(size: size)
+    }
+
+    let closed = try harness.model.createTab(runningArgv: argv, cwd: cwd.path)
+    try harness.model.updateTitleMetadata(
+      forTab: closed.id,
+      workspace: TabWorkspaceMetadata(cwd: cwd.path))
+    XCTAssertEqual(harness.model.activeTab?.id, closed.id)
+
+    harness.view.closeTab(nil)
+    XCTAssertEqual(harness.model.tabs.count, 1)
+    XCTAssertNil(harness.model.tabs.first { $0.id == closed.id })
+
+    XCTAssertTrue(undoManager.canUndo)
+    undoManager.undo()
+
+    XCTAssertEqual(harness.model.tabs.count, 2)
+    let restored = try XCTUnwrap(harness.model.activeTab)
+    XCTAssertEqual(harness.model.launchArgv(forTab: restored.id), argv)
+    XCTAssertEqual(launches.last?.cwd, cwd.path)
+    XCTAssertEqual(launches.last?.argv, argv)
+  }
+
+  func testAutoQuitEnvironmentPostsDebugObservableNoticeBeforeTimerFires() throws {
+    let saved = getenv("LABAN_AUTO_QUIT_AFTER_SECONDS").map { String(cString: $0) }
+    setenv("LABAN_AUTO_QUIT_AFTER_SECONDS", "3600", 1)
+    defer {
+      if let saved {
+        setenv("LABAN_AUTO_QUIT_AFTER_SECONDS", saved, 1)
+      } else {
+        unsetenv("LABAN_AUTO_QUIT_AFTER_SECONDS")
+      }
+    }
+
+    let harness = try makeHarness()
+    let tabId = try XCTUnwrap(harness.model.activeTab?.id)
+    let entries = harness.model.tabJournal.snapshot(tabId: tabId).entries
+
+    XCTAssertTrue(
+      entries.contains {
+        $0.note == TabStateJournal.automationAutoQuitArmedNote
+          && ($0.text?.contains("Automation will quit Laban in 3600 seconds") == true)
+      },
+      "auto-quit arming must be visible through the tab journal before termination")
+    XCTAssertEqual(
+      harness.model.activeTab?.titleMetadata.notification?.text,
+      "Automation will quit Laban in 3600 seconds.")
+  }
+
   func testSurfaceSignalsWakeFrameLoopThroughCoalescer() throws {
     let harness = try makeHarness()
     let tab = try XCTUnwrap(harness.model.activeTab)

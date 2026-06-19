@@ -37,6 +37,8 @@ public final class TabStateJournal {
 
   public static let bannerPostedNote = "banner.posted"
   public static let bannerSuppressedFrontmostNote = "banner.suppressed.frontmost"
+  public static let daemonRecoveryNote = "daemon.recovery"
+  public static let automationAutoQuitArmedNote = "automation.autoquit.armed"
 
   private struct Projection: Equatable {
     var isSelected: Bool

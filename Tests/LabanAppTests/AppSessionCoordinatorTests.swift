@@ -9,6 +9,41 @@ import os
 @testable import LabanApp
 
 final class AppSessionCoordinatorTests: XCTestCase {
+  func testMissingAttachedLabptySessionsPostRecoveryJournalNotice() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let model = try AppModel(initialSize: size) { try Session.fixture(size: $0) }
+    let first = try XCTUnwrap(model.activeTab)
+    let second = try model.createTab()
+    var noted: Set<Tab.ID> = []
+
+    let affected = AppSessionCoordinator.noteMissingLabptySessionsIfNeeded(
+      tabs: model.tabs,
+      model: model,
+      attachedTabIds: [first.id, second.id],
+      liveLogicalIds: [],
+      notedTabIds: &noted)
+
+    XCTAssertEqual(Set(affected), [first.id, second.id])
+    let entries = model.tabJournal.snapshot().entries.filter {
+      $0.note == TabStateJournal.daemonRecoveryNote
+    }
+    XCTAssertEqual(entries.count, 2)
+    XCTAssertTrue(entries.allSatisfy { $0.text?.contains("Restart the affected shell tabs") == true })
+    XCTAssertTrue(
+      model.tabs.allSatisfy { $0.titleMetadata.notification?.urgent == true },
+      "daemon recovery must surface as visible tab notifications, not only logs")
+
+    let duplicate = AppSessionCoordinator.noteMissingLabptySessionsIfNeeded(
+      tabs: model.tabs,
+      model: model,
+      attachedTabIds: [first.id, second.id],
+      liveLogicalIds: [],
+      notedTabIds: &noted)
+    XCTAssertTrue(duplicate.isEmpty, "one daemon recovery must not spam repeated notices")
+  }
+
   func testRestoredAppTabAttachesExistingDaemonSession() throws {
     let labandURL = URL(fileURLWithPath: ".build/debug/laband")
     guard FileManager.default.isExecutableFile(atPath: labandURL.path) else {

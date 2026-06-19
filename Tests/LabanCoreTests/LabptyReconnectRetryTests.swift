@@ -25,17 +25,17 @@ final class LabptyReconnectRetryTests: XCTestCase {
     private var accepts = 0
     private let handle: (Int, Int32) -> Void
 
-    init(handle: @escaping (Int, Int32) -> Void) throws {
+    init(path: String? = nil, handle: @escaping (Int, Int32) -> Void) throws {
       self.handle = handle
       // Stay well under sockaddr_un.sun_path (104 bytes on macOS).
-      path = "/tmp/lbt-\(UUID().uuidString.prefix(8)).sock"
-      unlink(path)
+      self.path = path ?? "/tmp/lbt-\(UUID().uuidString.prefix(8)).sock"
+      unlink(self.path)
       listenFd = socket(AF_UNIX, SOCK_STREAM, 0)
       guard listenFd >= 0 else { throw POSIXError(.EIO) }
       var addr = sockaddr_un()
       addr.sun_family = sa_family_t(AF_UNIX)
       _ = withUnsafeMutablePointer(to: &addr.sun_path.0) { dst in
-        path.withCString { strcpy(dst, $0) }
+        self.path.withCString { strcpy(dst, $0) }
       }
       let len = socklen_t(MemoryLayout<sockaddr_un>.size)
       let bound = withUnsafePointer(to: &addr) {
@@ -153,6 +153,31 @@ final class LabptyReconnectRetryTests: XCTestCase {
     }
   }
 
+  private final class AtomicServer {
+    private let lock = NSLock()
+    private var server: FakeLabptyServer?
+
+    func store(_ server: FakeLabptyServer?) {
+      lock.lock()
+      self.server = server
+      lock.unlock()
+    }
+
+    var acceptCount: Int {
+      lock.lock()
+      defer { lock.unlock() }
+      return server?.acceptCount ?? 0
+    }
+
+    func stop() {
+      lock.lock()
+      let server = self.server
+      self.server = nil
+      lock.unlock()
+      server?.stop()
+    }
+  }
+
   func testIdempotentHelloReconnectsAndRetriesOnForceClose() throws {
     // Every connection is force-closed, so hello ultimately fails — but only
     // after exhausting reconnects, proving it did not give up on the first drop.
@@ -190,6 +215,26 @@ final class LabptyReconnectRetryTests: XCTestCase {
     XCTAssertEqual(
       server.acceptCount, 2,
       "hello must recover on the clean response after exactly one reconnect")
+  }
+
+  func testInitialConnectRetriesUntilSocketAppears() throws {
+    let path = "/tmp/lbt-\(UUID().uuidString.prefix(8)).sock"
+    let serverBox = AtomicServer()
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
+      let server = try? FakeLabptyServer(path: path) { _, fd in
+        guard let req = FakeLabptyServer.readRequestFrame(fd) else { return }
+        FakeLabptyServer.sendHelloOK(fd, sequence: req.header.sequence)
+      }
+      serverBox.store(server)
+    }
+    defer { serverBox.stop() }
+
+    let client = try LabptyTerminalSessionClient(
+      socketPath: path, rpcTimeoutMilliseconds: 200)
+    defer { client.close() }
+
+    XCTAssertEqual(try client.hello().protocolMajor, LabptyFrameHeader.abiMajor)
+    XCTAssertGreaterThanOrEqual(serverBox.acceptCount, 1)
   }
 
   func testParkOutputWakeReconnectsAndRetriesOnForceClose() throws {

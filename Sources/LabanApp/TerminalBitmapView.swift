@@ -385,9 +385,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// On-surface "● REC" pill, shown only while a capture is active. Created
   /// lazily on first capture start, mirroring the find-chip subview pattern.
   private var captureIndicatorView: TerminalCaptureIndicatorView?
+  private struct ClosedTabUndoPayload {
+    var argv: [String]?
+    var cwd: String
+  }
   private var frameProbe: AppKitFrameProbe?
   private var resizeProbe: AppKitResizeProbe?
   private var resizeAutomationScheduled = false
+  var undoManagerForTesting: UndoManager?
   private var renderingResizeFrame = false
   private var renderRetryScheduled = false
   private var resizeBackgroundReset: DispatchWorkItem?
@@ -693,6 +698,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let seconds = Double(rawSeconds),
       seconds > 0
     else { return }
+    postAutomationAutoQuitNotice(
+      "Automation will quit Laban in \(Self.formatAutomationSeconds(seconds)).")
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
       if let self, self.captureRecorder != nil {
         self.toggleCapture(nil)
@@ -727,6 +734,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           label: "final", window: window, view: self, backend: backend,
           renderedFrame: renderedFrameCount)
         if config.autoQuit {
+          postAutomationAutoQuitNotice("Resize automation will quit Laban after the final step.")
           NSApp.terminate(nil)
         }
         return
@@ -3216,6 +3224,61 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     surfaceController.invalidateSessionSyncCache()
   }
 
+  private func closeTabRegisteringUndo(_ tabId: Tab.ID) throws {
+    let undoPayload = closedTabUndoPayload(tabId)
+    try closeTabAndRemoteSession(tabId)
+    if let undoPayload {
+      registerUndoForClosedTab(undoPayload)
+    }
+  }
+
+  private func closedTabUndoPayload(_ tabId: Tab.ID) -> ClosedTabUndoPayload? {
+    guard model.tabs.count > 1 else { return nil }
+    let snapshot = model.snapshotForPersistence(windowId: "undo")
+    guard let state = snapshot.windows.first?.tabs.first(where: { $0.id == tabId }) else {
+      return nil
+    }
+    return ClosedTabUndoPayload(argv: model.launchArgv(forTab: tabId), cwd: state.cwd)
+  }
+
+  private func registerUndoForClosedTab(_ payload: ClosedTabUndoPayload) {
+    let undoManager = undoManagerForTesting ?? window?.undoManager
+    undoManager?.registerUndo(withTarget: self) { target in
+      target.restoreClosedTab(payload)
+    }
+    undoManager?.setActionName("Close Tab")
+  }
+
+  private func restoreClosedTab(_ payload: ClosedTabUndoPayload) {
+    do {
+      let tab = try model.createTab(runningArgv: payload.argv ?? [], cwd: payload.cwd)
+      sessionCoordinator?.setLaunchCwd(payload.cwd, forTab: tab.id)
+      try sessionCoordinator?.ensureSession(
+        for: tab,
+        session: model.session(forTab: tab.id),
+        size: model.terminalSize)
+      restoreSelectionState(for: tab.id)
+      ensureSidebarTabVisible(tab.id, animated: true)
+      invalidateRenderAndWake()
+    } catch {
+      AppLog.app.error("close-tab undo failed: \(error)")
+    }
+  }
+
+  private func postAutomationAutoQuitNotice(_ text: String) {
+    guard let tabId = model.activeTab?.id else { return }
+    _ = model.postTabNotice(
+      forTab: tabId,
+      note: TabStateJournal.automationAutoQuitArmedNote,
+      text: text)
+  }
+
+  private static func formatAutomationSeconds(_ seconds: Double) -> String {
+    seconds.rounded(.towardZero) == seconds
+      ? "\(Int(seconds)) second\(seconds == 1 ? "" : "s")"
+      : String(format: "%.1f seconds", seconds)
+  }
+
   private func clearAllSelectionState() {
     selectionsByTab.removeAll()
     selectionAnchor = nil
@@ -4990,7 +5053,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         invalidateRenderAndWake()
       case .closeTab(let id):
         do {
-          try closeTabAndRemoteSession(id)
+          try closeTabRegisteringUndo(id)
           pruneClosedTabState(id)
         } catch AppError.lastTabClosed {
           pruneClosedTabState(id)
@@ -5951,7 +6014,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   @objc func closeTab(_ sender: Any?) {
     guard let tabId = model.activeTab?.id else { return }
     do {
-      try closeTabAndRemoteSession(tabId)
+      try closeTabRegisteringUndo(tabId)
       pruneClosedTabState(tabId)
     } catch AppError.lastTabClosed {
       pruneClosedTabState(tabId)

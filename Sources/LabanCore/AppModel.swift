@@ -975,6 +975,44 @@ public final class AppModel {
     }
   }
 
+  @discardableResult
+  private func recordTabJournalNote(
+    tabId: Tab.ID,
+    note: String,
+    text: String?
+  ) -> Bool {
+    let sessionId = withModelLock {
+      _tabs.first(where: { $0.id == tabId })?.sessionId
+    }
+    let entry = tabJournal.note(tabId: tabId, note: note, text: text)
+    captureSink?.record(entry.captureEvent(sessionId: sessionId))
+    return sessionId != nil
+  }
+
+  /// Surface a user-visible, non-modal notice on a tab and mirror it into the
+  /// tab-state journal so headless/debug clients can observe the same event.
+  @discardableResult
+  public func postTabNotice(
+    forTab tabId: Tab.ID,
+    note: String,
+    text: String,
+    urgent: Bool = false
+  ) -> Bool {
+    let changed: Bool = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+      let prior = _tabs[idx].titleMetadata.notification
+      _tabs[idx].titleMetadata.notification = TabNotification(
+        text: text,
+        urgent: urgent || (prior?.urgent ?? false),
+        count: (prior?.count ?? 0) + 1)
+      return true
+    }
+    guard changed else { return false }
+    notifyWorkspaceMutation()
+    _ = recordTabJournalNote(tabId: tabId, note: note, text: text)
+    return true
+  }
+
   public func selectTab(_ tabId: Tab.ID) {
     let changed: Bool = withModelLock {
       let prior = _tabs.first(where: { $0.isActive })?.id

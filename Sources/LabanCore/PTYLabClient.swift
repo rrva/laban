@@ -56,7 +56,10 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
     self.socketPath = socketPath
     self.rpcTimeoutMilliseconds = rpcTimeoutMilliseconds
     self.ensureDaemonRunning = ensureDaemonRunning
-    fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
+    fd = try Self.connectWithRetry(
+      socketPath: socketPath,
+      timeoutMilliseconds: rpcTimeoutMilliseconds,
+      ensureDaemonRunning: ensureDaemonRunning)
   }
 
   deinit {
@@ -328,6 +331,28 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   /// clears before the final attempt.
   private static let maxReconnectAttempts = 6
 
+  private static func connectWithRetry(
+    socketPath: String,
+    timeoutMilliseconds: Int,
+    ensureDaemonRunning: (() throws -> Void)?
+  ) throws -> Int32 {
+    var attempt = 0
+    while true {
+      do {
+        return try connect(socketPath: socketPath, timeoutMilliseconds: timeoutMilliseconds)
+      } catch {
+        attempt += 1
+        guard attempt < maxReconnectAttempts, isTransientConnectionDrop(error) else {
+          throw error
+        }
+        if let ensureDaemonRunning {
+          try ensureDaemonRunning()
+        }
+        usleep(UInt32(20_000) << (attempt - 1))
+      }
+    }
+  }
+
   private func send<T>(
     operation: LabptyOperation,
     payload: Data,
@@ -405,7 +430,7 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   private static func isTransientConnectionDrop(_ error: Error) -> Bool {
     guard let code = (error as? POSIXError)?.code else { return false }
     switch code {
-    case .ECONNRESET, .EPIPE, .ENOTCONN, .ECONNREFUSED, .ETIMEDOUT, .EAGAIN:
+    case .ECONNRESET, .EPIPE, .ENOTCONN, .ECONNREFUSED, .ENOENT, .ETIMEDOUT, .EAGAIN:
       return true
     default:
       return false
@@ -479,7 +504,10 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
   private func ensureConnectedLocked() throws {
     if fd >= 0 { return }
     do {
-      fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
+      fd = try Self.connectWithRetry(
+        socketPath: socketPath,
+        timeoutMilliseconds: rpcTimeoutMilliseconds,
+        ensureDaemonRunning: nil)
     } catch {
       // The socket is gone — labpty most likely crashed mid-session. If we
       // were handed a relaunch hook, spawn a fresh daemon on demand and retry
@@ -488,7 +516,10 @@ public final class LabptyTerminalSessionClient: TerminalSessionClient {
       // sessions against the new daemon. Without a hook we surface the error.
       guard let ensureDaemonRunning else { throw error }
       try ensureDaemonRunning()
-      fd = try Self.connect(socketPath: socketPath, timeoutMilliseconds: rpcTimeoutMilliseconds)
+      fd = try Self.connectWithRetry(
+        socketPath: socketPath,
+        timeoutMilliseconds: rpcTimeoutMilliseconds,
+        ensureDaemonRunning: nil)
     }
   }
 

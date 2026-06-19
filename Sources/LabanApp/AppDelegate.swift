@@ -95,8 +95,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         persistenceSyncEnabled: persistenceSyncEnabled,
         terminalBackendSelection: terminalBackendSelection)
     } catch {
-      showStartupFailure(error)
-      return
+      if terminalBackendSelection.backend != .inProcess,
+        let fallback = recoverStartupBackendFailure(
+          error,
+          originalSelection: terminalBackendSelection,
+          restoredState: restoredState,
+          persistenceSyncEnabled: persistenceSyncEnabled)
+      {
+        windowController = fallback
+      } else {
+        showStartupFailure(error)
+        return
+      }
     }
     NSApp.activate(ignoringOtherApps: true)
 
@@ -218,6 +228,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     alert.addButton(withTitle: "Quit")
     alert.runModal()
     NSApp.terminate(nil)
+  }
+
+  private func recoverStartupBackendFailure(
+    _ error: Error,
+    originalSelection: TerminalBackendLaunchConfiguration,
+    restoredState: WorkspaceState?,
+    persistenceSyncEnabled: Bool
+  ) -> MainWindowController? {
+    AppLog.app.error(
+      "terminal backend \(originalSelection.backend.rawValue) failed at startup: \(error)")
+    let shouldFallback: Bool
+    if originalSelection.source.isOverride {
+      let alert = NSAlert()
+      alert.messageText = "Background terminal sessions failed to start"
+      alert.informativeText = "\(error)"
+      alert.addButton(withTitle: "Use Local Sessions")
+      alert.addButton(withTitle: "Quit")
+      shouldFallback = alert.runModal() == .alertFirstButtonReturn
+    } else {
+      shouldFallback = true
+    }
+    guard shouldFallback else { return nil }
+    let fallback = TerminalBackendLaunchConfiguration(backend: .inProcess, source: .automatic)
+    do {
+      terminalBackendMenuController.configure(activeBackend: .inProcess, launchSource: .automatic)
+      return try MainWindowController.makeAndShow(
+        restoring: restoredState,
+        persistenceSyncEnabled: persistenceSyncEnabled,
+        terminalBackendSelection: fallback)
+    } catch {
+      AppLog.app.error("local-session startup fallback failed: \(error)")
+      return nil
+    }
   }
 
   func applicationWillTerminate(_ notification: Notification) {

@@ -101,7 +101,10 @@ crash in normal use; they are bundled into M3 as a single low-risk
       standard focus-ring mask, display-accessibility flag caching, and
       `/debug/accessibility` headless parity; display-accessibility flags now
       strengthen selection/cursor outlines and force opaque terminal backgrounds.
-- [ ] M5 — App lifecycle & data safety (BUG-04, 05, 14, 16, 27).
+- [x] (2026-06-19) M5 — App lifecycle & data safety (BUG-04, 05, 14, 16,
+      27). Added the generated bundle `LSMultipleInstancesProhibited` key,
+      labpty initial-connect retry, startup fallback to local sessions, daemon-
+      recovery tab notices, close-tab undo, and auto-quit armed notices.
 - [ ] M6 — Raw→canonical input-drop integrity (BUG-06; ADR + formal-spec gated).
 - [x] (2026-06-19) M7 — GPU-failure notification rate limiting
       (BUG-21). Added defaults-backed global throttling and disable preference
@@ -479,6 +482,16 @@ preference toggle suppresses them entirely.
   `MAP_FAILED` guard; fixed PUA scalar constants; upstream length bound + CBMC
   contract). Behavior must stay identical.
   Date/Author: 2026-06-19, plan author.
+- Decision: Treat `LSMultipleInstancesProhibited` as complementary to the
+  existing app singleton behavior, not as a replacement for repository code.
+  Rationale: M5 inspection found no repo-owned workspace lock file or `flock`
+  acquisition in the app launch path; the existing single-instance behavior is
+  the normal AppKit/Launch Services singleton path (with the explicit restart
+  path using `open -n` to bypass it briefly). The plist key asks Launch Services
+  to reject multiple instances earlier, before a second process can reach
+  workspace restore/persistence code, so it closes the BUG-04 window even though
+  ordinary Finder/dock launches already tend to activate the running instance.
+  Date/Author: 2026-06-19, M5 executor.
 
 ## Review Gate
 
@@ -569,6 +582,19 @@ Review findings (filled in by the review agent):
   through `UserDefaults`, and `LabanDisableGPUFailureNotifications` suppresses
   GPU-failure notification requests before the beep/banner path. Review Gate
   remains unchecked for the required separate verifier.
+- M5 executor validation (2026-06-19): focused tests passed:
+  `swift test --filter LabptyReconnectRetryTests/testInitialConnectRetriesUntilSocketAppears`,
+  `swift test --filter AppSessionCoordinatorTests/testMissingAttachedLabptySessionsPostRecoveryJournalNotice`,
+  `swift test --filter TerminalBitmapViewWakeTests/testCloseTabUndoRestoresTabWithSameCommandAndCwd`,
+  and `swift test --filter TerminalBitmapViewWakeTests/testAutoQuitEnvironmentPostsDebugObservableNoticeBeforeTimerFires`.
+  The first attempted close-tab undo test crashed when it introduced an
+  offscreen `NSWindow`; the final passing test uses a test-only `UndoManager`
+  override so it still exercises the close action's undo registration without
+  launching or showing the app. Closeout checks also passed: `git diff --check`,
+  `./scripts/build-app`, and `/usr/libexec/PlistBuddy -c 'Print
+  :LSMultipleInstancesProhibited' .build/laban/Laban.app/Contents/Info.plist`
+  returned `true`. Review Gate remains unchecked for the required separate
+  verifier.
 - M4 executor validation (2026-06-19): first focused compile failed on a Swift
   stored-property initializer using `Self`; after replacing it with the concrete
   type, `swift test --filter

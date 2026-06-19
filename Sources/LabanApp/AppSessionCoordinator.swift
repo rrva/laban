@@ -11,6 +11,7 @@ final class AppSessionCoordinator {
   private let labptyClient: LabptyTerminalSessionClient?
   private let shellLaunch: ShellIntegrationLaunch
   private let cwdByTabId: [Tab.ID: String]
+  private var launchCwdOverrideByTabId: [Tab.ID: String] = [:]
   private let supportsThemeApplication: Bool
   private let supportsViewportScroll: Bool
   private var infoByTabId: [Tab.ID: LabandSessionInfo] = [:]
@@ -29,6 +30,7 @@ final class AppSessionCoordinator {
   private let labptyStateLock = NSLock()
   private var labptyDegradation = LabptyOutputDegradation(
     cooldown: AppSessionCoordinator.labptyOutputDegradedCooldown)
+  private var labptyRecoveryNotedTabIds: Set<Tab.ID> = []
   private var ownedProcess: Process?
   private var themeChangeObserver: NSObjectProtocol?
   private var snapshotGenerationMonitor: LabandSnapshotGenerationMonitor?
@@ -103,6 +105,10 @@ final class AppSessionCoordinator {
 
   var terminalClient: TerminalSessionClient? {
     labptyClient ?? labandClient
+  }
+
+  func setLaunchCwd(_ cwd: String, forTab tabId: Tab.ID) {
+    launchCwdOverrideByTabId[tabId] = cwd
   }
 
   var usesRemoteSnapshots: Bool {
@@ -722,6 +728,12 @@ final class AppSessionCoordinator {
     let descriptorById = Dictionary(
       descriptors.lazy.filter { !$0.logicalSessionId.isEmpty }.map { ($0.logicalSessionId, $0) },
       uniquingKeysWith: { current, _ in current })
+    Self.noteMissingLabptySessionsIfNeeded(
+      tabs: tabs,
+      model: model,
+      attachedTabIds: Set(labptyDescriptorByTabId.keys),
+      liveLogicalIds: Set(descriptorById.keys),
+      notedTabIds: &labptyRecoveryNotedTabIds)
     // Kick off the off-main libproc walk for the live children so the next
     // poll reads warm metadata instead of blocking the render tick on syscalls.
     refreshProcMetadataCache(forChildPids: descriptors.map { $0.childPid })
@@ -755,6 +767,37 @@ final class AppSessionCoordinator {
         _ = model.clearAgentStatus(forTab: tab.id, ifEquals: Self.labptyOutputDegradedStatus)
       }
     }
+  }
+
+  @discardableResult
+  static func noteMissingLabptySessionsIfNeeded(
+    tabs: [Tab],
+    model: AppModel,
+    attachedTabIds: Set<Tab.ID>,
+    liveLogicalIds: Set<String>,
+    notedTabIds: inout Set<Tab.ID>
+  ) -> [Tab.ID] {
+    let liveTabIds = Set(tabs.map(\.id))
+    notedTabIds.formIntersection(liveTabIds)
+    notedTabIds.subtract(liveLogicalIds)
+    let affected = tabs.filter {
+      attachedTabIds.contains($0.id) && !liveLogicalIds.contains($0.id)
+        && !notedTabIds.contains($0.id)
+    }
+    guard !affected.isEmpty else { return [] }
+    let labels = affected.map(\.title).joined(separator: ", ")
+    let plural = affected.count == 1 ? "shell" : "shells"
+    let text =
+      "Background session daemon restarted; \(plural) lost for \(labels). Restart the affected shell tabs."
+    for tab in affected {
+      _ = model.postTabNotice(
+        forTab: tab.id,
+        note: TabStateJournal.daemonRecoveryNote,
+        text: text,
+        urgent: true)
+      notedTabIds.insert(tab.id)
+    }
+    return affected.map(\.id)
   }
 
   private func surfaceSignals(
@@ -990,7 +1033,7 @@ final class AppSessionCoordinator {
       cols: UInt32(max(1, Int(size.cols))),
       argv: (argvProvider?(tab.id) ?? shellLaunch.argv) ?? [],
       envp: spawnShellLaunch.environmentOverrides.map { "\($0.key)=\($0.value)" }.sorted(),
-      cwd: cwdByTabId[tab.id] ?? FileManager.default.homeDirectoryForCurrentUser.path,
+      cwd: cwdByLogicalSessionId(tab.id),
       logicalSessionId: tab.id)
   }
 
@@ -1002,7 +1045,7 @@ final class AppSessionCoordinator {
     return TerminalSessionLaunchRequest(
       executable: argv?.first,
       argv: argv,
-      cwd: cwdByTabId[tab.id] ?? FileManager.default.homeDirectoryForCurrentUser.path,
+      cwd: cwdByLogicalSessionId(tab.id),
       environmentPatch: spawnShellLaunch.environmentOverrides,
       rows: Int(size.rows),
       cols: Int(size.cols),
@@ -1011,7 +1054,8 @@ final class AppSessionCoordinator {
   }
 
   private func cwdByLogicalSessionId(_ logicalSessionId: String) -> String {
-    cwdByTabId[logicalSessionId] ?? FileManager.default.homeDirectoryForCurrentUser.path
+    launchCwdOverrideByTabId[logicalSessionId] ?? cwdByTabId[logicalSessionId]
+      ?? FileManager.default.homeDirectoryForCurrentUser.path
   }
 
   private func fallbackSize() -> LabanTerminalSize {
