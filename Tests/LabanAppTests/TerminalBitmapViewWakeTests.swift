@@ -266,7 +266,7 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
     )
   }
 
-  func testTerminalSurfaceAccessibilityReadsVisibleTextAndFocusRing() throws {
+  func testTerminalSurfaceAccessibilityReadsVisibleTextAndSuppressesFocusRing() throws {
     let harness = try makeHarness()
     let session = try XCTUnwrap(
       harness.model.activeTab.flatMap {
@@ -279,7 +279,7 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
     XCTAssertFalse((harness.view.accessibilityLabel() ?? "").isEmpty)
     let value = try XCTUnwrap(harness.view.accessibilityValue() as? String)
     XCTAssertTrue(value.contains("voiceover terminal text"))
-    XCTAssertNotEqual(harness.view.focusRingType, .none)
+    XCTAssertEqual(harness.view.focusRingType, .none)
   }
 
   func testAccessibilityDisplayOptionsNotificationUpdatesCachedFlags() throws {

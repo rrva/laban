@@ -557,7 +557,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     self.backendSelfPresents = backend.presentationLayer != nil
     super.init(frame: .zero)
     registerForDraggedTypes(TerminalDrop.acceptedTypes)
-    focusRingType = .default
+    // The terminal is the window's primary surface and effectively always the
+    // first responder; a system focus ring renders as a persistent blue border
+    // around the whole pane. VoiceOver reads the surface through the
+    // accessibility tree below, not this ring, so suppress it.
+    focusRingType = .none
     configurePresentationForCurrentBackend()
 
     // Install the per-frame completion hook so we can close out
@@ -3598,14 +3602,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     else { return "" }
     defer { laban_snapshot_destroy(snap) }
     return TerminalSnapshotText.visibleText(from: UnsafePointer(snap), mode: .trimmedNonEmptyRows)
-  }
-
-  override var focusRingMaskBounds: NSRect {
-    terminalContentRect()
-  }
-
-  override func drawFocusRingMask() {
-    NSBezierPath(rect: focusRingMaskBounds).fill()
   }
 
   override func resignFirstResponder() -> Bool {

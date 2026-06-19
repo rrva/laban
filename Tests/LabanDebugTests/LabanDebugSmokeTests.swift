@@ -94,7 +94,7 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(obj["role"] as? String, "AXTextArea")
     XCTAssertEqual(obj["label"] as? String, "Terminal")
     XCTAssertTrue((obj["value"] as? String)?.contains("debug accessibility text") == true)
-    XCTAssertEqual(obj["focusRingType"] as? String, "default")
+    XCTAssertEqual(obj["focusRingType"] as? String, "none")
     let display = try XCTUnwrap(obj["display"] as? [String: Any])
     XCTAssertEqual(display["increaseContrast"] as? Bool, true)
     XCTAssertEqual(display["differentiateWithoutColor"] as? Bool, true)

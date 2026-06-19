@@ -39,7 +39,7 @@ extension HeadlessDebugRuntime {
           role: "AXTextArea",
           label: "Terminal",
           value: accessibilityValueUnlocked(),
-          focusRingType: "default",
+          focusRingType: "none",
           display: accessibilityDisplayFlags))
     }
   }
