@@ -153,6 +153,84 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     )
   }
 
+  func testRowOnlyResizeClearsCachedInactiveSelections() throws {
+    let harness = try makeHarness()
+    defer { harness.restoreRenderer() }
+
+    let first = try XCTUnwrap(harness.model.activeTab)
+    let firstSession = try XCTUnwrap(harness.model.session(forTab: first.id))
+    firstSession.write(Array("ONE first\r\n".utf8))
+    firstSession.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 2, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "ONE")
+
+    harness.view.newTab(nil)
+    harness.view.advanceFrame()
+
+    let resizedHeight =
+      harness.insets.top + CGFloat(harness.rows + 2) * CGFloat(harness.cellHeight)
+      + harness.insets.bottom
+    harness.view.setFrameSize(NSSize(width: harness.view.frame.width, height: resizedHeight))
+
+    let item = NSMenuItem(title: "Tab 1", action: nil, keyEquivalent: "")
+    item.tag = 1
+    harness.view.selectTabByIndex(item)
+    harness.view.advanceFrame()
+
+    setPasteboard("sentinel")
+    harness.view.copy(nil)
+    XCTAssertEqual(
+      NSPasteboard.general.string(forType: .string),
+      "sentinel",
+      "row-only resize must drop cached selections for inactive tabs as well"
+    )
+  }
+
+  func testFontSizeChangeThatChangesRowsClearsSelection() throws {
+    var harness = try makeHarness(rows: 8, cols: 20)
+    defer { harness.restoreRenderer() }
+
+    let newPointSize: CGFloat = 15
+    let newCellSize = FontAtlas(pointSize: newPointSize).cellSize
+    let newCellWidth = Int(newCellSize.width)
+    let newCellHeight = Int(newCellSize.height)
+    let termWidth = try XCTUnwrap(
+      terminalWidthPreservingColumnCount(
+        oldCellWidth: harness.cellWidth,
+        newCellWidth: newCellWidth),
+      "test setup needs a width whose column count survives the font-size change")
+    let termHeight = try XCTUnwrap(
+      terminalHeightChangingRowCount(
+        oldCellHeight: harness.cellHeight,
+        newCellHeight: newCellHeight),
+      "test setup needs a height whose row count changes with the font-size change")
+
+    let sizedFrame = NSSize(
+      width: SidebarLayout.defaultWidth + harness.insets.left + CGFloat(termWidth)
+        + harness.insets.right,
+      height: harness.insets.top + CGFloat(termHeight) + harness.insets.bottom)
+    harness.view.setFrameSize(sizedFrame)
+    harness.cols = termWidth / harness.cellWidth
+    harness.rows = termHeight / harness.cellHeight
+
+    let tab = try XCTUnwrap(harness.model.activeTab)
+    let session = try XCTUnwrap(harness.model.session(forTab: tab.id))
+    session.write(Array("abc\r\n".utf8))
+    session.poll()
+    harness.view.advanceFrame()
+
+    selectCells(row: 0, startCol: 0, endCol: 2, in: harness)
+    XCTAssertEqual(copyText(from: harness.view), "abc")
+
+    harness.view.applyFontSize(newPointSize)
+
+    XCTAssertEqual(
+      copyText(from: harness.view), "sentinel",
+      "font-size changes that alter only row count must clear stale local selections")
+  }
+
   func testClosingLastRenderedInactiveTabKeepsActiveSelection() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
@@ -529,7 +607,7 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
       "pasting must clear the on-screen selection the user pasted from")
   }
 
-  func testWheelScrollPreservesSelectionWhenMouseTrackingIsActive() throws {
+  func testWheelScrollClearsSelectionWhenMouseTrackingIsActive() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
 
@@ -543,21 +621,20 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
     XCTAssertEqual(copyText(from: harness.view), "alpha")
 
-    // A fullscreen TUI (Claude Code) turns on mouse reporting, so a plain wheel
-    // is forwarded to the app. iTerm2/kitty keep the selection across a
-    // forwarded scroll rather than dropping it on every notch — bumping the
-    // wheel must not lose what the user selected.
+    // A fullscreen TUI turns on mouse reporting, so a plain wheel is forwarded
+    // to the app. The forwarded scroll moves remote content under Laban's local
+    // highlight, so the stale local selection must be dismissed.
     enableMouseTracking(in: session)
     harness.view.scrollWheel(
       with: TestScrollWheelEvent(
         locationInWindow: point(row: 2, col: 0, in: harness), deltaY: 1))
 
     XCTAssertEqual(
-      copyText(from: harness.view), "alpha",
-      "a wheel scroll forwarded under mouse tracking must keep the local selection")
+      copyText(from: harness.view), "sentinel",
+      "a wheel scroll forwarded under mouse tracking must clear the local selection")
   }
 
-  func testAltScrollWheelPreservesSelection() throws {
+  func testAltScrollWheelClearsSelection() throws {
     let harness = try makeHarness()
     defer { harness.restoreRenderer() }
 
@@ -572,15 +649,15 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     XCTAssertEqual(copyText(from: harness.view), "alpha")
 
     // Alt-scroll (less/man-style) translates the wheel into the app's cursor
-    // keys. Like iTerm2/kitty, a wheel notch must not discard a selection the
-    // user can still copy or extend.
+    // keys. The app moves content without Laban reprojecting the local
+    // selection, so the forwarded input must dismiss it.
     harness.view.scrollWheel(
       with: TestScrollWheelEvent(
         locationInWindow: point(row: 2, col: 0, in: harness), deltaY: 1))
 
     XCTAssertEqual(
-      copyText(from: harness.view), "alpha",
-      "an alt-scroll wheel must keep the local selection")
+      copyText(from: harness.view), "sentinel",
+      "an alt-scroll wheel must clear the local selection")
   }
 
   func testShiftWheelScrollsLocalScrollbackUnderMouseTracking() throws {
@@ -815,5 +892,33 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
   private func setPasteboard(_ text: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
+  }
+
+  private func terminalWidthPreservingColumnCount(
+    oldCellWidth: Int,
+    newCellWidth: Int
+  ) -> Int? {
+    for termWidth in 1...1_000 {
+      let oldCols = termWidth / oldCellWidth
+      guard oldCols >= 6 else { continue }
+      if oldCols == termWidth / newCellWidth {
+        return termWidth
+      }
+    }
+    return nil
+  }
+
+  private func terminalHeightChangingRowCount(
+    oldCellHeight: Int,
+    newCellHeight: Int
+  ) -> Int? {
+    for termHeight in 1...1_000 {
+      let oldRows = termHeight / oldCellHeight
+      let newRows = termHeight / newCellHeight
+      if oldRows > 1, newRows > 0, oldRows != newRows {
+        return termHeight
+      }
+    }
+    return nil
   }
 }

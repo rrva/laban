@@ -200,6 +200,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Last cols value applied to libghostty. Used to detect when a reflow
   /// invalidates the selection's grid coordinates so we can drop it.
   private var lastAppliedCols: Int = 0
+  private var lastAppliedRows: Int = 0
 
   // Smooth-scroll animation state. Wheel input adds to `targetScrollRows`
   // (cumulative target). A critically-damped PD controller advances
@@ -3255,11 +3256,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // nudge is fine for modern shells (the prompt redraw is one line);
     // libghostty's reflow is a no-op when dims are unchanged.
     let cols = max(1, termW / cellWidth)
-    if cols != lastAppliedCols, lastAppliedCols != 0 {
+    let rows = max(1, termH / cellHeight)
+    if lastAppliedCols != 0, lastAppliedRows != 0,
+      (cols != lastAppliedCols || rows != lastAppliedRows)
+    {
       // Reflow invalidates grid-anchored selection coordinates.
       clearAllSelectionState()
     }
     lastAppliedCols = cols
+    lastAppliedRows = rows
     model.resize(
       viewportWidth: termW, viewportHeight: termH,
       cellWidth: cellWidth, cellHeight: cellHeight,
@@ -3351,7 +3356,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       sidebarCellHeight: sidebarCell.height)
 
     // Renegotiate the grid with the unchanged viewport pixels. Mirrors
-    // setFrameSize's interaction invalidation: a column change invalidates
+    // setFrameSize's interaction invalidation: a grid-size change invalidates
     // grid-anchored selection coordinates, and the find rescan runs
     // synchronously (deferFindRescan: false).
     let w = Int(bounds.width)
@@ -3361,10 +3366,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let termW = max(1, w - Int(sidebarWidth) - Int(insets.left) - Int(insets.right))
       let termH = max(1, h - Int(insets.top) - Int(insets.bottom))
       let cols = max(1, termW / cellWidth)
-      if cols != lastAppliedCols, lastAppliedCols != 0 {
+      let rows = max(1, termH / cellHeight)
+      if lastAppliedCols != 0, lastAppliedRows != 0,
+        (cols != lastAppliedCols || rows != lastAppliedRows)
+      {
         clearAllSelectionState()
       }
       lastAppliedCols = cols
+      lastAppliedRows = rows
       model.resize(
         viewportWidth: termW, viewportHeight: termH,
         cellWidth: cellWidth, cellHeight: cellHeight,
@@ -4366,10 +4375,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
           hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas
         ))
       guard let direction else { return }
-      // Keep any committed local selection across the forwarded wheel, matching
-      // iTerm2/kitty: a scroll notch shouldn't discard a selection the user can
-      // still copy or extend. The app scrolls its own content under the pinned
-      // highlight; a click (forwarded below) is what dismisses it.
       let button: MouseButton = direction == .up ? .wheelUp : .wheelDown
       let geom = terminalMouseGeometry(at: pt)
       let mouseEncoding = remoteMouseEncoding(for: activeTab)
@@ -4388,6 +4393,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let sent = session.sendMouseCapturingBytes(me)
       let bytes = sent.result == 0 ? sent.bytes : []
       forwardEncodedMouseToDaemon(bytes, session: session)
+      dismissLocalSelectionForForwardedInput()
       recordInput(
         kind: "mouse",
         route: "terminal",
@@ -4421,15 +4427,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       else {
         return
       }
-      // Keep any committed local selection across the forwarded wheel, matching
-      // iTerm2/kitty: alt-scroll drives the app's cursor keys, but a wheel notch
-      // must not discard a selection the user can still copy or extend.
       let key: Key = keys.key == .up ? .arrowUp : .arrowDown
       var bytes: [UInt8] = []
       for _ in 0..<keys.count {
         let sent = session.sendKeyCapturingBytes(KeyEvent(action: .press, key: key))
         if sent.result == 0 { bytes.append(contentsOf: sent.bytes) }
       }
+      dismissLocalSelectionForForwardedInput()
       recordInput(
         kind: "scroll",
         route: "terminal",
@@ -4777,9 +4781,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// A bare click forwarded to the app (mouse reporting) is a deliberate pointer
   /// action, so it dismisses any committed local selection the same way a click
   /// does without tracking — scoped to the active tab, and scrubbed from the
-  /// per-tab cache so it can't resurrect on a tab switch. Forwarded *wheel*
-  /// scrolls deliberately do not call this: iTerm2/kitty keep the selection
-  /// across a scroll instead of dropping it on every notch.
+  /// per-tab cache so it can't resurrect on a tab switch. Forwarded wheel
+  /// input dismisses the selection too, because the remote app may move content
+  /// under Laban's local highlight without Laban reprojecting the range.
   private func dismissLocalSelectionForForwardedInput() {
     guard selectionAnchor != nil || selectionFocus != nil else { return }
     syncSelectionStateToActiveTab()

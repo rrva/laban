@@ -77,7 +77,11 @@ crash in normal use; they are bundled into M3 as a single low-risk
 - [x] (2026-06-19) Audit re-verified by fan-out workflow; 22 of 28 findings
       confirmed actionable, 6 corrected (1 refuted, 1 already fixed, 4
       defensive-only). Plan authored.
-- [ ] M1 — Selection correctness across scroll and resize (BUG-01, 07, 08).
+- [x] (2026-06-19) M1 — Selection correctness across scroll and resize
+      (BUG-01, 07, 08). Added red/green selection coverage for forwarded
+      wheel, alt-scroll, row-only resize, and row-count-changing font zoom;
+      implemented row-aware selection invalidation and forwarded-wheel
+      dismissal.
 - [ ] M2 — Wide-character / emoji fidelity in find, copy, word-select, IME
       (BUG-12, 13, 24, 25).
 - [ ] M3 — Crash & robustness hardening (BUG-03, 19, 20) + defensive-clarity
@@ -526,3 +530,8 @@ Review findings (filled in by the review agent):
   (commit `4232c1b`); BUG-17/18/26/28 unreachable (defensive-only).
 - Cross-referenced plan: `execplans/active/kimi-code-terminal-capability-gaps.md`
   (owns BUG-09/10/11).
+- M1 executor validation (2026-06-19): `swift test --filter
+  TerminalBitmapViewSelectionTests` failed before the fix with the new M1
+  assertions, then passed after the fix (23 tests, 0 failures);
+  `./scripts/build-app` exited 0. Review Gate remains unchecked for the required
+  separate verifier.
