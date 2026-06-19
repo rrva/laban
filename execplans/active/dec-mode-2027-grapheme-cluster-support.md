@@ -1,0 +1,667 @@
+# True elite DEC private mode 2027 (Unicode grapheme-cluster width) support
+
+This ExecPlan is a living document maintained in accordance with `../../PLANS.md`.
+Keep `Progress` and `Validation and Acceptance` current as work proceeds. Add
+optional sections only when they contain information that will help a fresh
+contributor.
+
+## Purpose / Big Picture
+
+Laban is a native macOS terminal emulator (Swift/AppKit + Metal). It does **not**
+parse VT escape sequences itself: it links the vendored static library
+`libghostty-vt` (the terminal engine extracted from the Ghostty terminal) and
+drives its *full terminal model* — grid, cursor, mode state — through a C API.
+Laban then flattens that model into its own `LabanSnapshot` struct that the Swift
+renderer draws.
+
+**DEC private mode 2027** (also called "grapheme clustering mode" or "Unicode core
+mode") is an opt-in terminal mode that fixes how the terminal computes the
+*display width* — the number of fixed-width character cells — of complex Unicode
+text such as emoji, flags, and combining sequences. A program running in the
+terminal turns it on by writing the escape sequence `ESC [ ? 2027 h`, off with
+`ESC [ ? 2027 l`, and asks the terminal whether it is supported/active with the
+DECRQM query `ESC [ ? 2027 $ p`. The number `2027` is the mode's identifier.
+
+Why it matters to a user: today, paste a line containing `👩‍🌾` (a single
+"farmer" emoji built from three Unicode code points: person U+1F9D1 + zero-width
+joiner U+200D + ear-of-rice U+1F33E) into a TUI such as `vim`, `fish`, or a chat
+client, and the program and the terminal can disagree about how many cells that
+emoji occupies. The program assumes the legacy rule (each code point measured on
+its own → 2 + 0 + 2 = **4 cells**); a mode-2027-aware terminal treats the whole
+cluster as one unit → **2 cells**. When they disagree, the cursor lands in the
+wrong place, the prompt redraws over itself, and selection/copy grabs the wrong
+columns. After this change a user can run a modern TUI that negotiates mode 2027
+with Laban and have emoji, flags, ZWJ ("zero-width joiner") sequences, and
+combining marks line up correctly — cursor, rendering, selection, copy, find, and
+the input method editor (IME) preedit all agree — and a developer can verify the
+negotiation handshake works with a one-line shell probe.
+
+The headline research finding that shapes this plan: **most of the engine-level
+behavior is already present**, because `libghostty-vt` implements mode 2027 and
+Laban passes every byte of the child program's output to it. The work here is to
+(1) *prove* the engine contract end-to-end with conformance tests, (2) close the
+one genuine code gap — the Swift-side width consumers (scrollback find/copy,
+word selection, IME preedit) that today assume the *legacy* width rule and drift
+when the mode flips, and (3) make the whole thing autonomously verifiable
+(debug-state endpoint + conformance fixture), per the `AGENTS.md`
+autonomous-verifiability rule.
+
+## Glossary (define before use)
+
+- **Code point**: one Unicode scalar value (e.g. U+1F9D1). UTF-8 encodes each code
+  point as 1–4 bytes.
+- **Grapheme cluster**: what a human perceives as a single character, possibly made
+  of several code points (e.g. `👩‍🌾` = three code points; `é` = `e` + combining
+  acute; `🏳️‍⚧️` = several). The boundaries are defined by Unicode Standard Annex
+  #29 ("UAX #29", *extended grapheme cluster* rules). "Grapheme clustering" =
+  splitting a stream of code points into these clusters.
+- **Cell / column**: one fixed-width slot in the terminal grid. A "narrow" glyph
+  occupies 1 cell, a "wide" one occupies 2 (the second cell is an empty
+  placeholder, the **spacer tail**).
+- **Display width**: how many cells a piece of text occupies. The whole point of
+  mode 2027 is *who decides this and how*.
+- **`wcwidth` / legacy width**: the historical rule where each code point is
+  measured independently (a C function `wcwidth` returns 0/1/2 per code point).
+  This is "mode 2027 OFF". It mis-measures multi-code-point graphemes.
+- **Mode 2027 ON (grapheme width)**: the terminal segments the stream into grapheme
+  clusters and assigns each cluster a single width (derived from its base, with
+  special rules below). `👩‍🌾` → 2 cells as one unit.
+- **DECSET / DECRST**: "DEC Set/Reset Mode" — the escape sequences `ESC [ ? <n> h`
+  (set/enable) and `ESC [ ? <n> l` (reset/disable) for a private mode `<n>`.
+- **DECRQM / DECRPM**: "DEC Request/Report Mode" — a program asks
+  `ESC [ ? <n> $ p` (DECRQM) and the terminal replies `ESC [ ? <n> ; <v> $ y`
+  (DECRPM), where `<v>` is: `0` not recognized, `1` set, `2` reset, `3`
+  permanently set, `4` permanently reset.
+- **VS15 / VS16**: "variation selectors" U+FE0E / U+FE0F. VS16 after an emoji base
+  forces *emoji presentation* and width 2; VS15 forces *text presentation* and
+  width 1. Example: `▶` (U+25B6) is width 1; `▶️` (U+25B6 U+FE0F) is width 2.
+- **ZWJ**: zero-width joiner U+200D; glues code points into one emoji (family,
+  profession, flag-with-modifier sequences). Width 0 on its own.
+- **Regional indicator**: pairs of code points U+1F1E6–U+1F1FF that form flag
+  emoji (`🇸🇪` = two regional indicators); the pair is one 2-cell grapheme.
+- **TUI**: "text user interface" — a full-screen terminal program (vim, fish,
+  tmux, Claude Code).
+- **Snapshot**: Laban's flattened, renderer-facing copy of the terminal grid at one
+  instant — the C struct `LabanSnapshot` (see `Context` below). The Swift renderer
+  never reads ghostty directly; it reads snapshots.
+- **Scrollback fallback path**: when selection/find reaches rows that scrolled out
+  of the live viewport, Laban reconstructs text from a `String`-based extraction
+  that (unlike the live snapshot) carries **no per-cell width metadata**. This is
+  the root cause of the width drift this plan must fix.
+
+## Progress
+
+- [x] (2026-06-19) Plan authored from research: spec sources (Terminal Unicode
+      Core / Mitchell Hashimoto write-up), reference implementations (ghostty,
+      contour, foot, wezterm, kitty), and a code map of Laban's libghostty
+      integration. Key finding recorded: mode 2027 is largely already wired
+      through `libghostty-vt`; the genuine gap is Swift-side width coherence.
+- [x] (2026-06-19) Plan reviewed by an independent fresh-state agent. All six
+      load-bearing factual claims verified against the source (see file:line
+      evidence folded into Context below). Minor revisions applied: scrollback
+      extraction is now flagged as an ABI/format change with a safe migration
+      note; a mode-OFF regression gate was added; a mid-session mode-flip probe
+      was added to M0; a DECRPM-value decision was logged; a render-glyph proof
+      was added to M2; the "genuine gap" consumer list was split into true
+      scrollback bugs vs. legitimate fallbacks; and M0/M1 now cite the existing
+      `testDECRQMModeQueryUsesTerminalState` proof as a template.
+- [ ] M0 — Characterization harness (discover exactly what already works).
+- [ ] M1 — Lock the engine handshake (DECSET/DECRST/DECRQM 2027) + debug
+      observability.
+- [ ] M2 — Grid & cursor-advance conformance under both modes.
+- [ ] M3 — Swift width-consumer coherence (scrollback find/copy, word select, IME)
+      under both modes.
+- [ ] M4 — Conformance fixture + end-to-end handshake demo.
+- [ ] M5 (optional, elite polish) — ADR, config surface, kitty-protocol non-goal.
+- [ ] Review Gate passed.
+
+Milestones are ordered: M0 is a *characterization* milestone whose output is the
+precise specification for M1–M3 (we measure what `libghostty-vt` already does
+before changing anything). M1/M2 are mostly verification-and-harden; M3 is the
+real code change. M4 locks behavior. M5 is optional.
+
+## Context and Orientation
+
+Read this as if you know nothing about Laban. Every path is repository-relative
+from the repo root `~/wrk/laban`. Build with `./scripts/build-app` (assembles the
+app bundle; **never** `swift build` alone for the app). Run tests with
+`swift test`. Do **not** `open`/launch `Laban.app` from a shell — it grabs a
+single-instance lock; for live checks install with
+`LABAN_INSTALL_PATH="$HOME/Laban-2027.app" ./scripts/install-app` and let the user
+launch it.
+
+### How Laban talks to the terminal engine
+
+- The terminal engine is the vendored static library
+  `.external/libghostty-vt/zig-out/lib/libghostty-vt.a`, with C headers under
+  `.external/libghostty-vt/include/ghostty/vt/`. `Package.swift` links it into the
+  `LabanTerminalCore` target (see `Package.swift` lines ~6–7 and ~37–43).
+- **Laban uses ghostty's full terminal model, not just its parser.** The C bridge
+  lives in `Sources/LabanTerminalCore/`. Every byte the child program writes is
+  forwarded verbatim to the engine: search for `ghostty_terminal_vt_write` (the
+  passthrough is documented in `Sources/LabanTerminalCore/decscusr.c:22` —
+  "every byte still flows unchanged to ghostty_terminal_vt_write"). The PTY read
+  loop is `Sources/LabanTerminalCore/pty_io.c` (`laban_vt_write_capture` at
+  ~line 148).
+- The engine owns mode state. Laban reads/sets modes through
+  `ghostty_terminal_mode_get` / `ghostty_terminal_mode_set`
+  (`Sources/LabanTerminalCore/terminal_effects.c`, e.g. lines ~139, ~192). Mode
+  identifiers are defined in `.external/libghostty-vt/include/ghostty/vt/modes.h`;
+  the relevant one is `GHOSTTY_MODE_GRAPHEME_CLUSTER` =
+  `ghostty_mode_new(2027, false)` (`modes.h:93`).
+- **Engine → host responses** (DECRQM replies, device status reports) are delivered
+  through a callback the host registers: `GHOSTTY_TERMINAL_OPT_WRITE_PTY`
+  (`.external/libghostty-vt/include/ghostty/vt/terminal.h:~409`, callback type
+  `GhosttyTerminalWritePtyFn`) — the comment states it fires "in response to a
+  DECRQM query or device status report". Laban's response plumbing is
+  `Sources/LabanTerminalCore/terminal_effects.c`
+  (`laban_write_terminal_response`, `laban_session_capture_response`). Responses
+  Laban sends back to the child are also mirrored to capture artifacts as
+  `terminal-response.bin` (see `AGENTS.md` → Runtime Artifacts).
+- The DECRPM report values are enumerated in `modes.h`:
+  `GHOSTTY_MODE_REPORT_NOT_RECOGNIZED=0`, `_SET=1`, `_RESET=2`,
+  `_PERMANENTLY_SET=3`, `_PERMANENTLY_RESET=4`; `ghostty_mode_report_encode`
+  (`modes.h:185`) encodes a DECRPM reply.
+
+### The snapshot already carries grapheme clusters
+
+`Sources/LabanTerminalCore/snapshot.c` builds a `LabanSnapshot`. For each cell it
+reads ghostty's per-cell data including the grapheme codepoints
+(`GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN` /
+`..._GRAPHEMES_BUF`, around lines 325–407) and UTF-8-encodes *all* code points of
+the cluster into the snapshot's shared `utf8_storage`. The cell type
+(`Sources/LabanTerminalCore/include/LabanTerminalCore.h`, struct `LabanCell`,
+lines ~88–99) is:
+
+```
+typedef struct {
+    uint32_t codepoint;      /* First codepoint; 0 if empty or multi-codepoint */
+    uint32_t utf8_offset;    /* Byte offset into LabanSnapshot.utf8_storage */
+    uint32_t utf8_length;    /* Byte length in utf8_storage; 0 if empty */
+    ...
+    uint8_t  wide;           /* LABAN_CELL_WIDE_* (NARROW=0, WIDE=1,
+                                SPACER_TAIL=2, SPACER_HEAD=3) */
+} LabanCell;
+```
+
+So the live viewport path has the *full* cluster text (`utf8_offset`/`utf8_length`
+→ the bytes in `utf8_storage`) and the engine's authoritative width
+(`wide`). Rendering and live-viewport width are therefore already grapheme- and
+mode-correct: they read what the engine decided. `LABAN_CELL_WIDE_*` is defined in
+`LabanTerminalCore.h:82–85` and mirrors ghostty's `GhosttyCellWide`.
+
+### The genuine gap: the Swift-side width consumers
+
+When selection or find reaches **scrolled-off** rows, Laban does **not** use the
+snapshot's per-cell `wide` flag — it reconstructs text from a `String`-only
+scrollback extraction (`Sources/LabanTerminalCore/scrollback_extract.c` feeding
+the Swift scrollback model). That `String` has no width metadata, so the Swift
+side recomputes width with a *pinned table*,
+`Sources/LabanCore/TerminalDisplayWidth.swift` (`cells(of:)`, `isWide(_:)`). That
+table deliberately implements the **legacy / mode-2027-OFF** rule (sum width per
+Unicode scalar). Its own doc comment (recently added, lines ~4–8) pins the
+assumption:
+
+```
+/// ... models libghostty layout with DEC mode 2027 (grapheme_cluster) DISABLED
+/// — Laban's configuration ... Width is summed per Unicode scalar ... If mode
+/// 2027 is ever enabled, these per-scalar-width consumers (scrollback find/copy,
+/// word selection, IME preedit) ... must switch to per-grapheme-head width.
+```
+
+There are two distinct classes of consumer here, and only the first is the bug.
+
+**(A) Scrollback `String` consumers — the actual mode-2027 bug.** These derive a
+*column* from `String` text using the pinned table because the scrollback fallback
+discarded the engine's per-cell width. These drift under mode 2027 and are what M3
+fixes:
+
+| Consumer | File | Symbol |
+|---|---|---|
+| Scrollback copy | `Sources/LabanCore/TerminalSelection.swift` | `plainLineText(...)` (~lines 279–284) |
+| Scrollback find | `Sources/LabanCore/TerminalFind.swift` | `rowBuffer(fromUTF8Row:)` (~lines 194–204) |
+
+**(B) Non-grid consumers that legitimately keep the pinned table as a fallback.**
+These size text that never entered the grid, or use the table for word
+*classification* (is-this-character-a-word-constituent), not for grid column math,
+so there is no engine width to consult:
+
+| Consumer | File | Symbol | Why fallback is OK |
+|---|---|---|---|
+| Word selection | `Sources/LabanApp/TerminalSelectionInput.swift` | `wordBounds`, `isWord` (~:208) | reads live `cells`/`storage` for layout; uses `TerminalDisplayWidth.isWide` only to classify word constituents |
+| IME preedit caret | `Sources/LabanApp/TerminalBitmapView.swift` | `markedTextCaretCells` (~:3696) | preedit text not yet committed to the grid |
+| IME preedit mask | `Sources/LabanCore/FrameProducer.swift` | preedit `runWidth` (~:577) | preedit text not yet committed to the grid |
+
+M3 reroutes class (A) to engine-carried width and demotes the pinned table to the
+last-resort role it already plays for class (B).
+
+The live-viewport selection/find paths (`snapshotLineText`,
+`snapshot`-based hit-testing) already consult the real `wide` flag and are fine;
+only the scrollback `String` fallback is wrong. This was previously visible even
+with mode OFF (the "BUG-12/13" column drift fixed by introducing the pinned
+table) — but with mode ON the pinned table is *also* wrong, because the engine
+now lays `👩‍🌾` into 2 cells while the per-scalar table still counts 4.
+
+### Rendering
+
+`Sources/LabanCore/FrameProducer.swift` builds glyph-run draw commands from
+snapshot cells; the macOS text stack (CoreText) shapes a cell's `utf8_storage`
+bytes, so a cluster like `👩‍🌾` carried in one cell already shapes to one glyph.
+Wide clusters occupy two cells (head + spacer tail) per the engine's `wide` flag.
+Confirm during M2 that this holds; it is expected to already work.
+
+### Tests and existing width coverage
+
+- C-bridge / engine tests: `Tests/LabanTerminalCoreTests/` (and the smoke file
+  `Sources/LabanTerminalCore/ghostty_vt_bridge_smoke.c`).
+- Swift width tests added by the prior audit work: `TerminalDisplayWidthTests`,
+  `TerminalFindTests`, `TerminalSelectionTests`, `FrameProducerPreeditTests`,
+  `TerminalSelectionInputTests` (all under `Tests/LabanCoreTests` and
+  `Tests/LabanAppTests`). These currently pin the **mode-OFF** behavior.
+- There is **no** `TerminalWidthConformanceTests` yet (an earlier plan referenced
+  it as future work). M4 creates it.
+
+### Headless / debug parity (a Laban hard rule)
+
+Any new subsystem must be reachable from both the GUI path
+(`Sources/LabanApp/MainWindowController.swift` `makeAndShow`) and the headless
+path (`Sources/LabanDebug/HeadlessDebugRuntime.swift`), with an HTTP debug
+endpoint for autonomous verification. Debug endpoints live in
+`Sources/LabanDebug/DebugStateEndpoints.swift` /
+`Sources/LabanDebug/DebugHTTPServer.swift` / `Sources/LabanDebug/DebugModels.swift`.
+M1 adds mode-2027 state there.
+
+## What "true elite" means here (scope and non-goals)
+
+"Elite" = the whole stack is coherent and provably correct, not just "DECRQM
+answers". Concretely:
+
+1. The **handshake** is correct: `ESC [ ? 2027 h/l` toggles the engine, and
+   `ESC [ ? 2027 $ p` returns the right DECRPM value (set/reset), so real TUIs
+   that negotiate (the recommended pattern) behave.
+2. The **cursor advances correctly** under each mode — the single behavior most
+   terminals get wrong and the reason naive clustering breaks `fish` (see
+   Decision Log). A program that prints `👩‍🌾` then asks the cursor position
+   (`ESC [ 6 n`) gets back the column the engine actually used.
+3. **Every width consumer agrees** with the active mode: rendering, cursor,
+   selection, copy, find, and IME preedit — including the scrollback fallback.
+4. It is **autonomously verifiable**: a debug endpoint reports mode state, and a
+   conformance fixture pins the spec's hard examples under *both* modes.
+5. The **default is OFF** (opt-in by the program), matching every correct
+   implementation and avoiding the `fish` breakage (Decision Log).
+
+Non-goals (explicitly out of scope, record as decisions, do not implement here):
+
+- **Kitty's text-sizing protocol** (an OSC-based alternative to mode 2027). It is
+  a different mechanism; kitty deliberately does *not* implement 2027. Out of
+  scope; note as future work in M5.
+- **Reimplementing UAX #29 segmentation in Swift.** The engine is the single source
+  of truth. The Swift side must *consume* the engine's width, never re-derive
+  grapheme boundaries itself (see Decision Log).
+- **Defaulting mode 2027 ON.** Stays opt-in.
+
+## Plan of Work
+
+### M0 — Characterization harness: measure what already works
+
+**Why first:** we believe `libghostty-vt` already implements mode 2027, but we must
+*measure* the exact current behavior through Laban's bridge before changing code,
+so M1–M3 target real gaps rather than assumed ones. This milestone adds tests that
+**document current behavior**; some assertions may be written as "record the
+observed value" first, then tightened once observed.
+
+**What to build:** a new C or Swift test that drives a real session via the
+`LabanTerminalCore` API (mirror the existing pattern in
+`Tests/LabanTerminalCoreTests/` and `Sources/LabanTerminalCore/session_smoke.c`):
+
+1. Create a session, feed bytes (use the same entry the PTY loop uses,
+   `ghostty_terminal_vt_write` via the bridge, or the session's write-input path).
+2. Probe A (mode OFF, default): write `👩‍🌾` (`\xF0\x9F\xA7\x91\xE2\x80\x8D\xF0\x9F\x8C\xBE`),
+   then snapshot; record `cursor_col`, and for the printed cells record `wide` and
+   the `utf8_storage` bytes. Expectation from research: engine lays the cluster as
+   per-code-point cells (≈4 columns) when OFF.
+3. Probe B: write `ESC [ ? 2027 h`, then `👩‍🌾`, snapshot; record `cursor_col`,
+   cell `wide`, and `utf8_storage`. Expectation: 2 columns, one wide cell + spacer
+   tail, full cluster bytes in the head cell.
+4. Probe C (handshake): register/observe the `WRITE_PTY` response callback (the
+   bridge already wires `laban_write_terminal_response`); write `ESC [ ? 2027 $ p`
+   and capture the bytes the engine emits back. Record the exact DECRPM reply
+   (expected `ESC [ ? 2027 ; 1 $ y` when set, `; 2` when reset).
+5. Probe D: `ESC [ 6 n` (Device Status Report — cursor position) after printing
+   the cluster in each mode; record the reported row/column.
+6. Probe E (mid-session flip — the one place "single source of truth" could
+   silently fail): set `?2027h`, print `👩‍🌾`, scroll it off the live viewport,
+   set `?2027l`, then run the scrollback extraction. Record whether the extracted
+   row reports the cluster as **2 columns** (the engine retained the historical
+   width it laid down) or **4 columns** (the engine/extractor re-derived width
+   under the now-current mode). This determines whether M3's "carry the width the
+   engine used" is sufficient or whether the width must be snapshotted at the
+   moment a row scrolls off. Record the answer in **Surprises & Discoveries**.
+
+A ready-made template exists: `Tests/LabanTerminalCoreTests/LabanSessionTests.swift`
+`testDECRQMModeQueryUsesTerminalState` (~line 2659) already proves the DECRQM drain
+end-to-end for mode `?7` (writes `\e[?7$p`, calls `drainResponse`, asserts
+`\e[?7;1$y`), using `makeFixtureSession` / `writeBytes` / `drainResponse` helpers.
+Copy that structure for the 2027 probes — only 2027-specific behavior is unverified;
+the handshake *mechanism* is already proven for a sibling mode.
+
+**Acceptance (observable):** First a 10-second pre-flight that fails fast if a
+future re-vendor stripped the Unicode tables:
+`nm .external/libghostty-vt/zig-out/lib/libghostty-vt.a | grep -i graphemeBreak`
+returns at least one symbol. Then `swift test --filter Mode2027CharacterizationTests`
+runs and prints (via test log) the measured cursor columns, cell widths, the raw
+DECRPM bytes for both modes, and the Probe E mid-flip column. The plan's
+**Surprises & Discoveries** section is updated with the measured table. This
+milestone *cannot fail to inform*: its job is to convert "probably works" into
+"here is exactly what works and what doesn't."
+
+### M1 — Lock the engine handshake + debug observability
+
+Using M0's measurements:
+
+- If DECRQM `?2027$p` already returns the correct DECRPM value (`1` when set, `2`
+  when reset) through the existing `WRITE_PTY`/`laban_write_terminal_response`
+  path, this milestone *verifies and pins* it with a test. If M0 shows the reply
+  is wrong/absent (e.g. the engine emits it but Laban drops it, or it reports a
+  wrong number — a known class of bug in other terminals), fix the drain in
+  `Sources/LabanTerminalCore/terminal_effects.c` so the engine's encoded report
+  reaches the child and the capture's `terminal-response.bin`.
+- Confirm `DECSET/DECRST 2027` toggles `ghostty_terminal_mode_get(...,
+  GHOSTTY_MODE_GRAPHEME_CLUSTER, ...)`.
+- **Observability (hard rule):** surface mode-2027 state. Extend the snapshot or a
+  debug query so `GET /debug/terminal-modes` (new or extend an existing
+  state endpoint in `Sources/LabanDebug/DebugStateEndpoints.swift`) returns
+  `{ "grapheme_cluster_2027": true|false, ... }`. Wire it into both
+  `HeadlessDebugRuntime` and `MainWindowController` (parity). Add the field to the
+  snapshot if convenient (the snapshot already exposes mode booleans like
+  `synchronized_output` for mode 2026 — follow that exact pattern in
+  `LabanTerminalCore.h` / `snapshot.c`).
+
+**Acceptance:** a headless test sends `?2027h`, asserts `GET /debug/terminal-modes`
+reports it on, sends `?2027$p`, and asserts the captured response bytes equal the
+DECRPM "set" reply; sends `?2027l` and asserts "reset". A `grep` shows the debug
+field wired in both runtimes. Model the response assertion on the existing
+`testDECRQMModeQueryUsesTerminalState` (`Tests/LabanTerminalCoreTests/LabanSessionTests.swift`
+~line 2659), which already does exactly this for mode `?7`.
+
+### M2 — Grid & cursor-advance conformance under both modes
+
+Verify (fix only if M0/M2 expose a gap) that the **engine grid** is correct:
+
+- Mode ON: a grapheme cluster occupies its cluster width (1 or 2), stored as one
+  head cell (`wide=WIDE` for 2-cell) + a `SPACER_TAIL`; `cursor_col` after the
+  cluster advanced by exactly that width; the head cell's `utf8_storage` holds all
+  cluster code points.
+- Mode OFF: legacy per-code-point layout; `cursor_col` advances by the legacy sum.
+- VS16/VS15: `▶`+VS16 → 2 cells; base+VS15 → 1 cell. Regional indicator pair → one
+  2-cell grapheme. ZWJ family (`👨‍👩‍👧`) → one 2-cell grapheme when ON.
+
+Drive these through the real session and assert against the snapshot + the
+`ESC [ 6 n` cursor report. This is primarily a verification milestone proving the
+engine path; if a discrepancy appears (e.g. Laban's snapshot mis-maps a wide
+spacer), fix it in `snapshot.c`.
+
+**Acceptance:** `swift test --filter Mode2027GridConformanceTests` passes; a table
+of clusters asserts `(wide, cursor advance)` for ON and OFF; mutating an expected
+ON-width to the OFF value makes exactly the affected row fail. **Render proof
+(separate from grid width):** a width-correct cell can still render as two glyphs.
+Add an assertion via the existing `FrameProducer` draw-command tests (see
+`Tests/.../FrameProducerTests`) that `👩‍🌾` carried in one wide cell produces a
+**single** glyph run, not two — or, if the draw-command layer cannot express that,
+a screenshot artifact of the rendered cluster. This proves the cluster shapes as
+one glyph, which grid width alone does not.
+
+### M3 — Swift width-consumer coherence (the real code change)
+
+Make the scrollback fallback consumers honor the engine's width regardless of
+mode, eliminating the pinned-table assumption as the *primary* width source:
+
+1. **Carry width into scrollback.** Extend the scrollback extraction
+   (`Sources/LabanTerminalCore/scrollback_extract.c` and the Swift scrollback
+   model it feeds) so each extracted row carries per-display-cell metadata
+   (the cluster boundaries and `wide` value the engine used), not just a `String`.
+   Minimum viable: alongside the row `String`, emit a parallel array of
+   `(utf8_range, displayColumns)` so the Swift side can map a display column to the
+   right cluster without guessing. This is the same information the live snapshot
+   already exposes per cell; the task is to preserve it through the scrollback
+   path instead of discarding it.
+
+   **This is an ABI/format change — make it additive and safe.** Today the C
+   functions `laban_session_scrollback_extract*`
+   (`Sources/LabanTerminalCore/include/LabanTerminalCore.h` ~lines 723–772) emit
+   only `text_buffer` + `row_offsets`, and the Swift `ScrollbackBlock`
+   (`Sources/LabanCore/TerminalFind.swift` ~line 21, built transiently by
+   `Session.scrollbackBlock` in `Session.swift` ~lines 840–866) holds `text:
+   String` + `rowOffsets`. Reassuring fact (verified): `ScrollbackBlock` /
+   `scrollback_extract` are a **transient in-memory query result, not a persisted
+   capture/replay artifact or the snapshot ring** — they are *not* referenced by
+   `Sources/Laband*` or `Sources/LabanDebug`, so capture/replay determinism and the
+   laband multi-client path are **not** at risk. To keep the change low-risk: add a
+   **new versioned C entry point** (e.g. `..._extract2` / an additional
+   out-parameter) rather than mutating the existing signatures, and give
+   `ScrollbackBlock` the metadata as an **optional** field so existing call sites
+   compile unchanged and fall through to the current behavior when metadata is
+   absent.
+
+   If Probe E (M0) shows the engine re-derives width under the *current* mode for
+   already-scrolled-off rows, the metadata must be captured at the instant a row
+   scrolls off (snapshot it then), not recomputed at extraction time. Record M0's
+   answer here before implementing.
+2. **Consume it.** Update `TerminalSelection.plainLineText`,
+   `TerminalFind.rowBuffer(fromUTF8Row:)`, `TerminalSelectionInput.wordBounds`,
+   `TerminalBitmapView.markedTextCaretCells`, and `FrameProducer` preedit width to
+   read the carried metadata when present. Keep `TerminalDisplayWidth` as a
+   *last-resort fallback only* (used when metadata is genuinely unavailable, e.g.
+   IME preedit text that never entered the grid). Update its doc comment to say it
+   is a fallback, not the model.
+3. The result: find/copy/word-select are correct whether mode 2027 is on or off,
+   because they use the engine's actual layout, not a re-derivation.
+
+**Acceptance:** new tests place `👩‍🌾` and a CJK char into scrollback under mode ON
+and assert that scrollback find returns the column the engine used (2 per cluster)
+and copy returns the exact cluster bytes; the same tests under mode OFF assert the
+legacy columns. Mutating the consumer to fall back to per-scalar width makes the
+mode-ON assertions fail. This permanently subsumes the earlier per-scalar fix:
+the pinned table is no longer the source of truth for grid-derived text.
+
+### M4 — Conformance fixture + end-to-end handshake demo
+
+- Create `Tests/LabanCoreTests/TerminalWidthConformanceTests.swift` (and/or a
+  `LabanTerminalCore` C test) with a table of the spec's hard cases driven through
+  the real engine in **both** modes:
+  `a` (1/1), `中` (2/2), `👩‍🌾` (4 off / 2 on), `🏳️‍⚧️` (transgender flag, ZWJ),
+  `🇸🇪` (regional pair), `👋🏽` (skin-tone modifier), `각` (Hangul), `क्षि`
+  (Devanagari cluster), `▶️`/`▶︎` (VS16/VS15). For each, assert engine cell width
+  + cursor advance + scrollback find/copy column.
+- Provide a documented, scriptable **end-to-end demo** a human can run: a short
+  program that does the DECRQM handshake (`printf '\e[?2027$p'`, read reply),
+  prints the farmer emoji, and reports the negotiated width — used as the manual
+  acceptance transcript. Capture the transcript in `Artifacts and Notes`.
+
+**Acceptance:** `swift test --filter TerminalWidthConformanceTests` passes; the
+documented demo transcript shows Laban replying `ESC [ ? 2027 ; 1 $ y` after
+`?2027h` and the emoji occupying 2 columns.
+
+### M5 — Elite polish (optional)
+
+- Write/append an ADR under `docs/adr/` recording the mode-2027 contract: engine is
+  the single source of truth, default OFF/opt-in, DECRPM semantics, and the
+  kitty-text-sizing-protocol non-goal. (Check `docs/adr/README.md` first.)
+- Optionally expose a Laban config to default-enable 2027 for power users (default
+  stays OFF). Ghostty itself has a `grapheme-width-method`; do **not** wire a
+  conflicting Laban setting without an ADR.
+- Update `Sources/LabanCore/TerminalDisplayWidth.swift` doc comment to reflect its
+  demoted role.
+
+## Decision Log
+
+- Decision: Mode 2027 default stays **OFF** (opt-in by the running program via
+  DECSET); Laban never enables it unilaterally.
+  Rationale: The Ghostty author's write-up documents that enabling grapheme
+  clustering unilaterally broke `fish` — the shell assumed legacy `wcwidth` while
+  the terminal used clustering, so the prompt redrew in the wrong place. The mode
+  exists precisely so programs negotiate it. Every correct implementation
+  (ghostty, contour, foot) defaults OFF and falls back to legacy width when off;
+  wezterm is the outlier (permanently on). Opt-in is the safe, spec-aligned choice.
+  Date/Author: 2026-06-19, plan author.
+- Decision: The terminal **engine (`libghostty-vt`) is the single source of truth**
+  for grapheme segmentation and width. The Swift side consumes the engine's width;
+  it must not re-implement UAX #29 segmentation.
+  Rationale: Laban already drives ghostty's full terminal model and snapshots its
+  per-cell width and cluster bytes. Re-deriving widths in Swift (the current pinned
+  table) is exactly what causes drift. One source of truth eliminates whole classes
+  of disagreement and tracks Unicode updates with the vendored engine.
+  Date/Author: 2026-06-19, plan author.
+- Decision: Kitty's **text-sizing protocol is out of scope** (non-goal).
+  Rationale: It is a separate OSC-based mechanism; kitty deliberately does not
+  implement mode 2027. Supporting both is a larger, independent effort. Record as
+  future work in M5.
+  Date/Author: 2026-06-19, plan author.
+- Decision: Treat M0 as a **characterization milestone** before any code change.
+  Rationale: PLANS.md encourages prototyping/measurement when feasibility hinges on
+  unknowns. The central unknown is "how much already works through libghostty"; M0
+  measures it so M1–M3 target real gaps.
+  Date/Author: 2026-06-19, plan author.
+- Decision: Laban reports DECRPM **SET (1) / RESET (2)** for mode 2027 — i.e. a
+  genuinely toggleable mode — not PERMANENTLY_SET/RESET (3/4).
+  Rationale: Laban delegates all width to `libghostty-vt`, which truly implements
+  grapheme-cluster width and toggles the mode, so the mode is genuinely
+  on/off-able. This differs from `foot`, which reports PERMANENTLY_RESET when its
+  configured width method cannot conform to the spec — Laban has no such
+  width-method caveat. Whatever value M0 actually observes the engine emit must be
+  recorded here and treated as authoritative; if the engine reports 3/4 for its own
+  reasons, defer to it rather than overriding.
+  Date/Author: 2026-06-19, plan author (folded in from independent review).
+
+## Review Gate
+
+A separate agent with fresh state must verify the following before this ExecPlan is
+considered complete. The executing agent must not mark the plan done until this
+gate passes. See `../../PLANS.md` "Review gate and review-fix loop".
+
+- [ ] `./scripts/build-app` exits 0 at the review commit.
+- [ ] `swift test` exits 0; record the passed count.
+- [ ] M1: a test sends `ESC [ ? 2027 h` then `ESC [ ? 2027 $ p` and asserts the
+      captured terminal response equals the DECRPM "set" reply
+      (`ESC [ ? 2027 ; 1 $ y`); sends `?2027l`/`?2027$p` and asserts the "reset"
+      reply (`; 2`). `grep -n "2027\|grapheme" Sources/LabanDebug/DebugStateEndpoints.swift`
+      shows the debug field; parity `grep` in `HeadlessDebugRuntime.swift` and
+      `MainWindowController.swift`.
+- [ ] M2: a conformance test asserts, through the real engine, that `👩‍🌾`
+      occupies 2 cells and advances the cursor by 2 when mode 2027 is ON, and the
+      legacy width when OFF. Mutating the expected ON width to the OFF value makes
+      that row FAIL; revert restores PASS.
+- [ ] M3: a scrollback find/copy test for `👩‍🌾` under mode ON returns column 2
+      (not 4) and the exact cluster bytes; mutating the consumer back to the
+      per-scalar `TerminalDisplayWidth` path makes it FAIL.
+- [ ] M4: `Tests/LabanCoreTests/TerminalWidthConformanceTests.swift` (or the C
+      equivalent) exists and passes; it covers ASCII, CJK, ZWJ emoji, regional
+      indicator, skin-tone modifier, Hangul, Devanagari cluster, and VS15/VS16
+      under both modes.
+- [ ] M3 regression guard: `swift test --filter TerminalFindTests` and
+      `swift test --filter TerminalSelectionTests` exit 0, and the mode-OFF
+      scrollback column outputs are unchanged from the pre-M3 baseline (the demoted
+      `TerminalDisplayWidth` path must not alter legacy results). Also
+      `swift test --filter TerminalDisplayWidthTests` exits 0 (the helper still
+      exists as a fallback).
+- [ ] No regression to MVP behavior: legacy width when mode 2027 is OFF (the
+      default) is unchanged — verified mechanically by the M3 regression-guard item
+      above plus `swift test` exiting 0, not by judgment.
+
+Review status: NOT REVIEWED
+
+Review findings (filled in by the review agent):
+
+(none yet)
+
+## Validation and Acceptance
+
+- Automated: `swift test` green, with the new `Mode2027CharacterizationTests`,
+  `Mode2027GridConformanceTests`, scrollback coherence tests, and
+  `TerminalWidthConformanceTests`. Each new behavioral test must fail before its
+  milestone's change and pass after (note the red→green transition in `Progress`).
+- Headless: `GET /debug/terminal-modes` reflects 2027 on/off after DECSET/DECRST.
+- Manual end-to-end (capture transcript in Artifacts): with a debug build installed
+  to `~/Laban-2027.app`, run a probe such as
+  `printf '\e[?2027$p'` (observe the DECRPM reply), then
+  `printf '\e[?2027h👩‍🌾\e[6n'` and confirm the cursor report shows a
+  2-column advance.
+
+## Idempotence and Recovery
+
+- M0/M2/M4 are additive (tests + a read-only debug field) and safe to re-run.
+- M1 touches the response-drain only if M0 proves a gap; otherwise it is
+  verification-only. M3 is the one behavior-changing milestone — it is additive
+  (carry metadata, consume when present, keep the pinned table as fallback), so the
+  mode-OFF default path is preserved and the change is revertible per file. M3's
+  scrollback metadata is a **transient query result** (`ScrollbackBlock` is rebuilt
+  on demand, never serialized) and is not referenced by the capture/replay or
+  laband multi-client code, so it cannot break replay determinism; still, add the
+  new C surface as a versioned entry point so old signatures keep working.
+- Rebuilding the vendored engine is **not** part of this plan: `libghostty-vt`
+  already ships mode 2027 in `zig-out/lib`. If a future engine bump is needed,
+  that is a separate change (rebuild Zig lib + re-vendor); call it out in
+  `Surprises & Discoveries` if M0 reveals the vendored build lacks the mode.
+- A regenerated `.rpg/graph.json` alone marks a build `+dirty`; if a built bundle
+  "doesn't work", verify `Info.plist:LABANBuildCommit` matches HEAD before
+  debugging source.
+
+## Artifacts and Notes
+
+Research sources consulted while authoring (knowledge embedded above; links for
+provenance only — the plan is self-contained without them):
+
+- Spec: "Terminal Unicode Core" by Christian Parpart (Contour author), repo
+  `contour-terminal/terminal-unicode-core` (spec defines mode 2027 + DECRPM).
+- Mitchell Hashimoto (Ghostty), "Grapheme Clusters and Terminal Emulators":
+  the opt-in/default-off rationale (fish breakage), the DECRQM + `CSI 6n`
+  detection handshake, and the `👩‍🌾` 4-vs-2 example.
+- Reference implementations (via DeepWiki):
+  - **ghostty** (`ghostty-org/ghostty`): mode `grapheme_cluster`; `print()` uses
+    `unicode.graphemeBreak()`; cluster code points stored on the cell +
+    spacer-tail for wide; VS16/VS15 explicit; config `grapheme-width-method`.
+    This is the engine Laban vendors.
+  - **contour** (`contour-terminal/contour`): `DECMode::Unicode` = 2027;
+    `graphemeClusterWidth` (base width, VS16 forces 2); DECRQM handshake.
+  - **foot** (`dnkl/foot` PR #1489): toggles "grapheme shaping" at runtime; ties
+    spec conformance to its `grapheme-width-method=double-width`; reports
+    "permanently reset" via DECRQM when the width method can't conform.
+  - **wezterm**: mode 2027 *permanently enabled* (query-only); uses
+    `finl_unicode` grapheme iterator + HarfBuzz shaping.
+  - **kitty**: does **not** implement 2027; uses its own OSC text-sizing protocol
+    (the M5 non-goal).
+- Code map (this repo, measured during authoring): `Package.swift` (links
+  `libghostty-vt.a`); `Sources/LabanTerminalCore/{snapshot.c, terminal_effects.c,
+  pty_io.c, decscusr.c, include/LabanTerminalCore.h}`; `.external/libghostty-vt/
+  include/ghostty/vt/{modes.h, terminal.h, screen.h, grid_ref.h}`;
+  `Sources/LabanCore/{TerminalDisplayWidth.swift, TerminalSelection.swift,
+  TerminalFind.swift, FrameProducer.swift}`;
+  `Sources/LabanApp/{TerminalSelectionInput.swift, TerminalBitmapView.swift}`.
+
+## Surprises & Discoveries
+
+- Observation: Mode 2027 is largely already wired end-to-end via `libghostty-vt`.
+  The C API exposes `GHOSTTY_MODE_GRAPHEME_CLUSTER` (2027), DECRPM report values
+  0–4, and `ghostty_mode_report_encode`; Laban forwards all child bytes to the
+  engine and the engine emits DECRQM replies through the `WRITE_PTY` callback;
+  the snapshot already carries each cell's full grapheme cluster bytes plus the
+  engine's `wide` flag. The real work is therefore *verification + Swift-side
+  width coherence + conformance*, not implementing the mode from scratch.
+  Evidence: `.external/libghostty-vt/include/ghostty/vt/modes.h:93,152-185`;
+  `Sources/LabanTerminalCore/snapshot.c:325-407`;
+  `Sources/LabanTerminalCore/terminal_effects.c` (mode get/set + response drain);
+  `.external/libghostty-vt/include/ghostty/vt/terminal.h:~409` (WRITE_PTY callback).
+  (M0 will confirm the exact current cursor/handshake numbers.)
+- Observation: The DECRQM drain is already proven for another mode. The test
+  `Tests/LabanTerminalCoreTests/LabanSessionTests.swift:~2659`
+  (`testDECRQMModeQueryUsesTerminalState`) writes `\e[?7$p` and asserts the engine
+  replies `\e[?7;1$y` through Laban's bridge. So the handshake *mechanism* is
+  verified end-to-end; only 2027-specific support is unmeasured. This is the
+  copy-paste template for M0/M1.
+  Evidence: independent review of this plan, 2026-06-19.
+- Open question (resolve in M0 Probe E): when mode 2027 is toggled mid-session, do
+  already-scrolled-off rows retain the width the engine laid them down with, or does
+  the scrollback extraction re-derive width under the now-current mode? If the
+  latter, M3 must snapshot per-row width at the moment a row scrolls off, not at
+  extraction time. This is the single place the "engine is the single source of
+  truth" claim could silently fail.
