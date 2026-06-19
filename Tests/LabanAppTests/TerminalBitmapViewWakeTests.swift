@@ -30,6 +30,7 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
     } else {
       unsetenv("LABAN_RENDERER")
     }
+    TerminalBitmapView.accessibilityDisplayOptionsProviderForTests = nil
     super.tearDown()
   }
 
@@ -201,6 +202,45 @@ final class TerminalBitmapViewWakeTests: XCTestCase {
       drainMainQueue { harness.view.advanceFrameCallCountForTesting > baseline },
       "a Reduce Motion flip must schedule a frame; invalidation alone never paints on a parked link"
     )
+  }
+
+  func testTerminalSurfaceAccessibilityReadsVisibleTextAndFocusRing() throws {
+    let harness = try makeHarness()
+    let session = try XCTUnwrap(harness.model.activeTab.flatMap {
+      harness.model.session(forTab: $0.id)
+    })
+    XCTAssertEqual(session.write(Array("voiceover terminal text".utf8)), 0)
+
+    XCTAssertTrue(harness.view.isAccessibilityElement())
+    XCTAssertEqual(harness.view.accessibilityRole(), .textArea)
+    XCTAssertFalse((harness.view.accessibilityLabel() ?? "").isEmpty)
+    let value = try XCTUnwrap(harness.view.accessibilityValue() as? String)
+    XCTAssertTrue(value.contains("voiceover terminal text"))
+    XCTAssertNotEqual(harness.view.focusRingType, .none)
+  }
+
+  func testAccessibilityDisplayOptionsNotificationUpdatesCachedFlags() throws {
+    var options = TerminalBitmapView.AccessibilityDisplayOptions(
+      reduceMotion: false,
+      increaseContrast: false,
+      differentiateWithoutColor: false,
+      reduceTransparency: false)
+    TerminalBitmapView.accessibilityDisplayOptionsProviderForTests = { options }
+    let harness = try makeHarness()
+    XCTAssertEqual(harness.view.accessibilityDisplayOptionsForTesting, options)
+
+    options = TerminalBitmapView.AccessibilityDisplayOptions(
+      reduceMotion: true,
+      increaseContrast: true,
+      differentiateWithoutColor: true,
+      reduceTransparency: true)
+    NSWorkspace.shared.notificationCenter.post(
+      name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+      object: NSWorkspace.shared)
+
+    XCTAssertTrue(
+      drainMainQueue { harness.view.accessibilityDisplayOptionsForTesting == options },
+      "display accessibility notification must refresh the cached flags")
   }
 
   // MARK: - Synchronized output (DEC 2026) defer must self-schedule a re-wake

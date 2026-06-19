@@ -3,6 +3,29 @@ import Foundation
 import LabanRenderer
 import LabanTerminalCore
 
+public struct TerminalAccessibilityVisualOptions: Equatable, Sendable {
+  public var increaseContrast: Bool
+  public var differentiateWithoutColor: Bool
+  public var reduceTransparency: Bool
+
+  public init(
+    increaseContrast: Bool = false,
+    differentiateWithoutColor: Bool = false,
+    reduceTransparency: Bool = false
+  ) {
+    self.increaseContrast = increaseContrast
+    self.differentiateWithoutColor = differentiateWithoutColor
+    self.reduceTransparency = reduceTransparency
+  }
+
+  public static let standard = TerminalAccessibilityVisualOptions()
+
+  public func terminalBackgroundColor(_ color: UInt32) -> UInt32 {
+    guard reduceTransparency else { return color }
+    return (color & 0xFFFF_FF00) | 0xFF
+  }
+}
+
 // Converts a LabanSnapshot into a flat FrameCommand list for the terminal viewport.
 // Uses standard CoreGraphics coordinates: (0,0) at bottom-left.
 // Row 0 (topmost terminal row) maps to y = (rows-1) * cellHeight.
@@ -20,19 +43,109 @@ public struct FrameProducer {
   /// DOWN. The terminal-area background rect is NOT shifted — it acts as
   /// the canvas under the sliding cells.
   public let contentYOffset: CGFloat
+  public let accessibilityVisualOptions: TerminalAccessibilityVisualOptions
 
   public init(
     cellWidth: Int = 8,
     cellHeight: Int = 16,
     originX: CGFloat = 0,
     originY: CGFloat = 0,
-    contentYOffset: CGFloat = 0
+    contentYOffset: CGFloat = 0,
+    accessibilityVisualOptions: TerminalAccessibilityVisualOptions = .standard
   ) {
     self.cellWidth = cellWidth
     self.cellHeight = cellHeight
     self.originX = originX
     self.originY = originY
     self.contentYOffset = contentYOffset
+    self.accessibilityVisualOptions = accessibilityVisualOptions
+  }
+
+  private var accessibilityOutlineRequired: Bool {
+    accessibilityVisualOptions.increaseContrast
+      || accessibilityVisualOptions.differentiateWithoutColor
+  }
+
+  private func terminalBackgroundColor(_ color: UInt32) -> UInt32 {
+    accessibilityVisualOptions.terminalBackgroundColor(color)
+  }
+
+  private func selectionFillColor() -> UInt32 {
+    let color = Theme.current.selectionBg
+    guard accessibilityVisualOptions.increaseContrast else { return color }
+    return Self.withAlphaAtLeast(color, 0xE6)
+  }
+
+  private func cursorFillColor() -> UInt32 {
+    guard accessibilityVisualOptions.increaseContrast else { return Theme.current.cursor }
+    return Self.contrastColor(against: Theme.current.bg0)
+  }
+
+  private func appendSelectionCommand(_ rect: CGRect, into cmds: inout [FrameCommand]) {
+    let fillColor = selectionFillColor()
+    cmds.append(.selection(rect, color: fillColor))
+    guard accessibilityOutlineRequired else { return }
+    let outlineColor = Self.contrastColor(against: fillColor)
+    for outlineRect in Self.outlineRects(for: rect) {
+      cmds.append(.selection(outlineRect, color: outlineColor))
+    }
+  }
+
+  private func appendCursorCommands(
+    style: Int,
+    cellRect: CGRect,
+    into cmds: inout [FrameCommand]
+  ) {
+    let fillColor = cursorFillColor()
+    for rect in Self.cursorRects(style: style, cellRect: cellRect) {
+      cmds.append(.cursor(rect, color: fillColor))
+    }
+    guard accessibilityOutlineRequired else { return }
+    let outlineColor = Self.contrastColor(against: fillColor)
+    for outlineRect in Self.outlineRects(for: cellRect) {
+      cmds.append(.cursor(outlineRect, color: outlineColor))
+    }
+  }
+
+  private func appendPayloadCursorRects(
+    style: Int,
+    cellRect: CGRect,
+    into payload: inout TerminalCellPayload
+  ) {
+    let fillColor = cursorFillColor()
+    for rect in Self.cursorRects(style: style, cellRect: cellRect) {
+      payload.cursorRects.append(TerminalCellPayload.CursorRect(rect: rect, color: fillColor))
+    }
+    guard accessibilityOutlineRequired else { return }
+    let outlineColor = Self.contrastColor(against: fillColor)
+    for outlineRect in Self.outlineRects(for: cellRect) {
+      payload.cursorRects.append(
+        TerminalCellPayload.CursorRect(rect: outlineRect, color: outlineColor))
+    }
+  }
+
+  private static func outlineRects(for rect: CGRect) -> [CGRect] {
+    guard rect.width > 0, rect.height > 0 else { return [] }
+    let thickness = min(CGFloat(2), min(rect.width, rect.height))
+    return [
+      CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: thickness),
+      CGRect(x: rect.minX, y: rect.maxY - thickness, width: rect.width, height: thickness),
+      CGRect(x: rect.minX, y: rect.minY, width: thickness, height: rect.height),
+      CGRect(x: rect.maxX - thickness, y: rect.minY, width: thickness, height: rect.height),
+    ]
+  }
+
+  private static func withAlphaAtLeast(_ color: UInt32, _ alpha: UInt32) -> UInt32 {
+    let currentAlpha = color & 0xFF
+    return (color & 0xFFFF_FF00) | max(currentAlpha, alpha)
+  }
+
+  private static func contrastColor(against color: UInt32) -> UInt32 {
+    let red = Double((color >> 24) & 0xFF)
+    let green = Double((color >> 16) & 0xFF)
+    let blue = Double((color >> 8) & 0xFF)
+    let luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0
+    return luminance > 0.5 ? 0x0000_00FF : 0xFFFF_FFFF
   }
 
   // A/B toggle: force the legacy glyph pass even on macOS 26. Production never
@@ -81,7 +194,7 @@ public struct FrameProducer {
     hyperlinkURIs: UnsafeBufferPointer<String>
   ) -> ResolvedCellVisuals {
     var attrsRaw = (cell.flags & renderableMaskRaw) & ~inverseRaw
-    let background = cell.background_rgba
+    let background = terminalBackgroundColor(cell.background_rgba)
     let foreground =
       (attrsRaw & faintRaw) != 0
       ? Self.blend(cell.foreground_rgba, toward: background, foregroundWeight: 0.50)
@@ -146,7 +259,7 @@ public struct FrameProducer {
     let cols = Int(snapshot.cols)
     let cw = CGFloat(cellWidth)
     let ch = CGFloat(cellHeight)
-    let defaultBg = snapshot.default_background_rgba
+    let defaultBg = terminalBackgroundColor(snapshot.default_background_rgba)
 
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(rows * 2 + 4)
@@ -202,7 +315,7 @@ public struct FrameProducer {
 
       for col in 0..<cols {
         let cell = cells[rowStart + col]
-        let cellBg = cell.background_rgba
+        let cellBg = terminalBackgroundColor(cell.background_rgba)
 
         if bgStart == nil {
           if cellBg != defaultBg {
@@ -244,7 +357,7 @@ public struct FrameProducer {
         let shifted = CGRect(
           x: rect.origin.x, y: rect.origin.y + contentYOffset,
           width: rect.width, height: rect.height)
-        cmds.append(.selection(shifted, color: Theme.current.selectionBg))
+        appendSelectionCommand(shifted, into: &cmds)
       }
     }
 
@@ -312,9 +425,7 @@ public struct FrameProducer {
       let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      for rect in Self.cursorRects(style: Int(effectiveCursorStyle), cellRect: cellRect) {
-        cmds.append(.cursor(rect, color: Theme.current.cursor))
-      }
+      appendCursorCommands(style: Int(effectiveCursorStyle), cellRect: cellRect, into: &cmds)
     }
 
     if let preedit {
@@ -366,14 +477,13 @@ public struct FrameProducer {
         originX: originX,
         originY: originY
       ) {
-        cmds.append(
-          .selection(
-            CGRect(
-              x: rect.origin.x,
-              y: rect.origin.y + contentYOffset,
-              width: rect.width,
-              height: rect.height),
-            color: Theme.current.selectionBg))
+        appendSelectionCommand(
+          CGRect(
+            x: rect.origin.x,
+            y: rect.origin.y + contentYOffset,
+            width: rect.width,
+            height: rect.height),
+          into: &cmds)
       }
     }
 
@@ -422,9 +532,7 @@ public struct FrameProducer {
       let cx = originX + CGFloat(caretCol) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      for rect in Self.cursorRects(style: Int(overlayEffectiveStyle), cellRect: cellRect) {
-        cmds.append(.cursor(rect, color: Theme.current.cursor))
-      }
+      appendCursorCommands(style: Int(overlayEffectiveStyle), cellRect: cellRect, into: &cmds)
     }
 
     if let preedit {
@@ -436,7 +544,7 @@ public struct FrameProducer {
         rows: rows,
         cols: cols,
         foreground: snapshot.default_foreground_rgba,
-        background: snapshot.default_background_rgba)
+        background: terminalBackgroundColor(snapshot.default_background_rgba))
     }
 
     return cmds
@@ -630,7 +738,7 @@ public struct FrameProducer {
     let cols = Int(snapshot.cols)
     let cw = CGFloat(cellWidth)
     let ch = CGFloat(cellHeight)
-    let defaultBg = snapshot.default_background_rgba
+    let defaultBg = terminalBackgroundColor(snapshot.default_background_rgba)
     payload.reset(
       rows: rows,
       cols: cols,
@@ -742,7 +850,7 @@ public struct FrameProducer {
 
         for col in 0..<cols {
           let cell = cells[rowStart + col]
-          let cellBg = cell.background_rgba
+          let cellBg = terminalBackgroundColor(cell.background_rgba)
           if bgStart == nil {
             if cellBg != defaultBg {
               bgStart = col
@@ -888,10 +996,7 @@ public struct FrameProducer {
       let cx = originX + CGFloat(snapshot.cursor_col) * cw
       let cy = originY + CGFloat(rows - 1 - Int(snapshot.cursor_row)) * ch + contentYOffset
       let cellRect = CGRect(x: cx, y: cy, width: cw, height: ch)
-      for rect in Self.cursorRects(style: Int(payloadEffectiveStyle), cellRect: cellRect) {
-        payload.cursorRects.append(
-          TerminalCellPayload.CursorRect(rect: rect, color: Theme.current.cursor))
-      }
+      appendPayloadCursorRects(style: Int(payloadEffectiveStyle), cellRect: cellRect, into: &payload)
     }
   }
 
@@ -1268,10 +1373,10 @@ public struct FrameProducer {
     // `cells.first?.backgroundRGBA` here — it can be 0 (transparent black) on
     // an unstyled first cell and used to leak the underlying view color
     // through as a black border between the sidebar and the terminal area.
-    let defaultBg: UInt32 = {
+    let defaultBg: UInt32 = terminalBackgroundColor({
       if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
       return Theme.current.bg0
-    }()
+    }())
 
     var cmds: [FrameCommand] = []
     cmds.reserveCapacity(rows * 2 + 4)
@@ -1304,7 +1409,8 @@ public struct FrameProducer {
       var bgColor: UInt32 = 0
 
       for col in 0..<cols {
-        let cellBg = cellAt(row: row, col: col)?.backgroundRGBA ?? defaultBg
+        let cellBg = cellAt(row: row, col: col).map { terminalBackgroundColor($0.backgroundRGBA) }
+          ?? defaultBg
         if bgStart == nil {
           if cellBg != defaultBg {
             bgStart = col
@@ -1349,14 +1455,13 @@ public struct FrameProducer {
         originX: originX,
         originY: originY
       ) {
-        cmds.append(
-          .selection(
-            CGRect(
-              x: rect.origin.x,
-              y: rect.origin.y + contentYOffset,
-              width: rect.width,
-              height: rect.height),
-            color: Theme.current.selectionBg))
+        appendSelectionCommand(
+          CGRect(
+            x: rect.origin.x,
+            y: rect.origin.y + contentYOffset,
+            width: rect.width,
+            height: rect.height),
+          into: &cmds)
       }
     }
 
@@ -1421,17 +1526,18 @@ public struct FrameProducer {
         if runStart == nil {
           runStart = col
           runFg = cell.foregroundRGBA
-          runBg = cell.backgroundRGBA
+          runBg = terminalBackgroundColor(cell.backgroundRGBA)
           runAttrs = attrs
           runText = cell.text
-        } else if cell.foregroundRGBA == runFg && cell.backgroundRGBA == runBg && attrs == runAttrs
+        } else if cell.foregroundRGBA == runFg
+          && terminalBackgroundColor(cell.backgroundRGBA) == runBg && attrs == runAttrs
         {
           runText += cell.text
         } else {
           flushRun()
           runStart = col
           runFg = cell.foregroundRGBA
-          runBg = cell.backgroundRGBA
+          runBg = terminalBackgroundColor(cell.backgroundRGBA)
           runAttrs = attrs
           runText = cell.text
         }
@@ -1457,10 +1563,10 @@ public struct FrameProducer {
       )
       // Use the user's configured style for the remote cursor (ring snapshots
       // carry no explicit DECSCUSR override bits — Decision Log entry).
-      for rect in Self.cursorRects(style: Int(userCursorStyle.labanStyleValue), cellRect: cellRect)
-      {
-        cmds.append(.cursor(rect, color: Theme.current.cursor))
-      }
+      appendCursorCommands(
+        style: Int(userCursorStyle.labanStyleValue),
+        cellRect: cellRect,
+        into: &cmds)
     }
 
     if let preedit {

@@ -69,6 +69,12 @@ struct GPUCellPayloadFailureNotificationPolicy {
 final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   QLPreviewPanelDataSource, QLPreviewPanelDelegate
 {
+  struct AccessibilityDisplayOptions: Equatable {
+    var reduceMotion: Bool
+    var increaseContrast: Bool
+    var differentiateWithoutColor: Bool
+    var reduceTransparency: Bool
+  }
 
   /// Reserved strip at the top of the contentView that sits behind the
   /// transparent full-size titlebar. Picked to clear the standard window
@@ -76,6 +82,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   static let titlebarReservedHeight: CGFloat = 28
   static let contentInsets = NSEdgeInsets(
     top: 8 + titlebarReservedHeight, left: 14, bottom: 8, right: 8)
+  static var accessibilityDisplayOptionsProviderForTests:
+    (() -> AccessibilityDisplayOptions)?
+
+  private static func currentAccessibilityDisplayOptions() -> AccessibilityDisplayOptions {
+    if let provider = accessibilityDisplayOptionsProviderForTests {
+      return provider()
+    }
+    let workspace = NSWorkspace.shared
+    return AccessibilityDisplayOptions(
+      reduceMotion: workspace.accessibilityDisplayShouldReduceMotion,
+      increaseContrast: workspace.accessibilityDisplayShouldIncreaseContrast,
+      differentiateWithoutColor: workspace.accessibilityDisplayShouldDifferentiateWithoutColor,
+      reduceTransparency: workspace.accessibilityDisplayShouldReduceTransparency)
+  }
 
   private let model: AppModel
   private let urlOpener: any ExternalURLOpening
@@ -233,10 +253,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// name means a family change, which still requires a restart.
   private var lastObservedPersistedFontName: String? =
     UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
-  /// Cached system Reduce Motion setting, refreshed via NSWorkspace
-  /// accessibility notifications. Freezes the sidebar needsAction pulse so a
-  /// motion-sensitive user gets a steady marker instead of a breathing one.
-  private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+  /// Cached system accessibility display settings, refreshed via NSWorkspace
+  /// notifications. Reduce Motion freezes the sidebar needsAction pulse; the
+  /// additional flags are exposed through debug state so low-vision display
+  /// changes are observable while renderer-specific adaptations remain bounded.
+  private var accessibilityDisplayOptions =
+    TerminalBitmapView.currentAccessibilityDisplayOptions()
+  private var reduceMotion: Bool { accessibilityDisplayOptions.reduceMotion }
+  var accessibilityDisplayOptionsForTesting: AccessibilityDisplayOptions {
+    accessibilityDisplayOptions
+  }
   private var terminalOutputActiveUntil = Date.distantPast
   /// While a precise scroll stream is flowing, the display link paces
   /// rendering at the panel rate instead of a synchronous render per wheel
@@ -514,6 +540,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     self.backendSelfPresents = backend.presentationLayer != nil
     super.init(frame: .zero)
     registerForDraggedTypes(TerminalDrop.acceptedTypes)
+    focusRingType = .default
     configurePresentationForCurrentBackend()
 
     // Install the per-frame completion hook so we can close out
@@ -576,16 +603,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
     }
 
-    // Track the system Reduce Motion setting so the sidebar needsAction pulse
-    // can freeze when it changes mid-session, and force a frame so the change
-    // takes effect immediately. The wake matters: with a parked display link
-    // the invalidation alone would sit unpainted until some other source
-    // produced a frame.
+    // Track the system accessibility display settings so visual preferences
+    // take effect mid-session, and force a frame so the change is immediate.
+    // The wake matters: with a parked display link the invalidation alone
+    // would sit unpainted until some other source produced a frame.
     reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
       object: nil, queue: .main
     ) { [weak self] _ in
-      self?.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+      self?.accessibilityDisplayOptions = Self.currentAccessibilityDisplayOptions()
       self?.invalidateRenderAndWake()
     }
 
@@ -598,7 +624,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let displayKickCoalescer = displayKickCoalescer
     model.onSessionDirty = { [weak self, displayKickCoalescer] _ in
       displayKickCoalescer.requestFrameAdvance {
-        self?.advanceFrame(wake: .sessionDirty)
+        guard let self else { return }
+        self.advanceFrame(wake: .sessionDirty)
+        NSAccessibility.post(element: self, notification: .valueChanged)
       }
     }
 
@@ -1998,6 +2026,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       cursorBlinkVisible: blinkDriver.phaseVisible,
       now: Date(),
       reduceMotion: reduceMotion,
+      accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
+        increaseContrast: accessibilityDisplayOptions.increaseContrast,
+        differentiateWithoutColor: accessibilityDisplayOptions.differentiateWithoutColor,
+        reduceTransparency: accessibilityDisplayOptions.reduceTransparency),
       selection: currentTerminalSelection(sessionId: session.id),
       includeTerminalAreaBackground: true,
       requireActiveSnapshot: true,
@@ -3469,6 +3501,37 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   // MARK: - Responder
 
   override var acceptsFirstResponder: Bool { true }
+
+  override func isAccessibilityElement() -> Bool { true }
+
+  override func accessibilityRole() -> NSAccessibility.Role? {
+    .textArea
+  }
+
+  override func accessibilityLabel() -> String? {
+    "Terminal"
+  }
+
+  override func accessibilityValue() -> Any? {
+    accessibilityVisibleText()
+  }
+
+  private func accessibilityVisibleText() -> String {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id),
+      let snap = session.snapshot()
+    else { return "" }
+    defer { laban_snapshot_destroy(snap) }
+    return TerminalSnapshotText.visibleText(from: UnsafePointer(snap), mode: .trimmedNonEmptyRows)
+  }
+
+  override var focusRingMaskBounds: NSRect {
+    terminalContentRect()
+  }
+
+  override func drawFocusRingMask() {
+    NSBezierPath(rect: focusRingMaskBounds).fill()
+  }
 
   override func resignFirstResponder() -> Bool {
     discardMarkedComposition()
@@ -6380,6 +6443,19 @@ extension TerminalBitmapView {
     guard model.activeTab != nil else { return false }
     sendBytes(bytes)
     return true
+  }
+
+  func debugAccessibilityState() -> [String: Any] {
+    [
+      "isElement": isAccessibilityElement(),
+      "role": accessibilityRole()?.rawValue ?? "",
+      "label": accessibilityLabel() ?? "",
+      "value": accessibilityVisibleText(),
+      "focusRingType": focusRingType.rawValue,
+      "increaseContrast": accessibilityDisplayOptions.increaseContrast,
+      "differentiateWithoutColor": accessibilityDisplayOptions.differentiateWithoutColor,
+      "reduceTransparency": accessibilityDisplayOptions.reduceTransparency,
+    ]
   }
 
   /// Enable the Metal drawable→CPU readback so `/scroll/screenshot.png` returns a

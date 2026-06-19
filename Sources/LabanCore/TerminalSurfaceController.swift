@@ -91,6 +91,8 @@ public struct TerminalSurfaceFrameRequest {
   public var now: Date
   /// System Reduce Motion setting; freezes the needsAction pulse when true.
   public var reduceMotion: Bool
+  /// System display-accessibility settings that affect terminal visuals.
+  public var accessibilityVisualOptions: TerminalAccessibilityVisualOptions
   public var selection: TerminalSelection?
   public var includeTerminalAreaBackground: Bool
   public var requireActiveSnapshot: Bool
@@ -128,6 +130,7 @@ public struct TerminalSurfaceFrameRequest {
     cursorBlinkVisible: Bool = true,
     now: Date = Date(),
     reduceMotion: Bool = false,
+    accessibilityVisualOptions: TerminalAccessibilityVisualOptions = .standard,
     selection: TerminalSelection? = nil,
     includeTerminalAreaBackground: Bool = false,
     requireActiveSnapshot: Bool = false,
@@ -154,6 +157,7 @@ public struct TerminalSurfaceFrameRequest {
     self.cursorBlinkVisible = cursorBlinkVisible
     self.now = now
     self.reduceMotion = reduceMotion
+    self.accessibilityVisualOptions = accessibilityVisualOptions
     self.selection = selection
     self.includeTerminalAreaBackground = includeTerminalAreaBackground
     self.requireActiveSnapshot = requireActiveSnapshot
@@ -636,7 +640,8 @@ public final class TerminalSurfaceController {
       commands.append(
         .rect(
           CGRect(x: sidebarWidth, y: 0, width: terminalAreaWidth, height: request.viewportHeight),
-          color: snapshot.default_background_rgba,
+          color: request.accessibilityVisualOptions.terminalBackgroundColor(
+            snapshot.default_background_rgba),
           source: .terminal
         ))
     }
@@ -646,7 +651,8 @@ public final class TerminalSurfaceController {
       cellHeight: cellHeight,
       originX: sidebarWidth + request.insets.left,
       originY: gridOriginY,
-      contentYOffset: request.contentYOffset
+      contentYOffset: request.contentYOffset,
+      accessibilityVisualOptions: request.accessibilityVisualOptions
     )
     let damage = Self.damage(
       snapshot: UnsafePointer(snap),
@@ -777,10 +783,10 @@ public final class TerminalSurfaceController {
     // Treat nil and 0 as "unknown" and fall back to the theme — `cells.first
     // ?.backgroundRGBA` can be 0 (transparent black) and would leak the
     // layer-backed view's underlying color through as a black border.
-    let defaultBg: UInt32 = {
+    let defaultBg: UInt32 = request.accessibilityVisualOptions.terminalBackgroundColor({
       if let supplied = snapshot.defaultBackgroundRGBA, supplied != 0 { return supplied }
       return Theme.current.bg0
-    }()
+    }())
 
     if request.includeTerminalAreaBackground {
       let terminalAreaWidth = max(0, request.viewportWidth - sidebarWidth)
@@ -797,7 +803,8 @@ public final class TerminalSurfaceController {
       cellHeight: cellHeight,
       originX: sidebarWidth + request.insets.left,
       originY: gridOriginY,
-      contentYOffset: request.contentYOffset
+      contentYOffset: request.contentYOffset,
+      accessibilityVisualOptions: request.accessibilityVisualOptions
     )
     commands += producer.commands(
       from: snapshot,

@@ -28,6 +28,10 @@ final class MainWindowController: NSWindowController {
   /// `makeAndShow`'s local scope. See `ScrollDebugServer`.
   private(set) var scrollDebugServer: ScrollDebugServer?
 
+  func accessibilityDebugState() -> [String: Any]? {
+    terminalView?.debugAccessibilityState()
+  }
+
   static func makeAndShow(
     restoring restoredState: WorkspaceState? = nil,
     persistenceSyncEnabled: Bool = true,

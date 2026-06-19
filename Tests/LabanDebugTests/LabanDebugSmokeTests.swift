@@ -71,6 +71,36 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(obj["ok"] as? Bool, true)
   }
 
+  func testDebugHTTPServerAccessibilityEndpointReturnsTerminalState() throws {
+    let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-accessibility")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    runtime.accessibilityDisplayFlags = AccessibilityDisplayFlagsResponse(
+      increaseContrast: true,
+      differentiateWithoutColor: true,
+      reduceTransparency: true)
+    let feed = try JSONSerialization.data(
+      withJSONObject: ["action": "feedOutput", "text": "debug accessibility text"])
+    XCTAssertEqual(runtime.applyAction(feed).status, 200)
+
+    let server = DebugHTTPServer(runtime: runtime)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let url = URL(string: readiness.debugServer + "/debug/accessibility")!
+    let ok = try httpGet(url, token: readiness.debugToken)
+    XCTAssertEqual(ok.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
+    XCTAssertEqual(obj["isElement"] as? Bool, true)
+    XCTAssertEqual(obj["role"] as? String, "AXTextArea")
+    XCTAssertEqual(obj["label"] as? String, "Terminal")
+    XCTAssertTrue((obj["value"] as? String)?.contains("debug accessibility text") == true)
+    XCTAssertEqual(obj["focusRingType"] as? String, "default")
+    let display = try XCTUnwrap(obj["display"] as? [String: Any])
+    XCTAssertEqual(display["increaseContrast"] as? Bool, true)
+    XCTAssertEqual(display["differentiateWithoutColor"] as? Bool, true)
+    XCTAssertEqual(display["reduceTransparency"] as? Bool, true)
+  }
+
   func testDebugHTTPServerWaitDoesNotBlockHealthRequest() throws {
     let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-wait-concurrent")
     defer { try? FileManager.default.removeItem(at: artifacts) }

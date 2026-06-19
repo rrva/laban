@@ -153,6 +153,21 @@ struct StateResponse: Encodable {
   var cursorSettings: CursorSettingsResponse
 }
 
+struct AccessibilityDisplayFlagsResponse: Encodable {
+  var increaseContrast: Bool
+  var differentiateWithoutColor: Bool
+  var reduceTransparency: Bool
+}
+
+struct AccessibilityResponse: Encodable {
+  var isElement: Bool
+  var role: String
+  var label: String
+  var value: String
+  var focusRingType: String
+  var display: AccessibilityDisplayFlagsResponse
+}
+
 struct ActionResult: Encodable {
   var ok: Bool
   var frame: Int

@@ -29,6 +29,21 @@ extension HeadlessDebugRuntime {
       ))
   }
 
+  public func accessibility() -> DebugResponse {
+    withRuntimeLock {
+      syncSessionMetadataUnlocked()
+      refreshTerminalClientSessionInfoUnlocked()
+      return jsonEncode(
+        AccessibilityResponse(
+          isElement: true,
+          role: "AXTextArea",
+          label: "Terminal",
+          value: accessibilityValueUnlocked(),
+          focusRingType: "default",
+          display: accessibilityDisplayFlags))
+    }
+  }
+
   /// User cursor preferences plus the active session's DECSCUSR / mode-12
   /// override flags from a fresh snapshot. Override flags are nil when the
   /// active session has no in-process snapshot (remote transport).
@@ -48,6 +63,23 @@ extension HeadlessDebugRuntime {
       blinkEnabled: CursorSettings.blinkEnabled,
       styleOverridden: styleOverridden,
       blinkOverridden: blinkOverridden)
+  }
+
+  private func accessibilityValueUnlocked() -> String {
+    guard let activeTab = model.activeTab else { return "" }
+    if let snapshot = terminalSessionClient == nil
+      ? nil
+      : terminalClientSnapshotUnlocked(sessionId: activeTab.sessionId)
+    {
+      return snapshot.visibleText
+    }
+    guard let session = model.session(forTab: activeTab.id),
+      let snapshot = session.snapshot()
+    else { return "" }
+    defer { laban_snapshot_destroy(snapshot) }
+    return TerminalSnapshotText.visibleText(
+      from: UnsafePointer(snapshot),
+      mode: .trimmedNonEmptyRows)
   }
 
   public func sessions() -> DebugResponse {

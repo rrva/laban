@@ -113,6 +113,14 @@ public final class DebugHTTPServer {
     },
     DebugHTTPRoute(
       method: "GET",
+      path: "/debug/accessibility",
+      category: "state",
+      summary: "Return terminal accessibility role, label, value, focus ring, and display flags."
+    ) { runtime, _, _ in
+      json(runtime.accessibility())
+    },
+    DebugHTTPRoute(
+      method: "GET",
       path: "/debug/screenshot",
       category: "artifacts",
       summary: "Return the current rendered surface as PNG bytes."

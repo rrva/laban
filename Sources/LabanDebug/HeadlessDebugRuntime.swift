@@ -93,6 +93,10 @@ public final class HeadlessDebugRuntime {
   var lastCaptureManifestPath: String?
   var lastCaptureRunId: String?
   var lastCaptureDirectory: String?
+  var accessibilityDisplayFlags = AccessibilityDisplayFlagsResponse(
+    increaseContrast: false,
+    differentiateWithoutColor: false,
+    reduceTransparency: false)
 
   /// Optional persistence wiring. When `--persistence-dir=<path>` is
   /// passed to the laban-agent CLI, the runtime mirrors what
@@ -702,6 +706,10 @@ public final class HeadlessDebugRuntime {
         viewportWidth: CGFloat(windowWidth),
         viewportHeight: CGFloat(windowHeight),
         cursorBlinkVisible: true,
+        accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
+          increaseContrast: accessibilityDisplayFlags.increaseContrast,
+          differentiateWithoutColor: accessibilityDisplayFlags.differentiateWithoutColor,
+          reduceTransparency: accessibilityDisplayFlags.reduceTransparency),
         selection: activeSelection,
         includeTerminalAreaBackground: false,
         requireActiveSnapshot: false,

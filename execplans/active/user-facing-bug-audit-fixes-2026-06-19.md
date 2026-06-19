@@ -32,6 +32,12 @@ passthrough), BUG-11 (emoji width conformance)** — are already owned by
 M4). This plan does **not** duplicate them; it cross-references that plan and
 treats them as out of scope here.
 
+Execution discipline: each milestone must execute in its own fresh context
+(separate agent/session), then return a commit plus evidence. The parent context
+does not implement the next milestone until it has reviewed and validated the
+previous milestone's diff, tests, and plan note. The final Review Gate also runs
+in a fresh context separate from all milestone executors.
+
 ## Verification provenance (do not re-investigate)
 
 Verified 2026-06-19 by workflow `verify-bug-audit` (55 agents). Verdicts:
@@ -90,7 +96,11 @@ crash in normal use; they are bundled into M3 as a single low-risk
       capture directory fallback, bitmap layout/context creation, selection
       geometry, mmap guards, menu key scalars, and labpty pending-input
       invariant documentation.
-- [ ] M4 — Accessibility for the terminal surface (BUG-02, 22, 23).
+- [x] (2026-06-19) M4 — Accessibility for the terminal surface
+      (BUG-02, 22, 23). Added terminal-surface AX text-area metadata/value,
+      standard focus-ring mask, display-accessibility flag caching, and
+      `/debug/accessibility` headless parity; display-accessibility flags now
+      strengthen selection/cursor outlines and force opaque terminal backgrounds.
 - [ ] M5 — App lifecycle & data safety (BUG-04, 05, 14, 16, 27).
 - [ ] M6 — Raw→canonical input-drop integrity (BUG-06; ADR + formal-spec gated).
 - [x] (2026-06-19) M7 — GPU-failure notification rate limiting
@@ -559,3 +569,18 @@ Review findings (filled in by the review agent):
   through `UserDefaults`, and `LabanDisableGPUFailureNotifications` suppresses
   GPU-failure notification requests before the beep/banner path. Review Gate
   remains unchecked for the required separate verifier.
+- M4 executor validation (2026-06-19): first focused compile failed on a Swift
+  stored-property initializer using `Self`; after replacing it with the concrete
+  type, `swift test --filter
+  TerminalBitmapViewWakeTests/testTerminalSurfaceAccessibilityReadsVisibleTextAndFocusRing`,
+  `swift test --filter
+  TerminalBitmapViewWakeTests/testAccessibilityDisplayOptionsNotificationUpdatesCachedFlags`,
+  `swift test --filter
+  LabanDebugSmokeTests/testDebugHTTPServerAccessibilityEndpointReturnsTerminalState`,
+  `git diff --check`, and `./scripts/build-app` passed. Parent follow-up also
+  passed `swift test --filter FrameProducerTests` and added core
+  frame-production coverage for BUG-23: Increase Contrast / Differentiate
+  Without Color add selection and cursor outline commands in both local and
+  remote frame paths, and Reduce Transparency forces terminal backgrounds
+  opaque. Focus-ring coverage is the `focusRingType != .none` assertion plus
+  `drawFocusRingMask`/`focusRingMaskBounds` wiring.

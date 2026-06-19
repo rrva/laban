@@ -314,6 +314,70 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertEqual(hollowRects.count, 4)
   }
 
+  func testAccessibilityVisualOptionsAddSelectionAndCursorOutlines() throws {
+    var size = LabanTerminalSize()
+    size.rows = 5
+    size.cols = 10
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("hello".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let selection = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: 0, col: 0),
+      focus: TerminalCellCoordinate(row: 0, col: 2))
+    let resolvedCursor = (style: CursorSettings.Style.block.labanStyleValue, blinking: false)
+    let standard = FrameProducer(cellWidth: 10, cellHeight: 20).commands(
+      from: UnsafePointer(snap),
+      selection: selection,
+      cursorBlinkVisible: true,
+      resolvedCursor: resolvedCursor)
+    let accessible = FrameProducer(
+      cellWidth: 10,
+      cellHeight: 20,
+      accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
+        increaseContrast: true,
+        differentiateWithoutColor: true)
+    ).commands(
+      from: UnsafePointer(snap),
+      selection: selection,
+      cursorBlinkVisible: true,
+      resolvedCursor: resolvedCursor)
+
+    XCTAssertGreaterThan(
+      selectionColors(in: accessible).count,
+      selectionColors(in: standard).count,
+      "display accessibility must add outline selection cues, not only recolor")
+    XCTAssertGreaterThan(
+      cursorRects(in: accessible).count,
+      cursorRects(in: standard).count,
+      "display accessibility must add a stronger cursor outline")
+  }
+
+  func testAccessibilityVisualOptionsMakeTerminalBackgroundOpaque() {
+    var snap = makeExitSnapshot(status: 0, exitStatus: 0)
+    snap.default_background_rgba = 0x1122_3344
+    let producer = FrameProducer(
+      accessibilityVisualOptions: TerminalAccessibilityVisualOptions(reduceTransparency: true))
+
+    let cmds = withUnsafePointer(to: &snap) { producer.commands(from: $0) }
+
+    guard case .rect(_, let color, let source)? = cmds.first else {
+      XCTFail("first command must be the terminal background")
+      return
+    }
+    XCTAssertEqual(source, .terminal)
+    XCTAssertEqual(color, 0x1122_33FF)
+  }
+
   func testFrameProducerTexturedQuadTypeIsSupported() {
     // Verify the texturedQuad case compiles and can be pattern-matched.
     let cmd: FrameCommand = .texturedQuad(
@@ -967,6 +1031,18 @@ final class FrameProducerTests: XCTestCase {
     }
   }
 
+  private func cursorRects(in cmds: [FrameCommand]) -> [CGRect] {
+    cmds.compactMap { cmd -> CGRect? in
+      if case .cursor(let r, _) = cmd { return r } else { return nil }
+    }
+  }
+
+  private func selectionColors(in cmds: [FrameCommand]) -> [UInt32] {
+    cmds.compactMap { cmd -> UInt32? in
+      if case .selection(_, let color) = cmd { return color } else { return nil }
+    }
+  }
+
   /// The user-default path: omitting `userCursorStyle` must draw the default
   /// full-cell block on a remote (laband) snapshot.
   func testRemoteCursor_DefaultStyleDrawsFullCellBlock() {
@@ -1007,5 +1083,27 @@ final class FrameProducerTests: XCTestCase {
     XCTAssertTrue(
       remoteCursorRects(cmds).isEmpty,
       "an invisible remote cursor must emit no cursor rects regardless of user style")
+  }
+
+  func testRemoteAccessibilityVisualOptionsAddSelectionAndCursorOutlines() {
+    let selection = TerminalSelection(
+      sessionId: "remote-test",
+      anchor: TerminalCellCoordinate(row: 0, col: 0),
+      focus: TerminalCellCoordinate(row: 0, col: 2))
+    let standard = FrameProducer(cellWidth: 10, cellHeight: 20).commands(
+      from: remoteSnapshotFixture(rows: 2, cols: 4),
+      selection: selection)
+    let accessible = FrameProducer(
+      cellWidth: 10,
+      cellHeight: 20,
+      accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
+        increaseContrast: true,
+        differentiateWithoutColor: true)
+    ).commands(
+      from: remoteSnapshotFixture(rows: 2, cols: 4),
+      selection: selection)
+
+    XCTAssertGreaterThan(selectionColors(in: accessible).count, selectionColors(in: standard).count)
+    XCTAssertGreaterThan(cursorRects(in: accessible).count, cursorRects(in: standard).count)
   }
 }
