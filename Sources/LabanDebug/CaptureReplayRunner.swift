@@ -95,10 +95,16 @@ public final class CaptureReplayRunner {
     size.rows = Int32(firstSnapshot?.rows ?? 24)
     size.cols = Int32(firstSnapshot?.cols ?? 80)
     let model = try AppModel(initialSize: size)
+    // Fallback cell metrics only. The capture pipeline derives its FrameProducer
+    // cell width/height from the persisted terminal font size (HeadlessDebugRuntime
+    // / MainWindowController), which varies per machine, so a fixed point size here
+    // cannot be trusted to match. Each frame instead recovers the exact capture
+    // geometry from its recorded grid rect (see replayCellMetrics); this atlas is
+    // only used when a frame carries no usable grid rect.
     let fontAtlas = FontAtlas(pointSize: 14)
     let cellSize = fontAtlas.cellSize
-    let cellWidth = Int(cellSize.width)
-    let cellHeight = Int(cellSize.height)
+    let fallbackCellWidth = Int(cellSize.width)
+    let fallbackCellHeight = Int(cellSize.height)
     var tabMap: [String: Tab.ID] = [:]
     var sessionMap: [String: Session.ID] = [:]
     var selectionBySession: [Session.ID: TerminalSelection] = [:]
@@ -202,8 +208,8 @@ public final class CaptureReplayRunner {
           newSize.cols = Int32(event.cols ?? 80)
           newSize.pixel_width = Int32(event.pixelWidth ?? 0)
           newSize.pixel_height = Int32(event.pixelHeight ?? 0)
-          newSize.cell_width = Int32(event.cellWidth ?? cellWidth)
-          newSize.cell_height = Int32(event.cellHeight ?? cellHeight)
+          newSize.cell_width = Int32(event.cellWidth ?? fallbackCellWidth)
+          newSize.cell_height = Int32(event.cellHeight ?? fallbackCellHeight)
           for pair in model.allSessions() {
             _ = pair.session.resize(newSize)
           }
@@ -323,6 +329,13 @@ public final class CaptureReplayRunner {
         defer { laban_snapshot_destroy(snap) }
 
         let layout = replayLayout(for: recorded)
+        let (cellWidth, cellHeight) = replayCellMetrics(
+          layout: layout,
+          rows: Int(snap.pointee.rows),
+          cols: Int(snap.pointee.cols),
+          fallbackWidth: fallbackCellWidth,
+          fallbackHeight: fallbackCellHeight
+        )
         let sidebarCommands = replaySidebarCommands(
           from: recorded,
           layout: layout,
@@ -407,7 +420,9 @@ public final class CaptureReplayRunner {
         height: max(recorded.surface.height, 1),
         scale: CGFloat(recorded.surface.scale)
       )
-      let renderer = SoftwareRenderer(surface: surface, fontAtlas: FontAtlas(pointSize: 14))
+      let renderer = SoftwareRenderer(
+        surface: surface,
+        fontAtlas: FontAtlas(pointSize: FontAtlas.persistedTerminalPointSize))
       renderer.render(commands)
       framesCompared += 1
 
@@ -517,7 +532,8 @@ public final class CaptureReplayRunner {
         logicalHeight: logicalHeight,
         terminalOriginX: sidebarWidth,
         terminalOriginY: 0,
-        terminalArea: nil
+        terminalArea: nil,
+        producerGridRect: nil
       )
     }
 
@@ -536,7 +552,8 @@ public final class CaptureReplayRunner {
         logicalHeight: logicalHeight,
         terminalOriginX: producerRect.minX,
         terminalOriginY: producerRect.minY,
-        terminalArea: firstTerminalRect
+        terminalArea: firstTerminalRect,
+        producerGridRect: producerRect
       )
     }
 
@@ -545,8 +562,37 @@ public final class CaptureReplayRunner {
       logicalHeight: logicalHeight,
       terminalOriginX: firstTerminalRect.minX,
       terminalOriginY: firstTerminalRect.minY,
-      terminalArea: nil
+      terminalArea: nil,
+      producerGridRect: firstTerminalRect
     )
+  }
+
+  /// Recover the exact cell metrics the capture pipeline used for a frame from
+  /// its recorded FrameProducer grid rect. The capture's cell height/width are
+  /// derived from the persisted terminal font size, which varies per machine, so
+  /// reconstructing with a hardcoded FontAtlas point size drifts every row Y, the
+  /// terminal-area rect height, and the cursor. Dividing the recorded grid rect
+  /// by the snapshot's rows/cols reproduces the capture geometry regardless of
+  /// the local font size. Falls back to the supplied atlas metrics when the frame
+  /// carries no usable grid rect (e.g. empty grid).
+  private func replayCellMetrics(
+    layout: ReplayFrameLayout,
+    rows: Int,
+    cols: Int,
+    fallbackWidth: Int,
+    fallbackHeight: Int
+  ) -> (width: Int, height: Int) {
+    var width = fallbackWidth
+    var height = fallbackHeight
+    if let grid = layout.producerGridRect {
+      if cols > 0, grid.width > 0 {
+        width = Int((grid.width / CGFloat(cols)).rounded())
+      }
+      if rows > 0, grid.height > 0 {
+        height = Int((grid.height / CGFloat(rows)).rounded())
+      }
+    }
+    return (max(1, width), max(1, height))
   }
 
   private func loadManifest() throws -> CaptureManifestSummary {
@@ -728,4 +774,11 @@ private struct ReplayFrameLayout {
   var terminalOriginX: CGFloat
   var terminalOriginY: CGFloat
   var terminalArea: CGRect?
+  /// The FrameProducer's full-grid background rect from the recorded frame
+  /// (size `cols*cellWidth` x `rows*cellHeight`), used to recover the exact cell
+  /// metrics the capture pipeline used. In AppKit-helper captures this is the
+  /// second terminal rect (after the appended terminal-area rect); in
+  /// HeadlessDebugRuntime captures the FrameProducer rect IS the only terminal
+  /// background, so it is the first one.
+  var producerGridRect: CGRect?
 }
