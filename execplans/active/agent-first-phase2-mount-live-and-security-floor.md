@@ -50,7 +50,10 @@ this document. Each is grounded in code that exists today.
    byte-stable headless wire (C9). Keep it `headlessOnly`, reclassify its capability
    from the implicit `.observe` to explicit `.observeSensitive`, keep
    `dataSensitivity: .clipboard`. The `.clipboard` **capability** is reserved for a
-   future live host-clipboard opt-in and is granted to no token in Phase 2.
+   future live host-clipboard opt-in and is granted to no token in Phase 2. (The
+   shipped clipboard *actions* `setText`/`copy`/`paste`, which currently demand
+   `.clipboard`, are reclassified to `.control` in Blocking Correction 9 — otherwise
+   2A enforcement `403`s the e2e clipboard flows.)
 
 3. **Rich debug DTOs are `.observeSensitive`, not `.observe` — including
    `app.state`.** The existing `SessionResponse` (workspace cwd/repo, process
@@ -90,6 +93,11 @@ this document. Each is grounded in code that exists today.
    afterward. The shared `environmentOverrides` hook then feeds **all three** backends
    (in-process `environment:` via the `sessionFactory`, laband `environmentPatch`,
    labpty `envp`), covering the default/restored session and every later one.
+   **Readiness:** until the model + session-coordinator/input-adapter references are
+   installed, the bound server answers GUI routes with `503 {"error":"control server
+   not ready"}` (never a partial/empty state DTO), and `control.json` is written only
+   after bind **and** model **and** coordinator are installed — so the early bind buys
+   env injection without advertising a half-mounted control plane.
 
 5. **`ControlReadiness` stays byte-stable; the control token is never serialized.**
    `ControlReadiness` is `{debugServer, debugToken, pid, runId}` and `laban-agent`
@@ -122,6 +130,24 @@ this document. Each is grounded in code that exists today.
    and `[::1]:evil` are wrongly **accepted** as loopback. Fix the parser to require a
    numeric port (or empty) after the host, and add these to the deny matrix — this is
    a code fix plus tests, not tests alone.
+
+9. **The shipped headless clipboard *actions* require `.clipboard` today — reclassify
+   them, or 2A enforcement breaks C9.** Verified: `IntentCatalog` already ships
+   `clipboard.setText`, `clipboard.copy`, `clipboard.paste` (kind `.action`,
+   `headlessOnly`, `clipboard.paste` has `sideEffects.ptyInput`) each with **explicit
+   `requiredCapability: .clipboard`**, plus `clipboard.read` (kind `.query`,
+   `headlessOnly`, `dataSensitivity: .clipboard`) defaulting to `.observe`.
+   `scripts/test-e2e` (~584–711) drives all four over a **single** fixture/debug token.
+   So Blocking Correction 1/2's "no token grants `.clipboard`" would `403` every one of
+   these flows after 2A — breaking C9. Fix: the headless debug clipboard family is
+   **debug-runtime diagnostics, not the future live OS-host `.clipboard` tier**.
+   Reclassify (all stay `headlessOnly`, `dataSensitivity: .clipboard`):
+   `clipboard.setText`/`clipboard.copy`/`clipboard.paste` → `requiredCapability:
+   .control`; `clipboard.read` → explicit `requiredCapability: .observeSensitive`.
+   Then the fixture/control token (grants `.control` + `.observeSensitive`) drives all
+   four and the e2e stays green, the observe token gets `403`, and `.clipboard` is
+   genuinely **granted to no token** and reserved for a future live host-clipboard
+   opt-in. No `gui:true` clipboard endpoint exists in Phase 2.
 
 ## Purpose / Big Picture
 
@@ -192,8 +218,8 @@ Milestone 2C — Catalog-parity test:
 - [ ] Capability/sensitivity completeness: assert every catalog descriptor declares an **explicit** `requiredCapability` and `dataSensitivity` (drives Blocking Correction 6 / the `validate()` change), and that no `gui:true` op exceeds the capability its live router actually enforces.
 
 Milestone 2D — Indicator, disable switch, audit, no-token-logging:
-- [ ] `ControlSecurityObserver` boundary (in `LabanControl`, e.g. `protocol ControlSecurityObserver { didAuthorize(intentID:capability:tokenClass:); didDeny(intentID:reason:); didControlActivity() }`): the server calls it; `LabanControl` keeps its `["LabanCore"]`-only deps and never imports app UI/logging internals. `LabanApp` supplies the observer that owns the indicator state and the persistent `EventLog` sink (Review finding #9).
-- [ ] "Agent attached" indicator in the GUI, driven by the observer: lights on the first authenticated `.control` request and stays lit for a TTL window (active for N seconds after the last authenticated `.control` activity, plus any open control stream once 3 adds one) — HTTP has no durable "connected" notion, so the indicator is TTL-based, not socket-based.
+- [ ] `ControlSecurityObserver` boundary (in `LabanControl`, e.g. `protocol ControlSecurityObserver { didAuthorize(intentID:capability:tokenClass:); didDeny(intentID:reason:); didPrivilegedActivity(capability:tokenClass:) }`): the server calls it; `LabanControl` keeps its `["LabanCore"]`-only deps and never imports app UI/logging internals. `LabanApp` supplies the observer that owns the indicator state and the persistent `EventLog` sink (Review finding #9).
+- [ ] "Agent attached" indicator in the GUI, driven by the observer: lights on **any successful privileged authorization** — any `.control` **or** `.observeSensitive` request (i.e. any env-token sensitive read, not only mutation) — and stays lit for a TTL window refreshed by **both** tiers (HTTP has no durable "connected" notion, so the indicator is TTL-based, not socket-based). This matches the UI signal to the real risk boundary: privileged access, not just control.
 - [ ] User-facing disable switch (menu item / setting) that stops the server and removes `control.json`.
 - [ ] Every `.control`/`.observeSensitive` access emits an audit event via the observer to the always-on `EventLog` (intent id, capability, surface, time, **no token, no payload secrets**).
 - [ ] A test greps **logs and non-token artifacts** for **both** minted token values (observe + control) and asserts **zero** occurrences; `control.json` is parsed separately (it intentionally holds the observe token only) (C6).
@@ -312,10 +338,20 @@ the parser). **Today this is violated** (Blocking Correction 7): `LiveIntentRout
 calls `session.write`/`session.sendKey` directly, while human input flows through
 `TerminalBitmapView` → `sessionCoordinator.write(...)` with `sanitizePaste` and
 `encodeKey`/`encodePaste`. 2B must re-point programmatic input at that shared
-coordinator/input-adapter path. Never write title/clipboard read-backs into the
-input stream; constrain DECRQSS/DSR (the CVE-2022-45872 class). OSC 52 **write
-only**, behind an explicit opt-in; clipboard **read is never implemented**. (ADR
-0024 §"Standing constraints".)
+coordinator/input-adapter path. **Routing through the coordinator is necessary but
+not sufficient:** `typeText` receives untrusted *bulk* bytes a human keyboard path
+cannot produce in one action, so arbitrary strings go through the **paste sanitizer**
+(or a printable-text-only path), not raw `write`, via a dedicated
+`TerminalInputAdapter` (`sendKey → encodeKey`, `paste → sanitizePaste + encodePaste`,
+`typeText → sanitized/printable`). A hostile-payload test (ESC/CSI/OSC/C1, e.g.
+`ESC ] 0 ; owned BEL`, `CSI 31 m`, an OSC 52 payload, a C1 `U+009B`) asserts no
+title/clipboard/color mutation and no raw control bytes — making C5 testable rather
+than trusting "same coordinator path" as a proxy. Never write title/clipboard
+read-backs into the input stream; constrain DECRQSS/DSR (the CVE-2022-45872 class).
+OSC 52 **write only**, behind an explicit opt-in; **no live OS-host clipboard read**
+is implemented in Phase 2 — the shipped headless `/debug/clipboard` diagnostic is not
+an OS-host read (it remains headless-only and privileged; see Blocking Corrections
+2/9). (ADR 0024 §"Standing constraints".)
 
 **C6 — `0600`-from-first-byte; never log a token.** `control.json` stays created
 `O_CREAT|O_EXCL,0600` → write → `rename` (no chmod-after-write). Logs record the
@@ -376,6 +412,12 @@ with a spy router.
   add an `explicit` marker), and extend `IntentCatalog.validate()` (and the
   `LabanControlGen` gate) to **fail** unless every descriptor declares both
   `requiredCapability` and `dataSensitivity` explicitly.
+- **Reclassify the headless clipboard family** (Blocking Correction 9): in the same
+  explicit-classification pass, move `clipboard.setText`/`clipboard.copy`/
+  `clipboard.paste` from `.clipboard` to `.control` and set `clipboard.read` to
+  explicit `.observeSensitive` (all stay `headlessOnly`, `dataSensitivity: .clipboard`)
+  so the fixture/control token keeps driving the shipped `scripts/test-e2e` flows and
+  `.clipboard` is left required by no descriptor and granted to no token.
 - **Fix `isLoopbackHost` port parsing** (Blocking Correction 8): after splitting the
   host label, require the remainder to be empty or `:<numeric port>`; reject
   non-numeric ports. `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → `forbidden`.
@@ -441,7 +483,11 @@ groups.
    direct `session.write`/`session.sendKey` calls onto the shared
    `sessionCoordinator.write(...)` + `encodeKey`/`encodePaste`/`sanitizePaste` path
    `TerminalBitmapView` uses, so programmatic and human input are identical across
-   in-process/laband/labpty backends (Blocking Correction 7).
+   in-process/laband/labpty backends (Blocking Correction 7). Introduce a
+   `TerminalInputAdapter` so `typeText` of arbitrary/untrusted strings flows through
+   the paste sanitizer (or a printable-only path) rather than raw bytes, and add a
+   hostile-payload test (ESC/CSI/OSC/C1) asserting no title/clipboard/color mutation
+   and no raw control bytes (C5).
 5. Each group: `swift run LabanControlGen --write` if route metadata changed;
    `swift test`; `scripts/check`.
 
@@ -488,9 +534,10 @@ conservative invariant, now expanded).
 
 ### Acceptance (2D)
 
-A `.control`-tier authenticated request lights a visible "agent attached" indicator
-in the running app (driven by `ControlSecurityObserver`; clears after the TTL window
-with no further `.control` activity); a menu/setting **disable switch** stops the
+Any successful privileged request — `.control` **or** `.observeSensitive` (an
+env-token sensitive read) — lights a visible "agent attached" indicator in the
+running app (driven by `ControlSecurityObserver`; clears after the TTL window with no
+further privileged activity); a menu/setting **disable switch** stops the
 server and removes `control.json` (verified: subsequent `curl` fails to connect and
 the file is gone). Every `.control`/`.observeSensitive` request appends an audit
 event via the observer to the app-side `EventLog` (assert via `GET /debug/events`
@@ -618,6 +665,21 @@ are byte-stable; no token value appears in any log.
   plan-added macOS env-secrecy release gate (`ps -Eww` et al.) and three wording fixes
   (`/debug/events` classification, no-token-log grep vs `control.json`, two `start`
   paths). DRAFT — 2026-06-20 / Claude.
+- (Security review round 3, verified against source 2026-06-20) One P0 + hardening:
+  (a) **The shipped headless clipboard *actions* `clipboard.setText`/`copy`/`paste`
+  already require `.clipboard`** (explicit, `headlessOnly`) and `scripts/test-e2e`
+  drives them over a single fixture token — so "no token grants `.clipboard`" would
+  `403` the e2e after 2A. Reclassified the action family to `.control` and
+  `clipboard.read` to explicit `.observeSensitive`; `.clipboard` is now required by no
+  descriptor and reserved for a future live host-clipboard opt-in (Blocking Correction
+  9). (b) The "agent attached" indicator lights on any privileged access (`.control`
+  **or** `.observeSensitive`), not only mutation — matching the UI to the risk
+  boundary. (c) `typeText` of untrusted bulk strings routes through the paste
+  sanitizer / a `TerminalInputAdapter` (printable-only), with a hostile-payload
+  (ESC/CSI/OSC/C1) test — coordinator routing alone is necessary but not sufficient.
+  (d) Early bind returns `503` until the model/coordinator are installed; `control.json`
+  is written only after. Plus the C5 "clipboard read never implemented" wording fixed
+  to "no live OS-host read." DRAFT — 2026-06-20 / Claude.
 - Fixture (test-only) token grants `{.fixture, .observe, .observeSensitive, .control}`
   — broader than the review's suggested `{.fixture, .observe}` — because the headless
   wire (C9) drives `.control`/`.observeSensitive` ops with it and `validate()` already
@@ -633,7 +695,10 @@ executed:
 - [ ] `ControlReadiness` is still `{debugServer, debugToken, pid, runId}` (no new field); the control token is never serialized into readiness JSON (grep the encode path; `laban-agent` readiness line byte-stable).
 - [ ] Spy-router test proves: observe token + `.control` intent → `403` with no router call; control token + `.control` intent → `200`; `.clipboard` intent → `403` for both tokens; missing token → `401`.
 - [ ] Sensitivity split: with the observe token, `app.state`/`session.list`/`selection.read`/`find.state`/accessibility → `403`, while `terminal.modes`/`scrollIndicator.state` (and `app.stateSummary` if added) → `200`; with the control token the `.observeSensitive` set → `200` and is shape-identical to `HeadlessIntentRouter` for the same model.
-- [ ] `clipboard.read` is **not removed**: still in the catalog + `ControlRouteCatalog` (`GET /debug/clipboard`) + discovery, reclassified to explicit `.observeSensitive` (no longer implicit `.observe`), `headlessOnly`; `LabanDebugSmokeTests` clipboard assertions pass unchanged. No `gui:true` clipboard read exists.
+- [ ] Headless clipboard family preserved + reclassified (Blocking Correction 9): `clipboard.setText`/`copy`/`paste` now `requiredCapability: .control`, `clipboard.read` now explicit `.observeSensitive` (all `headlessOnly`, `dataSensitivity: .clipboard`); **no descriptor requires `.clipboard` and no token grants it**; `scripts/test-e2e` clipboard flows (`setClipboardText`/`paste`/`copy` over `/debug/actions` + `GET /debug/clipboard`) pass with the fixture/control token and `403` with the observe token; `LabanDebugSmokeTests` clipboard assertions pass unchanged. No `gui:true` clipboard endpoint exists.
+- [ ] Indicator lights on any successful `.control` **or** `.observeSensitive` request (env-token sensitive read), not only mutation; TTL refreshed by both tiers.
+- [ ] `terminal.typeText` with ESC/CSI/OSC/C1 payloads emits no raw control sequence and does not mutate title/clipboard/color state (hostile-payload test against the `TerminalInputAdapter`).
+- [ ] Early-bind readiness: before the model/coordinator are installed the bound server returns `503 {"error":"control server not ready"}` (no partial DTO); `control.json` is written only after bind + model + coordinator are installed.
 - [ ] Deny-by-default: add a descriptor with no explicit `requiredCapability`/`dataSensitivity`; `IntentCatalog.validate()` / `LabanControlGen --check` **fails** (expect failure; revert).
 - [ ] `LiveIntentRouter` programmatic `typeText`/`sendKey` route through `sessionCoordinator.write(...)` (+ paste sanitizer / `encodeKey`), not direct `session.write`/`session.sendKey` (grep the impl).
 - [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path (projections come from `LabanCore`); `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
