@@ -14,6 +14,20 @@ HDR_OUT="$DEST/zig-out/include/ghostty/vt.h"
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
+# Scrub inherited git environment. When this script runs from a git hook
+# (e.g. pre-push), git exports GIT_DIR — and from a linked worktree it points
+# at that worktree's gitdir (.git/worktrees/<name>). Every `git` command below
+# targets the *vendored Ghostty* checkout under .external/, a DIFFERENT repo, so
+# the inherited env must not leak into them: `git -C "$DEST" …` does NOT override
+# an exported GIT_DIR (the env var wins over cwd discovery). Left set, `git init`
+# would reinitialize the superproject's gitdir and flip `core.bare=true` in the
+# shared config (breaking every worktree), and `git remote add origin` would
+# hit the superproject ("remote origin already exists") instead of Ghostty.
+# Clear all repo-targeting GIT_* vars so each nested command discovers $DEST.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE \
+      GIT_PREFIX GIT_QUARANTINE_PATH 2>/dev/null || true
+
 fail() {
     printf 'fetch-libghostty-vt: error: %s\n' "$1" >&2
     exit 1
@@ -45,7 +59,13 @@ if [ ! -d "$DEST/.git" ]; then
     printf 'fetch-libghostty-vt: cloning Ghostty at %s\n' "$GHOSTTY_COMMIT"
     mkdir -p "$DEST"
     git init "$DEST"
-    git -C "$DEST" remote add origin "$GHOSTTY_URL"
+    # Idempotent: a prior interrupted run may have left the remote behind, so
+    # set-url when it already exists rather than erroring on a re-add.
+    if git -C "$DEST" remote get-url origin >/dev/null 2>&1; then
+        git -C "$DEST" remote set-url origin "$GHOSTTY_URL"
+    else
+        git -C "$DEST" remote add origin "$GHOSTTY_URL"
+    fi
     # Fetch only the specific commit (GitHub supports this via partial clone).
     git -C "$DEST" fetch --depth=1 origin "$GHOSTTY_COMMIT"
     git -C "$DEST" checkout FETCH_HEAD
