@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LabanControl
 import LabanCore
 import LabanTerminalCore
 import XCTest
@@ -52,7 +53,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-auth")
     defer { try? FileManager.default.removeItem(at: artifacts) }
 
-    let server = DebugHTTPServer(runtime: runtime)
+    let server = LabanControlServer(
+      router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
     let readiness = try server.start(host: "127.0.0.1", port: 0)
     defer { server.stop() }
 
@@ -82,7 +84,8 @@ final class LabanDebugSmokeTests: XCTestCase {
       withJSONObject: ["action": "feedOutput", "text": "debug accessibility text"])
     XCTAssertEqual(runtime.applyAction(feed).status, 200)
 
-    let server = DebugHTTPServer(runtime: runtime)
+    let server = LabanControlServer(
+      router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
     let readiness = try server.start(host: "127.0.0.1", port: 0)
     defer { server.stop() }
 
@@ -105,7 +108,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-terminal-modes")
     defer { try? FileManager.default.removeItem(at: artifacts) }
 
-    let server = DebugHTTPServer(runtime: runtime)
+    let server = LabanControlServer(
+      router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
     let readiness = try server.start(host: "127.0.0.1", port: 0)
     defer { server.stop() }
     let url = URL(string: readiness.debugServer + "/debug/terminal-modes")!
@@ -142,7 +146,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-wait-concurrent")
     defer { try? FileManager.default.removeItem(at: artifacts) }
 
-    let server = DebugHTTPServer(runtime: runtime)
+    let server = LabanControlServer(
+      router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
     let readiness = try server.start(host: "127.0.0.1", port: 0)
     defer { server.stop() }
 
@@ -175,7 +180,8 @@ final class LabanDebugSmokeTests: XCTestCase {
     let (runtime, artifacts) = try makeRuntime(runId: "smoke-http-slow-header")
     defer { try? FileManager.default.removeItem(at: artifacts) }
 
-    let server = DebugHTTPServer(runtime: runtime)
+    let server = LabanControlServer(
+      router: HeadlessIntentRouter(runtime: runtime), surface: .headless)
     let readiness = try server.start(host: "127.0.0.1", port: 0)
     defer { server.stop() }
 

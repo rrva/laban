@@ -6,15 +6,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs/process/dev-process.md"
-ROUTES = ROOT / "Sources/LabanDebug/DebugHTTPServer.swift"
+# The /debug surface is now served by the shared LabanControl route catalog; the
+# legacy DebugHTTPServer route table has been removed.
+ROUTES = ROOT / "Sources/LabanControl/ControlRouteCatalog.swift"
 
 DOC_ENDPOINT = re.compile(r"`(GET|POST) (/debug[^`\s]+)`")
+# Matches both the endpoint(method:path:) helper calls and the one explicit
+# HTTPBinding(method:path:); the endpoint(for:) lookups and ("GET", path) tuples
+# carry no quoted method: literal and are skipped.
 ROUTE_ENDPOINT = re.compile(
-    r'DebugHTTPRoute\(\s*method:\s*"(?P<method>GET|POST)",\s*'
-    r'path:\s*"(?P<path>[^"]+)"',
+    r'method:\s*"(?P<method>GET|POST)",\s*path:\s*"(?P<path>/debug[^"]*)"',
     re.S,
 )
-ROUTE_SCHEMA = re.compile(r'(?:requestSchema|responseSchema):\s*"([^"]+)"')
+ROUTE_SCHEMA = re.compile(
+    r'(?:requestSchema|responseSchema|legacyRequestSchemaPath|legacyResponseSchemaPath):'
+    r'\s*"(schemas/[^"]+)"'
+)
 
 
 def normalize_path(path: str) -> str:

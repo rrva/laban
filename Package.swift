@@ -60,7 +60,7 @@ let package = Package(
     ),
     .target(
       name: "LabanDebug",
-      dependencies: ["LabanCore", "LabanRenderer", "LabanTerminalCore"]
+      dependencies: ["LabanCore", "LabanControl", "LabanRenderer", "LabanTerminalCore"]
     ),
     .target(
       name: "LabanControl",
@@ -129,7 +129,8 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanDebugTests",
-      dependencies: ["LabanDebug", "Laband"]
+      dependencies: ["LabanDebug", "LabanControl", "Laband"],
+      exclude: ["Fixtures"]
     ),
     .testTarget(
       name: "LabanControlTests",

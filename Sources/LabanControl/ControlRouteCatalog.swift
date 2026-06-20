@@ -81,7 +81,8 @@ public enum ControlRouteCatalog {
       method: "GET",
       path: "/debug/terminal-modes",
       category: "state",
-      summary: "Return active-session DEC private mode state.",
+      summary:
+        "Return active-session DEC private mode state (grapheme cluster 2027, sync output, focus, mouse).",
       intentID: "terminal.modes"),
     endpoint(
       method: "GET",
@@ -115,25 +116,29 @@ public enum ControlRouteCatalog {
       method: "POST",
       path: "/debug/persistence/flush",
       category: "control",
-      summary: "Drain persistence debounce and transcript writers synchronously.",
+      summary:
+        "Drain the persistence debounce + transcript writers synchronously (simulates applicationWillTerminate).",
       intentID: "persistence.flush"),
     endpoint(
       method: "POST",
       path: "/debug/persistence/relaunch",
       category: "control",
-      summary: "Flush, close every session, then rebuild from workspace.json.",
+      summary:
+        "Flush, close every session, then rebuild from workspace.json. Use to run quit/restore cycles inside one debug-server lifetime.",
       intentID: "persistence.relaunch"),
     endpoint(
       method: "GET",
       path: "/debug/persistence/restore-picker",
       category: "state",
-      summary: "Return pending Claude/Codex semantic restore candidates.",
+      summary:
+        "Return pending Claude/Codex semantic restore candidates after a laband daemon-loss restore.",
       intentID: "persistence.restorePicker"),
     endpoint(
       method: "POST",
       path: "/debug/persistence/restore-picker/select",
       category: "control",
-      summary: "Launch selected Claude/Codex semantic restores.",
+      summary:
+        "Launch selected Claude/Codex semantic restores through the native resume trampoline.",
       intentID: "persistence.restorePicker.select"),
     endpoint(
       method: "POST",
@@ -147,7 +152,7 @@ public enum ControlRouteCatalog {
       method: "POST",
       path: "/debug/find/step",
       category: "control",
-      summary: "Advance the selected find match.",
+      summary: "Advance the selected find match in the active or named terminal session.",
       requestSchema: "schemas/debug/find-step.schema.json",
       responseSchema: "schemas/debug/find-state.schema.json",
       intentID: "find.step"),
@@ -155,7 +160,7 @@ public enum ControlRouteCatalog {
       method: "POST",
       path: "/debug/find/stop",
       category: "control",
-      summary: "Stop find and clear highlights.",
+      summary: "Stop find and clear highlights in the active or named terminal session.",
       requestSchema: "schemas/debug/find-stop.schema.json",
       intentID: "find.stop"),
     endpoint(
@@ -170,7 +175,8 @@ public enum ControlRouteCatalog {
       method: "GET",
       path: "/debug/shell-integration/state",
       category: "state",
-      summary: "Return OSC 133 shell-integration phase and last exit code.",
+      summary:
+        "Return OSC 133 shell-integration phase + last exit code for the active or named session.",
       queryParameters: ["sessionID", "sessionId"],
       responseSchema: "schemas/debug/shell-integration-state.schema.json",
       intentID: "shellIntegration.state"),
@@ -178,7 +184,8 @@ public enum ControlRouteCatalog {
       method: "GET",
       path: "/debug/scroll-indicator/state",
       category: "state",
-      summary: "Return overlay scroll indicator input/output.",
+      summary:
+        "Return overlay scroll indicator input/output (shouldHold, pill text, thumb geometry) for the active or named session. Accepts hover=true to simulate the right-edge hover-reveal.",
       queryParameters: ["sessionID", "sessionId", "hover"],
       responseSchema: "schemas/debug/scroll-indicator-state.schema.json",
       intentID: "scrollIndicator.state"),
@@ -186,7 +193,8 @@ public enum ControlRouteCatalog {
       method: "GET",
       path: "/debug/scroll-trace",
       category: "state",
-      summary: "Return the ScrollDiagnostics event ring.",
+      summary:
+        "Return the ScrollDiagnostics event ring (viewport samples, labpty feeds, scroll/snap events) recorded since --scroll-debug / LABAN_SCROLL_DEBUG armed it. Accepts clear=1 to drain the ring after reading.",
       queryParameters: ["clear"],
       intentID: "scrollTrace"),
     endpoint(
@@ -269,7 +277,8 @@ public enum ControlRouteCatalog {
       method: "GET",
       path: "/debug/tab-journal",
       category: "logs",
-      summary: "Return the bounded journal of per-tab visible state transitions.",
+      summary:
+        "Return the bounded journal of per-tab visible state transitions after a sequence number.",
       queryParameters: ["since", "tabId"],
       responseSchema: "schemas/debug/tab-journal.schema.json",
       intentID: "log.tabJournal"),
