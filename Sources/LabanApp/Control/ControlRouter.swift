@@ -17,10 +17,3 @@ public struct ControlActionResult: Codable {
   public let activeTabId: String?
   public let error: String?
 }
-
-/// Phase 0 seam for the control transport. Later phases generalize this into
-/// the typed intent router shared by the GUI and headless runtimes.
-public protocol ControlRouter: AnyObject {
-  func snapshotState() -> ControlState
-  func selectTab(index: Int) -> ControlActionResult
-}

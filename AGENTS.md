@@ -66,6 +66,12 @@ Debug contracts and data: `schemas/`, `fixtures/`.
   stamp matches HEAD before debugging source.
 - Never `open`/launch the bundle from the shell: a windowless launch grabs the
   single-instance lock. Quit and relaunch Laban yourself to pick up a new build.
+- Don't run two builds (or two `scripts/check`/`build-app`) concurrently against
+  the same worktree `.build/`: a competing `swift build` relinks the bundle binary
+  *after* `build-app` ad-hoc-signs it, invalidating the signature so the
+  codesign/smoke-runtime check fails spuriously. Run them serially, or confirm
+  `pgrep -fl "swift build"` is empty first. (Most common when a review subagent
+  and the main agent both run `scripts/check`.)
 
 ## Runtime Artifacts (where to look — don't re-search)
 

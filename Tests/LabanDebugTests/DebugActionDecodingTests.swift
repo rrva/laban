@@ -1,3 +1,4 @@
+import LabanCore
 import XCTest
 
 @testable import LabanDebug
@@ -89,6 +90,29 @@ final class DebugActionDecodingTests: XCTestCase {
     }
 
     XCTAssertEqual(action, "futureAction")
+  }
+
+  func testDebugActionMapsToIntentIDs() throws {
+    XCTAssertEqual(
+      try decode(#"{"action":"selectTab","tabId":"tab-1"}"#).intent,
+      .tabSelect(TabSelectInput(tabId: "tab-1")))
+    XCTAssertEqual(
+      try decode(#"{"action":"typeText","text":"hello"}"#).intent,
+      .terminalTypeText(TypeTextInput(text: "hello")))
+    XCTAssertEqual(
+      try decode(#"{"action":"key","key":"Enter","modifiers":["cmd"]}"#).intent,
+      .terminalSendKey(SendKeyInput(key: "Enter", modifiers: ["cmd"])))
+    XCTAssertEqual(try decode(#"{"action":"feedOutput"}"#).intentID, "fixture.feedOutput")
+    XCTAssertEqual(
+      try decode(#"{"action":"futureAction"}"#).intent,
+      .unsupportedDebugAction(UnsupportedDebugActionInput(action: "futureAction")))
+  }
+
+  func testEveryKnownDebugActionNameMapsToCatalogDescriptor() throws {
+    for action in DebugActionIntentID.knownActionNames {
+      let decoded = try decode(#"{"action":"\#(action)"}"#)
+      XCTAssertNotNil(IntentCatalog.all.descriptor(id: decoded.intentID), action)
+    }
   }
 
   func testMissingDiscriminatorFailsDecoding() {

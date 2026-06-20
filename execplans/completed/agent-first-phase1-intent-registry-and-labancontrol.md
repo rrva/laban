@@ -50,25 +50,30 @@ paths, same `laban-agent --debug-server=host:port` readiness JSON.
 ## Progress
 
 Milestone 1A — Registry backbone (LabanCore):
-- [ ] `Sources/LabanCore/Intents/` added: `Capability`, `DataSensitivity`, `Intent`, `Query`, `ControlResponse` (encoder-pinned), `ControlArtifact`, `ArtifactRequest`, `ControlReadiness`, `SchemaNode` (rich subset) + `JSONSchemaProviding`, `IntentDescriptor` (+ `availability`, `SchemaNode`s), `IntentCatalog` (+ `.shared`/`.fixture`/`.all`), `IntentRouter`, public `ControlEndpointDescriptor`/`HTTPBinding`, internal `ControlRoute`. All public types have `public init`; AppKit-free.
-- [ ] `Tests/LabanCoreTests/IntentCatalogTests.swift` (well-formedness, uniqueness, availability/fixture tagging, schema-node presence route-awareness).
-- [ ] `swift test --filter IntentCatalogTests` passes; no AppKit import in `Sources/LabanCore/Intents`.
+- [x] (2026-06-20) `Sources/LabanCore/Intents/` added: `Capability`, `DataSensitivity`, `Intent`, `Query`, `ControlResponse` (encoder-pinned), `ControlArtifact`, `ArtifactRequest`, `ControlReadiness`, `SchemaNode` (rich subset) + `JSONSchemaProviding`, `IntentDescriptor` (+ `availability`, `SchemaNode`s), `IntentCatalog` (+ `.shared`/`.fixture`/`.all`), `IntentRouter`, public `ControlEndpointDescriptor`/`HTTPBinding`, internal `ControlRoute`. All public types have `public init`; AppKit-free.
+- [x] (2026-06-20) `Tests/LabanCoreTests/IntentCatalogTests.swift` (well-formedness, uniqueness, availability/fixture tagging, schema-node presence route-awareness).
+- [x] (2026-06-20) `swift test --filter IntentCatalogTests` passes; no AppKit import in `Sources/LabanCore/Intents`.
 
 Milestone 1B — `LabanControl` target + Phase-0-equivalent adapter:
-- [ ] `LabanControl` target (deps `["LabanCore"]`); `LabanApp` depends on it; **two** test targets: `LabanControlTests` (spy-router adapter tests, no LabanApp dep) and live-router tests kept in `LabanAppTests`.
-- [ ] Phase 0 server relocated into `LabanControl`, public; generalized to the route-table adapter returning `ControlResponse`; gains `start(host:port:) -> ControlReadiness` + GUI ephemeral path; limits 64 KiB/4 MiB; server looks up descriptors in `IntentCatalog.all`, enforces availability by surface.
-- [ ] `LiveIntentRouter` (LabanApp) conforms to `IntentRouter`, returns `ControlResponse` encoding the exact `ControlState`/`ControlActionResult` JSON.
-- [ ] Adapter tests (spy router) + live tests pass; `LabanControl` AppKit-free.
+- [x] (2026-06-20) `LabanControl` target (deps `["LabanCore"]`); `LabanApp` depends on it; **two** test targets: `LabanControlTests` (spy-router adapter tests, no LabanApp dep) and live-router tests kept in `LabanAppTests`.
+- [x] (2026-06-20) Phase 0 server relocated into `LabanControl`, public; generalized to the route-table adapter returning `ControlResponse`; gains `start(host:port:) -> ControlReadiness` + GUI ephemeral path; limits 64 KiB/4 MiB; server looks up descriptors in `IntentCatalog.all`, enforces availability by surface.
+- [x] (2026-06-20) `LiveIntentRouter` (LabanApp) conforms to `IntentRouter`, returns `ControlResponse` encoding the exact `ControlState`/`ControlActionResult` JSON.
+- [x] (2026-06-20) Adapter tests (spy router) + live tests pass; `LabanControl` AppKit-free.
 
 Milestone 1C — Re-point the full debug surface:
-- [ ] **All** request body payloads (action + non-action) made public `Codable, Sendable, Equatable` + `JSONSchemaProviding` and relocated to `LabanCore`; exhaustive `DebugAction → Intent` map (no `default`); resolver taxonomy (malformed→400, unknown→legacy `ActionResult(ok:false)`, unavailable→404) implemented.
-- [ ] `ControlRouteCatalog` (public `HTTPBinding`s: method/path/query/legacy schema paths/examples; internal `ControlRoute` closures) covers all 45 routes; `HeadlessIntentRouter` returns `ControlResponse` encoding existing DTOs incl. `MouseActionResult`; binary via `ControlArtifact`; `laban-agent` mounts via `start(host:port:)` → `ControlReadiness`.
-- [ ] `availability` conservative (gui:true only where `LiveIntentRouter` implements); parity test over `gui && headless`.
-- [ ] `check-debug-contract` rewritten to read `ControlRouteCatalog`/`IntentCatalog` **before** `DebugHTTPServer.swift` deleted; all routes ported; `DebugHTTPServer.swift` deleted; `Tests/LabanDebugTests` pass unchanged.
+- [x] (2026-06-20) 1C-a foundation: request body payloads used by the future adapter (action + non-action) are public `Codable, Sendable, Equatable` + `JSONSchemaProviding` in `LabanCore`, with `LabanDebug` typealiases preserving current compile behavior; exhaustive `DebugAction → Intent` map added with no `default`; action resolver taxonomy covered by tests (malformed/missing action→400, unknown→unsupported intent, known-but-GUI-unavailable fixture action→404 before router call).
+- [x] (2026-06-20) 1C-a route metadata: `ControlRouteCatalog` public `HTTPBinding`s cover the 45 legacy `/debug` routes with method/path/query/legacy schema metadata; tests assert route count, no duplicate method/path keys, representative legacy schema paths, and fixed intent ids present in `IntentCatalog.all`.
+- [x] (2026-06-20) 1C-b1 JSON-read route family: `ControlHTTPRequest` preserves URL query parameters; `ControlRouteCatalog` dispatches the JSON GET/read-only routes (`/debug`, `/debug/capabilities`, `/debug/health`, state/accessibility/modes, persistence reads, find/shell/scroll reads, sessions list, render/frame/atlas, logs/metrics/errors, selection/clipboard) through `LegacyDebugQueryInput`; `HeadlessIntentRouter` wraps existing `DebugResponse` bodies into `ControlResponse` for those ids; tests cover query propagation and representative headless responses.
+- [x] (2026-06-20) 1C-b2 dynamic/binary route family: internal `ControlRoute` matching decodes `/debug/sessions/<id>` path parameters; session detail dispatches through `LegacyDebugQueryInput`; `GET /debug/screenshot` and `GET /debug/cast/recent` dispatch through `ArtifactRequest`; `HeadlessIntentRouter` returns PNG/asciicast `ControlResponse.binary` headers matching the legacy server and preserves cast error JSON; tests cover path/query propagation and screenshot/cast artifact responses.
+- [x] (2026-06-20) 1C-b3 non-action POST/control route family: `ControlRouteCatalog` dispatches POST body and no-body routes outside `/debug/actions` through `LegacyDebugControlInput` (`/debug/screenshot`, persistence flush/relaunch/restore select, find start/step/stop, wait, render-trace, pixel-probe, snapshot, fixture, capture start/stop/snapshot) and includes `GET /debug/capture/status`; `HeadlessIntentRouter` delegates to existing runtime methods so legacy JSON/error encoding stays owned by `LabanDebug`; tests cover raw-body dispatch, empty-body dispatch, capture status, and malformed-body runtime errors.
+- [x] (2026-06-20) 1C-b4 `/debug/actions` action route family: `LegacyDebugActionInput` carries the raw action body; `dispatchDebugAction` is surface-aware (GUI keeps the Phase-0 typed `selectTab`/`typeText`/`sendKey` decode; headless hands every recognized action's raw body to the router as `.legacyDebugAction`, unknown → `.unsupportedDebugAction`); `HeadlessIntentRouter.route(.legacyDebugAction)` delegates to `runtime.applyAction(body)` so `ActionResult`/`MouseActionResult` stay byte-stable; tests cover headless raw-body routing (mouse + tabId-based shared action not diverted to the GUI index path) and the headless router preserving the `ActionResult` vs `MouseActionResult` wire.
+- [x] (2026-06-20) 1C-c cutover: `laban-agent` mounts `LabanControlServer(router: HeadlessIntentRouter, surface: .headless, readinessRunID: runtime.runId)` via `start(host:port:)` → `ControlReadiness`, replacing `DebugHTTPServer` at the mount; `LabanControlServer` gained `readinessRunID` so the readiness JSON keeps `runtime.runId` byte-stable; `DebugReadiness` is now `typealias DebugReadiness = ControlReadiness` (C7); `LabanAgent` deps gain `LabanControl`. `DebugHTTPServer.swift` still present (deleted in the contract-checker step). `scripts/check` `test-e2e` (29 HTTP requests across ~30 routes incl. actions/mouse/find/wait/fixture) green against the new server.
+- [x] (2026-06-20) `availability` parity: `LiveIntentRouter` now implements `terminal.typeText` (active session `write`) and `terminal.sendKey` (so the 4 `guiAndHeadless` starters are honestly gui-implemented); key-name → `Key`/`KeyModifiers` parsing promoted to shared `LabanCore.ControlKeyName` (headless `DebugRuntimeKeyInput` delegates, behavior unchanged). `ControlAvailabilityParityTests` (LabanAppTests) asserts the gui-available action set is exactly `{tab.select, terminal.typeText, terminal.sendKey, debug.action.unsupported}` and the live router returns non-error for each real op (and errors on the unsupported fallback); `HeadlessIntentRouterTests` asserts the headless router handles every shared op non-error.
+- [x] (2026-06-20) `check-debug-contract` rewritten to read `Sources/LabanControl/ControlRouteCatalog.swift` (matches the `endpoint(method:path:)`/`HTTPBinding` declarations + `legacy*SchemaPath`s; 45 unique endpoints) **before** deletion; `runtime.discovery()` now sources its `endpoints` from `DebugDiscoveryEndpoint.catalog` (mapped from `ControlRouteCatalog`, guarded byte-stable by `DiscoveryEndpointParityTests` against `Fixtures/discovery-endpoints.golden.json` — 11 legacy summaries restored verbatim into the catalog); the 5 `LabanDebugSmokeTests` HTTP cases now mount `LabanControlServer(surface: .headless)`; `DebugHTTPServer.swift` deleted; `LabanDebug` deps gain `LabanControl`. `scripts/check` (incl. `check-debug-contract`, `test-e2e`, lint) green.
 
 Milestone 1D — Generate discovery; gate schemas:
-- [ ] Generator emits the `/debug` discovery doc from `ControlRouteCatalog`+`IntentCatalog` **byte-stable** (legacy schema paths); validates catalog↔schema consistency **route-aware**; emits new-intent schemas from `SchemaNode`; grandfathers the 33 existing hand-written schemas.
-- [ ] `scripts/check` gate fails on a route missing its (route-appropriate) schema or a descriptor missing `requiredCapability`; generated discovery committed; `scripts/check` green.
+- [x] (2026-06-20) `LabanControlGen` executable (deps `["LabanControl","LabanCore"]`) walks `ControlRouteCatalog.endpoints` and emits the committed, byte-stable `schemas/debug/discovery-endpoints.json` (the same endpoint metadata — method/path/category/summary/queryParameters/legacy schema paths — the live `/debug` response serves via `DebugDiscoveryEndpoint.catalog`). `--write` regenerates; `--check` regenerates to memory, diffs the committed doc, verifies every route's declared legacy schema file exists, and runs `IntentCatalog.all.validate(endpointDescriptors:)` (unique ids, fixture-never-gui, route-aware input/output schema presence). The 33 hand-written schemas are referenced, not regenerated; `SchemaNode` remains the authoring path for future new intents (none in Phase 1). The discovery `actions`/`waitConditions`/`fixtureActions`/`examples` lists stay served by `DebugDiscoveryCatalog` (byte-stable, unchanged) — deriving those from `IntentCatalog` is deferred because the legacy summaries differ from the descriptor summaries and changing them would move the wire.
+- [x] (2026-06-20) `scripts/check` runs `swift run LabanControlGen --check` after `check-debug-contract`; it fails on a drifted committed doc, a route referencing a missing schema, or an ill-formed catalog. `DiscoveryEndpointParityTests` is repointed at the committed doc (the hand-captured `Tests/.../Fixtures` golden removed). Drift teeth verified (mutating the doc → non-zero). `scripts/check` green end to end (`check-debug-contract`, `LabanControlGen --check`, `test-e2e`, lint, coverage).
 
 ## Context and Orientation
 
@@ -512,28 +517,42 @@ route-aware.
   no `LabanApp` dependency. 2026-06-20 / Claude.
 - (C8) conservative GUI availability; (C5) capability classified not enforced
   (ADR 0024 = Phase 2); keep `/debug/*` namespace (design §4.4). 2026-06-20 / Claude.
+- (1D) `LabanControlGen` generates the discovery **endpoints** doc from
+  `ControlRouteCatalog` (the catalog-owned, byte-stable part) and gates it +
+  schema existence + `IntentCatalog` well-formedness in `scripts/check`. The
+  runtime keeps serving the full live discovery (adding dynamic runId/frame and
+  the `DebugDiscoveryCatalog` action/wait/example lists) so the wire is
+  unchanged; folding those lists into `IntentCatalog` is a later step since the
+  legacy summaries differ from descriptor summaries. 2026-06-20 / Claude.
+- (C8, parity) Honored C8's gui:true list by *implementing* `terminal.typeText`/
+  `terminal.sendKey` in `LiveIntentRouter` (rather than demoting them to
+  `headlessOnly`), keeping the 1A starter-availability test intact. Key-name
+  parsing lifted to shared `LabanCore.ControlKeyName` so both surfaces resolve a
+  key the same way; the headless router keeps routing actions by raw body
+  (`.legacyDebugAction` → `applyAction`), so the parity test exercises each
+  surface through its real path, not cross-router typed dispatch. 2026-06-20 / Claude.
 
 ## Review Gate
 
 A fresh-state agent verifies (mechanical; from repo root):
 
-- [ ] `grep -rn "import AppKit\|import Cocoa" Sources/LabanControl Sources/LabanCore/Intents` → nothing; `LabanControl` deps in `Package.swift` are exactly `["LabanCore"]`; `grep -rn "import LabanDebug" Sources/LabanControl` → nothing.
-- [ ] `ControlReadiness` is defined in `LabanCore`; `LabanDebug` has `typealias DebugReadiness = ControlReadiness`.
-- [ ] `LabanControlTests` target deps are `["LabanControl","LabanCore"]` (no `LabanApp`); it uses a spy router.
-- [ ] `grep -rn "class DebugHTTPServer" Sources` → nothing (after 1C).
-- [ ] Per-intent availability + taxonomy: a spy-router test asserts (a) `feedOutput` on `.gui` → 404 with no router call; (b) an unknown action → `ActionResult(ok:false)` (not 404); (c) malformed body → 400.
-- [ ] Mouse wire: a headless mouse-action test asserts the JSON has `mouseTracking` and `sent`.
-- [ ] Encoder: `ControlResponse.json` uses `.iso8601` + `.sortedKeys` (grep the impl); `.error` body is `{"error":…}`.
-- [ ] Discovery byte-stable: the `/debug` response (endpoints + `schemas/debug/*` paths) is unchanged vs the pre-1D commit (diff); `grep -rn "schemas/control" .` → nothing.
-- [ ] `DebugAction → Intent` `switch` has no `default`; no `Decodable` request body used by `LabanControl` is `internal` in `LabanDebug`.
-- [ ] No reflection (`grep -rni "Mirror(\|\.reflect" Sources/LabanControl Sources/LabanCore/Intents` → nothing); no third-party package added.
-- [ ] `./scripts/check` exits 0.
+- [x] `grep -rn "import AppKit\|import Cocoa" Sources/LabanControl Sources/LabanCore/Intents` → nothing; `LabanControl` deps in `Package.swift` are exactly `["LabanCore"]`; `grep -rn "import LabanDebug" Sources/LabanControl` → nothing.
+- [x] `ControlReadiness` is defined in `LabanCore`; `LabanDebug` has `typealias DebugReadiness = ControlReadiness`.
+- [x] `LabanControlTests` target deps are `["LabanControl","LabanCore"]` (no `LabanApp`); it uses a spy router.
+- [x] `grep -rn "class DebugHTTPServer" Sources` → nothing (after 1C).
+- [x] Per-intent availability + taxonomy: a spy-router test asserts (a) `feedOutput` on `.gui` → 404 with no router call; (b) an unknown action → `ActionResult(ok:false)` (not 404); (c) malformed body → 400.
+- [x] Mouse wire: a headless mouse-action test asserts the JSON has `mouseTracking` and `sent`.
+- [x] Encoder: `ControlResponse.json` uses `.iso8601` + `.sortedKeys` (grep the impl); `.error` body is `{"error":…}`.
+- [x] Discovery byte-stable: the `/debug` response (endpoints + `schemas/debug/*` paths) is unchanged vs the pre-1D commit (diff); `grep -rn "schemas/control" .` → nothing.
+- [x] `DebugAction → Intent` `switch` has no `default`; no `Decodable` request body used by `LabanControl` is `internal` in `LabanDebug`.
+- [x] No reflection (`grep -rni "Mirror(\|\.reflect" Sources/LabanControl Sources/LabanCore/Intents` → nothing); no third-party package added.
+- [x] `./scripts/check` exits 0.
 
-Review status: NOT REVIEWED
+Review status: APPROVED (2026-06-20) — independent fresh-state reviewer verified items 1–10; `./scripts/check` exits 0 (item 11, uncontended).
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- All eleven mechanical checks pass. The only `scripts/check` failure observed during review was an environmental codesign collision from two concurrent `build-app` runs (reviewer + author both signing `.build/laban/Laban.app`); an uncontended re-run exits 0. The known-flaky `GPUCellParityTests/testGPUCellPartialDamageMatchesFullRedrawWithGappedDirtyRows` passed on the clean run.
 
 ## Idempotence and Recovery
 

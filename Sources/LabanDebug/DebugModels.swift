@@ -43,12 +43,11 @@ public struct DebugServerAddress: Equatable {
   }
 }
 
-public struct DebugReadiness: Encodable {
-  public var debugServer: String
-  public var debugToken: String
-  public var pid: Int32
-  public var runId: String
-}
+/// The readiness JSON `laban-agent --debug-server` prints. Relocated to
+/// `LabanCore.ControlReadiness` so `LabanControl` can return it from
+/// `start(host:port:)`; this alias keeps existing `LabanDebug` references
+/// (and the byte-identical field names/encoder) intact.
+public typealias DebugReadiness = ControlReadiness
 
 // MARK: - JSON helpers
 
@@ -596,23 +595,9 @@ struct InputLogResponse: Encodable {
 
 // MARK: - Exploratory diagnostics
 
-struct PixelProbePointRequest: Decodable {
-  var x: Int
-  var y: Int
-}
-
-struct PixelProbeRegionRequest: Decodable {
-  var name: String
-  var x: Int
-  var y: Int
-  var width: Int
-  var height: Int
-}
-
-struct PixelProbeRequest: Decodable {
-  var points: [PixelProbePointRequest]?
-  var regions: [PixelProbeRegionRequest]?
-}
+typealias PixelProbePointRequest = LabanCore.PixelProbePointRequest
+typealias PixelProbeRegionRequest = LabanCore.PixelProbeRegionRequest
+typealias PixelProbeRequest = LabanCore.PixelProbeRequest
 
 struct PixelProbePointResult: Encodable {
   var x: Int
@@ -713,11 +698,7 @@ struct DebugErrorsResponse: Encodable {
   var next: Int
 }
 
-struct FixtureControlRequest: Decodable {
-  var action: String
-  var path: String?
-  var count: Int?
-}
+typealias FixtureControlRequest = LabanCore.FixtureControlRequest
 
 struct FixtureControlResponse: Encodable {
   var ok: Bool

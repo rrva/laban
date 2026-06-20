@@ -1,4 +1,5 @@
 import AppKit
+import LabanControl
 import LabanCore
 import LabanRenderer
 import LabanTerminalCore
@@ -509,16 +510,14 @@ final class MainWindowController: NSWindowController {
     if ProcessInfo.processInfo.environment["LABAN_CONTROL_SERVER"] == "1" {
       do {
         let router = LiveIntentRouter(model: model)
-        let server = LabanControlServer(router: router)
+        let server = LabanControlServer(router: router, surface: .gui)
         let info = try server.start()
-        let runId =
-          ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
-          ?? "gui-\(ProcessInfo.processInfo.processIdentifier)"
         try ControlAdvertisement.write(
           url: info.url,
           token: info.token,
           pid: ProcessInfo.processInfo.processIdentifier,
-          runId: runId)
+          runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
+            ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
         controller.controlServer = server
         AppLog.app.info("control server: \(info.url)")
       } catch {

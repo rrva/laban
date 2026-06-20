@@ -60,17 +60,27 @@ let package = Package(
     ),
     .target(
       name: "LabanDebug",
-      dependencies: ["LabanCore", "LabanRenderer", "LabanTerminalCore"]
+      dependencies: ["LabanCore", "LabanControl", "LabanRenderer", "LabanTerminalCore"]
+    ),
+    .target(
+      name: "LabanControl",
+      dependencies: ["LabanCore"]
+    ),
+    .executableTarget(
+      name: "LabanControlGen",
+      dependencies: ["LabanControl", "LabanCore"]
     ),
     .executableTarget(
       name: "LabanApp",
-      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore"],
+      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl"],
       resources: [.copy("Resources/AppIcon.icns")],
       swiftSettings: _releaseExclusivity
     ),
     .executableTarget(
       name: "LabanAgent",
-      dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore"]
+      dependencies: [
+        "LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl",
+      ]
     ),
     .executableTarget(
       name: "Laband",
@@ -123,7 +133,11 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanDebugTests",
-      dependencies: ["LabanDebug", "Laband"]
+      dependencies: ["LabanDebug", "LabanControl", "Laband"]
+    ),
+    .testTarget(
+      name: "LabanControlTests",
+      dependencies: ["LabanControl", "LabanCore"]
     ),
     .testTarget(
       name: "LabandTests",
@@ -135,7 +149,7 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanAppTests",
-      dependencies: ["LabanApp", "Laband", "Labpty"],
+      dependencies: ["LabanApp", "LabanControl", "Laband", "Labpty"],
       exclude: ["Fixtures"]
     ),
   ]

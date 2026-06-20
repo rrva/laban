@@ -1,4 +1,25 @@
 import Foundation
+import LabanControl
+import LabanCore
+
+extension DebugDiscoveryEndpoint {
+  init(binding: HTTPBinding) {
+    self.init(
+      method: binding.method,
+      path: binding.path,
+      category: binding.category,
+      summary: binding.summary,
+      queryParameters: binding.queryParameters,
+      requestSchema: binding.legacyRequestSchemaPath,
+      responseSchema: binding.legacyResponseSchemaPath)
+  }
+
+  /// The `/debug` discovery endpoint list, sourced from the shared route
+  /// catalog so the doc survives `DebugHTTPServer`'s removal byte-stably.
+  static var catalog: [DebugDiscoveryEndpoint] {
+    ControlRouteCatalog.endpoints.map { DebugDiscoveryEndpoint(binding: $0.binding) }
+  }
+}
 
 enum DebugDiscoveryCatalog {
   static let actions: [DebugDiscoveryControl] = [
@@ -99,7 +120,7 @@ extension HeadlessDebugRuntime {
           artifactRoot: artifactsURL.path,
           fixtureRoot: fixtureRootURL.path,
           entrypoints: ["/debug", "/debug/capabilities"],
-          endpoints: DebugHTTPServer.discoveryEndpoints,
+          endpoints: DebugDiscoveryEndpoint.catalog,
           actions: DebugDiscoveryCatalog.actions,
           waitConditions: DebugDiscoveryCatalog.waitConditions,
           fixtureActions: DebugDiscoveryCatalog.fixtureActions,

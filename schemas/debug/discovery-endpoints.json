@@ -1,0 +1,453 @@
+[
+  {
+    "category" : "discovery",
+    "method" : "GET",
+    "path" : "\/debug",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/discovery.schema.json",
+    "summary" : "List the live debug endpoints, controls, and command examples."
+  },
+  {
+    "category" : "discovery",
+    "method" : "GET",
+    "path" : "\/debug\/capabilities",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/discovery.schema.json",
+    "summary" : "Alias for \/debug for agents that look for a capabilities document."
+  },
+  {
+    "category" : "readiness",
+    "method" : "GET",
+    "path" : "\/debug\/health",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Check whether the process is ready and report the current frame."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/state",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/state.schema.json",
+    "summary" : "Return tabs, active session identity, window size, and focus state."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/accessibility",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Return terminal accessibility role, label, value, focus ring, and display flags."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/terminal-modes",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Return active-session DEC private mode state (grapheme cluster 2027, sync output, focus, mouse)."
+  },
+  {
+    "category" : "artifacts",
+    "method" : "GET",
+    "path" : "\/debug\/screenshot",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Return the current rendered surface as PNG bytes."
+  },
+  {
+    "category" : "artifacts",
+    "method" : "POST",
+    "path" : "\/debug\/screenshot",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/screenshot-result.schema.json",
+    "summary" : "Write a screenshot PNG under the artifact directory."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/actions",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/action.schema.json",
+    "responseSchema" : "schemas\/debug\/action-result.schema.json",
+    "summary" : "Drive tabs, input, mouse, clipboard, selection, and frames."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/persistence\/state",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Inspect workspace.json, transcript files, and agent JSONL mirrors."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/persistence\/flush",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Drain the persistence debounce + transcript writers synchronously (simulates applicationWillTerminate)."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/persistence\/relaunch",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Flush, close every session, then rebuild from workspace.json. Use to run quit\/restore cycles inside one debug-server lifetime."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/persistence\/restore-picker",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Return pending Claude\/Codex semantic restore candidates after a laband daemon-loss restore."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/persistence\/restore-picker\/select",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Launch selected Claude\/Codex semantic restores through the native resume trampoline."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/find\/start",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/find-start.schema.json",
+    "responseSchema" : "schemas\/debug\/find-state.schema.json",
+    "summary" : "Start literal find in the active or named terminal session."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/find\/step",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/find-step.schema.json",
+    "responseSchema" : "schemas\/debug\/find-state.schema.json",
+    "summary" : "Advance the selected find match in the active or named terminal session."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/find\/stop",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/find-stop.schema.json",
+    "summary" : "Stop find and clear highlights in the active or named terminal session."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/find\/state",
+    "queryParameters" : [
+      "sessionID",
+      "sessionId"
+    ],
+    "responseSchema" : "schemas\/debug\/find-state.schema.json",
+    "summary" : "Return current find state for the active or named terminal session."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/shell-integration\/state",
+    "queryParameters" : [
+      "sessionID",
+      "sessionId"
+    ],
+    "responseSchema" : "schemas\/debug\/shell-integration-state.schema.json",
+    "summary" : "Return OSC 133 shell-integration phase + last exit code for the active or named session."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/scroll-indicator\/state",
+    "queryParameters" : [
+      "sessionID",
+      "sessionId",
+      "hover"
+    ],
+    "responseSchema" : "schemas\/debug\/scroll-indicator-state.schema.json",
+    "summary" : "Return overlay scroll indicator input\/output (shouldHold, pill text, thumb geometry) for the active or named session. Accepts hover=true to simulate the right-edge hover-reveal."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/scroll-trace",
+    "queryParameters" : [
+      "clear"
+    ],
+    "summary" : "Return the ScrollDiagnostics event ring (viewport samples, labpty feeds, scroll\/snap events) recorded since --scroll-debug \/ LABAN_SCROLL_DEBUG armed it. Accepts clear=1 to drain the ring after reading."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/wait",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/wait.schema.json",
+    "responseSchema" : "schemas\/debug\/wait-result.schema.json",
+    "summary" : "Block until a frame, state, text, event, or render condition is true."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/sessions",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/sessions.schema.json",
+    "summary" : "Return terminal-session lifecycle and metadata for all tabs."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/sessions\/<id>",
+    "queryParameters" : [
+      "includeGrid"
+    ],
+    "responseSchema" : "schemas\/debug\/session.schema.json",
+    "summary" : "Return one terminal session, optionally with bounded visible-grid cells."
+  },
+  {
+    "category" : "rendering",
+    "method" : "GET",
+    "path" : "\/debug\/render",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/render.schema.json",
+    "summary" : "Return surface, viewport, cell size, damage, and draw stats."
+  },
+  {
+    "category" : "rendering",
+    "method" : "GET",
+    "path" : "\/debug\/frame-commands",
+    "queryParameters" : [
+      "source",
+      "limit"
+    ],
+    "responseSchema" : "schemas\/debug\/frame-commands.schema.json",
+    "summary" : "Return bounded frame commands, optionally filtered by source."
+  },
+  {
+    "category" : "rendering",
+    "method" : "POST",
+    "path" : "\/debug\/render-trace",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/render-trace-request.schema.json",
+    "responseSchema" : "schemas\/debug\/render-trace.schema.json",
+    "summary" : "Return render contributors, resources, passes, probes, and invariants."
+  },
+  {
+    "category" : "exploration",
+    "method" : "POST",
+    "path" : "\/debug\/pixel-probe",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/pixel-probe.schema.json",
+    "responseSchema" : "schemas\/debug\/pixel-probe-result.schema.json",
+    "summary" : "Sample exact pixels and rectangular regions from the rendered surface."
+  },
+  {
+    "category" : "rendering",
+    "method" : "GET",
+    "path" : "\/debug\/atlas",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/atlas.schema.json",
+    "summary" : "Return font, cell, and glyph diagnostics for the active renderer."
+  },
+  {
+    "category" : "exploration",
+    "method" : "POST",
+    "path" : "\/debug\/snapshot",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/snapshot-result.schema.json",
+    "summary" : "Write a one-shot diagnostic bundle with JSON state and a screenshot."
+  },
+  {
+    "category" : "logs",
+    "method" : "GET",
+    "path" : "\/debug\/events",
+    "queryParameters" : [
+      "since"
+    ],
+    "responseSchema" : "schemas\/debug\/events.schema.json",
+    "summary" : "Return bounded app\/debug events after a sequence number."
+  },
+  {
+    "category" : "logs",
+    "method" : "GET",
+    "path" : "\/debug\/tab-journal",
+    "queryParameters" : [
+      "since",
+      "tabId"
+    ],
+    "responseSchema" : "schemas\/debug\/tab-journal.schema.json",
+    "summary" : "Return the bounded journal of per-tab visible state transitions after a sequence number."
+  },
+  {
+    "category" : "logs",
+    "method" : "GET",
+    "path" : "\/debug\/input-log",
+    "queryParameters" : [
+      "since"
+    ],
+    "responseSchema" : "schemas\/debug\/input-log.schema.json",
+    "summary" : "Return keyboard\/text routing diagnostics after a sequence number."
+  },
+  {
+    "category" : "logs",
+    "method" : "GET",
+    "path" : "\/debug\/terminal-log",
+    "queryParameters" : [
+      "sessionId",
+      "since",
+      "limit"
+    ],
+    "responseSchema" : "schemas\/debug\/terminal-log.schema.json",
+    "summary" : "Return bounded escaped terminal input\/output byte-flow diagnostics."
+  },
+  {
+    "category" : "logs",
+    "method" : "GET",
+    "path" : "\/debug\/timing",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/timing.schema.json",
+    "summary" : "Return frame and endpoint timing fields for sluggishness diagnosis."
+  },
+  {
+    "category" : "logs",
+    "method" : "GET",
+    "path" : "\/debug\/metrics",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/metrics.schema.json",
+    "summary" : "Return local counters for frames, input, terminal bytes, and draw work."
+  },
+  {
+    "category" : "logs",
+    "method" : "GET",
+    "path" : "\/debug\/errors",
+    "queryParameters" : [
+      "since"
+    ],
+    "responseSchema" : "schemas\/debug\/errors.schema.json",
+    "summary" : "Return structured warnings and errors after a sequence number."
+  },
+  {
+    "category" : "control",
+    "method" : "POST",
+    "path" : "\/debug\/fixture",
+    "queryParameters" : [
+
+    ],
+    "requestSchema" : "schemas\/debug\/fixture-control.schema.json",
+    "responseSchema" : "schemas\/debug\/fixture-control.schema.json",
+    "summary" : "Load, restart, or step fixture sessions without restarting the server."
+  },
+  {
+    "category" : "capture",
+    "method" : "GET",
+    "path" : "\/debug\/capture\/status",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Return whether full capture recording is active."
+  },
+  {
+    "category" : "capture",
+    "method" : "POST",
+    "path" : "\/debug\/capture\/start",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Start full capture recording under the artifact directory."
+  },
+  {
+    "category" : "capture",
+    "method" : "POST",
+    "path" : "\/debug\/capture\/stop",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Stop full capture recording and return manifest metadata."
+  },
+  {
+    "category" : "capture",
+    "method" : "POST",
+    "path" : "\/debug\/capture\/snapshot",
+    "queryParameters" : [
+
+    ],
+    "summary" : "Write a snapshot inside the active capture run."
+  },
+  {
+    "category" : "capture",
+    "method" : "GET",
+    "path" : "\/debug\/cast\/recent",
+    "queryParameters" : [
+      "seconds",
+      "tabId"
+    ],
+    "summary" : "Snapshot the last N seconds of a tab's PTY output as an asciinema v2 cast."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/selection",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/selection.schema.json",
+    "summary" : "Return the current terminal selection projection."
+  },
+  {
+    "category" : "state",
+    "method" : "GET",
+    "path" : "\/debug\/clipboard",
+    "queryParameters" : [
+
+    ],
+    "responseSchema" : "schemas\/debug\/clipboard.schema.json",
+    "summary" : "Return debug clipboard copy\/paste diagnostics."
+  }
+]

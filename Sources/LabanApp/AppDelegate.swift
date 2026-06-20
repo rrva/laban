@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import LabanControl
 import LabanCore
 import LabanRenderer
 

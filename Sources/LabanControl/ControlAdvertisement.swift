@@ -1,8 +1,8 @@
 import Darwin
 import Foundation
 
-enum ControlAdvertisement {
-  static func directory() -> URL {
+public enum ControlAdvertisement {
+  public static func directory() -> URL {
     if let dir = ProcessInfo.processInfo.environment["LABAN_CONTROL_DIR"], !dir.isEmpty {
       return URL(fileURLWithPath: dir, isDirectory: true)
     }
@@ -12,7 +12,7 @@ enum ControlAdvertisement {
     return base.appendingPathComponent("Laban", isDirectory: true)
   }
 
-  static func write(url: String, token: String, pid: Int32, runId: String) throws {
+  public static func write(url: String, token: String, pid: Int32, runId: String) throws {
     let dir = directory()
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let file = dir.appendingPathComponent("control.json")
@@ -58,7 +58,7 @@ enum ControlAdvertisement {
     installed = true
   }
 
-  static func remove() {
+  public static func remove() {
     try? FileManager.default.removeItem(
       at: directory().appendingPathComponent("control.json"))
   }

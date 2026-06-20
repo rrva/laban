@@ -33,6 +33,11 @@ git diff --check
 ./scripts/check-boundaries
 ./scripts/check-docs
 ./scripts/check-debug-contract
+# Regenerate the /debug discovery doc from the shared catalogs and gate it:
+# fails on a drifted committed doc, a route referencing a missing schema, or an
+# ill-formed IntentCatalog (duplicate ids, fixture op gui-available, route-aware
+# input/output schema gaps).
+swift run LabanControlGen --check
 ./scripts/check-fd-hygiene
 # Verify the labpty formal layer is fully anchored and wired before running
 # it: dangling spec/proof anchors and unwired checks fail here.

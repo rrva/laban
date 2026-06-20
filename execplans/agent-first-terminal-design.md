@@ -442,7 +442,7 @@ behavior), and **status**.
   | 1B | Add the `LabanControl` target with a new HTTP↔Intent adapter for the Phase-0-equivalent routes only. |
   | 1C | Move/re-point existing `Debug*Endpoints` incrementally behind adapter wrappers (a few routes per PR). |
   | 1D | Turn on catalog→discovery/schema generation + the contract gate. |
-- **Status:** not started.
+- **Status:** **shipped** (2026-06-20) — `execplans/completed/agent-first-phase1-intent-registry-and-labancontrol.md`, Review Gate APPROVED. One server (`LabanControl`), one `IntentCatalog`, `LiveIntentRouter`/`HeadlessIntentRouter`; `DebugHTTPServer` deleted; `LabanControlGen` generates + gates the discovery doc.
 
 ### Phase 2 — Mount live + security floor + flip the default
 
@@ -463,7 +463,9 @@ behavior), and **status**.
   token; missing token ⇒ 401, bad `Host`/any `Origin` ⇒ 403; a `.control` client
   lights the indicator; the catalog-parity test fails if either router omits a
   shared intent; the §5.4 release checklist passes before the default flips.
-- **Status:** not started.
+- **Status:** **planned** — ExecPlan drafted at
+  `execplans/active/agent-first-phase2-mount-live-and-security-floor.md` (milestones
+  2A–2E; not started).
 
 > Phases 3–4 are the **first-class product pillars** the live-control seam exists
 > to enable. They are promoted ahead of MCP and the truthful-fixture work.
