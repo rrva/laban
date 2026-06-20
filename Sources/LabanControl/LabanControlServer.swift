@@ -42,16 +42,23 @@ public final class LabanControlServer {
   let router: IntentRouter
   private let surface: Surface
   private let catalog: IntentCatalog
+  private let readinessRunID: String?
   private let connectionQueue = DispatchQueue(
     label: "com.laban.control.conn", attributes: .concurrent)
   private var fd: Int32 = -1
   private var token = ""
   private var thread: Thread?
 
-  public init(router: IntentRouter, surface: Surface, catalog: IntentCatalog = .all) {
+  public init(
+    router: IntentRouter,
+    surface: Surface,
+    catalog: IntentCatalog = .all,
+    readinessRunID: String? = nil
+  ) {
     self.router = router
     self.surface = surface
     self.catalog = catalog
+    self.readinessRunID = readinessRunID
   }
 
   public func start() throws -> (url: String, token: String) {
@@ -116,7 +123,8 @@ public final class LabanControlServer {
       debugServer: "http://127.0.0.1:\(actualPort)",
       debugToken: mintedToken,
       pid: process.processIdentifier,
-      runId: process.environment["LABAN_RUN_ID"] ?? "gui-\(process.processIdentifier)")
+      runId: readinessRunID ?? process.environment["LABAN_RUN_ID"]
+        ?? "gui-\(process.processIdentifier)")
   }
 
   public func stop() {

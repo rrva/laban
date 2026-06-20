@@ -43,12 +43,11 @@ public struct DebugServerAddress: Equatable {
   }
 }
 
-public struct DebugReadiness: Encodable {
-  public var debugServer: String
-  public var debugToken: String
-  public var pid: Int32
-  public var runId: String
-}
+/// The readiness JSON `laban-agent --debug-server` prints. Relocated to
+/// `LabanCore.ControlReadiness` so `LabanControl` can return it from
+/// `start(host:port:)`; this alias keeps existing `LabanDebug` references
+/// (and the byte-identical field names/encoder) intact.
+public typealias DebugReadiness = ControlReadiness
 
 // MARK: - JSON helpers
 

@@ -1,6 +1,7 @@
 import CoreGraphics
 import Darwin
 import Foundation
+import LabanControl
 import LabanCore
 import LabanDebug
 import LabanRenderer
@@ -171,7 +172,7 @@ func defaultDebugArtifactsPath() -> String {
 func installTerminationSource(
   signal signalNumber: Int32,
   runtime: HeadlessDebugRuntime,
-  server: DebugHTTPServer
+  server: LabanControlServer
 ) -> DispatchSourceSignal {
   Darwin.signal(signalNumber, SIG_IGN)
   let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
@@ -248,8 +249,15 @@ if let debugAddr = args.debugServerAddress {
     fail("failed to initialise debug runtime: \(error)")
   }
 
-  let server = DebugHTTPServer(runtime: runtime)
-  let readiness: DebugReadiness
+  // The headless surface mounts the shared LabanControl server (one route-table
+  // adapter for GUI + headless). HeadlessIntentRouter encodes the legacy
+  // ActionResult/MouseActionResult/binary wire, and readinessRunID feeds
+  // runtime.runId so the readiness JSON stays byte-stable.
+  let server = LabanControlServer(
+    router: HeadlessIntentRouter(runtime: runtime),
+    surface: .headless,
+    readinessRunID: runtime.runId)
+  let readiness: ControlReadiness
   do {
     readiness = try server.start(host: serverAddress.host, port: serverAddress.port)
   } catch {
