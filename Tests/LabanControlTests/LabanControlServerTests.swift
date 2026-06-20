@@ -322,6 +322,52 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(router.intents(), [])
   }
 
+  func testHeadlessActionRoutesRawBodyAsLegacyDebugAction() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let body = Data(#"{"action":"mouseWheel","x":300,"y":200,"deltaY":3}"#.utf8)
+    let (status, _) = try await request(
+      url: "\(readiness.debugServer)/debug/actions",
+      method: "POST",
+      token: readiness.debugToken,
+      body: body)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.intents(),
+      [
+        .legacyDebugAction(
+          LegacyDebugActionInput(intentID: "terminal.mouseWheel", action: "mouseWheel", body: body))
+      ])
+  }
+
+  func testHeadlessSharedActionRoutesRawBodyNotTypedIntent() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    // The headless selectTab wire is tabId-based; it must not be diverted to the
+    // GUI index-based typed path, so the raw body flows to applyAction unchanged.
+    let body = Data(#"{"action":"selectTab","tabId":"tab-7"}"#.utf8)
+    let (status, _) = try await request(
+      url: "\(readiness.debugServer)/debug/actions",
+      method: "POST",
+      token: readiness.debugToken,
+      body: body)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.intents(),
+      [
+        .legacyDebugAction(
+          LegacyDebugActionInput(intentID: "tab.select", action: "selectTab", body: body))
+      ])
+  }
+
   func testRouteMetadataCarriesRepresentativeLegacySchemas() throws {
     let bindings = ControlRouteCatalog.bindings
 

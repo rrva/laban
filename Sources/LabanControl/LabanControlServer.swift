@@ -360,16 +360,33 @@ public final class LabanControlServer {
       return .error(400, "bad request")
     }
 
-    switch DebugActionIntentID.intentID(forAction: envelope.action) {
+    guard let intentID = DebugActionIntentID.intentID(forAction: envelope.action) else {
+      return router.route(
+        .unsupportedDebugAction(UnsupportedDebugActionInput(action: envelope.action)))
+    }
+
+    switch surface {
+    case .gui:
+      return dispatchGUIAction(intentID: intentID, request: request)
+    case .headless:
+      // The headless wire is owned by HeadlessDebugRuntime.applyAction, which
+      // produces ActionResult (and MouseActionResult for mouse). Hand it the raw
+      // body so every action family stays byte-stable through the router.
+      return router.route(
+        .legacyDebugAction(
+          LegacyDebugActionInput(
+            intentID: intentID, action: envelope.action, body: request.body)))
+    }
+  }
+
+  private func dispatchGUIAction(intentID: String, request: ControlHTTPRequest) -> ControlResponse {
+    switch intentID {
     case "tab.select":
       return dispatchSelectTab(request)
     case "terminal.typeText":
       return dispatchTypeText(request)
     case "terminal.sendKey":
       return dispatchSendKey(request)
-    case nil:
-      return router.route(
-        .unsupportedDebugAction(UnsupportedDebugActionInput(action: envelope.action)))
     default:
       return .error(501, "not yet ported")
     }

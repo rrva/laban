@@ -10,9 +10,11 @@ public final class HeadlessIntentRouter: IntentRouter {
 
   public func route(_ intent: Intent) -> ControlResponse {
     switch intent {
+    case .legacyDebugAction(let input):
+      return json(runtime.applyAction(input.body))
     case .unsupportedDebugAction(let input):
       return json(runtime.unsupportedAction(input.action))
-    case .tabSelect, .terminalTypeText, .terminalSendKey, .legacyDebugAction:
+    case .tabSelect, .terminalTypeText, .terminalSendKey:
       return .error(501, "not yet ported")
     }
   }

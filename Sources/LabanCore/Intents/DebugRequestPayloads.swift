@@ -101,18 +101,21 @@ public enum DebugActionIntentID {
 public struct LegacyDebugActionInput: Codable, Sendable, Equatable, JSONSchemaProviding {
   public var intentID: String
   public var action: String
+  public var body: Data
 
-  public init(intentID: String, action: String) {
+  public init(intentID: String, action: String, body: Data = Data()) {
     self.intentID = intentID
     self.action = action
+    self.body = body
   }
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object(
       [
         "action": DebugPayloadSchema.string,
+        "body": SchemaNode.string(enumValues: nil, const: nil, format: "byte", pattern: nil),
         "intentID": DebugPayloadSchema.string,
-      ], required: ["intentID", "action"])
+      ], required: ["intentID", "action", "body"])
   }
 }
 

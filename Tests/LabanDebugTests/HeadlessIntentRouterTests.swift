@@ -99,6 +99,54 @@ final class HeadlessIntentRouterTests: XCTestCase {
     XCTAssertEqual(body["error"] as? String, "invalid find.start request")
   }
 
+  func testLegacyDebugActionReturnsActionResultForTabAction() throws {
+    let (runtime, artifacts) = try makeRuntime("router-new-tab")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    let body = Data(#"{"action":"newTab"}"#.utf8)
+    let response = router.route(
+      .legacyDebugAction(LegacyDebugActionInput(intentID: "tab.new", action: "newTab", body: body)))
+
+    XCTAssertEqual(response.status, 200)
+    XCTAssertEqual(response.contentType, "application/json")
+    let body0 = try json(response)
+    XCTAssertEqual(body0["ok"] as? Bool, true)
+    XCTAssertNotNil(body0["frame"])
+    XCTAssertNil(body0["mouseTracking"])
+    XCTAssertNil(body0["sent"])
+  }
+
+  func testLegacyDebugActionPreservesMouseActionResultWire() throws {
+    let (runtime, artifacts) = try makeRuntime("router-mouse-wheel")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    // Enable SGR mouse tracking so the wheel takes the tracked-forward path that
+    // returns MouseActionResult (mouseTracking + sent), mirroring the legacy
+    // /debug/actions server.
+    let enableBody = try JSONSerialization.data(
+      withJSONObject: ["action": "feedOutput", "text": "\u{1B}[?1000h\u{1B}[?1006h"])
+    _ = router.route(
+      .legacyDebugAction(
+        LegacyDebugActionInput(
+          intentID: "fixture.feedOutput", action: "feedOutput", body: enableBody)))
+
+    let wheelBody = try JSONSerialization.data(
+      withJSONObject: ["action": "mouseWheel", "x": 300, "y": 200, "deltaY": 3])
+    let response = router.route(
+      .legacyDebugAction(
+        LegacyDebugActionInput(
+          intentID: "terminal.mouseWheel", action: "mouseWheel", body: wheelBody)))
+
+    XCTAssertEqual(response.status, 200)
+    XCTAssertEqual(response.contentType, "application/json")
+    let body = try json(response)
+    XCTAssertEqual(body["ok"] as? Bool, true)
+    XCTAssertEqual(body["mouseTracking"] as? Bool, true)
+    XCTAssertEqual(body["sent"] as? Bool, true)
+  }
+
   private func makeRuntime(_ runId: String) throws -> (HeadlessDebugRuntime, URL) {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-headless-router-\(runId)-\(UUID().uuidString)")
