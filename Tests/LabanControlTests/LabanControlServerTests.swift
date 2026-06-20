@@ -126,6 +126,69 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.params, ["includeGrid": "true", "sessionId": "session 1"])
   }
 
+  func testLegacyBodyRouteDispatchesRawBodyAndIntentID() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let body = Data(#"{"needle":"apple"}"#.utf8)
+    let (status, data) = try await request(
+      url: "\(readiness.debugServer)/debug/find/start?mode=literal",
+      method: "POST",
+      token: readiness.debugToken,
+      body: body)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.legacyControls(),
+      [LegacyDebugControlInput(intentID: "find.start", body: body, params: ["mode": "literal"])])
+    let result = try JSONDecoder().decode(SpyLegacyControlResult.self, from: data)
+    XCTAssertEqual(result.intentID, "find.start")
+    XCTAssertEqual(result.body, #"{"needle":"apple"}"#)
+    XCTAssertEqual(result.params, ["mode": "literal"])
+  }
+
+  func testLegacyNoBodyRouteDispatchesEmptyBody() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let (status, data) = try await request(
+      url: "\(readiness.debugServer)/debug/persistence/flush",
+      method: "POST",
+      token: readiness.debugToken,
+      body: Data())
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.legacyControls(),
+      [LegacyDebugControlInput(intentID: "persistence.flush")])
+    let result = try JSONDecoder().decode(SpyLegacyControlResult.self, from: data)
+    XCTAssertEqual(result.intentID, "persistence.flush")
+    XCTAssertEqual(result.body, "")
+    XCTAssertEqual(result.params, [:])
+  }
+
+  func testCaptureStatusRouteDispatchesLegacyQuery() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let (status, data) = try await request(
+      url: "\(readiness.debugServer)/debug/capture/status",
+      token: readiness.debugToken)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.legacyQueries(),
+      [LegacyDebugQueryInput(intentID: "capture.status")])
+    let result = try JSONDecoder().decode(SpyLegacyQueryResult.self, from: data)
+    XCTAssertEqual(result.intentID, "capture.status")
+  }
+
   func testScreenshotArtifactRouteDispatchesArtifactRequestAndPreservesHeaders() async throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .headless)
@@ -319,6 +382,7 @@ final class LabanControlServerTests: XCTestCase {
     if let body {
       request.httpBody = body
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      request.setValue("\(body.count)", forHTTPHeaderField: "Content-Length")
     }
     let (data, response) = try await URLSession.shared.data(for: request)
     let http = try XCTUnwrap(response as? HTTPURLResponse)
@@ -339,6 +403,12 @@ private struct SpyLegacyQueryResult: Codable, Equatable {
   var params: [String: String]
 }
 
+private struct SpyLegacyControlResult: Codable, Equatable {
+  var intentID: String
+  var body: String
+  var params: [String: String]
+}
+
 private final class SpyIntentRouter: IntentRouter {
   static let pngBytes = Data([0x89, 0x50, 0x4E, 0x47])
 
@@ -346,6 +416,7 @@ private final class SpyIntentRouter: IntentRouter {
   private var routedIntents: [Intent] = []
   private var routedQueries: [Query] = []
   private var routedLegacyQueries: [LegacyDebugQueryInput] = []
+  private var routedLegacyControls: [LegacyDebugControlInput] = []
   private var routedArtifacts: [ArtifactRequest] = []
 
   func route(_ intent: Intent) -> ControlResponse {
@@ -367,6 +438,17 @@ private final class SpyIntentRouter: IntentRouter {
     routedLegacyQueries.append(query)
     lock.unlock()
     return .json(SpyLegacyQueryResult(intentID: query.intentID, params: query.params))
+  }
+
+  func control(_ input: LegacyDebugControlInput) -> ControlResponse {
+    lock.lock()
+    routedLegacyControls.append(input)
+    lock.unlock()
+    return .json(
+      SpyLegacyControlResult(
+        intentID: input.intentID,
+        body: String(data: input.body, encoding: .utf8) ?? "",
+        params: input.params))
   }
 
   func artifact(_ request: ArtifactRequest) -> ControlResponse? {
@@ -398,6 +480,12 @@ private final class SpyIntentRouter: IntentRouter {
     lock.lock()
     defer { lock.unlock() }
     return routedLegacyQueries
+  }
+
+  func legacyControls() -> [LegacyDebugControlInput] {
+    lock.lock()
+    defer { lock.unlock() }
+    return routedLegacyControls
   }
 
   func artifacts() -> [ArtifactRequest] {

@@ -376,6 +376,7 @@ public enum ControlRouteCatalog {
         dispatch: { server, _ in server.router.query(.state) })
     ]
     + legacyJSONReadRoutes
+    + legacyJSONControlRoutes
     + [
       ControlRoute(
         endpoint: endpoint(for: "GET", "/debug/sessions/<id>"),
@@ -430,6 +431,7 @@ public enum ControlRouteCatalog {
     ("GET", "/debug/timing"),
     ("GET", "/debug/metrics"),
     ("GET", "/debug/errors"),
+    ("GET", "/debug/capture/status"),
     ("GET", "/debug/selection"),
     ("GET", "/debug/clipboard"),
   ]
@@ -451,6 +453,48 @@ public enum ControlRouteCatalog {
           }
           return server.router.query(
             LegacyDebugQueryInput(intentID: intentID, params: request.query))
+        })
+    }
+  }
+
+  private static let legacyJSONControlRoutePaths: [(method: String, path: String)] = [
+    ("POST", "/debug/screenshot"),
+    ("POST", "/debug/persistence/flush"),
+    ("POST", "/debug/persistence/relaunch"),
+    ("POST", "/debug/persistence/restore-picker/select"),
+    ("POST", "/debug/find/start"),
+    ("POST", "/debug/find/step"),
+    ("POST", "/debug/find/stop"),
+    ("POST", "/debug/wait"),
+    ("POST", "/debug/render-trace"),
+    ("POST", "/debug/pixel-probe"),
+    ("POST", "/debug/snapshot"),
+    ("POST", "/debug/fixture"),
+    ("POST", "/debug/capture/start"),
+    ("POST", "/debug/capture/stop"),
+    ("POST", "/debug/capture/snapshot"),
+  ]
+
+  private static var legacyJSONControlRoutes: [ControlRoute] {
+    legacyJSONControlRoutePaths.map { method, path in
+      let endpoint = endpoint(for: method, path)
+      return ControlRoute(
+        endpoint: endpoint,
+        resolveIntentID: { _ in
+          guard let intentID = endpoint.fixedIntentId else {
+            return .failed(.error(500, "missing intent mapping"))
+          }
+          return .resolved(intentID)
+        },
+        dispatch: { server, request in
+          guard let intentID = endpoint.fixedIntentId else {
+            return .error(500, "missing intent mapping")
+          }
+          return server.router.control(
+            LegacyDebugControlInput(
+              intentID: intentID,
+              body: request.body,
+              params: request.query))
         })
     }
   }

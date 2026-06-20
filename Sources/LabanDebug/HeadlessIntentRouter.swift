@@ -40,6 +40,8 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.persistenceState())
     case "persistence.restorePicker":
       return json(runtime.persistenceRestorePicker())
+    case "capture.status":
+      return json(runtime.captureStatus())
     case "find.state":
       return json(runtime.findState(query: query.params))
     case "shellIntegration.state":
@@ -79,6 +81,43 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.selection())
     case "clipboard.read":
       return json(runtime.clipboard())
+    default:
+      return .error(501, "not yet ported")
+    }
+  }
+
+  public func control(_ input: LegacyDebugControlInput) -> ControlResponse {
+    switch input.intentID {
+    case "artifact.screenshot.write":
+      return json(runtime.writeScreenshotArtifact())
+    case "persistence.flush":
+      return json(runtime.persistenceFlush())
+    case "persistence.relaunch":
+      return json(runtime.persistenceRelaunch())
+    case "persistence.restorePicker.select":
+      return json(runtime.persistenceRestoreSelection(input.body))
+    case "find.start":
+      return json(runtime.findStart(input.body))
+    case "find.step":
+      return json(runtime.findStep(input.body))
+    case "find.stop":
+      return json(runtime.findStop(input.body))
+    case "wait.condition":
+      return json(runtime.wait(input.body))
+    case "render.trace":
+      return json(runtime.renderTrace(input.body))
+    case "render.pixelProbe":
+      return json(runtime.pixelProbe(input.body))
+    case "artifact.snapshot":
+      return json(runtime.artifactSnapshot())
+    case "fixture.control":
+      return json(runtime.fixtureControl(input.body))
+    case "capture.start":
+      return json(runtime.startCapture(input.body))
+    case "capture.stop":
+      return json(runtime.stopCapture())
+    case "capture.snapshot":
+      return json(runtime.captureSnapshot())
     default:
       return .error(501, "not yet ported")
     }

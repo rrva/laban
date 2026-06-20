@@ -134,6 +134,27 @@ public struct LegacyDebugQueryInput: Codable, Sendable, Equatable, JSONSchemaPro
   }
 }
 
+public struct LegacyDebugControlInput: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var intentID: String
+  public var body: Data
+  public var params: [String: String]
+
+  public init(intentID: String, body: Data = Data(), params: [String: String] = [:]) {
+    self.intentID = intentID
+    self.body = body
+    self.params = params
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "body": SchemaNode.string(enumValues: nil, const: nil, format: "byte", pattern: nil),
+        "intentID": DebugPayloadSchema.string,
+        "params": DebugPayloadSchema.object([:]),
+      ], required: ["intentID", "body", "params"])
+  }
+}
+
 public struct UnsupportedDebugActionInput: Codable, Sendable, Equatable, JSONSchemaProviding {
   public var action: String
 

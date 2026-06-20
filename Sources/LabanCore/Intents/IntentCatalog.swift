@@ -362,11 +362,16 @@ public protocol IntentRouter: AnyObject {
   func route(_ intent: Intent) -> ControlResponse
   func query(_ query: Query) -> ControlResponse
   func query(_ query: LegacyDebugQueryInput) -> ControlResponse
+  func control(_ input: LegacyDebugControlInput) -> ControlResponse
   func artifact(_ request: ArtifactRequest) -> ControlResponse?
 }
 
 extension IntentRouter {
   public func query(_ query: LegacyDebugQueryInput) -> ControlResponse {
+    .error(501, "not yet ported")
+  }
+
+  public func control(_ input: LegacyDebugControlInput) -> ControlResponse {
     .error(501, "not yet ported")
   }
 }

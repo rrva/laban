@@ -72,6 +72,33 @@ final class HeadlessIntentRouterTests: XCTestCase {
     XCTAssertEqual(body["error"] as? String, "transcript host is not wired (use --persistence-dir)")
   }
 
+  func testLegacyNoBodyControlReturnsJSONFromRuntime() throws {
+    let (runtime, artifacts) = try makeRuntime("router-persistence-flush")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    let response = router.control(LegacyDebugControlInput(intentID: "persistence.flush"))
+
+    XCTAssertEqual(response.status, 200)
+    XCTAssertEqual(response.contentType, "application/json")
+    let body = try json(response)
+    XCTAssertEqual(body["ok"] as? Bool, true)
+  }
+
+  func testLegacyMalformedBodyControlDelegatesToRuntimeError() throws {
+    let (runtime, artifacts) = try makeRuntime("router-find-malformed")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    let response = router.control(
+      LegacyDebugControlInput(intentID: "find.start", body: Data(#"{"needle":"apple""#.utf8)))
+
+    XCTAssertEqual(response.status, 400)
+    XCTAssertEqual(response.contentType, "application/json")
+    let body = try json(response)
+    XCTAssertEqual(body["error"] as? String, "invalid find.start request")
+  }
+
   private func makeRuntime(_ runId: String) throws -> (HeadlessDebugRuntime, URL) {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-headless-router-\(runId)-\(UUID().uuidString)")
