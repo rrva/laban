@@ -139,10 +139,16 @@ and are resolved to a stable id immediately.
 ### 3.4 Transport and discovery
 
 - **Transport:** raw **loopback HTTP/1.1 + bearer token** is the primitive layer
-  for all phases. It already exists, is schema-backed, is exercised by CI, and is
-  `curl`-debuggable. A Unix-domain-socket transport is **not** adopted (it buys
-  little over loopback+token+Host/Origin and complicates discovery); revisit only
-  if a concrete need appears (tracked in §8).
+  through Phase 1. It already exists, is schema-backed, is exercised by CI, and is
+  `curl`-debuggable. A Unix-domain-socket transport was originally dismissed as
+  "buys little over loopback+token+Host/Origin" — but the 2026-06-20 competitive
+  research (**Appendix D**) **weakens that rationale**: every strong typed-API
+  competitor (iTerm2, Wave, kitty) *prefers* a UDS, and a UDS *eliminates* the
+  DNS-rebinding / Host-Origin attack class ADR 0024 otherwise hand-rolls a defense
+  against, with OS filesystem-permission gating for free. iTerm2's model is the
+  likely synthesis (**UDS-primary, TCP-fallback**). The transport is
+  **deferrable** — the catalog/router seam is transport-agnostic — so this is a
+  §3.4 / Phase-2 reconsideration (open question §8.6), **not a Phase-0/1 blocker**.
 - **Discovery (long-lived GUI):** the stdout readiness line that the headless
   agent prints cannot reach a process the agent did not launch, so the GUI writes
   a discovery file **`control.json`** = `{ url, token, pid, runId }`, mode `0600`,
@@ -570,9 +576,11 @@ These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
 1. **Intent-id migration window.** How long does the HTTP adapter accept both the
    bare Phase 0 action names and the dotted catalog ids before the bare forms are
    removed? (Affects when Phase 0 clients must update.)
-2. **Event-stream transport.** SSE vs HTTP long-poll for Phase 3 — SSE is simpler
-   for browsers (which we forbid) and adds a streaming code path; long-poll reuses
-   the existing request model. Pick at Phase 3 start.
+2. **Event-stream transport.** SSE vs HTTP long-poll vs **WebSocket** for Phase 3.
+   The 2026-06-20 research (Appendix D) finds the typed-catalog leaders push over
+   **WebSocket** (Wave, iTerm2) or a text protocol (tmux); *no* terminal pushes
+   over loopback HTTP, so HTTP-SSE/long-poll is the unusual choice. Pick at Phase 3
+   start, tied to the transport question (§8.6).
 3. **Metal readback cost (Phase 6).** Is a synchronous drawable readback
    acceptable for `screenshot`/`pixel-probe` latency, or is an async/queued
    capture required? Decides the Phase 6 API shape.
@@ -581,8 +589,13 @@ These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
 5. **Per-session token rollout (Phase 7).** Single app-scoped token is the v1
    floor; confirm per-session env-injection is deferred to Phase 7 and not pulled
    earlier by a multi-agent use case.
-6. **UDS transport.** Keep loopback-HTTP-only, or add a Unix-domain-socket
-   transport if a concrete consumer needs filesystem-permission gating?
+6. **UDS transport (sharpened by Appendix D).** The competitive research supplies
+   the "concrete need": iTerm2, Wave, and kitty all prefer a Unix domain socket,
+   which sidesteps the whole DNS-rebinding/Host-Origin attack class and adds OS
+   permission gating. Re-decide at the Phase-2 boundary: keep loopback-HTTP-only,
+   or adopt iTerm2's **UDS-primary + HTTP-for-curl/debug** split? (Sub-question:
+   does loopback alone stop DNS-rebinding, or is Host/Origin strictly required —
+   the research's sharpest unresolved security point — which drives the must-haves.)
 
 ## 9. Non-goals
 
@@ -601,7 +614,13 @@ These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
   is *events, not objects* — clients observe command runs in the stream, but
   nothing stored, queryable, or navigable. Reopen the object/API/UI only if a
   concrete consumer needs the literal command line (which would require a
-  `B`/command-line marker, à la VS Code's `OSC 633;E`).
+  `B`/command-line marker, à la VS Code's `OSC 633;E`). **Caveat (2026-06-20
+  research, Appendix D):** this is the thinnest-evidenced decision — stored blocks
+  are a *human-facing* differentiator competitors ship (Wave's addressable-block
+  model; Warp's blocks), the human-ergonomic side was not weighed when the call was
+  made, and the foil (Warp) produced **zero verified claims** (a coverage hole).
+  The decision stands on the substrate constraint, but a focused Warp/OSC-633 pass
+  should pressure-test it before it is treated as settled.
 - A replacement for shell integration, a screen-scraping API, a remote-desktop
   protocol, or an unauthenticated debug server.
 - Network/remote access, multi-user/team features, or any non-loopback binding.
@@ -684,3 +703,57 @@ planned** (§9). EventLog JSONL (`~/Library/Application Support/Laban/events/`) 
 the only surface that already behaves like the vision against the real app
 (always-on, read-only). No `LabanControlServer`/`IntentRouter`/`IntentCatalog`/
 `LabanControl` target exists in `Sources/` as of this date.
+
+## Appendix D — Competitive research (2026-06-20, primary-source)
+
+A deep-research pass (27 primary sources — official docs, source code, man pages —
+→ 124 extracted claims → **24 of 25 confirmed by 3-0 adversarial verification**, 1
+refuted) validated the program thesis and surfaced three direction questions.
+*Confidence: the six product findings are high (3-0 verified); the gap-analysis
+cross-product is analyst synthesis (medium).*
+
+**Thesis validated — the four-pillar combination is an empty cell.** No verified
+product combines (a) a typed intent catalog, (b) a push event stream, (c) semantic
+command blocks, and (d) an authenticated, capability-scoped server *in the real GUI
+app, shared by GUI/headless/MCP*. Each leader holds only 1–2 pillars:
+
+| | Typed API | Push events | Capability scoping | Auth | GUI-hosted | LLM exposure |
+|---|---|---|---|---|---|---|
+| **tmux** control mode | text (not schema) | **yes** (`%`-notifs, stable `$/@/%` ids, `%begin/%end/%error` framing) | no | **no** | no | — |
+| **iTerm2** Python API | **protobuf/typed** | notification path, no documented catalog | per-app only | **yes** (cookie+key, single-use) | **yes** | typed |
+| **wezterm** cli | typed actions (`--no-paste`) | **no** (poll; "emit" requested, never shipped) | no | local socket | yes | typed/poll |
+| **kitty** `@` | command set | no (poll, JSON `ls`) | **best in field** (`is_cmd_allowed`+consent, password globs, source-gating) | yes | yes | typed/poll |
+| **Wave** wshrpc | **yes** (one catalog, code-genned Go→TS, shared FE/BE/AI/CLI) | typed RPC | by block-reference, **not** classification; **no** Host/Origin | yes (JWT over UDS) | yes | typed |
+| **iterm-mcp** (dominant MCP) | **no** (scrape+inject, 3 coarse tools) | no | no | none (STDIO) | no | scrape+inject |
+
+Validations of current decisions: stable-id-not-index (universal across products);
+one catalog → generated MCP shared across surfaces (**Wave is the sole precedent —
+validates the architecture**); capability classification (kitty precedent; iTerm2's
+per-app all-or-nothing auth is precisely the gap Laban fills); GUI-as-the-typed-
+surface, not a sidecar (iterm-mcp scrape+inject is the anti-pattern Laban beats).
+
+**Three direction questions raised — none block Phase 0/1:**
+
+1. **Transport (§3.4, §8.6).** Every strong typed-API competitor prefers a **Unix
+   domain socket**; UDS eliminates the DNS-rebinding/Host-Origin class ADR 0024
+   defends. iTerm2 = UDS-primary + TCP-fallback. The §3.4 "UDS buys little"
+   rationale is weakened; reconsider at Phase 2 (transport-agnostic, so deferrable).
+2. **Command blocks (§9).** The thinnest-evidenced decision: stored blocks are a
+   *human-facing* differentiator competitors ship; the foil (Warp) is unverified.
+3. **Event-stream transport (§8.2).** Leaders push over **WebSocket** (Wave,
+   iTerm2) or text (tmux); none over loopback HTTP.
+
+**Caveats (honesty):** (1) The security CVEs the design cites (CVE-2022-45872
+DECRQSS-as-typed; ttyd auth-bypass RCE; OSC 52; CDP/WebDriver Host/Origin) were
+**not individually verified this run** — re-cite from NVD/MITRE/specs before
+treating as load-bearing. (2) Coverage holes: **Warp**, the **OSC 133/633 specs +
+VS Code per-command nonce**, **Ghostty**, and **Terminal-Bench** produced no
+surviving voted claims (verification was budget-capped at 25) — a focused second
+pass is needed for full pillar-(c)/foil coverage. (3) Correction: Wave's `wsh`
+*does* require a Wave-issued JWT (more authenticated than first assumed), but still
+publishes no capability-classification or Host/Origin model.
+
+Key primary sources: tmux Control-Mode wiki; iTerm2 `api/library/python/iterm2/
+connection.py` + `python-api-auth.html`; kitty `remote-control/` + `boss.py`;
+wezterm `cli/` + `send-text`; Wave `wavetermdev/waveterm` + `docs.waveterm.dev/wsh`;
+iterm-mcp `README` + `src/index.ts`.
