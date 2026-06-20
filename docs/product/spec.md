@@ -207,3 +207,37 @@ The debug server `/debug/state` endpoint includes a `cursorSettings` object with
 `style`, `blinkEnabled`, `styleOverridden`, and `blinkOverridden` fields for
 the active session. Headless runs accept `-LabanCursorStyle <value>` and
 `-LabanCursorBlink <YES|NO>` argument-domain defaults.
+
+## 24. Agent control plane (live GUI control over loopback)
+
+The running app exposes an authenticated, loopback-only control plane so trusted
+local programs — coding agents, test harnesses, CLI helpers — can inspect and
+drive the real window through typed intents instead of scraping pixels or blindly
+typing into a PTY. The process that owns the live tabs, sessions, and render state
+is itself the queryable fixture (the tmux/wezterm "one state authority, many thin
+clients" model), so there is no separate automation binary: the GUI hosts the same
+server the headless runtime does.
+
+A single typed intent catalog is the source of truth for every query, action, and
+wait condition; HTTP, a future MCP server, CLI helpers, tests, and the in-app
+debug surface are all adapters over it, never parallel definitions. The catalog
+and transport-neutral types live in `LabanCore`; the server, policy, and HTTP
+adapter in a `LabanControl` target; the live GUI router in `LabanApp`; the
+headless router in `LabanDebug`. GUI menus and key routes emit the same intents an
+external client does.
+
+Security is least-privilege and local-only: loopback bind with `Host`/`Origin`
+validation, capability-scoped tokens (an observe-only token advertised in a
+`0600` `control.json`; a control/sensitive token injected into the environment of
+agents Laban spawns), audited side effects, a user-visible "agent attached"
+indicator, and a disable switch. The surface is off until opted into and becomes
+observe-on-by-default only once that security floor exists. There is no in-band
+escape-sequence control channel, and programmatic input takes the same validation
+path as a human keystroke.
+
+Semantic command runs surface as control-plane *events* (command boundaries, exit
+code, cwd, with explicit confidence and nullable command text), not as stored
+Warp-style command-block objects. Architecture and security rationale are in
+ADR 0023 (LabanApp hosts the server) and ADR 0024 (security model); the phased
+delivery and full intent catalog live in
+`execplans/agent-first-terminal-design.md`.

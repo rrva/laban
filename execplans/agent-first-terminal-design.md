@@ -4,10 +4,12 @@
 (its comparator survey and grilling narrative are preserved verbatim in
 Appendix A/B; nothing in the body below depends on reading them).
 
-This is a **program roadmap**, not an executable ExecPlan. The single executable
-slice in flight is `execplans/active/agent-first-phase0-control-seam.md`, which
-is **authoritative for Phase 0**. This document must never contradict that file;
-where Phase 0 detail is needed here it is summarized and linked, not restated.
+This is a **program roadmap**, not an executable ExecPlan. Phase 0 — the first
+executable slice — **shipped** as commit `0a2a230` and is archived at
+`execplans/completed/agent-first-phase0-control-seam.md`, which remains
+**authoritative for what Phase 0 did**. This document must never contradict that
+file; where Phase 0 detail is needed here it is summarized and linked, not
+restated. Per-phase ExecPlans (when written) are authoritative for their phase.
 
 > **How to read this document.** Sections 1–9 are forward-only and authoritative:
 > a coding agent can execute any phase from them without reading anything marked
@@ -382,7 +384,7 @@ Tracer-bullet vertical slices. Every phase keeps CI green and the GUI unchanged
 for humans. Each phase lists **scope**, **files**, **acceptance** (observable
 behavior), and **status**.
 
-### Phase 0 — Live control seam spike *(authoritative spec: `execplans/active/agent-first-phase0-control-seam.md`)*
+### Phase 0 — Live control seam spike *(authoritative spec: `execplans/completed/agent-first-phase0-control-seam.md`)*
 
 - **Scope:** one query (`GET /debug/state`) + one control intent
   (`POST /debug/actions {"action":"selectTab","index":N}`) end-to-end through a
@@ -393,7 +395,7 @@ behavior), and **status**.
 - **Acceptance:** `swift test --filter ControlServerPhase0Tests` passes (guard
   matrix + live select-tab + loopback round-trip); manual `curl` shows
   `activeTabId` change in the real window; default launches open no socket.
-- **Status:** specified, **unexecuted**.
+- **Status:** **shipped** (commit `0a2a230`) — hosted in the live GUI behind `LABAN_CONTROL_SERVER=1`, verified against the running app (authed `GET /debug/state` returns the real window; 401/403/404 guards fire), review gate **PASS**.
 
 ### Governance gate *(before Phase 1 lands)*
 
@@ -406,6 +408,10 @@ behavior), and **status**.
 - Verify no `docs/product/mvp.md` regression.
 - **Acceptance:** both ADRs merged with index entries; `spec.md` names the control
   plane; `scripts/check` green.
+- **Status:** **done** (2026-06-20) — ADR 0023 + 0024 written and indexed,
+  `spec.md` §24 added, `mvp.md` no-regression confirmed (the control plane is
+  additive and env-gated off; `mvp.md` already contemplates the debug server and
+  states no no-network guarantee).
 
 ### Phase 1 — Registry backbone + carve `LabanControl`
 
