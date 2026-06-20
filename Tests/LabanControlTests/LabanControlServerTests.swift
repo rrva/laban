@@ -103,6 +103,50 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(result.params, ["since": "7"])
   }
 
+  func testSessionDetailRouteDecodesPathAndPreservesQueryParameters() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let (status, data) = try await request(
+      url: "\(readiness.debugServer)/debug/sessions/session%201?includeGrid=true",
+      token: readiness.debugToken)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.legacyQueries(),
+      [
+        LegacyDebugQueryInput(
+          intentID: "session.detail",
+          params: ["includeGrid": "true", "sessionId": "session 1"])
+      ])
+    let result = try JSONDecoder().decode(SpyLegacyQueryResult.self, from: data)
+    XCTAssertEqual(result.intentID, "session.detail")
+    XCTAssertEqual(result.params, ["includeGrid": "true", "sessionId": "session 1"])
+  }
+
+  func testScreenshotArtifactRouteDispatchesArtifactRequestAndPreservesHeaders() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let (status, data, response) = try await requestWithResponse(
+      url: "\(readiness.debugServer)/debug/screenshot?target=active",
+      token: readiness.debugToken)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(data, SpyIntentRouter.pngBytes)
+    XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Type"), "image/png")
+    XCTAssertEqual(response.value(forHTTPHeaderField: "X-App-Frame"), "12")
+    XCTAssertEqual(response.value(forHTTPHeaderField: "X-App-Size"), "80x24")
+    let artifacts = router.artifacts()
+    XCTAssertEqual(artifacts.count, 1)
+    XCTAssertEqual(artifacts.first?.id, "artifact.screenshot")
+    XCTAssertEqual(artifacts.first?.params, ["target": "active"])
+  }
+
   func testSelectTabRouteDispatchesIntent() async throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)
@@ -253,6 +297,20 @@ final class LabanControlServerTests: XCTestCase {
     token: String? = nil,
     body: Data? = nil
   ) async throws -> (Int, Data) {
+    let (status, data, _) = try await requestWithResponse(
+      url: url,
+      method: method,
+      token: token,
+      body: body)
+    return (status, data)
+  }
+
+  private func requestWithResponse(
+    url: String,
+    method: String = "GET",
+    token: String? = nil,
+    body: Data? = nil
+  ) async throws -> (Int, Data, HTTPURLResponse) {
     var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
     request.httpMethod = method
     if let token {
@@ -264,7 +322,7 @@ final class LabanControlServerTests: XCTestCase {
     }
     let (data, response) = try await URLSession.shared.data(for: request)
     let http = try XCTUnwrap(response as? HTTPURLResponse)
-    return (http.statusCode, data)
+    return (http.statusCode, data, http)
   }
 }
 
@@ -282,10 +340,13 @@ private struct SpyLegacyQueryResult: Codable, Equatable {
 }
 
 private final class SpyIntentRouter: IntentRouter {
+  static let pngBytes = Data([0x89, 0x50, 0x4E, 0x47])
+
   private let lock = NSLock()
   private var routedIntents: [Intent] = []
   private var routedQueries: [Query] = []
   private var routedLegacyQueries: [LegacyDebugQueryInput] = []
+  private var routedArtifacts: [ArtifactRequest] = []
 
   func route(_ intent: Intent) -> ControlResponse {
     lock.lock()
@@ -309,7 +370,16 @@ private final class SpyIntentRouter: IntentRouter {
   }
 
   func artifact(_ request: ArtifactRequest) -> ControlResponse? {
-    nil
+    lock.lock()
+    routedArtifacts.append(request)
+    lock.unlock()
+    return .binary(
+      Self.pngBytes,
+      contentType: "image/png",
+      headers: [
+        "X-App-Frame": "12",
+        "X-App-Size": "80x24",
+      ])
   }
 
   func intents() -> [Intent] {
@@ -328,5 +398,11 @@ private final class SpyIntentRouter: IntentRouter {
     lock.lock()
     defer { lock.unlock() }
     return routedLegacyQueries
+  }
+
+  func artifacts() -> [ArtifactRequest] {
+    lock.lock()
+    defer { lock.unlock() }
+    return routedArtifacts
   }
 }

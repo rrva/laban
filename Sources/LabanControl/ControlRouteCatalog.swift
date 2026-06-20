@@ -5,6 +5,7 @@ struct ControlHTTPRequest {
   let method: String
   let path: String
   let query: [String: String]
+  let pathParameters: [String: String]
   let body: Data
 }
 
@@ -18,8 +19,26 @@ struct ControlRoute {
   let resolveIntentID: (ControlHTTPRequest) -> ControlRouteResolution
   let dispatch: (LabanControlServer, ControlHTTPRequest) -> ControlResponse
 
-  func matches(method: String, path: String) -> Bool {
-    endpoint.binding.method == method && endpoint.binding.path == path
+  func match(method: String, path: String) -> [String: String]? {
+    guard endpoint.binding.method == method else { return nil }
+
+    let patternSegments = endpoint.binding.path.split(
+      separator: "/", omittingEmptySubsequences: false)
+    let pathSegments = path.split(separator: "/", omittingEmptySubsequences: false)
+    guard patternSegments.count == pathSegments.count else { return nil }
+
+    var parameters: [String: String] = [:]
+    for (patternSegment, pathSegment) in zip(patternSegments, pathSegments) {
+      let pattern = String(patternSegment)
+      let value = String(pathSegment)
+      if pattern.hasPrefix("<"), pattern.hasSuffix(">") {
+        let name = String(pattern.dropFirst().dropLast())
+        parameters[name] = value.removingPercentEncoding ?? value
+        continue
+      }
+      guard pattern == value else { return nil }
+    }
+    return parameters
   }
 }
 
@@ -359,9 +378,33 @@ public enum ControlRouteCatalog {
     + legacyJSONReadRoutes
     + [
       ControlRoute(
+        endpoint: endpoint(for: "GET", "/debug/sessions/<id>"),
+        resolveIntentID: { _ in .resolved("session.detail") },
+        dispatch: { server, request in
+          var params = request.query
+          params["sessionId"] = request.pathParameters["id"] ?? ""
+          return server.router.query(
+            LegacyDebugQueryInput(intentID: "session.detail", params: params))
+        }),
+      ControlRoute(
+        endpoint: endpoint(for: "GET", "/debug/screenshot"),
+        resolveIntentID: { _ in .resolved("artifact.screenshot") },
+        dispatch: { server, request in
+          server.router.artifact(
+            ArtifactRequest(id: "artifact.screenshot", params: request.query))
+            ?? .error(501, "not yet ported")
+        }),
+      ControlRoute(
+        endpoint: endpoint(for: "GET", "/debug/cast/recent"),
+        resolveIntentID: { _ in .resolved("cast.recent") },
+        dispatch: { server, request in
+          server.router.artifact(ArtifactRequest(id: "cast.recent", params: request.query))
+            ?? .error(501, "not yet ported")
+        }),
+      ControlRoute(
         endpoint: endpoint(for: "POST", "/debug/actions"),
         resolveIntentID: resolveActionIntentID,
-        dispatch: { server, request in server.dispatchDebugAction(request) })
+        dispatch: { server, request in server.dispatchDebugAction(request) }),
     ]
 
   private static let legacyJSONReadRoutePaths: [(method: String, path: String)] = [

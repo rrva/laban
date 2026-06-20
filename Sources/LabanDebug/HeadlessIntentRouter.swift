@@ -50,6 +50,8 @@ public final class HeadlessIntentRouter: IntentRouter {
       return json(runtime.scrollTrace(query: query.params))
     case "session.list":
       return json(runtime.sessions())
+    case "session.detail":
+      return json(runtime.session(id: query.params["sessionId"] ?? "", query: query.params))
     case "render.state":
       return json(runtime.renderState())
     case "render.frameCommands":
@@ -83,7 +85,42 @@ public final class HeadlessIntentRouter: IntentRouter {
   }
 
   public func artifact(_ request: ArtifactRequest) -> ControlResponse? {
-    nil
+    switch request.id {
+    case "artifact.screenshot":
+      do {
+        let (data, frame, width, height) = try runtime.screenshotBytes()
+        return .binary(
+          data,
+          contentType: "image/png",
+          headers: [
+            "X-App-Frame": "\(frame)",
+            "X-App-Size": "\(width)x\(height)",
+          ])
+      } catch {
+        return .error(500, "screenshot failed: \(error)")
+      }
+    case "cast.recent":
+      let parsedSeconds = Double(request.params["seconds"] ?? "") ?? 10
+      guard parsedSeconds.isFinite, parsedSeconds >= 0 else {
+        return .error(400, "seconds must be a finite, non-negative number")
+      }
+      let seconds = min(parsedSeconds, 3600)
+      switch runtime.recentCastBytes(seconds: seconds, tabId: request.params["tabId"]) {
+      case .success(let data, let tabId, let chunks, let windowSeconds):
+        return .binary(
+          data,
+          contentType: "application/x-asciicast",
+          headers: [
+            "X-App-Tab": "\(tabId)",
+            "X-App-Cast-Chunks": "\(chunks)",
+            "X-App-Cast-Window-Seconds": "\(windowSeconds)",
+          ])
+      case .failure(let status, let message):
+        return .error(status, message)
+      }
+    default:
+      return nil
+    }
   }
 
   private func json(_ response: DebugResponse) -> ControlResponse {

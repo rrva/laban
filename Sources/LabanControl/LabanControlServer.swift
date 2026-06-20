@@ -315,13 +315,26 @@ public final class LabanControlServer {
     query: [String: String],
     body: Data
   ) -> ControlResponse {
-    let request = ControlHTTPRequest(method: method, path: path, query: query, body: body)
-    guard
-      let route = ControlRouteCatalog.routes.first(where: { $0.matches(method: method, path: path) }
-      )
-    else {
+    var matchedRoute: ControlRoute?
+    var pathParameters: [String: String] = [:]
+    for candidate in ControlRouteCatalog.routes {
+      guard let parameters = candidate.match(method: method, path: path) else {
+        continue
+      }
+      matchedRoute = candidate
+      pathParameters = parameters
+      break
+    }
+
+    guard let route = matchedRoute else {
       return .error(404, "not found")
     }
+    let request = ControlHTTPRequest(
+      method: method,
+      path: path,
+      query: query,
+      pathParameters: pathParameters,
+      body: body)
 
     let intentID: String
     switch route.resolveIntentID(request) {

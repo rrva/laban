@@ -43,6 +43,35 @@ final class HeadlessIntentRouterTests: XCTestCase {
     XCTAssertEqual(body["next"] as? Int, since + 1)
   }
 
+  func testScreenshotArtifactReturnsPNGHeaders() throws {
+    let (runtime, artifacts) = try makeRuntime("router-screenshot")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    let response = try XCTUnwrap(
+      router.artifact(ArtifactRequest(id: "artifact.screenshot")))
+
+    XCTAssertEqual(response.status, 200)
+    XCTAssertEqual(response.contentType, "image/png")
+    XCTAssertNotNil(response.headers["X-App-Frame"])
+    XCTAssertNotNil(response.headers["X-App-Size"])
+    XCTAssertEqual(Array(response.body.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
+  }
+
+  func testRecentCastArtifactReturnsLegacyJSONFailureWhenPersistenceIsMissing() throws {
+    let (runtime, artifacts) = try makeRuntime("router-cast")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+
+    let response = try XCTUnwrap(
+      router.artifact(ArtifactRequest(id: "cast.recent", params: ["seconds": "1"])))
+
+    XCTAssertEqual(response.status, 400)
+    XCTAssertEqual(response.contentType, "application/json")
+    let body = try json(response)
+    XCTAssertEqual(body["error"] as? String, "transcript host is not wired (use --persistence-dir)")
+  }
+
   private func makeRuntime(_ runId: String) throws -> (HeadlessDebugRuntime, URL) {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-headless-router-\(runId)-\(UUID().uuidString)")
