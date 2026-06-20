@@ -16,9 +16,88 @@ Delivered as five independently-verifiable milestones (**2A → 2E**). **Read
 ADR 0024 security floor and the parity rules that keep the live and headless
 surfaces identical.
 
-> **Status: DRAFT (not started).** This plan is authored from the program design
-> and the current Phase-1 end state. Refine each milestone's Concrete Steps as you
-> execute and discover; keep this document self-contained per `PLANS.md`.
+> **Status: DRAFT — REVISED 2026-06-20 after security review (not started).** This
+> plan is authored from the program design and the current Phase-1 end state.
+> Refine each milestone's Concrete Steps as you execute and discover; keep this
+> document self-contained per `PLANS.md`.
+
+## Blocking Corrections (must-fix before implementation)
+
+A 2026-06-20 static security review against the current source (verified file by
+file) found contradictions between this plan, ADR 0024, and the shipped code. The
+following corrections are **normative** and override any conflicting prose later in
+this document. Each is grounded in code that exists today.
+
+1. **Token grant table (ADR 0024 §"Two-tier token model", verified).** `control.json`
+   advertises an **observe-only** token. The env-injected control token grants
+   `{.observe, .observeSensitive, .control}` — **not** `.clipboard`. `.clipboard` is
+   a *separate* tier the control token does **not** imply; no token grants it by
+   default in Phase 2. The headless **fixture** token grants
+   `{.fixture, .observe, .observeSensitive, .control}` (test-only; `validate()`
+   already forbids `.fixture` on the GUI surface) so the headless wire stays
+   byte-stable (C9) — `grants(fixture) = {.fixture, .observe}` would `403` existing
+   `LabanDebugTests` control flows.
+
+2. **Live `clipboard.read` is OUT of scope.** ADR 0024 §"Standing constraints" is
+   "OSC 52 write only; read **never**", and C5 below says the same — yet 2B's draft
+   listed `clipboard.read` as a live read. Remove it. Clipboard read is not
+   implemented on any surface this phase; a future `.clipboard` opt-in is a separate
+   design.
+
+3. **Rich debug DTOs are `.observeSensitive`, not `.observe`.** The existing
+   `SessionResponse` (workspace cwd/repo, process `command`/`arguments`/`pid`, agent
+   metadata, optional `grid`), `SelectionResponse.text`, `FindStateResponse.needle`,
+   and the clipboard DTO (`lastCopyText`/`lastPasteText`) all expose data ADR 0024
+   classifies `.observeSensitive`. The observe token (the one in `control.json`, the
+   one any same-user process can read) must **not** receive these. Observe-token
+   reads are limited to genuinely non-sensitive DTOs (e.g. `app.state`,
+   `terminal.modes`, `scrollIndicator.state`) or explicitly redacted variants;
+   sensitive reads return `403` with the observe token and `200` with the control
+   token. (Corrects 2B's draft acceptance that handed `/debug/sessions`,
+   `/debug/selection`, `/debug/find/state` to the observe token.)
+
+4. **Mint credentials BEFORE any session is created/restored.** Today
+   `MainWindowController` ensures/restores sessions (~L253 `ensureSessions`, ~L258
+   `sweepOrphanedSessions`) **before** it mounts the control server (~L510). A token
+   minted at mount time never reaches the initial/restored sessions' env — exactly
+   the agent-first case. Fix: mint `ControlCredentials` and bind the server (to learn
+   the ephemeral `LABAN_CONTROL_URL`) **above** `ensureSessions`, then inject the
+   control token + URL through the **shared** `ShellIntegrationLaunch.environmentOverrides`
+   hook — which feeds **all three** backends (in-process `environment:`, laband
+   `environmentPatch`, labpty `envp`), not labpty alone. The model exists by ~L107,
+   so there is a window between model creation and `ensureSessions`.
+
+5. **`ControlReadiness` stays byte-stable; the control token is never serialized.**
+   `ControlReadiness` is `{debugServer, debugToken, pid, runId}` and `laban-agent`
+   prints it as one `.sortedKeys` JSON line — adding a field changes that wire and
+   would leak the env-only token over stdout. **Do not** add the control token to
+   readiness JSON or any world-path file. Headless `debugToken` keeps its current
+   authority (so `LabanDebugTests` pass). GUI credential surfacing is internal:
+   `start()` returns `ControlCredentials` to the in-process caller; only `observe`
+   is written to `control.json`; `control` is handed to the env-injection path.
+
+6. **Deny-by-default is NOT true today — make it true.** The catalog builder helper
+   auto-fills `requiredCapability` (`defaultCapability(for:)`: `query/artifact →
+   .observe`, `action/wait/event → .control`) and defaults `dataSensitivity` to
+   `.nonSensitiveState`; `validate()` checks duplicates/fixture-in-GUI/schemas but
+   **not** explicit classification. So a new sensitive query silently becomes
+   observe-readable. Remove the implicit capability/sensitivity defaults (or track
+   an `explicit` flag) and make `validate()` **fail** unless every descriptor
+   declares both `requiredCapability` and `dataSensitivity` explicitly. (Corrects
+   C3's claim that the gate "already requires the field".)
+
+7. **Live input must share the human validation path.** `LiveIntentRouter.typeText`
+   calls `session.write(Array(text.utf8))` and `sendKey` calls `session.sendKey(...)`
+   **directly**, bypassing the `sessionCoordinator.write(...)` + paste-sanitizer +
+   `encodeKey`/`encodePaste` path human keystrokes take in `TerminalBitmapView`. For
+   laband/labpty backends this can diverge from human input and skip sanitization.
+   Route programmatic input through the same coordinator/input-adapter path (C5).
+
+8. **Host-header parsing accepts non-numeric ports (real bug).** `isLoopbackHost`
+   splits on `:` and validates only the label, so `localhost:evil`, `127.0.0.1:evil`,
+   and `[::1]:evil` are wrongly **accepted** as loopback. Fix the parser to require a
+   numeric port (or empty) after the host, and add these to the deny matrix — this is
+   a code fix plus tests, not tests alone.
 
 ## Purpose / Big Picture
 
@@ -72,31 +151,33 @@ the credential is insufficient, and (c) the default-on flip in 2E.
 > split partially-done items into "done" / "remaining" per `PLANS.md`.
 
 Milestone 2A — Capability enforcement + two-tier tokens (`LabanControl`):
-- [ ] `ControlCredentials { observe, control }` minted in `LabanControlServer.start*`; `control.json` carries **only** the observe token; the control token is returned for child-env injection (C1).
-- [ ] `LabanControlPolicy` (generated from `IntentCatalog`) resolves a presented bearer token → granted `Set<Capability>`; per request, after availability, enforce `descriptor.requiredCapability ∈ granted` → else `403 {"error":"insufficient capability"}` (C2/C3). Unclassified/unknown intent → deny.
-- [ ] Guard taxonomy preserved: missing/invalid token → `401`; bad `Host`/any `Origin` → `403`; capability-insufficient → `403` (distinct body). Token values never logged (C6).
-- [ ] `LabanControlTests` (spy router): observe token → `.observe` op `200`, `.observeSensitive`/`.control` op `403` (no router call); control token → both `200`; missing → `401`; `.fixture` op rejected for both non-fixture tokens.
+- [ ] `ControlCredentials { observe, control }` minted in `LabanControlServer.start*` and returned to the in-process caller; `control.json` carries **only** the observe token; the control token is returned for child-env injection (C1). `ControlReadiness` JSON is unchanged — the control token is never serialized (Blocking Correction 5).
+- [ ] `LabanControlPolicy` (generated from `IntentCatalog`) resolves a presented bearer token → granted `Set<Capability>` (`control` grants `{.observe,.observeSensitive,.control}`, **no `.clipboard`**); per request, after availability, enforce `descriptor.requiredCapability ∈ granted` → else `403 {"error":"insufficient capability"}` (C2/C3). Unknown intent → deny.
+- [ ] Deny-by-default made real (Blocking Correction 6): remove the catalog builder's implicit `requiredCapability`/`dataSensitivity` defaults; `validate()` + `LabanControlGen` fail on any unclassified descriptor.
+- [ ] Guard taxonomy preserved: missing/invalid token → `401`; bad `Host`/any `Origin` → `403`; capability-insufficient → `403` (distinct body). **`isLoopbackHost` rejects non-numeric ports** (`localhost:evil` etc., Blocking Correction 8). Token values never logged (C6).
+- [ ] `LabanControlTests` (spy router): observe token → `.observe` op `200`, `.observeSensitive`/`.control` op `403` (no router call); control token → both `200`; **`.clipboard` op `403` for both** (no token grants it); missing → `401`; `.fixture` op rejected for both non-fixture tokens.
 
 Milestone 2B — Live observe/control surface in `LiveIntentRouter` (`LabanApp`):
 - [ ] Shared `AppModel`/`Session` → DTO projections relocated to `LabanCore` (e.g. `Sources/LabanCore/Control/Projections/*`), public; `HeadlessIntentRouter` re-points to them with **byte-identical** output (headless `LabanDebugTests` unchanged) (C4).
-- [ ] `LiveIntentRouter` implements the observe-read family against the live `AppModel` + `AppSessionCoordinator`: `app.accessibility`, `terminal.modes`, `session.list`, `session.detail`, `find.state`, `selection.read`, `shellIntegration.state`, `scrollIndicator.state`, `clipboard.read` (read-back), plus the existing `app.state`. Each returns the shared DTO.
-- [ ] Catalog availability flips: these ids become `gui:true` with the correct `requiredCapability` (`.observe` vs `.observeSensitive`); renderer/atlas/pixel-probe/capture/persistence stay `headlessOnly` for Phase 2 with a one-line scope note (deferred GUI source of truth).
-- [ ] `.control` ops on the GUI extended where a live source exists (`terminal.scrollViewport`, `terminal.click`/mouse, `tab.*` lifecycle via `AppCommand`) — port in reviewable groups; each grows both routers' coverage and keeps `swift test` green.
+- [ ] `LiveIntentRouter` implements the observe-read family against the live `AppModel` + `AppSessionCoordinator`, each returning the shared DTO. **`clipboard.read` is NOT implemented** (Blocking Correction 2). Reads split by sensitivity (Blocking Correction 3): `.observe` (non-sensitive) — `terminal.modes`, `scrollIndicator.state`, plus the existing `app.state`; `.observeSensitive` — `session.list`, `session.detail`, `find.state` (needle), `selection.read` (text), `app.accessibility`, and `shellIntegration.state` if it exposes cwd. The observe token gets `403` on the `.observeSensitive` set; the control token gets `200`.
+- [ ] Catalog availability flips: these ids become `gui:true` with the correct **explicit** `requiredCapability` and `dataSensitivity` (no implicit default); renderer/atlas/pixel-probe/capture/persistence stay `headlessOnly` for Phase 2 with a one-line scope note (deferred GUI source of truth).
+- [ ] `.control` ops on the GUI extended where a live source exists (`terminal.scrollViewport`, `terminal.click`/mouse, `tab.*` lifecycle via `AppCommand`) — **routed through the shared `sessionCoordinator`/input-adapter path, not `session.write`/`session.sendKey` directly** (Blocking Correction 7 / C5); port in reviewable groups; each grows both routers' coverage and keeps `swift test` green.
 
 Milestone 2C — Catalog-parity test:
-- [ ] `CatalogParityTests`: over every intent with `availability.gui && availability.headless`, assert (a) both routers return a non-error `ControlResponse` for a representative input, and (b) the response JSON **shape** (sorted keys) matches between surfaces for the pure-observe reads. Fails if either router drops or diverges on a shared intent.
-- [ ] Capability/sensitivity completeness: assert every catalog descriptor carries a `requiredCapability` and a `dataSensitivity`, and that no `gui:true` op exceeds the capability its live router actually enforces.
+- [ ] `CatalogParityTests`: over every intent with `availability.gui && availability.headless`, assert (a) both surfaces return a non-error response for a representative input, and (b) the response JSON **shape** (sorted keys) matches between surfaces for the pure reads. **Compare at the HTTP-route level**, not the typed router: `HeadlessIntentRouter.route(.tabSelect/.terminalTypeText/.terminalSendKey)` currently returns `501 "not yet ported"` (legacy HTTP action routing still works), so typed-router parity for those would spuriously fail — add typed-router parity only once those headless typed cases are ported. Fails if either surface drops or diverges on a shared intent.
+- [ ] Capability/sensitivity completeness: assert every catalog descriptor declares an **explicit** `requiredCapability` and `dataSensitivity` (drives Blocking Correction 6 / the `validate()` change), and that no `gui:true` op exceeds the capability its live router actually enforces.
 
 Milestone 2D — Indicator, disable switch, audit, no-token-logging:
-- [ ] "Agent attached" indicator in the GUI whenever a `.control`-tier client is connected (lights on first authenticated `.control` request, clears on idle/disconnect).
+- [ ] `ControlSecurityObserver` boundary (in `LabanControl`, e.g. `protocol ControlSecurityObserver { didAuthorize(intentID:capability:tokenClass:); didDeny(intentID:reason:); didControlActivity() }`): the server calls it; `LabanControl` keeps its `["LabanCore"]`-only deps and never imports app UI/logging internals. `LabanApp` supplies the observer that owns the indicator state and the persistent `EventLog` sink (Review finding #9).
+- [ ] "Agent attached" indicator in the GUI, driven by the observer: lights on the first authenticated `.control` request and stays lit for a TTL window (active for N seconds after the last authenticated `.control` activity, plus any open control stream once 3 adds one) — HTTP has no durable "connected" notion, so the indicator is TTL-based, not socket-based.
 - [ ] User-facing disable switch (menu item / setting) that stops the server and removes `control.json`.
-- [ ] Every `.control`/`.observeSensitive` access emits an audit event to the always-on `EventLog` (intent id, capability, surface, time, **no token, no payload secrets**).
-- [ ] A test greps captured logs for the live token value and asserts **zero** occurrences (C6).
+- [ ] Every `.control`/`.observeSensitive` access emits an audit event via the observer to the always-on `EventLog` (intent id, capability, surface, time, **no token, no payload secrets**).
+- [ ] A test greps captured logs for **both** minted token values (observe + control) and asserts **zero** occurrences (C6).
 
 Milestone 2E — Flip observe-on-by-default (release-checklist gate):
 - [ ] The §5.4 release checklist (nine items, reproduced in this milestone) is each backed by a passing test or mechanical check.
 - [ ] Default mount flips: the GUI starts the server **observe-on** without `LABAN_CONTROL_SERVER=1`; `.control`/`.observeSensitive` still require the env token; the env var becomes an override/disable, not the on-switch.
-- [ ] Child-env injection: sessions Laban spawns receive `LABAN_CONTROL_TOKEN` + `LABAN_CONTROL_URL` (control tier) via the existing `labpty` `envp` path — **no wire change** (does not touch the ADR 0007 freeze).
+- [ ] Credential lifecycle (Blocking Correction 4): mint `ControlCredentials` and bind the server (to learn `LABAN_CONTROL_URL`) **before** `ensureSessions`/restore, and inject `LABAN_CONTROL_TOKEN` + `LABAN_CONTROL_URL` (control tier) through the shared `ShellIntegrationLaunch.environmentOverrides` hook so **all** backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`) carry it — including the initial/restored session. **No wire change** (does not touch the ADR 0007 freeze).
 - [ ] `scripts/check` green; the GUI is unchanged for humans (no new windows, no behavior change for a user who never reads `control.json`).
 
 ## Context and Orientation
@@ -181,9 +262,14 @@ caller can't afford is `403`, not `404`.
 
 **C3 — Policy generated from the catalog; deny by default.** `LabanControlPolicy`
 derives the token→capability grants and the per-intent requirement **from
-`IntentCatalog`**. An intent with no `requiredCapability`, or an unknown id, is
-**denied**. Adding an intent without classifying it fails closed (and the
-`LabanControlGen`/`IntentCatalog.validate()` gate already requires the field).
+`IntentCatalog`**. An unknown id is **denied**. Adding an intent without classifying
+it must fail closed. **This is not the case today** (Blocking Correction 6): the
+catalog builder auto-fills `requiredCapability` via `defaultCapability(for:)` and
+defaults `dataSensitivity` to `.nonSensitiveState`, and `validate()` does not check
+explicit classification — so an unclassified sensitive query silently defaults to
+`.observe`. Part of 2A/2C is to remove those implicit defaults (or track an
+`explicit` flag) and make `validate()`/`LabanControlGen` **fail** unless every
+descriptor declares both fields explicitly.
 
 **C4 — One projection, both surfaces.** The `AppModel`/`Session` → read-DTO
 projections the GUI and headless both need move to `LabanCore` (transport-neutral,
@@ -198,10 +284,14 @@ state, atlas, pixel-probe) have no live GUI projection in Phase 2 and stay
 **C5 — Programmatic input shares the human validation path; no in-band control.**
 `terminal.typeText`/`sendKey`/`paste` route through the **same** sanitizer/VT path
 a human keystroke takes (treat all agent/model/tool/repo bytes as untrusted before
-the parser). Never write title/clipboard read-backs into the input stream;
-constrain DECRQSS/DSR (the CVE-2022-45872 class). OSC 52 **write only**, behind an
-explicit opt-in; clipboard **read is never implemented**. (ADR 0024 §"Standing
-constraints".)
+the parser). **Today this is violated** (Blocking Correction 7): `LiveIntentRouter`
+calls `session.write`/`session.sendKey` directly, while human input flows through
+`TerminalBitmapView` → `sessionCoordinator.write(...)` with `sanitizePaste` and
+`encodeKey`/`encodePaste`. 2B must re-point programmatic input at that shared
+coordinator/input-adapter path. Never write title/clipboard read-backs into the
+input stream; constrain DECRQSS/DSR (the CVE-2022-45872 class). OSC 52 **write
+only**, behind an explicit opt-in; clipboard **read is never implemented**. (ADR
+0024 §"Standing constraints".)
 
 **C6 — `0600`-from-first-byte; never log a token.** `control.json` stays created
 `O_CREAT|O_EXCL,0600` → write → `rename` (no chmod-after-write). Logs record the
@@ -238,19 +328,33 @@ with a spy router.
 ### Plan of Work (2A)
 
 - `public struct ControlCredentials: Sendable { public let observe: String; public
-  let control: String }` (LabanControl). `start()`/`start(host:port:)` mint both
-  (32-byte hex, as today) and return them; `control.json` write takes
-  `observe` only; `ControlReadiness`/`(url, token)` continue to surface the
-  observe token for back-compat, plus the control token via a new field/return.
+  let control: String }` (LabanControl). The GUI `start()` mints both (32-byte hex,
+  as today) and returns `ControlCredentials` to the **in-process** caller;
+  `control.json` is written with **`observe` only**; `control` is handed to the
+  env-injection path (2E). **`ControlReadiness` is unchanged** — still
+  `{debugServer, debugToken, pid, runId}`; the control token is **never** serialized
+  into readiness JSON or any world-path file (Blocking Correction 5). Headless
+  `start(host:port:)` keeps `debugToken` with its current authority so `laban-agent`
+  and `LabanDebugTests` are byte-stable (C9).
 - `public struct LabanControlPolicy: Sendable` (LabanControl), built from a
   `IntentCatalog`:
-  - `grants(observe) = {.observe}`; `grants(control) = {.observe,
-    .observeSensitive, .control, .clipboard}`; `grants(fixture) = {.fixture,
-    .observe}` (headless/tests). Pure data, no I/O.
+  - `grants(observe) = {.observe}`; `grants(control) = {.observe, .observeSensitive,
+    .control}` (**no `.clipboard`**); `grants(fixture) = {.fixture, .observe,
+    .observeSensitive, .control}` (headless/tests only; `.fixture`-on-GUI already
+    rejected by `validate()`). **No token grants `.clipboard`** — it requires a
+    future explicit opt-in (Blocking Correction 1/2). Pure data, no I/O.
   - `func capabilities(forBearer token: String, credentials: ControlCredentials,
     fixtureToken: String?) -> Set<Capability>` (constant-time compares).
   - `func authorize(intentID: String, granted: Set<Capability>) -> Bool` using
     `catalog.descriptor(id:)?.requiredCapability`; unknown id → `false`.
+- **Make deny-by-default real** (Blocking Correction 6): drop the implicit
+  `defaultCapability(for:)` / `dataSensitivity` defaults in the catalog builder (or
+  add an `explicit` marker), and extend `IntentCatalog.validate()` (and the
+  `LabanControlGen` gate) to **fail** unless every descriptor declares both
+  `requiredCapability` and `dataSensitivity` explicitly.
+- **Fix `isLoopbackHost` port parsing** (Blocking Correction 8): after splitting the
+  host label, require the remainder to be empty or `:<numeric port>`; reject
+  non-numeric ports. `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → `forbidden`.
 - Server request path (after the `availability.permits` check): compute `granted`
   from the presented bearer token; `guard policy.authorize(intentID:, granted:)
   else return .error(403, "insufficient capability")`.
@@ -263,9 +367,13 @@ with a spy router.
 `.observe` intent returns `200` and a `.control`/`.observeSensitive` intent returns
 `403 {"error":"insufficient capability"}` **without invoking the router**; with the
 **control** token both return `200`; no token → `401`; forged `Host`/any `Origin`
-→ `403`. `control.json` contains the observe token and **not** the control token
-(parse the file in the test). Unknown action id → still the legacy unsupported
-path, not a capability `403` (the resolver runs first).
+→ `403`; `localhost:evil`/`127.0.0.1:evil`/`[::1]:evil` (non-numeric port) → `403`.
+A `.clipboard` op is rejected for **both** the observe and control tokens (no token
+grants `.clipboard`). `control.json` contains the observe token and **not** the
+control token (parse the file in the test). Unknown action id: with the **control**
+token it reaches the legacy unsupported response; with the **observe** token a
+capability `403` is acceptable (the resolved unsupported descriptor is not
+`.observe`), so the test asserts per token rather than assuming a single shape.
 
 ---
 
@@ -290,26 +398,37 @@ groups.
 2. **Implement the live reads** in `LiveIntentRouter` (on-main snapshot →
    projection → `ControlResponse.json`): `app.accessibility`, `terminal.modes`,
    `session.list`, `session.detail`, `find.state`, `selection.read`,
-   `shellIntegration.state`, `scrollIndicator.state`, `clipboard.read`.
-3. **Flip availability** for those ids to `gui:true` and set/confirm
-   `requiredCapability` (`.observe` vs `.observeSensitive` per ADR 0024 §5.1) and
-   `dataSensitivity`. Keep renderer/atlas/pixel-probe/capture/persistence
+   `shellIntegration.state`, `scrollIndicator.state`. **No `clipboard.read`**
+   (Blocking Correction 2).
+3. **Flip availability** for those ids to `gui:true` and set **explicit**
+   `requiredCapability` and `dataSensitivity` per Blocking Correction 3: `.observe`
+   only for the non-sensitive reads (`terminal.modes`, `scrollIndicator.state`,
+   `app.state`); `.observeSensitive` for everything exposing text/cwd/command/needle
+   /selection/grid/a11y content. Keep renderer/atlas/pixel-probe/capture/persistence
    `headlessOnly` (noted boundary; no live source this phase).
 4. **`.control` groups:** wire `terminal.scrollViewport`, mouse
    (`terminal.click`/`mouseWheel`/`mouseDrag`), and `tab.*` lifecycle through the
-   GUI's existing `AppCommand`/view paths (C5 — same validation as human input).
+   GUI's existing `AppCommand`/view paths (C5 — same validation as human input). In
+   the same pass, **retrofit the existing `terminal.typeText`/`sendKey`** off the
+   direct `session.write`/`session.sendKey` calls onto the shared
+   `sessionCoordinator.write(...)` + `encodeKey`/`encodePaste`/`sanitizePaste` path
+   `TerminalBitmapView` uses, so programmatic and human input are identical across
+   in-process/laband/labpty backends (Blocking Correction 7).
 5. Each group: `swift run LabanControlGen --write` if route metadata changed;
    `swift test`; `scripts/check`.
 
 ### Acceptance (2B)
 
-With the app running behind `LABAN_CONTROL_SERVER=1` and the **observe** token from
-`control.json`: `curl` of `GET /debug/sessions`, `/debug/state`,
-`/debug/selection`, `/debug/find/state` returns the **real window's** live state,
-shape-identical to the headless wire for the same model. `.observeSensitive` reads
-(e.g. full scrollback/grid) return `403` with the observe token and `200` with the
-control token. `LabanDebugTests` pass unchanged (headless wire byte-stable). The
-`CatalogParityTests` from 2C cover the new shared ids.
+With the app running behind `LABAN_CONTROL_SERVER=1`: with the **observe** token
+from `control.json`, the non-sensitive reads (`/debug/state`, `terminal.modes`,
+`scrollIndicator.state`) return the **real window's** live state, shape-identical to
+the headless wire for the same model, while the `.observeSensitive` reads
+(`/debug/sessions`, `/debug/selection`, `/debug/find/state`, accessibility,
+scrollback/grid) return `403`. With the **control** token (env-injected) those same
+`.observeSensitive` reads return `200` and are shape-identical to the headless wire.
+`clipboard.read` exists on no surface. `LabanDebugTests` pass unchanged (headless
+wire byte-stable, driven by the fixture/control token). The `CatalogParityTests`
+from 2C cover the new shared ids.
 
 ---
 
@@ -321,13 +440,15 @@ intent, plus capability/sensitivity completeness.
 ### Acceptance (2C)
 
 `CatalogParityTests`: for every descriptor with `availability.gui &&
-availability.headless`, both a live `LiveIntentRouter` (over a real `AppModel`) and
-a `HeadlessIntentRouter` (over a runtime) return a non-error `ControlResponse` for a
-representative input, and for pure-observe reads the sorted-key JSON **shape**
-matches between surfaces. A second test asserts every catalog descriptor has a
-`requiredCapability` and `dataSensitivity`, and that the set of `gui:true` ids is
-exactly what `LiveIntentRouter` implements (the Phase-1 conservative invariant,
-now expanded).
+availability.headless`, both surfaces — driven at the **HTTP-route level** (the live
+GUI server over a real `AppModel`, the headless server over a runtime) — return a
+non-error response for a representative input, and for pure reads the sorted-key JSON
+**shape** matches between surfaces. (Typed-router parity for `tabSelect`/`typeText`/
+`sendKey` is deferred until the headless typed cases are ported off their `501`
+stubs.) A second test asserts every catalog descriptor declares an **explicit**
+`requiredCapability` and `dataSensitivity` (no implicit default survives), and that
+the set of `gui:true` ids is exactly what `LiveIntentRouter` implements (the Phase-1
+conservative invariant, now expanded).
 
 ---
 
@@ -338,12 +459,14 @@ now expanded).
 ### Acceptance (2D)
 
 A `.control`-tier authenticated request lights a visible "agent attached" indicator
-in the running app (and clears when the client goes idle/disconnects); a menu/setting
-**disable switch** stops the server and removes `control.json` (verified: subsequent
-`curl` fails to connect and the file is gone). Every `.control`/`.observeSensitive`
-request appends an audit event to the `EventLog` (assert via `GET /debug/events` or
-the journal) carrying intent id + capability + surface + time and **no token/secret**.
-A test greps all captured logs/artifacts for the minted token string and asserts
+in the running app (driven by `ControlSecurityObserver`; clears after the TTL window
+with no further `.control` activity); a menu/setting **disable switch** stops the
+server and removes `control.json` (verified: subsequent `curl` fails to connect and
+the file is gone). Every `.control`/`.observeSensitive` request appends an audit
+event via the observer to the app-side `EventLog` (assert via `GET /debug/events` or
+the journal) carrying intent id + capability + surface + time and **no token/secret**;
+`LabanControl` itself does not import the `EventLog`. A test greps all captured
+logs/artifacts for **both** minted token strings (observe + control) and asserts
 **zero** occurrences.
 
 ---
@@ -359,7 +482,7 @@ token child-env injection. The GUI is unchanged for humans.
 - [ ] `.observeSensitive` requires the separate env-injected token/scope.
 - [ ] `.control` requires the separate env-injected token/scope.
 - [ ] The token file is created `0600` **from the first byte** (not chmod-after-write).
-- [ ] `Host` + `Origin` validation rejects malformed/spoofed hosts (tests cover `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`).
+- [ ] `Host` + `Origin` validation rejects malformed/spoofed hosts (tests cover `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, and the non-numeric-port cases `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` that `isLoopbackHost` accepts today — Blocking Correction 8).
 - [ ] A visible "agent attached" indicator exists.
 - [ ] A user-facing disable switch exists.
 - [ ] Audit events persist to the `EventLog`.
@@ -370,9 +493,13 @@ token child-env injection. The GUI is unchanged for humans.
 - Replace the `LABAN_CONTROL_SERVER == "1"` on-switch with **observe-on-by-default**
   mount (the env var becomes a force-disable / control-tier override). Keep the same
   bind/guard/limits.
-- Inject `LABAN_CONTROL_TOKEN` + `LABAN_CONTROL_URL` (control credential) into the
-  env of sessions Laban spawns, via the existing `labpty` `envp` path (no wire
-  change; does not touch ADR 0007).
+- **Reorder the mount** (Blocking Correction 4): mint `ControlCredentials` and bind
+  the server above `ensureSessions`/restore in `MainWindowController` (the model
+  exists by ~L107; sessions are ensured ~L253 today, after the current ~L510 mount).
+- Inject `LABAN_CONTROL_TOKEN` + `LABAN_CONTROL_URL` (control credential) into
+  `ShellIntegrationLaunch.environmentOverrides` (the shared source feeding in-process,
+  laband `environmentPatch`, and labpty `envp`) so every spawned session — including
+  the first/restored one — receives it. No wire change; does not touch ADR 0007.
 - Gate the flip behind the nine checks above (each already landed in 2A–2D).
 
 ### Acceptance (2E)
@@ -397,10 +524,12 @@ From the repo root:
     ./scripts/check                                 # discovery byte-stable + gated; lint; e2e; coverage
     ./scripts/build-app                             # GUI builds; unchanged for humans
 
-…all pass, and: an agent reading `control.json` observes the **live** app with the
-observe token; `.observeSensitive`/`.control` succeed only with the env-injected
-token (else `403`); missing token `401`, bad `Host`/any `Origin` `403`; the
-catalog-parity test fails if either router omits a shared intent; the §5.4 checklist
+…all pass, and: an agent reading `control.json` observes the **live** app's
+**non-sensitive** state with the observe token; `.observeSensitive`/`.control`
+(including all text/cwd/command/needle/selection/grid reads) succeed only with the
+env-injected token (else `403`); `clipboard.read` exists on no surface; missing
+token `401`, bad `Host`/any `Origin` (incl. non-numeric ports) `403`; the
+catalog-parity test fails if either surface omits a shared intent; the §5.4 checklist
 holds before the default flips; the headless wire + `/debug` discovery + `schemas/`
 are byte-stable; no token value appears in any log.
 
@@ -420,32 +549,57 @@ are byte-stable; no token value appears in any log.
 - (C8/§5.4) The default-on flip is gated by the nine-item release checklist, not
   the phase label; through 2A–2D the server stays behind `LABAN_CONTROL_SERVER=1`.
   DRAFT — 2026-06-20 / Claude.
+- (Security review, verified against source 2026-06-20) Eight blocking corrections
+  folded in (see "Blocking Corrections"): `.clipboard` excluded from the control
+  grant and from live `clipboard.read`; rich DTOs (`session.*`, `selection`, `find`,
+  a11y) reclassified `.observeSensitive` so the file (observe) token cannot read
+  them; credentials minted before `ensureSessions` and injected via the shared
+  `ShellIntegrationLaunch.environmentOverrides` (all backends, not labpty alone);
+  `ControlReadiness` kept byte-stable (control token never serialized); the catalog's
+  implicit capability/sensitivity defaults removed so `validate()` truly denies the
+  unclassified; programmatic input re-pointed at the human `sessionCoordinator` path;
+  and the `isLoopbackHost` non-numeric-port accept-bug fixed. DRAFT — 2026-06-20.
+- Fixture (test-only) token grants `{.fixture, .observe, .observeSensitive, .control}`
+  — broader than the review's suggested `{.fixture, .observe}` — because the headless
+  wire (C9) drives `.control`/`.observeSensitive` ops with it and `validate()` already
+  forbids `.fixture` on the GUI surface, so the breadth is test-scoped. `.clipboard`
+  is still excluded. DRAFT — 2026-06-20 / Claude.
 
 ## Review Gate
 
 A fresh-state agent verifies (mechanical; from repo root) once the plan is
 executed:
 
-- [ ] `control.json` contains the observe token and **not** the control token (parse the file written by the GUI mount / `ControlAdvertisement`); `grep` the minted control token across logs/artifacts → zero hits.
-- [ ] Spy-router test proves: observe token + `.control` intent → `403` with no router call; control token + `.control` intent → `200`; missing token → `401`.
-- [ ] `LiveIntentRouter` answers `session.list`/`selection.read`/`find.state` against a live `AppModel` (test in `LabanAppTests`), shape-identical to `HeadlessIntentRouter` for the same model.
-- [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path (projections come from `LabanCore`); `LabanControl` deps still exactly `["LabanCore"]`.
-- [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one router (mutate one router; expect failure; revert).
+- [ ] `control.json` contains the observe token and **not** the control token (parse the file written by the GUI mount / `ControlAdvertisement`); `grep` **both** minted tokens across logs/artifacts → zero hits (the observe token appears only inside `control.json` itself, never in a log).
+- [ ] `ControlReadiness` is still `{debugServer, debugToken, pid, runId}` (no new field); the control token is never serialized into readiness JSON (grep the encode path; `laban-agent` readiness line byte-stable).
+- [ ] Spy-router test proves: observe token + `.control` intent → `403` with no router call; control token + `.control` intent → `200`; `.clipboard` intent → `403` for both tokens; missing token → `401`.
+- [ ] Sensitivity split: with the observe token, `session.list`/`selection.read`/`find.state` (and accessibility) → `403`, while `app.state`/`terminal.modes`/`scrollIndicator.state` → `200`; with the control token the `.observeSensitive` set → `200` and is shape-identical to `HeadlessIntentRouter` for the same model. `clipboard.read` is implemented on no surface.
+- [ ] Deny-by-default: add a descriptor with no explicit `requiredCapability`/`dataSensitivity`; `IntentCatalog.validate()` / `LabanControlGen --check` **fails** (expect failure; revert).
+- [ ] `LiveIntentRouter` programmatic `typeText`/`sendKey` route through `sessionCoordinator.write(...)` (+ paste sanitizer / `encodeKey`), not direct `session.write`/`session.sendKey` (grep the impl).
+- [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path (projections come from `LabanCore`); `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
+- [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface (mutate one router; expect failure; revert).
 - [ ] `0600`-from-first-byte: `ControlAdvertisement` uses `O_CREAT|O_EXCL` with `S_IRUSR|S_IWUSR` and no `chmod` after write (grep the impl).
-- [ ] Host/Origin matrix tests include `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com` → all `403`.
-- [ ] With no `LABAN_CONTROL_SERVER` set, a launched app writes `control.json` and answers an observe read (default-on); a `.control` op with the file token → `403`.
+- [ ] Host/Origin matrix tests include `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → all `403` (the port cases require the `isLoopbackHost` fix).
+- [ ] Credential timing: with no `LABAN_CONTROL_SERVER` set, a launched app writes `control.json` and the **initial/restored** session's env carries `LABAN_CONTROL_TOKEN`/`LABAN_CONTROL_URL` (minted before `ensureSessions`); a `.control` op with the file (observe) token → `403`; with the env token → `200`.
 - [ ] `./scripts/check` exits 0; `./scripts/build-app` succeeds; `swift run LabanControlGen --check` passes (discovery byte-stable).
 
 Review status: NOT REVIEWED (plan not yet executed).
 
 ## Idempotence and Recovery
 
-- 2A is additive (new policy + second token); reverting restores the single-token
-  behavior. 2B relocates projections behind typealiases so a partial revert never
-  breaks the headless wire; each read group is independently revertible. 2C/2D are
-  test/UI additions. **2E is the only behavior-flipping milestone** — keep it last,
-  keep the env-var force-disable, and do not flip until the nine §5.4 checks are
-  green so the default-on state is always recoverable to off.
+- 2A is mostly additive (new policy + second token); reverting restores the
+  single-token behavior. Two 2A sub-steps are *tightening* rather than additive and
+  are effectively irreversible-by-intent: the `isLoopbackHost` port fix (rejects
+  hosts wrongly accepted today) and removing the catalog's implicit
+  capability/sensitivity defaults. The latter is a hard sequencing prerequisite —
+  making `validate()` strict will fail the build until **every existing descriptor**
+  is classified explicitly, so do that classification pass first, in the same change
+  that flips `validate()` to strict. 2B relocates projections behind typealiases so
+  a partial revert never breaks the headless wire; each read group is independently
+  revertible. 2C/2D are test/UI additions. **2E is the only behavior-flipping
+  milestone** — keep it last, keep the env-var force-disable, and do not flip until
+  the nine §5.4 checks are green so the default-on state is always recoverable to
+  off.
 
 ## Interfaces and Dependencies
 
