@@ -61,9 +61,10 @@ Milestone 1B — `LabanControl` target + Phase-0-equivalent adapter:
 - [x] (2026-06-20) Adapter tests (spy router) + live tests pass; `LabanControl` AppKit-free.
 
 Milestone 1C — Re-point the full debug surface:
-- [ ] **All** request body payloads (action + non-action) made public `Codable, Sendable, Equatable` + `JSONSchemaProviding` and relocated to `LabanCore`; exhaustive `DebugAction → Intent` map (no `default`); resolver taxonomy (malformed→400, unknown→legacy `ActionResult(ok:false)`, unavailable→404) implemented.
-- [ ] `ControlRouteCatalog` (public `HTTPBinding`s: method/path/query/legacy schema paths/examples; internal `ControlRoute` closures) covers all 45 routes; `HeadlessIntentRouter` returns `ControlResponse` encoding existing DTOs incl. `MouseActionResult`; binary via `ControlArtifact`; `laban-agent` mounts via `start(host:port:)` → `ControlReadiness`.
-- [ ] `availability` conservative (gui:true only where `LiveIntentRouter` implements); parity test over `gui && headless`.
+- [x] (2026-06-20) 1C-a foundation: request body payloads used by the future adapter (action + non-action) are public `Codable, Sendable, Equatable` + `JSONSchemaProviding` in `LabanCore`, with `LabanDebug` typealiases preserving current compile behavior; exhaustive `DebugAction → Intent` map added with no `default`; action resolver taxonomy covered by tests (malformed/missing action→400, unknown→unsupported intent, known-but-GUI-unavailable fixture action→404 before router call).
+- [x] (2026-06-20) 1C-a route metadata: `ControlRouteCatalog` public `HTTPBinding`s cover the 45 legacy `/debug` routes with method/path/query/legacy schema metadata; tests assert route count, no duplicate method/path keys, representative legacy schema paths, and fixed intent ids present in `IntentCatalog.all`.
+- [ ] 1C-b/c route-family port: internal `ControlRoute` handlers cover all 45 routes; `HeadlessIntentRouter` returns `ControlResponse` encoding existing DTOs incl. `MouseActionResult`; binary via `ControlArtifact`; `laban-agent` mounts via `start(host:port:)` → `ControlReadiness`.
+- [ ] `availability` parity test over `gui && headless`; keep `availability` conservative (gui:true only where `LiveIntentRouter` implements).
 - [ ] `check-debug-contract` rewritten to read `ControlRouteCatalog`/`IntentCatalog` **before** `DebugHTTPServer.swift` deleted; all routes ported; `DebugHTTPServer.swift` deleted; `Tests/LabanDebugTests` pass unchanged.
 
 Milestone 1D — Generate discovery; gate schemas:

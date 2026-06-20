@@ -29,7 +29,7 @@ final class IntentCatalogTests: XCTestCase {
       "terminal.typeText",
       "terminal.sendKey",
     ]
-    XCTAssertEqual(IntentCatalog.shared.ids, expectedIds)
+    XCTAssertTrue(expectedIds.isSubset(of: IntentCatalog.shared.ids))
 
     for id in expectedIds {
       let descriptor = try XCTUnwrap(IntentCatalog.shared.descriptor(id: id))
@@ -40,8 +40,14 @@ final class IntentCatalogTests: XCTestCase {
     }
   }
 
-  func testFixtureCatalogIsEmptyAndFixtureCapabilitiesCannotBeGUIAvailable() {
-    XCTAssertTrue(IntentCatalog.fixture.descriptors.isEmpty)
+  func testFixtureCatalogIsHeadlessOnlyAndFixtureCapabilitiesCannotBeGUIAvailable() {
+    XCTAssertEqual(
+      IntentCatalog.fixture.ids,
+      ["fixture.advanceFrames", "fixture.control", "fixture.feedOutput", "fixture.windowFocus"])
+    for descriptor in IntentCatalog.fixture.descriptors {
+      XCTAssertFalse(descriptor.availability.gui, descriptor.id)
+      XCTAssertTrue(descriptor.availability.headless, descriptor.id)
+    }
     XCTAssertNoThrow(try IntentCatalog.fixture.validate())
 
     let guiFixture = makeDescriptor(
@@ -66,17 +72,31 @@ final class IntentCatalogTests: XCTestCase {
     XCTAssertFalse(TabSelectInput.jsonSchema.toJSONSchema().isEmpty)
     XCTAssertFalse(TypeTextInput.jsonSchema.toJSONSchema().isEmpty)
     XCTAssertFalse(SendKeyInput.jsonSchema.toJSONSchema().isEmpty)
+    XCTAssertFalse(WaitRequest.jsonSchema.toJSONSchema().isEmpty)
+    XCTAssertFalse(RenderTraceRequest.jsonSchema.toJSONSchema().isEmpty)
+    XCTAssertFalse(PixelProbeRequest.jsonSchema.toJSONSchema().isEmpty)
+    XCTAssertFalse(FixtureControlRequest.jsonSchema.toJSONSchema().isEmpty)
 
     for descriptor in IntentCatalog.shared.descriptors {
-      XCTAssertFalse(try XCTUnwrap(descriptor.outputSchema).toJSONSchema().isEmpty)
+      if descriptor.kind != .artifact {
+        XCTAssertFalse(try XCTUnwrap(descriptor.outputSchema).toJSONSchema().isEmpty)
+      }
       XCTAssertFalse(try XCTUnwrap(descriptor.errorSchema).toJSONSchema().isEmpty)
 
-      if descriptor.kind == .action {
+      if descriptor.kind == .action || descriptor.kind == .wait {
         XCTAssertFalse(try XCTUnwrap(descriptor.inputSchema).toJSONSchema().isEmpty)
-      } else {
-        XCTAssertNil(descriptor.inputSchema)
       }
     }
+  }
+
+  func testKnownDebugActionIntentIDsAreCataloged() {
+    for action in DebugActionIntentID.knownActionNames {
+      guard let id = DebugActionIntentID.intentID(forAction: action) else {
+        return XCTFail("missing intent id for \(action)")
+      }
+      XCTAssertNotNil(IntentCatalog.all.descriptor(id: id), "\(action) -> \(id)")
+    }
+    XCTAssertNotNil(IntentCatalog.all.descriptor(id: DebugActionIntentID.unsupported))
   }
 
   func testRouteAwareValidationAllowsQueryOnlyDescriptorWithoutInputSchema() {

@@ -596,23 +596,9 @@ struct InputLogResponse: Encodable {
 
 // MARK: - Exploratory diagnostics
 
-struct PixelProbePointRequest: Decodable {
-  var x: Int
-  var y: Int
-}
-
-struct PixelProbeRegionRequest: Decodable {
-  var name: String
-  var x: Int
-  var y: Int
-  var width: Int
-  var height: Int
-}
-
-struct PixelProbeRequest: Decodable {
-  var points: [PixelProbePointRequest]?
-  var regions: [PixelProbeRegionRequest]?
-}
+typealias PixelProbePointRequest = LabanCore.PixelProbePointRequest
+typealias PixelProbeRegionRequest = LabanCore.PixelProbeRegionRequest
+typealias PixelProbeRequest = LabanCore.PixelProbeRequest
 
 struct PixelProbePointResult: Encodable {
   var x: Int
@@ -713,11 +699,7 @@ struct DebugErrorsResponse: Encodable {
   var next: Int
 }
 
-struct FixtureControlRequest: Decodable {
-  var action: String
-  var path: String?
-  var count: Int?
-}
+typealias FixtureControlRequest = LabanCore.FixtureControlRequest
 
 struct FixtureControlResponse: Encodable {
   var ok: Bool

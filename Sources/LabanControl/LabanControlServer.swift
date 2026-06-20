@@ -26,93 +26,20 @@ public final class LabanControlServer {
     var contentLengthHeader: String?
   }
 
-  private struct HTTPRequest {
-    let method: String
-    let path: String
-    let body: Data
-  }
-
-  private struct ActionEnvelope: Decodable {
-    let action: String
-  }
-
-  private struct SelectTabActionRequest: Decodable {
-    let action: String
-    let index: Int?
-  }
-
   private enum ContentLengthResult {
     case success(Int)
     case failure(status: Int)
-  }
-
-  private enum IntentIDResolution {
-    case resolved(String)
-    case failed(ControlResponse)
-  }
-
-  private struct ControlRoute {
-    let endpoint: ControlEndpointDescriptor
-    let resolveIntentID: (HTTPRequest) -> IntentIDResolution
-    let dispatch: (LabanControlServer, HTTPRequest) -> ControlResponse
-
-    func matches(method: String, path: String) -> Bool {
-      endpoint.binding.method == method && endpoint.binding.path == path
-    }
   }
 
   private static let requestReadTimeout: TimeInterval = 5
   private static let maxHeaderBytes = 64 * 1024
   private static let maxBodyBytes = 4 * 1024 * 1024
 
-  private static let stateEndpoint = ControlEndpointDescriptor(
-    binding: HTTPBinding(
-      method: "GET",
-      path: "/debug/state",
-      category: "state",
-      summary: "Return the live GUI tab state.",
-      legacyResponseSchemaPath: "schemas/debug/state.schema.json"),
-    intentMapping: .fixed("app.state"))
+  public static let endpoints: [ControlEndpointDescriptor] = ControlRouteCatalog.endpoints
 
-  private static let actionsEndpoint = ControlEndpointDescriptor(
-    binding: HTTPBinding(
-      method: "POST",
-      path: "/debug/actions",
-      category: "control",
-      summary: "Drive Phase 0 GUI control actions.",
-      legacyRequestSchemaPath: "schemas/debug/action.schema.json",
-      legacyResponseSchemaPath: "schemas/debug/action-result.schema.json",
-      examples: [#"{"action":"selectTab","index":0}"#]),
-    intentMapping: .requestBodyField("action"))
+  public static let routes: [HTTPBinding] = ControlRouteCatalog.bindings
 
-  public static let endpoints: [ControlEndpointDescriptor] = [
-    stateEndpoint,
-    actionsEndpoint,
-  ]
-
-  public static let routes: [HTTPBinding] = endpoints.map(\.binding)
-
-  private static let routeTable: [ControlRoute] = [
-    ControlRoute(
-      endpoint: stateEndpoint,
-      resolveIntentID: { _ in .resolved("app.state") },
-      dispatch: { server, _ in server.router.query(.state) }),
-    ControlRoute(
-      endpoint: actionsEndpoint,
-      resolveIntentID: { request in
-        guard let envelope = try? JSONDecoder().decode(ActionEnvelope.self, from: request.body)
-        else {
-          return .failed(.error(400, "bad request"))
-        }
-        guard envelope.action == "selectTab" else {
-          return .failed(.error(400, "unsupported action"))
-        }
-        return .resolved("tab.select")
-      },
-      dispatch: { server, request in server.dispatchSelectTab(request) }),
-  ]
-
-  private let router: IntentRouter
+  let router: IntentRouter
   private let surface: Surface
   private let catalog: IntentCatalog
   private let connectionQueue = DispatchQueue(
@@ -377,9 +304,10 @@ public final class LabanControlServer {
   }
 
   private func route(method: String, path: String, body: Data) -> ControlResponse {
-    let request = HTTPRequest(method: method, path: path, body: body)
+    let request = ControlHTTPRequest(method: method, path: path, body: body)
     guard
-      let route = Self.routeTable.first(where: { $0.matches(method: method, path: path) })
+      let route = ControlRouteCatalog.routes.first(where: { $0.matches(method: method, path: path) }
+      )
     else {
       return .error(404, "not found")
     }
@@ -402,7 +330,28 @@ public final class LabanControlServer {
     return route.dispatch(self, request)
   }
 
-  private func dispatchSelectTab(_ request: HTTPRequest) -> ControlResponse {
+  func dispatchDebugAction(_ request: ControlHTTPRequest) -> ControlResponse {
+    guard let envelope = try? JSONDecoder().decode(DebugActionEnvelope.self, from: request.body)
+    else {
+      return .error(400, "bad request")
+    }
+
+    switch DebugActionIntentID.intentID(forAction: envelope.action) {
+    case "tab.select":
+      return dispatchSelectTab(request)
+    case "terminal.typeText":
+      return dispatchTypeText(request)
+    case "terminal.sendKey":
+      return dispatchSendKey(request)
+    case nil:
+      return router.route(
+        .unsupportedDebugAction(UnsupportedDebugActionInput(action: envelope.action)))
+    default:
+      return .error(501, "not yet ported")
+    }
+  }
+
+  private func dispatchSelectTab(_ request: ControlHTTPRequest) -> ControlResponse {
     guard let action = try? JSONDecoder().decode(SelectTabActionRequest.self, from: request.body)
     else {
       return .error(400, "bad request")
@@ -412,6 +361,28 @@ public final class LabanControlServer {
       return .error(400, "missing index")
     }
     return router.route(.tabSelect(TabSelectInput(index: index)))
+  }
+
+  private func dispatchTypeText(_ request: ControlHTTPRequest) -> ControlResponse {
+    guard let action = try? JSONDecoder().decode(TextActionRequest.self, from: request.body)
+    else {
+      return .error(400, "bad request")
+    }
+    guard let text = action.text else {
+      return .error(400, "missing text")
+    }
+    return router.route(.terminalTypeText(TypeTextInput(text: text)))
+  }
+
+  private func dispatchSendKey(_ request: ControlHTTPRequest) -> ControlResponse {
+    guard let action = try? JSONDecoder().decode(DebugKeyActionRequest.self, from: request.body)
+    else {
+      return .error(400, "bad request")
+    }
+    guard let key = action.key else {
+      return .error(400, "missing key")
+    }
+    return router.route(.terminalSendKey(SendKeyInput(key: key, modifiers: action.modifiers ?? [])))
   }
 
   private static func missingDescriptorResponse(for route: ControlRoute) -> ControlResponse {
@@ -510,6 +481,7 @@ public final class LabanControlServer {
     case 405: return "Method Not Allowed"
     case 413: return "Payload Too Large"
     case 500: return "Internal Server Error"
+    case 501: return "Not Implemented"
     default: return "Unknown"
     }
   }

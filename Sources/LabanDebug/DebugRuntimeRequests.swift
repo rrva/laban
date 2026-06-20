@@ -1,9 +1,7 @@
 import Foundation
+import LabanCore
 
-struct CellCoordinateReq: Decodable {
-  var row: Int
-  var col: Int
-}
+typealias CellCoordinateReq = LabanCore.CellCoordinateReq
 
 enum DebugAction: Decodable {
   case newTab
@@ -103,155 +101,103 @@ enum DebugAction: Decodable {
   }
 }
 
-struct TabTargetActionRequest: Decodable {
-  var tabId: String?
+extension DebugAction {
+  var intent: Intent {
+    switch self {
+    case .newTab:
+      return legacyIntent(action: "newTab")
+    case .closeTab:
+      return legacyIntent(action: "closeTab")
+    case .selectTab(let request):
+      return .tabSelect(TabSelectInput(tabId: request.tabId))
+    case .setTabTitle:
+      return legacyIntent(action: "setTabTitle")
+    case .freezeTabTitle:
+      return legacyIntent(action: "freezeTabTitle")
+    case .clearTabTitle:
+      return legacyIntent(action: "clearTabTitle")
+    case .setTabMetadata:
+      return legacyIntent(action: "setTabMetadata")
+    case .moveTab:
+      return legacyIntent(action: "moveTab")
+    case .resizeWindow:
+      return legacyIntent(action: "resizeWindow")
+    case .setFontSize:
+      return legacyIntent(action: "setFontSize")
+    case .typeText(let request):
+      return .terminalTypeText(TypeTextInput(text: request.text ?? ""))
+    case .feedOutput:
+      return legacyIntent(action: "feedOutput")
+    case .advanceFrames:
+      return legacyIntent(action: "advanceFrames")
+    case .setClipboardText:
+      return legacyIntent(action: "setClipboardText")
+    case .setSelection:
+      return legacyIntent(action: "setSelection")
+    case .findStart:
+      return legacyIntent(action: "find.start")
+    case .findStep:
+      return legacyIntent(action: "find.step")
+    case .findStop:
+      return legacyIntent(action: "find.stop")
+    case .copy:
+      return legacyIntent(action: "copy")
+    case .paste:
+      return legacyIntent(action: "paste")
+    case .dropFiles:
+      return legacyIntent(action: "dropFiles")
+    case .scrollViewport:
+      return legacyIntent(action: "scrollViewport")
+    case .mouseWheel:
+      return legacyIntent(action: "mouseWheel")
+    case .mouseDrag:
+      return legacyIntent(action: "mouseDrag")
+    case .click:
+      return legacyIntent(action: "click")
+    case .key(let request):
+      return .terminalSendKey(
+        SendKeyInput(key: request.key ?? "", modifiers: request.modifiers ?? []))
+    case .windowFocus:
+      return legacyIntent(action: "windowFocus")
+    case .unsupported(let action):
+      return .unsupportedDebugAction(UnsupportedDebugActionInput(action: action))
+    }
+  }
+
+  var intentID: String {
+    intent.id
+  }
+
+  private func legacyIntent(action: String) -> Intent {
+    .legacyDebugAction(
+      LegacyDebugActionInput(
+        intentID: DebugActionIntentID.intentID(forAction: action)
+          ?? DebugActionIntentID.unsupported,
+        action: action))
+  }
 }
 
-struct MoveTabActionRequest: Decodable {
-  var tabId: String?
-  var toIndex: Int?
-}
-
-struct TabTitleActionRequest: Decodable {
-  var tabId: String?
-  var title: String?
-  var text: String?
-  var frozen: Bool?
-}
-
-struct TabMetadataActionRequest: Decodable {
-  var tabId: String?
-  var cwd: String?
-  var repoName: String?
-  var repoRoot: String?
-  var worktreeName: String?
-  var branch: String?
-  var isDirty: Bool?
-  var foregroundProcess: String?
-  var foregroundCommand: String?
-  var pid: Int?
-  var agentName: String?
-  var sessionName: String?
-  var agentSessionId: String?
-  var taskLabel: String?
-  var model: String?
-  var contextPercent: Int?
-  var awaitingInput: Bool?
-  var activityState: String?
-  var unseenOutput: Bool?
-  var bellAttention: Bool?
-  var exitStatus: Int?
-}
-
-struct ResizeWindowActionRequest: Decodable {
-  var width: Int?
-  var height: Int?
-}
-
-/// Live font-size zoom (headless counterpart of Cmd+= / Cmd+- / Cmd+0).
-/// The point size is clamped to the zoom range and applied with unchanged
-/// window pixels, so columns/rows renegotiate like the app's zoom step.
-struct SetFontSizeActionRequest: Decodable {
-  var pointSize: Double?
-}
-
-struct TextActionRequest: Decodable {
-  var text: String?
-  /// Optional target tab. Honored by `feedOutput` so callers can
-  /// target a specific tab without first changing focus. Other
-  /// actions that use `TextActionRequest` (`typeText`,
-  /// `setClipboardText`) ignore this — typed text goes to the
-  /// active tab by definition.
-  var tabId: String?
-}
-
-struct AdvanceFramesActionRequest: Decodable {
-  var count: Int?
-}
-
-/// Drives terminal focus reporting (DEC private mode 1004) from headless runs,
-/// mirroring the app's NSWindow key-state observers. `focused: true` reports
-/// focus-in (CSI I), `false` reports focus-out (CSI O).
-struct WindowFocusActionRequest: Decodable {
-  var focused: Bool?
-}
-
-struct DebugKeyActionRequest: Decodable {
-  var key: String?
-  var type: String?
-  var modifiers: [String]?
-  var consumedModifiers: [String]?
-  var unshifted: String?
-  var text: String?
-}
-
-struct MouseWheelActionRequest: Decodable {
-  var x: Int?
-  var y: Int?
-  var deltaY: Double?
-}
-
-struct MouseDragActionRequest: Decodable {
-  var startX: Int?
-  var startY: Int?
-  var endX: Int?
-  var endY: Int?
-  var button: String?
-  var holdMs: Int?
-}
-
-struct ClickActionRequest: Decodable {
-  var x: Int?
-  var y: Int?
-  var button: String?
-}
-
-struct SelectionActionRequest: Decodable {
-  var sessionId: String?
-  var anchor: CellCoordinateReq?
-  var focus: CellCoordinateReq?
-}
-
-struct SessionTargetActionRequest: Decodable {
-  var sessionId: String?
-}
-
-struct DropFilesActionRequest: Decodable {
-  var paths: [String]?
-}
-
-struct ScrollViewportActionRequest: Decodable {
-  var sessionId: String?
-  var deltaRows: Int?
-}
-
-struct FindStartRequest: Decodable {
-  var sessionID: String?
-  var sessionId: String?
-  var needle: String?
-
-  var targetSessionId: String? { sessionID ?? sessionId }
-}
-
-struct FindStepRequest: Decodable {
-  var sessionID: String?
-  var sessionId: String?
-  var direction: String?
-
-  var targetSessionId: String? { sessionID ?? sessionId }
-}
-
-struct FindSessionRequest: Decodable {
-  var sessionID: String?
-  var sessionId: String?
-
-  var targetSessionId: String? { sessionID ?? sessionId }
-}
-
-struct CaptureStartRequest: Decodable {
-  var name: String? = nil
-  var screenshots: String? = nil
-}
+typealias TabTargetActionRequest = LabanCore.TabTargetActionRequest
+typealias MoveTabActionRequest = LabanCore.MoveTabActionRequest
+typealias TabTitleActionRequest = LabanCore.TabTitleActionRequest
+typealias TabMetadataActionRequest = LabanCore.TabMetadataActionRequest
+typealias ResizeWindowActionRequest = LabanCore.ResizeWindowActionRequest
+typealias SetFontSizeActionRequest = LabanCore.SetFontSizeActionRequest
+typealias TextActionRequest = LabanCore.TextActionRequest
+typealias AdvanceFramesActionRequest = LabanCore.AdvanceFramesActionRequest
+typealias WindowFocusActionRequest = LabanCore.WindowFocusActionRequest
+typealias DebugKeyActionRequest = LabanCore.DebugKeyActionRequest
+typealias MouseWheelActionRequest = LabanCore.MouseWheelActionRequest
+typealias MouseDragActionRequest = LabanCore.MouseDragActionRequest
+typealias ClickActionRequest = LabanCore.ClickActionRequest
+typealias SelectionActionRequest = LabanCore.SelectionActionRequest
+typealias SessionTargetActionRequest = LabanCore.SessionTargetActionRequest
+typealias DropFilesActionRequest = LabanCore.DropFilesActionRequest
+typealias ScrollViewportActionRequest = LabanCore.ScrollViewportActionRequest
+typealias FindStartRequest = LabanCore.FindStartRequest
+typealias FindStepRequest = LabanCore.FindStepRequest
+typealias FindSessionRequest = LabanCore.FindSessionRequest
+typealias CaptureStartRequest = LabanCore.CaptureStartRequest
 
 struct CaptureStatusResponse: Encodable {
   var active: Bool
@@ -276,37 +222,7 @@ struct CaptureStopResponse: Encodable {
   var manifestPath: String
 }
 
-struct WaitRequest: Decodable {
-  var timeoutMs: Int
-  var condition: WaitCondition
-}
-
-struct WaitCondition: Decodable {
-  var kind: String
-  var frame: Int?
-  var eventKind: String?
-  var count: Int?
-  var tabId: String?
-  var sessionId: String?
-  var status: String?
-  var title: String?
-  var text: String?
-  var commandKind: String?
-  var invariantKind: String?
-  var level: String?
-}
-
-struct RenderTraceRequest: Decodable {
-  var frame: Int?
-  var target: String?
-  var include: [String]?
-  var commandIds: [String]?
-  var pixelProbes: [PixelProbeReq]?
-  var limit: Int?
-}
-
-struct PixelProbeReq: Decodable {
-  var name: String?
-  var x: Int
-  var y: Int
-}
+typealias WaitRequest = LabanCore.WaitRequest
+typealias WaitCondition = LabanCore.WaitCondition
+typealias RenderTraceRequest = LabanCore.RenderTraceRequest
+typealias PixelProbeReq = LabanCore.PixelProbeReq

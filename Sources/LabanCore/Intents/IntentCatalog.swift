@@ -331,6 +331,8 @@ public enum Intent: Sendable, Equatable {
   case tabSelect(TabSelectInput)
   case terminalTypeText(TypeTextInput)
   case terminalSendKey(SendKeyInput)
+  case legacyDebugAction(LegacyDebugActionInput)
+  case unsupportedDebugAction(UnsupportedDebugActionInput)
 
   public var id: String {
     switch self {
@@ -340,6 +342,10 @@ public enum Intent: Sendable, Equatable {
       return "terminal.typeText"
     case .terminalSendKey:
       return "terminal.sendKey"
+    case .legacyDebugAction(let input):
+      return input.intentID
+    case .unsupportedDebugAction:
+      return DebugActionIntentID.unsupported
     }
   }
 }
@@ -634,70 +640,13 @@ public struct IntentCatalog: Sendable {
     }
   }
 
-  public static let shared = IntentCatalog([
-    IntentDescriptor(
-      id: "app.state",
-      kind: .query,
-      category: "app",
-      summary: "Read current application state.",
-      requiredCapability: .observe,
-      dataSensitivity: .nonSensitiveState,
-      sideEffects: .init(),
-      risk: .init(level: .none, reason: "Read-only state snapshot."),
-      audit: .metadataOnly,
-      availability: .init(gui: true, headless: true),
-      transports: .init(http: true, mcp: true, cli: true),
-      inputSchema: nil,
-      outputSchema: stateOutputSchema,
-      errorSchema: errorSchema),
-    IntentDescriptor(
-      id: "tab.select",
-      kind: .action,
-      category: "tab",
-      summary: "Select an existing terminal tab.",
-      requiredCapability: .control,
-      dataSensitivity: .nonSensitiveState,
-      sideEffects: .init(),
-      risk: .init(level: .low, reason: "Changes focus without writing to the terminal."),
-      audit: .metadataOnly,
-      availability: .init(gui: true, headless: true),
-      transports: .init(http: true, mcp: true, cli: true),
-      inputSchema: TabSelectInput.jsonSchema,
-      outputSchema: actionOutputSchema,
-      errorSchema: errorSchema),
-    IntentDescriptor(
-      id: "terminal.typeText",
-      kind: .action,
-      category: "terminal",
-      summary: "Type text into the selected terminal.",
-      requiredCapability: .control,
-      dataSensitivity: .keystrokes,
-      sideEffects: .init(ptyInput: true),
-      risk: .init(level: .medium, reason: "Writes caller-provided text to the terminal PTY."),
-      audit: .fullInput,
-      availability: .init(gui: true, headless: true),
-      transports: .init(http: true, mcp: true, cli: true),
-      inputSchema: TypeTextInput.jsonSchema,
-      outputSchema: actionOutputSchema,
-      errorSchema: errorSchema),
-    IntentDescriptor(
-      id: "terminal.sendKey",
-      kind: .action,
-      category: "terminal",
-      summary: "Send a key press to the selected terminal.",
-      requiredCapability: .control,
-      dataSensitivity: .keystrokes,
-      sideEffects: .init(ptyInput: true),
-      risk: .init(level: .medium, reason: "Writes a synthesized key press to the terminal PTY."),
-      audit: .fullInput,
-      availability: .init(gui: true, headless: true),
-      transports: .init(http: true, mcp: true, cli: true),
-      inputSchema: SendKeyInput.jsonSchema,
-      outputSchema: actionOutputSchema,
-      errorSchema: errorSchema),
-  ])
+  public static let shared = IntentCatalog(
+    starterDescriptors
+      + legacyActionDescriptors
+      + legacyQueryDescriptors
+      + legacyArtifactDescriptors)
 
-  public static let fixture = IntentCatalog([])
+  public static let fixture = IntentCatalog(fixtureDescriptors)
 
   public static let all = IntentCatalog(shared.descriptors + fixture.descriptors)
 
@@ -720,6 +669,429 @@ public struct IntentCatalog: Sendable {
     ],
     required: ["error"],
     additionalProperties: false)
+
+  private static let emptyInputSchema: SchemaNode = .object(
+    properties: [:],
+    required: [],
+    additionalProperties: true)
+
+  private static let genericOutputSchema: SchemaNode = .object(
+    properties: [:],
+    required: [],
+    additionalProperties: true)
+
+  private static let httpTransports = IntentDescriptor.Transports(
+    http: true,
+    mcp: false,
+    cli: false)
+
+  private static let guiAndHeadless = IntentDescriptor.Availability(gui: true, headless: true)
+  private static let headlessOnly = IntentDescriptor.Availability(gui: false, headless: true)
+
+  private static let starterDescriptors: [IntentDescriptor] = [
+    descriptor(
+      id: "app.state",
+      kind: .query,
+      category: "app",
+      summary: "Read current application state.",
+      requiredCapability: .observe,
+      dataSensitivity: .nonSensitiveState,
+      availability: guiAndHeadless,
+      outputSchema: stateOutputSchema),
+    descriptor(
+      id: "tab.select",
+      kind: .action,
+      category: "tab",
+      summary: "Select an existing terminal tab.",
+      requiredCapability: .control,
+      dataSensitivity: .nonSensitiveState,
+      availability: guiAndHeadless,
+      inputSchema: TabSelectInput.jsonSchema,
+      outputSchema: actionOutputSchema),
+    descriptor(
+      id: "terminal.typeText",
+      kind: .action,
+      category: "terminal",
+      summary: "Type text into the selected terminal.",
+      requiredCapability: .control,
+      dataSensitivity: .keystrokes,
+      sideEffects: .init(ptyInput: true),
+      risk: .init(level: .medium, reason: "Writes caller-provided text to the terminal PTY."),
+      audit: .fullInput,
+      availability: guiAndHeadless,
+      inputSchema: TypeTextInput.jsonSchema,
+      outputSchema: actionOutputSchema),
+    descriptor(
+      id: "terminal.sendKey",
+      kind: .action,
+      category: "terminal",
+      summary: "Send a key press to the selected terminal.",
+      requiredCapability: .control,
+      dataSensitivity: .keystrokes,
+      sideEffects: .init(ptyInput: true),
+      risk: .init(level: .medium, reason: "Writes a synthesized key press to the terminal PTY."),
+      audit: .fullInput,
+      availability: guiAndHeadless,
+      inputSchema: SendKeyInput.jsonSchema,
+      outputSchema: actionOutputSchema),
+  ]
+
+  private static let legacyActionDescriptors: [IntentDescriptor] = [
+    descriptor(id: "tab.new", category: "tab", summary: "Create and select a new tab."),
+    descriptor(
+      id: "tab.close",
+      category: "tab",
+      summary: "Close a tab by id or the active tab.",
+      inputSchema: TabTargetActionRequest.jsonSchema),
+    descriptor(
+      id: "tab.title.set",
+      category: "tab",
+      summary: "Set a manual tab title.",
+      inputSchema: TabTitleActionRequest.jsonSchema),
+    descriptor(
+      id: "tab.title.freeze",
+      category: "tab",
+      summary: "Freeze or unfreeze title updates.",
+      inputSchema: TabTitleActionRequest.jsonSchema),
+    descriptor(
+      id: "tab.title.clear",
+      category: "tab",
+      summary: "Clear the manual tab title.",
+      inputSchema: TabTargetActionRequest.jsonSchema),
+    descriptor(
+      id: "tab.metadata.set",
+      category: "tab",
+      summary: "Set tab metadata shown by debug state and journals.",
+      inputSchema: TabMetadataActionRequest.jsonSchema),
+    descriptor(
+      id: "tab.move",
+      category: "tab",
+      summary: "Move a tab to a target index.",
+      inputSchema: MoveTabActionRequest.jsonSchema),
+    descriptor(
+      id: "window.resize",
+      category: "window",
+      summary: "Resize the headless window surface.",
+      inputSchema: ResizeWindowActionRequest.jsonSchema),
+    descriptor(
+      id: "app.fontSize.set",
+      category: "app",
+      summary: "Set the live terminal font size.",
+      inputSchema: SetFontSizeActionRequest.jsonSchema),
+    descriptor(
+      id: "clipboard.setText",
+      category: "clipboard",
+      summary: "Set debug clipboard text.",
+      requiredCapability: .clipboard,
+      dataSensitivity: .clipboard,
+      inputSchema: TextActionRequest.jsonSchema),
+    descriptor(
+      id: "clipboard.copy",
+      category: "clipboard",
+      summary: "Copy the current terminal selection.",
+      requiredCapability: .clipboard,
+      dataSensitivity: .clipboard,
+      inputSchema: SessionTargetActionRequest.jsonSchema),
+    descriptor(
+      id: "clipboard.paste",
+      category: "clipboard",
+      summary: "Paste debug clipboard text into the terminal.",
+      requiredCapability: .clipboard,
+      dataSensitivity: .clipboard,
+      sideEffects: .init(ptyInput: true),
+      inputSchema: emptyInputSchema),
+    descriptor(
+      id: "selection.set",
+      category: "selection",
+      summary: "Set terminal selection cell anchors.",
+      dataSensitivity: .visibleText,
+      inputSchema: SelectionActionRequest.jsonSchema),
+    descriptor(
+      id: "find.start",
+      category: "find",
+      summary: "Start literal find in a terminal session.",
+      dataSensitivity: .visibleText,
+      inputSchema: FindStartRequest.jsonSchema),
+    descriptor(
+      id: "find.step",
+      category: "find",
+      summary: "Advance the selected find match.",
+      dataSensitivity: .visibleText,
+      inputSchema: FindStepRequest.jsonSchema),
+    descriptor(
+      id: "find.stop",
+      category: "find",
+      summary: "Stop find and clear highlights.",
+      inputSchema: FindSessionRequest.jsonSchema),
+    descriptor(
+      id: "terminal.dropFiles",
+      category: "terminal",
+      summary: "Drop files into terminal content.",
+      sideEffects: .init(filesystem: true),
+      inputSchema: DropFilesActionRequest.jsonSchema),
+    descriptor(
+      id: "terminal.scrollViewport",
+      category: "terminal",
+      summary: "Move terminal scrollback viewport.",
+      inputSchema: ScrollViewportActionRequest.jsonSchema),
+    descriptor(
+      id: "terminal.mouseWheel",
+      category: "terminal",
+      summary: "Send a mouse wheel event.",
+      sideEffects: .init(ptyInput: true),
+      inputSchema: MouseWheelActionRequest.jsonSchema),
+    descriptor(
+      id: "terminal.mouseDrag",
+      category: "terminal",
+      summary: "Send a mouse press-drag-release gesture.",
+      sideEffects: .init(ptyInput: true),
+      inputSchema: MouseDragActionRequest.jsonSchema),
+    descriptor(
+      id: "terminal.click",
+      category: "terminal",
+      summary: "Send a click to sidebar or terminal content.",
+      sideEffects: .init(ptyInput: true),
+      inputSchema: ClickActionRequest.jsonSchema),
+    descriptor(
+      id: DebugActionIntentID.unsupported,
+      category: "debug",
+      summary: "Route an unknown legacy debug action to the legacy unsupported response.",
+      availability: guiAndHeadless,
+      inputSchema: UnsupportedDebugActionInput.jsonSchema),
+  ]
+
+  private static let legacyQueryDescriptors: [IntentDescriptor] = [
+    descriptor(
+      id: "debug.discovery", kind: .query, category: "discovery",
+      summary: "List debug endpoints and examples."),
+    descriptor(
+      id: "debug.capabilities", kind: .query, category: "discovery",
+      summary: "Alias for debug discovery."),
+    descriptor(
+      id: "debug.health", kind: .query, category: "readiness",
+      summary: "Report debug process readiness."),
+    descriptor(
+      id: "app.accessibility", kind: .query, category: "state",
+      summary: "Return terminal accessibility projection."),
+    descriptor(
+      id: "terminal.modes", kind: .query, category: "state",
+      summary: "Return active terminal mode state."),
+    descriptor(
+      id: "persistence.state", kind: .query, category: "state",
+      summary: "Inspect persistence files and agent mirrors."),
+    descriptor(
+      id: "persistence.flush", category: "persistence",
+      summary: "Synchronously flush persistence writers."),
+    descriptor(
+      id: "persistence.relaunch", category: "persistence",
+      summary: "Rebuild state from persisted workspace data."),
+    descriptor(
+      id: "persistence.restorePicker", kind: .query, category: "state",
+      summary: "Return pending semantic restore candidates."),
+    descriptor(
+      id: "persistence.restorePicker.select",
+      category: "persistence",
+      summary: "Launch selected semantic restore candidates.",
+      inputSchema: AgentRestoreSelectionRequest.jsonSchema),
+    descriptor(
+      id: "find.state", kind: .query, category: "find", summary: "Return current find state.",
+      dataSensitivity: .visibleText),
+    descriptor(
+      id: "shellIntegration.state", kind: .query, category: "state",
+      summary: "Return OSC 133 shell integration state."),
+    descriptor(
+      id: "scrollIndicator.state", kind: .query, category: "state",
+      summary: "Return scroll indicator debug state."),
+    descriptor(
+      id: "scrollTrace", kind: .query, category: "state",
+      summary: "Return scroll diagnostic events."),
+    descriptor(
+      id: "wait.condition",
+      kind: .wait,
+      category: "control",
+      summary: "Block until a debug condition is true.",
+      inputSchema: WaitRequest.jsonSchema),
+    descriptor(
+      id: "session.list", kind: .query, category: "state", summary: "Return all terminal sessions."),
+    descriptor(
+      id: "session.detail", kind: .query, category: "state", summary: "Return one terminal session."
+    ),
+    descriptor(
+      id: "render.state", kind: .query, category: "rendering",
+      summary: "Return renderer state and draw stats.", dataSensitivity: .trace),
+    descriptor(
+      id: "render.frameCommands", kind: .query, category: "rendering",
+      summary: "Return bounded frame commands.", dataSensitivity: .trace),
+    descriptor(
+      id: "render.trace",
+      kind: .query,
+      category: "rendering",
+      summary: "Return render contributors, resources, passes, and probes.",
+      dataSensitivity: .trace,
+      inputSchema: RenderTraceRequest.jsonSchema),
+    descriptor(
+      id: "render.pixelProbe",
+      kind: .query,
+      category: "exploration",
+      summary: "Sample exact pixels and rectangular regions.",
+      dataSensitivity: .screenshot,
+      inputSchema: PixelProbeRequest.jsonSchema),
+    descriptor(
+      id: "render.atlas", kind: .query, category: "rendering",
+      summary: "Return font atlas diagnostics."),
+    descriptor(
+      id: "artifact.snapshot", category: "exploration",
+      summary: "Write a diagnostic artifact bundle.", sideEffects: .init(filesystem: true)),
+    descriptor(id: "log.events", kind: .query, category: "logs", summary: "Return debug events."),
+    descriptor(
+      id: "log.tabJournal", kind: .query, category: "logs",
+      summary: "Return tab state journal events."),
+    descriptor(
+      id: "log.input", kind: .query, category: "logs",
+      summary: "Return keyboard/text routing diagnostics.", dataSensitivity: .keystrokes),
+    descriptor(
+      id: "log.terminal", kind: .query, category: "logs",
+      summary: "Return terminal byte-flow diagnostics.", dataSensitivity: .scrollback),
+    descriptor(
+      id: "log.timing", kind: .query, category: "logs",
+      summary: "Return endpoint and render timing."),
+    descriptor(
+      id: "log.metrics", kind: .query, category: "logs", summary: "Return local debug counters."),
+    descriptor(
+      id: "log.errors", kind: .query, category: "logs",
+      summary: "Return structured warnings and errors."),
+    descriptor(
+      id: "capture.status", kind: .query, category: "capture",
+      summary: "Return full capture recording status."),
+    descriptor(
+      id: "capture.start", category: "capture", summary: "Start full capture recording.",
+      sideEffects: .init(filesystem: true), inputSchema: CaptureStartRequest.jsonSchema),
+    descriptor(
+      id: "capture.stop", category: "capture", summary: "Stop full capture recording.",
+      sideEffects: .init(filesystem: true)),
+    descriptor(
+      id: "capture.snapshot", category: "capture",
+      summary: "Write a snapshot inside the active capture run.",
+      sideEffects: .init(filesystem: true)),
+    descriptor(
+      id: "selection.read", kind: .query, category: "state",
+      summary: "Return current terminal selection.", dataSensitivity: .visibleText),
+    descriptor(
+      id: "clipboard.read", kind: .query, category: "state",
+      summary: "Return debug clipboard diagnostics.", dataSensitivity: .clipboard),
+  ]
+
+  private static let legacyArtifactDescriptors: [IntentDescriptor] = [
+    descriptor(
+      id: "artifact.screenshot",
+      kind: .artifact,
+      category: "artifacts",
+      summary: "Return the current rendered surface as PNG bytes.",
+      dataSensitivity: .screenshot,
+      outputSchema: nil),
+    descriptor(
+      id: "artifact.screenshot.write",
+      category: "artifacts",
+      summary: "Write a screenshot PNG under the artifact directory.",
+      dataSensitivity: .screenshot,
+      sideEffects: .init(filesystem: true)),
+    descriptor(
+      id: "cast.recent",
+      kind: .artifact,
+      category: "capture",
+      summary: "Snapshot recent PTY output as an asciinema cast.",
+      dataSensitivity: .scrollback,
+      outputSchema: nil),
+  ]
+
+  private static let fixtureDescriptors: [IntentDescriptor] = [
+    descriptor(
+      id: "fixture.feedOutput",
+      category: "fixture",
+      summary: "Inject fixture terminal output bytes.",
+      requiredCapability: .fixture,
+      dataSensitivity: .scrollback,
+      inputSchema: TextActionRequest.jsonSchema),
+    descriptor(
+      id: "fixture.advanceFrames",
+      category: "fixture",
+      summary: "Render one or more deterministic fixture frames.",
+      requiredCapability: .fixture,
+      inputSchema: AdvanceFramesActionRequest.jsonSchema),
+    descriptor(
+      id: "fixture.windowFocus",
+      category: "fixture",
+      summary: "Drive terminal focus reporting in headless runs.",
+      requiredCapability: .fixture,
+      inputSchema: WindowFocusActionRequest.jsonSchema),
+    descriptor(
+      id: "fixture.control",
+      category: "fixture",
+      summary: "Load, restart, or step fixture sessions.",
+      requiredCapability: .fixture,
+      sideEffects: .init(lifecycle: true, filesystem: true),
+      inputSchema: FixtureControlRequest.jsonSchema),
+  ]
+
+  private static func descriptor(
+    id: String,
+    kind: IntentDescriptor.Kind = .action,
+    category: String,
+    summary: String,
+    requiredCapability: Capability? = nil,
+    dataSensitivity: DataSensitivity = .nonSensitiveState,
+    sideEffects: IntentDescriptor.SideEffects = .init(),
+    risk: IntentDescriptor.Risk = .init(level: .low, reason: "Legacy debug surface operation."),
+    audit: IntentDescriptor.Audit = .metadataOnly,
+    availability: IntentDescriptor.Availability? = nil,
+    transports: IntentDescriptor.Transports? = nil,
+    inputSchema: SchemaNode? = nil,
+    outputSchema: SchemaNode? = nil,
+    errorSchema: SchemaNode? = nil
+  ) -> IntentDescriptor {
+    IntentDescriptor(
+      id: id,
+      kind: kind,
+      category: category,
+      summary: summary,
+      requiredCapability: requiredCapability ?? defaultCapability(for: kind),
+      dataSensitivity: dataSensitivity,
+      sideEffects: sideEffects,
+      risk: risk,
+      audit: audit,
+      availability: availability ?? headlessOnly,
+      transports: transports ?? httpTransports,
+      inputSchema: inputSchema ?? defaultInputSchema(for: kind),
+      outputSchema: outputSchema ?? defaultOutputSchema(for: kind),
+      errorSchema: errorSchema ?? Self.errorSchema)
+  }
+
+  private static func defaultInputSchema(for kind: IntentDescriptor.Kind) -> SchemaNode? {
+    switch kind {
+    case .action, .wait:
+      return emptyInputSchema
+    case .query, .event, .artifact:
+      return nil
+    }
+  }
+
+  private static func defaultCapability(for kind: IntentDescriptor.Kind) -> Capability {
+    switch kind {
+    case .query, .artifact:
+      return .observe
+    case .action, .wait, .event:
+      return .control
+    }
+  }
+
+  private static func defaultOutputSchema(for kind: IntentDescriptor.Kind) -> SchemaNode? {
+    switch kind {
+    case .artifact:
+      return nil
+    case .query, .action, .wait, .event:
+      return genericOutputSchema
+    }
+  }
 
   private func validateSchema(_ schema: SchemaNode?, id: String, field: String) throws {
     guard let schema else {

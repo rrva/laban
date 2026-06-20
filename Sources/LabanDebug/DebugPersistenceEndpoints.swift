@@ -219,11 +219,7 @@ private func responseJSON(_ payload: [String: Any]) -> DebugResponse {
   return DebugResponse(status: 200, body: body)
 }
 
-private struct AgentRestoreSelectionRequest: Decodable {
-  var tabIds: [String]?
-  var selectedTabIds: [String]?
-  var environmentPatch: [String: String]?
-}
+private typealias AgentRestoreSelectionRequest = LabanCore.AgentRestoreSelectionRequest
 
 private struct AgentRestoreSelectionResult: Encodable {
   var tabId: String

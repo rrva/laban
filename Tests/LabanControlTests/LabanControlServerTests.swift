@@ -137,6 +137,97 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(String(data: data, encoding: .utf8), #"{"error":"unavailable on gui"}"#)
   }
 
+  func testFixtureActionIsKnownButUnavailableOnGUIWithoutRouterCall() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let (status, data) = try await request(
+      url: "\(readiness.debugServer)/debug/actions",
+      method: "POST",
+      token: readiness.debugToken,
+      body: Data(#"{"action":"feedOutput","text":"abc"}"#.utf8))
+
+    XCTAssertEqual(status, 404)
+    XCTAssertEqual(router.intents(), [])
+    XCTAssertEqual(String(data: data, encoding: .utf8), #"{"error":"unavailable on gui"}"#)
+  }
+
+  func testUnknownActionDispatchesUnsupportedIntentInsteadOfUnavailable404() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let (status, _) = try await request(
+      url: "\(readiness.debugServer)/debug/actions",
+      method: "POST",
+      token: readiness.debugToken,
+      body: Data(#"{"action":"future.action"}"#.utf8))
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.intents(),
+      [.unsupportedDebugAction(UnsupportedDebugActionInput(action: "future.action"))])
+  }
+
+  func testMalformedAndMissingActionsRemainBadRequest() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .gui)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let missing = try await request(
+      url: "\(readiness.debugServer)/debug/actions",
+      method: "POST",
+      token: readiness.debugToken,
+      body: Data(#"{"text":"abc"}"#.utf8))
+    XCTAssertEqual(missing.0, 400)
+    XCTAssertEqual(String(data: missing.1, encoding: .utf8), #"{"error":"bad request"}"#)
+
+    let malformed = try await request(
+      url: "\(readiness.debugServer)/debug/actions",
+      method: "POST",
+      token: readiness.debugToken,
+      body: Data(#"{"action":"selectTab""#.utf8))
+    XCTAssertEqual(malformed.0, 400)
+    XCTAssertEqual(String(data: malformed.1, encoding: .utf8), #"{"error":"bad request"}"#)
+    XCTAssertEqual(router.intents(), [])
+  }
+
+  func testRouteMetadataCarriesRepresentativeLegacySchemas() throws {
+    let bindings = ControlRouteCatalog.bindings
+
+    let actions = try XCTUnwrap(
+      bindings.first { $0.method == "POST" && $0.path == "/debug/actions" })
+    XCTAssertEqual(actions.legacyRequestSchemaPath, "schemas/debug/action.schema.json")
+    XCTAssertEqual(actions.legacyResponseSchemaPath, "schemas/debug/action-result.schema.json")
+
+    let wait = try XCTUnwrap(bindings.first { $0.method == "POST" && $0.path == "/debug/wait" })
+    XCTAssertEqual(wait.legacyRequestSchemaPath, "schemas/debug/wait.schema.json")
+    XCTAssertEqual(wait.legacyResponseSchemaPath, "schemas/debug/wait-result.schema.json")
+
+    let state = try XCTUnwrap(bindings.first { $0.method == "GET" && $0.path == "/debug/state" })
+    XCTAssertNil(state.legacyRequestSchemaPath)
+    XCTAssertEqual(state.legacyResponseSchemaPath, "schemas/debug/state.schema.json")
+  }
+
+  func testRouteCatalogCoversLegacyDebugSurfaceAndDescriptors() throws {
+    let endpoints = ControlRouteCatalog.endpoints
+    XCTAssertEqual(endpoints.count, 45)
+    XCTAssertEqual(Set(endpoints.map { "\($0.binding.method) \($0.binding.path)" }).count, 45)
+    XCTAssertNotNil(
+      endpoints.first { $0.binding.method == "GET" && $0.binding.path == "/debug/sessions/<id>" })
+
+    for endpoint in endpoints {
+      guard let intentID = endpoint.fixedIntentId else {
+        continue
+      }
+      XCTAssertNotNil(IntentCatalog.all.descriptor(id: intentID), intentID)
+    }
+  }
+
   private func request(
     url: String,
     method: String = "GET",

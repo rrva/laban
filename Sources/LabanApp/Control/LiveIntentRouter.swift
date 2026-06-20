@@ -53,7 +53,7 @@ final class LiveIntentRouter: IntentRouter {
         return .error(400, "missing index")
       }
       return .json(selectTab(index: index))
-    case .terminalTypeText, .terminalSendKey:
+    case .terminalTypeText, .terminalSendKey, .legacyDebugAction, .unsupportedDebugAction:
       return .error(400, "unsupported")
     }
   }
