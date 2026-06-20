@@ -505,6 +505,23 @@ preference toggle suppresses them entirely.
   fallback, word selection, and IME preedit sizing.
   Date/Author: 2026-06-19, M2 executor.
 
+## Validation and Acceptance
+
+This plan is accepted only when every attempted milestone has the milestone-
+specific acceptance evidence listed above, the Review Gate below has passed in a
+fresh context, and the repository build/test gates are green.
+
+Current validation state:
+
+- M1, M2, M3, M4, M5, and M7 have implementation notes in `Progress` and
+  supporting evidence in `Artifacts and Notes`.
+- M6 remains incomplete until the ADR/formal-spec-gated raw→canonical input
+  integrity work lands, or until a future update explicitly defers it with a
+  Review Gate note.
+- The final acceptance gate is still pending: `./scripts/build-app`, `swift
+  test`, the milestone-specific Review Gate checks, and the MVP regression check
+  in `docs/product/mvp.md` must be verified by the fresh review agent.
+
 ## Review Gate
 
 A separate agent with fresh state must verify the following before this ExecPlan
