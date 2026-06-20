@@ -27,6 +27,8 @@ final class MainWindowController: NSWindowController {
   /// `LABAN_SCROLL_DEBUG` is set; strong ref so its accept thread outlives
   /// `makeAndShow`'s local scope. See `ScrollDebugServer`.
   private(set) var scrollDebugServer: ScrollDebugServer?
+  /// Env-gated Phase 0 loopback control server for live GUI state/actions.
+  private(set) var controlServer: LabanControlServer?
 
   func accessibilityDebugState() -> [String: Any]? {
     terminalView?.debugAccessibilityState()
@@ -502,6 +504,26 @@ final class MainWindowController: NSWindowController {
       let server = ScrollDebugServer(model: model, termView: termView, indicator: scrollIndicator)
       server.start(config: config)
       controller.scrollDebugServer = server
+    }
+
+    if ProcessInfo.processInfo.environment["LABAN_CONTROL_SERVER"] == "1" {
+      do {
+        let router = LiveIntentRouter(model: model)
+        let server = LabanControlServer(router: router)
+        let info = try server.start()
+        let runId =
+          ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
+          ?? "gui-\(ProcessInfo.processInfo.processIdentifier)"
+        try ControlAdvertisement.write(
+          url: info.url,
+          token: info.token,
+          pid: ProcessInfo.processInfo.processIdentifier,
+          runId: runId)
+        controller.controlServer = server
+        AppLog.app.info("control server: \(info.url)")
+      } catch {
+        AppLog.app.error("control server failed: \(String(describing: error))")
+      }
     }
 
     return controller

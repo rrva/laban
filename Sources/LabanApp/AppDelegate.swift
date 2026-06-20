@@ -284,6 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     if RestoreOnLaunchSettings.isEnabled {
       windowController?.agentObserverHost?.flushAll()
     }
+    ControlAdvertisement.remove()
     windowController?.detachTerminalSessions()
     if secureInputEngaged {
       DisableSecureEventInput()

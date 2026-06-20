@@ -514,19 +514,22 @@ prints the 403 JSON. Kill the app with `kill %1` when done.
 
 ## Progress
 
-- [ ] `Sources/LabanApp/Control/ControlRouter.swift` added.
-- [ ] `Sources/LabanApp/Control/LiveIntentRouter.swift` added.
-- [ ] `Sources/LabanApp/Control/LabanControlServer.swift` added (bind/token/accept + `evaluateGuard`).
-- [ ] `LabanControlServer` has `stop()`/`deinit`, strict `Host`/IPv6 parsing, and accept-loop read/size limits.
-- [ ] `ControlAdvertisement` writes `control.json` `0600`-from-first-byte (`O_EXCL` then `rename`), not `.atomic`+chmod.
-- [ ] `Sources/LabanApp/Control/ControlAdvertisement.swift` added.
-- [ ] `MainWindowController.makeAndShow` mounts the server behind `LABAN_CONTROL_SERVER=1`; `controlServer` property added.
-- [ ] `AppDelegate.applicationWillTerminate` removes `control.json` (best effort).
-- [ ] `Tests/LabanAppTests/ControlServerPhase0Tests.swift` added (cases 1–4).
-- [ ] `./scripts/build-app` succeeds.
-- [ ] `swift test --filter ControlServerPhase0Tests` passes.
-- [ ] `./scripts/check` passes.
-- [ ] Manual GUI verification transcript captured in Artifacts.
+- [x] (2026-06-20) `Sources/LabanApp/Control/ControlRouter.swift` added.
+- [x] (2026-06-20) `Sources/LabanApp/Control/LiveIntentRouter.swift` added.
+- [x] (2026-06-20) `Sources/LabanApp/Control/LabanControlServer.swift` added (bind/token/accept + `evaluateGuard`).
+- [x] (2026-06-20) `LabanControlServer` has `stop()`/`deinit`, strict `Host`/IPv6 parsing, and accept-loop read/size limits.
+- [x] (2026-06-20) `ControlAdvertisement` writes `control.json` `0600`-from-first-byte (`O_EXCL` then `rename`), not `.atomic`+chmod.
+- [x] (2026-06-20) `Sources/LabanApp/Control/ControlAdvertisement.swift` added.
+- [x] (2026-06-20) `MainWindowController.makeAndShow` mounts the server behind `LABAN_CONTROL_SERVER=1`; `controlServer` property added.
+- [x] (2026-06-20) `AppDelegate.applicationWillTerminate` removes `control.json` (best effort).
+- [x] (2026-06-20) `Tests/LabanAppTests/ControlServerPhase0Tests.swift` added (Validation cases 1–4 plus start/stop/start lifecycle).
+- [x] (2026-06-20) `./scripts/build-app` succeeds.
+- [x] (2026-06-20) `swift test --filter ControlServerPhase0Tests` passes.
+- [x] (2026-06-20) `./scripts/check` passes.
+- [x] (2026-06-20) Manual GUI HTTP transcript captured in Artifacts. The
+      operator launched the GUI; bearer token omitted from notes.
+- [x] (2026-06-20) Operator visible-switch confirmation captured for manual GUI
+      verification.
 
 ## Decision Log
 
@@ -584,39 +587,59 @@ prints the 403 JSON. Kill the app with `kill %1` when done.
 A separate agent with fresh state must verify the following before this plan is
 marked done. Run from the repository root.
 
-- [ ] `swift test --filter ControlServerPhase0Tests` exits 0 and reports ≥4
+- [x] `swift test --filter ControlServerPhase0Tests` exits 0 and reports ≥4
       tests, 0 failures.
-- [ ] Guard matrix is real: in `ControlServerPhase0Tests.swift`, confirm
+- [x] Guard matrix is real: in `ControlServerPhase0Tests.swift`, confirm
       assertions exist for every `evaluateGuard` row under Validation case 1,
       including the malformed-Host rows (`[::1]evil`, `localhost.evil.com`,
       `127.0.0.1.evil.com` → `.forbidden`; `[::1]`, `[::1]:1234`,
       `localhost:1234` → `.ok`).
-- [ ] Default-off: `grep -n 'LABAN_CONTROL_SERVER' Sources/LabanApp/MainWindowController.swift`
+- [x] Default-off: `grep -n 'LABAN_CONTROL_SERVER' Sources/LabanApp/MainWindowController.swift`
       shows the server is started only inside an `== "1"` guard, and
       `grep -rn 'LabanControlServer(' Sources/LabanApp` shows no construction
       outside that guard or the test target.
-- [ ] `grep -rn 'Origin' Sources/LabanApp/Control/LabanControlServer.swift`
+- [x] `grep -rn 'Origin' Sources/LabanApp/Control/LabanControlServer.swift`
       shows the `Origin`-present → `.forbidden` rule.
-- [ ] Secure token write: `grep -n 'O_EXCL' Sources/LabanApp/Control/ControlAdvertisement.swift`
+- [x] Secure token write: `grep -n 'O_EXCL' Sources/LabanApp/Control/ControlAdvertisement.swift`
       shows the temp file is created `0600` before bytes are written, and
       `grep -n '\.atomic' Sources/LabanApp/Control/ControlAdvertisement.swift`
       returns **no** hits (chmod-after-write is not used).
-- [ ] Lifecycle: `grep -n 'func stop' Sources/LabanApp/Control/LabanControlServer.swift`
+- [x] Lifecycle: `grep -n 'func stop' Sources/LabanApp/Control/LabanControlServer.swift`
       and `grep -n 'deinit' Sources/LabanApp/Control/LabanControlServer.swift`
       both hit; a start/stop/start unit test passes and
       `swift test --filter ControlServerPhase0Tests` leaves no hung threads.
-- [ ] Token never logged: `grep -rn 'token' Sources/LabanApp/Control` and the
+- [x] Token never logged: `grep -rn 'token' Sources/LabanApp/Control` and the
       `MainWindowController` mount block show no log statement interpolating a
       token value (logging the URL is fine).
-- [ ] `./scripts/build-app` exits 0 and prints the final
+- [x] `./scripts/build-app` exits 0 and prints the final
       `build-app: .../LabanApp` line.
-- [ ] `./scripts/check` exits 0.
+- [x] `./scripts/check` exits 0.
 
-Review status: NOT REVIEWED
+Review status: PASS (2026-06-20, fresh agent `019ee463-ca7a-7a90-a84e-02a09ec74a78`)
 
 Review findings (filled in by the review agent):
 
-(none yet)
+No findings. The fresh reviewer confirmed `ControlServerPhase0Tests` ran 5
+tests with 0 failures; the guard matrix, default-off mount, Origin rejection,
+secure `O_EXCL` advertisement write, lifecycle hooks, token logging, build-app,
+and full `./scripts/check` all satisfy this gate.
+
+## Surprises & Discoveries
+
+- Observation: `./scripts/check` was initially blocked by an unrelated active
+  ExecPlan hygiene failure before it reached any Phase 0 validation. Adding the
+  missing `## Validation and Acceptance` section to
+  `execplans/active/user-facing-bug-audit-fixes-2026-06-19.md` unblocked the
+  gate.
+  Evidence: the first run printed
+  `check failed: execplans/active/user-facing-bug-audit-fixes-2026-06-19.md missing Validation and Acceptance section`;
+  the final rerun in `.build/check-phase0.log` ends with `check passed`.
+- Observation: the first full rerun after the hygiene fix hit a transient
+  labpty adversarial-test failure outside the Phase 0 control seam. The failed
+  case passed in isolation and on the final full rerun.
+  Evidence: `swift test --filter LabptyAdversarialTests/testRapidOpenTerminateSameLogicalIdSurvives`
+  passed; `.build/check-phase0.log` shows the same case passed and the full
+  gate completed with `check passed`.
 
 ## Idempotence and Recovery
 
@@ -655,6 +678,77 @@ Dependencies: only `Foundation`/`Darwin`/`LabanCore` (for `AppModel`) and
 
 ## Artifacts and Notes
 
-(Capture the manual transcript here once run — the `curl` state/select/state
-sequence showing `activeTabId` changing — as the evidence the live GUI seam
-works.)
+- Automated targeted test, 2026-06-20:
+
+      swift test --filter ControlServerPhase0Tests
+      Executed 5 tests, with 0 failures (0 unexpected)
+
+- App bundle build, 2026-06-20:
+
+      ./scripts/build-app
+      build-app: codesigned ad-hoc
+      build-app: .build/laban/Laban.app/Contents/MacOS/LabanApp
+
+- Full structural gate, 2026-06-20:
+
+      ./scripts/check
+      coverage-labpty: daemon MC/DC 46.29% holds the 45% floor
+      check passed
+
+- Final structural gate after manual-transcript notes, 2026-06-20:
+
+      ./scripts/check
+      smoke-runtime passed
+      test-e2e passed
+      coverage-labpty: daemon MC/DC 46.29% holds the 45% floor
+      check passed
+
+- Transient full-gate rerun note, 2026-06-20:
+
+      swift test --filter LabptyAdversarialTests/testRapidOpenTerminateSameLogicalIdSurvives
+      Executed 1 test, with 0 failures (0 unexpected)
+
+- Manual GUI verification completed against an operator-launched
+  `/Users/rrj/Laban.app` with `LABAN_CONTROL_SERVER=1`.
+
+- Manual GUI HTTP transcript, 2026-06-20 (operator launched
+  `/Users/rrj/Laban.app` with `LABAN_CONTROL_SERVER=1`; bearer token omitted):
+
+      stat /tmp/labanctl/control.json
+      -rw------- 501:0 /tmp/labanctl/control.json
+
+      jq -r '{url, pid, runId}' /tmp/labanctl/control.json
+      {
+        "url": "http://127.0.0.1:54577",
+        "pid": "35731",
+        "runId": "gui-35731"
+      }
+
+      curl -H "Authorization: Bearer <token>" "$URL/debug/state"
+      tabs: 6
+      activeTabId: EF54BF37-4F3C-4CD0-AF4E-12787345B69C
+      activeIndex: 3
+
+      curl "$URL/debug/state"
+      HTTP/1.1 401 Unauthorized
+      {"error":"missing or invalid bearer token"}
+
+      curl -H "Authorization: Bearer <token>" -H "Host: evil.com" "$URL/debug/state"
+      HTTP/1.1 403 Forbidden
+      {"error":"forbidden"}
+
+      # Ordered state/action/state transcript:
+      BEFORE activeIndex: 4
+      POST {"activeTabId":"B46AF196-5F18-47CA-9E9C-C2EE060646DA","ok":true}
+      AFTER activeIndex: 0
+
+- Voice-bracketed manual GUI HTTP transcript, 2026-06-20:
+
+      say "start of test"
+      BEFORE activeIndex=3 tabs=6
+      POST {"ok":true,"activeTabId":"B46AF196-5F18-47CA-9E9C-C2EE060646DA"}
+      AFTER {"activeTabId":"B46AF196-5F18-47CA-9E9C-C2EE060646DA","activeIndex":0,"tabs":6}
+      say "end of test"
+
+  Operator confirmation: during the bracketed interval, the window visibly
+  switched to the first tab.
