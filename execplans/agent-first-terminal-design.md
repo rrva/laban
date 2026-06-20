@@ -1,265 +1,602 @@
-# Laban Agent-Control Surface: Decision-Grade Design
+# Laban Agent-Control Surface — Design v2
 
-**Author:** Chief Architect · **Date:** 2026-05-29 (resolved 2026-05-30) · **Status:** Decided — Phase 0 ready
+**Status:** Active program roadmap. **Supersedes** the 2026-05-29 v1 of this file
+(its comparator survey and grilling narrative are preserved verbatim in
+Appendix A/B; nothing in the body below depends on reading them).
 
-> Vision restated: *every visible part of the running app is queryable and controllable over a loopback HTTP server; it behaves like a normal terminal for humans and a deterministic test fixture for agents/CI.* The verified central finding: that surface exists and is rich — but it lives in `LabanAgent` (headless), not in `LabanApp` (the GUI users run). The work ahead is **relocation and unification, not invention.**
+This is a **program roadmap**, not an executable ExecPlan. The single executable
+slice in flight is `execplans/active/agent-first-phase0-control-seam.md`, which
+is **authoritative for Phase 0**. This document must never contradict that file;
+where Phase 0 detail is needed here it is summarized and linked, not restated.
 
----
-
-## 0. Resolved decisions (grilling, 2026-05-30) — authoritative; supersedes conflicting detail below
-
-**Fact corrections found while grilling (the body still reflects the pre-grill view in places):**
-
-- **Metal-truthful frames are NOT net-new.** `Sources/LabanRenderer/MetalReadback.swift` already exists (`captureMode`, drawable→CPU blit, `MetalRenderer.pngData`). The work is *wiring it to the server + managing `captureMode`'s per-frame blit cost*, not building readback.
-- **The `labpty` wire already carries child `envp`** (`LABPTY_OP_OPEN_SESSION` → `read_envp_array` → `laban_pty_open(..., envp, ...)`). Per-session token env-injection needs **no wire change**, so it does not collide with the ADR-0007 freeze.
-- **`AppModel` already lives in `LabanCore` and is AppKit-free** — `HeadlessDebugRuntime` shares it, so there is no "private model" to retire; only the renderer backend (Software/offscreen vs Metal/window) diverges.
-- **`LabanApp` already links `LabanDebug`** (for `CaptureRecorder`); hosting a server in the GUI needs instantiation, not a new dependency.
-- **ADR 0011 is taken** (alt-screen primary-pen). New ADRs are **0012** (architecture) + **0013** (security).
-
-**Decisions:**
-
-1. **v1 scope = relocation-MVP:** drive + read text/grid/scrollback/process/events. **Selection/cursor/find promotion + Metal-truthful frames are a separate, explicitly-sequenced later pillar** (they touch the AppKit view layer and carry a `captureMode` cost) — not buried inside "move the server."
-2. **Three-way target split:** registry types (`Intent`/`Query`/`IntentResult`/`Capability`/`IntentCatalog`/`IntentRouter` protocol) → **`LabanCore`** (no HTTP, no AppKit). `LabanControlServer` + `LabanControlPolicy` + HTTP↔Intent adapter → **new `LabanControl`** target. `HeadlessDebugRuntime` + fixtures + `HeadlessIntentRouter` → stay in **`LabanDebug`**. `LabanApp` and `LabanDebug` both depend on `LabanControl` and mount the same server.
-3. **Security posture = token-gated observe-on-by-default.** Server listens by default, but observe requires the token (written to `$runDir/control.json`, mode 0600, env-discoverable). Zero-setup for agents Laban spawned; closed to unauthorized local processes. **Capability tiers `.observe` / `.observeSensitive` (scrollback, process cwd/command, input log, clipboard) / `.control` land in v1.** Host/Origin validation + token are **pulled into Phase 0**.
-4. **Token model = single app-scoped token + env-injection in v1.** Per-session scoping deferred (confirmed cheap later — no wire change).
-5. **Two catalogs.** Shared `IntentCatalog` (implemented by both routers) = cross-surface user ops. Headless-only `FixtureActionCatalog` (`feedOutput`, `advanceFrames`, `windowFocus`, title-forcing) gated behind a `.fixture` capability the shipped GUI never grants — **`feedOutput`/`advanceFrames` are barred from the live surface** (byte-injection / no-op-live). Relative tab-nav folds into `selectTab(relative:)`.
-6. **Lean parity.** Two thin assemblers (`makeAndShow`, `HeadlessDebugRuntime`) each build {shared `AppModel`, their renderer backend, their `IntentRouter`} and mount the **same** `LabanControlServer`; a **catalog-parity test** (enumerate `IntentCatalog`, assert both routers implement every intent) makes drift a CI failure. `HeadlessDebugRuntime` is kept. The AGENTS.md "wire both by hand" hard-rule is replaced by "both mount the shared server + pass the catalog-parity test." No full `AppHost` refactor of `makeAndShow`.
-7. **Governance gate.** Before Phase 1 lands: `docs/product/spec.md` entry + **ADR 0012** (LabanApp hosts the loopback control+query server; three-way split; lean parity) + **ADR 0013** (security model). **observe-on-by-default flips ON at the Phase-2 boundary** (when Host/Origin + token + tiers + `control.json` exist); env-gated (`LABAN_CONTROL_SERVER=1`) through Phase 0–1. Verify no `docs/product/mvp.md` regression when writing the ADRs.
-8. **MCP = in-house, generated from the catalog** (tool shapes generated, descriptions hand-curated), **pulled to just after the Phase-2 security floor** for early Claude-in-Laban dogfooding. Publish the generated HTTP+schema contract too.
-
-See **§7** for the revised phase plan reflecting these.
+> **How to read this document.** Sections 1–9 are forward-only and authoritative:
+> a coding agent can execute any phase from them without reading anything marked
+> "historical." There are **no "resolved decisions supersede the text below"
+> caveats** anywhere in the body — every decision is stated once, in place.
+> Appendices A–C hold rationale, comparator evidence, and the verified surface
+> inventory for readers who want the "why."
 
 ---
 
-## 1. Surface inventory
+## 1. Thesis (unchanged from v1)
 
-Legend: **Q** = queryable, **C** = controllable, **Agent today?** = reachable by an agent against the running GUI (`LabanApp`) over a Laban-provided channel.
+Every visible part of the running Laban GUI should be **queryable and
+controllable** by a local program over an **authenticated loopback control
+plane**, so that the app a human runs (`LabanApp`) is simultaneously a normal
+terminal for people and a deterministic, typed fixture for agents, tests, and CI.
 
-| Surface | What it exposes | Binary | Q | C | Agent today? |
-|---|---|---|---|---|---|
-| GUI human controls (new/close/select tab, copy, paste, find, scroll, select, mouse-forward, hyperlink, keystroke, drop, export-cast, capture-toggle) | The full human terminal control vocabulary | LabanApp | partial | yes | **no** |
-| GUI settings (theme, font, restore-on-launch, backend switch, restart, quit, updates/about/diagnostics, tab reorder, titlebar zoom) | App configuration + window mgmt | LabanApp | no | yes | **no** (some via launch-time `UserDefaults`/env only) |
-| `executeAppCommand` / `AppCommand` / `TerminalKeyDescriptor.route` | Single choke point for keyboard-driven app commands | LabanApp | no | yes | no (in-process only) |
-| `AppSessionCoordinator` | Tier-agnostic funnel: write/resize/scroll/markRendered/terminate/snapshot/attachRing | LabanApp | yes | yes | no (driven only by AppKit handlers) |
-| `DebugHTTPServer` + `Debug*Endpoints` (~40 routes) | state, sessions(+grid), screenshot, render/atlas/pixel-probe/frame-commands/render-trace, actions, wait, find, selection, clipboard, capture, cast, persistence, events, input-log, terminal-log, timing, metrics, errors, snapshot, fixture, discovery, health | **LabanAgent only** | yes | yes | **no** (never instantiated in LabanApp) |
-| `HeadlessDebugRuntime` | Backing model for the server: own `AppModel`+`SoftwareRenderer`+`BitmapSurface` | LabanDebug→LabanAgent | yes | yes | no (separate in-memory model, not the live GUI) |
-| Bearer-token auth + loopback bind + stdout readiness line | 32-byte hex token, constant-time compare, 127.0.0.1, port 0 → getsockname, readiness JSON to stdout | LabanAgent | — | — | no (token only emitted by agent it launches) |
-| `Session` accessors (snapshot grid, viewportState, scrollback, processMetadata, shell-integration/OSC133, selection text) | In-process terminal state over the C ABI | LabanCore | yes | partial | no (HTTP exposure only via agent) |
-| `TerminalSessionClient` protocol (inProcess / labpty / laband) | Uniform seam: create/list/attach/write/resize/snapshot/scroll/terminate/transferLease | LabanCore | yes | yes | no (Swift API only) |
-| labpty daemon (`LPCT` framed RPC, byte ring) | PTY custody, frozen Phase-1 wire (ADR 0007/0010) | labpty (C) | yes | yes | no (binary socket, no agent client) |
-| laband daemon RPC | VT serving, snapshot ring, leases, theme, scroll | laband (Swift) | yes | yes | no (internal IPC) |
-| `schemas/debug/*` (32 JSON Schemas) + discovery doc | Route↔schema↔doc contract, `check-debug-contract` gate | repo / served by agent | yes | — | no (served only by agent) |
-| Capture/replay (`CaptureRecorder`, asciicast, `manifest`/`event`/`replay-report` schemas) | Durable repro artifacts + deterministic replay | **LabanApp writes** + LabanDebug replays | yes | partial | **yes** (file-based, after human/env trigger) |
-| EventLog JSONL (`~/Library/Application Support/Laban/events/`) | Append-only event stream, 7-day retention | LabanApp | yes | no | **yes** (read-only, zero setup) |
-| Frame/resize probes (`*-probe.ndjson`) | Per-frame glyph/cursor/geometry + on-screen PNGs | LabanApp | yes | no | **yes** (only if env set at launch) |
-| Fixture / debug-script harness, `test-e2e`, `run-debug-script`, `smoke-runtime`, `check` | Deterministic CI gates | LabanAgent (+ smoke touches app) | yes | yes | yes (against agent, not GUI window) |
-| labpty/laband wire contract (C headers + TLA+ + CBMC + ADRs) | Safety-critical typed boundary | labpty/laband | — | — | no (not in `schemas/`, not on HTTP) |
+The central finding that shapes the whole effort: **that surface already exists,
+but in the wrong process.** A rich HTTP control surface (~40 routes) lives in the
+headless binary (`laban-agent`, backed by `HeadlessDebugRuntime`), which renders
+offscreen against its *own* `AppModel`. The GUI users actually run never starts
+it. The work ahead is therefore **relocation and unification, not invention**:
+host one server, in the GUI process, over one router, against the one live model.
 
-**The one-line truth:** every human control surface is in `LabanApp`; the entire query+control plane is in `LabanAgent`. The only Laban-provided channels into the *running GUI* today are read-only files (EventLog always; probes/capture conditionally).
+## 2. Current reality (verified 2026-06-20)
 
----
+Plain-language definitions are inline; full evidence is in Appendix C.
 
-## 2. Earns-its-keep verdict
+- **Targets today** (SwiftPM, `Package.swift`): `LabanTerminalCore` (C VT
+  parser), `LabanRenderer` (Metal + software), `LabanCore` (model/session/
+  persistence — **AppKit-free**), `LabanDebug` (HTTP server + capture —
+  **AppKit-free**), `LabanApp` (the macOS GUI — **AppKit**), `LabanAgent`/
+  `Laband`/`Labpty` (headless/daemon executables). There is **no `LabanControl`
+  target yet.**
+- **The control surface is real and isolated.** `Sources/LabanDebug/DebugHTTPServer.swift`
+  is loopback-bound, bearer-token-authed, port-0, with state/sessions(+grid)/
+  screenshot/actions/wait/events/find/selection/clipboard/shell-integration/
+  capture endpoints and a generated discovery doc. It is instantiated **only** by
+  `HeadlessDebugRuntime` (`LabanDebug` → `LabanAgent`). `grep` confirms `LabanApp`
+  never constructs it; it links `LabanDebug` solely for `CaptureRecorder`.
+- **The live model is already shared and safe to touch.** `AppModel`
+  (`Sources/LabanCore/AppModel.swift`) is AppKit-free and internally locked
+  (`withModelLock`); both `MainWindowController.makeAndShow` (GUI) and
+  `HeadlessDebugRuntime` build one. There is **no "private GUI model"** to
+  retire — only the renderer backend differs (Metal/window vs software/offscreen).
+- **The session seam exists.** `TerminalSessionClient` (`LabanCore`) is a
+  tier-agnostic protocol (inProcess / labpty / laband). `AppSessionCoordinator`
+  (`LabanApp`) is the GUI's funnel for write/resize/scroll/snapshot/terminate.
+- **Metal-truthful frames are wireable, not net-new.**
+  `Sources/LabanRenderer/MetalReadback.swift` already exists (`captureMode`,
+  drawable→CPU blit, `pngData`); the work is wiring it to the server and managing
+  per-frame blit cost.
+- **Semantic substrate exists.** OSC 133 shell-integration phase
+  (`ShellIntegrationState` in `LabanCore`: `idle`/`atPrompt`/`running`/`finished`
+  + `lastExitCode` + `completedCommandCount`), OSC 7 cwd (ADR 0015), OSC 52
+  clipboard write (ADR 0014). No higher-level **command-block** object yet.
+- **Phase 0 is specified but unexecuted.** No `LabanControlServer` /
+  `IntentRouter` / `IntentCatalog` / `LABAN_CONTROL_SERVER` anywhere in
+  `Sources/`. The active Phase 0 plan places its spike under
+  `Sources/LabanApp/Control/` (AppKit-free) deliberately, to be relocated in
+  Phase 1.
 
-Distinguish **redundant capability** (two ways to do the same user-meaningful thing) from **redundant plumbing** (two construction paths for the same subsystem). Laban has almost no redundant capability; it has one structurally-forked piece of plumbing (`HeadlessDebugRuntime` vs `makeAndShow`).
+## 3. Corrected architecture (one consistent target map)
 
-| Surface | Verdict | Why |
-|---|---|---|
-| `DebugHTTPServer` + `Debug*Endpoints` route family | **keep, relocate into LabanApp** | The actual agent plane. Misplaced, not redundant. |
-| `HeadlessDebugRuntime` (its own AppModel/SoftwareRenderer) | **fold into a shared host** | Redundant *plumbing*: a second construction of subsystems that drift from `makeAndShow`. Capability is needed; the parallel model is not. |
-| `POST /debug/actions` + `POST /debug/wait` | **keep — migrate first** | Control + deterministic-sync core; the heart of "deterministic test fixture." |
-| Bearer-token + loopback bind | **keep model** | Sound minimum. Constant-time compare, 127.0.0.1. |
-| stdout readiness discovery | **retire for GUI, replace with a port/token file** | A line the agent prints only works for a process the agent launched. A long-lived GUI needs an on-disk advertisement. |
-| `Session` / `TerminalSessionClient` / `AppSessionCoordinator` seam | **keep** | Tier-agnostic choke point; the natural attach point for a GUI-hosted server. Zero redundancy. |
-| labpty + laband daemons | **keep** | Architectural floor (ADR 0006/0007/0010). Control layers *above* them. |
-| Render/pixel diagnostics (render, atlas, pixel-probe, frame-commands, render-trace, screenshot) | **keep, needs Metal readback** | Valuable but currently reflect `SoftwareRenderer`, not the GUI's Metal output. Capability kept; GUI-truthfulness is new work. |
-| Capture/replay + `CaptureRecorder` GUI use | **keep — already the bridge** | The one LabanDebug component the GUI hosts in-process. Proof the relocation is mechanically possible. |
-| EventLog JSONL | **keep** | The only surface that already behaves like the vision against the real app. |
-| Frame/resize probes | **keep, weak** | Real render-path observation, but launch-time-gated and write-only. |
-| `schemas/debug/*` + `check-debug-contract` | **keep** | The rigor the vision wants. Re-home with the server. |
-| labpty/laband wire contract | **keep, bridge into discovery** | Heavily verified but invisible to the agent-facing surface. |
-| `render-test` / `render-torture` | **retire from the "agent surface" framing** | Exit-0 stimulus generators, no assertions, not in `check`. Keep as manual aids only. |
+v1 contained one genuine inconsistency: §5.3 placed `LabanControlServer` in
+`LabanCore` while §0.2 placed it in a new `LabanControl` target. **v2 resolves
+this in favor of a new `LabanControl` target.** `LabanCore` holds only
+transport-neutral *types*; anything that knows about HTTP, tokens, or wire
+framing lives in `LabanControl`.
 
----
+### 3.1 End-state target placement (authoritative)
 
-## 3. Gap analysis vs the vision
+| Target | Owns | AppKit? | Depends on |
+|---|---|---|---|
+| **`LabanCore`** | Registry **types**: `Intent`, `Query`, `IntentResult`, `QueryResult`, `Capability`, `IntentDescriptor`, `IntentCatalog`, and the `IntentRouter` **protocol**. No HTTP, no AppKit, no transport. | No | (unchanged) |
+| **`LabanControl`** *(new)* | `LabanControlServer` (loopback bind + token + Host/Origin), `LabanControlPolicy` (intent→capability mapping), the **HTTP↔Intent adapter** (decodes a request into an `Intent`/`Query`, serializes the result), `control.json` advertisement writer, and catalog-driven schema/discovery generation. | No | `LabanCore` |
+| **`LabanApp`** | `LiveIntentRouter` (binds the live `AppModel` + `AppSessionCoordinator` + `MetalReadback`); **mounts** `LabanControlServer`. The GUI human adapters (`executeAppCommand`, menus, key routes) emit the **same** `Intent`s. | Yes | `LabanControl`, `LabanCore`, `LabanRenderer`, `LabanDebug` |
+| **`LabanDebug`** | `HeadlessIntentRouter` + `HeadlessDebugRuntime` + fixtures + the headless-only `FixtureActionCatalog`; **mounts the same** `LabanControlServer`. | No | `LabanControl`, `LabanCore`, `LabanRenderer`, `LabanTerminalCore` |
+| **MCP layer** *(later, Phase 6)* | An MCP server whose tool shapes are **generated from `IntentCatalog`** with hand-curated descriptions; an out-of-process wrapper over the same HTTP/Intent surface, or a `LabanControl`-hosted transport. Never a parallel implementation. | No | `LabanControl` (contract only) |
 
-The vision says *the GUI app is the fixture*. Verified, the following is **NOT** queryable/controllable over loopback HTTP **from `LabanApp`** today (it is, from `LabanAgent`):
+**The invariant that makes parity structural:** there is **one** `LabanControlServer`,
+**one** `IntentCatalog`, and the `IntentRouter` **protocol** has exactly two live
+implementations — `LiveIntentRouter` (GUI) and `HeadlessIntentRouter` (offscreen).
+Both mount the same server. A **catalog-parity test** (Phase 2) enumerates
+`IntentCatalog` and asserts both routers handle every shared intent, turning drift
+into a CI failure. This **replaces** the AGENTS.md "wire every subsystem into both
+by hand" rule with "both mount the shared server and pass the catalog-parity test."
 
-1. **The entire `/debug/*` surface.** `LabanApp` never instantiates `DebugHTTPServer` or `HeadlessDebugRuntime` (grep-confirmed). It links `LabanDebug` solely for `CaptureRecorder`. There is no loopback listener of any kind in the GUI.
-2. **Live session/render state.** `Session.snapshot/viewportState/scrollback/processMetadata/shellIntegrationState` are clean in-process accessors, but their only out-of-process exposure is the agent's HTTP layer against the agent's *separate* `AppModel`. Even if the server moved into `LabanApp`, the runtime must be **re-pointed at the live coordinator and model**, not a private headless one.
-3. **Render/pixel truth.** All pixel/render endpoints reflect `SoftwareRenderer`/`BitmapSurface`. The GUI renders via `MetalRenderer`. Without a Metal drawable readback, `screenshot`/`pixel-probe`/`render` would not represent what the user sees. (`MetalRenderer.captureMode` already exists for `CaptureRecorder` — the hook is there.)
-4. **Selection / find UI state.** These live in `HeadlessDebugRuntime.selectionBySession` / `model.allFindStates` — the *headless mirror*. The GUI's real selection lives in the AppKit view layer with **no out-of-process accessor at all**.
-5. **On-demand screenshot.** No GUI equivalent of `GET /debug/screenshot`. GUI PNGs appear only as a side effect of capture mode or the resize probe.
-6. **Discovery + token.** No port file, no fixed port, no GUI-side advertisement, no token surfaced by the GUI. An agent that didn't launch the process cannot find the URL or authenticate.
-7. **Settings/window capabilities with no agent counterpart anywhere:** theme, font, restore-on-launch toggle, backend switch, restart, tab reorder, hyperlink open. These need *new* intents, not relocation.
-8. **Parity is unenforced.** `AGENTS.md` mandates `HeadlessDebugRuntime` ≡ `makeAndShow`, but no test checks it; the two construction paths are hand-duplicated and drift silently (named explicitly in `docs/quality/architecture-deepening-candidates.md`).
-
-What an agent *can* reach against the running GUI today: EventLog JSONL (always), frame/resize probes (if env set at launch), capture/cast artifacts (after a human/env trigger). All file-based, all read-only, none query-by-request, none control.
-
----
-
-## 4. Comparator lessons
-
-**Architecture — the split Laban has is the one every mature product avoids.**
-- **tmux / wezterm:** one state authority (the server / the `Mux`), many client types (human frontend *and* programmatic client) attach to the **same** state over the **same** transport. iTerm2 renders tmux windows natively while tmux owns PTYs. wezterm's GUI and `wezterm cli` are both mux clients — *there is no separate debug binary*. This is the direct refutation of `LabanApp`/`LabanAgent`: put the control surface in the process that owns the real tabs/PTYs/render state.
-- **iTerm2 / kitty / VS Code:** the scripting API is built into the one binary users run, gated by config. kitty proves a single binary is simultaneously "normal terminal for humans" and "scriptable fixture."
-
-**API shape to adopt.**
-- **Stable IDs, never indices** (tmux `$/@/%`, kitty `--match`, wezterm `pane_id`). Aligns with Laban's hard rule that session identity survives tab churn. Key everything off `sessionId`/`tabId`.
-- **Two distinct read primitives:** rendered grid (deterministic assertion) **and** raw pre-render bytes (fidelity/replay). tmux deliberately separates `%output` (verbatim bytes) from `capture-pane` (rendered). Laban already has both halves (`terminal-log` vs snapshot grid) — keep them distinct.
-- **Read/write symmetry & input fidelity:** iTerm2 distinguishes `async_send_text` (type into PTY) from `async_inject` (write into screen); wezterm `send-text --no-paste` distinguishes typed vs pasted. Laban must keep "type into PTY" separate from "feed output," and expose control-char injection as first-class (iterm-mcp's `send_control_character` so an agent can Ctrl-C a runaway).
-- **Push, not poll:** every rich product has a change stream (iTerm2 notifications, tmux `%`-notifications + format subscriptions). wezterm's *omission* of an external event stream is cited as its weakness. Laban's "queryable event log" should become an SSE/long-poll feed keyed to the same IDs — Laban already has `EventLog` and `GET /debug/events`; expose it as a stream.
-- **Semantic command framing:** VS Code's power derives entirely from OSC 633/133 markers (prompt/command/exit/cwd). Laband already parses OSC 133 (`shell-integration/state`). Surface a Warp-Block-equivalent: addressable record per command (text, output range, exit code, cwd, timestamps).
-- **Don't ship a second drifting interface:** iTerm2 deprecated AppleScript for the typed protobuf API. Laban already has `schemas/` — make it the single canonical, versioned, ADR-governed surface.
-
-**Security model — the consensus, and what verifiers refuted.**
-- **Default-deny, loopback-only, token-authed.** iTerm2: disabled by default, Unix socket, 128-bit `ITERM2_COOKIE`, OS-mediated per-app consent. kitty: off by default; `socket-only`/`password` tiers; per-command `is_cmd_allowed()`.
-- **Loopback bind is necessary but NOT sufficient.** CDP/WebDriver: any web page can POST to 127.0.0.1. Required defenses: explicit 127.0.0.1 bind (never 0.0.0.0), strict **Host-header** validation (defeats `127.0.0.1.xip.io` DNS rebinding), **Origin-header** validation on every request and WS upgrade. Safari WebDriver was judged most resilient precisely because it checks both.
-- **Split observe from control.** ttyd is read-only until `--writable`. kitty scopes passwords to action lists. A low-trust observer must not be able to drive the terminal.
-- **Auth must fail closed.** ttyd's 2017 RCE: a message missing `AuthToken` set `authenticated = true`. CVE-2021-34182: insecure-default RCE. Absence of credential must **deny**.
-- **The agent API is a keylogger/exfiltration surface.** A granted iTerm2 client can stream every keystroke and dump every buffer. Gate full keystroke stream / full scrollback dump behind the strongest tier; consider a user-visible "agent attached" indicator.
-- **Escape-sequence control is a distinct, severe trust boundary.** iTerm2 CVE-2022-45872 (CVSS 9.8, a DECRQSS reprise of the 2008 xterm bug): query responses (DECRQSS/DSR/title read-back) get written into the PTY *as if typed* and executed by the shell — "as egregious as string-concatenating SQL." OSC 52 clipboard *read* is universally refused; *write* is gated (Windows Terminal `allowClipboardSharing`). Codex CLI: unsanitized `--model`/branch-name/repo-config reflected into the terminal → RCE. **Lesson: do NOT add an in-band escape-sequence control channel; treat all agent/model/tool/repo bytes as untrusted before they reach the VT parser.**
-
-**Claims the verifiers refuted / qualified (so we don't over-rely on them):**
-- iTerm2 connection.py uses a Unix socket **by existence-based fallback**, *not* an explicit "default for security" — the source labels the unix path "Experimental," TCP "Legacy," and contains no security rationale for the transport choice. The only documented security rationale is the **cookie/key handshake**, not the socket selection. Takeaway: justify Laban's transport choice on its own merits; don't cite iTerm2's transport as a security precedent — cite its *cookie + per-app-consent* model.
-- Everything else (OSC 1337/133 verbs, the Python API request types, notification set, keystroke fields, the auth/override-file model) was verified **supported, high confidence**.
-
----
-
-## 5. Unified architecture
-
-**One state authority, many thin adapters.** Adopt the tmux/wezterm model: the process that owns the live tabs/PTYs/render state *is* the queryable fixture. For Laban that is `LabanApp`, fronting `AppSessionCoordinator`.
-
-### 5.1 The intent/capability registry (LabanCore)
-
-Introduce a single, AppKit-free registry in `LabanCore`. Every user-meaningful action becomes a typed **Intent**; every read becomes a typed **Query**. Concrete types:
+### 3.2 Adapters terminate at one router
 
 ```
-LabanCore/Intents/
-  Intent                      // enum/struct: tagged, Codable, schema-backed
-  IntentResult                // { ok, frame, activeTabId, activeSessionId, error }
-  Query                       // tagged Codable read request
-  QueryResult                 // Codable read response
-  Capability                  // .observe | .control | .clipboard | .escapeControl ...
-  IntentCatalog               // [IntentDescriptor]: name, capability, requestSchema, responseSchema
-  IntentRouter (protocol)     // route(Intent) -> IntentResult ; query(Query) -> QueryResult
+GUI menus / key routes / mouse  ─┐
+HTTP request (LabanControl)       ├─►  Intent / Query  ──►  IntentRouter
+MCP tool call (Phase 6, wrapper) ─┘                         (Live or Headless)
+                                                                   │
+                                                   AppSessionCoordinator + AppModel
+                                                   (tier-agnostic: inProcess/labpty/laband)
 ```
 
-`Intent` is the union of today's `AppCommand` cases *plus* the `DebugAction` cases — they describe the same operations (newTab, closeTab, selectTab, copy, paste, find.start/step/stop, scrollViewport, key, typeText, setSelection, mouseWheel, click, resize). Each carries a `Capability`. The `IntentCatalog` is the single source of truth from which discovery, schemas, and the security policy are **generated**, not hand-maintained.
+`executeAppCommand` (today a direct in-process call) becomes a **thin adapter**
+that constructs an `Intent` and hands it to the router — a low-risk refactor, not
+a rewrite, because it already funnels keyboard commands to the same core methods.
 
-### 5.2 Adapters (thin, emit the same intents)
+### 3.3 Identity and addressing (a v2 sharpening)
 
-- **GUI menus / key routes / mouse** → `executeAppCommand` becomes a thin adapter that constructs an `Intent` and hands it to the router. (`executeAppCommand` already funnels keyboard commands to the same core methods — this is a low-risk refactor, not a rewrite.)
-- **Debug HTTP** → an adapter that decodes a request body into an `Intent`/`Query` and routes it.
-- **Future agent transport (MCP)** → a wrapper that translates MCP tool calls into the same `Intent`/`Query`. Not a parallel implementation.
+The codebase has three identities; intents must address the right one or agents
+will act on the wrong terminal after UI churn:
 
-All adapters terminate at one `IntentRouter` implementation backed by `AppSessionCoordinator` + the live `AppModel`. Tier-agnostic by construction (the router calls `TerminalSessionClient`, which works for inProcess/labpty/laband).
+- **`Session.ID`** (`String`/UUID): the **stable** identity that owns the PTY and
+  VT state and **survives tab selection, resize, view rebuild** (an AGENTS.md hard
+  rule). **This is the primary key for any intent that reads or writes terminal
+  I/O** (`terminal.*`): typed text, grid, scrollback, process context, waits.
+- **`Tab.ID`** (`String`): a UI handle that *references* a `sessionId`. It is the
+  key for **window/tab lifecycle** intents (`tab.create/select/close`,
+  `window.*`).
+- **"active"**: a convenience selector. Every intent accepts an explicit id; when
+  omitted it resolves against the active tab/session, and the result echoes the
+  concrete id it acted on so a caller can pin it thereafter.
 
-### 5.3 The loopback server, hosted IN LabanApp
+Rule: **never key off an index for anything that outlives a single request.**
+Indices are accepted only as an ergonomic shorthand (e.g., Phase 0 `selectTab`)
+and are resolved to a stable id immediately.
 
-New type `LabanControlServer` in `LabanCore` (transport + auth + Host/Origin + routing; no AppKit). It is **mounted by both** `MainWindowController.makeAndShow` *and* `HeadlessDebugRuntime`, against the same `IntentRouter` interface. This makes parity **structural**: there is one server, one router, one catalog; the headless runtime becomes "the same host with no window," not a divergent superset.
+### 3.4 Transport and discovery
+
+- **Transport:** raw **loopback HTTP/1.1 + bearer token** is the primitive layer
+  for all phases. It already exists, is schema-backed, is exercised by CI, and is
+  `curl`-debuggable. A Unix-domain-socket transport is **not** adopted (it buys
+  little over loopback+token+Host/Origin and complicates discovery); revisit only
+  if a concrete need appears (tracked in §8).
+- **Discovery (long-lived GUI):** the stdout readiness line that the headless
+  agent prints cannot reach a process the agent did not launch, so the GUI writes
+  a discovery file **`control.json`** = `{ url, token, pid, runId }`, mode `0600`,
+  written atomically, under `$LABAN_CONTROL_DIR` or (unset)
+  `~/Library/Application Support/Laban/` — exactly as the active Phase 0 plan
+  specifies (same app-support convention as `Sources/LabanApp/EventLog.swift`).
+  It is removed best-effort on quit; a stale file from a crash is harmless (it
+  points at a dead port) and is overwritten next launch.
+  *(Note for future readers: the `laband` daemon's `"control-json/v1"` is a wire
+  **transport-mode label**, not this file — there is no filename collision.)*
+
+## 4. The Typed Intent Catalog
+
+The catalog is the **single source of truth** from which the discovery document,
+the JSON schemas under `schemas/`, the security policy, and (Phase 6) the MCP
+tool list are **generated** — never hand-maintained in parallel. Adding an intent
+regenerates discovery + schema and fails `check-debug-contract` until classified.
+
+### 4.1 Core types (in `LabanCore`)
 
 ```
-LabanCore:   IntentRouter, IntentCatalog, LabanControlServer, LabanControlPolicy
-LabanApp:    LiveIntentRouter (AppSessionCoordinator + AppModel + Metal readback)  -> mounts LabanControlServer
-LabanDebug:  HeadlessIntentRouter (HeadlessDebugRuntime)                            -> mounts LabanControlServer
+Intent        // tagged, Codable: the union of today's AppCommand + DebugAction
+              // operations (tab.create/select/close, terminal.typeText/sendKey/
+              // paste/interrupt/scroll/search/selectRange/resize, window.*, …)
+Query         // tagged, Codable read request (state, tab.getState, terminal.*…)
+IntentResult  // { ok, actedSessionId?, actedTabId?, eventId?, error? }
+QueryResult   // Codable read response (per-query payload)
+Capability    // .observe | .observeSensitive | .control | .clipboard | .fixture
+IntentDescriptor   // the metadata record below
+IntentCatalog      // [IntentDescriptor], queryable + serializable
+IntentRouter (protocol)  // route(Intent) -> IntentResult ; query(Query) -> QueryResult
 ```
 
-`DebugHTTPServer`'s route table is reframed as the **HTTP adapter** over `IntentRouter`; the existing `Debug*Endpoints` become serializers. Render/pixel/screenshot endpoints in `LabanApp` resolve through a **Metal readback** path (reusing the `MetalRenderer.captureMode` hook); in `LabanDebug` they resolve through `SoftwareRenderer` as today.
+Phase 0 ships a narrow seed of this — `protocol ControlRouter` with
+`snapshotState()` + `selectTab(index:)`. **Phase 1 generalizes `ControlRouter`
+into `IntentRouter`**; the Phase 0 spike is subsumed, not contradicted.
 
-### 5.4 Discovery, generated from the registry
+### 4.2 The expanded `IntentDescriptor` model
 
-`GET /debug` (and `/debug/capabilities`) is **generated** from `IntentCatalog` + `Query` catalog, so the discovery doc, the 32 JSON schemas, and `check-debug-contract` cannot drift from the implementation — adding an intent regenerates discovery and fails the contract gate until a schema exists.
+Every entry in the catalog carries the full metadata the program needs to
+generate transports, enforce safety, and version the surface. (Shown as a Swift
+shape plus a YAML rendering of one intent.)
 
-### 5.5 Agent transport choice: raw loopback HTTP + token **now**, MCP wrapper **later**
-
-Make the primitive layer raw loopback HTTP + token (it already exists, it's schema-backed, CI exercises it, and it's debuggable with `curl`). Provide MCP **as a thin out-of-process wrapper** that calls the same HTTP/Intent surface — this matches the surveyed MCP ecosystem (it2mcp/iterm-mcp wrap an existing API rather than being the API) and keeps one canonical, versioned contract per iTerm2's AppleScript lesson. Do **not** make MCP the primitive; do not build two surfaces.
-
-### 5.6 Discovery transport for a long-lived GUI
-
-Replace the stdout readiness line with a **token/port file** under the per-worktree run dir (per `worktree-isolation.md`), mode `0600`, containing `{ url, token, pid, runId }`. The GUI writes it on server start, removes it on quit. Agents read it; no process-launch coupling.
-
----
-
-## 6. Security model
-
-**Posture: default observe-only, control opt-in, fail closed.** Reuse the existing `debugToken` pattern (32-byte hex, constant-time compare) verbatim; harden the transport and split capabilities.
-
-1. **Bind loopback only.** Explicit `127.0.0.1`/`::1`, never `0.0.0.0`. Keep `nonLoopbackHost` rejection.
-2. **Host + Origin validation on every request and WS upgrade.** Reject any `Host` that is not literally `localhost`/`127.0.0.1`/`[::1]` (defeats DNS-rebinding); reject browser cross-origin `Origin`. This is the CDP/WebDriver lesson and is the single most important addition over today's loopback-only stance.
-3. **Per-session capability token injected into child env.** On session create, mint a per-session token and inject it into the child process environment (`LABAN_CONTROL_TOKEN` + `LABAN_CONTROL_URL`), exactly mirroring iTerm2's `ITERM2_COOKIE`-into-launched-scripts model. A child (an agent Laban itself spawned) can authenticate with no prompt; an unrelated local process cannot read the env and is denied.
-4. **Capability scoping, fail-closed.** `LabanControlPolicy` maps each `Intent`/`Query` to a required `Capability`. The token grants a capability set. `.observe` (read state/grid/scrollback/events) is separable from `.control` (write/resize/select/scroll/tab) and from `.clipboard`. Missing or unknown capability → `401`/`403`, never grant. The catalog-generated policy means a new intent is **denied by default** until explicitly classified.
-5. **High-power reads are privileged.** Full keystroke/input-log stream and full scrollback dump require `.control`-tier (or a dedicated `.audit`) capability, never bare `.observe`. Log every control-tier access to the EventLog.
-6. **Escape-sequence control: defer unless nonce-authed.** Do **not** implement an in-band escape-sequence control channel. Never write title/clipboard read-back into the input stream; constrain/disable DECRQSS/DSR replies (CVE-2022-45872 class). Treat all agent/model/tool/repo bytes as untrusted: programmatic "type this" routes through the *same* validation a human keystroke does. If shell-integration command attribution (OSC 633/133) is ever surfaced as authoritative, require a per-session **nonce** on the command-line marker (VS Code's defense) before trusting it; otherwise label it unverified.
-7. **OSC 52:** clipboard *write* only behind an explicit off-by-default permission; never implement clipboard *read*.
-8. **No-auth dev mode** (for CI) is opt-in, scoped, loud, and obviously off in normal use (kitty's admin-override lesson).
-9. **User-visible "agent attached" indicator** when a control-tier client is connected, since the API is a keylogger-equivalent surface.
-
----
-
-## 7. Concrete path forward
-
-Tracer-bullet, vertical slices. Every phase keeps all surfaces alive (CI green, GUI unchanged for humans). **Revised per §0 resolutions.**
-
-- **Phase 0 — Spike the seam (env-gated; FULLY SPECIFIED BELOW).** One query (`state`) + one control intent (`selectTab`), end-to-end, through a minimal registry + `LabanControlServer` hosted in `LabanApp`, against the live coordinator, behind `LABAN_CONTROL_SERVER=1`. Includes token + Host/Origin from the start. Proves relocation + Metal-free state path + auth.
-- **Governance gate** — write `docs/product/spec.md` entry + **ADR 0012** (architecture) + **ADR 0013** (security); verify no `mvp.md` regression. *Lands before Phase 1.*
-- **Phase 1 — Registry backbone + carve `LabanControl`.** Extract `Intent`/`Query`/`IntentResult`/`Capability`/`IntentCatalog`/`IntentRouter` into `LabanCore`; define the **two catalogs** (shared `IntentCatalog` + headless-only `FixtureActionCatalog`, with `feedOutput`/`advanceFrames` barred from live). Carve `DebugHTTPServer`/`Debug*Endpoints` out of `LabanDebug` into the new **`LabanControl`** target as the HTTP↔Intent adapter. `executeAppCommand` and the HTTP adapter both emit intents. Generate discovery + schemas from the catalog.
-- **Phase 2 — Mount the live server + security floor + flip the default.** `LiveIntentRouter` in `LabanApp`; re-point `Debug*Endpoints` state/sessions/find/selection at the live `AppModel` + `AppSessionCoordinator`. Write `$runDir/control.json` (token/port). Land the security floor: Host/Origin everywhere, single app-scoped token + env-injection, `.observe`/`.observeSensitive`/`.control` tiers, "agent attached" indicator. Add the **catalog-parity test** (retires the hand-wired parity rule). **Flip observe-on-by-default ON.**
-- **Phase 3 — MCP front door.** In-house MCP server, tool shapes generated from the catalog + curated descriptions; publish the HTTP+schema contract. Begin Claude-in-Laban dogfooding.
-- **Phase 4 — Truthful-fixture pillar (the deferred view-layer work).** Promote selection/cursor/find to first-class live-queryable state (new AppKit-view accessors); wire `MetalReadback` so `screenshot`/`pixel-probe`/`frame-commands` are GUI-truthful — decide `captureMode` sync vs async/queued readback (the perf tradeoff).
-- **Phase 5 — Hardening + reach.** New-capability intents with no current agent counterpart: theme, font, restore-toggle, backend switch, **restart**, tab reorder, hyperlink open; GUI capture start/stop/snapshot control. Per-session token scoping (cheap — envp already in wire). SSE/long-poll push stream + Warp-Block-equivalent command records from OSC 133.
-
-### FIRST SLICE (Phase 0), fully specified
-
-**Goal:** an agent hits a loopback HTTP server **hosted inside the running `LabanApp` GUI**, authenticates with a token, **queries** live tab/session state, and issues **one control intent** (`selectTab`), observing the effect — all through the registry seam, all CI-tested.
-
-**Why `selectTab` + `state`:** `selectTab` already exists end-to-end (`executeAppCommand` → `selectTab(at:)`), is reversible, needs no Metal, and its effect (`activeTabId`) is directly observable in `state`. Lowest-risk vertical slice that exercises auth + Host/Origin + registry + live coordinator.
-
-**Types (new, in LabanCore):**
 ```swift
-enum Phase0Intent: Codable { case selectTab(index: Int) }
-struct Phase0IntentResult: Codable { let ok: Bool; let frame: Int; let activeTabId: String?; let error: String? }
-enum Phase0Query: Codable { case state }
-// reuse existing StateResponse for the query result
-protocol IntentRouter {
-  func route(_ intent: Phase0Intent) -> Phase0IntentResult
-  func query(_ query: Phase0Query) -> StateResponse
+struct IntentDescriptor {
+  let id: String                 // stable dotted identifier, e.g. "terminal.typeText"
+  let kind: Kind                 // .query | .action | .wait | .event
+  let category: String           // "app" | "window" | "tab" | "terminal" |
+                                 //   "commandBlock" | "trace" | "screenshot" |
+                                 //   "event" | "approval" | "policy" | "audit"
+  let summary: String            // one human-readable sentence
+
+  // Contracts (schema refs are generated into schemas/ and validated in CI)
+  let inputSchema: SchemaRef
+  let outputSchema: SchemaRef
+  let errorSchema: SchemaRef
+
+  // Authorization
+  let requiredCapability: Capability
+
+  // Side-effect classification (drives audit + risk + which transports may carry it)
+  struct SideEffects {                 // all default false
+    var ptyInput     = false           // bytes reach the child shell
+    var lifecycle    = false           // creates/destroys tabs/sessions/windows
+    var filesystem   = Possibility.no  // .no | .possible (depends on shell state)
+    var network      = Possibility.no
+    var clipboard    = false
+  }
+  let sideEffects: SideEffects
+
+  // Risk (advisory in v1 floor; the Phase 8 broker consumes level + reason)
+  struct Risk { let level: Level; let reason: String }   // .none|.low|.medium|.high
+  let risk: Risk
+
+  // Audit behavior for the EventLog
+  enum Audit { case none, metadataOnly, redactedInput, fullInput }
+  let audit: Audit
+
+  // Where this intent can run, and over which transports it may be exposed
+  struct Availability { let gui: Bool; let headless: Bool }
+  let availability: Availability
+  struct Transports { let http: Bool; let mcp: Bool; let cli: Bool }
+  let transports: Transports
+
+  // Execution semantics
+  let preconditions: [Precondition]    // e.g. .sessionExists, .shellAtPrompt
+  struct Timeout { let defaultMs: Int; let maxMs: Int }   // waits carry real values
+  let timeout: Timeout?
+  enum Cancellation { case none, cooperative }            // long ops accept a cancel token
+  let cancellation: Cancellation
+
+  // Versioning / deprecation
+  struct Version { let since: String; let deprecatedSince: String?; let replacement: String? }
+  let version: Version
 }
-final class LabanControlServer { /* loopback bind, token, Host+Origin check, 2 routes */ }
 ```
 
-**Live router (LabanApp):** `LiveIntentRouter` holds a weak ref to the controller owning `AppModel`/`AppSessionCoordinator`. `route(.selectTab(i))` dispatches `selectTab(at: i)` on the main actor; `query(.state)` builds the existing `StateResponse` from the live model (no `HeadlessDebugRuntime`).
+```yaml
+# Generated rendering of one catalog entry
+id: terminal.typeText
+kind: action
+category: terminal
+summary: Type UTF-8 text into a terminal session as if a human typed it.
+input:  { sessionId: string?, text: string }      # sessionId omitted ⇒ active session
+output: { ok: boolean, actedSessionId: string, eventId: string }
+error:  { code: string, message: string }
+requiredCapability: control
+sideEffects: { ptyInput: true, filesystem: possible, network: possible }
+risk: { level: medium, reason: "Text may execute commands depending on shell state." }
+audit: redactedInput
+availability: { gui: true, headless: true }
+transports: { http: true, mcp: true, cli: true }
+preconditions: [ sessionExists ]
+timeout: null
+cancellation: none
+version: { since: "0.2" }
+```
 
-**Mounting:** `MainWindowController.makeAndShow` constructs `LiveIntentRouter` and starts `LabanControlServer` on `127.0.0.1:0`, writing `{url,token,pid,runId}` to `$runDir/control.json` (mode 0600). Gated behind an env flag (`LABAN_CONTROL_SERVER=1`) for Phase 0 so default human launches are unchanged.
+### 4.3 Two catalogs
 
-**Routes (only two):**
-- `GET  /debug/state`  → `query(.state)` → `StateResponse` (requires valid token; `.observe`).
-- `POST /debug/actions` with `{"action":"selectTab","index":N}` → `route(.selectTab(N))` → `Phase0IntentResult` (requires valid token; `.control`).
+- **`IntentCatalog`** (shared) — cross-surface, user-meaningful operations both
+  routers implement. The catalog-parity test guards it.
+- **`FixtureActionCatalog`** (headless-only) — deterministic test affordances:
+  `feedOutput` (inject synthetic child bytes), `advanceFrames`, `windowFocus`,
+  title-forcing. Gated behind a `.fixture` capability the **shipped GUI never
+  grants**. `feedOutput`/`advanceFrames` are **barred from the live surface**
+  (byte-injection / no-op-live). Relative tab navigation folds into
+  `tab.select(relative:)` in the shared catalog.
 
-**Auth/transport (this slice):** 32-byte hex bearer token (reuse `makeBearerToken`/`constantTimeEquals`); bind 127.0.0.1; **reject non-loopback `Host`** and **cross-origin `Origin`** with `403`; missing/invalid token → `401`. Fail closed.
+### 4.4 Naming
 
-**Test (the gate that makes the slice real):** a new script `scripts/test-control-server-gui` (wired into `scripts/check`) that:
-1. builds `./scripts/build-app`; launches the installed bundle **with `LABAN_CONTROL_SERVER=1`** under a watchdog (per the no-GUI-launch rule, via the smoke/headless path that drives the real `LabanApp` window-host code, not `open`);
-2. reads `$runDir/control.json` for `{url,token}`;
-3. `GET /debug/state` with the token → asserts ≥1 tab and records `activeTabId`;
-4. asserts `GET /debug/state` **without** a token → `401`, and **with a forged `Host: evil.com`** → `403`;
-5. drives `newTab` via the existing GUI path (or fixture) to get a second tab, then `POST /debug/actions {selectTab:0}`;
-6. `GET /debug/state` again → asserts `activeTabId` changed to tab 0.
+Catalog ids are stable **`category.verb`** dotted strings (`tab.select`,
+`terminal.typeText`, `terminal.waitForText`). Phase 0 ships the bare wire action
+`selectTab`; Phase 1 assigns it the canonical id `tab.select` and the HTTP adapter
+accepts **both** the bare and dotted forms through the migration so Phase 0
+clients keep working.
 
-Plus a `LabanCore`/`LabanApp` unit test: `LiveIntentRouter.route(.selectTab)` mutates `activeTabId`, and `LabanControlServer` returns `401`/`403` for missing-token / bad-Host. This is the first proof that *the app users run* is queryable and controllable over loopback HTTP through the registry seam.
+## 5. Capability and security model
+
+**Posture: token-gated, observe-on-by-default, fail closed.** Reuse the existing
+`debugToken` mechanism verbatim (32-byte hex, constant-time compare); harden the
+transport and split capabilities. The model has a **floor** (Phase 2) and a
+**broker** (Phase 8) — do not conflate them.
+
+### 5.1 Capability tiers
+
+| Capability | Grants | Lands |
+|---|---|---|
+| `.observe` | Non-sensitive live state: tab/window/session lists, dimensions, prompt phase, active ids, events. | Phase 2 floor |
+| `.observeSensitive` | Scrollback, visible-grid text, process cwd/command, input log, clipboard summary. (A keylogger/exfiltration surface — separable from `.observe`.) | Phase 2 floor |
+| `.control` | Mutations: typeText/sendKey/paste, resize/scroll/select, tab+window lifecycle, interrupt. | Phase 2 floor |
+| `.clipboard` | Programmatic clipboard write (OSC 52 write only; read never implemented). | Phase 2/8 |
+| `.fixture` | Headless determinism affordances; shipped GUI never grants it. | Phase 1 |
+
+The policy is **generated from the catalog**, so a new intent is **denied by
+default** until it is classified with a `requiredCapability`.
+
+### 5.2 Transport hardening (the CDP/WebDriver lesson)
+
+1. **Bind loopback only** — explicit `127.0.0.1`/`[::1]`, never `0.0.0.0`.
+2. **Validate `Host` on every request** — reject anything not literally
+   `localhost`/`127.0.0.1`/`[::1]` (defeats DNS-rebinding).
+3. **Reject any request bearing an `Origin` header** — there is no browser
+   client; an `Origin` means a web page is calling. (Phase 0 already does 1–3.)
+4. **Token required; absence or mismatch ⇒ deny** (401), never a default-allow.
+5. **Per-session token injected into child env** (`LABAN_CONTROL_TOKEN` +
+   `LABAN_CONTROL_URL`) — an agent Laban itself spawned authenticates with zero
+   prompt; an unrelated local process cannot read another process's env. The
+   `labpty` wire already carries child `envp`, so this needs **no wire change**
+   (does not touch the ADR 0007 freeze). **v1 ships a single app-scoped token;
+   per-session injection is a confirmed-cheap Phase 8 add.**
+
+### 5.3 Standing constraints
+
+- **No in-band escape-sequence control channel.** Never write title/clipboard
+  read-backs into the input stream; constrain DECRQSS/DSR replies (the
+  CVE-2022-45872 class). Programmatic "type this" routes through the **same**
+  validation a human keystroke does. Treat all agent/model/tool/repo bytes as
+  untrusted before the VT parser.
+- **High-power reads are privileged** — full keystroke stream and full scrollback
+  dumps require `.observeSensitive`, never bare `.observe`; every
+  `.control`/`.observeSensitive` access is logged to the EventLog.
+- **User-visible "agent attached" indicator** whenever a `.control`-tier client is
+  connected (the API is keylogger-equivalent).
+- **No-auth dev mode** (CI only) is opt-in, scoped, and loud.
+
+### 5.4 When the default flips on
+
+Through Phase 0–1 the server is **off unless `LABAN_CONTROL_SERVER=1`**. The
+**observe-on-by-default flip happens at the Phase 2 boundary**, once Host/Origin
+validation, capability tiers, the app-scoped token, the `control.json`
+advertisement, and the "agent attached" indicator all exist. Not before.
+
+## 6. Phased roadmap
+
+Tracer-bullet vertical slices. Every phase keeps CI green and the GUI unchanged
+for humans. Each phase lists **scope**, **files**, **acceptance** (observable
+behavior), and **status**.
+
+### Phase 0 — Live control seam spike *(authoritative spec: `execplans/active/agent-first-phase0-control-seam.md`)*
+
+- **Scope:** one query (`GET /debug/state`) + one control intent
+  (`POST /debug/actions {"action":"selectTab","index":N}`) end-to-end through a
+  minimal `ControlRouter` + `LabanControlServer` **hosted in the running
+  `LabanApp` GUI**, against the live `AppModel`, behind `LABAN_CONTROL_SERVER=1`,
+  with token + Host/Origin from the start.
+- **Files:** `Sources/LabanApp/Control/{ControlRouter,LiveIntentRouter,LabanControlServer,ControlAdvertisement}.swift`; edits to `MainWindowController.swift` + `AppDelegate.swift`; `Tests/LabanAppTests/ControlServerPhase0Tests.swift`. *(Do not re-specify here; follow the active plan.)*
+- **Acceptance:** `swift test --filter ControlServerPhase0Tests` passes (guard
+  matrix + live select-tab + loopback round-trip); manual `curl` shows
+  `activeTabId` change in the real window; default launches open no socket.
+- **Status:** specified, **unexecuted**.
+
+### Governance gate *(before Phase 1 lands)*
+
+- Add a `docs/product/spec.md` entry (this is new product scope).
+- Write **ADR 0023** (architecture: *LabanApp hosts the loopback control+query
+  server; one `IntentRouter`; three-way `LabanCore`/`LabanControl`/`LabanDebug`
+  split; lean parity via the catalog-parity test*) and **ADR 0024** (security:
+  *loopback + Host/Origin + capability tokens; escape-sequence control deferred*).
+  **Use 0023/0024 — v1's 0012/0013 are taken (the index runs to 0022).**
+- Verify no `docs/product/mvp.md` regression.
+- **Acceptance:** both ADRs merged with index entries; `spec.md` names the control
+  plane; `scripts/check` green.
+
+### Phase 1 — Registry backbone + carve `LabanControl`
+
+- **Scope:** extract `Intent`/`Query`/`IntentResult`/`QueryResult`/`Capability`/
+  `IntentDescriptor`/`IntentCatalog`/`IntentRouter` into `LabanCore` (generalizing
+  Phase 0's `ControlRouter`). Define the **two catalogs**. Carve
+  `DebugHTTPServer`/`Debug*Endpoints` out of `LabanDebug` into the new
+  **`LabanControl`** target, reframed as the **HTTP↔Intent adapter**.
+  `executeAppCommand` and the HTTP adapter both emit intents. **Generate**
+  discovery + the `schemas/` set + the policy from the catalog.
+- **Files (new/moved):** `Sources/LabanControl/**`; `Sources/LabanCore/Intents/**`;
+  `Package.swift` (new target + deps); `LabanApp`/`LabanDebug` dependency edits;
+  catalog→schema generator wired into `scripts/check` (`check-debug-contract`).
+- **Acceptance:** `LabanControl` builds AppKit-free; the generator emits discovery
+  + every schema and the contract gate fails if an intent lacks a schema or
+  capability; existing headless E2E tests pass unchanged against the carved
+  adapter; `feedOutput`/`advanceFrames` are absent from the shared catalog.
+- **Status:** not started.
+
+### Phase 2 — Mount live + security floor + flip the default
+
+- **Scope:** `LiveIntentRouter` in `LabanApp`; re-point the `Debug*Endpoints`
+  state/sessions/find/selection at the **live** `AppModel` + `AppSessionCoordinator`
+  (not the headless mirror). Land the **security floor**: Host/Origin everywhere,
+  single app-scoped token + child-env injection, `.observe`/`.observeSensitive`/
+  `.control` tiers, `control.json`, "agent attached" indicator. Add the
+  **catalog-parity test**. **Flip observe-on-by-default ON.**
+- **Files:** `Sources/LabanApp/Control/LiveIntentRouter.swift` (expanded);
+  `Sources/LabanControl/{LabanControlPolicy,*}`; `LabanDebug` `Debug*Endpoints`
+  re-pointing; `Tests/.../CatalogParityTests.swift`; `MainWindowController`/
+  `AppDelegate` mount edits.
+- **Acceptance:** with the app running, an agent reads `control.json`, `curl`s
+  live tab/session/grid/scrollback state and drives typeText/select/resize against
+  the real window; missing token ⇒ 401, bad `Host`/any `Origin` ⇒ 403; a
+  `.control` client lights the indicator; the catalog-parity test fails if either
+  router omits a shared intent.
+- **Status:** not started.
+
+> Phases 3–5 are the **first-class product pillars** the live-control seam exists
+> to enable. They are promoted ahead of MCP and the truthful-fixture work.
+
+### Phase 3 — Event stream pillar
+
+- **Scope:** promote the poll-cursor `/debug/events?since=N` into a **push stream**
+  (SSE or long-poll) keyed to stable session/tab ids, with a typed event model
+  (`window.*`, `tab.*`, `session.*`, `prompt`, `cwd`, `process`, `selection`,
+  `viewport`, `frame.committed`, `intent.{requested,accepted,rejected}`,
+  `screenshot`, `capture.*`). Back it with the always-on `EventLog`.
+- **Files:** `Sources/LabanControl/EventStream*`; `Sources/LabanCore/Events/**`;
+  `schemas/control/event*.json`; subscription endpoint in the HTTP adapter.
+- **Acceptance:** a client subscribes, types a command via `terminal.typeText`,
+  and receives ordered `prompt`/`process`/`frame.committed` events without
+  polling; events replay from `EventLog` via `event.getSince`.
+- **Status:** not started.
+
+### Phase 4 — Semantic command blocks pillar
+
+- **Scope:** a first-class **`CommandBlock`** model in `LabanCore`, synthesized
+  from OSC 133 transitions (`atPrompt`→`running`→`finished`) + `completedCommandCount`
+  + OSC 7 cwd + `lastExitCode` + output byte/screen ranges. Heuristic fallback
+  when shell integration is absent, **marked low-confidence**. Expose
+  `commandBlock.list/get`, link blocks to output ranges and (when available)
+  screenshots/hashes.
+- **Files:** `Sources/LabanCore/CommandBlocks/**`; catalog entries +
+  `schemas/control/command-block*.json`; serializers in the HTTP adapter.
+- **Acceptance:** after running `swift test` in a tab, `commandBlock.list` returns
+  a block with command text, cwd, exit status, time span, and output range; a
+  block with no OSC 133 evidence is flagged `confidence: heuristic`.
+- **Status:** not started.
+
+### Phase 5 — Trace/replay pillar
+
+- **Scope:** elevate the existing `CaptureRecorder` (already used in `LabanApp`)
+  into a first-class, agent-exportable **trace bundle**: PTY in/out/response
+  bytes, user actions, **intent requests + results**, command blocks, window/tab/
+  session metadata, resize events, screenshots/frame hashes, redaction report,
+  build metadata. Add `trace.start/stop/export` intents and CI replay.
+- **Files:** `Sources/LabanDebug/CaptureRecorder*` (extend);
+  `Sources/LabanControl` trace intents; `schemas/capture/*` extensions;
+  `scripts/replay-capture` coverage of intent events.
+- **Acceptance:** after a session, `trace.export` writes a bundle whose
+  `replay/report.json` shows `terminalReplay: passed`, and the bundle contains the
+  intent timeline + command blocks + redaction report.
+- **Status:** not started.
+
+### Phase 6 — MCP front door *(generated from the catalog)*
+
+- **Scope:** an in-house MCP server with tool shapes **generated from
+  `IntentCatalog`** (descriptions hand-curated), as an out-of-process wrapper over
+  the same HTTP/Intent surface. Read-only tools first, then `.control` tools
+  behind explicit scopes. Publish the HTTP+schema contract too. Begin
+  Claude-in-Laban dogfooding. *(MCP needs only the catalog + Phase 2 floor; it may
+  be pulled forward for dogfooding once those exist.)*
+- **Acceptance:** a generated MCP tool list matches the catalog 1:1; a read-only
+  MCP client orients (tabs/active/last command block) and a scoped client drives
+  typeText, with every call audited.
+- **Status:** not started.
+
+### Phase 7 — Truthful-fixture pillar (view-layer work)
+
+- **Scope:** wire `MetalReadback` so `screenshot`/`pixel-probe`/`frame-commands`
+  are **GUI-truthful** (decide `captureMode` synchronous vs async/queued readback
+  — the perf tradeoff). Promote selection/cursor/find to first-class
+  live-queryable state via new AppKit-view accessors (today only the headless
+  mirror has them).
+- **Acceptance:** a GUI screenshot/pixel-probe reflects the Metal output a human
+  sees; `terminal.getSelection` returns the real AppKit selection.
+- **Status:** not started.
+
+### Phase 8 — Safety broker + reach
+
+- **Scope:** the **policy/approval broker** (distinct from the Phase 2 floor):
+  risk classification of command content (`rm -rf`, `git push --force`),
+  approval-required actions + approval UI, clipboard/paste/secret policies, audit
+  browser/export. Per-session token scoping (cheap — `envp` already in the wire).
+  New-capability intents with no current counterpart: theme, font, restore toggle,
+  backend switch, **restart**, tab reorder, hyperlink open; GUI capture control.
+- **Acceptance:** a `.control` client's `rm -rf`-class command raises an approval
+  the user must grant; per-session tokens scope a client to one tab; the audit
+  browser lists every control-tier action.
+- **Status:** not started.
+
+## 7. Acceptance criteria (consolidated)
+
+The program as a whole succeeds when, against the **running `LabanApp` GUI**:
+
+1. A local client discovers the app via `control.json`, authenticates with a
+   token, and is denied without one (401) or with a forged `Host`/any `Origin`
+   (403).
+2. The client reads live windows/tabs/sessions/grid/scrollback/process/prompt
+   state keyed off stable ids, and drives typeText/sendKey/select/resize against
+   the real window — all typed, capability-scoped, and audited.
+3. Waits replace sleeps; events stream without polling.
+4. Command blocks, trace export, and MCP tools all derive from the **one** catalog
+   with no duplicated definitions.
+5. The catalog-parity test makes GUI/headless drift a CI failure.
+6. A human sees and can disable what external clients may do.
+
+Per-phase acceptance is in §6 (each is observable behavior, not an internal
+attribute).
+
+## 8. Open questions (genuinely remaining)
+
+These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
+
+1. **Intent-id migration window.** How long does the HTTP adapter accept both the
+   bare Phase 0 action names and the dotted catalog ids before the bare forms are
+   removed? (Affects when Phase 0 clients must update.)
+2. **Event-stream transport.** SSE vs HTTP long-poll for Phase 3 — SSE is simpler
+   for browsers (which we forbid) and adds a streaming code path; long-poll reuses
+   the existing request model. Pick at Phase 3 start.
+3. **Metal readback cost (Phase 7).** Is a synchronous drawable readback
+   acceptable for `screenshot`/`pixel-probe` latency, or is an async/queued
+   capture required? Decides the Phase 7 API shape.
+4. **Command-block heuristic fidelity (Phase 4).** Without OSC 133, how aggressive
+   should prompt-boundary heuristics be, and exactly what `confidence` taxonomy
+   does the schema expose?
+5. **MCP timing.** Hold MCP at Phase 6, or pull it forward for dogfooding the
+   moment the Phase 2 floor + catalog exist? (It is only a generated wrapper.)
+6. **Per-session token rollout (Phase 8).** Single app-scoped token is the v1
+   floor; confirm per-session env-injection is deferred to Phase 8 and not pulled
+   earlier by a multi-agent use case.
+7. **UDS transport.** Keep loopback-HTTP-only, or add a Unix-domain-socket
+   transport if a concrete consumer needs filesystem-permission gating?
+
+## 9. Non-goals
+
+- A chatbot or agent model inside the terminal. This is **substrate** for external
+  agents (Claude Code, Codex, scripts, tests), not an embedded agent.
+- A replacement for shell integration, a screen-scraping API, a remote-desktop
+  protocol, or an unauthenticated debug server.
+- Network/remote access, multi-user/team features, or any non-loopback binding.
+- MCP-first: MCP is a generated wrapper over a stable HTTP/Intent contract, built
+  after the catalog and security floor — never the primitive.
+- Re-litigating the resolved decisions in Appendix B without new evidence.
 
 ---
 
-## 8. Open questions / decisions needed
+## Appendix A — Comparator lessons (historical rationale)
 
-> **All eight resolved in §0 (grilling, 2026-05-30).** Summary of dispositions: (1) server home → **new `LabanControl` target** (three-way split; registry stays in `LabanCore`). (2) shipped posture → **token-gated observe-on-by-default**, flipped at the Phase-2 boundary. (3) token model → **single app-scoped + env-injection**; per-session deferred (no wire change needed). (4) Metal readback → deferred to the Phase-4 truthful-fixture pillar; `captureMode` sync-vs-async decided then. (5) `HeadlessDebugRuntime` → **kept** as the offscreen backend; lean parity via shared server + catalog-parity test (no `AppHost` refactor). (6) ADRs → **0012** (architecture) + **0013** (security), before Phase 1 (0011 is taken). (7) "every visible part" → v1 is relocation-MVP; selection/cursor/find promotion is the Phase-4 pillar. (8) MCP → **in-house, generated + curated**, pulled to just after the Phase-2 security floor; contract also published. Original analysis retained below for rationale.
+*(Preserved from v1 §4 for the "why." Nothing in §1–9 requires reading this.)*
+Key takeaways that shaped the body: **one state authority, many thin clients**
+(tmux/wezterm `Mux`; wezterm GUI and `wezterm cli` are both mux clients with no
+separate debug binary) — the direct refutation of the `LabanApp`/`LabanAgent`
+split; **stable ids, never indices** (tmux `$/@/%`, kitty `--match`, wezterm
+`pane_id`); **two read primitives** (rendered grid for assertions vs raw bytes for
+fidelity — tmux `capture-pane` vs `%output`); **typed input fidelity** (iTerm2
+`async_send_text` vs `async_inject`; first-class control-char injection for
+Ctrl-C); **push, not poll** (iTerm2 notifications; wezterm's missing event stream
+is its cited weakness); **semantic command framing from OSC 133/633** (VS Code,
+Warp blocks); **one canonical versioned surface** (iTerm2 deprecating AppleScript
+for the typed protobuf API). Security consensus: **default-deny, loopback-only,
+token-authed, fail closed** (iTerm2 `ITERM2_COOKIE` + per-app consent; kitty
+password tiers; ttyd read-only-until-`--writable`); **loopback is necessary but
+not sufficient** — Host + Origin validation defeat DNS-rebinding (CDP/WebDriver
+lesson); **escape-sequence control is a severe trust boundary** (iTerm2
+CVE-2022-45872; OSC 52 read universally refused). Verifier caveat: cite iTerm2's
+**cookie + per-app-consent** as the security precedent, **not** its
+socket-vs-TCP transport choice (its source labels the unix path "Experimental").
 
-1. **Single shared server target?** Confirm `LabanControlServer`/`IntentRouter`/`IntentCatalog` land in **LabanCore** (AppKit-free, reachable by `LabanApp`, `LabanDebug`, and the daemons) vs a new `LabanControl` target. Recommendation: LabanCore.
-2. **Default posture in the shipped GUI:** server **off** until a setting/env enables it (Phase 0 default), or **observe-only on by default** with control opt-in? iTerm2 ships disabled-by-default; recommend off-by-default through Phase 4, observe-on by default only once Host/Origin + capability tokens land.
-3. **Per-session token injection vs single app token.** Per-session env injection (iTerm2 model) is stronger but changes child-env plumbing across all three tiers. Acceptable to start with a single app-scoped token (Phase 0–3) and add per-session injection in Phase 4?
-4. **Metal readback cost.** Is a synchronous drawable readback acceptable for `screenshot`/`pixel-probe` latency, or do we need an async/queued capture? Affects Phase 3 API shape.
-5. **Retire `HeadlessDebugRuntime`'s private model entirely**, or keep it for fixture/deterministic CI runs? Recommendation: keep it as a *router implementation* (fixtures, offscreen determinism), but it must mount the same `LabanControlServer` so parity is structural.
-6. **New ADR(s) required.** This establishes durable policy: (a) "LabanApp hosts the loopback control+query server; agent and headless are adapters over one IntentRouter" and (b) "agent control surface security model: loopback + Host/Origin + capability tokens + escape-sequence control deferred." Confirm we write ADR 0012 (+ 0013) before Phase 1 lands. *(Resolved: yes — 0011 is taken by the alt-screen patch.)*
-7. **Scope of "every visible part."** Selection/find UI state currently has no out-of-process accessor in the GUI (only the headless mirror). Confirm we promote selection/cursor/find to first-class live-queryable state (the differentiator no comparator offers) — this is net-new work in the AppKit view layer, not relocation.
-8. **MCP timing.** Build the MCP wrapper in-house (Phase 7) or publish the HTTP+schema contract and let it be community-wrapped (the it2mcp pattern)? Affects how aggressively we freeze the HTTP contract.
+## Appendix B — Resolved decisions (grilling 2026-05-30) and v2 deltas
+
+The eight v1 questions were resolved during a 2026-05-30 grilling; v2 keeps all
+eight and records what changed since:
+
+1. v1 scope = relocation-MVP (drive + read). **Kept.**
+2. Three-way target split; registry in `LabanCore`. **Kept; v2 fixes the v1 §5.3
+   vs §0.2 contradiction by placing the *server* in `LabanControl`, not
+   `LabanCore`** (§3.1).
+3. Token-gated observe-on-by-default, flipped at the Phase 2 boundary. **Kept** (§5.4).
+4. Single app-scoped token + env-injection in v1; per-session deferred. **Kept**
+   (now Phase 8, §6).
+5. Two catalogs; `feedOutput`/`advanceFrames` barred from live. **Kept** (§4.3).
+6. Lean parity via the catalog-parity test; `HeadlessDebugRuntime` kept. **Kept** (§3.1).
+7. Governance gate (spec + ADRs) before Phase 1. **Kept; ADR numbers corrected
+   0012/0013 → 0023/0024** (the index has since reached 0022).
+8. MCP in-house, generated + curated. **Kept, but re-sequenced:** v2 promotes the
+   **event stream, command blocks, and trace/replay to first-class pillars
+   (Phases 3–5) ahead of MCP (Phase 6)** and the truthful-fixture work (Phase 7),
+   per the v2 mandate. v1 had MCP at Phase 3 and these pillars buried at Phase 5.
+
+**Stale-fact corrections folded into the body:** ADR numbering (0023/0024);
+`control.json` has no `laband` collision (the daemon's `control-json` is a
+transport-mode label); `MetalReadback.swift` confirmed present.
+
+## Appendix C — Verified surface inventory (2026-06-20)
+
+`DebugHTTPServer` (`Sources/LabanDebug/DebugHTTPServer.swift`, ~40 routes,
+loopback + bearer token + port 0) is instantiated **only** by
+`HeadlessDebugRuntime` (`LabanDebug` → `LabanAgent`); `LabanApp` never constructs
+it (links `LabanDebug` for `CaptureRecorder` only). `AppModel`/
+`TerminalSessionClient` are AppKit-free in `LabanCore`; `AppSessionCoordinator`
+is the GUI funnel in `LabanApp`. `MetalReadback.swift` (`captureMode`, `pngData`)
+exists in `LabanRenderer`. OSC 133 (`ShellIntegrationState`), OSC 7 cwd (ADR
+0015), OSC 52 write (ADR 0014) exist; no command-block object yet. EventLog JSONL
+(`~/Library/Application Support/Laban/events/`) is the only surface that already
+behaves like the vision against the real app (always-on, read-only). No
+`LabanControlServer`/`IntentRouter`/`IntentCatalog`/`LabanControl` target exists
+in `Sources/` as of this date.
