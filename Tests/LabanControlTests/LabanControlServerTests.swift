@@ -84,6 +84,25 @@ final class LabanControlServerTests: XCTestCase {
     XCTAssertEqual(state.tabs, ["spy"])
   }
 
+  func testLegacyReadRoutePreservesQueryParameters() async throws {
+    let router = SpyIntentRouter()
+    let server = LabanControlServer(router: router, surface: .headless)
+    let readiness = try server.start(host: "127.0.0.1", port: 0)
+    defer { server.stop() }
+
+    let (status, data) = try await request(
+      url: "\(readiness.debugServer)/debug/events?since=7",
+      token: readiness.debugToken)
+
+    XCTAssertEqual(status, 200)
+    XCTAssertEqual(
+      router.legacyQueries(),
+      [LegacyDebugQueryInput(intentID: "log.events", params: ["since": "7"])])
+    let result = try JSONDecoder().decode(SpyLegacyQueryResult.self, from: data)
+    XCTAssertEqual(result.intentID, "log.events")
+    XCTAssertEqual(result.params, ["since": "7"])
+  }
+
   func testSelectTabRouteDispatchesIntent() async throws {
     let router = SpyIntentRouter()
     let server = LabanControlServer(router: router, surface: .gui)
@@ -257,10 +276,16 @@ private struct SpyActionResult: Codable, Equatable {
   var ok: Bool
 }
 
+private struct SpyLegacyQueryResult: Codable, Equatable {
+  var intentID: String
+  var params: [String: String]
+}
+
 private final class SpyIntentRouter: IntentRouter {
   private let lock = NSLock()
   private var routedIntents: [Intent] = []
   private var routedQueries: [Query] = []
+  private var routedLegacyQueries: [LegacyDebugQueryInput] = []
 
   func route(_ intent: Intent) -> ControlResponse {
     lock.lock()
@@ -274,6 +299,13 @@ private final class SpyIntentRouter: IntentRouter {
     routedQueries.append(query)
     lock.unlock()
     return .json(SpyState(tabs: ["spy"]))
+  }
+
+  func query(_ query: LegacyDebugQueryInput) -> ControlResponse {
+    lock.lock()
+    routedLegacyQueries.append(query)
+    lock.unlock()
+    return .json(SpyLegacyQueryResult(intentID: query.intentID, params: query.params))
   }
 
   func artifact(_ request: ArtifactRequest) -> ControlResponse? {
@@ -290,5 +322,11 @@ private final class SpyIntentRouter: IntentRouter {
     lock.lock()
     defer { lock.unlock() }
     return routedQueries
+  }
+
+  func legacyQueries() -> [LegacyDebugQueryInput] {
+    lock.lock()
+    defer { lock.unlock() }
+    return routedLegacyQueries
   }
 }

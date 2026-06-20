@@ -251,7 +251,7 @@ public final class LabanControlServer {
 
     let method = parts[0]
     let rawPath = parts[1]
-    let path = rawPath.components(separatedBy: "?")[0]
+    let parsedTarget = Self.parseRequestTarget(rawPath)
     let headers = parseHeaders(Array(lines.dropFirst()))
 
     guard method == "GET" || method == "POST" else {
@@ -300,11 +300,22 @@ public final class LabanControlServer {
       break
     }
 
-    send(clientFD, route(method: method, path: path, body: body))
+    send(
+      clientFD,
+      route(
+        method: method,
+        path: parsedTarget.path,
+        query: parsedTarget.query,
+        body: body))
   }
 
-  private func route(method: String, path: String, body: Data) -> ControlResponse {
-    let request = ControlHTTPRequest(method: method, path: path, body: body)
+  private func route(
+    method: String,
+    path: String,
+    query: [String: String],
+    body: Data
+  ) -> ControlResponse {
+    let request = ControlHTTPRequest(method: method, path: path, query: query, body: body)
     guard
       let route = ControlRouteCatalog.routes.first(where: { $0.matches(method: method, path: path) }
       )
@@ -390,6 +401,33 @@ public final class LabanControlServer {
       return .error(400, "unsupported action")
     }
     return .error(404, "not found")
+  }
+
+  private static func parseRequestTarget(
+    _ rawPath: String
+  ) -> (path: String, query: [String: String]) {
+    let parts = rawPath.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+    let path = parts.first.map(String.init) ?? rawPath
+    guard parts.count > 1 else {
+      return (path, [:])
+    }
+    return (path, parseQueryString(String(parts[1])))
+  }
+
+  private static func parseQueryString(_ queryString: String) -> [String: String] {
+    var query: [String: String] = [:]
+    guard !queryString.isEmpty else { return query }
+
+    for pair in queryString.split(separator: "&", omittingEmptySubsequences: false) {
+      let keyValue = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+      guard keyValue.count == 2 else { continue }
+      let rawKey = String(keyValue[0])
+      let rawValue = String(keyValue[1])
+      let key = rawKey.removingPercentEncoding ?? rawKey
+      let value = rawValue.removingPercentEncoding ?? rawValue
+      query[key] = value
+    }
+    return query
   }
 
   private static func unauthorizedResponse() -> ControlResponse {

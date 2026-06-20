@@ -4,6 +4,7 @@ import LabanCore
 struct ControlHTTPRequest {
   let method: String
   let path: String
+  let query: [String: String]
   let body: Data
 }
 
@@ -348,16 +349,68 @@ public enum ControlRouteCatalog {
 
   public static let bindings: [HTTPBinding] = endpoints.map(\.binding)
 
-  static let routes: [ControlRoute] = [
-    ControlRoute(
-      endpoint: endpoint(for: "GET", "/debug/state"),
-      resolveIntentID: { _ in .resolved("app.state") },
-      dispatch: { server, _ in server.router.query(.state) }),
-    ControlRoute(
-      endpoint: endpoint(for: "POST", "/debug/actions"),
-      resolveIntentID: resolveActionIntentID,
-      dispatch: { server, request in server.dispatchDebugAction(request) }),
+  static let routes: [ControlRoute] =
+    [
+      ControlRoute(
+        endpoint: endpoint(for: "GET", "/debug/state"),
+        resolveIntentID: { _ in .resolved("app.state") },
+        dispatch: { server, _ in server.router.query(.state) })
+    ]
+    + legacyJSONReadRoutes
+    + [
+      ControlRoute(
+        endpoint: endpoint(for: "POST", "/debug/actions"),
+        resolveIntentID: resolveActionIntentID,
+        dispatch: { server, request in server.dispatchDebugAction(request) })
+    ]
+
+  private static let legacyJSONReadRoutePaths: [(method: String, path: String)] = [
+    ("GET", "/debug"),
+    ("GET", "/debug/capabilities"),
+    ("GET", "/debug/health"),
+    ("GET", "/debug/accessibility"),
+    ("GET", "/debug/terminal-modes"),
+    ("GET", "/debug/persistence/state"),
+    ("GET", "/debug/persistence/restore-picker"),
+    ("GET", "/debug/find/state"),
+    ("GET", "/debug/shell-integration/state"),
+    ("GET", "/debug/scroll-indicator/state"),
+    ("GET", "/debug/scroll-trace"),
+    ("GET", "/debug/sessions"),
+    ("GET", "/debug/render"),
+    ("GET", "/debug/frame-commands"),
+    ("GET", "/debug/atlas"),
+    ("GET", "/debug/events"),
+    ("GET", "/debug/tab-journal"),
+    ("GET", "/debug/input-log"),
+    ("GET", "/debug/terminal-log"),
+    ("GET", "/debug/timing"),
+    ("GET", "/debug/metrics"),
+    ("GET", "/debug/errors"),
+    ("GET", "/debug/selection"),
+    ("GET", "/debug/clipboard"),
   ]
+
+  private static var legacyJSONReadRoutes: [ControlRoute] {
+    legacyJSONReadRoutePaths.map { method, path in
+      let endpoint = endpoint(for: method, path)
+      return ControlRoute(
+        endpoint: endpoint,
+        resolveIntentID: { _ in
+          guard let intentID = endpoint.fixedIntentId else {
+            return .failed(.error(500, "missing intent mapping"))
+          }
+          return .resolved(intentID)
+        },
+        dispatch: { server, request in
+          guard let intentID = endpoint.fixedIntentId else {
+            return .error(500, "missing intent mapping")
+          }
+          return server.router.query(
+            LegacyDebugQueryInput(intentID: intentID, params: request.query))
+        })
+    }
+  }
 
   private static func endpoint(
     method: String,

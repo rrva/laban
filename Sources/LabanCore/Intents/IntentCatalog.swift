@@ -361,7 +361,14 @@ public enum Query: Sendable, Equatable {
 public protocol IntentRouter: AnyObject {
   func route(_ intent: Intent) -> ControlResponse
   func query(_ query: Query) -> ControlResponse
+  func query(_ query: LegacyDebugQueryInput) -> ControlResponse
   func artifact(_ request: ArtifactRequest) -> ControlResponse?
+}
+
+extension IntentRouter {
+  public func query(_ query: LegacyDebugQueryInput) -> ControlResponse {
+    .error(501, "not yet ported")
+  }
 }
 
 public struct IntentDescriptor: Sendable, Equatable {
