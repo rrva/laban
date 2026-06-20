@@ -163,7 +163,7 @@ width truth to untangle.
 | Paste → UTF-8 | `Sources/LabanApp/TerminalClipboard.swift:19,22`; `Sources/LabanCore/Session.swift:1279`; `Sources/LabanApp/TerminalBitmapView.swift:4336` |
 | Bracketed paste mode check | `Sources/LabanApp/TerminalBitmapView.swift:4364`; `Sources/LabanCore/Session.swift:1258-1265` |
 | OSC 52 clipboard (base64/UTF-8, ADR 0014) | `Sources/LabanCore/OSC52Clipboard.swift`; `Sources/LabanApp/TerminalClipboard.swift:40,49-56` |
-| Copy trailing-trim (ASCII `\s` only; U+3000 preserved) | `Sources/LabanCore/TerminalSelection.swift:353-355` |
+| Copy trailing-trim (`"\\s+$"` ICU regex — **also strips trailing U+3000**) | `Sources/LabanCore/TerminalSelection.swift:353-355` |
 | `.option` → `.alt` modifier mapping | `Sources/LabanApp/TerminalInputView.swift:439` |
 | Settings window (global-only; no profiles, no Option-as-Meta) | `Sources/LabanApp/SettingsWindowController.swift:16-29` |
 | `ssh://`/`telnet://` URL→argv | `Sources/LabanCore/TerminalURLCommand.swift:1-40`; `Sources/LabanApp/AppDelegate.swift:136-158` |
@@ -186,8 +186,8 @@ audit's wrong hypotheses, and avoid duplicate work. No implementation.
 | G3 | Ambiguous-width policy; no UAX #11 data; no ambiguous-as-wide setting | `TerminalDisplayWidth.swift:30-82` hardcoded ranges; no setting in `SettingsWindowController.swift:16-29` | Real **design gap**; engine owns live-grid width, so this is fallback-overlay + policy only | M4 |
 | G4 | CJK font pairing & cell-metric correctness | Single primary font `FontAtlas.swift:75-94`; CJK absent from `TerminalGlyphFallback.swift:83-98`; CJK → CoreText cascade `MetalGlyphAtlas.swift:395-402`; metrics from primary 'M' `FontAtlas.swift:150-161` | **CONFIRMED**: no dual-font architecture, no CJK-specific metric guarantee | M2 |
 | G5 | Color emoji renders monochrome / tofu | `MetalGlyphAtlas.swift:124` `.r8Unorm`, `:295-307` `alphaOnly`; shader `Shaders.metal:131` samples `.r`; no `kCTFontColorGlyphsTrait`/`sbix`/`COLR` detection anywhere | **CONFIRMED**; **no existing plan owns it** (vector plan defers it to a path that is monochrome) | M5 |
-| G6 | No legacy CJK paste/copy encodings; U+3000 trim unverified | `GBK/GB18030/iconv/CFStringEncoding/Big5/Shift_JIS` = **0 hits** repo-wide; trim is ASCII `\s` (`TerminalSelection.swift:353-355`) | **CONFIRMED absent**; U+3000 is **preserved, not trimmed** (correct) | M6 (investigation) / deferred |
-| G7 | No Option-as-Meta setting; IME candidate-key safety | No toggle `SettingsWindowController.swift:16-29`; no `macos_option_as_alt` in C API `LabanTerminalCore.h:1186-1233`; `.option`→`.alt` at `TerminalInputView.swift:439`; candidate keys protected by `hasMarkedText` guard at `TerminalInputView.swift:99` | Setting **absent** (real gap); candidate-key safety **already correct** (verify-only) | M6 |
+| G6 | No legacy CJK paste/copy encodings (absent); trailing U+3000 wrongly trimmed on copy | `GBK/GB18030/iconv/CFStringEncoding/Big5/Shift_JIS` = **0 hits** repo-wide; `rightTrim` uses `"\\s+$"` with `.regularExpression` (`TerminalSelection.swift:353-355`) — Foundation's ICU `\s` matches `\p{Z}`, so a trailing U+3000 IDEOGRAPHIC SPACE **is** stripped (verified empirically) | Legacy encodings **CONFIRMED absent** (P3); U+3000 trim is a **CONFIRMED copy-correctness bug / product decision** | M6 |
+| G7 | No Option-as-Meta setting; IME candidate-key safety | No toggle `SettingsWindowController.swift:16-29`; the C encoder option **exists and is already wired** — `key_input.c:132-138` calls `ghostty_key_encoder_setopt(GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, …)` but hard-codes `GHOSTTY_OPTION_AS_ALT_FALSE` ("a future settings path can override this"); `.option`→`.alt` at `TerminalInputView.swift:439`; candidate keys protected by `hasMarkedText` guard at `TerminalInputView.swift:99` | Swift setting **absent** (real gap); the C API is **present, not missing** — plumb a toggle through to `key_input.c:136`; candidate-key safety **already correct** (verify-only) | M6 |
 | G8 | zh-Hans localization absent | no `.lproj`/`NSLocalizedString`/`.xcstrings`; hardcoded English `MenuCommands.swift:13,18,27` | **CONFIRMED absent**; needs spec amendment | M7 (deferred) |
 | G9 | Proxy/jump-host/cloud-profile ecosystem absent | no `SOCKS`/`proxy`/`ProxyJump`; `ssh://` handler is argv-only (`TerminalURLCommand.swift`); cloud-sync is MVP non-goal (`mvp.md:86`) | **CONFIRMED absent**; needs spec amendment | M7 (deferred) |
 
@@ -199,7 +199,7 @@ audit's wrong hypotheses, and avoid duplicate work. No implementation.
 | "FrameProducer preedit uses `text.count`" | **Refuted** — it uses `TerminalDisplayWidth.cells(of:)` | `FrameProducer.swift:577` |
 | "OSC 52 may be missing/UTF-8 only" | **Refuted** — shipped (ADR 0014), base64+UTF-8, write-on/read-opt-in | `OSC52Clipboard.swift`; `TerminalClipboard.swift:40,49-56` |
 | "Soft-wrapped copy joins wrong" | **Already handled** + owned by another plan | `TerminalSelection.swift:101-117`; `execplans/active/terminal-copy-unwraps-soft-wrapped-lines.md` |
-| "U+3000 may be wrongly trimmed on copy" | **Refuted** — ASCII `\s` regex does not match U+3000; ideographic space preserved | `TerminalSelection.swift:353-355` |
+| "U+3000 may be wrongly trimmed on copy" | **CONFIRMED — earlier refutation reversed.** `rightTrim`'s `"\\s+$"` uses `.regularExpression`; Foundation's ICU `\s` matches `\p{Z}`, so trailing U+3000 **is** stripped (verified empirically). Now a tracked item in G6/M6, **not** deferred. | `TerminalSelection.swift:353-355` |
 | "Flip mode 2027 globally" | **Out of scope** — ADR 0021 mandates opt-in default OFF (fish/wcwidth regression risk) | `docs/adr/0021-...:55-67` |
 | GB18030/GBK paste/copy conversion | **Deferred to M6 investigation, likely P3** — no evidence many users hit it daily; modern remote stacks are UTF-8 | G6 |
 | zh-Hans UI, proxy/jump-host, cloud profiles, vibrancy/transparency | **Deferred to M7, spec-gated** — product scope, not text correctness | G8, G9; `spec.md` (no authorization) |
@@ -244,6 +244,16 @@ Pinyin** and **Rime/Squirrel** steps a human runs against an installed
 `~/Laban-cjk.app` build: compose `中文`, observe the candidate window at the
 cursor, commit, and confirm cell placement.
 
+**Staged assertions (so M1 is never a permanently-red CI gate).** M1 must not
+introduce a test that fails until M2/M3/M5 land. The first `ChineseTrustGateTests`
+asserts only **fixture-load and debug-endpoint integrity** (the fixture loads,
+frames advance, and `/debug/atlas` / `/debug/frame-commands` / `/debug/screenshot`
+respond) and records a **baseline artifact** (screenshots + atlas/frame-command
+dumps) — it does **not** assert CJK-font metrics, preedit columns, or color-emoji
+pixels yet. Each correctness assertion is enabled milestone-by-milestone as its fix
+lands (M2 → font metrics, M3 → preedit columns, M5 → color pixels); the final
+Review Gate flips the whole trust gate into a hard pass/fail requirement.
+
 **Validation (M1):**
 - Predicted files: `fixtures/cjk/trust-gate.fixture.json`,
   `Tests/LabanDebugTests/ChineseTrustGateTests.swift`, and a documented manual
@@ -255,7 +265,9 @@ cursor, commit, and confirm cell placement.
 - Debug/artifact: `GET /debug/screenshot?target=terminal` PNG captured for each
   renderer; `GET /debug/atlas` for missing-glyph/cell-metric check;
   `GET /debug/frame-commands` for cell occupancy.
-- `./scripts/build-app` exit 0; `swift test --filter ChineseTrustGate` green.
+- `./scripts/build-app` exit 0; `swift test --filter ChineseTrustGate` green —
+  baseline integrity assertions only at M1; correctness assertions activate as
+  M2/M3/M5 land, so the gate is never red before its dependency ships.
 - Renderer parity: capture the fixture through `software`, `classic`, and
   `gpuDriven` and compare cell occupancy (frame-command equivalence) — exact-RGBA
   where the renderers claim parity, non-blank where font-dependent.
@@ -335,7 +347,10 @@ out itself, one cell per `Character`.
   `for (cellIndex, cluster) in text.enumerated()` with `col = baseCol + cellIndex`
   (advances one column per Character; a wide CJK preedit cluster must advance two).
 - Consequence: composing `中文` (or a clustered emoji) in the `gpuDriven` renderer
-  draws the preedit underline/mask and candidate anchor at the wrong columns.
+  draws the preedit underline/mask/glyph cells at the wrong columns. The
+  candidate-window anchor is driven separately by `firstRect`
+  (`TerminalBitmapView.swift:3742`), **not** by this overlay, so it is confirmed by
+  manual acceptance and is not the primary verified bug surface here.
 
 **Source path from `NSTextInputClient` to renderer (trace, for the fix):**
 `setMarkedText` (`TerminalBitmapView.swift:3681`) sets `markedText` +
@@ -398,11 +413,18 @@ non-grid text — and decide the ambiguous-width product policy.
   the documented fallback sites (`FrameProducer.swift:577`,
   `TerminalBitmapView.swift:3696`, `TerminalFind.swift:247`,
   `TerminalSelection.swift:307`, and the M3-fixed Metal overlay).
-- **Session mode-2027 threading into overlay/preedit helpers:** since preedit is
-  sized by the Swift fallback, document that the fallback intentionally uses legacy
-  per-scalar width and that this is acceptable for not-yet-committed text (ADR 0021
-  class-B). If a session defaults to `preferGrapheme`, note that committed text
-  still gets engine width; only the transient preedit uses the fallback.
+- **Preedit width policy (explicit decision required, Decision Log):** preedit text
+  never entered the grid, so the engine has no width for it and it is sized by the
+  Swift fallback (ADR 0021 class-B). Decide explicitly between: (a) keep the legacy
+  per-scalar fallback for preedit even when the session is `preferGrapheme` / mode
+  2027 (lowest effort; risk: clustered-emoji preedit can visibly differ from the
+  committed text under mode 2027); (b) a session-aware preedit width that follows
+  the session's grapheme mode (better coherence; risk of re-creating width logic
+  outside the engine); or (c) ask libghostty for a non-grid text-width helper (best
+  architecture; needs C API work). **Default recommendation: (a)** — but if it stays
+  legacy, this milestone must add an explicit acceptance note/screenshot showing the
+  mode-2027 preedit-vs-committed visual compromise so the trade-off is on the record.
+  Committed text always gets engine width regardless.
 - **Ambiguous-width policy decision (Decision Log):** choose one — (a) keep
   engine-as-truth for grid (no app-layer ambiguous override; ambiguous chars get
   whatever the engine assigns), (b) add a user setting "ambiguous = wide" that maps
@@ -502,11 +524,16 @@ wired there.
   Verified state: `.option` maps to `.alt` (`TerminalInputView.swift:439`) but
   Option-produced text routes to native text with Option consumed
   (`TerminalKeyInputTests.swift:180-195`); there is **no** user toggle
-  (`SettingsWindowController.swift:16-29`) and **no** `macos_option_as_alt` in the
-  C API (`LabanTerminalCore.h:1186-1233`). Add a `GraphemeWidthSettings`-style
-  store + a Settings row; the setting changes whether a bare Option chord (no text
-  produced) encodes as Alt. Per-profile is out of scope (no profile architecture
-  exists — global setting only).
+  (`SettingsWindowController.swift:16-29`). The C encoder API **does exist and is
+  already wired** — `key_input.c:132-138` calls
+  `ghostty_key_encoder_setopt(GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, …)` but
+  hard-sets `GHOSTTY_OPTION_AS_ALT_FALSE` with the comment "a future settings path
+  can override this." So the work is **not** "no C API exists" (G7's original
+  evidence was wrong); it is to thread a Swift setting through `LabanKeyEvent` / the
+  session down to that call site so the hardcoded `FALSE` becomes the setting's
+  value. Add a `GraphemeWidthSettings`-style store + a Settings row; the setting
+  changes whether a bare Option chord (no text produced) encodes as Alt. Per-profile
+  is out of scope (no profile architecture exists — global setting only).
 - **IME candidate-key safety (verify-only):** confirm Space and digit keys 1–9
   (IME candidate selection) reach the IME during composition. Already correct: the
   `hasMarkedText` guard (`TerminalInputView.swift:99`) precedes app-command routing
@@ -518,9 +545,13 @@ wired there.
   P3** unless evidence shows daily user pain. If pursued, add a fixture copying CJK
   through a legacy-locale remote and an opt-in conversion at the
   `TerminalClipboard`/`TerminalPaste` seam (never silently mangle UTF-8).
-- **U+3000 copy/trim (verify-only):** confirmed preserved (`TerminalSelection.swift:353-355`
-  trims ASCII `\s` only). Add a regression test asserting a trailing U+3000 is
-  preserved (or, if product chooses, trimmed — Decision Log).
+- **U+3000 copy/trim (CONFIRMED bug / product decision):** `rightTrim`
+  (`TerminalSelection.swift:353-355`) uses `"\\s+$"` with `.regularExpression`;
+  Foundation's ICU `\s` matches `\p{Z}`, so a trailing U+3000 IDEOGRAPHIC SPACE
+  **is** stripped on copy (verified empirically). A trailing full-width space is
+  meaningful in CJK text, so the default should likely be **preserve** — restrict
+  the trim to ASCII spaces. Add a regression test for the chosen behavior and
+  record the decision in the Decision Log.
 - **Bracketed paste with Chinese text:** add a test that pasting CJK with bracketed
   paste enabled (`TerminalBitmapView.swift:4364`; `Session.swift:1258-1265`)
   delivers exact UTF-8 bytes wrapped in the fence (ADR 0020 sanitizer preserved).
@@ -528,8 +559,14 @@ wired there.
 **Validation (M6):**
 - Predicted files: `Sources/LabanApp/SettingsWindowController.swift`, a new
   `Sources/LabanCore/OptionKeySettings.swift`,
-  `Sources/LabanApp/TerminalInputView.swift`;
-  `Tests/LabanAppTests/TerminalKeyInputTests.swift`;
+  `Sources/LabanApp/TerminalInputView.swift`,
+  `Sources/LabanTerminalCore/key_input.c` (replace the hardcoded
+  `GHOSTTY_OPTION_AS_ALT_FALSE` at `:136` with the threaded setting),
+  `Sources/LabanTerminalCore/include/LabanTerminalCore.h` (carry the toggle on
+  `LabanKeyEvent`), `Sources/LabanCore/Session.swift` (Swift→C plumbing),
+  `Sources/LabanCore/TerminalSelection.swift` (U+3000 trim fix);
+  `Tests/LabanAppTests/TerminalKeyInputTests.swift`, a new
+  `Tests/LabanTerminalCoreTests/LabanSessionKeyEncodingTests.swift`;
   `Tests/LabanCoreTests` paste/selection tests.
 - Tests: `testOptionAsMetaSettingEncodesAltChord`,
   `testDigitKeyDuringMarkedTextRoutesToNativeText`,
@@ -597,11 +634,13 @@ fresh context, and the repository gates are green:
 
 ## Decision Log
 
-- Decision: **Do not assume the audit is correct; record refutations.**
+- Decision: **Do not assume the audit is correct; record refutations — and
+  re-verify our own refutations.**
   Rationale: direct source verification refuted/narrowed several claims (Metal
   preedit bug is `gpuDriven`-only; scrollback/find/copy/word-select/IME-caret width
-  already fixed; OSC 52 already shipped; U+3000 already preserved; no legacy CJK
-  encodings exist). Recording them prevents re-investigation.
+  already fixed; OSC 52 already shipped; no legacy CJK encodings exist). One earlier
+  refutation was itself wrong: U+3000 is **not** preserved on copy — `rightTrim`'s
+  `"\\s+$"` ICU regex strips it (verified empirically), now tracked in G6/M6.
   Date/Author: 2026-06-20, plan author.
 - Decision (open, to resolve in M4): **Whether `preferGrapheme` should be
   recommended/default for Chinese users.** Leaning: keep factory default `.auto`
@@ -614,6 +653,14 @@ fresh context, and the repository gates are green:
   locale policy, or unsupported.** Leaning: **unsupported in Swift** unless the
   libghostty C API exposes an ambiguous-width knob (must not create a second width
   truth, ADR 0001/0021). If the engine exposes it, surface it as a setting.
+  Date/Author: 2026-06-20, plan author.
+- Decision (open, to resolve in M4): **Preedit width follows legacy fallback vs.
+  session grapheme mode.** Leaning: **(a) keep the legacy fallback** for transient
+  preedit (engine has no width for not-yet-committed text, ADR 0021 class-B); if it
+  stays legacy, record an explicit acceptance note/screenshot of the mode-2027
+  preedit-vs-committed visual compromise. Alternatives: session-aware preedit width,
+  or a libghostty non-grid text-width helper (C API work). Committed text always
+  gets engine width.
   Date/Author: 2026-06-20, plan author.
 - Decision (open, to resolve in M2): **CJK dual-font architecture.** Adopt an
   explicit CJK cascade (primary Latin monospace + a CJK pair) shared by software
@@ -660,6 +707,10 @@ mechanical checks.
       the preedit overlay (was `:2732`) shows the display-width fix, and a
       `FrameProducerPreeditTests` case asserts a wide-CJK preedit column equals the
       display-width column; mutating it to `text.count` makes it FAIL.
+- [ ] M6: the Option-as-Meta plumbing landed — `key_input.c:136` no longer
+      hard-codes `GHOSTTY_OPTION_AS_ALT_FALSE` independent of the new setting — and a
+      copy test asserts the chosen trailing-U+3000 behavior (`rightTrim`'s `"\\s+$"`
+      at `TerminalSelection.swift:353-355` no longer silently strips it).
 - [ ] No duplicated work: this plan does not re-implement DEC mode 2027 width
       (ADR 0021), the bug-audit M2 scrollback/find/copy/word-select/IME-caret fix,
       the kimi-code Kitty-image/tmux-DCS/width-conformance work, the glyph-
