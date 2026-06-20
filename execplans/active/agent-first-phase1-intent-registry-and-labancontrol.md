@@ -72,8 +72,8 @@ Milestone 1C — Re-point the full debug surface:
 - [x] (2026-06-20) `check-debug-contract` rewritten to read `Sources/LabanControl/ControlRouteCatalog.swift` (matches the `endpoint(method:path:)`/`HTTPBinding` declarations + `legacy*SchemaPath`s; 45 unique endpoints) **before** deletion; `runtime.discovery()` now sources its `endpoints` from `DebugDiscoveryEndpoint.catalog` (mapped from `ControlRouteCatalog`, guarded byte-stable by `DiscoveryEndpointParityTests` against `Fixtures/discovery-endpoints.golden.json` — 11 legacy summaries restored verbatim into the catalog); the 5 `LabanDebugSmokeTests` HTTP cases now mount `LabanControlServer(surface: .headless)`; `DebugHTTPServer.swift` deleted; `LabanDebug` deps gain `LabanControl`. `scripts/check` (incl. `check-debug-contract`, `test-e2e`, lint) green.
 
 Milestone 1D — Generate discovery; gate schemas:
-- [ ] Generator emits the `/debug` discovery doc from `ControlRouteCatalog`+`IntentCatalog` **byte-stable** (legacy schema paths); validates catalog↔schema consistency **route-aware**; emits new-intent schemas from `SchemaNode`; grandfathers the 33 existing hand-written schemas.
-- [ ] `scripts/check` gate fails on a route missing its (route-appropriate) schema or a descriptor missing `requiredCapability`; generated discovery committed; `scripts/check` green.
+- [x] (2026-06-20) `LabanControlGen` executable (deps `["LabanControl","LabanCore"]`) walks `ControlRouteCatalog.endpoints` and emits the committed, byte-stable `schemas/debug/discovery-endpoints.json` (the same endpoint metadata — method/path/category/summary/queryParameters/legacy schema paths — the live `/debug` response serves via `DebugDiscoveryEndpoint.catalog`). `--write` regenerates; `--check` regenerates to memory, diffs the committed doc, verifies every route's declared legacy schema file exists, and runs `IntentCatalog.all.validate(endpointDescriptors:)` (unique ids, fixture-never-gui, route-aware input/output schema presence). The 33 hand-written schemas are referenced, not regenerated; `SchemaNode` remains the authoring path for future new intents (none in Phase 1). The discovery `actions`/`waitConditions`/`fixtureActions`/`examples` lists stay served by `DebugDiscoveryCatalog` (byte-stable, unchanged) — deriving those from `IntentCatalog` is deferred because the legacy summaries differ from the descriptor summaries and changing them would move the wire.
+- [x] (2026-06-20) `scripts/check` runs `swift run LabanControlGen --check` after `check-debug-contract`; it fails on a drifted committed doc, a route referencing a missing schema, or an ill-formed catalog. `DiscoveryEndpointParityTests` is repointed at the committed doc (the hand-captured `Tests/.../Fixtures` golden removed). Drift teeth verified (mutating the doc → non-zero). `scripts/check` green end to end (`check-debug-contract`, `LabanControlGen --check`, `test-e2e`, lint, coverage).
 
 ## Context and Orientation
 
@@ -517,6 +517,13 @@ route-aware.
   no `LabanApp` dependency. 2026-06-20 / Claude.
 - (C8) conservative GUI availability; (C5) capability classified not enforced
   (ADR 0024 = Phase 2); keep `/debug/*` namespace (design §4.4). 2026-06-20 / Claude.
+- (1D) `LabanControlGen` generates the discovery **endpoints** doc from
+  `ControlRouteCatalog` (the catalog-owned, byte-stable part) and gates it +
+  schema existence + `IntentCatalog` well-formedness in `scripts/check`. The
+  runtime keeps serving the full live discovery (adding dynamic runId/frame and
+  the `DebugDiscoveryCatalog` action/wait/example lists) so the wire is
+  unchanged; folding those lists into `IntentCatalog` is a later step since the
+  legacy summaries differ from descriptor summaries. 2026-06-20 / Claude.
 - (C8, parity) Honored C8's gui:true list by *implementing* `terminal.typeText`/
   `terminal.sendKey` in `LiveIntentRouter` (rather than demoting them to
   `headlessOnly`), keeping the 1A starter-availability test intact. Key-name

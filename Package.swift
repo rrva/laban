@@ -67,6 +67,10 @@ let package = Package(
       dependencies: ["LabanCore"]
     ),
     .executableTarget(
+      name: "LabanControlGen",
+      dependencies: ["LabanControl", "LabanCore"]
+    ),
+    .executableTarget(
       name: "LabanApp",
       dependencies: ["LabanCore", "LabanRenderer", "LabanDebug", "LabanTerminalCore", "LabanControl"],
       resources: [.copy("Resources/AppIcon.icns")],
@@ -129,8 +133,7 @@ let package = Package(
     ),
     .testTarget(
       name: "LabanDebugTests",
-      dependencies: ["LabanDebug", "LabanControl", "Laband"],
-      exclude: ["Fixtures"]
+      dependencies: ["LabanDebug", "LabanControl", "Laband"]
     ),
     .testTarget(
       name: "LabanControlTests",
