@@ -536,23 +536,23 @@ route-aware.
 
 A fresh-state agent verifies (mechanical; from repo root):
 
-- [ ] `grep -rn "import AppKit\|import Cocoa" Sources/LabanControl Sources/LabanCore/Intents` → nothing; `LabanControl` deps in `Package.swift` are exactly `["LabanCore"]`; `grep -rn "import LabanDebug" Sources/LabanControl` → nothing.
-- [ ] `ControlReadiness` is defined in `LabanCore`; `LabanDebug` has `typealias DebugReadiness = ControlReadiness`.
-- [ ] `LabanControlTests` target deps are `["LabanControl","LabanCore"]` (no `LabanApp`); it uses a spy router.
-- [ ] `grep -rn "class DebugHTTPServer" Sources` → nothing (after 1C).
-- [ ] Per-intent availability + taxonomy: a spy-router test asserts (a) `feedOutput` on `.gui` → 404 with no router call; (b) an unknown action → `ActionResult(ok:false)` (not 404); (c) malformed body → 400.
-- [ ] Mouse wire: a headless mouse-action test asserts the JSON has `mouseTracking` and `sent`.
-- [ ] Encoder: `ControlResponse.json` uses `.iso8601` + `.sortedKeys` (grep the impl); `.error` body is `{"error":…}`.
-- [ ] Discovery byte-stable: the `/debug` response (endpoints + `schemas/debug/*` paths) is unchanged vs the pre-1D commit (diff); `grep -rn "schemas/control" .` → nothing.
-- [ ] `DebugAction → Intent` `switch` has no `default`; no `Decodable` request body used by `LabanControl` is `internal` in `LabanDebug`.
-- [ ] No reflection (`grep -rni "Mirror(\|\.reflect" Sources/LabanControl Sources/LabanCore/Intents` → nothing); no third-party package added.
-- [ ] `./scripts/check` exits 0.
+- [x] `grep -rn "import AppKit\|import Cocoa" Sources/LabanControl Sources/LabanCore/Intents` → nothing; `LabanControl` deps in `Package.swift` are exactly `["LabanCore"]`; `grep -rn "import LabanDebug" Sources/LabanControl` → nothing.
+- [x] `ControlReadiness` is defined in `LabanCore`; `LabanDebug` has `typealias DebugReadiness = ControlReadiness`.
+- [x] `LabanControlTests` target deps are `["LabanControl","LabanCore"]` (no `LabanApp`); it uses a spy router.
+- [x] `grep -rn "class DebugHTTPServer" Sources` → nothing (after 1C).
+- [x] Per-intent availability + taxonomy: a spy-router test asserts (a) `feedOutput` on `.gui` → 404 with no router call; (b) an unknown action → `ActionResult(ok:false)` (not 404); (c) malformed body → 400.
+- [x] Mouse wire: a headless mouse-action test asserts the JSON has `mouseTracking` and `sent`.
+- [x] Encoder: `ControlResponse.json` uses `.iso8601` + `.sortedKeys` (grep the impl); `.error` body is `{"error":…}`.
+- [x] Discovery byte-stable: the `/debug` response (endpoints + `schemas/debug/*` paths) is unchanged vs the pre-1D commit (diff); `grep -rn "schemas/control" .` → nothing.
+- [x] `DebugAction → Intent` `switch` has no `default`; no `Decodable` request body used by `LabanControl` is `internal` in `LabanDebug`.
+- [x] No reflection (`grep -rni "Mirror(\|\.reflect" Sources/LabanControl Sources/LabanCore/Intents` → nothing); no third-party package added.
+- [x] `./scripts/check` exits 0.
 
-Review status: NOT REVIEWED
+Review status: APPROVED (2026-06-20) — independent fresh-state reviewer verified items 1–10; `./scripts/check` exits 0 (item 11, uncontended).
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- All eleven mechanical checks pass. The only `scripts/check` failure observed during review was an environmental codesign collision from two concurrent `build-app` runs (reviewer + author both signing `.build/laban/Laban.app`); an uncontended re-run exits 0. The known-flaky `GPUCellParityTests/testGPUCellPartialDamageMatchesFullRedrawWithGappedDirtyRows` passed on the clean run.
 
 ## Idempotence and Recovery
 
