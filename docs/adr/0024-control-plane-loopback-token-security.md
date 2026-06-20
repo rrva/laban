@@ -4,7 +4,12 @@ Date: 2026-06-20
 
 ## Status
 
-Accepted.
+Accepted; **amended 2026-06-20** (observe-first for Phase 2 — see "Amendment"
+below). The original two-tier *control* token model is superseded by two *observe*
+tiers plus a deferred lease; all input/clipboard actuation and cross-tab authority
+move to a future Terminal-Lease / Computer-Use ADR. The transport hardening,
+fail-closed posture, `0600` rule, capability-from-catalog policy, audit, indicator,
+and disable switch are unchanged.
 
 ## Context
 
@@ -85,6 +90,41 @@ summary) / `.control` / `.clipboard` / `.fixture`. Each intent also declares a
 Per-session token scoping (one token per session via child-env injection — no
 `labpty` wire change, since the wire already carries child `envp`) is deferred to
 a later phase; v1 ships a single app-scoped token per tier.
+
+## Amendment (2026-06-20): Observe-first for Phase 2
+
+A security deliberation concluded that an *agent-driven* terminal (programmatic
+input, an app-wide control token) creates a sandbox-escape surface that Laban's
+lack of an inter-tab boundary makes unsafe to ship by default. Phase 2 ships an
+*agent-observable* terminal instead. The following supersede the **Decision** above
+for Phase 2; the deferred items return only behind an explicit, user-leased mode.
+
+- **No app-wide control token.** The "Control/sensitive token … grants `.control` +
+  `.observeSensitive`" tier is **removed**. There are now two **observe** tiers:
+  - **app-observe** — in `control.json`, grants `.observe` only, redacted
+    `app.stateSummary` (liveness/discovery; no terminal contents).
+  - **session-observe** — injected into each spawned session's env, **per-session
+    and session-bound**, grants `.observeSensitive` + benign own-session navigation
+    (`scroll`, `tab.select`) **for its own session only**. Only
+    `LABAN_CONTROL_URL` is shared across sessions; the token is per-session.
+- **Per-session scoping is pulled forward** (the ADR had deferred it): for
+  `.observeSensitive`/`.control`, the policy requires `targetSession ==
+  token.sessionID`; cross-session → `403`. `session.list`/rich `app.state` are
+  redacted to the owning session. Only the test-only `.fixture` token has whole-app
+  scope.
+- **All input/mouse/clipboard actuation is deferred** to a future Terminal-Lease /
+  Computer-Use ADR. `terminal.typeText`/`sendKey`/`paste`/`click`/`mouseWheel`/
+  `mouseDrag` form an `.input` capability granted **only** to the `.fixture` token
+  (headless E2E), `headlessOnly`, build-gated out of the release GUI where feasible.
+  No live GUI surface actuates input. Command assistance ships as **command
+  proposals** — a data object the user reviews and runs, never PTY bytes.
+- **The future actuation mode is a distinct product mode** ("trust by default" holds
+  only inside an enforced boundary): the user picks a target session, a short-lived
+  **lease**, visible indicator, command approval/classifier, no self-injection, no
+  cross-tab unless named, audit + revocation.
+
+This phase is executed by
+`execplans/active/agent-first-phase2-mount-live-and-security-floor.md`.
 
 ## Consequences
 

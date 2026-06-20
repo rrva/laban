@@ -210,10 +210,21 @@ the active session. Headless runs accept `-LabanCursorStyle <value>` and
 
 ## 24. Agent control plane (live GUI control over loopback)
 
+> **Scope (amended 2026-06-20): observe-first.** The first delivery is *observe* —
+> typed inspection of a terminal session, scoped to the caller's **own session** —
+> plus **command proposals** (a reviewed data object the user runs, never PTY
+> bytes). *Driving* the terminal (programmatic input/mouse), cross-tab/whole-app
+> authority, and autonomous operation are **deferred** to a future user-leased
+> Computer-Use mode (user picks a target session, short-lived lease, command
+> approval, no self-injection, audit + revocation). The token model is two
+> **observe** tiers — an app-observe token in `control.json` (redacted summary) and
+> a per-session, session-bound session-observe token — with **no app-wide control
+> token**; sensitive reads are session-scoped. See ADR 0024 Amendment (2026-06-20).
+
 The running app exposes an authenticated, loopback-only control plane so trusted
-local programs — coding agents, test harnesses, CLI helpers — can inspect and
-drive the real window through typed intents instead of scraping pixels or blindly
-typing into a PTY. The process that owns the live tabs, sessions, and render state
+local programs — coding agents, test harnesses, CLI helpers — can inspect (and,
+via a future lease, drive) the real window through typed intents instead of
+scraping pixels or blindly typing into a PTY. The process that owns the live tabs, sessions, and render state
 is itself the queryable fixture (the tmux/wezterm "one state authority, many thin
 clients" model), so there is no separate automation binary: the GUI hosts the same
 server the headless runtime does.
@@ -227,13 +238,15 @@ headless router in `LabanDebug`. GUI menus and key routes emit the same intents 
 external client does.
 
 Security is least-privilege and local-only: loopback bind with `Host`/`Origin`
-validation, capability-scoped tokens (an observe-only token advertised in a
-`0600` `control.json`; a control/sensitive token injected into the environment of
-agents Laban spawns), audited side effects, a user-visible "agent attached"
-indicator, and a disable switch. The surface is off until opted into and becomes
-observe-on-by-default only once that security floor exists. There is no in-band
-escape-sequence control channel, and programmatic input takes the same validation
-path as a human keystroke.
+validation, capability-scoped tokens (an observe-only **app-observe** token
+advertised in a `0600` `control.json`; a per-session, session-bound
+**session-observe** token injected into the environment of agents Laban spawns —
+**no app-wide control token**), session-scoped sensitive reads, audited side
+effects, a user-visible "agent attached" indicator, and a disable switch. The
+surface is off until opted into and becomes observe-on-by-default only once that
+security floor exists. There is no in-band escape-sequence control channel; if a
+future lease enables programmatic input, it takes the same validation path as a
+human keystroke.
 
 Semantic command runs surface as control-plane *events* (command boundaries, exit
 code, cwd, with explicit confidence and nullable command text), not as stored

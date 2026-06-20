@@ -4,6 +4,22 @@
 (its comparator survey and grilling narrative are preserved verbatim in
 Appendix A/B; nothing in the body below depends on reading them).
 
+> **Amendment (2026-06-20): observe-first pivot.** Phase 2 ships an
+> *agent-observable* terminal, not an *agent-driven* one. All input/mouse/clipboard
+> actuation, cross-tab/whole-app authority, and autonomous "agent drives the
+> terminal" are **deferred** to a future **Terminal-Lease / Computer-Use** mode/ADR
+> (user picks a target session, short-lived lease, command approval, no
+> self-injection, audit + revocation). The §5 token model is amended to two
+> **observe** tiers — app-observe (`control.json`, redacted summary) + per-session,
+> session-bound session-observe (`.observeSensitive` + benign own-session nav),
+> **no app-wide control token** — and `.observeSensitive`/`.control` are
+> **session-scoped** (cross-tab → 403). Input forms an `.input` capability granted
+> only to the test `.fixture` token (headless E2E). Where §5 and the §6 Phase-2
+> entry below describe a control token or live input, read them through this
+> amendment. Command **proposals** (a reviewed data object, never PTY input)
+> replace live typing as Phase 2's assistive feature. See **ADR 0024 Amendment
+> (2026-06-20)** and `execplans/active/agent-first-phase2-mount-live-and-security-floor.md`.
+
 This is a **program roadmap**, not an executable ExecPlan. Phase 0 — the first
 executable slice — **shipped** as commit `0a2a230` and is archived at
 `execplans/completed/agent-first-phase0-control-seam.md`, which remains
@@ -444,28 +460,40 @@ behavior), and **status**.
   | 1D | Turn on catalog→discovery/schema generation + the contract gate. |
 - **Status:** **shipped** (2026-06-20) — `execplans/completed/agent-first-phase1-intent-registry-and-labancontrol.md`, Review Gate APPROVED. One server (`LabanControl`), one `IntentCatalog`, `LiveIntentRouter`/`HeadlessIntentRouter`; `DebugHTTPServer` deleted; `LabanControlGen` generates + gates the discovery doc.
 
-### Phase 2 — Mount live + security floor + flip the default
+### Phase 2 — Mount live (observe-first) + security floor + flip the default
+
+*(Recast 2026-06-20 to observe-first — see the header Amendment.)*
 
 - **Scope:** `LiveIntentRouter` in `LabanApp`; re-point the `Debug*Endpoints`
   state/sessions/find/selection at the **live** `AppModel` + `AppSessionCoordinator`
-  (not the headless mirror). Land the **security floor**: Host/Origin everywhere,
-  single app-scoped token + child-env injection, `.observe`/`.observeSensitive`/
-  `.control` tiers, `control.json`, "agent attached" indicator. Add the
-  **catalog-parity test**. **Flip observe-on-by-default ON.**
-- **Files:** `Sources/LabanApp/Control/LiveIntentRouter.swift` (expanded);
-  `Sources/LabanControl/{LabanControlPolicy,*}`; `LabanDebug` `Debug*Endpoints`
+  (not the headless mirror), scoped to the caller's **own session**. Land the
+  **security floor**: Host/Origin everywhere, **two observe tiers** (app-observe in
+  `control.json` + per-session **session-bound** session-observe via child-env
+  injection — **no app-wide control token**), `.observe`/`.observeSensitive`
+  **session-scoped** (cross-tab → 403), "agent attached" indicator, disable switch,
+  audit. The live surface is **observe + benign own-session navigation only**
+  (`scroll`, `tab.select`); **input/mouse/clipboard actuation and cross-tab are NOT
+  on the live surface** — the input family is `.input`, headless/`.fixture`-only.
+  Add **command proposals** (reviewed data object, never PTY input) and the
+  **catalog-parity test**. **Flip observe-on-by-default ON** behind the §5.4
+  checklist.
+- **Files:** `Sources/LabanApp/Control/LiveIntentRouter.swift` (own-session observe
+  + benign nav; Phase-1 input removed/build-gated); `Sources/LabanControl/{LabanControlPolicy,ControlSecurityObserver,*}`;
+  `Sources/LabanCore/Control/Projections/*`; `LabanDebug` `Debug*Endpoints`
   re-pointing; `Tests/.../CatalogParityTests.swift`; `MainWindowController`/
-  `AppDelegate` mount edits.
-- **Acceptance:** with the app running, an agent reads `control.json` and `curl`s
-  live **non-sensitive** state with the **observe** token; the **scrollback/grid**
-  reads (`.observeSensitive`) and **typeText/select/resize** (`.control`) succeed
-  only with the **env-injected** token and are refused (403) with the observe
-  token; missing token ⇒ 401, bad `Host`/any `Origin` ⇒ 403; a `.control` client
-  lights the indicator; the catalog-parity test fails if either router omits a
-  shared intent; the §5.4 release checklist passes before the default flips.
-- **Status:** **planned** — ExecPlan drafted at
-  `execplans/active/agent-first-phase2-mount-live-and-security-floor.md` (milestones
-  2A–2E; not started).
+  `AppDelegate` mount edits (per-session token before `AppModel.init`).
+- **Acceptance:** an agent reads `control.json` and `curl`s only the **redacted app
+  summary** with the app-observe token; a **per-session** env token reads **its own
+  session's** sensitive state (`.observeSensitive`) and any other session is refused
+  (403); input/mouse/clipboard/cross-tab are unreachable on the live surface
+  (404/403); missing token ⇒ 401, bad `Host`/any `Origin` (incl. non-numeric port)
+  ⇒ 403; a privileged read lights the indicator; the catalog-parity test fails if
+  either router omits a shared intent; the §5.4 checklist + env-secrecy gate pass
+  before the default flips. Live input actuation and autonomous driving are deferred
+  to the Terminal-Lease ADR.
+- **Status:** **planned** — ExecPlan at
+  `execplans/active/agent-first-phase2-mount-live-and-security-floor.md` (observe-first;
+  milestones 2A–2F; not started).
 
 > Phases 3–4 are the **first-class product pillars** the live-control seam exists
 > to enable. They are promoted ahead of MCP and the truthful-fixture work.
