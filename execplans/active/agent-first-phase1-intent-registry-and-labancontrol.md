@@ -50,9 +50,9 @@ paths, same `laban-agent --debug-server=host:port` readiness JSON.
 ## Progress
 
 Milestone 1A — Registry backbone (LabanCore):
-- [ ] `Sources/LabanCore/Intents/` added: `Capability`, `DataSensitivity`, `Intent`, `Query`, `ControlResponse` (encoder-pinned), `ControlArtifact`, `ArtifactRequest`, `ControlReadiness`, `SchemaNode` (rich subset) + `JSONSchemaProviding`, `IntentDescriptor` (+ `availability`, `SchemaNode`s), `IntentCatalog` (+ `.shared`/`.fixture`/`.all`), `IntentRouter`, public `ControlEndpointDescriptor`/`HTTPBinding`, internal `ControlRoute`. All public types have `public init`; AppKit-free.
-- [ ] `Tests/LabanCoreTests/IntentCatalogTests.swift` (well-formedness, uniqueness, availability/fixture tagging, schema-node presence route-awareness).
-- [ ] `swift test --filter IntentCatalogTests` passes; no AppKit import in `Sources/LabanCore/Intents`.
+- [x] (2026-06-20) `Sources/LabanCore/Intents/` added: `Capability`, `DataSensitivity`, `Intent`, `Query`, `ControlResponse` (encoder-pinned), `ControlArtifact`, `ArtifactRequest`, `ControlReadiness`, `SchemaNode` (rich subset) + `JSONSchemaProviding`, `IntentDescriptor` (+ `availability`, `SchemaNode`s), `IntentCatalog` (+ `.shared`/`.fixture`/`.all`), `IntentRouter`, public `ControlEndpointDescriptor`/`HTTPBinding`, internal `ControlRoute`. All public types have `public init`; AppKit-free.
+- [x] (2026-06-20) `Tests/LabanCoreTests/IntentCatalogTests.swift` (well-formedness, uniqueness, availability/fixture tagging, schema-node presence route-awareness).
+- [x] (2026-06-20) `swift test --filter IntentCatalogTests` passes; no AppKit import in `Sources/LabanCore/Intents`.
 
 Milestone 1B — `LabanControl` target + Phase-0-equivalent adapter:
 - [ ] `LabanControl` target (deps `["LabanCore"]`); `LabanApp` depends on it; **two** test targets: `LabanControlTests` (spy-router adapter tests, no LabanApp dep) and live-router tests kept in `LabanAppTests`.
