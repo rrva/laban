@@ -85,14 +85,18 @@ this document. Each is grounded in code that exists today.
    `shellLaunch` as a `let`, but the in-process default doesn't even go through the
    coordinator — it spawns via the `sessionFactory` closure reading the same
    `environmentOverrides`.) Fix: mint `ControlCredentials` and **bind** the server (to
-   learn `LABAN_CONTROL_URL`) at the **top** of `makeAndShow`, merge the control token
-   + URL into `shellLaunch.environmentOverrides` **before it is composed**, then build
-   the coordinator and model. Because `LiveIntentRouter` needs the `AppModel` (which
-   doesn't exist that early), give it a **late-bound model provider / weak box** so the
-   server can bind before the model is created and have the reference installed
-   afterward. The shared `environmentOverrides` hook then feeds **all three** backends
-   (in-process `environment:` via the `sessionFactory`, laband `environmentPatch`,
-   labpty `envp`), covering the default/restored session and every later one.
+   learn `LABAN_CONTROL_URL`) at the **top** of `makeAndShow`, merge **`LABAN_CONTROL_URL`
+   only** (shared) into `shellLaunch.environmentOverrides` **before it is composed**,
+   then build the coordinator and model. The `LABAN_CONTROL_TOKEN` is **per-session
+   and session-bound** (Blocking Correction 11) — minted and injected at each session's
+   spawn, not merged into the shared launch — so the default session (spawned in
+   `AppModel.init`) gets its own scoped token via the `sessionFactory`. Because
+   `LiveIntentRouter` needs the `AppModel` (which doesn't exist that early), give it a
+   **late-bound model provider / weak box** so the server can bind before the model is
+   created and have the reference installed afterward. The shared URL reaches **all
+   three** backends (in-process `environment:` via the `sessionFactory`, laband
+   `environmentPatch`, labpty `envp`); each session's spawn additionally injects its
+   own session-bound token, covering the default/restored session and every later one.
    **Readiness:** until the model + session-coordinator/input-adapter references are
    installed, the bound server answers GUI routes with `503 {"error":"control server
    not ready"}` (never a partial/empty state DTO), and `control.json` is written only
@@ -153,12 +157,17 @@ this document. Each is grounded in code that exists today.
 
 10. **Input-injection is OFF on the live GUI and hard-gated to the headless/debug
     surface — until the input security model is designed (2026-06-20 decision).**
-    `terminal.typeText`, `terminal.sendKey`, and `terminal.paste` (the input-injection
-    family — a TIOCSTI-class primitive: typing into a tty's *input* queue) are **not
-    served on the `.gui` surface** and are **not part of the live/default-on control
-    plane**. They stay `headlessOnly` (catalog `gui:false`), reachable only via the
-    headless/debug server that e2e needs, and should be **compile-excluded from the
-    release GUI binary** where feasible ("not even built" into the main executable).
+    `terminal.typeText`, `terminal.sendKey`, `terminal.paste`, `terminal.click`,
+    `terminal.mouseWheel`, and `terminal.mouseDrag` (the input-actuation family —
+    keyboard input is a TIOCSTI-class primitive, synthetic mouse events are the same
+    actuation class) are **not served on the `.gui` surface** and are **not part of
+    the live/default-on control plane**. They stay `headlessOnly` (catalog
+    `gui:false`) **and** require a dedicated **`.input` capability granted only to the
+    fixture/headless token** (never observe/control) — two independent gates, so the
+    GUI cannot actuate input even if availability were misconfigured. They are
+    reachable only via the headless/debug server that e2e needs, and should be
+    **compile-excluded from the release GUI binary** where feasible ("not even built"
+    into the main executable).
     This **reverses Phase 1's** shipped `LiveIntentRouter.typeText`/`sendKey` on
     `.gui`: flip their availability to `headlessOnly` and remove (or build-gate) the
     `LiveIntentRouter` input implementations so input lives only in the `LabanDebug`
@@ -166,12 +175,29 @@ this document. Each is grounded in code that exists today.
     launders past an embedded agent's own permission model and (b) — with a
     process-wide, tab-addressable token — lets an agent in one tab drive another
     (sandbox breakout). **Deferred** until a designed model lands: a separate
-    `.input` capability tier + explicit, session-scoped, revocable user
+    `.input` capability tier (added now) + explicit, session-scoped, revocable user
     consent-to-drive + session-bound tokens (see Decision Log / a future ADR 0024
     amendment). The Phase-2 live GUI control plane is therefore **observe + benign
-    control only** (state reads, `tab.select`, `scrollViewport`); mouse ops
-    (`terminal.click`/`mouseWheel`/`mouseDrag`) are a weaker case revisited in the
-    same security work and stay conservative/headless for now.
+    control only** — state reads, plus `tab.select` and `scrollViewport` (the benign
+    control allowlist); destructive/lifecycle tab ops (close/terminate/restart/detach,
+    and `tab.new` if it spawns a credentialed shell) are **not** benign and stay
+    deferred/headless.
+
+11. **`.observeSensitive` reads are session-scoped (2026-06-20 decision).** The
+    env-injected control token is **session-bound**: minted per spawned session and
+    scoped to it (per-session token; only `LABAN_CONTROL_URL` is shared — Blocking
+    Correction 4). The policy enforces, for `.observeSensitive` and `.control`, that
+    the **target session equals the token's session** — cross-session sensitive reads
+    return `403` unless the token carries an explicit **whole-app grant** (not injected
+    by default). Whole-app reads (`session.list`, rich `app.state`) are **redacted to
+    the owning session** for a session-bound token, or require the whole-app grant.
+    The **fixture/headless** token is whole-app (test-only, so e2e / `LabanDebugTests`
+    read any session and C9 holds). The `control.json` **observe** token is
+    `.observe`-only (non-sensitive) and unaffected. This closes the read-side analog of
+    the cross-tab breakout — an agent in tab A can no longer read tab B's
+    selection/scrollback/cwd/find-needle — and **pulls the session-bound-token
+    mechanism forward**, the same mechanism the deferred input consent model (Blocking
+    Correction 10) will reuse.
 
 ## Purpose / Big Picture
 
@@ -240,7 +266,7 @@ Milestone 2B — Live observe/control surface in `LiveIntentRouter` (`LabanApp`)
 - [ ] Shared `AppModel`/`Session` → DTO projections relocated to `LabanCore` (e.g. `Sources/LabanCore/Control/Projections/*`), public; `HeadlessIntentRouter` re-points to them with **byte-identical** output (headless `LabanDebugTests` unchanged) (C4).
 - [ ] `LiveIntentRouter` implements the observe-read family against the live `AppModel` + `AppSessionCoordinator`, each returning the shared DTO. **No `gui:true` clipboard read** (Blocking Correction 2); the headless `clipboard.read` diagnostic is left intact. Reads split by sensitivity (Blocking Correction 3): `.observe` (non-sensitive) — `terminal.modes`, `scrollIndicator.state` (and an optional new redacted `app.stateSummary`); `.observeSensitive` — **`app.state` (rich `/debug/state`)**, `session.list`, `session.detail`, `find.state` (needle), `selection.read` (text), `app.accessibility`, and `shellIntegration.state` if it exposes cwd. The observe token gets `403` on the `.observeSensitive` set; the control token gets `200`.
 - [ ] Catalog availability flips: these ids become `gui:true` with the correct **explicit** `requiredCapability` and `dataSensitivity` (no implicit default); renderer/atlas/pixel-probe/capture/persistence stay `headlessOnly` for Phase 2 with a one-line scope note (deferred GUI source of truth).
-- [ ] `.control` ops on the GUI limited to **benign, non-input** sources: `terminal.scrollViewport` and `tab.*` lifecycle via `AppCommand`. **Input-injection (`typeText`/`sendKey`/`paste`) is NOT ported to the GUI**, and Phase 1's existing GUI `typeText`/`sendKey` are **removed** (flip availability to `headlessOnly`; remove or build-gate the `LiveIntentRouter` input impls so input lives only in `LabanDebug`) — Blocking Correction 10. Mouse ops (`terminal.click`/`mouseWheel`/`mouseDrag`) stay conservative/headless pending the same security review. Port in reviewable groups; keep `swift test` green.
+- [ ] `.control` ops on the GUI limited to an explicit **benign-control allowlist** — exactly `tab.select` and `terminal.scrollViewport` via `AppCommand`. Destructive/lifecycle tab ops (`tab.close`/terminate/restart/detach, and `tab.new` if it spawns a credentialed shell) are **not** benign and are deferred/headless (not `tab.*`). **The whole input-actuation family — `typeText`/`sendKey`/`paste`/`click`/`mouseWheel`/`mouseDrag` — is `headlessOnly` and requires the new `.input` capability**, so it is not on the GUI; Phase 1's existing GUI `typeText`/`sendKey` are **removed** (remove or build-gate the `LiveIntentRouter` input impls so input lives only in `LabanDebug`) — Blocking Correction 10. Port in reviewable groups; keep `swift test` green.
 
 Milestone 2C — Catalog-parity test:
 - [ ] `CatalogParityTests`: over every intent with `availability.gui && availability.headless`, assert (a) both surfaces return a non-error response for a representative input, and (b) the response JSON **shape** (sorted keys) matches between surfaces for the pure reads. **Compare at the HTTP-route level**, not the typed router: `HeadlessIntentRouter.route(.tabSelect/.terminalTypeText/.terminalSendKey)` currently returns `501 "not yet ported"` (legacy HTTP action routing still works), so typed-router parity for those would spuriously fail — add typed-router parity only once those headless typed cases are ported. Fails if either surface drops or diverges on a shared intent.
@@ -256,7 +282,7 @@ Milestone 2D — Indicator, disable switch, audit, no-token-logging:
 Milestone 2E — Flip observe-on-by-default (release-checklist gate):
 - [ ] The §5.4 release checklist (nine items + the plan-added env-secrecy gate, reproduced in this milestone) is each backed by a passing test or mechanical check.
 - [ ] Default mount flips: the GUI starts the server **observe-on** without `LABAN_CONTROL_SERVER=1`; `.control`/`.observeSensitive` still require the env token; the env var becomes an override/disable, not the on-switch.
-- [ ] Credential lifecycle (Blocking Correction 4): mint `ControlCredentials` and bind the server **before `shellLaunch` is composed and `AppModel.init` spawns the default session** (not merely before `ensureSessions`); `LiveIntentRouter` uses a **late-bound model provider** so the server can bind that early. Merge `LABAN_CONTROL_TOKEN` + `LABAN_CONTROL_URL` (control tier) into the shared `ShellIntegrationLaunch.environmentOverrides` so **all** backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`) carry it — including the **initial/default/restored** session. **No wire change** (does not touch the ADR 0007 freeze).
+- [ ] Credential lifecycle (Blocking Correction 4): mint `ControlCredentials` and bind the server **before `shellLaunch` is composed and `AppModel.init` spawns the default session** (not merely before `ensureSessions`); `LiveIntentRouter` uses a **late-bound model provider** so the server can bind that early. Merge **`LABAN_CONTROL_URL` only** into the shared `ShellIntegrationLaunch.environmentOverrides`; the **`LABAN_CONTROL_TOKEN` is per-session and session-bound** (Blocking Correction 11), minted and injected at each session's spawn across **all** backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`) — including the **initial/default/restored** session. **No wire change** (does not touch the ADR 0007 freeze).
 - [ ] `scripts/check` green; the GUI is unchanged for humans (no new windows, no behavior change for a user who never reads `control.json`).
 
 ## Context and Orientation
@@ -280,7 +306,8 @@ against the Phase-1 end state, 2026-06-20.)
   check today** — 2A adds it after the availability check.
 - **`Capability`** (`Sources/LabanCore/Intents/IntentCatalog.swift`): `enum
   Capability: String, Codable, CaseIterable, Sendable { observe, observeSensitive,
-  control, clipboard, fixture }`. **`IntentDescriptor`** already carries
+  control, clipboard, fixture }` — Phase 2 **adds `input`** for the input-actuation
+  family (Blocking Correction 10). **`IntentDescriptor`** already carries
   `requiredCapability: Capability` and `dataSensitivity: DataSensitivity` and
   `availability: Availability { gui, headless; func permits(Surface) }`.
 - **`ControlAdvertisement`** (`Sources/LabanControl/ControlAdvertisement.swift`):
@@ -426,18 +453,29 @@ with a spy router.
   `{debugServer, debugToken, pid, runId}`; the control token is **never** serialized
   into readiness JSON or any world-path file (Blocking Correction 5). Headless
   `start(host:port:)` keeps `debugToken` with its current authority so `laban-agent`
-  and `LabanDebugTests` are byte-stable (C9).
+  and `LabanDebugTests` are byte-stable (C9). **Session-scoping (Blocking Correction
+  11):** the `control` credential is no longer a single static string — the server
+  mints a **session-bound** control token per spawned session (e.g. a `controlToken(for:
+  SessionID)` minter, or signed `{session, caps}`), so a presented token resolves to
+  both its capabilities **and** its session scope. The `observe` token stays a single
+  static string (`.observe`-only). The headless/fixture token resolves to a
+  **whole-app** scope (test-only).
 - `public struct LabanControlPolicy: Sendable` (LabanControl), built from a
   `IntentCatalog`:
   - `grants(observe) = {.observe}`; `grants(control) = {.observe, .observeSensitive,
-    .control}` (**no `.clipboard`**); `grants(fixture) = {.fixture, .observe,
-    .observeSensitive, .control}` (headless/tests only; `.fixture`-on-GUI already
-    rejected by `validate()`). **No token grants `.clipboard`** — it requires a
-    future explicit opt-in (Blocking Correction 1/2). Pure data, no I/O.
+    .control}` (**no `.clipboard`, no `.input`**); `grants(fixture) = {.fixture,
+    .observe, .observeSensitive, .control, .input}` (headless/tests only;
+    `.fixture`-on-GUI already rejected by `validate()`). **No token grants
+    `.clipboard`**; **only the fixture/headless token grants `.input`** — the GUI
+    observe and control tokens never do (Blocking Correction 10). Pure data, no I/O.
   - `func capabilities(forBearer token: String, credentials: ControlCredentials,
     fixtureToken: String?) -> Set<Capability>` (constant-time compares).
-  - `func authorize(intentID: String, granted: Set<Capability>) -> Bool` using
-    `catalog.descriptor(id:)?.requiredCapability`; unknown id → `false`.
+  - `func authorize(intentID: String, granted: Set<Capability>, targetSession:
+    SessionID?, tokenScope: Scope) -> Bool` using
+    `catalog.descriptor(id:)?.requiredCapability`; unknown id → `false`. For
+    `.observeSensitive`/`.control`, also require `targetSession ∈ tokenScope`
+    (session-bound token → only its own session; whole-app scope → any) — Blocking
+    Correction 11.
 - **Make deny-by-default real** (Blocking Correction 6): drop the implicit
   `defaultCapability(for:)` / `dataSensitivity` defaults in the catalog builder (or
   add an `explicit` marker), and extend `IntentCatalog.validate()` (and the
@@ -449,12 +487,24 @@ with a spy router.
   explicit `.observeSensitive` (all stay `headlessOnly`, `dataSensitivity: .clipboard`)
   so the fixture/control token keeps driving the shipped `scripts/test-e2e` flows and
   `.clipboard` is left required by no descriptor and granted to no token.
+- **New `.input` capability for the input-actuation family** (Blocking Correction 10):
+  add `case input` to `Capability` and require it on `terminal.typeText`,
+  `terminal.sendKey`, `terminal.paste`, `terminal.click`, `terminal.mouseWheel`,
+  `terminal.mouseDrag` (all `headlessOnly`). `.input` is granted **only** to the
+  fixture/headless token — never to the observe or env/control token — so headless
+  e2e drives input while the GUI cannot, even if availability were misconfigured
+  (capability gate is independent of the availability gate). `.clipboard.paste` is
+  input-actuation too but stays `.control` per Blocking Correction 9 (it pastes the
+  *debug* clipboard, headless-only); revisit folding it under `.input` when the input
+  consent model lands.
 - **Fix `isLoopbackHost` port parsing** (Blocking Correction 8): after splitting the
   host label, require the remainder to be empty or `:<numeric port>`; reject
   non-numeric ports. `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → `forbidden`.
-- Server request path (after the `availability.permits` check): compute `granted`
-  from the presented bearer token; `guard policy.authorize(intentID:, granted:)
-  else return .error(403, "insufficient capability")`.
+- Server request path (after the `availability.permits` check): resolve the presented
+  bearer token to its `granted` capabilities **and `tokenScope`**, extract the
+  request's `targetSession`; `guard policy.authorize(intentID:, granted:,
+  targetSession:, tokenScope:) else return .error(403, "insufficient capability")`
+  (cross-session sensitive read → same `403`).
 - Keep `evaluateGuard` for Host/Origin/"is this a valid token at all" (401/403),
   then layer capability (403) on top.
 
@@ -507,16 +557,18 @@ groups.
    from its implicit `.observe` to explicit `.observeSensitive` (stays `headlessOnly`,
    `dataSensitivity: .clipboard`). Keep renderer/atlas/pixel-probe/capture/persistence
    `headlessOnly` (noted boundary; no live source this phase).
-4. **`.control` groups (benign, non-input only):** wire `terminal.scrollViewport`
-   and `tab.*` lifecycle through the GUI's existing `AppCommand`/view paths. **Do NOT
-   port input-injection to the GUI** (Blocking Correction 10): leave
-   `typeText`/`sendKey`/`paste` `headlessOnly`, and **remove or build-gate** the
-   existing `LiveIntentRouter.typeText`/`sendKey` so input exists only in the
-   `LabanDebug` target. The `TerminalInputAdapter` + paste sanitizer + hostile-payload
-   (ESC/CSI/OSC/C1) test (C5) apply to the retained **headless** input path and to the
-   future GUI input-driving feature once its consent model lands — they are not a GUI
-   deliverable this phase. Mouse ops stay conservative/headless pending the same
-   review.
+4. **Benign-control allowlist only (no input on GUI):** wire exactly `tab.select`
+   and `terminal.scrollViewport` through the GUI's existing `AppCommand`/view paths.
+   Destructive/lifecycle tab ops (`tab.close`/terminate/restart/detach; `tab.new`
+   spawning a credentialed shell) are **not** benign — deferred/headless (enumerate,
+   not `tab.*`). **Do NOT port the input-actuation family to the GUI** (Blocking
+   Correction 10): `typeText`/`sendKey`/`paste`/`click`/`mouseWheel`/`mouseDrag` stay
+   `headlessOnly` **and** require the new `.input` capability (fixture-token only);
+   **remove or build-gate** the existing `LiveIntentRouter.typeText`/`sendKey` so input
+   exists only in the `LabanDebug` target. The `TerminalInputAdapter` + paste sanitizer
+   + hostile-payload (ESC/CSI/OSC/C1) test (C5) apply to the retained **headless** input
+   path and to the future GUI input-driving feature once its consent model lands — they
+   are not a GUI deliverable this phase.
 5. Each group: `swift run LabanControlGen --write` if route metadata changed;
    `swift test`; `scripts/check`.
 
@@ -527,13 +579,17 @@ from `control.json`, only the non-sensitive reads (`terminal.modes`,
 `scrollIndicator.state`, and `app.stateSummary` if added) return the **real
 window's** live state, shape-identical to the headless wire, while the
 `.observeSensitive` reads (**`/debug/state`**, `/debug/sessions`, `/debug/selection`,
-`/debug/find/state`, accessibility, scrollback/grid) return `403`. With the
-**control** token (env-injected) those `.observeSensitive` reads return `200` and are
-shape-identical to the headless wire. There is **no `gui:true` clipboard read**; the
-headless `/debug/clipboard` diagnostic is unchanged and byte-stable
-(`.observeSensitive`, driven by the fixture/control token). `LabanDebugTests` pass
-unchanged (headless wire byte-stable). The `CatalogParityTests` from 2C cover the new
-shared ids.
+`/debug/find/state`, accessibility, scrollback/grid) return `403`. With a **session-bound
+control** token (env-injected into a given session) those `.observeSensitive` reads
+return `200` **for that token's own session** and `403` for any other session
+(Blocking Correction 11); `session.list`/rich `app.state` are redacted to the owning
+session. A **whole-app** token (the fixture/headless token, or an explicit whole-app
+grant) reads any session's `.observeSensitive` state `200`, shape-identical to the
+headless wire. There is **no `gui:true` clipboard read**; the headless
+`/debug/clipboard` diagnostic is unchanged and byte-stable (`.observeSensitive`, driven
+by the fixture/control token). `LabanDebugTests` pass unchanged (headless wire
+byte-stable; fixture token is whole-app). The `CatalogParityTests` from 2C cover the
+new shared ids.
 
 ---
 
@@ -725,6 +781,27 @@ are byte-stable; no token value appears in any log.
   per-keystroke — unusable at agent speed), token **session-scoping** to kill cross-tab
   breakout, a **ban on self-injection** to kill laundering, always-on sanitization, and
   fail-closed consent. Phase 2's live surface stays observe + benign control only.
+- (Direction decision, 2026-06-20 / user) **The input-actuation family gets its own
+  `.input` capability — now, not deferred.** `terminal.typeText`/`sendKey`/`paste`/
+  `click`/`mouseWheel`/`mouseDrag` require `.input` (added to `Capability`), granted
+  **only** to the fixture/headless token, never observe/control. Combined with their
+  `headlessOnly` availability this is a **double gate** (availability + capability):
+  the GUI cannot actuate input even if a future change wrongly flips availability to
+  `gui:true`, because no GUI-reachable token holds `.input`. Mouse ops join the family
+  (no longer a "weaker case"); the benign-control GUI allowlist is exactly `tab.select`
+  + `terminal.scrollViewport` (destructive tab lifecycle is not benign). The
+  consent-to-drive UX and session-bound tokens remain deferred; the capability +
+  classification land now. DRAFT — 2026-06-20 / Claude.
+- (Direction decision, 2026-06-20 / user) **`.observeSensitive` reads are
+  session-scoped** (chosen over "whole-app observe, documented"). The env control
+  token is **session-bound** (per-session token; only `LABAN_CONTROL_URL` is shared);
+  the policy enforces target-session == token-session for `.observeSensitive`/`.control`,
+  cross-session → `403` unless an explicit whole-app grant; `session.list`/rich
+  `app.state` redacted to the owning session. Fixture/headless token is whole-app
+  (test-only, C9 holds). Closes the read-side analog of the cross-tab breakout and
+  **pulls session-bound tokens forward** — the mechanism the deferred input
+  consent model (Blocking Correction 10) reuses. Supersedes Blocking Correction 4's
+  "one shared control token in the launch env." DRAFT — 2026-06-20 / Claude.
 - Fixture (test-only) token grants `{.fixture, .observe, .observeSensitive, .control}`
   — broader than the review's suggested `{.fixture, .observe}` — because the headless
   wire (C9) drives `.control`/`.observeSensitive` ops with it and `validate()` already
@@ -739,13 +816,14 @@ executed:
 - [ ] `control.json` contains the observe token and **not** the control token (parse the file written by the GUI mount / `ControlAdvertisement`); `grep` **both** minted tokens across logs/artifacts → zero hits (the observe token appears only inside `control.json` itself, never in a log).
 - [ ] `ControlReadiness` is still `{debugServer, debugToken, pid, runId}` (no new field); the control token is never serialized into readiness JSON (grep the encode path; `laban-agent` readiness line byte-stable).
 - [ ] Spy-router test proves: observe token + `.control` intent → `403` with no router call; control token + `.control` intent → `200`; `.clipboard` intent → `403` for both tokens; missing token → `401`.
-- [ ] Sensitivity split: with the observe token, `app.state`/`session.list`/`selection.read`/`find.state`/accessibility → `403`, while `terminal.modes`/`scrollIndicator.state` (and `app.stateSummary` if added) → `200`; with the control token the `.observeSensitive` set → `200` and is shape-identical to `HeadlessIntentRouter` for the same model.
+- [ ] Sensitivity split: with the observe token, `app.state`/`session.list`/`selection.read`/`find.state`/accessibility → `403`, while `terminal.modes`/`scrollIndicator.state` (and `app.stateSummary` if added) → `200`; with a control/whole-app token the `.observeSensitive` set → `200` and is shape-identical to `HeadlessIntentRouter` for the same model.
+- [ ] Session-scoping (Blocking Correction 11): a session-bound control token reads its **own** session's `.observeSensitive` state `200` but any **other** session's → `403`; `session.list`/rich `app.state` are redacted to the owning session; a whole-app token (fixture/headless or explicit grant) reads any session `200`. Only `LABAN_CONTROL_URL` is shared in the env; the `LABAN_CONTROL_TOKEN` is per-session.
 - [ ] Headless clipboard family preserved + reclassified (Blocking Correction 9): `clipboard.setText`/`copy`/`paste` now `requiredCapability: .control`, `clipboard.read` now explicit `.observeSensitive` (all `headlessOnly`, `dataSensitivity: .clipboard`); **no descriptor requires `.clipboard` and no token grants it**; `scripts/test-e2e` clipboard flows (`setClipboardText`/`paste`/`copy` over `/debug/actions` + `GET /debug/clipboard`) pass with the fixture/control token and `403` with the observe token; `LabanDebugSmokeTests` clipboard assertions pass unchanged. No `gui:true` clipboard endpoint exists.
 - [ ] Indicator lights on any successful `.control` **or** `.observeSensitive` request (env-token sensitive read), not only mutation; TTL refreshed by both tiers.
-- [ ] Input-injection off the GUI (Blocking Correction 10): `terminal.typeText`/`sendKey`/`paste` are `gui:false` (the live server returns `404` by availability) and absent from / build-gated out of the release GUI binary — input exists only on the headless/debug surface; Phase 1's GUI `typeText`/`sendKey` are gone. The ESC/CSI/OSC/C1 hostile-payload sanitization test applies to that retained headless input path.
+- [ ] GUI input-actuation absence (Blocking Correction 10): `terminal.typeText`/`sendKey`/`paste`/`click`/`mouseWheel`/`mouseDrag` are `availability.gui == false` **and** require the `.input` capability that **no GUI-reachable token grants** (only the fixture/headless token) — GUI HTTP routes for those ids return `404`/unavailable for **both** observe and control tokens; `LiveIntentRouter` has **no** dispatch cases for input/mouse actuation; `grep -rn "session.write\|session.sendKey\|sessionCoordinator.write\|encodePaste\|sanitizePaste" Sources/LabanApp/Control` → nothing; the release GUI target does not link the headless/debug input impl; `LabanControlGen --check` **fails** if any input-actuation descriptor becomes `gui:true`.
 - [ ] Early-bind readiness: before the model/coordinator are installed the bound server returns `503 {"error":"control server not ready"}` (no partial DTO); `control.json` is written only after bind + model + coordinator are installed.
 - [ ] Deny-by-default: add a descriptor with no explicit `requiredCapability`/`dataSensitivity`; `IntentCatalog.validate()` / `LabanControlGen --check` **fails** (expect failure; revert).
-- [ ] `LiveIntentRouter` no longer serves input: its `typeText`/`sendKey` impls are removed or build-gated out of the release GUI (`grep -rn "session.write\|session.sendKey" Sources/LabanApp/Control` → nothing), and the catalog marks `typeText`/`sendKey`/`paste` `gui:false` (Blocking Correction 10).
+- [ ] Hostile-payload sanitization (ESC/CSI/OSC/C1) test asserts no title/clipboard/color mutation and no raw control bytes — scoped to the **retained headless/debug input path** and the **future GUI input-driving feature**, not the Phase-2 GUI surface (which serves no input).
 - [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path (projections come from `LabanCore`); `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
 - [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface (mutate one router; expect failure; revert).
 - [ ] `0600`-from-first-byte: `ControlAdvertisement` uses `O_CREAT|O_EXCL` with `S_IRUSR|S_IWUSR` and no `chmod` after write (grep the impl).
