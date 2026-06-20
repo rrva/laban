@@ -81,22 +81,34 @@ tokens only.
 
 ### Hard-won gotchas
 
-- **Dispatch the worker as a context fork, not a fresh agent that must
-  `ToolSearch`.** Load the `rpg` MCP tools in the orchestrator session first,
-  then spawn the Haiku worker as a *fork* so `get_entities_for_lifting` /
-  `submit_lift_results` / `lifting_status` are already directly callable in its
-  function set. A fresh `general-purpose` subagent only receives the tool
-  *schemas* from `ToolSearch`, and Haiku reliably talks itself into "I can't
-  invoke these" and rabbit-holes into bash/npm/HTTP workarounds (observed: 24
-  wasted turns, zero batches submitted). The fork removes that indirection.
-- **Pin the mechanism in the worker prompt.** State plainly: *"the only
-  mechanism is calling the `mcp__rpg__*` functions directly; if a call errors,
-  report it verbatim and stop — never try shell/npm/HTTP."* Open the prompt with
-  a STEP 0 that calls `lifting_status` to prove the tools work before the loop —
-  it doubles as the reachability check if a fork ever does lack the server.
+- **Dispatch a fresh Haiku agent with a hardened prompt — do NOT fork — unless
+  the orchestrator is itself Haiku.** The cheap-model rule and the "tools must be
+  directly callable" rule used to be reconciled by forking the orchestrator (its
+  loaded `rpg` tools carry into the fork). That no longer works: `subagent_type:
+  "fork"` **ignores the `model` override and always runs the orchestrator's
+  model**. Forking from an Opus/Sonnet orchestrator therefore burns the expensive
+  model on mechanical summarization — exactly what the Haiku rule forbids. Fork
+  *only* when the orchestrator is already Haiku.
+  Otherwise spawn a fresh `general-purpose` agent with `model: "haiku"` and a
+  prompt hardened to defeat the rabbit-hole the fork used to avoid (a fresh agent
+  receives only tool *schemas* from `ToolSearch`, and an unhardened Haiku talks
+  itself into "I can't invoke these" and detours into bash/npm/HTTP — observed
+  once: 24 wasted turns, zero batches). The prompt that does work:
+  - **STEP 0 front-loads the exact selector** and asserts callability:
+    `ToolSearch("select:mcp__rpg__lifting_status,mcp__rpg__get_entities_for_lifting,mcp__rpg__submit_lift_results")`,
+    then in plain words *"after this call those functions ARE directly callable —
+    you CAN invoke them, do not doubt it"*, then a `lifting_status` call to prove
+    it (doubles as the reachability check).
+  - **An ABSOLUTE rule:** *"the only mechanism is calling the `mcp__rpg__*`
+    functions directly; if a call errors, copy it verbatim and STOP — never
+    shell/npm/HTTP/CLI."*
+  - **A hard batch floor** (see below).
+  This combination did not rabbit-hole: successive such workers cleared a 1357-
+  entity backlog ~386 entities/pass (78%→89%→…) with zero shell detours.
 - **Persist + resume.** The graph is written to disk after *every* submit, so
-  work is fully resumable. Chain successive Haiku forks — each handles ~10–18
-  batches (~25 entities/batch) before its own context fills.
+  work is fully resumable. Chain successive Haiku workers, sequentially (not in
+  parallel — see below) — each handles ~10–18 batches (~25 entities/batch)
+  before its own context fills.
 - **Give workers a hard batch floor.** Haiku tends to "hand off" after 1–2
   batches. Instruct: *"do not report until the tool says DONE or you have
   submitted N batches."*
@@ -106,6 +118,14 @@ tokens only.
 - **Reload after workers.** Subagents may hold an isolated MCP session; call
   `reload_rpg` in the orchestrator session to pick up their on-disk writes
   before trusting `lifting_status`.
+- **Run workers one at a time, not concurrently.** That same isolated-session
+  caveat is why parallel workers are unsafe: if each subagent holds its own
+  in-memory graph and `submit_lift_results` rewrites the whole `graph.json`, two
+  workers running at once last-writer-wins each other — the second clobbers the
+  first's lifts even on disjoint scopes. Sequential workers each load the latest
+  on-disk state (including the prior worker's writes) when their session first
+  touches a tool, so nothing is lost. Slower, but the only safe order until the
+  server's write model is confirmed to merge rather than overwrite.
 - **Verify, don't trust self-reports.** Confirm coverage with `reload_rpg` +
   `lifting_status` after a run — workers occasionally miscount or finalize early.
 
