@@ -110,14 +110,18 @@ final class IntentCatalogTests: XCTestCase {
     let response = ControlResponse.json(DatedPayload(z: Date(timeIntervalSince1970: 0), a: 1))
     XCTAssertEqual(response.status, 200)
     XCTAssertEqual(response.contentType, "application/json")
-    XCTAssertEqual(String(data: response.body, encoding: .utf8), #"{"a":1,"z":"1970-01-01T00:00:00Z"}"#)
+    XCTAssertEqual(
+      String(data: response.body, encoding: .utf8),
+      #"{"a":1,"z":"1970-01-01T00:00:00Z"}"#)
   }
 
   func testControlResponseErrorMatchesLegacyJSONErrorShape() {
     let response = ControlResponse.error(418, #"bad "input"\path"#)
     XCTAssertEqual(response.status, 418)
     XCTAssertEqual(response.contentType, "application/json")
-    XCTAssertEqual(String(data: response.body, encoding: .utf8), #"{"error":"bad \"input\"\\path"}"#)
+    XCTAssertEqual(
+      String(data: response.body, encoding: .utf8),
+      #"{"error":"bad \"input\"\\path"}"#)
   }
 }
 

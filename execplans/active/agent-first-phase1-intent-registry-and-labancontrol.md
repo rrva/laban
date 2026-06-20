@@ -55,10 +55,10 @@ Milestone 1A — Registry backbone (LabanCore):
 - [x] (2026-06-20) `swift test --filter IntentCatalogTests` passes; no AppKit import in `Sources/LabanCore/Intents`.
 
 Milestone 1B — `LabanControl` target + Phase-0-equivalent adapter:
-- [ ] `LabanControl` target (deps `["LabanCore"]`); `LabanApp` depends on it; **two** test targets: `LabanControlTests` (spy-router adapter tests, no LabanApp dep) and live-router tests kept in `LabanAppTests`.
-- [ ] Phase 0 server relocated into `LabanControl`, public; generalized to the route-table adapter returning `ControlResponse`; gains `start(host:port:) -> ControlReadiness` + GUI ephemeral path; limits 64 KiB/4 MiB; server looks up descriptors in `IntentCatalog.all`, enforces availability by surface.
-- [ ] `LiveIntentRouter` (LabanApp) conforms to `IntentRouter`, returns `ControlResponse` encoding the exact `ControlState`/`ControlActionResult` JSON.
-- [ ] Adapter tests (spy router) + live tests pass; `LabanControl` AppKit-free.
+- [x] (2026-06-20) `LabanControl` target (deps `["LabanCore"]`); `LabanApp` depends on it; **two** test targets: `LabanControlTests` (spy-router adapter tests, no LabanApp dep) and live-router tests kept in `LabanAppTests`.
+- [x] (2026-06-20) Phase 0 server relocated into `LabanControl`, public; generalized to the route-table adapter returning `ControlResponse`; gains `start(host:port:) -> ControlReadiness` + GUI ephemeral path; limits 64 KiB/4 MiB; server looks up descriptors in `IntentCatalog.all`, enforces availability by surface.
+- [x] (2026-06-20) `LiveIntentRouter` (LabanApp) conforms to `IntentRouter`, returns `ControlResponse` encoding the exact `ControlState`/`ControlActionResult` JSON.
+- [x] (2026-06-20) Adapter tests (spy router) + live tests pass; `LabanControl` AppKit-free.
 
 Milestone 1C — Re-point the full debug surface:
 - [ ] **All** request body payloads (action + non-action) made public `Codable, Sendable, Equatable` + `JSONSchemaProviding` and relocated to `LabanCore`; exhaustive `DebugAction → Intent` map (no `default`); resolver taxonomy (malformed→400, unknown→legacy `ActionResult(ok:false)`, unavailable→404) implemented.

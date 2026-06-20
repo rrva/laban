@@ -1,39 +1,23 @@
 import Darwin
 import Dispatch
 import Foundation
+import LabanCore
 
-enum GuardOutcome: Equatable {
+public enum GuardOutcome: Equatable, Sendable {
   case ok
   case unauthorized
   case forbidden
 }
 
-final class LabanControlServer {
-  private struct Response {
-    var status: Int
-    var contentType: String
-    var extraHeaders: [String] = []
-    var body: Data
+public enum LabanControlServerError: Error, Equatable, Sendable {
+  case socketFailed
+  case bindFailed
+  case listenFailed
+  case alreadyStarted
+  case nonLoopbackHost
+}
 
-    static func json(_ object: Any, status: Int = 200, extraHeaders: [String] = []) -> Response {
-      let body =
-        (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
-        ?? Data("{}".utf8)
-      return Response(
-        status: status,
-        contentType: "application/json",
-        extraHeaders: extraHeaders,
-        body: body)
-    }
-
-    static func encodable<T: Encodable>(_ value: T, status: Int = 200) -> Response {
-      let encoder = JSONEncoder()
-      encoder.outputFormatting = [.sortedKeys]
-      let body = (try? encoder.encode(value)) ?? Data("{}".utf8)
-      return Response(status: status, contentType: "application/json", body: body)
-    }
-  }
-
+public final class LabanControlServer {
   private struct ParsedHeaders {
     var host: String?
     var origin: String?
@@ -42,7 +26,17 @@ final class LabanControlServer {
     var contentLengthHeader: String?
   }
 
-  private struct ActionRequest: Decodable {
+  private struct HTTPRequest {
+    let method: String
+    let path: String
+    let body: Data
+  }
+
+  private struct ActionEnvelope: Decodable {
+    let action: String
+  }
+
+  private struct SelectTabActionRequest: Decodable {
     let action: String
     let index: Int?
   }
@@ -52,33 +46,98 @@ final class LabanControlServer {
     case failure(status: Int)
   }
 
-  private enum ServerError: Error {
-    case socketFailed
-    case bindFailed
-    case listenFailed
-    case alreadyStarted
+  private enum IntentIDResolution {
+    case resolved(String)
+    case failed(ControlResponse)
+  }
+
+  private struct ControlRoute {
+    let endpoint: ControlEndpointDescriptor
+    let resolveIntentID: (HTTPRequest) -> IntentIDResolution
+    let dispatch: (LabanControlServer, HTTPRequest) -> ControlResponse
+
+    func matches(method: String, path: String) -> Bool {
+      endpoint.binding.method == method && endpoint.binding.path == path
+    }
   }
 
   private static let requestReadTimeout: TimeInterval = 5
-  private static let maxHeaderBytes = 16 * 1024
-  private static let maxBodyBytes = 1024 * 1024
+  private static let maxHeaderBytes = 64 * 1024
+  private static let maxBodyBytes = 4 * 1024 * 1024
 
-  private let router: ControlRouter
+  private static let stateEndpoint = ControlEndpointDescriptor(
+    binding: HTTPBinding(
+      method: "GET",
+      path: "/debug/state",
+      category: "state",
+      summary: "Return the live GUI tab state.",
+      legacyResponseSchemaPath: "schemas/debug/state.schema.json"),
+    intentMapping: .fixed("app.state"))
+
+  private static let actionsEndpoint = ControlEndpointDescriptor(
+    binding: HTTPBinding(
+      method: "POST",
+      path: "/debug/actions",
+      category: "control",
+      summary: "Drive Phase 0 GUI control actions.",
+      legacyRequestSchemaPath: "schemas/debug/action.schema.json",
+      legacyResponseSchemaPath: "schemas/debug/action-result.schema.json",
+      examples: [#"{"action":"selectTab","index":0}"#]),
+    intentMapping: .requestBodyField("action"))
+
+  public static let endpoints: [ControlEndpointDescriptor] = [
+    stateEndpoint,
+    actionsEndpoint,
+  ]
+
+  public static let routes: [HTTPBinding] = endpoints.map(\.binding)
+
+  private static let routeTable: [ControlRoute] = [
+    ControlRoute(
+      endpoint: stateEndpoint,
+      resolveIntentID: { _ in .resolved("app.state") },
+      dispatch: { server, _ in server.router.query(.state) }),
+    ControlRoute(
+      endpoint: actionsEndpoint,
+      resolveIntentID: { request in
+        guard let envelope = try? JSONDecoder().decode(ActionEnvelope.self, from: request.body)
+        else {
+          return .failed(.error(400, "bad request"))
+        }
+        guard envelope.action == "selectTab" else {
+          return .failed(.error(400, "unsupported action"))
+        }
+        return .resolved("tab.select")
+      },
+      dispatch: { server, request in server.dispatchSelectTab(request) }),
+  ]
+
+  private let router: IntentRouter
+  private let surface: Surface
+  private let catalog: IntentCatalog
   private let connectionQueue = DispatchQueue(
     label: "com.laban.control.conn", attributes: .concurrent)
   private var fd: Int32 = -1
   private var token = ""
   private var thread: Thread?
 
-  init(router: ControlRouter) {
+  public init(router: IntentRouter, surface: Surface, catalog: IntentCatalog = .all) {
     self.router = router
+    self.surface = surface
+    self.catalog = catalog
   }
 
-  func start() throws -> (url: String, token: String) {
-    guard fd < 0 else { throw ServerError.alreadyStarted }
+  public func start() throws -> (url: String, token: String) {
+    let readiness = try start(host: "127.0.0.1", port: 0)
+    return (readiness.debugServer, readiness.debugToken)
+  }
+
+  public func start(host: String, port: UInt16) throws -> ControlReadiness {
+    guard fd < 0 else { throw LabanControlServerError.alreadyStarted }
+    guard Self.isLoopbackBindHost(host) else { throw LabanControlServerError.nonLoopbackHost }
 
     let listener = socket(AF_INET, SOCK_STREAM, 0)
-    guard listener >= 0 else { throw ServerError.socketFailed }
+    guard listener >= 0 else { throw LabanControlServerError.socketFailed }
 
     var one: Int32 = 1
     setsockopt(
@@ -87,7 +146,7 @@ final class LabanControlServer {
 
     var addr = sockaddr_in()
     addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = CFSwapInt16HostToBig(0)
+    addr.sin_port = CFSwapInt16HostToBig(port)
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
 
     let bindResult = withUnsafeBytes(of: &addr) { ptr in
@@ -98,12 +157,12 @@ final class LabanControlServer {
     }
     guard bindResult == 0 else {
       Darwin.close(listener)
-      throw ServerError.bindFailed
+      throw LabanControlServerError.bindFailed
     }
 
     guard listen(listener, 16) == 0 else {
       Darwin.close(listener)
-      throw ServerError.listenFailed
+      throw LabanControlServerError.listenFailed
     }
 
     var bound = sockaddr_in()
@@ -125,10 +184,15 @@ final class LabanControlServer {
     acceptThread.start()
     thread = acceptThread
 
-    return ("http://127.0.0.1:\(actualPort)", mintedToken)
+    let process = ProcessInfo.processInfo
+    return ControlReadiness(
+      debugServer: "http://127.0.0.1:\(actualPort)",
+      debugToken: mintedToken,
+      pid: process.processIdentifier,
+      runId: process.environment["LABAN_RUN_ID"] ?? "gui-\(process.processIdentifier)")
   }
 
-  func stop() {
+  public func stop() {
     let listener = fd
     fd = -1
     if listener >= 0 { Darwin.close(listener) }
@@ -139,7 +203,7 @@ final class LabanControlServer {
     stop()
   }
 
-  static func evaluateGuard(
+  public static func evaluateGuard(
     host: String?,
     origin: String?,
     authorization: String?,
@@ -159,7 +223,7 @@ final class LabanControlServer {
     return .ok
   }
 
-  static func isLoopbackHost(_ host: String?) -> Bool {
+  public static func isLoopbackHost(_ host: String?) -> Bool {
     guard let host, !host.isEmpty else { return false }
     if host.hasPrefix("[") {
       let rest = host.dropFirst()
@@ -172,7 +236,7 @@ final class LabanControlServer {
     return label == "127.0.0.1" || label == "localhost"
   }
 
-  static func constantTimeEquals(_ a: String, _ b: String) -> Bool {
+  public static func constantTimeEquals(_ a: String, _ b: String) -> Bool {
     let x = Array(a.utf8)
     let y = Array(b.utf8)
     var diff = UInt8(truncatingIfNeeded: x.count ^ y.count)
@@ -183,11 +247,15 @@ final class LabanControlServer {
     return diff == 0
   }
 
-  static func makeToken() -> String {
+  public static func makeToken() -> String {
     var generator = SystemRandomNumberGenerator()
     return (0..<32)
       .map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &generator)) }
       .joined()
+  }
+
+  private static func isLoopbackBindHost(_ host: String) -> Bool {
+    host == "127.0.0.1" || host == "localhost"
   }
 
   private func acceptLoop() {
@@ -236,21 +304,21 @@ final class LabanControlServer {
     }
 
     guard headerEnd >= 0 else {
-      send(clientFD, .json(["error": "request too large"], status: 413))
+      send(clientFD, .error(413, "request too large"))
       return
     }
     guard let headerString = String(data: raw[0..<headerEnd], encoding: .utf8) else {
-      send(clientFD, .json(["error": "bad request"], status: 400))
+      send(clientFD, .error(400, "bad request"))
       return
     }
     let lines = headerString.components(separatedBy: "\r\n")
     guard let requestLine = lines.first else {
-      send(clientFD, .json(["error": "bad request"], status: 400))
+      send(clientFD, .error(400, "bad request"))
       return
     }
     let parts = requestLine.components(separatedBy: " ")
     guard parts.count >= 2 else {
-      send(clientFD, .json(["error": "bad request"], status: 400))
+      send(clientFD, .error(400, "bad request"))
       return
     }
 
@@ -260,11 +328,11 @@ final class LabanControlServer {
     let headers = parseHeaders(Array(lines.dropFirst()))
 
     guard method == "GET" || method == "POST" else {
-      send(clientFD, .json(["error": "method not allowed"], status: 405))
+      send(clientFD, .error(405, "method not allowed"))
       return
     }
     guard headers.authorizationCount <= 1 else {
-      send(clientFD, .json(["error": "duplicate authorization header"], status: 400))
+      send(clientFD, .error(400, "duplicate authorization header"))
       return
     }
 
@@ -273,11 +341,7 @@ final class LabanControlServer {
     case .success(let length):
       contentLength = length
     case .failure(let status):
-      send(
-        clientFD,
-        .json(
-          ["error": status == 413 ? "request too large" : "bad request"],
-          status: status))
+      send(clientFD, .error(status, status == 413 ? "request too large" : "bad request"))
       return
     }
 
@@ -300,15 +364,10 @@ final class LabanControlServer {
       token: token)
     switch guardOutcome {
     case .forbidden:
-      send(clientFD, .json(["error": "forbidden"], status: 403))
+      send(clientFD, .error(403, "forbidden"))
       return
     case .unauthorized:
-      send(
-        clientFD,
-        .json(
-          ["error": "missing or invalid bearer token"],
-          status: 401,
-          extraHeaders: ["WWW-Authenticate: Bearer"]))
+      send(clientFD, Self.unauthorizedResponse())
       return
     case .ok:
       break
@@ -317,26 +376,55 @@ final class LabanControlServer {
     send(clientFD, route(method: method, path: path, body: body))
   }
 
-  private func route(method: String, path: String, body: Data) -> Response {
-    switch (method, path) {
-    case ("GET", "/debug/state"):
-      return .encodable(router.snapshotState())
-    case ("POST", "/debug/actions"):
-      guard
-        let request = try? JSONDecoder().decode(ActionRequest.self, from: body)
-      else {
-        return .json(["error": "bad request"], status: 400)
-      }
-      guard request.action == "selectTab" else {
-        return .json(["error": "unsupported action"], status: 400)
-      }
-      guard let index = request.index else {
-        return .json(["error": "missing index"], status: 400)
-      }
-      return .encodable(router.selectTab(index: index))
-    default:
-      return .json(["error": "not found"], status: 404)
+  private func route(method: String, path: String, body: Data) -> ControlResponse {
+    let request = HTTPRequest(method: method, path: path, body: body)
+    guard
+      let route = Self.routeTable.first(where: { $0.matches(method: method, path: path) })
+    else {
+      return .error(404, "not found")
     }
+
+    let intentID: String
+    switch route.resolveIntentID(request) {
+    case .resolved(let id):
+      intentID = id
+    case .failed(let response):
+      return response
+    }
+
+    guard let descriptor = catalog.descriptor(id: intentID) else {
+      return Self.missingDescriptorResponse(for: route)
+    }
+    guard descriptor.availability.permits(surface) else {
+      return .error(404, "unavailable on \(surface)")
+    }
+
+    return route.dispatch(self, request)
+  }
+
+  private func dispatchSelectTab(_ request: HTTPRequest) -> ControlResponse {
+    guard let action = try? JSONDecoder().decode(SelectTabActionRequest.self, from: request.body)
+    else {
+      return .error(400, "bad request")
+    }
+    _ = action.action
+    guard let index = action.index else {
+      return .error(400, "missing index")
+    }
+    return router.route(.tabSelect(TabSelectInput(index: index)))
+  }
+
+  private static func missingDescriptorResponse(for route: ControlRoute) -> ControlResponse {
+    if route.endpoint.binding.method == "POST" && route.endpoint.binding.path == "/debug/actions" {
+      return .error(400, "unsupported action")
+    }
+    return .error(404, "not found")
+  }
+
+  private static func unauthorizedResponse() -> ControlResponse {
+    var response = ControlResponse.error(401, "missing or invalid bearer token")
+    response.headers["WWW-Authenticate"] = "Bearer"
+    return response
   }
 
   private func parseHeaders(_ lines: [String]) -> ParsedHeaders {
@@ -379,13 +467,13 @@ final class LabanControlServer {
     return .success(length)
   }
 
-  private func send(_ clientFD: Int32, _ response: Response) {
+  private func send(_ clientFD: Int32, _ response: ControlResponse) {
     var header = "HTTP/1.1 \(response.status) \(Self.statusText(response.status))\r\n"
     header += "Content-Type: \(response.contentType)\r\n"
     header += "Content-Length: \(response.body.count)\r\n"
     header += "Connection: close\r\n"
-    for extra in response.extraHeaders {
-      header += "\(extra)\r\n"
+    for (name, value) in response.headers.sorted(by: { $0.key < $1.key }) {
+      header += "\(name): \(value)\r\n"
     }
     header += "\r\n"
     var data = Data(header.utf8)

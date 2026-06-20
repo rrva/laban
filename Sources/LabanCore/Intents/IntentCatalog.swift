@@ -549,10 +549,6 @@ public struct ControlEndpointDescriptor: Sendable, Equatable {
 
 struct ControlRoute: Sendable, Equatable {
   let endpoint: ControlEndpointDescriptor
-
-  init(endpoint: ControlEndpointDescriptor) {
-    self.endpoint = endpoint
-  }
 }
 
 public struct IntentCatalog: Sendable {

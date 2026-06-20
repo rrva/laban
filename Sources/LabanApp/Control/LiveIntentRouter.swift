@@ -4,7 +4,7 @@ import LabanCore
 /// Routes Phase 0 control requests against the live AppModel rendered by the
 /// GUI. Server callbacks arrive off-main; mutations hop to the main thread so
 /// model observers and AppKit-facing refresh paths keep their existing contract.
-final class LiveIntentRouter: ControlRouter {
+final class LiveIntentRouter: IntentRouter {
   private weak var model: AppModel?
 
   init(model: AppModel) {
@@ -44,6 +44,29 @@ final class LiveIntentRouter: ControlRouter {
       model.selectTab(tabs[index].id)
       return ControlActionResult(ok: true, activeTabId: model.activeTab?.id, error: nil)
     }
+  }
+
+  func route(_ intent: Intent) -> ControlResponse {
+    switch intent {
+    case .tabSelect(let input):
+      guard let index = input.index else {
+        return .error(400, "missing index")
+      }
+      return .json(selectTab(index: index))
+    case .terminalTypeText, .terminalSendKey:
+      return .error(400, "unsupported")
+    }
+  }
+
+  func query(_ query: Query) -> ControlResponse {
+    switch query {
+    case .state:
+      return .json(snapshotState())
+    }
+  }
+
+  func artifact(_ request: ArtifactRequest) -> ControlResponse? {
+    nil
   }
 
   private func onMain<T>(_ body: @escaping () -> T) -> T {

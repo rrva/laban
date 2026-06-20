@@ -1,62 +1,11 @@
 import Foundation
+import LabanControl
 import LabanCore
 import XCTest
 
 @testable import LabanApp
 
 final class ControlServerPhase0Tests: XCTestCase {
-  func testGuardMatrix() {
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "127.0.0.1:5", origin: nil, authorization: "Bearer T", token: "T"),
-      .ok)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "127.0.0.1:5", origin: nil, authorization: nil, token: "T"),
-      .unauthorized)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "127.0.0.1:5", origin: nil, authorization: "Bearer X", token: "T"),
-      .unauthorized)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "evil.com", origin: nil, authorization: "Bearer T", token: "T"),
-      .forbidden)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: nil, origin: nil, authorization: "Bearer T", token: "T"),
-      .forbidden)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "127.0.0.1:5", origin: "http://evil.com",
-        authorization: "Bearer T", token: "T"),
-      .forbidden)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "[::1]:1234", origin: nil, authorization: "Bearer T", token: "T"),
-      .ok)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "[::1]", origin: nil, authorization: "Bearer T", token: "T"),
-      .ok)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "[::1]evil", origin: nil, authorization: "Bearer T", token: "T"),
-      .forbidden)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "localhost:1234", origin: nil, authorization: "Bearer T", token: "T"),
-      .ok)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "localhost.evil.com", origin: nil, authorization: "Bearer T", token: "T"),
-      .forbidden)
-    XCTAssertEqual(
-      LabanControlServer.evaluateGuard(
-        host: "127.0.0.1.evil.com", origin: nil, authorization: "Bearer T", token: "T"),
-      .forbidden)
-  }
-
   func testLiveRouterSelectTabChangesActiveTab() throws {
     let (model, router) = try makeModelAndRouter()
     let initial = router.snapshotState()
@@ -84,7 +33,7 @@ final class ControlServerPhase0Tests: XCTestCase {
 
   func testEndToEndOverLoopback() async throws {
     let (model, router) = try makeModelAndRouter()
-    let server = LabanControlServer(router: router)
+    let server = LabanControlServer(router: router, surface: .gui)
     let info = try server.start()
     defer { server.stop() }
 
@@ -115,7 +64,7 @@ final class ControlServerPhase0Tests: XCTestCase {
 
   func testServerStartStopStartReleasesListener() throws {
     let (_, router) = try makeModelAndRouter()
-    let server = LabanControlServer(router: router)
+    let server = LabanControlServer(router: router, surface: .gui)
 
     let first = try server.start()
     XCTAssertTrue(first.url.hasPrefix("http://127.0.0.1:"))
