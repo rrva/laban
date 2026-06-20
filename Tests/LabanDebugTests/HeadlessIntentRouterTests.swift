@@ -147,6 +147,27 @@ final class HeadlessIntentRouterTests: XCTestCase {
     XCTAssertEqual(body["sent"] as? Bool, true)
   }
 
+  func testHeadlessRouterHandlesEverySharedOpNonError() throws {
+    let (runtime, artifacts) = try makeRuntime("router-parity")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+    let router = HeadlessIntentRouter(runtime: runtime)
+    let tabId = runtime.model.activeTab?.id ?? ""
+
+    XCTAssertLessThan(router.query(.state).status, 400)
+
+    let shared: [(intentID: String, action: String, body: Data)] = [
+      ("tab.select", "selectTab", Data(#"{"action":"selectTab","tabId":"\#(tabId)"}"#.utf8)),
+      ("terminal.typeText", "typeText", Data(#"{"action":"typeText","text":"parity"}"#.utf8)),
+      ("terminal.sendKey", "key", Data(#"{"action":"key","key":"a"}"#.utf8)),
+    ]
+    for op in shared {
+      let response = router.route(
+        .legacyDebugAction(
+          LegacyDebugActionInput(intentID: op.intentID, action: op.action, body: op.body)))
+      XCTAssertLessThan(response.status, 400, op.intentID)
+    }
+  }
+
   private func makeRuntime(_ runId: String) throws -> (HeadlessDebugRuntime, URL) {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-headless-router-\(runId)-\(UUID().uuidString)")

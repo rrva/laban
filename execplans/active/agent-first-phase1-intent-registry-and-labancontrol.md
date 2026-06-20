@@ -68,7 +68,7 @@ Milestone 1C — Re-point the full debug surface:
 - [x] (2026-06-20) 1C-b3 non-action POST/control route family: `ControlRouteCatalog` dispatches POST body and no-body routes outside `/debug/actions` through `LegacyDebugControlInput` (`/debug/screenshot`, persistence flush/relaunch/restore select, find start/step/stop, wait, render-trace, pixel-probe, snapshot, fixture, capture start/stop/snapshot) and includes `GET /debug/capture/status`; `HeadlessIntentRouter` delegates to existing runtime methods so legacy JSON/error encoding stays owned by `LabanDebug`; tests cover raw-body dispatch, empty-body dispatch, capture status, and malformed-body runtime errors.
 - [x] (2026-06-20) 1C-b4 `/debug/actions` action route family: `LegacyDebugActionInput` carries the raw action body; `dispatchDebugAction` is surface-aware (GUI keeps the Phase-0 typed `selectTab`/`typeText`/`sendKey` decode; headless hands every recognized action's raw body to the router as `.legacyDebugAction`, unknown → `.unsupportedDebugAction`); `HeadlessIntentRouter.route(.legacyDebugAction)` delegates to `runtime.applyAction(body)` so `ActionResult`/`MouseActionResult` stay byte-stable; tests cover headless raw-body routing (mouse + tabId-based shared action not diverted to the GUI index path) and the headless router preserving the `ActionResult` vs `MouseActionResult` wire.
 - [x] (2026-06-20) 1C-c cutover: `laban-agent` mounts `LabanControlServer(router: HeadlessIntentRouter, surface: .headless, readinessRunID: runtime.runId)` via `start(host:port:)` → `ControlReadiness`, replacing `DebugHTTPServer` at the mount; `LabanControlServer` gained `readinessRunID` so the readiness JSON keeps `runtime.runId` byte-stable; `DebugReadiness` is now `typealias DebugReadiness = ControlReadiness` (C7); `LabanAgent` deps gain `LabanControl`. `DebugHTTPServer.swift` still present (deleted in the contract-checker step). `scripts/check` `test-e2e` (29 HTTP requests across ~30 routes incl. actions/mouse/find/wait/fixture) green against the new server.
-- [ ] `availability` parity test over `gui && headless`; keep `availability` conservative (gui:true only where `LiveIntentRouter` implements).
+- [x] (2026-06-20) `availability` parity: `LiveIntentRouter` now implements `terminal.typeText` (active session `write`) and `terminal.sendKey` (so the 4 `guiAndHeadless` starters are honestly gui-implemented); key-name → `Key`/`KeyModifiers` parsing promoted to shared `LabanCore.ControlKeyName` (headless `DebugRuntimeKeyInput` delegates, behavior unchanged). `ControlAvailabilityParityTests` (LabanAppTests) asserts the gui-available action set is exactly `{tab.select, terminal.typeText, terminal.sendKey, debug.action.unsupported}` and the live router returns non-error for each real op (and errors on the unsupported fallback); `HeadlessIntentRouterTests` asserts the headless router handles every shared op non-error.
 - [ ] `check-debug-contract` rewritten to read `ControlRouteCatalog`/`IntentCatalog` **before** `DebugHTTPServer.swift` deleted; all routes ported; `DebugHTTPServer.swift` deleted; `Tests/LabanDebugTests` pass unchanged.
 
 Milestone 1D — Generate discovery; gate schemas:
@@ -517,6 +517,13 @@ route-aware.
   no `LabanApp` dependency. 2026-06-20 / Claude.
 - (C8) conservative GUI availability; (C5) capability classified not enforced
   (ADR 0024 = Phase 2); keep `/debug/*` namespace (design §4.4). 2026-06-20 / Claude.
+- (C8, parity) Honored C8's gui:true list by *implementing* `terminal.typeText`/
+  `terminal.sendKey` in `LiveIntentRouter` (rather than demoting them to
+  `headlessOnly`), keeping the 1A starter-availability test intact. Key-name
+  parsing lifted to shared `LabanCore.ControlKeyName` so both surfaces resolve a
+  key the same way; the headless router keeps routing actions by raw body
+  (`.legacyDebugAction` → `applyAction`), so the parity test exercises each
+  surface through its real path, not cross-router typed dispatch. 2026-06-20 / Claude.
 
 ## Review Gate
 
