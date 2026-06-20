@@ -109,6 +109,10 @@ Add four new files and make two small edits.
    - `func start() throws -> (url: String, token: String)` — bind
      `127.0.0.1:0`, `listen`, `getsockname` for the port, mint a 32-byte hex
      token, spawn an accept loop on a background `Thread`.
+   - `func stop()` + `deinit` — close the listener fd (unblocks `accept()`, ends
+     the thread) so tests and app teardown leak no socket/thread. Idempotent. The
+     accept loop applies read/size limits (5s read deadline, 16 KiB headers,
+     1 MiB body) so a wedged client cannot hang it.
    - A pure, unit-testable guard:
      `static func evaluateGuard(host:origin:authorization:token:) ->
      GuardOutcome` returning `.forbidden` (bad/missing `Host`, or any `Origin`
@@ -118,10 +122,13 @@ Add four new files and make two small edits.
      `router.selectTab(index:)`. Everything else → `404`.
 
 4. **`Sources/LabanApp/Control/ControlAdvertisement.swift`** — writes/removes
-   `control.json` (`{url, token, pid, runId}`, mode `0600`, written atomically)
-   under `$LABAN_CONTROL_DIR` or, if unset, the app-support dir
-   `~/Library/Application Support/Laban/` (same convention as
-   `Sources/LabanApp/EventLog.swift`).
+   `control.json` (`{url, token, pid, runId}`) under `$LABAN_CONTROL_DIR` or, if
+   unset, the app-support dir `~/Library/Application Support/Laban/` (same
+   convention as `Sources/LabanApp/EventLog.swift`). The file holds a bearer
+   token, so it must be created **`0600` from the first byte**: open a temp file
+   `O_CREAT|O_EXCL,0600`, write, `fsync`, then `rename(2)` over `control.json`
+   (rename preserves the mode and is atomic). Do **not** `.atomic`-write then
+   `chmod` — that leaves the token briefly world-readable in the temp file.
 
 5. **Edit `Sources/LabanApp/MainWindowController.swift`**: add
    `var controlServer: LabanControlServer?`; near the end of `makeAndShow`
@@ -267,11 +274,18 @@ All commands run from the repository root `/Users/dev/wrk/laban`.
 
          static func isLoopbackHost(_ host: String?) -> Bool {
            guard let host, !host.isEmpty else { return false } // Host required
-           // strip ":port"; accept 127.0.0.1, localhost, [::1]
+           // IPv6: must be EXACTLY "[::1]" optionally followed by ":port".
+           // (host.hasPrefix("[::1]") wrongly accepts "[::1]evil".)
            if host.hasPrefix("[") {
-             return host.hasPrefix("[::1]")
+             let rest = host.dropFirst()                   // "::1]…"
+             guard let close = rest.firstIndex(of: "]") else { return false }
+             guard rest[rest.startIndex..<close] == "::1" else { return false }
+             let after = rest[rest.index(after: close)...]  // "" or ":port"
+             return after.isEmpty || after.first == ":"
            }
-           let h = host.split(separator: ":").first.map(String.init) ?? host
+           // IPv4/name: take the label before ":port"; a trailing label must
+           // fail ("127.0.0.1.evil.com", "localhost.evil.com").
+           let h = host.split(separator: ":", maxSplits: 1).first.map(String.init) ?? host
            return h == "127.0.0.1" || h == "localhost"
          }
 
@@ -289,10 +303,26 @@ All commands run from the repository root `/Users/dev/wrk/laban`.
              UInt8.random(in: 0...255, using: &g)) }.joined()
          }
 
+         /// Stop accepting and release the socket so tests and app teardown do
+         /// not leak the listener thread / fd. Idempotent; safe to call twice.
+         func stop() {
+           let f = fd; fd = -1
+           if f >= 0 { Darwin.close(f) }   // unblocks accept(); the thread exits
+           thread = nil
+         }
+         deinit { stop() }
+
          // acceptLoop(): per connection, read until "\r\n\r\n", parse the
          // request line ("METHOD PATH HTTP/1.1") and headers (Host, Origin,
          // Authorization, Content-Length); read Content-Length more bytes for
-         // the body. Then:
+         // the body. Limits — a wedged client must not hang the single loop:
+         //   - 5s read deadline per connection (SO_RCVTIMEO or a poll timeout);
+         //   - max header bytes 16 KiB, max body bytes 1 MiB → 413 if exceeded;
+         //   - header names compared case-insensitively; a duplicate
+         //     Authorization header → 400 (no header smuggling);
+         //   - missing / non-integer / negative Content-Length on POST → 400;
+         //   - method other than GET/POST → 405.
+         // The loop exits when accept() fails after stop() closes fd. Then:
          //   let outcome = Self.evaluateGuard(host:..., origin:...,
          //                  authorization:..., token: self.token)
          //   .forbidden    -> 403 {"error":"forbidden"}
@@ -308,6 +338,7 @@ All commands run from the repository root `/Users/dev/wrk/laban`.
 
    `Sources/LabanApp/Control/ControlAdvertisement.swift`:
 
+       import Darwin
        import Foundation
 
        enum ControlAdvertisement {
@@ -331,9 +362,24 @@ All commands run from the repository root `/Users/dev/wrk/laban`.
                           "pid": String(pid), "runId": runId]
            let data = try JSONSerialization.data(withJSONObject: payload,
              options: [.sortedKeys])
-           try data.write(to: file, options: .atomic)
-           try? FileManager.default.setAttributes(
-             [.posixPermissions: 0o600], ofItemAtPath: file.path)
+           // Create the temp file 0600 BEFORE writing the token. `.atomic`
+           // writes a default-perms temp then renames; chmod-after leaves the
+           // token briefly world-readable. O_CREAT|O_EXCL,0600 then rename(2)
+           // (rename preserves mode and is atomic).
+           let tmp = dir.appendingPathComponent("control.json.\(getpid()).tmp")
+           let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+           guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+           defer { Darwin.close(fd) }
+           try data.withUnsafeBytes {
+             guard write(fd, $0.baseAddress, $0.count) == $0.count else {
+               throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+             }
+           }
+           fsync(fd)
+           guard rename(tmp.path, file.path) == 0 else {
+             try? FileManager.default.removeItem(at: tmp)
+             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+           }
          }
          static func remove() {
            try? FileManager.default.removeItem(
@@ -400,6 +446,12 @@ Construct an `AppModel` with two tabs like so:
    - `evaluateGuard(host: "evil.com", origin: nil, authorization: "Bearer T", token: "T")` == `.forbidden`
    - `evaluateGuard(host: nil, origin: nil, authorization: "Bearer T", token: "T")` == `.forbidden`
    - `evaluateGuard(host: "127.0.0.1:5", origin: "http://evil.com", authorization: "Bearer T", token: "T")` == `.forbidden`
+   - `evaluateGuard(host: "[::1]:1234", origin: nil, authorization: "Bearer T", token: "T")` == `.ok`
+   - `evaluateGuard(host: "[::1]", origin: nil, authorization: "Bearer T", token: "T")` == `.ok`
+   - `evaluateGuard(host: "[::1]evil", origin: nil, authorization: "Bearer T", token: "T")` == `.forbidden`
+   - `evaluateGuard(host: "localhost:1234", origin: nil, authorization: "Bearer T", token: "T")` == `.ok`
+   - `evaluateGuard(host: "localhost.evil.com", origin: nil, authorization: "Bearer T", token: "T")` == `.forbidden`
+   - `evaluateGuard(host: "127.0.0.1.evil.com", origin: nil, authorization: "Bearer T", token: "T")` == `.forbidden`
 
 2. `testLiveRouterSelectTabChangesActiveTab` — with the two-tab `model`/`router`:
    - `router.snapshotState().tabs.count` == 2.
@@ -465,6 +517,8 @@ prints the 403 JSON. Kill the app with `kill %1` when done.
 - [ ] `Sources/LabanApp/Control/ControlRouter.swift` added.
 - [ ] `Sources/LabanApp/Control/LiveIntentRouter.swift` added.
 - [ ] `Sources/LabanApp/Control/LabanControlServer.swift` added (bind/token/accept + `evaluateGuard`).
+- [ ] `LabanControlServer` has `stop()`/`deinit`, strict `Host`/IPv6 parsing, and accept-loop read/size limits.
+- [ ] `ControlAdvertisement` writes `control.json` `0600`-from-first-byte (`O_EXCL` then `rename`), not `.atomic`+chmod.
 - [ ] `Sources/LabanApp/Control/ControlAdvertisement.swift` added.
 - [ ] `MainWindowController.makeAndShow` mounts the server behind `LABAN_CONTROL_SERVER=1`; `controlServer` property added.
 - [ ] `AppDelegate.applicationWillTerminate` removes `control.json` (best effort).
@@ -508,6 +562,22 @@ prints the 403 JSON. Kill the app with `kill %1` when done.
   Acceptance` on every `execplans/active/*.md`; the design doc is a program
   roadmap, not an executable plan, so it belongs outside `active/`.
   Date/Author: 2026-05-30 / Claude.
+- Decision: harden the spike before implementation (2026-06-20 review) — secure
+  `0600`-from-first-byte token write (not `.atomic`+chmod), `stop()`/`deinit`
+  lifecycle, strict IPv6/`Host` parsing with malformed-host tests, and read/size
+  limits on the accept loop.
+  Rationale: the file holds a bearer token (chmod-after-write briefly leaks it
+  in the temp file); a leaked listener thread makes `swift test` flaky;
+  `host.hasPrefix("[::1]")` wrongly accepts `[::1]evil`; an unbounded reader can
+  wedge the single accept loop.
+  Date/Author: 2026-06-20 / Claude.
+- Decision: in the larger design, `control.json`'s token is **observe-tier
+  only**; `.control`/`.observeSensitive` ride an env-injected token. Phase 0
+  stays env-gated (`LABAN_CONTROL_SERVER=1`), so its single token is acceptable
+  pre-flip — but the file must already be written securely.
+  Rationale: `0600` does not stop same-user processes that know the path; see
+  `execplans/agent-first-terminal-design.md` §5.1 (token classes).
+  Date/Author: 2026-06-20 / Claude.
 
 ## Review Gate
 
@@ -517,17 +587,27 @@ marked done. Run from the repository root.
 - [ ] `swift test --filter ControlServerPhase0Tests` exits 0 and reports ≥4
       tests, 0 failures.
 - [ ] Guard matrix is real: in `ControlServerPhase0Tests.swift`, confirm
-      assertions exist for all six `evaluateGuard` rows (ok / unauthorized×2 /
-      forbidden×3) listed under Validation case 1.
+      assertions exist for every `evaluateGuard` row under Validation case 1,
+      including the malformed-Host rows (`[::1]evil`, `localhost.evil.com`,
+      `127.0.0.1.evil.com` → `.forbidden`; `[::1]`, `[::1]:1234`,
+      `localhost:1234` → `.ok`).
 - [ ] Default-off: `grep -n 'LABAN_CONTROL_SERVER' Sources/LabanApp/MainWindowController.swift`
       shows the server is started only inside an `== "1"` guard, and
       `grep -rn 'LabanControlServer(' Sources/LabanApp` shows no construction
       outside that guard or the test target.
 - [ ] `grep -rn 'Origin' Sources/LabanApp/Control/LabanControlServer.swift`
       shows the `Origin`-present → `.forbidden` rule.
-- [ ] `control.json` is written `0600` and atomically: confirm
-      `.posixPermissions: 0o600` and `options: .atomic` in
-      `ControlAdvertisement.swift`.
+- [ ] Secure token write: `grep -n 'O_EXCL' Sources/LabanApp/Control/ControlAdvertisement.swift`
+      shows the temp file is created `0600` before bytes are written, and
+      `grep -n '\.atomic' Sources/LabanApp/Control/ControlAdvertisement.swift`
+      returns **no** hits (chmod-after-write is not used).
+- [ ] Lifecycle: `grep -n 'func stop' Sources/LabanApp/Control/LabanControlServer.swift`
+      and `grep -n 'deinit' Sources/LabanApp/Control/LabanControlServer.swift`
+      both hit; a start/stop/start unit test passes and
+      `swift test --filter ControlServerPhase0Tests` leaves no hung threads.
+- [ ] Token never logged: `grep -rn 'token' Sources/LabanApp/Control` and the
+      `MainWindowController` mount block show no log statement interpolating a
+      token value (logging the URL is fine).
 - [ ] `./scripts/build-app` exits 0 and prints the final
       `build-app: .../LabanApp` line.
 - [ ] `./scripts/check` exits 0.
@@ -564,6 +644,7 @@ End-state types (all new, in `Sources/LabanApp/Control/`):
     final class LabanControlServer {
       init(router: ControlRouter)
       func start() throws -> (url: String, token: String)
+      func stop()                       // idempotent; closes fd, ends accept thread
       static func evaluateGuard(host: String?, origin: String?, authorization: String?, token: String) -> GuardOutcome
     }
     enum ControlAdvertisement { static func write(url:token:pid:runId:) throws; static func remove() }

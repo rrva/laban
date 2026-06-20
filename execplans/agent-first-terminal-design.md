@@ -144,9 +144,11 @@ and are resolved to a stable id immediately.
 - **Discovery (long-lived GUI):** the stdout readiness line that the headless
   agent prints cannot reach a process the agent did not launch, so the GUI writes
   a discovery file **`control.json`** = `{ url, token, pid, runId }`, mode `0600`,
-  written atomically, under `$LABAN_CONTROL_DIR` or (unset)
-  `~/Library/Application Support/Laban/` — exactly as the active Phase 0 plan
-  specifies (same app-support convention as `Sources/LabanApp/EventLog.swift`).
+  written atomically *and created `0600` from the first byte* (§5.1 token classes:
+  this file's `token` is the **observe-only** credential — control/sensitive
+  tokens never land here), under `$LABAN_CONTROL_DIR` or (unset)
+  `~/Library/Application Support/Laban/` — same app-support convention as
+  `Sources/LabanApp/EventLog.swift`.
   It is removed best-effort on quit; a stale file from a crash is harmless (it
   points at a dead port) and is overwritten next launch.
   *(Note for future readers: the `laband` daemon's `"control-json/v1"` is a wire
@@ -219,6 +221,13 @@ struct IntentDescriptor {
   enum Audit { case none, metadataOnly, redactedInput, fullInput }
   let audit: Audit
 
+  // What may LEAK if this intent's output is logged or exposed. Capability says
+  // WHO may call; sensitivity says WHAT escapes — it drives redaction, audit
+  // verbosity, MCP exposure, and the UI warning surface, independently of tier.
+  enum DataSensitivity { case none, nonSensitiveState, visibleText, scrollback,
+                              keystrokes, clipboard, screenshot, trace }
+  let dataSensitivity: DataSensitivity
+
   // Where this intent can run, and over which transports it may be exposed
   struct Availability { let gui: Bool; let headless: Bool }
   let availability: Availability
@@ -251,6 +260,7 @@ requiredCapability: control
 sideEffects: { ptyInput: true, filesystem: possible, network: possible }
 risk: { level: medium, reason: "Text may execute commands depending on shell state." }
 audit: redactedInput
+dataSensitivity: keystrokes
 availability: { gui: true, headless: true }
 transports: { http: true, mcp: true, cli: true }
 preconditions: [ sessionExists ]
@@ -298,6 +308,26 @@ transport and split capabilities. The model has a **floor** (Phase 2) and a
 The policy is **generated from the catalog**, so a new intent is **denied by
 default** until it is classified with a `requiredCapability`.
 
+**Token classes — which credential carries which tier.** A single token that is
+both advertised in a file *and* grants control is unsafe under observe-on-by-
+default: `0600` stops other Unix *users*, but **not** an arbitrary same-user
+process that knows the path (`~/Library/Application Support/Laban/control.json`).
+So tiers map to *different* credentials, not one shared token:
+
+| Token | Delivered via | Grants |
+|---|---|---|
+| **Observe token** | `control.json` (world-known path, `0600`) | `.observe` only — non-sensitive state |
+| **Control/sensitive token** | child-env injection (`LABAN_CONTROL_TOKEN`) into agents Laban spawns | `.control` + `.observeSensitive` |
+| **Fixture token** | headless test harness only | `.fixture` |
+
+A same-user process can read the file (so the file token must be low-stakes) but
+**cannot read another process's environment** on macOS without debugging
+entitlements — so the control/sensitive token rides the child env, not the file.
+Both tokens are **app-scoped in v1**; **per-session** scoping is the Phase 7 add.
+The "agent attached" indicator is a backstop, not the primary control — the file
+token never grants control, so a same-user reader of `control.json` cannot drive
+the terminal in the first place.
+
 ### 5.2 Transport hardening (the CDP/WebDriver lesson)
 
 1. **Bind loopback only** — explicit `127.0.0.1`/`[::1]`, never `0.0.0.0`.
@@ -306,12 +336,14 @@ default** until it is classified with a `requiredCapability`.
 3. **Reject any request bearing an `Origin` header** — there is no browser
    client; an `Origin` means a web page is calling. (Phase 0 already does 1–3.)
 4. **Token required; absence or mismatch ⇒ deny** (401), never a default-allow.
-5. **Per-session token injected into child env** (`LABAN_CONTROL_TOKEN` +
-   `LABAN_CONTROL_URL`) — an agent Laban itself spawned authenticates with zero
-   prompt; an unrelated local process cannot read another process's env. The
-   `labpty` wire already carries child `envp`, so this needs **no wire change**
-   (does not touch the ADR 0007 freeze). **v1 ships a single app-scoped token;
-   per-session injection is a confirmed-cheap Phase 7 add.**
+5. **Control/sensitive token injected into child env** (`LABAN_CONTROL_TOKEN` +
+   `LABAN_CONTROL_URL`) — the `.control`/`.observeSensitive` credential is **never
+   the `control.json` token**; it is delivered only into the env of children
+   Laban spawns. An agent Laban launched authenticates with zero prompt; an
+   unrelated local process can read the file (observe-only) but cannot read
+   another process's env. The `labpty` wire already carries child `envp`, so this
+   needs **no wire change** (does not touch the ADR 0007 freeze). **Both tokens
+   are app-scoped in v1; per-session scoping is a confirmed-cheap Phase 7 add.**
 
 ### 5.3 Standing constraints
 
@@ -330,9 +362,19 @@ default** until it is classified with a `requiredCapability`.
 ### 5.4 When the default flips on
 
 Through Phase 0–1 the server is **off unless `LABAN_CONTROL_SERVER=1`**. The
-**observe-on-by-default flip happens at the Phase 2 boundary**, once Host/Origin
-validation, capability tiers, the app-scoped token, the `control.json`
-advertisement, and the "agent attached" indicator all exist. Not before.
+**observe-on-by-default flip happens at the Phase 2 boundary** — but gated on a
+**release checklist**, not merely a phase label. Every item must hold before the
+default flips:
+
+- [ ] `control.json` grants an **observe-only** token (never `.control`/`.observeSensitive`).
+- [ ] `.observeSensitive` requires the separate env-injected token/scope.
+- [ ] `.control` requires the separate env-injected token/scope.
+- [ ] The token file is created `0600` **from the first byte** (not chmod-after-write).
+- [ ] `Host` + `Origin` validation rejects malformed/spoofed hosts (tests cover `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`).
+- [ ] A visible "agent attached" indicator exists.
+- [ ] A user-facing disable switch exists.
+- [ ] Audit events persist to the EventLog.
+- [ ] No token value is ever logged.
 
 ## 6. Phased roadmap
 
@@ -381,6 +423,13 @@ behavior), and **status**.
   + every schema and the contract gate fails if an intent lacks a schema or
   capability; existing headless E2E tests pass unchanged against the carved
   adapter; `feedOutput`/`advanceFrames` are absent from the shared catalog.
+- **Subphases (each independently reviewable — the endpoint carve is too large for one PR):**
+  | # | Goal |
+  |---|---|
+  | 1A | Add `LabanCore/Intents` types + `IntentCatalog`; **no endpoint moves**. |
+  | 1B | Add the `LabanControl` target with a new HTTP↔Intent adapter for the Phase-0-equivalent routes only. |
+  | 1C | Move/re-point existing `Debug*Endpoints` incrementally behind adapter wrappers (a few routes per PR). |
+  | 1D | Turn on catalog→discovery/schema generation + the contract gate. |
 - **Status:** not started.
 
 ### Phase 2 — Mount live + security floor + flip the default
@@ -395,11 +444,13 @@ behavior), and **status**.
   `Sources/LabanControl/{LabanControlPolicy,*}`; `LabanDebug` `Debug*Endpoints`
   re-pointing; `Tests/.../CatalogParityTests.swift`; `MainWindowController`/
   `AppDelegate` mount edits.
-- **Acceptance:** with the app running, an agent reads `control.json`, `curl`s
-  live tab/session/grid/scrollback state and drives typeText/select/resize against
-  the real window; missing token ⇒ 401, bad `Host`/any `Origin` ⇒ 403; a
-  `.control` client lights the indicator; the catalog-parity test fails if either
-  router omits a shared intent.
+- **Acceptance:** with the app running, an agent reads `control.json` and `curl`s
+  live **non-sensitive** state with the **observe** token; the **scrollback/grid**
+  reads (`.observeSensitive`) and **typeText/select/resize** (`.control`) succeed
+  only with the **env-injected** token and are refused (403) with the observe
+  token; missing token ⇒ 401, bad `Host`/any `Origin` ⇒ 403; a `.control` client
+  lights the indicator; the catalog-parity test fails if either router omits a
+  shared intent; the §5.4 release checklist passes before the default flips.
 - **Status:** not started.
 
 > Phases 3–4 are the **first-class product pillars** the live-control seam exists
@@ -409,16 +460,29 @@ behavior), and **status**.
 
 - **Scope:** promote the poll-cursor `/debug/events?since=N` into a **push stream**
   (SSE or long-poll) keyed to stable session/tab ids, with a typed event model
-  (`window.*`, `tab.*`, `session.*`, `prompt`, `cwd`, `process`, `selection`,
-  `viewport`, `frame.committed`, `intent.{requested,accepted,rejected}`,
-  `screenshot`, `capture.*`). Back it with the always-on `EventLog`. (The OSC 133
+  (`window.*`, `tab.*`, `session.*`, `prompt`, `cwd`, `process`,
+  `command.started`, `command.finished`, `selection`, `viewport`,
+  `frame.committed`, `intent.{requested,accepted,rejected}`, `screenshot`,
+  `capture.*`). Back it with the always-on `EventLog`. (The OSC 133
   prompt-phase transitions and OSC 7 cwd changes become first-class events — the
   same substrate that powers the failed-command indicator, surfaced to clients.)
+  A `command.finished` correlates the OSC 133 C→D span and carries `{ sessionId,
+  cwd, exitCode, startedAt, endedAt, outputRange, commandText?, confidence }` —
+  `commandText` is **nullable** and `confidence` is mandatory (`shellIntegration`
+  when overlay markers bound the run, `heuristic` otherwise). These are
+  **events, not a stored object or a `commandBlock.*` API** (§9).
+  Every event shares one envelope, defined now so emitters cannot improvise:
+  `{ seq, runId, sessionId?, tabId?, kind, time, stateVersion }`. **`seq` is a
+  monotonic per-run cursor and the primary ordering/replay key — never
+  timestamps** (`time` is advisory). `event.getSince(seq)` replays the gap.
 - **Files:** `Sources/LabanControl/EventStream*`; `Sources/LabanCore/Events/**`;
   `schemas/control/event*.json`; subscription endpoint in the HTTP adapter.
 - **Acceptance:** a client subscribes, types a command via `terminal.typeText`,
-  and receives ordered `prompt`/`process`/`frame.committed` events without
-  polling; events replay from `EventLog` via `event.getSince`.
+  and receives ordered `prompt`/`process`/`command.finished`/`frame.committed`
+  events without polling; the `command.finished` carries the exit code and cwd
+  (`confidence: shellIntegration` under the zsh overlay, `commandText: null`
+  until a command-line marker exists); events replay from `EventLog` via
+  `event.getSince`.
 - **Status:** not started.
 
 ### Phase 4 — Trace/replay pillar
@@ -477,12 +541,13 @@ behavior), and **status**.
 
 The program as a whole succeeds when, against the **running `LabanApp` GUI**:
 
-1. A local client discovers the app via `control.json`, authenticates with a
-   token, and is denied without one (401) or with a forged `Host`/any `Origin`
-   (403).
-2. The client reads live windows/tabs/sessions/grid/scrollback/process/prompt
-   state keyed off stable ids, and drives typeText/sendKey/select/resize against
-   the real window — all typed, capability-scoped, and audited.
+1. A local client discovers the app via `control.json`, authenticates with the
+   **observe** token, and is denied without one (401) or with a forged `Host`/any
+   `Origin` (403). Sensitive reads and control are refused with the observe token.
+2. With the **env-injected control/sensitive** token the client reads live
+   windows/tabs/sessions/grid/scrollback/process/prompt state keyed off stable
+   ids, and drives typeText/sendKey/select/resize against the real window — all
+   typed, capability-scoped, and audited.
 3. Waits replace sleeps; events stream without polling.
 4. Trace export and MCP tools all derive from the **one** catalog with no
    duplicated definitions.
@@ -517,17 +582,20 @@ These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
 
 - A chatbot or agent model inside the terminal. This is **substrate** for external
   agents (Claude Code, Codex, scripts, tests), not an embedded agent.
-- **Semantic command-block objects / Warp-style blocks.** Considered and
-  **dropped 2026-06-20**: Laban's injected OSC 133 captures command *boundaries*,
-  exit code, and cwd but **not the command text** (the overlay omits the `B`
-  marker and emits a bare `C` with no command-line payload), and bash boundaries
-  are weak (its `preexec` is a coarse `DEBUG` trap), so an agent-facing
-  `CommandBlock` would over-promise. The shell-integration **phase**
-  (`atPrompt`/`running`/`finished` + exit code) **stays** — it powers the
-  failed-command indicator and the Phase 3 event stream — but no `CommandBlock`
-  model, `commandBlock.*` intents, or block-navigation UI are planned. Reopen only
-  if a concrete consumer needs the literal command line (which would require
-  adding a `B`/command-line marker to the overlay, à la VS Code's `OSC 633;E`).
+- **Semantic command-block *objects* / Warp-style blocks.** No stored
+  `CommandBlock` model, no `commandBlock.*` query API, and no block-navigation UI
+  (decided 2026-06-20). Rationale: Laban's injected OSC 133 captures command
+  *boundaries*, exit code, and cwd but **not the command text** (the overlay omits
+  the `B` marker and emits a bare `C` with no command-line payload), and bash
+  boundaries are weak (its `preexec` is a coarse `DEBUG` trap), so an addressable,
+  queryable block product would over-promise. **In scope (Phase 3), explicitly:**
+  the `command.started`/`command.finished` **events** (boundaries, exit, cwd,
+  output range, mandatory `confidence`, nullable `commandText`) and the
+  shell-integration **phase** behind the failed-command indicator. The line held
+  is *events, not objects* — clients observe command runs in the stream, but
+  nothing stored, queryable, or navigable. Reopen the object/API/UI only if a
+  concrete consumer needs the literal command line (which would require a
+  `B`/command-line marker, à la VS Code's `OSC 633;E`).
 - A replacement for shell integration, a screen-scraping API, a remote-desktop
   protocol, or an unauthenticated debug server.
 - Network/remote access, multi-user/team features, or any non-loopback binding.
@@ -571,8 +639,12 @@ eight and records what changed since:
    vs §0.2 contradiction by placing the *server* in `LabanControl`, not
    `LabanCore`** (§3.1).
 3. Token-gated observe-on-by-default, flipped at the Phase 2 boundary. **Kept** (§5.4).
-4. Single app-scoped token + env-injection in v1; per-session deferred. **Kept**
-   (now Phase 7, §6).
+4. Single app-scoped token + env-injection in v1; per-session deferred. **Kept,
+   but refined (2026-06-20 review):** "single token" was unsafe for
+   observe-on-by-default — a same-user process can read `control.json` despite
+   `0600`. v2 splits it into a **two-tier, still-app-scoped** model (observe token
+   in the file, control/sensitive token in the child env) at the Phase 2 floor;
+   **per-session** scoping remains the Phase 7 add (§5.1 token classes).
 5. Two catalogs; `feedOutput`/`advanceFrames` barred from live. **Kept** (§4.3).
 6. Lean parity via the catalog-parity test; `HeadlessDebugRuntime` kept. **Kept** (§3.1).
 7. Governance gate (spec + ADRs) before Phase 1. **Kept; ADR numbers corrected
@@ -581,8 +653,10 @@ eight and records what changed since:
    **event stream and trace/replay to first-class pillars (Phases 3–4) ahead of
    MCP (Phase 5)** and the truthful-fixture work (Phase 6), per the v2 mandate. v1
    had MCP at Phase 3 and these pillars buried at Phase 5. **The v2 mandate's third
-   proposed pillar, *semantic command blocks*, was dropped 2026-06-20** after the
-   substrate review showed Laban does not capture command text — see Non-goals §9.
+   proposed pillar, *semantic command blocks*, was reduced 2026-06-20** to
+   command-run *events* in Phase 3 (boundaries/exit/cwd/confidence, nullable
+   command text); the stored `CommandBlock` object, `commandBlock.*` API, and
+   block UI are dropped — see Non-goals §9.
 
 **Stale-fact corrections folded into the body:** ADR numbering (0023/0024);
 `control.json` has no `laband` collision (the daemon's `control-json` is a
