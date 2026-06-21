@@ -44,7 +44,8 @@ public final class SoftwareRenderer {
   /// distinct (cluster, font); keyed without bold/italic because color
   /// detection ignores them.
   @inline(__always)
-  private func clusterIsColorGlyph(_ cluster: Character, font: CTFont, cellAdvance: CGFloat) -> Bool {
+  private func clusterIsColorGlyph(_ cluster: Character, font: CTFont, cellAdvance: CGFloat) -> Bool
+  {
     let key = ColorClassKey(cluster: cluster, font: ObjectIdentifier(font))
     if let cached = colorGlyphClassification[key] { return cached }
     let result = ColorGlyphSupport.containsColorGlyph(
