@@ -805,8 +805,16 @@ mechanical checks.
       `font14-scale1` and `font18-scale2-retina`.
 - [ ] IME acceptance includes both Apple Pinyin and Rime/Squirrel (manual transcript
       + screenshots recorded in Artifacts).
-      **BLOCKED:** repository evidence search found no matching Apple Pinyin or
-      Rime/Squirrel transcript/screenshot artifacts.
+      **PARTIAL 2026-06-21:** Apple Pinyin was exercised manually in a clean Laban
+      tab with active input source `com.apple.inputmethod.SCIM.ITABC`. The marked
+      `zhong wen` preedit remained out of the terminal accessibility value until
+      Space committed `中文`; local window captures are recorded at
+      `.artifacts/ime-trust-review/apple-pinyin/preedit-zhongwen-window.png` and
+      `.artifacts/ime-trust-review/apple-pinyin/final-zhongwen-window.png`, with
+      transcript notes at `.artifacts/ime-trust-review/apple-pinyin/transcript.md`.
+      **BLOCKED:** Rime/Squirrel is not installed on this host (`/Library/Input Methods`
+      is empty; `~/Library/Input Methods` contains only `.localized`), so the required
+      Rime/Squirrel transcript/screenshots are still missing.
 - [x] HeadlessDebugRuntime parity: any new debug surface is wired into both
       `MainWindowController.makeAndShow` and `HeadlessDebugRuntime` (grep both).
 - [x] No regression to MVP behavior (`docs/product/mvp.md`), especially the glyph
@@ -823,8 +831,10 @@ Review findings (filled in by the review agent):
   artifacts). **RESOLVED 2026-06-21:** added an opt-in renderer artifact test and
   generated `.artifacts/cjk-trust-review/manifest.json` plus six PNGs covering
   software/classic/gpuDriven at normal and Retina scale.
-- [FAIL] IME acceptance artifact set is missing for Apple Pinyin and Rime/Squirrel:
-  no transcript/screenshot artifacts are present in-repo.
+- [FAIL] IME acceptance artifact set is incomplete: Apple Pinyin now has local
+  transcript/window-capture evidence under `.artifacts/ime-trust-review/apple-pinyin/`,
+  but Rime/Squirrel is not installed on this host, so no Rime/Squirrel transcript or
+  screenshots exist yet.
 - [PASS] Automated verification requirements are satisfied for automated items (M1, M3, M5, M6,
   headless parity, and G1–G9 gap accounting).
 
@@ -884,12 +894,24 @@ Review findings (filled in by the review agent):
   implementation commit `84f7061`, including full `swift test` 1745 tests / 8
   skipped / 0 failures, smoke-runtime (`foundExpectedText: true`), `test-e2e`,
   and `coverage-labpty` with daemon MC/DC 46.86% holding the 45% floor. Remaining
-  Review Gate blocker is only the manual Apple Pinyin + Rime/Squirrel IME
-  transcript/screenshots.
-- Manual IME transcript (to fill on first execution): install
-  `LABAN_INSTALL_PATH="$HOME/Laban-cjk.app" ./scripts/install-app`; with Apple
-  Pinyin and then Rime/Squirrel, compose `中文`, screenshot the candidate window at
-  the cursor and the committed cells, in `classic` and `gpuDriven` renderers.
+  Review Gate blocker is only the manual Rime/Squirrel IME transcript/screenshots.
+- Manual IME evidence (Apple Pinyin, partial, 2026-06-21): active input source
+  `com.apple.inputmethod.SCIM.ITABC`; running bundle
+  `/Users/rrj/Laban.app` stamped `bd3df0d+dirty`; clean tab 12 showed
+  `zhong wen` as marked preedit while the accessibility value stayed `~$`, then
+  Space committed `中文` and the accessibility value became `~$ 中文`. Local
+  artifacts: `.artifacts/ime-trust-review/apple-pinyin/transcript.md`,
+  `.artifacts/ime-trust-review/apple-pinyin/preedit-zhongwen-window.png`, and
+  `.artifacts/ime-trust-review/apple-pinyin/final-zhongwen-window.png`.
+  `screencapture -x` failed with `could not create image from display`, so the
+  PNGs were captured with `CGWindowListCreateImage` and Swift availability checks
+  disabled. An interrupted run and an Apple Pinyin segmented-candidate run were
+  discarded; the recorded evidence is the clean tab 12 pass. A candidate-panel
+  expansion attempt with Down-arrow was also discarded because it left raw
+  `zhongwen` in the terminal value.
+- Manual IME transcript still required: install/enable Rime/Squirrel, compose
+  `中文`, screenshot the candidate window at the cursor and the committed cells,
+  in `classic` and `gpuDriven` renderers.
 
 ## Idempotence and Recovery
 
