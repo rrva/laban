@@ -1296,6 +1296,86 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  func testCJKTrustMatrixArtifactsWhenRequested() throws {
+    guard let artifactRoot = ProcessInfo.processInfo.environment["LABAN_CJK_TRUST_ARTIFACTS"],
+      !artifactRoot.isEmpty
+    else {
+      throw XCTSkip("set LABAN_CJK_TRUST_ARTIFACTS to write CJK trust matrix PNGs")
+    }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let root = URL(fileURLWithPath: artifactRoot, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    var manifest: [[String: Any]] = []
+    for spec in [
+      (label: "font14-scale1", pointSize: CGFloat(14), scale: CGFloat(1)),
+      (label: "font18-scale2-retina", pointSize: CGFloat(18), scale: CGFloat(2)),
+    ] {
+      let commands = cjkTrustMatrixFrame(pointSize: spec.pointSize)
+
+      let software = try renderSoftware(
+        label: "\(spec.label)-software",
+        commands: commands,
+        pointSize: spec.pointSize,
+        scale: spec.scale)
+      let classic = try renderMetal(
+        label: "\(spec.label)-classic",
+        commands: commands,
+        pointSize: spec.pointSize,
+        scale: spec.scale,
+        gpuDriven: false)
+      let gpuDriven = try renderMetal(
+        label: "\(spec.label)-gpuDriven",
+        commands: commands,
+        pointSize: spec.pointSize,
+        scale: spec.scale,
+        gpuDriven: true)
+
+      if #available(macOS 26, *) {
+        XCTAssertGreaterThan(
+          gpuDriven.counts.cellGlyphs,
+          0,
+          "\(spec.label): gpuDriven artifact must exercise the cell path")
+      }
+
+      for (renderer, result) in [
+        ("software", software),
+        ("classic", classic),
+        ("gpuDriven", gpuDriven),
+      ] {
+        let fileName = "cjk-trust-matrix-\(spec.label)-\(renderer).png"
+        let url = root.appendingPathComponent(fileName)
+        try result.png.write(to: url)
+        manifest.append([
+          "renderer": renderer,
+          "pointSize": spec.pointSize,
+          "scale": spec.scale,
+          "path": url.path,
+          "bytes": result.png.count,
+          "width": result.image.width,
+          "height": result.image.height,
+          "cellGlyphs": result.counts.cellGlyphs,
+          "glyphs": result.counts.glyphs,
+          "coverage": [
+            "denseChinese",
+            "mixedASCIIChinese",
+            "boxDrawingChinese",
+            "nerdFontAdjacency",
+            "retinaOrMultipleFontSize",
+          ],
+        ])
+      }
+    }
+
+    let manifestData = try JSONSerialization.data(
+      withJSONObject: ["artifacts": manifest],
+      options: [.prettyPrinted, .sortedKeys])
+    try manifestData.write(to: root.appendingPathComponent("manifest.json"))
+  }
+
   func testGPUCellPayloadMatchesClassicForFractionalContentYOffset() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -2064,6 +2144,59 @@ final class GPUCellParityTests: XCTestCase {
     ["界", "語", "니", "中"]
   }
 
+  private func cjkTrustMatrixPixelSize(fontAtlas: FontAtlas, scale: CGFloat) -> (
+    width: Int, height: Int
+  ) {
+    (
+      width: Int((CGFloat(cols) * fontAtlas.cellSize.width * scale).rounded(.up)),
+      height: Int((CGFloat(rows) * fontAtlas.cellSize.height * scale).rounded(.up))
+    )
+  }
+
+  private func cjkTrustMatrixFrame(pointSize: CGFloat) -> [FrameCommand] {
+    let atlas = FontAtlas(pointSize: pointSize)
+    let cell = atlas.cellSize
+    let bg: UInt32 = 0x10_20_30_FF
+    let rowBg: UInt32 = 0x18_24_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let accent: UInt32 = 0xF8_DD_78_FF
+    let rows = [
+      "用户@主机 ~/项目 $ npm run build",
+      "中文文字段落检查宽字符对齐",
+      "┌──────────────┐",
+      "│ 设置 │",
+      "└──────────────┘",
+      "中文      tools",
+    ]
+
+    var commands: [FrameCommand] = [
+      .rect(
+        CGRect(
+          x: 0, y: 0, width: CGFloat(cols) * cell.width,
+          height: CGFloat(rows.count + 1) * cell.height),
+        color: bg,
+        source: .terminal)
+    ]
+
+    for (index, text) in rows.enumerated() {
+      let y = CGFloat(index) * cell.height
+      commands.append(
+        .rect(
+          CGRect(x: 0, y: y, width: CGFloat(cols) * cell.width, height: cell.height),
+          color: index.isMultiple(of: 2) ? bg : rowBg,
+          source: .terminal))
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: cell.width, y: y),
+          text: text,
+          foreground: index == rows.count - 1 ? accent : fg,
+          background: index.isMultiple(of: 2) ? bg : rowBg,
+          attributes: [],
+          source: .terminal))
+    }
+    return commands
+  }
+
   private func representativeCJKFrame() -> [FrameCommand] {
     let bg: UInt32 = 0x18_24_30_FF
     let fg: UInt32 = 0xE6_EE_F6_FF
@@ -2298,7 +2431,6 @@ final class GPUCellParityTests: XCTestCase {
         .init(row: row, startCol: 0, colCount: cols, color: bg))
       for col in 0..<cols {
         let scalar = ascii[(col + row + seed + (changed ? 7 : 0)) % ascii.count]
-        let text = String(scalar)
         payload.glyphs.append(
           .init(
             row: row,
@@ -2490,10 +2622,21 @@ final class GPUCellParityTests: XCTestCase {
   }
 
   private func renderSoftware(label: String, commands: [FrameCommand]) throws -> RenderResult {
+    try renderSoftware(label: label, commands: commands, pointSize: 14, scale: scale)
+  }
+
+  private func renderSoftware(
+    label: String,
+    commands: [FrameCommand],
+    pointSize: CGFloat,
+    scale: CGFloat
+  ) throws -> RenderResult {
+    let fontAtlas = FontAtlas(pointSize: pointSize)
+    let size = cjkTrustMatrixPixelSize(fontAtlas: fontAtlas, scale: scale)
     let backend = SoftwareBackend(
-      fontAtlas: FontAtlas(pointSize: 14),
-      pixelWidth: Int(CGFloat(cols) * cellW * scale),
-      pixelHeight: Int(CGFloat(rows) * cellH * scale),
+      fontAtlas: fontAtlas,
+      pixelWidth: size.width,
+      pixelHeight: size.height,
       scale: scale)
     XCTAssertTrue(backend.render(commands, damage: .full), "\(label): software render failed")
     guard let png = backend.pngData else {
@@ -2504,6 +2647,31 @@ final class GPUCellParityTests: XCTestCase {
       png: png,
       image: try decodeRGBA(png),
       counts: MetalRenderer.RenderInstanceCounts())
+  }
+
+  private func renderMetal(
+    label: String,
+    commands: [FrameCommand],
+    pointSize: CGFloat,
+    scale: CGFloat,
+    gpuDriven: Bool
+  ) throws -> RenderResult {
+    let fontAtlas = FontAtlas(pointSize: pointSize)
+    guard let renderer = MetalRenderer(fontAtlas: fontAtlas, scale: scale) else {
+      XCTFail("\(label): MetalRenderer.init returned nil")
+      throw TestFailure()
+    }
+    let previous = MetalRenderer.useGPUCellPath
+    MetalRenderer.useGPUCellPath = gpuDriven
+    defer { MetalRenderer.useGPUCellPath = previous }
+
+    let size = cjkTrustMatrixPixelSize(fontAtlas: fontAtlas, scale: scale)
+    renderer.captureMode = true
+    renderer.waitForFrameCompletion = true
+    renderer.resize(pixelWidth: size.width, pixelHeight: size.height, scale: scale)
+    XCTAssertTrue(renderer.render(commands, damage: .full), "\(label): metal render failed")
+    renderer.waitForLastFrame()
+    return try readResult(renderer: renderer, label: label)
   }
 
   private func renderSequence(

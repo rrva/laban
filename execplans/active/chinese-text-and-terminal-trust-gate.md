@@ -795,11 +795,13 @@ mechanical checks.
       sites (preedit, word-classification, scrollback fallback, the M3-fixed overlay).  
       Verified by `Tests/LabanCoreTests/TerminalWidthPolicyGuardTests` and live
       `rg` sweep of `Sources/`.
-- [ ] CJK rendering acceptance (M2) includes screenshot/capture artifacts for dense
+- [x] CJK rendering acceptance (M2) includes screenshot/capture artifacts for dense
       Chinese, mixed ASCII+Chinese, Chinese in box-drawing UI, Chinese next to
       Nerd-Font symbols, and multiple sizes/Retina, across software/classic/gpuDriven.
-      **BLOCKED:** repository evidence search found no matching artifact set under
-      `.artifacts`.
+      Verified by
+      `LABAN_CJK_TRUST_ARTIFACTS=.artifacts/cjk-trust-review swift test --filter GPUCellParityTests/testCJKTrustMatrixArtifactsWhenRequested`,
+      which wrote six PNGs plus `manifest.json` for software/classic/gpuDriven at
+      `font14-scale1` and `font18-scale2-retina`.
 - [ ] IME acceptance includes both Apple Pinyin and Rime/Squirrel (manual transcript
       + screenshots recorded in Artifacts).
       **BLOCKED:** repository evidence search found no matching Apple Pinyin or
@@ -817,7 +819,9 @@ Review findings (filled in by the review agent):
 
 - [FAIL] CJK rendering acceptance artifact set is missing for M2: no dense/mixed/box-drawing/
   Nerd-Font/Retina screenshots are present in-repo (`.artifacts` contains only log/snapshot
-  artifacts).
+  artifacts). **RESOLVED 2026-06-21:** added an opt-in renderer artifact test and
+  generated `.artifacts/cjk-trust-review/manifest.json` plus six PNGs covering
+  software/classic/gpuDriven at normal and Retina scale.
 - [FAIL] IME acceptance artifact set is missing for Apple Pinyin and Rime/Squirrel:
   no transcript/screenshot artifacts are present in-repo.
 - [PASS] Automated verification requirements are satisfied for automated items (M1, M3, M5, M6,
@@ -847,10 +851,12 @@ Review findings (filled in by the review agent):
   `PingFangSC-Regular` for Hanzi (`中`) with a valid glyph and 14 pt natural
   advance; `swift test --filter 'CJKFontMetrics|GPUCellParityTests/testGPUCellPayloadAcceptsRepresentativeCJKWideGlyphs|GPUCellParityTests/testGPUCellPayloadMatchesClassicForRepresentativeCJKWideGlyphs|ChineseTrustGate|LabanDebugExploratoryControlTests/testSessionDetailAndAtlasDiagnosticsAreQueryable'`
   passed 7 tests; `swift test --filter 'GPUCellParity|CJKFontMetrics'` passed 48
-  tests; `git diff --check` passed; `./scripts/build-app` exited 0. Deviation:
-  the M2 screenshot matrix for dense Chinese / mixed ASCII+Chinese / box-drawing /
-  Nerd Font adjacency / multiple sizes and Retina was not captured during this
-  slice.
+  tests; `git diff --check` passed; `./scripts/build-app` exited 0. Follow-up
+  artifact evidence: `LABAN_CJK_TRUST_ARTIFACTS=.artifacts/cjk-trust-review swift test --filter GPUCellParityTests/testCJKTrustMatrixArtifactsWhenRequested`
+  passed 1 test and wrote six local PNG artifacts plus `manifest.json`, covering
+  dense Chinese, mixed ASCII+Chinese, Chinese in box-drawing UI, Chinese next to
+  Nerd Font symbols, and multiple font-size/Retina scale across software/classic/
+  gpuDriven renderers.
 - M3 automated evidence (2026-06-21): `swift test --filter FrameProducerPreedit`
   passed 8 tests, including wide CJK preedit at a nonzero cursor column and ZWJ
   mask-width regressions; `./scripts/build-app` exited 0 in the worker. A local
