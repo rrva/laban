@@ -513,23 +513,23 @@ final class MainWindowController: NSWindowController {
     // Phase 2 floor is required before this can ship enabled. Release builds compile
     // this out entirely; the headless `laban-agent` harness is unaffected.
     #if DEBUG
-    if ProcessInfo.processInfo.environment["LABAN_CONTROL_SERVER"] == "1" {
-      do {
-        let router = LiveIntentRouter(model: model)
-        let server = LabanControlServer(router: router, surface: .gui)
-        let info = try server.start()
-        try ControlAdvertisement.write(
-          url: info.url,
-          token: info.token,
-          pid: ProcessInfo.processInfo.processIdentifier,
-          runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
-            ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
-        controller.controlServer = server
-        AppLog.app.info("control server: \(info.url)")
-      } catch {
-        AppLog.app.error("control server failed: \(String(describing: error))")
+      if ProcessInfo.processInfo.environment["LABAN_CONTROL_SERVER"] == "1" {
+        do {
+          let router = LiveIntentRouter(model: model)
+          let server = LabanControlServer(router: router, surface: .gui)
+          let info = try server.start()
+          try ControlAdvertisement.write(
+            url: info.url,
+            token: info.token,
+            pid: ProcessInfo.processInfo.processIdentifier,
+            runId: ProcessInfo.processInfo.environment["LABAN_RUN_ID"]
+              ?? "gui-\(ProcessInfo.processInfo.processIdentifier)")
+          controller.controlServer = server
+          AppLog.app.info("control server: \(info.url)")
+        } catch {
+          AppLog.app.error("control server failed: \(String(describing: error))")
+        }
       }
-    }
     #endif
 
     return controller
