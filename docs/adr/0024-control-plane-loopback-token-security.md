@@ -4,12 +4,15 @@ Date: 2026-06-20
 
 ## Status
 
-Accepted; **amended 2026-06-20** (observe-first for Phase 2 — see "Amendment"
-below). The original two-tier *control* token model is superseded by two *observe*
-tiers plus a deferred lease; all input/clipboard actuation and cross-tab authority
-move to a future Terminal-Lease / Computer-Use ADR. The transport hardening,
-fail-closed posture, `0600` rule, capability-from-catalog policy, audit, indicator,
-and disable switch are unchanged.
+Accepted; **amended 2026-06-20** (observe-first for Phase 2) **and 2026-06-21**
+(transport → Unix domain socket) — see "Amendment" below. The original two-tier
+*control* token model is superseded by two *observe* tiers plus a deferred lease; all
+input/clipboard actuation and cross-tab authority move to a future Terminal-Lease /
+Computer-Use ADR. **The loopback-TCP transport + `Host`/`Origin` validation in
+"Transport hardening" below are superseded by a UDS transport with peer-credential +
+filesystem-permission auth** (Amendment §Transport). The fail-closed posture, `0600`
+rule, capability-from-catalog policy, audit, indicator, and disable switch are
+unchanged.
 
 ## Context
 
@@ -45,7 +48,10 @@ flip gated behind a release checklist, not a phase label.** Through Phase 0–1 
 server is off unless `LABAN_CONTROL_SERVER=1`. The flip to observe-on-by-default
 happens only once the floor below exists.
 
-**Transport hardening (every request and stream upgrade):**
+**Transport hardening (every request and stream upgrade):** *(Superseded 2026-06-21 —
+the control plane now binds a **Unix domain socket**, not loopback TCP, so items 1–3
+below are obviated; see Amendment §Transport. Item 4 — token required, fail-closed —
+still holds, alongside peer-credential + filesystem-permission auth.)*
 
 1. Bind `127.0.0.1`/`[::1]` only, never `0.0.0.0`.
 2. Validate `Host`: accept only literal `127.0.0.1`/`localhost`/`[::1]`
@@ -150,6 +156,24 @@ for Phase 2; the deferred items return only behind an explicit, user-leased mode
 
 This phase is executed by
 `execplans/active/agent-first-phase2-mount-live-and-security-floor.md`.
+
+### Transport (2026-06-21): Unix domain socket, not loopback TCP
+
+The control plane binds a **UDS** at `control.sock` inside a `0700` user-owned dir —
+**no TCP listener, no network surface**. This eliminates the loopback-TCP attack class
+the "Transport hardening" section above was built to mitigate: DNS rebinding,
+browser/CDP CSRF (a web page cannot open a UDS), and any cross-host reachability. The
+guard becomes **filesystem permissions** (`0700` dir) **+ kernel peer-credentials**
+(`getpeereid`/`LOCAL_PEERCRED`: connecting `uid` must equal the owner) **+ the bearer
+token** (fail-closed). `Host`/`Origin` validation is moot. **HTTP request framing + the
+JSON/intent wire are retained over the socket** (HTTP-over-UDS), so the catalog,
+policy, adapters, and byte-stable response bodies are unchanged — only the listener and
+discovery change: `control.json` (still `0600`) and `LABAN_CONTROL_URL` carry the socket
+path; readiness emits the path; clients use `--unix-socket`. Peer-credentials also
+harden the agent-attach handshake (the redeemer's pid/uid can be checked). A named pipe
+was rejected (FIFOs aren't connection-oriented on macOS); a custom protocol was rejected
+(no security gain over HTTP-over-UDS). This **migrates the shipped Phase-0/1 loopback-TCP
+server**.
 
 ## Consequences
 

@@ -69,15 +69,18 @@ second wrapper); the **event push stream** (already Phase 3 in the program — `
 promoted to push); full **trace/replay** export. Phase 2 keeps the architecture that
 makes these cheap (one catalog, one policy, router-parity, generated discovery).
 
-**CLI consumer credential model (the substrate must support it).** The `laban` CLI is
-a client of this surface, so Phase 2's credential design accommodates it: **non-sensitive
-whole-app reads** use the app-observe token from `control.json` directly (stateless,
-repeatable). **Session-scoped commands** (own-session sensitive reads, `command.propose`)
-cannot re-redeem the **single-use** C14 bootstrap on every short-lived invocation, so
-they go through a **per-session helper** (the agent process or a small per-session
-daemon) that redeems the bootstrap once and holds the connection-bound credential; the
-CLI is a thin client of that helper over a per-session channel. This keeps C14's "no
-inheritable bearer" property while letting a stateless CLI do session-scoped work.
+**CLI / consumer credential model (no daemon, no certs).** The natural consumer is a
+**long-lived agent** (Claude Code, a sidecar) — it opens the UDS, performs the C14
+one-shot attach **once**, and **holds that connection** for its lifetime; that held
+connection *is* the session-observe credential. **No separate helper/daemon and no
+certificates** (UDS peer-cred carries the auth). The stateless **`laban` CLI** then
+does **app-observe reads** (the `control.json` token, every invocation) and
+`command.propose` (an interactive call may perform its own fresh one-shot attach). A
+*fully session-capable stateless CLI* (repeated own-session sensitive reads without a
+long-lived holder) is **deferred** — when needed it's either a small per-session helper
+or a `0600` per-session credential file (which trades C14's single-use property for
+"same-user-readable," the same trust level as `control.json`). Phase 2 does not build
+either; it only ensures the substrate supports the long-lived-agent pattern.
 
 > **Amendments status (done 2026-06-20):** ADR 0024 (token model → two observe tiers
 > + deferred lease; Amendment section), the program doc `agent-first-terminal-design.md`
@@ -186,12 +189,12 @@ selection/scrollback/cwd/find-needle.
 > partially-done items into "done"/"remaining" per `PLANS.md`.
 
 Milestone 2A — Capability + scope enforcement, two observe tiers (`LabanControl`):
-- [ ] Two start paths: GUI `start()` mints an **app-observe** token (→ `control.json`) and a **session-observe minter** (per-session, session-bound); returns them to the in-process caller. Headless `start(host:port:)` keeps `debugToken` (fixture-class, whole-app) so `laban-agent`/`LabanDebugTests` are byte-stable. **`ControlReadiness` unchanged** (`{debugServer, debugToken, pid, runId}`); no sensitive token serialized into readiness JSON or any world-path file.
+- [ ] Two start paths over the **UDS listener** (C16): GUI `start()` mints an **app-observe** token (→ `control.json`) and a **session-observe minter** (per-session, session-bound); returns them to the in-process caller. Headless `start(socketPath:)` (was `start(host:port:)`) keeps `debugToken` (fixture-class, whole-app) so `laban-agent`/`LabanDebugTests` stay byte-stable. **`ControlReadiness` shape unchanged** (`{debugServer, debugToken, pid, runId}`) — `debugServer` now carries the **socket path** instead of a URL; no sensitive token serialized into readiness JSON or any world-path file.
 - [ ] `LabanControlPolicy` (generated from `IntentCatalog`): `grants(appObserve)={.observe}`; `grants(sessionObserve)={.observe,.observeSensitive,.navigate,.propose}`; `grants(fixture)={.fixture,.observe,.observeSensitive,.navigate,.propose,.input}`. No token grants `.clipboard`; only fixture grants `.input`. `authorize(intentID:, granted:, targetSession:, tokenScope:)` checks `requiredCapability ∈ granted` **and**, for `.observeSensitive`/`.navigate`/`.propose`, `targetSession ∈ tokenScope`. `targetSession` is derived per C12 (session-bound token + omitted target → the token's **own** session, never the active tab; whole-app token → legacy active-session). Unknown id → deny.
 - [ ] Deny-by-default made real: remove the catalog builder's implicit `requiredCapability`/`dataSensitivity` defaults (or track `explicit`); `IntentCatalog.validate()` + `LabanControlGen --check` **fail** unless every descriptor declares both explicitly.
 - [ ] **Reclassify the shipped headless clipboard family off `.clipboard`** (which no token grants — `.clipboard` is reserved for a future live OS-host opt-in). The catalog today has `clipboard.setText`/`clipboard.copy`/`clipboard.paste` requiring `.clipboard`, which would be unreachable after enforcement and break headless byte-stability. New classification, all `headlessOnly`, `dataSensitivity: .clipboard`: `clipboard.read` → `.observeSensitive`; `clipboard.setText`/`clipboard.copy` → `.fixture`; `clipboard.paste` → `.input` (`sideEffects.ptyInput: true`). The fixture token grants all of these, so the shipped e2e flows pass; **no Phase-2 descriptor requires `.clipboard`** (assert with a grep gate).
-- [ ] Guard taxonomy: missing/invalid token → `401`; bad `Host`/any `Origin` → `403`; capability-insufficient → `403`; cross-session sensitive read → `403`. **`isLoopbackHost` rejects non-numeric ports** (`localhost:evil`, `127.0.0.1:evil`, `[::1]:evil`). Token values never logged.
-- [ ] `LabanControlTests` (spy router): app-observe token → `.observe` `200`, `.observeSensitive`/`.navigate`/`.propose` `403` (no router call); session-observe token → own-session `.observeSensitive` `200`, **other-session `403`**; `.input`/`.clipboard` rejected for all non-fixture tokens (policy-level assertion); missing → `401`; forged `Host`/any `Origin`/non-numeric port → `403`. `control.json` contains the app-observe token only.
+- [ ] Guard taxonomy (UDS transport, C16): connection rejected unless the **peer uid == owner** (`getpeereid`/`LOCAL_PEERCRED`) and the socket sits in a `0700` user dir; then missing/invalid token → `401`; capability-insufficient → `403`; cross-session sensitive read → `403`. (No `Host`/`Origin`/port checks — obviated by UDS.) Token values never logged.
+- [ ] `LabanControlTests` (spy router): app-observe token → `.observe` `200`, `.observeSensitive`/`.navigate`/`.propose` `403` (no router call); session-observe token → own-session `.observeSensitive` `200`, **other-session `403`**; `.input`/`.clipboard` rejected for all non-fixture tokens (policy-level assertion); missing → `401`; a connection whose **peer uid ≠ owner** is rejected before auth (C16). `control.json` contains the app-observe token only.
 
 Milestone 2B — Live session-scoped observe surface (`LabanApp`):
 - [ ] Shared `AppModel`/`Session` → DTO projections relocated to `Sources/LabanCore/Control/Projections/*` (public); `HeadlessIntentRouter` re-points to them **byte-identically** (headless `LabanDebugTests` + `DiscoveryEndpointParityTests` unchanged). `LabanDebug` typealiases relocated DTOs.
@@ -233,7 +236,7 @@ file. (ADR 0024 §"Two-tier
 token model", amended to observe-only for Phase 2.)
 
 **C2 — Capability + scope enforced per resolved intent, after availability.** Guard
-(Host/Origin/token) → match route → resolve intent id → availability (`404` if
+(UDS peer-cred/fs-perms/token, C16) → match route → resolve intent id → availability (`404` if
 surface-unavailable) → **capability** (`requiredCapability ∈ granted`, else `403`) →
 **scope** (for `.observeSensitive`/`.navigate`/`.propose`, `targetSession ∈ tokenScope`, else
 `403`). Checks are on the resolved id; a known intent the caller can't afford is `403`,
@@ -339,6 +342,28 @@ displayed text** (or an explicit diff). Hidden newlines, Unicode bidi overrides
 approval bypass and must be defeated by rendering, not just by "Laban doesn't write the
 PTY."
 
+**C16 — Transport is a Unix domain socket, not loopback TCP (2026-06-21 decision;
+authoritative — supersedes every `Host`/`Origin`/`isLoopbackHost`/port reference in
+this plan and the ADR's loopback-TCP transport).** The control plane binds a **UDS** at
+`~/Library/Application Support/Laban/control.sock` inside a `0700` user-owned dir — **no
+TCP listener, no network surface**. This eliminates the entire loopback-TCP attack
+class (DNS rebinding, browser/CDP CSRF — a web page cannot connect to a UDS, any
+cross-host reachability). **HTTP request framing + the JSON/intent wire are retained
+over the socket** (HTTP-over-UDS, like `--unix-socket`), so the catalog, policy,
+adapters, and **byte-stable response bodies are unchanged** — only the listener and
+discovery change. The guard becomes: **filesystem permissions** (`0700` dir) **+
+kernel peer-credentials** (`getpeereid`/`LOCAL_PEERCRED` — assert connecting `uid` ==
+owner; reject otherwise) **+ the bearer token** (fail-closed). `Host`/`Origin`
+validation and the `isLoopbackHost` numeric-port work are **obviated** (no such headers
+matter on a same-host UDS; nothing to rebind). **Discovery:** `control.json` advertises
+the **socket path** (still `0600`, in the `0700` dir); `LABAN_CONTROL_URL` carries that
+path (or a `unix:` URL); `laban-agent` readiness emits the path; the e2e harness uses
+`curl --unix-socket`. Peer-cred (pid/uid) additionally hardens the C14 attach handshake
+(redeemer pid can be checked). **Scope note:** this **migrates the shipped Phase-0/1
+loopback-TCP server** to UDS — it changes `LabanControlServer.start*`, the headless
+harness's bind/readiness, and `scripts/test-e2e`; the GUI mount and both surfaces use
+the UDS listener.
+
 ## Milestone detail
 
 ### 2A — Capability + scope enforcement, two observe tiers
@@ -436,7 +461,7 @@ Discovery/schema byte-stable via `LabanControlGen`.
 - [ ] `.observeSensitive` requires the separate per-session env-injected token/scope.
 - [ ] No live token grants `.input`/`.clipboard`/cross-tab/destructive control.
 - [ ] The token file is created `0600` **from the first byte** (not chmod-after-write).
-- [ ] `Host` + `Origin` validation rejects malformed/spoofed hosts (`[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, and the non-numeric-port cases `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil`).
+- [ ] Transport is a UDS in a `0700` dir (no TCP listener); a connecting peer whose `uid` ≠ owner is rejected (peer-cred), and there is no `Host`/`Origin`/rebinding surface to validate (C16).
 - [ ] A visible "agent attached" indicator exists.
 - [ ] A user-facing disable switch **and a persistent Settings master toggle** (complete opt-out: off ⇒ no server, no `control.json`, no token injection) exist.
 - [ ] Audit events persist to the `EventLog`.
@@ -479,15 +504,16 @@ From the repo root:
 …all pass, and: an agent reading `control.json` observes only the **redacted app
 summary**; a per-session env token reads **its own session's** sensitive state (others
 `403`); input/mouse/clipboard/cross-tab are unreachable on the live surface
-(`404`/`403`); missing token `401`, bad `Host`/any `Origin` (incl. non-numeric ports)
-`403`; the catalog-parity test fails if either surface omits a shared intent; the §5.4
+(`404`/`403`); missing token `401`, a non-owner-uid peer rejected by UDS peer-cred
+(C16; no TCP listener at all); the catalog-parity test fails if either surface omits a shared intent; the §5.4
 checklist + env-secrecy gate hold before the default flips; the headless wire + `/debug`
 discovery + `schemas/` are byte-stable; no token value appears in any log.
 
 ## Carried-over hardening (from the four review rounds)
 
 These hard-won specifics survive the reframe and must hold: `0600`-from-first-byte
-token file (C6); `isLoopbackHost` numeric-port fix + the full deny matrix; deny-by-
+token file (C6); **UDS transport + peer-cred guard (C16)** — which *replaces* the old
+`isLoopbackHost`/Host/Origin hardening (now obviated, no network surface); deny-by-
 default via explicit classification + `validate()` failure; `ControlReadiness`
 byte-stability (no sensitive token serialized); projections relocated to `LabanCore`
 for a byte-identical headless wire; HTTP-route-level parity (headless typed
@@ -569,6 +595,26 @@ no-inject fallback).
   `app.stateSummary` field set stands: `cwd`/process are `ps`-equivalent; titles +
   repo/workspace are net-new app-state but accepted per the prior decision (the user
   reaffirmed against the adversarial challenge). DRAFT — 2026-06-20 / Claude.
+- (2026-06-21 / user) **Transport switched from loopback TCP to a Unix domain socket
+  (C16).** Binds `control.sock` in a `0700` user dir — no network listener — which
+  eliminates the loopback-TCP attack class (DNS rebinding, browser/CDP CSRF). Guard
+  becomes filesystem perms + kernel **peer-credentials** (uid==owner) + token; the
+  `Host`/`Origin`/`isLoopbackHost`/port hardening is **obviated**. HTTP framing + the
+  JSON/intent wire are kept over the socket (HTTP-over-UDS), so the catalog/policy/
+  adapters and byte-stable response *bodies* are unchanged — only the listener and
+  discovery (`control.json` + `LABAN_CONTROL_URL` → socket path; `laban-agent` readiness
+  → path; e2e → `curl --unix-socket`) change. Chosen over a named pipe (FIFOs aren't
+  connection-oriented on macOS) and over a custom protocol (no security gain vs
+  HTTP-over-UDS). **This migrates the shipped Phase-0/1 TCP server** — its own
+  non-additive change, revertible to loopback TCP. DRAFT — 2026-06-21 / Claude.
+- (2026-06-21 / user) **No daemon, no certs for the credential model.** Dropped the
+  proposed per-session helper as the primary path: the **long-lived agent holds the UDS
+  connection** (one C14 attach, held for its lifetime) — that held connection *is* the
+  session-observe credential. UDS peer-credentials carry the auth, so there are **no
+  certificates / no TLS / no SMJobBless privileged-helper** anywhere (and nothing here
+  needs elevated privileges). The stateless `laban` CLI does app-observe + `propose`; a
+  fully session-capable stateless CLI (small helper or `0600` per-session cred file) is
+  deferred, not built in Phase 2. DRAFT — 2026-06-21 / Claude.
 
 ## Review Gate
 
@@ -587,24 +633,29 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] No descriptor requires `.clipboard`: `grep -RE "requiredCapability:? \.?clipboard" Sources/LabanCore/Intents` → **zero**. The shipped headless clipboard flows (`clipboard.read`/`setText`/`copy`/`paste`) pass with the fixture token; app-observe/session-observe tokens cannot call them; no `gui:true` clipboard route is advertised.
 - [ ] `app.stateSummary` snapshot test: the response keys are exactly the allowlist (schema/version, runID, readiness, `inputActuation:"unavailable"`, `crossSessionSensitiveReads:"denied"`, window/tab/session counts, opaque per-run ids, `callerOwnedSessionID?`, coarse booleans, **per-tab titles + cwd/repo/workspace + process command/args/pid**) and **none** of the forbidden keys (terminal text/grid/scrollback, selected text, find needle, clipboard, a11y text, keystroke/input log, agent metadata, launch-stable ids); adding a key fails the snapshot.
 - [ ] `0600`-from-first-byte: `ControlAdvertisement` uses `O_CREAT|O_EXCL` + `S_IRUSR|S_IWUSR`, no `chmod` after write (grep).
-- [ ] Host/Origin matrix includes `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → all `403`.
+- [ ] Transport/peer-cred (C16): the server binds a UDS in a `0700` user dir with no TCP listener (`lsof`/`netstat` shows no control-plane port); a connection from a process whose `uid` ≠ owner is rejected before auth; a same-uid connection with no/invalid token → `401`. (The old `Host`/`Origin`/numeric-port matrix is obviated.)
 - [ ] No ambient token (C10): with observe-on default, a **normal** shell tab's env contains at most `LABAN_CONTROL_URL` (or no Laban env) and **no** `LABAN_SESSION_ATTACH` bootstrap; only an explicitly **agent-attached** session's env carries the single-use bootstrap. After the agent redeems it, its connection-bound credential reads session A → `200` and B → `403`; the file (app-observe) token gets `403` on all sensitive reads.
 - [ ] One-shot handshake (C14): a **grandchild** process in an agent-attached session (e.g. an npm postinstall) that reads the env **after** the agent has attached finds a **spent** `LABAN_SESSION_ATTACH` and cannot obtain a working credential; no long-lived bearer is recoverable from the env.
 - [ ] Preallocated id (C11): the session-observe token carries the session's real `sessionID` (minted from a `SessionLaunchContext` preallocated id before envp composition); `Session.init` accepts an injected id rather than always self-generating.
 - [ ] Active-session fallback (C12): for a session-bound token, an omitted target `sessionID` resolves to the token's own session (test `selection.read`/`find.state`/`session.detail`/`scrollIndicator.state`/rich `app.state`); changing the active tab does not let it read another tab; an explicit other target → `403`.
 - [ ] Indicator lights on any privileged read; disable switch stops the server and removes the file; env-secrecy gate (`ps -Eww` et al.) holds — **or, if it cannot be proven, no session-observe token is injected into default-on sessions at all** (C10 fallback; sensitive observation then needs a non-env credential path).
-- [ ] Settings master toggle (`controlServerEnabled`) off ⇒ **complete opt-out**: after a relaunch no server binds (`curl` fails to connect), no `control.json` exists, and no session env carries `LABAN_SESSION_ATTACH`/`LABAN_CONTROL_URL` — even with observe-on-by-default and even if `LABAN_CONTROL_SERVER=1` is set.
+- [ ] Settings master toggle (`controlServerEnabled`) off ⇒ **complete opt-out**: after a relaunch the UDS is never created (no `control.sock`, connect fails), no `control.json` exists, and no session env carries `LABAN_SESSION_ATTACH`/`LABAN_CONTROL_URL` — even with observe-on-by-default and even if `LABAN_CONTROL_SERVER=1` is set.
 - [ ] `./scripts/check` exits 0; `./scripts/build-app` succeeds; `swift run LabanControlGen --check` passes.
 
 Review status: NOT REVIEWED (plan not yet executed).
 
 ## Idempotence and Recovery
 
-2A is additive (policy + tiers) except two tightenings: the `isLoopbackHost` port fix
-and removing the catalog's implicit classification defaults — the latter is a
-prerequisite (make `validate()` strict in the same change that classifies every existing
-descriptor explicitly). 2B relocates projections behind typealiases so a partial revert
-never breaks the headless wire; each read group is independently revertible. 2C/2D/2E
+2A is additive (policy + tiers) except: removing the catalog's implicit classification
+defaults — a prerequisite (make `validate()` strict in the same change that classifies
+every existing descriptor explicitly). **Transport migration (C16) is the riskiest
+non-additive step:** moving the shipped Phase-0/1 loopback-TCP server to a UDS changes
+`LabanControlServer.start*`, the headless harness bind/readiness, `control.json`
+(URL→socket path), and `scripts/test-e2e` (`curl`→`--unix-socket`) — land it as its own
+change with the headless wire (response bodies) held byte-stable and only the
+transport/discovery moving; it is revertible to loopback TCP if needed. 2B relocates
+projections behind typealiases so a partial revert never breaks the headless wire; each
+read group is independently revertible. 2C/2D/2E
 are test/UI/data-exchange additions. **2F is the only behavior-flipping milestone** —
 keep it last, keep the env-var force-disable, and do not flip until the §5.4 + env-
 secrecy checks are green. The deferred actuation layer is reversible-by-omission: it

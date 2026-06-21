@@ -110,7 +110,7 @@ framing lives in `LabanControl`.
 | **`LabanControl`** *(new)* | `LabanControlServer` (loopback bind + token + Host/Origin), `LabanControlPolicy` (intent→capability mapping), the **HTTP↔Intent adapter** (decodes a request into an `Intent`/`Query`, serializes the result), `control.json` advertisement writer, and catalog-driven schema/discovery generation. | No | `LabanCore` |
 | **`LabanApp`** | `LiveIntentRouter` (binds the live `AppModel` + `AppSessionCoordinator` + `MetalReadback`); **mounts** `LabanControlServer`. The GUI human adapters (`executeAppCommand`, menus, key routes) emit the **same** `Intent`s. | Yes | `LabanControl`, `LabanCore`, `LabanRenderer`, `LabanDebug` |
 | **`LabanDebug`** | `HeadlessIntentRouter` + `HeadlessDebugRuntime` + fixtures + the headless-only `FixtureActionCatalog`; **mounts the same** `LabanControlServer`. | No | `LabanControl`, `LabanCore`, `LabanRenderer`, `LabanTerminalCore` |
-| **`laban` CLI** *(first-class external adapter, Phase 5)* | A thin command-line client over the same loopback HTTP/Intent surface, commands **generated from `IntentCatalog`**: app-observe reads direct from `control.json`; session-scoped ops (own-session reads, `command.propose`) via a per-session helper that holds the C14 connection-bound credential. Never a parallel implementation. | No | `LabanControl` (contract only) |
+| **`laban` CLI** *(first-class external adapter, Phase 5)* | A thin command-line client over the same UDS HTTP/Intent surface, commands **generated from `IntentCatalog`**: app-observe reads direct from `control.json`; session-scoped work is held by a **long-lived agent** that keeps the C14 UDS connection (no daemon, no certs). Never a parallel implementation. | No | `LabanControl` (contract only) |
 | **MCP layer** *(deferred/optional, after the CLI)* | An MCP server whose tool shapes are **generated from `IntentCatalog`**; an out-of-process wrapper over the same HTTP/Intent surface. A second adapter over the one catalog, not a parallel implementation. | No | `LabanControl` (contract only) |
 
 **The invariant that makes parity structural:** there is **one** `LabanControlServer`,
@@ -577,11 +577,11 @@ optional second wrapper over the same contract (below).
   `IntentCatalog`**, over the same loopback HTTP/Intent surface. **Read-only / observe
   commands (and `command.propose`) only**; live actuation waits for the Terminal-Lease
   ADR. **Credential model:** non-sensitive whole-app reads use the **app-observe**
-  token from `control.json` directly (stateless, repeatable); session-scoped commands
-  (own-session reads, `command.propose`) go through a **per-session helper** that
-  redeems the C14 one-shot bootstrap and holds the connection-bound credential — the
-  short-lived CLI is a thin client of that helper, so the single-use handshake and the
-  "no inheritable bearer" property still hold. Publish the HTTP+schema contract. Begin
+  token from `control.json` directly (stateless, repeatable). For session-scoped work
+  the **long-lived agent holds the UDS connection** (one C14 attach, held for its
+  lifetime) — no daemon, no certs; the short-lived CLI does app-observe + `command.propose`
+  (which can do its own fresh one-shot attach). A fully session-capable *stateless* CLI
+  is deferred (a small helper or a `0600` per-session cred file if ever needed). Publish the HTTP+schema contract. Begin
   Claude-in-Laban dogfooding. *(Needs only the catalog + Phase 2 floor.)*
 - **Acceptance:** the generated CLI command set matches the catalog 1:1; `laban`
   whole-app reads work with the file token alone; a session-scoped `laban` command in

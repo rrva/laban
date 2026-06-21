@@ -223,9 +223,10 @@ the active session. Headless runs accept `-LabanCursorStyle <value>` and
 > a per-session, session-bound session-observe token — with **no app-wide control
 > token**; sensitive reads are session-scoped. See ADR 0024 Amendment (2026-06-20).
 
-The running app exposes an authenticated, loopback-only control plane so trusted
-local programs — coding agents, test harnesses, CLI helpers — can inspect (and,
-via a future lease, drive) the real window through typed intents instead of
+The running app exposes an authenticated control plane over a **Unix domain socket**
+(no network listener) so trusted local programs — coding agents, test harnesses, CLI
+helpers — can inspect (and, via a future lease, drive) the real window through typed
+intents instead of
 scraping pixels or blindly typing into a PTY. The process that owns the live tabs, sessions, and render state
 is itself the queryable fixture (the tmux/wezterm "one state authority, many thin
 clients" model), so there is no separate automation binary: the GUI hosts the same
@@ -239,8 +240,10 @@ adapter in a `LabanControl` target; the live GUI router in `LabanApp`; the
 headless router in `LabanDebug`. GUI menus and key routes emit the same intents an
 external client does.
 
-Security is least-privilege and local-only: loopback bind with `Host`/`Origin`
-validation, capability-scoped tokens (an observe-only **app-observe** token
+Security is least-privilege and local-only: a **Unix-domain-socket** bind in a `0700`
+user dir (no network surface — no DNS-rebinding/browser-CSRF class) gated by **kernel
+peer-credentials** (connecting uid == owner) plus the token, capability-scoped tokens
+(an observe-only **app-observe** token
 advertised in a `0600` `control.json`; a per-session, session-bound
 **session-observe** token injected into the environment of agents Laban spawns —
 **no app-wide control token**), session-scoped sensitive reads, audited side
