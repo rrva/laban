@@ -16,8 +16,11 @@ enum TerminalGlyphFallback {
     cellAdvance: CGFloat,
     foreground: CGColor? = nil
   ) -> CTLine {
-    let resolvedFont =
+    var resolvedFont =
       preferredMonospaceFallbackFont(for: text, baseFont: font, cellAdvance: cellAdvance) ?? font
+    if TerminalCJKFontPolicy.containsCJK(text) {
+      resolvedFont = TerminalCJKFontPolicy.fontByAddingExplicitCJKCascade(to: resolvedFont)
+    }
     let attrStr = NSMutableAttributedString(string: text)
     let range = NSRange(location: 0, length: attrStr.length)
     attrStr.addAttribute(

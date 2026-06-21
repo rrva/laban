@@ -252,17 +252,35 @@ public final class MetalGlyphAtlas {
     guard !text.isEmpty else { return nil }
     let plan = rasterPlan(text: text, font: font)
     let layoutWidth = max(plan.layoutWidth, 0)
-    let isWide = layoutWidth > cellWidth * 1.5
-    let baseTileCellWidth = max(isWide ? cellWidth * 2 : cellWidth, layoutWidth)
     let inkBounds = normalizedInkBounds(plan.inkBounds, fallbackWidth: layoutWidth)
+    let cjkMetricPlan = TerminalCJKFontPolicy.cjkMetricPlan(
+      text: text,
+      cellWidth: cellWidth,
+      layoutWidth: layoutWidth,
+      inkBounds: inkBounds)
+    let isWide = cjkMetricPlan != nil || layoutWidth > cellWidth * 1.5
+    let baseTileCellWidth =
+      cjkMetricPlan?.targetWidth ?? max(isWide ? cellWidth * 2 : cellWidth, layoutWidth)
+    let horizontalScale = cjkMetricPlan?.scaleX ?? 1
 
-    let leftSlop = max(0, ceil(-inkBounds.minX))
-    let rightInkSlop = max(0, ceil(inkBounds.maxX - baseTileCellWidth))
-    let italicSlop: CGFloat = italicFallback ? ceil(cellHeight * abs(Self.italicShear)) : 0
-    let boldSlop: CGFloat = boldFallback ? max(1.0 / scale, 0.5) : 0
-    let rightSlop = rightInkSlop + italicSlop + boldSlop
-    let logicalOriginX = -leftSlop
-    let drawOriginX = leftSlop
+    let leftSlop: CGFloat
+    let rightSlop: CGFloat
+    let logicalOriginX: CGFloat
+    let drawOriginX: CGFloat
+    if cjkMetricPlan != nil {
+      leftSlop = 0
+      rightSlop = 0
+      logicalOriginX = 0
+      drawOriginX = max(0, ceil(-inkBounds.minX * horizontalScale))
+    } else {
+      leftSlop = max(0, ceil(-inkBounds.minX))
+      let rightInkSlop = max(0, ceil(inkBounds.maxX - baseTileCellWidth))
+      let italicSlop: CGFloat = italicFallback ? ceil(cellHeight * abs(Self.italicShear)) : 0
+      let boldSlop: CGFloat = boldFallback ? max(1.0 / scale, 0.5) : 0
+      rightSlop = rightInkSlop + italicSlop + boldSlop
+      logicalOriginX = -leftSlop
+      drawOriginX = leftSlop
+    }
     let logicalTileWidth = baseTileCellWidth + leftSlop + rightSlop
     let pixelW = max(1, Int((logicalTileWidth * scale).rounded(.up)))
     let pixelH = max(1, Int((cellHeight * scale).rounded(.up)))
@@ -314,6 +332,12 @@ public final class MetalGlyphAtlas {
       ctx.textMatrix = .identity
 
       func drawPlan(xOffset: CGFloat) {
+        ctx.saveGState()
+        if horizontalScale < 1 {
+          ctx.translateBy(x: xOffset, y: 0)
+          ctx.scaleBy(x: horizontalScale, y: 1)
+          ctx.translateBy(x: -xOffset, y: 0)
+        }
         switch plan {
         case .glyph(let glyph, _, _):
           let positions = [CGPoint(x: xOffset, y: descent)]
@@ -330,6 +354,7 @@ public final class MetalGlyphAtlas {
           ctx.textPosition = CGPoint(x: xOffset, y: descent)
           CTLineDraw(line, ctx)
         }
+        ctx.restoreGState()
       }
 
       drawPlan(xOffset: drawOriginX)

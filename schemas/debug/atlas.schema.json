@@ -17,6 +17,31 @@
         "baseline": {"type": "integer", "minimum": 0}
       }
     },
+    "cjkFont": {
+      "type": "object",
+      "required": [
+        "font",
+        "family",
+        "source",
+        "candidates",
+        "fallbackOrder",
+        "glyphAvailable",
+        "glyphAdvance",
+        "targetCellWidth",
+        "scaleX"
+      ],
+      "properties": {
+        "font": {"type": "string"},
+        "family": {"type": "string"},
+        "source": {"type": "string"},
+        "candidates": {"type": "array", "items": {"type": "string"}},
+        "fallbackOrder": {"type": "array", "items": {"type": "string"}},
+        "glyphAvailable": {"type": "boolean"},
+        "glyphAdvance": {"type": "number", "minimum": 0},
+        "targetCellWidth": {"type": "number", "minimum": 0},
+        "scaleX": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
     "glyphs": {
       "type": "object",
       "required": ["loaded", "missing"],

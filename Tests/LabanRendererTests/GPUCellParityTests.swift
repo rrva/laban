@@ -1232,6 +1232,70 @@ final class GPUCellParityTests: XCTestCase {
       actualPNG: gpu.png)
   }
 
+  func testGPUCellPayloadAcceptsRepresentativeCJKWideGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-cjk-wide")
+    var failures: [String] = []
+    for text in representativeCJKGlyphs() {
+      guard let scalar = text.unicodeScalars.first else { continue }
+      let payload = singleGlyphPayload(
+        scalarValue: scalar.value,
+        wide: 1,
+        attributes: [],
+        labelSeed: Int(scalar.value))
+      if renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: payload,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)) == nil
+      {
+        let failure = renderer.lastGPUCellPayloadBuildFailure
+        failures.append(
+          "\(text) reason=\(failure?.reason ?? "unknown") logicalWidth=\(failure?.logicalWidth ?? -1) max=\(failure?.maxLogicalWidth ?? -1)"
+        )
+      }
+    }
+
+    XCTAssertTrue(
+      failures.isEmpty,
+      "CJK glyphs assigned two terminal cells must remain renderable through the payload atlas path: \(failures.joined(separator: ", "))"
+    )
+  }
+
+  func testGPUCellPayloadMatchesClassicForRepresentativeCJKWideGlyphs() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let commands = representativeCJKFrame()
+    let payload = representativeCJKPayload()
+
+    MetalRenderer.useGPUCellPath = false
+    let classic = try renderSingle(label: "classic-cjk-wide", commands: commands, damage: .full)
+
+    MetalRenderer.useGPUCellPath = true
+    let gpu = try renderSingle(
+      label: "gpu-payload-cjk-wide",
+      commands: [],
+      payload: payload,
+      damage: .full)
+
+    if #available(macOS 26, *) {
+      XCTAssertGreaterThan(gpu.counts.cellGlyphs, 0)
+      XCTAssertEqual(gpu.counts.glyphs, 0)
+    }
+
+    try assertPixelsEqual(
+      expected: classic.image,
+      actual: gpu.image,
+      fixture: "gpu-cell-payload-cjk-wide",
+      expectedPNG: classic.png,
+      actualPNG: gpu.png)
+  }
+
   func testGPUCellPayloadMatchesClassicForFractionalContentYOffset() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -1993,6 +2057,65 @@ final class GPUCellParityTests: XCTestCase {
         foreground: fg,
         background: bg,
         attributes: []))
+    return payload
+  }
+
+  private func representativeCJKGlyphs() -> [String] {
+    ["界", "語", "니", "中"]
+  }
+
+  private func representativeCJKFrame() -> [FrameCommand] {
+    let bg: UInt32 = 0x18_24_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let row = 3
+    let y = CGFloat(rows - 1 - row) * cellH
+    var commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(cols) * cellW, height: CGFloat(rows) * cellH),
+        color: 0x10_20_30_FF,
+        source: .terminal),
+      .rect(
+        CGRect(x: 0, y: y, width: CGFloat(cols) * cellW, height: cellH),
+        color: bg,
+        source: .terminal),
+    ]
+    for (index, text) in representativeCJKGlyphs().enumerated() {
+      commands.append(
+        .glyphRun(
+          origin: CGPoint(x: CGFloat(index * 2) * cellW, y: y),
+          text: text,
+          foreground: fg,
+          background: bg,
+          attributes: [],
+          source: .terminal))
+    }
+    return commands
+  }
+
+  private func representativeCJKPayload() -> TerminalCellPayload {
+    let bg: UInt32 = 0x18_24_30_FF
+    let fg: UInt32 = 0xE6_EE_F6_FF
+    let row = 3
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellW, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: Array(0..<rows))
+    payload.backgroundRuns.append(.init(row: row, startCol: 0, colCount: cols, color: bg))
+    for (index, text) in representativeCJKGlyphs().enumerated() {
+      payload.glyphs.append(
+        .init(
+          row: row,
+          col: index * 2,
+          scalarValue: text.unicodeScalars.first?.value,
+          foreground: fg,
+          background: bg,
+          attributes: [],
+          wide: 1))
+    }
     return payload
   }
 

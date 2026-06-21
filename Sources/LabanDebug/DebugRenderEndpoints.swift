@@ -6,6 +6,7 @@ extension HeadlessDebugRuntime {
   public func atlas() -> DebugResponse {
     withRuntimeLock {
       let diagnostics = glyphDiagnosticsUnlocked()
+      let cjk = fontAtlas.cjkFontDiagnostics
       return jsonEncode(
         AtlasResponse(
           font: CTFontCopyPostScriptName(fontAtlas.font) as String,
@@ -14,6 +15,17 @@ extension HeadlessDebugRuntime {
             width: cellWidth,
             height: cellHeight,
             baseline: max(Int(ceil(fontAtlas.ascent)), 0)
+          ),
+          cjkFont: AtlasCJKFontResponse(
+            font: cjk.selectedFontPostScriptName,
+            family: cjk.selectedFamilyName,
+            source: cjk.selectedSource,
+            candidates: cjk.candidateFonts,
+            fallbackOrder: cjk.fallbackOrder,
+            glyphAvailable: cjk.glyphAvailable,
+            glyphAdvance: Double(cjk.glyphAdvance),
+            targetCellWidth: Double(cjk.targetCellWidth),
+            scaleX: Double(cjk.scaleX)
           ),
           glyphs: AtlasGlyphsResponse(
             loaded: diagnostics.loaded,

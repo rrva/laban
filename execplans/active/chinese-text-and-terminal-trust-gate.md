@@ -82,7 +82,11 @@ so nobody re-investigates them.
       legacy CJK encodings exist anywhere).
 - [ ] M0 — Evidence and scope lock (this revision establishes it; keep current).
 - [x] M1 — Chinese text trust gate fixture.
-- [ ] M2 — CJK font pairing and metrics.
+- [x] (2026-06-21) M2 — CJK font pairing and metrics. Implemented explicit
+      shared CJK fallback policy, fixed two-cell CJK atlas metrics, `/debug/atlas`
+      CJK diagnostics, focused renderer/debug tests, and ADR 0025. Automated
+      validation passed; durable screenshot matrix artifacts were not captured in
+      this execution and remain a Review Gate/manual artifact task.
 - [ ] M3 — IME/preedit correctness (Metal `gpuDriven` preedit display-column fix).
 - [ ] M4 — Width policy coherence (verify single truth; ambiguous-width policy).
 - [ ] M5 — Emoji / color glyph path.
@@ -659,15 +663,25 @@ fresh context, and the repository gates are green:
   or a libghostty non-grid text-width helper (C API work). Committed text always
   gets engine width.
   Date/Author: 2026-06-20, plan author.
-- Decision (open, to resolve in M2): **CJK dual-font architecture.** Adopt an
-  explicit CJK cascade (primary Latin monospace + a CJK pair) shared by software
-  and Metal, replacing reliance on CoreText's default `CTLine` cascade. Likely an
-  ADR.
-  Rationale: today CJK has no metric guarantee (`MetalGlyphAtlas.swift:395-402`).
-  Date/Author: 2026-06-20, plan author.
-- Decision (open, to resolve in M2): **Whether bundled CJK fonts are acceptable.**
-  Trade license + binary size (Sarasa/Noto) against relying on system PingFang SC.
-  Date/Author: 2026-06-20, plan author.
+- Decision: **M2 uses an explicit shared CJK cascade and fixed two-cell atlas
+  metrics.** The cascade is primary terminal font → PingFang SC → Noto Sans Mono
+  CJK SC → Sarasa Term/Mono/Gothic SC → CoreText cascade. The software renderer
+  and Metal atlas share `TerminalGlyphFallback` / `TerminalCJKFontPolicy`; Metal
+  CJK atlas entries reserve exactly `2 * cellWidth` and scale down only if the
+  fallback's natural ink would overflow those two cells.
+  Rationale: this replaces unobservable CoreText-default CJK fallback with a
+  deterministic font-pairing policy while preserving ADR 0021's engine-owned grid
+  width. It is durable renderer policy, recorded in
+  `docs/adr/0025-cjk-font-pairing-and-metrics.md`.
+  Date/Author: 2026-06-21, Codex.
+- Decision: **Do not bundle a CJK font or add CJK font UI in M2.** Rely on system
+  PingFang SC first; keep Noto/Sarasa as explicit preferred candidates if a user
+  has them installed.
+  Rationale: local CoreText evidence on macOS selected `PingFangSC-Regular` with a
+  valid Hanzi glyph and a 14 pt natural advance inside the 18 pt two-cell target.
+  Bundling Noto/Sarasa would add license and binary-size cost without current
+  evidence that PingFang is insufficient; a font picker is product/settings scope.
+  Date/Author: 2026-06-21, Codex.
 - Decision (open, to resolve in M5): **Color emoji path: vector, bitmap, or
   hybrid.** Leaning: a separate BGRA8 color atlas + color-glyph detection + a new
   shader variant (hybrid), leaving the R8 + tint path unchanged. This is the
@@ -754,6 +768,14 @@ Review findings (filled in by the review agent):
   `/debug/terminal-modes`, `/debug/pixel-probe`, `/debug/clipboard`,
   `/debug/input-log`, `/debug/actions` (typeText/paste/key/setFontSize),
   `/debug/fixture`; capture/replay via `./scripts/replay-capture`.
+- M2 automated evidence (2026-06-21): local CoreText probe resolved
+  `PingFangSC-Regular` for Hanzi (`中`) with a valid glyph and 14 pt natural
+  advance; `swift test --filter 'CJKFontMetrics|GPUCellParityTests/testGPUCellPayloadAcceptsRepresentativeCJKWideGlyphs|GPUCellParityTests/testGPUCellPayloadMatchesClassicForRepresentativeCJKWideGlyphs|ChineseTrustGate|LabanDebugExploratoryControlTests/testSessionDetailAndAtlasDiagnosticsAreQueryable'`
+  passed 7 tests; `swift test --filter 'GPUCellParity|CJKFontMetrics'` passed 48
+  tests; `git diff --check` passed; `./scripts/build-app` exited 0. Deviation:
+  the M2 screenshot matrix for dense Chinese / mixed ASCII+Chinese / box-drawing /
+  Nerd Font adjacency / multiple sizes and Retina was not captured during this
+  slice.
 - Manual IME transcript (to fill on first execution): install
   `LABAN_INSTALL_PATH="$HOME/Laban-cjk.app" ./scripts/install-app`; with Apple
   Pinyin and then Rime/Squirrel, compose `中文`, screenshot the candidate window at

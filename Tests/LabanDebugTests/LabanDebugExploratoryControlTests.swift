@@ -181,6 +181,10 @@ final class LabanDebugExploratoryControlTests: XCTestCase {
     let glyphs = atlas["glyphs"] as! [String: Any]
     XCTAssertGreaterThan(glyphs["loaded"] as? Int ?? 0, 0)
     XCTAssertGreaterThanOrEqual(glyphs["missing"] as? Int ?? -1, 0)
+    let cjkFont = atlas["cjkFont"] as! [String: Any]
+    XCTAssertEqual(cjkFont["glyphAvailable"] as? Bool, true)
+    XCTAssertFalse((cjkFont["font"] as? String ?? "").isEmpty)
+    XCTAssertGreaterThan((cjkFont["targetCellWidth"] as? NSNumber)?.doubleValue ?? 0, 0)
     XCTAssertNotNil(atlas["missingCodepoints"] as? [String])
     XCTAssertNotNil(atlas["atlases"] as? [[String: Any]])
   }

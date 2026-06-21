@@ -347,10 +347,23 @@ struct AtlasTextureResponse: Encodable {
   var occupancy: Double
 }
 
+struct AtlasCJKFontResponse: Encodable {
+  var font: String
+  var family: String
+  var source: String
+  var candidates: [String]
+  var fallbackOrder: [String]
+  var glyphAvailable: Bool
+  var glyphAdvance: Double
+  var targetCellWidth: Double
+  var scaleX: Double
+}
+
 struct AtlasResponse: Encodable {
   var font: String
   var fontSize: Double
   var cell: AtlasCellResponse
+  var cjkFont: AtlasCJKFontResponse
   var glyphs: AtlasGlyphsResponse
   var missingCodepoints: [String]
   var atlases: [AtlasTextureResponse]

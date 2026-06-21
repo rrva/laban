@@ -565,6 +565,17 @@ Returns font and glyph-atlas diagnostics.
   "font": "JetBrains Mono",
   "fontSize": 16,
   "cell": {"width": 9, "height": 18, "baseline": 14},
+  "cjkFont": {
+    "font": "PingFangSC-Regular",
+    "family": "PingFang SC",
+    "source": "system",
+    "candidates": ["PingFang SC", "Noto Sans Mono CJK SC", "Sarasa Term SC"],
+    "fallbackOrder": ["primary terminal font", "PingFang SC", "...", "CoreText cascade"],
+    "glyphAvailable": true,
+    "glyphAdvance": 16,
+    "targetCellWidth": 18,
+    "scaleX": 1
+  },
   "glyphs": {"loaded": 1532, "missing": 0},
   "missingCodepoints": [],
   "atlases": [

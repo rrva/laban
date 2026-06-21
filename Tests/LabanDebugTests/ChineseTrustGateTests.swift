@@ -67,6 +67,11 @@ final class ChineseTrustGateTests: XCTestCase {
     let atlasBody = try json(atlasResponse)
     XCTAssertNotNil(atlasBody["font"] as? String)
     XCTAssertNotNil((atlasBody["glyphs"] as? [String: Any])?["missing"] as? Int)
+    let cjkFont = atlasBody["cjkFont"] as? [String: Any]
+    XCTAssertNotNil(cjkFont)
+    XCTAssertEqual(cjkFont?["glyphAvailable"] as? Bool, true)
+    XCTAssertFalse((cjkFont?["font"] as? String ?? "").isEmpty)
+    XCTAssertGreaterThan((cjkFont?["targetCellWidth"] as? NSNumber)?.doubleValue ?? 0, 0)
 
     let frameCommandsResponse = runtime.frameCommands(query: ["source": "all", "limit": "4000"])
     XCTAssertEqual(frameCommandsResponse.status, 200)

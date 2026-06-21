@@ -112,6 +112,10 @@ public final class FontAtlas {
     return candidate == fontPostScriptName
   }
 
+  public var cjkFontDiagnostics: TerminalCJKFontDiagnostics {
+    TerminalCJKFontPolicy.diagnostics(baseFont: font, cellWidth: cellSize.width)
+  }
+
   public func withPointSize(_ pointSize: CGFloat) -> FontAtlas {
     FontAtlas(
       font: CTFontCreateCopyWithAttributes(font, pointSize, nil, nil),
