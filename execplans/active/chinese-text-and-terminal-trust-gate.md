@@ -87,7 +87,12 @@ so nobody re-investigates them.
       CJK diagnostics, focused renderer/debug tests, and ADR 0025. Automated
       validation passed; durable screenshot matrix artifacts were not captured in
       this execution and remain a Review Gate/manual artifact task.
-- [ ] M3 — IME/preedit correctness (Metal `gpuDriven` preedit display-column fix).
+- [x] (2026-06-21) M3 — IME/preedit correctness. Fixed the Metal `gpuDriven`
+      preedit overlay to use the `FrameProducer` preedit rect width when present
+      and per-cluster atlas logical width as fallback instead of `text.count` /
+      one-column `Character` enumeration. `swift test --filter FrameProducerPreedit`
+      passed 8 tests; `./scripts/build-app` passed. Manual gpuDriven IME
+      screenshot artifacts remain to be captured.
 - [ ] M4 — Width policy coherence (verify single truth; ambiguous-width policy).
 - [ ] M6 — Keyboard and paste polish.
 - [ ] M5 — Emoji / color glyph path, including a user setting for color vs.
@@ -798,6 +803,12 @@ Review findings (filled in by the review agent):
   the M2 screenshot matrix for dense Chinese / mixed ASCII+Chinese / box-drawing /
   Nerd Font adjacency / multiple sizes and Retina was not captured during this
   slice.
+- M3 automated evidence (2026-06-21): `swift test --filter FrameProducerPreedit`
+  passed 8 tests, including wide CJK preedit at a nonzero cursor column and ZWJ
+  mask-width regressions; `./scripts/build-app` exited 0 in the worker. A local
+  preedit-overlay scan over `MetalRenderer.swift` lines 2700-2800 found no old
+  `text.count` / `enumerated()` column-stepping pattern. Deviation: no manual
+  `gpuDriven` Apple Pinyin/Rime screenshot artifact was captured in this slice.
 - Manual IME transcript (to fill on first execution): install
   `LABAN_INSTALL_PATH="$HOME/Laban-cjk.app" ./scripts/install-app`; with Apple
   Pinyin and then Rime/Squirrel, compose `中文`, screenshot the candidate window at
