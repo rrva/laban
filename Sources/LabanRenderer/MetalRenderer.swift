@@ -2835,20 +2835,21 @@ public final class MetalRenderer: RendererBackend {
       let traits = CTFontGetSymbolicTraits(font)
       let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
       let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
-      let preeditCellCount = commands
+      let preeditCellCount =
+        commands
         .compactMap { cmd -> Int? in
           if case .rect(let rect, _, .preedit) = cmd {
             return Int((rect.width / glyphCellAdvance).rounded(.up))
           }
           return nil
         }
-        .first ?? text.reduce(into: 0) { total, cluster in
+        .first
+        ?? text.reduce(into: 0) { total, cluster in
           if let entry = glyphAtlas.entry(
             character: cluster, font: font,
             boldFallback: needsBoldFallback,
             italicFallback: needsItalicFallback
-          ), entry.logicalWidth <= payload.cellSize.width * 2.5
-          {
+          ), entry.logicalWidth <= payload.cellSize.width * 2.5 {
             total += max(
               1,
               Int(
@@ -2872,15 +2873,15 @@ public final class MetalRenderer: RendererBackend {
       var cellIndex = 0
       for cluster in text {
         let col = baseCol + cellIndex
-        let isCellInBounds = bottomRow >= 0 && bottomRow < geometry.rows
+        let isCellInBounds =
+          bottomRow >= 0 && bottomRow < geometry.rows
           && col >= 0 && col < geometry.cols
         let index = isCellInBounds ? (bottomRow * geometry.cols + col) : -1
         if let entry = glyphAtlas.entry(
           character: cluster, font: font,
           boldFallback: needsBoldFallback,
           italicFallback: needsItalicFallback
-        ), entry.logicalWidth <= payload.cellSize.width * 2.5
-        {
+        ), entry.logicalWidth <= payload.cellSize.width * 2.5 {
           if isCellInBounds, index >= 0, index < cellGlyphs.count {
             let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
             cellGlyphs[index] = CellGlyph(

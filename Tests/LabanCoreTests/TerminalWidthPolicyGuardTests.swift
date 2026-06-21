@@ -19,24 +19,27 @@ final class TerminalWidthPolicyGuardTests: XCTestCase {
       "LabanCore/TerminalFind.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanCore/TerminalSelection.swift": ["TerminalDisplayWidth.cells(of:"],
       "LabanApp/TerminalBitmapView.swift": ["TerminalDisplayWidth.cells(of:"],
-      "LabanApp/TerminalSelectionInput.swift": ["TerminalDisplayWidth.isWide("]
+      "LabanApp/TerminalSelectionInput.swift": ["TerminalDisplayWidth.isWide("],
     ]
 
     var matchedFiles = Set<String>()
     var observed = [(file: String, line: Int, text: String)]()
 
-    guard let enumerator = FileManager.default.enumerator(
-      at: sourcesRoot,
-      includingPropertiesForKeys: [.isRegularFileKey],
-      options: [.skipsHiddenFiles]
-    ) else {
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: sourcesRoot,
+        includingPropertiesForKeys: [.isRegularFileKey],
+        options: [.skipsHiddenFiles]
+      )
+    else {
       XCTFail("Failed to enumerate Sources directory at \(sourcesRoot.path)")
       return
     }
 
     for case let fileURL as URL in enumerator {
       guard fileURL.pathExtension == "swift" else { continue }
-      let isRegularFile = try fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+      let isRegularFile =
+        try fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
       if !isRegularFile { continue }
 
       let rel = fileURL.path.replacingOccurrences(of: sourcesRoot.path + "/", with: "")
@@ -69,7 +72,8 @@ final class TerminalWidthPolicyGuardTests: XCTestCase {
     for rel in allowedSites.keys.sorted() {
       XCTAssertTrue(
         matchedFiles.contains(rel),
-        "Expected fallback-site usage not found in \(rel): update this guard if policy intentionally changed")
+        "Expected fallback-site usage not found in \(rel): update this guard if policy intentionally changed"
+      )
     }
   }
 }

@@ -25,7 +25,8 @@ final class ChineseTrustGateTests: XCTestCase {
       fixtureRootURL: fixtureRoot
     )
 
-    XCTAssertTrue(FileManager.default.fileExists(atPath: fixtureRoot.appendingPathComponent(fixturePath).path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: fixtureRoot.appendingPathComponent(fixturePath).path))
 
     let initialHealth = try json(runtime.health())
     let initialFrame = initialHealth["frame"] as? Int ?? 0
@@ -56,7 +57,7 @@ final class ChineseTrustGateTests: XCTestCase {
         "condition": [
           "kind": "textVisible",
           "text": "用户@主机 ~/项目 $ npm run build",
-        ]
+        ],
       ]
     )
     let waitResponse = try json(runtime.wait(waitPayload))
@@ -95,7 +96,8 @@ final class ChineseTrustGateTests: XCTestCase {
         $0["path"] as? String == "/debug/screenshot"
       })
 
-    let (pngData, screenshotFrame, screenshotWidth, screenshotHeight) = try runtime.screenshotBytes()
+    let (pngData, screenshotFrame, screenshotWidth, screenshotHeight) =
+      try runtime.screenshotBytes()
     XCTAssertGreaterThanOrEqual(screenshotFrame, stepFrame)
     XCTAssertGreaterThan(pngData.count, 0)
     XCTAssertGreaterThan(screenshotWidth, 0)
@@ -111,7 +113,8 @@ final class ChineseTrustGateTests: XCTestCase {
     }
 
     let atlasArtifactPath = artifacts.appendingPathComponent("trust-gate-atlas.json")
-    let frameCommandsArtifactPath = artifacts.appendingPathComponent("trust-gate-frame-commands.json")
+    let frameCommandsArtifactPath = artifacts.appendingPathComponent(
+      "trust-gate-frame-commands.json")
     try atlasResponse.body.write(to: atlasArtifactPath)
     try frameCommandsResponse.body.write(to: frameCommandsArtifactPath)
 

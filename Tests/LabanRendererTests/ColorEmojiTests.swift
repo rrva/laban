@@ -87,13 +87,13 @@ final class ColorEmojiTests: XCTestCase {
     renderer.render([
       .rect(
         CGRect(x: 0, y: 0, width: surface.logicalWidth, height: surface.logicalHeight),
-        color: 0x000000FF,
+        color: 0x0000_00FF,
         source: .terminal),
       .glyphRun(
         origin: .zero,
         text: "😀",
-        foreground: 0xFFFFFFFF,
-        background: 0x000000FF,
+        foreground: 0xFFFF_FFFF,
+        background: 0x0000_00FF,
         attributes: [],
         source: .terminal),
     ])
@@ -101,7 +101,7 @@ final class ColorEmojiTests: XCTestCase {
     var stats = PixelStats()
     for y in 0..<surface.height {
       for x in 0..<surface.width {
-        guard let pixel = surface.pixel(x: x, y: y), pixel != 0x000000FF else { continue }
+        guard let pixel = surface.pixel(x: x, y: y), pixel != 0x0000_00FF else { continue }
         stats.nonBackground += 1
         let r = Int((pixel >> 24) & 0xFF)
         let g = Int((pixel >> 16) & 0xFF)
