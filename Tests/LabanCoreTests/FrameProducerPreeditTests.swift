@@ -39,6 +39,13 @@ final class FrameProducerPreeditTests: XCTestCase {
     return nil
   }
 
+  private func preeditMaskRect(in cmds: [FrameCommand]) -> CGRect? {
+    for cmd in cmds {
+      if case .rect(let rect, _, .preedit) = cmd { return rect }
+    }
+    return nil
+  }
+
   func testPreeditEmitsUnderlinedGlyphRunAtCursor() throws {
     let (session, snap) = try snapshotAfterWriting("echo ")
     defer {
@@ -119,6 +126,63 @@ final class FrameProducerPreeditTests: XCTestCase {
     XCTAssertTrue(run.attrs.contains(.underline))
   }
 
+  func testOverlayPreeditUsesDisplayCellWidthAtNonzeroCursorColumn() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+
+    let cw = 8
+    let ch = 16
+    let producer = FrameProducer(cellWidth: cw, cellHeight: ch)
+    let composition = "中文"
+    let cursorCol = Int(snap.pointee.cursor_col)
+    let expectedColumns = TerminalDisplayWidth.cells(of: composition)
+    let cmds = producer.overlayCommands(
+      from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
+
+    let run = try XCTUnwrap(
+      preeditGlyphRun(in: cmds),
+      "overlayCommands must emit preedit at the cursor for the GPU-cell path")
+    let mask = try XCTUnwrap(
+      preeditMaskRect(in: cmds),
+      "overlay preedit must emit a background mask for wide compositions")
+
+    XCTAssertEqual(
+      run.origin.x, CGFloat(cursorCol) * CGFloat(cw), accuracy: 0.5,
+      "overlay preedit must start at the live cursor column")
+    XCTAssertEqual(
+      mask.width,
+      CGFloat(expectedColumns) * CGFloat(cw),
+      accuracy: 0.5,
+      "overlay mask width must use display-cell width for wide preedit")
+  }
+
+  func testOverlayPreeditMaskUsesDisplayCellWidthForZWJ() throws {
+    let (session, snap) = try snapshotAfterWriting("echo ")
+    defer {
+      laban_snapshot_destroy(snap)
+      session.close()
+    }
+
+    let cw = 8
+    let ch = 16
+    let composition = "👩\u{200D}💻"
+    let expectedColumns = TerminalDisplayWidth.cells(of: composition)
+    let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
+      .overlayCommands(from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
+
+    let mask = try XCTUnwrap(
+      preeditMaskRect(in: cmds),
+      "overlay preedit must emit a background mask for clustered emoji")
+    XCTAssertEqual(
+      mask.width,
+      CGFloat(expectedColumns) * CGFloat(cw),
+      accuracy: 0.5,
+      "overlay mask width must follow the same fallback width policy for ZWJ emoji")
+  }
+
   private func firstCursorRect(in cmds: [FrameCommand]) -> CGRect? {
     for cmd in cmds {
       if case .cursor(let rect, _) = cmd { return rect }
@@ -175,11 +239,7 @@ final class FrameProducerPreeditTests: XCTestCase {
     let cmds = FrameProducer(cellWidth: cw, cellHeight: ch)
       .commands(from: snap, selection: nil, cursorBlinkVisible: true, preedit: composition)
 
-    let mask = try XCTUnwrap(
-      cmds.compactMap { command -> CGRect? in
-        if case .rect(let rect, _, .preedit) = command { return rect }
-        return nil
-      }.first)
+    let mask = try XCTUnwrap(preeditMaskRect(in: cmds))
 
     XCTAssertEqual(
       mask.width,

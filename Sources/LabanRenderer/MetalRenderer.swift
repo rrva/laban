@@ -2726,48 +2726,82 @@ public final class MetalRenderer: RendererBackend {
       // sits where the terminal cursor is) is masked instead of bleeding
       // through as a second cursor. The `.rect` mask FrameProducer emits runs
       // through the earlier prepass and would otherwise be painted over.
-      appendSolid(
-        rect: CGRect(
-          x: origin.x, y: origin.y,
-          width: CGFloat(text.count) * glyphCellAdvance, height: glyphCellHeight),
-        color: bg)
       let font = styledFont(for: attrs, in: fontAtlas)
       let traits = CTFontGetSymbolicTraits(font)
       let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
       let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+      let preeditCellCount = commands
+        .compactMap { cmd -> Int? in
+          if case .rect(let rect, _, .preedit) = cmd {
+            return Int((rect.width / glyphCellAdvance).rounded(.up))
+          }
+          return nil
+        }
+        .first ?? text.reduce(into: 0) { total, cluster in
+          if let entry = glyphAtlas.entry(
+            character: cluster, font: font,
+            boldFallback: needsBoldFallback,
+            italicFallback: needsItalicFallback
+          ), entry.logicalWidth <= payload.cellSize.width * 2.5
+          {
+            total += max(
+              1,
+              Int(
+                ceil(
+                  entry.logicalWidth / payload.cellSize.width)))
+          } else {
+            total += 1
+          }
+        }
+      appendSolid(
+        rect: CGRect(
+          x: origin.x, y: origin.y,
+          width: CGFloat(preeditCellCount) * glyphCellAdvance, height: glyphCellHeight),
+        color: bg)
       let atlasW = Float(glyphAtlas.textureSize)
       let atlasH = Float(glyphAtlas.textureSize)
       let bottomRow = Int(
         ((origin.y - payload.origin.y - payload.contentYOffset) / payload.cellSize.height)
           .rounded())
       let baseCol = Int(((origin.x - payload.origin.x) / payload.cellSize.width).rounded())
-      for (cellIndex, cluster) in text.enumerated() {
+      var cellIndex = 0
+      for cluster in text {
         let col = baseCol + cellIndex
-        guard bottomRow >= 0, bottomRow < geometry.rows, col >= 0, col < geometry.cols
-        else { continue }
-        let index = bottomRow * geometry.cols + col
-        guard index >= 0, index < cellGlyphs.count else { continue }
-        guard
-          let entry = glyphAtlas.entry(
-            character: cluster, font: font,
-            boldFallback: needsBoldFallback,
-            italicFallback: needsItalicFallback),
-          entry.logicalWidth <= payload.cellSize.width * 2.5
-        else { continue }
-        let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
-        cellGlyphs[index] = CellGlyph(
-          originPx: SIMD2<Float>(
-            Float(cellX + entry.logicalOriginX) * scale,
-            Float(origin.y) * scale),
-          sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
-          uvOrigin: SIMD2<Float>(Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
-          uvSize: SIMD2<Float>(Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
-          flags: Self.gpuCellActiveFlag,
-          fg: rgbaToFloat4(fg))
-        appendCellGlyphUploadRange(index..<(index + 1))
+        let isCellInBounds = bottomRow >= 0 && bottomRow < geometry.rows
+          && col >= 0 && col < geometry.cols
+        let index = isCellInBounds ? (bottomRow * geometry.cols + col) : -1
+        if let entry = glyphAtlas.entry(
+          character: cluster, font: font,
+          boldFallback: needsBoldFallback,
+          italicFallback: needsItalicFallback
+        ), entry.logicalWidth <= payload.cellSize.width * 2.5
+        {
+          if isCellInBounds, index >= 0, index < cellGlyphs.count {
+            let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
+            cellGlyphs[index] = CellGlyph(
+              originPx: SIMD2<Float>(
+                Float(cellX + entry.logicalOriginX) * scale,
+                Float(origin.y) * scale),
+              sizePx: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+              uvOrigin: SIMD2<Float>(
+                Float(entry.originX) / atlasW, Float(entry.originY) / atlasH),
+              uvSize: SIMD2<Float>(
+                Float(entry.pixelWidth) / atlasW, Float(entry.pixelHeight) / atlasH),
+              flags: Self.gpuCellActiveFlag,
+              fg: rgbaToFloat4(fg))
+            appendCellGlyphUploadRange(index..<(index + 1))
+          }
+          cellIndex += max(
+            1,
+            Int(
+              ceil(
+                entry.logicalWidth / payload.cellSize.width)))
+        } else {
+          cellIndex += 1
+        }
       }
       emitDecorations(
-        for: text, at: origin, attributes: attrs,
+        cellCount: preeditCellCount, at: origin, attributes: attrs,
         cellAdvance: glyphCellAdvance,
         cellHeight: glyphCellHeight,
         descent: fontAtlas.descent,
