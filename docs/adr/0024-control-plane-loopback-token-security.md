@@ -118,8 +118,15 @@ for Phase 2; the deferred items return only behind an explicit, user-leased mode
     is shared across sessions. A normal shell's child processes inherit no sensitive
     authority. If env secrecy cannot be proven on the supported macOS/SIP matrix, no
     session-observe token is injected at all.
+- **Capability `.control` is renamed `.navigate`; `command.propose` splits into
+  `.propose`.** Post-pivot the old `.control` granted only benign navigation +
+  proposals (it no longer "controls" the terminal), so the name was misleading.
+  `.navigate` = benign own-session view/focus (`tab.select`, `scrollViewport`);
+  `.propose` = `command.propose`. `control` is **retired** (a future actuation/lease
+  tier is `.input` + a distinct `.execute`, never `.control`). End-state enum:
+  `observe, observeSensitive, navigate, propose, input, clipboard, fixture`.
 - **Per-session scoping is pulled forward** (the ADR had deferred it): for
-  `.observeSensitive`/`.control`, the policy requires `targetSession ==
+  `.observeSensitive`/`.navigate`/`.propose`, the policy requires `targetSession ==
   token.sessionID`; cross-session → `403`. `session.list`/rich `app.state` are
   redacted to the owning session. Only the test-only `.fixture` token has whole-app
   scope.
@@ -161,7 +168,8 @@ This phase is executed by
 - Never write terminal/title/clipboard read-backs into the input stream.
   Programmatic input takes the same validation path as human input.
 - Any code that advertises the server must write the discovery file `0600` from
-  the first byte and must never place a `.control`/`.observeSensitive` token in
-  it. Tokens must never be logged (log the URL only).
+  the first byte and must place **only** the app-observe token in it — never a
+  token granting `.observeSensitive`/`.navigate`/`.propose`/`.input`. Tokens must
+  never be logged (log the URL only).
 - New transports (MCP, CLI) reuse this token/capability model; they do not invent
   their own auth.

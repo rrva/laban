@@ -118,17 +118,19 @@ default-on flip in 2F.
 ## Token & Capability Model
 
 **Capabilities** (`Capability` in `Sources/LabanCore/Intents/IntentCatalog.swift`):
-`observe, observeSensitive, control, clipboard, fixture` — Phase 2 also keeps
-**`input`** (added for the actuation family, used **only** on the headless/fixture
-path). On the live GUI surface, `control` shrinks to **benign own-session navigation
-only**.
+Phase 2 **renames `control` → `navigate`** (it no longer means "drive the terminal" —
+only benign own-session navigation) and **adds `propose`** (command proposals) and
+**`input`** (the actuation family, used **only** on the headless/fixture path). The
+end-state enum is `observe, observeSensitive, navigate, propose, input, clipboard,
+fixture` — **no `control`** (the name is retired; a future actuation/lease tier would
+be `input` + a distinct `execute`, never the vague `control`).
 
 **Tokens (two observe-derived tokens; no app-wide control token):**
 
 | Token | Where it lives | Grants | Scope |
 | --- | --- | --- | --- |
 | **app-observe** | `control.json` (`0600`) | `.observe` (redacted `app.stateSummary`) | whole-app but **non-sensitive** |
-| **session-observe** | env of an **agent-attached session only** (per-session; var `LABAN_SESSION_OBSERVE_TOKEN`) | `.observeSensitive` + benign own-session navigation (`.control`: scroll/select own tab) | **its own session only** |
+| **session-observe** | env of an **agent-attached session only** (per-session; var `LABAN_SESSION_OBSERVE_TOKEN`) | `.observeSensitive` + `.navigate` (benign own-session nav: scroll/select own tab) + `.propose` (command proposals) | **its own session only** |
 | **fixture** | headless tests only (`laban-agent`/`LabanDebug`) | all incl. `.input` | whole-app (test-only; `validate()` bars `.fixture` on `.gui`) |
 
 `.clipboard` is granted to **no token**; `.input` only to the fixture token. The
@@ -158,7 +160,7 @@ token is minted from that id **before envp composition** and injected **only** w
 falls back to app-wide scope.
 
 **Session scoping + active-session fallback (the core invariant).** The policy
-enforces, for `.observeSensitive`/`.control`, `targetSession ∈ tokenScope` —
+enforces, for `.observeSensitive`/`.navigate`/`.propose`, `targetSession ∈ tokenScope` —
 cross-session → `403`. **For a session-bound token an omitted target `sessionID`
 resolves to the token's own session, never the app's active tab** (otherwise a focus
 change would leak another tab through a legacy active-session route). Whole-app reads
@@ -175,31 +177,31 @@ selection/scrollback/cwd/find-needle.
 
 Milestone 2A — Capability + scope enforcement, two observe tiers (`LabanControl`):
 - [ ] Two start paths: GUI `start()` mints an **app-observe** token (→ `control.json`) and a **session-observe minter** (per-session, session-bound); returns them to the in-process caller. Headless `start(host:port:)` keeps `debugToken` (fixture-class, whole-app) so `laban-agent`/`LabanDebugTests` are byte-stable. **`ControlReadiness` unchanged** (`{debugServer, debugToken, pid, runId}`); no sensitive token serialized into readiness JSON or any world-path file.
-- [ ] `LabanControlPolicy` (generated from `IntentCatalog`): `grants(appObserve)={.observe}`; `grants(sessionObserve)={.observe,.observeSensitive,.control}` (benign nav only); `grants(fixture)={.fixture,.observe,.observeSensitive,.control,.input}`. No token grants `.clipboard`; only fixture grants `.input`. `authorize(intentID:, granted:, targetSession:, tokenScope:)` checks `requiredCapability ∈ granted` **and**, for `.observeSensitive`/`.control`, `targetSession ∈ tokenScope`. `targetSession` is derived per C12 (session-bound token + omitted target → the token's **own** session, never the active tab; whole-app token → legacy active-session). Unknown id → deny.
+- [ ] `LabanControlPolicy` (generated from `IntentCatalog`): `grants(appObserve)={.observe}`; `grants(sessionObserve)={.observe,.observeSensitive,.navigate,.propose}`; `grants(fixture)={.fixture,.observe,.observeSensitive,.navigate,.propose,.input}`. No token grants `.clipboard`; only fixture grants `.input`. `authorize(intentID:, granted:, targetSession:, tokenScope:)` checks `requiredCapability ∈ granted` **and**, for `.observeSensitive`/`.navigate`/`.propose`, `targetSession ∈ tokenScope`. `targetSession` is derived per C12 (session-bound token + omitted target → the token's **own** session, never the active tab; whole-app token → legacy active-session). Unknown id → deny.
 - [ ] Deny-by-default made real: remove the catalog builder's implicit `requiredCapability`/`dataSensitivity` defaults (or track `explicit`); `IntentCatalog.validate()` + `LabanControlGen --check` **fail** unless every descriptor declares both explicitly.
 - [ ] Guard taxonomy: missing/invalid token → `401`; bad `Host`/any `Origin` → `403`; capability-insufficient → `403`; cross-session sensitive read → `403`. **`isLoopbackHost` rejects non-numeric ports** (`localhost:evil`, `127.0.0.1:evil`, `[::1]:evil`). Token values never logged.
-- [ ] `LabanControlTests` (spy router): app-observe token → `.observe` `200`, `.observeSensitive`/`.control` `403` (no router call); session-observe token → own-session `.observeSensitive` `200`, **other-session `403`**; `.input`/`.clipboard` rejected for all non-fixture tokens (policy-level assertion); missing → `401`; forged `Host`/any `Origin`/non-numeric port → `403`. `control.json` contains the app-observe token only.
+- [ ] `LabanControlTests` (spy router): app-observe token → `.observe` `200`, `.observeSensitive`/`.navigate`/`.propose` `403` (no router call); session-observe token → own-session `.observeSensitive` `200`, **other-session `403`**; `.input`/`.clipboard` rejected for all non-fixture tokens (policy-level assertion); missing → `401`; forged `Host`/any `Origin`/non-numeric port → `403`. `control.json` contains the app-observe token only.
 
 Milestone 2B — Live session-scoped observe surface (`LabanApp`):
 - [ ] Shared `AppModel`/`Session` → DTO projections relocated to `Sources/LabanCore/Control/Projections/*` (public); `HeadlessIntentRouter` re-points to them **byte-identically** (headless `LabanDebugTests` + `DiscoveryEndpointParityTests` unchanged). `LabanDebug` typealiases relocated DTOs.
 - [ ] `LiveIntentRouter` implements the **own-session** observe family against the live `AppModel`/`AppSessionCoordinator`: `app.accessibility`, `terminal.modes`, `session.detail`, `find.state`, `selection.read`, `shellIntegration.state`, `scrollIndicator.state`, plus rich `app.state` and `session.list` **redacted to the owning session**. Each returns the shared DTO. Sensitivity split (explicit classification): the trigger for `.observeSensitive` is **terminal content** (grid/scrollback text, selection, find needle, accessibility text, keystroke log); `.observe` covers `terminal.modes`, `scrollIndicator.state`, and the whole-app `app.stateSummary` (which now also carries per-tab title/cwd/repo/process metadata — `ps`-equivalent, 2026-06-20). The rich `session.detail`/`app.state` DTOs stay `.observeSensitive` + session-scoped because they **also** carry content (grid), even though their process-metadata subset is separately available via the summary.
-- [ ] Benign own-session navigation only under `.control`: `terminal.scrollViewport` and `tab.select` (bring own tab to front). **No input/mouse/clipboard, no destructive tab lifecycle, no cross-tab.** The input-actuation family stays `headlessOnly` + `.input`; remove/build-gate the Phase-1 `LiveIntentRouter.typeText`/`sendKey` so input lives only in `LabanDebug`.
+- [ ] Benign own-session navigation under `.navigate`: `terminal.scrollViewport` and `tab.select` (bring own tab to front); `command.propose` under its own `.propose` (§2E). **No input/mouse/clipboard, no destructive tab lifecycle, no cross-tab.** The input-actuation family stays `headlessOnly` + `.input`; remove/build-gate the Phase-1 `LiveIntentRouter.typeText`/`sendKey` so input lives only in `LabanDebug`.
 - [ ] Catalog availability flips: own-session observe ids → `gui:true` with explicit `requiredCapability`/`dataSensitivity`; renderer/atlas/pixel-probe/capture/persistence stay `headlessOnly` (noted boundary). `swift run LabanControlGen --write` if route metadata changed; `swift test`; `scripts/check`.
 
 Milestone 2C — Catalog-parity + classification completeness:
 - [ ] `CatalogParityTests` at the **HTTP-route level**: over every `availability.gui && availability.headless` intent, both surfaces return a non-error response for a representative input and pure reads' sorted-key JSON **shape** matches. Fails if either surface drops/diverges on a shared intent.
 - [ ] Completeness invariants: every descriptor declares explicit `requiredCapability` + `dataSensitivity`; **no `gui:true` descriptor requires `.input` or `.clipboard`**; the set of `gui:true` ids is exactly what `LiveIntentRouter` implements (own-session observe + benign nav).
-- [ ] **`.control` hard allowlist** (positive test, not just the `.input`/`.clipboard` ban): the set of `gui:true` descriptors requiring `.control` equals **exactly** `{tab.select, terminal.scrollViewport, command.propose}` — the test fails if `tab.close`/`session.kill`/`restart`/`detach`/`tab.new` (or any other op) ever becomes a `gui:true` `.control` descriptor.
+- [ ] **`.navigate`/`.propose` hard allowlists** (positive tests, not just the `.input`/`.clipboard` ban): the `gui:true` `.navigate` set equals **exactly** `{tab.select, terminal.scrollViewport}` and the `gui:true` `.propose` set equals **exactly** `{command.propose}` — the test fails if `tab.close`/`session.kill`/`restart`/`detach`/`tab.new` (or any other op) ever becomes a `gui:true` `.navigate`/`.propose` descriptor.
 
 Milestone 2D — Indicator, disable switch, audit, no-token-logging:
 - [ ] `ControlSecurityObserver` boundary in `LabanControl` (`didAuthorize/didDeny/didPrivilegedActivity`); `LabanControl` keeps `["LabanCore"]`-only deps and never imports app UI/logging internals. `LabanApp` supplies the observer owning indicator state + the persistent `EventLog` sink.
-- [ ] "Agent attached" indicator lights on any successful **privileged** request (`.observeSensitive` or benign `.control`) — TTL-based (HTTP has no durable "connected").
+- [ ] "Agent attached" indicator lights on any successful **privileged** request (`.observeSensitive`, `.navigate`, or `.propose` — anything beyond app-observe non-sensitive reads) — TTL-based (HTTP has no durable "connected").
 - [ ] User-facing disable switch (menu/setting) stops the server and removes `control.json`.
 - [ ] Every privileged access emits an audit event via the observer to the `EventLog` (intent id, capability, surface, session, time — **no token, no payload secrets**).
 - [ ] A test greps logs and non-token artifacts for **both** minted tokens → **zero** hits; `control.json` parsed separately (it holds the app-observe token only).
 
 Milestone 2E — Command proposals:
-- [ ] A typed `command.propose` exchange: the agent submits a proposed command (text + rationale + target session) as a **data object**; Laban surfaces it to the user (review UI), who runs or dismisses it. **Never** written to a PTY by Laban. Requires session-observe scope for its target session; audited; lights the indicator.
+- [ ] A typed `command.propose` exchange (capability `.propose`): the agent submits a proposed command (text + rationale + target session) as a **data object**; Laban surfaces it to the user (review UI), who runs or dismisses it. **Never** written to a PTY by Laban. Requires `.propose` + session-observe scope for its target session; audited; lights the indicator.
 - [ ] DTO + schema added to the catalog/discovery (gated, byte-stable via `LabanControlGen`); covered by `LiveIntentRouter`/`HeadlessIntentRouter` parity.
 
 Milestone 2F — Flip observe-on-by-default (release-checklist gate):
@@ -220,7 +222,7 @@ token model", amended to observe-only for Phase 2.)
 **C2 — Capability + scope enforced per resolved intent, after availability.** Guard
 (Host/Origin/token) → match route → resolve intent id → availability (`404` if
 surface-unavailable) → **capability** (`requiredCapability ∈ granted`, else `403`) →
-**scope** (for `.observeSensitive`/`.control`, `targetSession ∈ tokenScope`, else
+**scope** (for `.observeSensitive`/`.navigate`/`.propose`, `targetSession ∈ tokenScope`, else
 `403`). Checks are on the resolved id; a known intent the caller can't afford is `403`,
 not `404`.
 
@@ -252,7 +254,7 @@ debug-runtime read, not OS clipboard, and stays headless-only).
 only; a test greps logs for both minted tokens and expects zero hits.
 
 **C7 — Every privileged access is audited; the indicator reflects the risk boundary.**
-Every `.observeSensitive`/benign-`.control` access appends an audit event to the
+Every `.observeSensitive`/`.navigate`/`.propose` access appends an audit event to the
 `EventLog`. The "agent attached" indicator lights on any privileged access (privileged
 **reads** included — the risk boundary is sensitive observation, not just mutation).
 
@@ -344,9 +346,9 @@ byte-identical.
 **Acceptance.** `CatalogParityTests` (HTTP-route level) green; mutating one surface to
 drop a shared intent fails it. A completeness test asserts every descriptor is
 explicitly classified, **no `gui:true` descriptor requires `.input`/`.clipboard`**, and
-the `gui:true` `.control` set equals **exactly** `{tab.select, terminal.scrollViewport,
-command.propose}` (a positive allowlist — fails if `tab.close`/`session.kill`/etc.
-sneaks in).
+the `gui:true` `.navigate` set equals **exactly** `{tab.select, terminal.scrollViewport}`
+and the `gui:true` `.propose` set equals **exactly** `{command.propose}` (positive
+allowlists — fail if `tab.close`/`session.kill`/etc. sneaks in).
 
 ### 2D — Indicator, disable switch, audit, no-token-logging
 **Acceptance.** A privileged request lights a visible "agent attached" indicator
@@ -371,7 +373,7 @@ artifacts for both minted tokens → zero; `control.json` parsed separately.
   returns the **same** shape, never writes PTY bytes (keeps `CatalogParityTests`
   unambiguous).
 - Requires session-observe scope for `targetSessionID` (cross-session → `403`);
-  classified `.control` and in the `.gui` `.control` allowlist (2C); audited; lights
+  classified `.propose` and in the `.gui` `.propose` allowlist (2C); audited; lights
   the indicator.
 
 **Acceptance.** An agent with session-observe scope for tab N submits `command.propose`
@@ -481,10 +483,19 @@ no-inject fallback).
   `Session.init` self-generates it). **(C12)** scoped tokens never fall back to the
   active tab — an omitted target resolves to the token's own session. Plus exact
   specs: `app.stateSummary` key allowlist (snapshot-tested), `command.propose`
-  response shape + no-PTY-write on both surfaces, a positive `.gui` `.control`
-  allowlist (`{tab.select, scrollViewport, command.propose}`), env-secrecy
+  response shape + no-PTY-write on both surfaces, positive `.gui` `.navigate`/`.propose`
+  allowlists (`{tab.select, scrollViewport}` / `{command.propose}`), env-secrecy
   **no-inject** fallback, the `LABAN_SESSION_OBSERVE_TOKEN` rename, and a scrub of the
   stale actuation text in the program roadmap. DRAFT — 2026-06-20 / Claude.
+- (2026-06-20 / user) **Renamed the capability `control` → `navigate`; split
+  `command.propose` into its own `propose`.** Post-pivot `.control` granted only
+  `{tab.select, scrollViewport, command.propose}` — none of which control the
+  terminal — so the name invited the exact "can drive the terminal" assumption the
+  pivot removed. `.navigate` = benign own-session view/focus (`tab.select`,
+  `scrollViewport`); `.propose` = `command.propose` (a suggestion, not navigation).
+  `control` is **retired** (not reused for the future lease tier — that is `.input` +
+  a distinct `execute`). Touches the `Capability` enum, every descriptor's
+  `requiredCapability`, the policy grants, and the docs. DRAFT — 2026-06-20 / Claude.
 
 ## Review Gate
 
@@ -498,7 +509,7 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] Mechanical input-out-of-release boundary: "lives in `LabanDebug`" is **not** sufficient because `LabanApp` already links `LabanDebug` (CaptureRecorder). The input-actuation fixture impl lives in a **headless/test-only target not depended on by `LabanApp`**, or behind a **non-release build flag** — verified by: no route registered, no `gui:true` descriptor, no `LiveIntentRouter` dispatch, and **no release-target dependency on the input fixture symbols**.
 - [ ] `command.propose` is a data object: a test asserts proposing a command does **not** write to the PTY (no `session.write`/coordinator write from the propose path); cross-session propose → `403`.
 - [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path; `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
-- [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface; completeness test fails if any descriptor is unclassified, any `gui:true` requires `.input`/`.clipboard`, or the `gui:true` `.control` set is not exactly `{tab.select, terminal.scrollViewport, command.propose}` (add `tab.close`/`session.kill` as `gui:true` `.control` → expect failure; revert).
+- [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface; completeness test fails if any descriptor is unclassified, any `gui:true` requires `.input`/`.clipboard`, the `gui:true` `.navigate` set is not exactly `{tab.select, terminal.scrollViewport}`, or the `gui:true` `.propose` set is not exactly `{command.propose}` (add `tab.close`/`session.kill` as a `gui:true` `.navigate` → expect failure; revert).
 - [ ] `app.stateSummary` snapshot test: the response keys are exactly the allowlist (schema/version, runID, readiness, `inputActuation:"unavailable"`, `crossSessionSensitiveReads:"denied"`, window/tab/session counts, opaque per-run ids, `callerOwnedSessionID?`, coarse booleans, **per-tab titles + cwd/repo/workspace + process command/args/pid**) and **none** of the forbidden keys (terminal text/grid/scrollback, selected text, find needle, clipboard, a11y text, keystroke/input log, agent metadata, launch-stable ids); adding a key fails the snapshot.
 - [ ] `0600`-from-first-byte: `ControlAdvertisement` uses `O_CREAT|O_EXCL` + `S_IRUSR|S_IWUSR`, no `chmod` after write (grep).
 - [ ] Host/Origin matrix includes `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → all `403`.

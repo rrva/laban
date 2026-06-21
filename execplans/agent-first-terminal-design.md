@@ -12,7 +12,7 @@ Appendix A/B; nothing in the body below depends on reading them).
 > self-injection, audit + revocation). The §5 token model is amended to two
 > **observe** tiers — app-observe (`control.json`, redacted summary) + per-session,
 > session-bound session-observe (`.observeSensitive` + benign own-session nav),
-> **no app-wide control token** — and `.observeSensitive`/`.control` are
+> **no app-wide control token** — and `.observeSensitive`/`.navigate`/`.propose` are
 > **session-scoped** (cross-tab → 403). Input forms an `.input` capability granted
 > only to the test `.fixture` token (headless E2E). Where §5 and the §6 Phase-2
 > entry below describe a control token or live input, read them through this
@@ -197,9 +197,11 @@ Intent        // tagged, Codable: the union of today's AppCommand + DebugAction
 Query         // tagged, Codable read request (state, tab.getState, terminal.*…)
 IntentResult  // { ok, actedSessionId?, actedTabId?, eventId?, error? }
 QueryResult   // Codable read response (per-query payload)
-Capability    // .observe | .observeSensitive | .control | .input | .clipboard | .fixture
-              //   .input = actuation (typeText/sendKey/paste/mouse), fixture/headless-only
-              //   .control = benign live nav only (tab.select/scrollViewport) + command.propose
+Capability    // .observe | .observeSensitive | .navigate | .propose | .input | .clipboard | .fixture
+              //   .input  = actuation (typeText/sendKey/paste/mouse), fixture/headless-only
+              //   .navigate = benign live nav (tab.select/scrollViewport)
+              //   .propose  = command.propose (a reviewed suggestion, never PTY bytes)
+              //   (.control retired — a future actuation/lease tier is .input + a distinct .execute)
 IntentDescriptor   // the metadata record below
 IntentCatalog      // [IntentDescriptor], queryable + serializable
 IntentRouter (protocol)  // route(Intent) -> IntentResult ; query(Query) -> QueryResult
@@ -328,16 +330,18 @@ transport and split capabilities. The model has a **floor** (Phase 2) and a
 ### 5.1 Capability tiers
 
 > **Superseded for Phase 2 by the header Amendment (2026-06-20).** The `.control`
-> row's *actuation* (typeText/sendKey/paste, mouse) is **not** a Phase-2-floor live
-> capability — it becomes an `.input` capability that is headless/`.fixture`-only and
-> off the live GUI; on the live surface `.control` shrinks to benign own-session
-> navigation (`tab.select`, `scrollViewport`) plus `command.propose`. The "Token
-> classes" app-scoped control/sensitive token below is **replaced** by two observe
-> tiers (app-observe + agent-attached-only, session-bound session-observe), and
-> per-session scoping is **pulled into Phase 2** (not Phase 7). The capability
-> *machinery* — catalog-generated deny-by-default policy, `dataSensitivity`
-> independent of `requiredCapability` — is unchanged. Read the rows below for the
-> machinery, not the actuation/token placement.
+> row is **retired and split**: its *actuation* (typeText/sendKey/paste, mouse)
+> becomes an `.input` capability that is headless/`.fixture`-only and off the live
+> GUI; its benign navigation becomes **`.navigate`** (`tab.select`, `scrollViewport`)
+> and `command.propose` becomes its own **`.propose`**. There is no `.control`
+> capability in the end-state enum (`observe, observeSensitive, navigate, propose,
+> input, clipboard, fixture`). The "Token classes" app-scoped control/sensitive token
+> below is **replaced** by two observe tiers (app-observe + agent-attached-only,
+> session-bound session-observe), and per-session scoping is **pulled into Phase 2**
+> (not Phase 7). The capability *machinery* — catalog-generated deny-by-default
+> policy, `dataSensitivity` independent of `requiredCapability` — is unchanged. Read
+> the rows below for the machinery, not the capability names / actuation / token
+> placement.
 
 | Capability | Grants | Lands |
 |---|---|---|
@@ -396,9 +400,9 @@ the terminal in the first place.
   untrusted before the VT parser.
 - **High-power reads are privileged** — full keystroke stream and full scrollback
   dumps require `.observeSensitive`, never bare `.observe`; every
-  `.control`/`.observeSensitive` access is logged to the EventLog.
-- **User-visible "agent attached" indicator** whenever a `.control`-tier client is
-  connected (the API is keylogger-equivalent).
+  `.observeSensitive`/`.navigate`/`.propose` access is logged to the EventLog.
+- **User-visible "agent attached" indicator** whenever a privileged
+  (`.observeSensitive`/`.navigate`/`.propose`) client is active.
 - **No-auth dev mode** (CI only) is opt-in, scoped, and loud.
 
 ### 5.4 When the default flips on
@@ -408,9 +412,9 @@ Through Phase 0–1 the server is **off unless `LABAN_CONTROL_SERVER=1`**. The
 **release checklist**, not merely a phase label. Every item must hold before the
 default flips:
 
-- [ ] `control.json` grants an **observe-only** token (never `.control`/`.observeSensitive`).
+- [ ] `control.json` grants an **observe-only** token (never `.observeSensitive`/`.navigate`/`.propose`/`.input`).
 - [ ] `.observeSensitive` requires the separate env-injected token/scope.
-- [ ] `.control` requires the separate env-injected token/scope.
+- [ ] `.navigate`/`.propose` (and `.observeSensitive`) require the separate, agent-attached session-observe env token/scope; `.input` is fixture/headless-only.
 - [ ] The token file is created `0600` **from the first byte** (not chmod-after-write).
 - [ ] `Host` + `Origin` validation rejects malformed/spoofed hosts (tests cover `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`).
 - [ ] A visible "agent attached" indicator exists.
