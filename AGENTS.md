@@ -107,6 +107,7 @@ commit); `main` owns semantic refreshes (lifting). See
 - `HeadlessDebugRuntime` stays in feature parity with `MainWindowController.makeAndShow`. Wire new subsystems into both and expose HTTP endpoints. Move shared types from `LabanApp` down to `LabanCore` (no AppKit deps) so `LabanDebug` can reach them.
 - Terminal session identity must survive tab selection, view rebuilds, resize, and UI refresh.
 - Native text input wins over raw modifier interpretation.
+- The renderer's per-frame encode/glyph-build path must not read `UserDefaults` or run CoreText/`CTLine` work per cell. Static glyph properties (e.g. color-ness) are decided once at rasterization and cached on the atlas entry; settings are cached and refreshed via their change notification, never polled per frame. (Regression bed1a2b: a per-cluster `CTLine` color scan cost +60–105 ms/frame while scrolling — guard it with `ColorGlyphScrollBench`.)
 - Keep changesets focused on one behavioral reason.
 - Git commits are atomic. Commit messages are single-line reason statements: why the change exists, not what changed. Bad: `Update plans`. Good: `Agents need bounded execution shards`.
 

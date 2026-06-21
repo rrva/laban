@@ -10,6 +10,16 @@ public final class SoftwareRenderer {
   private let sidebarCellAdvance: CGFloat
   private var colorCache: [UInt32: CGColor] = [:]
   private var fontCache: [UInt32: CTFont] = [:]
+  /// Cached emoji policy, refreshed once per `render()` so the per-cluster
+  /// glyph loop never reads `UserDefaults`.
+  private var emojiRenderingMode: EmojiRenderingMode = .monochrome
+  private struct ColorClassKey: Hashable {
+    let cluster: Character
+    let font: ObjectIdentifier
+  }
+  /// Memoized color-ness per (cluster, font). Avoids building a CoreText
+  /// CTLine per cluster every frame on the scroll path (see ColorGlyphSupport).
+  private var colorGlyphClassification: [ColorClassKey: Bool] = [:]
 
   public init(
     surface: BitmapSurface,
@@ -30,7 +40,21 @@ public final class SoftwareRenderer {
     return c
   }
 
+  /// Final, memoized color-ness decision. Runs CoreText at most once per
+  /// distinct (cluster, font); keyed without bold/italic because color
+  /// detection ignores them.
+  @inline(__always)
+  private func clusterIsColorGlyph(_ cluster: Character, font: CTFont, cellAdvance: CGFloat) -> Bool {
+    let key = ColorClassKey(cluster: cluster, font: ObjectIdentifier(font))
+    if let cached = colorGlyphClassification[key] { return cached }
+    let result = ColorGlyphSupport.containsColorGlyph(
+      text: String(cluster), font: font, cellAdvance: cellAdvance)
+    colorGlyphClassification[key] = result
+    return result
+  }
+
   public func render(_ commands: [FrameCommand]) {
+    emojiRenderingMode = EmojiRenderingSettings.current()
     let ctx = surface.context
     ctx.saveGState()
     ctx.scaleBy(x: surface.scale, y: surface.scale)
@@ -109,7 +133,7 @@ public final class SoftwareRenderer {
       xOffset: 0,
       font: font,
       foreground: fgColor,
-      emojiRenderingMode: EmojiRenderingSettings.current(),
+      emojiRenderingMode: emojiRenderingMode,
       cellAdvance: cellAdvance,
       cellHeight: atlas.cellSize.height,
       descent: atlas.descent,
@@ -123,7 +147,7 @@ public final class SoftwareRenderer {
         xOffset: max(1.0 / surface.scale, 0.5),
         font: font,
         foreground: fgColor,
-        emojiRenderingMode: EmojiRenderingSettings.current(),
+        emojiRenderingMode: emojiRenderingMode,
         cellAdvance: cellAdvance,
         cellHeight: atlas.cellSize.height,
         descent: atlas.descent,
@@ -160,6 +184,8 @@ public final class SoftwareRenderer {
     ctx.textMatrix = .identity
     ctx.setFillColor(fgColor)
 
+    let runMayColor = ColorGlyphSupport.mayContainColorGlyph(text: text, font: font)
+
     func flushGlyphs() {
       guard !glyphs.isEmpty else { return }
       // CTLineDraw on a fallback line can leave the context's text matrix
@@ -183,12 +209,11 @@ public final class SoftwareRenderer {
         x: origin.x + CGFloat(cellIndex) * cellAdvance + xOffset,
         y: baseline
       )
-      let clusterText = String(cluster)
-      if ColorGlyphSupport.containsColorGlyph(
-        text: clusterText,
-        font: font,
-        cellAdvance: cellAdvance)
+      if runMayColor,
+        ColorGlyphSupport.clusterMayBeColor(cluster),
+        clusterIsColorGlyph(cluster, font: font, cellAdvance: cellAdvance)
       {
+        let clusterText = String(cluster)
         flushGlyphs()
         if emojiRenderingMode == .color && xOffset == 0 {
           drawColorFallbackText(

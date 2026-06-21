@@ -634,6 +634,7 @@ public final class MetalRenderer: RendererBackend {
   /// when the palette changes so partial damage cannot leave chrome coloured
   /// from the previous theme.
   public func invalidateContentForThemeChange() {
+    emojiRenderingMode = EmojiRenderingSettings.current()
     targetNeedsFullRedraw = true
     cellGlyphGridGeometry = nil
     cellGlyphs.removeAll(keepingCapacity: true)
@@ -3472,16 +3473,14 @@ public final class MetalRenderer: RendererBackend {
         let traits = CTFontGetSymbolicTraits(font)
         let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
         let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
-        let emojiRenderingMode = EmojiRenderingSettings.current()
+        let runWantsColor =
+          !isSidebar && emojiRenderingMode == .color
+          && ColorGlyphSupport.mayContainColorGlyph(text: text, font: font)
 
         for (cellIndex, cluster) in text.enumerated() {
           let cellX = origin.x + CGFloat(cellIndex) * activeAdvance
-          if !isSidebar,
-            ColorGlyphSupport.shouldRenderColor(
-              text: String(cluster),
-              font: font,
-              cellAdvance: activeAdvance,
-              mode: emojiRenderingMode),
+          if runWantsColor,
+            ColorGlyphSupport.clusterMayBeColor(cluster),
             let entry = colorGlyphAtlas.entry(
               character: cluster,
               font: font,
@@ -3682,7 +3681,7 @@ public final class MetalRenderer: RendererBackend {
   }
 
   private func commandsContainColorGlyph(_ commands: [FrameCommand]) -> Bool {
-    guard EmojiRenderingSettings.current() == .color else { return false }
+    guard emojiRenderingMode == .color else { return false }
     for command in commands {
       guard
         case .glyphRun(_, let text, _, _, let attrs, let source, _, _, _) = command,
@@ -3690,12 +3689,14 @@ public final class MetalRenderer: RendererBackend {
         !text.isEmpty
       else { continue }
       let font = styledFont(for: attrs, in: fontAtlas)
-      for cluster in text {
-        if ColorGlyphSupport.shouldRenderColor(
-          text: String(cluster),
-          font: font,
-          cellAdvance: glyphCellAdvance,
-          mode: .color)
+      guard ColorGlyphSupport.mayContainColorGlyph(text: text, font: font) else { continue }
+      let traits = CTFontGetSymbolicTraits(font)
+      let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
+      let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+      for cluster in text where ColorGlyphSupport.clusterMayBeColor(cluster) {
+        if colorGlyphAtlas.isColorGlyph(
+          character: cluster, font: font,
+          boldFallback: needsBoldFallback, italicFallback: needsItalicFallback)
         {
           return true
         }
@@ -3703,6 +3704,21 @@ public final class MetalRenderer: RendererBackend {
     }
     return false
   }
+
+  // MARK: - Color-glyph routing (bed1a2b scroll-regression fix)
+  //
+  // Color-ness is a static property of (cluster, font): ghostty, kitty,
+  // alacritty and wezterm all decide it once at rasterization and cache it on
+  // the glyph, never re-shaping per frame. bed1a2b instead built a CoreText
+  // CTLine per cluster across the whole screen every frame — tens of ms/frame
+  // while scrolling. The decision now lives on `ColorGlyphAtlas` (computed once
+  // at rasterization, read back as a boolean); the cheap scalar pre-filter in
+  // `ColorGlyphSupport` rejects all plain text before the atlas is consulted.
+
+  /// Cached emoji policy; refreshed on theme/emoji changes via
+  /// `invalidateContentForThemeChange` so the encode path never reads
+  /// `UserDefaults`.
+  private var emojiRenderingMode: EmojiRenderingMode = EmojiRenderingSettings.current()
 
   // MARK: - Font cache (mirrors SoftwareRenderer.styledFont)
 

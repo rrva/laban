@@ -34,6 +34,10 @@ final class ColorGlyphAtlas {
   private let descent: CGFloat
   private let colorSpace = CGColorSpaceCreateDeviceRGB()
   private var entries: [Key: Entry] = [:]
+  /// Color-ness flag per glyph, co-located with the rasterization cache so the
+  /// decision is computed once (CoreText) and read back as a boolean — the
+  /// atlas owns this info; the renderer no longer keeps a parallel cache.
+  private var colorClassification: [Key: Bool] = [:]
   private(set) var didOverflow = false
 
   private var shelfX = 0
@@ -89,6 +93,41 @@ final class ColorGlyphAtlas {
       italicFallback: italicFallback)
   }
 
+  /// Whether this cluster rasterizes to a color glyph in `font`. Memoized:
+  /// CoreText runs at most once per distinct (text, font, fallback) key for the
+  /// cache's lifetime (the atlas is rebuilt on font/scale change, dropping it).
+  func isColorGlyph(
+    character: Character,
+    font: CTFont,
+    boldFallback: Bool,
+    italicFallback: Bool
+  ) -> Bool {
+    isColorGlyph(
+      text: String(character),
+      font: font,
+      boldFallback: boldFallback,
+      italicFallback: italicFallback)
+  }
+
+  func isColorGlyph(
+    text: String,
+    font: CTFont,
+    boldFallback: Bool,
+    italicFallback: Bool
+  ) -> Bool {
+    guard !text.isEmpty else { return false }
+    let key = Key(
+      text: text,
+      font: ObjectIdentifier(font),
+      boldFallback: boldFallback,
+      italicFallback: italicFallback)
+    if let cached = colorClassification[key] { return cached }
+    let result = ColorGlyphSupport.containsColorGlyph(
+      text: text, font: font, cellAdvance: cellWidth)
+    colorClassification[key] = result
+    return result
+  }
+
   func entry(
     text: String,
     font: CTFont,
@@ -103,10 +142,11 @@ final class ColorGlyphAtlas {
       italicFallback: italicFallback)
     if let cached = entries[key] { return cached }
     guard
-      ColorGlyphSupport.containsColorGlyph(
+      isColorGlyph(
         text: text,
         font: font,
-        cellAdvance: cellWidth)
+        boldFallback: boldFallback,
+        italicFallback: italicFallback)
     else { return nil }
     let made = rasterizeAndPack(text: text, font: font)
     if let made {
