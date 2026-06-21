@@ -60,7 +60,9 @@ happens only once the floor below exists.
   **from the first byte** (open `O_CREAT|O_EXCL,0600`, write, `fsync`,
   `rename(2)`; never `.atomic`-write-then-`chmod`, which briefly exposes the
   token). Grants `.observe` (non-sensitive state) only.
-- **Control/sensitive token** — injected into the environment
+- **Control/sensitive token** *(superseded for Phase 2 — see Amendment: replaced by
+  the agent-attached-only, session-scoped `LABAN_SESSION_OBSERVE_TOKEN`; no app-wide
+  control token, no live actuation)* — injected into the environment
   (`LABAN_CONTROL_TOKEN`/`LABAN_CONTROL_URL`) of children Laban spawns. Grants
   `.control` + `.observeSensitive`. A same-user process can read the file but
   cannot read another process's environment on macOS, so control/sensitive
@@ -103,10 +105,14 @@ for Phase 2; the deferred items return only behind an explicit, user-leased mode
   `.observeSensitive`" tier is **removed**. There are now two **observe** tiers:
   - **app-observe** — in `control.json`, grants `.observe` only, redacted
     `app.stateSummary` (liveness/discovery; no terminal contents).
-  - **session-observe** — injected into each spawned session's env, **per-session
-    and session-bound**, grants `.observeSensitive` + benign own-session navigation
-    (`scroll`, `tab.select`) **for its own session only**. Only
-    `LABAN_CONTROL_URL` is shared across sessions; the token is per-session.
+  - **session-observe** (`LABAN_SESSION_OBSERVE_TOKEN`) — injected **only into
+    sessions explicitly marked agent-attached**, never into a normal user shell;
+    **per-session and session-bound** (minted from a preallocated `sessionID` before
+    env composition), grants `.observeSensitive` + benign own-session navigation
+    (`scroll`, `tab.select`) **for its own session only**. Only `LABAN_CONTROL_URL`
+    is shared across sessions. A normal shell's child processes inherit no sensitive
+    authority. If env secrecy cannot be proven on the supported macOS/SIP matrix, no
+    session-observe token is injected at all.
 - **Per-session scoping is pulled forward** (the ADR had deferred it): for
   `.observeSensitive`/`.control`, the policy requires `targetSession ==
   token.sessionID`; cross-session → `403`. `session.list`/rich `app.state` are

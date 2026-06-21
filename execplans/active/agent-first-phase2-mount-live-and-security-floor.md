@@ -123,25 +123,50 @@ default-on flip in 2F.
 path). On the live GUI surface, `control` shrinks to **benign own-session navigation
 only**.
 
-**Tokens (two observe tiers; no app-wide control token):**
+**Tokens (two observe-derived tokens; no app-wide control token):**
 
 | Token | Where it lives | Grants | Scope |
 | --- | --- | --- | --- |
 | **app-observe** | `control.json` (`0600`) | `.observe` (redacted `app.stateSummary`) | whole-app but **non-sensitive** |
-| **session-observe** | env of an agent-attached session (per-session) | `.observeSensitive` + benign `.control` (scroll/select own tab) | **its own session only** |
+| **session-observe** | env of an **agent-attached session only** (per-session; var `LABAN_SESSION_OBSERVE_TOKEN`) | `.observeSensitive` + benign own-session navigation (`.control`: scroll/select own tab) | **its own session only** |
 | **fixture** | headless tests only (`laban-agent`/`LabanDebug`) | all incl. `.input` | whole-app (test-only; `validate()` bars `.fixture` on `.gui`) |
 
-`.clipboard` is granted to **no token**. `.input` is granted **only** to the fixture
-token. No live GUI token grants `.input`, `.clipboard`, cross-session, or destructive
-tab ops. The headless wire continues to be driven by the fixture token, so C9 holds.
+`.clipboard` is granted to **no token**; `.input` only to the fixture token. The
+session token is **observe-derived** (it also grants benign own-session navigation),
+not a control token. No live GUI token grants `.input`, `.clipboard`, cross-session,
+or destructive tab ops. The headless wire stays fixture-driven, so C9 holds.
 
-**Session scoping (the core invariant).** A session-observe token is **session-bound**:
-minted per spawned session, carrying its `sessionID`. The policy enforces, for
-`.observeSensitive` and `.control`, that `targetSession == token.sessionID` —
-cross-session → `403`. Whole-app reads (`session.list`, rich `app.state`) are
-**redacted to the owning session** for a session-bound token. Only the fixture token
-(test-only) has whole-app scope. This closes the cross-tab read breakout: an agent in
-tab A cannot read tab B's selection/scrollback/cwd/find-needle.
+**Agent-attached injection only — no ambient token in normal shells (C10).** The
+session-observe token is injected **only** into sessions
+explicitly marked/launched **agent-attached** — never into a normal user shell. A
+normal shell tab inherits at most `LABAN_CONTROL_URL` (discovery), never a
+session-observe token, so an arbitrary child process in a normal tab (npm scripts,
+test binaries, `curl | sh`, editor plugins, REPL/background jobs) can read **nothing**
+sensitive — it cannot reach own-session scrollback/grid/cwd/process/selection/find/
+accessibility. Default-on grants the machine *discovery* (the app-observe file) and
+grants sensitive observation **only** to explicitly agent-attached sessions.
+
+**Preallocated session identity (C11).** A session-observe token
+must carry the real `sessionID`, but `Session.init` generates its own id today and the
+env is composed before the `Session` exists. So introduce a `SessionLaunchContext {
+sessionID, tabID?, isAgentAttached, environmentOverrides, sessionObserveToken? }`:
+`AppModel`/the session registry **preallocates `sessionID`** before invoking the
+session factory; the launch paths (`Session.realShell`/`parserOnly`, laband, labpty)
+accept the preallocated id (`Session.init` no longer always self-generates it); the
+token is minted from that id **before envp composition** and injected **only** when
+`isAgentAttached`. Without this, an implementer mints a token with the wrong/late id or
+falls back to app-wide scope.
+
+**Session scoping + active-session fallback (the core invariant).** The policy
+enforces, for `.observeSensitive`/`.control`, `targetSession ∈ tokenScope` —
+cross-session → `403`. **For a session-bound token an omitted target `sessionID`
+resolves to the token's own session, never the app's active tab** (otherwise a focus
+change would leak another tab through a legacy active-session route). Whole-app reads
+(`session.list`, rich `app.state`) are **redacted to the owning session** for a
+session-bound token. A whole-app token (fixture, or a future explicit grant) + omitted
+target → legacy active-session behavior; the app-observe token → redacted app summary
+only. This closes the cross-tab read breakout: an agent in tab A cannot read tab B's
+selection/scrollback/cwd/find-needle.
 
 ## Progress
 
@@ -150,7 +175,7 @@ tab A cannot read tab B's selection/scrollback/cwd/find-needle.
 
 Milestone 2A — Capability + scope enforcement, two observe tiers (`LabanControl`):
 - [ ] Two start paths: GUI `start()` mints an **app-observe** token (→ `control.json`) and a **session-observe minter** (per-session, session-bound); returns them to the in-process caller. Headless `start(host:port:)` keeps `debugToken` (fixture-class, whole-app) so `laban-agent`/`LabanDebugTests` are byte-stable. **`ControlReadiness` unchanged** (`{debugServer, debugToken, pid, runId}`); no sensitive token serialized into readiness JSON or any world-path file.
-- [ ] `LabanControlPolicy` (generated from `IntentCatalog`): `grants(appObserve)={.observe}`; `grants(sessionObserve)={.observe,.observeSensitive,.control}` (benign nav only); `grants(fixture)={.fixture,.observe,.observeSensitive,.control,.input}`. No token grants `.clipboard`; only fixture grants `.input`. `authorize(intentID:, granted:, targetSession:, tokenScope:)` checks `requiredCapability ∈ granted` **and**, for `.observeSensitive`/`.control`, `targetSession ∈ tokenScope`. Unknown id → deny.
+- [ ] `LabanControlPolicy` (generated from `IntentCatalog`): `grants(appObserve)={.observe}`; `grants(sessionObserve)={.observe,.observeSensitive,.control}` (benign nav only); `grants(fixture)={.fixture,.observe,.observeSensitive,.control,.input}`. No token grants `.clipboard`; only fixture grants `.input`. `authorize(intentID:, granted:, targetSession:, tokenScope:)` checks `requiredCapability ∈ granted` **and**, for `.observeSensitive`/`.control`, `targetSession ∈ tokenScope`. `targetSession` is derived per C12 (session-bound token + omitted target → the token's **own** session, never the active tab; whole-app token → legacy active-session). Unknown id → deny.
 - [ ] Deny-by-default made real: remove the catalog builder's implicit `requiredCapability`/`dataSensitivity` defaults (or track `explicit`); `IntentCatalog.validate()` + `LabanControlGen --check` **fail** unless every descriptor declares both explicitly.
 - [ ] Guard taxonomy: missing/invalid token → `401`; bad `Host`/any `Origin` → `403`; capability-insufficient → `403`; cross-session sensitive read → `403`. **`isLoopbackHost` rejects non-numeric ports** (`localhost:evil`, `127.0.0.1:evil`, `[::1]:evil`). Token values never logged.
 - [ ] `LabanControlTests` (spy router): app-observe token → `.observe` `200`, `.observeSensitive`/`.control` `403` (no router call); session-observe token → own-session `.observeSensitive` `200`, **other-session `403`**; `.input`/`.clipboard` rejected for all non-fixture tokens (policy-level assertion); missing → `401`; forged `Host`/any `Origin`/non-numeric port → `403`. `control.json` contains the app-observe token only.
@@ -164,6 +189,7 @@ Milestone 2B — Live session-scoped observe surface (`LabanApp`):
 Milestone 2C — Catalog-parity + classification completeness:
 - [ ] `CatalogParityTests` at the **HTTP-route level**: over every `availability.gui && availability.headless` intent, both surfaces return a non-error response for a representative input and pure reads' sorted-key JSON **shape** matches. Fails if either surface drops/diverges on a shared intent.
 - [ ] Completeness invariants: every descriptor declares explicit `requiredCapability` + `dataSensitivity`; **no `gui:true` descriptor requires `.input` or `.clipboard`**; the set of `gui:true` ids is exactly what `LiveIntentRouter` implements (own-session observe + benign nav).
+- [ ] **`.control` hard allowlist** (positive test, not just the `.input`/`.clipboard` ban): the set of `gui:true` descriptors requiring `.control` equals **exactly** `{tab.select, terminal.scrollViewport, command.propose}` — the test fails if `tab.close`/`session.kill`/`restart`/`detach`/`tab.new` (or any other op) ever becomes a `gui:true` `.control` descriptor.
 
 Milestone 2D — Indicator, disable switch, audit, no-token-logging:
 - [ ] `ControlSecurityObserver` boundary in `LabanControl` (`didAuthorize/didDeny/didPrivilegedActivity`); `LabanControl` keeps `["LabanCore"]`-only deps and never imports app UI/logging internals. `LabanApp` supplies the observer owning indicator state + the persistent `EventLog` sink.
@@ -179,7 +205,7 @@ Milestone 2E — Command proposals:
 Milestone 2F — Flip observe-on-by-default (release-checklist gate):
 - [ ] The §5.4 release checklist (nine items + the env-secrecy gate, reproduced below) each backed by a passing test/mechanical check.
 - [ ] Default mount flips: GUI starts the server **observe-on** without `LABAN_CONTROL_SERVER=1`; the env var becomes a force-disable, not the on-switch. `.observeSensitive` still requires the per-session env token.
-- [ ] Credential lifecycle: mint credentials + bind the server **before `shellLaunch` is composed and `AppModel.init` spawns the default session** (not merely before `ensureSessions`); `LiveIntentRouter` uses a **late-bound model provider**. Merge **`LABAN_CONTROL_URL` only** into the shared `ShellIntegrationLaunch.environmentOverrides`; the **per-session session-observe token** is minted/injected at each session's spawn across all backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`) — including the initial/default/restored session. **No wire change** (does not touch the ADR 0007 freeze).
+- [ ] Credential lifecycle: bind the server early (`LiveIntentRouter` via a **late-bound model provider**) and merge **`LABAN_CONTROL_URL` only** into the shared `ShellIntegrationLaunch.environmentOverrides`. The **session-observe token is per-session, session-bound, and injected ONLY into agent-attached sessions** (C10): normal/default/restored shells get **no** session-observe token. Use a `SessionLaunchContext` with a **preallocated `sessionID`** (C11) so the token is minted from the real id before envp composition; gate injection on `isAgentAttached`. If the first/default session is itself agent-attached (launch flag), the server must be bound before it spawns; the common case (default = normal shell, no token) has no such race. Across all backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`). **No wire change** (does not touch the ADR 0007 freeze).
 - [ ] `scripts/check` green; the GUI is unchanged for humans (no new windows, no behavior change for a user who never reads `control.json`).
 
 ## Cross-cutting design contracts (read first)
@@ -241,6 +267,27 @@ or behavior for a user who never reads `control.json`. `laban-agent` + `LabanDeb
 token, which retains whole-app + `.input`). The GUI-visible changes are the deliberate
 removal of actuation from the live surface and the new own-session observe reads.
 
+**C10 — No ambient sensitive authority; session-observe is agent-attached-only.** The
+session-observe token is injected **only** into sessions explicitly marked
+agent-attached, never into a normal user shell. A normal tab's child processes inherit
+at most `LABAN_CONTROL_URL` and can read nothing sensitive. Default-on grants discovery
+(the app-observe file), not sensitive env authority to every process. **Env-secrecy
+fallback:** if the §5.4 env-secrecy gate cannot be proven on the supported macOS/SIP
+matrix, do **not** inject session-observe tokens into default-on sessions at all
+(sensitive observation then requires an explicit, non-env credential path).
+
+**C11 — Preallocated session identity.** `sessionID` is allocated **before** the
+session factory runs (a `SessionLaunchContext`); launch paths accept the preallocated
+id and `Session.init` no longer always self-generates it; the session-observe token is
+minted from that id before envp composition and injected only when `isAgentAttached`.
+A token never carries a wrong/late id and never silently falls back to app-wide scope.
+
+**C12 — Scoped tokens never fall back to the active tab.** For a session-bound token,
+an omitted target `sessionID` resolves to the **token's own** session, not the app's
+active tab; an explicit other target → `403`. Only a whole-app token (fixture / future
+explicit grant) gets legacy active-session behavior. This prevents focus changes from
+turning a legacy "active session" route into a cross-tab read.
+
 ## Milestone detail
 
 ### 2A — Capability + scope enforcement, two observe tiers
@@ -262,10 +309,27 @@ reads and `200` only on redacted/non-sensitive ones. `terminal.typeText`/`sendKe
 `paste`/`click`/`mouseWheel`/`mouseDrag` are `gui:false` (live server `404`s; absent
 from / build-gated out of the release GUI). `LabanDebugTests` pass unchanged.
 
+**`app.stateSummary` exact key allowlist** (this read is reachable by any same-user
+process that finds `control.json`, so its shape is locked by a snapshot test that fails
+when a new key appears). **Allowed:** `schema`/`version`; `runID`; `readiness`;
+`inputActuation: "unavailable"`; `crossSessionSensitiveReads: "denied"`;
+`windowCount`/`tabCount`/`sessionCount`; active **opaque per-run** ids;
+`callerOwnedSessionID` (if known); coarse booleans only (`focused`, `scrollable`,
+`shellIntegrationAvailable`). **Forbidden:** titles; cwd/repo/workspace; process
+command/args/pid; agent metadata; terminal text/grid/scrollback; selected text; find
+needle; clipboard data; accessibility text; any id stable across launches.
+
+For a session-bound token, `session.list`/rich `app.state` are **schema-identical to
+the headless wire but content-filtered/redacted by scope** (own session only) — not
+byte-identical.
+
 ### 2C — Catalog-parity + completeness
 **Acceptance.** `CatalogParityTests` (HTTP-route level) green; mutating one surface to
 drop a shared intent fails it. A completeness test asserts every descriptor is
-explicitly classified and **no `gui:true` descriptor requires `.input`/`.clipboard`**.
+explicitly classified, **no `gui:true` descriptor requires `.input`/`.clipboard`**, and
+the `gui:true` `.control` set equals **exactly** `{tab.select, terminal.scrollViewport,
+command.propose}` (a positive allowlist — fails if `tab.close`/`session.kill`/etc.
+sneaks in).
 
 ### 2D — Indicator, disable switch, audit, no-token-logging
 **Acceptance.** A privileged request lights a visible "agent attached" indicator
@@ -277,10 +341,26 @@ explicitly classified and **no `gui:true` descriptor requires `.input`/`.clipboa
 artifacts for both minted tokens → zero; `control.json` parsed separately.
 
 ### 2E — Command proposals
-**Acceptance.** An agent with session-observe scope for tab N submits `command.propose`;
-Laban surfaces it for review and **never** writes it to the PTY itself; the user runs or
-dismisses it; the access is audited and lights the indicator; cross-session propose →
-`403`. Discovery/schema byte-stable via `LabanControlGen`.
+**Exact response shape (both surfaces):**
+
+    { "ok": true, "proposalID": "...", "targetSessionID": "...",
+      "state": "pendingReview", "writtenToPTY": false }
+
+- **GUI:** records the proposal, shows the review UI, **never** writes PTY bytes. Any
+  "Run" affordance in Phase 2 **copies/shows** the command for the human to run
+  manually — it does **not** call terminal input (no `command.propose` path may reach
+  `session.write`/`sessionCoordinator.write`).
+- **Headless:** records the proposal in the deterministic debug journal/event log,
+  returns the **same** shape, never writes PTY bytes (keeps `CatalogParityTests`
+  unambiguous).
+- Requires session-observe scope for `targetSessionID` (cross-session → `403`);
+  classified `.control` and in the `.gui` `.control` allowlist (2C); audited; lights
+  the indicator.
+
+**Acceptance.** An agent with session-observe scope for tab N submits `command.propose`
+and gets the shape above with `writtenToPTY:false`; a test asserts no PTY write occurs
+on either surface; the user runs or dismisses it; cross-session propose → `403`.
+Discovery/schema byte-stable via `LabanControlGen`.
 
 ### 2F — Flip observe-on-by-default (release-checklist gate)
 **§5.4 release checklist — every item must hold (each backed by a test/check):**
@@ -298,7 +378,9 @@ dismisses it; the access is audited and lights the indicator; cross-session prop
 macOS/SIP matrix, a sibling same-user process cannot recover the per-session token from
 a spawned child via `ps -Eww -p <pid>`, `sysctl`/proc APIs, Activity Monitor,
 crash/`sysdiagnose` artifacts, or project logs. If unprovable, env-token delivery is
-**defense-in-depth, not a boundary**, and default-on must not rely on it.
+**defense-in-depth, not a boundary**: do **not** inject session-observe tokens into
+default-on sessions at all (C10 fallback) — sensitive observation then requires an
+explicit, non-env credential path deferred with the lease ADR.
 
 **Acceptance.** A freshly launched app (no `LABAN_CONTROL_SERVER`) writes `control.json`
 and answers redacted app-summary reads for a file-token reader; the **initial/default/
@@ -338,9 +420,12 @@ default via explicit classification + `validate()` failure; `ControlReadiness`
 byte-stability (no sensitive token serialized); projections relocated to `LabanCore`
 for a byte-identical headless wire; HTTP-route-level parity (headless typed
 `tabSelect`/`typeText`/`sendKey` are `501` stubs); `ControlSecurityObserver` boundary so
-`LabanControl` never imports the app `EventLog`; per-session token minted **before**
-`AppModel.init` spawns the default session (`AppModel.swift:277`; `shellLaunch` composed
-at `MainWindowController` ~L80); env-secrecy release gate.
+`LabanControl` never imports the app `EventLog`; the session-observe token is
+**agent-attached-only** and minted from a **preallocated `sessionID`** (C10/C11) — the
+default session is a normal shell with no token (so no `AppModel.init` timing race);
+the race applies only if the first session is itself agent-attached, handled by the
+early bind + late-bound model provider; env-secrecy release gate (with the C10
+no-inject fallback).
 
 ## Decision Log
 
@@ -369,6 +454,19 @@ at `MainWindowController` ~L80); env-secrecy release gate.
   byte-stable; clipboard family kept as a headless diagnostic (not removed, C9);
   `ControlSecurityObserver` boundary; credential mint before `AppModel.init`;
   env-secrecy gate. (See git history for the prior actuation-oriented draft.)
+- (Security review round 5, 2026-06-20) Tightened the token model further:
+  **(C10) session-observe is agent-attached-only** — a normal shell gets no
+  sensitive env token, so arbitrary child processes (npm/test/`curl | sh`/editor
+  plugins) in a normal tab can read nothing sensitive; default-on grants discovery,
+  not ambient sensitive authority. **(C11)** a `SessionLaunchContext` **preallocates
+  `sessionID`** before the session factory so the token carries the real id (today
+  `Session.init` self-generates it). **(C12)** scoped tokens never fall back to the
+  active tab — an omitted target resolves to the token's own session. Plus exact
+  specs: `app.stateSummary` key allowlist (snapshot-tested), `command.propose`
+  response shape + no-PTY-write on both surfaces, a positive `.gui` `.control`
+  allowlist (`{tab.select, scrollViewport, command.propose}`), env-secrecy
+  **no-inject** fallback, the `LABAN_SESSION_OBSERVE_TOKEN` rename, and a scrub of the
+  stale actuation text in the program roadmap. DRAFT — 2026-06-20 / Claude.
 
 ## Review Gate
 
@@ -381,11 +479,14 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] GUI input-actuation absence: `terminal.typeText`/`sendKey`/`paste`/`click`/`mouseWheel`/`mouseDrag` are `availability.gui == false` **and** require `.input` (no GUI token grants it); GUI routes `404` for both tokens; `grep -rn "session.write\|session.sendKey\|sessionCoordinator.write\|encodePaste\|sanitizePaste" Sources/LabanApp/Control` → nothing; release GUI doesn't link the headless input impl; `LabanControlGen --check` fails if any actuation descriptor becomes `gui:true`.
 - [ ] `command.propose` is a data object: a test asserts proposing a command does **not** write to the PTY (no `session.write`/coordinator write from the propose path); cross-session propose → `403`.
 - [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path; `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
-- [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface; completeness test fails if any descriptor is unclassified or any `gui:true` requires `.input`/`.clipboard`.
+- [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface; completeness test fails if any descriptor is unclassified, any `gui:true` requires `.input`/`.clipboard`, or the `gui:true` `.control` set is not exactly `{tab.select, terminal.scrollViewport, command.propose}` (add `tab.close`/`session.kill` as `gui:true` `.control` → expect failure; revert).
+- [ ] `app.stateSummary` snapshot test: the response keys are exactly the allowlist (schema/version, runID, readiness, `inputActuation:"unavailable"`, `crossSessionSensitiveReads:"denied"`, window/tab/session counts, opaque per-run ids, `callerOwnedSessionID?`, coarse booleans) and **none** of the forbidden keys (titles, cwd/repo, process command/args/pid, agent metadata, terminal text/grid/scrollback, selection, find needle, clipboard, a11y text, launch-stable ids); adding a key fails the snapshot.
 - [ ] `0600`-from-first-byte: `ControlAdvertisement` uses `O_CREAT|O_EXCL` + `S_IRUSR|S_IWUSR`, no `chmod` after write (grep).
 - [ ] Host/Origin matrix includes `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → all `403`.
-- [ ] Credential timing: with no `LABAN_CONTROL_SERVER`, a launched app writes `control.json`; the **initial/default/restored** session's env carries its own session-bound token + URL (minted before `shellLaunch` composition / `AppModel.init`); that token reads its own session `200`, other session `403`; the file (app-observe) token gets `403` on sensitive reads.
-- [ ] Indicator lights on any privileged read; disable switch stops the server and removes the file; env-secrecy gate (`ps -Eww` et al.) holds or default-on is documented as not relying on it.
+- [ ] No ambient token (C10): with observe-on default, a **normal** shell tab's env contains at most `LABAN_CONTROL_URL` (or no Laban env) and **no** `LABAN_SESSION_OBSERVE_TOKEN`; only an explicitly **agent-attached** session's env carries one. A token from agent session A reads A → `200` and B → `403`; the file (app-observe) token gets `403` on all sensitive reads.
+- [ ] Preallocated id (C11): the session-observe token carries the session's real `sessionID` (minted from a `SessionLaunchContext` preallocated id before envp composition); `Session.init` accepts an injected id rather than always self-generating.
+- [ ] Active-session fallback (C12): for a session-bound token, an omitted target `sessionID` resolves to the token's own session (test `selection.read`/`find.state`/`session.detail`/`scrollIndicator.state`/rich `app.state`); changing the active tab does not let it read another tab; an explicit other target → `403`.
+- [ ] Indicator lights on any privileged read; disable switch stops the server and removes the file; env-secrecy gate (`ps -Eww` et al.) holds — **or, if it cannot be proven, no session-observe token is injected into default-on sessions at all** (C10 fallback; sensitive observation then needs a non-env credential path).
 - [ ] `./scripts/check` exits 0; `./scripts/build-app` succeeds; `swift run LabanControlGen --check` passes.
 
 Review status: NOT REVIEWED (plan not yet executed).

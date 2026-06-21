@@ -321,6 +321,18 @@ transport and split capabilities. The model has a **floor** (Phase 2) and a
 
 ### 5.1 Capability tiers
 
+> **Superseded for Phase 2 by the header Amendment (2026-06-20).** The `.control`
+> row's *actuation* (typeText/sendKey/paste, mouse) is **not** a Phase-2-floor live
+> capability — it becomes an `.input` capability that is headless/`.fixture`-only and
+> off the live GUI; on the live surface `.control` shrinks to benign own-session
+> navigation (`tab.select`, `scrollViewport`) plus `command.propose`. The "Token
+> classes" app-scoped control/sensitive token below is **replaced** by two observe
+> tiers (app-observe + agent-attached-only, session-bound session-observe), and
+> per-session scoping is **pulled into Phase 2** (not Phase 7). The capability
+> *machinery* — catalog-generated deny-by-default policy, `dataSensitivity`
+> independent of `requiredCapability` — is unchanged. Read the rows below for the
+> machinery, not the actuation/token placement.
+
 | Capability | Grants | Lands |
 |---|---|---|
 | `.observe` | Non-sensitive live state: tab/window/session lists, dimensions, prompt phase, active ids, events. | Phase 2 floor |
@@ -519,8 +531,9 @@ behavior), and **status**.
   timestamps** (`time` is advisory). `event.getSince(seq)` replays the gap.
 - **Files:** `Sources/LabanControl/EventStream*`; `Sources/LabanCore/Events/**`;
   `schemas/control/event*.json`; subscription endpoint in the HTTP adapter.
-- **Acceptance:** a client subscribes, types a command via `terminal.typeText`,
-  and receives ordered `prompt`/`process`/`command.finished`/`frame.committed`
+- **Acceptance:** a client subscribes to its own session; when a command runs there
+  (entered by the human, or by the `.fixture` token in headless tests — not by live
+  agent input), it receives ordered `prompt`/`process`/`command.finished`/`frame.committed`
   events without polling; the `command.finished` carries the exit code and cwd
   (`confidence: shellIntegration` under the zsh overlay, `commandText: null`
   until a command-line marker exists); events replay from `EventLog` via
@@ -546,13 +559,15 @@ behavior), and **status**.
 
 - **Scope:** an in-house MCP server with tool shapes **generated from
   `IntentCatalog`** (descriptions hand-curated), as an out-of-process wrapper over
-  the same HTTP/Intent surface. Read-only tools first, then `.control` tools
-  behind explicit scopes. Publish the HTTP+schema contract too. Begin
+  the same HTTP/Intent surface. **Read-only / observe tools (and `command.propose`)
+  only**; live actuation tools wait for the Terminal-Lease ADR. Publish the
+  HTTP+schema contract too. Begin
   Claude-in-Laban dogfooding. *(MCP needs only the catalog + Phase 2 floor; it may
   be pulled forward for dogfooding once those exist.)*
-- **Acceptance:** a generated MCP tool list matches the catalog 1:1; a read-only
-  MCP client orients (tabs/active/visible text) and a scoped client drives
-  typeText, with every call audited.
+- **Acceptance:** a generated MCP tool list matches the catalog 1:1; a session-scoped
+  MCP client orients (its own session's tabs/active/visible text) with every call
+  audited; live driving (typeText/mouse) is **not** in the Phase-2 MCP and returns
+  only after the Terminal-Lease ADR.
 - **Status:** not started.
 
 ### Phase 6 — Truthful-fixture pillar (view-layer work)
@@ -586,10 +601,11 @@ The program as a whole succeeds when, against the **running `LabanApp` GUI**:
 1. A local client discovers the app via `control.json`, authenticates with the
    **observe** token, and is denied without one (401) or with a forged `Host`/any
    `Origin` (403). Sensitive reads and control are refused with the observe token.
-2. With the **env-injected control/sensitive** token the client reads live
-   windows/tabs/sessions/grid/scrollback/process/prompt state keyed off stable
-   ids, and drives typeText/sendKey/select/resize against the real window — all
-   typed, capability-scoped, and audited.
+2. With its **agent-attached session-observe** token the client reads **its own
+   session's** live grid/scrollback/process/prompt/selection/find state keyed off
+   stable ids — session-scoped (cross-session → 403) and audited. Live input/mouse
+   actuation is **deferred** to the Terminal-Lease ADR; command assistance is via
+   `command.propose` (a reviewed data object, never PTY bytes).
 3. Waits replace sleeps; events stream without polling.
 4. Trace export and MCP tools all derive from the **one** catalog with no
    duplicated definitions.
@@ -616,9 +632,10 @@ These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
    capture required? Decides the Phase 6 API shape.
 4. **MCP timing.** Hold MCP at Phase 5, or pull it forward for dogfooding the
    moment the Phase 2 floor + catalog exist? (It is only a generated wrapper.)
-5. **Per-session token rollout (Phase 7).** Single app-scoped token is the v1
-   floor; confirm per-session env-injection is deferred to Phase 7 and not pulled
-   earlier by a multi-agent use case.
+5. **Per-session token rollout.** ~~Deferred to Phase 7~~ **Resolved (2026-06-20
+   observe-first amendment):** per-session, session-bound tokens are **pulled into
+   Phase 2**, agent-attached-only; there is no app-wide control token. (Header
+   Amendment; §5.1 superseded note.)
 6. **UDS transport (sharpened by Appendix D).** The competitive research supplies
    the "concrete need": iTerm2, Wave, and kitty all prefer a Unix domain socket,
    which sidesteps the whole DNS-rebinding/Host-Origin attack class and adds OS
@@ -694,12 +711,15 @@ eight and records what changed since:
    vs §0.2 contradiction by placing the *server* in `LabanControl`, not
    `LabanCore`** (§3.1).
 3. Token-gated observe-on-by-default, flipped at the Phase 2 boundary. **Kept** (§5.4).
-4. Single app-scoped token + env-injection in v1; per-session deferred. **Kept,
-   but refined (2026-06-20 review):** "single token" was unsafe for
+4. Token model + env-injection. **Refined (2026-06-20 observe-first amendment):**
+   "single token" was unsafe for
    observe-on-by-default — a same-user process can read `control.json` despite
-   `0600`. v2 splits it into a **two-tier, still-app-scoped** model (observe token
-   in the file, control/sensitive token in the child env) at the Phase 2 floor;
-   **per-session** scoping remains the Phase 7 add (§5.1 token classes).
+   `0600`. v2 split it into a two-tier model; the **2026-06-20 observe-first
+   amendment** refines that further: two **observe** tiers (app-observe in the file +
+   agent-attached-only, session-bound session-observe in the child env), **no
+   app-wide control token**, and **per-session scoping pulled into Phase 2** (not
+   Phase 7). Live actuation moves to a future Terminal-Lease ADR. (§5.1 + header
+   Amendment.)
 5. Two catalogs; `feedOutput`/`advanceFrames` barred from live. **Kept** (§4.3).
 6. Lean parity via the catalog-parity test; `HeadlessDebugRuntime` kept. **Kept** (§3.1).
 7. Governance gate (spec + ADRs) before Phase 1. **Kept; ADR numbers corrected
