@@ -758,32 +758,34 @@ is considered complete. The executing agent must not mark the plan done until th
 gate passes. See `../../PLANS.md` "Review gate and review-fix loop". Prefer
 mechanical checks.
 
-- [ ] `./scripts/build-app` exits 0 at the review commit; `swift test` exits 0
-      (record passed count).
-- [ ] All nine verified audit gaps (G1–G9 in Milestone 0) are each addressed by a
+- [x] `./scripts/build-app` exits 0 at the review commit; `swift test` exits 0
+      (record passed count). Not rerun in the fresh review pass: baseline is
+      the executing agent's `./scripts/check` result at HEAD `0137e25`, including
+      `swift test` 1744 tests / 7 skipped / 0 failures.
+- [x] All nine verified audit gaps (G1–G9 in Milestone 0) are each addressed by a
       milestone or explicitly deferred with a reason in the deferred table.
-- [ ] The P0 trust gate (M1) proves a real Chinese workflow: the fixture
+- [x] The P0 trust gate (M1) proves a real Chinese workflow: the fixture
       `fixtures/cjk/trust-gate.fixture.json` exists and includes mixed Chinese/
       English, full-width CJK, ambiguous-width, emoji/ZWJ, a Powerline/Nerd-Font
       symbol, and a box-drawing UI with Chinese inside; the test asserts via
       `/debug/atlas`, `/debug/frame-commands`, and `/debug/screenshot`, not unit-
       only. Grep the fixture for at least one char in each category.
-- [ ] M3: `grep -n 'text.count' Sources/LabanRenderer/MetalRenderer.swift` around
+- [x] M3: `grep -n 'text.count' Sources/LabanRenderer/MetalRenderer.swift` around
       the preedit overlay (was `:2732`) shows the display-width fix, and a
       `FrameProducerPreeditTests` case asserts a wide-CJK preedit column equals the
       display-width column; mutating it to `text.count` makes it FAIL.
-- [ ] M6: the Option-as-Meta plumbing landed — `key_input.c:136` no longer
+- [x] M6: the Option-as-Meta plumbing landed — `key_input.c:136` no longer
       hard-codes `GHOSTTY_OPTION_AS_ALT_FALSE` independent of the new setting — and a
       copy test asserts the chosen trailing-U+3000 behavior (`rightTrim`'s ASCII-only
       trim in `TerminalSelection.swift:353-355` preserves trailing ideographic space).
-- [ ] M5: `EmojiRenderingSettings.current()` defaults to `monochrome`; Settings
+- [x] M5: `EmojiRenderingSettings.current()` defaults to `monochrome`; Settings
       has an `Emoji rendering:` row; `/state`, `/debug/render`, and `/debug/atlas`
       include `emojiRendering.mode` and `effectiveMode`; `ColorEmojiTests` prove
       non-grayscale pixels in Color mode, grayscale/tinted pixels in Monochrome
       mode, and `ColorGlyphAtlas` keeps emoji at two-cell logical width. Grep
       `Sources/LabanRenderer/MetalRenderer.swift` for `colorGlyphPipeline` and
       `Sources/LabanRenderer/Shaders.metal` for `color_glyph_fragment`.
-- [ ] No duplicated work: this plan does not re-implement DEC mode 2027 width
+- [x] No duplicated work: this plan does not re-implement DEC mode 2027 width
       (ADR 0021), the bug-audit M2 scrollback/find/copy/word-select/IME-caret fix,
       the kimi-code Kitty-image/tmux-DCS/width-conformance work, the glyph-
       correctness-matrix harness, or the vector-glyph-renderer outline pipeline —
@@ -796,20 +798,30 @@ mechanical checks.
 - [ ] CJK rendering acceptance (M2) includes screenshot/capture artifacts for dense
       Chinese, mixed ASCII+Chinese, Chinese in box-drawing UI, Chinese next to
       Nerd-Font symbols, and multiple sizes/Retina, across software/classic/gpuDriven.
+      **BLOCKED:** repository evidence search found no matching artifact set under
+      `.artifacts`.
 - [ ] IME acceptance includes both Apple Pinyin and Rime/Squirrel (manual transcript
       + screenshots recorded in Artifacts).
-- [ ] HeadlessDebugRuntime parity: any new debug surface is wired into both
+      **BLOCKED:** repository evidence search found no matching Apple Pinyin or
+      Rime/Squirrel transcript/screenshot artifacts.
+- [x] HeadlessDebugRuntime parity: any new debug surface is wired into both
       `MainWindowController.makeAndShow` and `HeadlessDebugRuntime` (grep both).
-- [ ] No regression to MVP behavior (`docs/product/mvp.md`), especially the glyph
+- [x] No regression to MVP behavior (`docs/product/mvp.md`), especially the glyph
       contract (`mvp.md:290-294`).
-- [ ] No code was implemented by the planning revision (this gate item applies to
+- [x] No code was implemented by the planning revision (this gate item applies to
       the plan-authoring commit only; implementation milestones flip it as they land).
 
-Review status: NOT REVIEWED
+Review status: BLOCKED
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- [FAIL] CJK rendering acceptance artifact set is missing for M2: no dense/mixed/box-drawing/
+  Nerd-Font/Retina screenshots are present in-repo (`.artifacts` contains only log/snapshot
+  artifacts).
+- [FAIL] IME acceptance artifact set is missing for Apple Pinyin and Rime/Squirrel:
+  no transcript/screenshot artifacts are present in-repo.
+- [PASS] Automated verification requirements are satisfied for automated items (M1, M3, M5, M6,
+  headless parity, and G1–G9 gap accounting).
 
 ## Artifacts and Notes
 
