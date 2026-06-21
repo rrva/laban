@@ -136,7 +136,9 @@ Add a fourth, opt-in renderer — `vectorGlyph` — implemented as a new
   The fallback cascade is explicit and distinct: vector pipeline fails on a
   device-present machine → classic Metal; **no Metal device at all → software**
   (never classic, which is itself Metal); a single glyph with no usable outline →
-  raster atlas for that cell only. Each is reported via
+  raster/color atlas for that cell only (`ColorGlyphAtlas` for color/bitmap glyphs
+  when the Emoji rendering setting is `color`, otherwise the R8 `MetalGlyphAtlas`
+  tint path). Each is reported via
   `RendererStatus{configuredRenderer, effectiveRenderer, fallbackReason}`.
 - The vector renderer must reach feature parity with `classic` (box drawing,
   wide/CJK/ZWJ clusters, decorations, overlays, image quads, sidebar, preedit)

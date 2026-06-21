@@ -25,7 +25,8 @@ extension HeadlessDebugRuntime {
         activeTabId: activeTab?.id,
         activeSessionId: activeTab?.sessionId,
         findStateBySession: findStateResponsesUnlocked(),
-        cursorSettings: cursorSettingsResponseUnlocked(activeTab: activeTab)
+        cursorSettings: cursorSettingsResponseUnlocked(activeTab: activeTab),
+        emojiRendering: emojiRenderingSettingsResponse()
       ))
   }
 
@@ -93,6 +94,11 @@ extension HeadlessDebugRuntime {
       blinkEnabled: CursorSettings.blinkEnabled,
       styleOverridden: styleOverridden,
       blinkOverridden: blinkOverridden)
+  }
+
+  func emojiRenderingSettingsResponse() -> EmojiRenderingSettingsResponse {
+    let mode = EmojiRenderingSettings.current().rawValue
+    return EmojiRenderingSettingsResponse(mode: mode, effectiveMode: mode)
   }
 
   private func accessibilityValueUnlocked() -> String {

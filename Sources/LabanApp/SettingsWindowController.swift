@@ -25,6 +25,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let emojiRenderingPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
   private let blinkCheckbox = NSButton(
@@ -39,6 +40,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let cursorStyleOptions: [CursorSettings.Style] = CursorSettings.Style.allCases
   private let scrollModeOptions: [ScrollSettings.Mode] = ScrollSettings.Mode.allCases
   private let graphemeWidthOptions: [GraphemeWidthMode] = GraphemeWidthMode.allCases
+  private let emojiRenderingOptions: [EmojiRenderingMode] = EmojiRenderingMode.allCases
 
   init(
     theme: ThemeMenuController,
@@ -170,6 +172,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       + "so emoji and clusters line up immediately. A program can still toggle "
       + "it at runtime. Applies to new sessions."
 
+    emojiRenderingPopUp.target = self
+    emojiRenderingPopUp.action = #selector(emojiRenderingChanged(_:))
+    for option in emojiRenderingOptions {
+      emojiRenderingPopUp.addItem(withTitle: emojiRenderingTitle(option))
+    }
+    emojiRenderingPopUp.toolTip =
+      "Color uses CoreText color/bitmap glyphs for emoji. Monochrome keeps the "
+      + "legacy tinted glyph path for compatibility."
+
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
     optionAsMetaCheckbox.toolTip =
@@ -184,6 +195,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [NSGridCell.emptyContentView, blinkCheckbox],
       [makeLabel("Scroll:"), scrollModePopUp],
       [makeLabel("Unicode width:"), graphemeWidthPopUp],
+      [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
       [makeLabel("Renderer:"), rendererPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
@@ -256,6 +268,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
     if let row = graphemeWidthOptions.firstIndex(of: GraphemeWidthSettings.current()) {
       graphemeWidthPopUp.selectItem(at: row)
+    }
+    if let row = emojiRenderingOptions.firstIndex(of: EmojiRenderingSettings.current()) {
+      emojiRenderingPopUp.selectItem(at: row)
     }
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
   }
@@ -330,6 +345,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < graphemeWidthOptions.count else { return }
     GraphemeWidthSettings.set(graphemeWidthOptions[row])
+  }
+
+  @objc private func emojiRenderingChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < emojiRenderingOptions.count else { return }
+    EmojiRenderingSettings.set(emojiRenderingOptions[row])
   }
 
   @objc private func optionAsMetaChanged(_ sender: NSButton) {
@@ -407,6 +428,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     switch mode {
     case .auto: return "Auto (recommended)"
     case .preferGrapheme: return "Prefer grapheme width"
+    }
+  }
+
+  private func emojiRenderingTitle(_ mode: EmojiRenderingMode) -> String {
+    switch mode {
+    case .monochrome: return "Monochrome"
+    case .color: return "Color"
     }
   }
 

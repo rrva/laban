@@ -103,8 +103,12 @@ so nobody re-investigates them.
       and `key_input.c`; preserved default Option-as-text behavior; preserved
       trailing U+3000 on copy by trimming only ASCII whitespace; and added
       IME candidate-key and bracketed CJK paste regressions.
-- [ ] M5 — Emoji / color glyph path, including a user setting for color vs.
-      monochrome emoji rendering.
+- [x] (2026-06-21) M5 — Emoji / color glyph path. Added global
+      `Emoji rendering: Monochrome / Color` setting, defaulted to Monochrome;
+      implemented CoreText color-glyph detection, software color rendering,
+      classic Metal BGRA `ColorGlyphAtlas` + shader path, debug state reporting,
+      and a gpuDriven fail-closed route that keeps terminal commands available
+      and uses the classic command path for color-glyph frames.
 - [ ] M7 — Product polish and ecosystem (zh-Hans / proxy / vibrancy) — deferred,
       spec-gated.
 - [ ] Review Gate passed.
@@ -721,12 +725,21 @@ fresh context, and the repository gates are green:
   The UTF-8 selection trim change is explicit: preserve U+3000 in copied text and
   only trim ASCII whitespace at the right edge.
   Date/Author: 2026-06-21, Codex.
-- Decision (open, to resolve in M5): **Color emoji path: vector, bitmap, or
-  hybrid.** Leaning: a separate BGRA8 color atlas + color-glyph detection + a new
-  shader variant (hybrid), leaving the R8 + tint path unchanged. This is the
-  "existing color path" `vector-glyph-renderer.md` assumes; coordinate so it is no
-  longer monochrome.
-  Date/Author: 2026-06-20, plan author.
+- Decision (resolved, 2026-06-21): **Color emoji path: vector, bitmap, or
+  hybrid.** Use a hybrid raster path: `EmojiRenderingSettings` defaults to
+  `monochrome`, preserving the existing R8 alpha-atlas + tint path; `color`
+  detects CoreText color/bitmap glyphs and routes terminal glyphs through a
+  separate BGRA8 `ColorGlyphAtlas` and `color_glyph_fragment` in classic Metal,
+  while software draws CoreText color glyphs directly. The gpuDriven cell-payload
+  accelerator is intentionally disabled in color mode by keeping terminal
+  commands in the frame; frames with color glyphs render through the classic
+  command pass rather than the R8 cell buffer. `vectorGlyph` must route
+  bitmap/color/no-outline glyphs to this M5 path, not duplicate the outline
+  pipeline.
+  Rationale: this makes the vector plan's "existing color/bitmap path" real,
+  leaves monochrome as the compatibility/rollback path, and keeps cell metrics
+  owned by the existing frame/payload geometry rather than by emoji rasterization.
+  Date/Author: 2026-06-21, Codex.
 - Decision (resolved, 2026-06-21): **GB18030/GBK support is deferred.**
   Rationale: M6 found no existing encoding library or daily-workflow evidence
   that legacy CJK encodings should enter this text-trust slice. Modern remote
@@ -763,6 +776,13 @@ mechanical checks.
       hard-codes `GHOSTTY_OPTION_AS_ALT_FALSE` independent of the new setting — and a
       copy test asserts the chosen trailing-U+3000 behavior (`rightTrim`'s ASCII-only
       trim in `TerminalSelection.swift:353-355` preserves trailing ideographic space).
+- [ ] M5: `EmojiRenderingSettings.current()` defaults to `monochrome`; Settings
+      has an `Emoji rendering:` row; `/state`, `/debug/render`, and `/debug/atlas`
+      include `emojiRendering.mode` and `effectiveMode`; `ColorEmojiTests` prove
+      non-grayscale pixels in Color mode, grayscale/tinted pixels in Monochrome
+      mode, and `ColorGlyphAtlas` keeps emoji at two-cell logical width. Grep
+      `Sources/LabanRenderer/MetalRenderer.swift` for `colorGlyphPipeline` and
+      `Sources/LabanRenderer/Shaders.metal` for `color_glyph_fragment`.
 - [ ] No duplicated work: this plan does not re-implement DEC mode 2027 width
       (ADR 0021), the bug-audit M2 scrollback/find/copy/word-select/IME-caret fix,
       the kimi-code Kitty-image/tmux-DCS/width-conformance work, the glyph-
@@ -828,6 +848,19 @@ Review findings (filled in by the review agent):
 - M4 automated evidence (2026-06-21): `swift test --filter 'TerminalWidthConformance|Mode2027|TerminalWidthPolicyGuard'`
   passed 28 tests, including `Tests/LabanCoreTests/TerminalWidthPolicyGuardTests`,
   confirming `TerminalDisplayWidth` usage is confined to fallback sites.
+- M5 automated evidence (2026-06-21): `swift test --filter 'ColorEmoji|EmojiRendering'`
+  passed 10 tests, including `ColorEmojiTests.testEmojiRendersWithColorPixelsInColorMode`,
+  `ColorEmojiTests.testMonochromeModePreservesTintedMaskPath`,
+  `ColorEmojiTests.testColorGlyphAtlasKeepsEmojiInsideTwoCells`, and
+  `EmojiRenderingHeadlessTests` for `/state` + `/debug/render` reporting. The
+  broader focused gate
+  `swift test --filter 'ColorEmoji|EmojiRendering|GPUCellParity|RendererModeSettings|GraphemeWidthSettingsUI'`
+  passed 64 tests, including 45 `GPUCellParityTests`; `git diff --check` passed;
+  `./scripts/build-app` exited 0 with module-cache/codesign replacement warnings
+  only. Deviation: no durable screenshot artifacts were captured in this slice;
+  the color proof is automated pixel/atlas/debug-state coverage. The gpuDriven
+  color route deliberately fail-closes to the classic command path instead of
+  adding a separate retained BGRA cell buffer.
 - Manual IME transcript (to fill on first execution): install
   `LABAN_INSTALL_PATH="$HOME/Laban-cjk.app" ./scripts/install-app`; with Apple
   Pinyin and then Rime/Squirrel, compose `中文`, screenshot the candidate window at

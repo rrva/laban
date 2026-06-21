@@ -757,8 +757,11 @@ exists. Cases to handle:
 
 - **`nil` / empty outline paths** — return `nil` from `GlyphCurveStore`.
 - **Bitmap (`sbix`) and color (`COLR`/`CBDT`) glyphs, color emoji** — Apple Color
-  Emoji has no monochrome outline path; it must rasterize through the existing
-  color/bitmap path.
+  Emoji has no monochrome outline path; it must rasterize through the M5
+  color/bitmap path from
+  `execplans/active/chinese-text-and-terminal-trust-gate.md`: `Color` mode uses
+  `ColorGlyphAtlas` / `color_glyph_fragment`, while `Monochrome` uses the legacy
+  R8 `MetalGlyphAtlas` + tint path.
 - **ZWJ emoji clusters and complex CTLine fallback** — multi-scalar grapheme
   clusters resolved by shaping (the `TerminalCellPayload` cluster path +
   `TerminalGlyphFallback`) are not single outline glyphs.
@@ -772,9 +775,11 @@ exists. Cases to handle:
   no outline for the glyph, it falls back per the above.
 
 **Design.** `GlyphCurveStore` returns an optional curve set. The renderer routes
-outline glyphs to the vector atlas and everything else to the **existing
-raster/classic alpha-mask atlas (`MetalGlyphAtlas`)** for that glyph/cell only —
-a per-glyph fallback (cascade case 3 above), not a whole-renderer fallback.
+outline glyphs to the vector atlas and everything else to the existing raster
+fallback for that glyph/cell only — color/bitmap glyphs to the M5
+`ColorGlyphAtlas` path when `EmojiRenderingSettings` is `color`, and otherwise to
+the legacy R8 `MetalGlyphAtlas` tint path. This is a per-glyph fallback (cascade
+case 3 above), not a whole-renderer fallback.
 
 **Atlas keying must not collide.** The vector atlas and the raster-fallback atlas
 are **separate namespaces** (separate atlases, or a `kind: {vector, raster}`
@@ -1422,8 +1427,9 @@ acceptable outcome.)
 
 - Decision: not every displayed glyph has a usable outline; outline glyphs go
   vector, everything else (nil/empty paths, bitmap/`sbix`, color emoji,
-  `.notdef`, unresolved clusters) falls back to the existing raster atlas, in a
-  disjoint key namespace (`kind = raster`). Style flags (`bold/italic/
+  `.notdef`, unresolved clusters) falls back to the existing raster/color path:
+  M5's `ColorGlyphAtlas` for color/bitmap glyphs when enabled, otherwise the R8
+  `MetalGlyphAtlas`, in a disjoint key namespace (`kind = raster`). Style flags (`bold/italic/
   syntheticBold/syntheticItalic`) join the vector key; real styled faces use the
   styled outline, fake italic uses a shear, fake bold falls back to raster
   initially (outline emboldening is a later improvement) so styled text never

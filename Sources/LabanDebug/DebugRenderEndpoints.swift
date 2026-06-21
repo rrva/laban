@@ -33,7 +33,8 @@ extension HeadlessDebugRuntime {
           ),
           missingCodepoints: diagnostics.missingCodepoints,
           atlases: [],
-          backend: "software"
+          backend: "software",
+          emojiRendering: emojiRenderingSettingsResponse()
         ))
     }
   }
@@ -60,7 +61,8 @@ extension HeadlessDebugRuntime {
             backgroundRects: lastDrawStats.backgroundRects,
             images: lastDrawStats.images,
             cursor: lastDrawStats.cursor
-          )
+          ),
+          emojiRendering: emojiRenderingSettingsResponse()
         ))
     }
   }

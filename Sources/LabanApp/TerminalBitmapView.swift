@@ -257,6 +257,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var themeChangeObserver: NSObjectProtocol?
   private var reduceMotionObserver: NSObjectProtocol?
   private var cursorSettingsObserver: NSObjectProtocol?
+  private var emojiRenderingObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
   /// UserDefaults. The Settings live-apply path compares against it: an
@@ -603,6 +604,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard let self else { return }
       self.renderInvalidated = true
       self.syncBlinkDriverFromWindowState()
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    emojiRenderingObserver = NotificationCenter.default.addObserver(
+      forName: EmojiRenderingSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      (self.backend as? MetalRenderer)?.invalidateContentForThemeChange()
+      self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
       }
@@ -1512,6 +1524,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let cursorSettingsObserver {
       NotificationCenter.default.removeObserver(cursorSettingsObserver)
+    }
+    if let emojiRenderingObserver {
+      NotificationCenter.default.removeObserver(emojiRenderingObserver)
     }
     if let fontChangeObserver {
       NotificationCenter.default.removeObserver(fontChangeObserver)

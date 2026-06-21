@@ -109,7 +109,10 @@ public final class SoftwareRenderer {
       xOffset: 0,
       font: font,
       foreground: fgColor,
+      emojiRenderingMode: EmojiRenderingSettings.current(),
       cellAdvance: cellAdvance,
+      cellHeight: atlas.cellSize.height,
+      descent: atlas.descent,
       in: ctx
     )
     if needsBoldFallback {
@@ -120,7 +123,10 @@ public final class SoftwareRenderer {
         xOffset: max(1.0 / surface.scale, 0.5),
         font: font,
         foreground: fgColor,
+        emojiRenderingMode: EmojiRenderingSettings.current(),
         cellAdvance: cellAdvance,
+        cellHeight: atlas.cellSize.height,
+        descent: atlas.descent,
         in: ctx
       )
     }
@@ -142,7 +148,10 @@ public final class SoftwareRenderer {
     xOffset: CGFloat,
     font: CTFont,
     foreground fgColor: CGColor,
+    emojiRenderingMode: EmojiRenderingMode,
     cellAdvance: CGFloat,
+    cellHeight: CGFloat,
+    descent: CGFloat,
     in ctx: CGContext
   ) {
     var glyphs: [CGGlyph] = []
@@ -174,6 +183,33 @@ public final class SoftwareRenderer {
         x: origin.x + CGFloat(cellIndex) * cellAdvance + xOffset,
         y: baseline
       )
+      let clusterText = String(cluster)
+      if ColorGlyphSupport.containsColorGlyph(
+        text: clusterText,
+        font: font,
+        cellAdvance: cellAdvance)
+      {
+        flushGlyphs()
+        if emojiRenderingMode == .color && xOffset == 0 {
+          drawColorFallbackText(
+            clusterText,
+            at: cellOrigin,
+            font: font,
+            cellAdvance: cellAdvance,
+            in: ctx)
+        } else if emojiRenderingMode == .monochrome {
+          drawTintedFallbackMask(
+            clusterText,
+            at: cellOrigin,
+            foreground: fgColor,
+            font: font,
+            cellAdvance: cellAdvance,
+            cellHeight: cellHeight,
+            descent: descent,
+            in: ctx)
+        }
+        continue
+      }
       if let glyph = simpleGlyph(for: cluster, font: font) {
         glyphs.append(glyph)
         positions.append(cellOrigin)
@@ -222,6 +258,99 @@ public final class SoftwareRenderer {
     ctx.textMatrix = .identity
     ctx.textPosition = position
     CTLineDraw(line, ctx)
+  }
+
+  private func drawColorFallbackText(
+    _ text: String,
+    at position: CGPoint,
+    font: CTFont,
+    cellAdvance: CGFloat,
+    in ctx: CGContext
+  ) {
+    let line = TerminalGlyphFallback.fallbackLine(
+      text: text,
+      font: font,
+      cellAdvance: cellAdvance,
+      foreground: nil
+    )
+    ctx.textMatrix = .identity
+    ctx.textPosition = position
+    CTLineDraw(line, ctx)
+  }
+
+  private func drawTintedFallbackMask(
+    _ text: String,
+    at position: CGPoint,
+    foreground fgColor: CGColor,
+    font: CTFont,
+    cellAdvance: CGFloat,
+    cellHeight: CGFloat,
+    descent: CGFloat,
+    in ctx: CGContext
+  ) {
+    let line = TerminalGlyphFallback.fallbackLine(
+      text: text,
+      font: font,
+      cellAdvance: cellAdvance,
+      foreground: CGColor(gray: 1, alpha: 1)
+    )
+    let layoutWidth = ColorGlyphSupport.typographicWidth(line)
+    let logicalWidth = ColorGlyphSupport.logicalTileWidth(
+      text: text,
+      typographicWidth: layoutWidth,
+      cellAdvance: cellAdvance)
+    let horizontalScale =
+      layoutWidth > logicalWidth && layoutWidth > 0 ? logicalWidth / layoutWidth : 1
+    let pixelW = max(1, Int((logicalWidth * surface.scale).rounded(.up)))
+    let pixelH = max(1, Int((cellHeight * surface.scale).rounded(.up)))
+    let bytesPerRow = pixelW
+    var maskBytes = [UInt8](repeating: 0, count: bytesPerRow * pixelH)
+    maskBytes.withUnsafeMutableBytes { rawPtr in
+      guard let baseAddr = rawPtr.baseAddress else { return }
+      guard
+        let maskContext = CGContext(
+          data: baseAddr,
+          width: pixelW,
+          height: pixelH,
+          bitsPerComponent: 8,
+          bytesPerRow: bytesPerRow,
+          space: CGColorSpaceCreateDeviceGray(),
+          bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
+        )
+      else { return }
+      maskContext.scaleBy(x: surface.scale, y: surface.scale)
+      if horizontalScale < 1 {
+        maskContext.scaleBy(x: horizontalScale, y: 1)
+      }
+      maskContext.setFillColor(CGColor(gray: 1, alpha: 1))
+      maskContext.textMatrix = .identity
+      maskContext.textPosition = CGPoint(x: 0, y: descent)
+      CTLineDraw(line, maskContext)
+    }
+
+    let data = Data(maskBytes)
+    guard let provider = CGDataProvider(data: data as CFData),
+      let mask = CGImage(
+        maskWidth: pixelW,
+        height: pixelH,
+        bitsPerComponent: 8,
+        bitsPerPixel: 8,
+        bytesPerRow: bytesPerRow,
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: true)
+    else { return }
+
+    let rect = CGRect(
+      x: position.x,
+      y: position.y - descent,
+      width: logicalWidth,
+      height: cellHeight)
+    ctx.saveGState()
+    ctx.clip(to: rect, mask: mask)
+    ctx.setFillColor(fgColor)
+    ctx.fill(rect)
+    ctx.restoreGState()
   }
 
   private func styledFont(for attributes: TextAttributes, in atlas: FontAtlas) -> CTFont {

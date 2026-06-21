@@ -702,6 +702,7 @@ public final class TerminalSurfaceController {
     }
     let canSkipTerminalCommands =
       request.contentMode == .cellPayloadPreferred
+      && EmojiRenderingSettings.current() == .monochrome
       && cellPayload?.isGPUCellCompatible == true
       && snapshotCommandsHook == nil
       && captureSink == nil

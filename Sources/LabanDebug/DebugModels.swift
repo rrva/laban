@@ -141,6 +141,11 @@ struct CursorSettingsResponse: Encodable {
   var blinkOverridden: Bool?
 }
 
+struct EmojiRenderingSettingsResponse: Encodable {
+  var mode: String
+  var effectiveMode: String
+}
+
 struct StateResponse: Encodable {
   var mode: String
   var frame: Int
@@ -150,6 +155,7 @@ struct StateResponse: Encodable {
   var activeSessionId: String?
   var findStateBySession: [String: FindStateResponse]
   var cursorSettings: CursorSettingsResponse
+  var emojiRendering: EmojiRenderingSettingsResponse
 }
 
 struct AccessibilityDisplayFlagsResponse: Encodable {
@@ -327,6 +333,7 @@ struct RenderResponse: Encodable {
   var cell: CellSizeResponse
   var damage: [RectResponse]
   var lastDraw: DrawStatsResponse
+  var emojiRendering: EmojiRenderingSettingsResponse
 }
 
 struct AtlasCellResponse: Encodable {
@@ -368,6 +375,7 @@ struct AtlasResponse: Encodable {
   var missingCodepoints: [String]
   var atlases: [AtlasTextureResponse]
   var backend: String
+  var emojiRendering: EmojiRenderingSettingsResponse
 }
 
 struct FrameCommandResponse: Encodable {

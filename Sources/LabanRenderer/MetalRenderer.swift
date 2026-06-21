@@ -372,9 +372,11 @@ public final class MetalRenderer: RendererBackend {
   private let queue: MTLCommandQueue
   private let solidPipeline: MTLRenderPipelineState
   private let glyphPipeline: MTLRenderPipelineState
+  private let colorGlyphPipeline: MTLRenderPipelineState
   private let cellGlyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
   private var glyphAtlas: MetalGlyphAtlas
+  private var colorGlyphAtlas: ColorGlyphAtlas
   /// Distinct atlas for sidebar text — same when sidebarFontAtlas ===
   /// fontAtlas, otherwise a separately-rasterized R8 texture sized to
   /// the smaller font's cell metrics.
@@ -382,6 +384,7 @@ public final class MetalRenderer: RendererBackend {
 
   private var solidInstances: [SolidInstance] = []
   private var glyphInstances: [GlyphInstance] = []
+  private var colorGlyphInstances: [GlyphInstance] = []
   private var cellGlyphs: [CellGlyph] = []
   private var cellGlyphUploadRanges: [Range<Int>] = []
   private var cellGlyphGridGeometry: TerminalGridGeometry?
@@ -427,6 +430,7 @@ public final class MetalRenderer: RendererBackend {
   // We size MTLBuffers on demand and reuse them frame-to-frame.
   private var solidBuffer: MTLBuffer?
   private var glyphBuffer: MTLBuffer?
+  private var colorGlyphBuffer: MTLBuffer?
   private var cellGlyphBuffer: MTLBuffer?
   private var sidebarGlyphBuffer: MTLBuffer?
   private var cursorBuffer: MTLBuffer?
@@ -676,7 +680,8 @@ public final class MetalRenderer: RendererBackend {
       let solidFS = library.makeFunction(name: "solid_fragment"),
       let glyphVS = library.makeFunction(name: "glyph_vertex"),
       let cellGlyphVS = library.makeFunction(name: "cell_glyph_vertex"),
-      let glyphFS = library.makeFunction(name: "glyph_fragment")
+      let glyphFS = library.makeFunction(name: "glyph_fragment"),
+      let colorGlyphFS = library.makeFunction(name: "color_glyph_fragment")
     else { return nil }
 
     let layer = CAMetalLayer()
@@ -739,9 +744,24 @@ public final class MetalRenderer: RendererBackend {
     cellGlyphAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
     cellGlyphAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 
+    let colorGlyphDesc = MTLRenderPipelineDescriptor()
+    colorGlyphDesc.label = "laban.color-glyph-quad"
+    colorGlyphDesc.vertexFunction = glyphVS
+    colorGlyphDesc.fragmentFunction = colorGlyphFS
+    let colorGlyphAttachment = colorGlyphDesc.colorAttachments[0]!
+    colorGlyphAttachment.pixelFormat = layer.pixelFormat
+    colorGlyphAttachment.isBlendingEnabled = true
+    colorGlyphAttachment.rgbBlendOperation = .add
+    colorGlyphAttachment.alphaBlendOperation = .add
+    colorGlyphAttachment.sourceRGBBlendFactor = .one
+    colorGlyphAttachment.sourceAlphaBlendFactor = .one
+    colorGlyphAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+    colorGlyphAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDesc),
       let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDesc),
+      let colorGlyphPipeline = try? device.makeRenderPipelineState(descriptor: colorGlyphDesc),
       let cellGlyphPipeline = try? device.makeRenderPipelineState(descriptor: cellGlyphDesc)
     else { return nil }
 
@@ -757,6 +777,15 @@ public final class MetalRenderer: RendererBackend {
     let cell = fontAtlas.cellSize
     guard
       let atlas = MetalGlyphAtlas(
+        device: device,
+        cellWidth: cell.width,
+        cellHeight: cell.height,
+        descent: fontAtlas.descent,
+        scale: scale,
+        textureSize: initialAtlasTextureSize)
+    else { return nil }
+    guard
+      let colorAtlas = ColorGlyphAtlas(
         device: device,
         cellWidth: cell.width,
         cellHeight: cell.height,
@@ -793,9 +822,11 @@ public final class MetalRenderer: RendererBackend {
     self.configuredRendererMode = rendererMode.isAvailableOnCurrentOS ? rendererMode : .classic
     self.solidPipeline = solidPipeline
     self.glyphPipeline = glyphPipeline
+    self.colorGlyphPipeline = colorGlyphPipeline
     self.cellGlyphPipeline = cellGlyphPipeline
     self.sampler = sampler
     self.glyphAtlas = atlas
+    self.colorGlyphAtlas = colorAtlas
     self.sidebarGlyphAtlas = sidebarGlyphAtlasInstance
     self.glyphCellAdvance = cell.width
     self.glyphCellHeight = cell.height
@@ -868,6 +899,16 @@ public final class MetalRenderer: RendererBackend {
       {
         glyphAtlas = fresh
       }
+      if let fresh = ColorGlyphAtlas(
+        device: device,
+        cellWidth: glyphCellAdvance,
+        cellHeight: glyphCellHeight,
+        descent: fontAtlas.descent,
+        scale: newScale,
+        textureSize: colorGlyphAtlas.textureSize)
+      {
+        colorGlyphAtlas = fresh
+      }
       if sidebarFontAtlas === fontAtlas {
         sidebarGlyphAtlas = glyphAtlas
       } else if let fresh = MetalGlyphAtlas(
@@ -927,6 +968,16 @@ public final class MetalRenderer: RendererBackend {
     {
       glyphAtlas = fresh
     }
+    if let fresh = ColorGlyphAtlas(
+      device: device,
+      cellWidth: cell.width,
+      cellHeight: cell.height,
+      descent: fontAtlas.descent,
+      scale: layer.contentsScale,
+      textureSize: colorGlyphAtlas.textureSize)
+    {
+      colorGlyphAtlas = fresh
+    }
 
     if sidebarFontAtlas === fontAtlas {
       sidebarGlyphAtlas = glyphAtlas
@@ -958,7 +1009,9 @@ public final class MetalRenderer: RendererBackend {
     cellGlyphGridGeometry = nil
     cellGlyphs.removeAll(keepingCapacity: true)
     cellGlyphUploadRanges.removeAll(keepingCapacity: true)
+    colorGlyphInstances.removeAll(keepingCapacity: true)
     cellGlyphBuffer = nil
+    colorGlyphBuffer = nil
     targetNeedsFullRedraw = true
   }
 
@@ -1376,6 +1429,23 @@ public final class MetalRenderer: RendererBackend {
     return true
   }
 
+  private func growColorGlyphAtlas() -> Bool {
+    let nextSize = min(colorGlyphAtlas.textureSize * 2, Self.maxGlyphAtlasTextureSize)
+    guard nextSize > colorGlyphAtlas.textureSize else { return false }
+    guard
+      let fresh = ColorGlyphAtlas(
+        device: device,
+        cellWidth: glyphCellAdvance,
+        cellHeight: glyphCellHeight,
+        descent: fontAtlas.descent,
+        scale: layer.contentsScale,
+        textureSize: nextSize)
+    else { return false }
+    colorGlyphAtlas = fresh
+    targetNeedsFullRedraw = true
+    return true
+  }
+
   /// Pass 1: render terminal cells (everything but the cursor) into the
   /// persistent target. Honours `damage`:
   /// - `.full`: clear + draw all instances.
@@ -1487,6 +1557,16 @@ public final class MetalRenderer: RendererBackend {
       glyphFrameBuffer = buffer
     }
 
+    let colorGlyphFrameBuffer: MTLBuffer?
+    if colorGlyphInstances.isEmpty {
+      colorGlyphFrameBuffer = nil
+    } else {
+      guard let buffer = prepareInstanceBuffer(&colorGlyphBuffer, for: colorGlyphInstances) else {
+        return false
+      }
+      colorGlyphFrameBuffer = buffer
+    }
+
     let sidebarGlyphFrameBuffer: MTLBuffer?
     if sidebarGlyphInstances.isEmpty {
       sidebarGlyphFrameBuffer = nil
@@ -1525,6 +1605,15 @@ public final class MetalRenderer: RendererBackend {
         type: .triangle, vertexStart: 0,
         vertexCount: 6, instanceCount: glyphInstances.count)
     }
+    if let buf = colorGlyphFrameBuffer {
+      encoder.setRenderPipelineState(colorGlyphPipeline)
+      encoder.setVertexBuffer(buf, offset: 0, index: 0)
+      encoder.setFragmentTexture(colorGlyphAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle, vertexStart: 0,
+        vertexCount: 6, instanceCount: colorGlyphInstances.count)
+    }
     if let buf = sidebarGlyphFrameBuffer {
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(buf, offset: 0, index: 0)
@@ -1548,6 +1637,16 @@ public final class MetalRenderer: RendererBackend {
     uniforms u: inout Uniforms,
     cmdBuf: MTLCommandBuffer
   ) -> Bool {
+    if commandsContainColorGlyph(commands) {
+      return encodeContentPass(
+        commands: commands,
+        damage: damage,
+        target: target,
+        surfacePxH: surfacePxH,
+        uniforms: &u,
+        cmdBuf: cmdBuf)
+    }
+
     let builtInstances: Bool
     if let cellPayload {
       builtInstances = buildGPUCellInstanceLists(
@@ -1933,6 +2032,7 @@ public final class MetalRenderer: RendererBackend {
     let damageBounds = Self.useClassicDamageScoped ? Self.damageYBounds(damage) : nil
     while true {
       glyphAtlas.clearOverflowFlag()
+      colorGlyphAtlas.clearOverflowFlag()
       if sidebarGlyphAtlas !== glyphAtlas {
         sidebarGlyphAtlas.clearOverflowFlag()
       }
@@ -1942,8 +2042,9 @@ public final class MetalRenderer: RendererBackend {
         damageBounds: damageBounds)
 
       let terminalOverflow = glyphAtlas.didOverflow
+      let colorOverflow = colorGlyphAtlas.didOverflow
       let sidebarOverflow = sidebarGlyphAtlas.didOverflow
-      guard terminalOverflow || sidebarOverflow else { return }
+      guard terminalOverflow || colorOverflow || sidebarOverflow else { return }
 
       attempts += 1
       guard attempts < 4 else { return }
@@ -1951,6 +2052,9 @@ public final class MetalRenderer: RendererBackend {
       var grew = false
       if terminalOverflow {
         grew = growGlyphAtlas(forSidebar: false) || grew
+      }
+      if colorOverflow {
+        grew = growColorGlyphAtlas() || grew
       }
       if sidebarOverflow && !(terminalOverflow && sidebarGlyphAtlas === glyphAtlas) {
         grew = growGlyphAtlas(forSidebar: true) || grew
@@ -2208,6 +2312,7 @@ public final class MetalRenderer: RendererBackend {
   ) -> Bool {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
+    colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cellGlyphUploadRanges.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
@@ -2822,7 +2927,7 @@ public final class MetalRenderer: RendererBackend {
 
     lastInstanceCounts = RenderInstanceCounts(
       solids: solidInstances.count,
-      glyphs: glyphInstances.count,
+      glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: cellGlyphs.count,
       cursors: cursorInstances.count)
@@ -2938,6 +3043,7 @@ public final class MetalRenderer: RendererBackend {
   ) -> Bool {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
+    colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cellGlyphUploadRanges.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
@@ -3165,7 +3271,7 @@ public final class MetalRenderer: RendererBackend {
 
     lastInstanceCounts = RenderInstanceCounts(
       solids: solidInstances.count,
-      glyphs: glyphInstances.count,
+      glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: cellGlyphs.count,
       cursors: cursorInstances.count)
@@ -3175,6 +3281,7 @@ public final class MetalRenderer: RendererBackend {
   private func buildCursorInstanceList(commands: [FrameCommand]) {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
+    colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
 
@@ -3192,7 +3299,7 @@ public final class MetalRenderer: RendererBackend {
     }
     lastInstanceCounts = RenderInstanceCounts(
       solids: solidInstances.count,
-      glyphs: glyphInstances.count,
+      glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: 0,
       cursors: cursorInstances.count)
@@ -3228,6 +3335,7 @@ public final class MetalRenderer: RendererBackend {
   ) {
     solidInstances.removeAll(keepingCapacity: true)
     glyphInstances.removeAll(keepingCapacity: true)
+    colorGlyphInstances.removeAll(keepingCapacity: true)
     sidebarGlyphInstances.removeAll(keepingCapacity: true)
     cellGlyphs.removeAll(keepingCapacity: true)
     cursorInstances.removeAll(keepingCapacity: true)
@@ -3279,6 +3387,30 @@ public final class MetalRenderer: RendererBackend {
         glyphInstances.append(inst)
       }
       _ = logicalWidth  // reserved for future per-cell width reconciliation
+    }
+
+    @inline(__always)
+    func appendColorGlyph(
+      cellX: CGFloat,
+      cellY: CGFloat,
+      entry: ColorGlyphAtlas.Entry
+    ) {
+      let originPx = SIMD2<Float>(
+        Float(cellX + entry.logicalOriginX) * scale, Float(cellY) * scale)
+      let sizePx = SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight))
+      let atlasW = Float(colorGlyphAtlas.textureSize)
+      let atlasH = Float(colorGlyphAtlas.textureSize)
+      colorGlyphInstances.append(
+        GlyphInstance(
+          origin: originPx,
+          size: sizePx,
+          uvOrigin: SIMD2<Float>(
+            Float(entry.originX) / atlasW,
+            Float(entry.originY) / atlasH),
+          uvSize: SIMD2<Float>(
+            Float(entry.pixelWidth) / atlasW,
+            Float(entry.pixelHeight) / atlasH),
+          color: SIMD4<Float>(1, 1, 1, 1)))
     }
 
     for cmd in commands {
@@ -3339,15 +3471,31 @@ public final class MetalRenderer: RendererBackend {
         let traits = CTFontGetSymbolicTraits(font)
         let needsBoldFallback = attrs.contains(.bold) && !traits.contains(.traitBold)
         let needsItalicFallback = attrs.contains(.italic) && !traits.contains(.traitItalic)
+        let emojiRenderingMode = EmojiRenderingSettings.current()
 
         for (cellIndex, cluster) in text.enumerated() {
+          let cellX = origin.x + CGFloat(cellIndex) * activeAdvance
+          if !isSidebar,
+            ColorGlyphSupport.shouldRenderColor(
+              text: String(cluster),
+              font: font,
+              cellAdvance: activeAdvance,
+              mode: emojiRenderingMode),
+            let entry = colorGlyphAtlas.entry(
+              character: cluster,
+              font: font,
+              boldFallback: needsBoldFallback,
+              italicFallback: needsItalicFallback)
+          {
+            appendColorGlyph(cellX: cellX, cellY: origin.y, entry: entry)
+            continue
+          }
           guard
             let entry = activeAtlas.entry(
               character: cluster, font: font,
               boldFallback: needsBoldFallback,
               italicFallback: needsItalicFallback)
           else { continue }
-          let cellX = origin.x + CGFloat(cellIndex) * activeAdvance
           appendGlyph(
             cellX: cellX, cellY: origin.y,
             tilePixelW: entry.pixelWidth, tilePixelH: entry.pixelHeight,
@@ -3374,7 +3522,7 @@ public final class MetalRenderer: RendererBackend {
     }
     lastInstanceCounts = RenderInstanceCounts(
       solids: solidInstances.count,
-      glyphs: glyphInstances.count,
+      glyphs: glyphInstances.count + colorGlyphInstances.count,
       sidebarGlyphs: sidebarGlyphInstances.count,
       cellGlyphs: cellGlyphs.count,
       cursors: cursorInstances.count)
@@ -3530,6 +3678,29 @@ public final class MetalRenderer: RendererBackend {
     if let rect = layout.overlineRect {
       appendSolid(rect, fg)
     }
+  }
+
+  private func commandsContainColorGlyph(_ commands: [FrameCommand]) -> Bool {
+    guard EmojiRenderingSettings.current() == .color else { return false }
+    for command in commands {
+      guard
+        case .glyphRun(_, let text, _, _, let attrs, let source, _, _, _) = command,
+        source != .sidebar,
+        !text.isEmpty
+      else { continue }
+      let font = styledFont(for: attrs, in: fontAtlas)
+      for cluster in text {
+        if ColorGlyphSupport.shouldRenderColor(
+          text: String(cluster),
+          font: font,
+          cellAdvance: glyphCellAdvance,
+          mode: .color)
+        {
+          return true
+        }
+      }
+    }
+    return false
   }
 
   // MARK: - Font cache (mirrors SoftwareRenderer.styledFont)

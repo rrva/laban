@@ -133,3 +133,12 @@ fragment float4 glyph_fragment(
     float a = in.color.a * coverage;
     return float4(in.color.rgb * a, a);
 }
+
+fragment float4 color_glyph_fragment(
+    VOut in [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler atlasSampler [[sampler(0)]]
+) {
+    float4 sample = atlas.sample(atlasSampler, in.uv);
+    return float4(sample.rgb * sample.a, sample.a);
+}
