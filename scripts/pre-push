@@ -33,10 +33,24 @@ fail() {
   exit 1
 }
 
-# 1. Whitespace / leftover conflict-marker errors.
+# 1. Working tree must match the commit being pushed. The gates below lint and
+#    build the *working tree*, but CI runs against the *pushed commit* — so
+#    uncommitted edits to tracked files can turn this hook green while CI fails
+#    remotely (or vice versa). Refuse to vouch for a tree we aren't pushing.
+#    Untracked files are ignored (they aren't "part of the repo" yet); staged
+#    and unstaged edits to tracked files both count.
+if git rev-parse --verify --quiet HEAD >/dev/null 2>&1 && ! git diff --quiet HEAD; then
+  printf 'pre-push: uncommitted changes to tracked files:\n' >&2
+  git diff --name-only HEAD | sed 's/^/  /' >&2
+  printf 'pre-push: these are not in the commit you are pushing, so a green preflight here would not match CI.\n' >&2
+  printf 'pre-push: commit or stash them, then push again.\n' >&2
+  fail "working tree differs from the pushed commit"
+fi
+
+# 2. Whitespace / leftover conflict-marker errors.
 git diff --check || fail "whitespace or merge-marker errors (git diff --check)"
 
-# 2. AGENTS.md stays map-sized — the scripts/check gate, caught locally.
+# 3. AGENTS.md stays map-sized — the scripts/check gate, caught locally.
 if [ -f AGENTS.md ]; then
   agents_lines=$(wc -l < AGENTS.md | tr -d ' ')
   if [ "$agents_lines" -gt 150 ]; then
@@ -45,16 +59,22 @@ if [ -f AGENTS.md ]; then
 fi
 
 if [ -f Package.swift ]; then
-  # 3. swift-format lint (fast).
-  ./scripts/lint || fail "swift-format lint"
+  # 4. swift-format lint (fast). On failure, hand over the one-liner that fixes
+  #    it in place so the developer isn't left guessing.
+  if ! ./scripts/lint; then
+    printf 'pre-push: lint failures are auto-fixable — run:\n' >&2
+    printf '    ./scripts/format        # swift format --in-place over Sources Tests\n' >&2
+    printf 'pre-push: then review, commit, and push again.\n' >&2
+    fail "swift-format lint"
+  fi
 
-  # 4. Build. Ensure the vendored VT header is present first (no-op once built).
+  # 5. Build. Ensure the vendored VT header is present first (no-op once built).
   if [ ! -f .external/libghostty-vt/zig-out/include/ghostty/vt.h ]; then
     ./scripts/fetch-libghostty-vt || fail "fetch-libghostty-vt"
   fi
   swift build || fail "swift build"
 
-  # 5. Tests are opt-in: the stress/fuzz suites are slow, so keep the default
+  # 6. Tests are opt-in: the stress/fuzz suites are slow, so keep the default
   #    push fast and run them on request.
   if [ "${PRE_PUSH_TEST:-0}" = "1" ]; then
     swift test || fail "swift test"
