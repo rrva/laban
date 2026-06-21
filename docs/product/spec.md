@@ -244,8 +244,11 @@ validation, capability-scoped tokens (an observe-only **app-observe** token
 advertised in a `0600` `control.json`; a per-session, session-bound
 **session-observe** token injected into the environment of agents Laban spawns —
 **no app-wide control token**), session-scoped sensitive reads, audited side
-effects, a user-visible "agent attached" indicator, and a disable switch. The
-surface is off until opted into and becomes observe-on-by-default only once that
+effects, a user-visible "agent attached" indicator, a disable switch, and a
+**persistent Settings master toggle** that fully opts out (off ⇒ no server, no
+`control.json`, no injected tokens) for users who want no remote-control capability
+at all. The surface is off until opted into and becomes observe-on-by-default only
+once that
 security floor exists. There is no in-band escape-sequence control channel; if a
 future lease enables programmatic input, it takes the same validation path as a
 human keystroke.

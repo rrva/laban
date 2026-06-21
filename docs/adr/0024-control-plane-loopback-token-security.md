@@ -81,8 +81,10 @@ summary) / `.control` / `.clipboard` / `.fixture`. Each intent also declares a
 - High-power reads (full keystroke stream, full scrollback) require
   `.observeSensitive`, never bare `.observe`. Every `.control`/`.observeSensitive`
   access is logged to the `EventLog`.
-- A user-visible "agent attached" indicator shows when a `.control`-tier client is
-  connected; a user-facing disable switch exists.
+- A user-visible "agent attached" indicator shows when a privileged client is
+  connected; a user-facing disable switch exists, plus a **persistent Settings master
+  toggle** that disables the server entirely (off ⇒ no server, no `control.json`, no
+  injected tokens) for a complete opt-out.
 - **No in-band escape-sequence control channel.** Never write title/clipboard
   read-backs into the input stream; constrain DECRQSS/DSR. Programmatic "type
   this" runs through the *same* sanitizer/validation as a human keystroke; all

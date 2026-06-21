@@ -197,7 +197,7 @@ Milestone 2C — Catalog-parity + classification completeness:
 Milestone 2D — Indicator, disable switch, audit, no-token-logging:
 - [ ] `ControlSecurityObserver` boundary in `LabanControl` (`didAuthorize/didDeny/didPrivilegedActivity`); `LabanControl` keeps `["LabanCore"]`-only deps and never imports app UI/logging internals. `LabanApp` supplies the observer owning indicator state + the persistent `EventLog` sink.
 - [ ] "Agent attached" indicator lights on any successful **privileged** request (`.observeSensitive`, `.navigate`, or `.propose` — anything beyond app-observe non-sensitive reads) — TTL-based (HTTP has no durable "connected").
-- [ ] User-facing disable switch (menu/setting) stops the server and removes `control.json`.
+- [ ] **Persistent Settings master toggle** — a native Settings UI preference ("Enable agent control server", e.g. `controlServerEnabled`, persisted across launches) that is the **complete opt-out** for users uneasy about *any* remote-control capability: when **off**, the server **never starts** (it overrides observe-on-by-default and `LABAN_CONTROL_SERVER`), **no `control.json` is written**, and **no session-observe token is injected into any session**. The runtime menu "disable" action sets this preference off, stops a running server, and removes `control.json`. (Default: on, per the 2F flip — the toggle is the user's escape hatch, not the default.)
 - [ ] Every privileged access emits an audit event via the observer to the `EventLog` (intent id, capability, surface, session, time — **no token, no payload secrets**).
 - [ ] A test greps logs and non-token artifacts for **both** minted tokens → **zero** hits; `control.json` parsed separately (it holds the app-observe token only).
 
@@ -207,7 +207,7 @@ Milestone 2E — Command proposals:
 
 Milestone 2F — Flip observe-on-by-default (release-checklist gate):
 - [ ] The §5.4 release checklist (nine items + the env-secrecy gate, reproduced below) each backed by a passing test/mechanical check.
-- [ ] Default mount flips: GUI starts the server **observe-on** without `LABAN_CONTROL_SERVER=1`; the env var becomes a force-disable, not the on-switch. `.observeSensitive` still requires the per-session env token.
+- [ ] Default mount flips: GUI starts the server **observe-on** without `LABAN_CONTROL_SERVER=1`; the env var becomes a force-disable, not the on-switch. **The persistent Settings master toggle (2D) wins** — if `controlServerEnabled` is off, the server does **not** start despite observe-on-by-default (no `control.json`, no token injection). `.observeSensitive` still requires the per-session env token.
 - [ ] Credential lifecycle: bind the server early (`LiveIntentRouter` via a **late-bound model provider**) and merge **`LABAN_CONTROL_URL` only** into the shared `ShellIntegrationLaunch.environmentOverrides`. The **session-observe token is per-session, session-bound, and injected ONLY into agent-attached sessions** (C10): normal/default/restored shells get **no** session-observe token. Use a `SessionLaunchContext` with a **preallocated `sessionID`** (C11) so the token is minted from the real id before envp composition; gate injection on `isAgentAttached`. If the first/default session is itself agent-attached (launch flag), the server must be bound before it spawns; the common case (default = normal shell, no token) has no such race. Across all backends (in-process `environment:`, laband `environmentPatch`, labpty `envp`). **No wire change** (does not touch the ADR 0007 freeze).
 - [ ] `scripts/check` green; the GUI is unchanged for humans (no new windows, no behavior change for a user who never reads `control.json`).
 
@@ -354,7 +354,9 @@ allowlists — fail if `tab.close`/`session.kill`/etc. sneaks in).
 ### 2D — Indicator, disable switch, audit, no-token-logging
 **Acceptance.** A privileged request lights a visible "agent attached" indicator
 (clears after TTL); a disable switch stops the server and removes `control.json`
-(verified: `curl` fails, file gone); every privileged access appends an audit event
+(verified: `curl` fails, file gone); the persistent Settings master toggle, set off,
+keeps the server from starting at all across a relaunch (no bind, no `control.json`,
+no token in any session env); every privileged access appends an audit event
 (intent/capability/surface/session/time, no token/secret) asserted via `GET
 /debug/events` (if `log.events` is itself classified) or the in-process journal hook;
 `LabanControl` imports no app-side `EventLog`. A test greps logs and non-token
@@ -390,7 +392,7 @@ Discovery/schema byte-stable via `LabanControlGen`.
 - [ ] The token file is created `0600` **from the first byte** (not chmod-after-write).
 - [ ] `Host` + `Origin` validation rejects malformed/spoofed hosts (`[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, and the non-numeric-port cases `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil`).
 - [ ] A visible "agent attached" indicator exists.
-- [ ] A user-facing disable switch exists.
+- [ ] A user-facing disable switch **and a persistent Settings master toggle** (complete opt-out: off ⇒ no server, no `control.json`, no token injection) exist.
 - [ ] Audit events persist to the `EventLog`.
 - [ ] No token value is ever logged.
 
@@ -497,6 +499,12 @@ no-inject fallback).
   `control` is **retired** (not reused for the future lease tier — that is `.input` +
   a distinct `execute`). Touches the `Capability` enum, every descriptor's
   `requiredCapability`, the policy grants, and the docs. DRAFT — 2026-06-20 / Claude.
+- (2026-06-20 / user) **Persistent Settings master toggle for complete opt-out.** A
+  native Settings preference (`controlServerEnabled`) lets a user disable the control
+  server **entirely** — off ⇒ no server starts, no `control.json`, no token injection,
+  overriding observe-on-by-default and `LABAN_CONTROL_SERVER`. So users uneasy about
+  any remote-control capability have a one-switch, persistent guarantee of "nothing is
+  listening." The runtime menu disable sets this same preference. DRAFT — 2026-06-20.
 
 ## Review Gate
 
@@ -519,6 +527,7 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] Preallocated id (C11): the session-observe token carries the session's real `sessionID` (minted from a `SessionLaunchContext` preallocated id before envp composition); `Session.init` accepts an injected id rather than always self-generating.
 - [ ] Active-session fallback (C12): for a session-bound token, an omitted target `sessionID` resolves to the token's own session (test `selection.read`/`find.state`/`session.detail`/`scrollIndicator.state`/rich `app.state`); changing the active tab does not let it read another tab; an explicit other target → `403`.
 - [ ] Indicator lights on any privileged read; disable switch stops the server and removes the file; env-secrecy gate (`ps -Eww` et al.) holds — **or, if it cannot be proven, no session-observe token is injected into default-on sessions at all** (C10 fallback; sensitive observation then needs a non-env credential path).
+- [ ] Settings master toggle (`controlServerEnabled`) off ⇒ **complete opt-out**: after a relaunch no server binds (`curl` fails to connect), no `control.json` exists, and no session env carries `LABAN_SESSION_OBSERVE_TOKEN`/`LABAN_CONTROL_URL` — even with observe-on-by-default and even if `LABAN_CONTROL_SERVER=1` is set.
 - [ ] `./scripts/check` exits 0; `./scripts/build-app` succeeds; `swift run LabanControlGen --check` passes.
 
 Review status: NOT REVIEWED (plan not yet executed).
