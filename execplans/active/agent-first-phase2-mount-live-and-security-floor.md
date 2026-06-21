@@ -182,7 +182,7 @@ Milestone 2A — Capability + scope enforcement, two observe tiers (`LabanContro
 
 Milestone 2B — Live session-scoped observe surface (`LabanApp`):
 - [ ] Shared `AppModel`/`Session` → DTO projections relocated to `Sources/LabanCore/Control/Projections/*` (public); `HeadlessIntentRouter` re-points to them **byte-identically** (headless `LabanDebugTests` + `DiscoveryEndpointParityTests` unchanged). `LabanDebug` typealiases relocated DTOs.
-- [ ] `LiveIntentRouter` implements the **own-session** observe family against the live `AppModel`/`AppSessionCoordinator`: `app.accessibility`, `terminal.modes`, `session.detail`, `find.state`, `selection.read`, `shellIntegration.state`, `scrollIndicator.state`, plus rich `app.state` and `session.list` **redacted to the owning session**. Each returns the shared DTO. Sensitivity split (explicit classification): `.observe` for `terminal.modes`/`scrollIndicator.state`/redacted `app.stateSummary`; `.observeSensitive` for everything exposing text/cwd/command/needle/selection/grid/a11y.
+- [ ] `LiveIntentRouter` implements the **own-session** observe family against the live `AppModel`/`AppSessionCoordinator`: `app.accessibility`, `terminal.modes`, `session.detail`, `find.state`, `selection.read`, `shellIntegration.state`, `scrollIndicator.state`, plus rich `app.state` and `session.list` **redacted to the owning session**. Each returns the shared DTO. Sensitivity split (explicit classification): the trigger for `.observeSensitive` is **terminal content** (grid/scrollback text, selection, find needle, accessibility text, keystroke log); `.observe` covers `terminal.modes`, `scrollIndicator.state`, and the whole-app `app.stateSummary` (which now also carries per-tab title/cwd/repo/process metadata — `ps`-equivalent, 2026-06-20). The rich `session.detail`/`app.state` DTOs stay `.observeSensitive` + session-scoped because they **also** carry content (grid), even though their process-metadata subset is separately available via the summary.
 - [ ] Benign own-session navigation only under `.control`: `terminal.scrollViewport` and `tab.select` (bring own tab to front). **No input/mouse/clipboard, no destructive tab lifecycle, no cross-tab.** The input-actuation family stays `headlessOnly` + `.input`; remove/build-gate the Phase-1 `LiveIntentRouter.typeText`/`sendKey` so input lives only in `LabanDebug`.
 - [ ] Catalog availability flips: own-session observe ids → `gui:true` with explicit `requiredCapability`/`dataSensitivity`; renderer/atlas/pixel-probe/capture/persistence stay `headlessOnly` (noted boundary). `swift run LabanControlGen --write` if route metadata changed; `swift test`; `scripts/check`.
 
@@ -311,13 +311,19 @@ from / build-gated out of the release GUI). `LabanDebugTests` pass unchanged.
 
 **`app.stateSummary` exact key allowlist** (this read is reachable by any same-user
 process that finds `control.json`, so its shape is locked by a snapshot test that fails
-when a new key appears). **Allowed:** `schema`/`version`; `runID`; `readiness`;
-`inputActuation: "unavailable"`; `crossSessionSensitiveReads: "denied"`;
-`windowCount`/`tabCount`/`sessionCount`; active **opaque per-run** ids;
-`callerOwnedSessionID` (if known); coarse booleans only (`focused`, `scrollable`,
-`shellIntegrationAvailable`). **Forbidden:** titles; cwd/repo/workspace; process
-command/args/pid; agent metadata; terminal text/grid/scrollback; selected text; find
-needle; clipboard data; accessibility text; any id stable across launches.
+when a new key appears). The boundary is **process/workspace metadata is allowed,
+terminal *content* is not** — the allowed fields are already same-user-visible via
+`ps`/`lsof`/proc APIs, so they grant no capability a local process lacks; the
+forbidden fields are terminal-internal content the OS does not otherwise expose.
+**Allowed:** `schema`/`version`; `runID`; `readiness`; `inputActuation: "unavailable"`;
+`crossSessionSensitiveReads: "denied"`; `windowCount`/`tabCount`/`sessionCount`; active
+**opaque per-run** ids; `callerOwnedSessionID` (if known); coarse booleans (`focused`,
+`scrollable`, `shellIntegrationAvailable`); **per-tab titles; cwd/repo/workspace;
+process command/args/pid** (2026-06-20 decision — `ps`-equivalent). **Forbidden:**
+terminal text/grid/scrollback; selected text; find needle; clipboard data;
+accessibility text; keystroke/input log; agent metadata; any id stable across
+launches. (Caveat carried for review: process args may contain secrets and titles may
+carry remote-session strings — both already `ps`-visible except remote-set titles.)
 
 For a session-bound token, `session.list`/rich `app.state` are **schema-identical to
 the headless wire but content-filtered/redacted by scope** (own session only) — not
@@ -480,7 +486,7 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] `command.propose` is a data object: a test asserts proposing a command does **not** write to the PTY (no `session.write`/coordinator write from the propose path); cross-session propose → `403`.
 - [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path; `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
 - [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface; completeness test fails if any descriptor is unclassified, any `gui:true` requires `.input`/`.clipboard`, or the `gui:true` `.control` set is not exactly `{tab.select, terminal.scrollViewport, command.propose}` (add `tab.close`/`session.kill` as `gui:true` `.control` → expect failure; revert).
-- [ ] `app.stateSummary` snapshot test: the response keys are exactly the allowlist (schema/version, runID, readiness, `inputActuation:"unavailable"`, `crossSessionSensitiveReads:"denied"`, window/tab/session counts, opaque per-run ids, `callerOwnedSessionID?`, coarse booleans) and **none** of the forbidden keys (titles, cwd/repo, process command/args/pid, agent metadata, terminal text/grid/scrollback, selection, find needle, clipboard, a11y text, launch-stable ids); adding a key fails the snapshot.
+- [ ] `app.stateSummary` snapshot test: the response keys are exactly the allowlist (schema/version, runID, readiness, `inputActuation:"unavailable"`, `crossSessionSensitiveReads:"denied"`, window/tab/session counts, opaque per-run ids, `callerOwnedSessionID?`, coarse booleans, **per-tab titles + cwd/repo/workspace + process command/args/pid**) and **none** of the forbidden keys (terminal text/grid/scrollback, selected text, find needle, clipboard, a11y text, keystroke/input log, agent metadata, launch-stable ids); adding a key fails the snapshot.
 - [ ] `0600`-from-first-byte: `ControlAdvertisement` uses `O_CREAT|O_EXCL` + `S_IRUSR|S_IWUSR`, no `chmod` after write (grep).
 - [ ] Host/Origin matrix includes `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → all `403`.
 - [ ] No ambient token (C10): with observe-on default, a **normal** shell tab's env contains at most `LABAN_CONTROL_URL` (or no Laban env) and **no** `LABAN_SESSION_OBSERVE_TOKEN`; only an explicitly **agent-attached** session's env carries one. A token from agent session A reads A → `200` and B → `403`; the file (app-observe) token gets `403` on all sensitive reads.

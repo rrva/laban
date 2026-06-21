@@ -103,8 +103,13 @@ for Phase 2; the deferred items return only behind an explicit, user-leased mode
 
 - **No app-wide control token.** The "Control/sensitive token … grants `.control` +
   `.observeSensitive`" tier is **removed**. There are now two **observe** tiers:
-  - **app-observe** — in `control.json`, grants `.observe` only, redacted
-    `app.stateSummary` (liveness/discovery; no terminal contents).
+  - **app-observe** — in `control.json`, grants `.observe` only: the
+    `app.stateSummary` (liveness/discovery, plus per-tab title/cwd/repo/workspace and
+    process command/args/pid — `ps`/`lsof`-equivalent, already same-user-visible, so
+    no net-new capability; 2026-06-20 decision). **No terminal content** (grid/
+    scrollback/selection/find-needle/clipboard/keystroke log) — that line stays
+    `.observeSensitive` (the §5.1 row's "process cwd/command" moves to app-observe;
+    its scrollback/grid/input-log stays sensitive).
   - **session-observe** (`LABAN_SESSION_OBSERVE_TOKEN`) — injected **only into
     sessions explicitly marked agent-attached**, never into a normal user shell;
     **per-session and session-bound** (minted from a preallocated `sessionID` before

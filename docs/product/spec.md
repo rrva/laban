@@ -217,7 +217,9 @@ the active session. Headless runs accept `-LabanCursorStyle <value>` and
 > authority, and autonomous operation are **deferred** to a future user-leased
 > Computer-Use mode (user picks a target session, short-lived lease, command
 > approval, no self-injection, audit + revocation). The token model is two
-> **observe** tiers — an app-observe token in `control.json` (redacted summary) and
+> **observe** tiers — an app-observe token in `control.json` (a redacted summary:
+> counts, liveness, and per-tab title/cwd/process metadata that is already
+> same-user-visible via `ps`/`lsof` — but **no terminal content**) and
 > a per-session, session-bound session-observe token — with **no app-wide control
 > token**; sensitive reads are session-scoped. See ADR 0024 Amendment (2026-06-20).
 
