@@ -27,10 +27,13 @@ executable slice — **shipped** as commit `0a2a230` and is archived at
 file; where Phase 0 detail is needed here it is summarized and linked, not
 restated. Per-phase ExecPlans (when written) are authoritative for their phase.
 
-> **How to read this document.** Sections 1–9 are forward-only and authoritative:
-> a coding agent can execute any phase from them without reading anything marked
-> "historical." There are **no "resolved decisions supersede the text below"
-> caveats** anywhere in the body — every decision is stated once, in place.
+> **How to read this document.** Sections 1–9 are forward-only and authoritative,
+> with **one standing exception**: the 2026-06-20 observe-first **header Amendment**
+> supersedes the control-token / live-input placement in §4.2, §5.1, §5.2, and
+> Phase 7 — read those sections through it (input is `.input`/fixture-only, the token
+> model is two observe tiers, per-session scoping is in Phase 2, live actuation is
+> deferred to the Terminal-Lease ADR). Apart from that amendment, every decision is
+> stated once, in place.
 > Appendices A–C hold rationale, comparator evidence, and the verified surface
 > inventory for readers who want the "why."
 
@@ -194,7 +197,9 @@ Intent        // tagged, Codable: the union of today's AppCommand + DebugAction
 Query         // tagged, Codable read request (state, tab.getState, terminal.*…)
 IntentResult  // { ok, actedSessionId?, actedTabId?, eventId?, error? }
 QueryResult   // Codable read response (per-query payload)
-Capability    // .observe | .observeSensitive | .control | .clipboard | .fixture
+Capability    // .observe | .observeSensitive | .control | .input | .clipboard | .fixture
+              //   .input = actuation (typeText/sendKey/paste/mouse), fixture/headless-only
+              //   .control = benign live nav only (tab.select/scrollViewport) + command.propose
 IntentDescriptor   // the metadata record below
 IntentCatalog      // [IntentDescriptor], queryable + serializable
 IntentRouter (protocol)  // route(Intent) -> IntentResult ; query(Query) -> QueryResult
@@ -280,13 +285,14 @@ summary: Type UTF-8 text into a terminal session as if a human typed it.
 input:  { sessionId: string?, text: string }      # sessionId omitted ⇒ active session
 output: { ok: boolean, actedSessionId: string, eventId: string }
 error:  { code: string, message: string }
-requiredCapability: control
+requiredCapability: input        # actuation tier — fixture/headless only (2026-06-20 amendment)
 sideEffects: { ptyInput: true, filesystem: possible, network: possible }
 risk: { level: medium, reason: "Text may execute commands depending on shell state." }
 audit: redactedInput
 dataSensitivity: keystrokes
-availability: { gui: true, headless: true }
-transports: { http: true, mcp: true, cli: true }
+availability: { gui: false, headless: true }   # NOT on the live GUI; deferred to the Terminal-Lease ADR
+transports: { http: true, mcp: false, cli: false }
+note: headless fixture only until the Terminal-Lease / Computer-Use ADR; on the live surface, command.propose (a reviewed data object) is the Phase-2 equivalent
 preconditions: [ sessionExists ]
 timeout: null
 cancellation: none
@@ -581,17 +587,21 @@ behavior), and **status**.
   sees; `terminal.getSelection` returns the real AppKit selection.
 - **Status:** not started.
 
-### Phase 7 — Safety broker + reach
+### Phase 7 — Terminal-Lease / Computer-Use + Safety Broker
 
-- **Scope:** the **policy/approval broker** (distinct from the Phase 2 floor):
-  risk classification of command content (`rm -rf`, `git push --force`),
-  approval-required actions + approval UI, clipboard/paste/secret policies, audit
-  browser/export. Per-session token scoping (cheap — `envp` already in the wire).
-  New-capability intents with no current counterpart: theme, font, restore toggle,
-  backend switch, **restart**, tab reorder, hyperlink open; GUI capture control.
-- **Acceptance:** a `.control` client's `rm -rf`-class command raises an approval
-  the user must grant; per-session tokens scope a client to one tab; the audit
-  browser lists every control-tier action.
+*(Recast 2026-06-20: this is the home for the actuation the observe-first pivot
+deferred. Per-session token scoping is **no longer** here — it moved into Phase 2.)*
+
+- **Scope:** an explicit, user-granted **terminal-input / terminal-execute lease**
+  (the actuation tier): a command classifier + approval UI (`rm -rf`, `git push
+  --force`), **no self-injection by default**, cross-session only by a **named** user
+  grant, clipboard/paste/secret policies, audit browser/export. New-capability intents
+  with no current counterpart: theme, font, restore toggle, backend switch,
+  **restart**, tab reorder, hyperlink open; GUI capture control.
+- **Acceptance:** a `terminalExecute` lease request for an `rm -rf`-class command
+  raises an approval the user must grant; existing **Phase-2 session-observe tokens
+  remain read + benign-nav only and cannot execute commands**; the audit browser lists
+  every leased action.
 - **Status:** not started.
 
 ## 7. Acceptance criteria (consolidated)

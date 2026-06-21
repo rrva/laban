@@ -69,11 +69,11 @@ generated from the catalog; the **event push stream** (already Phase 3 in the pr
 architecture that makes these cheap (one catalog, one policy, router-parity, generated
 discovery).
 
-> **Amendments owed (not done in this plan; flagged for approval):** ADR 0024's token
-> model (app-wide control token → two observe tiers + deferred lease) and the program
-> doc `agent-first-terminal-design.md` (actuation recast as a future lease mode) must
-> be updated to match. spec.md notes the product-scope shift. Do these after this plan
-> is approved.
+> **Amendments status (done 2026-06-20):** ADR 0024 (token model → two observe tiers
+> + deferred lease; Amendment section), the program doc `agent-first-terminal-design.md`
+> (header amendment + §6 Phase 2 recast + §4.1/§4.2/§5.1/Phase-3/5/7/§8/App-B scrub),
+> and spec.md §24 (observe-first scope note) are all amended to match this plan. No
+> amendment is outstanding.
 
 ## Purpose / Big Picture
 
@@ -288,6 +288,17 @@ active tab; an explicit other target → `403`. Only a whole-app token (fixture 
 explicit grant) gets legacy active-session behavior. This prevents focus changes from
 turning a legacy "active session" route into a cross-tab read.
 
+**C13 — Agent-attached lifecycle (the boundary, so define it).** Since
+"agent-attached-only" is now the core security boundary, its creation/revocation is
+specified, not implied: (a) only sessions created through an explicit path — a "New
+Agent-Attached Session" command, a launch flag, or a future attach flow — set
+`isAgentAttached` and receive `LABAN_SESSION_OBSERVE_TOKEN`; (b) an existing normal
+session is **never silently upgraded** (a running process's env cannot be safely
+mutated); (c) restored sessions default to **normal** unless their agent-attached
+status was explicitly persisted **and** the user setting still allows it; (d) the
+disable switch / revoke invalidates **all** session-observe tokens and removes
+`control.json`.
+
 ## Milestone detail
 
 ### 2A — Capability + scope enforcement, two observe tiers
@@ -389,12 +400,13 @@ default-on sessions at all (C10 fallback) — sensitive observation then require
 explicit, non-env credential path deferred with the lease ADR.
 
 **Acceptance.** A freshly launched app (no `LABAN_CONTROL_SERVER`) writes `control.json`
-and answers redacted app-summary reads for a file-token reader; the **initial/default/
-restored** session's env carries its own session-bound token + `LABAN_CONTROL_URL`
-(minted before `shellLaunch` composition / `AppModel.init`); that token reads its own
-session's sensitive state `200` and any other session `403`; all input/mouse/clipboard/
-cross-tab → `404`/`403`. The disable switch turns it off. `scripts/check` green; no
-human-visible GUI change.
+and answers redacted app-summary reads for a file-token reader. **Normal
+initial/default/restored sessions inherit at most `LABAN_CONTROL_URL` (or no Laban env)
+and never `LABAN_SESSION_OBSERVE_TOKEN`** (C10). Only an **explicitly agent-attached**
+session receives a per-session `LABAN_SESSION_OBSERVE_TOKEN` (minted from a preallocated
+`sessionID`, C11); that token reads its own session's sensitive state `200` and any
+other session `403`. All input/mouse/clipboard/cross-tab → `404`/`403`. The disable
+switch turns it off. `scripts/check` green; no human-visible GUI change.
 
 ## Validation and Acceptance
 
@@ -482,7 +494,8 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] `ControlReadiness` is still `{debugServer, debugToken, pid, runId}` (no new field); no sensitive token serialized.
 - [ ] Spy-router: app-observe + `.observeSensitive` → `403` (no router call); session-observe + own-session `.observeSensitive` → `200`, **other session → `403`**; `.input`/`.clipboard` denied for all non-fixture tokens; missing → `401`.
 - [ ] `LiveIntentRouter` answers `session.detail`/`selection.read`/`find.state` for the caller's own session against a live `AppModel` (LabanAppTests), shape-identical to `HeadlessIntentRouter`; cross-session → `403`; `session.list`/`app.state` redacted to the owning session.
-- [ ] GUI input-actuation absence: `terminal.typeText`/`sendKey`/`paste`/`click`/`mouseWheel`/`mouseDrag` are `availability.gui == false` **and** require `.input` (no GUI token grants it); GUI routes `404` for both tokens; `grep -rn "session.write\|session.sendKey\|sessionCoordinator.write\|encodePaste\|sanitizePaste" Sources/LabanApp/Control` → nothing; release GUI doesn't link the headless input impl; `LabanControlGen --check` fails if any actuation descriptor becomes `gui:true`.
+- [ ] GUI input-actuation absence: `terminal.typeText`/`sendKey`/`paste`/`click`/`mouseWheel`/`mouseDrag` are `availability.gui == false` **and** require `.input` (no GUI token grants it); GUI routes `404` for both tokens; `grep -rn "session.write\|session.sendKey\|sessionCoordinator.write\|encodePaste\|sanitizePaste" Sources/LabanApp/Control` → nothing; no `LiveIntentRouter` dispatch for the family; `LabanControlGen --check` fails if any actuation descriptor becomes `gui:true`.
+- [ ] Mechanical input-out-of-release boundary: "lives in `LabanDebug`" is **not** sufficient because `LabanApp` already links `LabanDebug` (CaptureRecorder). The input-actuation fixture impl lives in a **headless/test-only target not depended on by `LabanApp`**, or behind a **non-release build flag** — verified by: no route registered, no `gui:true` descriptor, no `LiveIntentRouter` dispatch, and **no release-target dependency on the input fixture symbols**.
 - [ ] `command.propose` is a data object: a test asserts proposing a command does **not** write to the PTY (no `session.write`/coordinator write from the propose path); cross-session propose → `403`.
 - [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path; `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
 - [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface; completeness test fails if any descriptor is unclassified, any `gui:true` requires `.input`/`.clipboard`, or the `gui:true` `.control` set is not exactly `{tab.select, terminal.scrollViewport, command.propose}` (add `tab.close`/`session.kill` as `gui:true` `.control` → expect failure; revert).
