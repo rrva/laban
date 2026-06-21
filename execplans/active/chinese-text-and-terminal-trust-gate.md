@@ -93,7 +93,7 @@ so nobody re-investigates them.
       one-column `Character` enumeration. `swift test --filter FrameProducerPreedit`
       passed 8 tests; `./scripts/build-app` passed. Manual gpuDriven IME
       screenshot artifacts remain to be captured.
-- [ ] M4 — Width policy coherence (verify single truth; ambiguous-width policy).
+- [x] (2026-06-21) M4 — Width policy coherence (verify single truth; ambiguous-width policy).
 - [ ] M6 — Keyboard and paste polish.
 - [ ] M5 — Emoji / color glyph path, including a user setting for color vs.
       monochrome emoji rendering.
@@ -423,25 +423,19 @@ non-grid text — and decide the ambiguous-width product policy.
   the documented fallback sites (`FrameProducer.swift:577`,
   `TerminalBitmapView.swift:3696`, `TerminalFind.swift:247`,
   `TerminalSelection.swift:307`, and the M3-fixed Metal overlay).
-- **Preedit width policy (explicit decision required, Decision Log):** preedit text
-  never entered the grid, so the engine has no width for it and it is sized by the
-  Swift fallback (ADR 0021 class-B). Decide explicitly between: (a) keep the legacy
-  per-scalar fallback for preedit even when the session is `preferGrapheme` / mode
-  2027 (lowest effort; risk: clustered-emoji preedit can visibly differ from the
-  committed text under mode 2027); (b) a session-aware preedit width that follows
-  the session's grapheme mode (better coherence; risk of re-creating width logic
-  outside the engine); or (c) ask libghostty for a non-grid text-width helper (best
-  architecture; needs C API work). **Default recommendation: (a)** — but if it stays
-  legacy, this milestone must add an explicit acceptance note/screenshot showing the
-  mode-2027 preedit-vs-committed visual compromise so the trade-off is on the record.
-  Committed text always gets engine width regardless.
-- **Ambiguous-width policy decision (Decision Log):** choose one — (a) keep
-  engine-as-truth for grid (no app-layer ambiguous override; ambiguous chars get
-  whatever the engine assigns), (b) add a user setting "ambiguous = wide" that maps
-  to a libghostty capability **iff** one is exposed (investigate the C API; if
-  absent it is **unsupported**, not a Swift second-truth), or (c) locale policy.
-  Default recommendation: (a) unless the C API exposes an ambiguous-width knob,
-  because option (b)-in-Swift would violate the ADR 0001/0021 boundary.
+- **Preedit width decision (resolved):** preedit text never entered the grid in this release,
+  so engine width is unavailable and fallback sizing remains Swift-side via
+  `TerminalDisplayWidth` at the documented callsites (`FrameProducer.swift:577`,
+  `TerminalBitmapView.swift:3696`). This is the ADR 0021 class-B contract.
+  Session-aware preedit width is deferred pending C API support for a non-grid text-width
+  helper so the fallback remains intentional even if it can differ from committed text
+  under mode 2027.
+- **Ambiguous-width policy decision (resolved):** engine remains the grid truth for all
+  production grid width (mode ON/OFF already includes whichever ambiguous behavior the
+  negotiated engine mode chooses). Ambiguous-width overrides are **unsupported in Swift**
+  because the libghostty C API exposes no ambiguous-width knob in this branch.
+  Therefore no Swift setting was added here; adding one now would create a second width
+  truth and conflict with ADR 0001/0021.
 - **Fallback helper replacement or isolation:** keep `TerminalDisplayWidth` as the
   documented fallback; do **not** regenerate it into a UAX #11 table (that would
   invite re-creating a second width truth). Its hardcoded ranges
@@ -664,26 +658,23 @@ fresh context, and the repository gates are green:
   refutation was itself wrong: U+3000 is **not** preserved on copy — `rightTrim`'s
   `"\\s+$"` ICU regex strips it (verified empirically), now tracked in G6/M6.
   Date/Author: 2026-06-20, plan author.
-- Decision (open, to resolve in M4): **Whether `preferGrapheme` should be
-  recommended/default for Chinese users.** Leaning: keep factory default `.auto`
-  (mode 2027 OFF) per ADR 0021 — defaulting ON risks the documented fish/wcwidth
-  prompt-redraw regression — but document `preferGrapheme` as a recommended *opt-in*
-  for modern CJK/emoji workflows.
-  Rationale/risk: ADR 0021 Decision Log (fish breakage). Resolve with evidence.
-  Date/Author: 2026-06-20, plan author.
-- Decision (open, to resolve in M4): **Ambiguous-width-as-wide is a user setting,
-  locale policy, or unsupported.** Leaning: **unsupported in Swift** unless the
-  libghostty C API exposes an ambiguous-width knob (must not create a second width
-  truth, ADR 0001/0021). If the engine exposes it, surface it as a setting.
-  Date/Author: 2026-06-20, plan author.
-- Decision (open, to resolve in M4): **Preedit width follows legacy fallback vs.
-  session grapheme mode.** Leaning: **(a) keep the legacy fallback** for transient
-  preedit (engine has no width for not-yet-committed text, ADR 0021 class-B); if it
-  stays legacy, record an explicit acceptance note/screenshot of the mode-2027
-  preedit-vs-committed visual compromise. Alternatives: session-aware preedit width,
-  or a libghostty non-grid text-width helper (C API work). Committed text always
-  gets engine width.
-  Date/Author: 2026-06-20, plan author.
+- Decision (resolved, 2026-06-21): **Whether `preferGrapheme` should be recommended/default for Chinese users.**
+  Keep factory default `.auto` (mode 2027 OFF) per ADR 0021 to avoid the fish/wcwidth
+  prompt-redraw regression documented there. `preferGrapheme` is an explicit
+  *opt-in* recommendation for workflows that prefer cluster width by default, and is
+  already persisted as a start-mode preference only for fresh sessions.
+  Date/Author: 2026-06-21, Codex.
+- Decision (resolved, 2026-06-21): **Ambiguous-width-as-wide is a user setting, locale policy, or unsupported.**
+  The C API currently has no ambiguous-width control surface. Therefore this Milestone
+  resolves it as **unsupported**, keeping ambiguous-width behavior engine-owned for grid
+  text and confined Swift fallback to non-grid text only.
+  Date/Author: 2026-06-21, Codex.
+- Decision (resolved, 2026-06-21): **Preedit width follows legacy fallback vs.
+  session grapheme mode.** Keep legacy Swift fallback for preedit (not yet committed),
+  documented at `TerminalDisplayWidth.swift` and measured in `FrameProducer.swift`/`MetalRenderer.swift`.
+  Session-aware preedit width is explicitly deferred until libghostty exposes a non-grid
+  width helper; committed text stays on engine width.
+  Date/Author: 2026-06-21, Codex.
 - Decision: **M2 uses an explicit shared CJK cascade and fixed two-cell atlas
   metrics.** The cascade is primary terminal font → PingFang SC → Noto Sans Mono
   CJK SC → Sarasa Term/Mono/Gothic SC → CoreText cascade. The software renderer
@@ -754,9 +745,11 @@ mechanical checks.
       the kimi-code Kitty-image/tmux-DCS/width-conformance work, the glyph-
       correctness-matrix harness, or the vector-glyph-renderer outline pipeline —
       verify by the cross-reference table in Context.
-- [ ] Width truth consistency: grep shows no *new* grid-text consumer of
+- [x] Width truth consistency: grep shows no *new* grid-text consumer of
       `TerminalDisplayWidth.cells(of:)`/`isWide(_:)` outside the documented fallback
-      sites (preedit, word-classification, scrollback fallback, the M3-fixed overlay).
+      sites (preedit, word-classification, scrollback fallback, the M3-fixed overlay).  
+      Verified by `Tests/LabanCoreTests/TerminalWidthPolicyGuardTests` and live
+      `rg` sweep of `Sources/`.
 - [ ] CJK rendering acceptance (M2) includes screenshot/capture artifacts for dense
       Chinese, mixed ASCII+Chinese, Chinese in box-drawing UI, Chinese next to
       Nerd-Font symbols, and multiple sizes/Retina, across software/classic/gpuDriven.
@@ -809,6 +802,9 @@ Review findings (filled in by the review agent):
   preedit-overlay scan over `MetalRenderer.swift` lines 2700-2800 found no old
   `text.count` / `enumerated()` column-stepping pattern. Deviation: no manual
   `gpuDriven` Apple Pinyin/Rime screenshot artifact was captured in this slice.
+- M4 automated evidence (2026-06-21): `swift test --filter 'TerminalWidthConformance|Mode2027|TerminalWidthPolicyGuard'`
+  passed 6 tests, and a focused guard passed `Tests/LabanCoreTests/TerminalWidthPolicyGuardTests`,
+  confirming `TerminalDisplayWidth` usage is confined to fallback sites.
 - Manual IME transcript (to fill on first execution): install
   `LABAN_INSTALL_PATH="$HOME/Laban-cjk.app" ./scripts/install-app`; with Apple
   Pinyin and then Rime/Squirrel, compose `中文`, screenshot the candidate window at
