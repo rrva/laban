@@ -98,7 +98,11 @@ so nobody re-investigates them.
       than default, rejected Swift-side ambiguous-width overrides without a
       libghostty C API knob, and recorded preedit width as an intentional
       non-grid `TerminalDisplayWidth` fallback.
-- [x] (2026-06-21) M6 — Keyboard and paste polish.
+- [x] (2026-06-21) M6 — Keyboard and paste polish. Added global
+      Option-as-Meta setting plumbing through Settings, Swift key routing, C ABI,
+      and `key_input.c`; preserved default Option-as-text behavior; preserved
+      trailing U+3000 on copy by trimming only ASCII whitespace; and added
+      IME candidate-key and bracketed CJK paste regressions.
 - [ ] M5 — Emoji / color glyph path, including a user setting for color vs.
       monochrome emoji rendering.
 - [ ] M7 — Product polish and ecosystem (zh-Hans / proxy / vibrancy) — deferred,
@@ -723,10 +727,12 @@ fresh context, and the repository gates are green:
   "existing color path" `vector-glyph-renderer.md` assumes; coordinate so it is no
   longer monochrome.
   Date/Author: 2026-06-20, plan author.
-- Decision (open, to resolve in M6): **Whether GB18030/GBK support is in scope.**
-  Leaning: **deferred to P3** — zero encoding code exists and modern remote stacks
-  are UTF-8; pursue only with evidence of daily user pain.
-  Date/Author: 2026-06-20, plan author.
+- Decision (resolved, 2026-06-21): **GB18030/GBK support is deferred.**
+  Rationale: M6 found no existing encoding library or daily-workflow evidence
+  that legacy CJK encodings should enter this text-trust slice. Modern remote
+  workflows remain UTF-8, and silent conversion would risk corrupting bytes.
+  Reopen only with a concrete legacy-locale repro and an opt-in conversion design.
+  Date/Author: 2026-06-21, Codex.
 - Decision (open, to resolve in M7): **Whether zh-Hans / proxy / cloud profiles /
   vibrancy require product-spec amendment.** Finding: **yes** — `docs/product/spec.md`
   authorizes none of them today; each needs a spec amendment before implementation.
