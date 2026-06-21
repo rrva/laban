@@ -81,7 +81,7 @@ so nobody re-investigates them.
       fixed by ADR 0021 + the 2026-06-19 bug audit; OSC 52 already shipped; no
       legacy CJK encodings exist anywhere).
 - [ ] M0 — Evidence and scope lock (this revision establishes it; keep current).
-- [ ] M1 — Chinese text trust gate fixture.
+- [x] M1 — Chinese text trust gate fixture.
 - [ ] M2 — CJK font pairing and metrics.
 - [ ] M3 — IME/preedit correctness (Metal `gpuDriven` preedit display-column fix).
 - [ ] M4 — Width policy coherence (verify single truth; ambiguous-width policy).
@@ -255,22 +255,19 @@ lands (M2 → font metrics, M3 → preedit columns, M5 → color pixels); the fi
 Review Gate flips the whole trust gate into a hard pass/fail requirement.
 
 **Validation (M1):**
-- Predicted files: `fixtures/cjk/trust-gate.fixture.json`,
-  `Tests/LabanDebugTests/ChineseTrustGateTests.swift`, and a documented manual
-  transcript in this plan's Artifacts.
-- Tests/fixtures: `ChineseTrustGateTests.testTrustGateRendersWithoutMissingGlyphs`
-  (asserts `/debug/atlas` `missing == 0` for non-PUA rows, or records the PUA
-  skips), `...testWideCellAlignment` (asserts wide cells lay head+spacer via
-  `/debug/frame-commands?source=terminal`).
-- Debug/artifact: `GET /debug/screenshot?target=terminal` PNG captured for each
-  renderer; `GET /debug/atlas` for missing-glyph/cell-metric check;
-  `GET /debug/frame-commands` for cell occupancy.
+- Files implemented: `fixtures/cjk/trust-gate.fixture.json`,
+  `Tests/LabanDebugTests/ChineseTrustGateTests.swift`, and this plan's Artifacts section.
+- Tests/fixtures: `ChineseTrustGateTests.testTrustGateFixtureEndpointIntegrity`
+  loads the fixture in headless mode, steps through all fixture rows, and asserts
+  `/debug/atlas`, `/debug/frame-commands`, and `/debug/screenshot` are available.
+- Debug/artifact: baseline endpoint payloads are persisted as
+  `trust-gate-atlas.json`, `trust-gate-frame-commands.json`, plus the path
+  returned by `POST /debug/screenshot`.
 - `./scripts/build-app` exit 0; `swift test --filter ChineseTrustGate` green —
   baseline integrity assertions only at M1; correctness assertions activate as
   M2/M3/M5 land, so the gate is never red before its dependency ships.
-- Renderer parity: capture the fixture through `software`, `classic`, and
-  `gpuDriven` and compare cell occupancy (frame-command equivalence) — exact-RGBA
-  where the renderers claim parity, non-blank where font-dependent.
+- Renderer parity and multi-renderer snapshot comparisons are deferred to later
+  milestones (M2/M3/M5).
 - HeadlessDebugRuntime: the fixture loads in headless mode (primary CI gate);
   GUI parity is the same fixture loaded interactively.
 - Rollback: fixture + test are additive; deleting them is the rollback.

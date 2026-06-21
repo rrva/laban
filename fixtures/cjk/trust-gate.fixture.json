@@ -1,0 +1,63 @@
+{
+  "name": "trust-gate",
+  "version": 1,
+  "description": "Chinese trust-gate fixture for baseline endpoint and frame-command visibility.",
+  "initialSize": {
+    "cols": 96,
+    "rows": 30
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Trust Gate CJK"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "用户@主机 ~/项目 $ npm run build\r\n"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "中文文字段落用于宽字符对齐验证，检查每个字符是否占据两个单元格。\r\n"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "± § ° ← → ↑ ↓ │ ┌ ┐\r\n"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "✳ 🧑‍💻 🇨🇳 ▶️\r\n"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "    \r\n"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "┌──────────────────────────────────────────────────────────────┐\r\n"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "│ 设置 │\r\n"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "└──────────────────────────────────────────────────────────────┘\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "containsText": ["用户@主机 ~/项目 $ npm run build", "中文文字段落用于宽字符对齐验证，检查每个字符是否占据两个单元格。", "✳ 🧑‍💻 🇨🇳 ▶️"],
+    "nonEmptyScreenshot": true
+  }
+}
