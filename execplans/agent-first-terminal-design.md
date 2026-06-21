@@ -110,7 +110,8 @@ framing lives in `LabanControl`.
 | **`LabanControl`** *(new)* | `LabanControlServer` (loopback bind + token + Host/Origin), `LabanControlPolicy` (intent→capability mapping), the **HTTP↔Intent adapter** (decodes a request into an `Intent`/`Query`, serializes the result), `control.json` advertisement writer, and catalog-driven schema/discovery generation. | No | `LabanCore` |
 | **`LabanApp`** | `LiveIntentRouter` (binds the live `AppModel` + `AppSessionCoordinator` + `MetalReadback`); **mounts** `LabanControlServer`. The GUI human adapters (`executeAppCommand`, menus, key routes) emit the **same** `Intent`s. | Yes | `LabanControl`, `LabanCore`, `LabanRenderer`, `LabanDebug` |
 | **`LabanDebug`** | `HeadlessIntentRouter` + `HeadlessDebugRuntime` + fixtures + the headless-only `FixtureActionCatalog`; **mounts the same** `LabanControlServer`. | No | `LabanControl`, `LabanCore`, `LabanRenderer`, `LabanTerminalCore` |
-| **MCP layer** *(later, Phase 5)* | An MCP server whose tool shapes are **generated from `IntentCatalog`** with hand-curated descriptions; an out-of-process wrapper over the same HTTP/Intent surface, or a `LabanControl`-hosted transport. Never a parallel implementation. | No | `LabanControl` (contract only) |
+| **`laban` CLI** *(first-class external adapter, Phase 5)* | A thin command-line client over the same loopback HTTP/Intent surface, commands **generated from `IntentCatalog`**: app-observe reads direct from `control.json`; session-scoped ops (own-session reads, `command.propose`) via a per-session helper that holds the C14 connection-bound credential. Never a parallel implementation. | No | `LabanControl` (contract only) |
+| **MCP layer** *(deferred/optional, after the CLI)* | An MCP server whose tool shapes are **generated from `IntentCatalog`**; an out-of-process wrapper over the same HTTP/Intent surface. A second adapter over the one catalog, not a parallel implementation. | No | `LabanControl` (contract only) |
 
 **The invariant that makes parity structural:** there is **one** `LabanControlServer`,
 **one** `IntentCatalog`, and the `IntentRouter` **protocol** has exactly two live
@@ -124,8 +125,9 @@ by hand" rule with "both mount the shared server and pass the catalog-parity tes
 
 ```
 GUI menus / key routes / mouse  ─┐
-HTTP request (LabanControl)       ├─►  Intent / Query  ──►  IntentRouter
-MCP tool call (Phase 5, wrapper) ─┘                         (Live or Headless)
+HTTP request (LabanControl)       │
+`laban` CLI (Phase 5, first-class)├─►  Intent / Query  ──►  IntentRouter
+MCP tool call (deferred, wrapper) ─┘                         (Live or Headless)
                                                                    │
                                                    AppSessionCoordinator + AppModel
                                                    (tier-agnostic: inProcess/labpty/laband)
@@ -566,20 +568,34 @@ behavior), and **status**.
   intent timeline + redaction report.
 - **Status:** not started.
 
-### Phase 5 — MCP front door *(generated from the catalog)*
+### Phase 5 — `laban` CLI front door *(first-class; generated from the catalog)*
 
-- **Scope:** an in-house MCP server with tool shapes **generated from
-  `IntentCatalog`** (descriptions hand-curated), as an out-of-process wrapper over
-  the same HTTP/Intent surface. **Read-only / observe tools (and `command.propose`)
-  only**; live actuation tools wait for the Terminal-Lease ADR. Publish the
-  HTTP+schema contract too. Begin
-  Claude-in-Laban dogfooding. *(MCP needs only the catalog + Phase 2 floor; it may
-  be pulled forward for dogfooding once those exist.)*
-- **Acceptance:** a generated MCP tool list matches the catalog 1:1; a session-scoped
-  MCP client orients (its own session's tabs/active/visible text) with every call
-  audited; live driving (typeText/mouse) is **not** in the Phase-2 MCP and returns
-  only after the Terminal-Lease ADR.
+The CLI is the **first-class** external integration surface; MCP is a deferred,
+optional second wrapper over the same contract (below).
+
+- **Scope:** a `laban` command-line client with commands **generated from
+  `IntentCatalog`**, over the same loopback HTTP/Intent surface. **Read-only / observe
+  commands (and `command.propose`) only**; live actuation waits for the Terminal-Lease
+  ADR. **Credential model:** non-sensitive whole-app reads use the **app-observe**
+  token from `control.json` directly (stateless, repeatable); session-scoped commands
+  (own-session reads, `command.propose`) go through a **per-session helper** that
+  redeems the C14 one-shot bootstrap and holds the connection-bound credential — the
+  short-lived CLI is a thin client of that helper, so the single-use handshake and the
+  "no inheritable bearer" property still hold. Publish the HTTP+schema contract. Begin
+  Claude-in-Laban dogfooding. *(Needs only the catalog + Phase 2 floor.)*
+- **Acceptance:** the generated CLI command set matches the catalog 1:1; `laban`
+  whole-app reads work with the file token alone; a session-scoped `laban` command in
+  an agent-attached session reads its own session `200` and any other `403`; live
+  driving is **not** present and returns only after the Terminal-Lease ADR.
 - **Status:** not started.
+
+#### Phase 5b — MCP wrapper *(deferred / optional)*
+
+- **Scope:** an in-house MCP server, tool shapes **generated from `IntentCatalog`**,
+  an out-of-process wrapper over the *same* HTTP/Intent surface (read-only/observe +
+  `command.propose`; never a parallel implementation). Built only if/when an
+  MCP-native consumer is wanted; the CLI covers the primary integration.
+- **Status:** deferred.
 
 ### Phase 6 — Truthful-fixture pillar (view-layer work)
 
@@ -622,8 +638,8 @@ The program as a whole succeeds when, against the **running `LabanApp` GUI**:
    actuation is **deferred** to the Terminal-Lease ADR; command assistance is via
    `command.propose` (a reviewed data object, never PTY bytes).
 3. Waits replace sleeps; events stream without polling.
-4. Trace export and MCP tools all derive from the **one** catalog with no
-   duplicated definitions.
+4. Trace export, the **`laban` CLI** (first-class), and the optional MCP wrapper all
+   derive from the **one** catalog with no duplicated definitions.
 5. The catalog-parity test makes GUI/headless drift a CI failure.
 6. A human sees and can disable what external clients may do.
 
@@ -645,8 +661,10 @@ These are *not* resolved; the resolved-8 from v1 are recorded in Appendix B.
 3. **Metal readback cost (Phase 6).** Is a synchronous drawable readback
    acceptable for `screenshot`/`pixel-probe` latency, or is an async/queued
    capture required? Decides the Phase 6 API shape.
-4. **MCP timing.** Hold MCP at Phase 5, or pull it forward for dogfooding the
-   moment the Phase 2 floor + catalog exist? (It is only a generated wrapper.)
+4. **Primary external adapter.** ~~MCP timing~~ **Resolved (2026-06-20):** the
+   **`laban` CLI is the first-class external adapter** (Phase 5); MCP is a deferred,
+   optional second wrapper (Phase 5b) over the same contract, built only if an
+   MCP-native consumer is wanted.
 5. **Per-session token rollout.** ~~Deferred to Phase 7~~ **Resolved (2026-06-20
    observe-first amendment):** per-session, session-bound tokens are **pulled into
    Phase 2**, agent-attached-only; there is no app-wide control token. (Header

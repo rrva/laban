@@ -63,11 +63,21 @@ authority by accident.
   product mode: user picks the target session, short-lived **lease**, visible
   indicator, command approval/classifier, no self-injection, audit + revocation.
 
-**Roadmap the substrate enables (beyond Phase 2):** a read-only **MCP front door**
-generated from the catalog; the **event push stream** (already Phase 3 in the program —
-`EventLog` promoted to push); full **trace/replay** export. Phase 2 keeps the
-architecture that makes these cheap (one catalog, one policy, router-parity, generated
-discovery).
+**Roadmap the substrate enables (beyond Phase 2):** a first-class **`laban` CLI**
+generated from the catalog (the primary external adapter; MCP is a deferred/optional
+second wrapper); the **event push stream** (already Phase 3 in the program — `EventLog`
+promoted to push); full **trace/replay** export. Phase 2 keeps the architecture that
+makes these cheap (one catalog, one policy, router-parity, generated discovery).
+
+**CLI consumer credential model (the substrate must support it).** The `laban` CLI is
+a client of this surface, so Phase 2's credential design accommodates it: **non-sensitive
+whole-app reads** use the app-observe token from `control.json` directly (stateless,
+repeatable). **Session-scoped commands** (own-session sensitive reads, `command.propose`)
+cannot re-redeem the **single-use** C14 bootstrap on every short-lived invocation, so
+they go through a **per-session helper** (the agent process or a small per-session
+daemon) that redeems the bootstrap once and holds the connection-bound credential; the
+CLI is a thin client of that helper over a per-session channel. This keeps C14's "no
+inheritable bearer" property while letting a stateless CLI do session-scoped work.
 
 > **Amendments status (done 2026-06-20):** ADR 0024 (token model → two observe tiers
 > + deferred lease; Amendment section), the program doc `agent-first-terminal-design.md`
