@@ -25,4 +25,3 @@ public enum OptionKeySettings {
     NotificationCenter.default.post(name: didChangeNotification, object: nil)
   }
 }
-

@@ -167,7 +167,10 @@ public enum TerminalCJKFontPolicy {
     return (targetWidth: targetWidth, scaleX: min(1, targetWidth / naturalWidth))
   }
 
-  public static func diagnostics(baseFont: CTFont, cellWidth: CGFloat) -> TerminalCJKFontDiagnostics {
+  public static func diagnostics(
+    baseFont: CTFont,
+    cellWidth: CGFloat
+  ) -> TerminalCJKFontDiagnostics {
     let selected = explicitCascadeFonts(for: baseFont).first
     let selectedFont = selected ?? baseFont
     let postScriptName = CTFontCopyPostScriptName(selectedFont) as String
