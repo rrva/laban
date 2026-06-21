@@ -2002,6 +2002,7 @@ public struct KeyEvent: Equatable, Sendable {
   public var composing: Bool
   public var unshiftedCodepoint: UInt32
   public var text: String?
+  public var optionAsMeta: Bool
 
   public init(
     action: KeyAction = .press,
@@ -2010,7 +2011,8 @@ public struct KeyEvent: Equatable, Sendable {
     consumedModifiers: KeyModifiers = [],
     composing: Bool = false,
     unshiftedCodepoint: UInt32 = 0,
-    text: String? = nil
+    text: String? = nil,
+    optionAsMeta: Bool = false
   ) {
     self.action = action
     self.key = key
@@ -2019,6 +2021,7 @@ public struct KeyEvent: Equatable, Sendable {
     self.composing = composing
     self.unshiftedCodepoint = unshiftedCodepoint
     self.text = text
+    self.optionAsMeta = optionAsMeta
   }
 
   func withLabanKeyEvent<T>(_ body: (LabanKeyEvent) -> T) -> T {
@@ -2122,6 +2125,7 @@ public struct KeyEvent: Equatable, Sendable {
     raw.consumed_modifiers = consumedModifiers.rawValue
     raw.composing = composing ? 1 : 0
     raw.unshifted_codepoint = unshiftedCodepoint
+    raw.option_as_alt = optionAsMeta ? 1 : 0
     raw.utf8 = nil
     raw.utf8_len = 0
 

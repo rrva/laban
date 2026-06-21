@@ -254,4 +254,30 @@ final class LabanSessionKeyEncodingTests: XCTestCase {
     // Bare "$" (0x24), not ESC-prefixed — option-as-alt is FALSE and ALT is consumed
     XCTAssertEqual(Array(outBuf.prefix(outLen)), [0x24])
   }
+
+  func testOptionAsMetaSettingEncodesAltChord() {
+    guard let session = makeFixtureSession() else {
+      XCTFail("session creation failed")
+      return
+    }
+    defer { laban_session_destroy(session) }
+
+    var outBuf = [UInt8](repeating: 0, count: 128)
+    var outLen = 0
+    let rc = outBuf.withUnsafeMutableBytes { outPtr in
+      var ev = LabanKeyEvent()
+      ev.action = LABAN_KEY_ACTION_PRESS
+      ev.key = LABAN_KEY_DIGIT_4
+      ev.modifiers = 4  // LABAN_KEY_MOD_ALT
+      ev.option_as_alt = 1
+      ev.unshifted_codepoint = UInt32(UInt8(ascii: "4"))
+      return laban_session_encode_key(
+        session, &ev,
+        outPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        outPtr.count, &outLen)
+    }
+    XCTAssertEqual(rc, 0)
+    // With option-as-meta enabled, Option-4 should encode as Alt-composed bytes (not raw '$').
+    XCTAssertEqual(Array(outBuf.prefix(outLen)), [0x1B, 0x34])
+  }
 }

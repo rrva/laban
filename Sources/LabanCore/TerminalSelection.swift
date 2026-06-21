@@ -351,6 +351,10 @@ public struct TerminalSelection: Codable, Equatable, Sendable {
   }
 
   private static func rightTrim(_ text: String) -> String {
-    text.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+    text.replacingOccurrences(
+      of: "[\\t\\n\\r \\f\\v]+$",
+      with: "",
+      options: .regularExpression
+    )
   }
 }

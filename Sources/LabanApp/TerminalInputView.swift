@@ -92,7 +92,13 @@ extension TerminalKeyDescriptor {
       case .appCommand, .swallowCommand, .terminalBytes:
         return .swallowCommand
       default:
-        return .encodedKey(KeyEvent(action: .release, key: key, modifiers: modifiers))
+        return .encodedKey(
+          KeyEvent(
+            action: .release,
+            key: key,
+            modifiers: modifiers,
+            optionAsMeta: OptionKeySettings.current()
+          ))
       }
     }
 
@@ -119,12 +125,34 @@ extension TerminalKeyDescriptor {
           action: action,
           key: key,
           modifiers: modifiers,
-          unshiftedCodepoint: unshiftedCodepoint
+          unshiftedCodepoint: unshiftedCodepoint,
+          optionAsMeta: OptionKeySettings.current()
         ))
     }
 
     if let key, Self.isNonTextKey(key) {
-      return .encodedKey(KeyEvent(action: action, key: key, modifiers: modifiers))
+      return .encodedKey(
+        KeyEvent(
+          action: action,
+          key: key,
+          modifiers: modifiers,
+          optionAsMeta: OptionKeySettings.current()
+        ))
+    }
+
+    if modifiers.contains(.alt),
+      let key,
+      OptionKeySettings.current(),
+      let text = characters,
+      !text.isEmpty
+    {
+      return .encodedKey(
+        KeyEvent(
+          action: action,
+          key: key,
+          modifiers: modifiers,
+          optionAsMeta: true
+        ))
     }
 
     return .nativeText
@@ -217,14 +245,17 @@ extension TerminalKeyDescriptor {
     let isPUA = firstScalar >= 0xF700 && firstScalar <= 0xF8FF
     var consumed: KeyModifiers = []
     if descriptor.modifiers.contains(.shift) { consumed.insert(.shift) }
-    if descriptor.modifiers.contains(.alt) { consumed.insert(.alt) }
+    if descriptor.modifiers.contains(.alt) && !OptionKeySettings.current() {
+      consumed.insert(.alt)
+    }
     return KeyEvent(
       action: descriptor.action,
       key: key,
       modifiers: descriptor.modifiers,
       consumedModifiers: consumed,
       unshiftedCodepoint: descriptor.unshiftedCodepoint,
-      text: (isC0 || isPUA) ? nil : text
+      text: (isC0 || isPUA) ? nil : text,
+      optionAsMeta: OptionKeySettings.current()
     )
   }
 

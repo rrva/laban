@@ -206,6 +206,31 @@ final class TerminalSelectionTests: XCTestCase {
     XCTAssertEqual(text, "hello mvp", "trailing spaces must be right-trimmed; got '\(text)'")
   }
 
+  func testTrailingIdeographicSpacePreservedOnCopy() throws {
+    var size = LabanTerminalSize()
+    size.rows = 24
+    size.cols = 80
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    session.write(Array("hello\u{3000}\r\n".utf8))
+    session.poll()
+
+    guard let snap = session.snapshot() else {
+      XCTFail("snapshot must be non-nil")
+      return
+    }
+    defer { laban_snapshot_destroy(snap) }
+
+    let sel = TerminalSelection(
+      sessionId: session.id,
+      anchor: TerminalCellCoordinate(row: 0, col: 0),
+      focus: TerminalCellCoordinate(row: 0, col: 79)
+    )
+    let text = sel.selectedText(from: snap.pointee)
+    XCTAssertEqual(text, "hello\u{3000}", "IDEOGRAPHIC SPACE must be preserved: got '\(text)'")
+  }
+
   func testSelectedTextJoinsSoftWrappedRowsWithoutNewline() throws {
     var size = LabanTerminalSize()
     size.rows = 24

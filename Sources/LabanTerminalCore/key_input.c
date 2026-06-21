@@ -132,8 +132,9 @@ static int laban_session_encode_key_locked(
     /* Sync encoder from terminal state; this resets option-as-alt to FALSE. */
     ghostty_key_encoder_setopt_from_terminal(s->key_encoder, s->terminal);
 
-    /* Keep option-as-alt false — a future settings path can override this. */
-    GhosttyOptionAsAlt opt_as_alt = GHOSTTY_OPTION_AS_ALT_FALSE;
+    GhosttyOptionAsAlt opt_as_alt = event->option_as_alt == 0
+      ? GHOSTTY_OPTION_AS_ALT_FALSE
+      : GHOSTTY_OPTION_AS_ALT_TRUE;
     ghostty_key_encoder_setopt(s->key_encoder,
         GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &opt_as_alt);
 

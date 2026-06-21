@@ -1190,6 +1190,7 @@ typedef struct {
     int             consumed_modifiers;
     int             composing;
     uint32_t        unshifted_codepoint;
+    int             option_as_alt;
     const char     *utf8;
     size_t          utf8_len;
 } LabanKeyEvent;

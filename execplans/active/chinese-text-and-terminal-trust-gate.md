@@ -98,7 +98,7 @@ so nobody re-investigates them.
       than default, rejected Swift-side ambiguous-width overrides without a
       libghostty C API knob, and recorded preedit width as an intentional
       non-grid `TerminalDisplayWidth` fallback.
-- [ ] M6 — Keyboard and paste polish.
+- [x] (2026-06-21) M6 — Keyboard and paste polish.
 - [ ] M5 — Emoji / color glyph path, including a user setting for color vs.
       monochrome emoji rendering.
 - [ ] M7 — Product polish and ecosystem (zh-Hans / proxy / vibrancy) — deferred,
@@ -589,13 +589,20 @@ wired there.
   `testDigitKeyDuringMarkedTextRoutesToNativeText`,
   `testTrailingIdeographicSpacePreservedOnCopy`,
   `testBracketedPasteDeliversCJKBytesExactly`.
-- Debug/artifact: `GET /debug/input-log` shows the Option routing decision;
-  `GET /debug/clipboard` shows paste text + bracketed flag.
+- Debug/artifact: `GET /debug/input-log` shows Option routing (encoded route
+  when option-as-Meta is on); `GET /debug/clipboard` shows paste text +
+  bracketed flag.
 - `./scripts/build-app` exit 0; `swift test --filter 'TerminalKeyInput|TerminalPaste|TerminalSelection'` green.
 - Renderer parity: N/A (input/clipboard).
 - HeadlessDebugRuntime: drive via `/debug/actions` `typeText`/`paste`/`key`.
 - Rollback: each is additive; the Option setting defaults to today's behavior
   (Option-as-text), so default behavior is unchanged.
+
+  Recommended M6 regression assertions:
+  - `testOptionAsMetaSettingEncodesAltChord` (TerminalKeyInput / TerminalSessionKeyEncoding),
+  - `testDigitKeyDuringMarkedTextRoutesToNativeText` (TerminalKeyInput),
+  - `testTrailingIdeographicSpacePreservedOnCopy` (TerminalSelection),
+  - `testBracketedPasteDeliversCJKBytesExactly` (TerminalPaste).
 
 ### Milestone 7 — Product polish and ecosystem (deferred, spec-gated)
 
@@ -704,6 +711,12 @@ fresh context, and the repository gates are green:
   escape hatch, so M5 must surface a global `Emoji rendering: Color / Monochrome`
   setting rather than silently replacing the monochrome path.
   Date/Author: 2026-06-21, user direction recorded by Codex.
+- Decision: **M6 Option-as-Meta is a global, no-profile setting; default is false.**
+  Rationale: this preserves today’s behavior for users and existing copy flows, and
+  keeps profile-scope behavior out of scope until a profile architecture exists.
+  The UTF-8 selection trim change is explicit: preserve U+3000 in copied text and
+  only trim ASCII whitespace at the right edge.
+  Date/Author: 2026-06-21, Codex.
 - Decision (open, to resolve in M5): **Color emoji path: vector, bitmap, or
   hybrid.** Leaning: a separate BGRA8 color atlas + color-glyph detection + a new
   shader variant (hybrid), leaving the R8 + tint path unchanged. This is the
@@ -742,8 +755,8 @@ mechanical checks.
       display-width column; mutating it to `text.count` makes it FAIL.
 - [ ] M6: the Option-as-Meta plumbing landed — `key_input.c:136` no longer
       hard-codes `GHOSTTY_OPTION_AS_ALT_FALSE` independent of the new setting — and a
-      copy test asserts the chosen trailing-U+3000 behavior (`rightTrim`'s `"\\s+$"`
-      at `TerminalSelection.swift:353-355` no longer silently strips it).
+      copy test asserts the chosen trailing-U+3000 behavior (`rightTrim`'s ASCII-only
+      trim in `TerminalSelection.swift:353-355` preserves trailing ideographic space).
 - [ ] No duplicated work: this plan does not re-implement DEC mode 2027 width
       (ADR 0021), the bug-audit M2 scrollback/find/copy/word-select/IME-caret fix,
       the kimi-code Kitty-image/tmux-DCS/width-conformance work, the glyph-

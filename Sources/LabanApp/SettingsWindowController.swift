@@ -25,6 +25,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let cursorStylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let optionAsMetaCheckbox = NSButton(
+    checkboxWithTitle: "Option as Meta", target: nil, action: nil)
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: "Blink cursor", target: nil, action: nil)
 
@@ -168,6 +170,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       + "so emoji and clusters line up immediately. A program can still toggle "
       + "it at runtime. Applies to new sessions."
 
+    optionAsMetaCheckbox.target = self
+    optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
+    optionAsMetaCheckbox.toolTip =
+      "When enabled, Option-modified keys are sent to the terminal as Alt/Meta "
+      + "instead of being treated as native text input."
+
     let grid = NSGridView(views: [
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
@@ -180,6 +188,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
       [makeLabel("Identity:"), identityPopUp],
+      [NSGridCell.emptyContentView, optionAsMetaCheckbox],
     ])
     grid.translatesAutoresizingMaskIntoConstraints = false
     grid.column(at: 0).xPlacement = .trailing
@@ -248,6 +257,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     if let row = graphemeWidthOptions.firstIndex(of: GraphemeWidthSettings.current()) {
       graphemeWidthPopUp.selectItem(at: row)
     }
+    optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
   }
 
   // MARK: Actions
@@ -320,6 +330,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < graphemeWidthOptions.count else { return }
     GraphemeWidthSettings.set(graphemeWidthOptions[row])
+  }
+
+  @objc private func optionAsMetaChanged(_ sender: NSButton) {
+    OptionKeySettings.set(sender.state == .on)
   }
 
   @objc private func blinkChanged(_ sender: NSButton) {

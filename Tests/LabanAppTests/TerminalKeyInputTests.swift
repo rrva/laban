@@ -178,6 +178,7 @@ final class TerminalKeyInputTests: XCTestCase {
   }
 
   func testOptionProducedTextRoutesToNativeTextWithOptionConsumed() {
+    OptionKeySettings.set(false)
     // Option-4 on some layouts produces "$"; Option is consumed by native text input
     let desc = TerminalKeyDescriptor(
       action: .press,
@@ -192,6 +193,39 @@ final class TerminalKeyInputTests: XCTestCase {
     XCTAssertNotNil(keyEvent)
     XCTAssertTrue(keyEvent!.consumedModifiers.contains(.alt))
     XCTAssertEqual(keyEvent!.text, "$")
+  }
+
+  func testOptionAsMetaSettingEncodesAltChord() {
+    OptionKeySettings.set(true)
+    defer { OptionKeySettings.set(false) }
+    let desc = TerminalKeyDescriptor(
+      action: .press,
+      key: .digit4,
+      modifiers: .alt,
+      characters: "$",
+      charactersIgnoringModifiers: "4"
+    )
+    guard case .encodedKey(let keyEvent) = desc.route() else {
+      XCTFail("expected .encodedKey when Option-as-Meta is enabled")
+      return
+    }
+    XCTAssertEqual(keyEvent.key, .digit4)
+    XCTAssertEqual(keyEvent.modifiers, .alt)
+    XCTAssertEqual(keyEvent.optionAsMeta, true)
+    XCTAssertFalse(keyEvent.consumedModifiers.contains(.alt))
+  }
+
+  func testDigitKeyDuringMarkedTextRoutesToNativeText() {
+    OptionKeySettings.set(true)
+    defer { OptionKeySettings.set(false) }
+    let desc = TerminalKeyDescriptor(
+      action: .press,
+      key: .digit1,
+      modifiers: .alt,
+      characters: "!",
+      charactersIgnoringModifiers: "1"
+    )
+    XCTAssertEqual(desc.route(hasMarkedText: true), .nativeText)
   }
 
   func testControlCRoutesToEncodedKeyWithNoText() {

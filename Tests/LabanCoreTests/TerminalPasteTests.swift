@@ -28,6 +28,23 @@ final class TerminalPasteTests: XCTestCase {
     XCTAssertEqual(text, "\u{1b}[200~hello\u{1b}[201~")
   }
 
+  func testBracketedPasteDeliversCJKBytesExactly() throws {
+    var size = LabanTerminalSize()
+    size.rows = 4
+    size.cols = 20
+    let session = try Session.fixture(size: size)
+    defer { session.close() }
+
+    _ = session.write(Array("\u{1b}[?2004h".utf8))
+    let sent = session.encodePaste("中文")
+
+    XCTAssertEqual(sent.result?.bracketed, true)
+    XCTAssertEqual(sent.result?.bytesWritten, sent.bytes.count)
+    let text = String(bytes: sent.bytes, encoding: .utf8)
+    XCTAssertEqual(text, "\u{1b}[200~中文\u{1b}[201~")
+    XCTAssertEqual(Array(sent.bytes), Array("\u{1b}[200~中文\u{1b}[201~".utf8))
+  }
+
   /// Regression: in labpty / laband mode the local Session is a
   /// fixture (no PTY in-process), so writePasteCapturingBytes would
   /// feed the encoded paste bytes into the local VT — rendering the

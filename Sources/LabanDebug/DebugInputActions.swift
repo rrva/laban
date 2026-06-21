@@ -176,7 +176,8 @@ struct DebugInputActions {
       modifiers: mods,
       consumedModifiers: consumed,
       unshiftedCodepoint: unshiftedCodepoint,
-      text: request.text
+      text: request.text,
+      optionAsMeta: OptionKeySettings.current()
     )
     var encodedHex: String? = nil
     var encodedLength: Int? = nil
