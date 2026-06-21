@@ -812,6 +812,9 @@ mechanical checks.
       `.artifacts/ime-trust-review/apple-pinyin/preedit-zhongwen-window.png` and
       `.artifacts/ime-trust-review/apple-pinyin/final-zhongwen-window.png`, with
       transcript notes at `.artifacts/ime-trust-review/apple-pinyin/transcript.md`.
+      A follow-up retry after reselecting Apple Pinyin proved digit candidate keys:
+      `zhong wen` + digit `1` committed `中文`, and segmented `zhong` + digit `1`,
+      `wen` + digit `2` committed `中文` without switching tabs.
       **BLOCKED:** Rime/Squirrel is not installed on this host (`/Library/Input Methods`
       is empty; `~/Library/Input Methods` contains only `.localized`), so the required
       Rime/Squirrel transcript/screenshots are still missing.
@@ -905,10 +908,13 @@ Review findings (filled in by the review agent):
   `.artifacts/ime-trust-review/apple-pinyin/final-zhongwen-window.png`.
   `screencapture -x` failed with `could not create image from display`, so the
   PNGs were captured with `CGWindowListCreateImage` and Swift availability checks
-  disabled. An interrupted run and an Apple Pinyin segmented-candidate run were
-  discarded; the recorded evidence is the clean tab 12 pass. A candidate-panel
-  expansion attempt with Down-arrow was also discarded because it left raw
-  `zhongwen` in the terminal value.
+  disabled. Follow-up retry after reselecting Apple Pinyin: tab 14 proved marked
+  `zhong wen` survives Down without raw commit and digit `1` selects the IME
+  candidate, committing `中文`; tab 15 proved segmented candidate selection
+  (`zhong` + digit `1`, `wen` + digit `2`) commits `中文`. Additional local
+  artifact: `.artifacts/ime-trust-review/apple-pinyin/segmented-digit-candidates-final-window.png`.
+  The earlier user-interfered run and the earlier `osascript` Down-arrow run that
+  left raw `zhongwen` are discarded and not counted.
 - Manual IME transcript still required: install/enable Rime/Squirrel, compose
   `中文`, screenshot the candidate window at the cursor and the committed cells,
   in `classic` and `gpuDriven` renderers.
