@@ -759,9 +759,10 @@ gate passes. See `../../PLANS.md` "Review gate and review-fix loop". Prefer
 mechanical checks.
 
 - [x] `./scripts/build-app` exits 0 at the review commit; `swift test` exits 0
-      (record passed count). Not rerun in the fresh review pass: baseline is
-      the executing agent's `./scripts/check` result at HEAD `0137e25`, including
-      `swift test` 1744 tests / 7 skipped / 0 failures.
+      (record passed count). Latest automated closeout is the executing agent's
+      `./scripts/check` result at implementation commit `84f7061`, including
+      `swift test` 1745 tests / 8 skipped / 0 failures; smoke-runtime, test-e2e,
+      and coverage-labpty also passed.
 - [x] All nine verified audit gaps (G1–G9 in Milestone 0) are each addressed by a
       milestone or explicitly deferred with a reason in the deferred table.
 - [x] The P0 trust gate (M1) proves a real Chinese workflow: the fixture
@@ -879,6 +880,12 @@ Review findings (filled in by the review agent):
   the color proof is automated pixel/atlas/debug-state coverage. The gpuDriven
   color route deliberately fail-closes to the classic command path instead of
   adding a separate retained BGRA cell buffer.
+- Review-gate automated closeout (2026-06-21): `./scripts/check` passed at
+  implementation commit `84f7061`, including full `swift test` 1745 tests / 8
+  skipped / 0 failures, smoke-runtime (`foundExpectedText: true`), `test-e2e`,
+  and `coverage-labpty` with daemon MC/DC 46.86% holding the 45% floor. Remaining
+  Review Gate blocker is only the manual Apple Pinyin + Rime/Squirrel IME
+  transcript/screenshots.
 - Manual IME transcript (to fill on first execution): install
   `LABAN_INSTALL_PATH="$HOME/Laban-cjk.app" ./scripts/install-app`; with Apple
   Pinyin and then Rime/Squirrel, compose `中文`, screenshot the candidate window at
