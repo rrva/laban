@@ -129,7 +129,7 @@ be `input` + a distinct `execute`, never the vague `control`).
 
 | Token | Where it lives | Grants | Scope |
 | --- | --- | --- | --- |
-| **app-observe** | `control.json` (`0600`) | `.observe` (redacted `app.stateSummary`) | whole-app but **non-sensitive** |
+| **app-observe** | `control.json` (`0600`) | `.observe` (redacted `app.stateSummary`) | whole-app **activity metadata** (no terminal content) |
 | **session-observe** | env of an **agent-attached session only** (per-session; var `LABAN_SESSION_OBSERVE_TOKEN`) | `.observeSensitive` + `.navigate` (benign own-session nav: scroll/select own tab) + `.propose` (command proposals) | **its own session only** |
 | **fixture** | headless tests only (`laban-agent`/`LabanDebug`) | all incl. `.input` | whole-app (test-only; `validate()` bars `.fixture` on `.gui`) |
 
@@ -179,6 +179,7 @@ Milestone 2A — Capability + scope enforcement, two observe tiers (`LabanContro
 - [ ] Two start paths: GUI `start()` mints an **app-observe** token (→ `control.json`) and a **session-observe minter** (per-session, session-bound); returns them to the in-process caller. Headless `start(host:port:)` keeps `debugToken` (fixture-class, whole-app) so `laban-agent`/`LabanDebugTests` are byte-stable. **`ControlReadiness` unchanged** (`{debugServer, debugToken, pid, runId}`); no sensitive token serialized into readiness JSON or any world-path file.
 - [ ] `LabanControlPolicy` (generated from `IntentCatalog`): `grants(appObserve)={.observe}`; `grants(sessionObserve)={.observe,.observeSensitive,.navigate,.propose}`; `grants(fixture)={.fixture,.observe,.observeSensitive,.navigate,.propose,.input}`. No token grants `.clipboard`; only fixture grants `.input`. `authorize(intentID:, granted:, targetSession:, tokenScope:)` checks `requiredCapability ∈ granted` **and**, for `.observeSensitive`/`.navigate`/`.propose`, `targetSession ∈ tokenScope`. `targetSession` is derived per C12 (session-bound token + omitted target → the token's **own** session, never the active tab; whole-app token → legacy active-session). Unknown id → deny.
 - [ ] Deny-by-default made real: remove the catalog builder's implicit `requiredCapability`/`dataSensitivity` defaults (or track `explicit`); `IntentCatalog.validate()` + `LabanControlGen --check` **fail** unless every descriptor declares both explicitly.
+- [ ] **Reclassify the shipped headless clipboard family off `.clipboard`** (which no token grants — `.clipboard` is reserved for a future live OS-host opt-in). The catalog today has `clipboard.setText`/`clipboard.copy`/`clipboard.paste` requiring `.clipboard`, which would be unreachable after enforcement and break headless byte-stability. New classification, all `headlessOnly`, `dataSensitivity: .clipboard`: `clipboard.read` → `.observeSensitive`; `clipboard.setText`/`clipboard.copy` → `.fixture`; `clipboard.paste` → `.input` (`sideEffects.ptyInput: true`). The fixture token grants all of these, so the shipped e2e flows pass; **no Phase-2 descriptor requires `.clipboard`** (assert with a grep gate).
 - [ ] Guard taxonomy: missing/invalid token → `401`; bad `Host`/any `Origin` → `403`; capability-insufficient → `403`; cross-session sensitive read → `403`. **`isLoopbackHost` rejects non-numeric ports** (`localhost:evil`, `127.0.0.1:evil`, `[::1]:evil`). Token values never logged.
 - [ ] `LabanControlTests` (spy router): app-observe token → `.observe` `200`, `.observeSensitive`/`.navigate`/`.propose` `403` (no router call); session-observe token → own-session `.observeSensitive` `200`, **other-session `403`**; `.input`/`.clipboard` rejected for all non-fixture tokens (policy-level assertion); missing → `401`; forged `Host`/any `Origin`/non-numeric port → `403`. `control.json` contains the app-observe token only.
 
@@ -383,7 +384,7 @@ Discovery/schema byte-stable via `LabanControlGen`.
 
 ### 2F — Flip observe-on-by-default (release-checklist gate)
 **§5.4 release checklist — every item must hold (each backed by a test/check):**
-- [ ] `control.json` grants an **observe-only** token (never sensitive/control/input).
+- [ ] `control.json` grants an **observe-only** token (never a privileged token — `.observeSensitive`/`.navigate`/`.propose`/`.input`).
 - [ ] `.observeSensitive` requires the separate per-session env-injected token/scope.
 - [ ] No live token grants `.input`/`.clipboard`/cross-tab/destructive control.
 - [ ] The token file is created `0600` **from the first byte** (not chmod-after-write).
@@ -501,7 +502,7 @@ no-inject fallback).
 
 A fresh-state agent verifies (mechanical; from repo root) once executed:
 
-- [ ] `control.json` contains the app-observe token and **no** sensitive/control/input token; `grep` both minted tokens across logs/non-token artifacts → zero (the app-observe token appears only inside `control.json`).
+- [ ] `control.json` contains the app-observe token and **no** privileged token (`.observeSensitive`/`.navigate`/`.propose`/`.input`); `grep` both minted tokens across logs/non-token artifacts → zero (the app-observe token appears only inside `control.json`).
 - [ ] `ControlReadiness` is still `{debugServer, debugToken, pid, runId}` (no new field); no sensitive token serialized.
 - [ ] Spy-router: app-observe + `.observeSensitive` → `403` (no router call); session-observe + own-session `.observeSensitive` → `200`, **other session → `403`**; `.input`/`.clipboard` denied for all non-fixture tokens; missing → `401`.
 - [ ] `LiveIntentRouter` answers `session.detail`/`selection.read`/`find.state` for the caller's own session against a live `AppModel` (LabanAppTests), shape-identical to `HeadlessIntentRouter`; cross-session → `403`; `session.list`/`app.state` redacted to the owning session.
@@ -510,6 +511,7 @@ A fresh-state agent verifies (mechanical; from repo root) once executed:
 - [ ] `command.propose` is a data object: a test asserts proposing a command does **not** write to the PTY (no `session.write`/coordinator write from the propose path); cross-session propose → `403`.
 - [ ] `grep -rn "import LabanDebug" Sources/LabanApp/Control` → nothing for the read path; `LabanControl` deps still exactly `["LabanCore"]` and it imports no app-side `EventLog`.
 - [ ] `swift test --filter CatalogParityTests` fails if a `gui:true && headless:true` intent is removed from one surface; completeness test fails if any descriptor is unclassified, any `gui:true` requires `.input`/`.clipboard`, the `gui:true` `.navigate` set is not exactly `{tab.select, terminal.scrollViewport}`, or the `gui:true` `.propose` set is not exactly `{command.propose}` (add `tab.close`/`session.kill` as a `gui:true` `.navigate` → expect failure; revert).
+- [ ] No descriptor requires `.clipboard`: `grep -RE "requiredCapability:? \.?clipboard" Sources/LabanCore/Intents` → **zero**. The shipped headless clipboard flows (`clipboard.read`/`setText`/`copy`/`paste`) pass with the fixture token; app-observe/session-observe tokens cannot call them; no `gui:true` clipboard route is advertised.
 - [ ] `app.stateSummary` snapshot test: the response keys are exactly the allowlist (schema/version, runID, readiness, `inputActuation:"unavailable"`, `crossSessionSensitiveReads:"denied"`, window/tab/session counts, opaque per-run ids, `callerOwnedSessionID?`, coarse booleans, **per-tab titles + cwd/repo/workspace + process command/args/pid**) and **none** of the forbidden keys (terminal text/grid/scrollback, selected text, find needle, clipboard, a11y text, keystroke/input log, agent metadata, launch-stable ids); adding a key fails the snapshot.
 - [ ] `0600`-from-first-byte: `ControlAdvertisement` uses `O_CREAT|O_EXCL` + `S_IRUSR|S_IWUSR`, no `chmod` after write (grep).
 - [ ] Host/Origin matrix includes `[::1]evil`, `127.0.0.1.evil.com`, `localhost.evil.com`, `localhost:evil`, `127.0.0.1:evil`, `[::1]:evil` → all `403`.
