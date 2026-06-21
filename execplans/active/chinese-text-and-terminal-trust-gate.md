@@ -93,7 +93,11 @@ so nobody re-investigates them.
       one-column `Character` enumeration. `swift test --filter FrameProducerPreedit`
       passed 8 tests; `./scripts/build-app` passed. Manual gpuDriven IME
       screenshot artifacts remain to be captured.
-- [x] (2026-06-21) M4 — Width policy coherence (verify single truth; ambiguous-width policy).
+- [x] (2026-06-21) M4 — Width policy coherence. Added
+      `TerminalWidthPolicyGuardTests`, kept `preferGrapheme` as opt-in rather
+      than default, rejected Swift-side ambiguous-width overrides without a
+      libghostty C API knob, and recorded preedit width as an intentional
+      non-grid `TerminalDisplayWidth` fallback.
 - [ ] M6 — Keyboard and paste polish.
 - [ ] M5 — Emoji / color glyph path, including a user setting for color vs.
       monochrome emoji rendering.
@@ -803,7 +807,7 @@ Review findings (filled in by the review agent):
   `text.count` / `enumerated()` column-stepping pattern. Deviation: no manual
   `gpuDriven` Apple Pinyin/Rime screenshot artifact was captured in this slice.
 - M4 automated evidence (2026-06-21): `swift test --filter 'TerminalWidthConformance|Mode2027|TerminalWidthPolicyGuard'`
-  passed 6 tests, and a focused guard passed `Tests/LabanCoreTests/TerminalWidthPolicyGuardTests`,
+  passed 28 tests, including `Tests/LabanCoreTests/TerminalWidthPolicyGuardTests`,
   confirming `TerminalDisplayWidth` usage is confined to fallback sites.
 - Manual IME transcript (to fill on first execution): install
   `LABAN_INSTALL_PATH="$HOME/Laban-cjk.app" ./scripts/install-app`; with Apple
