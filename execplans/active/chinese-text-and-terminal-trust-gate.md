@@ -89,16 +89,20 @@ so nobody re-investigates them.
       this execution and remain a Review Gate/manual artifact task.
 - [ ] M3 — IME/preedit correctness (Metal `gpuDriven` preedit display-column fix).
 - [ ] M4 — Width policy coherence (verify single truth; ambiguous-width policy).
-- [ ] M5 — Emoji / color glyph path.
 - [ ] M6 — Keyboard and paste polish.
+- [ ] M5 — Emoji / color glyph path, including a user setting for color vs.
+      monochrome emoji rendering.
 - [ ] M7 — Product polish and ecosystem (zh-Hans / proxy / vibrancy) — deferred,
       spec-gated.
 - [ ] Review Gate passed.
 
 Milestones are ordered by trust priority. M1–M3 are highest value and have no
 inter-dependencies (they may land in any order or in parallel). M4 consolidates
-the width story. M5 is orthogonal renderer work. M6 is small high-value polish.
-M7 is product-scope and gated on `docs/product/spec.md` amendments.
+the width story. **Execution order after M4 is M6 before M5**: land keyboard and
+paste polish before the heavier emoji renderer work. M5 remains the color-emoji
+milestone number because G5 maps to it, but its implementation must now include a
+user-visible emoji rendering setting. M7 is product-scope and gated on
+`docs/product/spec.md` amendments.
 
 ## Context and Orientation
 
@@ -481,6 +485,11 @@ emoji to "the existing color/bitmap path", but that path is monochrome;
   `CTFontCreatePathForGlyph == nil` on a bitmap font), rasterized with
   `CTFontDrawGlyphs` into a color CGContext, sampled full-RGBA in a new shader
   variant — leaving the R8 atlas + tint path unchanged for monochrome glyphs.
+- **Emoji rendering setting:** surface a global user setting in Settings, e.g.
+  `Emoji rendering: Color / Monochrome`. `Monochrome` must preserve today's R8
+  tint path for compatibility and rollback. `Color` enables the new BGRA/color
+  path. The setting must be exposed through the same runtime/debug state surfaces
+  used by other renderer settings so headless tests can assert both modes.
 - **Cell-metric safety:** color emoji must still occupy the engine-assigned cells
   (one or two) without changing cell metrics — the M2/atlas wide-glyph clamp
   applies.
@@ -497,14 +506,18 @@ wired there.
 - Predicted files: `Sources/LabanRenderer/MetalGlyphAtlas.swift`,
   `Sources/LabanRenderer/Shaders.metal`,
   `Sources/LabanRenderer/SoftwareRenderer.swift`,
-  `Sources/LabanRenderer/MetalRenderer.swift`; possibly a new
-  `Sources/LabanRenderer/ColorGlyphAtlas.swift`; coordination note in
+  `Sources/LabanRenderer/MetalRenderer.swift`,
+  `Sources/LabanApp/SettingsWindowController.swift`, a new
+  `Sources/LabanCore/EmojiRenderingSettings.swift` or equivalent settings store;
+  possibly a new `Sources/LabanRenderer/ColorGlyphAtlas.swift`; coordination note in
   `vector-glyph-renderer.md`; possibly `docs/adr/00NN-color-glyph-atlas.md`.
 - Tests: `Tests/LabanRendererTests/ColorEmojiTests.testEmojiRendersWithColorPixels`
   (probe asserts R≠G≠B somewhere in the emoji cell); occupancy test reuses the
-  glyph-correctness-matrix corpus.
+  glyph-correctness-matrix corpus; a setting test proves `Monochrome` keeps the
+  legacy tint path and `Color` produces non-grayscale pixels.
 - Debug/artifact: `POST /debug/pixel-probe` color assertion; `/debug/screenshot`
-  emoji artifacts; `/debug/atlas` for the color atlas.
+  emoji artifacts; `/debug/atlas` for the color atlas; debug state reports the
+  effective emoji rendering setting.
 - `./scripts/build-app` exit 0; `swift test --filter 'ColorEmoji|GPUCellParity'` green.
 - Renderer parity: software and classic both produce color emoji; if `gpuDriven`
   can't, it must fail-closed to `classic` for color-glyph cells (per
@@ -512,8 +525,8 @@ wired there.
 - HeadlessDebugRuntime: color atlas works on the offscreen software surface
   (primary CI gate).
 - Rollback: gate the color atlas behind a feature path; falling back to the R8
-  path restores monochrome behavior. Compatibility: monochrome glyph path is
-  byte-identical-preserved.
+  path restores monochrome behavior. Compatibility: the `Monochrome` setting keeps
+  the current glyph path byte-identical where feasible.
 
 ### Milestone 6 — Keyboard and paste polish
 
@@ -629,6 +642,9 @@ fresh context, and the repository gates are green:
   Swift second-truth for grid text).
 - IME acceptance includes both Apple Pinyin and Rime/Squirrel (manual transcript +
   screenshots in Artifacts).
+- M5 acceptance includes a user-visible `Emoji rendering` setting whose
+  `Monochrome` mode preserves today's rendering path and whose `Color` mode
+  proves non-grayscale emoji pixels.
 - No regression to MVP behavior (`docs/product/mvp.md`), especially the glyph
   requirements (`mvp.md:290-294`: fixed-cell atlas, no ligatures/shaping, fallback
   must not change cell metrics).
@@ -682,6 +698,12 @@ fresh context, and the repository gates are green:
   Bundling Noto/Sarasa would add license and binary-size cost without current
   evidence that PingFang is insufficient; a font picker is product/settings scope.
   Date/Author: 2026-06-21, Codex.
+- Decision: **Execute M6 before M5, and make M5 user-controllable.**
+  Rationale: keyboard/paste polish is smaller and should land before the higher-
+  blast-radius color atlas work. Color emoji also needs an explicit compatibility
+  escape hatch, so M5 must surface a global `Emoji rendering: Color / Monochrome`
+  setting rather than silently replacing the monochrome path.
+  Date/Author: 2026-06-21, user direction recorded by Codex.
 - Decision (open, to resolve in M5): **Color emoji path: vector, bitmap, or
   hybrid.** Leaning: a separate BGRA8 color atlas + color-glyph detection + a new
   shader variant (hybrid), leaving the R8 + tint path unchanged. This is the
