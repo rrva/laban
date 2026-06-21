@@ -199,7 +199,7 @@ IntentResult  // { ok, actedSessionId?, actedTabId?, eventId?, error? }
 QueryResult   // Codable read response (per-query payload)
 Capability    // .observe | .observeSensitive | .navigate | .propose | .input | .clipboard | .fixture
               //   .input  = actuation (typeText/sendKey/paste/mouse), fixture/headless-only
-              //   .navigate = benign live nav (tab.select/scrollViewport)
+              //   .navigate = benign live nav (scrollViewport; tab.select removed — focus-hijack)
               //   .propose  = command.propose (a reviewed suggestion, never PTY bytes)
               //   (.control retired — a future actuation/lease tier is .input + a distinct .execute)
 IntentDescriptor   // the metadata record below
@@ -332,7 +332,8 @@ transport and split capabilities. The model has a **floor** (Phase 2) and a
 > **Superseded for Phase 2 by the header Amendment (2026-06-20).** The `.control`
 > row is **retired and split**: its *actuation* (typeText/sendKey/paste, mouse)
 > becomes an `.input` capability that is headless/`.fixture`-only and off the live
-> GUI; its benign navigation becomes **`.navigate`** (`tab.select`, `scrollViewport`)
+> GUI; its benign navigation becomes **`.navigate`** (`scrollViewport` only; `tab.select`
+> removed as a focus-hijack/input-redirect vector)
 > and `command.propose` becomes its own **`.propose`**. There is no `.control`
 > capability in the end-state enum (`observe, observeSensitive, navigate, propose,
 > input, clipboard, fixture`). The "Token classes" app-scoped control/sensitive token
@@ -494,7 +495,7 @@ behavior), and **status**.
   injection — **no app-wide control token**), `.observe`/`.observeSensitive`
   **session-scoped** (cross-tab → 403), "agent attached" indicator, disable switch,
   audit. The live surface is **observe + benign own-session navigation only**
-  (`scroll`, `tab.select`); **input/mouse/clipboard actuation and cross-tab are NOT
+  (`scroll` only; `tab.select` removed — focus-hijack); **input/mouse/clipboard actuation and cross-tab are NOT
   on the live surface** — the input family is `.input`, headless/`.fixture`-only.
   Add **command proposals** (reviewed data object, never PTY input) and the
   **catalog-parity test**. **Flip observe-on-by-default ON** behind the §5.4

@@ -60,9 +60,10 @@ happens only once the floor below exists.
   **from the first byte** (open `O_CREAT|O_EXCL,0600`, write, `fsync`,
   `rename(2)`; never `.atomic`-write-then-`chmod`, which briefly exposes the
   token). Grants `.observe` (non-sensitive state) only.
-- **Control/sensitive token** *(superseded for Phase 2 — see Amendment: replaced by
-  the agent-attached-only, session-scoped `LABAN_SESSION_OBSERVE_TOKEN`; no app-wide
-  control token, no live actuation)* — injected into the environment
+- **Control/sensitive token** *(superseded for Phase 2 — see Amendment: replaced by an
+  agent-attached-only, session-scoped session-observe credential obtained via a
+  one-shot attach handshake; no app-wide control token, no live actuation)* — injected
+  into the environment
   (`LABAN_CONTROL_TOKEN`/`LABAN_CONTROL_URL`) of children Laban spawns. Grants
   `.control` + `.observeSensitive`. A same-user process can read the file but
   cannot read another process's environment on macOS, so control/sensitive
@@ -112,19 +113,23 @@ for Phase 2; the deferred items return only behind an explicit, user-leased mode
     scrollback/selection/find-needle/clipboard/keystroke log) — that line stays
     `.observeSensitive` (the §5.1 row's "process cwd/command" moves to app-observe;
     its scrollback/grid/input-log stays sensitive).
-  - **session-observe** (`LABAN_SESSION_OBSERVE_TOKEN`) — injected **only into
-    sessions explicitly marked agent-attached**, never into a normal user shell;
-    **per-session and session-bound** (minted from a preallocated `sessionID` before
-    env composition), grants `.observeSensitive` + benign own-session navigation
-    (`scroll`, `tab.select`) **for its own session only**. Only `LABAN_CONTROL_URL`
-    is shared across sessions. A normal shell's child processes inherit no sensitive
-    authority. If env secrecy cannot be proven on the supported macOS/SIP matrix, no
-    session-observe token is injected at all.
+  - **session-observe** — obtained **only by sessions explicitly marked
+    agent-attached** via a **one-shot attach handshake**: the env carries a single-use
+    bootstrap (`LABAN_SESSION_ATTACH`, bound to a preallocated `sessionID`) + the URL;
+    the agent **redeems it once** for a **connection-bound** credential and the server
+    invalidates the bootstrap, so a descendant (npm/test/`curl | sh`) that reads the
+    env later finds a spent bootstrap and gets no working credential — **no long-lived
+    bearer in any inheritable variable**. Grants `.observeSensitive` + benign
+    own-session **view scroll** (`scrollViewport`; **`tab.select` removed** — it
+    hijacks focus / redirects keystrokes) **for its own session only**. A normal
+    shell's children inherit no sensitive authority. If env secrecy cannot be proven
+    on the supported macOS/SIP matrix, no bootstrap is injected at all.
 - **Capability `.control` is renamed `.navigate`; `command.propose` splits into
   `.propose`.** Post-pivot the old `.control` granted only benign navigation +
   proposals (it no longer "controls" the terminal), so the name was misleading.
-  `.navigate` = benign own-session view/focus (`tab.select`, `scrollViewport`);
-  `.propose` = `command.propose`. `control` is **retired** (a future actuation/lease
+  `.navigate` = benign own-session view scroll (`scrollViewport`; `tab.select` removed
+  as a focus-hijack vector); `.propose` = `command.propose`. `control` is **retired**
+  (a future actuation/lease
   tier is `.input` + a distinct `.execute`, never `.control`). End-state enum:
   `observe, observeSensitive, navigate, propose, input, clipboard, fixture`.
 - **Per-session scoping is pulled forward** (the ADR had deferred it): for
