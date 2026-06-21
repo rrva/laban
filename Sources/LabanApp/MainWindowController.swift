@@ -507,6 +507,12 @@ final class MainWindowController: NSWindowController {
       controller.scrollDebugServer = server
     }
 
+    // The GUI control server is a DEBUG-only opt-in. Phase 1's surface has no
+    // capability enforcement and a single same-user-readable token in control.json,
+    // so it must never be reachable from a shipped (release) build. The hardened
+    // Phase 2 floor is required before this can ship enabled. Release builds compile
+    // this out entirely; the headless `laban-agent` harness is unaffected.
+    #if DEBUG
     if ProcessInfo.processInfo.environment["LABAN_CONTROL_SERVER"] == "1" {
       do {
         let router = LiveIntentRouter(model: model)
@@ -524,6 +530,7 @@ final class MainWindowController: NSWindowController {
         AppLog.app.error("control server failed: \(String(describing: error))")
       }
     }
+    #endif
 
     return controller
   }
