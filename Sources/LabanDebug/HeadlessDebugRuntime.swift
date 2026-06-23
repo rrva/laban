@@ -351,12 +351,22 @@ public final class HeadlessDebugRuntime {
     model.onShellIntegrationChange = { [weak self] tabId, state in
       self?.recordShellIntegrationEvent(tabId: tabId, state: state)
     }
-    model.onAgentNotification = { [weak self] tabId, text in
-      self?.recordAgentNotificationEvent(tabId: tabId, text: text)
+    model.onAttentionNotification = { [weak self] event in
+      guard let self else { return }
+      if event.source == .osc {
+        self.recordAgentNotificationEvent(tabId: event.tabId, text: event.body)
+      }
+      let decision: AttentionNotificationDecision =
+        event.category == .needsAction
+        ? AttentionNotificationDecision(event: event, action: .posted)
+        : AttentionNotificationDecision(
+          event: event, action: .suppressed, suppressionReason: .categoryDisabled)
+      self.model.recordAttentionNotificationDecision(decision)
+      guard decision.action == .posted else { return }
       // Headless parity with MainWindowController's banner journaling: no
-      // banner is posted, but the broadcast itself is the observable event.
-      self?.model.tabJournal.note(
-        tabId: tabId, note: TabStateJournal.bannerPostedNote, text: text)
+      // banner is posted, but the policy decision is observable.
+      self.model.tabJournal.note(
+        tabId: event.tabId, note: TabStateJournal.bannerPostedNote, text: event.body)
     }
     // Headless has no user attention; never treat a tab as frontmost so the
     // synthetic awaiting-input badge always raises (tests rely on this).

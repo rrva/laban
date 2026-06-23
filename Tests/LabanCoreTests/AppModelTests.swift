@@ -111,11 +111,16 @@ final class AppModelTests: XCTestCase {
 
     var received: [(tab: Tab.ID, text: String)] = []
     model.onAgentNotification = { id, text in received.append((id, text)) }
+    var events: [AttentionNotificationEvent] = []
+    model.onAttentionNotification = { events.append($0) }
 
     // Informational turn-complete OSC badges the tab but does not banner.
     session.feedOutput(Array("\u{1b}]9;Agent turn complete\u{07}".utf8))
     pumpMainQueue()
     XCTAssertTrue(received.isEmpty, "informational OSC must not reach the banner hook")
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events[0].source, .osc)
+    XCTAssertEqual(events[0].category, .completion)
     XCTAssertEqual(
       model.tabs.first { $0.id == tabId }?.titleMetadata.notification?.text,
       "Agent turn complete")
@@ -126,11 +131,16 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(received.count, 1, "urgent OSC must fire onAgentNotification exactly once")
     XCTAssertEqual(received.first?.tab, tabId)
     XCTAssertEqual(received.first?.text, "Approval requested: rm -rf /")
+    XCTAssertEqual(events.count, 2)
+    XCTAssertEqual(events[1].source, .osc)
+    XCTAssertEqual(events[1].category, .needsAction)
+    XCTAssertEqual(events[1].body, "Approval requested: rm -rf /")
 
     // A ConEmu progress report (OSC 9;4) must not be surfaced as a notification.
     session.feedOutput(Array("\u{1b}]9;4;1;75\u{07}".utf8))
     pumpMainQueue()
     XCTAssertEqual(received.count, 1, "OSC 9;4 progress must not reach the notification hook")
+    XCTAssertEqual(events.count, 2, "OSC 9;4 progress must not emit attention events")
   }
 
   func testClaudeWaitingForInputNotificationIsInformational() throws {
@@ -348,6 +358,11 @@ final class AppModelTests: XCTestCase {
     XCTAssertTrue(
       banners.isEmpty,
       "the restore-burst must not banner either — a relaunch posted ~40 stale banners")
+    let suppressed = try XCTUnwrap(model.recentAttentionNotificationDecisions.last)
+    XCTAssertEqual(suppressed.event.source, .osc)
+    XCTAssertEqual(suppressed.event.category, .needsAction)
+    XCTAssertEqual(suppressed.action, .suppressed)
+    XCTAssertEqual(suppressed.suppressionReason, .restoreSuppression)
 
     // After the window closes, notifications badge normally.
     model.notificationSuppressionDeadline = nil
@@ -398,6 +413,29 @@ final class AppModelTests: XCTestCase {
     pumpMainQueue()
     XCTAssertTrue(banners.isEmpty)
     XCTAssertNotNil(model.tabs.first { $0.id == tabId }?.titleMetadata.notification)
+  }
+
+  func testActionRequiredTitleEmitsNeedsActionAttentionEvent() throws {
+    let model = try makeModel()
+    let firstTab = try XCTUnwrap(model.activeTab)
+    _ = try model.createTab()
+    let bgTabId = firstTab.id
+    var events: [AttentionNotificationEvent] = []
+    model.onAttentionNotification = { events.append($0) }
+
+    try model.updateTerminalTitle("[ ! ] Action Required", forTab: bgTabId)
+    model.detectAwaitMarkerTransitions()
+    pumpMainQueue()
+
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events[0].source, .tabAttention)
+    XCTAssertEqual(events[0].category, .needsAction)
+    XCTAssertEqual(events[0].body, AppModel.awaitingInputNotificationText)
+    XCTAssertEqual(
+      TabAttentionClassifier.classify(
+        try XCTUnwrap(model.tabs.first { $0.id == bgTabId }).titleMetadata,
+        isActive: false),
+      .needsAction)
   }
 
   func testRealNotificationDuringCoveredEpisodeBannersOnlyWhenUrgent() throws {
@@ -997,6 +1035,46 @@ final class AppModelTests: XCTestCase {
     updatedSecond = try XCTUnwrap(model.tabs.first { $0.id == secondTab.id })
     XCTAssertTrue(updatedSecond.isActive)
     XCTAssertFalse(updatedSecond.titleMetadata.bellAttention)
+  }
+
+  func testInactiveBellAttentionBroadcastsOnlyWhenAttentionIsRaised() throws {
+    let model = try makeModel()
+    let firstTab = try XCTUnwrap(model.activeTab)
+    let secondTab = try model.createTab()
+    model.selectTab(firstTab.id)
+    let secondSession = try XCTUnwrap(model.session(forTab: secondTab.id))
+    var broadcasts: [(tabId: Tab.ID, title: String)] = []
+    model.onBellAttention = { tabId, title in
+      broadcasts.append((tabId, title))
+    }
+    var events: [AttentionNotificationEvent] = []
+    model.onAttentionNotification = { events.append($0) }
+
+    XCTAssertEqual(secondSession.feedOutput([0x07]), 0)
+    pumpMainQueue()
+    XCTAssertEqual(broadcasts.count, 1)
+    XCTAssertEqual(broadcasts[0].tabId, secondTab.id)
+    XCTAssertEqual(broadcasts[0].title, "Tab 2")
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events[0].source, .bell)
+    XCTAssertEqual(events[0].category, .passive)
+    XCTAssertEqual(events[0].body, "Tab needs attention.")
+
+    XCTAssertEqual(secondSession.feedOutput([0x07]), 0)
+    pumpMainQueue()
+    XCTAssertEqual(
+      broadcasts.count, 1,
+      "repeated BEL while the tab is already marked must not spam notifications")
+    XCTAssertEqual(events.count, 1)
+
+    model.selectTab(secondTab.id)
+    model.selectTab(firstTab.id)
+    XCTAssertEqual(secondSession.feedOutput([0x07]), 0)
+    pumpMainQueue()
+    XCTAssertEqual(
+      broadcasts.count, 2,
+      "viewing the tab acknowledges attention and lets a later BEL notify again")
+    XCTAssertEqual(events.count, 2)
   }
 
   func testSyncExitStateIsMonotonic() throws {

@@ -12,6 +12,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let rendererController: RendererModeMenuController
   private let backendController: TerminalBackendMenuController
   private let onChangeFont: () -> Void
+  private let onTestNotification: () -> Void
 
   private let themePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let followSystemCheckbox = NSButton(
@@ -28,6 +29,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let emojiRenderingPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
+  private let needsActionNotificationsCheckbox = NSButton(
+    checkboxWithTitle: "Notify when a tab needs action", target: nil, action: nil)
+  private let completionNotificationsCheckbox = NSButton(
+    checkboxWithTitle: "Notify when a task completes", target: nil, action: nil)
+  private let passiveNotificationsCheckbox = NSButton(
+    checkboxWithTitle: "Notify for passive tab attention", target: nil, action: nil)
+  private let notificationSoundCheckbox = NSButton(
+    checkboxWithTitle: "Play notification sound", target: nil, action: nil)
+  private let testNotificationButton = NSButton(
+    title: "Test Native Notification", target: nil, action: nil)
   private let blinkCheckbox = NSButton(
     checkboxWithTitle: "Blink cursor", target: nil, action: nil)
 
@@ -46,12 +57,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     theme: ThemeMenuController,
     renderer: RendererModeMenuController,
     backend: TerminalBackendMenuController,
-    onChangeFont: @escaping () -> Void
+    onChangeFont: @escaping () -> Void,
+    onTestNotification: @escaping () -> Void
   ) {
     self.themeController = theme
     self.rendererController = renderer
     self.backendController = backend
     self.onChangeFont = onChangeFont
+    self.onTestNotification = onTestNotification
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 460, height: 10),
       styleMask: [.titled, .closable],
@@ -187,6 +200,31 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       "When enabled, Option-modified keys are sent to the terminal as Alt/Meta "
       + "instead of being treated as native text input."
 
+    needsActionNotificationsCheckbox.target = self
+    needsActionNotificationsCheckbox.action = #selector(needsActionNotificationsChanged(_:))
+    needsActionNotificationsCheckbox.toolTip =
+      "Posts a macOS notification when a background tab is blocked on user input."
+
+    completionNotificationsCheckbox.target = self
+    completionNotificationsCheckbox.action = #selector(completionNotificationsChanged(_:))
+    completionNotificationsCheckbox.toolTip =
+      "Posts a macOS notification for informational completion notices."
+
+    passiveNotificationsCheckbox.target = self
+    passiveNotificationsCheckbox.action = #selector(passiveNotificationsChanged(_:))
+    passiveNotificationsCheckbox.toolTip =
+      "Posts a passive macOS notification for low-salience attention such as BEL."
+
+    notificationSoundCheckbox.target = self
+    notificationSoundCheckbox.action = #selector(notificationSoundChanged(_:))
+    notificationSoundCheckbox.toolTip = "Adds the default macOS sound to posted notifications."
+
+    testNotificationButton.target = self
+    testNotificationButton.action = #selector(testNotificationClicked(_:))
+    testNotificationButton.bezelStyle = .rounded
+    testNotificationButton.toolTip =
+      "Sends one native macOS notification through the same path as tab attention."
+
     let grid = NSGridView(views: [
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
@@ -201,6 +239,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [NSGridCell.emptyContentView, restoreCheckbox],
       [makeLabel("Identity:"), identityPopUp],
       [NSGridCell.emptyContentView, optionAsMetaCheckbox],
+      [makeLabel("Notifications:"), needsActionNotificationsCheckbox],
+      [NSGridCell.emptyContentView, completionNotificationsCheckbox],
+      [NSGridCell.emptyContentView, passiveNotificationsCheckbox],
+      [NSGridCell.emptyContentView, notificationSoundCheckbox],
+      [NSGridCell.emptyContentView, testNotificationButton],
     ])
     grid.translatesAutoresizingMaskIntoConstraints = false
     grid.column(at: 0).xPlacement = .trailing
@@ -273,6 +316,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       emojiRenderingPopUp.selectItem(at: row)
     }
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
+    needsActionNotificationsCheckbox.state =
+      AttentionNotificationSettings.needsActionEnabled ? .on : .off
+    completionNotificationsCheckbox.state =
+      AttentionNotificationSettings.completionEnabled ? .on : .off
+    passiveNotificationsCheckbox.state =
+      AttentionNotificationSettings.passiveEnabled ? .on : .off
+    notificationSoundCheckbox.state =
+      AttentionNotificationSettings.soundEnabled ? .on : .off
   }
 
   // MARK: Actions
@@ -355,6 +406,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
   @objc private func optionAsMetaChanged(_ sender: NSButton) {
     OptionKeySettings.set(sender.state == .on)
+  }
+
+  @objc private func needsActionNotificationsChanged(_ sender: NSButton) {
+    AttentionNotificationSettings.setEnabled(sender.state == .on, for: .needsAction)
+  }
+
+  @objc private func completionNotificationsChanged(_ sender: NSButton) {
+    AttentionNotificationSettings.setEnabled(sender.state == .on, for: .completion)
+  }
+
+  @objc private func passiveNotificationsChanged(_ sender: NSButton) {
+    AttentionNotificationSettings.setEnabled(sender.state == .on, for: .passive)
+  }
+
+  @objc private func notificationSoundChanged(_ sender: NSButton) {
+    AttentionNotificationSettings.setSoundEnabled(sender.state == .on)
+  }
+
+  @objc private func testNotificationClicked(_ sender: NSButton) {
+    onTestNotification()
   }
 
   @objc private func blinkChanged(_ sender: NSButton) {

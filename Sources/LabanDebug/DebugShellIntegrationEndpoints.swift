@@ -51,8 +51,8 @@ extension HeadlessDebugRuntime {
 
   /// Record one OSC 9 desktop notification on the event stream so
   /// `GET /debug/events` shows agent turn-complete / approval notifications.
-  /// Wired to `AppModel.onAgentNotification`, which fires on the main queue.
-  /// This is the headless parity for the AppKit native-banner presenter.
+  /// Wired through the unified attention notification path.
+  /// This is the headless parity for the AppKit native-notification presenter.
   func recordAgentNotificationEvent(tabId: String, text: String) {
     let sessionId = model.tabs.first { $0.id == tabId }?.sessionId
     withRuntimeLock {

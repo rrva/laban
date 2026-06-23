@@ -3,12 +3,16 @@ import Carbon
 import LabanControl
 import LabanCore
 import LabanRenderer
+import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
+  UNUserNotificationCenterDelegate
+{
   private var windowController: MainWindowController?
   private var appearanceObservation: NSKeyValueObservation?
   private let themeMenuController = ThemeMenuController()
   private let terminalBackendMenuController = TerminalBackendMenuController()
+  private let settingsNotificationPoster = AgentNotificationPoster()
   private lazy var rendererModeMenuController = RendererModeMenuController {
     [weak self] selection in
     self?.windowController?.applyRendererSelection(selection)
@@ -18,7 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     theme: themeMenuController,
     renderer: rendererModeMenuController,
     backend: terminalBackendMenuController,
-    onChangeFont: { [weak self] in self?.showFontPicker(nil) }
+    onChangeFont: { [weak self] in self?.showFontPicker(nil) },
+    onTestNotification: { [weak self] in self?.postSettingsTestNotification() }
   )
   private var updateCheckInFlight = false
   private static let secureKeyboardEntryDefaultsKey = "LabanSecureKeyboardEntry"
@@ -29,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   private var secureInputEngaged = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    UNUserNotificationCenter.current().delegate = self
     AppLog.app.notice("launch \(BuildInfo.summary)")
     LogFile.shared.pruneOldFiles()
     EventLog.shared.pruneOldFiles()
@@ -133,6 +139,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   /// Opt in to the macOS 14+ secure state-restoration contract. Without it
   /// AppKit logs a warning each launch and declines to restore window state.
   func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler:
+      @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    var options: UNNotificationPresentationOptions = [.banner, .list]
+    if notification.request.content.sound != nil {
+      options.insert(.sound)
+    }
+    EventLog.shared.log(
+      "attention.notification.willPresent",
+      [
+        "identifier": notification.request.identifier,
+        "title": notification.request.content.title,
+        "body": notification.request.content.body,
+        "tabId": notification.request.content.userInfo["tabId"] as? String ?? "",
+        "source": notification.request.content.userInfo["source"] as? String ?? "",
+        "category": notification.request.content.userInfo["category"] as? String ?? "",
+        "options": presentationOptionsDescription(options),
+      ])
+    completionHandler(options)
+  }
+
+  private func presentationOptionsDescription(
+    _ options: UNNotificationPresentationOptions
+  ) -> [String] {
+    var names: [String] = []
+    if options.contains(.banner) { names.append("banner") }
+    if options.contains(.list) { names.append("list") }
+    if options.contains(.sound) { names.append("sound") }
+    if options.contains(.badge) { names.append("badge") }
+    return names
+  }
 
   /// Handle `ssh://` and `telnet://` URLs opened via the system — a clicked
   /// link, `open ssh://host`, or Laban registered as the default handler. Each
@@ -511,5 +552,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
       .applicationVersion: BuildInfo.version,
       .credits: credits,
     ])
+  }
+
+  private func postSettingsTestNotification() {
+    let event = AttentionNotificationEvent(
+      tabId: "settings",
+      source: .osc,
+      category: .needsAction,
+      title: "Laban",
+      body: "Native notification test",
+      dedupeKey: "settings-test")
+    settingsNotificationPoster.post(
+      event: event,
+      soundEnabled: AttentionNotificationSettings.soundEnabled
+    ) { decision in
+      EventLog.shared.log(
+        "attention.notification.test",
+        [
+          "eventId": decision.event.id,
+          "action": decision.action.rawValue,
+          "reason": decision.suppressionReason?.rawValue ?? "",
+        ])
+    }
   }
 }

@@ -72,6 +72,13 @@ public final class AppModel {
   /// capture timelines as `tab.metadata` events.
   public let tabJournal = TabStateJournal()
 
+  private static let attentionDecisionCapacity = 128
+  private var attentionNotificationDecisions: [AttentionNotificationDecision] = []
+
+  public var recentAttentionNotificationDecisions: [AttentionNotificationDecision] {
+    withModelLock { attentionNotificationDecisions }
+  }
+
   /// Fires after every workspace mutation (tab add/remove/reorder, tab
   /// select, cwd update) so the persistence coordinator can debounce a
   /// save. The callback runs on the calling thread under no lock;
@@ -109,13 +116,18 @@ public final class AppModel {
   /// `Session.onShellIntegration` stays owned by AppModel.
   public var onShellIntegrationChange: ((Tab.ID, ShellIntegrationState) -> Void)?
 
-  /// Broadcast when a tab's program emits an OSC 9 desktop notification (the
-  /// Codex agent TUI signalling e.g. "agent turn complete" or "approval
-  /// requested"). Always dispatched to the main queue with the originating tab
-  /// and the notification text. The AppKit host posts a native macOS user
-  /// notification; the debug runtime records it. Single broadcast point so
-  /// `Session.onOSCNotification` stays owned by AppModel.
+  /// Broadcast when a tab enters a user-visible attention state that may be
+  /// eligible for a native notification. Always dispatched to the main queue.
+  /// Hosts decide delivery policy; AppModel owns the tab metadata changes.
+  public var onAttentionNotification: ((AttentionNotificationEvent) -> Void)?
+
+  /// Compatibility hook for older tests/debug surfaces that only observe
+  /// urgent OSC notifications. New code should use `onAttentionNotification`.
   public var onAgentNotification: ((Tab.ID, String) -> Void)?
+
+  /// Compatibility hook for older tests that only observe BEL attention. New
+  /// code should use `onAttentionNotification`.
+  public var onBellAttention: ((Tab.ID, String) -> Void)?
 
   /// Host-provided check for "is the user looking at this tab right now"
   /// (AppKit: app active AND tab selected — the same closure the banner
@@ -972,6 +984,16 @@ public final class AppModel {
       snapshot.map { ($0.id, $0.sessionId) }, uniquingKeysWith: { first, _ in first })
     for entry in entries {
       captureSink.record(entry.captureEvent(sessionId: sessionByTab[entry.tabId]))
+    }
+  }
+
+  public func recordAttentionNotificationDecision(_ decision: AttentionNotificationDecision) {
+    withModelLock {
+      attentionNotificationDecisions.append(decision)
+      if attentionNotificationDecisions.count > Self.attentionDecisionCapacity {
+        attentionNotificationDecisions.removeFirst(
+          attentionNotificationDecisions.count - Self.attentionDecisionCapacity)
+      }
     }
   }
 
@@ -1902,16 +1924,37 @@ public final class AppModel {
     session.onBell = { [weak self] _ in
       let date = Date()
       DispatchQueue.main.async { [weak self] in
-        self?.applyBellAttention(forTab: tabId, at: date)
+        self?.broadcastBellAttentionIfNeeded(forTab: tabId, at: date)
       }
     }
   }
 
   @discardableResult
-  private func applyBellAttention(forTab tabId: Tab.ID, at date: Date) -> Bool {
-    withModelLock {
-      metadataSync.noteBell(forTab: tabId, at: date, tabs: &_tabs)
+  func applyBellAttention(forTab tabId: Tab.ID, at date: Date) -> String? {
+    let result: (changed: Bool, title: String?) = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else {
+        return (false, nil)
+      }
+      let hadAttention = _tabs[idx].titleMetadata.bellAttention
+      let changed = metadataSync.noteBell(forTab: tabId, at: date, tabs: &_tabs)
+      let raisedAttention = !hadAttention && _tabs[idx].titleMetadata.bellAttention
+      return (changed, raisedAttention ? _tabs[idx].titleMetadata.displayTitle : nil)
     }
+    if result.changed { notifySurfaceStateChanged() }
+    return result.title
+  }
+
+  private func broadcastBellAttentionIfNeeded(forTab tabId: Tab.ID, at date: Date) {
+    guard let title = applyBellAttention(forTab: tabId, at: date) else { return }
+    let event = AttentionNotificationEvent(
+      tabId: tabId,
+      source: .bell,
+      category: .passive,
+      title: title,
+      body: "Tab needs attention.",
+      dedupeKey: "bell:\(tabId)",
+      createdAt: date)
+    broadcastAttentionNotification(event)
   }
 
   /// Re-broadcast OSC 9 desktop notifications. The session callback fires on the
@@ -2018,17 +2061,70 @@ public final class AppModel {
       || t.contains("requested")
   }
 
-  /// Native banners are reserved for blocking requests. Informational
-  /// turn-complete OSC and the early title-flip badge stay sidebar-only.
+  /// Convert OSC 9-style agent messages into unified attention events. Policy
+  /// decides later whether a native banner, sidebar-only state, or suppression
+  /// is appropriate for the event's category and tab focus.
   private func broadcastAgentNotificationIfNeeded(
     tabId: Tab.ID, text: String, outcome: AgentNotificationOutcome
   ) {
     switch outcome {
     case .applied, .mergedIntoAwaitEpisode:
-      guard Self.isUrgentNotification(text) else { return }
-      onAgentNotification?(tabId, text)
+      let urgent = Self.isUrgentNotification(text)
+      guard
+        let event = makeAttentionNotificationEvent(
+          tabId: tabId,
+          source: .osc,
+          category: urgent ? .needsAction : .completion,
+          body: text,
+          dedupeKey: "osc:\(tabId):\(urgent ? "needsAction" : "completion"):\(text)")
+      else { return }
+      broadcastAttentionNotification(event)
     case .ignored:
+      let urgent = Self.isUrgentNotification(text)
+      guard
+        let event = makeAttentionNotificationEvent(
+          tabId: tabId,
+          source: .osc,
+          category: urgent ? .needsAction : .completion,
+          body: text,
+          dedupeKey: "osc:\(tabId):restore:\(text)")
+      else { return }
+      recordAttentionNotificationDecision(
+        AttentionNotificationDecision(
+          event: event, action: .suppressed, suppressionReason: .restoreSuppression))
+    }
+  }
+
+  private func broadcastAttentionNotification(_ event: AttentionNotificationEvent) {
+    onAttentionNotification?(event)
+    switch event.source {
+    case .osc where event.category == .needsAction:
+      onAgentNotification?(event.tabId, event.body)
+    case .bell:
+      onBellAttention?(event.tabId, event.title)
+    case .osc, .tabAttention:
       break
+    }
+  }
+
+  private func makeAttentionNotificationEvent(
+    tabId: Tab.ID,
+    source: AttentionNotificationSource,
+    category: AttentionNotificationCategory,
+    body: String,
+    dedupeKey: String,
+    createdAt: Date = Date()
+  ) -> AttentionNotificationEvent? {
+    withModelLock {
+      guard let tab = _tabs.first(where: { $0.id == tabId }) else { return nil }
+      return AttentionNotificationEvent(
+        tabId: tab.id,
+        source: source,
+        category: category,
+        title: tab.titleMetadata.displayTitle,
+        body: body,
+        dedupeKey: dedupeKey,
+        createdAt: createdAt)
     }
   }
 
@@ -2094,19 +2190,31 @@ public final class AppModel {
   /// all light up).
   private func raiseSyntheticAttention(forTab tabId: Tab.ID) {
     if isTabFrontmost?(tabId) == true { return }
-    let raised: Bool = withModelLock {
-      if let deadline = notificationSuppressionDeadline, Date() < deadline { return false }
-      guard var episode = awaitEpisodeByTab[tabId] else { return false }
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
-      guard _tabs[idx].titleMetadata.notification == nil else { return false }
+    let event: AttentionNotificationEvent? = withModelLock {
+      let now = Date()
+      if let deadline = notificationSuppressionDeadline, now < deadline { return nil }
+      guard var episode = awaitEpisodeByTab[tabId] else { return nil }
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return nil }
+      guard _tabs[idx].titleMetadata.notification == nil else { return nil }
       episode.raised = true
       awaitEpisodeByTab[tabId] = episode
       _tabs[idx].titleMetadata.notification = TabNotification(
         text: Self.awaitingInputNotificationText, urgent: false)
-      return true
+      let tab = _tabs[idx]
+      let attention = TabAttentionClassifier.classify(tab.titleMetadata, isActive: tab.isActive)
+      let category = AttentionNotificationCategory(attention) ?? .completion
+      return AttentionNotificationEvent(
+        tabId: tab.id,
+        source: .tabAttention,
+        category: category,
+        title: tab.titleMetadata.displayTitle,
+        body: Self.awaitingInputNotificationText,
+        dedupeKey: "tabAttention:\(tab.id):await",
+        createdAt: now)
     }
-    guard raised else { return }
+    guard let event else { return }
     notifyWorkspaceMutation()
+    broadcastAttentionNotification(event)
   }
 
   /// The agent resumed working without its own notification ever arriving,
@@ -2139,10 +2247,11 @@ public final class AppModel {
   }
 
   private func applyTabStatusUpdate(_ update: Session.TabStatusUpdate, forTab tabId: Tab.ID) {
-    let changed: Bool = withModelLock {
-      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return false }
+    let result: (changed: Bool, needsActionEvent: AttentionNotificationEvent?) = withModelLock {
+      guard let idx = _tabs.firstIndex(where: { $0.id == tabId }) else { return (false, nil) }
       var status = _tabs[idx].titleMetadata.agentStatus
       let before = status
+      let wasAwaiting = _tabs[idx].titleMetadata.agent.awaitingInput
 
       if let v = update.indicator {
         status.indicatorColor = v.isEmpty ? nil : v
@@ -2170,12 +2279,33 @@ public final class AppModel {
         _tabs[idx].titleMetadata.agentStatus = status
         changed = true
       }
-      return changed
+      let tab = _tabs[idx]
+      let attention = TabAttentionClassifier.classify(tab.titleMetadata, isActive: tab.isActive)
+      let raisedNeedsAction =
+        !wasAwaiting && tab.titleMetadata.agent.awaitingInput
+        && attention == .needsAction
+      let statusBody = update.status?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let event =
+        raisedNeedsAction
+        ? AttentionNotificationEvent(
+          tabId: tab.id,
+          source: .tabAttention,
+          category: .needsAction,
+          title: tab.titleMetadata.displayTitle,
+          body: statusBody?.isEmpty == false
+            ? statusBody!
+            : "Tab needs attention.",
+          dedupeKey: "tabAttention:\(tab.id):agentAwaiting")
+        : nil
+      return (changed, event)
     }
     // The OSC 21337 bytes that carried this update woke the frame loop via
     // onSessionDirty, but this model write lands on a later main-queue hop and
     // can miss that frame; with a parked link only this wake repaints it.
-    if changed { notifySurfaceStateChanged() }
+    if result.changed { notifySurfaceStateChanged() }
+    if let event = result.needsActionEvent {
+      broadcastAttentionNotification(event)
+    }
   }
 
   /// Completion target for `TabMetadataSynchronizer` git refresh. Writes the resolved branch into

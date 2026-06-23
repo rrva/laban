@@ -146,6 +146,20 @@ struct EmojiRenderingSettingsResponse: Encodable {
   var effectiveMode: String
 }
 
+struct AttentionNotificationDecisionResponse: Encodable {
+  var id: String
+  var tabId: String
+  var source: String
+  var category: String
+  var action: String
+  var reason: String?
+  var title: String
+  var body: String
+  var dedupeKey: String
+  var createdAt: Date
+  var decidedAt: Date
+}
+
 struct StateResponse: Encodable {
   var mode: String
   var frame: Int
@@ -156,6 +170,7 @@ struct StateResponse: Encodable {
   var findStateBySession: [String: FindStateResponse]
   var cursorSettings: CursorSettingsResponse
   var emojiRendering: EmojiRenderingSettingsResponse
+  var attentionNotifications: [AttentionNotificationDecisionResponse]
 }
 
 struct AccessibilityDisplayFlagsResponse: Encodable {

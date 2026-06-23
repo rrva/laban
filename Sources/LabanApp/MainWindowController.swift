@@ -398,33 +398,46 @@ final class MainWindowController: NSWindowController {
     autoChecker.start()
     controller.updateAutoChecker = autoChecker
 
-    // OSC 9 desktop notifications (e.g. the Codex agent finishing a turn or
-    // asking for approval) -> native macOS banner. AppModel fires
-    // onAgentNotification on the main queue. The poster is retained by the
-    // closure, which the model owns; suppress the banner for the tab already in
-    // front of the user. Headless parity lives in HeadlessDebugRuntime, which
-    // records the same notification as a debug event.
+    // All tab-attention notification candidates flow through one policy point:
+    // explicit OSC/BEL events and derived attention-state transitions share
+    // settings, focus suppression, journal notes, debug decisions, and native
+    // delivery.
     let agentNotificationPoster = AgentNotificationPoster()
     let isTabFrontmost: (Tab.ID) -> Bool = { [weak model] tabId in
       guard NSApplication.shared.isActive, let model else { return false }
       return model.tabs.first(where: { $0.isActive })?.id == tabId
     }
-    agentNotificationPoster.isTabFrontmost = isTabFrontmost
     // The model uses the same attention check to skip raising the synthetic
     // awaiting-input badge on the tab the user is already watching.
     model.isTabFrontmost = isTabFrontmost
-    model.onAgentNotification = { [weak model] tabId, text in
-      guard let model else { return }
-      // Journal the banner decision so post-hoc timing questions ("when did
-      // the user actually get told?") are answerable from the tab journal.
+    let recordAttentionDecision: (AppModel, AttentionNotificationDecision) -> Void = {
+      model, decision in
+      model.recordAttentionNotificationDecision(decision)
       model.tabJournal.note(
-        tabId: tabId,
-        note: isTabFrontmost(tabId)
-          ? TabStateJournal.bannerSuppressedFrontmostNote
-          : TabStateJournal.bannerPostedNote,
-        text: text)
-      let title = model.tabs.first(where: { $0.id == tabId })?.title
-      agentNotificationPoster.post(tabId: tabId, tabTitle: title, text: text)
+        tabId: decision.event.tabId,
+        note: decision.suppressionReason.map {
+          TabStateJournal.bannerSuppressedNote(reason: $0)
+        }
+          ?? TabStateJournal.bannerPostedNote,
+        text: decision.event.body)
+    }
+    model.onAttentionNotification = { [weak model] event in
+      guard let model else { return }
+      if let decision = AttentionNotificationPolicy.suppressedDecision(
+        for: event,
+        isTabFrontmost: isTabFrontmost,
+        isCategoryEnabled: { AttentionNotificationSettings.isEnabled(for: $0) })
+      {
+        recordAttentionDecision(model, decision)
+        return
+      }
+      agentNotificationPoster.post(
+        event: event,
+        soundEnabled: AttentionNotificationSettings.soundEnabled
+      ) { [weak model] decision in
+        guard let model else { return }
+        recordAttentionDecision(model, decision)
+      }
     }
     // Returning to the app means the user is now looking at the active tab, so
     // clear its notification badge (peers clear on viewing the tab, not on

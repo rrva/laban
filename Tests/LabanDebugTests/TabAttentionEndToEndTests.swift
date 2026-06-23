@@ -63,6 +63,19 @@ final class TabAttentionEndToEndTests: XCTestCase {
     XCTAssertEqual(badge?.count, 1)
     XCTAssertEqual(badge?.urgent, true)
 
+    let state =
+      try JSONSerialization.jsonObject(with: harness.runtime.state().body)
+      as! [String: Any]
+    let decisions = state["attentionNotifications"] as! [[String: Any]]
+    XCTAssertTrue(
+      decisions.contains {
+        ($0["tabId"] as? String) == tabId
+          && ($0["source"] as? String) == "osc"
+          && ($0["category"] as? String) == "needsAction"
+          && ($0["action"] as? String) == "posted"
+      },
+      "debug state must expose the native-notification decision")
+
     // The journal tells the whole story in order: the title-flip state entry
     // precedes the permission badge state entry, which precedes the banner note.
     let entries = harness.runtime.model.tabJournal.snapshot(tabId: tabId).entries

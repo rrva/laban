@@ -11,7 +11,8 @@
     "activeTabId",
     "activeSessionId",
     "findStateBySession",
-    "cursorSettings"
+    "cursorSettings",
+    "attentionNotifications"
   ],
   "additionalProperties": true,
   "properties": {
@@ -47,9 +48,55 @@
       "type": "object",
       "additionalProperties": {"$ref": "#/$defs/findState"}
     },
-    "cursorSettings": {"$ref": "#/$defs/cursorSettings"}
+    "cursorSettings": {"$ref": "#/$defs/cursorSettings"},
+    "attentionNotifications": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/attentionNotificationDecision"}
+    }
   },
   "$defs": {
+    "attentionNotificationDecision": {
+      "type": "object",
+      "required": [
+        "id",
+        "tabId",
+        "source",
+        "category",
+        "action",
+        "reason",
+        "title",
+        "body",
+        "dedupeKey",
+        "createdAt",
+        "decidedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string"},
+        "tabId": {"type": "string"},
+        "source": {"type": "string", "enum": ["bell", "osc", "tabAttention"]},
+        "category": {"type": "string", "enum": ["needsAction", "completion", "passive"]},
+        "action": {"type": "string", "enum": ["posted", "suppressed"]},
+        "reason": {
+          "type": ["string", "null"],
+          "enum": [
+            "frontmostTab",
+            "categoryDisabled",
+            "emptyBody",
+            "bundleUnavailable",
+            "authorizationDenied",
+            "deliveryFailed",
+            "restoreSuppression",
+            null
+          ]
+        },
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+        "dedupeKey": {"type": "string"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "decidedAt": {"type": "string", "format": "date-time"}
+      }
+    },
     "tab": {
       "type": "object",
       "required": [

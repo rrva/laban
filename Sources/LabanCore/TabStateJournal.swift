@@ -37,8 +37,36 @@ public final class TabStateJournal {
 
   public static let bannerPostedNote = "banner.posted"
   public static let bannerSuppressedFrontmostNote = "banner.suppressed.frontmost"
+  public static let bannerSuppressedCategoryDisabledNote = "banner.suppressed.categoryDisabled"
+  public static let bannerSuppressedEmptyBodyNote = "banner.suppressed.emptyBody"
+  public static let bannerSuppressedBundleUnavailableNote = "banner.suppressed.bundleUnavailable"
+  public static let bannerSuppressedAuthorizationDeniedNote =
+    "banner.suppressed.authorizationDenied"
+  public static let bannerSuppressedDeliveryFailedNote = "banner.suppressed.deliveryFailed"
+  public static let bannerSuppressedRestoreNote = "banner.suppressed.restoreSuppression"
   public static let daemonRecoveryNote = "daemon.recovery"
   public static let automationAutoQuitArmedNote = "automation.autoquit.armed"
+
+  public static func bannerSuppressedNote(
+    reason: AttentionNotificationSuppressionReason
+  ) -> String {
+    switch reason {
+    case .frontmostTab:
+      return bannerSuppressedFrontmostNote
+    case .categoryDisabled:
+      return bannerSuppressedCategoryDisabledNote
+    case .emptyBody:
+      return bannerSuppressedEmptyBodyNote
+    case .bundleUnavailable:
+      return bannerSuppressedBundleUnavailableNote
+    case .authorizationDenied:
+      return bannerSuppressedAuthorizationDeniedNote
+    case .deliveryFailed:
+      return bannerSuppressedDeliveryFailedNote
+    case .restoreSuppression:
+      return bannerSuppressedRestoreNote
+    }
+  }
 
   private struct Projection: Equatable {
     var isSelected: Bool

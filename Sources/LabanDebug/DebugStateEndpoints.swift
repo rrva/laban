@@ -26,7 +26,9 @@ extension HeadlessDebugRuntime {
         activeSessionId: activeTab?.sessionId,
         findStateBySession: findStateResponsesUnlocked(),
         cursorSettings: cursorSettingsResponseUnlocked(activeTab: activeTab),
-        emojiRendering: emojiRenderingSettingsResponse()
+        emojiRendering: emojiRenderingSettingsResponse(),
+        attentionNotifications: model.recentAttentionNotificationDecisions.map(
+          Self.attentionNotificationDecisionResponse)
       ))
   }
 
@@ -99,6 +101,23 @@ extension HeadlessDebugRuntime {
   func emojiRenderingSettingsResponse() -> EmojiRenderingSettingsResponse {
     let mode = EmojiRenderingSettings.current().rawValue
     return EmojiRenderingSettingsResponse(mode: mode, effectiveMode: mode)
+  }
+
+  static func attentionNotificationDecisionResponse(
+    _ decision: AttentionNotificationDecision
+  ) -> AttentionNotificationDecisionResponse {
+    AttentionNotificationDecisionResponse(
+      id: decision.event.id,
+      tabId: decision.event.tabId,
+      source: decision.event.source.rawValue,
+      category: decision.event.category.rawValue,
+      action: decision.action.rawValue,
+      reason: decision.suppressionReason?.rawValue,
+      title: decision.event.title,
+      body: decision.event.body,
+      dedupeKey: decision.event.dedupeKey,
+      createdAt: decision.event.createdAt,
+      decidedAt: decision.decidedAt)
   }
 
   private func accessibilityValueUnlocked() -> String {
