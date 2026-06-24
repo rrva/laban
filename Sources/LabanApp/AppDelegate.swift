@@ -460,25 +460,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
     Self.restartApp()
   }
 
-  /// Spawn a fresh instance of our own .app via `open -n` and quit the
-  /// current one. `-n` forces a new instance because macOS otherwise
-  /// just activates the existing one. There's a brief gap where the
-  /// window isn't visible — acceptable for an explicit user action.
+  /// Relaunch our own .app and quit the current instance. The bundle sets
+  /// `LSMultipleInstancesProhibited`, so the successor cannot overlap us:
+  /// we delegate to a detached helper that waits for this process to exit
+  /// and only then launches a fresh instance (see `relaunchCommand`).
+  /// There is a brief gap where no window is visible, which is acceptable
+  /// for an explicit user action.
   ///
   /// No flags are forwarded: the restart shortcut is ⌘⌥R (no Shift), so
   /// the successor can never trip the Shift-to-skip-restore archive
   /// hatch and there is nothing to signal across the relaunch.
   static func restartApp() {
-    let bundleURL = Bundle.main.bundleURL
+    let command = relaunchCommand(
+      pid: ProcessInfo.processInfo.processIdentifier,
+      bundlePath: Bundle.main.bundleURL.path
+    )
     let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    task.arguments = ["-n", bundleURL.path]
+    task.executableURL = URL(fileURLWithPath: command.executable)
+    task.arguments = command.arguments
     do {
       try task.run()
       NSApp.terminate(nil)
     } catch {
       AppLog.app.error("restart failed: \(error)")
     }
+  }
+
+  /// Builds the detached relaunch command for `restartApp`.
+  ///
+  /// `open -n` is a no-op while we are alive because the bundle prohibits
+  /// multiple instances: it re-activates the dying process, and once we
+  /// terminate nothing relaunches (the app appears to merely quit). So the
+  /// helper polls until our pid is gone, then launches a fresh instance
+  /// when no instance is running and the launch is permitted. The wait is
+  /// bounded (~10s) so a stuck termination cannot hang the relaunch.
+  static func relaunchCommand(
+    pid: Int32,
+    bundlePath: String
+  ) -> (executable: String, arguments: [String]) {
+    let quoted = "'" + bundlePath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    let script =
+      "n=0; while /bin/kill -0 \(pid) 2>/dev/null && [ $n -lt 100 ]; do "
+      + "/bin/sleep 0.1; n=$((n+1)); done; exec /usr/bin/open \(quoted)"
+    return ("/bin/sh", ["-c", script])
   }
 
   private func handleUpdateCheck(_ result: Result<UpdateCheckResult, Error>) {

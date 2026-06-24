@@ -66,6 +66,11 @@ Debug contracts and data: `schemas/`, `fixtures/`.
   stamp matches HEAD before debugging source.
 - Never `open`/launch the bundle from the shell: a windowless launch grabs the
   single-instance lock. Quit and relaunch Laban yourself to pick up a new build.
+- The bundle sets `Info.plist:LSMultipleInstancesProhibited` (single-instance).
+  So any relaunch that `open`s the bundle while the old process is still alive
+  is a no-op — Launch Services re-activates the dying instance, then it quits and
+  nothing respawns (the app "just quits"). In-process relaunch must wait for the
+  current pid to exit *before* `open` (see `AppDelegate.relaunchCommand`).
 - Don't run two builds (or two `scripts/check`/`build-app`) concurrently against
   the same worktree `.build/`: a competing `swift build` relinks the bundle binary
   *after* `build-app` ad-hoc-signs it, invalidating the signature so the
