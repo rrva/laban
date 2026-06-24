@@ -16,6 +16,11 @@ final class AppDelegateRestartTests: XCTestCase {
     // Waits on the old pid before relaunching, so the successor never overlaps.
     XCTAssertTrue(script.contains("kill -0 4242"), script)
     XCTAssertTrue(script.contains("/usr/bin/open"), script)
+    // The wait is bounded so a stuck termination cannot hang the relaunch.
+    XCTAssertTrue(script.contains("-lt 100"), script)
+    // No `-n`: the force-new-instance flag is what made two instances overlap
+    // and fight over the daemon socket / workspace.json (BUG-04). Must stay gone.
+    XCTAssertFalse(script.contains(" -n "), script)
     // The open must run only after the wait loop, not concurrently.
     let killIndex = script.range(of: "kill -0 4242")?.lowerBound
     let openIndex = script.range(of: "/usr/bin/open")?.lowerBound
