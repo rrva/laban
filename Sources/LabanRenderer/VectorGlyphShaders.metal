@@ -41,7 +41,8 @@ struct VectorGlyphRasterParams {
     float2 origin;
     float2 boundsMin;
     float2 boundsMax;
-    float2 _pad1;
+    float rasterScale;
+    float _pad1;
 };
 
 struct VectorGlyphAccumParams {
@@ -55,8 +56,10 @@ struct VectorGlyphAccumParams {
     float2 origin;
     float2 boundsMin;
     float2 boundsMax;
-    float3 subpixelOffsets;
+    float rasterScale;
     float _pad0;
+    float3 subpixelOffsets;
+    float _pad1;
 };
 
 constant float2 kVectorQuadVertices[6] = {
@@ -207,11 +210,11 @@ inline int winding_contribution(VectorGlyphCurve curve) {
     return winding;
 }
 
-inline float window_weight(float x) {
-    return clamp(x + 0.5, 0.0, 1.0);
+inline float window_weight(float x, float halfWidth) {
+    return clamp((x + halfWidth) / (2.0 * halfWidth), 0.0, 1.0);
 }
 
-inline float winding_window_contribution(VectorGlyphCurve curve) {
+inline float winding_window_contribution(VectorGlyphCurve curve, float halfWidth) {
     constexpr float eps = 1.0e-6;
     float y0 = curve.p0.y;
     float y1 = curve.p1.y;
@@ -230,15 +233,15 @@ inline float winding_window_contribution(VectorGlyphCurve curve) {
         }
         float clamped = clamp(t, 0.0, 1.0);
         float x = curve_x_at(curve, clamped);
-        if (x < -0.5 - eps) {
+        if (x < -halfWidth - eps) {
             return 0.0;
         }
         float derivative = -2.0 * b;
         if (derivative < -eps) {
-            return window_weight(x);
+            return window_weight(x, halfWidth);
         }
         if (derivative > eps) {
-            return -window_weight(x);
+            return -window_weight(x, halfWidth);
         }
         return 0.0;
     }
@@ -254,14 +257,14 @@ inline float winding_window_contribution(VectorGlyphCurve curve) {
     float winding = 0.0;
     if (t0 >= -eps && t0 < 1.0 - eps) {
         float x = curve_x_at(curve, clamp(t0, 0.0, 1.0));
-        if (x >= -0.5 - eps) {
-            winding += window_weight(x);
+        if (x >= -halfWidth - eps) {
+            winding += window_weight(x, halfWidth);
         }
     }
     if (t1 >= -eps && t1 < 1.0 - eps) {
         float x = curve_x_at(curve, clamp(t1, 0.0, 1.0));
-        if (x >= -0.5 - eps) {
-            winding -= window_weight(x);
+        if (x >= -halfWidth - eps) {
+            winding -= window_weight(x, halfWidth);
         }
     }
     return winding;
@@ -278,9 +281,10 @@ inline float vector_coverage_at(
     uint curveCount,
     float2 sample,
     float2 boundsMin,
-    float2 boundsMax
+    float2 boundsMax,
+    float halfWidth
 ) {
-    if (sample.x < boundsMin.x - 0.5 || sample.x > boundsMax.x + 0.5 ||
+    if (sample.x < boundsMin.x - halfWidth || sample.x > boundsMax.x + halfWidth ||
         sample.y < boundsMin.y || sample.y > boundsMax.y) {
         return 0.0;
     }
@@ -291,7 +295,7 @@ inline float vector_coverage_at(
         curve.p0 -= sample;
         curve.p1 -= sample;
         curve.p2 -= sample;
-        winding += winding_window_contribution(curve);
+        winding += winding_window_contribution(curve, halfWidth);
     }
     return clamp(float(abs(winding)), 0.0, 1.0);
 }
@@ -308,8 +312,8 @@ kernel void vectorGlyphRasterizeScratch(
     }
 
     float2 sample = float2(
-        params.origin.x + float(gid.x) + 0.5,
-        params.origin.y + float(params.height - 1 - gid.y) + 0.5
+        params.origin.x + (float(gid.x) + 0.5) / params.rasterScale,
+        params.origin.y + (float(params.height - 1 - gid.y) + 0.5) / params.rasterScale
     );
     if (sample.x < params.boundsMin.x || sample.x > params.boundsMax.x ||
         sample.y < params.boundsMin.y || sample.y > params.boundsMax.y) {
@@ -344,6 +348,7 @@ kernel void vectorGlyphAccumulateAtlas(
     uint2 atlasPosition = params.targetOrigin + gid;
     uint4 state = params.sampleStart == 0 ? uint4(0) : accum.read(atlasPosition);
     uint3 sum = uint3(0);
+    float halfWidth = 0.5 / params.rasterScale;
     for (uint sampleIndex = 0; sampleIndex < params.sampleCount; sampleIndex++) {
         uint absoluteSample = params.sampleStart + sampleIndex;
         float2 jitter = float2(
@@ -351,29 +356,32 @@ kernel void vectorGlyphAccumulateAtlas(
             vector_r2(absoluteSample, params.seed, 0.569840296, 13)
         );
         float2 baseSample = float2(
-            params.origin.x + float(gid.x) + jitter.x,
-            params.origin.y + float(params.height - 1 - gid.y) + jitter.y
+            params.origin.x + (float(gid.x) + jitter.x) / params.rasterScale,
+            params.origin.y + (float(params.height - 1 - gid.y) + jitter.y) / params.rasterScale
         );
         float coverageR = vector_coverage_at(
             curves,
             params.curveCount,
-            baseSample + float2(params.subpixelOffsets.r, 0.0),
+            baseSample + float2(params.subpixelOffsets.r / params.rasterScale, 0.0),
             params.boundsMin,
-            params.boundsMax
+            params.boundsMax,
+            halfWidth
         );
         float coverageG = vector_coverage_at(
             curves,
             params.curveCount,
-            baseSample + float2(params.subpixelOffsets.g, 0.0),
+            baseSample + float2(params.subpixelOffsets.g / params.rasterScale, 0.0),
             params.boundsMin,
-            params.boundsMax
+            params.boundsMax,
+            halfWidth
         );
         float coverageB = vector_coverage_at(
             curves,
             params.curveCount,
-            baseSample + float2(params.subpixelOffsets.b, 0.0),
+            baseSample + float2(params.subpixelOffsets.b / params.rasterScale, 0.0),
             params.boundsMin,
-            params.boundsMax
+            params.boundsMax,
+            halfWidth
         );
         sum += uint3(
             uint(round(coverageR * 65535.0)),

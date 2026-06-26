@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreText
 import Foundation
+import ImageIO
 import Metal
 import XCTest
 
@@ -178,6 +179,78 @@ final class VectorGlyphParityTests: XCTestCase {
     }
   }
 
+  func testDefaultVectorTextFidelityStaysNearMetalOnLightBackground() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let scale: CGFloat = 2
+    let width = 760
+    let height = 180
+    let atlas = FontAtlas(pointSize: 18, fontName: nil)
+    let commands = fidelityProbeCommands()
+
+    let vector = try XCTUnwrap(
+      VectorGlyphRenderer(
+        fontAtlas: atlas,
+        sidebarFontAtlas: atlas,
+        pixelWidth: width,
+        pixelHeight: height,
+        scale: scale))
+    vector.setSubpixelLayout(.grayscale)
+    XCTAssertTrue(vector.render(commands, damage: .full))
+    let vectorPNG = try XCTUnwrap(vector.pngData)
+    let vectorImage = try decodeRGBA(vectorPNG)
+
+    let reference = try XCTUnwrap(
+      MetalRenderer(
+        fontAtlas: atlas,
+        sidebarFontAtlas: atlas,
+        scale: scale,
+        rendererMode: .classic))
+    reference.captureMode = true
+    reference.waitForFrameCompletion = true
+    reference.resize(pixelWidth: width, pixelHeight: height, scale: scale)
+    XCTAssertTrue(reference.render(commands, damage: .full))
+    reference.waitForLastFrame()
+    let referencePNG = try XCTUnwrap(reference.pngData)
+    let referenceImage = try decodeRGBA(referencePNG)
+
+    let crop = CGRect(x: 24, y: 26, width: 700, height: 112)
+    let vectorMetrics = fidelityMetrics(
+      image: vectorImage,
+      crop: crop,
+      background: (r: 0xF6, g: 0xEE, b: 0xDB),
+      foreground: (r: 0x18, g: 0x22, b: 0x2A))
+    let referenceMetrics = fidelityMetrics(
+      image: referenceImage,
+      crop: crop,
+      background: (r: 0xF6, g: 0xEE, b: 0xDB),
+      foreground: (r: 0x18, g: 0x22, b: 0x2A))
+
+    XCTAssertGreaterThan(vectorMetrics.inkMass, 10_000, "probe must contain measurable text ink")
+    XCTAssertGreaterThan(
+      referenceMetrics.inkMass,
+      10_000,
+      "reference must contain measurable text ink")
+    XCTAssertLessThan(
+      abs(vectorMetrics.inkMass - referenceMetrics.inkMass) / referenceMetrics.inkMass,
+      0.30,
+      "vector text ink mass drifted too far from Metal reference")
+    XCTAssertLessThanOrEqual(
+      vectorMetrics.edgePixelRatio,
+      referenceMetrics.edgePixelRatio + 0.18,
+      "vector text has too much partial-edge spread, which reads as soft text")
+    XCTAssertGreaterThanOrEqual(
+      vectorMetrics.meanGradient,
+      referenceMetrics.meanGradient * 0.50,
+      "vector text edge gradients are too shallow, which reads as blurry text")
+    XCTAssertLessThan(
+      vectorMetrics.meanCoverageSpread,
+      0.025,
+      "default grayscale vector rendering should not introduce visible RGB fringing")
+  }
+
   private func glyph(for scalar: Unicode.Scalar, font: CTFont) -> CGGlyph? {
     guard scalar.value <= UInt32(UInt16.max) else { return nil }
     var unit = UniChar(scalar.value)
@@ -186,6 +259,153 @@ final class VectorGlyphParityTests: XCTestCase {
       return nil
     }
     return glyph
+  }
+
+  private struct RGBAImage {
+    var width: Int
+    var height: Int
+    var bytes: [UInt8]
+  }
+
+  private struct FidelityMetrics {
+    var inkMass: Double
+    var edgePixelRatio: Double
+    var meanGradient: Double
+    var meanCoverageSpread: Double
+  }
+
+  private func fidelityProbeCommands() -> [FrameCommand] {
+    [
+      .rect(
+        CGRect(x: 0, y: 0, width: 380, height: 90),
+        color: 0xF6_EE_DB_FF,
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 12, y: 18),
+        text: "illili |||| HHHH WWWM",
+        foreground: 0x18_22_2A_FF,
+        background: 0xF6_EE_DB_FF,
+        attributes: [],
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 12, y: 48),
+        text: "warning: QuartzCore pcm missing",
+        foreground: 0x18_22_2A_FF,
+        background: 0xF6_EE_DB_FF,
+        attributes: [],
+        source: .terminal),
+    ]
+  }
+
+  private func decodeRGBA(_ png: Data) throws -> RGBAImage {
+    guard let source = CGImageSourceCreateWithData(png as CFData, nil),
+      let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+    else {
+      throw XCTSkip("failed to decode renderer PNG")
+    }
+    let width = image.width
+    let height = image.height
+    var bytes = [UInt8](repeating: 0, count: width * height * 4)
+    let bitmapInfo =
+      CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+    bytes.withUnsafeMutableBytes { raw in
+      guard
+        let context = CGContext(
+          data: raw.baseAddress,
+          width: width,
+          height: height,
+          bitsPerComponent: 8,
+          bytesPerRow: width * 4,
+          space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: bitmapInfo)
+      else { return }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    }
+    return RGBAImage(width: width, height: height, bytes: bytes)
+  }
+
+  private func fidelityMetrics(
+    image: RGBAImage,
+    crop: CGRect,
+    background: (r: UInt8, g: UInt8, b: UInt8),
+    foreground: (r: UInt8, g: UInt8, b: UInt8)
+  ) -> FidelityMetrics {
+    let minX = max(0, Int(floor(crop.minX)))
+    let maxX = min(image.width, Int(ceil(crop.maxX)))
+    let minY = max(0, Int(floor(crop.minY)))
+    let maxY = min(image.height, Int(ceil(crop.maxY)))
+    let bgLum = luminance(r: background.r, g: background.g, b: background.b)
+
+    var inkMass = 0.0
+    var edgePixels = 0
+    var inkPixels = 0
+    var gradientTotal = 0.0
+    var gradientCount = 0
+    var coverageSpreadTotal = 0.0
+    var coverageSpreadCount = 0
+
+    func inkAt(x: Int, y: Int) -> Double {
+      let offset = (y * image.width + x) * 4
+      let lum = luminance(
+        r: image.bytes[offset],
+        g: image.bytes[offset + 1],
+        b: image.bytes[offset + 2])
+      return max(0, bgLum - lum)
+    }
+
+    for y in minY..<maxY {
+      for x in minX..<maxX {
+        let offset = (y * image.width + x) * 4
+        let ink = inkAt(x: x, y: y)
+        inkMass += ink
+        if ink > 2 {
+          inkPixels += 1
+          let coverageR = channelCoverage(
+            value: image.bytes[offset],
+            background: background.r,
+            foreground: foreground.r)
+          let coverageG = channelCoverage(
+            value: image.bytes[offset + 1],
+            background: background.g,
+            foreground: foreground.g)
+          let coverageB = channelCoverage(
+            value: image.bytes[offset + 2],
+            background: background.b,
+            foreground: foreground.b)
+          let maximumCoverage = max(coverageR, coverageG, coverageB)
+          let minimumCoverage = min(coverageR, coverageG, coverageB)
+          coverageSpreadTotal += maximumCoverage - minimumCoverage
+          coverageSpreadCount += 1
+        }
+        if ink > 2 && ink < 120 {
+          edgePixels += 1
+        }
+        if x + 1 < maxX {
+          let gradient = abs(ink - inkAt(x: x + 1, y: y))
+          if gradient > 2 {
+            gradientTotal += gradient
+            gradientCount += 1
+          }
+        }
+      }
+    }
+
+    return FidelityMetrics(
+      inkMass: inkMass,
+      edgePixelRatio: inkPixels == 0 ? 0 : Double(edgePixels) / Double(inkPixels),
+      meanGradient: gradientCount == 0 ? 0 : gradientTotal / Double(gradientCount),
+      meanCoverageSpread: coverageSpreadCount == 0
+        ? 0 : coverageSpreadTotal / Double(coverageSpreadCount))
+  }
+
+  private func channelCoverage(value: UInt8, background: UInt8, foreground: UInt8) -> Double {
+    let range = Double(background) - Double(foreground)
+    guard abs(range) > 0.0001 else { return 0 }
+    return max(0, min(1, (Double(background) - Double(value)) / range))
+  }
+
+  private func luminance(r: UInt8, g: UInt8, b: UInt8) -> Double {
+    0.2126 * Double(r) + 0.7152 * Double(g) + 0.0722 * Double(b)
   }
 
   private func renderDecorationProbe(

@@ -292,6 +292,9 @@ public final class VectorGlyphRenderer: RendererBackend {
     layer.drawableSize = CGSize(width: pw, height: ph)
     targetTexture = nil
     if scaleChanged {
+      maskAtlas = VectorGlyphMaskAtlas()
+      atlasTexture = nil
+      accumTexture = nil
       rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: newScale)
       sidebarRasterAtlas = Self.makeRasterAtlas(
         device: device,
@@ -788,8 +791,8 @@ public final class VectorGlyphRenderer: RendererBackend {
         CGAffineTransform(a: 1, b: 0, c: Self.syntheticItalicShear, d: 1, tx: 0, ty: 0))
     }
     let bounds = outline.bounds.integral.insetBy(dx: -1, dy: -1)
-    let width = max(1, Int(ceil(bounds.width)))
-    let height = max(1, Int(ceil(bounds.height)))
+    let width = max(1, Int(ceil(bounds.width * scale)))
+    let height = max(1, Int(ceil(bounds.height * scale)))
     let origin = CGPoint(x: floor(bounds.minX), y: floor(bounds.minY))
     let key = VectorGlyphMaskAtlas.Key(
       font: ObjectIdentifier(font),
@@ -856,6 +859,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         width: descriptor.width,
         height: descriptor.height,
         origin: descriptor.origin,
+        rasterScale: scale,
         targetX: entry.x,
         targetY: entry.y,
         sampleStart: sampleStart,
@@ -917,7 +921,8 @@ public final class VectorGlyphRenderer: RendererBackend {
         outline: descriptor.outline,
         width: descriptor.width,
         height: descriptor.height,
-        origin: descriptor.origin),
+        origin: descriptor.origin,
+        rasterScale: scale),
       let entry = maskAtlas.store(
         key: descriptor.key,
         width: descriptor.width,
@@ -963,8 +968,8 @@ public final class VectorGlyphRenderer: RendererBackend {
     let rect = CGRect(
       x: position.x + mask.origin.x,
       y: position.y + mask.origin.y,
-      width: CGFloat(mask.width),
-      height: CGFloat(mask.height))
+      width: CGFloat(mask.width) / scale,
+      height: CGFloat(mask.height) / scale)
     return VectorGlyphInstance(
       origin: SIMD2<Float>(Float(rect.minX * scale), Float(rect.minY * scale)),
       size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),

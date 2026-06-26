@@ -17,7 +17,8 @@ public final class VectorGlyphScratchRasterizer {
     var origin: SIMD2<Float>
     var boundsMin: SIMD2<Float>
     var boundsMax: SIMD2<Float>
-    var _pad1: SIMD2<Float> = .zero
+    var rasterScale: Float
+    var _pad1: Float = 0
   }
 
   private struct GPUAccumParams {
@@ -31,8 +32,10 @@ public final class VectorGlyphScratchRasterizer {
     var origin: SIMD2<Float>
     var boundsMin: SIMD2<Float>
     var boundsMax: SIMD2<Float>
-    var subpixelOffsets: SIMD3<Float>
+    var rasterScale: Float
     var _pad0: Float = 0
+    var subpixelOffsets: SIMD3<Float>
+    var _pad1: Float = 0
   }
 
   private let device: MTLDevice
@@ -71,7 +74,8 @@ public final class VectorGlyphScratchRasterizer {
     outline: GlyphCurveOutline,
     width: Int,
     height: Int,
-    origin: CGPoint
+    origin: CGPoint,
+    rasterScale: CGFloat = 1
   ) -> [UInt8]? {
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: .r8Unorm,
@@ -88,6 +92,7 @@ public final class VectorGlyphScratchRasterizer {
         width: width,
         height: height,
         origin: origin,
+        rasterScale: rasterScale,
         targetX: 0,
         targetY: 0,
         into: texture,
@@ -116,12 +121,15 @@ public final class VectorGlyphScratchRasterizer {
     width: Int,
     height: Int,
     origin: CGPoint,
+    rasterScale: CGFloat = 1,
     targetX: Int,
     targetY: Int,
     into texture: MTLTexture,
     commandBuffer: MTLCommandBuffer
   ) -> Bool {
     guard width > 0, height > 0 else { return false }
+    let resolvedScale = max(rasterScale, 1)
+    guard resolvedScale.isFinite else { return false }
     guard width <= UInt32.max, height <= UInt32.max else { return false }
     guard targetX >= 0, targetY >= 0 else { return false }
     guard targetX + width <= texture.width, targetY + height <= texture.height else {
@@ -136,7 +144,8 @@ public final class VectorGlyphScratchRasterizer {
       height: UInt32(height),
       origin: SIMD2<Float>(Float(origin.x), Float(origin.y)),
       boundsMin: SIMD2<Float>(Float(outline.bounds.minX), Float(outline.bounds.minY)),
-      boundsMax: SIMD2<Float>(Float(outline.bounds.maxX), Float(outline.bounds.maxY)))
+      boundsMax: SIMD2<Float>(Float(outline.bounds.maxX), Float(outline.bounds.maxY)),
+      rasterScale: Float(resolvedScale))
     var targetOrigin = SIMD2<UInt32>(UInt32(targetX), UInt32(targetY))
 
     guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
@@ -163,6 +172,7 @@ public final class VectorGlyphScratchRasterizer {
     width: Int,
     height: Int,
     origin: CGPoint,
+    rasterScale: CGFloat = 1,
     targetX: Int,
     targetY: Int,
     sampleStart: Int,
@@ -174,6 +184,8 @@ public final class VectorGlyphScratchRasterizer {
     commandBuffer: MTLCommandBuffer
   ) -> Bool {
     guard width > 0, height > 0 else { return false }
+    let resolvedScale = max(rasterScale, 1)
+    guard resolvedScale.isFinite else { return false }
     guard width <= UInt32.max, height <= UInt32.max else { return false }
     guard targetX >= 0, targetY >= 0 else { return false }
     guard targetX + width <= accumTexture.width, targetY + height <= accumTexture.height else {
@@ -198,6 +210,7 @@ public final class VectorGlyphScratchRasterizer {
       origin: SIMD2<Float>(Float(origin.x), Float(origin.y)),
       boundsMin: SIMD2<Float>(Float(outline.bounds.minX), Float(outline.bounds.minY)),
       boundsMax: SIMD2<Float>(Float(outline.bounds.maxX), Float(outline.bounds.maxY)),
+      rasterScale: Float(resolvedScale),
       subpixelOffsets: subpixelOffsets)
 
     guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
