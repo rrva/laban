@@ -20,10 +20,10 @@ final class VectorGlyphParityTests: XCTestCase {
   func testLargeGlyphMasksGetStableFirstResidencySampleBudget() {
     XCTAssertEqual(
       VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 0, maskPixels: 32 * 32),
-      128)
+      512)
     XCTAssertEqual(
       VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 0, maskPixels: 48 * 64),
-      256)
+      512)
     XCTAssertEqual(
       VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 0, maskPixels: 96 * 96),
       512)
@@ -247,6 +247,74 @@ final class VectorGlyphParityTests: XCTestCase {
       threshold: 48)
     XCTAssertLessThan(diff.pixelRatioOverThreshold, 0.003)
     XCTAssertLessThan(diff.largestComponentArea, 80)
+  }
+
+  func testSmallAsymmetricGlyphsFirstFrameDoesNotHaveSevereSettlingArtifacts() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let scale: CGFloat = 2
+    let width = 960
+    let height = 220
+    for pointSize in [CGFloat(21), CGFloat(23)] {
+      let atlas = FontAtlas(pointSize: pointSize, fontName: nil)
+      let commands: [FrameCommand] = [
+        .rect(
+          CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale),
+          color: 0x10_10_10_FF,
+          source: .terminal),
+        .glyphRun(
+          origin: CGPoint(x: 14, y: 26),
+          text: "/ v D l U N /tmp/foo/bar //// /config",
+          foreground: 0xEE_EE_EE_FF,
+          background: 0x10_10_10_FF,
+          attributes: [],
+          source: .terminal),
+        .glyphRun(
+          origin: CGPoint(x: 14, y: 66),
+          text: "asymmetric glyph masks must not visibly settle",
+          foreground: 0xEE_EE_EE_FF,
+          background: 0x10_10_10_FF,
+          attributes: [],
+          source: .terminal),
+      ]
+
+      for layout in [VectorSubpixelLayout.grayscale, .calibratedRGB, .rgbStripe] {
+        let renderer = try XCTUnwrap(
+          VectorGlyphRenderer(
+            fontAtlas: atlas,
+            sidebarFontAtlas: atlas,
+            pixelWidth: width,
+            pixelHeight: height,
+            scale: scale))
+        renderer.setSubpixelLayout(layout)
+        XCTAssertTrue(
+          renderer.render(commands, damage: .full),
+          "\(layout.name) \(pointSize)pt first frame failed")
+        let first = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+        for frame in 0..<3 {
+          XCTAssertTrue(
+            renderer.render(commands, damage: .full),
+            "\(layout.name) \(pointSize)pt settling frame \(frame) failed")
+        }
+        let settled = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+
+        let diff = lumaDiffMetrics(
+          lhs: first,
+          rhs: settled,
+          crop: CGRect(x: 0, y: 0, width: width, height: height),
+          threshold: 16)
+        XCTAssertLessThan(
+          diff.pixelRatioOverThreshold,
+          0.0001,
+          "\(layout.name) \(pointSize)pt still changes after first residency")
+        XCTAssertLessThan(
+          diff.largestComponentArea,
+          4,
+          "\(layout.name) \(pointSize)pt has a severe settling block")
+      }
+    }
   }
 
   func testDefaultVectorTextFidelityStaysNearMetalOnLightBackground() throws {

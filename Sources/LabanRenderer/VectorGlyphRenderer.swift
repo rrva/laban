@@ -881,10 +881,7 @@ public final class VectorGlyphRenderer: RendererBackend {
 
   static func accumulationSamplesThisFrame(sampleStart: Int, maskPixels: Int) -> Int {
     if sampleStart == 0 {
-      if maskPixels >= 8_192 { return 512 }
-      if maskPixels >= 2_048 { return 256 }
-      if maskPixels >= 1_024 { return 128 }
-      return 64
+      return Self.accumulationSampleCap
     }
     if sampleStart < 128 { return 16 }
     if sampleStart < 256 { return 8 }
