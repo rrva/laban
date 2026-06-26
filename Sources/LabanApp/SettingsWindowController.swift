@@ -33,6 +33,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSubpixelBField = NSTextField(frame: .zero)
   private let vectorSubpixelWidthField = NSTextField(frame: .zero)
   private let vectorSubpixelApplyButton = NSButton(title: "Apply", target: nil, action: nil)
+  private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
   private let needsActionNotificationsCheckbox = NSButton(
@@ -243,43 +244,51 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     testNotificationButton.toolTip =
       "Sends one native macOS notification through the same path as tab attention."
 
-    let grid = NSGridView(views: [
+    let appearanceGrid = makeSettingsGrid([
       [makeLabel("Theme:"), themePopUp],
       [NSGridCell.emptyContentView, followSystemCheckbox],
       [makeLabel("Font:"), fontRow],
       [makeLabel("Cursor:"), cursorStylePopUp],
       [NSGridCell.emptyContentView, blinkCheckbox],
+    ])
+    let terminalGrid = makeSettingsGrid([
       [makeLabel("Scroll:"), scrollModePopUp],
       [makeLabel("Unicode width:"), graphemeWidthPopUp],
-      [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
-      [makeLabel("Renderer:"), rendererPopUp],
-      [makeLabel("Vector text AA:"), vectorSubpixelLayoutPopUp],
-      [makeLabel("Overlap:"), makeVectorSubpixelCustomRow()],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
       [makeLabel("Identity:"), identityPopUp],
       [NSGridCell.emptyContentView, optionAsMetaCheckbox],
+    ])
+    let renderingGrid = makeSettingsGrid([
+      [makeLabel("Renderer:"), rendererPopUp],
+      [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
+      [makeLabel("Vector text AA:"), vectorSubpixelLayoutPopUp],
+      [makeLabel("Overlap:"), makeVectorSubpixelCustomRow()],
+    ])
+    vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
+    let notificationsGrid = makeSettingsGrid([
       [makeLabel("Notifications:"), needsActionNotificationsCheckbox],
       [NSGridCell.emptyContentView, completionNotificationsCheckbox],
       [NSGridCell.emptyContentView, passiveNotificationsCheckbox],
       [NSGridCell.emptyContentView, notificationSoundCheckbox],
       [NSGridCell.emptyContentView, testNotificationButton],
     ])
-    grid.translatesAutoresizingMaskIntoConstraints = false
-    grid.column(at: 0).xPlacement = .trailing
-    grid.rowAlignment = .firstBaseline
-    grid.columnSpacing = 10
-    grid.rowSpacing = 14
-    content.addSubview(grid)
+
+    let tabs = NSTabView(frame: .zero)
+    tabs.translatesAutoresizingMaskIntoConstraints = false
+    tabs.addTabViewItem(makeTabItem(label: "Appearance", grid: appearanceGrid))
+    tabs.addTabViewItem(makeTabItem(label: "Terminal", grid: terminalGrid))
+    tabs.addTabViewItem(makeTabItem(label: "Rendering", grid: renderingGrid))
+    tabs.addTabViewItem(makeTabItem(label: "Notifications", grid: notificationsGrid))
+    content.addSubview(tabs)
     NSLayoutConstraint.activate([
-      grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-      grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-      content.trailingAnchor.constraint(equalTo: grid.trailingAnchor, constant: 20),
-      content.bottomAnchor.constraint(equalTo: grid.bottomAnchor, constant: 20),
+      tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+      tabs.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+      content.trailingAnchor.constraint(equalTo: tabs.trailingAnchor, constant: 20),
+      content.bottomAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 20),
     ])
     window.layoutIfNeeded()
-    let fitting = grid.fittingSize
-    window.setContentSize(NSSize(width: fitting.width + 40, height: fitting.height + 40))
+    window.setContentSize(NSSize(width: 560, height: 300))
   }
 
   private func populateThemePopUp() {
@@ -299,6 +308,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
   private func makeLabel(_ text: String) -> NSTextField {
     NSTextField(labelWithString: text)
+  }
+
+  private func makeSettingsGrid(_ rows: [[NSView]]) -> NSGridView {
+    let grid = NSGridView(views: rows)
+    grid.translatesAutoresizingMaskIntoConstraints = false
+    grid.column(at: 0).xPlacement = .trailing
+    grid.rowAlignment = .firstBaseline
+    grid.columnSpacing = 10
+    grid.rowSpacing = 14
+    return grid
+  }
+
+  private func makeTabItem(label: String, grid: NSGridView) -> NSTabViewItem {
+    let item = NSTabViewItem(identifier: label)
+    item.label = label
+
+    let view = NSView(frame: .zero)
+    view.addSubview(grid)
+    NSLayoutConstraint.activate([
+      grid.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+      grid.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+      view.trailingAnchor.constraint(greaterThanOrEqualTo: grid.trailingAnchor, constant: 12),
+      view.bottomAnchor.constraint(greaterThanOrEqualTo: grid.bottomAnchor, constant: 12),
+    ])
+    item.view = view
+    return item
   }
 
   private func makeSmallLabel(_ text: String) -> NSTextField {
@@ -396,6 +431,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       vectorSubpixelLayoutPopUp.selectItem(at: row)
     }
     refreshVectorSubpixelCustomFields(vectorLayout)
+    vectorSubpixelCustomGridRow?.isHidden =
+      VectorSubpixelLayout.persistedPreset() != .customOverlap
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
