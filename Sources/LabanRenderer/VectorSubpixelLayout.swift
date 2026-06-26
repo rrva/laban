@@ -5,6 +5,11 @@ public enum VectorSubpixelLayoutPreset: String, CaseIterable, Sendable {
   case rgbStripe
   case bgrStripe
 
+  public static let settingsCases: [VectorSubpixelLayoutPreset] = [
+    .grayscale,
+    .rgbStripe,
+  ]
+
   public var layout: VectorSubpixelLayout {
     switch self {
     case .grayscale: return .grayscale

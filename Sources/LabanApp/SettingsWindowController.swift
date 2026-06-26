@@ -54,7 +54,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let graphemeWidthOptions: [GraphemeWidthMode] = GraphemeWidthMode.allCases
   private let emojiRenderingOptions: [EmojiRenderingMode] = EmojiRenderingMode.allCases
   private let vectorSubpixelLayoutOptions: [VectorSubpixelLayoutPreset] =
-    VectorSubpixelLayoutPreset.allCases
+    VectorSubpixelLayoutPreset.settingsCases
 
   init(
     theme: ThemeMenuController,
@@ -202,6 +202,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     for option in vectorSubpixelLayoutOptions {
       vectorSubpixelLayoutPopUp.addItem(withTitle: vectorSubpixelLayoutTitle(option))
     }
+    vectorSubpixelLayoutPopUp.toolTip =
+      "Grayscale is neutral. RGB subpixel uses an RGB stripe display layout "
+      + "for maximum horizontal text acuity."
 
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
@@ -244,7 +247,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [makeLabel("Unicode width:"), graphemeWidthPopUp],
       [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
       [makeLabel("Renderer:"), rendererPopUp],
-      [makeLabel("Subpixel layout:"), vectorSubpixelLayoutPopUp],
+      [makeLabel("Vector text AA:"), vectorSubpixelLayoutPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
       [makeLabel("Identity:"), identityPopUp],
@@ -535,8 +538,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private func vectorSubpixelLayoutTitle(_ preset: VectorSubpixelLayoutPreset) -> String {
     switch preset {
     case .grayscale: return "Grayscale"
-    case .rgbStripe: return "RGB stripe"
-    case .bgrStripe: return "BGR stripe"
+    case .rgbStripe: return "RGB subpixel"
+    case .bgrStripe: return "BGR subpixel"
     }
   }
 

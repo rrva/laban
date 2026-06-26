@@ -3,6 +3,15 @@ import XCTest
 @testable import LabanRenderer
 
 final class VectorSubpixelLayoutTests: XCTestCase {
+  func testSettingsCasesExposeGrayscaleAndRGBOnly() {
+    XCTAssertEqual(
+      VectorSubpixelLayoutPreset.settingsCases,
+      [.grayscale, .rgbStripe])
+    XCTAssertTrue(
+      VectorSubpixelLayoutPreset.allCases.contains(.bgrStripe),
+      "BGR remains available for debug/API calibration without being a normal Settings choice.")
+  }
+
   func testPersistedPresetDefaultsToGrayscaleAndStoresStripePresets() throws {
     let suiteName = "VectorSubpixelLayoutTests-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

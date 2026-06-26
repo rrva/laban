@@ -1235,7 +1235,7 @@ renderer would be a bug to fix, not an acceptable outcome.)
 - [ ] M1a (stretch) — Apple-GPU tile-shader coverage pass. Deferred; the compute path met the M1/M3 correctness and timing gates, so this optional spike is not a blocker for M5.
 - [x] M2 — `VectorGlyphRenderer` is an additive `RendererBackend` peer with shared `RendererSelection`/`makeRendererBackend(...)` routing in `LabanRenderer`, no `RendererMode.vectorGlyph`, View and Settings entries, font-zoom preservation, headless selection, `/debug/render`, and offscreen screenshot readback. The bundle contains `VectorGlyphShaders.metal` and the `Vector Glyph Renderer` menu string.
 - [x] M3 — temporal accumulation is implemented with deterministic `rgba32Uint` fixed-point sums, front-loaded 8/4/2/1 sampling, R2 jitter, fixed-frame convergence, and the parity matrix. Instruments evidence from `.tmp/vector-attach-trace.trace` shows `laban.vector.content` at p50 0.195542-0.203125 ms and p99 0.218532-0.231455 ms, meeting the <=0.3 ms p50 M3 target in the attached headless workload.
-- [x] M4 — RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
+- [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale vs RGB subpixel choice; BGR/custom remain debug/API calibration paths. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
 - [ ] M5 — feature parity implementation and autonomous gates are complete, but one non-autonomous gate remains before this ExecPlan can be marked fully done: a manually launched AppKit live-shell classic<->vector switch check. The formal fresh-agent Review Gate passed at commit `28e072d719a6686255ec6c87e1828ad9c0bde530`. Current autonomous evidence includes focused XCTest passes (`swift test --filter VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`, `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the preedit smoke), including `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` for Metal instance batches larger than the 4 KB `setVertexBytes` inline limit. It also includes `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`, `./scripts/lint`, `./scripts/check-docs`, `./scripts/check-debug-contract`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `git diff --check`, and `./scripts/build-app` plus `codesign --verify --deep --strict .build/laban/Laban.app`. A broad `swift test` run is not green in this environment due to pre-existing/non-vector failures (`AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`, `LabanSessionTests`, `TabTitleEndToEndTests`) and pasteboard-dependent `TerminalClipboardTests`/`TerminalDropTests`; the vector-added `TerminalWidthPolicyGuardTests` failure from that stale full log was fixed and rerun targeted.
 - [x] ADR `docs/adr/0022-vector-glyph-renderer.md` written and `docs/adr/README.md` index entry — **already landed** (ADR 0022 exists and is indexed). M5 only updates its Evidence section.
 
@@ -1468,6 +1468,16 @@ renderer would be a bug to fix, not an acceptable outcome.)
   `VectorGlyphRenderer.setSubpixelLayout(...)` from a notification, so the
   renderer still never polls `UserDefaults` per frame.
   Date/Author: 2026-06-26 / M4 persistence slice.
+
+- Decision: default vector text antialiasing is grayscale, and the normal
+  Settings UI exposes only **Grayscale** and **RGB subpixel**. Keep `bgrStripe`
+  and custom JSON/debug offsets supported for calibration, external displays,
+  and automated experiments, but do not present them as ordinary user choices.
+  Rationale: grayscale is the safest neutral default across Retina compositing,
+  display rotation, OLED/subpixel geometries, and unknown external panels. RGB
+  subpixel is the explicit maximum-acuity option for a known RGB-stripe panel,
+  such as the built-in MacBook display, and should be a deliberate choice.
+  Date/Author: 2026-06-26 / Settings acuity control.
 
 - Decision: M5's first glyph fallback uses the existing `MetalGlyphAtlas` R8
   raster path for unsupported vector clusters and `ColorGlyphAtlas` for terminal
@@ -1834,7 +1844,7 @@ renderer would be a bug to fix, not an acceptable outcome.)
   first-class Settings UI in this plan. `VectorSubpixelLayout.persisted` accepts
   preset names or JSON like `{"name":"oledDiamond","offsets":[-0.25,0,0.25]}`,
   and the debug action accepts finite custom offsets for autonomous verification.
-  Settings stays limited to RGB/BGR presets so ordinary users cannot configure
+  Settings stays limited to grayscale/RGB so ordinary users cannot configure
   display-specific offsets without a calibration workflow.
 
 - Observation: `./scripts/install-app` now passes for the current vector glyph
