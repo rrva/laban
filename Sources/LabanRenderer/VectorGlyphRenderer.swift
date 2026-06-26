@@ -42,6 +42,7 @@ private struct VectorMaskDescriptor {
 
 public final class VectorGlyphRenderer: RendererBackend {
   private static let syntheticItalicShear: CGFloat = 0.18
+  private static let maxInlineInstanceBytes = 4096
 
   public private(set) var fontAtlas: FontAtlas
   public private(set) var sidebarFontAtlas: FontAtlas
@@ -343,17 +344,26 @@ public final class VectorGlyphRenderer: RendererBackend {
       let commandBuffer = queue.makeCommandBuffer()
     else { return false }
 
+    var retainedInstanceBuffers: [MTLBuffer] = []
     lastRasterFallbackGlyphs = prepareGlyphResources(
       commands: commands,
       commandBuffer: commandBuffer)
-    encode(commands: commands, into: target, commandBuffer: commandBuffer)
+    encode(
+      commands: commands,
+      into: target,
+      commandBuffer: commandBuffer,
+      retainedInstanceBuffers: &retainedInstanceBuffers)
     if let drawable = layer.nextDrawable() {
       encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
       commandBuffer.present(drawable)
     }
 
     let completion = onFrameCompleted
-    commandBuffer.addCompletedHandler { _ in completion?() }
+    let buffersToRetain = retainedInstanceBuffers
+    commandBuffer.addCompletedHandler { _ in
+      _ = buffersToRetain
+      completion?()
+    }
     commandBuffer.commit()
     lastCommandBuffer = commandBuffer
     return true
@@ -362,7 +372,8 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func encode(
     commands: [FrameCommand],
     into target: MTLTexture,
-    commandBuffer: MTLCommandBuffer
+    commandBuffer: MTLCommandBuffer,
+    retainedInstanceBuffers: inout [MTLBuffer]
   ) {
     let descriptor = MTLRenderPassDescriptor()
     descriptor.colorAttachments[0].texture = target
@@ -392,9 +403,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         scale: Float(scale))
       if !solids.isEmpty {
         encoder.setRenderPipelineState(solidPipeline)
-        solids.withUnsafeBytes { raw in
-          guard let base = raw.baseAddress else { return }
-          encoder.setVertexBytes(base, length: raw.count, index: 0)
+        if setVertexInstances(solids, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
           encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
           encoder.drawPrimitives(
             type: .triangle,
@@ -406,9 +415,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       }
       if !glyphs.isEmpty, let atlasTexture {
         encoder.setRenderPipelineState(glyphPipeline)
-        glyphs.withUnsafeBytes { raw in
-          guard let base = raw.baseAddress else { return }
-          encoder.setVertexBytes(base, length: raw.count, index: 0)
+        if setVertexInstances(glyphs, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
           encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
           encoder.setFragmentTexture(atlasTexture, index: 0)
           encoder.setFragmentSamplerState(sampler, index: 0)
@@ -420,17 +427,24 @@ public final class VectorGlyphRenderer: RendererBackend {
         }
         glyphs.removeAll(keepingCapacity: true)
       }
-      drawRasterGlyphs(&rasterGlyphs, atlas: rasterAtlas, encoder: encoder, uniforms: &uniforms)
+      drawRasterGlyphs(
+        &rasterGlyphs,
+        atlas: rasterAtlas,
+        encoder: encoder,
+        uniforms: &uniforms,
+        retainedInstanceBuffers: &retainedInstanceBuffers)
       drawRasterGlyphs(
         &sidebarRasterGlyphs,
         atlas: sidebarRasterAtlas,
         encoder: encoder,
-        uniforms: &uniforms)
+        uniforms: &uniforms,
+        retainedInstanceBuffers: &retainedInstanceBuffers)
       drawColorGlyphs(
         &colorGlyphs,
         atlas: colorGlyphAtlas,
         encoder: encoder,
-        uniforms: &uniforms)
+        uniforms: &uniforms,
+        retainedInstanceBuffers: &retainedInstanceBuffers)
     }
 
     for command in commands {
@@ -478,16 +492,15 @@ public final class VectorGlyphRenderer: RendererBackend {
     _ glyphs: inout [VectorGlyphInstance],
     atlas: MetalGlyphAtlas?,
     encoder: MTLRenderCommandEncoder,
-    uniforms: inout VectorUniforms
+    uniforms: inout VectorUniforms,
+    retainedInstanceBuffers: inout [MTLBuffer]
   ) {
     guard !glyphs.isEmpty, let atlas else {
       glyphs.removeAll(keepingCapacity: true)
       return
     }
     encoder.setRenderPipelineState(rasterGlyphPipeline)
-    glyphs.withUnsafeBytes { raw in
-      guard let base = raw.baseAddress else { return }
-      encoder.setVertexBytes(base, length: raw.count, index: 0)
+    if setVertexInstances(glyphs, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
       encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
       encoder.setFragmentTexture(atlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
@@ -504,16 +517,15 @@ public final class VectorGlyphRenderer: RendererBackend {
     _ glyphs: inout [VectorGlyphInstance],
     atlas: ColorGlyphAtlas?,
     encoder: MTLRenderCommandEncoder,
-    uniforms: inout VectorUniforms
+    uniforms: inout VectorUniforms,
+    retainedInstanceBuffers: inout [MTLBuffer]
   ) {
     guard !glyphs.isEmpty, let atlas else {
       glyphs.removeAll(keepingCapacity: true)
       return
     }
     encoder.setRenderPipelineState(colorGlyphPipeline)
-    glyphs.withUnsafeBytes { raw in
-      guard let base = raw.baseAddress else { return }
-      encoder.setVertexBytes(base, length: raw.count, index: 0)
+    if setVertexInstances(glyphs, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
       encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
       encoder.setFragmentTexture(atlas.texture, index: 0)
       encoder.setFragmentSamplerState(sampler, index: 0)
@@ -524,6 +536,33 @@ public final class VectorGlyphRenderer: RendererBackend {
         instanceCount: glyphs.count)
     }
     glyphs.removeAll(keepingCapacity: true)
+  }
+
+  private func setVertexInstances<Element>(
+    _ instances: [Element],
+    encoder: MTLRenderCommandEncoder,
+    retainedBuffers: inout [MTLBuffer]
+  ) -> Bool {
+    let stride = MemoryLayout<Element>.stride
+    let byteCount = instances.count.multipliedReportingOverflow(by: stride)
+    guard !byteCount.overflow, byteCount.partialValue > 0 else { return false }
+
+    return instances.withUnsafeBytes { raw -> Bool in
+      guard let base = raw.baseAddress else { return false }
+      if raw.count <= Self.maxInlineInstanceBytes {
+        encoder.setVertexBytes(base, length: raw.count, index: 0)
+        return true
+      }
+      guard
+        let buffer = device.makeBuffer(
+          bytes: base,
+          length: raw.count,
+          options: .storageModeShared)
+      else { return false }
+      retainedBuffers.append(buffer)
+      encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+      return true
+    }
   }
 
   private func prepareGlyphResources(
