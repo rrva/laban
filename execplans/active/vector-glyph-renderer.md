@@ -1235,7 +1235,7 @@ renderer would be a bug to fix, not an acceptable outcome.)
 - [ ] M1a (stretch) — Apple-GPU tile-shader coverage pass. Deferred; the compute path met the M1/M3 correctness and timing gates, so this optional spike is not a blocker for M5.
 - [x] M2 — `VectorGlyphRenderer` is an additive `RendererBackend` peer with shared `RendererSelection`/`makeRendererBackend(...)` routing in `LabanRenderer`, no `RendererMode.vectorGlyph`, View and Settings entries, font-zoom preservation, headless selection, `/debug/render`, and offscreen screenshot readback. The bundle contains `VectorGlyphShaders.metal` and the `Vector Glyph Renderer` menu string.
 - [x] M3 — temporal accumulation is implemented with deterministic `rgba32Uint` fixed-point sums, front-loaded 8/4/2/1 sampling, R2 jitter, fixed-frame convergence, and the parity matrix. Instruments evidence from `.tmp/vector-attach-trace.trace` shows `laban.vector.content` at p50 0.195542-0.203125 ms and p99 0.218532-0.231455 ms, meeting the <=0.3 ms p50 M3 target in the attached headless workload.
-- [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale vs RGB subpixel choice; BGR/custom remain debug/API calibration paths. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
+- [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale, calibrated, and RGB subpixel choices; BGR/custom remain debug/API calibration paths. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
 - [x] Renderer fidelity calibration artifact — `scripts/vector-renderer-fidelity-report`
   writes a deterministic Markdown/JSON/PNG report under
   `.artifacts/runs/<run-id>/renderer-fidelity/`. A 2026-06-26 verification run
@@ -1485,14 +1485,19 @@ renderer would be a bug to fix, not an acceptable outcome.)
   Date/Author: 2026-06-26 / M4 persistence slice.
 
 - Decision: default vector text antialiasing is grayscale, and the normal
-  Settings UI exposes only **Grayscale** and **RGB subpixel**. Keep `bgrStripe`
-  and custom JSON/debug offsets supported for calibration, external displays,
-  and automated experiments, but do not present them as ordinary user choices.
+  Settings UI exposes **Grayscale**, **Calibrated**, and **RGB subpixel**.
+  `Calibrated` is the measured balanced RGB profile from the sweep (`-0.20, 0,
+  +0.20` px). Keep `bgrStripe` and custom JSON/debug offsets supported for
+  external displays and automated experiments, but do not present them as
+  ordinary user choices.
   Rationale: grayscale is the safest neutral default across Retina compositing,
   display rotation, OLED/subpixel geometries, and unknown external panels. RGB
-  subpixel is the explicit maximum-acuity option for a known RGB-stripe panel,
-  such as the built-in MacBook display, and should be a deliberate choice.
-  Date/Author: 2026-06-26 / Settings acuity control.
+  subpixel is the explicit strong-acuity option for a known RGB-stripe panel,
+  such as the built-in MacBook display, and should be a deliberate choice. The
+  calibrated option gives Settings a lower-fringing middle point without forcing
+  users through the JSON/custom path.
+  Date/Author: 2026-06-26 / Settings acuity control; 2026-06-26 / calibrated
+  setting.
 
 - Decision: renderer fidelity calibration is an evidence artifact, not a
   golden-master gate, and it treats `classic`/`gpuDriven` as comparators rather

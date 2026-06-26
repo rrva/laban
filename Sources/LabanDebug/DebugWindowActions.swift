@@ -164,6 +164,8 @@ struct DebugWindowActions {
       switch request.layout ?? "grayscale" {
       case "grayscale", "gray", "greyscale", "grey":
         layout = .grayscale
+      case "calibratedRGB", "calibrated", "balanced":
+        layout = .calibratedRGB
       case "rgbStripe", "rgb":
         layout = .rgbStripe
       case "bgrStripe", "bgr":

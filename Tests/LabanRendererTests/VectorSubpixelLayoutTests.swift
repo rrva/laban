@@ -3,22 +3,31 @@ import XCTest
 @testable import LabanRenderer
 
 final class VectorSubpixelLayoutTests: XCTestCase {
-  func testSettingsCasesExposeGrayscaleAndRGBOnly() {
+  func testSettingsCasesExposeGrayscaleCalibratedAndRGBOnly() {
     XCTAssertEqual(
       VectorSubpixelLayoutPreset.settingsCases,
-      [.grayscale, .rgbStripe])
+      [.grayscale, .calibratedRGB, .rgbStripe])
     XCTAssertTrue(
       VectorSubpixelLayoutPreset.allCases.contains(.bgrStripe),
       "BGR remains available for debug/API calibration without being a normal Settings choice.")
   }
 
-  func testPersistedPresetDefaultsToGrayscaleAndStoresStripePresets() throws {
+  func testPersistedPresetDefaultsToGrayscaleAndStoresCalibratedAndStripePresets() throws {
     let suiteName = "VectorSubpixelLayoutTests-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
 
     XCTAssertEqual(VectorSubpixelLayout.persistedPreset(defaults: defaults), .grayscale)
     XCTAssertEqual(VectorSubpixelLayout.persisted(defaults: defaults), .grayscale)
+
+    VectorSubpixelLayout.setPersistedPreset(.calibratedRGB, defaults: defaults)
+
+    XCTAssertEqual(VectorSubpixelLayout.persistedPreset(defaults: defaults), .calibratedRGB)
+    XCTAssertEqual(VectorSubpixelLayout.persisted(defaults: defaults), .calibratedRGB)
+    XCTAssertEqual(
+      VectorSubpixelLayout.persisted(defaults: defaults).offsets.x, -0.20, accuracy: 0.0001)
+    XCTAssertEqual(
+      VectorSubpixelLayout.persisted(defaults: defaults).offsets.z, 0.20, accuracy: 0.0001)
 
     VectorSubpixelLayout.setPersistedPreset(.rgbStripe, defaults: defaults)
 

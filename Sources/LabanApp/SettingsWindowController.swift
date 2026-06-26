@@ -203,8 +203,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       vectorSubpixelLayoutPopUp.addItem(withTitle: vectorSubpixelLayoutTitle(option))
     }
     vectorSubpixelLayoutPopUp.toolTip =
-      "Grayscale is neutral. RGB subpixel uses an RGB stripe display layout "
-      + "for maximum horizontal text acuity."
+      "Grayscale is neutral. Calibrated uses the measured balanced RGB offset. "
+      + "RGB subpixel uses a stronger RGB stripe layout for maximum horizontal text acuity."
 
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
@@ -538,6 +538,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private func vectorSubpixelLayoutTitle(_ preset: VectorSubpixelLayoutPreset) -> String {
     switch preset {
     case .grayscale: return "Grayscale"
+    case .calibratedRGB: return "Calibrated"
     case .rgbStripe: return "RGB subpixel"
     case .bgrStripe: return "BGR subpixel"
     }

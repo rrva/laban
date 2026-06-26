@@ -2,17 +2,20 @@ import Foundation
 
 public enum VectorSubpixelLayoutPreset: String, CaseIterable, Sendable {
   case grayscale
+  case calibratedRGB
   case rgbStripe
   case bgrStripe
 
   public static let settingsCases: [VectorSubpixelLayoutPreset] = [
     .grayscale,
+    .calibratedRGB,
     .rgbStripe,
   ]
 
   public var layout: VectorSubpixelLayout {
     switch self {
     case .grayscale: return .grayscale
+    case .calibratedRGB: return .calibratedRGB
     case .rgbStripe: return .rgbStripe
     case .bgrStripe: return .bgrStripe
     }
@@ -40,6 +43,10 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
   public static let grayscale = VectorSubpixelLayout(
     name: "grayscale",
     offsets: SIMD3<Float>(0, 0, 0))
+
+  public static let calibratedRGB = VectorSubpixelLayout(
+    name: "calibratedRGB",
+    offsets: SIMD3<Float>(-0.20, 0, 0.20))
 
   public static let rgbStripe = VectorSubpixelLayout(
     name: "rgbStripe",
@@ -89,6 +96,8 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
   ) {
     if layout == .grayscale {
       defaults.set(VectorSubpixelLayoutPreset.grayscale.rawValue, forKey: defaultsKey)
+    } else if layout == .calibratedRGB {
+      defaults.set(VectorSubpixelLayoutPreset.calibratedRGB.rawValue, forKey: defaultsKey)
     } else if layout == .rgbStripe {
       defaults.set(VectorSubpixelLayoutPreset.rgbStripe.rawValue, forKey: defaultsKey)
     } else if layout == .bgrStripe {
