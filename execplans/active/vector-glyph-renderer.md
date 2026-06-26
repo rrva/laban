@@ -1235,7 +1235,7 @@ renderer would be a bug to fix, not an acceptable outcome.)
 - [ ] M1a (stretch) — Apple-GPU tile-shader coverage pass. Deferred; the compute path met the M1/M3 correctness and timing gates, so this optional spike is not a blocker for M5.
 - [x] M2 — `VectorGlyphRenderer` is an additive `RendererBackend` peer with shared `RendererSelection`/`makeRendererBackend(...)` routing in `LabanRenderer`, no `RendererMode.vectorGlyph`, View and Settings entries, font-zoom preservation, headless selection, `/debug/render`, and offscreen screenshot readback. The bundle contains `VectorGlyphShaders.metal` and the `Vector Glyph Renderer` menu string.
 - [x] M3 — temporal accumulation is implemented with deterministic `rgba32Uint` fixed-point sums, front-loaded 8/4/2/1 sampling, R2 jitter, fixed-frame convergence, and the parity matrix. Instruments evidence from `.tmp/vector-attach-trace.trace` shows `laban.vector.content` at p50 0.195542-0.203125 ms and p99 0.218532-0.231455 ms, meeting the <=0.3 ms p50 M3 target in the attached headless workload.
-- [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale, calibrated, and RGB subpixel choices; BGR/custom remain debug/API calibration paths. `Calibrated` now uses OSOR-style overlapping per-channel sample areas rather than three shifted point samples. The debug action also accepts explicit RGB `areas` rectangles for monitor-specific experiments.
+- [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale, calibrated, custom overlap, and RGB subpixel choices; BGR remains a debug/API calibration path. `Calibrated` now uses OSOR-style overlapping per-channel sample areas rather than three shifted point samples. `Custom overlap` exposes editable R/G/B center offsets plus overlap width in Settings, and the debug action also accepts explicit RGB `areas` rectangles for monitor-specific experiments.
 - [x] Renderer fidelity calibration artifact — `scripts/vector-renderer-fidelity-report`
   writes a deterministic Markdown/JSON/PNG report under
   `.artifacts/runs/<run-id>/renderer-fidelity/`. A 2026-06-26 verification run
@@ -1482,26 +1482,30 @@ renderer would be a bug to fix, not an acceptable outcome.)
   harness exercise the same invalidation path the App settings UI should call.
   Date/Author: 2026-06-26 / M4 layout action.
 
-- Decision: persist vector subpixel layout as RGB/BGR presets in
-  `LabanVectorSubpixelLayout`; keep arbitrary custom offsets debug-only for the
-  first UI slice.
+- Decision: persist vector subpixel layout as presets or custom JSON in
+  `LabanVectorSubpixelLayout`; expose a compact Settings editor for custom OSOR
+  overlap center offsets and width.
   Rationale: RGB/BGR covers the common stripe-panel correction with a compact
-  Settings popup. Custom OLED offset editing needs a richer editor and validation
-  than this native settings grid should grow in M4. New vector backends read the
-  persisted preset once at creation, and `TerminalBitmapView` applies changes via
+  Settings popup, while custom overlap needs only four bounded fields for the
+  practical calibration loop: R/G/B center offsets plus common channel width.
+  Full arbitrary per-channel rectangles remain debug/API-only for experiments.
+  New vector backends read the persisted preset once at creation, and
+  `TerminalBitmapView` applies changes via
   `VectorGlyphRenderer.setSubpixelLayout(...)` from a notification, so the
   renderer still never polls `UserDefaults` per frame.
-  Date/Author: 2026-06-26 / M4 persistence slice.
+  Date/Author: 2026-06-26 / M4 persistence slice; 2026-06-26 / Settings custom
+  overlap exposure.
 
 - Decision: default vector text antialiasing is grayscale, and the normal
-  Settings UI exposes **Grayscale**, **Calibrated**, and **RGB subpixel**.
+  Settings UI exposes **Grayscale**, **Calibrated**, **Custom overlap**, and
+  **RGB subpixel**.
   `Calibrated` is the measured balanced RGB center profile from the sweep
   (`-0.15, 0, +0.15` px) rendered with OSOR-style overlapping sample areas:
   each channel jitters inside its own min/max rectangle, the rectangles overlap,
-  and the red/blue rectangles bleed outside the pixel. Keep `bgrStripe`,
-  custom JSON/debug offsets, and explicit debug `areas` rectangles supported for
-  external displays and automated experiments, but do not present them as
-  ordinary user choices.
+  and the red/blue rectangles bleed outside the pixel. `Custom overlap` persists
+  a user-tuned OSOR layout; keep `bgrStripe` and explicit debug `areas`
+  rectangles supported for external displays and automated experiments, but do
+  not present those lower-level choices as ordinary presets.
   Rationale: grayscale is the safest neutral default across Retina compositing,
   display rotation, OLED/subpixel geometries, and unknown external panels. RGB
   subpixel is the explicit strong-acuity option for a known RGB-stripe panel,

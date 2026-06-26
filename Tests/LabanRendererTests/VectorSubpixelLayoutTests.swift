@@ -3,10 +3,10 @@ import XCTest
 @testable import LabanRenderer
 
 final class VectorSubpixelLayoutTests: XCTestCase {
-  func testSettingsCasesExposeGrayscaleCalibratedAndRGBOnly() {
+  func testSettingsCasesExposeGrayscaleCalibratedCustomAndRGBOnly() {
     XCTAssertEqual(
       VectorSubpixelLayoutPreset.settingsCases,
-      [.grayscale, .calibratedRGB, .rgbStripe])
+      [.grayscale, .calibratedRGB, .customOverlap, .rgbStripe])
     XCTAssertTrue(
       VectorSubpixelLayoutPreset.allCases.contains(.bgrStripe),
       "BGR remains available for debug/API calibration without being a normal Settings choice.")
@@ -58,6 +58,14 @@ final class VectorSubpixelLayoutTests: XCTestCase {
       VectorSubpixelLayout.rgbStripe.areas.b.min.x,
       accuracy: 0.0001)
 
+    VectorSubpixelLayout.setPersistedPreset(.customOverlap, defaults: defaults)
+
+    XCTAssertEqual(VectorSubpixelLayout.persistedPreset(defaults: defaults), .customOverlap)
+    XCTAssertEqual(
+      VectorSubpixelLayout.persisted(defaults: defaults),
+      .calibratedRGB,
+      "A raw customOverlap preset seeds the Settings fields; saved custom values use JSON.")
+
     VectorSubpixelLayout.setPersistedPreset(.bgrStripe, defaults: defaults)
 
     XCTAssertEqual(VectorSubpixelLayout.persistedPreset(defaults: defaults), .bgrStripe)
@@ -80,8 +88,8 @@ final class VectorSubpixelLayoutTests: XCTestCase {
     XCTAssertEqual(layout.offsets.z, 0.25, accuracy: 0.0001)
     XCTAssertEqual(
       VectorSubpixelLayout.persistedPreset(defaults: defaults),
-      .grayscale,
-      "Settings only exposes safe presets; custom JSON remains an advanced path.")
+      .customOverlap,
+      "Settings exposes custom JSON through the Custom overlap row.")
   }
 
   func testPersistedCustomJSONLayoutSupportsOSORAreas() throws {
@@ -100,6 +108,8 @@ final class VectorSubpixelLayoutTests: XCTestCase {
     XCTAssertEqual(layout.offsets.z, 0.20, accuracy: 0.0001)
     XCTAssertEqual(layout.areas.r.min.x, -0.1, accuracy: 0.0001)
     XCTAssertEqual(layout.areas.b.max.x, 1.1, accuracy: 0.0001)
+    XCTAssertEqual(layout.areas.averageWidthX, 0.8, accuracy: 0.0001)
+    XCTAssertEqual(VectorSubpixelLayout.persistedPreset(defaults: defaults), .customOverlap)
   }
 
   func testSetPersistedCustomLayoutWritesJSON() throws {

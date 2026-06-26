@@ -7,7 +7,7 @@ import LabanRenderer
 /// and restore-on-launch — as standard AppKit controls. Every control drives
 /// the same menu-controller apply path, so there is a single source of truth
 /// and flipping a setting here behaves exactly as the old menu item did.
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
   private let themeController: ThemeMenuController
   private let rendererController: RendererModeMenuController
   private let backendController: TerminalBackendMenuController
@@ -28,6 +28,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let emojiRenderingPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let vectorSubpixelLayoutPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let vectorSubpixelRField = NSTextField(frame: .zero)
+  private let vectorSubpixelGField = NSTextField(frame: .zero)
+  private let vectorSubpixelBField = NSTextField(frame: .zero)
+  private let vectorSubpixelWidthField = NSTextField(frame: .zero)
+  private let vectorSubpixelApplyButton = NSButton(title: "Apply", target: nil, action: nil)
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
   private let needsActionNotificationsCheckbox = NSButton(
@@ -205,6 +210,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     vectorSubpixelLayoutPopUp.toolTip =
       "Grayscale is neutral. Calibrated uses measured overlapping RGB sample areas. "
       + "RGB subpixel uses a stronger RGB stripe layout for maximum horizontal text acuity."
+    configureVectorSubpixelCustomControls()
 
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
@@ -248,6 +254,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
       [makeLabel("Renderer:"), rendererPopUp],
       [makeLabel("Vector text AA:"), vectorSubpixelLayoutPopUp],
+      [makeLabel("Overlap:"), makeVectorSubpixelCustomRow()],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
       [makeLabel("Identity:"), identityPopUp],
@@ -294,6 +301,61 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     NSTextField(labelWithString: text)
   }
 
+  private func makeSmallLabel(_ text: String) -> NSTextField {
+    let label = NSTextField(labelWithString: text)
+    label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    return label
+  }
+
+  private func makeVectorSubpixelCustomRow() -> NSStackView {
+    let row = NSStackView(views: [
+      makeSmallLabel("R"),
+      vectorSubpixelRField,
+      makeSmallLabel("G"),
+      vectorSubpixelGField,
+      makeSmallLabel("B"),
+      vectorSubpixelBField,
+      makeSmallLabel("W"),
+      vectorSubpixelWidthField,
+      vectorSubpixelApplyButton,
+    ])
+    row.orientation = .horizontal
+    row.spacing = 6
+    row.alignment = .firstBaseline
+    return row
+  }
+
+  private func configureVectorSubpixelCustomControls() {
+    for field in vectorSubpixelFields {
+      field.alignment = .right
+      field.font = .monospacedDigitSystemFont(
+        ofSize: NSFont.systemFontSize,
+        weight: .regular)
+      field.target = self
+      field.action = #selector(vectorSubpixelCustomFieldChanged(_:))
+      field.delegate = self
+      field.translatesAutoresizingMaskIntoConstraints = false
+      field.widthAnchor.constraint(equalToConstant: 52).isActive = true
+    }
+    vectorSubpixelRField.toolTip = "Red channel sample-area center offset in device pixels."
+    vectorSubpixelGField.toolTip = "Green channel sample-area center offset in device pixels."
+    vectorSubpixelBField.toolTip = "Blue channel sample-area center offset in device pixels."
+    vectorSubpixelWidthField.toolTip = "Width of each overlapping channel sample area in pixels."
+    vectorSubpixelApplyButton.target = self
+    vectorSubpixelApplyButton.action = #selector(vectorSubpixelCustomApplyClicked(_:))
+    vectorSubpixelApplyButton.bezelStyle = .rounded
+    vectorSubpixelApplyButton.toolTip = "Save these values as a custom vector text AA layout."
+  }
+
+  private var vectorSubpixelFields: [NSTextField] {
+    [
+      vectorSubpixelRField,
+      vectorSubpixelGField,
+      vectorSubpixelBField,
+      vectorSubpixelWidthField,
+    ]
+  }
+
   // MARK: Live values
 
   private func refresh() {
@@ -328,11 +390,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     if let row = emojiRenderingOptions.firstIndex(of: EmojiRenderingSettings.current()) {
       emojiRenderingPopUp.selectItem(at: row)
     }
-    if let row = vectorSubpixelLayoutOptions.firstIndex(
-      of: VectorSubpixelLayout.persistedPreset())
+    let vectorLayout = VectorSubpixelLayout.persisted()
+    if let row = vectorSubpixelLayoutOptions.firstIndex(of: VectorSubpixelLayout.persistedPreset())
     {
       vectorSubpixelLayoutPopUp.selectItem(at: row)
     }
+    refreshVectorSubpixelCustomFields(vectorLayout)
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
@@ -425,7 +488,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   @objc private func vectorSubpixelLayoutChanged(_ sender: NSPopUpButton) {
     let row = sender.indexOfSelectedItem
     guard row >= 0, row < vectorSubpixelLayoutOptions.count else { return }
-    VectorSubpixelLayout.setPersistedPreset(vectorSubpixelLayoutOptions[row])
+    let option = vectorSubpixelLayoutOptions[row]
+    if option == .customOverlap {
+      applyCustomVectorSubpixelLayout()
+    } else {
+      VectorSubpixelLayout.setPersistedPreset(option)
+      refresh()
+    }
+  }
+
+  @objc private func vectorSubpixelCustomFieldChanged(_ sender: NSTextField) {
+    applyCustomVectorSubpixelLayout()
+  }
+
+  @objc private func vectorSubpixelCustomApplyClicked(_ sender: NSButton) {
+    applyCustomVectorSubpixelLayout()
   }
 
   @objc private func optionAsMetaChanged(_ sender: NSButton) {
@@ -454,6 +531,52 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
   @objc private func blinkChanged(_ sender: NSButton) {
     CursorSettings.setBlinkEnabled(sender.state == .on)
+  }
+
+  func controlTextDidEndEditing(_ obj: Notification) {
+    guard let field = obj.object as? NSTextField,
+      vectorSubpixelFields.contains(where: { $0 === field })
+    else { return }
+    applyCustomVectorSubpixelLayout()
+  }
+
+  private func applyCustomVectorSubpixelLayout() {
+    guard
+      let r = fieldFloat(vectorSubpixelRField),
+      let g = fieldFloat(vectorSubpixelGField),
+      let b = fieldFloat(vectorSubpixelBField),
+      let width = fieldFloat(vectorSubpixelWidthField)
+    else {
+      NSSound.beep()
+      refreshVectorSubpixelCustomFields(VectorSubpixelLayout.persisted())
+      return
+    }
+
+    let resolvedWidth = min(max(width, 0.05), 1.50)
+    let layout = VectorSubpixelLayout.custom(
+      name: "customOverlap",
+      areas: VectorSubpixelAreas.horizontalOverlap(
+        centerOffsets: SIMD3<Float>(r, g, b),
+        width: resolvedWidth))
+    VectorSubpixelLayout.setPersisted(layout)
+    refresh()
+  }
+
+  private func fieldFloat(_ field: NSTextField) -> Float? {
+    let raw = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !raw.isEmpty, let value = Float(raw), value.isFinite else { return nil }
+    return value
+  }
+
+  private func refreshVectorSubpixelCustomFields(_ layout: VectorSubpixelLayout) {
+    vectorSubpixelRField.stringValue = formatSubpixelValue(layout.offsets.x)
+    vectorSubpixelGField.stringValue = formatSubpixelValue(layout.offsets.y)
+    vectorSubpixelBField.stringValue = formatSubpixelValue(layout.offsets.z)
+    vectorSubpixelWidthField.stringValue = formatSubpixelValue(layout.areas.averageWidthX)
+  }
+
+  private func formatSubpixelValue(_ value: Float) -> String {
+    String(format: "%.2f", value)
   }
 
   // MARK: Titles
@@ -539,6 +662,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     switch preset {
     case .grayscale: return "Grayscale"
     case .calibratedRGB: return "Calibrated"
+    case .customOverlap: return "Custom overlap"
     case .rgbStripe: return "RGB subpixel"
     case .bgrStripe: return "BGR subpixel"
     }

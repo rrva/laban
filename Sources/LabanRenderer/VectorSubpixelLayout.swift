@@ -36,6 +36,13 @@ public struct VectorSubpixelAreas: Equatable, Sendable {
     SIMD3<Float>(r.centerOffsetX, g.centerOffsetX, b.centerOffsetX)
   }
 
+  public var averageWidthX: Float {
+    let rWidth = r.max.x - r.min.x
+    let gWidth = g.max.x - g.min.x
+    let bWidth = b.max.x - b.min.x
+    return (rWidth + gWidth + bWidth) / 3
+  }
+
   public static func fullPixel(offsets: SIMD3<Float>) -> VectorSubpixelAreas {
     VectorSubpixelAreas(
       r: area(minX: offsets.x, maxX: offsets.x + 1),
@@ -85,12 +92,14 @@ public struct VectorSubpixelAreas: Equatable, Sendable {
 public enum VectorSubpixelLayoutPreset: String, CaseIterable, Sendable {
   case grayscale
   case calibratedRGB
+  case customOverlap
   case rgbStripe
   case bgrStripe
 
   public static let settingsCases: [VectorSubpixelLayoutPreset] = [
     .grayscale,
     .calibratedRGB,
+    .customOverlap,
     .rgbStripe,
   ]
 
@@ -98,6 +107,7 @@ public enum VectorSubpixelLayoutPreset: String, CaseIterable, Sendable {
     switch self {
     case .grayscale: return .grayscale
     case .calibratedRGB: return .calibratedRGB
+    case .customOverlap: return .calibratedRGB
     case .rgbStripe: return .rgbStripe
     case .bgrStripe: return .bgrStripe
     }
@@ -168,10 +178,11 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
   public static func persistedPreset(
     defaults: UserDefaults = .standard
   ) -> VectorSubpixelLayoutPreset {
-    guard let raw = defaults.string(forKey: defaultsKey),
-      let preset = VectorSubpixelLayoutPreset(rawValue: raw)
-    else { return .grayscale }
-    return preset
+    guard let raw = defaults.string(forKey: defaultsKey) else { return .grayscale }
+    if let preset = VectorSubpixelLayoutPreset(rawValue: raw) {
+      return preset
+    }
+    return customLayout(from: raw) == nil ? .grayscale : .customOverlap
   }
 
   public static func persisted(defaults: UserDefaults = .standard) -> VectorSubpixelLayout {
