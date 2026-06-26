@@ -112,14 +112,21 @@ vertex VectorVertexOut vectorGlyphVertex(
     return out;
 }
 
-fragment float4 vectorGlyphFragment(
+fragment float4 vectorGlyphCoverageFragment(
+    VectorVertexOut in [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler atlasSampler [[sampler(0)]]
+) {
+    return float4(atlas.sample(atlasSampler, in.uv).rgb * in.color.a, 0.0);
+}
+
+fragment float4 vectorGlyphColorFragment(
     VectorVertexOut in [[stage_in]],
     texture2d<float> atlas [[texture(0)]],
     sampler atlasSampler [[sampler(0)]]
 ) {
     float3 coverage = atlas.sample(atlasSampler, in.uv).rgb;
-    float alpha = in.color.a * max(max(coverage.r, coverage.g), coverage.b);
-    return float4(in.color.rgb * coverage * in.color.a, alpha);
+    return float4(in.color.rgb * coverage * in.color.a, 0.0);
 }
 
 fragment float4 vectorRasterGlyphFragment(

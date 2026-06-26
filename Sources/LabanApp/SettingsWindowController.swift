@@ -534,6 +534,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
   private func vectorSubpixelLayoutTitle(_ preset: VectorSubpixelLayoutPreset) -> String {
     switch preset {
+    case .grayscale: return "Grayscale"
     case .rgbStripe: return "RGB stripe"
     case .bgrStripe: return "BGR stripe"
     }

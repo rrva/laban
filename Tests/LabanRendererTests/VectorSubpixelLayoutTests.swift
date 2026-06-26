@@ -3,10 +3,15 @@ import XCTest
 @testable import LabanRenderer
 
 final class VectorSubpixelLayoutTests: XCTestCase {
-  func testPersistedPresetDefaultsToRGBAndStoresBGR() throws {
+  func testPersistedPresetDefaultsToGrayscaleAndStoresStripePresets() throws {
     let suiteName = "VectorSubpixelLayoutTests-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    XCTAssertEqual(VectorSubpixelLayout.persistedPreset(defaults: defaults), .grayscale)
+    XCTAssertEqual(VectorSubpixelLayout.persisted(defaults: defaults), .grayscale)
+
+    VectorSubpixelLayout.setPersistedPreset(.rgbStripe, defaults: defaults)
 
     XCTAssertEqual(VectorSubpixelLayout.persistedPreset(defaults: defaults), .rgbStripe)
     XCTAssertEqual(VectorSubpixelLayout.persisted(defaults: defaults), .rgbStripe)
@@ -33,7 +38,7 @@ final class VectorSubpixelLayoutTests: XCTestCase {
     XCTAssertEqual(layout.offsets.z, 0.25, accuracy: 0.0001)
     XCTAssertEqual(
       VectorSubpixelLayout.persistedPreset(defaults: defaults),
-      .rgbStripe,
+      .grayscale,
       "Settings only exposes safe presets; custom JSON remains an advanced path.")
   }
 
@@ -55,13 +60,13 @@ final class VectorSubpixelLayoutTests: XCTestCase {
     XCTAssertEqual(layout.offsets.z, 0.25, accuracy: 0.0001)
   }
 
-  func testInvalidCustomJSONFallsBackToRGB() throws {
+  func testInvalidCustomJSONFallsBackToGrayscale() throws {
     let suiteName = "VectorSubpixelLayoutTests-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
 
     defaults.set(#"{"name":"bad","offsets":[0,0]}"#, forKey: VectorSubpixelLayout.defaultsKey)
 
-    XCTAssertEqual(VectorSubpixelLayout.persisted(defaults: defaults), .rgbStripe)
+    XCTAssertEqual(VectorSubpixelLayout.persisted(defaults: defaults), .grayscale)
   }
 }

@@ -51,7 +51,8 @@ public final class VectorGlyphRenderer: RendererBackend {
   private let queue: MTLCommandQueue
   private let layer: CAMetalLayer
   private let solidPipeline: MTLRenderPipelineState
-  private let glyphPipeline: MTLRenderPipelineState
+  private let glyphCoveragePipeline: MTLRenderPipelineState
+  private let glyphColorPipeline: MTLRenderPipelineState
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
@@ -64,7 +65,7 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var targetTexture: MTLTexture?
   private var atlasTexture: MTLTexture?
   private var accumTexture: MTLTexture?
-  public private(set) var subpixelLayout: VectorSubpixelLayout = .rgbStripe
+  public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
   public private(set) var lastRasterFallbackGlyphs = 0
   private var lastCommandBuffer: MTLCommandBuffer?
   private var fontCache: [UInt32: (font: CTFont, boldFallback: Bool, italicFallback: Bool)] = [:]
@@ -110,7 +111,8 @@ public final class VectorGlyphRenderer: RendererBackend {
       let solidVertex = library.makeFunction(name: "vectorSolidVertex"),
       let solidFragment = library.makeFunction(name: "vectorSolidFragment"),
       let glyphVertex = library.makeFunction(name: "vectorGlyphVertex"),
-      let glyphFragment = library.makeFunction(name: "vectorGlyphFragment"),
+      let glyphCoverageFragment = library.makeFunction(name: "vectorGlyphCoverageFragment"),
+      let glyphColorFragment = library.makeFunction(name: "vectorGlyphColorFragment"),
       let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
       let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment")
     else { return nil }
@@ -133,12 +135,19 @@ public final class VectorGlyphRenderer: RendererBackend {
     solidDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
     configureAlphaBlend(solidDescriptor.colorAttachments[0])
 
-    let glyphDescriptor = MTLRenderPipelineDescriptor()
-    glyphDescriptor.label = "laban.vector.glyph"
-    glyphDescriptor.vertexFunction = glyphVertex
-    glyphDescriptor.fragmentFunction = glyphFragment
-    glyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
-    configureAlphaBlend(glyphDescriptor.colorAttachments[0])
+    let glyphCoverageDescriptor = MTLRenderPipelineDescriptor()
+    glyphCoverageDescriptor.label = "laban.vector.glyph-coverage"
+    glyphCoverageDescriptor.vertexFunction = glyphVertex
+    glyphCoverageDescriptor.fragmentFunction = glyphCoverageFragment
+    glyphCoverageDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSubpixelCoverageBlend(glyphCoverageDescriptor.colorAttachments[0])
+
+    let glyphColorDescriptor = MTLRenderPipelineDescriptor()
+    glyphColorDescriptor.label = "laban.vector.glyph-color"
+    glyphColorDescriptor.vertexFunction = glyphVertex
+    glyphColorDescriptor.fragmentFunction = glyphColorFragment
+    glyphColorDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureAdditiveRGBPreserveAlphaBlend(glyphColorDescriptor.colorAttachments[0])
 
     let rasterGlyphDescriptor = MTLRenderPipelineDescriptor()
     rasterGlyphDescriptor.label = "laban.vector.raster-glyph"
@@ -162,7 +171,10 @@ public final class VectorGlyphRenderer: RendererBackend {
 
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
-      let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDescriptor),
+      let glyphCoveragePipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphCoverageDescriptor),
+      let glyphColorPipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphColorDescriptor),
       let rasterGlyphPipeline = try? device.makeRenderPipelineState(
         descriptor: rasterGlyphDescriptor),
       let colorGlyphPipeline = try? device.makeRenderPipelineState(
@@ -174,7 +186,8 @@ public final class VectorGlyphRenderer: RendererBackend {
     self.queue = queue
     self.layer = layer
     self.solidPipeline = solidPipeline
-    self.glyphPipeline = glyphPipeline
+    self.glyphCoveragePipeline = glyphCoveragePipeline
+    self.glyphColorPipeline = glyphColorPipeline
     self.rasterGlyphPipeline = rasterGlyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
     self.sampler = sampler
@@ -414,11 +427,17 @@ public final class VectorGlyphRenderer: RendererBackend {
         solids.removeAll(keepingCapacity: true)
       }
       if !glyphs.isEmpty, let atlasTexture {
-        encoder.setRenderPipelineState(glyphPipeline)
         if setVertexInstances(glyphs, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
           encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
           encoder.setFragmentTexture(atlasTexture, index: 0)
           encoder.setFragmentSamplerState(sampler, index: 0)
+          encoder.setRenderPipelineState(glyphCoveragePipeline)
+          encoder.drawPrimitives(
+            type: .triangle,
+            vertexStart: 0,
+            vertexCount: 6,
+            instanceCount: glyphs.count)
+          encoder.setRenderPipelineState(glyphColorPipeline)
           encoder.drawPrimitives(
             type: .triangle,
             vertexStart: 0,
@@ -1233,4 +1252,30 @@ private func configureAlphaBlend(_ attachment: MTLRenderPipelineColorAttachmentD
   attachment.sourceAlphaBlendFactor = .one
   attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
   attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+}
+
+private func configureSubpixelCoverageBlend(
+  _ attachment: MTLRenderPipelineColorAttachmentDescriptor?
+) {
+  guard let attachment else { return }
+  attachment.isBlendingEnabled = true
+  attachment.rgbBlendOperation = .add
+  attachment.alphaBlendOperation = .add
+  attachment.sourceRGBBlendFactor = .zero
+  attachment.destinationRGBBlendFactor = .oneMinusSourceColor
+  attachment.sourceAlphaBlendFactor = .zero
+  attachment.destinationAlphaBlendFactor = .one
+}
+
+private func configureAdditiveRGBPreserveAlphaBlend(
+  _ attachment: MTLRenderPipelineColorAttachmentDescriptor?
+) {
+  guard let attachment else { return }
+  attachment.isBlendingEnabled = true
+  attachment.rgbBlendOperation = .add
+  attachment.alphaBlendOperation = .add
+  attachment.sourceRGBBlendFactor = .one
+  attachment.destinationRGBBlendFactor = .one
+  attachment.sourceAlphaBlendFactor = .zero
+  attachment.destinationAlphaBlendFactor = .one
 }

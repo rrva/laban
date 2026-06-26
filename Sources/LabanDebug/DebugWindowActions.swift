@@ -161,7 +161,9 @@ struct DebugWindowActions {
       }
       layout = customLayout
     } else {
-      switch request.layout ?? "rgbStripe" {
+      switch request.layout ?? "grayscale" {
+      case "grayscale", "gray", "greyscale", "grey":
+        layout = .grayscale
       case "rgbStripe", "rgb":
         layout = .rgbStripe
       case "bgrStripe", "bgr":

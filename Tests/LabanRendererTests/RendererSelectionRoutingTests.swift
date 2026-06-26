@@ -92,7 +92,7 @@ final class RendererSelectionRoutingTests: XCTestCase {
 
     XCTAssertTrue(rendered)
     XCTAssertGreaterThan(renderer.rendererStatus.rasterFallbackGlyphs ?? 0, 0)
-    XCTAssertEqual(renderer.rendererStatus.vectorSubpixelLayout, "rgbStripe")
+    XCTAssertEqual(renderer.rendererStatus.vectorSubpixelLayout, "grayscale")
     XCTAssertGreaterThan(renderer.pngData?.count ?? 0, 0)
   }
 }

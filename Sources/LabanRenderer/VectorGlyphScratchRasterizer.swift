@@ -168,7 +168,7 @@ public final class VectorGlyphScratchRasterizer {
     sampleStart: Int,
     sampleCount: Int,
     seed: UInt32,
-    subpixelOffsets: SIMD3<Float> = VectorSubpixelLayout.rgbStripe.offsets,
+    subpixelOffsets: SIMD3<Float> = VectorSubpixelLayout.grayscale.offsets,
     accumTexture: MTLTexture,
     resolvedTexture: MTLTexture,
     commandBuffer: MTLCommandBuffer

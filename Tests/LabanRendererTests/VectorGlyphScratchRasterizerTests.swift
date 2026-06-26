@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreText
+import Foundation
 import Metal
 import XCTest
 
@@ -26,6 +27,25 @@ final class VectorGlyphScratchRasterizerTests: XCTestCase {
     }
     let library = try device.makeLibrary(source: source, options: options)
     XCTAssertNotNil(library.makeFunction(name: "vectorGlyphRasterizeScratch"))
+    XCTAssertNotNil(library.makeFunction(name: "vectorGlyphCoverageFragment"))
+    XCTAssertNotNil(library.makeFunction(name: "vectorGlyphColorFragment"))
+  }
+
+  func testVectorGlyphFragmentUsesTwoPassSubpixelComposition() throws {
+    let source = try vectorShaderSource()
+
+    XCTAssertTrue(
+      source.contains("fragment float4 vectorGlyphCoverageFragment"),
+      "vector glyph presentation must first attenuate destination RGB by coverage")
+    XCTAssertTrue(
+      source.contains("fragment float4 vectorGlyphColorFragment"),
+      "vector glyph presentation must then add foreground RGB by coverage")
+    XCTAssertFalse(
+      source.contains("max(max(coverage.r, coverage.g), coverage.b)"),
+      "max-channel subpixel alpha over-darkens black text on light backgrounds")
+    XCTAssertFalse(
+      source.contains("float alpha = in.color.a * max"),
+      "RGB subpixel masks need per-channel destination math, not fixed alpha blending")
   }
 
   func testScratchRasterizerMatchesCPUOracleForPrintableASCII() throws {
@@ -83,6 +103,17 @@ final class VectorGlyphScratchRasterizerTests: XCTestCase {
       return nil
     }
     return glyph
+  }
+
+  private func vectorShaderSource() throws -> String {
+    guard
+      let url = LabanRendererResources.bundle?.url(
+        forResource: "VectorGlyphShaders",
+        withExtension: "metal")
+    else {
+      throw XCTSkip("VectorGlyphShaders.metal is not bundled")
+    }
+    return try String(contentsOf: url, encoding: .utf8)
   }
 
   private func rasterRegion(

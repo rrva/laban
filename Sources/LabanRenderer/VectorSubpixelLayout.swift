@@ -1,11 +1,13 @@
 import Foundation
 
 public enum VectorSubpixelLayoutPreset: String, CaseIterable, Sendable {
+  case grayscale
   case rgbStripe
   case bgrStripe
 
   public var layout: VectorSubpixelLayout {
     switch self {
+    case .grayscale: return .grayscale
     case .rgbStripe: return .rgbStripe
     case .bgrStripe: return .bgrStripe
     }
@@ -30,6 +32,10 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
     self.offsets = offsets
   }
 
+  public static let grayscale = VectorSubpixelLayout(
+    name: "grayscale",
+    offsets: SIMD3<Float>(0, 0, 0))
+
   public static let rgbStripe = VectorSubpixelLayout(
     name: "rgbStripe",
     offsets: SIMD3<Float>(-1.0 / 3.0, 0, 1.0 / 3.0))
@@ -52,16 +58,16 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
   ) -> VectorSubpixelLayoutPreset {
     guard let raw = defaults.string(forKey: defaultsKey),
       let preset = VectorSubpixelLayoutPreset(rawValue: raw)
-    else { return .rgbStripe }
+    else { return .grayscale }
     return preset
   }
 
   public static func persisted(defaults: UserDefaults = .standard) -> VectorSubpixelLayout {
-    guard let raw = defaults.string(forKey: defaultsKey) else { return .rgbStripe }
+    guard let raw = defaults.string(forKey: defaultsKey) else { return .grayscale }
     if let preset = VectorSubpixelLayoutPreset(rawValue: raw) {
       return preset.layout
     }
-    return customLayout(from: raw) ?? .rgbStripe
+    return customLayout(from: raw) ?? .grayscale
   }
 
   public static func setPersistedPreset(
@@ -76,7 +82,9 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
     _ layout: VectorSubpixelLayout,
     defaults: UserDefaults = .standard
   ) {
-    if layout == .rgbStripe {
+    if layout == .grayscale {
+      defaults.set(VectorSubpixelLayoutPreset.grayscale.rawValue, forKey: defaultsKey)
+    } else if layout == .rgbStripe {
       defaults.set(VectorSubpixelLayoutPreset.rgbStripe.rawValue, forKey: defaultsKey)
     } else if layout == .bgrStripe {
       defaults.set(VectorSubpixelLayoutPreset.bgrStripe.rawValue, forKey: defaultsKey)
