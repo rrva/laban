@@ -865,7 +865,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         sampleStart: sampleStart,
         sampleCount: sampleCount,
         seed: accumulationSeed(glyph: glyph, font: font, descriptor: descriptor),
-        subpixelOffsets: subpixelLayout.offsets,
+        subpixelLayout: subpixelLayout,
         accumTexture: accumTexture,
         resolvedTexture: resolvedTexture,
         commandBuffer: commandBuffer)

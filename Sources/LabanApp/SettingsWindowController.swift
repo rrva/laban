@@ -203,7 +203,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       vectorSubpixelLayoutPopUp.addItem(withTitle: vectorSubpixelLayoutTitle(option))
     }
     vectorSubpixelLayoutPopUp.toolTip =
-      "Grayscale is neutral. Calibrated uses the measured balanced RGB offset. "
+      "Grayscale is neutral. Calibrated uses measured overlapping RGB sample areas. "
       + "RGB subpixel uses a stronger RGB stripe layout for maximum horizontal text acuity."
 
     optionAsMetaCheckbox.target = self

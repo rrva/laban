@@ -447,16 +447,19 @@ public struct AdvanceFramesActionRequest: Codable, Sendable, Equatable, JSONSche
 public struct VectorSubpixelLayoutActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
   public var layout: String?
   public var offsets: [Double]?
+  public var areas: [[Double]]?
 
-  public init(layout: String? = nil, offsets: [Double]? = nil) {
+  public init(layout: String? = nil, offsets: [Double]? = nil, areas: [[Double]]? = nil) {
     self.layout = layout
     self.offsets = offsets
+    self.areas = areas
   }
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object([
       "layout": DebugPayloadSchema.string,
       "offsets": .array(DebugPayloadSchema.number, minItems: 3),
+      "areas": .array(.array(DebugPayloadSchema.number, minItems: 4), minItems: 3),
     ])
   }
 }

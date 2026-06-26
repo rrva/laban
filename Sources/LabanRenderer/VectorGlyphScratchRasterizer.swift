@@ -34,8 +34,9 @@ public final class VectorGlyphScratchRasterizer {
     var boundsMax: SIMD2<Float>
     var rasterScale: Float
     var _pad0: Float = 0
-    var subpixelOffsets: SIMD3<Float>
-    var _pad1: Float = 0
+    var subpixelRBounds: SIMD4<Float>
+    var subpixelGBounds: SIMD4<Float>
+    var subpixelBBounds: SIMD4<Float>
   }
 
   private let device: MTLDevice
@@ -178,7 +179,7 @@ public final class VectorGlyphScratchRasterizer {
     sampleStart: Int,
     sampleCount: Int,
     seed: UInt32,
-    subpixelOffsets: SIMD3<Float> = VectorSubpixelLayout.grayscale.offsets,
+    subpixelLayout: VectorSubpixelLayout = .grayscale,
     accumTexture: MTLTexture,
     resolvedTexture: MTLTexture,
     commandBuffer: MTLCommandBuffer
@@ -211,7 +212,9 @@ public final class VectorGlyphScratchRasterizer {
       boundsMin: SIMD2<Float>(Float(outline.bounds.minX), Float(outline.bounds.minY)),
       boundsMax: SIMD2<Float>(Float(outline.bounds.maxX), Float(outline.bounds.maxY)),
       rasterScale: Float(resolvedScale),
-      subpixelOffsets: subpixelOffsets)
+      subpixelRBounds: subpixelLayout.rBounds,
+      subpixelGBounds: subpixelLayout.gBounds,
+      subpixelBBounds: subpixelLayout.bBounds)
 
     guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
     encoder.label = "laban.vector-glyph-accumulate"

@@ -143,7 +143,28 @@ struct DebugWindowActions {
       return jsonError("setVectorSubpixelLayout requires vectorGlyph renderer")
     }
     let layout: VectorSubpixelLayout
-    if let offsets = request.offsets {
+    if let areas = request.areas {
+      guard areas.count == 3, areas.allSatisfy({ $0.count == 4 }) else {
+        return jsonError(
+          "setVectorSubpixelLayout areas must contain three [minX,minY,maxX,maxY] arrays")
+      }
+      guard
+        let r = VectorSubpixelArea(
+          min: SIMD2<Float>(Float(areas[0][0]), Float(areas[0][1])),
+          max: SIMD2<Float>(Float(areas[0][2]), Float(areas[0][3]))),
+        let g = VectorSubpixelArea(
+          min: SIMD2<Float>(Float(areas[1][0]), Float(areas[1][1])),
+          max: SIMD2<Float>(Float(areas[1][2]), Float(areas[1][3]))),
+        let b = VectorSubpixelArea(
+          min: SIMD2<Float>(Float(areas[2][0]), Float(areas[2][1])),
+          max: SIMD2<Float>(Float(areas[2][2]), Float(areas[2][3])))
+      else {
+        return jsonError("setVectorSubpixelLayout areas must be finite and non-empty")
+      }
+      layout = VectorSubpixelLayout.custom(
+        name: request.layout ?? "customAreas",
+        areas: VectorSubpixelAreas(r: r, g: g, b: b))
+    } else if let offsets = request.offsets {
       guard offsets.count == 3 else {
         return jsonError("setVectorSubpixelLayout offsets must contain exactly three values")
       }

@@ -58,8 +58,9 @@ struct VectorGlyphAccumParams {
     float2 boundsMax;
     float rasterScale;
     float _pad0;
-    float3 subpixelOffsets;
-    float _pad1;
+    float4 subpixelRBounds;
+    float4 subpixelGBounds;
+    float4 subpixelBBounds;
 };
 
 constant float2 kVectorQuadVertices[6] = {
@@ -300,6 +301,33 @@ inline float vector_coverage_at(
     return clamp(float(abs(winding)), 0.0, 1.0);
 }
 
+inline float vector_point_coverage_at(
+    constant VectorGlyphCurve *curves,
+    uint curveCount,
+    float2 sample,
+    float2 boundsMin,
+    float2 boundsMax
+) {
+    if (sample.x < boundsMin.x || sample.x > boundsMax.x ||
+        sample.y < boundsMin.y || sample.y > boundsMax.y) {
+        return 0.0;
+    }
+
+    int winding = 0;
+    for (uint i = 0; i < curveCount; i++) {
+        VectorGlyphCurve curve = curves[i];
+        curve.p0 -= sample;
+        curve.p1 -= sample;
+        curve.p2 -= sample;
+        winding += winding_contribution(curve);
+    }
+    return clamp(float(abs(winding)), 0.0, 1.0);
+}
+
+inline float2 vector_sample_in_bounds(float4 bounds, float2 unit) {
+    return mix(bounds.xy, bounds.zw, unit);
+}
+
 kernel void vectorGlyphRasterizeScratch(
     constant VectorGlyphCurve *curves [[buffer(0)]],
     constant VectorGlyphRasterParams &params [[buffer(1)]],
@@ -348,40 +376,45 @@ kernel void vectorGlyphAccumulateAtlas(
     uint2 atlasPosition = params.targetOrigin + gid;
     uint4 state = params.sampleStart == 0 ? uint4(0) : accum.read(atlasPosition);
     uint3 sum = uint3(0);
-    float halfWidth = 0.5 / params.rasterScale;
+    float2 pixelBase = float2(
+        float(gid.x),
+        float(params.height - 1 - gid.y)
+    );
     for (uint sampleIndex = 0; sampleIndex < params.sampleCount; sampleIndex++) {
         uint absoluteSample = params.sampleStart + sampleIndex;
         float2 jitter = float2(
             vector_r2(absoluteSample, params.seed, 0.754877666, 7),
             vector_r2(absoluteSample, params.seed, 0.569840296, 13)
         );
-        float2 baseSample = float2(
-            params.origin.x + (float(gid.x) + jitter.x) / params.rasterScale,
-            params.origin.y + (float(params.height - 1 - gid.y) + jitter.y) / params.rasterScale
-        );
-        float coverageR = vector_coverage_at(
+        float2 sampleR = params.origin
+            + (pixelBase + vector_sample_in_bounds(params.subpixelRBounds, jitter))
+                / params.rasterScale;
+        float2 sampleG = params.origin
+            + (pixelBase + vector_sample_in_bounds(params.subpixelGBounds, jitter))
+                / params.rasterScale;
+        float2 sampleB = params.origin
+            + (pixelBase + vector_sample_in_bounds(params.subpixelBBounds, jitter))
+                / params.rasterScale;
+        float coverageR = vector_point_coverage_at(
             curves,
             params.curveCount,
-            baseSample + float2(params.subpixelOffsets.r / params.rasterScale, 0.0),
+            sampleR,
             params.boundsMin,
-            params.boundsMax,
-            halfWidth
+            params.boundsMax
         );
-        float coverageG = vector_coverage_at(
+        float coverageG = vector_point_coverage_at(
             curves,
             params.curveCount,
-            baseSample + float2(params.subpixelOffsets.g / params.rasterScale, 0.0),
+            sampleG,
             params.boundsMin,
-            params.boundsMax,
-            halfWidth
+            params.boundsMax
         );
-        float coverageB = vector_coverage_at(
+        float coverageB = vector_point_coverage_at(
             curves,
             params.curveCount,
-            baseSample + float2(params.subpixelOffsets.b / params.rasterScale, 0.0),
+            sampleB,
             params.boundsMin,
-            params.boundsMax,
-            halfWidth
+            params.boundsMax
         );
         sum += uint3(
             uint(round(coverageR * 65535.0)),

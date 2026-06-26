@@ -56,9 +56,13 @@ final class RendererFidelityReportTests: XCTestCase {
     let pairLabels = [
       ("classic-vs-gpuDriven", "metal-classic", "metal-gpuDriven"),
       ("classic-vs-vector-grayscale", "metal-classic", "vector-grayscale"),
+      ("classic-vs-vector-calibrated", "metal-classic", "vector-calibrated"),
       ("classic-vs-vector-rgbStripe", "metal-classic", "vector-rgbStripe"),
       ("gpuDriven-vs-vector-grayscale", "metal-gpuDriven", "vector-grayscale"),
+      ("gpuDriven-vs-vector-calibrated", "metal-gpuDriven", "vector-calibrated"),
       ("gpuDriven-vs-vector-rgbStripe", "metal-gpuDriven", "vector-rgbStripe"),
+      ("vector-grayscale-vs-calibrated", "vector-grayscale", "vector-calibrated"),
+      ("vector-calibrated-vs-rgbStripe", "vector-calibrated", "vector-rgbStripe"),
       ("vector-grayscale-vs-rgbStripe", "vector-grayscale", "vector-rgbStripe"),
       ("vector-rgbStripe-vs-bgrStripe", "vector-rgbStripe", "vector-bgrStripe"),
       ("vector-rgbQuarter-vs-rgbStripe", "vector-rgbQuarter", "vector-rgbStripe"),
@@ -83,6 +87,7 @@ final class RendererFidelityReportTests: XCTestCase {
 
     let fractional = [
       fractionalStability(prefix: "vector-grayscale", variants: variants),
+      fractionalStability(prefix: "vector-calibrated", variants: variants),
       fractionalStability(prefix: "vector-rgbStripe", variants: variants),
     ]
     let sweep = try calibrationSweep(imageRoot: imageRoot, crop: crop)
@@ -150,6 +155,7 @@ final class RendererFidelityReportTests: XCTestCase {
 
     let layouts: [(label: String, layout: VectorSubpixelLayout)] = [
       ("vector-grayscale", .grayscale),
+      ("vector-calibrated", .calibratedRGB),
       (
         "vector-rgbQuarter",
         VectorSubpixelLayout(name: "rgbQuarter", offsets: SIMD3(-0.25, 0, 0.25))
@@ -172,6 +178,7 @@ final class RendererFidelityReportTests: XCTestCase {
 
     let shiftedLayouts: [(prefix: String, layout: VectorSubpixelLayout)] = [
       ("vector-grayscale", .grayscale),
+      ("vector-calibrated", .calibratedRGB),
       ("vector-rgbStripe", .rgbStripe),
     ]
     for (prefix, layout) in shiftedLayouts {
@@ -201,10 +208,12 @@ final class RendererFidelityReportTests: XCTestCase {
     var variants: [RenderedVariant] = []
     var offset = 0.0
     while offset <= sweepMaxOffset + 0.000001 {
-      let label = "cal-rgb-\(offsetLabel(offset))"
+      let label = "cal-osor-\(offsetLabel(offset))"
       let layout = VectorSubpixelLayout(
         name: label,
-        offsets: SIMD3<Float>(-Float(offset), 0, Float(offset)))
+        areas: VectorSubpixelAreas.horizontalOverlap(
+          centerOffsets: SIMD3<Float>(-Float(offset), 0, Float(offset)),
+          width: 0.92))
       variants.append(
         try renderVector(
           label: label,
@@ -470,7 +479,7 @@ final class RendererFidelityReportTests: XCTestCase {
         offsetRangePx: "0.00...\(format(sweepMaxOffset))",
         offsetStepPx: sweepStep,
         objective:
-          "Rank symmetric RGB offsets by luma gradient, max-channel gradient, edge spread, and RGB coverage spread. Recommendations use explicit fringing budgets; classic/GPU renderers are comparators, not oracles."
+          "Rank OSOR overlapping RGB sample areas by center offset, luma gradient, max-channel gradient, edge spread, and RGB coverage spread. The sweep uses 0.92 px-wide channel areas with intentional neighbor bleed; classic/GPU renderers are comparators, not oracles."
       ),
       recommendations: calibrationRecommendations(marked),
       candidates: marked)
@@ -982,7 +991,8 @@ final class RendererFidelityReportTests: XCTestCase {
   }
 
   private func calibrationOffsetMagnitude(label: String) -> Double {
-    let raw = label.replacingOccurrences(of: "cal-rgb-", with: "")
+    let raw = label.replacingOccurrences(of: "cal-osor-", with: "")
+      .replacingOccurrences(of: "cal-rgb-", with: "")
       .replacingOccurrences(of: "_", with: ".")
     return Double(raw) ?? 0
   }

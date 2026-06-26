@@ -1235,15 +1235,16 @@ renderer would be a bug to fix, not an acceptable outcome.)
 - [ ] M1a (stretch) — Apple-GPU tile-shader coverage pass. Deferred; the compute path met the M1/M3 correctness and timing gates, so this optional spike is not a blocker for M5.
 - [x] M2 — `VectorGlyphRenderer` is an additive `RendererBackend` peer with shared `RendererSelection`/`makeRendererBackend(...)` routing in `LabanRenderer`, no `RendererMode.vectorGlyph`, View and Settings entries, font-zoom preservation, headless selection, `/debug/render`, and offscreen screenshot readback. The bundle contains `VectorGlyphShaders.metal` and the `Vector Glyph Renderer` menu string.
 - [x] M3 — temporal accumulation is implemented with deterministic `rgba32Uint` fixed-point sums, front-loaded 8/4/2/1 sampling, R2 jitter, fixed-frame convergence, and the parity matrix. Instruments evidence from `.tmp/vector-attach-trace.trace` shows `laban.vector.content` at p50 0.195542-0.203125 ms and p99 0.218532-0.231455 ms, meeting the <=0.3 ms p50 M3 target in the attached headless workload.
-- [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale, calibrated, and RGB subpixel choices; BGR/custom remain debug/API calibration paths. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
+- [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale, calibrated, and RGB subpixel choices; BGR/custom remain debug/API calibration paths. `Calibrated` now uses OSOR-style overlapping per-channel sample areas rather than three shifted point samples. The debug action also accepts explicit RGB `areas` rectangles for monitor-specific experiments.
 - [x] Renderer fidelity calibration artifact — `scripts/vector-renderer-fidelity-report`
   writes a deterministic Markdown/JSON/PNG report under
   `.artifacts/runs/<run-id>/renderer-fidelity/`. A 2026-06-26 verification run
   passed
   `RendererFidelityReportTests/testWritesCalibrationArtifact`; it records
   classic, real GPU-cell (`cellGlyphs: 112`, `glyphs: 0`), vector grayscale,
-  RGB quarter/third/half, BGR, pairwise diff PNGs, fractional x-shift stability,
-  and a dense symmetric-RGB offset calibration sweep. On this host/probe classic
+  calibrated OSOR overlap, RGB quarter/third/half, BGR, pairwise diff PNGs,
+  fractional x-shift stability, and a dense OSOR-overlap center-offset
+  calibration sweep. On this host/probe classic
   and GPU-cell are pixel-identical; vector grayscale has lower RGB spread
   (`meanCoverageSpread 0.0024`) and higher luma gradient than RGB stripe
   (`66.46` vs `60.28` mean gradient), while RGB stripe intentionally exposes more
@@ -1251,6 +1252,14 @@ renderer would be a bug to fix, not an acceptable outcome.)
   that tradeoff explicit: neutral selects offset `0.00`, balanced selects `0.20`
   px (`1.1649x` max-channel response at `0.9440x` luma gradient), and max-acuity
   selects `0.35` px (`1.2922x` max-channel response at `0.9035x` luma gradient).
+  The superseding OSOR-overlap run
+  `.artifacts/runs/20260626T195624Z-osor-overlap/renderer-fidelity/` passed
+  `RendererFidelityReportTests/testWritesCalibrationArtifact` with 0.92 px-wide
+  overlapping channel areas: balanced selects offset `0.15` px (`1.1437x`
+  max-channel response at `0.9276x` luma gradient, mean RGB spread `0.1028`,
+  P99 spread `0.3348`), max-acuity selects `0.25` px (`1.2182x` max-channel
+  response at `0.8842x` luma gradient). Settings `Calibrated` uses that
+  balanced `0.15` px OSOR-overlap profile.
 - [ ] M5 — feature parity implementation and autonomous gates are complete, but one non-autonomous gate remains before this ExecPlan can be marked fully done: a manually launched AppKit live-shell classic<->vector switch check. The formal fresh-agent Review Gate passed at commit `28e072d719a6686255ec6c87e1828ad9c0bde530`. Current autonomous evidence includes focused XCTest passes (`swift test --filter VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`, `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the preedit smoke), including `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` for Metal instance batches larger than the 4 KB `setVertexBytes` inline limit. It also includes `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`, `./scripts/lint`, `./scripts/check-docs`, `./scripts/check-debug-contract`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `git diff --check`, and `./scripts/build-app` plus `codesign --verify --deep --strict .build/laban/Laban.app`. A broad `swift test` run is not green in this environment due to pre-existing/non-vector failures (`AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`, `LabanSessionTests`, `TabTitleEndToEndTests`) and pasteboard-dependent `TerminalClipboardTests`/`TerminalDropTests`; the vector-added `TerminalWidthPolicyGuardTests` failure from that stale full log was fixed and rerun targeted.
 - [x] ADR `docs/adr/0022-vector-glyph-renderer.md` written and `docs/adr/README.md` index entry — **already landed** (ADR 0022 exists and is indexed). M5 only updates its Evidence section.
 
@@ -1486,8 +1495,11 @@ renderer would be a bug to fix, not an acceptable outcome.)
 
 - Decision: default vector text antialiasing is grayscale, and the normal
   Settings UI exposes **Grayscale**, **Calibrated**, and **RGB subpixel**.
-  `Calibrated` is the measured balanced RGB profile from the sweep (`-0.20, 0,
-  +0.20` px). Keep `bgrStripe` and custom JSON/debug offsets supported for
+  `Calibrated` is the measured balanced RGB center profile from the sweep
+  (`-0.15, 0, +0.15` px) rendered with OSOR-style overlapping sample areas:
+  each channel jitters inside its own min/max rectangle, the rectangles overlap,
+  and the red/blue rectangles bleed outside the pixel. Keep `bgrStripe`,
+  custom JSON/debug offsets, and explicit debug `areas` rectangles supported for
   external displays and automated experiments, but do not present them as
   ordinary user choices.
   Rationale: grayscale is the safest neutral default across Retina compositing,
@@ -1495,9 +1507,11 @@ renderer would be a bug to fix, not an acceptable outcome.)
   subpixel is the explicit strong-acuity option for a known RGB-stripe panel,
   such as the built-in MacBook display, and should be a deliberate choice. The
   calibrated option gives Settings a lower-fringing middle point without forcing
-  users through the JSON/custom path.
+  users through the JSON/custom path. The OSOR article's key overlap observation
+  is that subpixel elements are sample areas, not point offsets; this change
+  applies that model directly to Laban's accumulation shader.
   Date/Author: 2026-06-26 / Settings acuity control; 2026-06-26 / calibrated
-  setting.
+  setting; 2026-06-26 / OSOR overlap implementation.
 
 - Decision: renderer fidelity calibration is an evidence artifact, not a
   golden-master gate, and it treats `classic`/`gpuDriven` as comparators rather

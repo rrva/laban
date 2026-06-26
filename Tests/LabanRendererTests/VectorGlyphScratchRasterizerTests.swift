@@ -27,6 +27,7 @@ final class VectorGlyphScratchRasterizerTests: XCTestCase {
     }
     let library = try device.makeLibrary(source: source, options: options)
     XCTAssertNotNil(library.makeFunction(name: "vectorGlyphRasterizeScratch"))
+    XCTAssertNotNil(library.makeFunction(name: "vectorGlyphAccumulateAtlas"))
     XCTAssertNotNil(library.makeFunction(name: "vectorGlyphCoverageFragment"))
     XCTAssertNotNil(library.makeFunction(name: "vectorGlyphColorFragment"))
   }
@@ -46,6 +47,15 @@ final class VectorGlyphScratchRasterizerTests: XCTestCase {
     XCTAssertFalse(
       source.contains("float alpha = in.color.a * max"),
       "RGB subpixel masks need per-channel destination math, not fixed alpha blending")
+    XCTAssertTrue(
+      source.contains("subpixelRBounds"),
+      "OSOR overlap needs per-channel sample rectangles, not only shifted point offsets")
+    XCTAssertTrue(
+      source.contains("vector_sample_in_bounds"),
+      "vector accumulation should jitter inside each channel sample rectangle")
+    XCTAssertFalse(
+      source.contains("subpixelOffsets"),
+      "the accumulator must not regress to three shifted point samples")
   }
 
   func testScratchRasterizerMatchesCPUOracleForPrintableASCII() throws {
