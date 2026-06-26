@@ -15,6 +15,8 @@ final class RendererFidelityReportTests: XCTestCase {
   private let background = RGB(r: 0xF6, g: 0xEE, b: 0xDB)
   private let foreground = RGB(r: 0x18, g: 0x22, b: 0x2A)
   private let vectorConvergenceFrames = 130
+  private let sweepStep = 0.05
+  private let sweepMaxOffset = 0.50
   private let lineSpacing: CGFloat = 24
   private let firstBaselineY: CGFloat = 16
   private let firstBaselineX: CGFloat = 12
@@ -83,6 +85,7 @@ final class RendererFidelityReportTests: XCTestCase {
       fractionalStability(prefix: "vector-grayscale", variants: variants),
       fractionalStability(prefix: "vector-rgbStripe", variants: variants),
     ]
+    let sweep = try calibrationSweep(imageRoot: imageRoot, crop: crop)
 
     let report = FidelityReport(
       version: 1,
@@ -104,7 +107,8 @@ final class RendererFidelityReportTests: XCTestCase {
       ),
       variants: variants.map { $0.report(relativeTo: root) },
       pairs: pairReports,
-      fractionalStability: fractional)
+      fractionalStability: fractional,
+      calibration: calibrationReport(from: sweep, root: root))
 
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -185,6 +189,33 @@ final class RendererFidelityReportTests: XCTestCase {
       }
     }
 
+    return variants
+  }
+
+  private func calibrationSweep(
+    imageRoot: URL,
+    crop: CGRect
+  ) throws -> [RenderedVariant] {
+    let atlas = FontAtlas(pointSize: pointSize)
+    let commands = probeCommands(xShiftPoints: 0)
+    var variants: [RenderedVariant] = []
+    var offset = 0.0
+    while offset <= sweepMaxOffset + 0.000001 {
+      let label = "cal-rgb-\(offsetLabel(offset))"
+      let layout = VectorSubpixelLayout(
+        name: label,
+        offsets: SIMD3<Float>(-Float(offset), 0, Float(offset)))
+      variants.append(
+        try renderVector(
+          label: label,
+          layout: layout,
+          atlas: atlas,
+          commands: commands,
+          xShiftPixels: 0,
+          imageRoot: imageRoot,
+          crop: crop))
+      offset += sweepStep
+    }
     return variants
   }
 
@@ -334,6 +365,7 @@ final class RendererFidelityReportTests: XCTestCase {
     var edgePixels = 0
     var solidPixels = 0
     var gradients: [Double] = []
+    var channelGradients: [Double] = []
     var spreads: [Double] = []
 
     func inkAt(x: Int, y: Int) -> Double {
@@ -362,6 +394,12 @@ final class RendererFidelityReportTests: XCTestCase {
           if gradient > 1 {
             gradients.append(gradient)
           }
+          let channelGradient = maxChannelCoverageGradient(
+            lhs: pixel,
+            rhs: image.pixel(x: x + 1, y: y))
+          if channelGradient > 0.005 {
+            channelGradients.append(channelGradient * 255.0)
+          }
         }
       }
     }
@@ -375,9 +413,195 @@ final class RendererFidelityReportTests: XCTestCase {
       meanGradient: mean(gradients),
       p95Gradient: percentile(gradients, 0.95),
       p99Gradient: percentile(gradients, 0.99),
+      meanMaxChannelGradient: mean(channelGradients),
+      p95MaxChannelGradient: percentile(channelGradients, 0.95),
+      p99MaxChannelGradient: percentile(channelGradients, 0.99),
       meanCoverageSpread: mean(spreads),
       p95CoverageSpread: percentile(spreads, 0.95),
       p99CoverageSpread: percentile(spreads, 0.99))
+  }
+
+  private func calibrationReport(
+    from variants: [RenderedVariant],
+    root: URL
+  ) -> CalibrationReport {
+    let base = variants.first { abs($0.xShiftPixels) < 0.000001 }
+    let baseMetrics = base?.metrics
+    let candidates = variants.map { variant in
+      let relativeLuma =
+        baseMetrics.map { relativeRatio(variant.metrics.meanGradient, $0.meanGradient) } ?? 1
+      let relativeChannel =
+        baseMetrics.map {
+          relativeRatio(variant.metrics.meanMaxChannelGradient, $0.meanMaxChannelGradient)
+        } ?? 1
+      let relativeEdge =
+        baseMetrics.map { relativeRatio(variant.metrics.edgePixelRatio, $0.edgePixelRatio) } ?? 1
+      let score = calibrationScore(
+        metrics: variant.metrics,
+        relativeLuma: relativeLuma,
+        relativeChannel: relativeChannel,
+        relativeEdge: relativeEdge)
+      return CalibrationCandidateReport(
+        label: variant.label,
+        offsetMagnitudePx: calibrationOffsetMagnitude(label: variant.label),
+        imagePath: variant.report(relativeTo: root).imagePath,
+        metrics: variant.metrics,
+        relativeLumaGradient: relativeLuma,
+        relativeMaxChannelGradient: relativeChannel,
+        relativeEdgePixelRatio: relativeEdge,
+        score: score,
+        paretoOptimal: false)
+    }
+    let paretoLabels = Set(paretoFrontier(candidates).map(\.label))
+    let marked = candidates.map { candidate in
+      CalibrationCandidateReport(
+        label: candidate.label,
+        offsetMagnitudePx: candidate.offsetMagnitudePx,
+        imagePath: candidate.imagePath,
+        metrics: candidate.metrics,
+        relativeLumaGradient: candidate.relativeLumaGradient,
+        relativeMaxChannelGradient: candidate.relativeMaxChannelGradient,
+        relativeEdgePixelRatio: candidate.relativeEdgePixelRatio,
+        score: candidate.score,
+        paretoOptimal: paretoLabels.contains(candidate.label))
+    }
+    return CalibrationReport(
+      search: CalibrationSearchReport(
+        offsetRangePx: "0.00...\(format(sweepMaxOffset))",
+        offsetStepPx: sweepStep,
+        objective:
+          "Rank symmetric RGB offsets by luma gradient, max-channel gradient, edge spread, and RGB coverage spread. Recommendations use explicit fringing budgets; classic/GPU renderers are comparators, not oracles."
+      ),
+      recommendations: calibrationRecommendations(marked),
+      candidates: marked)
+  }
+
+  private func calibrationScore(
+    metrics: TextMetrics,
+    relativeLuma: Double,
+    relativeChannel: Double,
+    relativeEdge: Double
+  ) -> Double {
+    let edgeBonus = relativeEdge <= 0 ? 0 : 1.0 / relativeEdge
+    return
+      0.48 * relativeLuma
+      + 0.28 * relativeChannel
+      + 0.18 * edgeBonus
+      - 0.40 * metrics.meanCoverageSpread
+      - 0.10 * metrics.p99CoverageSpread
+  }
+
+  private func calibrationRecommendations(
+    _ candidates: [CalibrationCandidateReport]
+  ) -> [CalibrationRecommendationReport] {
+    let neutral = chooseRecommendation(
+      name: "neutral",
+      reason: "Highest luma acutance under a strict RGB-fringing budget.",
+      candidates: candidates,
+      maxMeanSpread: 0.015,
+      maxP99Spread: 0.05,
+      minRelativeLuma: 0.95,
+      mode: .score)
+    let balanced = chooseRecommendation(
+      name: "balanced",
+      reason:
+        "Highest channel-edge response while preserving at least 90% of grayscale luma acutance and a moderate fringing budget.",
+      candidates: candidates,
+      maxMeanSpread: 0.12,
+      maxP99Spread: 0.36,
+      minRelativeLuma: 0.90,
+      mode: .channelAcuity)
+    let maxAcuity = chooseRecommendation(
+      name: "max-acuity",
+      reason: "Highest max-channel edge response within a visible-fringing budget.",
+      candidates: candidates,
+      maxMeanSpread: 0.22,
+      maxP99Spread: 0.62,
+      minRelativeLuma: 0.82,
+      mode: .channelAcuity)
+    return [neutral, balanced, maxAcuity].compactMap { $0 }
+  }
+
+  private func chooseRecommendation(
+    name: String,
+    reason: String,
+    candidates: [CalibrationCandidateReport],
+    maxMeanSpread: Double,
+    maxP99Spread: Double,
+    minRelativeLuma: Double,
+    mode: RecommendationMode
+  ) -> CalibrationRecommendationReport? {
+    let eligible = candidates.filter {
+      $0.metrics.meanCoverageSpread <= maxMeanSpread
+        && $0.metrics.p99CoverageSpread <= maxP99Spread
+        && $0.relativeLumaGradient >= minRelativeLuma
+    }
+    let pool = eligible.isEmpty ? candidates : eligible
+    guard let selected = pool.max(by: { recommendationLessThan($0, $1, mode: mode) })
+    else { return nil }
+    return CalibrationRecommendationReport(
+      name: name,
+      label: selected.label,
+      offsetMagnitudePx: selected.offsetMagnitudePx,
+      reason: eligible.isEmpty
+        ? "\(reason) No candidate met the budget; selected best score." : reason,
+      score: selected.score,
+      meanCoverageSpread: selected.metrics.meanCoverageSpread,
+      p99CoverageSpread: selected.metrics.p99CoverageSpread,
+      relativeLumaGradient: selected.relativeLumaGradient,
+      relativeMaxChannelGradient: selected.relativeMaxChannelGradient)
+  }
+
+  private func recommendationLessThan(
+    _ lhs: CalibrationCandidateReport,
+    _ rhs: CalibrationCandidateReport,
+    mode: RecommendationMode
+  ) -> Bool {
+    switch mode {
+    case .score:
+      if abs(lhs.score - rhs.score) > 0.000001 {
+        return lhs.score < rhs.score
+      }
+    case .channelAcuity:
+      if abs(lhs.relativeMaxChannelGradient - rhs.relativeMaxChannelGradient) > 0.000001 {
+        return lhs.relativeMaxChannelGradient < rhs.relativeMaxChannelGradient
+      }
+      if abs(lhs.metrics.meanGradient - rhs.metrics.meanGradient) > 0.000001 {
+        return lhs.metrics.meanGradient < rhs.metrics.meanGradient
+      }
+    }
+    if abs(lhs.metrics.p99CoverageSpread - rhs.metrics.p99CoverageSpread) > 0.000001 {
+      return lhs.metrics.p99CoverageSpread > rhs.metrics.p99CoverageSpread
+    }
+    return lhs.offsetMagnitudePx > rhs.offsetMagnitudePx
+  }
+
+  private func paretoFrontier(
+    _ candidates: [CalibrationCandidateReport]
+  ) -> [CalibrationCandidateReport] {
+    candidates.filter { candidate in
+      !candidates.contains { other in
+        other.label != candidate.label
+          && dominates(other, candidate)
+      }
+    }
+  }
+
+  private func dominates(
+    _ lhs: CalibrationCandidateReport,
+    _ rhs: CalibrationCandidateReport
+  ) -> Bool {
+    let noWorse =
+      lhs.metrics.meanGradient >= rhs.metrics.meanGradient
+      && lhs.metrics.meanMaxChannelGradient >= rhs.metrics.meanMaxChannelGradient
+      && lhs.metrics.edgePixelRatio <= rhs.metrics.edgePixelRatio
+      && lhs.metrics.p99CoverageSpread <= rhs.metrics.p99CoverageSpread
+    let strictlyBetter =
+      lhs.metrics.meanGradient > rhs.metrics.meanGradient
+      || lhs.metrics.meanMaxChannelGradient > rhs.metrics.meanMaxChannelGradient
+      || lhs.metrics.edgePixelRatio < rhs.metrics.edgePixelRatio
+      || lhs.metrics.p99CoverageSpread < rhs.metrics.p99CoverageSpread
+    return noWorse && strictlyBetter
   }
 
   private func pairMetrics(lhs: RGBAImage, rhs: RGBAImage, crop: CGRect) -> PairMetrics {
@@ -466,6 +690,23 @@ final class RendererFidelityReportTests: XCTestCase {
       channelCoverage(value: pixel.b, background: background.b, foreground: foreground.b),
     ]
     return (coverages.max() ?? 0) - (coverages.min() ?? 0)
+  }
+
+  private func maxChannelCoverageGradient(lhs: RGB, rhs: RGB) -> Double {
+    let lhsCoverage = channelCoverages(lhs)
+    let rhsCoverage = channelCoverages(rhs)
+    return max(
+      abs(lhsCoverage.r - rhsCoverage.r),
+      abs(lhsCoverage.g - rhsCoverage.g),
+      abs(lhsCoverage.b - rhsCoverage.b))
+  }
+
+  private func channelCoverages(_ pixel: RGB) -> (r: Double, g: Double, b: Double) {
+    (
+      r: channelCoverage(value: pixel.r, background: background.r, foreground: foreground.r),
+      g: channelCoverage(value: pixel.g, background: background.g, foreground: foreground.g),
+      b: channelCoverage(value: pixel.b, background: background.b, foreground: foreground.b)
+    )
   }
 
   private func channelCoverage(value: UInt8, background: UInt8, foreground: UInt8) -> Double {
@@ -633,6 +874,33 @@ final class RendererFidelityReportTests: XCTestCase {
       )
     }
     lines.append("")
+    lines.append("## Calibration Sweep")
+    lines.append("")
+    lines.append(
+      "- Search: \(report.calibration.search.offsetRangePx) px, step \(format(report.calibration.search.offsetStepPx)) px"
+    )
+    lines.append("- Objective: \(report.calibration.search.objective)")
+    lines.append("")
+    lines.append(
+      "| Recommendation | Offset px | Score | Rel luma | Rel channel | Mean spread | P99 spread | Reason |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    for recommendation in report.calibration.recommendations {
+      lines.append(
+        "| \(recommendation.name) | \(format(recommendation.offsetMagnitudePx)) | \(format(recommendation.score)) | \(format(recommendation.relativeLumaGradient)) | \(format(recommendation.relativeMaxChannelGradient)) | \(format(recommendation.meanCoverageSpread)) | \(format(recommendation.p99CoverageSpread)) | \(recommendation.reason) |"
+      )
+    }
+    lines.append("")
+    lines.append(
+      "| Candidate | Offset px | Score | Pareto | Rel luma | Rel channel | Edge ratio | Mean spread | P99 spread | Image |"
+    )
+    lines.append("| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+    for candidate in report.calibration.candidates {
+      lines.append(
+        "| \(candidate.label) | \(format(candidate.offsetMagnitudePx)) | \(format(candidate.score)) | \(candidate.paretoOptimal ? "yes" : "no") | \(format(candidate.relativeLumaGradient)) | \(format(candidate.relativeMaxChannelGradient)) | \(format(candidate.metrics.edgePixelRatio)) | \(format(candidate.metrics.meanCoverageSpread)) | \(format(candidate.metrics.p99CoverageSpread)) | \(candidate.imagePath) |"
+      )
+    }
+    lines.append("")
     return lines.joined(separator: "\n")
   }
 
@@ -691,6 +959,11 @@ final class RendererFidelityReportTests: XCTestCase {
     return abs(value - baseline) / abs(baseline)
   }
 
+  private func relativeRatio(_ value: Double, _ baseline: Double) -> Double {
+    guard abs(baseline) > 0.000001 else { return value == baseline ? 1 : 0 }
+    return value / baseline
+  }
+
   private func relativePath(_ url: URL, root: URL) -> String {
     let rootPath = root.standardizedFileURL.path
     let path = url.standardizedFileURL.path
@@ -702,6 +975,16 @@ final class RendererFidelityReportTests: XCTestCase {
 
   private func shiftLabel(_ value: Double) -> String {
     String(format: "%.2f", value).replacingOccurrences(of: ".", with: "_")
+  }
+
+  private func offsetLabel(_ value: Double) -> String {
+    String(format: "%.2f", value).replacingOccurrences(of: ".", with: "_")
+  }
+
+  private func calibrationOffsetMagnitude(label: String) -> Double {
+    let raw = label.replacingOccurrences(of: "cal-rgb-", with: "")
+      .replacingOccurrences(of: "_", with: ".")
+    return Double(raw) ?? 0
   }
 
   private func format(_ value: Double) -> String {
@@ -786,6 +1069,7 @@ final class RendererFidelityReportTests: XCTestCase {
     var variants: [VariantReport]
     var pairs: [PairReport]
     var fractionalStability: [FractionalStabilityReport]
+    var calibration: CalibrationReport
   }
 
   private struct HostReport: Encodable {
@@ -859,6 +1143,9 @@ final class RendererFidelityReportTests: XCTestCase {
     var meanGradient: Double
     var p95Gradient: Double
     var p99Gradient: Double
+    var meanMaxChannelGradient: Double
+    var p95MaxChannelGradient: Double
+    var p99MaxChannelGradient: Double
     var meanCoverageSpread: Double
     var p95CoverageSpread: Double
     var p99CoverageSpread: Double
@@ -902,5 +1189,46 @@ final class RendererFidelityReportTests: XCTestCase {
     var relativeMeanGradientDelta: Double
     var p99Gradient: Double
     var relativeP99GradientDelta: Double
+  }
+
+  private struct CalibrationReport: Encodable {
+    var search: CalibrationSearchReport
+    var recommendations: [CalibrationRecommendationReport]
+    var candidates: [CalibrationCandidateReport]
+  }
+
+  private struct CalibrationSearchReport: Encodable {
+    var offsetRangePx: String
+    var offsetStepPx: Double
+    var objective: String
+  }
+
+  private struct CalibrationRecommendationReport: Encodable {
+    var name: String
+    var label: String
+    var offsetMagnitudePx: Double
+    var reason: String
+    var score: Double
+    var meanCoverageSpread: Double
+    var p99CoverageSpread: Double
+    var relativeLumaGradient: Double
+    var relativeMaxChannelGradient: Double
+  }
+
+  private struct CalibrationCandidateReport: Encodable {
+    var label: String
+    var offsetMagnitudePx: Double
+    var imagePath: String
+    var metrics: TextMetrics
+    var relativeLumaGradient: Double
+    var relativeMaxChannelGradient: Double
+    var relativeEdgePixelRatio: Double
+    var score: Double
+    var paretoOptimal: Bool
+  }
+
+  private enum RecommendationMode {
+    case score
+    case channelAcuity
   }
 }

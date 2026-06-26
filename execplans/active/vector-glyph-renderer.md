@@ -1242,12 +1242,15 @@ renderer would be a bug to fix, not an acceptable outcome.)
   passed
   `RendererFidelityReportTests/testWritesCalibrationArtifact`; it records
   classic, real GPU-cell (`cellGlyphs: 112`, `glyphs: 0`), vector grayscale,
-  RGB quarter/third/half, BGR, pairwise diff PNGs, and fractional x-shift
-  stability. On this host/probe classic and GPU-cell are pixel-identical; vector
-  grayscale has lower RGB spread (`meanCoverageSpread 0.0024`) and higher luma
-  gradient than RGB stripe (`66.46` vs `60.28` mean gradient), while RGB stripe
-  intentionally exposes more channel spread (`0.1929`) for acuity/fringing
-  tradeoff review.
+  RGB quarter/third/half, BGR, pairwise diff PNGs, fractional x-shift stability,
+  and a dense symmetric-RGB offset calibration sweep. On this host/probe classic
+  and GPU-cell are pixel-identical; vector grayscale has lower RGB spread
+  (`meanCoverageSpread 0.0024`) and higher luma gradient than RGB stripe
+  (`66.46` vs `60.28` mean gradient), while RGB stripe intentionally exposes more
+  channel spread (`0.1929`) for acuity/fringing tradeoff review. The sweep makes
+  that tradeoff explicit: neutral selects offset `0.00`, balanced selects `0.20`
+  px (`1.1649x` max-channel response at `0.9440x` luma gradient), and max-acuity
+  selects `0.35` px (`1.2922x` max-channel response at `0.9035x` luma gradient).
 - [ ] M5 — feature parity implementation and autonomous gates are complete, but one non-autonomous gate remains before this ExecPlan can be marked fully done: a manually launched AppKit live-shell classic<->vector switch check. The formal fresh-agent Review Gate passed at commit `28e072d719a6686255ec6c87e1828ad9c0bde530`. Current autonomous evidence includes focused XCTest passes (`swift test --filter VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`, `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the preedit smoke), including `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` for Metal instance batches larger than the 4 KB `setVertexBytes` inline limit. It also includes `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`, `./scripts/lint`, `./scripts/check-docs`, `./scripts/check-debug-contract`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `git diff --check`, and `./scripts/build-app` plus `codesign --verify --deep --strict .build/laban/Laban.app`. A broad `swift test` run is not green in this environment due to pre-existing/non-vector failures (`AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`, `LabanSessionTests`, `TabTitleEndToEndTests`) and pasteboard-dependent `TerminalClipboardTests`/`TerminalDropTests`; the vector-added `TerminalWidthPolicyGuardTests` failure from that stale full log was fixed and rerun targeted.
 - [x] ADR `docs/adr/0022-vector-glyph-renderer.md` written and `docs/adr/README.md` index entry — **already landed** (ADR 0022 exists and is indexed). M5 only updates its Evidence section.
 
@@ -1503,6 +1506,19 @@ renderer would be a bug to fix, not an acceptable outcome.)
   records the renderer status and instance counts to prove whether the
   GPU-driven comparator exercised real cell glyphs.
   Date/Author: 2026-06-26 / fidelity calibration artifact.
+
+- Decision: calibrate vector RGB subpixel offsets by Pareto sweep and budgeted
+  recommendations, not by picking a fixed "best" offset globally.
+  Rationale: increasing symmetric RGB offset monotonically raises max-channel
+  edge response on the current probe, but it also lowers luma gradient and raises
+  RGB coverage spread. There is no single objective winner independent of user
+  tolerance for color fringing, panel behavior, and taste. The artifact therefore
+  reports the whole sweep and three reproducible choices: neutral (strict
+  fringing budget, highest luma cleanliness), balanced (higher channel response
+  while retaining most grayscale luma acutance), and max-acuity (largest channel
+  response inside a looser visible-fringing budget). This is the calibration
+  mechanism until the renderer grows a richer osor-style overlap/width profile.
+  Date/Author: 2026-06-26 / smart subpixel calibration.
 
 - Decision: M5's first glyph fallback uses the existing `MetalGlyphAtlas` R8
   raster path for unsupported vector clusters and `ColorGlyphAtlas` for terminal
