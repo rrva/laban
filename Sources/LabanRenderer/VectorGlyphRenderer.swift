@@ -851,7 +851,9 @@ public final class VectorGlyphRenderer: RendererBackend {
     guard sampleStart < Self.accumulationSampleCap else { return entry }
     let sampleCount = min(
       Self.accumulationSampleCap - sampleStart,
-      accumulationSamplesThisFrame(sampleStart: sampleStart))
+      Self.accumulationSamplesThisFrame(
+        sampleStart: sampleStart,
+        maskPixels: descriptor.width * descriptor.height))
     guard sampleCount > 0 else { return entry }
     guard
       scratchRasterizer.encodeAccumulate(
@@ -877,11 +879,16 @@ public final class VectorGlyphRenderer: RendererBackend {
     return entry
   }
 
-  private func accumulationSamplesThisFrame(sampleStart: Int) -> Int {
-    if sampleStart == 0 { return 8 }
-    if sampleStart < 64 { return 4 }
-    if sampleStart < 256 { return 2 }
-    return 1
+  static func accumulationSamplesThisFrame(sampleStart: Int, maskPixels: Int) -> Int {
+    if sampleStart == 0 {
+      if maskPixels >= 8_192 { return 512 }
+      if maskPixels >= 2_048 { return 256 }
+      if maskPixels >= 1_024 { return 128 }
+      return 64
+    }
+    if sampleStart < 128 { return 16 }
+    if sampleStart < 256 { return 8 }
+    return 4
   }
 
   private func accumulationSeed(

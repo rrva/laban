@@ -17,6 +17,21 @@ final class VectorGlyphParityTests: XCTestCase {
     try? FileManager.default.removeItem(at: artifactRoot)
   }
 
+  func testLargeGlyphMasksGetStableFirstResidencySampleBudget() {
+    XCTAssertEqual(
+      VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 0, maskPixels: 32 * 32),
+      128)
+    XCTAssertEqual(
+      VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 0, maskPixels: 48 * 64),
+      256)
+    XCTAssertEqual(
+      VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 0, maskPixels: 96 * 96),
+      512)
+    XCTAssertEqual(
+      VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 128, maskPixels: 96 * 96),
+      8)
+  }
+
   func testRendererGlyphMasksMatchCPUOracleForPrintableASCII() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -179,6 +194,61 @@ final class VectorGlyphParityTests: XCTestCase {
     }
   }
 
+  func testLargeVectorTextFirstFrameDoesNotHaveSevereSettlingArtifacts() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let scale: CGFloat = 2
+    let width = 1600
+    let height = 360
+    let atlas = FontAtlas(pointSize: 48, fontName: nil)
+    let renderer = try XCTUnwrap(
+      VectorGlyphRenderer(
+        fontAtlas: atlas,
+        sidebarFontAtlas: atlas,
+        pixelWidth: width,
+        pixelHeight: height,
+        scale: scale))
+    renderer.setSubpixelLayout(.grayscale)
+
+    let commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale),
+        color: 0x10_10_10_FF,
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 18, y: 26),
+        text: "What should Claude Code do next? /config",
+        foreground: 0xEE_EE_EE_FF,
+        background: 0x10_10_10_FF,
+        attributes: [],
+        source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 18, y: 96),
+        text: "Zoomed vector masks should settle without blocks",
+        foreground: 0xEE_EE_EE_FF,
+        background: 0x10_10_10_FF,
+        attributes: [],
+        source: .terminal),
+    ]
+
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    let first = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+    for frame in 0..<20 {
+      XCTAssertTrue(renderer.render(commands, damage: .full), "settling frame \(frame) failed")
+    }
+    let settled = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+
+    let diff = lumaDiffMetrics(
+      lhs: first,
+      rhs: settled,
+      crop: CGRect(x: 0, y: 0, width: width, height: height),
+      threshold: 48)
+    XCTAssertLessThan(diff.pixelRatioOverThreshold, 0.003)
+    XCTAssertLessThan(diff.largestComponentArea, 80)
+  }
+
   func testDefaultVectorTextFidelityStaysNearMetalOnLightBackground() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -265,6 +335,11 @@ final class VectorGlyphParityTests: XCTestCase {
     var width: Int
     var height: Int
     var bytes: [UInt8]
+  }
+
+  private struct LumaDiffMetrics {
+    var pixelRatioOverThreshold: Double
+    var largestComponentArea: Int
   }
 
   private struct FidelityMetrics {
@@ -402,6 +477,79 @@ final class VectorGlyphParityTests: XCTestCase {
     let range = Double(background) - Double(foreground)
     guard abs(range) > 0.0001 else { return 0 }
     return max(0, min(1, (Double(background) - Double(value)) / range))
+  }
+
+  private func lumaDiffMetrics(
+    lhs: RGBAImage,
+    rhs: RGBAImage,
+    crop: CGRect,
+    threshold: UInt8
+  ) -> LumaDiffMetrics {
+    XCTAssertEqual(lhs.width, rhs.width)
+    XCTAssertEqual(lhs.height, rhs.height)
+    let minX = max(0, Int(floor(crop.minX)))
+    let maxX = min(lhs.width, Int(ceil(crop.maxX)))
+    let minY = max(0, Int(floor(crop.minY)))
+    let maxY = min(lhs.height, Int(ceil(crop.maxY)))
+    let width = max(0, maxX - minX)
+    let height = max(0, maxY - minY)
+    guard width > 0, height > 0 else {
+      return LumaDiffMetrics(pixelRatioOverThreshold: 0, largestComponentArea: 0)
+    }
+
+    var mask = [Bool](repeating: false, count: width * height)
+    var overThreshold = 0
+    for y in 0..<height {
+      for x in 0..<width {
+        let imageX = minX + x
+        let imageY = minY + y
+        let offset = (imageY * lhs.width + imageX) * 4
+        let lhsLuma = luminance(
+          r: lhs.bytes[offset],
+          g: lhs.bytes[offset + 1],
+          b: lhs.bytes[offset + 2])
+        let rhsLuma = luminance(
+          r: rhs.bytes[offset],
+          g: rhs.bytes[offset + 1],
+          b: rhs.bytes[offset + 2])
+        if abs(lhsLuma - rhsLuma) >= Double(threshold) {
+          mask[y * width + x] = true
+          overThreshold += 1
+        }
+      }
+    }
+
+    var visited = [Bool](repeating: false, count: mask.count)
+    var largestComponent = 0
+    for y in 0..<height {
+      for x in 0..<width {
+        let index = y * width + x
+        guard mask[index], !visited[index] else { continue }
+        visited[index] = true
+        var stack = [(x, y)]
+        var area = 0
+        while let (cx, cy) = stack.popLast() {
+          area += 1
+          let neighbors = [
+            (cx + 1, cy),
+            (cx - 1, cy),
+            (cx, cy + 1),
+            (cx, cy - 1),
+          ]
+          for (nx, ny) in neighbors where nx >= 0 && nx < width && ny >= 0 && ny < height {
+            let neighborIndex = ny * width + nx
+            guard mask[neighborIndex], !visited[neighborIndex] else { continue }
+            visited[neighborIndex] = true
+            stack.append((nx, ny))
+          }
+        }
+        largestComponent = max(largestComponent, area)
+      }
+    }
+
+    return LumaDiffMetrics(
+      pixelRatioOverThreshold: Double(overThreshold) / Double(width * height),
+      largestComponentArea: largestComponent)
   }
 
   private func luminance(r: UInt8, g: UInt8, b: UInt8) -> Double {

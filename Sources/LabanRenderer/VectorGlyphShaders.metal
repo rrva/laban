@@ -345,7 +345,7 @@ kernel void vectorGlyphRasterizeScratch(
     );
     if (sample.x < params.boundsMin.x || sample.x > params.boundsMax.x ||
         sample.y < params.boundsMin.y || sample.y > params.boundsMax.y) {
-        output.write(float4(0.0, 0.0, 0.0, 1.0), gid);
+        output.write(float4(0.0, 0.0, 0.0, 1.0), targetOrigin + gid);
         return;
     }
 
