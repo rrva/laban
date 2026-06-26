@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+artifact_root="${LABAN_RENDERER_FIDELITY_ARTIFACTS:-${ARTIFACT_ROOT:-.artifacts/runs/$run_id/renderer-fidelity}}"
+artifact_abs=$(mkdir -p "$(dirname "$artifact_root")" && cd "$(dirname "$artifact_root")" && pwd -P)/$(basename "$artifact_root")
+repo_abs=$(pwd -P)
+
+case "$artifact_abs" in
+  /|"$repo_abs"|"$repo_abs/."|"$repo_abs/..")
+    printf 'vector-renderer-fidelity-report: refusing unsafe artifact root: %s\n' "$artifact_root" >&2
+    exit 2
+    ;;
+esac
+
+rm -rf "$artifact_root"
+mkdir -p "$artifact_root"
+
+LABAN_RENDERER_FIDELITY_ARTIFACTS="$artifact_root" \
+  swift test --filter RendererFidelityReportTests/testWritesCalibrationArtifact
+
+printf 'renderer fidelity report: %s\n' "$artifact_root/renderer-fidelity-report.md"
+printf 'renderer fidelity json:   %s\n' "$artifact_root/renderer-fidelity-report.json"

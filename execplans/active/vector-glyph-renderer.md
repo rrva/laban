@@ -1236,6 +1236,18 @@ renderer would be a bug to fix, not an acceptable outcome.)
 - [x] M2 — `VectorGlyphRenderer` is an additive `RendererBackend` peer with shared `RendererSelection`/`makeRendererBackend(...)` routing in `LabanRenderer`, no `RendererMode.vectorGlyph`, View and Settings entries, font-zoom preservation, headless selection, `/debug/render`, and offscreen screenshot readback. The bundle contains `VectorGlyphShaders.metal` and the `Vector Glyph Renderer` menu string.
 - [x] M3 — temporal accumulation is implemented with deterministic `rgba32Uint` fixed-point sums, front-loaded 8/4/2/1 sampling, R2 jitter, fixed-frame convergence, and the parity matrix. Instruments evidence from `.tmp/vector-attach-trace.trace` shows `laban.vector.content` at p50 0.195542-0.203125 ms and p99 0.218532-0.231455 ms, meeting the <=0.3 ms p50 M3 target in the attached headless workload.
 - [x] M4 — grayscale/RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The normal Settings UI exposes the product-facing grayscale vs RGB subpixel choice; BGR/custom remain debug/API calibration paths. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
+- [x] Renderer fidelity calibration artifact — `scripts/vector-renderer-fidelity-report`
+  writes a deterministic Markdown/JSON/PNG report under
+  `.artifacts/runs/<run-id>/renderer-fidelity/`. A 2026-06-26 verification run
+  passed
+  `RendererFidelityReportTests/testWritesCalibrationArtifact`; it records
+  classic, real GPU-cell (`cellGlyphs: 112`, `glyphs: 0`), vector grayscale,
+  RGB quarter/third/half, BGR, pairwise diff PNGs, and fractional x-shift
+  stability. On this host/probe classic and GPU-cell are pixel-identical; vector
+  grayscale has lower RGB spread (`meanCoverageSpread 0.0024`) and higher luma
+  gradient than RGB stripe (`66.46` vs `60.28` mean gradient), while RGB stripe
+  intentionally exposes more channel spread (`0.1929`) for acuity/fringing
+  tradeoff review.
 - [ ] M5 — feature parity implementation and autonomous gates are complete, but one non-autonomous gate remains before this ExecPlan can be marked fully done: a manually launched AppKit live-shell classic<->vector switch check. The formal fresh-agent Review Gate passed at commit `28e072d719a6686255ec6c87e1828ad9c0bde530`. Current autonomous evidence includes focused XCTest passes (`swift test --filter VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`, `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the preedit smoke), including `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` for Metal instance batches larger than the 4 KB `setVertexBytes` inline limit. It also includes `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`, `./scripts/lint`, `./scripts/check-docs`, `./scripts/check-debug-contract`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `git diff --check`, and `./scripts/build-app` plus `codesign --verify --deep --strict .build/laban/Laban.app`. A broad `swift test` run is not green in this environment due to pre-existing/non-vector failures (`AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`, `LabanSessionTests`, `TabTitleEndToEndTests`) and pasteboard-dependent `TerminalClipboardTests`/`TerminalDropTests`; the vector-added `TerminalWidthPolicyGuardTests` failure from that stale full log was fixed and rerun targeted.
 - [x] ADR `docs/adr/0022-vector-glyph-renderer.md` written and `docs/adr/README.md` index entry — **already landed** (ADR 0022 exists and is indexed). M5 only updates its Evidence section.
 
@@ -1478,6 +1490,19 @@ renderer would be a bug to fix, not an acceptable outcome.)
   subpixel is the explicit maximum-acuity option for a known RGB-stripe panel,
   such as the built-in MacBook display, and should be a deliberate choice.
   Date/Author: 2026-06-26 / Settings acuity control.
+
+- Decision: renderer fidelity calibration is an evidence artifact, not a
+  golden-master gate, and it treats `classic`/`gpuDriven` as comparators rather
+  than definitive references.
+  Rationale: the current vector renderer is unhinted and intentionally differs
+  from CoreText-rasterized Metal text, while the old GPU-cell path is not itself
+  a text-quality oracle. The calibration report therefore records objective
+  measurements — ink mass, edge ratio, luma gradients, RGB coverage spread,
+  pairwise RGB/luma deltas, SSIM, diff PNGs, and fractional x-shift stability —
+  so preference decisions are made from explicit tradeoffs. The artifact also
+  records the renderer status and instance counts to prove whether the
+  GPU-driven comparator exercised real cell glyphs.
+  Date/Author: 2026-06-26 / fidelity calibration artifact.
 
 - Decision: M5's first glyph fallback uses the existing `MetalGlyphAtlas` R8
   raster path for unsupported vector clusters and `ColorGlyphAtlas` for terminal
