@@ -27,10 +27,10 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     secondSession.write(Array("TWO second\r\n".utf8))
     secondSession.poll()
 
-    setPasteboard("sentinel")
+    setPasteboard("sentinel", in: harness.view)
     harness.view.copy(nil)
     XCTAssertEqual(
-      NSPasteboard.general.string(forType: .string),
+      harness.view.pasteboardStringForTesting,
       "sentinel",
       "newly created tab must not inherit the previous tab's selection before the next frame"
     )
@@ -160,10 +160,10 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     harness.view.selectTabByIndex(item)
     harness.view.advanceFrame()
 
-    setPasteboard("sentinel")
+    setPasteboard("sentinel", in: harness.view)
     harness.view.copy(nil)
     XCTAssertEqual(
-      NSPasteboard.general.string(forType: .string),
+      harness.view.pasteboardStringForTesting,
       "sentinel",
       "column-changing resize must drop cached selections for inactive tabs as well"
     )
@@ -195,10 +195,10 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     harness.view.selectTabByIndex(item)
     harness.view.advanceFrame()
 
-    setPasteboard("sentinel")
+    setPasteboard("sentinel", in: harness.view)
     harness.view.copy(nil)
     XCTAssertEqual(
-      NSPasteboard.general.string(forType: .string),
+      harness.view.pasteboardStringForTesting,
       "sentinel",
       "row-only resize must drop cached selections for inactive tabs as well"
     )
@@ -613,7 +613,7 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
     selectCells(row: 0, startCol: 0, endCol: 4, in: harness)
     XCTAssertEqual(copyText(from: harness.view), "alpha")
 
-    setPasteboard("PASTED")
+    setPasteboard("PASTED", in: harness.view)
     harness.view.paste(nil)
 
     // After a paste the selection is gone, so a follow-up copy finds nothing to
@@ -900,14 +900,13 @@ final class TerminalBitmapViewSelectionTests: XCTestCase {
   }
 
   private func copyText(from view: TerminalBitmapView) -> String? {
-    setPasteboard("sentinel")
+    setPasteboard("sentinel", in: view)
     view.copy(nil)
-    return NSPasteboard.general.string(forType: .string)
+    return view.pasteboardStringForTesting
   }
 
-  private func setPasteboard(_ text: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
+  private func setPasteboard(_ text: String, in view: TerminalBitmapView) {
+    view.pasteboardStringForTesting = text
   }
 
   private func terminalWidthPreservingColumnCount(

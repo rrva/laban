@@ -1,0 +1,32 @@
+{
+  "name": "mixed-fallback",
+  "version": 1,
+  "description": "Mixes ASCII, CJK, emoji/ZWJ, private-use, and box drawing glyphs for vector raster-fallback parity.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 12
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Fixture: Mixed Fallback"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "Mixed fallback: ASCII \u6f22\u5b57 \ud83d\ude42 \ud83d\udc69\u200d\ud83d\udcbb \ue000 \u250c\u2500\u2510\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "title": "Fixture: Mixed Fallback",
+    "nonEmptyScreenshot": true,
+    "containsText": [
+      "Mixed fallback",
+      "ASCII"
+    ]
+  }
+}

@@ -133,8 +133,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var caDisplayLink: AnyObject?
   private var cvDisplayLink: CVDisplayLink?
 
-  // Last known terminal grid size (updated each frame)
-  private var lastRows: Int = 24
+  // Last known terminal grid size (updated each frame). Seeded from the model
+  // so hit-testing is correct even before the first settled render.
+  private var lastRows: Int
+  private var testPasteboardEnabled = false
+  private var testPasteboardString: String?
+  var pasteboardStringForTesting: String? {
+    get { testPasteboardString }
+    set {
+      testPasteboardEnabled = true
+      testPasteboardString = newValue
+    }
+  }
 
   private var selectionAnchor: TerminalSelectionPoint?
   private var selectionFocus: TerminalSelectionPoint?
@@ -258,6 +268,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var reduceMotionObserver: NSObjectProtocol?
   private var cursorSettingsObserver: NSObjectProtocol?
   private var emojiRenderingObserver: NSObjectProtocol?
+  private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
   /// UserDefaults. The Settings live-apply path compares against it: an
@@ -537,6 +548,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     self.sessionCoordinator = sessionCoordinator
     self.sidebarCellWidth = Int(sidebarFontAtlas.cellSize.width)
     self.sidebarCellHeight = Int(sidebarFontAtlas.cellSize.height)
+    self.lastRows = max(1, Int(model.terminalSize.rows))
     let gpuFreezeAutoDumpEnabled = RenderJournal.gpuFreezeAutoDumpEnabled()
     self.gpuFreezeAutoDumpEnabled = gpuFreezeAutoDumpEnabled
     self.renderJournalEnabled = RenderJournal.isEnabled() || gpuFreezeAutoDumpEnabled
@@ -614,6 +626,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     ) { [weak self] _ in
       guard let self else { return }
       (self.backend as? MetalRenderer)?.invalidateContentForThemeChange()
+      (self.backend as? VectorGlyphRenderer)?.refreshEmojiRenderingMode()
+      self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    vectorSubpixelLayoutObserver = NotificationCenter.default.addObserver(
+      forName: VectorSubpixelLayout.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
+      vector.setSubpixelLayout(VectorSubpixelLayout.persisted())
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -839,15 +863,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas
   ) -> RendererBackend {
-    if let metalMode = selection.metalMode,
-      let metal = MetalRenderer(
-        fontAtlas: fontAtlas,
-        sidebarFontAtlas: sidebarFontAtlas,
-        rendererMode: metalMode)
-    {
-      return metal
-    }
-    return SoftwareBackend(fontAtlas: fontAtlas, sidebarFontAtlas: sidebarFontAtlas)
+    makeRendererBackend(
+      selection: selection,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebarFontAtlas)
   }
 
   private func configurePresentationForCurrentBackend() {
@@ -864,8 +883,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   private func installFrameCompletionHook() {
-    guard let metal = backend as? MetalRenderer else { return }
-    metal.onFrameCompleted = { [weak self] in
+    guard backend.rendererStatus.effectiveRenderer != RendererSelection.software.rawValue else {
+      return
+    }
+    backend.onFrameCompleted = { [weak self] in
       DispatchQueue.main.async {
         guard let self else { return }
         self.gpuFrameCompletionCount += 1
@@ -877,17 +898,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   var rendererMode: RendererMode {
-    guard let metal = backend as? MetalRenderer else {
-      return .classic
-    }
-    return metal.configuredRendererMode
+    backend.rendererStatus.configuredRenderer == RendererMode.gpuDriven.rawValue
+      ? .gpuDriven : .classic
   }
 
   var rendererSelection: RendererSelection {
-    if let metal = backend as? MetalRenderer {
-      return RendererSelection(metalMode: metal.configuredRendererMode)
-    }
-    return .software
+    RendererSelection(rawValue: backend.rendererStatus.configuredRenderer) ?? .software
   }
 
   var usesMetalBackend: Bool {
@@ -918,8 +934,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let metalMode = resolved.metalMode,
       let metal = backend as? MetalRenderer
     {
+      metal.clearRendererStatusOverride()
       guard metal.configuredRendererMode != metalMode else { return }
       metal.configuredRendererMode = metalMode
+      metal.clearRendererStatusOverride()
       renderInvalidated = true
       if window != nil {
         scheduleRenderRetry()
@@ -927,7 +945,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
 
-    (backend as? MetalRenderer)?.onFrameCompleted = nil
+    backend.onFrameCompleted = nil
     backend = Self.makeBackend(
       selection: resolved,
       fontAtlas: fontAtlas,
@@ -1528,6 +1546,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let emojiRenderingObserver {
       NotificationCenter.default.removeObserver(emojiRenderingObserver)
     }
+    if let vectorSubpixelLayoutObserver {
+      NotificationCenter.default.removeObserver(vectorSubpixelLayoutObserver)
+    }
     if let fontChangeObserver {
       NotificationCenter.default.removeObserver(fontChangeObserver)
     }
@@ -1557,11 +1578,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     lastPixelWidth = pixW
     lastPixelHeight = pixH
     lastSurfaceScale = scale
-    if let metal = backend as? MetalRenderer {
-      metal.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
-    } else if let software = backend as? SoftwareBackend {
-      software.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
-    }
+    backend.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
     // Ladder textures were rasterized for the old backing scale; discard and
     // rebuild for the new one (the renderer's own scale-change branch already
     // rebuilt the active size synchronously above).
@@ -2298,7 +2315,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         width: backend.surfaceWidth,
         height: backend.surfaceHeight,
         scale: Double(backend.surfaceScale),
-        backend: backend is MetalRenderer ? "metal" : "software")
+        backend: backend.rendererStatus.effectiveRenderer)
     }
     if !backendSelfPresents {
       needsDisplay = true
@@ -3526,6 +3543,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         sidebarFontAtlas: newSidebarFontAtlas,
         prebuiltTerminalAtlas: ladderEntry?.terminalAtlas,
         prebuiltSidebarAtlas: ladderEntry?.sidebarAtlas)
+    } else if let vector = backend as? VectorGlyphRenderer {
+      vector.reconfigureFonts(fontAtlas: newFontAtlas, sidebarFontAtlas: newSidebarFontAtlas)
+      vector.resize(
+        pixelWidth: lastPixelWidth,
+        pixelHeight: lastPixelHeight,
+        scale: lastSurfaceScale)
     } else {
       // SoftwareRenderer rasterizes from its FontAtlas every frame and is
       // wired to one surface; recreate the backend with the new atlases at
@@ -4116,8 +4139,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   @objc func copy(_ sender: Any?) {
     guard let text = currentSelectionText() else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
+    if testPasteboardEnabled {
+      testPasteboardString = text
+    } else {
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(text, forType: .string)
+    }
     EventLog.shared.log("copy", ["bytes": text.utf8.count])
     recordInput(kind: "copy", route: "appCommand", text: text, command: "copy")
   }
@@ -4305,17 +4332,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let session = model.session(forTab: activeTab.id)
     else { return }
 
-    let pasteboard = NSPasteboard.general
-    // Read the clipboard text BEFORE deciding to forward an image read.
-    // A mixed text+image clipboard (web selection, screenshot annotation,
-    // Figma) must paste its text; only an image-only clipboard (the .empty
-    // case below) forwards Ctrl+V so a TUI can read the image itself.
-    // (H-7: short-circuiting on hasImage here silently dropped the text.)
-    let hasImage = TerminalClipboard.containsImage(pasteboard)
+    // Read the clipboard text BEFORE deciding to forward an image read. A mixed
+    // text+image clipboard (web selection, screenshot annotation, Figma) must
+    // paste its text; only an image-only clipboard (the .empty case below)
+    // forwards Ctrl+V so a TUI can read the image itself. (H-7:
+    // short-circuiting on hasImage here silently dropped the text.)
+    let clipboardRead: TerminalClipboard.StringRead
+    let hasImage: Bool
+    if testPasteboardEnabled {
+      hasImage = false
+      if let raw = testPasteboardString, !raw.isEmpty {
+        let bytes = raw.utf8.count
+        clipboardRead =
+          bytes > TerminalClipboard.hardLimitBytes ? .tooLarge(bytes) : .value(raw, bytes: bytes)
+      } else {
+        clipboardRead = .empty
+      }
+    } else {
+      let pasteboard = NSPasteboard.general
+      hasImage = TerminalClipboard.containsImage(pasteboard)
+      clipboardRead = TerminalClipboard.readString(pasteboard)
+    }
 
     let raw: String
     let rawBytes: Int
-    switch TerminalClipboard.readString(pasteboard) {
+    switch clipboardRead {
     case .empty:
       // Image-only clipboard: mirror Ghostty's performable-keybind pass-through —
       // when the clipboard has no text, forward as ctrl+v so TUIs like Claude

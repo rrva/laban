@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import LabanCore
 import LabanRenderer
 
 struct DebugWindowActions {
@@ -17,6 +18,7 @@ struct DebugWindowActions {
     runtime.windowHeight = max(height, 1)
     runtime.surface = BitmapSurface(width: runtime.windowWidth, height: runtime.windowHeight)
     runtime.renderer = SoftwareRenderer(surface: runtime.surface, fontAtlas: runtime.fontAtlas)
+    runtime.resizeRendererBackendUnlocked()
     runtime.model.resize(
       viewportWidth: runtime.windowWidth - runtime.sidebarWidth,
       viewportHeight: runtime.windowHeight,
@@ -68,6 +70,7 @@ struct DebugWindowActions {
       runtime.cellWidth = max(1, Int(cell.width))
       runtime.cellHeight = max(1, Int(cell.height))
       runtime.renderer = SoftwareRenderer(surface: runtime.surface, fontAtlas: fontAtlas)
+      runtime.rebuildRendererBackendUnlocked()
       // Init parity: the headless sidebar shares the terminal metrics.
       runtime.surfaceController.updateCellMetrics(
         cellWidth: runtime.cellWidth,
@@ -110,11 +113,65 @@ struct DebugWindowActions {
     return runtime.actionResult(ok: true)
   }
 
+  /// Headless counterpart of the app's live renderer menu: replace only the
+  /// renderer backend through the shared factory, leaving AppModel sessions and
+  /// tab identity untouched.
+  func setRenderer(_ request: SetRendererActionRequest) -> DebugResponse {
+    guard let rawRenderer = request.renderer else {
+      return jsonError("setRenderer requires renderer")
+    }
+    guard let selection = RendererSelection(rawValue: rawRenderer) else {
+      return jsonError("unknown renderer")
+    }
+    runtime.rendererSelection = selection
+    runtime.rebuildRendererBackendUnlocked()
+    runtime.renderFrameUnlocked()
+    runtime.appendEvent(EventEntry(kind: "renderer.set", action: selection.rawValue))
+    return runtime.actionResult(ok: true)
+  }
+
   func advanceFrames(_ request: AdvanceFramesActionRequest) -> DebugResponse {
     let count = max(request.count ?? 1, 1)
     for _ in 0..<count {
       runtime.renderFrameUnlocked()
     }
+    return runtime.actionResult(ok: true)
+  }
+
+  func setVectorSubpixelLayout(_ request: VectorSubpixelLayoutActionRequest) -> DebugResponse {
+    guard let vectorRenderer = runtime.rendererBackend as? VectorGlyphRenderer else {
+      return jsonError("setVectorSubpixelLayout requires vectorGlyph renderer")
+    }
+    let layout: VectorSubpixelLayout
+    if let offsets = request.offsets {
+      guard offsets.count == 3 else {
+        return jsonError("setVectorSubpixelLayout offsets must contain exactly three values")
+      }
+      guard
+        let customLayout = VectorSubpixelLayout.custom(
+          name: request.layout ?? "custom",
+          offsets: SIMD3<Float>(
+            Float(offsets[0]),
+            Float(offsets[1]),
+            Float(offsets[2])
+          )
+        )
+      else {
+        return jsonError("setVectorSubpixelLayout offsets must be finite")
+      }
+      layout = customLayout
+    } else {
+      switch request.layout ?? "rgbStripe" {
+      case "rgbStripe", "rgb":
+        layout = .rgbStripe
+      case "bgrStripe", "bgr":
+        layout = .bgrStripe
+      default:
+        return jsonError("unknown vector subpixel layout")
+      }
+    }
+    vectorRenderer.setSubpixelLayout(layout)
+    runtime.renderFrameUnlocked()
     return runtime.actionResult(ok: true)
   }
 

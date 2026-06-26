@@ -676,6 +676,16 @@ Returns terminal selection state for copy behavior.
 
 The text field is bounded to visible selected text.
 
+`POST /debug/actions` can set transient headless preedit text for renderer
+verification without committing input to the terminal:
+
+```json
+{"action": "setPreedit", "text": "中👩‍💻a", "caretCells": 3}
+```
+
+Use `/debug/frame-commands?source=preedit&includeText=true` to verify the
+background mask and underlined preedit glyph run.
+
 ### Clipboard
 
 `GET /debug/clipboard`
@@ -891,6 +901,8 @@ Example actions:
 {"action":"selectTab","tabId":"tab-1"}
 {"action":"resizeWindow","width":1280,"height":800}
 {"action":"setFontSize","pointSize":20}
+{"action":"setRenderer","renderer":"vectorGlyph"}
+{"action":"setVectorSubpixelLayout","layout":"bgrStripe"}
 {"action":"typeText","text":"printf '$HOME\\n'\\n"}
 {"action":"key","key":"t","modifiers":["command"]}
 {"action":"mouseWheel","x":400,"y":300,"deltaY":-3}

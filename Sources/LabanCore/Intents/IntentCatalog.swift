@@ -791,6 +791,16 @@ public struct IntentCatalog: Sendable {
       summary: "Set the live terminal font size.",
       inputSchema: SetFontSizeActionRequest.jsonSchema),
     descriptor(
+      id: "renderer.set",
+      category: "rendering",
+      summary: "Set the headless renderer backend.",
+      inputSchema: SetRendererActionRequest.jsonSchema),
+    descriptor(
+      id: "vector.subpixelLayout.set",
+      category: "rendering",
+      summary: "Set the vector renderer subpixel layout.",
+      inputSchema: VectorSubpixelLayoutActionRequest.jsonSchema),
+    descriptor(
       id: "clipboard.setText",
       category: "clipboard",
       summary: "Set debug clipboard text.",
@@ -818,6 +828,12 @@ public struct IntentCatalog: Sendable {
       summary: "Set terminal selection cell anchors.",
       dataSensitivity: .visibleText,
       inputSchema: SelectionActionRequest.jsonSchema),
+    descriptor(
+      id: "preedit.set",
+      category: "input",
+      summary: "Set transient IME preedit text in headless runs.",
+      dataSensitivity: .visibleText,
+      inputSchema: PreeditActionRequest.jsonSchema),
     descriptor(
       id: "find.start",
       category: "find",

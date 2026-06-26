@@ -12,14 +12,22 @@ public final class SoftwareBackend: RendererBackend {
   public let fontAtlas: FontAtlas
   public let sidebarFontAtlas: FontAtlas
   private var lastImage: CGImage?
+  public var onFrameCompleted: (() -> Void)?
+  public var rendererStatus: RendererStatus
 
   public init(
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas? = nil,
-    pixelWidth: Int = 1, pixelHeight: Int = 1, scale: CGFloat = 1
+    pixelWidth: Int = 1,
+    pixelHeight: Int = 1,
+    scale: CGFloat = 1,
+    rendererStatus: RendererStatus = RendererStatus(
+      configuredRenderer: RendererSelection.software.rawValue,
+      effectiveRenderer: RendererSelection.software.rawValue)
   ) {
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
+    self.rendererStatus = rendererStatus
     let s = BitmapSurface(width: max(1, pixelWidth), height: max(1, pixelHeight), scale: scale)
     self.surface = s
     self.renderer = SoftwareRenderer(
@@ -47,6 +55,7 @@ public final class SoftwareBackend: RendererBackend {
     // Software backend has no persistent target; damage is ignored.
     renderer.render(commands)
     lastImage = surface.cgImage
+    onFrameCompleted?()
     return true
   }
 

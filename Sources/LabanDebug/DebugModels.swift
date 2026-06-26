@@ -343,6 +343,8 @@ struct RenderResponse: Encodable {
   var configuredRenderer: String?
   var effectiveRenderer: String?
   var fallbackReason: String?
+  var rasterFallbackGlyphs: Int?
+  var vectorSubpixelLayout: String?
   var surface: SurfaceResponse
   var terminalViewport: RectResponse
   var cell: CellSizeResponse

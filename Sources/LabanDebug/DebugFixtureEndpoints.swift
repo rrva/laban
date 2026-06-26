@@ -153,6 +153,7 @@ extension HeadlessDebugRuntime {
     windowHeight = runner.fixture.initialSize.rows * cellHeight
     surface = BitmapSurface(width: max(windowWidth, 1), height: max(windowHeight, 1))
     renderer = SoftwareRenderer(surface: surface, fontAtlas: fontAtlas)
+    rebuildRendererBackendUnlocked()
   }
 
   private func applyFixtureStepsUnlocked(count: Int) throws {

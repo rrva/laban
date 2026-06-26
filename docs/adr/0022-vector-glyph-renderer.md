@@ -151,6 +151,131 @@ Add a fourth, opt-in renderer — `vectorGlyph` — implemented as a new
   OLED); macOS exposes no arbitrary subpixel-structure API, so the "ideal"
   automatic layout from the article's "A Plea" remains out of reach.
 
+## Evidence
+
+Implementation evidence as of 2026-06-26 is partial and lives in the ExecPlan
+until the M5 gate closes:
+
+- `vectorGlyph` is selectable through the shared backend factory, View renderer
+  menu, Settings renderer popup, and `laban-agent --renderer=vectorGlyph`.
+  `RendererMode` remains limited to `classic`/`gpuDriven`.
+- Headless vector rendering is observable through `GET /debug/render` and
+  `GET /debug/screenshot`. The latest mixed-Unicode fallback smoke reported
+  `configuredRenderer == effectiveRenderer == "vectorGlyph"`,
+  `rasterFallbackGlyphs == 7`, and `vectorSubpixelLayout == "rgbStripe"`, with
+  a readable screenshot at
+  `.tmp/vector-headless-raster-fallback-status2/mixed-unicode-status.png`.
+- Color emoji fallback is observable in headless vector mode with the
+  process-local `laban-agent --emoji-rendering=color` override. The latest color
+  smoke reported `effectiveRenderer == "vectorGlyph"`, `emojiRendering.mode ==
+  "color"`, and `rasterFallbackGlyphs == 3`, with visible color emoji in
+  `.tmp/vector-headless-color-emoji/color-emoji.png`.
+- Headless Metal screenshots now work for classic as well as vector because
+  `HeadlessDebugRuntime` enables `MetalRenderer.captureMode` for verification
+  backends; `testRuntimeClassicRendererScreenshotNonEmpty` pins the classic
+  path. Matched headless comparisons between classic and vector frame 131/133
+  now cover `fixtures/find-viewport.json`, debug-driven
+  `overlay-selection-find`, debug-driven `preedit-inline`,
+  `fixtures/colored-boxes.fixture.json`,
+  `fixtures/cjk/trust-gate.fixture.json`,
+  `fixtures/color-emoji.fixture.json`,
+  `fixtures/mixed-fallback.fixture.json`, and
+  `fixtures/styled-decorations.fixture.json`;
+  `scripts/vector-glyph-parity-matrix` reproduces the run and writes artifacts
+  under `.tmp/vector-parity-matrix/<fixture>/`. The eight case metrics were:
+  find-viewport `meanAbsRGB 0.2850`, `p95AbsRGB 0`, `p99AbsRGB 0`;
+  overlay-selection-find `meanAbsRGB 0.2728`, `p95AbsRGB 0`, `p99AbsRGB 0`;
+  preedit-inline `meanAbsRGB 0.3956`, `p95AbsRGB 0`, `p99AbsRGB 1`;
+  colored-boxes `meanAbsRGB 0.0906`, `p95AbsRGB 0`, `p99AbsRGB 0`; CJK trust
+  gate `meanAbsRGB 0.1136`, `p95AbsRGB 0`, `p99AbsRGB 0`; color emoji
+  `meanAbsRGB 0.2467`, `p95AbsRGB 0`, `p99AbsRGB 0`; mixed fallback
+  `meanAbsRGB 0.2838`, `p95AbsRGB 0`, `p99AbsRGB 0`; styled decorations
+  `meanAbsRGB 0.8979`, `p95AbsRGB 0`, `p99AbsRGB 36`. The styled fixture also
+  validates frame-command metadata for underline styles, strikethrough,
+  overline, faint, inverse text, and invisible-text omission. The overlay case
+  validates that both classic and vector frame-command JSON include `selection`,
+  `findMatch`, `findSelected`, and `cursor`. The preedit case validates one
+  `.preedit` rect and one `.preedit` glyph run with text `中👩‍💻a` for both
+  backends; the vector run reports `rasterFallbackGlyphs == 2`. The color emoji
+  case runs both renderers with `--emoji-rendering=color` and validates the
+  emoji glyph-run text plus vector `rasterFallbackGlyphs == 3`. The mixed fallback case
+  validates ASCII, CJK, emoji/ZWJ, private-use, and box-drawing text with vector
+  `rasterFallbackGlyphs == 8`. Every case asserts both classic and vector emit
+  sidebar `glyphRun` and `rect` commands.
+- `./scripts/install-app` installs the profilable release bundle successfully
+  without launching it. The installed bundle at `~/Laban.app` has stamp
+  `e37cb91+dirty`, includes `VectorGlyphShaders.metal`, has a sibling
+  `~/Laban.app.dSYM`, and passes
+  `codesign --verify --deep --strict ~/Laban.app`.
+- Debug/control contract checks pass for the new render fields and vector
+  subpixel action: `./scripts/check-debug-contract`, `./scripts/check-docs`,
+  `./scripts/check-boundaries`, and `swift run LabanControlGen --check`.
+- A fresh broad local pass also verifies the current tree outside the missing
+  XCTest/Instruments/manual-GUI gates: full `swift build`, `./scripts/test-e2e`,
+  `./scripts/check-fd-hygiene`, `./scripts/check-anchors`,
+  `./scripts/check-dependencies`, `./scripts/check-model-coverage`,
+  `./scripts/fuzz-labpty --check`, `./scripts/lint`, `git diff --check`,
+  `bash -n scripts/vector-glyph-parity-matrix`, and
+  `scripts/vector-glyph-parity-matrix` pass. The rebuilt
+  `.build/laban/Laban.app` passes `codesign --verify --deep --strict`, contains
+  the `Vector Glyph Renderer` menu string, bundles `VectorGlyphShaders.metal`,
+  and stamps `LABANBuildCommit` as `e37cb91+dirty`. CBMC/TLA/MSan-adjacent
+  scripts were run and self-skipped or downgraded as scripted where the local
+  toolchain lacks those tools.
+- Mechanical review self-checks also pass locally, without satisfying the formal
+  fresh-review requirement: `RendererMode.swift` still has no `vectorGlyph`
+  case, `RendererSelection.vectorGlyph.metalMode == nil`, vector routing lives
+  in the shared `makeRendererBackend(...)` factory used by both `LabanApp` and
+  `LabanDebug`, and `LabanDebug` does not import `LabanApp`. Headless runtime
+  evidence under `.tmp/vector-review-route/` reported vector configured/effective
+  with no fallback, produced a 920×228 screenshot via `/debug/screenshot`, and
+  returned 404 for the intentionally absent `/debug/renderer-status` route.
+  Evidence under `.tmp/vector-review-subpixel-action/` confirmed the
+  `setVectorSubpixelLayout` action updates `/debug/render` to `bgrStripe`.
+- That self-check found and fixed one fallback-status edge: when vector pipeline
+  creation falls back to a classic `MetalRenderer`, later selecting Classic now
+  clears the vector status override instead of reporting stale
+  `configuredRenderer == "vectorGlyph"`. `MetalRenderer.clearRendererStatusOverride()`
+  and the AppKit selection path cover that reuse case, and
+  `testMetalRendererStatusOverrideCanBeClearedWhenReusingFallbackRenderer` pins
+  it for the XCTest-capable toolchain.
+- Synthetic italic now follows the vector design rather than the raster fallback
+  path: the vector mask descriptor shears the outline, `VectorGlyphMaskAtlas.Key`
+  includes a `syntheticItalic` discriminator, and synthetic bold remains raster
+  fallback. Runtime evidence under `.tmp/vector-style-probe/` shows regular
+  ASCII and SGR italic ASCII differ (`meanAbsRGB 0.3077`, `maxAbsRGB 157`,
+  `874/209760` changed pixels) while italic ASCII stays
+  `effectiveRenderer == "vectorGlyph"` with `rasterFallbackGlyphs == 0`.
+- Vector decorations now use the same `TextDecorationLayout` geometry as
+  `MetalRenderer` for underline styles, underline color, strikethrough, and
+  overline. Runtime evidence under `.tmp/vector-decoration-probe/` shows plain
+  and decorated vector runs both stay `effectiveRenderer == "vectorGlyph"` with
+  `rasterFallbackGlyphs == 0`, while decoration pixels change
+  (`meanAbsRGB 1.2745`, `maxAbsRGB 161`, `4836/209760` changed pixels).
+- Headless renderer switching is now externally controllable via
+  `POST /debug/actions` with `setRenderer`. `scripts/vector-renderer-switch-smoke`
+  reproduces the runtime check and writes
+  `.tmp/vector-headless-renderer-switch/<run-id>/` by default, with
+  `ARTIFACT_ROOT` available for a stable path; the latest stable-path run shows
+  the same active session id before software→vectorGlyph and vectorGlyph→classic
+  switches, while `/debug/render` moves through software/software,
+  vectorGlyph/vectorGlyph, and classic/classic. This is partial identity
+  evidence; AppKit live switching remains a separate M5 gate.
+- Subpixel layout is cached on `VectorGlyphRenderer`, persisted as RGB/BGR
+  presets or advanced custom JSON in UserDefaults, applied live from Settings
+  through a notification, and exposed for debug readback via `/debug/render`.
+  Settings intentionally exposes only RGB/BGR presets; arbitrary OLED/editor
+  offsets stay in JSON/debug paths until there is a calibration workflow. The
+  RGB-vs-BGR fringing artifact is under `.tmp/vector-subpixel-fringing/` with
+  mean RGB delta `0.2637`, `p95AbsRGB 0`, and `p99AbsRGB 0`.
+- Correctness/perf release evidence is not complete yet in this worktree:
+  local `swift test` is blocked by an XCTest-unavailable Command Line Tools
+  install, AppKit live-switch verification requires a manually launched app, and
+  the release timing matrix still needs an Instruments trace. This local
+  toolchain also lacks `xcodebuild` and `xctrace`, so those gates require a full
+  Xcode/Instruments environment. Until those gates are recorded, this ADR
+  remains an accepted opt-in design decision, not a default-enable decision.
+
 ## Applies To New Code
 
 Any renderer work continues to preserve the `[FrameCommand]` contract first.

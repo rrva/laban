@@ -21,5 +21,10 @@ actions. UI actions belong in debug-server E2E tests via `/debug/actions`.
 ## Examples
 
 - `colored-boxes.fixture.json` - color and box-drawing smoke fixture.
+- `color-emoji.fixture.json` - color emoji fallback parity fixture.
 - `find-viewport.json` - repeated literal text for terminal find
   highlight and frame-command checks.
+- `mixed-fallback.fixture.json` - ASCII, CJK, emoji/ZWJ, private-use,
+  and box-drawing raster-fallback parity.
+- `styled-decorations.fixture.json` - SGR underline styles, strike,
+  overline, faint, inverse, and invisible-text renderer parity.

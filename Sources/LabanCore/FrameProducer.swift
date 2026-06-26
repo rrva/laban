@@ -61,6 +61,10 @@ public struct FrameProducer {
     self.accessibilityVisualOptions = accessibilityVisualOptions
   }
 
+  public static func preeditCaretCells(for text: String) -> Int {
+    TerminalDisplayWidth.cells(of: text)
+  }
+
   private var accessibilityOutlineRequired: Bool {
     accessibilityVisualOptions.increaseContrast
       || accessibilityVisualOptions.differentiateWithoutColor

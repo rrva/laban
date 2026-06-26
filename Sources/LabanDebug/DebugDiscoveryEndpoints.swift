@@ -33,6 +33,10 @@ enum DebugDiscoveryCatalog {
     DebugDiscoveryControl(
       name: "setFontSize",
       summary: "Apply a live font-size zoom step; grid renegotiates at unchanged window pixels."),
+    DebugDiscoveryControl(name: "setRenderer", summary: "Switch the headless renderer backend."),
+    DebugDiscoveryControl(
+      name: "setVectorSubpixelLayout",
+      summary: "Set the active vector renderer subpixel layout."),
     DebugDiscoveryControl(name: "typeText", summary: "Send text through terminal input."),
     DebugDiscoveryControl(name: "feedOutput", summary: "Inject fixture terminal output bytes."),
     DebugDiscoveryControl(name: "advanceFrames", summary: "Render one or more additional frames."),
@@ -46,6 +50,7 @@ enum DebugDiscoveryCatalog {
       name: "dropFiles", summary: "Insert dropped file paths into the terminal."),
     DebugDiscoveryControl(name: "copy", summary: "Copy the current terminal selection."),
     DebugDiscoveryControl(name: "setSelection", summary: "Set terminal selection cell anchors."),
+    DebugDiscoveryControl(name: "setPreedit", summary: "Set transient IME preedit text."),
     DebugDiscoveryControl(name: "find.start", summary: "Start find in a terminal session."),
     DebugDiscoveryControl(name: "find.step", summary: "Move to the next or previous find match."),
     DebugDiscoveryControl(name: "find.stop", summary: "Stop find and clear match highlights."),

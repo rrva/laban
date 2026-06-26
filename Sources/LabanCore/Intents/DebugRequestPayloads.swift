@@ -45,9 +45,12 @@ public enum DebugActionIntentID {
     "moveTab",
     "resizeWindow",
     "setFontSize",
+    "setRenderer",
     "typeText",
     "feedOutput",
     "advanceFrames",
+    "setVectorSubpixelLayout",
+    "setPreedit",
     "setClipboardText",
     "setSelection",
     "find.start",
@@ -76,9 +79,12 @@ public enum DebugActionIntentID {
     case "moveTab": return "tab.move"
     case "resizeWindow": return "window.resize"
     case "setFontSize": return "app.fontSize.set"
+    case "setRenderer": return "renderer.set"
     case "typeText": return "terminal.typeText"
     case "feedOutput": return "fixture.feedOutput"
     case "advanceFrames": return "fixture.advanceFrames"
+    case "setVectorSubpixelLayout": return "vector.subpixelLayout.set"
+    case "setPreedit": return "preedit.set"
     case "setClipboardText": return "clipboard.setText"
     case "setSelection": return "selection.set"
     case "find.start": return "find.start"
@@ -407,6 +413,25 @@ public struct TextActionRequest: Codable, Sendable, Equatable, JSONSchemaProvidi
   }
 }
 
+public struct SetRendererActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var renderer: String?
+
+  public init(renderer: String? = nil) {
+    self.renderer = renderer
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object(
+      [
+        "renderer": SchemaNode.string(
+          enumValues: ["software", "classic", "gpuDriven", "vectorGlyph"],
+          const: nil,
+          format: nil,
+          pattern: nil)
+      ], required: ["renderer"])
+  }
+}
+
 public struct AdvanceFramesActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
   public var count: Int?
 
@@ -416,6 +441,23 @@ public struct AdvanceFramesActionRequest: Codable, Sendable, Equatable, JSONSche
 
   public static var jsonSchema: SchemaNode {
     DebugPayloadSchema.object(["count": SchemaNode.integer(min: 1, max: nil)])
+  }
+}
+
+public struct VectorSubpixelLayoutActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var layout: String?
+  public var offsets: [Double]?
+
+  public init(layout: String? = nil, offsets: [Double]? = nil) {
+    self.layout = layout
+    self.offsets = offsets
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object([
+      "layout": DebugPayloadSchema.string,
+      "offsets": .array(DebugPayloadSchema.number, minItems: 3),
+    ])
   }
 }
 
@@ -563,6 +605,26 @@ public struct SelectionActionRequest: Codable, Sendable, Equatable, JSONSchemaPr
       "anchor": CellCoordinateReq.jsonSchema,
       "focus": CellCoordinateReq.jsonSchema,
       "sessionId": DebugPayloadSchema.string,
+    ])
+  }
+}
+
+public struct PreeditActionRequest: Codable, Sendable, Equatable, JSONSchemaProviding {
+  public var sessionId: String?
+  public var text: String?
+  public var caretCells: Int?
+
+  public init(sessionId: String? = nil, text: String? = nil, caretCells: Int? = nil) {
+    self.sessionId = sessionId
+    self.text = text
+    self.caretCells = caretCells
+  }
+
+  public static var jsonSchema: SchemaNode {
+    DebugPayloadSchema.object([
+      "caretCells": DebugPayloadSchema.integer,
+      "sessionId": DebugPayloadSchema.string,
+      "text": DebugPayloadSchema.string,
     ])
   }
 }

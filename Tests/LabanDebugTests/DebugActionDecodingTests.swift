@@ -56,6 +56,32 @@ final class DebugActionDecodingTests: XCTestCase {
     XCTAssertEqual(request.pointSize, 20)
   }
 
+  func testDecodesSetRendererPayloadFromFlatWireShape() throws {
+    guard
+      case .setRenderer(let request) = try decode(
+        #"{"action":"setRenderer","renderer":"vectorGlyph"}"#
+      )
+    else {
+      return XCTFail("Expected setRenderer action")
+    }
+
+    XCTAssertEqual(request.renderer, "vectorGlyph")
+  }
+
+  func testDecodesSetPreeditPayloadFromFlatWireShape() throws {
+    guard
+      case .setPreedit(let request) = try decode(
+        #"{"action":"setPreedit","sessionId":"s1","text":"中👩‍💻a","caretCells":3}"#
+      )
+    else {
+      return XCTFail("Expected setPreedit action")
+    }
+
+    XCTAssertEqual(request.sessionId, "s1")
+    XCTAssertEqual(request.text, "中👩‍💻a")
+    XCTAssertEqual(request.caretCells, 3)
+  }
+
   func testDecodesPayloadFreeActions() throws {
     guard case .paste = try decode(#"{"action":"paste","ignored":true}"#) else {
       return XCTFail("Expected paste action")
@@ -103,6 +129,8 @@ final class DebugActionDecodingTests: XCTestCase {
       try decode(#"{"action":"key","key":"Enter","modifiers":["cmd"]}"#).intent,
       .terminalSendKey(SendKeyInput(key: "Enter", modifiers: ["cmd"])))
     XCTAssertEqual(try decode(#"{"action":"feedOutput"}"#).intentID, "fixture.feedOutput")
+    XCTAssertEqual(try decode(#"{"action":"setRenderer"}"#).intentID, "renderer.set")
+    XCTAssertEqual(try decode(#"{"action":"setPreedit"}"#).intentID, "preedit.set")
     XCTAssertEqual(
       try decode(#"{"action":"futureAction"}"#).intent,
       .unsupportedDebugAction(UnsupportedDebugActionInput(action: "futureAction")))

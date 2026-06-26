@@ -14,11 +14,14 @@ enum DebugAction: Decodable {
   case moveTab(MoveTabActionRequest)
   case resizeWindow(ResizeWindowActionRequest)
   case setFontSize(SetFontSizeActionRequest)
+  case setRenderer(SetRendererActionRequest)
   case typeText(TextActionRequest)
   case feedOutput(TextActionRequest)
   case advanceFrames(AdvanceFramesActionRequest)
+  case setVectorSubpixelLayout(VectorSubpixelLayoutActionRequest)
   case setClipboardText(TextActionRequest)
   case setSelection(SelectionActionRequest)
+  case setPreedit(PreeditActionRequest)
   case findStart(FindStartRequest)
   case findStep(FindStepRequest)
   case findStop(FindSessionRequest)
@@ -61,16 +64,22 @@ enum DebugAction: Decodable {
       self = .resizeWindow(try ResizeWindowActionRequest(from: decoder))
     case "setFontSize":
       self = .setFontSize(try SetFontSizeActionRequest(from: decoder))
+    case "setRenderer":
+      self = .setRenderer(try SetRendererActionRequest(from: decoder))
     case "typeText":
       self = .typeText(try TextActionRequest(from: decoder))
     case "feedOutput":
       self = .feedOutput(try TextActionRequest(from: decoder))
     case "advanceFrames":
       self = .advanceFrames(try AdvanceFramesActionRequest(from: decoder))
+    case "setVectorSubpixelLayout":
+      self = .setVectorSubpixelLayout(try VectorSubpixelLayoutActionRequest(from: decoder))
     case "setClipboardText":
       self = .setClipboardText(try TextActionRequest(from: decoder))
     case "setSelection":
       self = .setSelection(try SelectionActionRequest(from: decoder))
+    case "setPreedit":
+      self = .setPreedit(try PreeditActionRequest(from: decoder))
     case "find.start":
       self = .findStart(try FindStartRequest(from: decoder))
     case "find.step":
@@ -124,16 +133,22 @@ extension DebugAction {
       return legacyIntent(action: "resizeWindow")
     case .setFontSize:
       return legacyIntent(action: "setFontSize")
+    case .setRenderer:
+      return legacyIntent(action: "setRenderer")
     case .typeText(let request):
       return .terminalTypeText(TypeTextInput(text: request.text ?? ""))
     case .feedOutput:
       return legacyIntent(action: "feedOutput")
     case .advanceFrames:
       return legacyIntent(action: "advanceFrames")
+    case .setVectorSubpixelLayout:
+      return legacyIntent(action: "setVectorSubpixelLayout")
     case .setClipboardText:
       return legacyIntent(action: "setClipboardText")
     case .setSelection:
       return legacyIntent(action: "setSelection")
+    case .setPreedit:
+      return legacyIntent(action: "setPreedit")
     case .findStart:
       return legacyIntent(action: "find.start")
     case .findStep:
@@ -183,6 +198,7 @@ typealias TabTitleActionRequest = LabanCore.TabTitleActionRequest
 typealias TabMetadataActionRequest = LabanCore.TabMetadataActionRequest
 typealias ResizeWindowActionRequest = LabanCore.ResizeWindowActionRequest
 typealias SetFontSizeActionRequest = LabanCore.SetFontSizeActionRequest
+typealias SetRendererActionRequest = LabanCore.SetRendererActionRequest
 typealias TextActionRequest = LabanCore.TextActionRequest
 typealias AdvanceFramesActionRequest = LabanCore.AdvanceFramesActionRequest
 typealias WindowFocusActionRequest = LabanCore.WindowFocusActionRequest
@@ -191,6 +207,7 @@ typealias MouseWheelActionRequest = LabanCore.MouseWheelActionRequest
 typealias MouseDragActionRequest = LabanCore.MouseDragActionRequest
 typealias ClickActionRequest = LabanCore.ClickActionRequest
 typealias SelectionActionRequest = LabanCore.SelectionActionRequest
+typealias PreeditActionRequest = LabanCore.PreeditActionRequest
 typealias SessionTargetActionRequest = LabanCore.SessionTargetActionRequest
 typealias DropFilesActionRequest = LabanCore.DropFilesActionRequest
 typealias ScrollViewportActionRequest = LabanCore.ScrollViewportActionRequest

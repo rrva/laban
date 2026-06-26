@@ -4,17 +4,17 @@ extension HeadlessDebugRuntime {
   public func screenshotBytes() throws -> (data: Data, frame: Int, width: Int, height: Int) {
     try withRuntimeLock {
       let start = monotonicNow()
-      guard let pngData = surface.pngData else { throw DebugServerError.encodingFailed }
+      guard let pngData = rendererBackend.pngData else { throw DebugServerError.encodingFailed }
       timing.screenshotMs = elapsedMs(since: start)
       screenshotCount += 1
-      return (pngData, currentFrame, surface.width, surface.height)
+      return (pngData, currentFrame, rendererBackend.surfaceWidth, rendererBackend.surfaceHeight)
     }
   }
 
   public func writeScreenshotArtifact() -> DebugResponse {
     withRuntimeLock {
       let start = monotonicNow()
-      guard let pngData = surface.pngData else {
+      guard let pngData = rendererBackend.pngData else {
         appendError(kind: "screenshot.encoding", message: "PNG encoding failed")
         return jsonError("PNG encoding failed", status: 500)
       }
@@ -47,8 +47,8 @@ extension HeadlessDebugRuntime {
       return jsonEncode(
         ScreenshotResult(
           path: fileURL.path,
-          width: surface.width,
-          height: surface.height,
+          width: rendererBackend.surfaceWidth,
+          height: rendererBackend.surfaceHeight,
           frame: currentFrame,
           target: "window"
         ))

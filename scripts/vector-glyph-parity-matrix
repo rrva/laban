@@ -1,0 +1,412 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+agent_bin="${AGENT_BIN:-.build/debug/laban-agent}"
+artifact_root="${ARTIFACT_ROOT:-.tmp/vector-parity-matrix}"
+advance_frames="${VECTOR_ADVANCE_FRAMES:-130}"
+mean_max="${VECTOR_PARITY_MEAN_MAX:-1.0}"
+p99_max="${VECTOR_PARITY_P99_MAX:-2}"
+styled_p99_max="${VECTOR_STYLE_PARITY_P99_MAX:-40}"
+
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'vector-glyph-parity-matrix: missing required command: %s\n' "$1" >&2
+    exit 2
+  }
+}
+
+require curl
+require jq
+require swift
+
+if [ ! -x "$agent_bin" ]; then
+  swift build --product laban-agent >/dev/null
+fi
+
+mkdir -p "$artifact_root"
+compare_script="$artifact_root/compare_pngs.swift"
+cat >"$compare_script" <<'SWIFT'
+import CoreGraphics
+import Foundation
+import ImageIO
+
+struct ImageBytes {
+  var width: Int
+  var height: Int
+  var rgba: [UInt8]
+}
+
+func load(_ path: String) throws -> ImageBytes {
+  let data = try Data(contentsOf: URL(fileURLWithPath: path))
+  guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+    let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+  else {
+    throw NSError(domain: "compare", code: 1, userInfo: [NSLocalizedDescriptionKey: "decode failed"])
+  }
+  var rgba = [UInt8](repeating: 0, count: image.width * image.height * 4)
+  guard
+    let ctx = CGContext(
+      data: &rgba,
+      width: image.width,
+      height: image.height,
+      bitsPerComponent: 8,
+      bytesPerRow: image.width * 4,
+      space: CGColorSpaceCreateDeviceRGB(),
+      bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+        | CGImageAlphaInfo.premultipliedLast.rawValue)
+  else {
+    throw NSError(domain: "compare", code: 2, userInfo: [NSLocalizedDescriptionKey: "context failed"])
+  }
+  ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+  return ImageBytes(width: image.width, height: image.height, rgba: rgba)
+}
+
+func percentile(_ values: [Int], _ p: Double) -> Int {
+  guard !values.isEmpty else { return 0 }
+  let sorted = values.sorted()
+  let index = min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * p).rounded())))
+  return sorted[index]
+}
+
+let args = CommandLine.arguments
+guard args.count == 4 else {
+  fputs("usage: compare_pngs classic.png vector.png diff.png\n", stderr)
+  exit(2)
+}
+let classic = try load(args[1])
+let vector = try load(args[2])
+guard classic.width == vector.width, classic.height == vector.height else {
+  fputs(
+    "dimension mismatch \(classic.width)x\(classic.height) vs \(vector.width)x\(vector.height)\n",
+    stderr)
+  exit(3)
+}
+
+var channelDeltas: [Int] = []
+channelDeltas.reserveCapacity(classic.width * classic.height * 3)
+var maxDelta = 0
+var sum = 0
+var activeSum = 0
+var activeCount = 0
+var pixelsWithDelta = 0
+var diff = [UInt8](repeating: 0, count: classic.width * classic.height * 4)
+
+for pixel in 0..<(classic.width * classic.height) {
+  let offset = pixel * 4
+  var pixelDelta = 0
+  for channel in 0..<3 {
+    let lhs = Int(classic.rgba[offset + channel])
+    let rhs = Int(vector.rgba[offset + channel])
+    let delta = abs(lhs - rhs)
+    channelDeltas.append(delta)
+    sum += delta
+    maxDelta = max(maxDelta, delta)
+    pixelDelta = max(pixelDelta, delta)
+    if lhs > 0 || rhs > 0 {
+      activeSum += delta
+      activeCount += 1
+    }
+  }
+  diff[offset] = UInt8(pixelDelta)
+  diff[offset + 1] = UInt8(pixelDelta)
+  diff[offset + 2] = UInt8(pixelDelta)
+  diff[offset + 3] = 255
+  if pixelDelta > 0 {
+    pixelsWithDelta += 1
+  }
+}
+
+guard
+  let ctx = CGContext(
+    data: &diff,
+    width: classic.width,
+    height: classic.height,
+    bitsPerComponent: 8,
+    bytesPerRow: classic.width * 4,
+    space: CGColorSpaceCreateDeviceRGB(),
+    bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+      | CGImageAlphaInfo.premultipliedLast.rawValue),
+  let image = ctx.makeImage(),
+  let dest = CGImageDestinationCreateWithURL(
+    URL(fileURLWithPath: args[3]) as CFURL,
+    "public.png" as CFString,
+    1,
+    nil)
+else {
+  fputs("failed to create diff image\n", stderr)
+  exit(4)
+}
+CGImageDestinationAddImage(dest, image, nil)
+guard CGImageDestinationFinalize(dest) else {
+  fputs("failed to write diff image\n", stderr)
+  exit(5)
+}
+
+let output: [String: Any] = [
+  "width": classic.width,
+  "height": classic.height,
+  "meanAbsRGB": Double(sum) / Double(max(channelDeltas.count, 1)),
+  "activeMeanAbsRGB": activeCount > 0 ? Double(activeSum) / Double(activeCount) : 0,
+  "p95AbsRGB": percentile(channelDeltas, 0.95),
+  "p99AbsRGB": percentile(channelDeltas, 0.99),
+  "maxAbsRGB": maxDelta,
+  "pixelsWithAnyDelta": pixelsWithDelta,
+  "pixelCount": classic.width * classic.height,
+]
+let encoded = try JSONSerialization.data(
+  withJSONObject: output,
+  options: [.prettyPrinted, .sortedKeys])
+FileHandle.standardOutput.write(encoded)
+FileHandle.standardOutput.write(Data("\n".utf8))
+SWIFT
+
+pids=()
+cleanup() {
+  for pid in "${pids[@]:-}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT
+
+wait_ready() {
+  local stdout=$1
+  local stderr=$2
+  local pid=$3
+  local ready=
+  for _ in {1..120}; do
+    if [ -s "$stdout" ]; then
+      ready=$(head -n 1 "$stdout" || true)
+      if printf '%s' "$ready" | jq -e '.debugServer and .debugToken' >/dev/null 2>&1; then
+        printf '%s' "$ready"
+        return 0
+      fi
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      printf 'vector-glyph-parity-matrix: agent exited before readiness\n' >&2
+      sed -n '1,200p' "$stderr" >&2 || true
+      return 1
+    fi
+    sleep 0.1
+  done
+  printf 'vector-glyph-parity-matrix: timed out waiting for readiness\n' >&2
+  sed -n '1,200p' "$stderr" >&2 || true
+  return 1
+}
+
+post_action() {
+  local url=$1
+  local token=$2
+  local out_file=$3
+  local payload=$4
+  curl -fsS \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "$url/debug/actions" >"$out_file"
+}
+
+apply_case_actions() {
+  local label=$1
+  local url=$2
+  local token=$3
+  local out_dir=$4
+  case "$label" in
+    overlay-selection-find)
+      post_action "$url" "$token" "$out_dir/set-selection.json" \
+        '{"action":"setSelection","anchor":{"row":1,"col":0},"focus":{"row":1,"col":6}}'
+      post_action "$url" "$token" "$out_dir/find-start.json" \
+        '{"action":"find.start","needle":"apple"}'
+      ;;
+    preedit-inline)
+      post_action "$url" "$token" "$out_dir/set-preedit.json" \
+        '{"action":"setPreedit","text":"中👩‍💻a","caretCells":3}'
+      ;;
+  esac
+}
+
+case_agent_args() {
+  local label=$1
+  case "$label" in
+    color-emoji)
+      printf '%s\n' "--emoji-rendering=color"
+      ;;
+  esac
+}
+
+capture_renderer() {
+  local label=$1
+  local fixture=$2
+  local renderer=$3
+  local out_dir=$4
+  rm -rf "$out_dir"
+  mkdir -p "$out_dir"
+  local extra_args=()
+  while IFS= read -r arg; do
+    [ -n "$arg" ] && extra_args+=("$arg")
+  done < <(case_agent_args "$label")
+
+  "$agent_bin" \
+    --headless \
+    --debug-server=127.0.0.1:0 \
+    --fixture="$fixture" \
+    --artifacts="$out_dir" \
+    --renderer="$renderer" \
+    --deterministic \
+    "${extra_args[@]}" \
+    >"$out_dir/stdout.log" \
+    2>"$out_dir/stderr.log" &
+  local pid=$!
+  pids+=("$pid")
+
+  local ready url token
+  ready=$(wait_ready "$out_dir/stdout.log" "$out_dir/stderr.log" "$pid")
+  url=$(printf '%s' "$ready" | jq -r '.debugServer')
+  token=$(printf '%s' "$ready" | jq -r '.debugToken')
+
+  apply_case_actions "$label" "$url" "$token" "$out_dir"
+
+  if [ "$renderer" = "vectorGlyph" ]; then
+    post_action "$url" "$token" "$out_dir/advance-frames.json" \
+      "{\"action\":\"advanceFrames\",\"count\":$advance_frames}"
+  fi
+
+  curl -fsS -H "Authorization: Bearer $token" "$url/debug/render" >"$out_dir/render.json"
+  curl -fsS -H "Authorization: Bearer $token" \
+    "$url/debug/frame-commands?source=all&includeText=true&limit=2000" \
+    >"$out_dir/frame-commands.json"
+  curl -fsS -H "Authorization: Bearer $token" \
+    "$url/debug/screenshot?target=active" >"$out_dir/screenshot.png"
+
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  printf '%s %s %s\n' "$label" "$renderer" \
+    "$(jq -c '{configuredRenderer,effectiveRenderer,fallbackReason,rasterFallbackGlyphs,vectorSubpixelLayout,frame:.frame}' "$out_dir/render.json")"
+}
+
+run_case() {
+  local label=$1
+  local fixture=$2
+  local out_dir="$artifact_root/$label"
+  capture_renderer "$label" "$fixture" classic "$out_dir/classic"
+  capture_renderer "$label" "$fixture" vectorGlyph "$out_dir/vector"
+
+  jq -e '.effectiveRenderer == "classic"' "$out_dir/classic/render.json" >/dev/null
+  jq -e '.effectiveRenderer == "vectorGlyph"' "$out_dir/vector/render.json" >/dev/null
+
+  for side in classic vector; do
+    jq -e '
+      any(.commands[]; .source == "sidebar" and .kind == "glyphRun")
+      and any(.commands[]; .source == "sidebar" and .kind == "rect")
+    ' "$out_dir/$side/frame-commands.json" >/dev/null
+  done
+
+  swift "$compare_script" \
+    "$out_dir/classic/screenshot.png" \
+    "$out_dir/vector/screenshot.png" \
+    "$out_dir/classic-vs-vector-diff.png" \
+    >"$out_dir/classic-vs-vector-metrics.json"
+
+  local case_p99_max="$p99_max"
+  if [ "$label" = "styled-decorations" ]; then
+    case_p99_max="$styled_p99_max"
+  fi
+  local case_mean_max="$mean_max"
+  jq -e --argjson meanMax "$case_mean_max" --argjson p99Max "$case_p99_max" \
+    '.meanAbsRGB <= $meanMax and .p99AbsRGB <= $p99Max' \
+    "$out_dir/classic-vs-vector-metrics.json" >/dev/null
+
+  if [ "$label" = "styled-decorations" ]; then
+    jq -e '
+      [.commands[] | select(.kind == "glyphRun") | .underlineStyle]
+      | any(. == "single")
+        and any(. == "double")
+        and any(. == "curly")
+        and any(. == "dotted")
+        and any(. == "dashed")
+    ' "$out_dir/vector/frame-commands.json" >/dev/null
+    jq -e '
+      [.commands[] | select(.kind == "glyphRun") | .attributes[]?]
+      | any(. == "strikethrough")
+        and any(. == "overline")
+        and any(. == "faint")
+    ' "$out_dir/vector/frame-commands.json" >/dev/null
+    jq -e '
+      ([.commands[] | select(.kind == "glyphRun") | .text] | any(. == "Inverse text"))
+      and ([.commands[] | select(.kind == "glyphRun") | .text] | all(. != "HIDDEN"))
+    ' "$out_dir/vector/frame-commands.json" >/dev/null
+  fi
+  if [ "$label" = "overlay-selection-find" ]; then
+    for side in classic vector; do
+      jq -e '
+        any(.commands[]; .kind == "selection")
+        and any(.commands[]; .kind == "findMatch")
+        and any(.commands[]; .kind == "findSelected")
+        and any(.commands[]; .kind == "cursor")
+      ' "$out_dir/$side/frame-commands.json" >/dev/null
+    done
+  fi
+  if [ "$label" = "preedit-inline" ]; then
+    for side in classic vector; do
+      jq -e '
+        any(.commands[]; .kind == "rect" and .source == "preedit")
+        and any(.commands[]; .kind == "glyphRun" and .source == "preedit" and .text == "中👩‍💻a")
+      ' "$out_dir/$side/frame-commands.json" >/dev/null
+    done
+  fi
+  if [ "$label" = "color-emoji" ]; then
+    jq -e '.emojiRendering.mode == "color"' "$out_dir/classic/render.json" >/dev/null
+    jq -e '
+      .emojiRendering.mode == "color"
+      and .rasterFallbackGlyphs == 3
+      and .effectiveRenderer == "vectorGlyph"
+    ' "$out_dir/vector/render.json" >/dev/null
+    for side in classic vector; do
+      jq -e '
+        ([.commands[] | select(.kind == "glyphRun") | .text] | join(""))
+        | contains("Color emoji:")
+          and contains("🙂")
+          and contains("🚀")
+          and contains("👩‍💻")
+          and contains("ASCII")
+      ' "$out_dir/$side/frame-commands.json" >/dev/null
+    done
+  fi
+  if [ "$label" = "mixed-fallback" ]; then
+    jq -e '
+      .effectiveRenderer == "vectorGlyph"
+      and (.rasterFallbackGlyphs // 0) > 0
+    ' "$out_dir/vector/render.json" >/dev/null
+    for side in classic vector; do
+      jq -e '
+        ([.commands[] | select(.kind == "glyphRun") | .text] | join(""))
+        | contains("Mixed fallback:")
+          and contains("ASCII")
+          and contains("漢字")
+          and contains("🙂")
+          and contains("👩‍💻")
+          and contains("\ue000")
+          and contains("┌─┐")
+      ' "$out_dir/$side/frame-commands.json" >/dev/null
+    done
+  fi
+
+  printf '%s metrics %s\n' "$label" \
+    "$(jq -c '{meanAbsRGB,p95AbsRGB,p99AbsRGB,maxAbsRGB,pixelsWithAnyDelta,pixelCount}' "$out_dir/classic-vs-vector-metrics.json")"
+}
+
+run_case find-viewport fixtures/find-viewport.json
+run_case overlay-selection-find fixtures/find-viewport.json
+run_case preedit-inline fixtures/find-viewport.json
+run_case colored-boxes fixtures/colored-boxes.fixture.json
+run_case cjk-trust-gate fixtures/cjk/trust-gate.fixture.json
+run_case color-emoji fixtures/color-emoji.fixture.json
+run_case mixed-fallback fixtures/mixed-fallback.fixture.json
+run_case styled-decorations fixtures/styled-decorations.fixture.json
+
+printf 'vector-glyph-parity-matrix: artifacts at %s\n' "$artifact_root"

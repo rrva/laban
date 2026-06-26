@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo_root"
+
+agent_bin="${AGENT_BIN:-.build/debug/laban-agent}"
+advance_frames="${VECTOR_SWITCH_ADVANCE_FRAMES:-20}"
+debug_server="${DEBUG_SERVER_ADDR:-127.0.0.1:0}"
+run_id="${VECTOR_SWITCH_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}}"
+
+if [ -n "${ARTIFACT_ROOT:-}" ]; then
+  artifact_root="$ARTIFACT_ROOT"
+else
+  artifact_root=".tmp/vector-headless-renderer-switch/$run_id"
+fi
+
+if [ -n "${VECTOR_SWITCH_TEMP_DIR:-}" ]; then
+  temp_root="$VECTOR_SWITCH_TEMP_DIR"
+  remove_temp_on_success=0
+else
+  temp_root=".tmp/vector-headless-renderer-switch-temp/$run_id"
+  remove_temp_on_success=1
+fi
+
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'vector-renderer-switch-smoke: missing required command: %s\n' "$1" >&2
+    exit 2
+  }
+}
+
+require curl
+require jq
+require file
+
+if [ ! -x "$agent_bin" ]; then
+  swift build --product laban-agent >/dev/null
+fi
+
+mkdir -p "$artifact_root"
+mkdir -p "$temp_root"
+
+pid=
+success=0
+cleanup() {
+  if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  if [ -n "${pid:-}" ]; then
+    wait "$pid" 2>/dev/null || true
+  fi
+  if [ "$success" -eq 1 ] && [ "$remove_temp_on_success" -eq 1 ]; then
+    rm -rf "$temp_root"
+  fi
+}
+trap cleanup EXIT
+
+"$agent_bin" \
+  --headless \
+  --debug-server="$debug_server" \
+  --artifacts="$artifact_root" \
+  --temp-dir="$temp_root" \
+  --renderer=software \
+  --deterministic \
+  >"$artifact_root/stdout.log" \
+  2>"$artifact_root/stderr.log" &
+pid=$!
+
+ready=
+for _ in {1..120}; do
+  if [ -s "$artifact_root/stdout.log" ]; then
+    ready=$(head -n 1 "$artifact_root/stdout.log" || true)
+    if printf '%s' "$ready" | jq -e '.debugServer and .debugToken' >/dev/null 2>&1; then
+      break
+    fi
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    printf 'vector-renderer-switch-smoke: agent exited before readiness\n' >&2
+    sed -n '1,200p' "$artifact_root/stderr.log" >&2 || true
+    exit 1
+  fi
+  sleep 0.1
+done
+
+if ! printf '%s' "$ready" | jq -e '.debugServer and .debugToken' >/dev/null 2>&1; then
+  printf 'vector-renderer-switch-smoke: timed out waiting for readiness\n' >&2
+  sed -n '1,200p' "$artifact_root/stderr.log" >&2 || true
+  exit 1
+fi
+
+printf '%s\n' "$ready" >"$artifact_root/ready.json"
+url=$(printf '%s' "$ready" | jq -r '.debugServer')
+token=$(printf '%s' "$ready" | jq -r '.debugToken')
+
+get_json() {
+  local path=$1
+  local output=$2
+  curl -fsS -H "Authorization: Bearer $token" "$url$path" >"$output"
+}
+
+post_json() {
+  local path=$1
+  local body=$2
+  local output=$3
+  curl -fsS \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    -d "$body" \
+    "$url$path" >"$output"
+}
+
+get_json /debug/state "$artifact_root/state-before.json"
+get_json /debug/render "$artifact_root/render-before.json"
+
+post_json /debug/actions \
+  '{"action":"setRenderer","renderer":"vectorGlyph"}' \
+  "$artifact_root/action-vector.json"
+post_json /debug/actions \
+  "{\"action\":\"advanceFrames\",\"count\":$advance_frames}" \
+  "$artifact_root/action-advance-vector.json"
+get_json /debug/state "$artifact_root/state-vector.json"
+get_json /debug/render "$artifact_root/render-vector.json"
+curl -fsS -H "Authorization: Bearer $token" \
+  "$url/debug/screenshot?target=active" >"$artifact_root/vector.png"
+
+post_json /debug/actions \
+  '{"action":"setRenderer","renderer":"classic"}' \
+  "$artifact_root/action-classic.json"
+get_json /debug/state "$artifact_root/state-classic.json"
+get_json /debug/render "$artifact_root/render-classic.json"
+curl -fsS -H "Authorization: Bearer $token" \
+  "$url/debug/screenshot?target=active" >"$artifact_root/classic.png"
+
+jq -n \
+  --slurpfile before "$artifact_root/state-before.json" \
+  --slurpfile vectorState "$artifact_root/state-vector.json" \
+  --slurpfile classicState "$artifact_root/state-classic.json" \
+  --slurpfile beforeRender "$artifact_root/render-before.json" \
+  --slurpfile vectorRender "$artifact_root/render-vector.json" \
+  --slurpfile classicRender "$artifact_root/render-classic.json" \
+  --slurpfile vectorAction "$artifact_root/action-vector.json" \
+  --slurpfile classicAction "$artifact_root/action-classic.json" \
+  '{
+    beforeSession: $before[0].activeSessionId,
+    vectorActionSession: $vectorAction[0].activeSessionId,
+    vectorStateSession: $vectorState[0].activeSessionId,
+    classicActionSession: $classicAction[0].activeSessionId,
+    classicStateSession: $classicState[0].activeSessionId,
+    beforeRender: {
+      configuredRenderer: $beforeRender[0].configuredRenderer,
+      effectiveRenderer: $beforeRender[0].effectiveRenderer,
+      fallbackReason: $beforeRender[0].fallbackReason
+    },
+    vectorRender: {
+      configuredRenderer: $vectorRender[0].configuredRenderer,
+      effectiveRenderer: $vectorRender[0].effectiveRenderer,
+      fallbackReason: $vectorRender[0].fallbackReason,
+      rasterFallbackGlyphs: $vectorRender[0].rasterFallbackGlyphs,
+      vectorSubpixelLayout: $vectorRender[0].vectorSubpixelLayout
+    },
+    classicRender: {
+      configuredRenderer: $classicRender[0].configuredRenderer,
+      effectiveRenderer: $classicRender[0].effectiveRenderer,
+      fallbackReason: $classicRender[0].fallbackReason
+    }
+  }' >"$artifact_root/summary.json"
+
+jq -e '
+  .beforeSession != null
+  and .beforeSession == .vectorActionSession
+  and .beforeSession == .vectorStateSession
+  and .beforeSession == .classicActionSession
+  and .beforeSession == .classicStateSession
+  and .beforeRender.configuredRenderer == "software"
+  and .beforeRender.effectiveRenderer == "software"
+  and .beforeRender.fallbackReason == null
+  and .vectorRender.configuredRenderer == "vectorGlyph"
+  and (
+    (
+      .vectorRender.effectiveRenderer == "vectorGlyph"
+      and .vectorRender.fallbackReason == null
+      and .vectorRender.rasterFallbackGlyphs == 0
+      and .vectorRender.vectorSubpixelLayout == "rgbStripe"
+    )
+    or (.vectorRender.effectiveRenderer == "software" and .vectorRender.fallbackReason == "noMetalDevice")
+  )
+  and .classicRender.configuredRenderer == "classic"
+  and (
+    (.classicRender.effectiveRenderer == "classic" and .classicRender.fallbackReason == null)
+    or (.classicRender.effectiveRenderer == "software" and .classicRender.fallbackReason == "noMetalDevice")
+  )
+' "$artifact_root/summary.json" >/dev/null
+
+file "$artifact_root/vector.png" "$artifact_root/classic.png" | tee "$artifact_root/file.txt"
+grep -q 'vector.png: .*PNG image data' "$artifact_root/file.txt"
+grep -q 'classic.png: .*PNG image data' "$artifact_root/file.txt"
+jq -c . "$artifact_root/summary.json"
+success=1
+printf 'vector-renderer-switch-smoke: artifacts at %s\n' "$artifact_root"

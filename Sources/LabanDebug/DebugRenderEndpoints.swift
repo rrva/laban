@@ -42,15 +42,20 @@ extension HeadlessDebugRuntime {
   public func renderState() -> DebugResponse {
     withRuntimeLock {
       let terminalViewportWidth = max(windowWidth - sidebarWidth, 1)
+      let status = rendererBackend.rendererStatus
       return jsonEncode(
         RenderResponse(
           frame: currentFrame,
-          backend: "software",
-          configuredRenderer: "software",
-          effectiveRenderer: "software",
-          fallbackReason: nil,
+          backend: status.effectiveRenderer,
+          configuredRenderer: status.configuredRenderer,
+          effectiveRenderer: status.effectiveRenderer,
+          fallbackReason: status.fallbackReason,
+          rasterFallbackGlyphs: status.rasterFallbackGlyphs,
+          vectorSubpixelLayout: status.vectorSubpixelLayout,
           surface: SurfaceResponse(
-            width: surface.width, height: surface.height, scale: Double(surface.scale)),
+            width: rendererBackend.surfaceWidth,
+            height: rendererBackend.surfaceHeight,
+            scale: Double(rendererBackend.surfaceScale)),
           terminalViewport: RectResponse(
             x: sidebarWidth, y: 0, width: terminalViewportWidth, height: windowHeight),
           cell: CellSizeResponse(width: cellWidth, height: cellHeight),

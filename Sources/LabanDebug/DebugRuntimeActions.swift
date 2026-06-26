@@ -33,8 +33,12 @@ extension HeadlessDebugRuntime {
       return DebugWindowActions(runtime: self).resizeWindow(request)
     case .setFontSize(let request):
       return DebugWindowActions(runtime: self).setFontSize(request)
+    case .setRenderer(let request):
+      return DebugWindowActions(runtime: self).setRenderer(request)
     case .advanceFrames(let request):
       return DebugWindowActions(runtime: self).advanceFrames(request)
+    case .setVectorSubpixelLayout(let request):
+      return DebugWindowActions(runtime: self).setVectorSubpixelLayout(request)
     case .windowFocus(let request):
       return DebugWindowActions(runtime: self).windowFocus(request)
     case .typeText(let request):
@@ -53,6 +57,8 @@ extension HeadlessDebugRuntime {
       return DebugDropActions(runtime: self).dropFiles(request)
     case .setSelection(let request):
       return DebugSelectionActions(runtime: self).setSelection(request)
+    case .setPreedit(let request):
+      return DebugPreeditActions(runtime: self).setPreedit(request)
     case .findStart(let request):
       return DebugFindActions(runtime: self).start(request)
     case .findStep(let request):

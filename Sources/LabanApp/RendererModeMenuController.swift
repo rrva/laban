@@ -1,58 +1,6 @@
 import AppKit
 import LabanRenderer
 
-enum RendererSelection: String, Codable, CaseIterable, Sendable {
-  case software
-  case classic
-  case gpuDriven
-
-  static let defaultsKey = RendererMode.defaultsKey
-
-  var isAvailableOnCurrentOS: Bool {
-    switch self {
-    case .software, .classic:
-      return true
-    case .gpuDriven:
-      return RendererMode.gpuDriven.isAvailableOnCurrentOS
-    }
-  }
-
-  var metalMode: RendererMode? {
-    switch self {
-    case .software:
-      return nil
-    case .classic:
-      return .classic
-    case .gpuDriven:
-      return .gpuDriven
-    }
-  }
-
-  static func persisted(defaults: UserDefaults = .standard) -> RendererSelection {
-    guard let raw = defaults.string(forKey: defaultsKey),
-      let selection = RendererSelection(rawValue: raw),
-      selection.isAvailableOnCurrentOS
-    else {
-      return RendererSelection(metalMode: RendererMode.defaultMode)
-    }
-    return selection
-  }
-
-  static func set(_ selection: RendererSelection, defaults: UserDefaults = .standard) {
-    let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
-    defaults.set(resolved.rawValue, forKey: defaultsKey)
-  }
-
-  init(metalMode: RendererMode) {
-    switch metalMode {
-    case .classic:
-      self = .classic
-    case .gpuDriven:
-      self = .gpuDriven
-    }
-  }
-}
-
 final class RendererModeMenuController: NSObject {
   typealias ApplySelection = (RendererSelection) -> Void
 
@@ -61,6 +9,7 @@ final class RendererModeMenuController: NSObject {
   private var softwareItem: NSMenuItem?
   private var classicItem: NSMenuItem?
   private var gpuDrivenItem: NSMenuItem?
+  private var vectorGlyphItem: NSMenuItem?
 
   init(
     defaults: UserDefaults = .standard,
@@ -100,6 +49,14 @@ final class RendererModeMenuController: NSObject {
     submenu.addItem(gpuDriven)
     gpuDrivenItem = gpuDriven
 
+    let vectorGlyph = NSMenuItem(
+      title: "Vector Glyph Renderer",
+      action: #selector(selectVectorGlyph(_:)),
+      keyEquivalent: "")
+    vectorGlyph.target = self
+    submenu.addItem(vectorGlyph)
+    vectorGlyphItem = vectorGlyph
+
     syncMenuState()
     return parent
   }
@@ -114,6 +71,10 @@ final class RendererModeMenuController: NSObject {
 
   @objc func selectGPUDriven(_ sender: Any?) {
     select(.gpuDriven)
+  }
+
+  @objc func selectVectorGlyph(_ sender: Any?) {
+    select(.vectorGlyph)
   }
 
   private var gpuDrivenTitle: String {
@@ -148,6 +109,7 @@ final class RendererModeMenuController: NSObject {
     softwareItem?.state = selected == .software ? .on : .off
     classicItem?.state = selected == .classic ? .on : .off
     gpuDrivenItem?.state = selected == .gpuDriven ? .on : .off
+    vectorGlyphItem?.state = selected == .vectorGlyph ? .on : .off
     gpuDrivenItem?.isEnabled = RendererMode.gpuDriven.isAvailableOnCurrentOS
     gpuDrivenItem?.title = gpuDrivenTitle
   }

@@ -12,6 +12,8 @@
     {"$ref": "#/$defs/setTabMetadata"},
     {"$ref": "#/$defs/resizeWindow"},
     {"$ref": "#/$defs/setFontSize"},
+    {"$ref": "#/$defs/setRenderer"},
+    {"$ref": "#/$defs/setVectorSubpixelLayout"},
     {"$ref": "#/$defs/typeText"},
     {"$ref": "#/$defs/feedOutput"},
     {"$ref": "#/$defs/key"},
@@ -24,6 +26,7 @@
     {"$ref": "#/$defs/setClipboardText"},
     {"$ref": "#/$defs/scrollViewport"},
     {"$ref": "#/$defs/setSelection"},
+    {"$ref": "#/$defs/setPreedit"},
     {"$ref": "#/$defs/findStart"},
     {"$ref": "#/$defs/findStep"},
     {"$ref": "#/$defs/findStop"}
@@ -129,6 +132,30 @@
       "properties": {
         "action": {"const": "setFontSize"},
         "pointSize": {"type": "number", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "setRenderer": {
+      "type": "object",
+      "required": ["action", "renderer"],
+      "properties": {
+        "action": {"const": "setRenderer"},
+        "renderer": {"enum": ["software", "classic", "gpuDriven", "vectorGlyph"]}
+      },
+      "additionalProperties": false
+    },
+    "setVectorSubpixelLayout": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "setVectorSubpixelLayout"},
+        "layout": {"type": "string"},
+        "offsets": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 3,
+          "maxItems": 3
+        }
       },
       "additionalProperties": false
     },
@@ -255,6 +282,17 @@
         "sessionId": {"type": "string"},
         "anchor": {"$ref": "#/$defs/cell"},
         "focus": {"$ref": "#/$defs/cell"}
+      },
+      "additionalProperties": false
+    },
+    "setPreedit": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"const": "setPreedit"},
+        "sessionId": {"type": "string"},
+        "text": {"type": "string"},
+        "caretCells": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },

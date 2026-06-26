@@ -253,6 +253,7 @@ public final class MetalRenderer: RendererBackend {
   }
 
   private static let log = Logger(subsystem: "com.rrva.laban", category: "metal-renderer")
+  private static let maxNarrowGlyphLogicalWidthCells: CGFloat = 2.6
 
   public private(set) var lastInstanceCounts = RenderInstanceCounts()
   public private(set) var lastGPUCellPayloadBuildFailure: GPUCellPayloadBuildFailure?
@@ -266,6 +267,7 @@ public final class MetalRenderer: RendererBackend {
   public private(set) var rendererStatus = RendererStatus(
     configuredRenderer: RendererMode.classic.rawValue,
     effectiveRenderer: RendererMode.classic.rawValue)
+  private var rendererStatusOverride: RendererStatus?
 
   /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time spent
   /// building instances and encoding commands before `commit()`. GPU =
@@ -838,6 +840,16 @@ public final class MetalRenderer: RendererBackend {
     rendererStatus = resolvedRendererStatus(rendererFallbackReason: nil).status
   }
 
+  public func overrideRendererStatus(_ status: RendererStatus) {
+    rendererStatusOverride = status
+    rendererStatus = status
+  }
+
+  public func clearRendererStatusOverride() {
+    rendererStatusOverride = nil
+    rendererStatus = resolvedRendererStatus(rendererFallbackReason: nil).status
+  }
+
   /// Discover the device's timestamp counter set and allocate a sample
   /// buffer big enough for the four passes per frame. Capability gates are
   /// checked separately for render and blit so we don't try to attach a
@@ -879,7 +891,8 @@ public final class MetalRenderer: RendererBackend {
   }
 
   /// Update the layer's drawable size in pixels (call from view layout).
-  public func resize(pixelWidth: Int, pixelHeight: Int, scale: CGFloat) {
+  @discardableResult
+  public func resize(pixelWidth: Int, pixelHeight: Int, scale: CGFloat) -> Bool {
     let pw = max(1, pixelWidth)
     let ph = max(1, pixelHeight)
     let newScale = max(scale, 1)
@@ -933,6 +946,7 @@ public final class MetalRenderer: RendererBackend {
       targetTexture = nil
       targetNeedsFullRedraw = true
     }
+    return scaleChanged || sizeChanged
   }
 
   /// Swap both font atlases (and their GPU glyph atlases) for a live font-size
@@ -1338,6 +1352,9 @@ public final class MetalRenderer: RendererBackend {
   private func resolvedRendererStatus(
     rendererFallbackReason: String?
   ) -> (effectiveMode: RendererMode, status: RendererStatus) {
+    if let rendererStatusOverride {
+      return (.classic, rendererStatusOverride)
+    }
     let requested = requestedRendererMode
     guard requested == .gpuDriven else {
       return (
@@ -2657,7 +2674,7 @@ public final class MetalRenderer: RendererBackend {
     let payloadContentYOffset = payload.contentYOffset
     let payloadRows = payload.rows
     let payloadCols = payload.cols
-    let maxLogicalWidth = payloadCellWidth * 2.5
+    let maxLogicalWidth = payloadCellWidth * Self.maxNarrowGlyphLogicalWidthCells
     var cachedPayloadForeground: UInt32?
     var cachedPayloadForegroundFloat = SIMD4<Float>.zero
     scalarEntryCacheGeneration &+= 1
@@ -2850,7 +2867,7 @@ public final class MetalRenderer: RendererBackend {
             character: cluster, font: font,
             boldFallback: needsBoldFallback,
             italicFallback: needsItalicFallback
-          ), entry.logicalWidth <= payload.cellSize.width * 2.5 {
+          ), entry.logicalWidth <= payload.cellSize.width * Self.maxNarrowGlyphLogicalWidthCells {
             total += max(
               1,
               Int(
@@ -2882,7 +2899,7 @@ public final class MetalRenderer: RendererBackend {
           character: cluster, font: font,
           boldFallback: needsBoldFallback,
           italicFallback: needsItalicFallback
-        ), entry.logicalWidth <= payload.cellSize.width * 2.5 {
+        ), entry.logicalWidth <= payload.cellSize.width * Self.maxNarrowGlyphLogicalWidthCells {
           if isCellInBounds, index >= 0, index < cellGlyphs.count {
             let cellX = origin.x + CGFloat(cellIndex) * glyphCellAdvance
             cellGlyphs[index] = CellGlyph(
@@ -3138,7 +3155,9 @@ public final class MetalRenderer: RendererBackend {
       color: UInt32
     ) -> Bool {
       guard index >= 0, index < cellGlyphs.count else { return false }
-      guard entry.logicalWidth <= glyphCellAdvance * 2.5 else { return false }
+      guard entry.logicalWidth <= glyphCellAdvance * Self.maxNarrowGlyphLogicalWidthCells else {
+        return false
+      }
       if !patchRows.isEmpty {
         let row = index / max(1, cellGlyphGridGeometry?.cols ?? 1)
         guard row >= 0, row < patchRows.count, patchRows[row] else { return true }

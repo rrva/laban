@@ -41,6 +41,36 @@ final class GPUCellParityTests: XCTestCase {
     XCTAssertEqual(RendererMode.persisted(defaults: defaults), .classic)
   }
 
+  func testMetalRendererStatusOverrideCanBeClearedWhenReusingFallbackRenderer() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    guard
+      let renderer = MetalRenderer(
+        fontAtlas: FontAtlas(pointSize: 14),
+        rendererMode: .classic)
+    else {
+      throw XCTSkip("Metal renderer unavailable")
+    }
+
+    renderer.overrideRendererStatus(
+      RendererStatus(
+        configuredRenderer: RendererSelection.vectorGlyph.rawValue,
+        effectiveRenderer: RendererSelection.classic.rawValue,
+        fallbackReason: "vectorPipelineUnavailable"))
+    XCTAssertEqual(
+      renderer.rendererStatus.configuredRenderer,
+      RendererSelection.vectorGlyph.rawValue)
+    XCTAssertEqual(renderer.rendererStatus.effectiveRenderer, RendererSelection.classic.rawValue)
+    XCTAssertEqual(renderer.rendererStatus.fallbackReason, "vectorPipelineUnavailable")
+
+    renderer.clearRendererStatusOverride()
+
+    XCTAssertEqual(renderer.rendererStatus.configuredRenderer, RendererMode.classic.rawValue)
+    XCTAssertEqual(renderer.rendererStatus.effectiveRenderer, RendererMode.classic.rawValue)
+    XCTAssertNil(renderer.rendererStatus.fallbackReason)
+  }
+
   func testClassicDamageScopedMatchesFullRebuildForOneDirtyRow() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

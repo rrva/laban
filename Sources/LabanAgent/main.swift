@@ -19,6 +19,8 @@ struct AgentArgs {
   var deterministic = false
   var capture: String? = nil
   var captureScreenshots: CaptureScreenshotPolicy = .marked
+  var rendererSelection: RendererSelection = .software
+  var emojiRenderingMode: EmojiRenderingMode? = nil
   var replayCapture: String? = nil
   var replayMode: CaptureReplayMode = .both
   /// Optional persistence directory. When set, the headless runtime
@@ -60,6 +62,12 @@ func parseArgs() -> AgentArgs {
         case "none": a.captureScreenshots = .none
         default: a.captureScreenshots = .marked
         }
+      } else if arg.hasPrefix("--renderer=") {
+        let raw = String(arg.dropFirst("--renderer=".count))
+        a.rendererSelection = RendererSelection(rawValue: raw) ?? .software
+      } else if arg.hasPrefix("--emoji-rendering=") {
+        let raw = String(arg.dropFirst("--emoji-rendering=".count))
+        a.emojiRenderingMode = EmojiRenderingMode(rawValue: raw)
       } else if arg.hasPrefix("--replay-capture=") {
         a.replayCapture = String(arg.dropFirst("--replay-capture=".count))
       } else if arg.hasPrefix("--replay-mode=") {
@@ -87,6 +95,10 @@ func usage() -> String {
     --temp-dir=PATH                 Use an isolated temp directory.
     --capture=NAME                  Start full capture recording immediately.
     --capture-screenshots=POLICY    final, all, none, or marked.
+    --renderer=NAME                 software, classic, gpuDriven, or vectorGlyph
+                                    for the debug/headless renderer backend.
+    --emoji-rendering=MODE          monochrome or color. Process-local override
+                                    for autonomous renderer verification.
     --persistence-dir=PATH          Wire workspace.json + transcript + agent
                                     persistence against PATH. Use this directory
                                     to reproduce M0/M1/M2 bugs against the same
@@ -194,6 +206,12 @@ if args.help {
   exit(0)
 }
 
+if let emojiRenderingMode = args.emojiRenderingMode {
+  UserDefaults.standard.setVolatileDomain(
+    [EmojiRenderingSettings.defaultsKey: emojiRenderingMode.rawValue],
+    forName: UserDefaults.argumentDomain)
+}
+
 if let replayPath = args.replayCapture {
   do {
     let runner = CaptureReplayRunner(captureURL: resolveURL(replayPath), mode: args.replayMode)
@@ -240,6 +258,7 @@ if let debugAddr = args.debugServerAddress {
       deterministic: args.deterministic,
       runId: runId,
       sessionMode: fixtureURL == nil ? .realShell : .fixture,
+      rendererSelection: args.rendererSelection,
       captureName: args.capture,
       captureScreenshots: args.captureScreenshots,
       persistenceBaseURL: args.noPersistence ? nil : args.persistenceDir.map(resolveURL),

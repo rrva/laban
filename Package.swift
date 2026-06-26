@@ -50,6 +50,7 @@ let package = Package(
         .copy("Resources/JetBrainsMono-Regular.ttf"),
         .copy("Resources/JetBrainsMono-OFL.txt"),
         .process("Shaders.metal"),
+        .process("VectorGlyphShaders.metal"),
       ],
       swiftSettings: _releaseExclusivity
     ),

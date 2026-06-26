@@ -27,6 +27,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let scrollModePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let graphemeWidthPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let emojiRenderingPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  private let vectorSubpixelLayoutPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
   private let needsActionNotificationsCheckbox = NSButton(
@@ -52,6 +53,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
   private let scrollModeOptions: [ScrollSettings.Mode] = ScrollSettings.Mode.allCases
   private let graphemeWidthOptions: [GraphemeWidthMode] = GraphemeWidthMode.allCases
   private let emojiRenderingOptions: [EmojiRenderingMode] = EmojiRenderingMode.allCases
+  private let vectorSubpixelLayoutOptions: [VectorSubpixelLayoutPreset] =
+    VectorSubpixelLayoutPreset.allCases
 
   init(
     theme: ThemeMenuController,
@@ -194,6 +197,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       "Color uses CoreText color/bitmap glyphs for emoji. Monochrome keeps the "
       + "legacy tinted glyph path for compatibility."
 
+    vectorSubpixelLayoutPopUp.target = self
+    vectorSubpixelLayoutPopUp.action = #selector(vectorSubpixelLayoutChanged(_:))
+    for option in vectorSubpixelLayoutOptions {
+      vectorSubpixelLayoutPopUp.addItem(withTitle: vectorSubpixelLayoutTitle(option))
+    }
+
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
     optionAsMetaCheckbox.toolTip =
@@ -235,6 +244,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
       [makeLabel("Unicode width:"), graphemeWidthPopUp],
       [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
       [makeLabel("Renderer:"), rendererPopUp],
+      [makeLabel("Subpixel layout:"), vectorSubpixelLayoutPopUp],
       [makeLabel("Sessions:"), backendPopUp],
       [NSGridCell.emptyContentView, restoreCheckbox],
       [makeLabel("Identity:"), identityPopUp],
@@ -314,6 +324,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
     if let row = emojiRenderingOptions.firstIndex(of: EmojiRenderingSettings.current()) {
       emojiRenderingPopUp.selectItem(at: row)
+    }
+    if let row = vectorSubpixelLayoutOptions.firstIndex(
+      of: VectorSubpixelLayout.persistedPreset())
+    {
+      vectorSubpixelLayoutPopUp.selectItem(at: row)
     }
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
@@ -404,6 +419,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     EmojiRenderingSettings.set(emojiRenderingOptions[row])
   }
 
+  @objc private func vectorSubpixelLayoutChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < vectorSubpixelLayoutOptions.count else { return }
+    VectorSubpixelLayout.setPersistedPreset(vectorSubpixelLayoutOptions[row])
+  }
+
   @objc private func optionAsMetaChanged(_ sender: NSButton) {
     OptionKeySettings.set(sender.state == .on)
   }
@@ -443,6 +464,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     case .gpuDriven:
       return selection.isAvailableOnCurrentOS
         ? "GPU-driven (Metal)" : "GPU-driven (requires macOS 26)"
+    case .vectorGlyph:
+      return "Vector Glyph"
     }
   }
 
@@ -506,6 +529,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     switch mode {
     case .monochrome: return "Monochrome"
     case .color: return "Color"
+    }
+  }
+
+  private func vectorSubpixelLayoutTitle(_ preset: VectorSubpixelLayoutPreset) -> String {
+    switch preset {
+    case .rgbStripe: return "RGB stripe"
+    case .bgrStripe: return "BGR stripe"
     }
   }
 

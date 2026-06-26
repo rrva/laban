@@ -11,6 +11,8 @@
     "configuredRenderer": {"type": "string"},
     "effectiveRenderer": {"type": "string"},
     "fallbackReason": {"type": ["string", "null"]},
+    "rasterFallbackGlyphs": {"type": "integer", "minimum": 0},
+    "vectorSubpixelLayout": {"type": "string"},
     "surface": {"$ref": "#/$defs/rectWithScale"},
     "terminalViewport": {"$ref": "#/$defs/rect"},
     "cell": {

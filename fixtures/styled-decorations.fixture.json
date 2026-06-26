@@ -1,0 +1,29 @@
+{
+  "name": "styled-decorations",
+  "version": 1,
+  "description": "Renders SGR text decorations and visibility attributes for renderer parity.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 18
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Fixture: Styled Decorations"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "\u001b[4mSingle underline\u001b[0m\r\n\u001b[4:2mDouble underline\u001b[0m\r\n\u001b[4:3mCurly underline\u001b[0m\r\n\u001b[4:4mDotted underline\u001b[0m\r\n\u001b[4:5mDashed underline\u001b[0m\r\n\u001b[9mStrikethrough text\u001b[0m\r\n\u001b[53mOverline text\u001b[0m\r\n\u001b[2mFaint text\u001b[0m and \u001b[7mInverse text\u001b[0m\r\nInvisible start \u001b[8mHIDDEN\u001b[0m visible end\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "title": "Fixture: Styled Decorations",
+    "nonEmptyScreenshot": true,
+    "containsText": ["Single underline", "Strikethrough text", "Overline text"]
+  }
+}

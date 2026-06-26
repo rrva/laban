@@ -29,15 +29,21 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
   public var configuredRenderer: String
   public var effectiveRenderer: String
   public var fallbackReason: String?
+  public var rasterFallbackGlyphs: Int?
+  public var vectorSubpixelLayout: String?
 
   public init(
     configuredRenderer: String,
     effectiveRenderer: String,
-    fallbackReason: String? = nil
+    fallbackReason: String? = nil,
+    rasterFallbackGlyphs: Int? = nil,
+    vectorSubpixelLayout: String? = nil
   ) {
     self.configuredRenderer = configuredRenderer
     self.effectiveRenderer = effectiveRenderer
     self.fallbackReason = fallbackReason
+    self.rasterFallbackGlyphs = rasterFallbackGlyphs
+    self.vectorSubpixelLayout = vectorSubpixelLayout
   }
 }
 
@@ -76,6 +82,10 @@ public protocol RendererBackend: AnyObject {
     rendererFallbackReason: String?
   ) -> Bool
 
+  /// Reallocate presentation resources for the requested device-pixel size.
+  @discardableResult
+  func resize(pixelWidth: Int, pixelHeight: Int, scale: CGFloat) -> Bool
+
   /// Surface metrics in device pixels and the backing scale factor.
   var surfaceWidth: Int { get }
   var surfaceHeight: Int { get }
@@ -93,6 +103,11 @@ public protocol RendererBackend: AnyObject {
 
   /// PNG bytes of the most recent rendered frame for screenshots / capture.
   var pngData: Data? { get }
+
+  /// Called after a backend has completed a frame. GPU backends fire this from
+  /// their command-buffer completion path; CPU/readback backends fire it after
+  /// their synchronous render.
+  var onFrameCompleted: (() -> Void)? { get set }
 
   var rendererStatus: RendererStatus { get }
 }

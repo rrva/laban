@@ -2,7 +2,9 @@ import Darwin
 import Foundation
 import LabanControl
 import LabanCore
+import LabanRenderer
 import LabanTerminalCore
+import Metal
 import XCTest
 
 @testable import LabanDebug
@@ -397,6 +399,37 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertGreaterThan(height, 0)
   }
 
+  func testRuntimeClassicRendererScreenshotNonEmpty() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-classic-screenshot",
+      rendererSelection: .classic
+    )
+
+    let render = runtime.renderState()
+    let renderObj = try JSONSerialization.jsonObject(with: render.body) as! [String: Any]
+    XCTAssertEqual(renderObj["configuredRenderer"] as? String, "classic")
+    XCTAssertEqual(renderObj["effectiveRenderer"] as? String, "classic")
+    XCTAssertNil(renderObj["fallbackReason"])
+
+    let (data, frame, width, height) = try runtime.screenshotBytes()
+    XCTAssertGreaterThan(data.count, 0)
+    XCTAssertGreaterThan(frame, 0)
+    XCTAssertGreaterThan(width, 0)
+    XCTAssertGreaterThan(height, 0)
+  }
+
   func testRuntimeNewTabAction() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
@@ -552,6 +585,77 @@ final class LabanDebugSmokeTests: XCTestCase {
     XCTAssertEqual(obj["configuredRenderer"] as? String, "software")
     XCTAssertEqual(obj["effectiveRenderer"] as? String, "software")
     XCTAssertNil(obj["fallbackReason"])
+  }
+
+  func testRuntimeRenderStateReportsVectorGlyphRendererStatus() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-vector-render-status",
+      rendererSelection: .vectorGlyph
+    )
+
+    let resp = runtime.renderState()
+    XCTAssertEqual(resp.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: resp.body) as! [String: Any]
+    XCTAssertEqual(obj["configuredRenderer"] as? String, "vectorGlyph")
+    if MTLCreateSystemDefaultDevice() == nil {
+      XCTAssertEqual(obj["effectiveRenderer"] as? String, "software")
+      XCTAssertEqual(obj["fallbackReason"] as? String, "noMetalDevice")
+    } else {
+      XCTAssertEqual(obj["effectiveRenderer"] as? String, "vectorGlyph")
+      XCTAssertNil(obj["fallbackReason"])
+    }
+  }
+
+  func testRuntimeSetRendererPreservesActiveSessionIdentity() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-set-renderer"
+    )
+
+    let stateBefore = try JSONSerialization.jsonObject(with: runtime.state().body) as! [String: Any]
+    let sessionBefore = stateBefore["activeSessionId"] as? String
+    let tabBefore = stateBefore["activeTabId"] as? String
+    XCTAssertNotNil(sessionBefore)
+
+    let action = runtime.applyAction(
+      Data(#"{"action":"setRenderer","renderer":"vectorGlyph"}"#.utf8))
+    XCTAssertEqual(action.status, 200)
+    let actionObject = try JSONSerialization.jsonObject(with: action.body) as! [String: Any]
+    XCTAssertEqual(actionObject["activeSessionId"] as? String, sessionBefore)
+    XCTAssertEqual(actionObject["activeTabId"] as? String, tabBefore)
+
+    let render =
+      try JSONSerialization.jsonObject(with: runtime.renderState().body) as! [String: Any]
+    XCTAssertEqual(render["configuredRenderer"] as? String, "vectorGlyph")
+    if MTLCreateSystemDefaultDevice() == nil {
+      XCTAssertEqual(render["effectiveRenderer"] as? String, "software")
+      XCTAssertEqual(render["fallbackReason"] as? String, "noMetalDevice")
+    } else {
+      XCTAssertEqual(render["effectiveRenderer"] as? String, "vectorGlyph")
+      XCTAssertNil(render["fallbackReason"])
+    }
+
+    let back = runtime.applyAction(
+      Data(#"{"action":"setRenderer","renderer":"classic"}"#.utf8))
+    XCTAssertEqual(back.status, 200)
+    let backObject = try JSONSerialization.jsonObject(with: back.body) as! [String: Any]
+    XCTAssertEqual(backObject["activeSessionId"] as? String, sessionBefore)
+    XCTAssertEqual(backObject["activeTabId"] as? String, tabBefore)
   }
 
   func testRuntimeRenderTraceHasRequiredFields() throws {
@@ -1403,6 +1507,42 @@ final class LabanDebugSmokeTests: XCTestCase {
     let selectionCmds = cmds.filter { ($0["kind"] as? String) == "selection" }
     XCTAssertGreaterThan(
       selectionCmds.count, 0, "expected selection frame commands after setSelection")
+  }
+
+  func testSetPreeditActionProducesPreeditFrameCommands() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-preedit-cmds"
+    )
+
+    let setBody = #"{"action":"setPreedit","text":"中👩‍💻a","caretCells":3}"#
+      .data(using: .utf8)!
+    XCTAssertEqual(runtime.applyAction(setBody).status, 200)
+
+    let cmdsResp = runtime.frameCommands(
+      query: ["source": "preedit", "includeText": "true", "limit": "20"])
+    let cmdsObj = try JSONSerialization.jsonObject(with: cmdsResp.body) as! [String: Any]
+    let cmds = cmdsObj["commands"] as! [[String: Any]]
+    XCTAssertTrue(cmds.contains { ($0["kind"] as? String) == "rect" })
+    XCTAssertTrue(
+      cmds.contains {
+        ($0["kind"] as? String) == "glyphRun" && ($0["text"] as? String) == "中👩‍💻a"
+      })
+
+    let clearBody = #"{"action":"setPreedit","text":""}"#.data(using: .utf8)!
+    XCTAssertEqual(runtime.applyAction(clearBody).status, 200)
+    let clearedResp = runtime.frameCommands(
+      query: ["source": "preedit", "includeText": "true", "limit": "20"])
+    let clearedObj = try JSONSerialization.jsonObject(with: clearedResp.body) as! [String: Any]
+    let cleared = clearedObj["commands"] as! [[String: Any]]
+    XCTAssertTrue(cleared.isEmpty)
   }
 
   // MARK: - Title synchronization tests

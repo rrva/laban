@@ -65,6 +65,8 @@ public final class HeadlessDebugRuntime {
   var windowHeight: Int
   var surface: BitmapSurface
   var renderer: SoftwareRenderer
+  var rendererSelection: RendererSelection
+  var rendererBackend: RendererBackend
   var surfaceController: TerminalSurfaceController
 
   var currentFrame: Int = 0
@@ -72,6 +74,7 @@ public final class HeadlessDebugRuntime {
   var lastDrawStats = DrawStats()
   var debugClipboard: String = ""
   var selectionBySession: [Session.ID: TerminalSelection] = [:]
+  var preeditBySession: [Session.ID: (text: String, caretCells: Int)] = [:]
   var lastCopyText: String?
   var lastPasteText: String?
   var lastPasteUsedBracketedPaste: Bool?
@@ -118,6 +121,37 @@ public final class HeadlessDebugRuntime {
     return try body()
   }
 
+  func rebuildRendererBackendUnlocked() {
+    rendererBackend = makeRendererBackend(
+      selection: rendererSelection,
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: fontAtlas,
+      pixelWidth: max(windowWidth, 1),
+      pixelHeight: max(windowHeight, 1),
+      scale: 1)
+    enableBackendReadbackIfNeededUnlocked()
+    syncSoftwareRendererIfNeededUnlocked()
+  }
+
+  func resizeRendererBackendUnlocked() {
+    rendererBackend.resize(
+      pixelWidth: max(windowWidth, 1),
+      pixelHeight: max(windowHeight, 1),
+      scale: 1)
+    syncSoftwareRendererIfNeededUnlocked()
+  }
+
+  func syncSoftwareRendererIfNeededUnlocked() {
+    if let software = rendererBackend as? SoftwareBackend {
+      surface = software.surface
+      renderer = software.renderer
+    }
+  }
+
+  private func enableBackendReadbackIfNeededUnlocked() {
+    (rendererBackend as? MetalRenderer)?.captureMode = true
+  }
+
   // MARK: - Init
 
   public init(
@@ -128,6 +162,7 @@ public final class HeadlessDebugRuntime {
     runId: String,
     fixtureRootURL: URL? = nil,
     sessionMode: HeadlessSessionMode = .fixture,
+    rendererSelection: RendererSelection = .software,
     captureName: String? = nil,
     captureScreenshots: CaptureScreenshotPolicy = .marked,
     persistenceBaseURL: URL? = nil,
@@ -146,6 +181,7 @@ public final class HeadlessDebugRuntime {
     self.mode = fixtureURL != nil ? "fixture" : "headless"
     let initialSessionMode: HeadlessSessionMode = fixtureURL != nil ? .fixture : sessionMode
     self.sessionMode = initialSessionMode
+    self.rendererSelection = rendererSelection
     let configuredBackend = try TerminalSessionBackend.configured()
     self.terminalBackend = fixtureURL == nil ? configuredBackend : .inProcess
 
@@ -320,6 +356,13 @@ public final class HeadlessDebugRuntime {
       height: max(windowHeight, 1)
     )
     self.renderer = SoftwareRenderer(surface: surface, fontAtlas: fa)
+    self.rendererBackend = makeRendererBackend(
+      selection: rendererSelection,
+      fontAtlas: fa,
+      sidebarFontAtlas: fa,
+      pixelWidth: max(windowWidth, 1),
+      pixelHeight: max(windowHeight, 1),
+      scale: 1)
     self.surfaceController = TerminalSurfaceController(
       model: model,
       cellWidth: Int(cs.width),
@@ -329,6 +372,7 @@ public final class HeadlessDebugRuntime {
       sidebarCellHeight: cs.height,
       captureSink: initialRecorder
     )
+    self.enableBackendReadbackIfNeededUnlocked()
 
     if terminalBackend == .laband {
       try configureLabandBackendUnlocked()
@@ -710,6 +754,7 @@ public final class HeadlessDebugRuntime {
 
     timer = monotonicNow()
     let activeSelection = model.activeTab.flatMap { selectionBySession[$0.sessionId] }
+    let activePreedit = model.activeTab.flatMap { preeditBySession[$0.sessionId] }
     let surfaceFrame = surfaceController.makeFrame(
       TerminalSurfaceFrameRequest(
         frame: frame,
@@ -727,6 +772,8 @@ public final class HeadlessDebugRuntime {
         surfaceWidth: surface.width,
         surfaceHeight: surface.height,
         surfaceScale: Double(surface.scale),
+        preedit: activePreedit?.text,
+        preeditCaretCells: activePreedit?.caretCells ?? 0,
         userCursorStyle: CursorSettings.style,
         userCursorBlinkEnabled: CursorSettings.blinkEnabled)
     )
@@ -752,7 +799,8 @@ public final class HeadlessDebugRuntime {
     commandExtractionMs: Double = 0
   ) {
     let renderStart = monotonicNow()
-    renderer.render(cmds)
+    rendererBackend.render(cmds)
+    syncSoftwareRendererIfNeededUnlocked()
     let renderMs = elapsedMs(since: renderStart)
     lastFrameCommands = cmds
     lastDrawStats = countStats(cmds)
@@ -767,7 +815,15 @@ public final class HeadlessDebugRuntime {
       renderMs: renderMs,
       screenshotMs: timing.screenshotMs
     )
-    captureRecorder?.recordRenderedFrame(frame: frame, surface: surface)
+    if let pngData = rendererBackend.pngData {
+      captureRecorder?.recordRenderedFrame(
+        frame: frame,
+        pngData: pngData,
+        width: rendererBackend.surfaceWidth,
+        height: rendererBackend.surfaceHeight,
+        scale: Double(rendererBackend.surfaceScale),
+        backend: rendererBackend.rendererStatus.effectiveRenderer)
+    }
     appendEvent(EventEntry(kind: "frame.rendered", frame: currentFrame))
   }
 

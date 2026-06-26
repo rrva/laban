@@ -1,0 +1,32 @@
+{
+  "name": "color-emoji",
+  "version": 1,
+  "description": "Writes color emoji and ASCII text for classic/vector color fallback parity.",
+  "initialSize": {
+    "cols": 80,
+    "rows": 12
+  },
+  "steps": [
+    {
+      "op": "setTitle",
+      "title": "Fixture: Color Emoji"
+    },
+    {
+      "op": "writeBytes",
+      "encoding": "utf8",
+      "data": "Color emoji: \ud83d\ude42 \ud83d\ude80 \ud83d\udc69\u200d\ud83d\udcbb ASCII\r\n"
+    },
+    {
+      "op": "waitFrames",
+      "count": 2
+    }
+  ],
+  "expect": {
+    "title": "Fixture: Color Emoji",
+    "nonEmptyScreenshot": true,
+    "containsText": [
+      "Color emoji",
+      "ASCII"
+    ]
+  }
+}
