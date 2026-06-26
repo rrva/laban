@@ -1236,7 +1236,7 @@ renderer would be a bug to fix, not an acceptable outcome.)
 - [x] M2 — `VectorGlyphRenderer` is an additive `RendererBackend` peer with shared `RendererSelection`/`makeRendererBackend(...)` routing in `LabanRenderer`, no `RendererMode.vectorGlyph`, View and Settings entries, font-zoom preservation, headless selection, `/debug/render`, and offscreen screenshot readback. The bundle contains `VectorGlyphShaders.metal` and the `Vector Glyph Renderer` menu string.
 - [x] M3 — temporal accumulation is implemented with deterministic `rgba32Uint` fixed-point sums, front-loaded 8/4/2/1 sampling, R2 jitter, fixed-frame convergence, and the parity matrix. Instruments evidence from `.tmp/vector-attach-trace.trace` shows `laban.vector.content` at p50 0.195542-0.203125 ms and p99 0.218532-0.231455 ms, meeting the <=0.3 ms p50 M3 target in the attached headless workload.
 - [x] M4 — RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
-- [ ] M5 — feature parity implementation and autonomous gates are complete, but two non-autonomous gates remain before this ExecPlan can be marked fully done: a manually launched AppKit live-shell classic<->vector switch check, and the formal fresh-agent Review Gate below. Current autonomous evidence includes focused XCTest passes (`swift test --filter VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`, `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the preedit smoke), including `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` for Metal instance batches larger than the 4 KB `setVertexBytes` inline limit. It also includes `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`, `./scripts/lint`, `./scripts/check-docs`, `./scripts/check-debug-contract`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `git diff --check`, and `./scripts/build-app` plus `codesign --verify --deep --strict .build/laban/Laban.app`. A broad `swift test` run is not green in this environment due to pre-existing/non-vector failures (`AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`, `LabanSessionTests`, `TabTitleEndToEndTests`) and pasteboard-dependent `TerminalClipboardTests`/`TerminalDropTests`; the vector-added `TerminalWidthPolicyGuardTests` failure from that stale full log was fixed and rerun targeted.
+- [ ] M5 — feature parity implementation and autonomous gates are complete, but one non-autonomous gate remains before this ExecPlan can be marked fully done: a manually launched AppKit live-shell classic<->vector switch check. The formal fresh-agent Review Gate passed at commit `28e072d719a6686255ec6c87e1828ad9c0bde530`. Current autonomous evidence includes focused XCTest passes (`swift test --filter VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`, `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the preedit smoke), including `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` for Metal instance batches larger than the 4 KB `setVertexBytes` inline limit. It also includes `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`, `./scripts/lint`, `./scripts/check-docs`, `./scripts/check-debug-contract`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `git diff --check`, and `./scripts/build-app` plus `codesign --verify --deep --strict .build/laban/Laban.app`. A broad `swift test` run is not green in this environment due to pre-existing/non-vector failures (`AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`, `LabanSessionTests`, `TabTitleEndToEndTests`) and pasteboard-dependent `TerminalClipboardTests`/`TerminalDropTests`; the vector-added `TerminalWidthPolicyGuardTests` failure from that stale full log was fixed and rerun targeted.
 - [x] ADR `docs/adr/0022-vector-glyph-renderer.md` written and `docs/adr/README.md` index entry — **already landed** (ADR 0022 exists and is indexed). M5 only updates its Evidence section.
 
 ## Decision Log
@@ -2005,31 +2005,32 @@ renderer would be a bug to fix, not an acceptable outcome.)
 
 ## Review Gate
 
-Review status: NOT REVIEWED
+Review status: PASSED 2026-06-26T07:29:58Z at commit
+`28e072d719a6686255ec6c87e1828ad9c0bde530`.
 
 A fresh review agent must confirm, against the commit SHA under review:
 
-- [ ] `rg "vectorGlyph" Sources/LabanRenderer/RendererMode.swift` returns
+- [x] `rg "vectorGlyph" Sources/LabanRenderer/RendererMode.swift` returns
      **nothing** — `RendererMode` stays `{classic, gpuDriven}` (Metal-internal
      modes only). `vectorGlyph` lives in `RendererSelection` (now in
      `Sources/LabanRenderer/RendererSelection.swift`, moved from `LabanApp`), and
      `RendererSelection.vectorGlyph.metalMode == nil`. `RendererMode.defaultMode`
      still returns `.gpuDriven ?? .classic` (default unchanged).
-- [ ] `rg "encodeContentPass|encodeGPUCellContentPass"
+- [x] `rg "encodeContentPass|encodeGPUCellContentPass"
      Sources/LabanRenderer/MetalRenderer.swift` shows the classic/gpuDriven
      dispatch is unchanged in substance. Run `git diff` on
      `Sources/LabanRenderer/MetalRenderer.swift` and confirm no behavioral edit
      to the two existing content passes.
-- [ ] `rg "Shaders.metal" Sources/LabanRenderer/` — `Shaders.metal` is
+- [x] `rg "Shaders.metal" Sources/LabanRenderer/` — `Shaders.metal` is
      untouched; the vector shaders live in a separate `VectorGlyphShaders.metal`,
      and `Package.swift` has `.process("VectorGlyphShaders.metal")` in the
      `LabanRenderer` target `resources` (without it SwiftPM will not bundle the
      file and the renderer's loader will return nil at startup).
-- [ ] The new shader is actually bundled and loadable:
+- [x] The new shader is actually bundled and loadable:
      `LabanRendererResources.bundle?.url(forResource: "VectorGlyphShaders",
      withExtension: "metal")` resolves inside `.build/laban/Laban.app`, and
      `VectorGlyphRenderer` compiles a non-nil `MTLLibrary` from it.
-- [ ] **Shared factory + selection routing** (the "peer backend" is actually
+- [x] **Shared factory + selection routing** (the "peer backend" is actually
      wired and the package graph is legal): `RendererSelection` is in
      `LabanRenderer` and `RendererSelection.vectorGlyph.metalMode` is `nil` (like
      `.software`, so it is not collapsed to classic by
@@ -2042,7 +2043,7 @@ A fresh review agent must confirm, against the commit SHA under review:
      `rendererSelection` report vector (via `rendererStatus` or a `backend as?
      VectorGlyphRenderer` arm), and `applyFontSize` has a vector branch so font
      zoom does not drop to software.
-- [ ] **Headless / debug vector support**: `HeadlessDebugRuntime` takes a
+- [x] **Headless / debug vector support**: `HeadlessDebugRuntime` takes a
      `rendererSelection`, holds a `RendererBackend` (not just a `SoftwareRenderer`),
      and `DebugRenderEndpoints.renderState()` reads configured/effective/fallback
      from the live backend's `rendererStatus` (no hard-coded `"software"` literal
@@ -2053,9 +2054,9 @@ A fresh review agent must confirm, against the commit SHA under review:
      `testRuntimeRenderStateReportsVectorGlyphRendererStatus` (device-present →
      vectorGlyph; no device → software/`noMetalDevice`) passes, and the existing
      `testRuntimeRenderStateReportsRendererStatus` (software default) still passes.
-- [ ] `swift test --filter VectorGlyphParityTests` exits 0 and leaves no
+- [x] `swift test --filter VectorGlyphParityTests` exits 0 and leaves no
      `*.diff.png` under `.build/vector-glyph-parity/`.
-- [ ] `swift test --filter
+- [x] `swift test --filter
      VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` exits
      0. Source inspection of
      `Tests/LabanRendererTests/VectorGlyphParityTests.swift` confirms the test
@@ -2063,28 +2064,28 @@ A fresh review agent must confirm, against the commit SHA under review:
      Metal's 4 KB `setVertexBytes` inline limit, and
      `Sources/LabanRenderer/VectorGlyphRenderer.swift` uses buffer-backed
      uploads for larger batches.
-- [ ] `swift test --filter RendererModeSettingsTests` exits 0, including the new
+- [x] `swift test --filter RendererModeSettingsTests` exits 0, including the new
      `testVectorGlyphSwitchPreservesActiveSessionIdentity` and the updated
      `testRendererMenuPersistsAvailableSelectionAndAppliesLiveMode` (its
      hard-coded menu title array now includes the vector entry). The
      `SettingsWindowController` renderer-popup population (which uses
      `RendererSelection.allCases`) and its title assertions include vector too,
      so menu and Settings expose the same set of selections.
-- [ ] `./scripts/build-app` exits 0 and `rg -a "Vector Glyph Renderer"` on the
+- [x] `./scripts/build-app` exits 0 and `rg -a "Vector Glyph Renderer"` on the
      built bundle `.build/laban/Laban.app` (the `build-app` output,
      `scripts/build-app:76`) finds the menu title string. (Do not grep
      `~/Laban.app` — that is refreshed only by `scripts/install-app` and may be
      stale; either check `.build/laban/Laban.app` directly or run
      `./scripts/install-app` first.)
-- [ ] `docs/adr/0022-vector-glyph-renderer.md` exists and `docs/adr/README.md`
+- [x] `docs/adr/0022-vector-glyph-renderer.md` exists and `docs/adr/README.md`
      contains a one-line entry for it.
-- [ ] `RendererMode.defaultMode` and `RendererMode.gpuDriven.isAvailableOnCurrentOS`
+- [x] `RendererMode.defaultMode` and `RendererMode.gpuDriven.isAvailableOnCurrentOS`
      behavior for `classic`/`gpuDriven` is unchanged (regression: run
      `swift test --filter GPUCellParityTests` —
      `testRendererModeDefaultsToGPUDrivenWhereAvailableAndGatesAvailability`
      at `Tests/LabanRendererTests/GPUCellParityTests.swift:22` must pass; there
      is no `RendererModeTests`).
-- [ ] `GET /debug/render` returns `configuredRenderer: "vectorGlyph"`,
+- [x] `GET /debug/render` returns `configuredRenderer: "vectorGlyph"`,
      `effectiveRenderer: "vectorGlyph"` when selected (asserted headless by
      the new `testRuntimeRenderStateReportsVectorGlyphRendererStatus` in
      `Tests/LabanDebugTests/LabanDebugSmokeTests.swift` — the existing
@@ -2094,4 +2095,41 @@ A fresh review agent must confirm, against the commit SHA under review:
 
 Review findings:
 
-_(filled in by the review agent)_
+PASS at commit `28e072d719a6686255ec6c87e1828ad9c0bde530`. Fresh review ran
+the requested mechanical gate checks.
+
+Evidence:
+
+- `rg "vectorGlyph" Sources/LabanRenderer/RendererMode.swift` returned no
+  matches; `RendererSelection.vectorGlyph.metalMode` is nil in
+  `Sources/LabanRenderer/RendererSelection.swift`, and `RendererMode.defaultMode`
+  remains gpuDriven-where-available else classic.
+- `makeRendererBackend(...)` is public in `LabanRenderer`; both
+  `TerminalBitmapView` and `HeadlessDebugRuntime` call it; `LabanDebug` has no
+  `import LabanApp`.
+- `VectorGlyphRenderer` uses `setVertexBytes` only for instance batches
+  `<= 4096` bytes and uses `MTLBuffer`/`setVertexBuffer` above that threshold.
+- `git diff origin/main...HEAD -- Sources/LabanRenderer/Shaders.metal` was
+  empty; `Package.swift` processes `VectorGlyphShaders.metal`.
+- Built bundle contains `Vector Glyph Renderer` and
+  `Contents/Resources/Laban_LabanRenderer.bundle/VectorGlyphShaders.metal`;
+  bundled shader source compiled with Metal and exposed expected vector
+  functions.
+- `swift test --filter VectorGlyphParityTests`: passed 4 tests, 0 failures; no
+  `.build/vector-glyph-parity/*.diff.png` artifacts were left.
+- `swift test --filter
+  VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches`: passed 1
+  test, 0 failures.
+- `swift test --filter RendererModeSettingsTests`: passed 6 tests, 0 failures.
+- `swift test --filter
+  LabanDebugSmokeTests/testRuntimeRenderStateReportsVectorGlyphRendererStatus`:
+  passed.
+- `swift test --filter LabanDebugSmokeTests/testRuntimeRenderStateReportsRendererStatus`:
+  passed.
+- `swift test --filter GPUCellParityTests`: passed 47 tests, 1 expected skip, 0
+  failures.
+- `./scripts/build-app`: exited 0; `.build/laban/Laban.app` stamp is
+  `LABANBuildCommit => 28e072d`.
+- `codesign --verify --deep --strict .build/laban/Laban.app`: exited 0.
+
+No blocking findings.
