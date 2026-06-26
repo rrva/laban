@@ -1201,7 +1201,10 @@ verify completion by:
    confirm the TUI keeps running and text looks crisp with no session restart.
 2. `swift test --filter VectorGlyphParityTests` is green and leaves no diff PNGs
    (new file `Tests/LabanRendererTests/VectorGlyphParityTests.swift`, modeled
-   on `Tests/LabanRendererTests/GPUCellParityTests.swift`).
+   on `Tests/LabanRendererTests/GPUCellParityTests.swift`). This includes
+   `testRendererHandlesLiveSizedInstanceBatches`, which constructs a 160x48
+   terminal-sized frame and proves vector instance uploads do not hit Metal's
+   4 KB `setVertexBytes` inline limit.
 3. `swift test --filter RendererModeSettingsTests` is green, including the new
    `testVectorGlyphSwitchPreservesActiveSessionIdentity`. (There is no
    `RendererLiveSwitchTests`; the live-switch harness lives in
@@ -1218,45 +1221,22 @@ ship are the **perf/default-enable** thresholds (the M3 ≤0.3 ms p50 trace and
 the ADR-0017 default-enable comparison): a missed perf target means the
 renderer ships opt-in at whatever quality/speed it achieved, with the numbers
 recorded. The **correctness** gates — parity (`VectorGlyphParityTests`),
-headless/screenshot E2E, session-identity live switch, the M0/M1 oracle, and
-no regression in `classic`/`gpuDriven`/software — are hard blockers; M5 is
-not done until they pass. (This plan adds files and enum cases; it does not
-edit `MetalRenderer`'s content passes or the existing shaders, so a
-correctness regression in another renderer would be a bug to fix, not an
-acceptable outcome.)
+the live-sized Metal instance-batch regression, headless/screenshot E2E,
+session-identity live switch, the M0/M1 oracle, and no regression in
+`classic`/`gpuDriven`/software — are hard blockers; M5 is not done until they
+pass. (This plan adds files and enum cases; it does not edit `MetalRenderer`'s
+content passes or the existing shaders, so a correctness regression in another
+renderer would be a bug to fix, not an acceptable outcome.)
 
 ## Progress
 
-- [ ] M0 — `GlyphCurveStore`: CoreText→contour-aware quadratic extraction (per-contour seed, nil for outline-less glyphs) + CPU winding-number oracle; strict geometry/oracle tests (unit square, analytic disc, contour topology O/i/%/8/combining-mark, cubic sampled-max-deviation) + perceptual CoreText comparison (mean-abs/percentile, not ±2/255 exact). **In progress 2026-06-25/26:** `Sources/LabanRenderer/GlyphCurveStore.swift` and `Tests/LabanRendererTests/GlyphCurveStoreTests.swift` are added; `swift build --target LabanRenderer` and `./scripts/build-app` pass; a stdin-only non-XCTest harness passed square winding, analytic circle coverage, contour topology, cubic split, and printable-ASCII CoreText thresholds for JetBrains Mono and Menlo. Remaining: run `swift test --filter GlyphCurveStoreTests` in an XCTest-capable toolchain, fix any failures, then mark M0 complete.
-- [ ] M1 — Metal compute rasterizer (from-scratch MSL port) into scratch atlas, single sample; ASCII readback vs M0 oracle within ±3/255 plus ≤1% binary edge-tie mismatches; `analyze-metal-trace --self-test` still passes. **In progress 2026-06-26:** `Sources/LabanRenderer/VectorGlyphShaders.metal`, `VectorGlyphScratchRasterizer.swift`, and `Tests/LabanRendererTests/VectorGlyphScratchRasterizerTests.swift` are added; `Package.swift` bundles the new shader; `swift build --target LabanRenderer`, `./scripts/build-app`, and `scripts/analyze-metal-trace --self-test` pass; `.build/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle/VectorGlyphShaders.metal` exists; a non-XCTest Metal harness compiles the shader and passes ASCII GPU parity with 94 checked outlines and worst edge mismatches of 5 pixels. Remaining: run `swift test --filter VectorGlyphScratchRasterizerTests` in an XCTest-capable toolchain, fix any failures, then mark M1 complete.
-- [ ] M1a (stretch) — Apple-GPU tile-shader coverage pass; promoted only if it beats M1 on release timing and keeps parity.
-- [ ] M2 — Z-order (transposed) resident atlas + `VectorGlyphRenderer: RendererBackend` on screen for ASCII, single sample, no accumulation; `RendererSelection` moved to `LabanRenderer` + `.vectorGlyph` (RendererMode untouched), shared `makeRendererBackend` factory, menu **and** Settings entries + test updates, `applyFontSize` vector branch (default-off, no macOS-26 gate); on-screen ASCII readable, session survives; `GET /debug/render` reports `vectorGlyph` (no-device → software); parity vs M0/M1 oracle within ±2/255. **In progress 2026-06-26:** selection and routing moved into `Sources/LabanRenderer/RendererSelection.swift`; `RendererMode` is untouched and `rg "vectorGlyph" Sources/LabanRenderer/RendererMode.swift` returns nothing. `Sources/LabanRenderer/VectorGlyphRenderer.swift` now owns a `CAMetalLayer`, persistent BGRA target texture, R8 glyph atlas texture, solid/glyph render pipelines, and backend PNG readback. It presents by rendering frame-command solids plus vector-generated glyph masks into its target texture, then blitting that target to the layer drawable when one is available. `VectorGlyphScratchRasterizer.encodeRasterize(...)` now writes missing glyph masks directly into the resident atlas texture at the atlas entry origin; `VectorGlyphRenderer.prepareGlyphMasks` pre-scans glyph runs and encodes those compute passes into the same command buffer before the content render pass samples the atlas. The synchronous scratch readback path remains only for deterministic `VectorGlyphMaskSnapshot` test bytes. This is a verified direct resident-atlas path for single-sample ASCII, not the temporal-accumulation implementation. `TerminalBitmapView` and `HeadlessDebugRuntime` call the shared `makeRendererBackend(...)`; `RendererBackend` now carries protocol-level resize and frame-completion hooks; `SoftwareBackend` and factory fallbacks stamp `RendererStatus`; `TerminalBitmapView.rendererSelection` reads `rendererStatus`, and font zoom keeps vector via `VectorGlyphRenderer.reconfigureFonts`. View ▸ Renderer and Settings expose `Vector Glyph Renderer` / `Vector Glyph`, and tests were updated/added (`RendererModeSettingsTests`, `LabanDebugSmokeTests`, `RendererSelectionRoutingTests`, `VectorGlyphMaskAtlasTests`, `VectorGlyphParityTests`). `VectorGlyphRenderer` exposes an internal deterministic `VectorGlyphMaskSnapshot` for parity tests; `VectorGlyphParityTests` compares printable-ASCII renderer masks against `GlyphCurveCPUOracle` with the M1 edge-tie tolerance and writes failure PNGs under `.build/vector-glyph-parity/`. `laban-agent` gained `--renderer=software|classic|gpuDriven|vectorGlyph` for headless verification. Verified: `./scripts/lint`, `swift build --target LabanRenderer`, `swift build --target LabanApp`, `swift build --target LabanDebug`, `swift build --product laban-agent`, `./scripts/build-app`, `scripts/analyze-metal-trace --self-test`, `git diff --check`; shader bundle exists at `.build/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle/VectorGlyphShaders.metal`; `rg -a "Vector Glyph Renderer" .build/laban/Laban.app` finds the menu string. Headless smoke after the direct-atlas path: `.build/debug/laban-agent --headless --debug-server=127.0.0.1:0 --fixture=fixtures/find-viewport.json --artifacts=.tmp/vector-headless-smoke-direct-atlas --renderer=vectorGlyph --deterministic` then `GET /debug/render` returned `configuredRenderer == effectiveRenderer == "vectorGlyph"` and `/debug/screenshot` wrote a readable 920×228 PNG. Remaining: run `VectorGlyphParityTests` and the other new XCTest cases in an XCTest-capable toolchain, and manually/live verify AppKit session-preserving classic↔vector switching.
-- [ ] M3 — Temporal accumulation (`rgba32Uint` fixed-point accum, 8/4/2/1 schedule, cap 512, R₂ jitter); convergence/determinism protocol (pump-to-N, hash-seeded jitter); perceptual classic parity at convergence (mean-abs, not per-pixel exact); ≤0.3 ms p50 trace. **In progress 2026-06-26:** `VectorGlyphRenderer` now allocates a `.rgba32Uint` accumulation atlas beside the R8 resolved atlas, tracks per-entry sample counts in `VectorGlyphMaskAtlas`, and advances resident glyphs with a deterministic 8/4/2/1 schedule capped at 512. `VectorGlyphShaders.metal` adds `vectorGlyphAccumulateAtlas`, which updates fixed-point RGB sums and count, resolves normalized coverage to the R8 atlas sampled by the content pass, applies horizontal pixel-window fractional edge weighting, and seeds R₂ jitter from a stable glyph/font descriptor hash. `advanceFrames` debug action pumps deterministic convergence; `.tmp/vector-headless-accum-window/first-frame.png` and `converged-frame.png` show frame 1 vs frame 131 after 130 pumped frames, and `/debug/render` stayed `configuredRenderer == effectiveRenderer == "vectorGlyph"`. `scripts/vector-glyph-parity-matrix` now reproduces the matched headless comparison against `classic` across five cases after pumping vector to frame 131/133: `fixtures/find-viewport.json` (`meanAbsRGB 0.2850`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 135`, `1982/209760` pixels with any delta), `overlay-selection-find` on the same fixture after debug `setSelection` + `find.start` (`meanAbsRGB 0.2728`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 135`, `1976/209760` pixels with any delta), `fixtures/colored-boxes.fixture.json` (`meanAbsRGB 0.0906`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 154`, `1239/419520` pixels with any delta), `fixtures/cjk/trust-gate.fixture.json` (`meanAbsRGB 0.1136`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 138`, `2253/606480` pixels with any delta), and `fixtures/styled-decorations.fixture.json` (`meanAbsRGB 0.8979`, `p95AbsRGB 0`, `p99AbsRGB 36`, `maxAbsRGB 135`, `9918/314640` pixels with any delta). The overlay case asserts classic and vector frame-command JSON both include `selection`, `findMatch`, `findSelected`, and `cursor`; the styled-decoration case uses the same mean gate and a looser p99 gate because the fixture intentionally has many glyph-edge pixels, and it asserts frame-command metadata for single/double/curly/dotted/dashed underline, strikethrough, overline, faint, inverse text, and invisible text omission. Artifacts live under `.tmp/vector-parity-matrix/<fixture>/` with `classic/screenshot.png`, `vector/screenshot.png`, `classic-vs-vector-diff.png`, `classic-vs-vector-metrics.json`, and renderer frame-command JSON; visual inspection shows the fixtures remain readable and close to classic. Verified: `swift build --target LabanRenderer`, `swift build --product laban-agent`, `./scripts/build-app`, `./scripts/lint`, `git diff --check`, `scripts/analyze-metal-trace --self-test`, `scripts/vector-glyph-parity-matrix`, `rg -a "Vector Glyph Renderer" .build/laban/Laban.app`; latest focused rerun also passed `bash -n scripts/vector-glyph-parity-matrix` and `scripts/vector-glyph-parity-matrix` after the overlay case was added. Remaining: add the fixed-N convergence/parity tests in an XCTest-capable toolchain and record release timing p50/p95/p99 from an Instruments trace.
-- [ ] M4 — Subpixel AA (per-R/G/B winding) + user-configurable layout (RGB stripe default, custom JSON for OLED); overlapping sample quads; fringing test artifact. **In progress 2026-06-26:** the resolved vector atlas is now `.rgba8Unorm`; `vectorGlyphAccumulateAtlas` evaluates separate R/G/B coverage lanes with default RGB-stripe offsets (`-1/3, 0, +1/3` px), accumulates them into the existing `rgba32Uint` fixed-point sums, and resolves RGB coverage for the content pass. `vectorGlyphFragment` multiplies foreground channels by their matching coverage lane and uses the max lane as premultiplied alpha, so single-color text gets subpixel edge separation while the rest of the frame-command path stays unchanged. `Sources/LabanRenderer/VectorSubpixelLayout.swift` defines RGB/BGR presets, custom JSON parsing for advanced OLED/editor offsets under `LabanVectorSubpixelLayout`, and a change notification; new vector backends apply the persisted layout once at creation; `TerminalBitmapView` observes the notification and calls `VectorGlyphRenderer.setSubpixelLayout(...)` on the active vector backend, invalidating cached atlas state without per-frame defaults reads. Settings has a conservative "Subpixel layout" popup for RGB/BGR presets only; first-class arbitrary-offset UI is deferred, while `/debug/render` reports `vectorSubpixelLayout` and `/debug/actions` accepts `{"action":"setVectorSubpixelLayout","layout":"rgbStripe|bgrStripe"}` or custom `{"offsets":[r,g,b]}` through the shared `LabanCore` request schema and intent descriptor. `VectorSubpixelLayoutTests` covers preset persistence, custom JSON parsing, custom JSON writing, and invalid-custom fallback. Headless artifacts: `.tmp/vector-headless-subpixel-rgb/first-frame.png`/`converged-frame.png` for RGB, `.tmp/vector-headless-subpixel-bgr-action/converged-frame.png` for BGR set through the debug action, and `.tmp/vector-subpixel-fringing/` with RGB/BGR screenshots plus `rgb-vs-bgr-diff.png` and metrics (`meanAbsRGB 0.2637`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 120`, `1865/209760` pixels changed); `/debug/render` stayed `configuredRenderer == effectiveRenderer == "vectorGlyph"` and reported the selected layout. Verified: `swift build --target LabanRenderer`, `swift build --target LabanDebug`, `swift build --target LabanApp`, `swift build --product laban-agent`, `./scripts/build-app`, `./scripts/lint`, `git diff --check`, `scripts/analyze-metal-trace --self-test`, `./scripts/check-debug-contract`, `./scripts/check-docs`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `rg -a "Vector Glyph Renderer" .build/laban/Laban.app`, and bundled `VectorGlyphShaders.metal` exists in `.build/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle/`. Remaining: run XCTest/perf gates in the required toolchain.
-- [ ] M5 — Feature parity (box-drawing grid-pinned, wide/CJK/ZWJ, glyph fallback for non-outline/emoji/.notdef, synthetic bold/italic, decorations, overlays, image quads, sidebar, preedit); `VectorGlyphParityTests` (four threshold classes); `HeadlessDebugRuntime` parity + offscreen `/debug/screenshot`; release timing matrix; `testVectorGlyphSwitchPreservesActiveSessionIdentity` in `RendererModeSettingsTests`; ship default-off; ADR 0022 Evidence updated. **In progress 2026-06-26:** `VectorGlyphRenderer` now pre-scans glyph runs before the render encoder, encodes vector masks for supported simple outline glyphs, and prewarms raster fallback entries through the existing `MetalGlyphAtlas` for unsupported clusters. Fallback policy covers multi-scalar clusters (emoji/ZWJ), CJK/wide text, simple glyphs with no usable outline, synthetic bold fallback variants, and box/block/private-use symbols (raster path keeps them grid-pinned instead of subpixel-jittered); synthetic italic uses a sheared vector outline in a disjoint mask key. When `EmojiRenderingSettings` is `.color`, terminal emoji/color-font clusters route through a new vector color-glyph pipeline backed by the existing `ColorGlyphAtlas`; sidebar remains monochrome like `classic`. Blank space clusters are skipped so they do not inflate fallback counts. The renderer reports per-frame `rasterFallbackGlyphs` through `RendererStatus` and `/debug/render`; `schemas/debug/render.schema.json` includes the field. Decorations, selection/find/cursor solids, sidebar glyph runs, and preedit glyph runs all flow through the same frame-command handling as M2/M3/M4. Image quads intentionally preserve current renderer behavior: `FrameCommand.texturedQuad` is accepted but not drawn by `SoftwareRenderer`, `MetalRenderer` classic/gpuDriven, or `VectorGlyphRenderer`, so first-class image rendering remains a product gap outside this vector-only plan. `HeadlessDebugRuntime` now enables `MetalRenderer.captureMode` for headless Metal backends so `/debug/screenshot` works for `classic`/`gpuDriven` as well as vector, and `testRuntimeClassicRendererScreenshotNonEmpty` pins the classic path. `laban-agent --emoji-rendering=color|monochrome` adds a process-local volatile UserDefaults override for autonomous renderer verification. `testVectorGlyphSwitchPreservesActiveSessionIdentity` exists in `RendererModeSettingsTests`; `RendererSelectionRoutingTests` includes a mixed-Unicode fallback-status test; `VectorSubpixelLayoutTests` covers persistence. Headless evidence: `.build/debug/laban-agent --headless --debug-server=127.0.0.1:0 --artifacts=.tmp/vector-headless-raster-fallback-status2 --renderer=vectorGlyph --deterministic`, then `feedOutput` with `Vector fallback: ASCII 漢字 🙂 👩‍💻 ┌─┐`, `advanceFrames` 20, and `GET /debug/render` returned `configuredRenderer == effectiveRenderer == "vectorGlyph"`, `rasterFallbackGlyphs == 7`, `vectorSubpixelLayout == "rgbStripe"`; `/debug/screenshot` wrote `.tmp/vector-headless-raster-fallback-status2/mixed-unicode-status.png` (920×456 RGBA) and visual inspection confirmed CJK, monochrome emoji/ZWJ fallback marks, and box-drawing glyphs are visible rather than dropped. Color evidence: `.build/debug/laban-agent --headless --debug-server=127.0.0.1:0 --artifacts=.tmp/vector-headless-color-emoji --renderer=vectorGlyph --emoji-rendering=color --deterministic`, then `feedOutput` with `Color emoji: 🙂 🚀 👩‍💻 ASCII`, `advanceFrames` 20, and `/debug/render` returned `emojiRendering.mode == "color"`, `effectiveRenderer == "vectorGlyph"`, and `rasterFallbackGlyphs == 3`; `.tmp/vector-headless-color-emoji/color-emoji.png` visually shows color emoji through the vector backend. Classic/vector screenshot evidence now covers `find-viewport`, `colored-boxes`, `cjk-trust-gate`, and `styled-decorations`; see M3 and Decision Log for artifact paths and metrics. Verified after the color fallback/readback patch: `swift build --target LabanRenderer`, `swift build --target LabanDebug`, `swift build --target LabanApp`, `swift build --product laban-agent`, `./scripts/lint`, `git diff --check`, `./scripts/check-debug-contract`, `./scripts/check-docs`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `scripts/analyze-metal-trace --self-test`, `scripts/vector-glyph-parity-matrix`, `./scripts/build-app`, `./scripts/install-app`, installed `~/Laban.app` stamp `e37cb91+dirty`, installed `~/Laban.app.dSYM`, installed `VectorGlyphShaders.metal`, `codesign --verify --deep --strict ~/Laban.app`, `rg -a "Vector Glyph Renderer" .build/laban/Laban.app`, and bundled `VectorGlyphShaders.metal`. Fresh broader verification on 2026-06-26 also passed: full `swift build`, `./scripts/test-e2e`, `./scripts/check-fd-hygiene`, `./scripts/check-anchors`, `./scripts/check-dependencies`, `./scripts/check-model-coverage`, `./scripts/fuzz-labpty --check`, `bash -n scripts/vector-glyph-parity-matrix`, and a rerun of `scripts/vector-glyph-parity-matrix`; `.build/laban/Laban.app` was rebuilt and re-signed, `codesign --verify --deep --strict .build/laban/Laban.app` passed, the built bundle still contains `Vector Glyph Renderer`, `VectorGlyphShaders.metal`, and stamp `e37cb91+dirty`. After the synthetic-italic patch, `swift build --target LabanRenderer`, `swift build --target LabanApp`, `swift build --product laban-agent`, `./scripts/lint`, `git diff --check`, `scripts/vector-glyph-parity-matrix`, and `./scripts/build-app` pass; `.tmp/vector-style-probe/` shows SGR italic ASCII renders differently from regular ASCII while `/debug/render` stays `effectiveRenderer == "vectorGlyph"` and `rasterFallbackGlyphs == 0`; the rebuilt bundle passes codesign, contains the vector menu string and `VectorGlyphShaders.metal`, and stamps `e37cb91+dirty`. `./scripts/check-cbmc`, `./scripts/check-cbmc-contracts`, `./scripts/check-trace`, and `./scripts/fuzz-labpty --check-msan` also ran and self-skipped or downgraded exactly as their scripts define when CBMC, TLA+/Java, or Linux MSan support is absent. Remaining: run XCTest in an XCTest-capable toolchain; run the full release timing matrix; manually/live verify AppKit classic↔vector session switching after relaunch; update ADR 0022 Evidence with release timing numbers when available.
-  Decoration update 2026-06-26: vector decorations now use the shared `TextDecorationLayout` geometry for underline styles, underline color, strikethrough, and overline, matching the solid emission used by `MetalRenderer`. Runtime artifact `.tmp/vector-decoration-probe/` compares plain and decorated vector runs; both reported `configuredRenderer == effectiveRenderer == "vectorGlyph"` and `rasterFallbackGlyphs == 0`, and `plain-vs-decorated-metrics.json` reported `meanAbsRGB 1.2745`, `maxAbsRGB 161`, and `4836/209760` changed pixels. Verification after the decoration patch: `swift build --target LabanRenderer`, `./scripts/lint`, `git diff --check`, `scripts/vector-glyph-parity-matrix`, `./scripts/build-app`, and `codesign --verify --deep --strict .build/laban/Laban.app`.
-  Headless switch update 2026-06-26: `/debug/actions` now accepts `{"action":"setRenderer","renderer":"software|classic|gpuDriven|vectorGlyph"}` through the shared `RendererSelection` factory, allowing autonomous renderer-switch probes without replacing `AppModel` sessions. `scripts/vector-renderer-switch-smoke` reproduces the probe with a worktree-isolated default artifact path `.tmp/vector-headless-renderer-switch/<run-id>/`, or an explicit `ARTIFACT_ROOT`. The latest stable-path run (`ARTIFACT_ROOT=.tmp/vector-headless-renderer-switch/latest`) showed the same active session id before switching, after software→vectorGlyph, and after vectorGlyph→classic. `/debug/render` reported software/software, vectorGlyph/vectorGlyph with `rasterFallbackGlyphs == 0` and `vectorSubpixelLayout == "rgbStripe"`, then classic/classic. This is headless identity evidence only; the AppKit live-shell switch gate remains open.
-  Overlay parity update 2026-06-26: `scripts/vector-glyph-parity-matrix` now posts `setSelection` and `find.start` for an `overlay-selection-find` case before screenshot readback. The latest run passed with vector `configuredRenderer == effectiveRenderer == "vectorGlyph"`, `rasterFallbackGlyphs == 0`, `vectorSubpixelLayout == "rgbStripe"`, and frame-command JSON containing one `selection`, one `findMatch`, one `findSelected`, and one `cursor` command for both classic and vector. Metrics were `meanAbsRGB 0.2728`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 135`, and `1976/209760` changed pixels; artifacts live under `.tmp/vector-parity-matrix/overlay-selection-find/`.
-  Color emoji parity update 2026-06-26: `fixtures/color-emoji.fixture.json` now exercises smiley, rocket, technologist ZWJ, and ASCII text with both renderers launched under `--emoji-rendering=color`. The latest matrix run passed with vector `configuredRenderer == effectiveRenderer == "vectorGlyph"`, `emojiRendering.mode == "color"`, `rasterFallbackGlyphs == 3`, and frame-command text containing all expected emoji/ASCII clusters for classic and vector. Metrics were `meanAbsRGB 0.2467`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 136`, and `1727/209760` changed pixels; artifacts live under `.tmp/vector-parity-matrix/color-emoji/`.
-  Mixed fallback/sidebar parity update 2026-06-26: `fixtures/mixed-fallback.fixture.json` now exercises ASCII, CJK, smiley, technologist ZWJ, private-use, and box-drawing glyphs in one fixture. The latest matrix run passed with vector `configuredRenderer == effectiveRenderer == "vectorGlyph"`, `rasterFallbackGlyphs == 8`, and frame-command text containing all expected clusters for classic and vector. Metrics were `meanAbsRGB 0.2838`, `p95AbsRGB 0`, `p99AbsRGB 0`, `maxAbsRGB 135`, and `1951/209760` changed pixels; artifacts live under `.tmp/vector-parity-matrix/mixed-fallback/`. The matrix also now asserts both classic and vector emit sidebar `glyphRun` and `rect` commands in every case, giving command-path evidence for sidebar text parity.
-  Preedit parity update 2026-06-26: `/debug/actions` now accepts `{"action":"setPreedit","text":"中👩‍💻a","caretCells":3}` in headless runs, storing transient IME/dictation composition text per session and feeding the existing `TerminalSurfaceFrameRequest.preedit` path. `scripts/vector-glyph-parity-matrix` uses that action in `preedit-inline`; the latest run passed with vector `configuredRenderer == effectiveRenderer == "vectorGlyph"`, `rasterFallbackGlyphs == 2`, and both classic and vector frame-command JSON containing one `.preedit` rect and one `.preedit` glyph run with text `中👩‍💻a`. Metrics were `meanAbsRGB 0.3956`, `p95AbsRGB 0`, `p99AbsRGB 1`, `maxAbsRGB 157`, and `2170/209760` changed pixels; artifacts live under `.tmp/vector-parity-matrix/preedit-inline/`.
-  Parity verification 2026-06-26: after adding the cursor, color emoji, mixed fallback, sidebar, and preedit assertions, `jq empty schemas/debug/action.schema.json fixtures/mixed-fallback.fixture.json fixtures/color-emoji.fixture.json fixtures/styled-decorations.fixture.json`, `bash -n scripts/vector-glyph-parity-matrix`, `swift build --target LabanCore`, `swift build --target LabanDebug`, `swift build --product laban-agent`, and `scripts/vector-glyph-parity-matrix` pass.
-  Bundle/blocker refresh 2026-06-26: after the preedit action and matrix work,
-  `./scripts/build-app` passes and re-signs `.build/laban/Laban.app`;
-  `codesign --verify --deep --strict .build/laban/Laban.app` exits 0;
-  `rg -a "Vector Glyph Renderer" .build/laban/Laban.app` finds the menu title;
-  and `find .build/laban/Laban.app -name 'VectorGlyphShaders*' -print` finds
-  `.build/laban/Laban.app/Contents/Resources/Laban_LabanRenderer.bundle/VectorGlyphShaders.metal`.
-  Serial local attempts to run `swift test --filter VectorGlyphParityTests` and
-  `swift test --filter RendererModeSettingsTests` still fail before executing
-  tests with `error: no such module 'XCTest'`. `xcrun xctrace version` and
-  `xcrun --find xcodebuild` both exit 72 because this CLT environment has no
-  `xctrace` or `xcodebuild`; `xcode-select -p` reports
-  `/Library/Developer/CommandLineTools`, `/Applications` contains no Xcode.app,
-  and `mdfind 'kMDItemCFBundleIdentifier == "com.apple.dt.Xcode"'` returns
-  nothing. The Instruments release-timing gate therefore remains external. The
-  AppKit live-shell classic↔vector switch gate still requires a user-launched
-  app session; do not `open` the bundle from shell.
+- [x] M0 — `GlyphCurveStore` contour-aware CoreText outline extraction and CPU winding oracle are implemented and tested. After Xcode was installed and selected, `swift test --filter GlyphCurveStoreTests` passes, including strict geometry/oracle tests and the looser real-font CoreText comparison.
+- [x] M1 — the from-scratch Metal scratch rasterizer and bundled `VectorGlyphShaders.metal` are implemented and tested. `swift test --filter VectorGlyph` covers the scratch rasterizer and vector parity gates, and `scripts/analyze-metal-trace --self-test` still passes.
+- [ ] M1a (stretch) — Apple-GPU tile-shader coverage pass. Deferred; the compute path met the M1/M3 correctness and timing gates, so this optional spike is not a blocker for M5.
+- [x] M2 — `VectorGlyphRenderer` is an additive `RendererBackend` peer with shared `RendererSelection`/`makeRendererBackend(...)` routing in `LabanRenderer`, no `RendererMode.vectorGlyph`, View and Settings entries, font-zoom preservation, headless selection, `/debug/render`, and offscreen screenshot readback. The bundle contains `VectorGlyphShaders.metal` and the `Vector Glyph Renderer` menu string.
+- [x] M3 — temporal accumulation is implemented with deterministic `rgba32Uint` fixed-point sums, front-loaded 8/4/2/1 sampling, R2 jitter, fixed-frame convergence, and the parity matrix. Instruments evidence from `.tmp/vector-attach-trace.trace` shows `laban.vector.content` at p50 0.195542-0.203125 ms and p99 0.218532-0.231455 ms, meeting the <=0.3 ms p50 M3 target in the attached headless workload.
+- [x] M4 — RGB/BGR subpixel AA, persisted presets/custom JSON, live notification refresh, Settings preset control, and debug `setVectorSubpixelLayout` action are implemented and verified. The fringing artifact under `.tmp/vector-subpixel-fringing/` records RGB-vs-BGR deltas (`meanAbsRGB 0.2637`, `maxAbsRGB 120`).
+- [ ] M5 — feature parity implementation and autonomous gates are complete, but two non-autonomous gates remain before this ExecPlan can be marked fully done: a manually launched AppKit live-shell classic<->vector switch check, and the formal fresh-agent Review Gate below. Current autonomous evidence includes focused XCTest passes (`swift test --filter VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`, `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the preedit smoke), including `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` for Metal instance batches larger than the 4 KB `setVertexBytes` inline limit. It also includes `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`, `./scripts/lint`, `./scripts/check-docs`, `./scripts/check-debug-contract`, `./scripts/check-boundaries`, `swift run LabanControlGen --check`, `git diff --check`, and `./scripts/build-app` plus `codesign --verify --deep --strict .build/laban/Laban.app`. A broad `swift test` run is not green in this environment due to pre-existing/non-vector failures (`AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`, `LabanSessionTests`, `TabTitleEndToEndTests`) and pasteboard-dependent `TerminalClipboardTests`/`TerminalDropTests`; the vector-added `TerminalWidthPolicyGuardTests` failure from that stale full log was fixed and rerun targeted.
 - [x] ADR `docs/adr/0022-vector-glyph-renderer.md` written and `docs/adr/README.md` index entry — **already landed** (ADR 0022 exists and is indexed). M5 only updates its Evidence section.
 
 ## Decision Log
@@ -1638,18 +1618,14 @@ acceptable outcome.)
 
 ## Surprises & Discoveries
 
-- Observation: Local verification cannot run XCTest in the current Command Line
-  Tools install (`swift test --filter GlyphCurveStoreTests` fails while importing
-  `XCTest` in pre-existing test targets such as
-  `Tests/LabanRendererTests/CJKFontMetricsTests.swift`; `xcode-select -p` points
-  at `/Library/Developer/CommandLineTools`). `swift build --target LabanRenderer`
-  does pass, so production source compilation is verified, but M0's XCTest gate
-  remains unproven in this environment.
-  Evidence: `swift test --filter GlyphCurveStoreTests` and
-  `swift test --list-tests` both fail with `error: no such module 'XCTest'`.
-  A fuller stdin-only harness combining `GlyphCurveStore.swift` with the M0
-  checks prints `checked 94 ASCII outlines for JetBrainsMono`, `checked 94 ASCII
-  outlines for Menlo`, and `M0 non-XCTest verification ok`.
+- Observation: the earlier Command Line Tools-only XCTest blocker is resolved in
+  this worktree. After installing Xcode and selecting
+  `/Applications/Xcode.app/Contents/Developer`, focused XCTest filters execute
+  normally instead of failing while importing `XCTest`.
+  Evidence: `xcodebuild -version` reports Xcode 26.6 build 17F113 and
+  `xcrun xctrace version` reports `xctrace version 16.0 (17F113)`.
+  `swift test --filter GlyphCurveStoreTests` passes, covering the M0 winding,
+  contour topology, cubic split, and CoreText perceptual comparison tests.
 
 - Observation: `CTFontDrawGlyphs` real-font masks differ materially from the
   unhinted vector oracle even when coordinate offset is swept and font smoothing
@@ -1712,21 +1688,14 @@ acceptable outcome.)
   with `configuredRenderer == effectiveRenderer == "vectorGlyph"` and
   `.tmp/vector-headless-subpixel-bgr-action/converged-frame.png` was readable.
 
-- Observation: the local XCTest blocker still applies to the new M2 test files.
-  `swift test --filter RendererSelectionRoutingTests` and
-  `swift test --filter VectorGlyphParityTests` start compiling unrelated
-  pre-existing test targets and fail before executing any tests with
-  `error: no such module 'XCTest'`.
-  Evidence: the failure appears first in
-  `Tests/LabanTerminalCoreTests/CaptureBugBisect.swift:2:8` and then in
-  `Tests/LabanRendererTests/CJKFontMetricsTests.swift:3:8`, matching the earlier
-  M0/M1 toolchain limitation. A later
-  `swift test --filter VectorSubpixelLayoutTests` attempt after the M4/M5
-  persistence/fallback slice failed the same way before executing tests. A fresh
-  post-verification `swift test --filter VectorGlyphParityTests` rerun still
-  fails before executing tests, first at
-  `Tests/LabanTerminalCoreTests/CaptureBugBisect.swift:2:8` and then
-  `Tests/LabanRendererTests/CJKFontMetricsTests.swift:3:8`.
+- Observation: focused XCTest coverage for the vector renderer now runs in the
+  selected Xcode toolchain. The previously added tests execute, including the
+  M2/M3 routing, atlas, parity, debug status, and live-switch identity checks.
+  Evidence: `swift test --filter VectorGlyph` passes 16 tests; focused reruns
+  also pass `DebugActionDecodingTests`, `LabanDebugSmokeTests`,
+  `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`,
+  `GPUCellParityTests`, and
+  `LabanDebugSmokeTests/testSetPreeditActionProducesPreeditFrameCommands`.
 
 - Observation: the M5 raster fallback slice is externally observable through
   `/debug/render` and visible in a headless screenshot. The fallback count is
@@ -1877,23 +1846,28 @@ acceptable outcome.)
   acceptance work is the manual relaunch/live classic↔vector session-switch
   check, not the install command itself.
 
-- Observation: a fresh broad local verification pass after the M5 fallback/color
-  work still compiles and exercises the current tree outside the missing XCTest
-  and Instruments gates.
-  Evidence: `swift build`, `./scripts/test-e2e`, `./scripts/check-fd-hygiene`,
-  `./scripts/check-anchors`, `./scripts/check-dependencies`,
-  `./scripts/check-model-coverage`, `./scripts/fuzz-labpty --check`, `./scripts/lint`,
-  `git diff --check`, `./scripts/check-debug-contract`, `./scripts/check-docs`,
-  `./scripts/check-boundaries`, `swift run LabanControlGen --check`,
-  `bash -n scripts/vector-glyph-parity-matrix`, and
-  `scripts/vector-glyph-parity-matrix` all pass. The rebuilt
+- Observation: broad local verification is strong for the vector work but the
+  entire repository XCTest suite is not currently green in this environment.
+  The remaining full-suite failures are outside the vector renderer changes or
+  depend on unavailable pasteboard services; the vector-specific stale full-log
+  width-policy failure was fixed and rerun targeted.
+  Evidence: vector and adjacent focused filters pass (`swift test --filter
+  VectorGlyph`, `GlyphCurveStoreTests`, `GPUCellParityTests`,
+  `DebugActionDecodingTests`, `LabanDebugSmokeTests`,
+  `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the
+  focused preedit smoke). Repository checks also pass:
+  `scripts/vector-glyph-parity-matrix`, `scripts/vector-renderer-switch-smoke`,
+  `./scripts/lint`, `git diff --check`, `./scripts/check-debug-contract`,
+  `./scripts/check-docs`, `./scripts/check-boundaries`,
+  `swift run LabanControlGen --check`, and `./scripts/build-app`. The rebuilt
   `.build/laban/Laban.app` passes `codesign --verify --deep --strict`, contains
-  the `Vector Glyph Renderer` menu string, bundles `VectorGlyphShaders.metal`,
-  and stamps `LABANBuildCommit` as `e37cb91+dirty`. `./scripts/check-cbmc`,
-  `./scripts/check-cbmc-contracts`, `./scripts/check-trace`, and
-  `./scripts/fuzz-labpty --check-msan` ran too; they self-skip or downgrade to
-  compile-only drift checks as scripted when CBMC, TLA+/Java, or Linux MSan
-  support is absent.
+  the `Vector Glyph Renderer` menu string, and bundles
+  `VectorGlyphShaders.metal`. A full `swift test` run captured in
+  `.tmp/full-swift-test.log` executed 1796 tests with 10 skipped and 25 failures:
+  `AltScreenClearUsesPrimaryPenTests`, `GlyphAtlasLadderTests`,
+  `LabanSessionTests`, `TabTitleEndToEndTests`, pasteboard-dependent
+  `TerminalClipboardTests`/`TerminalDropTests`, and the now-fixed
+  `TerminalWidthPolicyGuardTests` failure from that stale run.
 
 - Observation: the mechanical parts of the Review Gate have a current self-check
   pass, but this does **not** satisfy the required fresh review agent.
@@ -1993,24 +1967,41 @@ acceptable outcome.)
   software/software → vectorGlyph/vectorGlyph → classic/classic with nil
   fallback reasons, and `vector.png` / `classic.png` are 920×456 RGBA PNGs.
   New XCTest coverage `testRuntimeSetRendererPreservesActiveSessionIdentity`
-  is added for the XCTest-capable toolchain. A focused local attempt,
-  `swift test --filter LabanDebugSmokeTests/testRuntimeSetRendererPreservesActiveSessionIdentity`,
-  still failed before executing tests with `error: no such module 'XCTest'`.
+  runs in the selected Xcode toolchain as part of the focused vector/debug smoke
+  filters.
   This evidence strengthens headless identity coverage but does not replace the
   required AppKit live-shell switch gate.
 
-- Observation: the release timing matrix cannot be recorded in the current
-  Command Line Tools environment because `xctrace` is absent.
-  Evidence: `xcrun xctrace version` exits 72 with
-  `unable to find utility "xctrace", not a developer tool or in PATH`. The
-  full Xcode driver is absent too: `xcrun --find xcodebuild` exits 72 with
-  `unable to find utility "xcodebuild", not a developer tool or in PATH`.
-  `xcode-select -p` reports `/Library/Developer/CommandLineTools`,
-  `/Applications` contains no Xcode.app, and
-  `mdfind 'kMDItemCFBundleIdentifier == "com.apple.dt.Xcode"'` returns nothing,
-  so this cannot be unblocked by only setting `DEVELOPER_DIR`. The parser's
-  `scripts/analyze-metal-trace --self-test` still passes, so trace JSON analysis
-  code is verified but trace capture is not.
+- Observation: a manual AppKit launch found a vector renderer crash that the
+  earlier autonomous headless/parity matrix missed. The crash happened when a
+  live-sized vector frame batched enough glyph/rect instances to exceed Metal's
+  4 KB `setVertexBytes` inline limit; the AGX driver aborts in that case rather
+  than returning a recoverable error. The fix switches vector instance uploads
+  to retained `MTLBuffer`s for batches above 4 KB while keeping inline bytes for
+  small batches, and adds a live-sized XCTest regression.
+  Evidence: the crash report faulted in
+  `AGX::RenderContext::setVertexProgramBufferBytes` with
+  `VectorGlyphRenderer.encode(commands:into:commandBuffer:)` at line 411 on the
+  stack. Commit `8f9d473` adds
+  `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches`, which
+  renders a 160x48 frame with thousands of rect/glyph instances and passes.
+  Verification before push: `swift test --filter
+  VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches`,
+  `swift test --filter VectorGlyph`, `./scripts/lint`, `git diff --check`,
+  `./scripts/build-app`, and
+  `codesign --verify --deep --strict .build/laban/Laban.app`.
+
+- Observation: the release timing matrix is now recorded from Xcode/Instruments
+  traces, with the caveat that some `xctrace record` runs emitted corrupt-log
+  warnings while still producing analyzable trace bundles. The attached
+  headless vector trace meets the M3 p50 target.
+  Evidence: `scripts/analyze-metal-trace --format json --no-files --max-rows 0
+  --all-processes .tmp/vector-attach-trace.trace` reports
+  `laban.vector.content` p50 0.195542-0.203125 ms, p95
+  0.207483-0.2165 ms, and p99 0.218532-0.231455 ms; accumulated glyph work
+  reports `laban.vector-glyph-accumulate` p50 0.025562 ms, p95 0.02775 ms,
+  and p99 0.030146 ms. The matched classic attach trace reports
+  `laban.frame` p50 0.269375 ms, p95 0.292325 ms, and p99 0.326453 ms.
 
 ## Review Gate
 
@@ -2064,6 +2055,14 @@ A fresh review agent must confirm, against the commit SHA under review:
      `testRuntimeRenderStateReportsRendererStatus` (software default) still passes.
 - [ ] `swift test --filter VectorGlyphParityTests` exits 0 and leaves no
      `*.diff.png` under `.build/vector-glyph-parity/`.
+- [ ] `swift test --filter
+     VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches` exits
+     0. Source inspection of
+     `Tests/LabanRendererTests/VectorGlyphParityTests.swift` confirms the test
+     constructs a 160x48-ish frame whose rect/glyph instance arrays exceed
+     Metal's 4 KB `setVertexBytes` inline limit, and
+     `Sources/LabanRenderer/VectorGlyphRenderer.swift` uses buffer-backed
+     uploads for larger batches.
 - [ ] `swift test --filter RendererModeSettingsTests` exits 0, including the new
      `testVectorGlyphSwitchPreservesActiveSessionIdentity` and the updated
      `testRendererMenuPersistsAvailableSelectionAndAppliesLiveMode` (its

@@ -113,6 +113,10 @@ commit); `main` owns semantic refreshes (lifting). See
 - Terminal session identity must survive tab selection, view rebuilds, resize, and UI refresh.
 - Native text input wins over raw modifier interpretation.
 - The renderer's per-frame encode/glyph-build path must not read `UserDefaults` or run CoreText/`CTLine` work per cell. Static glyph properties (e.g. color-ness) are decided once at rasterization and cached on the atlas entry; settings are cached and refreshed via their change notification, never polled per frame. (Regression bed1a2b: a per-cluster `CTLine` color scan cost +60–105 ms/frame while scrolling — guard it with `ColorGlyphScrollBench`.)
+- Metal renderer instance data must be tested at live terminal scale, not only
+  small/headless fixtures. Any renderer path that batches rect/glyph instances
+  needs a regression exceeding Metal's 4 KB `setVertexBytes` inline limit and
+  must use buffer-backed uploads when the batch is larger.
 - Keep changesets focused on one behavioral reason.
 - Git commits are atomic. Commit messages are single-line reason statements: why the change exists, not what changed. Bad: `Update plans`. Good: `Agents need bounded execution shards`.
 

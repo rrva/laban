@@ -159,6 +159,14 @@ until the M5 gate closes:
 - `vectorGlyph` is selectable through the shared backend factory, View renderer
   menu, Settings renderer popup, and `laban-agent --renderer=vectorGlyph`.
   `RendererMode` remains limited to `classic`/`gpuDriven`.
+- Focused XCTest coverage now runs in the selected Xcode toolchain
+  (`/Applications/Xcode.app/Contents/Developer`, Xcode 26.6). Passing filters
+  include `swift test --filter VectorGlyph`, `GlyphCurveStoreTests`,
+  `GPUCellParityTests`, `DebugActionDecodingTests`, `LabanDebugSmokeTests`,
+  `TerminalBitmapViewSelectionTests`, `TerminalWidthPolicyGuardTests`, and the
+  focused preedit smoke. A full `swift test` run is not green in this
+  environment due to pre-existing/non-vector failures and pasteboard-dependent
+  tests; see the ExecPlan for the failure list.
 - Headless vector rendering is observable through `GET /debug/render` and
   `GET /debug/screenshot`. The latest mixed-Unicode fallback smoke reported
   `configuredRenderer == effectiveRenderer == "vectorGlyph"`,
@@ -268,13 +276,28 @@ until the M5 gate closes:
   offsets stay in JSON/debug paths until there is a calibration workflow. The
   RGB-vs-BGR fringing artifact is under `.tmp/vector-subpixel-fringing/` with
   mean RGB delta `0.2637`, `p95AbsRGB 0`, and `p99AbsRGB 0`.
-- Correctness/perf release evidence is not complete yet in this worktree:
-  local `swift test` is blocked by an XCTest-unavailable Command Line Tools
-  install, AppKit live-switch verification requires a manually launched app, and
-  the release timing matrix still needs an Instruments trace. This local
-  toolchain also lacks `xcodebuild` and `xctrace`, so those gates require a full
-  Xcode/Instruments environment. Until those gates are recorded, this ADR
-  remains an accepted opt-in design decision, not a default-enable decision.
+- Release trace evidence is recorded from Xcode/Instruments bundles. In the
+  attached headless vector trace, `laban.vector.content` reports p50
+  0.195542-0.203125 ms and p99 0.218532-0.231455 ms; accumulated glyph work
+  reports p50 0.025562 ms and p99 0.030146 ms. The matched classic attach trace
+  reports `laban.frame` p50 0.269375 ms and p99 0.326453 ms. Some `xctrace
+  record` runs emitted corrupt-log warnings while still producing analyzable
+  trace bundles.
+- A manual AppKit launch found one real live-window crash after the initial
+  autonomous matrix: vector instance batches could exceed Metal's 4 KB
+  `setVertexBytes` inline limit, causing an AGX driver abort in
+  `setVertexProgramBufferBytes`. Commit `8f9d473` fixes vector instance uploads
+  by using retained `MTLBuffer`s above the inline limit and adds
+  `VectorGlyphParityTests/testRendererHandlesLiveSizedInstanceBatches`, which
+  renders a 160x48 frame with large rect/glyph batches. The hotfix was verified
+  with that regression, `swift test --filter VectorGlyph`, `./scripts/lint`,
+  `git diff --check`, `./scripts/build-app`, and codesign verification, then
+  pushed to `origin/codex/vector-glyph-renderer`.
+- Remaining M5 evidence before the ExecPlan can close: manually relaunch the
+  installed AppKit app and verify live-shell classic<->vector switching preserves
+  the session, then run the formal fresh-agent Review Gate. Until those gates
+  are recorded, this ADR remains an accepted opt-in design decision, not a
+  default-enable decision.
 
 ## Applies To New Code
 
