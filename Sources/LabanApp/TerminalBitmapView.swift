@@ -6662,6 +6662,27 @@ extension TerminalBitmapView {
     needsDisplay = true
   }
 
+  /// Smooth-scroll variant for profiling: moves the PD controller's *target* (and
+  /// optionally seeds a fling velocity) without snapping `displayedScrollRows`, so
+  /// the animation runs over real frames and produces the sub-cell offsets the
+  /// smooth-scroll path is meant to render. `debugScrollByRows` snaps instead and
+  /// cannot exercise this path. Returns immediately; the glide plays out across
+  /// the next frames driven by the display link.
+  func debugSmoothScrollByRows(_ rows: Int, velocityRowsPerSec: Double = 0) {
+    guard let activeTab = model.activeTab,
+      model.session(forTab: activeTab.id) != nil
+    else { return }
+    targetScrollRows = min(0, targetScrollRows + Double(rows))
+    if velocityRowsPerSec != 0 {
+      scrollVelocityRowsPerSec = velocityRowsPerSec
+    }
+    // Keep the display link unparked for the glide so the PD controller ticks.
+    preciseScrollStreamActiveUntil = Date().addingTimeInterval(
+      Self.preciseScrollStreamLinkHoldSeconds)
+    invalidateRenderAndWake()
+    needsDisplay = true
+  }
+
   func debugSnapToBottom() {
     guard let activeTab = model.activeTab,
       let session = model.session(forTab: activeTab.id)

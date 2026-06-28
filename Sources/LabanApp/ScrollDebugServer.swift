@@ -286,6 +286,29 @@ final class ScrollDebugServer {
         tv.debugScrollByRows(rows)
         return Response.json(["ok": true, "rows": rows])
       }
+    case ("POST", "/scroll/smooth"):
+      let rows = Int(query["rows"] ?? "0") ?? 0
+      let velocity = Double(query["velocity"] ?? "0") ?? 0
+      return onMain { tv, _, _ in
+        tv.debugSmoothScrollByRows(rows, velocityRowsPerSec: velocity)
+        return Response.json(["ok": true, "rows": rows, "velocity": velocity])
+      }
+    case ("POST", "/config/renderer"):
+      let name = query["name"] ?? ""
+      guard let selection = RendererSelection(rawValue: name) else {
+        return Response.json(["error": "unknown renderer", "name": name], status: 400)
+      }
+      return onMain { tv, _, _ in
+        tv.applyRendererSelection(selection)
+        return Response.json(["ok": true, "renderer": name])
+      }
+    case ("POST", "/config/smooth-scroll"):
+      let mode = query["mode"] ?? ""
+      guard let parsed = VectorSmoothScrollMode(rawValue: mode) else {
+        return Response.json(["error": "unknown mode", "mode": mode], status: 400)
+      }
+      VectorSmoothScrollSettings.setCurrent(parsed)
+      return Response.json(["ok": true, "mode": mode])
     case ("POST", "/scroll/snap-bottom"):
       return onMain { tv, _, _ in
         tv.debugSnapToBottom()
@@ -404,8 +427,12 @@ final class ScrollDebugServer {
     GET  /scroll/trace[?clear=1]      ScrollDiagnostics event ring (JSON)
     POST /scroll/trace/clear          clear the ring
     POST /scroll/input                request body bytes -> active session input
-    POST /scroll/wheel?rows=N         scroll N rows (negative = up, positive = toward bottom)
+    POST /scroll/wheel?rows=N         scroll N rows (snaps; negative = up)
+    POST /scroll/smooth?rows=N&velocity=V  smooth (PD-animated) scroll producing
+                                      sub-cell offsets; optional fling velocity
     POST /scroll/snap-bottom          pin viewport to the active bottom
+    POST /config/renderer?name=R      switch renderer (e.g. classic, gpuDriven, vectorGlyph)
+    POST /config/smooth-scroll?mode=M switch vector smooth-scroll mode (fluid|perPhase)
     GET  /scroll/screenshot.png       PNG of the live render surface
     """
 }
