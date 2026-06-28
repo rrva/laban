@@ -1,31 +1,26 @@
 #!/usr/bin/env bash
-# Profile Laban smooth-scroll across renderer / smooth-scroll configs by recording
-# ONE short Instruments trace PER config while driving sub-cell scroll bursts over
-# HTTP. One-trace-per-config is deliberate: custom Points-of-Interest signposts do
-# not reliably land in an xctrace capture (tried Metal System Trace +/- the Points
-# of Interest instrument; both gave 0 signpost rows), so segmenting a single trace
-# by signpost is unreliable. Separate traces are robust and each is independently
-# analyzable with `analyze-metal-trace --cpu-only` and its GPU pacing tables.
+# Profile Laban smooth-scroll JANK across renderer / smooth-scroll configs by
+# driving sub-cell scroll bursts over HTTP and reading the app's own display-link
+# frame-interval statistics (mean/p50/p95/p99/stddev + long-frame count). This is
+# the renderer-independent jank metric the SOTA guidance calls for (frame-interval
+# VARIANCE, not average FPS) and needs no Instruments/xctrace/HUD capture — those
+# all proved flaky for custom signposts and cross-architecture comparison.
 #
 # PREREQUISITE: launch Laban yourself with the scroll-debug server enabled:
 #   open ~/Laban.app --args --scroll-debug
-# This script never launches the app (single-instance ghost risk); it drives the
-# already-running instance over HTTP and records it with xctrace.
+# This script never launches the app (single-instance ghost risk).
 #
-# IMPORTANT: point --tab at a NORMAL-BUFFER shell tab (one with scrollback), not a
-# fullscreen alt-screen TUI (e.g. a Claude Code / vim tab) — alt-screen has no
-# scrollback, so the scroll burst is a no-op and you would profile the TUI's own
-# rendering instead of Laban's smooth-scroll path.
+# IMPORTANT: pass --tab pointing at a NORMAL-BUFFER shell tab (with scrollback),
+# not a fullscreen alt-screen TUI (Claude Code / vim) — alt-screen has no
+# scrollback so the burst is a no-op and measures nothing useful.
 #
 # Usage:
-#   scripts/profile-scroll-renderers [--port 8787] [--burst-seconds 5] \
-#       [--tab N] [--out-dir ~/Downloads/scroll-profile]
+#   scripts/profile-scroll-renderers --tab N [--port 8787] [--burst-seconds 6]
 set -euo pipefail
 
 port=8787
-burst_seconds=5
+burst_seconds=6
 tab=""
-out_dir="$HOME/Downloads/scroll-profile-$(date +%Y%m%d-%H%M%S)"
 process="Laban"
 
 while [ $# -gt 0 ]; do
@@ -33,19 +28,18 @@ while [ $# -gt 0 ]; do
     --port) port="$2"; shift 2 ;;
     --burst-seconds) burst_seconds="$2"; shift 2 ;;
     --tab) tab="$2"; shift 2 ;;
-    --out-dir) out_dir="$2"; shift 2 ;;
     --process) process="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
 base="http://127.0.0.1:${port}"
-script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 post() {
   curl -fsS -X POST "${base}$1" >/dev/null \
     || { echo "POST $1 failed — is Laban running with --scroll-debug on ${port}?" >&2; exit 1; }
 }
+getj() { curl -fsS "${base}$1"; }
 
 if ! curl -fsS "${base}/scroll/state" >/dev/null 2>&1; then
   echo "scroll-debug server not reachable at ${base}." >&2
@@ -53,17 +47,17 @@ if ! curl -fsS "${base}/scroll/state" >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "${out_dir}"
-
 if [ -n "${tab}" ]; then
   echo "selecting tab ${tab}" >&2
   post "/config/tab?index=${tab}"
   sleep 0.5
+else
+  echo "WARNING: no --tab given; measuring whatever tab is focused (alt-screen TUIs" >&2
+  echo "         have no scrollback and will measure nothing). Pass --tab N." >&2
 fi
 
-# A continuous smooth-scroll burst: alternating fling so the PD controller animates
-# through sub-cell offsets for the whole window (not row snaps), driven concurrently
-# with the recording.
+# Continuous smooth-scroll burst: alternating fling so the PD controller animates
+# through sub-cell offsets for the whole window (not row snaps).
 burst() {
   local ticks=$(( burst_seconds * 10 ))
   for _ in $(seq 1 "$ticks"); do
@@ -74,40 +68,44 @@ burst() {
   done
 }
 
-# Record one trace for a single config: set the config, then record while bursting.
-record_config() {
+measure_config() {
   local label="$1"; shift
-  local out="${out_dir}/${label}.trace"
-  echo "=== ${label} ===" >&2
-  "$@"          # apply config (renderer/mode switch)
-  sleep 0.3
-  local secs=$(( burst_seconds + 1 ))
-  burst &
-  local burst_pid=$!
-  xcrun xctrace record --template "Metal System Trace" \
-    --time-limit "${secs}s" --attach "${process}" --output "${out}" \
-    >/dev/null 2>&1 || true   # benign "log archive corrupt" warning; bundle is fine
-  wait "${burst_pid}" 2>/dev/null || true
-  echo "  trace: ${out}" >&2
+  "$@"                  # apply config (renderer/mode switch)
+  sleep 0.4             # let the switch settle + first frames render
+  getj "/scroll/frame-stats?reset=1" >/dev/null   # clear the ring
+  burst                 # scroll for burst_seconds, filling the ring
+  sleep 0.2
+  local stats
+  stats=$(getj "/scroll/frame-stats")
+  printf '%s\t%s\n' "${label}" "${stats}"
 }
 
 set_renderer() { post "/config/renderer?name=$1"; }
 set_vector_mode() { post "/config/renderer?name=vectorGlyph"; post "/config/smooth-scroll?mode=$1"; }
 
-record_config "gpu-driven"   set_renderer gpuDriven
-record_config "vector-fluid" set_vector_mode fluid
-record_config "vector-crisp" set_vector_mode perPhase
-record_config "classic"      set_renderer classic
+echo "measuring (tab ${tab:-focused}, ${burst_seconds}s burst per config)..." >&2
+
+results=$(
+  measure_config "gpu-driven"   set_renderer gpuDriven
+  measure_config "vector-fluid" set_vector_mode fluid
+  measure_config "vector-crisp" set_vector_mode perPhase
+  measure_config "classic"      set_renderer classic
+)
 
 echo >&2
-echo "=== pacing summary (command-buffer submission + drawable wait p50/p95) ===" >&2
-for label in gpu-driven vector-fluid vector-crisp classic; do
-  t="${out_dir}/${label}.trace"
-  [ -d "${t}" ] || continue
-  echo "--- ${label} ---" >&2
-  "${script_dir}/analyze-metal-trace" "${t}" --no-files 2>/dev/null \
-    | grep -iE "command-buffer-submissions|ca-client-buffer-wait|p50=" | head -4 || true
-done
-echo >&2
-echo "traces in: ${out_dir}" >&2
-echo "Deeper CPU per config: analyze-metal-trace ${out_dir}/<label>.trace --cpu-only" >&2
+echo "=== smooth-scroll jank (frame-interval ms; lower stddev/jank = smoother) ===" >&2
+printf "%-14s %6s %7s %7s %7s %7s %7s %6s\n" \
+  config fps meanMs p50 p95 p99 stddev jank% >&2
+while IFS=$'\t' read -r label json; do
+  [ -n "${label}" ] || continue
+  echo "${json}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+def g(k):
+    v = d.get(k, 0)
+    return f'{v:.2f}' if isinstance(v, (int, float)) else str(v)
+print('%-14s %6s %7s %7s %7s %7s %7s %6s' % (
+    '${label}', g('fps'), g('meanMs'), g('p50Ms'), g('p95Ms'),
+    g('p99Ms'), g('stddevMs'), g('jankPercent')))
+" >&2
+done <<< "${results}"

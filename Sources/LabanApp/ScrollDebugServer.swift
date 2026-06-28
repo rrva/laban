@@ -325,6 +325,11 @@ final class ScrollDebugServer {
         tv.debugSnapToBottom()
         return Response.json(["ok": true])
       }
+    case ("GET", "/scroll/frame-stats"):
+      let reset = query["reset"] == "1"
+      return onMain { tv, _, _ in
+        Response.json(tv.debugFrameStats(reset: reset))
+      }
     case ("GET", "/scroll/screenshot.png"):
       return screenshotResponse()
     default:
@@ -447,6 +452,8 @@ final class ScrollDebugServer {
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
                                       shell tab so scroll bursts hit Laban scrollback
                                       (not a fullscreen alt-screen TUI)
+    GET  /scroll/frame-stats[?reset=1] frame-interval jank stats (mean/p50/p95/p99/
+                                      stddev/jankFrames over the display-link ring)
     GET  /scroll/screenshot.png       PNG of the live render surface
     """
 }

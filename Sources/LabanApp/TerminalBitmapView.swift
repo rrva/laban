@@ -301,6 +301,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private static let preciseScrollStreamLinkHoldSeconds: TimeInterval = 0.25
   private var lastDisplayLinkTickAt: Date?
   private var lastDisplayLinkTickIntervalMs: Double?
+  /// Bounded ring of recent display-link frame intervals (ms) for jank profiling.
+  /// Frame-interval variance — not average FPS — is the jank signal; the debug
+  /// HTTP surface reports mean/p50/p95/p99/stddev + a long-frame count over this
+  /// window. Renderer-independent (the display link ticks regardless of backend).
+  private var frameIntervalSamplesMs: [Double] = []
+  private static let frameIntervalRingCapacity = 2048
   private var lastRenderedActiveTabId: Tab.ID?
   private var remoteSnapshotRenderTracker = RemoteSnapshotRenderTracker()
   private var remoteMouseEncodingByTab: [Tab.ID: (trackingMode: Int, format: Int)] = [:]
@@ -1266,9 +1272,48 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private func noteDisplayLinkTick(now: Date = Date()) {
     IdleCounters.shared.noteDisplayLinkTick()
     if let lastDisplayLinkTickAt {
-      lastDisplayLinkTickIntervalMs = now.timeIntervalSince(lastDisplayLinkTickAt) * 1000.0
+      let intervalMs = now.timeIntervalSince(lastDisplayLinkTickAt) * 1000.0
+      lastDisplayLinkTickIntervalMs = intervalMs
+      // Record for jank profiling. Drop absurd gaps (link parked between bursts):
+      // a >100 ms interval is an idle pause, not a rendered-frame stutter, and
+      // would swamp the variance stats.
+      if intervalMs > 0, intervalMs < 100 {
+        frameIntervalSamplesMs.append(intervalMs)
+        if frameIntervalSamplesMs.count > Self.frameIntervalRingCapacity {
+          frameIntervalSamplesMs.removeFirst(
+            frameIntervalSamplesMs.count - Self.frameIntervalRingCapacity)
+        }
+      }
     }
     lastDisplayLinkTickAt = now
+  }
+
+  /// Frame-interval statistics over the recent ring (ms), for jank profiling.
+  /// `reset` clears the ring after sampling so the next config measures clean.
+  func debugFrameStats(reset: Bool) -> [String: Any] {
+    let s = frameIntervalSamplesMs.sorted()
+    if reset { frameIntervalSamplesMs.removeAll(keepingCapacity: true) }
+    guard !s.isEmpty else { return ["count": 0] }
+    let n = s.count
+    let sum = s.reduce(0, +)
+    let mean = sum / Double(n)
+    let variance = s.reduce(0.0) { $0 + ($1 - mean) * ($1 - mean) } / Double(n)
+    func pct(_ p: Double) -> Double { s[min(n - 1, max(0, Int((Double(n) * p).rounded()) - 1))] }
+    let median = pct(0.50)
+    // Jank: frames noticeably longer than the local cadence (>1.5x median).
+    let jank = s.filter { $0 > median * 1.5 }.count
+    return [
+      "count": n,
+      "fps": mean > 0 ? 1000.0 / mean : 0,
+      "meanMs": mean,
+      "p50Ms": median,
+      "p95Ms": pct(0.95),
+      "p99Ms": pct(0.99),
+      "stddevMs": variance.squareRoot(),
+      "maxMs": s[n - 1],
+      "jankFrames": jank,
+      "jankPercent": Double(jank) / Double(n) * 100.0,
+    ]
   }
 
   /// Called from a per-session reader thread (off main) when the
