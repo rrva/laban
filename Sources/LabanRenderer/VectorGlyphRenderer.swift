@@ -327,6 +327,64 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// of a new row at the floor; the rest refine over the next frames.
   private static let baseFirstPaintBudgetPerFrame = 1024
   private var remainingBaseFirstPaintBudget = 0
+  /// Max GPU mask-bake *dispatches* (encodeAccumulate calls) per frame while
+  /// scrolling. The sample budgets bound how many *samples* a frame bakes, but
+  /// each new glyph is a separate compute dispatch with its own CPU-side encode
+  /// cost — and a fast fling reveals a whole new row at once (~160 glyphs), so
+  /// ~160 dispatches could land in one frame's command buffer. That per-dispatch
+  /// encode overhead (independent of sample count) is what spiked the main thread
+  /// and slipped the present — the jank `classic` never pays (its atlas is
+  /// pre-baked, mask lookup is O(1)). Bounding dispatches caps the worst-case
+  /// per-frame main-thread cost to a constant regardless of content variety: a
+  /// new glyph past the budget draws this frame from the O(1) raster atlas (the
+  /// same CoreText bitmap path `classic` uses) and bakes its vector mask on a
+  /// later frame when the budget admits it. At rest (no scroll) the budget is not
+  /// applied — static first paint stays immediate and the parity baseline holds.
+  private static let maxMaskBakeDispatchesPerFrame = 24
+  private var remainingMaskBakeDispatches = 0
+  /// New-entry mask bakes dispatched in the last `render` (diagnostic / gate).
+  /// While scrolling this is bounded by `maxMaskBakeDispatchesPerFrame`; at rest
+  /// it is unbounded (static first paint is immediate).
+  public private(set) var lastMaskBakeDispatchCount = 0
+  private var maskBakeDispatchesThisFrame = 0
+  /// Reusable per-draw instance buffers, recycled across frames. The vector path
+  /// used to `device.makeBuffer(bytes:)` a fresh buffer for every glyph/solid/
+  /// raster batch over the 4 KB inline limit — i.e. several heap allocations per
+  /// frame, every frame, held until GPU completion. That per-frame allocation
+  /// (and the allocator's periodic slow path) was a content-independent ~17 ms
+  /// hitch the classic renderer never paid (it reuses a persistent, grown-with-
+  /// headroom buffer). The 1-frame-in-flight scheduler serializes frames, so a
+  /// buffer used last frame is free to overwrite this frame; a cursor hands out a
+  /// distinct slot per draw within a frame and resets each frame, so steady-state
+  /// allocation is zero. Grows on demand (more clip regions / a bigger screen).
+  private var instanceBufferPool: [MTLBuffer] = []
+  private var instanceBufferPoolCursor = 0
+  /// Memoized character → glyph-id lookup, per font. `CTFontGetGlyphsForCharacters`
+  /// was ~11% of CPU during a fluid scroll (the time profiler's top non-encode
+  /// frame): it ran for every glyph, twice per frame (residency pass + instance
+  /// build), even though a character's glyph id never changes. Cache it. Keyed by
+  /// font identity then scalar; `nil` memoizes "no simple glyph" so the negative
+  /// case (combining marks, multi-scalar clusters) isn't re-probed either.
+  private var glyphIDCache: [ObjectIdentifier: [UInt32: CGGlyph]] = [:]
+  /// Per-frame memo of glyph residency + resolved draw mask, keyed by the glyph
+  /// identity that is constant within a frame (font, glyph id, synthetic italic).
+  /// A full screen has thousands of cells but only tens of distinct glyphs, and
+  /// the scroll phase is shared across the whole frame — so residency and the
+  /// resolved mask are identical for every occurrence of a glyph this frame. The
+  /// time profiler showed `ensureResidentMask`/`ForMode` at ~25% and `encode` at
+  /// ~17% during a fluid scroll, dominated by re-resolving the descriptor and
+  /// re-probing the atlas *per cell, twice per frame* (residency pass + draw
+  /// pass). Memoizing per distinct glyph collapses that ~thousands→~tens, which
+  /// is what pulls fluid's per-frame CPU back under the 8.33 ms budget so the
+  /// occasional frame stops tipping into a dropped vsync. Reset each frame.
+  private struct FrameGlyphKey: Hashable {
+    var font: ObjectIdentifier
+    var glyph: CGGlyph
+    var italic: Bool
+  }
+  private var framePreparedGlyphs: Set<FrameGlyphKey> = []
+  private var frameResolvedMasks: [FrameGlyphKey: (mask: VectorGlyphMaskAtlas.Entry, slide: Bool)] =
+    [:]
   /// Minimum present interval hinted to the compositor for smooth-scroll frames,
   /// so a ProMotion panel holds 120 Hz instead of dropping into the half-rate
   /// basin after a single missed frame (mirrors `MetalRenderer`).
@@ -453,6 +511,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
     fontCache.removeAll(keepingCapacity: true)
+    glyphIDCache.removeAll(keepingCapacity: true)
     maskAtlas = VectorGlyphMaskAtlas()
     atlasTexture = nil
     accumTexture = nil
@@ -600,6 +659,10 @@ public final class VectorGlyphRenderer: RendererBackend {
     maskAtlas.beginFrame()
     remainingPhasedSampleBudget = Self.phasedSampleBudgetPerFrame
     remainingBaseFirstPaintBudget = Self.baseFirstPaintBudgetPerFrame
+    remainingMaskBakeDispatches = Self.maxMaskBakeDispatchesPerFrame
+    maskBakeDispatchesThisFrame = 0
+    framePreparedGlyphs.removeAll(keepingCapacity: true)
+    frameResolvedMasks.removeAll(keepingCapacity: true)
     updatePhaseStability()
     lastRasterFallbackGlyphs = prepareGlyphResources(
       commands: commands,
@@ -666,6 +729,10 @@ public final class VectorGlyphRenderer: RendererBackend {
       return
     }
     encoder.label = "laban.vector.content"
+    // New frame: hand out pooled instance buffers from the start. Safe because
+    // the scheduler holds frames to one in flight, so last frame's buffers are
+    // done on the GPU before this frame encodes.
+    instanceBufferPoolCursor = 0
 
     var solids: [VectorSolidInstance] = []
     var glyphs: [VectorGlyphInstance] = []
@@ -842,16 +909,41 @@ public final class VectorGlyphRenderer: RendererBackend {
         encoder.setVertexBytes(base, length: raw.count, index: 0)
         return true
       }
-      guard
-        let buffer = device.makeBuffer(
-          bytes: base,
-          length: raw.count,
-          options: .storageModeShared)
-      else { return false }
-      retainedBuffers.append(buffer)
+      // Recycle a pooled buffer instead of allocating one per draw per frame.
+      guard let buffer = nextInstanceBuffer(minimumLength: raw.count) else { return false }
+      memcpy(buffer.contents(), base, raw.count)
       encoder.setVertexBuffer(buffer, offset: 0, index: 0)
       return true
     }
+  }
+
+  /// Hand out the next reusable instance buffer for this frame, growing the pool
+  /// or the individual buffer as needed. The 1-frame-in-flight scheduler makes
+  /// reuse safe: the buffer a given cursor slot returned last frame has finished
+  /// on the GPU before this frame encodes. 25% headroom amortises growth so a
+  /// steadily-scrolling session settles to zero allocation (mirrors
+  /// `MetalRenderer.ensureBuffer`).
+  private func nextInstanceBuffer(minimumLength: Int) -> MTLBuffer? {
+    guard minimumLength > 0 else { return nil }
+    let slot = instanceBufferPoolCursor
+    instanceBufferPoolCursor += 1
+    if slot < instanceBufferPool.count {
+      let existing = instanceBufferPool[slot]
+      if existing.length >= minimumLength { return existing }
+    }
+    let headroom = minimumLength / 4
+    guard minimumLength <= Int.max - headroom else { return nil }
+    let length = max(minimumLength + headroom, Self.maxInlineInstanceBytes)
+    guard let fresh = device.makeBuffer(length: length, options: [.storageModeShared]) else {
+      return nil
+    }
+    fresh.label = "laban.vector.instances"
+    if slot < instanceBufferPool.count {
+      instanceBufferPool[slot] = fresh
+    } else {
+      instanceBufferPool.append(fresh)
+    }
+    return fresh
   }
 
   private func prepareGlyphResources(
@@ -897,14 +989,22 @@ public final class VectorGlyphRenderer: RendererBackend {
           for: cluster,
           font: font,
           boldFallback: variant.boldFallback,
-          italicFallback: variant.italicFallback),
-          ensureResidentMaskForMode(
+          italicFallback: variant.italicFallback)
+        {
+          // A glyph repeats across many cells but its residency is identical this
+          // frame: ensure it (bake/touch) once, then skip the per-cell re-resolve.
+          let key = FrameGlyphKey(
+            font: ObjectIdentifier(font), glyph: glyph, italic: variant.italicFallback)
+          if framePreparedGlyphs.contains(key) { continue }
+          if ensureResidentMaskForMode(
             for: glyph,
             font: font,
             syntheticItalic: variant.italicFallback,
             commandBuffer: commandBuffer) != nil
-        {
-          continue
+          {
+            framePreparedGlyphs.insert(key)
+            continue
+          }
         }
         guard !isBlankCluster(cluster) else { continue }
         if rasterFallbackEntry(
@@ -918,6 +1018,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         }
       }
     }
+    lastMaskBakeDispatchCount = maskBakeDispatchesThisFrame
     return rasterFallbackGlyphs
   }
 
@@ -1163,6 +1264,22 @@ public final class VectorGlyphRenderer: RendererBackend {
     font: CTFont,
     syntheticItalic: Bool
   ) -> (mask: VectorGlyphMaskAtlas.Entry, slide: Bool)? {
+    // The same glyph draws into many cells; its resolved mask + slide is identical
+    // for every occurrence this frame (mode and phase are frame-constant). Memoize
+    // per distinct glyph so the encode pass resolves each once, not per cell.
+    let key = FrameGlyphKey(font: ObjectIdentifier(font), glyph: glyph, italic: syntheticItalic)
+    if let memo = frameResolvedMasks[key] { return memo }
+    let resolved = resolveDrawMaskUncached(
+      for: glyph, font: font, syntheticItalic: syntheticItalic)
+    if let resolved { frameResolvedMasks[key] = resolved }
+    return resolved
+  }
+
+  private func resolveDrawMaskUncached(
+    for glyph: CGGlyph,
+    font: CTFont,
+    syntheticItalic: Bool
+  ) -> (mask: VectorGlyphMaskAtlas.Entry, slide: Bool)? {
     if smoothScrollMode == .perPhase, scrollPhaseOffset != .zero,
       let phased = cachedMask(
         for: glyph, font: font, syntheticItalic: syntheticItalic, phaseOffset: scrollPhaseOffset)
@@ -1221,6 +1338,20 @@ public final class VectorGlyphRenderer: RendererBackend {
     // p99 spike). Already-resident entries are reused regardless of budget.
     if existing == nil && scheduled <= 0 { return nil }
 
+    // Dispatch budget: a brand-new mask bake is a compute dispatch with its own
+    // main-thread encode cost, independent of how many samples it runs. While
+    // scrolling, a fast row reveal can present ~160 new glyphs in one frame; an
+    // unbounded burst of dispatches is what slipped the present (the residual
+    // tail). Cap new-entry bakes per frame — overflow glyphs return nil here and
+    // the draw path renders them from the O(1) raster atlas this frame (exactly
+    // `classic`'s path), then they bake to vector quality on a later frame when
+    // the budget admits. Refinement of already-resident entries is not charged
+    // (it is bounded by the on-screen glyph count and measured at parity).
+    let isNewBake = existing == nil
+    if isNewBake, scrollPhaseOffset != .zero, remainingMaskBakeDispatches <= 0 {
+      return nil
+    }
+
     guard
       let entry = existing
         ?? maskAtlas.reserve(
@@ -1261,6 +1392,14 @@ public final class VectorGlyphRenderer: RendererBackend {
     else {
       maskAtlas.remove(entry)
       return nil
+    }
+    // Charge the dispatch budget only for a new entry's first bake (the costly,
+    // burst-prone case); refinement of a resident entry is bounded by screenful.
+    if isNewBake {
+      maskBakeDispatchesThisFrame += 1
+      if scrollPhaseOffset != .zero {
+        remainingMaskBakeDispatches -= 1
+      }
     }
     maskAtlas.setSampleCount(sampleStart + sampleCount, for: entry)
     return entry
@@ -1765,12 +1904,19 @@ public final class VectorGlyphRenderer: RendererBackend {
       scalar.value <= UInt32(UInt16.max)
     else { return nil }
 
+    let fontKey = ObjectIdentifier(font)
+    if let cached = glyphIDCache[fontKey]?[scalar.value] {
+      // 0 memoizes "no simple glyph" (CTFont returned the .notdef glyph or false),
+      // so the negative case is not re-probed every frame either.
+      return cached == 0 ? nil : cached
+    }
+
     var codeUnit = UniChar(scalar.value)
     var glyph = CGGlyph()
-    guard CTFontGetGlyphsForCharacters(font, &codeUnit, &glyph, 1), glyph != 0 else {
-      return nil
-    }
-    return glyph
+    let resolved: CGGlyph =
+      CTFontGetGlyphsForCharacters(font, &codeUnit, &glyph, 1) ? glyph : 0
+    glyphIDCache[fontKey, default: [:]][scalar.value] = resolved
+    return resolved == 0 ? nil : resolved
   }
 
   private func vectorColor(_ rgba: UInt32) -> SIMD4<Float> {

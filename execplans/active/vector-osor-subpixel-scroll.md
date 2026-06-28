@@ -399,11 +399,30 @@ Acceptance (autonomous + observable):
   behavior (scope expansion per AGENTS.md). Bundle builds. **Manual on-device glide
   inspection pending** a GUI relaunch (scroll slowly with the vector backend: text
   should glide and settle sharp).
+- [x] (2026-06-28) M7 — scroll-jank eliminated. Vector smooth-scroll now holds 120 Hz
+  at parity with classic/gpu-driven (fluid 0.00% jank / p99 ~10 ms; crisp ~0.1%),
+  down from 4.74% / 7.48% with ~50 ms blocking stalls. Adopted `MetalDrawableScheduler`
+  in the vector backend (non-blocking acquire, drop-don't-block), bounded scroll-edge
+  bake cost (sample + dispatch budgets, crisp per-phase settle gate), and — found by
+  time-profiling after two falsified hypotheses — added a per-font glyph-id cache and
+  a per-frame glyph memo that collapse the per-cell CoreText + descriptor/atlas
+  resolve (~thousands → ~tens of distinct glyphs), which erased the 17 ms p99. Gates:
+  `VectorDrawableSchedulerTests` (non-blocking contract, dispatch budget, per-frame
+  bake-once memo), `VectorGlyphAtlasEvictionTests` (scrolling base first-paint
+  chunk/budget). All `VectorGlyph`/`VectorSmoothScroll`/`VectorSubpixel`/
+  `GlyphCurveStore` suites green; parity stays byte-identical. See the M7 detail
+  section below. **Manual on-device glide inspection still pending.**
 
-### Post-M6 — scroll-jank investigation (measurement + diagnosis, fix pending)
+### M7 — scroll-jank eliminated (DONE)
 
 On-device A/B (MacBook, Low Power Mode OFF → real 120 Hz) found the vector renderer
-**feels less smooth than gpu-driven/classic**, and quantified it. Key facts and tools:
+**felt less smooth than gpu-driven/classic**; M7 diagnosed and eliminated it. Final
+result (tab 5, 14 s bursts, baseline-validated clean runs): **vector-fluid 0.00%
+jank / stddev ~0.4 ms / p99 ~10 ms; vector-crisp ~0.1% / p99 ~10.4 ms — at parity
+with gpu-driven and classic (0% / stddev ~0.4 ms).** Before M7: fluid 4.74%, crisp
+7.48%, both p99 ~17 ms with max ~50 ms stalls. Shipped in commits `5246099` (scheduler
++ bake budgets) and the follow-up (glyph-id cache + per-frame glyph memo). Key facts
+and tools:
 
 - **Metric is frame-interval variance, not average FPS** (SOTA guidance; macOS 27's
   `metalperftrace` is unavailable on this 26.5 box). Added an in-app jank meter:
@@ -426,20 +445,45 @@ On-device A/B (MacBook, Low Power Mode OFF → real 120 Hz) found the vector ren
   parked-drawable poison-gate fix, and the `onDrawableReadyAfterMiss` half-rate-basin
   escape). So when the vector path falls behind it stalls the main thread instead of
   skipping a tick.
-- **Done so far:** paced present for scroll frames
-  (`present(drawable, afterMinimumDuration: 1/120)`, mirroring `MetalRenderer`,
-  commit `9d9e40a`). Correct groundwork but **insufficient alone** — measured jank
-  unchanged, because pacing only helps once acquisition stops blocking.
+- **Fixes that landed (in order, each measured):**
+  1. **Paced present** for scroll frames (`afterMinimumDuration: 1/120`, `9d9e40a`):
+     correct groundwork, insufficient alone.
+  2. **Adopted `MetalDrawableScheduler` in the vector backend** (async non-blocking
+     acquire, 1-frame-in-flight serialization, drop-don't-block while scrolling,
+     `onDrawableReadyAfterMiss` wake). The vector `render()` still always renders +
+     commits its offscreen target (so headless `pngData` and atlas accumulation stay
+     valid on a dropped present); only the *present* is gated. Wired the view's
+     `dropNextFrameWhenBusy` + wake hooks for the vector renderer too. **Removed the
+     hard 50 ms blocking stalls** (max interval → ~17 ms).
+  3. **Bounded scroll-edge bake cost:** new base masks front-load in 64-sample chunks
+     under a per-frame sample budget; a per-frame **dispatch** budget caps new-glyph
+     `encodeAccumulate` calls (overflow → O(1) raster atlas this frame, bakes to
+     vector quality later). Crisp **per-phase settle gate** stops the per-frame
+     per-phase bake storm during a fling (bakes only once the phase rests).
+  4. **The residual ~17 ms p99 (the hard part): found by time-profiling, not
+     guessing.** Two earlier hypotheses (dispatch bursts, per-frame `MTLBuffer`
+     allocation) were each falsified by the same tell — fluid's p99 stayed *exactly*
+     17.3 ms across every run and code version (a content-independent fingerprint).
+     `scripts/analyze-metal-trace --record --attach Laban --cpu-only` during a fluid
+     burst showed the truth: `CTFontGetGlyphsForCharacters` was ~11% (called per
+     glyph, twice per frame) and `ensureResidentMask`/`encode` ~40% from re-resolving
+     the descriptor + re-probing the atlas **per cell, twice per frame**. Fixes: a
+     per-font **glyph-id cache** (kills the CoreText cost) and a **per-frame glyph
+     memo** (`FrameGlyphKey` → residency + resolved mask) collapsing ~thousands of
+     per-cell resolves to ~tens of distinct glyphs. **This erased the 17 ms p99**:
+     fluid/crisp per-frame CPU fell back under the 8.33 ms budget.
+- **Lesson:** when hypothesis→change→measure plateaus (two falsified hypotheses with
+  an identical, invariant residual), stop guessing and **profile**. The
+  `analyze-metal-trace` CPU loop named the real cost in one capture. The
+  "log archive corrupt" xctrace warning is benign — analyze the bundle anyway.
+- **Reliable measurement protocol:** the dev box has heavy background churn (Chrome,
+  Spotlight/XProtect scans). A run is valid only if **classic AND gpu-driven both
+  read ~0% in that same run** (in-run control); discard contaminated runs and take a
+  median of ≥3 valid ones. Longer bursts (14 s) give stabler tail percentiles.
 
-**Next milestone (M7?): adopt `MetalDrawableScheduler` (or a shared variant) in the
-vector backend** — async non-blocking drawable acquire with frame-in-flight
-serialization against the vector target/atlas, drop-don't-block while
-`scrollPhaseOffset != .zero`, and the miss-recovery wake. Re-measure with
-`scripts/profile-scroll-renderers --tab 5`; target vector jank ≈ gpu-driven (0%).
-Also still pending: the original M6 manual glide inspection, and trace tooling notes
-(`analyze-metal-trace --signposts` / `--time-profiler` added; custom POI signposts
-do not reliably survive an xctrace capture even with `--instrument "Points of
-Interest"`, so per-config separate captures / the in-app meter are the reliable path).
+**Still pending:** the original M6 manual slow-scroll glide inspection (perceptual,
+on-device) — the numbers are now at parity, but a human glide check remains good
+practice.
 
 ## Decision Log
 

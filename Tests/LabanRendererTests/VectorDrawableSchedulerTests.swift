@@ -122,4 +122,83 @@ final class VectorDrawableSchedulerTests: XCTestCase {
     renderer.onDrawableReadyAfterMiss = nil
     XCTAssertTrue(renderDrained(renderer))
   }
+
+  /// The per-frame mask-bake *dispatch* budget bounds the worst-case main-thread
+  /// cost during a fast scroll: a frame that newly reveals far more glyphs than
+  /// the budget must not bake them all at once (the dispatch burst that slipped
+  /// the present and left the residual jank tail). Overflow glyphs render from the
+  /// O(1) raster atlas this frame and bake to vector quality over later frames, so
+  /// every glyph is always drawn (no blanks) and the screen fully converges.
+  func testMaskBakeDispatchesAreBoundedPerScrollFrameYetAllConverge() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("no Metal device") }
+    let atlas = FontAtlas(pointSize: 16, fontName: nil)
+    let renderer = try XCTUnwrap(
+      VectorGlyphRenderer(
+        fontAtlas: atlas, sidebarFontAtlas: atlas,
+        pixelWidth: 1200, pixelHeight: 60, scale: 2))
+
+    // A wide run of many distinct glyphs — far more than one frame's dispatch
+    // budget — to emulate a whole new row entering at once during a fling.
+    let wide = String((0..<140).map { _ in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" }.joined())
+    let line = String(wide.prefix(130))
+    let cmds: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 600, height: 30), color: 0x00_00_00_FF, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 2, y: 8), text: line,
+        foreground: 0xFF_FF_FF_FF, background: 0x00_00_00_FF,
+        attributes: [], source: .terminal),
+    ]
+
+    // Scroll active (non-zero phase): each frame's NEW-entry bakes must be capped.
+    var everResident = false
+    for frame in 0..<40 {
+      // Vary the phase a little so the scroll looks live, but keep it within the
+      // settle window so motion is "active" (per-phase baking stays gated off).
+      renderer.setScrollPhaseOffset(CGPoint(x: 0, y: (frame % 2 == 0 ? 0.12 : 0.13)))
+      XCTAssertTrue(renderer.render(cmds, damage: .full))
+      _ = renderer.pngData  // drain to free the in-flight slot for the next frame
+      XCTAssertLessThanOrEqual(
+        renderer.lastMaskBakeDispatchCount, 24,
+        "frame \(frame) baked \(renderer.lastMaskBakeDispatchCount) new masks — dispatch budget breached"
+      )
+      if renderer.lastMaskBakeDispatchCount == 0 { everResident = true }
+    }
+    // Over many frames the whole line must converge to resident (a later frame
+    // bakes nothing new) — the budget only defers, never drops, vector quality.
+    XCTAssertTrue(everResident, "the line never fully converged to resident vector masks")
+  }
+
+  /// A glyph repeated across many cells must bake at most once per frame, not
+  /// once per cell. The per-frame glyph memo collapses the residency/draw resolve
+  /// from per-cell (~thousands on a full screen) to per distinct glyph (~tens) —
+  /// the fix that pulled fluid's per-frame CPU back under the 8.33 ms budget and
+  /// erased the ~17 ms p99 jank tail (verified on-device, not just here). Render a
+  /// long run of ONE repeated character at a fresh phase and assert exactly one
+  /// new-mask bake that frame.
+  func testRepeatedGlyphBakesOncePerFrameNotPerCell() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("no Metal device") }
+    let atlas = FontAtlas(pointSize: 16, fontName: nil)
+    let renderer = try XCTUnwrap(
+      VectorGlyphRenderer(
+        fontAtlas: atlas, sidebarFontAtlas: atlas,
+        pixelWidth: 1200, pixelHeight: 60, scale: 2))
+    let line = String(repeating: "W", count: 120)  // one distinct glyph, 120 cells
+    let cmds: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 600, height: 30), color: 0x00_00_00_FF, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 2, y: 8), text: line,
+        foreground: 0xFF_FF_FF_FF, background: 0x00_00_00_FF,
+        attributes: [], source: .terminal),
+    ]
+    // First scroll frame: the single distinct glyph 'W' bakes exactly once,
+    // despite filling 120 cells — proof the per-frame memo dedupes the resolve.
+    renderer.setScrollPhaseOffset(CGPoint(x: 0, y: 0.12))
+    XCTAssertTrue(renderer.render(cmds, damage: .full))
+    _ = renderer.pngData
+    XCTAssertEqual(
+      renderer.lastMaskBakeDispatchCount, 1,
+      "a glyph repeated across 120 cells baked \(renderer.lastMaskBakeDispatchCount) times — the per-frame memo is not deduping"
+    )
+    XCTAssertEqual(renderer.lastRasterFallbackGlyphs, 0)
+  }
 }
