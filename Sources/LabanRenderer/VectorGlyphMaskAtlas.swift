@@ -10,6 +10,11 @@ final class VectorGlyphMaskAtlas {
     var originX: Int
     var originY: Int
     var syntheticItalic: Bool = false
+    // Quantized sub-pixel phase (OSOR u0.8: device-pixel fraction in 1/256 steps).
+    // Static (integer-cell) text uses 0/0, collapsing to one entry per glyph; a
+    // fractional on-screen position selects a distinct mask baked for that phase.
+    var quantizedOffsetX: Int = 0
+    var quantizedOffsetY: Int = 0
   }
 
   struct Entry: Equatable {

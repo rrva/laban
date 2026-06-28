@@ -326,7 +326,21 @@ Acceptance (autonomous + observable):
 - [x] (2026-06-28) M1 — gamma-correct grayscale via sRGB render target (vector-only; classic untouched), plus a user-tunable **text weight** (stem-darkening) setting (`VectorTextWeightSettings`, live Settings slider, 0 = thin/geometric, 1 = CoreText-ish; default 1.0). Gates: `VectorGlyphGammaTests` (linear-light compositing) and `VectorTextWeightTests` (exponent neutral@0, thickens@1, dark-on-light > light-on-dark, persistence). All `VectorGlyph`/`GlyphCurveStore`/`VectorSubpixelLayout` suites green; bundle builds. Awaiting manual visual confirmation on the MacBook before M2.
 - [x] (2026-06-28) M2 — display robustness: pure subpixel auto-policy `VectorSubpixelLayout.effective(configured:scale:downsampled:)` (grayscale unless integer device scale AND not resampled), renderer renders + reports the **effective** layout (`/debug/render` `vectorSubpixelLayout`), integer-scale auto-fallback, live reconfig on scale change (existing `resize` path resets caches), `setDisplayDownsampled` hook. Gate `VectorSubpixelPolicyTests` (5 cases incl. renderer effective-layout reporting). **Deferred:** automatic scaled-mode (downsample) *detection* from AppKit — public macOS APIs don't reliably expose native panel resolution and it can't be validated on the headless build host; the policy + hook are in place, detection needs on-device validation. Default grayscale already makes the common path fringe-free regardless.
 - [x] (2026-06-28) M3 — OSOR subpixel calibration. The overlap/bleed sample areas were already in place (`calibratedRGB` spans exceed [0,1]); this milestone **proves it** with a fringing-metric gate `VectorSubpixelFringingTests` (grayscale edge-chroma ~0; `calibratedRGB` < 0.85×`rgbStripe`) and adds OSOR's extreme-coverage clamp (snap ~1/512 noise to 0/1) in the accumulate resolve. All vector/subpixel/curve/weight suites green; bundle builds. **Deferred:** 2D (vertical) subpixel-area calibration UI + non-stripe presets (QD-OLED/WOLED) — the `VectorSubpixelArea` mechanism already carries a y-range, but presets/UI and validation need a non-stripe panel on-device.
-- [ ] M4 — sub-pixel-offset glyph caching + fractional-phase raster + fractional placement.
+- [x] (2026-06-28) M4 — sub-pixel-offset glyph caching. `VectorGlyphMaskAtlas.Key`
+  carries `quantizedOffsetX/Y` (OSOR u0.8, 1/256 device px; default 0/0 so static
+  text keeps one phase-0 entry, no regression). The accumulate kernel
+  (`vectorGlyphAccumulateAtlas` / `GPUAccumParams`) takes a `subpixelOffset` that
+  biases the sample grid so a mask baked for a fractional position samples the
+  outline at that phase. Gate `VectorGlyphPhaseSweepTests`: production accumulate
+  vs supersampled oracle across phases {0, ¼-x, ¼-y, ½/½, ⅓/⅔} (gross >80/255 ~0
+  per phase), distinct phases → distinct masks, distinct phases → distinct atlas
+  entries (same phase idempotent). All gates fail before the kernel bias / Key
+  change and pass after; `VectorGlyph`/`VectorSubpixel`/`GlyphCurveStore`/
+  `VectorTextWeight` suites green; bundle builds. **Deferred to M6:** wiring the
+  live fractional offset through `maskDescriptor`/`glyphInstance` (quad placement
+  at the true fractional device-pixel position) — it has no fractional source
+  until the scroll plumbing exists and is a *visible* change to all text, so it
+  rides the M6 visual gate rather than landing as always-zero dead code now.
 - [ ] M5 — atlas eviction + bounded per-frame sample budget + front-loaded schedule.
 - [ ] M6 — smooth sub-pixel scroll plumbing + end-to-end gate + spec.md note.
 

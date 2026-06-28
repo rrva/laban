@@ -63,6 +63,10 @@ struct VectorGlyphAccumParams {
     float4 subpixelRBounds;
     float4 subpixelGBounds;
     float4 subpixelBBounds;
+    // Sub-pixel phase (device-pixel fraction) baked into the sample grid so a
+    // mask cached for a fractional on-screen position samples the outline at the
+    // matching phase (OSOR per-phase glyph caching). Zero for static text.
+    float2 subpixelOffset;
 };
 
 constant float2 kVectorQuadVertices[6] = {
@@ -318,10 +322,13 @@ kernel void vectorGlyphAccumulateAtlas(
     uint2 atlasPosition = params.targetOrigin + gid;
     uint4 state = params.sampleStart == 0 ? uint4(0) : accum.read(atlasPosition);
     uint3 sum = uint3(0);
+    // Bias the sample grid by the cached sub-pixel phase so a mask baked for a
+    // fractional on-screen position samples the outline at that phase. Zero for
+    // static (integer-cell) text, which keeps a single phase-0 mask per glyph.
     float2 pixelBase = float2(
         float(gid.x),
         float(params.height - 1 - gid.y)
-    );
+    ) + params.subpixelOffset;
     for (uint sampleIndex = 0; sampleIndex < params.sampleCount; sampleIndex++) {
         uint absoluteSample = params.sampleStart + sampleIndex;
         float2 jitter = float2(
