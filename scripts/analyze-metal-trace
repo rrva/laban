@@ -1743,6 +1743,13 @@ def parse_args() -> argparse.Namespace:
     agent.add_argument("--launch", nargs=argparse.REMAINDER,
                        help="Command to launch when recording; must be last: --launch -- ./app args")
     agent.add_argument("--template", default="Metal System Trace", help="xctrace template for --record.")
+    agent.add_argument(
+        "--time-profiler",
+        action="store_true",
+        help="Capture/analyze a CPU Time Profiler trace only (no Metal GPU tables). "
+        "For --record this swaps the template to 'Time Profiler' (lighter capture); "
+        "it always implies --cpu-only. Use for fast CPU hot-path iteration.",
+    )
     agent.add_argument("--record-output", type=Path, help="Where to write the recorded .trace bundle.")
     agent.add_argument("--self-test", action="store_true", help="Run built-in tests (no trace or xcrun needed) and exit.")
     agent.add_argument("--print-agent-docs", action="store_true",
@@ -1771,8 +1778,18 @@ def main() -> int:
     if config_path is not None:
         print(f"analyze-metal-trace: focus config {redact(config_path)}", file=sys.stderr)
 
+    # Time Profiler mode: CPU-only analysis, and (when recording) the lighter
+    # "Time Profiler" instrument instead of the full "Metal System Trace".
+    if args.time_profiler:
+        args.cpu_only = True
+        record_template = (
+            "Time Profiler" if args.template == "Metal System Trace" else args.template
+        )
+    else:
+        record_template = args.template
+
     if args.record is not None:
-        trace = record_trace(args.record, args.template, args.attach, args.launch, args.record_output)
+        trace = record_trace(args.record, record_template, args.attach, args.launch, args.record_output)
     else:
         trace = args.trace.expanduser()
     if not trace.exists():
