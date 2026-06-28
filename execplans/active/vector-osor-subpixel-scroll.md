@@ -325,6 +325,24 @@ Acceptance (autonomous + observable):
 - [x] (2026-06-28) M0 — numerically stable winding + size-sweep gates (commit `af4380d`).
 - [x] (2026-06-28) M1 — gamma-correct grayscale via sRGB render target (vector-only; classic untouched), plus a user-tunable **text weight** (stem-darkening) setting (`VectorTextWeightSettings`, live Settings slider, 0 = thin/geometric, 1 = CoreText-ish; default 1.0). Gates: `VectorGlyphGammaTests` (linear-light compositing) and `VectorTextWeightTests` (exponent neutral@0, thickens@1, dark-on-light > light-on-dark, persistence). All `VectorGlyph`/`GlyphCurveStore`/`VectorSubpixelLayout` suites green; bundle builds. Awaiting manual visual confirmation on the MacBook before M2.
 - [x] (2026-06-28) M2 — display robustness: pure subpixel auto-policy `VectorSubpixelLayout.effective(configured:scale:downsampled:)` (grayscale unless integer device scale AND not resampled), renderer renders + reports the **effective** layout (`/debug/render` `vectorSubpixelLayout`), integer-scale auto-fallback, live reconfig on scale change (existing `resize` path resets caches), `setDisplayDownsampled` hook. Gate `VectorSubpixelPolicyTests` (5 cases incl. renderer effective-layout reporting). **Deferred:** automatic scaled-mode (downsample) *detection* from AppKit — public macOS APIs don't reliably expose native panel resolution and it can't be validated on the headless build host; the policy + hook are in place, detection needs on-device validation. Default grayscale already makes the common path fringe-free regardless.
+- [x] (2026-06-28) M2 scaled-mode detection (the deferred AppKit piece, done on the
+  MacBook). `DisplayDownsampleDetector` (LabanApp) resolves the window's display ID
+  and compares the current `CGDisplayMode` pixel size against the **native-flagged**
+  mode's pixel size (`kDisplayModeNativeFlag`); the pure decision is
+  `VectorSubpixelLayout.displayIsDownsampled(...)`. Wired into `recreateSurface`,
+  `viewDidMoveToWindow` (via recreate), and a new
+  `NSApplication.didChangeScreenParametersNotification` observer; pushes
+  `VectorGlyphRenderer.setDisplayDownsampled` (now returns whether the effective
+  layout flipped) and logs the flip (`AppLog.render` "vector subpixel layout -> …").
+  The native flag is the correct reference, not the max mode: on this panel native is
+  3024×1964 while "More Space" reports 3600×2338. Gate `VectorSubpixelPolicyTests`
+  (+4 cases: native→not-downsampled, scaled→downsampled, unknown-size→safe,
+  setDisplayDownsampled change-reporting); detection logic verified live against the
+  panel (Default = 1:1 → not downsampled). On-device toggle confirmation (Settings
+  rgbStripe + Displays Default↔More Space → log shows grayscale↔rgbStripe) pending a
+  GUI relaunch of the dedicated build (`~/Laban-m2detector/Laban.app`). Headless stays
+  unaffected (synthetic scale 1, no NSScreen). **Still deferred:** M3 2D/non-stripe
+  calibration (needs an external non-stripe panel).
 - [x] (2026-06-28) M3 — OSOR subpixel calibration. The overlap/bleed sample areas were already in place (`calibratedRGB` spans exceed [0,1]); this milestone **proves it** with a fringing-metric gate `VectorSubpixelFringingTests` (grayscale edge-chroma ~0; `calibratedRGB` < 0.85×`rgbStripe`) and adds OSOR's extreme-coverage clamp (snap ~1/512 noise to 0/1) in the accumulate resolve. All vector/subpixel/curve/weight suites green; bundle builds. **Deferred:** 2D (vertical) subpixel-area calibration UI + non-stripe presets (QD-OLED/WOLED) — the `VectorSubpixelArea` mechanism already carries a y-range, but presets/UI and validation need a non-stripe panel on-device.
 - [x] (2026-06-28) M4 — sub-pixel-offset glyph caching. `VectorGlyphMaskAtlas.Key`
   carries `quantizedOffsetX/Y` (OSOR u0.8, 1/256 device px; default 0/0 so static

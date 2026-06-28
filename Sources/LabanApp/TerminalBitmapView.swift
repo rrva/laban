@@ -270,6 +270,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var emojiRenderingObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
+  private var screenParametersObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
   /// UserDefaults. The Settings live-apply path compares against it: an
@@ -653,6 +654,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
+      }
+    }
+
+    // A display-mode change (Default <-> More Space) or moving the window to a
+    // different screen changes whether the framebuffer is downsampled, which the
+    // vector subpixel auto-policy depends on. Re-evaluate and repaint.
+    screenParametersObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self else { return }
+      if self.updateDisplayDownsampledState() {
+        self.renderInvalidated = true
+        if self.window != nil {
+          self.scheduleRenderRetry()
+        }
       }
     }
 
@@ -1561,6 +1577,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let vectorTextWeightObserver {
       NotificationCenter.default.removeObserver(vectorTextWeightObserver)
     }
+    if let screenParametersObserver {
+      NotificationCenter.default.removeObserver(screenParametersObserver)
+    }
     if let vectorSubpixelLayoutObserver {
       NotificationCenter.default.removeObserver(vectorSubpixelLayoutObserver)
     }
@@ -1594,6 +1613,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     lastPixelHeight = pixH
     lastSurfaceScale = scale
     backend.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
+    // Re-evaluate downsample state on every surface change: a backing-scale or
+    // screen change can flip whether the framebuffer maps 1:1 onto the panel.
+    _ = updateDisplayDownsampledState()
     // Ladder textures were rasterized for the old backing scale; discard and
     // rebuild for the new one (the renderer's own scale-change branch already
     // rebuilt the active size synchronously above).
@@ -1604,6 +1626,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       }
     }
     return true
+  }
+
+  /// Detect whether the window's display is in a scaled (downsampled) mode and
+  /// push it to the vector backend, whose subpixel auto-policy falls back to
+  /// grayscale when downsampled. Returns whether the backend's effective layout
+  /// changed (the backend no-ops an unchanged value). Non-vector backends ignore
+  /// this — they have no subpixel path.
+  @discardableResult
+  private func updateDisplayDownsampledState() -> Bool {
+    guard let vector = backend as? VectorGlyphRenderer else { return false }
+    let downsampled = DisplayDownsampleDetector.isDownsampled(for: window)
+    let changed = vector.setDisplayDownsampled(downsampled)
+    if changed {
+      AppLog.render.info(
+        "vector subpixel layout -> \(vector.rendererStatus.vectorSubpixelLayout ?? "?") "
+          + "(displayDownsampled=\(downsampled))")
+    }
+    return changed
   }
 
   private func carryRenderInvalidationForGPUBackpressure() {

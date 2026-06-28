@@ -348,11 +348,18 @@ public final class VectorGlyphRenderer: RendererBackend {
 
   /// Set whether the display resamples the framebuffer (a "scaled" mode). When
   /// true, subpixel AA auto-disables (see `VectorSubpixelLayout.effective`).
-  public func setDisplayDownsampled(_ downsampled: Bool) {
-    guard downsampled != displayDownsampled else { return }
+  /// Set whether the display resamples the framebuffer (a "scaled" mode). When
+  /// true, subpixel AA auto-disables (see `VectorSubpixelLayout.effective`).
+  /// Returns whether the effective (rendered) layout changed, so the caller can
+  /// repaint; an unchanged value (including a no-op toggle) returns false.
+  @discardableResult
+  public func setDisplayDownsampled(_ downsampled: Bool) -> Bool {
+    guard downsampled != displayDownsampled else { return false }
     let previousEffective = effectiveSubpixelLayout
     displayDownsampled = downsampled
-    if effectiveSubpixelLayout != previousEffective { resetMaskCaches() }
+    let changed = effectiveSubpixelLayout != previousEffective
+    if changed { resetMaskCaches() }
+    return changed
   }
 
   private func resetMaskCaches() {

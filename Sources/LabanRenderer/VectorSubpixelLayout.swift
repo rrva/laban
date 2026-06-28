@@ -178,6 +178,27 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
     return configured
   }
 
+  /// Whether a display is in a "scaled" (downsampled) mode: macOS renders the
+  /// framebuffer at a size that does not match the panel's native pixel grid and
+  /// the display engine resamples it down. Subpixel AA cannot survive that
+  /// resample (the AA is computed for a pixel grid that is no longer the physical
+  /// one), so this feeds `effective(...)` to force grayscale. The decision is
+  /// the framebuffer/native pixel comparison; the AppKit caller supplies the
+  /// current display-mode pixel size and the native-flagged mode's pixel size.
+  /// Returns false when either size is unknown (0), leaving an opted-in subpixel
+  /// layout untouched rather than disabling it on a detection gap.
+  public static func displayIsDownsampled(
+    currentPixelWidth: Int,
+    currentPixelHeight: Int,
+    nativePixelWidth: Int,
+    nativePixelHeight: Int
+  ) -> Bool {
+    guard currentPixelWidth > 0, currentPixelHeight > 0,
+      nativePixelWidth > 0, nativePixelHeight > 0
+    else { return false }
+    return currentPixelWidth != nativePixelWidth || currentPixelHeight != nativePixelHeight
+  }
+
   public static func custom(
     name: String = "custom",
     offsets: SIMD3<Float>
