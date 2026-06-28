@@ -16,17 +16,23 @@
 #
 # Usage:
 #   scripts/profile-scroll-renderers --tab N [--port 8787] [--burst-seconds 6]
+#       [--voice Samantha] [--quiet]
+# Speaks progress ("1 of 4, gpu-driven", ... "Profiling complete") via `say` so
+# you know when to keep hands off the window; --quiet disables it.
 set -euo pipefail
 
 port=8787
 burst_seconds=6
 tab=""
 process="Laban"
+voice="Samantha"   # natural, clear English; empty string disables spoken cues
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) port="$2"; shift 2 ;;
     --burst-seconds) burst_seconds="$2"; shift 2 ;;
+    --voice) voice="$2"; shift 2 ;;
+    --quiet) voice=""; shift ;;
     --tab) tab="$2"; shift 2 ;;
     --process) process="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -40,6 +46,9 @@ post() {
     || { echo "POST $1 failed — is Laban running with --scroll-debug on ${port}?" >&2; exit 1; }
 }
 getj() { curl -fsS "${base}$1"; }
+# Spoken cue (non-blocking, never fails the run). Announces start/progress/stop so
+# you know when it's safe to touch the window again.
+speak() { [ -n "${voice}" ] && say -v "${voice}" "$1" >/dev/null 2>&1 & }
 
 if ! curl -fsS "${base}/scroll/state" >/dev/null 2>&1; then
   echo "scroll-debug server not reachable at ${base}." >&2
@@ -68,8 +77,11 @@ burst() {
   done
 }
 
+total=4
 measure_config() {
-  local label="$1"; shift
+  local step="$1"; local label="$2"; shift 2
+  echo "  [${step}/${total}] ${label}" >&2
+  speak "${step} of ${total}. ${label}."
   "$@"                  # apply config (renderer/mode switch)
   sleep 0.4             # let the switch settle + first frames render
   getj "/scroll/frame-stats?reset=1" >/dev/null   # clear the ring
@@ -84,13 +96,15 @@ set_renderer() { post "/config/renderer?name=$1"; }
 set_vector_mode() { post "/config/renderer?name=vectorGlyph"; post "/config/smooth-scroll?mode=$1"; }
 
 echo "measuring (tab ${tab:-focused}, ${burst_seconds}s burst per config)..." >&2
+speak "Profiling start. Hands off the Laban window."
 
 results=$(
-  measure_config "gpu-driven"   set_renderer gpuDriven
-  measure_config "vector-fluid" set_vector_mode fluid
-  measure_config "vector-crisp" set_vector_mode perPhase
-  measure_config "classic"      set_renderer classic
+  measure_config 1 "gpu-driven"   set_renderer gpuDriven
+  measure_config 2 "vector-fluid" set_vector_mode fluid
+  measure_config 3 "vector-crisp" set_vector_mode perPhase
+  measure_config 4 "classic"      set_renderer classic
 )
+speak "Profiling complete. You can use the window now."
 
 echo >&2
 echo "=== smooth-scroll jank (frame-interval ms; lower stddev/jank = smoother) ===" >&2
