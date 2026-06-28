@@ -1677,6 +1677,86 @@ def default_output_paths(trace: Path) -> tuple[Path, Path]:
     return build_dir / f"{stem}-metal-trace-analysis.json", build_dir / f"{stem}-metal-trace-analysis.md"
 
 
+def list_signpost_segments(
+    trace: Path,
+    scratch: Path,
+    descriptors_by_schema: dict[str, list["TableDescriptor"]],
+    available_set: set[str],
+) -> int:
+    # Signpost tables are not Metal schemas and vary by Xcode; the os_signpost /
+    # Points of Interest instrument exports under a schema containing "signpost".
+    # Discover it from the TOC rather than hard-coding a name.
+    signpost_schemas = sorted(s for s in available_set if "signpost" in s.lower())
+    if not signpost_schemas:
+        print(
+            "no signpost table in this trace.\n"
+            "  The recording template must include the 'Points of Interest' (os_signpost)\n"
+            "  instrument — the Metal System Trace template does NOT by default. Re-record\n"
+            "  with that instrument added, or use the 'Points of Interest' template.",
+            file=sys.stderr,
+        )
+        return 2
+
+    found_any = False
+    for schema in signpost_schemas:
+        descriptors = descriptors_by_schema.get(schema) or [
+            TableDescriptor(
+                schema=schema,
+                run_number="1",
+                xpath=f"/trace-toc/run/data/table[@schema={xpath_literal(schema)}]",
+            )
+        ]
+        rows: list[dict[str, str]] = []
+        for descriptor in descriptors:
+            out = scratch / f"signpost-{schema}-{descriptor.run_number}.xml"
+            try:
+                run_xctrace_export(trace, ["--xpath", descriptor.xpath], out)
+            except RuntimeError as exc:
+                print(redact(str(exc)), file=sys.stderr)
+                continue
+            for _cols, row in iter_table_rows(out):
+                rows.append(row)
+
+        # Keep only our renderer-config signposts (name == RenderConfig / change).
+        segments = []
+        for row in rows:
+            name = (row.get("name") or row.get("os-signpost-name") or "").strip()
+            label = (
+                row.get("message")
+                or row.get("os-signpost-message")
+                or row.get("label")
+                or ""
+            ).strip()
+            if "renderconfig" not in name.lower() and "render" not in label.lower():
+                continue
+            start = parse_duration_ms(row.get("start-time") or row.get("start") or "")
+            dur = row_duration_ms(row)
+            segments.append((start, dur, name, redact(label, max_len=120)))
+
+        if not segments:
+            print(
+                f"signpost table [{redact(schema)}]: {len(rows)} rows, but no RenderConfig\n"
+                "  segments. Either this trace predates the app's RenderConfig signposts, or\n"
+                "  no renderer/mode switch happened during capture.",
+                file=sys.stderr,
+            )
+            continue
+        found_any = True
+        print(f"signpost segments [{redact(schema)}]:")
+        print("  start(s)   dur(s)   label")
+        for start, dur, _name, label in segments:
+            s = f"{start/1000:.3f}" if start is not None else "  ?  "
+            d = f"{dur/1000:.3f}" if dur is not None else "  ?  "
+            print(f"  {s:>8}  {d:>7}   {label}")
+        print(
+            "\n  To analyze one segment, re-record that window or use Instruments' time\n"
+            "  filter, then run --cpu-only on the sub-range. Segment boundaries above are\n"
+            "  the RenderConfig interval starts (one per renderer/mode switch)."
+        )
+
+    return 0 if found_any else 2
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Analyze an Instruments .trace bundle for Laban Metal renderer CPU/GPU optimization.",
@@ -1717,6 +1797,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scratch-dir", type=Path, help="Directory for raw XML exports. Defaults to a temporary directory.")
     parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to parse per table; 0 means all rows.")
     parser.add_argument("--list-schemas", action="store_true", help="Only list sanitized table schemas in the trace.")
+    parser.add_argument(
+        "--signposts",
+        action="store_true",
+        help="List Points-of-Interest signpost segments (e.g. RenderConfig intervals "
+        "emitted by the app on renderer/mode change) with their time ranges, so one "
+        "capture can be sliced per configuration. Requires the trace to have been "
+        "recorded with the Points of Interest instrument (the Metal System Trace "
+        "template does NOT include it by default).",
+    )
 
     agent = parser.add_argument_group("agent iteration loop")
     agent.add_argument("--format", choices=["brief", "json", "md", "none"], default="brief",
@@ -1838,6 +1927,9 @@ def main() -> int:
             for schema in sorted(available_set):
                 print(redact(schema))
             return 0
+        if args.signposts:
+            return list_signpost_segments(
+                trace, scratch_root, descriptors_by_schema, available_set)
 
         parsed: list[str] = []
         skipped: list[str] = []
