@@ -71,6 +71,13 @@ public final class VectorGlyphRenderer: RendererBackend {
   private let device: MTLDevice
   private let queue: MTLCommandQueue
   private let layer: CAMetalLayer
+  /// Async, non-blocking drawable acquisition shared with `MetalRenderer`. The
+  /// vector path used a plain blocking `layer.nextDrawable()`, which stalled the
+  /// main thread (~p99 10 ms, max 51 ms in a scroll trace) whenever a present
+  /// fell behind — the source of vector scroll jank. The scheduler acquires off
+  /// the main thread, serializes frames to one in flight, and drops a scroll
+  /// tick rather than blocking on it.
+  private let drawableScheduler: MetalDrawableScheduler
   private let solidPipeline: MTLRenderPipelineState
   private let glyphCoveragePipeline: MTLRenderPipelineState
   private let glyphColorPipeline: MTLRenderPipelineState
@@ -99,6 +106,27 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// smooth scrolling glides instead of jumping. Zero when no scroll is in flight,
   /// which keeps static text on its single phase-0 mask (no regression).
   private var scrollPhaseOffset: CGPoint = .zero
+  /// Quantized phase from the previous frame and how many consecutive frames it
+  /// has held steady. Crisp mode only bakes per-phase masks once the phase has
+  /// *settled* (held for `perPhaseSettleFrames`): during an active fling the
+  /// fractional position changes every frame, so a per-phase mask baked this
+  /// frame is never reused — and its extra crispness is invisible under motion
+  /// blur anyway. Baking it every frame was a per-glyph dispatch storm (the
+  /// frame-time bench measured crisp at ~14.8 ms/frame vs the 8.33 ms budget),
+  /// the residual crisp scroll jank after the drawable + first-paint fixes.
+  /// While moving, crisp falls back to fluid's cheap phase-0 + slide (measured
+  /// at parity with classic); per-phase crispness returns the instant motion
+  /// rests, which is the only time the eye can resolve it.
+  private var lastQuantizedPhase: (qx: Int, qy: Int)?
+  private var phaseStableFrames = 0
+  /// Whether per-phase masks may be baked this frame (phase settled). Computed
+  /// once per `render` from phase stability; read by `ensureResidentMaskForMode`.
+  private var perPhaseBakeEnabledThisFrame = false
+  /// Frames the quantized phase must hold steady before crisp bakes per-phase
+  /// masks. 2 = "not changing this frame or last"; small enough that a rest
+  /// sharpens within ~2 ticks (~17 ms), large enough to skip baking during a
+  /// continuous fling where the phase moves every frame.
+  private static let perPhaseSettleFrames = 2
   /// Layout actually rendered, after the display-condition auto-policy
   /// (grayscale fallback on scaled/non-integer-scale displays).
   var effectiveSubpixelLayout: VectorSubpixelLayout {
@@ -122,6 +150,21 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var smoothScrollMode: VectorSmoothScrollMode = VectorSmoothScrollSettings.current()
 
   public var onFrameCompleted: (() -> Void)?
+  /// Set by the host view for the next frame only: when true, a frame whose
+  /// present pipeline is already busy is *dropped* rather than blocked on. Only
+  /// scroll-animation frames opt in (mirrors `MetalRenderer.dropNextFrameWhenBusy`)
+  /// — output-driven frames keep the blocking guarantee so typed output never
+  /// silently vanishes. Consumed (reset to false) by each `render` call.
+  public var dropNextFrameWhenBusy = false
+  /// Catch-up wake: a prefetched drawable landed after a drop-when-busy frame
+  /// missed. Rendering immediately (instead of waiting for the next display-link
+  /// tick) presents a second frame into the current swap interval — the escape
+  /// from the half-rate drawable-recycle basin. Fired on a background queue;
+  /// the receiver must hop to the main thread (mirrors `MetalRenderer`).
+  public var onDrawableReadyAfterMiss: (() -> Void)? {
+    get { drawableScheduler.onDrawableReadyAfterMiss }
+    set { drawableScheduler.onDrawableReadyAfterMiss = newValue }
+  }
   public var rendererStatus: RendererStatus {
     RendererStatus(
       configuredRenderer: RendererSelection.vectorGlyph.rawValue,
@@ -242,6 +285,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     self.device = device
     self.queue = queue
     self.layer = layer
+    self.drawableScheduler = MetalDrawableScheduler(layer: layer)
     self.solidPipeline = solidPipeline
     self.glyphCoveragePipeline = glyphCoveragePipeline
     self.glyphColorPipeline = glyphColorPipeline
@@ -267,6 +311,22 @@ public final class VectorGlyphRenderer: RendererBackend {
   }
 
   private static let accumulationSampleCap = 512
+  /// Per-frame sample chunk for a base mask's first paint while scrolling, so a
+  /// new glyph refines to the 512 cap over ~8 frames instead of bursting it in
+  /// one (see `scrollingBaseSamplesThisFrame`). Divides 512 so convergence lands
+  /// exactly on the cap.
+  private static let scrollingBaseFirstPaintChunk = 64
+  /// Minimum samples a fresh base mask gets even when the per-frame base budget
+  /// is spent — it must be resident this frame (it is the fallback mask), just
+  /// at lower quality until later frames refine it. Divides 512.
+  private static let scrollingBaseFirstPaintFloor = 8
+  /// Total base-first-paint samples all newly-resident glyphs may share in one
+  /// scroll frame. A fast fling can reveal a whole new row (~160 glyphs) at once;
+  /// without a global cap that is 160 × 64 samples in a single command buffer —
+  /// the burst that slips the present. 1024 ≈ 16 glyphs at the full chunk, or all
+  /// of a new row at the floor; the rest refine over the next frames.
+  private static let baseFirstPaintBudgetPerFrame = 1024
+  private var remainingBaseFirstPaintBudget = 0
   /// Minimum present interval hinted to the compositor for smooth-scroll frames,
   /// so a ProMotion panel holds 120 Hz instead of dropping into the half-rate
   /// basin after a single missed frame (mirrors `MetalRenderer`).
@@ -439,6 +499,31 @@ public final class VectorGlyphRenderer: RendererBackend {
     scrollPhaseOffset = resolved
   }
 
+  /// Track whether the quantized sub-pixel phase has settled, so crisp mode only
+  /// pays the per-phase bake when the result is actually reused and visible (at
+  /// rest), not every frame of a fling. Called once per `render`.
+  private func updatePhaseStability() {
+    guard scrollPhaseOffset != .zero else {
+      // At rest (no scroll): phase 0 is trivially stable. Per-phase baking is
+      // moot here (the per-phase path only runs when scrollPhaseOffset != 0),
+      // but reset so the first frame of the next scroll counts as unstable.
+      lastQuantizedPhase = nil
+      phaseStableFrames = 0
+      perPhaseBakeEnabledThisFrame = false
+      return
+    }
+    let phase = Self.quantizedPhase(pointOffset: scrollPhaseOffset, scale: scale)
+    if let last = lastQuantizedPhase, last.qx == phase.qx, last.qy == phase.qy {
+      phaseStableFrames += 1
+    } else {
+      phaseStableFrames = 1
+    }
+    lastQuantizedPhase = (phase.qx, phase.qy)
+    // Settled means the phase held for at least `perPhaseSettleFrames` frames —
+    // i.e. motion has effectively stopped at a fractional rest position.
+    perPhaseBakeEnabledThisFrame = phaseStableFrames >= Self.perPhaseSettleFrames
+  }
+
   private func resetMaskCaches() {
     maskAtlas = VectorGlyphMaskAtlas()
     atlasTexture = nil
@@ -485,13 +570,37 @@ public final class VectorGlyphRenderer: RendererBackend {
 
   @discardableResult
   public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
+    let dropIfBusy = dropNextFrameWhenBusy
+    dropNextFrameWhenBusy = false
+
+    // Serialize against the previous frame's present pipeline so only one frame
+    // at a time writes the shared target/atlas. A scroll frame (dropIfBusy) that
+    // finds the pipeline still busy is dropped immediately — the next tick
+    // repaints from newer state — instead of stalling the main thread. Non-scroll
+    // frames never drop (needsFullFrame forces a ≤16 ms wait for capacity), so
+    // typed output and static repaints keep the old always-commit guarantee.
+    let needsFullFrame = !dropIfBusy || damage == .full
+    guard
+      let scheduledFrame = drawableScheduler.beginFrame(
+        needsFullFrame: needsFullFrame, dropIfBusy: dropIfBusy)
+    else {
+      // Pipeline at capacity and this frame opted into dropping: the target
+      // still shows the previous frame, repainted next tick from newer state.
+      return false
+    }
+
     guard let target = ensureTargetTexture(),
       let commandBuffer = queue.makeCommandBuffer()
-    else { return false }
+    else {
+      scheduledFrame.finish()
+      return false
+    }
 
     var retainedInstanceBuffers: [MTLBuffer] = []
     maskAtlas.beginFrame()
     remainingPhasedSampleBudget = Self.phasedSampleBudgetPerFrame
+    remainingBaseFirstPaintBudget = Self.baseFirstPaintBudgetPerFrame
+    updatePhaseStability()
     lastRasterFallbackGlyphs = prepareGlyphResources(
       commands: commands,
       commandBuffer: commandBuffer)
@@ -503,9 +612,19 @@ public final class VectorGlyphRenderer: RendererBackend {
       into: target,
       commandBuffer: commandBuffer,
       retainedInstanceBuffers: &retainedInstanceBuffers)
-    if let drawable = layer.nextDrawable() {
+
+    // Acquire the drawable AFTER the offscreen target/atlas work is encoded, so
+    // Core Animation's limited drawable pool is held for the shortest interval.
+    // Non-blocking while scrolling: a late drawable parks in the scheduler and
+    // the next tick presents it (drop-don't-block). The target is rendered and
+    // committed regardless of the present so the atlas keeps accumulating and
+    // `pngData` (offscreen readback) stays valid even on a dropped present.
+    let drawable = scheduledFrame.acquireDrawable(nonBlocking: dropIfBusy)
+    if let drawable, drawable.texture.width == target.width,
+      drawable.texture.height == target.height
+    {
       encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
-      if scrollPhaseOffset != .zero {
+      if dropIfBusy || scrollPhaseOffset != .zero {
         // Paced present while smooth-scrolling: declare the intended 120 Hz
         // cadence so a ProMotion panel holds its refresh rate. Without the hint,
         // one missed frame lets the panel infer a lower rate and drawable
@@ -525,6 +644,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     commandBuffer.addCompletedHandler { _ in
       _ = buffersToRetain
       completion?()
+      scheduledFrame.finish()
     }
     commandBuffer.commit()
     lastCommandBuffer = commandBuffer
@@ -1061,6 +1181,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     syntheticItalic: Bool = false,
     phaseOffset: CGPoint = .zero,
     budgetGated: Bool = false,
+    scrolling: Bool = false,
     commandBuffer: MTLCommandBuffer
   ) -> VectorGlyphMaskAtlas.Entry? {
     guard
@@ -1077,12 +1198,20 @@ public final class VectorGlyphRenderer: RendererBackend {
 
     let existing = maskAtlas.entry(for: descriptor.key)
     let sampleStart = existing.map { maskAtlas.sampleCount(for: $0) } ?? 0
-    let scheduled =
-      budgetGated
-      ? Self.phasedSamplesThisFrame(
+    let scheduled: Int
+    if budgetGated {
+      scheduled = Self.phasedSamplesThisFrame(
         sampleStart: sampleStart, budgetRemaining: remainingPhasedSampleBudget)
-      : Self.accumulationSamplesThisFrame(
+    } else if scrolling {
+      // A base mask entering the viewport mid-scroll: refine in chunks under a
+      // per-frame global budget instead of a 512-sample burst (or a whole new
+      // row of bursts), so the bake doesn't slip this scroll frame's present.
+      scheduled = Self.scrollingBaseSamplesThisFrame(
+        sampleStart: sampleStart, budgetRemaining: remainingBaseFirstPaintBudget)
+    } else {
+      scheduled = Self.accumulationSamplesThisFrame(
         sampleStart: sampleStart, maskPixels: descriptor.width * descriptor.height)
+    }
     // A brand-new entry occupies an atlas slot eviction may have just recycled, so
     // its pixels are stale until rasterized once. If we cannot afford even one
     // sample this frame (the per-frame phased budget is spent), do NOT reserve it:
@@ -1107,7 +1236,11 @@ public final class VectorGlyphRenderer: RendererBackend {
     guard sampleStart < Self.accumulationSampleCap else { return entry }
     let sampleCount = min(Self.accumulationSampleCap - sampleStart, scheduled)
     guard sampleCount > 0 else { return entry }
-    if budgetGated { remainingPhasedSampleBudget -= sampleCount }
+    if budgetGated {
+      remainingPhasedSampleBudget -= sampleCount
+    } else if scrolling {
+      remainingBaseFirstPaintBudget -= sampleCount
+    }
     guard
       scratchRasterizer.encodeAccumulate(
         outline: descriptor.outline,
@@ -1147,14 +1280,28 @@ public final class VectorGlyphRenderer: RendererBackend {
     syntheticItalic: Bool = false,
     commandBuffer: MTLCommandBuffer
   ) -> VectorGlyphMaskAtlas.Entry? {
+    // While scrolling (any non-zero phase), a base mask that is first becoming
+    // resident refines over several frames rather than baking 512 samples in
+    // this scroll frame — the residual-jank fix. At rest (phase zero) the base
+    // mask keeps its full-quality single-frame first paint, so static text is
+    // crisp immediately and the parity baseline is unchanged.
+    let scrolling = scrollPhaseOffset != .zero
     let base = ensureResidentMask(
       for: glyph,
       font: font,
       syntheticItalic: syntheticItalic,
       phaseOffset: .zero,
       budgetGated: false,
+      scrolling: scrolling,
       commandBuffer: commandBuffer)
     guard smoothScrollMode == .perPhase, scrollPhaseOffset != .zero else { return base }
+    // Only bake the per-phase mask once the phase has settled (motion at a
+    // fractional rest). During an active fling the phase moves every frame, so
+    // the bake would never be reused and its crispness is invisible under motion
+    // blur — baking it anyway was the crisp per-frame dispatch storm. While
+    // moving, the resident phase-0 base + fluid slide carries the glyph (parity
+    // with classic); the instant motion rests, per-phase crispness returns.
+    guard perPhaseBakeEnabledThisFrame else { return base }
     // Best-effort per-phase mask (budget-gated). Failure is fine: the resident
     // phase-0 mask renders with the fluid slide for this glyph this frame.
     _ = ensureResidentMask(
@@ -1174,6 +1321,38 @@ public final class VectorGlyphRenderer: RendererBackend {
     if sampleStart < 128 { return 16 }
     if sampleStart < 256 { return 8 }
     return 4
+  }
+
+  /// First-paint chunk for a *base* (phase-0) mask that goes resident **while
+  /// scrolling**. A static first paint takes the full 512 in one frame (crisp at
+  /// rest), but during a scroll many glyphs enter the viewport at once and a
+  /// 512-sample burst per new glyph injects multi-ms of GPU compute into that
+  /// scroll frame's command buffer — the residual vector scroll jank that
+  /// remained after the drawable-blocking fix (the bake burst slips the present,
+  /// the next display-link tick lands a vsync late: the periodic p99 ≈ 2×8.33 ms
+  /// drop). Front-load in 64-sample chunks instead: a new glyph reaches full
+  /// quality within ~8 frames (~70 ms) while motion blur hides the coarser
+  /// intermediate AA, and the per-frame bake cost per new glyph drops 8×.
+  ///
+  /// `budgetRemaining` is the per-frame *global* base-first-paint budget shared
+  /// across every new glyph this frame: a fast fling reveals a whole new row at
+  /// once (~160 glyphs), and 160 chunks would still be a burst, so the chunk is
+  /// clamped to what the frame's budget allows. The floor guarantees a fresh mask
+  /// always gets at least one sample even when the budget is spent — a base mask
+  /// must be resident (it IS the fallback), so it can never be skipped to the
+  /// raster path mid-scroll; it just refines over more frames. `classic`'s
+  /// pre-baked atlas pays none of this; this closes the gap that made vector
+  /// scrolling measurably less smooth.
+  static func scrollingBaseSamplesThisFrame(sampleStart: Int, budgetRemaining: Int) -> Int {
+    guard sampleStart < Self.accumulationSampleCap else { return 0 }
+    let remainingToCap = Self.accumulationSampleCap - sampleStart
+    let ideal = min(Self.scrollingBaseFirstPaintChunk, remainingToCap)
+    // Budget exhausted: still paint the floor (capped to what the mask needs) so
+    // the glyph is resident this frame and refines later.
+    if budgetRemaining <= 0 {
+      return min(Self.scrollingBaseFirstPaintFloor, remainingToCap)
+    }
+    return min(ideal, max(Self.scrollingBaseFirstPaintFloor, budgetRemaining), remainingToCap)
   }
 
   /// Samples to encode this frame for a *phased* (sub-pixel scroll) mask, given

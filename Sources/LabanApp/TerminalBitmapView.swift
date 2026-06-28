@@ -372,6 +372,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// Renderer instance whose drawable catch-up wake has been installed, so
   /// backend swaps re-install onto the new renderer.
   private weak var drawableWakeInstalledRenderer: MetalRenderer?
+  /// Same, for the vector backend (it shares MetalRenderer's drawable scheduler
+  /// and its miss-recovery wake). Tracked separately so a classic↔vector backend
+  /// swap re-installs the wake onto whichever renderer is now live.
+  private weak var drawableWakeInstalledVectorRenderer: VectorGlyphRenderer?
 
   /// Whether the previous frame animated the attention marker. The animation
   /// never touches terminal damage: it repaints via the renderer's dedicated
@@ -2195,8 +2199,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // tick repaints from newer state) while blocking on it delays the next
     // tick and halves the cadence. Only scroll animation frames opt in —
     // output-driven frames keep the blocking guarantees.
-    metalRenderer?.dropNextFrameWhenBusy =
+    let dropFrameWhenBusy =
       scrollAnimating || subCellRows != 0 || sidebarScrollFrame.animating
+    metalRenderer?.dropNextFrameWhenBusy = dropFrameWhenBusy
+    // The vector backend now shares MetalRenderer's drawable scheduler, so it
+    // honours the same drop-don't-block contract: without it the vector path
+    // blocked on `nextDrawable()` and dropped ~5–8% of scroll frames.
+    let vectorRenderer = backend as? VectorGlyphRenderer
+    vectorRenderer?.dropNextFrameWhenBusy = dropFrameWhenBusy
     // Attention pulse frames repaint the sidebar in the renderer's dedicated
     // scissored strip pass instead of forcing full-damage terminal repaints.
     // (The software backend ignores damage and repaints every command, so it
@@ -2206,6 +2216,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if let metalRenderer, drawableWakeInstalledRenderer !== metalRenderer {
       drawableWakeInstalledRenderer = metalRenderer
       metalRenderer.onDrawableReadyAfterMiss = { [weak self] in
+        DispatchQueue.main.async {
+          self?.advanceFrame(wake: .renderRetry)
+        }
+      }
+    }
+    if let vectorRenderer, drawableWakeInstalledVectorRenderer !== vectorRenderer {
+      drawableWakeInstalledVectorRenderer = vectorRenderer
+      vectorRenderer.onDrawableReadyAfterMiss = { [weak self] in
         DispatchQueue.main.async {
           self?.advanceFrame(wake: .renderRetry)
         }

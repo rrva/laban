@@ -129,4 +129,73 @@ final class VectorGlyphAtlasEvictionTests: XCTestCase {
     XCTAssertEqual(
       VectorGlyphRenderer.accumulationSamplesThisFrame(sampleStart: 0, maskPixels: 32 * 32), 512)
   }
+
+  /// M7 residual-jank fix: a *base* mask entering the viewport mid-scroll must
+  /// refine in bounded chunks (not a 512-sample burst that slips the scroll
+  /// frame's present), converge exactly to the 512 cap over a few frames, and
+  /// never return 0 for an unfinished mask (a base mask must always be resident —
+  /// never a raster fallback mid-scroll). A static base mask keeps its full
+  /// single-frame 512 first paint.
+  func testScrollingBaseFirstPaintChunksToCapWithoutBursting() {
+    // Ample budget: a single glyph refines in chunks up to the cap.
+    func chunk(_ start: Int) -> Int {
+      VectorGlyphRenderer.scrollingBaseSamplesThisFrame(
+        sampleStart: start, budgetRemaining: 9999)
+    }
+    // A fresh mask takes a bounded chunk, far below the 512 static burst.
+    let first = chunk(0)
+    XCTAssertGreaterThan(first, 0)
+    XCTAssertLessThan(first, 512, "scrolling first paint must not burst the full cap")
+
+    // Walking the schedule must reach exactly 512 and then stop (no over-shoot,
+    // no infinite non-zero tail) — and every step before the cap is non-zero, so
+    // the glyph is always resident.
+    var total = 0
+    var frames = 0
+    while true {
+      let n = chunk(total)
+      if n == 0 { break }
+      XCTAssertGreaterThan(n, 0)
+      total += n
+      frames += 1
+      XCTAssertLessThanOrEqual(total, 512)
+      XCTAssertLessThan(frames, 100, "scrolling first paint never converged")
+    }
+    XCTAssertEqual(total, 512, "scrolling first paint must converge to the full cap")
+    // Converges in a handful of frames (motion blur hides the intermediate AA),
+    // not one burst and not hundreds of crawling frames.
+    XCTAssertGreaterThan(frames, 1)
+    XCTAssertLessThanOrEqual(frames, 16)
+
+    // Already-capped masks schedule nothing more.
+    XCTAssertEqual(chunk(512), 0)
+    XCTAssertEqual(chunk(600), 0)
+  }
+
+  /// The global per-frame base-first-paint budget bounds the total samples a
+  /// fast fling (a whole new row entering at once) can bake in one frame, while
+  /// the floor keeps every entering glyph resident (never skipped to raster).
+  func testScrollingBaseFirstPaintGlobalBudgetBoundsBurstYetKeepsEveryGlyphResident() {
+    let budget = 1024
+    var remaining = budget
+    var totalEncoded = 0
+    var residentCount = 0
+    // A new row of ~160 fresh glyphs all entering this frame.
+    let newGlyphsThisFrame = 160
+    for _ in 0..<newGlyphsThisFrame {
+      let n = VectorGlyphRenderer.scrollingBaseSamplesThisFrame(
+        sampleStart: 0, budgetRemaining: remaining)
+      // Floor guarantees residency even past budget exhaustion.
+      XCTAssertGreaterThan(n, 0, "a base mask must always be resident mid-scroll")
+      residentCount += 1
+      totalEncoded += n
+      remaining -= n
+    }
+    XCTAssertEqual(residentCount, newGlyphsThisFrame, "every entering glyph must be resident")
+    // Bounded: the in-budget glyphs honour the budget; once spent, the rest each
+    // add only the floor. Total ≤ budget + floor × (glyphs that overran).
+    XCTAssertLessThan(totalEncoded, 512 * newGlyphsThisFrame, "did not bound the bake burst")
+    // Far below baking the full 512 for every new glyph in one frame.
+    XCTAssertLessThan(totalEncoded, budget + 8 * newGlyphsThisFrame + 64)
+  }
 }
