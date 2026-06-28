@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Record one Instruments trace while driving smooth-scroll bursts across each
+# renderer / smooth-scroll config, so a single capture can be sliced per config
+# via the RenderConfig signpost segments the app emits on each switch.
+#
+# PREREQUISITE: launch Laban yourself with the scroll-debug server enabled, e.g.
+#   LABAN_SCROLL_DEBUG=1 open ~/Laban.app      (or pass --scroll-debug)
+# This script never launches the app (single-instance ghost risk); it only
+# drives the already-running instance over HTTP and records it with xctrace.
+#
+# Usage:
+#   scripts/profile-scroll-renderers [--port 8787] [--burst-seconds 5] \
+#       [--out ~/Downloads/scroll-profile.trace]
+set -euo pipefail
+
+port=8787
+burst_seconds=5
+out="$HOME/Downloads/scroll-profile-$(date +%Y%m%d-%H%M%S).trace"
+process="Laban"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port) port="$2"; shift 2 ;;
+    --burst-seconds) burst_seconds="$2"; shift 2 ;;
+    --out) out="$2"; shift 2 ;;
+    --process) process="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+base="http://127.0.0.1:${port}"
+
+post() { curl -fsS -X POST "${base}$1" >/dev/null || { echo "POST $1 failed — is Laban running with LABAN_SCROLL_DEBUG=${port}?" >&2; exit 1; }; }
+
+# Confirm the control surface is up before recording.
+if ! curl -fsS "${base}/scroll/state" >/dev/null 2>&1; then
+  echo "scroll-debug server not reachable at ${base}." >&2
+  echo "Launch Laban with LABAN_SCROLL_DEBUG=${port} first (you, not this script)." >&2
+  exit 1
+fi
+
+# One smooth-scroll burst: a sequence of sub-cell PD-animated steps over ~N s.
+burst() {
+  local label="$1"
+  echo "  scrolling: ${label}" >&2
+  local ticks=$(( burst_seconds * 10 ))
+  for _ in $(seq 1 "$ticks"); do
+    # Alternate direction with a fling velocity so the PD controller animates
+    # continuously through sub-cell offsets (not row snaps).
+    post "/scroll/smooth?rows=-3&velocity=-40"
+    sleep 0.05
+    post "/scroll/smooth?rows=3&velocity=40"
+    sleep 0.05
+  done
+}
+
+# Drive the configs in a background job; xctrace records the foreground attach.
+drive() {
+  sleep 1  # let recording warm up
+  post "/config/renderer?name=gpuDriven";        burst "gpu-driven"
+  post "/config/renderer?name=vectorGlyph"
+  post "/config/smooth-scroll?mode=fluid";        burst "vector/fluid"
+  post "/config/smooth-scroll?mode=perPhase";     burst "vector/crisp"
+  post "/config/renderer?name=classic";           burst "classic"
+}
+
+total=$(( 1 + burst_seconds * 3 + 3 ))
+echo "recording ${total}s to ${out} (attach ${process})" >&2
+drive &
+drive_pid=$!
+
+xcrun xctrace record --template "Metal System Trace" \
+  --time-limit "${total}s" --attach "${process}" --output "${out}"
+
+wait "${drive_pid}" 2>/dev/null || true
+
+echo >&2
+echo "trace: ${out}" >&2
+echo "segment map:" >&2
+scripts/analyze-metal-trace "${out}" --signposts || true
+echo >&2
+echo "Next: analyze a segment's CPU with --cpu-only (time-filter in Instruments" >&2
+echo "to a single RenderConfig interval from the map above)." >&2
