@@ -586,6 +586,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // touching shared state.
     installFrameCompletionHook()
 
+    // Open the first profiling segment for the initial renderer config, so a
+    // capture started before any live switch is still labeled.
+    markRenderConfigForProfiling()
+
     // When the blink driver fires a phase flip it calls advanceFrame()
     // directly so the cursor toggles immediately instead of waiting up to
     // 125 ms for the next 8 Hz display-link tick.
@@ -670,6 +674,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     ) { [weak self] _ in
       guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
       vector.refreshSmoothScrollMode()
+      self.markRenderConfigForProfiling()
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -985,6 +990,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard metal.configuredRendererMode != metalMode else { return }
       metal.configuredRendererMode = metalMode
       metal.clearRendererStatusOverride()
+      markRenderConfigForProfiling()
       renderInvalidated = true
       if window != nil {
         scheduleRenderRetry()
@@ -1003,6 +1009,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     lastPixelHeight = 0
     lastSurfaceScale = 0
     _ = recreateSurface()
+    markRenderConfigForProfiling()
     renderInvalidated = true
     if window != nil {
       scheduleRenderRetry()
@@ -1010,6 +1017,20 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if !backendSelfPresents {
       needsDisplay = true
     }
+  }
+
+  /// Emit a Points-of-Interest signpost segment for the active renderer config,
+  /// so one Instruments capture can be sliced per configuration (switch renderers
+  /// or smooth-scroll mode live, then segment the trace). Call after any change
+  /// that alters what is being measured.
+  private func markRenderConfigForProfiling() {
+    let renderer = backend.rendererStatus.effectiveRenderer
+    var label = renderer
+    if backend is VectorGlyphRenderer {
+      let mode = VectorSmoothScrollSettings.current() == .fluid ? "fluid" : "crisp"
+      label = "vector/\(mode)/\(VectorSubpixelLayout.persistedPreset().rawValue)"
+    }
+    RenderSignpost.configActivated(label)
   }
 
   func snapshotCommandsHook(captureFrame: Int) -> TerminalSurfaceController.SnapshotCommandsHook? {
