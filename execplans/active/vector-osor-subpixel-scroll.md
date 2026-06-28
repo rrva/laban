@@ -379,7 +379,26 @@ Acceptance (autonomous + observable):
   paint). The bounded-churn gate fails before eviction (1488 residency failures) and
   passes after; all baselines green; bundle builds. The budget/eviction only bites
   once phased masks exist, i.e. under M6 scroll; static rendering today is unchanged.
-- [ ] M6 — smooth sub-pixel scroll plumbing + end-to-end gate + spec.md note.
+- [x] (2026-06-28) M6 — smooth sub-pixel scroll, end to end. `TerminalBitmapView`
+  already snaps the scroll offset to whole device pixels; M6 routes the **signed
+  sub-pixel remainder** that snapping discards to the vector backend only
+  (`setScrollPhaseOffset`, points), leaving the classic path on the snapped offset.
+  The renderer folds that phase into `maskDescriptor` via `quantizedPhase(...)`
+  (OSOR u0.8, signed, clamped ±0.5 px — *not* `frac()`, which would wrap a negative
+  phase by a whole pixel), so both the bake (`ensureResidentMask`) and the lookup
+  (`cachedMask`) compute the same phased `Key` and the accumulate kernel biases its
+  sample grid by the matching signed offset (y negated for the kernel's Y-down mask
+  vs FrameProducer's Y-up points). The quad stays pixel-aligned (crisp at rest); the
+  mask carries the sub-pixel shift. Static frames pass offset 0 → phase 0 → the same
+  single mask as before (`VectorGlyph`/`AtlasEviction` baselines stay byte-identical
+  green). Gate `VectorSmoothScrollTests`: pure `quantizedPhase` (signed, no wrap,
+  clamp) + end-to-end (sweep phase across a device pixel through the full
+  `render()`; ink centroid moves ~1 px monotonically with no raster fallback and no
+  row snap). End-to-end gate fails before the wiring (no motion) and passes after.
+  `spec.md` §19 records smooth sub-pixel scrolling as intended vector-backend
+  behavior (scope expansion per AGENTS.md). Bundle builds. **Manual on-device glide
+  inspection pending** a GUI relaunch (scroll slowly with the vector backend: text
+  should glide and settle sharp).
 
 ## Decision Log
 

@@ -2098,8 +2098,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let subCellRows = displayedScrollRows - Double(appliedScrollRows)
     // Snapped to whole device pixels so glyphs never rasterize at subpixel
     // positions while content is in motion (text stays sharp mid-scroll).
-    let scrollContentYOffset =
-      (CGFloat(subCellRows) * CGFloat(cellHeight) * surfaceScale).rounded() / surfaceScale
+    let scrollContentYDevicePixels = CGFloat(subCellRows) * CGFloat(cellHeight) * surfaceScale
+    let scrollContentYDeviceSnapped = scrollContentYDevicePixels.rounded()
+    let scrollContentYOffset = scrollContentYDeviceSnapped / surfaceScale
+    // The signed sub-pixel remainder that snapping discards (∈ [-0.5, 0.5] device
+    // px). The vector backend bakes this into its per-phase glyph masks (M4) so
+    // smooth scroll glides sub-pixel while the snapped quad stays pixel-crisp;
+    // the classic path ignores it and renders the snapped offset only.
+    let scrollSubpixelRemainderPoints =
+      (scrollContentYDevicePixels - scrollContentYDeviceSnapped) / surfaceScale
+    (backend as? VectorGlyphRenderer)?.setScrollPhaseOffset(
+      CGPoint(x: 0, y: scrollSubpixelRemainderPoints))
     // Resampled scroll frames are drop-don't-block: when the present
     // pipeline is at capacity, skipping this tick costs nothing (the next
     // tick repaints from newer state) while blocking on it delays the next

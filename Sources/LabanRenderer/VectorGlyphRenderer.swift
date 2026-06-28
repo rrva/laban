@@ -42,6 +42,9 @@ private struct VectorMaskDescriptor {
   var width: Int
   var height: Int
   var origin: CGPoint
+  // Signed device-pixel sub-pixel phase baked into this mask (the accumulate
+  // kernel biases its sample grid by this). Zero for static (integer-cell) text.
+  var subpixelSampleOffset: CGPoint = .zero
 }
 
 public final class VectorGlyphRenderer: RendererBackend {
@@ -71,6 +74,12 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var accumTexture: MTLTexture?
   public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
   private var displayDownsampled = false
+  /// Sub-cell scroll offset for the current frame, in *points* (the FrameProducer
+  /// coordinate space). The vector path renders glyphs at this true fractional
+  /// position via per-phase masks (M4) instead of snapping to the pixel grid, so
+  /// smooth scrolling glides instead of jumping. Zero when no scroll is in flight,
+  /// which keeps static text on its single phase-0 mask (no regression).
+  private var scrollPhaseOffset: CGPoint = .zero
   /// Layout actually rendered, after the display-condition auto-policy
   /// (grayscale fallback on scaled/non-integer-scale displays).
   var effectiveSubpixelLayout: VectorSubpixelLayout {
@@ -369,6 +378,16 @@ public final class VectorGlyphRenderer: RendererBackend {
     let changed = effectiveSubpixelLayout != previousEffective
     if changed { resetMaskCaches() }
     return changed
+  }
+
+  /// Set the sub-cell scroll offset (in points) for the frames that follow, so
+  /// the vector path renders glyphs at their true fractional position through
+  /// per-phase masks. The app passes the unsnapped scroll remainder here while
+  /// the classic path keeps the pixel-snapped offset. Pass `.zero` (the default
+  /// once scrolling settles) to return to static phase-0 rendering.
+  public func setScrollPhaseOffset(_ offset: CGPoint) {
+    let resolved = offset.x.isFinite && offset.y.isFinite ? offset : .zero
+    scrollPhaseOffset = resolved
   }
 
   private func resetMaskCaches() {
@@ -856,6 +875,10 @@ public final class VectorGlyphRenderer: RendererBackend {
     let width = max(1, Int(ceil(bounds.width * scale)))
     let height = max(1, Int(ceil(bounds.height * scale)))
     let origin = CGPoint(x: floor(bounds.minX), y: floor(bounds.minY))
+    // Quantize the current sub-cell scroll offset to OSOR's u0.8 (1/256 device
+    // px) so near-identical phases collapse to one cache entry. Static frames
+    // (offset 0) quantize to 0 → the same single phase-0 mask as before.
+    let phase = Self.quantizedPhase(pointOffset: scrollPhaseOffset, scale: scale)
     let key = VectorGlyphMaskAtlas.Key(
       font: ObjectIdentifier(font),
       glyph: glyph,
@@ -863,13 +886,45 @@ public final class VectorGlyphRenderer: RendererBackend {
       height: height,
       originX: Int(origin.x),
       originY: Int(origin.y),
-      syntheticItalic: syntheticItalic)
+      syntheticItalic: syntheticItalic,
+      quantizedOffsetX: phase.qx,
+      quantizedOffsetY: phase.qy)
     return VectorMaskDescriptor(
       outline: outline,
       key: key,
       width: width,
       height: height,
-      origin: origin)
+      origin: origin,
+      subpixelSampleOffset: phase.sampleOffset)
+  }
+
+  /// Quantize a point-space sub-cell offset to a device-pixel u0.8 phase. Returns
+  /// the quantized key fields (1/256 device px, wrapped to one pixel) and the
+  /// matching signed device-pixel sample offset the accumulate kernel biases by.
+  /// The kernel's pixelBase is Y-down within the mask while FrameProducer point Y
+  /// is Y-up, so the y sample offset is negated to keep bake and placement aligned.
+  static func quantizedPhase(
+    pointOffset: CGPoint,
+    scale: CGFloat
+  ) -> (qx: Int, qy: Int, sampleOffset: CGPoint) {
+    // `pointOffset` is the *signed sub-pixel remainder* (the fraction the app
+    // rounds away when snapping the scroll offset to whole device pixels), so the
+    // quad stays pixel-aligned (crisp, texel↔pixel 1:1) and the mask carries the
+    // sub-pixel shift. Quantize the signed device-pixel remainder directly to
+    // u0.8 (1/256 px); do NOT take frac(), which would wrap a −0.3 px phase to
+    // +0.7 px and misplace the glyph by a whole pixel. Clamp to ±0.5 px: a larger
+    // value means the caller failed to snap and should be treated as the nearest
+    // half-pixel rather than aliased.
+    func quantize(_ devicePixels: Double) -> (q: Int, frac: Double) {
+      let clamped = min(0.5, max(-0.5, devicePixels))
+      let q = Int((clamped * 256).rounded())
+      return (q, Double(q) / 256.0)
+    }
+    let px = quantize(Double(pointOffset.x) * Double(scale))
+    let py = quantize(Double(pointOffset.y) * Double(scale))
+    // Kernel pixelBase is Y-down within the mask; FrameProducer point Y is Y-up,
+    // so the y sample bias is negated to keep bake and on-screen placement aligned.
+    return (px.q, py.q, CGPoint(x: px.frac, y: -py.frac))
   }
 
   private func cachedMask(
@@ -937,6 +992,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         sampleCount: sampleCount,
         seed: accumulationSeed(glyph: glyph, font: font, descriptor: descriptor),
         subpixelLayout: effectiveSubpixelLayout,
+        subpixelOffset: descriptor.subpixelSampleOffset,
         accumTexture: accumTexture,
         resolvedTexture: resolvedTexture,
         commandBuffer: commandBuffer)
@@ -994,6 +1050,8 @@ public final class VectorGlyphRenderer: RendererBackend {
     mix(UInt32(bitPattern: Int32(descriptor.key.originX)))
     mix(UInt32(bitPattern: Int32(descriptor.key.originY)))
     mix(descriptor.key.syntheticItalic ? 1 : 0)
+    mix(UInt32(bitPattern: Int32(descriptor.key.quantizedOffsetX)))
+    mix(UInt32(bitPattern: Int32(descriptor.key.quantizedOffsetY)))
     let pointSize = UInt32(max(0, Int((CTFontGetSize(font) * 256).rounded())))
     mix(pointSize)
     return hash == 0 ? 1 : hash
