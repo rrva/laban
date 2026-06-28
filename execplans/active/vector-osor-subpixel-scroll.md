@@ -400,6 +400,47 @@ Acceptance (autonomous + observable):
   inspection pending** a GUI relaunch (scroll slowly with the vector backend: text
   should glide and settle sharp).
 
+### Post-M6 — scroll-jank investigation (measurement + diagnosis, fix pending)
+
+On-device A/B (MacBook, Low Power Mode OFF → real 120 Hz) found the vector renderer
+**feels less smooth than gpu-driven/classic**, and quantified it. Key facts and tools:
+
+- **Metric is frame-interval variance, not average FPS** (SOTA guidance; macOS 27's
+  `metalperftrace` is unavailable on this 26.5 box). Added an in-app jank meter:
+  `TerminalBitmapView` records per-frame display-link intervals in a bounded ring;
+  `GET /scroll/frame-stats[?reset=1]` reports fps/mean/p50/p95/p99/**stddev**/jank%.
+- **Automation:** `scripts/profile-scroll-renderers --tab N` drives HTTP smooth-scroll
+  bursts (new `/scroll/smooth`, `/config/renderer`, `/config/smooth-scroll`,
+  `/config/tab` routes + `debugSmoothScrollByRows`, which animates the PD controller
+  instead of snapping) across all four configs and prints the jank table. Spoken
+  progress via `say -v Samantha`. **Use a normal-buffer shell tab** (alt-screen TUIs
+  have no scrollback → burst is a no-op).
+- **Result (tab 5, 6 s bursts, clean build):** gpu-driven & classic = stddev ~0.3 ms,
+  **0% jank**, locked 8.33 ms (120 Hz). vector-fluid & vector-crisp = p50 8.33 ms but
+  **p95 ~16 ms, stddev ~2.5 ms, ~5–8% janky frames** — a dropped frame ~1-in-15. The
+  median hid it (averages were equal); variance exposed it.
+- **Root cause (trace-confirmed):** "Wait for Next Drawable" p99 10 ms / max 51 ms.
+  The vector `render()` does a plain **blocking** `layer.nextDrawable()` and has none
+  of `MetalRenderer`'s `MetalDrawableScheduler` (async background acquire, 1-frame
+  in-flight semaphore vs the persistent target, **drop-don't-block** on scroll, the
+  parked-drawable poison-gate fix, and the `onDrawableReadyAfterMiss` half-rate-basin
+  escape). So when the vector path falls behind it stalls the main thread instead of
+  skipping a tick.
+- **Done so far:** paced present for scroll frames
+  (`present(drawable, afterMinimumDuration: 1/120)`, mirroring `MetalRenderer`,
+  commit `9d9e40a`). Correct groundwork but **insufficient alone** — measured jank
+  unchanged, because pacing only helps once acquisition stops blocking.
+
+**Next milestone (M7?): adopt `MetalDrawableScheduler` (or a shared variant) in the
+vector backend** — async non-blocking drawable acquire with frame-in-flight
+serialization against the vector target/atlas, drop-don't-block while
+`scrollPhaseOffset != .zero`, and the miss-recovery wake. Re-measure with
+`scripts/profile-scroll-renderers --tab 5`; target vector jank ≈ gpu-driven (0%).
+Also still pending: the original M6 manual glide inspection, and trace tooling notes
+(`analyze-metal-trace --signposts` / `--time-profiler` added; custom POI signposts
+do not reliably survive an xctrace capture even with `--instrument "Points of
+Interest"`, so per-config separate captures / the in-app meter are the reliable path).
+
 ## Decision Log
 
 - Decision: Grayscale AA is the default and primary quality target; subpixel AA is an
