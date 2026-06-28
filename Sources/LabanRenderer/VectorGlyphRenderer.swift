@@ -253,7 +253,7 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// are not charged against this: their settled first paint stays full quality.
   /// During active scroll many new phases appear at once, so each gets OSOR's
   /// front-loaded handful and converges to full quality once motion settles.
-  private static let phasedSampleBudgetPerFrame = 4096
+  private static let phasedSampleBudgetPerFrame = 256
   /// Free a mask after this many frames without a reference (keep-or-free sweep).
   private static let maskEvictionTTLFrames = 240
   /// Distinct sub-pixel phases the per-phase scroll mode quantizes to per device
@@ -736,7 +736,7 @@ public final class VectorGlyphRenderer: RendererBackend {
           font: font,
           boldFallback: variant.boldFallback,
           italicFallback: variant.italicFallback),
-          ensureResidentMask(
+          ensureResidentMaskForMode(
             for: glyph,
             font: font,
             syntheticItalic: variant.italicFallback,
@@ -805,15 +805,15 @@ public final class VectorGlyphRenderer: RendererBackend {
         font: font,
         boldFallback: variant.boldFallback,
         italicFallback: variant.italicFallback),
-        let mask = cachedMask(
+        let resolved = resolveDrawMask(
           for: glyph,
           font: font,
           syntheticItalic: variant.italicFallback)
       {
         glyphs.append(
           glyphInstance(
-            mask: mask, position: position, color: foreground,
-            coverageExponent: coverageExponent))
+            mask: resolved.mask, position: position, color: foreground,
+            coverageExponent: coverageExponent, slide: resolved.slide))
       } else if let fallback = rasterFallbackInstance(
         cluster: cluster,
         font: font,
@@ -894,7 +894,8 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func maskDescriptor(
     for glyph: CGGlyph,
     font: CTFont,
-    syntheticItalic: Bool = false
+    syntheticItalic: Bool = false,
+    phaseOffset: CGPoint = .zero
   ) -> VectorMaskDescriptor? {
     guard var outline = curveStore.outline(for: glyph, font: font) else { return nil }
     if syntheticItalic {
@@ -905,14 +906,11 @@ public final class VectorGlyphRenderer: RendererBackend {
     let width = max(1, Int(ceil(bounds.width * scale)))
     let height = max(1, Int(ceil(bounds.height * scale)))
     let origin = CGPoint(x: floor(bounds.minX), y: floor(bounds.minY))
-    // Per-phase mode bakes the sub-cell scroll offset into the mask (one cache
-    // entry per coarse phase); fluid mode bakes a single phase-0 mask per glyph
-    // and instead slides the quad at draw time (see glyphInstance). Static frames
-    // (offset 0) quantize to phase 0 in both modes → the same single mask.
-    let phase =
-      smoothScrollMode == .perPhase
-      ? Self.quantizedPhase(pointOffset: scrollPhaseOffset, scale: scale)
-      : (qx: 0, qy: 0, sampleOffset: CGPoint.zero)
+    // `phaseOffset` selects which mask this descriptor addresses: `.zero` is the
+    // single phase-0 mask (used by fluid mode and as crisp's always-resident
+    // fallback); a non-zero offset is a per-phase mask (crisp mode bakes the
+    // sub-cell scroll offset into the coverage). Static frames pass `.zero`.
+    let phase = Self.quantizedPhase(pointOffset: phaseOffset, scale: scale)
     let key = VectorGlyphMaskAtlas.Key(
       font: ObjectIdentifier(font),
       glyph: glyph,
@@ -969,33 +967,80 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func cachedMask(
     for glyph: CGGlyph,
     font: CTFont,
-    syntheticItalic: Bool = false
+    syntheticItalic: Bool = false,
+    phaseOffset: CGPoint = .zero
   ) -> VectorGlyphMaskAtlas.Entry? {
     guard
       let descriptor = maskDescriptor(
         for: glyph,
         font: font,
-        syntheticItalic: syntheticItalic)
+        syntheticItalic: syntheticItalic,
+        phaseOffset: phaseOffset)
     else { return nil }
     return maskAtlas.entry(for: descriptor.key)
+  }
+
+  /// Resolve the mask to draw for the active mode, and whether the draw should
+  /// apply the fluid sub-pixel slide. Crisp mode prefers a resident per-phase
+  /// mask (placed pixel-aligned, no slide); when that phase isn't resident yet
+  /// (budget spent this frame), it falls back to the phase-0 mask drawn with the
+  /// fluid slide — so the glyph still moves sub-pixel, just without the per-phase
+  /// AA refinement until a later frame bakes it. Fluid mode always slides phase-0.
+  private func resolveDrawMask(
+    for glyph: CGGlyph,
+    font: CTFont,
+    syntheticItalic: Bool
+  ) -> (mask: VectorGlyphMaskAtlas.Entry, slide: Bool)? {
+    if smoothScrollMode == .perPhase, scrollPhaseOffset != .zero,
+      let phased = cachedMask(
+        for: glyph, font: font, syntheticItalic: syntheticItalic, phaseOffset: scrollPhaseOffset)
+    {
+      return (phased, false)
+    }
+    guard
+      let base = cachedMask(for: glyph, font: font, syntheticItalic: syntheticItalic)
+    else { return nil }
+    return (base, true)
   }
 
   private func ensureResidentMask(
     for glyph: CGGlyph,
     font: CTFont,
     syntheticItalic: Bool = false,
+    phaseOffset: CGPoint = .zero,
+    budgetGated: Bool = false,
     commandBuffer: MTLCommandBuffer
   ) -> VectorGlyphMaskAtlas.Entry? {
     guard
       let descriptor = maskDescriptor(
         for: glyph,
         font: font,
-        syntheticItalic: syntheticItalic)
+        syntheticItalic: syntheticItalic,
+        phaseOffset: phaseOffset)
     else { return nil }
-    let existing = maskAtlas.entry(for: descriptor.key)
     guard
       let resolvedTexture = ensureAtlasTexture(),
-      let accumTexture = ensureAccumTexture(),
+      let accumTexture = ensureAccumTexture()
+    else { return nil }
+
+    let existing = maskAtlas.entry(for: descriptor.key)
+    let sampleStart = existing.map { maskAtlas.sampleCount(for: $0) } ?? 0
+    let scheduled =
+      budgetGated
+      ? Self.phasedSamplesThisFrame(
+        sampleStart: sampleStart, budgetRemaining: remainingPhasedSampleBudget)
+      : Self.accumulationSamplesThisFrame(
+        sampleStart: sampleStart, maskPixels: descriptor.width * descriptor.height)
+    // A brand-new entry occupies an atlas slot eviction may have just recycled, so
+    // its pixels are stale until rasterized once. If we cannot afford even one
+    // sample this frame (the per-frame phased budget is spent), do NOT reserve it:
+    // return nil so the caller falls back to the always-resident phase-0 mask.
+    // This both avoids showing a recycled slot AND bounds per-frame bake work, so
+    // a phase-boundary frame can't bake the whole screen at once (the crisp p95/
+    // p99 spike). Already-resident entries are reused regardless of budget.
+    if existing == nil && scheduled <= 0 { return nil }
+
+    guard
       let entry = existing
         ?? maskAtlas.reserve(
           key: descriptor.key,
@@ -1007,27 +1052,10 @@ public final class VectorGlyphRenderer: RendererBackend {
     // Referenced this frame: keep it alive through the keep-or-free sweep.
     maskAtlas.touch(entry)
 
-    let sampleStart = maskAtlas.sampleCount(for: entry)
     guard sampleStart < Self.accumulationSampleCap else { return entry }
-    let isPhased = descriptor.key.quantizedOffsetX != 0 || descriptor.key.quantizedOffsetY != 0
-    var scheduled =
-      isPhased
-      ? Self.phasedSamplesThisFrame(
-        sampleStart: sampleStart, budgetRemaining: remainingPhasedSampleBudget)
-      : Self.accumulationSamplesThisFrame(
-        sampleStart: sampleStart, maskPixels: descriptor.width * descriptor.height)
-    // A brand-new entry (sampleStart == 0) occupies an atlas slot that eviction
-    // may have just recycled from another glyph: its pixels are stale until it is
-    // rasterized at least once. So a never-rasterized entry MUST get ≥1 sample
-    // even when the phased budget is exhausted — otherwise the budget cap would
-    // leave it displaying a different glyph's mask (visible "mutation" during a
-    // fast scroll). An already-rasterized entry is safe to skip-refine this frame.
-    if sampleStart == 0 {
-      scheduled = max(1, scheduled)
-    }
     let sampleCount = min(Self.accumulationSampleCap - sampleStart, scheduled)
     guard sampleCount > 0 else { return entry }
-    if isPhased { remainingPhasedSampleBudget -= sampleCount }
+    if budgetGated { remainingPhasedSampleBudget -= sampleCount }
     guard
       scratchRasterizer.encodeAccumulate(
         outline: descriptor.outline,
@@ -1051,6 +1079,40 @@ public final class VectorGlyphRenderer: RendererBackend {
     }
     maskAtlas.setSampleCount(sampleStart + sampleCount, for: entry)
     return entry
+  }
+
+  /// Make a usable mask resident for the active smooth-scroll mode. Fluid mode
+  /// uses one phase-0 mask per glyph (sub-pixel motion is the draw-time slide).
+  /// Crisp mode keeps the phase-0 mask resident as a guaranteed fallback AND
+  /// tries to bake the per-phase mask within the per-frame budget; if the budget
+  /// is spent, the phase-0 mask + fluid slide carries the glyph this frame so the
+  /// bake cost stays bounded (no screen-wide bake burst at a phase boundary).
+  /// Returns non-nil when at least the phase-0 mask is resident.
+  @discardableResult
+  private func ensureResidentMaskForMode(
+    for glyph: CGGlyph,
+    font: CTFont,
+    syntheticItalic: Bool = false,
+    commandBuffer: MTLCommandBuffer
+  ) -> VectorGlyphMaskAtlas.Entry? {
+    let base = ensureResidentMask(
+      for: glyph,
+      font: font,
+      syntheticItalic: syntheticItalic,
+      phaseOffset: .zero,
+      budgetGated: false,
+      commandBuffer: commandBuffer)
+    guard smoothScrollMode == .perPhase, scrollPhaseOffset != .zero else { return base }
+    // Best-effort per-phase mask (budget-gated). Failure is fine: the resident
+    // phase-0 mask renders with the fluid slide for this glyph this frame.
+    _ = ensureResidentMask(
+      for: glyph,
+      font: font,
+      syntheticItalic: syntheticItalic,
+      phaseOffset: scrollPhaseOffset,
+      budgetGated: true,
+      commandBuffer: commandBuffer)
+    return base
   }
 
   static func accumulationSamplesThisFrame(sampleStart: Int, maskPixels: Int) -> Int {
@@ -1165,20 +1227,19 @@ public final class VectorGlyphRenderer: RendererBackend {
     mask: VectorGlyphMaskAtlas.Entry,
     position: CGPoint,
     color: UInt32,
-    coverageExponent: Float
+    coverageExponent: Float,
+    slide: Bool
   ) -> VectorGlyphInstance {
     let rect = CGRect(
       x: position.x + mask.origin.x,
       y: position.y + mask.origin.y,
       width: CGFloat(mask.width) / scale,
       height: CGFloat(mask.height) / scale)
-    // Fluid mode slides the (single, phase-0) quad to the true fractional
-    // device-pixel position and lets the bilinear sampler interpolate, so motion
-    // is continuous. Per-phase mode bakes the offset into the mask instead and
-    // keeps the quad on the pixel grid, so it adds nothing here. Both are 0 for
-    // static text.
-    let fluidDeviceOffsetY =
-      smoothScrollMode == .fluid ? CGFloat(scrollPhaseOffset.y) * scale : 0
+    // `slide` true: this is a phase-0 mask drawn at the true fractional position
+    // (fluid mode, or crisp's fallback when the per-phase mask isn't baked yet);
+    // the bilinear sampler interpolates so motion is continuous. `slide` false: a
+    // per-phase mask whose sub-pixel offset is baked in, kept pixel-aligned.
+    let fluidDeviceOffsetY = slide ? CGFloat(scrollPhaseOffset.y) * scale : 0
     return VectorGlyphInstance(
       origin: SIMD2<Float>(
         Float(rect.minX * scale),
