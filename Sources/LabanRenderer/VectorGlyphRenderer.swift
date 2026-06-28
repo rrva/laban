@@ -267,6 +267,10 @@ public final class VectorGlyphRenderer: RendererBackend {
   }
 
   private static let accumulationSampleCap = 512
+  /// Minimum present interval hinted to the compositor for smooth-scroll frames,
+  /// so a ProMotion panel holds 120 Hz instead of dropping into the half-rate
+  /// basin after a single missed frame (mirrors `MetalRenderer`).
+  private static let scrollPresentMinimumDuration: CFTimeInterval = 1.0 / 120.0
   /// Total accumulation samples that *phased* (sub-pixel scroll) masks may newly
   /// encode in one frame, shared across all new phases that frame. Static glyphs
   /// are not charged against this: their settled first paint stays full quality.
@@ -501,7 +505,19 @@ public final class VectorGlyphRenderer: RendererBackend {
       retainedInstanceBuffers: &retainedInstanceBuffers)
     if let drawable = layer.nextDrawable() {
       encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
-      commandBuffer.present(drawable)
+      if scrollPhaseOffset != .zero {
+        // Paced present while smooth-scrolling: declare the intended 120 Hz
+        // cadence so a ProMotion panel holds its refresh rate. Without the hint,
+        // one missed frame lets the panel infer a lower rate and drawable
+        // recycling locks to the slower swap interval — the "half-rate basin"
+        // that showed up as ~6% dropped frames / blocking on nextDrawable in the
+        // vector path while the classic renderer (which already paces) stayed at
+        // 120 Hz. On non-VRR panels a 1/120 minimum is weaker than vsync and is a
+        // no-op.
+        commandBuffer.present(drawable, afterMinimumDuration: Self.scrollPresentMinimumDuration)
+      } else {
+        commandBuffer.present(drawable)
+      }
     }
 
     let completion = onFrameCompleted
