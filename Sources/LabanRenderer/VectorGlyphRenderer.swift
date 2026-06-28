@@ -368,6 +368,10 @@ public final class VectorGlyphRenderer: RendererBackend {
       maskAtlas = VectorGlyphMaskAtlas()
       atlasTexture = nil
       accumTexture = nil
+      // Descriptors cache scale-dependent dims (width/height/origin) and atlas
+      // Keys, so a scale change must invalidate them too — otherwise the next
+      // frame reserves wrong-sized atlas slots and bakes garbled glyphs.
+      descriptorCache.removeAll(keepingCapacity: true)
       rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: newScale)
       sidebarRasterAtlas = Self.makeRasterAtlas(
         device: device,
@@ -388,6 +392,8 @@ public final class VectorGlyphRenderer: RendererBackend {
     maskAtlas = VectorGlyphMaskAtlas()
     atlasTexture = nil
     accumTexture = nil
+    // New fonts produce new outlines/dims; drop the geometry memo with the atlas.
+    descriptorCache.removeAll(keepingCapacity: true)
     rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: scale)
     sidebarRasterAtlas = Self.makeRasterAtlas(
       device: device,
