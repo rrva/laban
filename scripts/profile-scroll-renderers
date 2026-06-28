@@ -87,8 +87,10 @@ measure_config() {
   getj "/scroll/frame-stats?reset=1" >/dev/null   # clear the ring
   burst                 # scroll for burst_seconds, filling the ring
   sleep 0.2
+  # Compact the (pretty-printed) JSON to one line so it survives the tab-delimited
+  # results capture and the line-oriented reader below.
   local stats
-  stats=$(getj "/scroll/frame-stats")
+  stats=$(getj "/scroll/frame-stats" | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin)))')
   printf '%s\t%s\n' "${label}" "${stats}"
 }
 
