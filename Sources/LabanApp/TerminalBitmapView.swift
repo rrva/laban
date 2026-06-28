@@ -269,6 +269,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var cursorSettingsObserver: NSObjectProtocol?
   private var emojiRenderingObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
+  private var vectorTextWeightObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
   /// UserDefaults. The Settings live-apply path compares against it: an
@@ -638,6 +639,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     ) { [weak self] _ in
       guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
       vector.setSubpixelLayout(VectorSubpixelLayout.persisted())
+      self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    vectorTextWeightObserver = NotificationCenter.default.addObserver(
+      forName: VectorTextWeightSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
+      vector.refreshTextWeight()
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -1545,6 +1557,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let emojiRenderingObserver {
       NotificationCenter.default.removeObserver(emojiRenderingObserver)
+    }
+    if let vectorTextWeightObserver {
+      NotificationCenter.default.removeObserver(vectorTextWeightObserver)
     }
     if let vectorSubpixelLayoutObserver {
       NotificationCenter.default.removeObserver(vectorSubpixelLayoutObserver)

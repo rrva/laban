@@ -76,10 +76,17 @@ final class VectorGlyphGammaTests: XCTestCase {
           device: device, queue: queue, rasterizer: rasterizer, outline: outline,
           width: width, height: height, origin: origin, scale: scale)
       else { continue }
+      // Apply the same stem-darkening the renderer uses (white-on-black at the
+      // current weight) so the gate isolates gamma-correctness of compositing.
+      let exponent = Double(
+        VectorGlyphRenderer.coverageExponent(
+          foreground: 0xFF_FF_FF_FF,
+          background: 0x00_00_00_FF,
+          weight: VectorTextWeightSettings.current()))
       for byte in coverage where byte > 4 && byte < 251 {
-        let c = Double(byte) / 255
-        gammaExpected.append(srgbEncode(c) * 255)
-        naiveExpected.append(Double(byte))
+        let darkened = pow(Double(byte) / 255, exponent)
+        gammaExpected.append(srgbEncode(darkened) * 255)  // linear-light composite
+        naiveExpected.append(darkened * 255)  // gamma-space composite
       }
     }
     XCTAssertGreaterThan(gammaExpected.count, 200, "masks must have AA coverage")

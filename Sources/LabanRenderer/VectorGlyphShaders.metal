@@ -13,6 +13,7 @@ struct VectorGlyphInstance {
     float2 uvOrigin;
     float2 uvSize;
     float4 color;
+    float coverageExponent;
 };
 
 struct VectorRenderUniforms {
@@ -25,6 +26,7 @@ struct VectorVertexOut {
     float4 position [[position]];
     float4 color;
     float2 uv;
+    float coverageExponent;
 };
 
 struct VectorGlyphCurve {
@@ -89,6 +91,7 @@ vertex VectorVertexOut vectorSolidVertex(
     out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);
     out.color = instance.color;
     out.uv = float2(0.0, 0.0);
+    out.coverageExponent = 1.0;
     return out;
 }
 
@@ -113,6 +116,7 @@ vertex VectorVertexOut vectorGlyphVertex(
         instance.uvOrigin.x + unit.x * instance.uvSize.x,
         instance.uvOrigin.y + (1.0 - unit.y) * instance.uvSize.y
     );
+    out.coverageExponent = instance.coverageExponent;
     return out;
 }
 
@@ -121,7 +125,8 @@ fragment float4 vectorGlyphCoverageFragment(
     texture2d<float> atlas [[texture(0)]],
     sampler atlasSampler [[sampler(0)]]
 ) {
-    return float4(atlas.sample(atlasSampler, in.uv).rgb * in.color.a, 0.0);
+    float3 coverage = pow(atlas.sample(atlasSampler, in.uv).rgb, float3(in.coverageExponent));
+    return float4(coverage * in.color.a, 0.0);
 }
 
 fragment float4 vectorGlyphColorFragment(
@@ -129,7 +134,7 @@ fragment float4 vectorGlyphColorFragment(
     texture2d<float> atlas [[texture(0)]],
     sampler atlasSampler [[sampler(0)]]
 ) {
-    float3 coverage = atlas.sample(atlasSampler, in.uv).rgb;
+    float3 coverage = pow(atlas.sample(atlasSampler, in.uv).rgb, float3(in.coverageExponent));
     return float4(in.color.rgb * coverage * in.color.a, 0.0);
 }
 

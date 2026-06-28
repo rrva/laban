@@ -33,6 +33,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSubpixelBField = NSTextField(frame: .zero)
   private let vectorSubpixelWidthField = NSTextField(frame: .zero)
   private let vectorSubpixelApplyButton = NSButton(title: "Apply", target: nil, action: nil)
+  private let vectorTextWeightSlider = NSSlider(
+    value: VectorTextWeightSettings.defaultWeight, minValue: 0, maxValue: 1,
+    target: nil, action: nil)
+  private let vectorTextWeightValueLabel = NSTextField(labelWithString: "")
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
@@ -264,6 +268,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
       [makeLabel("Vector text AA:"), vectorSubpixelLayoutPopUp],
       [makeLabel("Overlap:"), makeVectorSubpixelCustomRow()],
+      [makeLabel("Text weight:"), makeVectorTextWeightRow()],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -340,6 +345,37 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let label = NSTextField(labelWithString: text)
     label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
     return label
+  }
+
+  private func makeVectorTextWeightRow() -> NSStackView {
+    vectorTextWeightSlider.isContinuous = true
+    vectorTextWeightSlider.target = self
+    vectorTextWeightSlider.action = #selector(vectorTextWeightChanged(_:))
+    vectorTextWeightSlider.toolTip =
+      "How much to thicken vector text (stem darkening). 0 = thin geometric outline; "
+      + "1 = matched to the classic/CoreText weight. Applies live."
+    vectorTextWeightSlider.widthAnchor.constraint(equalToConstant: 160).isActive = true
+    vectorTextWeightValueLabel.font = .monospacedDigitSystemFont(
+      ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    let row = NSStackView(views: [
+      makeSmallLabel("Thin"),
+      vectorTextWeightSlider,
+      makeSmallLabel("CoreText"),
+      vectorTextWeightValueLabel,
+    ])
+    row.orientation = .horizontal
+    row.spacing = 6
+    return row
+  }
+
+  @objc private func vectorTextWeightChanged(_ sender: NSSlider) {
+    VectorTextWeightSettings.setCurrent(sender.doubleValue)
+    updateVectorTextWeightLabel()
+  }
+
+  private func updateVectorTextWeightLabel() {
+    vectorTextWeightValueLabel.stringValue = String(
+      format: "%.2f", VectorTextWeightSettings.current())
   }
 
   private func makeVectorSubpixelCustomRow() -> NSStackView {
@@ -433,6 +469,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     refreshVectorSubpixelCustomFields(vectorLayout)
     vectorSubpixelCustomGridRow?.isHidden =
       VectorSubpixelLayout.persistedPreset() != .customOverlap
+    vectorTextWeightSlider.doubleValue = VectorTextWeightSettings.current()
+    updateVectorTextWeightLabel()
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off

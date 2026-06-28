@@ -323,7 +323,7 @@ Acceptance (autonomous + observable):
 ## Progress
 
 - [x] (2026-06-28) M0 — numerically stable winding + size-sweep gates (commit `af4380d`).
-- [x] (2026-06-28) M1 — gamma-correct grayscale via sRGB render target (vector-only; classic untouched). Gate `VectorGlyphGammaTests.testVectorCompositesCoverageInLinearLight` fails before / passes after; all `VectorGlyph`/`GlyphCurveStore`/`VectorSubpixelLayout` suites green. Awaiting manual visual confirmation on the M2 Max panel before M2.
+- [x] (2026-06-28) M1 — gamma-correct grayscale via sRGB render target (vector-only; classic untouched), plus a user-tunable **text weight** (stem-darkening) setting (`VectorTextWeightSettings`, live Settings slider, 0 = thin/geometric, 1 = CoreText-ish; default 1.0). Gates: `VectorGlyphGammaTests` (linear-light compositing) and `VectorTextWeightTests` (exponent neutral@0, thickens@1, dark-on-light > light-on-dark, persistence). All `VectorGlyph`/`GlyphCurveStore`/`VectorSubpixelLayout` suites green; bundle builds. Awaiting manual visual confirmation on the MacBook before M2.
 - [ ] M2 — display robustness (scale/color-space/scaled-mode detection, live reconfig, grayscale auto-policy).
 - [ ] M3 — OSOR subpixel calibration: overlap/bleed, 2D areas, presets, fringing gate.
 - [ ] M4 — sub-pixel-offset glyph caching + fractional-phase raster + fractional placement.

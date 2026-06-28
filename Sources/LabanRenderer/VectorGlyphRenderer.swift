@@ -24,6 +24,10 @@ private struct VectorGlyphInstance {
   var uvOrigin: SIMD2<Float>
   var uvSize: SIMD2<Float>
   var color: SIMD4<Float>
+  // Exponent applied to vector coverage (c^e) for stem-darkening: e<1 thickens.
+  // 1.0 = no change (used by raster/emoji fallbacks whose masks are already
+  // weighted by CoreText).
+  var coverageExponent: Float
 }
 
 private struct VectorUniforms {
@@ -74,6 +78,7 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var sidebarRasterAtlas: MetalGlyphAtlas?
   private var colorGlyphAtlas: ColorGlyphAtlas?
   private var emojiRenderingMode: EmojiRenderingMode = EmojiRenderingSettings.current()
+  private var textWeight: Double = VectorTextWeightSettings.current()
 
   public var onFrameCompleted: (() -> Void)?
   public var rendererStatus: RendererStatus {
@@ -339,6 +344,10 @@ public final class VectorGlyphRenderer: RendererBackend {
     emojiRenderingMode = EmojiRenderingSettings.current()
   }
 
+  public func refreshTextWeight() {
+    textWeight = VectorTextWeightSettings.current()
+  }
+
   func maskSnapshot(
     for glyph: CGGlyph,
     font: CTFont,
@@ -487,7 +496,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         solids.append(solid(rect: rect, color: color))
 
       case .glyphRun(
-        let origin, let text, let foreground, _, let attributes, let source,
+        let origin, let text, let foreground, let background, let attributes, let source,
         let underlineStyle, let underlineColor, _
       ):
         let atlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
@@ -495,6 +504,7 @@ public final class VectorGlyphRenderer: RendererBackend {
           text,
           origin: origin,
           foreground: foreground,
+          background: background,
           attributes: attributes,
           underlineStyle: underlineStyle,
           underlineColor: underlineColor,
@@ -662,6 +672,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     _ text: String,
     origin: CGPoint,
     foreground: UInt32,
+    background: UInt32,
     attributes: TextAttributes,
     underlineStyle: UnderlineStyle,
     underlineColor: UInt32?,
@@ -677,6 +688,8 @@ public final class VectorGlyphRenderer: RendererBackend {
     let font = variant.font
     let cellAdvance = atlas.cellSize.width
     let baseline = origin.y + atlas.descent
+    let coverageExponent = Self.coverageExponent(
+      foreground: foreground, background: background, weight: textWeight)
     let runWantsColor =
       source != .sidebar && emojiRenderingMode == .color
       && ColorGlyphSupport.mayContainColorGlyph(text: text, font: font)
@@ -706,7 +719,10 @@ public final class VectorGlyphRenderer: RendererBackend {
           font: font,
           syntheticItalic: variant.italicFallback)
       {
-        glyphs.append(glyphInstance(mask: mask, position: position, color: foreground))
+        glyphs.append(
+          glyphInstance(
+            mask: mask, position: position, color: foreground,
+            coverageExponent: coverageExponent))
       } else if let fallback = rasterFallbackInstance(
         cluster: cluster,
         font: font,
@@ -971,7 +987,8 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func glyphInstance(
     mask: VectorGlyphMaskAtlas.Entry,
     position: CGPoint,
-    color: UInt32
+    color: UInt32,
+    coverageExponent: Float
   ) -> VectorGlyphInstance {
     let rect = CGRect(
       x: position.x + mask.origin.x,
@@ -987,7 +1004,36 @@ public final class VectorGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(mask.width) / Float(maskAtlas.width),
         Float(mask.height) / Float(maskAtlas.height)),
-      color: vectorColor(color))
+      color: vectorColor(color),
+      coverageExponent: coverageExponent)
+  }
+
+  /// Stem-darkening exponent for vector coverage so weight matches CoreText-based
+  /// renderers (whose glyph masks bake in stem darkening). Geometric coverage is
+  /// otherwise too thin, especially for dark text on a light background where
+  /// thin strokes wash out. Returns an exponent `e` for `coverage^e`; `e < 1`
+  /// thickens. A base boost applies to all text; an extra boost applies when the
+  /// foreground is darker than the background (dark-on-light).
+  static func coverageExponent(
+    foreground: UInt32,
+    background: UInt32,
+    weight: Double
+  ) -> Float {
+    let w = Float(min(max(weight, 0), 1))
+    guard w > 0 else { return 1 }
+    let lf = relativeLuma(foreground)
+    let lb = relativeLuma(background)
+    let base: Float = 0.35
+    let directional: Float = 1.25 * max(0, lb - lf)
+    let gamma = 1 + w * (base + directional)
+    return 1 / gamma
+  }
+
+  static func relativeLuma(_ rgba: UInt32) -> Float {
+    let r = Float((rgba >> 24) & 0xFF) / 255
+    let g = Float((rgba >> 16) & 0xFF) / 255
+    let b = Float((rgba >> 8) & 0xFF) / 255
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
   }
 
   private func rasterFallbackInstance(
@@ -1020,7 +1066,8 @@ public final class VectorGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(entry.pixelWidth) / atlasSize,
         Float(entry.pixelHeight) / atlasSize),
-      color: vectorColor(color))
+      color: vectorColor(color),
+      coverageExponent: 1)
   }
 
   private func colorGlyphInstance(
@@ -1050,7 +1097,8 @@ public final class VectorGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(entry.pixelWidth) / atlasSize,
         Float(entry.pixelHeight) / atlasSize),
-      color: SIMD4<Float>(1, 1, 1, 1))
+      color: SIMD4<Float>(1, 1, 1, 1),
+      coverageExponent: 1)
   }
 
   private func colorGlyphFallbackEntry(
