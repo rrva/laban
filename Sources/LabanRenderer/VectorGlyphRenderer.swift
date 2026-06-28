@@ -225,6 +225,15 @@ public final class VectorGlyphRenderer: RendererBackend {
   }
 
   private static let accumulationSampleCap = 512
+  /// Total accumulation samples that *phased* (sub-pixel scroll) masks may newly
+  /// encode in one frame, shared across all new phases that frame. Static glyphs
+  /// are not charged against this: their settled first paint stays full quality.
+  /// During active scroll many new phases appear at once, so each gets OSOR's
+  /// front-loaded handful and converges to full quality once motion settles.
+  private static let phasedSampleBudgetPerFrame = 4096
+  /// Free a mask after this many frames without a reference (keep-or-free sweep).
+  private static let maskEvictionTTLFrames = 240
+  private var remainingPhasedSampleBudget = 0
 
   private static func makeRasterAtlas(
     device: MTLDevice,
@@ -402,9 +411,14 @@ public final class VectorGlyphRenderer: RendererBackend {
     else { return false }
 
     var retainedInstanceBuffers: [MTLBuffer] = []
+    maskAtlas.beginFrame()
+    remainingPhasedSampleBudget = Self.phasedSampleBudgetPerFrame
     lastRasterFallbackGlyphs = prepareGlyphResources(
       commands: commands,
       commandBuffer: commandBuffer)
+    // Free masks not referenced for a while (mostly scroll sub-pixel phases that
+    // churn through the atlas); static glyphs are touched every frame and survive.
+    maskAtlas.evictUnused(olderThan: Self.maskEvictionTTLFrames)
     encode(
       commands: commands,
       into: target,
@@ -895,14 +909,21 @@ public final class VectorGlyphRenderer: RendererBackend {
           origin: descriptor.origin)
     else { return nil }
 
+    // Referenced this frame: keep it alive through the keep-or-free sweep.
+    maskAtlas.touch(entry)
+
     let sampleStart = maskAtlas.sampleCount(for: entry)
     guard sampleStart < Self.accumulationSampleCap else { return entry }
-    let sampleCount = min(
-      Self.accumulationSampleCap - sampleStart,
-      Self.accumulationSamplesThisFrame(
-        sampleStart: sampleStart,
-        maskPixels: descriptor.width * descriptor.height))
+    let isPhased = descriptor.key.quantizedOffsetX != 0 || descriptor.key.quantizedOffsetY != 0
+    let scheduled =
+      isPhased
+      ? Self.phasedSamplesThisFrame(
+        sampleStart: sampleStart, budgetRemaining: remainingPhasedSampleBudget)
+      : Self.accumulationSamplesThisFrame(
+        sampleStart: sampleStart, maskPixels: descriptor.width * descriptor.height)
+    let sampleCount = min(Self.accumulationSampleCap - sampleStart, scheduled)
     guard sampleCount > 0 else { return entry }
+    if isPhased { remainingPhasedSampleBudget -= sampleCount }
     guard
       scratchRasterizer.encodeAccumulate(
         outline: descriptor.outline,
@@ -934,6 +955,27 @@ public final class VectorGlyphRenderer: RendererBackend {
     if sampleStart < 128 { return 16 }
     if sampleStart < 256 { return 8 }
     return 4
+  }
+
+  /// Samples to encode this frame for a *phased* (sub-pixel scroll) mask, given
+  /// the remaining per-frame phased budget. Front-loads OSOR-style (8 → 4 → 2 → 1)
+  /// instead of a full 512 first paint, so a frame that introduces many new phases
+  /// stays bounded; clamps to the budget but never below 1 while samples remain,
+  /// so every referenced phase becomes resident (lower quality, not missing) and
+  /// converges to the cap over subsequent settled frames.
+  static func phasedSamplesThisFrame(sampleStart: Int, budgetRemaining: Int) -> Int {
+    guard budgetRemaining > 0 else { return 0 }
+    let ideal: Int
+    if sampleStart == 0 {
+      ideal = 8
+    } else if sampleStart < 32 {
+      ideal = 4
+    } else if sampleStart < 128 {
+      ideal = 2
+    } else {
+      ideal = 1
+    }
+    return min(ideal, budgetRemaining)
   }
 
   private func accumulationSeed(

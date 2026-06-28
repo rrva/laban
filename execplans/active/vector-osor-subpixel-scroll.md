@@ -359,7 +359,26 @@ Acceptance (autonomous + observable):
   at the true fractional device-pixel position) — it has no fractional source
   until the scroll plumbing exists and is a *visible* change to all text, so it
   rides the M6 visual gate rather than landing as always-zero dead code now.
-- [ ] M5 — atlas eviction + bounded per-frame sample budget + front-loaded schedule.
+- [x] (2026-06-28) M5 — atlas eviction + bounded per-frame sample budget.
+  `VectorGlyphMaskAtlas` gained a frame clock (`beginFrame`), per-entry
+  `lastUsedFrame` with `touch(_:)`, a keep-or-free sweep `evictUnused(olderThan:)`,
+  and LRU-on-full eviction inside `reserve` (never evicts a current-frame entry;
+  returns nil → raster fallback when even LRU can't fit). `slotCapacity`/`usedSlots`
+  expose the hard ceiling (the atlas is a fixed 2048² texture, bounded regardless of
+  system RAM, per the Decision Log). The renderer runs the lifecycle each frame
+  (`beginFrame` → `evictUnused(240)` → `touch` on every referenced mask). A
+  per-frame **phased** sample budget (`phasedSampleBudgetPerFrame`,
+  `phasedSamplesThisFrame` front-loading 8→4→2→1, floored at 1 while budget remains)
+  bounds new-phase raster cost during scroll; **static glyphs are not charged** and
+  keep their full-quality 512-sample first paint (`accumulationSamplesThisFrame`
+  unchanged, so the live static path and `VectorGlyphParityTests` stay
+  byte-identical). Gate `VectorGlyphAtlasEvictionTests` (5 CPU-only cases: bounded
+  under phase churn with every current-frame phase resident, live keys survive while
+  stale freed, reserve nil when full of current-frame entries, budget bounds total
+  samples yet keeps every phase resident, phased front-loads while static keeps full
+  paint). The bounded-churn gate fails before eviction (1488 residency failures) and
+  passes after; all baselines green; bundle builds. The budget/eviction only bites
+  once phased masks exist, i.e. under M6 scroll; static rendering today is unchanged.
 - [ ] M6 — smooth sub-pixel scroll plumbing + end-to-end gate + spec.md note.
 
 ## Decision Log

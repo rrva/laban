@@ -36,6 +36,10 @@ final class VectorGlyphMaskAtlas {
   private var pixels: [UInt8]
   private var entries: [Key: Entry] = [:]
   private var sampleCounts: [Key: Int] = [:]
+  /// Frame index in which each entry was last referenced, for keep-or-free
+  /// sweeps and LRU eviction. Bumped by `touch(_:)` each frame an entry is used.
+  private var lastUsedFrame: [Key: Int] = [:]
+  private var currentFrame = 0
 
   init(width: Int = 2048, height: Int = 2048) {
     precondition(width > 0 && height > 0)
@@ -50,6 +54,37 @@ final class VectorGlyphMaskAtlas {
   }
 
   var entryCount: Int { entries.count }
+
+  /// Total addressable base slots; the hard ceiling on resident entries' footprint.
+  var slotCapacity: Int { slotsWide * slotsHigh }
+
+  /// Currently occupied base slots.
+  var usedSlots: Int { occupiedSlots.lazy.filter { $0 }.count }
+
+  /// Begin a new frame: advances the frame clock so `touch(_:)` records fresh
+  /// usage and `evictUnused(olderThan:)` can identify stale entries. Call once
+  /// per rendered frame before referencing masks.
+  func beginFrame() {
+    currentFrame &+= 1
+  }
+
+  /// Mark an entry used in the current frame (keeps it from being swept).
+  func touch(_ entry: Entry) {
+    guard entries[entry.key] == entry else { return }
+    lastUsedFrame[entry.key] = currentFrame
+  }
+
+  /// Free every entry not referenced within the last `frames` frames (OSOR's
+  /// keep-or-free sweep). An entry touched this frame is never freed. Returns the
+  /// number of entries evicted.
+  @discardableResult
+  func evictUnused(olderThan frames: Int) -> Int {
+    guard frames >= 0 else { return 0 }
+    let cutoff = currentFrame - frames
+    let stale = entries.values.filter { (lastUsedFrame[$0.key] ?? 0) <= cutoff }
+    for entry in stale { remove(entry) }
+    return stale.count
+  }
 
   func entry(for key: Key) -> Entry? {
     entries[key]
@@ -82,7 +117,10 @@ final class VectorGlyphMaskAtlas {
 
     let slotWidth = (glyphWidth + Self.baseSlotSize - 1) / Self.baseSlotSize
     let slotHeight = (glyphHeight + Self.baseSlotSize - 1) / Self.baseSlotSize
-    guard let slotOrigin = findFreeRegion(slotWidth: slotWidth, slotHeight: slotHeight) else {
+    guard
+      let slotOrigin = findFreeRegion(slotWidth: slotWidth, slotHeight: slotHeight)
+        ?? evictForRegion(slotWidth: slotWidth, slotHeight: slotHeight)
+    else {
       return nil
     }
 
@@ -99,7 +137,25 @@ final class VectorGlyphMaskAtlas {
       origin: origin)
     entries[key] = entry
     sampleCounts[key] = 0
+    lastUsedFrame[key] = currentFrame
     return entry
+  }
+
+  /// When the atlas is full, evict least-recently-used entries (never one used
+  /// in the current frame) until the requested region fits or nothing more can
+  /// be freed. Returns the freed region's slot origin, or nil if it still does
+  /// not fit (the caller then falls back to the raster path for this glyph).
+  private func evictForRegion(slotWidth: Int, slotHeight: Int) -> (x: Int, y: Int)? {
+    let evictable = entries.values
+      .filter { (lastUsedFrame[$0.key] ?? 0) < currentFrame }
+      .sorted { (lastUsedFrame[$0.key] ?? 0) < (lastUsedFrame[$1.key] ?? 0) }
+    for victim in evictable {
+      remove(victim)
+      if let origin = findFreeRegion(slotWidth: slotWidth, slotHeight: slotHeight) {
+        return origin
+      }
+    }
+    return nil
   }
 
   @discardableResult
@@ -119,6 +175,7 @@ final class VectorGlyphMaskAtlas {
     guard entries[entry.key] == entry else { return }
     entries.removeValue(forKey: entry.key)
     sampleCounts.removeValue(forKey: entry.key)
+    lastUsedFrame.removeValue(forKey: entry.key)
     let slotX = entry.x / Self.baseSlotSize
     let slotY = entry.y / Self.baseSlotSize
     let slotWidth = (entry.width + Self.baseSlotSize - 1) / Self.baseSlotSize
