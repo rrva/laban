@@ -70,6 +70,13 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var atlasTexture: MTLTexture?
   private var accumTexture: MTLTexture?
   public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
+  private var displayDownsampled = false
+  /// Layout actually rendered, after the display-condition auto-policy
+  /// (grayscale fallback on scaled/non-integer-scale displays).
+  var effectiveSubpixelLayout: VectorSubpixelLayout {
+    VectorSubpixelLayout.effective(
+      configured: subpixelLayout, scale: Double(scale), downsampled: displayDownsampled)
+  }
   public private(set) var lastRasterFallbackGlyphs = 0
   private var lastCommandBuffer: MTLCommandBuffer?
   private var fontCache: [UInt32: (font: CTFont, boldFallback: Bool, italicFallback: Bool)] = [:]
@@ -86,7 +93,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       configuredRenderer: RendererSelection.vectorGlyph.rawValue,
       effectiveRenderer: RendererSelection.vectorGlyph.rawValue,
       rasterFallbackGlyphs: lastRasterFallbackGlyphs,
-      vectorSubpixelLayout: subpixelLayout.name)
+      vectorSubpixelLayout: effectiveSubpixelLayout.name)
   }
 
   public init?(
@@ -334,7 +341,21 @@ public final class VectorGlyphRenderer: RendererBackend {
 
   public func setSubpixelLayout(_ layout: VectorSubpixelLayout) {
     guard layout != subpixelLayout else { return }
+    let previousEffective = effectiveSubpixelLayout
     subpixelLayout = layout
+    if effectiveSubpixelLayout != previousEffective { resetMaskCaches() }
+  }
+
+  /// Set whether the display resamples the framebuffer (a "scaled" mode). When
+  /// true, subpixel AA auto-disables (see `VectorSubpixelLayout.effective`).
+  public func setDisplayDownsampled(_ downsampled: Bool) {
+    guard downsampled != displayDownsampled else { return }
+    let previousEffective = effectiveSubpixelLayout
+    displayDownsampled = downsampled
+    if effectiveSubpixelLayout != previousEffective { resetMaskCaches() }
+  }
+
+  private func resetMaskCaches() {
     maskAtlas = VectorGlyphMaskAtlas()
     atlasTexture = nil
     accumTexture = nil
@@ -887,7 +908,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         sampleStart: sampleStart,
         sampleCount: sampleCount,
         seed: accumulationSeed(glyph: glyph, font: font, descriptor: descriptor),
-        subpixelLayout: subpixelLayout,
+        subpixelLayout: effectiveSubpixelLayout,
         accumTexture: accumTexture,
         resolvedTexture: resolvedTexture,
         commandBuffer: commandBuffer)

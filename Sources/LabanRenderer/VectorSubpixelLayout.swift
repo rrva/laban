@@ -158,6 +158,26 @@ public struct VectorSubpixelLayout: Equatable, Sendable {
     name: "bgrStripe",
     areas: .bgrStripe)
 
+  /// The layout actually used for rendering, given the display conditions.
+  /// Subpixel AA only works when the rendered framebuffer maps 1:1 onto the
+  /// monitor's physical subpixels. On Apple Retina displays in a "scaled"
+  /// (downsampled) mode the framebuffer is resampled by the display engine, and
+  /// at a non-integer device-pixel scale the subpixel sample areas no longer
+  /// align — both produce color fringing. In those cases (and whenever the
+  /// configured layout is already grayscale) we fall back to grayscale, which is
+  /// always safe and is what macOS itself uses. Grayscale never fringes, so it
+  /// is the robust default across the whole MacBook line and any future panel.
+  public static func effective(
+    configured: VectorSubpixelLayout,
+    scale: Double,
+    downsampled: Bool
+  ) -> VectorSubpixelLayout {
+    if configured == .grayscale { return .grayscale }
+    if downsampled { return .grayscale }
+    if scale <= 0 || scale.rounded() != scale { return .grayscale }
+    return configured
+  }
+
   public static func custom(
     name: String = "custom",
     offsets: SIMD3<Float>
