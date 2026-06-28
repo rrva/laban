@@ -309,6 +309,17 @@ final class ScrollDebugServer {
       }
       VectorSmoothScrollSettings.setCurrent(parsed)
       return Response.json(["ok": true, "mode": mode])
+    case ("POST", "/config/tab"):
+      let index = Int(query["index"] ?? "") ?? -1
+      return onMain { _, _, model in
+        let tabs = model.tabs
+        guard index >= 0, index < tabs.count else {
+          return Response.json(
+            ["error": "tab index out of range", "index": index, "count": tabs.count], status: 400)
+        }
+        model.selectTab(tabs[index].id)
+        return Response.json(["ok": true, "index": index])
+      }
     case ("POST", "/scroll/snap-bottom"):
       return onMain { tv, _, _ in
         tv.debugSnapToBottom()
@@ -433,6 +444,9 @@ final class ScrollDebugServer {
     POST /scroll/snap-bottom          pin viewport to the active bottom
     POST /config/renderer?name=R      switch renderer (e.g. classic, gpuDriven, vectorGlyph)
     POST /config/smooth-scroll?mode=M switch vector smooth-scroll mode (fluid|perPhase)
+    POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
+                                      shell tab so scroll bursts hit Laban scrollback
+                                      (not a fullscreen alt-screen TUI)
     GET  /scroll/screenshot.png       PNG of the live render surface
     """
 }

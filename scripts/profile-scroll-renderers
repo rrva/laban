@@ -1,52 +1,72 @@
 #!/usr/bin/env bash
-# Record one Instruments trace while driving smooth-scroll bursts across each
-# renderer / smooth-scroll config, so a single capture can be sliced per config
-# via the RenderConfig signpost segments the app emits on each switch.
+# Profile Laban smooth-scroll across renderer / smooth-scroll configs by recording
+# ONE short Instruments trace PER config while driving sub-cell scroll bursts over
+# HTTP. One-trace-per-config is deliberate: custom Points-of-Interest signposts do
+# not reliably land in an xctrace capture (tried Metal System Trace +/- the Points
+# of Interest instrument; both gave 0 signpost rows), so segmenting a single trace
+# by signpost is unreliable. Separate traces are robust and each is independently
+# analyzable with `analyze-metal-trace --cpu-only` and its GPU pacing tables.
 #
-# PREREQUISITE: launch Laban yourself with the scroll-debug server enabled, e.g.
-#   LABAN_SCROLL_DEBUG=1 open ~/Laban.app      (or pass --scroll-debug)
-# This script never launches the app (single-instance ghost risk); it only
-# drives the already-running instance over HTTP and records it with xctrace.
+# PREREQUISITE: launch Laban yourself with the scroll-debug server enabled:
+#   open ~/Laban.app --args --scroll-debug
+# This script never launches the app (single-instance ghost risk); it drives the
+# already-running instance over HTTP and records it with xctrace.
+#
+# IMPORTANT: point --tab at a NORMAL-BUFFER shell tab (one with scrollback), not a
+# fullscreen alt-screen TUI (e.g. a Claude Code / vim tab) — alt-screen has no
+# scrollback, so the scroll burst is a no-op and you would profile the TUI's own
+# rendering instead of Laban's smooth-scroll path.
 #
 # Usage:
 #   scripts/profile-scroll-renderers [--port 8787] [--burst-seconds 5] \
-#       [--out ~/Downloads/scroll-profile.trace]
+#       [--tab N] [--out-dir ~/Downloads/scroll-profile]
 set -euo pipefail
 
 port=8787
 burst_seconds=5
-out="$HOME/Downloads/scroll-profile-$(date +%Y%m%d-%H%M%S).trace"
+tab=""
+out_dir="$HOME/Downloads/scroll-profile-$(date +%Y%m%d-%H%M%S)"
 process="Laban"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) port="$2"; shift 2 ;;
     --burst-seconds) burst_seconds="$2"; shift 2 ;;
-    --out) out="$2"; shift 2 ;;
+    --tab) tab="$2"; shift 2 ;;
+    --out-dir) out_dir="$2"; shift 2 ;;
     --process) process="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
 base="http://127.0.0.1:${port}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 
-post() { curl -fsS -X POST "${base}$1" >/dev/null || { echo "POST $1 failed — is Laban running with LABAN_SCROLL_DEBUG=${port}?" >&2; exit 1; }; }
+post() {
+  curl -fsS -X POST "${base}$1" >/dev/null \
+    || { echo "POST $1 failed — is Laban running with --scroll-debug on ${port}?" >&2; exit 1; }
+}
 
-# Confirm the control surface is up before recording.
 if ! curl -fsS "${base}/scroll/state" >/dev/null 2>&1; then
   echo "scroll-debug server not reachable at ${base}." >&2
-  echo "Launch Laban with LABAN_SCROLL_DEBUG=${port} first (you, not this script)." >&2
+  echo "Launch Laban with: open ~/Laban.app --args --scroll-debug" >&2
   exit 1
 fi
 
-# One smooth-scroll burst: a sequence of sub-cell PD-animated steps over ~N s.
+mkdir -p "${out_dir}"
+
+if [ -n "${tab}" ]; then
+  echo "selecting tab ${tab}" >&2
+  post "/config/tab?index=${tab}"
+  sleep 0.5
+fi
+
+# A continuous smooth-scroll burst: alternating fling so the PD controller animates
+# through sub-cell offsets for the whole window (not row snaps), driven concurrently
+# with the recording.
 burst() {
-  local label="$1"
-  echo "  scrolling: ${label}" >&2
   local ticks=$(( burst_seconds * 10 ))
   for _ in $(seq 1 "$ticks"); do
-    # Alternate direction with a fling velocity so the PD controller animates
-    # continuously through sub-cell offsets (not row snaps).
     post "/scroll/smooth?rows=-3&velocity=-40"
     sleep 0.05
     post "/scroll/smooth?rows=3&velocity=40"
@@ -54,30 +74,40 @@ burst() {
   done
 }
 
-# Drive the configs in a background job; xctrace records the foreground attach.
-drive() {
-  sleep 1  # let recording warm up
-  post "/config/renderer?name=gpuDriven";        burst "gpu-driven"
-  post "/config/renderer?name=vectorGlyph"
-  post "/config/smooth-scroll?mode=fluid";        burst "vector/fluid"
-  post "/config/smooth-scroll?mode=perPhase";     burst "vector/crisp"
-  post "/config/renderer?name=classic";           burst "classic"
+# Record one trace for a single config: set the config, then record while bursting.
+record_config() {
+  local label="$1"; shift
+  local out="${out_dir}/${label}.trace"
+  echo "=== ${label} ===" >&2
+  "$@"          # apply config (renderer/mode switch)
+  sleep 0.3
+  local secs=$(( burst_seconds + 1 ))
+  burst &
+  local burst_pid=$!
+  xcrun xctrace record --template "Metal System Trace" \
+    --time-limit "${secs}s" --attach "${process}" --output "${out}" \
+    >/dev/null 2>&1 || true   # benign "log archive corrupt" warning; bundle is fine
+  wait "${burst_pid}" 2>/dev/null || true
+  echo "  trace: ${out}" >&2
 }
 
-total=$(( 1 + burst_seconds * 3 + 3 ))
-echo "recording ${total}s to ${out} (attach ${process})" >&2
-drive &
-drive_pid=$!
+set_renderer() { post "/config/renderer?name=$1"; }
+set_vector_mode() { post "/config/renderer?name=vectorGlyph"; post "/config/smooth-scroll?mode=$1"; }
 
-xcrun xctrace record --template "Metal System Trace" \
-  --time-limit "${total}s" --attach "${process}" --output "${out}"
-
-wait "${drive_pid}" 2>/dev/null || true
+record_config "gpu-driven"   set_renderer gpuDriven
+record_config "vector-fluid" set_vector_mode fluid
+record_config "vector-crisp" set_vector_mode perPhase
+record_config "classic"      set_renderer classic
 
 echo >&2
-echo "trace: ${out}" >&2
-echo "segment map:" >&2
-scripts/analyze-metal-trace "${out}" --signposts || true
+echo "=== pacing summary (command-buffer submission + drawable wait p50/p95) ===" >&2
+for label in gpu-driven vector-fluid vector-crisp classic; do
+  t="${out_dir}/${label}.trace"
+  [ -d "${t}" ] || continue
+  echo "--- ${label} ---" >&2
+  "${script_dir}/analyze-metal-trace" "${t}" --no-files 2>/dev/null \
+    | grep -iE "command-buffer-submissions|ca-client-buffer-wait|p50=" | head -4 || true
+done
 echo >&2
-echo "Next: analyze a segment's CPU with --cpu-only (time-filter in Instruments" >&2
-echo "to a single RenderConfig interval from the map above)." >&2
+echo "traces in: ${out_dir}" >&2
+echo "Deeper CPU per config: analyze-metal-trace ${out_dir}/<label>.trace --cpu-only" >&2
