@@ -47,6 +47,20 @@ private struct VectorMaskDescriptor {
   var subpixelSampleOffset: CGPoint = .zero
 }
 
+/// Cache identity for a `VectorMaskDescriptor`. The descriptor is a pure function
+/// of (glyph, font, synthetic italic, quantized phase) at a fixed scale, so it is
+/// memoized across frames: during a steady scroll the same handful of (glyph,
+/// phase) pairs recur every frame, and recomputing the outline shear + bounds +
+/// key each time dominated the per-frame CPU (the residency-rebuild cost). The
+/// cache is dropped on scale/layout change via `resetMaskCaches`.
+private struct VectorMaskDescriptorKey: Hashable {
+  var font: ObjectIdentifier
+  var glyph: CGGlyph
+  var syntheticItalic: Bool
+  var quantizedOffsetX: Int
+  var quantizedOffsetY: Int
+}
+
 public final class VectorGlyphRenderer: RendererBackend {
   private static let syntheticItalicShear: CGFloat = 0.18
   private static let maxInlineInstanceBytes = 4096
@@ -95,6 +109,11 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var lastCommandBuffer: MTLCommandBuffer?
   private var fontCache: [UInt32: (font: CTFont, boldFallback: Bool, italicFallback: Bool)] = [:]
   private var maskAtlas = VectorGlyphMaskAtlas()
+  /// Memoized pre-raster geometry (outline/bounds/key) keyed by glyph + phase.
+  /// Sits above the atlas: the atlas holds baked pixels, this holds the input to
+  /// produce them. Recomputing it every frame for already-resident glyphs was the
+  /// steady-scroll CPU cost. Cleared with the atlas on scale change.
+  private var descriptorCache: [VectorMaskDescriptorKey: VectorMaskDescriptor] = [:]
   private var rasterAtlas: MetalGlyphAtlas?
   private var sidebarRasterAtlas: MetalGlyphAtlas?
   private var colorGlyphAtlas: ColorGlyphAtlas?
@@ -414,6 +433,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     maskAtlas = VectorGlyphMaskAtlas()
     atlasTexture = nil
     accumTexture = nil
+    descriptorCache.removeAll(keepingCapacity: true)
   }
 
   public func refreshEmojiRenderingMode() {
@@ -897,6 +917,19 @@ public final class VectorGlyphRenderer: RendererBackend {
     syntheticItalic: Bool = false,
     phaseOffset: CGPoint = .zero
   ) -> VectorMaskDescriptor? {
+    // `phaseOffset` selects which mask this descriptor addresses: `.zero` is the
+    // single phase-0 mask (used by fluid mode and as crisp's always-resident
+    // fallback); a non-zero offset is a per-phase mask (crisp mode bakes the
+    // sub-cell scroll offset into the coverage). Static frames pass `.zero`.
+    let phase = Self.quantizedPhase(pointOffset: phaseOffset, scale: scale)
+    let cacheKey = VectorMaskDescriptorKey(
+      font: ObjectIdentifier(font),
+      glyph: glyph,
+      syntheticItalic: syntheticItalic,
+      quantizedOffsetX: phase.qx,
+      quantizedOffsetY: phase.qy)
+    if let cached = descriptorCache[cacheKey] { return cached }
+
     guard var outline = curveStore.outline(for: glyph, font: font) else { return nil }
     if syntheticItalic {
       outline = outline.applying(
@@ -906,11 +939,6 @@ public final class VectorGlyphRenderer: RendererBackend {
     let width = max(1, Int(ceil(bounds.width * scale)))
     let height = max(1, Int(ceil(bounds.height * scale)))
     let origin = CGPoint(x: floor(bounds.minX), y: floor(bounds.minY))
-    // `phaseOffset` selects which mask this descriptor addresses: `.zero` is the
-    // single phase-0 mask (used by fluid mode and as crisp's always-resident
-    // fallback); a non-zero offset is a per-phase mask (crisp mode bakes the
-    // sub-cell scroll offset into the coverage). Static frames pass `.zero`.
-    let phase = Self.quantizedPhase(pointOffset: phaseOffset, scale: scale)
     let key = VectorGlyphMaskAtlas.Key(
       font: ObjectIdentifier(font),
       glyph: glyph,
@@ -921,13 +949,15 @@ public final class VectorGlyphRenderer: RendererBackend {
       syntheticItalic: syntheticItalic,
       quantizedOffsetX: phase.qx,
       quantizedOffsetY: phase.qy)
-    return VectorMaskDescriptor(
+    let descriptor = VectorMaskDescriptor(
       outline: outline,
       key: key,
       width: width,
       height: height,
       origin: origin,
       subpixelSampleOffset: phase.sampleOffset)
+    descriptorCache[cacheKey] = descriptor
+    return descriptor
   }
 
   /// Quantize a point-space sub-cell offset to a device-pixel u0.8 phase. Returns
