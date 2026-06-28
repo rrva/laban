@@ -640,6 +640,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     ) { [weak self] _ in
       guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
       vector.setSubpixelLayout(VectorSubpixelLayout.persisted())
+      // Confirm the live change landed: log the configured choice and the layout
+      // actually rendered (the auto-policy may force grayscale). The visual delta
+      // is sub-perceptual at small sizes on a 2x Retina panel, so this is the
+      // reliable way to see the setting took effect.
+      AppLog.render.info(
+        "vector subpixel layout configured=\(vector.subpixelLayout.name) "
+          + "effective=\(vector.rendererStatus.vectorSubpixelLayout ?? "?")")
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
