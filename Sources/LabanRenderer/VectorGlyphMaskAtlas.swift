@@ -146,16 +146,28 @@ final class VectorGlyphMaskAtlas {
   /// be freed. Returns the freed region's slot origin, or nil if it still does
   /// not fit (the caller then falls back to the raster path for this glyph).
   private func evictForRegion(slotWidth: Int, slotHeight: Int) -> (x: Int, y: Int)? {
-    let evictable = entries.values
-      .filter { (lastUsedFrame[$0.key] ?? 0) < currentFrame }
-      .sorted { (lastUsedFrame[$0.key] ?? 0) < (lastUsedFrame[$1.key] ?? 0) }
-    for victim in evictable {
+    // Evict least-recently-used entries one at a time until the region fits.
+    // A single linear min-scan per eviction (no full sort): the previous
+    // sort-all-entries-per-reserve was O(n log n) on every reserve and, under a
+    // continuous scroll that minted a fresh key per glyph per frame, dominated
+    // the frame (the M6 scroll-jank regression). An entry used in the current
+    // frame is never a victim.
+    while true {
+      var victim: Entry?
+      var victimFrame = Int.max
+      for entry in entries.values {
+        let used = lastUsedFrame[entry.key] ?? 0
+        if used < currentFrame, used < victimFrame {
+          victimFrame = used
+          victim = entry
+        }
+      }
+      guard let victim else { return nil }
       remove(victim)
       if let origin = findFreeRegion(slotWidth: slotWidth, slotHeight: slotHeight) {
         return origin
       }
     }
-    return nil
   }
 
   @discardableResult

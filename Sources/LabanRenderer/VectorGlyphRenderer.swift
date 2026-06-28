@@ -63,6 +63,11 @@ public final class VectorGlyphRenderer: RendererBackend {
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
+  /// Bilinear sampler for the vector glyph atlas. Fluid smooth-scroll places the
+  /// quad at a fractional device-pixel position, so the mask must interpolate to
+  /// glide; static / per-phase placement lands on integer pixels where bilinear
+  /// equals nearest, so it stays crisp. Raster/emoji atlases keep `sampler`.
+  private let linearSampler: MTLSamplerState
   private let scratchRasterizer: VectorGlyphScratchRasterizer
   private let curveStore = GlyphCurveStore()
 
@@ -95,6 +100,7 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var colorGlyphAtlas: ColorGlyphAtlas?
   private var emojiRenderingMode: EmojiRenderingMode = EmojiRenderingSettings.current()
   private var textWeight: Double = VectorTextWeightSettings.current()
+  private var smoothScrollMode: VectorSmoothScrollMode = VectorSmoothScrollSettings.current()
 
   public var onFrameCompleted: (() -> Void)?
   public var rendererStatus: RendererStatus {
@@ -194,6 +200,12 @@ public final class VectorGlyphRenderer: RendererBackend {
     samplerDescriptor.sAddressMode = .clampToEdge
     samplerDescriptor.tAddressMode = .clampToEdge
 
+    let linearSamplerDescriptor = MTLSamplerDescriptor()
+    linearSamplerDescriptor.minFilter = .linear
+    linearSamplerDescriptor.magFilter = .linear
+    linearSamplerDescriptor.sAddressMode = .clampToEdge
+    linearSamplerDescriptor.tAddressMode = .clampToEdge
+
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
       let glyphCoveragePipeline = try? device.makeRenderPipelineState(
@@ -204,7 +216,8 @@ public final class VectorGlyphRenderer: RendererBackend {
         descriptor: rasterGlyphDescriptor),
       let colorGlyphPipeline = try? device.makeRenderPipelineState(
         descriptor: colorGlyphDescriptor),
-      let sampler = device.makeSamplerState(descriptor: samplerDescriptor)
+      let sampler = device.makeSamplerState(descriptor: samplerDescriptor),
+      let linearSampler = device.makeSamplerState(descriptor: linearSamplerDescriptor)
     else { return nil }
 
     self.device = device
@@ -216,6 +229,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     self.rasterGlyphPipeline = rasterGlyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
     self.sampler = sampler
+    self.linearSampler = linearSampler
     self.scratchRasterizer = scratchRasterizer
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
@@ -242,6 +256,12 @@ public final class VectorGlyphRenderer: RendererBackend {
   private static let phasedSampleBudgetPerFrame = 4096
   /// Free a mask after this many frames without a reference (keep-or-free sweep).
   private static let maskEvictionTTLFrames = 240
+  /// Distinct sub-pixel phases the per-phase scroll mode quantizes to per device
+  /// pixel (per axis). Coarse on purpose: a continuous scroll shares one offset
+  /// across the whole screen each frame, so few phases means masks repeat and
+  /// cache instead of thrashing the atlas. 4/pixel reads as smooth quarter-pixel
+  /// steps. Must divide 256 (the u0.8 phase range).
+  private static let phaseStepsPerPixel = 4
   private var remainingPhasedSampleBudget = 0
 
   private static func makeRasterAtlas(
@@ -404,6 +424,16 @@ public final class VectorGlyphRenderer: RendererBackend {
     textWeight = VectorTextWeightSettings.current()
   }
 
+  public func refreshSmoothScrollMode() {
+    let mode = VectorSmoothScrollSettings.current()
+    guard mode != smoothScrollMode else { return }
+    smoothScrollMode = mode
+    // The two modes populate the atlas with different keys (fluid bakes a single
+    // phase-0 mask per glyph; per-phase bakes one per phase). Drop the caches so
+    // the next frame rebuilds under the new mode.
+    resetMaskCaches()
+  }
+
   func maskSnapshot(
     for glyph: CGGlyph,
     font: CTFont,
@@ -507,7 +537,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         if setVertexInstances(glyphs, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {
           encoder.setVertexBytes(&uniforms, length: MemoryLayout<VectorUniforms>.stride, index: 1)
           encoder.setFragmentTexture(atlasTexture, index: 0)
-          encoder.setFragmentSamplerState(sampler, index: 0)
+          encoder.setFragmentSamplerState(linearSampler, index: 0)
           encoder.setRenderPipelineState(glyphCoveragePipeline)
           encoder.drawPrimitives(
             type: .triangle,
@@ -875,10 +905,14 @@ public final class VectorGlyphRenderer: RendererBackend {
     let width = max(1, Int(ceil(bounds.width * scale)))
     let height = max(1, Int(ceil(bounds.height * scale)))
     let origin = CGPoint(x: floor(bounds.minX), y: floor(bounds.minY))
-    // Quantize the current sub-cell scroll offset to OSOR's u0.8 (1/256 device
-    // px) so near-identical phases collapse to one cache entry. Static frames
-    // (offset 0) quantize to 0 → the same single phase-0 mask as before.
-    let phase = Self.quantizedPhase(pointOffset: scrollPhaseOffset, scale: scale)
+    // Per-phase mode bakes the sub-cell scroll offset into the mask (one cache
+    // entry per coarse phase); fluid mode bakes a single phase-0 mask per glyph
+    // and instead slides the quad at draw time (see glyphInstance). Static frames
+    // (offset 0) quantize to phase 0 in both modes → the same single mask.
+    let phase =
+      smoothScrollMode == .perPhase
+      ? Self.quantizedPhase(pointOffset: scrollPhaseOffset, scale: scale)
+      : (qx: 0, qy: 0, sampleOffset: CGPoint.zero)
     let key = VectorGlyphMaskAtlas.Key(
       font: ObjectIdentifier(font),
       glyph: glyph,
@@ -910,15 +944,20 @@ public final class VectorGlyphRenderer: RendererBackend {
     // `pointOffset` is the *signed sub-pixel remainder* (the fraction the app
     // rounds away when snapping the scroll offset to whole device pixels), so the
     // quad stays pixel-aligned (crisp, texel↔pixel 1:1) and the mask carries the
-    // sub-pixel shift. Quantize the signed device-pixel remainder directly to
-    // u0.8 (1/256 px); do NOT take frac(), which would wrap a −0.3 px phase to
-    // +0.7 px and misplace the glyph by a whole pixel. Clamp to ±0.5 px: a larger
-    // value means the caller failed to snap and should be treated as the nearest
-    // half-pixel rather than aliased.
+    // sub-pixel shift. Quantize the signed device-pixel remainder directly (NOT
+    // frac(), which would wrap a −0.3 px phase to +0.7 px) to a *coarse* step:
+    // `phaseStepsPerPixel` distinct phases across a pixel. Coarse is deliberate —
+    // a continuous scroll sweeps one shared offset per frame, so fine steps (e.g.
+    // 1/256) would mint a fresh mask for every glyph every frame, thrashing the
+    // atlas (O(n²) eviction) with zero reuse. A handful of phases repeat across
+    // frames, so masks cache and the per-frame rasterization stays bounded.
+    // Clamp to ±0.5 px: a larger value means the caller failed to snap.
+    let step = 256 / Self.phaseStepsPerPixel  // u0.8 units per phase bucket
     func quantize(_ devicePixels: Double) -> (q: Int, frac: Double) {
       let clamped = min(0.5, max(-0.5, devicePixels))
-      let q = Int((clamped * 256).rounded())
-      return (q, Double(q) / 256.0)
+      let raw = Int((clamped * 256).rounded())
+      let snapped = Int((Double(raw) / Double(step)).rounded()) * step
+      return (snapped, Double(snapped) / 256.0)
     }
     let px = quantize(Double(pointOffset.x) * Double(scale))
     let py = quantize(Double(pointOffset.y) * Double(scale))
@@ -953,10 +992,11 @@ public final class VectorGlyphRenderer: RendererBackend {
         font: font,
         syntheticItalic: syntheticItalic)
     else { return nil }
+    let existing = maskAtlas.entry(for: descriptor.key)
     guard
       let resolvedTexture = ensureAtlasTexture(),
       let accumTexture = ensureAccumTexture(),
-      let entry = maskAtlas.entry(for: descriptor.key)
+      let entry = existing
         ?? maskAtlas.reserve(
           key: descriptor.key,
           width: descriptor.width,
@@ -970,12 +1010,21 @@ public final class VectorGlyphRenderer: RendererBackend {
     let sampleStart = maskAtlas.sampleCount(for: entry)
     guard sampleStart < Self.accumulationSampleCap else { return entry }
     let isPhased = descriptor.key.quantizedOffsetX != 0 || descriptor.key.quantizedOffsetY != 0
-    let scheduled =
+    var scheduled =
       isPhased
       ? Self.phasedSamplesThisFrame(
         sampleStart: sampleStart, budgetRemaining: remainingPhasedSampleBudget)
       : Self.accumulationSamplesThisFrame(
         sampleStart: sampleStart, maskPixels: descriptor.width * descriptor.height)
+    // A brand-new entry (sampleStart == 0) occupies an atlas slot that eviction
+    // may have just recycled from another glyph: its pixels are stale until it is
+    // rasterized at least once. So a never-rasterized entry MUST get ≥1 sample
+    // even when the phased budget is exhausted — otherwise the budget cap would
+    // leave it displaying a different glyph's mask (visible "mutation" during a
+    // fast scroll). An already-rasterized entry is safe to skip-refine this frame.
+    if sampleStart == 0 {
+      scheduled = max(1, scheduled)
+    }
     let sampleCount = min(Self.accumulationSampleCap - sampleStart, scheduled)
     guard sampleCount > 0 else { return entry }
     if isPhased { remainingPhasedSampleBudget -= sampleCount }
@@ -1123,8 +1172,17 @@ public final class VectorGlyphRenderer: RendererBackend {
       y: position.y + mask.origin.y,
       width: CGFloat(mask.width) / scale,
       height: CGFloat(mask.height) / scale)
+    // Fluid mode slides the (single, phase-0) quad to the true fractional
+    // device-pixel position and lets the bilinear sampler interpolate, so motion
+    // is continuous. Per-phase mode bakes the offset into the mask instead and
+    // keeps the quad on the pixel grid, so it adds nothing here. Both are 0 for
+    // static text.
+    let fluidDeviceOffsetY =
+      smoothScrollMode == .fluid ? CGFloat(scrollPhaseOffset.y) * scale : 0
     return VectorGlyphInstance(
-      origin: SIMD2<Float>(Float(rect.minX * scale), Float(rect.minY * scale)),
+      origin: SIMD2<Float>(
+        Float(rect.minX * scale),
+        Float(rect.minY * scale + fluidDeviceOffsetY)),
       size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
       uvOrigin: SIMD2<Float>(
         Float(mask.x) / Float(maskAtlas.width),

@@ -270,6 +270,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var emojiRenderingObserver: NSObjectProtocol?
   private var vectorSubpixelLayoutObserver: NSObjectProtocol?
   private var vectorTextWeightObserver: NSObjectProtocol?
+  private var vectorSmoothScrollObserver: NSObjectProtocol?
   private var screenParametersObserver: NSObjectProtocol?
   private var fontChangeObserver: NSObjectProtocol?
   /// Persisted font name as of the last time this view reconciled with
@@ -658,6 +659,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     ) { [weak self] _ in
       guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
       vector.refreshTextWeight()
+      self.renderInvalidated = true
+      if self.window != nil {
+        self.scheduleRenderRetry()
+      }
+    }
+
+    vectorSmoothScrollObserver = NotificationCenter.default.addObserver(
+      forName: VectorSmoothScrollSettings.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
+      vector.refreshSmoothScrollMode()
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -1583,6 +1595,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if let vectorTextWeightObserver {
       NotificationCenter.default.removeObserver(vectorTextWeightObserver)
+    }
+    if let vectorSmoothScrollObserver {
+      NotificationCenter.default.removeObserver(vectorSmoothScrollObserver)
     }
     if let screenParametersObserver {
       NotificationCenter.default.removeObserver(screenParametersObserver)

@@ -37,6 +37,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     value: VectorTextWeightSettings.defaultWeight, minValue: 0, maxValue: 1,
     target: nil, action: nil)
   private let vectorTextWeightValueLabel = NSTextField(labelWithString: "")
+  private let vectorSmoothScrollPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
@@ -65,6 +66,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let emojiRenderingOptions: [EmojiRenderingMode] = EmojiRenderingMode.allCases
   private let vectorSubpixelLayoutOptions: [VectorSubpixelLayoutPreset] =
     VectorSubpixelLayoutPreset.settingsCases
+  private let vectorSmoothScrollOptions: [VectorSmoothScrollMode] =
+    VectorSmoothScrollMode.allCases
 
   init(
     theme: ThemeMenuController,
@@ -217,6 +220,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       + "RGB subpixel uses a stronger RGB stripe layout for maximum horizontal text acuity."
     configureVectorSubpixelCustomControls()
 
+    vectorSmoothScrollPopUp.target = self
+    vectorSmoothScrollPopUp.action = #selector(vectorSmoothScrollModeChanged(_:))
+    for option in vectorSmoothScrollOptions {
+      vectorSmoothScrollPopUp.addItem(withTitle: vectorSmoothScrollTitle(option))
+    }
+    vectorSmoothScrollPopUp.toolTip =
+      "Fluid slides one cached glyph mask to any fractional position (smoothest, "
+      + "softens slightly while moving). Crisp rasterizes a mask per sub-pixel phase "
+      + "(sharper subpixel-AA in motion, a touch more GPU work). Vector renderer only."
+
     optionAsMetaCheckbox.target = self
     optionAsMetaCheckbox.action = #selector(optionAsMetaChanged(_:))
     optionAsMetaCheckbox.toolTip =
@@ -269,6 +282,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       [makeLabel("Vector text AA:"), vectorSubpixelLayoutPopUp],
       [makeLabel("Overlap:"), makeVectorSubpixelCustomRow()],
       [makeLabel("Text weight:"), makeVectorTextWeightRow()],
+      [makeLabel("Smooth scroll:"), vectorSmoothScrollPopUp],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -471,6 +485,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       VectorSubpixelLayout.persistedPreset() != .customOverlap
     vectorTextWeightSlider.doubleValue = VectorTextWeightSettings.current()
     updateVectorTextWeightLabel()
+    if let row = vectorSmoothScrollOptions.firstIndex(of: VectorSmoothScrollSettings.current()) {
+      vectorSmoothScrollPopUp.selectItem(at: row)
+    }
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
@@ -570,6 +587,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       VectorSubpixelLayout.setPersistedPreset(option)
       refresh()
     }
+  }
+
+  @objc private func vectorSmoothScrollModeChanged(_ sender: NSPopUpButton) {
+    let row = sender.indexOfSelectedItem
+    guard row >= 0, row < vectorSmoothScrollOptions.count else { return }
+    VectorSmoothScrollSettings.setCurrent(vectorSmoothScrollOptions[row])
+    refresh()
   }
 
   @objc private func vectorSubpixelCustomFieldChanged(_ sender: NSTextField) {
@@ -740,6 +764,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     case .customOverlap: return "Custom overlap"
     case .rgbStripe: return "RGB subpixel"
     case .bgrStripe: return "BGR subpixel"
+    }
+  }
+
+  private func vectorSmoothScrollTitle(_ mode: VectorSmoothScrollMode) -> String {
+    switch mode {
+    case .fluid: return "Fluid"
+    case .perPhase: return "Crisp"
     }
   }
 
