@@ -119,7 +119,11 @@ public final class VectorGlyphRenderer: RendererBackend {
 
     let layer = CAMetalLayer()
     layer.device = device
-    layer.pixelFormat = .bgra8Unorm
+    // sRGB target so the fixed-function blend composites coverage in linear
+    // light (gamma-correct), instead of lerping in gamma-encoded space which
+    // renders text the wrong weight. Vector-only: the classic renderer is not
+    // a reference and is intentionally left on its existing path.
+    layer.pixelFormat = .bgra8Unorm_srgb
     layer.framebufferOnly = false
     layer.contentsScale = max(scale, 1)
     layer.drawableSize = CGSize(width: max(1, pixelWidth), height: max(1, pixelHeight))
@@ -1244,11 +1248,17 @@ public final class VectorGlyphRenderer: RendererBackend {
   }
 
   private func vectorColor(_ rgba: UInt32) -> SIMD4<Float> {
+    // Linearize RGB so colors stored into the sRGB target round-trip correctly
+    // and blends happen in linear light. Alpha stays linear.
     SIMD4<Float>(
-      Float((rgba >> 24) & 0xFF) / 255,
-      Float((rgba >> 16) & 0xFF) / 255,
-      Float((rgba >> 8) & 0xFF) / 255,
+      Self.srgbToLinear(Float((rgba >> 24) & 0xFF) / 255),
+      Self.srgbToLinear(Float((rgba >> 16) & 0xFF) / 255),
+      Self.srgbToLinear(Float((rgba >> 8) & 0xFF) / 255),
       Float(rgba & 0xFF) / 255)
+  }
+
+  private static func srgbToLinear(_ c: Float) -> Float {
+    c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
   }
 }
 

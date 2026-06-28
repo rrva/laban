@@ -323,7 +323,7 @@ Acceptance (autonomous + observable):
 ## Progress
 
 - [x] (2026-06-28) M0 — numerically stable winding + size-sweep gates (commit `af4380d`).
-- [ ] M1 — gamma-correct grayscale, Retina-tuned default.
+- [x] (2026-06-28) M1 — gamma-correct grayscale via sRGB render target (vector-only; classic untouched). Gate `VectorGlyphGammaTests.testVectorCompositesCoverageInLinearLight` fails before / passes after; all `VectorGlyph`/`GlyphCurveStore`/`VectorSubpixelLayout` suites green. Awaiting manual visual confirmation on the M2 Max panel before M2.
 - [ ] M2 — display robustness (scale/color-space/scaled-mode detection, live reconfig, grayscale auto-policy).
 - [ ] M3 — OSOR subpixel calibration: overlap/bleed, 2D areas, presets, fringing gate.
 - [ ] M4 — sub-pixel-offset glyph caching + fractional-phase raster + fractional placement.
@@ -345,6 +345,20 @@ Acceptance (autonomous + observable):
   make motion jump row-to-row. This forces in atlas eviction and a bounded per-frame
   sample budget (M5), which is why those are explicit milestones.
   Date/Author: 2026-06-28 / initial plan.
+- Decision: The classic/other renderers are NOT oracles; the vector renderer may
+  depart from them. Gates assert against ground-truth math (e.g. linear-light
+  compositing, the CPU winding oracle), never against the classic renderer's output.
+  Rationale: user directive 2026-06-28; the vector path is meant to improve on the
+  shipped look, so pinning it to classic would block the improvement.
+  Date/Author: 2026-06-28 / user directive.
+- Decision: M1 weight target is CoreText-match, but the renderer is free to depart
+  from CoreText's extra stem weight where it improves readability/UX.
+  Rationale: user directive 2026-06-28.
+  Date/Author: 2026-06-28 / user directive.
+- Decision: Execution pauses at each milestone gate for manual visual inspection on
+  the user's display, announced via the macOS `say` command; do not auto-advance.
+  Rationale: user directive 2026-06-28; perceptual quality is best judged on-device.
+  Date/Author: 2026-06-28 / user directive.
 - Decision: Cap atlas/GPU memory with a hard ceiling independent of system RAM.
   Rationale: traction across all MacBooks (not just a 96 GB box) requires bounded GPU
   footprint and good cache locality; eviction + raster fallback handle overflow.

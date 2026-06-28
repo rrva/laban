@@ -143,13 +143,23 @@ fragment float4 vectorRasterGlyphFragment(
     return float4(in.color.rgb * alpha, alpha);
 }
 
+inline float srgb_to_linear(float c) {
+    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
 fragment float4 vectorColorGlyphFragment(
     VectorVertexOut in [[stage_in]],
     texture2d<float> atlas [[texture(0)]],
     sampler atlasSampler [[sampler(0)]]
 ) {
     float4 sample = atlas.sample(atlasSampler, in.uv);
-    return float4(sample.rgb * sample.a, sample.a);
+    // Emoji atlas stores straight sRGB color; linearize before premultiplying
+    // so it composites correctly into the sRGB (linear-light) target.
+    float3 lin = float3(
+        srgb_to_linear(sample.r),
+        srgb_to_linear(sample.g),
+        srgb_to_linear(sample.b));
+    return float4(lin * sample.a, sample.a);
 }
 
 inline float curve_x_at(VectorGlyphCurve curve, float t) {
