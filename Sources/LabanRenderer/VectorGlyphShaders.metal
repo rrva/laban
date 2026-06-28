@@ -372,5 +372,11 @@ kernel void vectorGlyphAccumulateAtlas(
     float3 alpha = state.w == 0
         ? float3(0.0)
         : float3(state.xyz) / (float(state.w) * 65535.0);
-    resolved.write(float4(clamp(alpha, 0.0, 1.0), 1.0), atlasPosition);
+    alpha = clamp(alpha, 0.0, 1.0);
+    // Snap single-sample quantization noise (1/512 ~= 0.002) to the extremes so
+    // stems read fully solid and the background stays fully clear (OSOR's
+    // extreme-coverage clamp).
+    alpha = select(alpha, float3(0.0), alpha < 0.002);
+    alpha = select(alpha, float3(1.0), alpha > 0.998);
+    resolved.write(float4(alpha, 1.0), atlasPosition);
 }
