@@ -183,24 +183,35 @@ inline int winding_contribution(VectorGlyphCurve curve) {
         if (!valid_root(t, curve)) {
             return 0;
         }
-        float derivative = -2.0 * b;
-        if (derivative < -eps) {
-            return 1;
-        }
-        if (derivative > eps) {
-            return -1;
-        }
-        return 0;
+        // derivative = -2*b; b>0 => downward crossing => +1.
+        return b > 0.0 ? 1 : -1;
     }
 
-    float discriminant = b * b - a * c;
-    if (discriminant <= eps) {
+    // FMA computes b*b - a*c with a single rounding, avoiding the spurious
+    // sign flip that plain (b*b) - (a*c) can produce for near-tangent crossings.
+    float discriminant = fma(b, b, -a * c);
+    if (discriminant <= 0.0) {
         return 0;
     }
 
     float root = sqrt(discriminant);
-    float t0 = (b - root) / a;
-    float t1 = (b + root) / a;
+    // Numerically stable roots of a*t^2 - 2*b*t + c = 0. Straight strokes are
+    // encoded as collinear (degenerate) quadratics whose `a` rounds to a tiny
+    // non-zero value in 32-bit float. The naive (b - root)/a then suffers
+    // catastrophic cancellation (b ~= root), producing garbage crossings that
+    // garble line glyphs (e.g. `/`, `N`, `X`) at the sizes where the sample
+    // grid lands in the cancellation zone. Vieta's form keeps the small root
+    // full-precision; the large root falls out of [0,1) and is rejected.
+    float s = b + (b >= 0.0 ? root : -root);
+    float t0;  // downward crossing (+1) = (b - root)/a
+    float t1;  // upward crossing (-1) = (b + root)/a
+    if (b >= 0.0) {
+        t0 = c / s;
+        t1 = s / a;
+    } else {
+        t0 = s / a;
+        t1 = c / s;
+    }
     int winding = 0;
     if (valid_root(t0, curve)) {
         winding += 1;
@@ -211,94 +222,10 @@ inline int winding_contribution(VectorGlyphCurve curve) {
     return winding;
 }
 
-inline float window_weight(float x, float halfWidth) {
-    return clamp((x + halfWidth) / (2.0 * halfWidth), 0.0, 1.0);
-}
-
-inline float winding_window_contribution(VectorGlyphCurve curve, float halfWidth) {
-    constexpr float eps = 1.0e-6;
-    float y0 = curve.p0.y;
-    float y1 = curve.p1.y;
-    float y2 = curve.p2.y;
-    float a = y0 - 2.0 * y1 + y2;
-    float b = y0 - y1;
-    float c = y0;
-
-    if (fabs(a) <= eps) {
-        if (fabs(b) <= eps) {
-            return 0.0;
-        }
-        float t = c / (2.0 * b);
-        if (t < -eps || t >= 1.0 - eps) {
-            return 0.0;
-        }
-        float clamped = clamp(t, 0.0, 1.0);
-        float x = curve_x_at(curve, clamped);
-        if (x < -halfWidth - eps) {
-            return 0.0;
-        }
-        float derivative = -2.0 * b;
-        if (derivative < -eps) {
-            return window_weight(x, halfWidth);
-        }
-        if (derivative > eps) {
-            return -window_weight(x, halfWidth);
-        }
-        return 0.0;
-    }
-
-    float discriminant = b * b - a * c;
-    if (discriminant <= eps) {
-        return 0.0;
-    }
-
-    float root = sqrt(discriminant);
-    float t0 = (b - root) / a;
-    float t1 = (b + root) / a;
-    float winding = 0.0;
-    if (t0 >= -eps && t0 < 1.0 - eps) {
-        float x = curve_x_at(curve, clamp(t0, 0.0, 1.0));
-        if (x >= -halfWidth - eps) {
-            winding += window_weight(x, halfWidth);
-        }
-    }
-    if (t1 >= -eps && t1 < 1.0 - eps) {
-        float x = curve_x_at(curve, clamp(t1, 0.0, 1.0));
-        if (x >= -halfWidth - eps) {
-            winding -= window_weight(x, halfWidth);
-        }
-    }
-    return winding;
-}
-
 inline float vector_r2(uint index, uint seed, float alpha, uint shift) {
     uint mixed = seed ^ (seed >> shift);
     float seedOffset = float(mixed & 0xffffu) / 65536.0;
     return fract((float(index) + 0.5) * alpha + seedOffset);
-}
-
-inline float vector_coverage_at(
-    constant VectorGlyphCurve *curves,
-    uint curveCount,
-    float2 sample,
-    float2 boundsMin,
-    float2 boundsMax,
-    float halfWidth
-) {
-    if (sample.x < boundsMin.x - halfWidth || sample.x > boundsMax.x + halfWidth ||
-        sample.y < boundsMin.y || sample.y > boundsMax.y) {
-        return 0.0;
-    }
-
-    float winding = 0.0;
-    for (uint i = 0; i < curveCount; i++) {
-        VectorGlyphCurve curve = curves[i];
-        curve.p0 -= sample;
-        curve.p1 -= sample;
-        curve.p2 -= sample;
-        winding += winding_window_contribution(curve, halfWidth);
-    }
-    return clamp(float(abs(winding)), 0.0, 1.0);
 }
 
 inline float vector_point_coverage_at(

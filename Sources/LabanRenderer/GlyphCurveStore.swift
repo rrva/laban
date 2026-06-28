@@ -219,20 +219,30 @@ public enum GlyphCurveCPUOracle {
       guard abs(b) > epsilon else { return 0 }
       let t = c / (2 * b)
       guard rootIsValid(t, x0: x0, x1: x1, x2: x2) else { return 0 }
-      let derivative = -2 * b
-      if derivative < -epsilon { return 1 }
-      if derivative > epsilon { return -1 }
+      // derivative = -2*b; b>0 => downward crossing => +1.
+      return b > 0 ? 1 : -1
+    }
+
+    // FMA keeps b*b - a*c at a single rounding (matches the Metal kernel).
+    let discriminant = fma(b, b, -a * c)
+    if discriminant <= 0 {
       return 0
     }
 
-    let discriminant = b * b - a * c
-    if discriminant <= epsilon {
-      return 0
+    let root = discriminant.squareRoot()
+    // Numerically stable (Vieta / Numerical Recipes) roots of
+    // a*t^2 - 2*b*t + c = 0; avoids catastrophic cancellation when |a| is tiny,
+    // i.e. for straight strokes encoded as collinear quadratics.
+    let s = b + (b >= 0 ? root : -root)
+    let t0: Double  // downward crossing (+1) = (b - root)/a
+    let t1: Double  // upward crossing (-1) = (b + root)/a
+    if b >= 0 {
+      t0 = c / s
+      t1 = s / a
+    } else {
+      t0 = s / a
+      t1 = c / s
     }
-
-    let root = sqrt(discriminant)
-    let t0 = (b - root) / a
-    let t1 = (b + root) / a
     var winding = 0
     if rootIsValid(t0, x0: x0, x1: x1, x2: x2) {
       winding += 1
