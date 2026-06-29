@@ -100,7 +100,94 @@ final class VectorSmoothScrollTests: XCTestCase {
     XCTAssertNotEqual(centroids.first!, centroids.last!)
   }
 
+  func testGlyphCentroidShiftsSubPixelAcrossHorizontalPhases() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("no Metal device") }
+
+    let scale: CGFloat = 2
+    let width = 256
+    let height = 120
+    let atlas = FontAtlas(pointSize: 28, fontName: nil)
+    let renderer = try XCTUnwrap(
+      VectorGlyphRenderer(
+        fontAtlas: atlas, sidebarFontAtlas: atlas,
+        pixelWidth: width, pixelHeight: height, scale: scale))
+
+    let commands: [FrameCommand] = [
+      .rect(
+        CGRect(x: 0, y: 0, width: CGFloat(width) / scale, height: CGFloat(height) / scale),
+        color: 0x00_00_00_FF, source: .terminal),
+      .glyphRun(
+        origin: CGPoint(x: 8, y: 30),
+        text: "HHHHH",
+        foreground: 0xFF_FF_FF_FF,
+        background: 0x00_00_00_FF,
+        attributes: [],
+        source: .terminal),
+    ]
+
+    // Sweep a sub-cell horizontal phase across a full device pixel. The slide
+    // offset is symmetric with the vertical axis (+phase adds +offset*scale), so
+    // a positive phase shifts the left-to-right centroid X the same way a positive
+    // vertical phase shifts centroid Y: monotonically toward smaller coordinates.
+    let phaseDevicePixels: [CGFloat] = [-0.5, -0.25, 0.0, 0.25, 0.5]
+    var centroids: [Double] = []
+    for devpx in phaseDevicePixels {
+      renderer.setScrollPhaseOffset(CGPoint(x: devpx / scale, y: 0))
+      var png: Data?
+      for _ in 0..<6 {
+        XCTAssertTrue(renderer.render(commands, damage: .full))
+        png = renderer.pngData
+      }
+      XCTAssertEqual(renderer.lastRasterFallbackGlyphs, 0, "vector backend fell back to raster")
+      centroids.append(try inkCentroidX(png: XCTUnwrap(png)))
+    }
+
+    let totalShift = abs(centroids.last! - centroids.first!)
+    XCTAssertGreaterThan(totalShift, 0.5, "phase sweep produced too little motion: \(centroids)")
+    XCTAssertLessThan(totalShift, 2.0, "phase sweep jumped more than a pixel — snapped, not smooth")
+    // Monotonic in the expected direction (+phase -> decreasing X), matching the
+    // vertical axis's +phase -> decreasing Y convention.
+    for i in 1..<centroids.count {
+      XCTAssertLessThanOrEqual(
+        centroids[i] - centroids[i - 1], 0.06,
+        "centroid moved the wrong way (non-monotonic): \(centroids)")
+    }
+    XCTAssertNotEqual(centroids.first!, centroids.last!)
+  }
+
   // MARK: - Helpers
+
+  /// Horizontal centroid (in device pixels, left-to-right) of ink — luminance
+  /// above the black background — in the presented frame.
+  private func inkCentroidX(png: Data) throws -> Double {
+    let src = try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil))
+    let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(src, 0, nil))
+    let w = image.width
+    let h = image.height
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    let ctx = try XCTUnwrap(
+      CGContext(
+        data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: cs,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+    var weightedSum = 0.0
+    var total = 0.0
+    for y in 0..<h {
+      for x in 0..<w {
+        let i = (y * w + x) * 4
+        let luma = Double(px[i + 0]) * 0.299 + Double(px[i + 1]) * 0.587 + Double(px[i + 2]) * 0.114
+        if luma > 8 {
+          weightedSum += Double(x) * luma
+          total += luma
+        }
+      }
+    }
+    XCTAssertGreaterThan(total, 0, "no ink found in rendered frame")
+    return weightedSum / total
+  }
+
 
   /// Vertical centroid (in device pixels, top-down) of ink — luminance above the
   /// black background — in the presented frame.

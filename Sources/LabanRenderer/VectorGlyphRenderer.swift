@@ -1611,10 +1611,11 @@ public final class VectorGlyphRenderer: RendererBackend {
     // (fluid mode, or crisp's fallback when the per-phase mask isn't baked yet);
     // the bilinear sampler interpolates so motion is continuous. `slide` false: a
     // per-phase mask whose sub-pixel offset is baked in, kept pixel-aligned.
+    let fluidDeviceOffsetX = slide ? CGFloat(scrollPhaseOffset.x) * scale : 0
     let fluidDeviceOffsetY = slide ? CGFloat(scrollPhaseOffset.y) * scale : 0
     return VectorGlyphInstance(
       origin: SIMD2<Float>(
-        Float(rect.minX * scale),
+        Float(rect.minX * scale + fluidDeviceOffsetX),
         Float(rect.minY * scale + fluidDeviceOffsetY)),
       size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
       uvOrigin: SIMD2<Float>(
