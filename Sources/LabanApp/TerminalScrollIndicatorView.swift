@@ -44,8 +44,17 @@ final class TerminalScrollIndicatorView: NSView {
   // cost ~10% of all CPU. A text layer renders via CoreText with no view
   // layout involvement.
   private let pillTextLayer = CATextLayer()
+  // When the vector glyph renderer is active, the pill text is rasterized
+  // through that pipeline into this layer's `contents` so the overlay's glyphs
+  // match the terminal grid; `pillTextLayer` is left empty in that mode. A
+  // dedicated CALayer (not the CATextLayer) holds the image because
+  // CATextLayer.display() would otherwise overwrite an externally-set contents.
+  private let pillImageLayer = CALayer()
   private let pillFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
   private var pillTextColor = NSColor.labelColor
+  // Set by the owner when the vector glyph renderer is selected; nil restores
+  // the CoreText/CATextLayer path under the classic/software renderers.
+  private var vectorTextRasterizer: VectorTextRasterizer?
   // Measured pill sizes keyed by text length. Valid because the pill text is
   // always "<digits> / <digits>" in a monospaced-digit font: every string of
   // the same length has the same glyph-advance multiset, so length fully
@@ -107,6 +116,10 @@ final class TerminalScrollIndicatorView: NSView {
     pillTextLayer.truncationMode = .none
     pillTextLayer.contentsScale = 2
     pillContainer.layer?.addSublayer(pillTextLayer)
+    pillImageLayer.contentsGravity = .center
+    pillImageLayer.contentsScale = 2
+    pillImageLayer.isHidden = true
+    pillContainer.layer?.addSublayer(pillImageLayer)
     addSubview(pillContainer)
 
     themeChangeObserver = NotificationCenter.default.addObserver(
@@ -216,12 +229,20 @@ final class TerminalScrollIndicatorView: NSView {
   /// would — without this the pill text rasterizes at 1x and blurs on Retina.
   override func viewDidChangeBackingProperties() {
     super.viewDidChangeBackingProperties()
-    pillTextLayer.contentsScale = window?.backingScaleFactor ?? 2
+    let scale = window?.backingScaleFactor ?? 2
+    pillTextLayer.contentsScale = scale
+    pillImageLayer.contentsScale = scale
+    // A backing-scale change invalidates the cached vector image (baked at the
+    // old scale); re-render at the new scale on the next layout.
+    invalidatePillVectorImage()
   }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    pillTextLayer.contentsScale = window?.backingScaleFactor ?? 2
+    let scale = window?.backingScaleFactor ?? 2
+    pillTextLayer.contentsScale = scale
+    pillImageLayer.contentsScale = scale
+    invalidatePillVectorImage()
   }
 
   override func mouseEntered(with event: NSEvent) {
@@ -375,13 +396,9 @@ final class TerminalScrollIndicatorView: NSView {
     // (text changes every tick, length rarely) skips the typesetter too.
     if lastOutput.pillVisible {
       if lastOutput.pillText != lastPillText {
-        pillTextLayer.string = lastOutput.pillText
         lastPillText = lastOutput.pillText
         lastPillFittedSize = pillSize(for: lastOutput.pillText)
-        pillTextLayer.frame = NSRect(
-          x: 8, y: 3,
-          width: lastPillFittedSize.width - 16,
-          height: lastPillFittedSize.height - 6)
+        renderPillText(lastOutput.pillText, fittedSize: lastPillFittedSize)
       }
       let pillSize = lastPillFittedSize
       let pillX = bounds.maxX - Self.edgeInset - Self.thumbWidthHover - 6 - pillSize.width
@@ -402,6 +419,57 @@ final class TerminalScrollIndicatorView: NSView {
       width: ceil(measured.width) + 16, height: ceil(measured.height) + 6)
     pillSizeByTextLength[text.count] = size
     return size
+  }
+
+  /// Select the vector glyph renderer as the pill's text source. Passing a
+  /// rasterizer switches the pill to vector-rendered glyphs (matching the
+  /// terminal grid); passing nil restores the CoreText/CATextLayer path. Safe to
+  /// call on a live renderer switch — it re-renders the current pill text.
+  func setVectorTextRasterizer(_ rasterizer: VectorTextRasterizer?) {
+    vectorTextRasterizer = rasterizer
+    // Force a re-render of the current text through the newly selected path.
+    let text = lastPillText
+    lastPillText = nil
+    if let text {
+      renderPillText(text, fittedSize: pillSize(for: text))
+      lastPillText = text
+    }
+  }
+
+  /// Drop the cached vector image so the next layout re-renders it (e.g. after a
+  /// backing-scale change that invalidates the baked pixels).
+  private func invalidatePillVectorImage() {
+    guard vectorTextRasterizer != nil, let text = lastPillText else { return }
+    renderPillText(text, fittedSize: lastPillFittedSize)
+  }
+
+  /// Render `text` into the pill, either through the vector glyph pipeline (image
+  /// layer) or CoreText (`CATextLayer`). Falls back to CoreText if the vector
+  /// path yields no image (e.g. no Metal device, or an all-whitespace string).
+  private func renderPillText(_ text: String, fittedSize: NSSize) {
+    let textFrame = NSRect(
+      x: 8, y: 3,
+      width: fittedSize.width - 16,
+      height: fittedSize.height - 6)
+    if let rasterizer = vectorTextRasterizer,
+      let image = rasterizer.image(
+        for: text,
+        font: pillFont as CTFont,
+        color: pillTextColor.cgColor,
+        scale: window?.backingScaleFactor ?? 2)
+    {
+      pillImageLayer.contents = image
+      pillImageLayer.frame = textFrame
+      pillImageLayer.isHidden = false
+      pillTextLayer.isHidden = true
+      pillTextLayer.string = nil
+      return
+    }
+    pillTextLayer.string = text
+    pillTextLayer.frame = textFrame
+    pillTextLayer.isHidden = false
+    pillImageLayer.isHidden = true
+    pillImageLayer.contents = nil
   }
 
   private func setThumbOpacity(_ value: Float, animated: Bool) {
@@ -456,6 +524,9 @@ final class TerminalScrollIndicatorView: NSView {
     pillContainer.layer?.borderColor = Self.themedCGColor(theme.dim0, alpha: 0.55)
     pillTextColor = Self.themedNSColor(theme.fg0)
     pillTextLayer.foregroundColor = pillTextColor.cgColor
+    // The vector pill image bakes in the text color, so a palette change must
+    // re-render it; the CATextLayer path picks up foregroundColor for free.
+    invalidatePillVectorImage()
   }
 
   private static func thumbColor(hover: Bool) -> CGColor {
@@ -532,6 +603,18 @@ extension TerminalScrollIndicatorView {
       pillBackground: pillContainer.layer?.backgroundColor,
       pillBorder: pillContainer.layer?.borderColor,
       pillText: pillTextColor)
+  }
+
+  /// Which renderer currently supplies the pill text. Lets a test confirm the
+  /// pill routes through the vector glyph pipeline only when that renderer is
+  /// selected, and reverts to CoreText otherwise.
+  enum PillTextSourceForTesting {
+    case vectorImage
+    case coreTextLayer
+  }
+
+  func pillTextSourceForTesting() -> PillTextSourceForTesting {
+    (!pillImageLayer.isHidden && pillImageLayer.contents != nil) ? .vectorImage : .coreTextLayer
   }
 
   func debugVisibility() -> DebugVisibility {

@@ -28,6 +28,14 @@ final class MainWindowController: NSWindowController {
   /// `LABAN_SCROLL_DEBUG` is set; strong ref so its accept thread outlives
   /// `makeAndShow`'s local scope. See `ScrollDebugServer`.
   private(set) var scrollDebugServer: ScrollDebugServer?
+  /// The overlay scroll indicator (scrollback pill + thumb). Held so the pill's
+  /// text source can be re-pointed at the vector glyph renderer when that
+  /// renderer is selected, and reverted on a live switch back.
+  private weak var scrollIndicator: TerminalScrollIndicatorView?
+  /// Lazily-built vector text rasterizer shared by chrome that opts into
+  /// vector-rendered glyphs (currently the scrollback pill). Nil if no Metal
+  /// device is available; built once and reused.
+  private lazy var vectorTextRasterizer: VectorTextRasterizer? = VectorTextRasterizer()
   /// Env-gated Phase 0 loopback control server for live GUI state/actions.
   private(set) var controlServer: LabanControlServer?
 
@@ -386,6 +394,8 @@ final class MainWindowController: NSWindowController {
     let controller = MainWindowController(window: window)
     controller.model = model
     controller.terminalView = termView
+    controller.scrollIndicator = scrollIndicator
+    controller.syncPillTextSourceToRenderer()
     controller.terminalBackend = terminalBackend
     controller.terminalSessionClient =
       sessionCoordinator?.terminalClient
@@ -554,6 +564,15 @@ final class MainWindowController: NSWindowController {
 
   func applyRendererSelection(_ selection: RendererSelection) {
     terminalView?.applyRendererSelection(selection)
+    syncPillTextSourceToRenderer()
+  }
+
+  /// Point the scrollback pill's text at the vector glyph renderer when that
+  /// renderer is the effective backend, otherwise restore its CoreText path.
+  /// Idempotent: safe to call after any renderer change or at setup.
+  func syncPillTextSourceToRenderer() {
+    let useVector = terminalView?.rendererSelection == .vectorGlyph
+    scrollIndicator?.setVectorTextRasterizer(useVector ? vectorTextRasterizer : nil)
   }
 
   /// Launch-time recovery for the labpty tier. If the daemon is holding
