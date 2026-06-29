@@ -89,11 +89,23 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var presentDisplayLink: VectorPresentDisplayLink? {
     presentDisplayLinkStorage as? VectorPresentDisplayLink
   }
-  /// The most recently committed offscreen target, shown by the present link.
-  /// Touched on both the main thread (publish) and the present thread (blit), so
-  /// always under `presentTargetLock`.
+  /// The most recently *completed* offscreen target, shown by the present link.
+  /// Published from the content buffer's completion handler (write finished), read
+  /// on the present thread. Always under `presentTargetLock`.
   private var latestPresentedTarget: MTLTexture?
   private let presentTargetLock = NSLock()
+  /// Dedicated command queue for the present-thread blit, so vsync-rate presents
+  /// do not contend on the content/bake queue under sustained scroll (sharing one
+  /// queue across the two threads serialized them and dropped fps to ~105). Nil on
+  /// the legacy path.
+  private var presentQueue: MTLCommandQueue?
+  /// Ring of offscreen targets so the content thread renders into a different
+  /// texture than the one the present thread is blitting, avoiding a GPU
+  /// read/write race on a single shared target. `targetTexture` is the content
+  /// thread's current slot; `latestPresentedTarget` is a finished slot.
+  private var targetRing: [MTLTexture] = []
+  private var targetRingCursor = 0
+  private static let targetRingDepth = 3
   private let solidPipeline: MTLRenderPipelineState
   private let glyphCoveragePipeline: MTLRenderPipelineState
   private let glyphColorPipeline: MTLRenderPipelineState
@@ -331,7 +343,11 @@ public final class VectorGlyphRenderer: RendererBackend {
     // (ADR 0026). Opt-out via `defaults write … LabanVectorPresentDisplayLink
     // -bool NO` to exercise the legacy scheduler path. macOS 13 always uses the
     // legacy path.
-    if #available(macOS 14.0, *), Self.presentDisplayLinkEnabled {
+    if #available(macOS 14.0, *), Self.presentDisplayLinkEnabled,
+      let presentQueue = device.makeCommandQueue()
+    {
+      presentQueue.label = "laban.vector.present"
+      self.presentQueue = presentQueue
       let presentLink = VectorPresentDisplayLink(layer: layer)
       presentLink.onPresent = { [weak self] drawable in
         self?.presentLatestTarget(into: drawable) ?? false
@@ -354,6 +370,17 @@ public final class VectorGlyphRenderer: RendererBackend {
     if #available(macOS 14.0, *) {
       presentDisplayLink?.stop()
     }
+  }
+
+  /// Present-side cadence stats from the display-link path (the actual
+  /// presented-frame intervals), or nil if the legacy path is active. Unlike the
+  /// view's display-link TICK stats, this reflects whether every vsync got a
+  /// present. See `VectorPresentDisplayLink.presentIntervalStats`.
+  public func presentDisplayLinkStats(reset: Bool) -> [String: Double]? {
+    if #available(macOS 14.0, *) {
+      return presentDisplayLink?.presentIntervalStats(reset: reset)
+    }
+    return nil
   }
 
   private static let accumulationSampleCap = 512
@@ -541,6 +568,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     layer.contentsScale = newScale
     layer.drawableSize = CGSize(width: pw, height: ph)
     targetTexture = nil
+    targetRing.removeAll(keepingCapacity: true)
     // The present link must not blit a stale-sized target into a new-sized
     // drawable; clear it under the lock so the present thread skips until the
     // next render publishes a correctly-sized target.
@@ -745,18 +773,19 @@ public final class VectorGlyphRenderer: RendererBackend {
     // acquisition (the ~6.5 ms per-frame stall; ADR 0026). The present link blits
     // the latest committed target into its ready drawable each vsync.
     if #available(macOS 14.0, *), let presentLink = presentDisplayLink {
-      publishLatestTarget(target)
       let completion = onFrameCompleted
       let buffersToRetain = retainedInstanceBuffers
-      commandBuffer.addCompletedHandler { _ in
+      commandBuffer.addCompletedHandler { [weak self] _ in
         _ = buffersToRetain
+        // Publish only after the GPU finished writing this target, so the present
+        // thread never blits a half-rendered texture. Then wake the link.
+        self?.publishLatestTarget(target)
+        presentLink.notifyContentUpdated()
         completion?()
         scheduledFrame.finish()
       }
       commandBuffer.commit()
       lastCommandBuffer = commandBuffer
-      // Wake the present link so it shows this content (it parks itself when idle).
-      presentLink.notifyContentUpdated()
       return true
     }
 
@@ -810,7 +839,11 @@ public final class VectorGlyphRenderer: RendererBackend {
       target.width == drawable.texture.width,
       target.height == drawable.texture.height
     else { return false }
-    guard let commandBuffer = queue.makeCommandBuffer() else { return false }
+    // Dedicated present queue: keep vsync-rate blits off the content/bake queue so
+    // the two threads don't serialize on one queue under sustained scroll.
+    guard let presentQueue,
+      let commandBuffer = presentQueue.makeCommandBuffer()
+    else { return false }
     encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
     commandBuffer.present(drawable)
     commandBuffer.commit()
@@ -1953,12 +1986,44 @@ public final class VectorGlyphRenderer: RendererBackend {
   }
 
   private func ensureTargetTexture() -> MTLTexture? {
+    // Fast path (present link active): rotate through a small ring so the content
+    // thread renders into a different texture than the present thread is blitting.
+    // A single shared target would race read-vs-write across the two threads.
+    if presentQueue != nil {
+      if targetRing.count == Self.targetRingDepth,
+        targetRing[0].width == pixelWidth,
+        targetRing[0].height == pixelHeight
+      {
+        targetRingCursor = (targetRingCursor + 1) % Self.targetRingDepth
+        let texture = targetRing[targetRingCursor]
+        targetTexture = texture
+        return texture
+      }
+      // (Re)build the ring at the current size.
+      targetRing.removeAll(keepingCapacity: true)
+      for i in 0..<Self.targetRingDepth {
+        guard let texture = makeTargetTexture() else { return nil }
+        texture.label = "laban.vector.target.\(i)"
+        targetRing.append(texture)
+      }
+      targetRingCursor = 0
+      targetTexture = targetRing[0]
+      return targetRing[0]
+    }
+
     if let targetTexture,
       targetTexture.width == pixelWidth,
       targetTexture.height == pixelHeight
     {
       return targetTexture
     }
+    let texture = makeTargetTexture()
+    texture?.label = "laban.vector.target"
+    targetTexture = texture
+    return texture
+  }
+
+  private func makeTargetTexture() -> MTLTexture? {
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: layer.pixelFormat,
       width: pixelWidth,
@@ -1966,10 +2031,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       mipmapped: false)
     descriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
     descriptor.storageMode = .shared
-    let texture = device.makeTexture(descriptor: descriptor)
-    texture?.label = "laban.vector.target"
-    targetTexture = texture
-    return texture
+    return device.makeTexture(descriptor: descriptor)
   }
 
   private func ensureAtlasTexture() -> MTLTexture? {

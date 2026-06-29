@@ -22,9 +22,73 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// After `idlePauseThreshold` consecutive false returns the link pauses itself.
   var onPresent: ((any CAMetalDrawable) -> Bool)?
 
+  /// Present-side cadence stats: intervals (ms) between successive callbacks that
+  /// actually presented a frame, sampled while the link is active. This is the
+  /// "did we hit every vsync" truth, unlike the main-thread display-link TICK
+  /// interval (which keeps ticking even when content is late). Read via
+  /// `presentIntervalStats(reset:)`.
+  private var lastPresentTimestamp: CFTimeInterval?
+  private var presentIntervalsMs: [Double] = []
+  private let statsLock = NSLock()
+  private static let presentIntervalRingCap = 4096
+
+  /// Diagnostic counters: total callbacks fired and how many actually presented.
+  /// `callbacks == 0` means the link never fired (run-loop/pause bug);
+  /// `callbacks > 0, presented == 0` means `onPresent` always returned false (no
+  /// published target). Surfaced through `presentIntervalStats`.
+  private var callbackCount = 0
+  private var presentedCount = 0
+
+  /// Snapshot of present-interval percentiles, optionally clearing the ring.
+  func presentIntervalStats(reset: Bool) -> [String: Double] {
+    statsLock.lock()
+    let s = presentIntervalsMs.sorted()
+    let callbacks = callbackCount
+    let presented = presentedCount
+    if reset {
+      presentIntervalsMs.removeAll(keepingCapacity: true)
+      lastPresentTimestamp = nil
+      callbackCount = 0
+      presentedCount = 0
+    }
+    statsLock.unlock()
+    _ = (callbacks, presented)
+    guard !s.isEmpty else {
+      return ["count": 0, "callbacks": Double(callbacks), "presented": Double(presented)]
+    }
+    let n = s.count
+    let mean = s.reduce(0, +) / Double(n)
+    func pct(_ p: Double) -> Double { s[min(n - 1, max(0, Int((Double(n) * p).rounded()) - 1))] }
+    let median = pct(0.50)
+    let jank = s.filter { $0 > median * 1.5 }.count
+    return [
+      "count": Double(n), "fps": mean > 0 ? 1000.0 / mean : 0, "meanMs": mean,
+      "p50Ms": median, "p95Ms": pct(0.95), "p99Ms": pct(0.99), "maxMs": s[n - 1],
+      "jankFrames": Double(jank), "jankPercent": Double(jank) / Double(n) * 100.0,
+      "callbacks": Double(callbacks), "presented": Double(presented),
+    ]
+  }
+
+  private func recordPresentInterval(_ update: CAMetalDisplayLink.Update) {
+    let now = update.targetPresentationTimestamp
+    statsLock.lock()
+    if let last = lastPresentTimestamp {
+      let ms = (now - last) * 1000.0
+      if ms > 0, ms < 100 {
+        presentIntervalsMs.append(ms)
+        if presentIntervalsMs.count > Self.presentIntervalRingCap {
+          presentIntervalsMs.removeFirst(presentIntervalsMs.count - Self.presentIntervalRingCap)
+        }
+      }
+    }
+    lastPresentTimestamp = now
+    statsLock.unlock()
+  }
+
   private let link: CAMetalDisplayLink
   private let lock = NSLock()
   private var thread: Thread?
+  private var runLoop: CFRunLoop?
   private var started = false
   private var idleCallbacks = 0
   /// Consecutive no-new-content callbacks before the link parks. ~8 vsyncs at
@@ -56,12 +120,16 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
 
     let t = Thread { [weak self] in
       guard let self else { return }
-      let runLoop = RunLoop.current
-      self.link.add(to: runLoop, forMode: .common)
-      // Keep the run loop alive for the link's callbacks until cancelled.
-      while !Thread.current.isCancelled {
-        runLoop.run(mode: .common, before: Date(timeIntervalSinceNow: 1))
-      }
+      // Attach the link, then block in CFRunLoopRun(). A plain
+      // `RunLoop.run(mode:before:)` loop does NOT reliably service the link's
+      // source (it returns on each timeout without delivering callbacks) — in
+      // testing it produced zero callbacks, while CFRunLoopRun() delivers the full
+      // 120 Hz. Capture the CFRunLoop so `stop()` can end it from another thread.
+      self.lock.lock()
+      self.runLoop = CFRunLoopGetCurrent()
+      self.lock.unlock()
+      self.link.add(to: RunLoop.current, forMode: .common)
+      CFRunLoopRun()
     }
     t.qualityOfService = .userInteractive
     t.name = "laban.vector.present-link"
@@ -87,9 +155,12 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     link.isPaused = true
     lock.lock()
     let t = thread
+    let rl = runLoop
     thread = nil
+    runLoop = nil
     started = false
     lock.unlock()
+    if let rl { CFRunLoopStop(rl) }
     t?.cancel()
   }
 
@@ -97,7 +168,12 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     _ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update
   ) {
     let presented = onPresent?(update.drawable) ?? false
+    statsLock.lock()
+    callbackCount += 1
+    if presented { presentedCount += 1 }
+    statsLock.unlock()
     if presented {
+      recordPresentInterval(update)
       lock.lock()
       idleCallbacks = 0
       lock.unlock()

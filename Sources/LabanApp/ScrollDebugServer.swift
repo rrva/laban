@@ -330,6 +330,11 @@ final class ScrollDebugServer {
       return onMain { tv, _, _ in
         Response.json(tv.debugFrameStats(reset: reset))
       }
+    case ("GET", "/scroll/present-stats"):
+      let reset = query["reset"] == "1"
+      return onMain { tv, _, _ in
+        Response.json(tv.debugPresentStats(reset: reset))
+      }
     case ("GET", "/scroll/screenshot.png"):
       return screenshotResponse()
     default:

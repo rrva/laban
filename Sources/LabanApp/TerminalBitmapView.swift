@@ -1294,6 +1294,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   /// Frame-interval statistics over the recent ring (ms), for jank profiling.
   /// `reset` clears the ring after sampling so the next config measures clean.
+  /// Present-side cadence from the vector display-link path (actual presented
+  /// frame intervals), or `{present: false}` on the legacy/non-vector path. This
+  /// is the true "did every vsync present" metric; `debugFrameStats` only sees the
+  /// display-link TICK interval, which keeps ticking even when content is late.
+  func debugPresentStats(reset: Bool) -> [String: Any] {
+    guard let vector = backend as? VectorGlyphRenderer,
+      let stats = vector.presentDisplayLinkStats(reset: reset)
+    else {
+      return ["present": false]
+    }
+    var out: [String: Any] = ["present": true]
+    for (k, v) in stats { out[k] = v }
+    return out
+  }
+
   func debugFrameStats(reset: Bool) -> [String: Any] {
     let s = frameIntervalSamplesMs.sorted()
     if reset { frameIntervalSamplesMs.removeAll(keepingCapacity: true) }
