@@ -89,9 +89,11 @@ final class VectorGlyphAtlasEvictionTests: XCTestCase {
   // MARK: - Per-frame sample budget
 
   /// With a small budget and many new phases in one frame, total samples encoded
-  /// must stay within budget, and every phase must still get at least one sample
-  /// (resident, lower quality — never missing).
-  func testPhasedBudgetBoundsTotalSamplesYetKeepsEveryPhaseResident() {
+  /// must stay within budget. Once the budget is spent, over-budget phases get 0
+  /// samples this frame and are drawn via the phase-0 slide fallback (never
+  /// missing) until a later frame's budget bakes their per-phase mask — they are
+  /// not made per-phase resident this frame.
+  func testPhasedBudgetBoundsTotalSamplesAndDefersOverBudgetPhases() {
     let budget = 40
     var remaining = budget
     var totalEncoded = 0

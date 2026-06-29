@@ -1498,9 +1498,10 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// Samples to encode this frame for a *phased* (sub-pixel scroll) mask, given
   /// the remaining per-frame phased budget. Front-loads OSOR-style (8 → 4 → 2 → 1)
   /// instead of a full 512 first paint, so a frame that introduces many new phases
-  /// stays bounded; clamps to the budget but never below 1 while samples remain,
-  /// so every referenced phase becomes resident (lower quality, not missing) and
-  /// converges to the cap over subsequent settled frames.
+  /// stays bounded; clamps to the budget and returns 0 once the budget is spent.
+  /// Phases that get 0 this frame are not made per-phase resident: they fall back
+  /// to the phase-0 mask drawn with the slide offset (never missing), and a later
+  /// frame's budget bakes their per-phase mask, converging to the cap.
   static func phasedSamplesThisFrame(sampleStart: Int, budgetRemaining: Int) -> Int {
     guard budgetRemaining > 0 else { return 0 }
     let ideal: Int
