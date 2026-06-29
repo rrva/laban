@@ -253,7 +253,7 @@ public final class MetalRenderer: RendererBackend {
   }
 
   private static let log = Logger(subsystem: "com.rrva.laban", category: "metal-renderer")
-  private static let maxNarrowGlyphLogicalWidthCells: CGFloat = 2.6
+  private static let maxNarrowGlyphLogicalWidthCells: CGFloat = 2.5
 
   public private(set) var lastInstanceCounts = RenderInstanceCounts()
   public private(set) var lastGPUCellPayloadBuildFailure: GPUCellPayloadBuildFailure?

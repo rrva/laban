@@ -1076,6 +1076,50 @@ final class GPUCellParityTests: XCTestCase {
     }
   }
 
+  func testGPUCellPathStillRejectsGlyphsAboveTwoPointFiveCells() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    let renderer = try makeRenderer(label: "payload-narrow-glyph-cutoff")
+
+    // The cell path admits narrow glyphs only up to 2.5 logical cell widths
+    // (shipping behavior). `Entry.logicalWidth` is font-derived, so first probe
+    // it with a deliberately tiny cell so the gate trips, then read it back.
+    let probe = scalarPayload(scalarValue: UInt32(UnicodeScalar("M").value), cellWidthOverride: 1)
+    XCTAssertNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: probe,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)))
+    let probeFailure = try XCTUnwrap(renderer.lastGPUCellPayloadBuildFailure)
+    XCTAssertEqual(probeFailure.reason, "logicalWidthTooWide")
+    let logicalWidth = try XCTUnwrap(probeFailure.logicalWidth)
+    XCTAssertGreaterThan(logicalWidth, 0)
+
+    // Size the cell so the glyph's logical width is 2.55 cells: above the 2.5
+    // cutoff but at or below the 2.6 the branch had accidentally widened to. The
+    // shipping (2.5) cutoff must still reject this; a 2.6 cutoff would accept it.
+    let cellWidth = logicalWidth / 2.55
+    let target = scalarPayload(
+      scalarValue: UInt32(UnicodeScalar("M").value), cellWidthOverride: cellWidth)
+    XCTAssertNil(
+      renderer.rebuildGPUCellPayloadInstancesForTesting(
+        payload: target,
+        commands: [],
+        damage: .full,
+        surfacePxH: Int(CGFloat(rows) * cellH * scale)),
+      "a glyph whose logical width is in (2.5, 2.6] cells must fall back as it did before the cutoff widened to 2.6")
+    let failure = try XCTUnwrap(renderer.lastGPUCellPayloadBuildFailure)
+    XCTAssertEqual(failure.reason, "logicalWidthTooWide")
+    let maxLogicalWidth = try XCTUnwrap(failure.maxLogicalWidth)
+    let ratio = logicalWidth / (maxLogicalWidth / 2.5)
+    XCTAssertGreaterThan(ratio, 2.5, "probe must sit above the 2.5-cell cutoff")
+    XCTAssertLessThanOrEqual(
+      ratio, 2.6, "probe must sit at or below the 2.6 the branch had drifted to")
+  }
+
   func testGPUCellPayloadPartialDirtyRowAcceptsWideInkNarrowSymbols() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -2386,6 +2430,33 @@ final class GPUCellParityTests: XCTestCase {
         background: edgeProbeBackground(seed: labelSeed),
         attributes: attributes,
         wide: wide))
+    return payload
+  }
+
+  private func scalarPayload(
+    scalarValue: UInt32,
+    cellWidthOverride: CGFloat
+  ) -> TerminalCellPayload {
+    let row = 3
+    var payload = TerminalCellPayload(
+      rows: rows,
+      cols: cols,
+      origin: .zero,
+      cellSize: CGSize(width: cellWidthOverride, height: cellH),
+      contentYOffset: 0,
+      defaultBackground: 0x10_20_30_FF,
+      dirtyRows: Array(0..<rows))
+    payload.backgroundRuns.append(
+      .init(row: row, startCol: 0, colCount: cols, color: 0x18_24_30_FF))
+    payload.glyphs.append(
+      .init(
+        row: row,
+        col: 0,
+        scalarValue: scalarValue,
+        foreground: 0xDD_EE_EE_FF,
+        background: 0x18_24_30_FF,
+        attributes: [],
+        wide: 0))
     return payload
   }
 
