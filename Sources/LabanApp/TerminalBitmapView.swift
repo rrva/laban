@@ -326,22 +326,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomGestureBasePointSize: CGFloat?
   private var zoomGestureAccumulatedMagnification: CGFloat = 0
 
-  /// The bucket-snapped point size last applied during the active gesture, so a
-  /// frame whose fractional target lands in the same bucket skips re-applying
-  /// fonts entirely (a cache hit on the resident masks — the smoothness lever:
-  /// every fractional size is otherwise a new mask key and a full-screen rebake).
-  /// Nil when no gesture is in flight. See `Self.zoomBucketPointSize`.
-  private var zoomGestureLastAppliedBucketSize: CGFloat?
-
-  /// Point-size quantization bucket used *during* a continuous zoom gesture. The
-  /// gesture snaps the fractional target to this grid so consecutive frames reuse
-  /// the same baked masks; on gesture end the exact fractional size is applied
-  /// and the masks converge crisp. 0.5 pt is below the perceptual threshold while
-  /// sliding (you cannot read a moving glyph that precisely) yet coarse enough
-  /// that a 14→28 pt slide reuses masks across ~28 buckets instead of missing
-  /// every frame.
-  static let zoomGestureBucketPointSize: CGFloat = 0.5
-
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -3959,21 +3943,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       : FontAtlas.clampedZoomPointSize(target)
   }
 
-  /// Snap a fractional point size to the gesture quantization grid (pure,
-  /// testable). During a continuous zoom the vector backend renders at these
-  /// snapped sizes so consecutive frames reuse the same baked glyph masks (a
-  /// cache hit) instead of baking the whole screen anew at every fractional
-  /// size; the small sub-bucket error is imperceptible on a moving glyph and is
-  /// erased when the exact size is applied on gesture end. Always clamped into
-  /// the zoom range.
-  static func zoomBucketPointSize(_ size: CGFloat, bucket: CGFloat = zoomGestureBucketPointSize)
-    -> CGFloat
-  {
-    let grid = max(bucket, 0.01)
-    let snapped = (size / grid).rounded() * grid
-    return FontAtlas.clampedFractionalZoomPointSize(snapped)
-  }
-
   /// Drive a continuous-zoom gesture (trackpad pinch and Cmd+scroll share this
   /// one body). `delta` is the per-event magnification increment; `phase` is the
   /// gesture envelope. The live frames apply without persisting; the terminating
@@ -3991,51 +3960,45 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     zoomGestureAccumulatedMagnification += delta
 
     let fractional = backend is VectorGlyphRenderer
+    let base = zoomGestureBasePointSize ?? fontAtlas.pointSize
     let target = Self.zoomPointSize(
-      base: zoomGestureBasePointSize ?? fontAtlas.pointSize,
+      base: base,
       accumulatedMagnification: zoomGestureAccumulatedMagnification,
       fractional: fractional)
     let ending = phase == .ended || phase == .cancelled
 
     if fractional && !ending {
-      // Live gesture frame on the vector backend. Two layers of smoothness:
-      //  1. Re-bake only on bucket crossings: snap to a 0.5 pt bucket so
-      //     consecutive frames reuse the resident masks (an unbucketed fractional
-      //     size is a new mask key every frame and re-bakes the whole screen,
-      //     ~20 ms/frame measured). Within a bucket, skip re-applying fonts.
-      //  2. Continuous sub-bucket scaling (the osor.io trick): between crossings
-      //     the presented layer is scaled by the live fractional remainder so the
-      //     image tracks the finger at the display's full refresh rate, free, with
-      //     no re-rasterization. Without this the gesture would visibly STEP at
-      //     0.5 pt; with it, motion is continuous and bake cost is paid ~28x over
-      //     a 14→28 pt slide instead of every frame.
+      // DURING the gesture, do NOT re-rasterize or reflow the grid at all. The
+      // glyph atlas stays baked at the gesture's start size; the whole screen is
+      // scaled as a free GPU compositor transform (target / startSize), so the
+      // text tracks the fingers continuously at the display's full refresh rate
+      // — like pinch-zooming a photo. Re-baking the atlas (and delivering
+      // SIGWINCH) per step is what made the gesture stall and snap; it is moved
+      // entirely to gesture end. The transient softness from scaling the baked
+      // bitmap is invisible under motion and is erased by the crisp re-bake on
+      // release.
       debugZoomGestureFrameCount += 1
-      let bucketSize = Self.zoomBucketPointSize(target)
-      if bucketSize != zoomGestureLastAppliedBucketSize {
-        zoomGestureLastAppliedBucketSize = bucketSize
-        debugZoomGestureBakeCount += 1
-        applyFontSize(
-          bucketSize, quantize: false, persist: false, throttleReflow: true, liveZoom: true)
-      }
-      // Scale the presented surface by target/bucket for the in-between motion.
-      setGestureZoomPresentationScale(target / bucketSize)
-    } else {
+      setGestureZoomPresentationScale(target / base)
+    } else if !fractional {
+      // Non-vector backends have no resident atlas to scale; keep the prior
+      // behavior (apply the rounded ladder size live).
       applyFontSize(
-        target, quantize: !fractional, persist: false, throttleReflow: true, liveZoom: true)
+        target, quantize: true, persist: false, throttleReflow: true, liveZoom: true)
     }
 
     if ending {
-      // Settle: drop the transient presentation scale to identity and apply the
-      // exact (unbucketed) fractional size so the resting image is crisp at the
-      // true size, not the last 0.5 pt bucket scaled. liveZoom is false here, so
-      // this terminating frame takes the synchronous no-mixed-frame guarantee.
+      // Settle: drop the transient presentation scale to identity, then commit
+      // the real font size + grid ONCE (the single rebake/reflow of the whole
+      // gesture). liveZoom is false here so the terminating frame takes the
+      // synchronous no-mixed-frame guarantee and lands crisp at the true size.
       setGestureZoomPresentationScale(1)
-      if fractional && target != fontAtlas.pointSize {
-        applyFontSize(target, quantize: false, persist: false, throttleReflow: true)
+      if target != fontAtlas.pointSize {
+        debugZoomGestureBakeCount += 1
+        applyFontSize(target, quantize: !fractional, persist: false, throttleReflow: false)
       }
       // Reconcile the vector backend's raster/color fallback atlases to the
-      // settled size once (the live frames skipped that rebuild to stay smooth),
-      // so emoji and any raster-fallback glyphs render at the final size at rest.
+      // settled size once, so emoji and any raster-fallback glyphs render at the
+      // final size at rest.
       (backend as? VectorGlyphRenderer)?.reconcileFallbackAtlasesForSettledSize()
       // Persist the live size once on lift. `applyFontSize` already moved
       // `fontAtlas.pointSize` to the final value (and its no-op-size guard would
@@ -4043,7 +4006,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       persistFontSize(fontAtlas.pointSize)
       zoomGestureBasePointSize = nil
       zoomGestureAccumulatedMagnification = 0
-      zoomGestureLastAppliedBucketSize = nil
     }
   }
 

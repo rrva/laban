@@ -55,89 +55,6 @@ final class ContinuousZoomTests: XCTestCase {
     }
   }
 
-  // MARK: - M3: gesture size bucketing (smoothness lever)
-
-  func testZoomBucketSnapsToGrid() {
-    // 0.5 pt grid: 17.3 -> 17.5, 17.24 -> 17.0, 21.74 -> 21.5.
-    XCTAssertEqual(TerminalBitmapView.zoomBucketPointSize(17.3, bucket: 0.5), 17.5, accuracy: 1e-9)
-    XCTAssertEqual(TerminalBitmapView.zoomBucketPointSize(17.24, bucket: 0.5), 17.0, accuracy: 1e-9)
-    XCTAssertEqual(TerminalBitmapView.zoomBucketPointSize(21.74, bucket: 0.5), 21.5, accuracy: 1e-9)
-  }
-
-  func testZoomBucketIsStableWithinABucket() {
-    // The smoothness lever: many distinct fractional sizes inside one bucket all
-    // snap to the SAME value, so the gesture re-applies fonts (and re-bakes) only
-    // on bucket crossings, not every frame.
-    // Round-to-nearest 0.5: [17.25, 17.75) all snap to 17.5.
-    let a = TerminalBitmapView.zoomBucketPointSize(17.26, bucket: 0.5)
-    let b = TerminalBitmapView.zoomBucketPointSize(17.49, bucket: 0.5)
-    let c = TerminalBitmapView.zoomBucketPointSize(17.80, bucket: 0.5)
-    XCTAssertEqual(a, 17.5, accuracy: 1e-9)
-    XCTAssertEqual(a, b, accuracy: 1e-9)
-    XCTAssertNotEqual(b, c)  // 17.80 crosses into the next bucket (18.0)
-  }
-
-  func testZoomBucketClampsIntoZoomRange() {
-    XCTAssertEqual(
-      TerminalBitmapView.zoomBucketPointSize(1000, bucket: 0.5),
-      FontAtlas.zoomMaximumPointSize, accuracy: 1e-9)
-    XCTAssertEqual(
-      TerminalBitmapView.zoomBucketPointSize(0.1, bucket: 0.5),
-      FontAtlas.zoomMinimumPointSize, accuracy: 1e-9)
-  }
-
-  func testZoomBucketCountAcrossSweepIsBounded() {
-    // A 14->28 pt sweep at 0.5 pt buckets crosses ~28 distinct buckets, far
-    // fewer than the number of gesture frames — that ratio is the re-bake saving.
-    var buckets = Set<Double>()
-    for hundredths in stride(from: 1400, through: 2800, by: 1) {
-      let size = CGFloat(hundredths) / 100
-      buckets.insert(Double(TerminalBitmapView.zoomBucketPointSize(size, bucket: 0.5)))
-    }
-    // 1400 frames, ~29 buckets.
-    XCTAssertLessThanOrEqual(buckets.count, 30)
-    XCTAssertGreaterThanOrEqual(buckets.count, 27)
-  }
-
-  // MARK: - M3: end-to-end gesture smoothness (bakes << frames)
-
-  /// The smoothness proof: a fine-grained pinch (many small magnification deltas,
-  /// as a real trackpad delivers) must re-rasterize only on bucket crossings,
-  /// while every frame still tracks the finger via the free presentation-scale
-  /// transform. So `bakeCount` must be a small fraction of `frameCount`.
-  func testVectorGestureRebakesOncePerBucketNotPerFrame() throws {
-    guard MTLCreateSystemDefaultDevice() != nil else {
-      throw XCTSkip("no Metal device available")
-    }
-    let harness = try makeHarness(rows: 24, cols: 80)
-    defer { harness.restoreRenderer() }
-    harness.view.applyRendererSelection(.vectorGlyph)
-    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
-      throw XCTSkip("vector backend not active (no GPU in this environment)")
-    }
-
-    // Drive a 14 -> ~26 pt slide in 120 tiny steps (a ~1 s gesture at 120 Hz).
-    harness.view.applyZoomMagnification(delta: 0, phase: .began)
-    let changedSteps = 120
-    for _ in 0..<changedSteps {
-      // ~0.6% per event compounds to ~2x over 120 steps.
-      harness.view.applyZoomMagnification(delta: 0.006, phase: .changed)
-    }
-    let frames = harness.view.debugZoomGestureFrameCount
-    let bakes = harness.view.debugZoomGestureBakeCount
-    harness.view.applyZoomMagnification(delta: 0, phase: .ended)
-
-    // began (delta 0) + 120 changed = 121 tracked gesture frames.
-    XCTAssertEqual(frames, changedSteps + 1, "every gesture event is a tracked frame")
-    // 14->~26 pt at 0.5 pt buckets crosses ~24 buckets; allow slack but require
-    // bakes to be well under a third of frames (the smoothness win).
-    let ratioMessage =
-      "gesture must re-bake ~once per 0.5pt bucket, not per frame "
-      + "(bakes=\(bakes) frames=\(frames))"
-    XCTAssertLessThan(bakes, frames / 3, ratioMessage)
-    XCTAssertGreaterThan(bakes, 0, "a 2x slide must cross several buckets")
-  }
-
   // MARK: - M1: gesture accumulation + persist-on-end
 
   func testPinchGesturePersistsOnlyOnEnd() throws {
@@ -227,6 +144,53 @@ final class ContinuousZoomTests: XCTestCase {
     XCTAssertLessThan(
       expectedReflows, steps,
       "the sweep must cross fewer grid boundaries than it has frames (else nothing was throttled)")
+  }
+
+  // MARK: - M3: end-to-end gesture smoothness (zero rebakes during motion)
+
+  /// The smoothness proof: a fine-grained pinch (many small magnification deltas,
+  /// as a real trackpad delivers) must NOT re-rasterize or reflow the grid at all
+  /// during the motion — every frame is a free compositor presentation-scale
+  /// transform. The single rebake happens once, on gesture end. This is what
+  /// makes the motion continuous instead of stalling/snapping at size steps.
+  func testVectorGestureDoesNotRebakeDuringMotion() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.applyRendererSelection(.vectorGlyph)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("vector backend not active (no GPU in this environment)")
+    }
+
+    // Drive a 14 -> ~26 pt slide in 120 tiny steps (a ~1 s gesture at 120 Hz).
+    harness.view.applyZoomMagnification(delta: 0, phase: .began)
+    let changedSteps = 120
+    for _ in 0..<changedSteps {
+      // ~0.6% per event compounds to ~2x over 120 steps.
+      harness.view.applyZoomMagnification(delta: 0.006, phase: .changed)
+    }
+    let framesDuringMotion = harness.view.debugZoomGestureFrameCount
+    let bakesDuringMotion = harness.view.debugZoomGestureBakeCount
+    let reflowsDuringMotion = harness.view.debugGridReflowCount
+
+    // began (delta 0) + 120 changed = 121 tracked gesture frames, all transforms.
+    XCTAssertEqual(framesDuringMotion, changedSteps + 1, "every gesture event is a tracked frame")
+    XCTAssertEqual(
+      bakesDuringMotion, 0,
+      "the gesture must not re-rasterize during motion (bakes=\(bakesDuringMotion))")
+    XCTAssertEqual(
+      reflowsDuringMotion, 0,
+      "the gesture must not reflow the grid / send SIGWINCH during motion "
+        + "(reflows=\(reflowsDuringMotion))")
+
+    // Exactly one rebake + reflow on settle, landing the true size crisp.
+    harness.view.applyZoomMagnification(delta: 0, phase: .ended)
+    XCTAssertEqual(
+      harness.view.debugZoomGestureBakeCount, 1, "exactly one rebake commits on gesture end")
+    XCTAssertGreaterThan(
+      harness.view.debugGridReflowCount, 0, "the grid reflows once at the settled size")
   }
 
   // MARK: - Harness
