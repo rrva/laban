@@ -78,6 +78,16 @@ final class VectorZoomFrameTimeBench: XCTestCase {
     // is multi-ms, that is the Cmd+scroll lock-up.
     printRow("gesture-end commit", try measureSettleCommit(pw: pixelW, ph: pixelH))
 
+    // The shipped commit: synchronous (waitUntilCompleted, beats the present
+    // race) but with a low first-paint cap so the block is cheap. Compare to the
+    // uncapped synchronous commit (the ~900 ms freeze).
+    printRow(
+      "commit sync, cap 24",
+      try measureSettleCommit(pw: pixelW, ph: pixelH, paintCap: 24, sync: true))
+    printRow(
+      "commit sync, uncapped",
+      try measureSettleCommit(pw: pixelW, ph: pixelH, paintCap: nil, sync: true))
+
     print(String(format: "  budget @120Hz = %.2f ms", budget))
   }
 
@@ -85,14 +95,15 @@ final class VectorZoomFrameTimeBench: XCTestCase {
   /// + raster/color fallback texture rebuilds) followed by a full render — the
   /// work `applyZoomMagnification`'s `.ended` branch does once per gesture (and
   /// the Cmd+scroll path does once per scroll event).
-  private func measureSettleCommit(pw: Int, ph: Int) throws -> (
-    p50: Double, p95: Double, p99: Double
-  ) {
+  private func measureSettleCommit(
+    pw: Int, ph: Int, paintCap: Int? = nil, sync: Bool = false
+  ) throws -> (p50: Double, p95: Double, p99: Double) {
     let base = FontAtlas(pointSize: baseSize)
     guard
       let renderer = VectorGlyphRenderer(
         fontAtlas: base, sidebarFontAtlas: base, pixelWidth: pw, pixelHeight: ph, scale: scale)
     else { throw XCTSkip("VectorGlyphRenderer unavailable") }
+    renderer.waitForFrameCompletion = sync
     var sizes: [CGFloat] = []
     for i in 0..<80 { sizes.append(baseSize + CGFloat(i % 26) + 0.3) }
     var idx = 0
@@ -100,6 +111,7 @@ final class VectorZoomFrameTimeBench: XCTestCase {
       let atlas = FontAtlas(pointSize: sizes[idx % sizes.count])
       idx += 1
       renderer.reconfigureFonts(fontAtlas: atlas, sidebarFontAtlas: atlas)
+      renderer.commitFramePaintSampleCap = paintCap
       _ = renderer.render(self.commands(), damage: .full)
     }
     return timeFrames(warmup: frame, timed: frame)

@@ -669,6 +669,17 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// asserts this advances at most once across a whole gesture. Test seam.
   public private(set) var fallbackAtlasRebuildCount = 0
 
+  /// One-shot cap on the per-glyph first-paint sample count for the NEXT frame's
+  /// fresh masks (non-scrolling path). The zoom gesture-end commit sets a small
+  /// value so its synchronous commit frame bakes a coarse-but-complete pass of
+  /// every visible glyph cheaply (no multi-hundred-ms block at a large size),
+  /// and the display link refines to the full 512-sample quality over later
+  /// frames. Nil = normal full first paint. Consumed (reset to nil) each render.
+  public var commitFramePaintSampleCap: Int?
+  /// `commitFramePaintSampleCap` captured for the duration of the current frame
+  /// (so it is stable across all glyphs in that frame).
+  private var activeCommitFramePaintSampleCap: Int?
+
   /// Tripwire: counts any `applyLiveZoomFonts` call made while a scroll phase is
   /// active (`scrollPhaseOffset != .zero`). The live-zoom size path and the
   /// scroll-phase bake path are meant to be mutually exclusive on a frame —
@@ -879,6 +890,10 @@ public final class VectorGlyphRenderer: RendererBackend {
 
     var retainedInstanceBuffers: [MTLBuffer] = []
     maskAtlas.beginFrame()
+    // Capture-and-consume the one-shot zoom-commit first-paint cap so it is
+    // stable for this whole frame and applies to exactly one frame.
+    activeCommitFramePaintSampleCap = commitFramePaintSampleCap
+    commitFramePaintSampleCap = nil
     remainingPhasedSampleBudget = Self.phasedSampleBudgetPerFrame
     remainingBaseFirstPaintBudget = Self.baseFirstPaintBudgetPerFrame
     remainingMaskBakeDispatches = Self.maxMaskBakeDispatchesPerFrame
@@ -1632,6 +1647,12 @@ public final class VectorGlyphRenderer: RendererBackend {
       // row of bursts), so the bake doesn't slip this scroll frame's present.
       scheduled = Self.scrollingBaseSamplesThisFrame(
         sampleStart: sampleStart, budgetRemaining: remainingBaseFirstPaintBudget)
+    } else if let cap = activeCommitFramePaintSampleCap, sampleStart == 0 {
+      // Zoom-commit frame: bake a coarse-but-complete first pass of every fresh
+      // glyph cheaply (so a synchronous commit at a large size does not block for
+      // hundreds of ms); the display link refines to full quality over later
+      // frames. Only the first paint is capped; refinement is unaffected.
+      scheduled = min(cap, Self.accumulationSampleCap)
     } else {
       scheduled = Self.accumulationSamplesThisFrame(
         sampleStart: sampleStart, maskPixels: descriptor.width * descriptor.height)

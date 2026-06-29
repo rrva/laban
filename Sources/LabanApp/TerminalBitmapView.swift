@@ -4063,15 +4063,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // atomic (no intermediate small-text frame).
     (backend as? VectorGlyphRenderer)?.setGestureZoom(1, anchor: .zero)
     debugGestureZoomScale = 1
-    // Apply the real size + grid. Pass liveZoom:false so it does a FULL
-    // reconfigure (the size-matched fallback atlases get rebuilt inside, before
-    // its frame renders), but forceSynchronousFrame:false so the whole-screen
-    // bake does not block the main thread (no freeze). The raster fallback
-    // covers any not-yet-baked glyph at the correct size this frame; vector
-    // masks upgrade over the next few frames.
+    // Apply the real size + grid with a SYNCHRONOUS commit frame
+    // (forceSynchronousFrame:true). The self-presenting vector renderer drives
+    // its own display link, so a non-blocking commit lets the link present a
+    // frame mid-bake — some glyphs baked at the new size, some still drawn from a
+    // stale small mask: the intermittent per-glyph size mix. Blocking until the
+    // commit frame fully completes beats that race (this is exactly why a manual
+    // Cmd+0 — also synchronous — heals a mixed state). Capping the commit frame's
+    // first-paint samples keeps the block cheap (see `commitFramePaintSampleCap`);
+    // the display link refines to full quality over the next frames.
+    (backend as? VectorGlyphRenderer)?.commitFramePaintSampleCap = 24
     applyFontSize(
       target, quantize: !fractional, persist: false, throttleReflow: false,
-      forceSynchronousFrame: false)
+      forceSynchronousFrame: true)
     persistFontSize(fontAtlas.pointSize)
   }
 
