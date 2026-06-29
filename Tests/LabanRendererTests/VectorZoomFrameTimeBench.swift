@@ -71,7 +71,38 @@ final class VectorZoomFrameTimeBench: XCTestCase {
     // settle frame on gesture end, and what a scroll frame costs at this grid).
     printRow("steady render (settle)", try measureSteadyRender(pw: pixelW, ph: pixelH))
 
+    // The gesture-END commit cost: reconfigureFonts (atlas reset + 3 fallback
+    // texture rebuilds) + one full render. This fires ONCE per pinch — fine — but
+    // the Cmd+scroll path fires it PER scroll event (each is a self-contained
+    // began+ended), so a fast scroll pays this dozens of times a second. If this
+    // is multi-ms, that is the Cmd+scroll lock-up.
+    printRow("gesture-end commit", try measureSettleCommit(pw: pixelW, ph: pixelH))
+
     print(String(format: "  budget @120Hz = %.2f ms", budget))
+  }
+
+  /// Time a full gesture-end commit: a fresh-size `reconfigureFonts` (atlas reset
+  /// + raster/color fallback texture rebuilds) followed by a full render — the
+  /// work `applyZoomMagnification`'s `.ended` branch does once per gesture (and
+  /// the Cmd+scroll path does once per scroll event).
+  private func measureSettleCommit(pw: Int, ph: Int) throws -> (
+    p50: Double, p95: Double, p99: Double
+  ) {
+    let base = FontAtlas(pointSize: baseSize)
+    guard
+      let renderer = VectorGlyphRenderer(
+        fontAtlas: base, sidebarFontAtlas: base, pixelWidth: pw, pixelHeight: ph, scale: scale)
+    else { throw XCTSkip("VectorGlyphRenderer unavailable") }
+    var sizes: [CGFloat] = []
+    for i in 0..<80 { sizes.append(baseSize + CGFloat(i % 26) + 0.3) }
+    var idx = 0
+    let frame: (Int) -> Void = { _ in
+      let atlas = FontAtlas(pointSize: sizes[idx % sizes.count])
+      idx += 1
+      renderer.reconfigureFonts(fontAtlas: atlas, sidebarFontAtlas: atlas)
+      _ = renderer.render(self.commands(), damage: .full)
+    }
+    return timeFrames(warmup: frame, timed: frame)
   }
 
   /// Re-apply a new fractional size + render every frame (the rejected naive

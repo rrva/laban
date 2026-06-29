@@ -338,6 +338,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// is observable: at rest this must be exactly 1.0.
   private(set) var debugGestureZoomScale: CGFloat = 1
 
+  /// Pending settle for a coalesced Cmd+scroll zoom. Phase-less precise scroll
+  /// devices stream many events with no `.began`/`.ended` envelope; committing
+  /// (a ~26 ms reconfigureFonts + fallback rebuild) on each one floods the main
+  /// thread and locks up. Instead the stream is treated as ONE gesture
+  /// (compositor-scale per event, cheap) and the single commit fires after the
+  /// stream goes quiet. Each new event reschedules this; it fires `.ended`.
+  private var coalescedZoomScrollSettle: DispatchWorkItem?
+
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -4003,10 +4011,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // or `.ended` after the renderer was switched away) is a no-op: committing
     // would run a full fallback-atlas rebuild + persist for nothing.
     if terminating && zoomGestureBasePointSize == nil { return }
+    // A `.changed` with no gesture in flight is a stray event — a momentum tail
+    // or an event arriving after `.ended` cleared the gesture. Ignore it rather
+    // than seizing a new base and starting a phantom gesture that never gets an
+    // `.ended`, which would leave the presentation scale stuck (the "weird
+    // state" lock-up). A real gesture always opens with `.began`.
+    if phase == .changed && zoomGestureBasePointSize == nil { return }
 
-    if phase == .began || zoomGestureBasePointSize == nil {
-      // Capture the base on `.began`, or tolerate an event stream that opens
-      // mid-gesture (`.changed` first) by seizing the current size as the base.
+    if phase == .began {
+      // Clear any scale left by a prior gesture that did not deliver `.ended`
+      // (rare, but a back-to-back `.began` must start from identity, not stack
+      // transforms).
+      if debugGestureZoomScale != 1 { setGestureZoomPresentationScale(1) }
       zoomGestureBasePointSize = fontAtlas.pointSize
       zoomGestureAccumulatedMagnification = 0
       debugZoomGestureFrameCount = 0
@@ -4092,21 +4108,30 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let precise = event.hasPreciseScrollingDeltas
     let raw = precise ? event.scrollingDeltaY : event.deltaY
 
-    // No phase envelope at all → a self-contained event with no `.began`/`.ended`
-    // bookends. This is the discrete mouse wheel, but ALSO some precise devices
-    // (e.g. certain Magic Mouse configs) that stream `phase == []` throughout.
-    // Commit each such event as its own began+ended so the presentation scale is
-    // always reset to identity and the size persists — otherwise a phase-less
-    // precise stream would be a perpetual `.changed` that leaves the terminal
-    // stuck scaled and never saved.
+    // No phase envelope at all → events with no `.began`/`.ended` bookends.
     if event.phase == [] {
-      let delta =
-        precise
-        ? CGFloat(raw) * Self.zoomScrollMagnificationPerPoint
-        : (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep
+      if !precise {
+        // Discrete mouse wheel: a notch is a deliberate, separate step. Commit
+        // each as its own began+ended (only a few per second, so the per-event
+        // commit cost is fine), landing an integer-ladder step.
+        let delta = (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep
+        applyZoomMagnification(delta: delta, phase: .began)
+        applyZoomMagnification(delta: 0, phase: .ended)
+        return
+      }
+      // Phase-less PRECISE stream (e.g. some Magic Mouse configs): dozens of
+      // events a second. Coalesce into one gesture — `.began` on the first
+      // event, `.changed` (free compositor scale) on the rest — and commit once
+      // after the stream goes quiet. Committing per event would run a ~26 ms
+      // reconfigureFonts each time and lock up the main thread.
+      let delta = CGFloat(raw) * Self.zoomScrollMagnificationPerPoint
       guard delta != 0 else { return }
-      applyZoomMagnification(delta: delta, phase: .began)
-      applyZoomMagnification(delta: 0, phase: .ended)
+      if zoomGestureBasePointSize == nil {
+        applyZoomMagnification(delta: delta, phase: .began)
+      } else {
+        applyZoomMagnification(delta: delta, phase: .changed)
+      }
+      scheduleCoalescedZoomScrollSettle()
       return
     }
 
@@ -4120,6 +4145,28 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     applyZoomMagnification(delta: delta, phase: phase)
   }
+
+  /// (Re)arm the quiet-timer that commits a coalesced phase-less Cmd+scroll zoom.
+  /// Each scroll event pushes the settle out; when the stream stops for
+  /// `coalescedZoomScrollQuietSeconds`, the gesture ends once.
+  private func scheduleCoalescedZoomScrollSettle() {
+    coalescedZoomScrollSettle?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.coalescedZoomScrollSettle = nil
+      if self.zoomGestureBasePointSize != nil {
+        self.applyZoomMagnification(delta: 0, phase: .ended)
+      }
+    }
+    coalescedZoomScrollSettle = work
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + Self.coalescedZoomScrollQuietSeconds, execute: work)
+  }
+
+  /// How long a phase-less Cmd+scroll stream must be quiet before the coalesced
+  /// zoom commits its final size. Short enough to feel immediate on release,
+  /// long enough to bridge the inter-event gap of a continuous scroll.
+  private static let coalescedZoomScrollQuietSeconds: TimeInterval = 0.12
 
   /// Debug seam: drive a synthetic pinch from the headless HTTP surface. Shares
   /// `applyZoomMagnification` with the real gesture so the route exercises the

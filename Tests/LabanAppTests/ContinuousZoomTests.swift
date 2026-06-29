@@ -115,11 +115,46 @@ final class ContinuousZoomTests: XCTestCase {
     XCTAssertGreaterThan(size, 14.0, "Cmd+scroll up must zoom in past the base size")
   }
 
+  /// The Cmd+scroll lock-up fix: a phase-less PRECISE scroll burst (dozens of
+  /// events) must be coalesced into one gesture — zero per-event commits during
+  /// the burst (each commit is a ~26 ms reconfigureFonts that floods the main
+  /// thread) — and tracked continuously by the compositor scale instead.
+  func testPhaselessPreciseCmdScrollCoalescesAndDoesNotCommitPerEvent() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.applyRendererSelection(.vectorGlyph)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("vector backend not active (no GPU in this environment)")
+    }
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    for _ in 0..<40 {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0, scrollingDeltaY: 8,
+          hasPreciseScrollingDeltas: true, modifierFlags: .command, phase: []))
+    }
+
+    // During the burst: one gesture is active, tracked by the compositor scale,
+    // with NO per-event commits (the lock-up was 40 commits x ~26 ms here).
+    let s = harness.view.debugZoomState()
+    XCTAssertEqual(s["gestureActive"] as! Bool, true, "burst coalesces into one active gesture")
+    XCTAssertEqual(
+      harness.view.debugZoomGestureBakeCount, 0,
+      "no per-event commit during the burst (commits=\(harness.view.debugZoomGestureBakeCount))")
+    XCTAssertGreaterThan(
+      s["visualPointSize"] as! Double, 14.0, "the burst still zooms via the compositor scale")
+  }
+
   /// Regression for the review's finding #1: a precise scrolling device that
   /// streams `phase == []` (no began/ended envelope, e.g. some Magic Mouse
-  /// configs) must commit + persist each Cmd+scroll event as a self-contained
-  /// gesture, not leave a perpetual `.changed` that never resets/persists.
-  func testCmdScrollWithoutPhaseEnvelopeCommitsAndPersists() throws {
+  /// configs) must still zoom AND eventually persist — coalesced into one
+  /// gesture that commits once the stream goes quiet (not a perpetual `.changed`
+  /// that never resets/persists, and not a per-event commit that locks up).
+  func testCmdScrollWithoutPhaseEnvelopeZoomsAndPersistsOnSettle() throws {
     let harness = try makeHarness(rows: 24, cols: 80)
     defer { harness.restoreRenderer() }
     let defaults = UserDefaults.standard
@@ -142,12 +177,23 @@ final class ContinuousZoomTests: XCTestCase {
           hasPreciseScrollingDeltas: true, modifierFlags: .command, phase: []))
     }
 
-    // Each phase-less event self-commits, so the size both grew and PERSISTED
-    // (a perpetual `.changed` would never write UserDefaults).
+    // The burst zooms immediately (visual size grew via the live path/scale).
     let size = try XCTUnwrap(harness.view.debugZoomState()["effectivePointSize"] as? Double)
     XCTAssertGreaterThan(size, 14.0, "phase-less Cmd+scroll must still zoom")
-    let persisted = try XCTUnwrap(defaults.object(forKey: FontAtlas.userFontSizeKey) as? Double)
-    XCTAssertEqual(persisted, size, accuracy: 1e-9, "each phase-less event must persist its size")
+
+    // The single commit fires once the stream goes quiet (the coalesce timer);
+    // spin the run loop past the quiet window, then it must have persisted.
+    let deadline = Date().addingTimeInterval(0.6)
+    while defaults.object(forKey: FontAtlas.userFontSizeKey) == nil, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+    let persisted = try XCTUnwrap(
+      defaults.object(forKey: FontAtlas.userFontSizeKey) as? Double,
+      "coalesced Cmd+scroll must persist its final size once the stream settles")
+    XCTAssertGreaterThan(persisted, 14.0)
+    XCTAssertEqual(
+      harness.view.debugZoomState()["gestureActive"] as! Bool, false,
+      "the gesture must end (and reset) after the stream settles")
   }
 
   // MARK: - M2: reflow throttling
@@ -313,6 +359,14 @@ final class ContinuousZoomTests: XCTestCase {
     harness.view.applyRendererSelection(.classic)
     harness.view.applyRendererSelection(.vectorGlyph)
     assertResting("after renderer switch mid-gesture")
+
+    // Stray events with no gesture in flight (momentum tail / post-ended
+    // `.changed`, duplicate `.ended`) must be ignored — not start a phantom
+    // gesture that leaves a stuck scale.
+    harness.view.applyZoomMagnification(delta: 0.05, phase: .changed)
+    harness.view.applyZoomMagnification(delta: 0.05, phase: .changed)
+    harness.view.applyZoomMagnification(delta: 0, phase: .ended)
+    assertResting("after stray changed/ended with no gesture")
   }
 
   // MARK: - Harness
