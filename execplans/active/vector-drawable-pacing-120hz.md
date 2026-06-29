@@ -85,8 +85,12 @@ preserves the frame-command contract and MVP behavior (`docs/product/mvp.md`).
   names `CAMetalDisplayLink` as the fix. Machine is macOS 26.5, native arm64 (no
   Rosetta 60 Hz cap). Layer already has `maximumDrawableCount=3`,
   `allowsNextDrawableTimeout=true`.
-- [ ] Milestone 0: live-app baseline from `GET /scroll/frame-stats` + a GPU trace,
-  under vector/fluid heavy scroll on a deep-scrollback tab.
+- [x] (2026-06-29) Milestone 0: live baseline captured on macOS 26.5, vector/fluid,
+  tab 7. frame-stats (tick): fps 119.7, p99 10.5, max 21.3, jank 0.21%. GPU trace
+  (present-side): drawable-wait p50 6.53 / p99 15.34 / max 40.6 ms; vector.content
+  GPU p95 1.10 ms. Discovered frame-stats measures the display-link TICK interval,
+  not present cadence, so it understates drawable misses — acceptance uses the GPU
+  drawable-wait number as the primary truth (see Artifacts caveat).
 - [ ] Milestone 1 (cheap, all-OS): raise frames-in-flight above 1 with correct
   target-texture double-buffering, so the drawable pool stops draining every frame.
 - [ ] Milestone 2 (macOS 26 fast path): add a `CAMetalDisplayLink`-driven
@@ -162,7 +166,10 @@ frame in flight, and (2) on macOS 26, stop calling `nextDrawable()` at all and l
 
 - **Live app** `--scroll-debug` HTTP control surface (`ScrollDebugServer`):
   - `POST /config/renderer?name=vectorGlyph`, `POST /config/smooth-scroll?mode=fluid`,
-    `POST /config/tab?index=N` (pick a deep-scrollback normal-buffer shell tab),
+    `POST /config/tab?index=N` — pick a deep-scrollback normal-buffer shell tab that
+    is NOT the tab the agent/driver runs in (the driver's own shell output pollutes
+    the measured tab). Tab 7 (`index=6`) is the standard target here.
+  - NOTE: `?reset=1` on frame-stats is a GET query, not a POST.
   - `POST /scroll/smooth?rows=N&velocity=V` to drive sub-cell smooth scroll,
   - `GET /scroll/frame-stats[?reset=1]` → mean/p50/p95/p99 frame interval + stddev +
     `jankFrames` over the display-link ring. **This is the primary acceptance metric.**
@@ -431,6 +438,33 @@ Prior GPU trace (pre-change, build 206e4fa, heavy fluid scroll, tab 7):
     blocked waiting for next drawable        p50 7.2 ms   p95 ~15 ms  max 40
     present-blit                             p95 0.05 ms
 
-Milestone 0 frame-stats baseline (fill in): __
+Milestone 0 baseline (2026-06-29, build 04c263e, macOS 26.5, vector/fluid, tab 7
+[4807 rows, normal buffer], driven by 114 `POST /scroll/smooth` bursts of ±50 rows
+at ~10 Hz over 12 s):
+
+    frame-stats (display-link TICK interval):
+      fps 119.7  p50 8.33  p95 9.15  p99 10.50  max 21.3 ms  jank 3/1446 (0.21%)
+    GPU trace (PRESENT-side truth):
+      drawable-wait (ca-client-buffer-wait-interval): p50 6.53  p95 7.71  p99 15.34  max 40.6 ms
+      vector.content (GPU render):                    p50 0.93  p95 1.10  p99 1.26 ms
+
+Reading: the main thread waits ~6.5 ms (≈ 0.8 of a 120 Hz vsync) for a drawable on
+*every* frame, while the GPU render is ~1 ms. The tick-cadence frame-stats only
+tips into visible jank ~0.2% of the time because the wait usually overlaps the
+vsync slot — so frame-stats UNDERSTATES the problem (see the measurement caveat
+below). The drawable-wait p50 6.5 ms is the stall the macOS-26 fast path removes;
+"never miss a frame" is the elimination of the p99 15.3 ms / max 40.6 ms tail.
+
+MEASUREMENT CAVEAT (load-bearing): `GET /scroll/frame-stats` records the
+display-link *tick* interval (`TerminalBitmapView.noteDisplayLinkTick`,
+`:1276`/`:1285`), NOT actual present cadence. The display link keeps ticking at
+120 Hz even when a frame is computed-but-not-presented or a drawable is missed, so
+a missed drawable only shows as tick-jank if it stalls the main thread enough to
+delay the *next tick*. The true "did we present every refresh" number is the GPU
+trace's `ca-client-buffer-wait-interval` / "blocked waiting for next drawable", or
+`MTLDrawable.presentedTime`. Acceptance therefore uses BOTH: frame-stats jank → ~0
+AND drawable-wait p50/p99 → near zero. Consider adding a presented-frame interval
+counter (via `addPresentedHandler`/`presentedTime`) as part of M1 so the live
+endpoint reports the present-side truth directly.
 
 After M1 / M2 (fill in): __
