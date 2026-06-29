@@ -22,7 +22,7 @@ After this change, that per-cell work shrinks measurably: the renderer builds GP
 instance data with less work per cell and one fewer full copy, so the same heavy
 scroll spends materially less CPU time in `encode`. You can see it working by
 running the existing benchmark `VectorScrollFrameTimeBench` (it prints CPU encode
-p50/p95/p99 milliseconds per renderer at a realistic 80×50 grid) before and after
+p50/p95/p99 milliseconds per renderer at a realistic 160×48 grid) before and after
 each milestone and comparing the "vector" rows — they must drop, and the
 pixel-output parity tests must stay at zero diff so the optimization changes cost,
 not appearance.
@@ -73,7 +73,10 @@ approval"). It must not break any behavior required by `docs/product/mvp.md`.
   the inlined per-cell loop body. Prior commit `a407c6f` already collapsed the
   *prepare* pass's per-cell mask resolution to per-glyph; this plan targets the
   *encode* pass and the array→buffer copy, which `a407c6f` did not touch.
-- [ ] Milestone 0: capture a reproducible baseline from `VectorScrollFrameTimeBench`.
+- [x] (2026-06-29) Milestone 0: baseline captured. 160x48 @ scale 2, release:
+  gpu/classic 8.384/9.186/9.734, vector/fluid 8.347/16.755/20.064, vector/crisp
+  8.874/16.711/20.050 (p50/p95/p99 ms). Cost is tail latency: vector p95/p99 ~2x
+  classic. Target refined to p95/p99.
 - [ ] Milestone 1: write instances straight into the pooled `MTLBuffer`, removing
   the array→buffer `memcpy` and the Swift `Array` churn.
 - [ ] Milestone 2: hoist per-frame/per-run constants out of the per-cell body and
@@ -172,7 +175,7 @@ buffer.
 
 ### The existing test and benchmark anchors
 
-- `Tests/LabanRendererTests/VectorScrollFrameTimeBench.swift`: builds an 80×50
+- `Tests/LabanRendererTests/VectorScrollFrameTimeBench.swift`: builds a 160×48
   cell grid at scale 2, warms up, then times 200 frames while sweeping the scroll
   offset, and prints **CPU encode p50/p95/p99 ms** for three paths labeled
   `gpu/classic`, `vector/fluid`, and `vector/crisp`. This is the headline
@@ -332,7 +335,7 @@ output is empty, you forgot `LABAN_RUN_PERF_BENCH=1` — the test no-ops without
 ### Milestone 3: stride/segmentation (measurement-gated)
 
 1. Implement the scalar fast-path loop.
-2. Run the gates. **Only keep this milestone if** the `vector/*` p50 drops
+2. Run the gates. **Only keep this milestone if** the `vector/*` p95 drops
    measurably beyond Milestone 2 with parity still green. Otherwise revert and
    record the decision.
 3. Lint and commit: "Vector encode must stride coalesced runs instead of
@@ -346,10 +349,9 @@ Acceptance is behavioral and measurable, not "code changed":
    release --filter VectorScrollFrameTimeBench` prints lower CPU encode p50 and
    p95 for both `vector/fluid` and `vector/crisp` after Milestones 1–2 than the
    Milestone 0 baseline recorded in `Artifacts and Notes`. Record the
-   before/after table. Target: a meaningful reduction in `vector/*` p50 (the
-   plan's analysis implies the encode self-time has substantial removable
-   overhead; set the concrete numeric target from the Milestone 0 baseline once
-   measured, and state it here).
+   before/after table. Target: a meaningful reduction in `vector/*` p95 and p99
+   (the baseline shows the encode cost as tail latency, p95/p99 ~2x the classic
+   renderer while p50 is comparable), with p50 holding or improving.
 2. **Correctness (must not regress):** `swift test --filter VectorGlyphParityTests`
    passes with no change in pixel diffs, including
    `testRendererHandlesLiveSizedInstanceBatches` which exercises the >4 KB buffer
@@ -388,9 +390,10 @@ this gate has passed. See "Review gate and review-fix loop" in `PLANS.md`.
 - [ ] `swift test --filter ColorGlyphScrollBench` exits 0 with `0 failures`.
 - [ ] `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter
       VectorScrollFrameTimeBench` runs; capture its printed `vector/fluid` and
-      `vector/crisp` p50/p95 rows and confirm both p50 values are numerically
-      lower than the Milestone 0 baseline rows recorded in `Artifacts and Notes`.
-      If not lower, the gate fails.
+      `vector/crisp` p95 values and confirm both are numerically lower than the
+      Milestone 0 baseline rows recorded in `Artifacts and Notes` (baseline
+      vector/fluid p95 16.755, vector/crisp p95 16.711). If not lower, the gate
+      fails.
 - [ ] Buffer-path coverage: confirm `VectorGlyphParityTests` still contains a case
       whose instance batch exceeds 4096 bytes (grep `testRendererHandlesLiveSizedInstanceBatches`
       in `Tests/LabanRendererTests/VectorGlyphParityTests.swift`; expect one hit).
@@ -438,18 +441,24 @@ Review findings (filled in by the review agent):
 
 ## Artifacts and Notes
 
-Milestone 0 baseline (fill in when measured):
+Milestone 0 baseline (measured 2026-06-29, grid 160x48 @ scale 2, 2880x1824 px,
+200 timed frames, release build, Apple Silicon):
 
     # LABAN_RUN_PERF_BENCH=1 swift test -c release --filter VectorScrollFrameTimeBench
     path           cpu p50/p95/p99 ms
-    gpu/classic    __/__/__
-    vector/fluid   __/__/__
-    vector/crisp   __/__/__
+    gpu/classic    8.384 / 9.186 / 9.734
+    vector/fluid   8.347 / 16.755 / 20.064
+    vector/crisp   8.874 / 16.711 / 20.050
+
+Note: vector p50 is competitive with the classic renderer, but p95/p99 are ~2x —
+the per-cell encode work shows up as tail latency on the heaviest frames. The
+primary acceptance target is therefore a drop in vector/* p95 and p99 (with p50
+holding or improving), not p50 alone.
 
 After Milestone 1 / 2 (fill in):
 
-    vector/fluid   __/__/__   (Δ p50 vs baseline: __)
-    vector/crisp   __/__/__   (Δ p50 vs baseline: __)
+    vector/fluid   __/__/__   (Δ p95 vs baseline: __)
+    vector/crisp   __/__/__   (Δ p95 vs baseline: __)
 
 ## Interfaces and Dependencies
 
