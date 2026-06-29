@@ -91,8 +91,10 @@ preserves the frame-command contract and MVP behavior (`docs/product/mvp.md`).
   GPU p95 1.10 ms. Discovered frame-stats measures the display-link TICK interval,
   not present cadence, so it understates drawable misses — acceptance uses the GPU
   drawable-wait number as the primary truth (see Artifacts caveat).
-- [ ] Milestone 1 (cheap, all-OS): raise frames-in-flight above 1 with correct
-  target-texture double-buffering, so the drawable pool stops draining every frame.
+- [~] Milestone 1 (cheap, all-OS): raise frames-in-flight above 1. DEFERRED to a
+  contingency — the vector renderer's accumulation atlas is persistent across
+  frames (temporal AA), so >1 in flight would corrupt accumulation. M2 removes the
+  drawable wait without needing it. See Decision Log.
 - [ ] Milestone 2 (macOS 26 fast path): add a `CAMetalDisplayLink`-driven
   acquisition path that delivers the drawable in the callback; renderer presents
   into the supplied drawable instead of calling `nextDrawable()`. Legacy path
@@ -356,6 +358,26 @@ migration. No destructive operations. Re-running the measurement driver is safe.
   `DispatchSemaphore(value: 1)` as the basin's root cause. Raising it is the
   smallest, all-OS, lowest-risk change and may itself clear most of the tail,
   de-risking the larger M2.
+  Date/Author: 2026-06-29 / analysis session.
+
+- Decision (SUPERSEDES the above): Defer Milestone 1; go straight to Milestone 2
+  (`CAMetalDisplayLink`). Keep `frameInFlight = 1`.
+  Rationale: On inspection, the vector renderer's shared offscreen resources split
+  into (a) `targetTexture`, genuinely per-frame and double-bufferable, and (b)
+  `accumTexture`/`atlasTexture`/`maskAtlas`, which are **persistent temporal-
+  accumulation** textures — masks accumulate coverage samples across many frames
+  (the renderer's defining feature, ADR 0022). Raising frames-in-flight means
+  frame N+1 bakes into the atlas while frame N still reads it, which would corrupt
+  or break accumulation; double-buffering the atlas would discard accumulated
+  coverage. So M1 is high-risk *specifically* for the vector renderer and does not
+  cleanly apply. Crucially, M2 does not need it: with `CAMetalDisplayLink` the
+  drawable is delivered ready in the callback, so the ~6.5 ms `nextDrawable()` wait
+  is removed **without** changing the in-flight model. `frameInFlight = 1` then
+  serves its real purpose — serializing access to the accumulation atlas — while
+  no longer gating on a drawable wait. The per-frame GPU work is ~1–2 ms, well
+  inside the 8.33 ms callback budget, so 1-in-flight does not throttle 120 Hz. M1
+  stays in the plan as a *contingency* only if M2 leaves a throughput tail that is
+  traceable to in-flight serialization (unlikely given the ~1 ms GPU cost).
   Date/Author: 2026-06-29 / execution session.
 
 ## Surprises & Discoveries
