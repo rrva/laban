@@ -90,6 +90,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   private var thread: Thread?
   private var runLoop: CFRunLoop?
   private var started = false
+  private var stopRequested = false
   private var idleCallbacks = 0
   /// Consecutive no-new-content callbacks before the link parks. ~8 vsyncs at
   /// 120 Hz ≈ 67 ms: long enough to ride out a brief gap between scroll bursts,
@@ -126,6 +127,13 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
       // testing it produced zero callbacks, while CFRunLoopRun() delivers the full
       // 120 Hz. Capture the CFRunLoop so `stop()` can end it from another thread.
       self.lock.lock()
+      // If stop() already ran in the window before this thread started, bail
+      // before entering CFRunLoopRun() — `cancel()` cannot break CFRunLoopRun(),
+      // so without this the thread would leak.
+      if self.stopRequested {
+        self.lock.unlock()
+        return
+      }
       self.runLoop = CFRunLoopGetCurrent()
       self.lock.unlock()
       self.link.add(to: RunLoop.current, forMode: .common)
@@ -154,12 +162,15 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   func stop() {
     link.isPaused = true
     lock.lock()
+    stopRequested = true
     let t = thread
     let rl = runLoop
     thread = nil
     runLoop = nil
     started = false
     lock.unlock()
+    // If the thread already entered CFRunLoopRun(), stop it; if it has not yet
+    // captured its run loop, `stopRequested` makes it bail before CFRunLoopRun().
     if let rl { CFRunLoopStop(rl) }
     t?.cancel()
   }

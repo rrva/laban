@@ -5,6 +5,31 @@ the repository root). Keep `Progress` and `Validation and Acceptance` current as
 work proceeds. Add optional sections only when they contain information that will
 help a fresh contributor.
 
+## Post-merge review follow-ups (2026-06-29)
+
+A fresh-state Review Gate (verdict PASS-WITH-NITS; no correctness/crash/corruption
+bug) raised two follow-ups, addressed as follows:
+
+- **Doc drift (fixed):** ADR 0026 + the ADR index claimed "frames-in-flight raised
+  above 1 (target 2)". The shipped design keeps `frameInFlight = 1` (the
+  accumulation atlas is persistent) and gets cross-thread safety from a dedicated
+  present queue + a 3-deep target ring. Docs corrected to match the code.
+- **`stop()` thread-leak window (fixed):** if `stop()` ran before the present
+  thread captured its run loop, `CFRunLoopStop` was skipped and `cancel()` cannot
+  break `CFRunLoopRun()`, leaking the thread. Added a `stopRequested` flag the
+  thread checks before entering `CFRunLoopRun()`.
+- **Idle-park is dead code (DEFERRED, documented):** while the window is visible the
+  present link re-presents the latest target every vsync and never parks, because
+  the present callback always reports a present. This is a power/thermal cost on a
+  visible-idle terminal, NOT a correctness bug. A fix attempt (freshness gate, then
+  time-based idle) regressed the active 120 Hz present rate in shell-harness testing
+  — though that regression could not be cleanly separated from a
+  window-focus/visibility artifact of the `open`/quit test loop (`CAMetalDisplayLink`
+  throttles when its window is not frontmost, which the headless driver can't
+  guarantee). Reverted to the verified-working always-present code. A correct idle
+  fix needs a reliable on-device active/idle A/B (real window focus) before
+  shipping; tracked here, left out of the merged change.
+
 ## Purpose / Big Picture
 
 When the user scrolls a terminal while the **vector glyph renderer** is selected,

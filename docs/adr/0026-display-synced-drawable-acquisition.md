@@ -55,16 +55,25 @@ hold:
 
 1. On the fast path, a `CAMetalDisplayLink` (constructed under
    `#available(macOS 14.0, *)`) running on a dedicated high-QoS thread drives
-   presentation. Its callback supplies `update.drawable`; the renderer gains an
-   entry point that **renders into a supplied drawable** without touching
-   `MetalDrawableScheduler` or calling `nextDrawable()`. Animation is advanced
-   from `update.targetPresentationTimestamp`.
+   presentation. Presentation is **decoupled from content render**: the main-thread
+   `render()` encodes the offscreen target and commits **without** acquiring a
+   drawable or calling `nextDrawable()`; the display-link callback supplies
+   `update.drawable`, blits the latest committed target into it, and presents. The
+   `MetalDrawableScheduler` is not on this path.
 
-2. Frames-in-flight is raised above 1 (target 2, matching Apple's WWDC25 reference
-   architecture), with the per-frame-written offscreen target/accumulation
-   textures owned per in-flight slot so the shared-resource invariant is
-   preserved. `maximumDrawableCount` stays 3 and `allowsNextDrawableTimeout` stays
-   `true` (setting it `false` risks a documented indefinite hang).
+2. Frames-in-flight stays **1** (the `frameInFlight` semaphore is unchanged). It is
+   not raised: the vector renderer's accumulation atlas is persistent across frames
+   (temporal AA, ADR 0022), so allowing a second content frame in flight would
+   corrupt accumulation — the semaphore's real job is to serialize atlas access,
+   not to gate the (now-removed) drawable wait. Cross-thread safety between the
+   content thread and the present thread is instead provided by a **dedicated
+   present `MTLCommandQueue`** plus a **small ring of offscreen target textures**
+   (depth 3), so the content thread renders into a different texture than the
+   present thread is blitting. The most-recently-completed target is published to
+   the present thread under a lock, in the content command buffer's completion
+   handler (write finished). `maximumDrawableCount` stays 3 and
+   `allowsNextDrawableTimeout` stays `true` (setting it `false` risks a documented
+   indefinite hang).
 
 3. On macOS below the gate, nothing changes: the `CADisplayLink`/`CVDisplayLink`
    tick, `MetalDrawableScheduler`, and the blocking-but-mitigated `nextDrawable()`
@@ -75,21 +84,36 @@ path plus an untouched, pinned legacy fallback.
 
 ## Consequences
 
-- On macOS 26, the render path no longer blocks on `nextDrawable()`; the heavy
-  scroll p99 frame interval should hold near 8.33 ms and the live `jankFrames`
-  counter (`GET /scroll/frame-stats`) drop to ~0. This is verified against the live
-  app under `--scroll-debug`, not the offscreen `VectorScrollFrameTimeBench` (which
-  cannot observe drawable wait).
+- On macOS 26, the render path no longer blocks on `nextDrawable()`; the present
+  side holds a steady 120 Hz (present-interval p99 ≈ 8.33 ms) with no synchronous
+  drawable wait. This is verified against the live app under `--scroll-debug` via
+  `GET /scroll/present-stats` (the present-side cadence), not `GET
+  /scroll/frame-stats` (which measures only the main-thread display-link TICK
+  interval and stays ~120 Hz even when nothing presents), and not the offscreen
+  `VectorScrollFrameTimeBench` (which cannot observe drawable wait at all).
 - Two presentation code paths now exist (display-link-driven vs scheduler-driven),
   selected by `#available` and renderer kind. The legacy path is retained
   unchanged, so the maintenance cost is additive and the fallback is low-risk.
-- Raising frames-in-flight requires per-in-flight ownership of the offscreen
-  target/accum textures; getting that wrong would let frame N+1 stomp frame N. The
-  ExecPlan gates this behind the existing vector parity tests (zero pixel-diff).
+- The target-texture ring + dedicated present queue must keep the content thread
+  and present thread off the same texture and queue; getting it wrong would let the
+  present thread blit a half-rendered slot. Depth 3 is the minimum that keeps the
+  three live residues (the slot content is writing, the just-published slot, and
+  the prior published slot) distinct with one content frame in flight. Guarded by
+  the existing vector parity tests (zero pixel-diff).
 - Presentation work moves to a dedicated thread, interacting with the existing
-  main-thread watchdog and the event-driven frame production model (ADR 0018);
-  idle behavior (`isPaused`) must be wired to the same wake sources so a quiescent
-  terminal still parks.
+  main-thread watchdog and the event-driven frame production model (ADR 0018). The
+  dedicated thread's run loop must be driven by `CFRunLoopRun()`, not
+  `RunLoop.run(mode:before:)`, or the link never fires (see the ExecPlan's
+  Surprises).
+- KNOWN FOLLOW-UP (idle power): as shipped, while the layer's window is visible the
+  present link re-presents the latest target every vsync (a ~0.05 ms blit) and does
+  not actually park, because the present callback always reports a present — so the
+  `isPaused`-after-idle-callbacks path is effectively dead. This is a power/thermal
+  cost on a visible-but-idle terminal, not a correctness issue (an occluded/offscreen
+  layer gets 0 callbacks from the OS, and the main display-link tick still parks, so
+  no new content renders). A correct fix needs time-based idle detection that does
+  not regress the active present rate; a first attempt regressed 120 Hz and was
+  reverted. Tracked in `execplans/active/vector-drawable-pacing-120hz.md`.
 - Frame-command contract (ADR 0017/0022) and MVP behavior are unchanged; this is a
   presentation/pacing change, not a rendering-semantics change.
 
