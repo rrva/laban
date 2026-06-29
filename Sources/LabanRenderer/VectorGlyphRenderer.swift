@@ -78,6 +78,22 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// the main thread, serializes frames to one in flight, and drops a scroll
   /// tick rather than blocking on it.
   private let drawableScheduler: MetalDrawableScheduler
+  /// macOS 14+ fast path: when present, the renderer publishes each rendered
+  /// target here and this link presents it from its own thread, so `render()`
+  /// never calls `nextDrawable()` (ADR 0026). Nil on macOS 13 and when the fast
+  /// path is disabled, in which case `render()` keeps the legacy acquire+present.
+  /// Typed `AnyObject` so the stored-property declaration needs no availability
+  /// annotation; downcast under `#available` where used.
+  private var presentDisplayLinkStorage: AnyObject?
+  @available(macOS 14.0, *)
+  private var presentDisplayLink: VectorPresentDisplayLink? {
+    presentDisplayLinkStorage as? VectorPresentDisplayLink
+  }
+  /// The most recently committed offscreen target, shown by the present link.
+  /// Touched on both the main thread (publish) and the present thread (blit), so
+  /// always under `presentTargetLock`.
+  private var latestPresentedTarget: MTLTexture?
+  private let presentTargetLock = NSLock()
   private let solidPipeline: MTLRenderPipelineState
   private let glyphCoveragePipeline: MTLRenderPipelineState
   private let glyphColorPipeline: MTLRenderPipelineState
@@ -309,6 +325,35 @@ public final class VectorGlyphRenderer: RendererBackend {
       device: device,
       fontAtlas: fontAtlas,
       scale: scale)
+
+    // macOS 14+ fast path: a CAMetalDisplayLink presents the offscreen target
+    // from its own thread, so `render()` never blocks on `nextDrawable()`
+    // (ADR 0026). Opt-out via `defaults write … LabanVectorPresentDisplayLink
+    // -bool NO` to exercise the legacy scheduler path. macOS 13 always uses the
+    // legacy path.
+    if #available(macOS 14.0, *), Self.presentDisplayLinkEnabled {
+      let presentLink = VectorPresentDisplayLink(layer: layer)
+      presentLink.onPresent = { [weak self] drawable in
+        self?.presentLatestTarget(into: drawable) ?? false
+      }
+      presentLink.start()
+      self.presentDisplayLinkStorage = presentLink
+    }
+  }
+
+  /// Whether the macOS 14+ display-link present path is enabled. Default true;
+  /// set `LabanVectorPresentDisplayLink` to NO in `UserDefaults` to fall back to
+  /// the legacy `MetalDrawableScheduler` acquire+present path.
+  private static var presentDisplayLinkEnabled: Bool {
+    let defaults = UserDefaults.standard
+    if defaults.object(forKey: "LabanVectorPresentDisplayLink") == nil { return true }
+    return defaults.bool(forKey: "LabanVectorPresentDisplayLink")
+  }
+
+  deinit {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.stop()
+    }
   }
 
   private static let accumulationSampleCap = 512
@@ -496,6 +541,12 @@ public final class VectorGlyphRenderer: RendererBackend {
     layer.contentsScale = newScale
     layer.drawableSize = CGSize(width: pw, height: ph)
     targetTexture = nil
+    // The present link must not blit a stale-sized target into a new-sized
+    // drawable; clear it under the lock so the present thread skips until the
+    // next render publishes a correctly-sized target.
+    presentTargetLock.lock()
+    latestPresentedTarget = nil
+    presentTargetLock.unlock()
     if scaleChanged {
       maskAtlas = VectorGlyphMaskAtlas()
       atlasTexture = nil
@@ -687,12 +738,35 @@ public final class VectorGlyphRenderer: RendererBackend {
       commandBuffer: commandBuffer,
       retainedInstanceBuffers: &retainedInstanceBuffers)
 
-    // Acquire the drawable AFTER the offscreen target/atlas work is encoded, so
-    // Core Animation's limited drawable pool is held for the shortest interval.
-    // Non-blocking while scrolling: a late drawable parks in the scheduler and
-    // the next tick presents it (drop-don't-block). The target is rendered and
-    // committed regardless of the present so the atlas keeps accumulating and
-    // `pngData` (offscreen readback) stays valid even on a dropped present.
+    // Fast path (macOS 14+): presentation is owned by an internal
+    // `CAMetalDisplayLink` that acquires the drawable in its own callback on a
+    // dedicated thread. This frame only commits the offscreen content render — it
+    // never calls `nextDrawable()`, so the main thread never blocks on drawable
+    // acquisition (the ~6.5 ms per-frame stall; ADR 0026). The present link blits
+    // the latest committed target into its ready drawable each vsync.
+    if #available(macOS 14.0, *), let presentLink = presentDisplayLink {
+      publishLatestTarget(target)
+      let completion = onFrameCompleted
+      let buffersToRetain = retainedInstanceBuffers
+      commandBuffer.addCompletedHandler { _ in
+        _ = buffersToRetain
+        completion?()
+        scheduledFrame.finish()
+      }
+      commandBuffer.commit()
+      lastCommandBuffer = commandBuffer
+      // Wake the present link so it shows this content (it parks itself when idle).
+      presentLink.notifyContentUpdated()
+      return true
+    }
+
+    // Legacy path (macOS 13, or fast path unavailable): acquire the drawable AFTER
+    // the offscreen target/atlas work is encoded, so Core Animation's limited
+    // drawable pool is held for the shortest interval. Non-blocking while
+    // scrolling: a late drawable parks in the scheduler and the next tick presents
+    // it (drop-don't-block). The target is rendered and committed regardless of the
+    // present so the atlas keeps accumulating and `pngData` (offscreen readback)
+    // stays valid even on a dropped present.
     let drawable = scheduledFrame.acquireDrawable(nonBlocking: dropIfBusy)
     if let drawable, drawable.texture.width == target.width,
       drawable.texture.height == target.height
@@ -723,6 +797,33 @@ public final class VectorGlyphRenderer: RendererBackend {
     commandBuffer.commit()
     lastCommandBuffer = commandBuffer
     return true
+  }
+
+  /// Present-thread callback: blit the most recently committed offscreen target
+  /// into the display-link's ready drawable and present. Returns true if a frame
+  /// was presented. Runs on the present link's dedicated thread.
+  private func presentLatestTarget(into drawable: any CAMetalDrawable) -> Bool {
+    presentTargetLock.lock()
+    let target = latestPresentedTarget
+    presentTargetLock.unlock()
+    guard let target,
+      target.width == drawable.texture.width,
+      target.height == drawable.texture.height
+    else { return false }
+    guard let commandBuffer = queue.makeCommandBuffer() else { return false }
+    encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
+    commandBuffer.present(drawable)
+    commandBuffer.commit()
+    return true
+  }
+
+  /// Publish the just-rendered target as the one the present link should show.
+  /// Held under a lock so a resize swapping `targetTexture` cannot free a texture
+  /// the present thread is mid-blit on.
+  private func publishLatestTarget(_ target: MTLTexture) {
+    presentTargetLock.lock()
+    latestPresentedTarget = target
+    presentTargetLock.unlock()
   }
 
   private func encode(
