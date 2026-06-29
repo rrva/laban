@@ -386,6 +386,17 @@ Acceptance is behavioral and measurable, not "code changed":
    (no missing glyphs, correct colors, correct underlines/cursor/selection). This
    is the human-visible proof that the refactor preserved behavior.
 
+   DONE (2026-06-29): installed build `206e4fa` (M2 merged to `main`), ran it with
+   `--scroll-debug`, set renderer `vectorGlyph` + fluid, selected the scrollable
+   tab, and drove 58 `POST /scroll/smooth` bursts through ~6.5k rows of
+   scrollback. A live `GET /scroll/screenshot.png` (saved at
+   `.build/vector-scroll-acceptance.png`) shows correct rendering: ASCII body
+   text, mixed-weight headings, a complete box-drawing table with aligned columns,
+   colored link text, the sidebar tab list, and the scroll indicator — all glyphs
+   present, correct colors, correct alignment, no corruption. The GPU trace from
+   the same run recorded 1200 clean `laban.vector.content` encode passes
+   (p95 1.13 ms) with zero render errors.
+
 Each test command's pass/fail is unambiguous: XCTest prints
 `Executed N tests, with 0 failures` on success.
 
@@ -567,6 +578,31 @@ declined by their own measurement gates (M1, M3). The plan's value was as much i
 Net: the vector renderer's heavy-scroll encode cost is now lower (crisp p95 −10%),
 the per-cell loop does strictly less arithmetic, and the codebase did not absorb
 two speculative changes that the numbers did not justify.
+
+### Follow-up GPU profile (where the remaining p95 actually lives)
+
+After M2, a GPU-track Metal System Trace (not `--cpu-only`) of heavy fluid scroll
+on a ~6.5k-row scrollback tab (driven via `--scroll-debug` `POST /scroll/smooth`)
+settled the "should we optimize GPU work next?" question with evidence:
+
+- `laban.vector.content` — the entire vector GPU render encode — is p95 **1.13 ms**
+  (p99 1.37, max 2.2). `present-blit` is p95 0.05 ms. There is **no glyph-mask
+  bake compute pass in the top GPU labels** (the per-phase bake budgeting from
+  prior commits `9c51a66`/`a407c6f` keeps it cheap). GPU throughput has large
+  headroom; optimizing shaders or bakes would shave an already-tiny ~1 ms.
+- The ~15 ms scroll p95 tail is the **main thread blocked in `nextDrawable()`**
+  (`ca-client-buffer-wait-interval` / "blocked waiting for next drawable",
+  p50 ~7.2 ms ≈ one 120 Hz vsync, p95 ~15 ms, max 40 ms) — Core Animation
+  drawable-pool starvation / the "half-rate basin", a presentation-pacing problem,
+  not GPU compute.
+
+Conclusion: the next perf lever is drawable/present pacing, not GPU compute or
+further CPU encode work. That area is already in flight in a parallel effort
+(commits `5246099` "main thread blocking on drawable acquire and bake bursts",
+`9d9e40a` "pace presents to hold 120 Hz", plans `vector-scroll-jank-handoff.md`,
+`vector-osor-subpixel-scroll.md`). A new effort here should reconcile with that
+work rather than duplicate it. Trace saved at
+`.build/traces/trace-20260629-121343.trace`, analysis at `.build/gpu-scroll.json`.
 
 ## Artifacts and Notes
 
