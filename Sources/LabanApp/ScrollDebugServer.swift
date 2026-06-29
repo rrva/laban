@@ -325,6 +325,18 @@ final class ScrollDebugServer {
         tv.debugSnapToBottom()
         return Response.json(["ok": true])
       }
+    case ("POST", "/zoom/pinch"):
+      let magnification = Double(query["magnification"] ?? "0") ?? 0
+      let phase = query["phase"] ?? "changed"
+      return onMain { tv, _, _ in
+        var payload = tv.debugApplyPinch(magnification: CGFloat(magnification), phase: phase)
+        payload["ok"] = true
+        return Response.json(payload)
+      }
+    case ("GET", "/zoom/state"):
+      return onMain { tv, _, _ in
+        Response.json(tv.debugZoomState())
+      }
     case ("GET", "/scroll/frame-stats"):
       let reset = query["reset"] == "1"
       return onMain { tv, _, _ in
@@ -459,6 +471,11 @@ final class ScrollDebugServer {
                                       (not a fullscreen alt-screen TUI)
     GET  /scroll/frame-stats[?reset=1] frame-interval jank stats (mean/p50/p95/p99/
                                       stddev/jankFrames over the display-link ring)
+    POST /zoom/pinch?magnification=D&phase=P  drive a synthetic pinch (phase:
+                                      began|changed|ended|cancelled); shares the
+                                      real gesture path. Fractional on vectorGlyph
+    GET  /zoom/state                  effectivePointSize (fractional for vector),
+                                      cols, rows, backend, gridReflowCount
     GET  /scroll/screenshot.png       PNG of the live render surface
     """
 }

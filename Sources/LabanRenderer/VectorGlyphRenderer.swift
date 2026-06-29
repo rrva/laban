@@ -534,6 +534,15 @@ public final class VectorGlyphRenderer: RendererBackend {
   public var presentationLayer: CALayer? { layer }
   public var presentationImage: CGImage? { nil }
 
+  /// When true, `render` blocks until the committed command buffer completes
+  /// before returning (mirrors `MetalRenderer.waitForFrameCompletion`). Normal
+  /// display-link frames leave this off and present asynchronously. The live
+  /// font-size apply path turns it on for one frame so a continuous pinch-zoom
+  /// never presents a drawable that mixes glyphs baked at two sizes: without it,
+  /// frame N's in-flight bakes race frame N+1's atlas reset into the shared
+  /// target texture.
+  public var waitForFrameCompletion: Bool = false
+
   public var pngData: Data? {
     lastCommandBuffer?.waitUntilCompleted()
     guard let targetTexture else { return nil }
@@ -620,12 +629,100 @@ public final class VectorGlyphRenderer: RendererBackend {
     // New fonts produce new outlines/dims; drop the geometry memo with the atlas.
     descriptorCache.removeAll(keepingCapacity: true)
     scratchRasterizer.invalidateCurveBufferCache()
+    zoomRetainedFonts.removeAll(keepingCapacity: true)
+    rebuildFallbackAtlases()
+  }
+
+  /// Fonts whose `ObjectIdentifier` keys live mask-atlas / curve entries created
+  /// during a continuous zoom. The live-zoom path preserves those entries across
+  /// size changes, so the `CTFont` objects they key on must stay alive to keep
+  /// each identifier unique (a freed-then-reused address could otherwise alias a
+  /// stale entry). Cleared by a full `reconfigureFonts` and on
+  /// `reconcileFallbackAtlasesForSettledSize` (gesture end).
+  private var zoomRetainedFonts: [CTFont] = []
+
+  /// Number of times the raster/color fallback atlases have been rebuilt. A
+  /// continuous pinch must not rebuild them per gesture frame (that per-event
+  /// texture reallocation is the jank this milestone removes); the M1 gate
+  /// asserts this advances at most once across a whole gesture. Test seam.
+  public private(set) var fallbackAtlasRebuildCount = 0
+
+  /// Tripwire: counts any `applyLiveZoomFonts` call made while a scroll phase is
+  /// active (`scrollPhaseOffset != .zero`). The live-zoom size path and the
+  /// scroll-phase bake path are meant to be mutually exclusive on a frame —
+  /// continuous zoom is its own gesture and never overlaps scrolling. Should
+  /// always be zero; a non-zero value means a future edit let the zoom size path
+  /// leak into the scroll steady-state (the exact regression M2 guards). The
+  /// guard test asserts this stays zero in the live-zoom path and rises when a
+  /// scroll phase is forced active. Test seam.
+  public private(set) var liveZoomWhileScrollPhaseActiveCount = 0
+
+  private func rebuildFallbackAtlases() {
     rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: scale)
     sidebarRasterAtlas = Self.makeRasterAtlas(
       device: device,
-      fontAtlas: self.sidebarFontAtlas,
+      fontAtlas: sidebarFontAtlas,
       scale: scale)
     colorGlyphAtlas = Self.makeColorGlyphAtlas(device: device, fontAtlas: fontAtlas, scale: scale)
+    fallbackAtlasRebuildCount += 1
+  }
+
+  /// Lightweight live-zoom size change — the per-gesture-frame path for
+  /// continuous pinch / Cmd+scroll on the vector backend.
+  ///
+  /// A zoom is a *scale* change, not a *font* change, so this updates the font
+  /// and per-size metrics but deliberately keeps the expensive, reusable GPU
+  /// state that a full `reconfigureFonts` would throw away and rebuild every
+  /// frame:
+  ///  - the resident **mask atlas** and its texture stay (mask keys encode the
+  ///    rendered pixel width/height, so masks at different sizes coexist without
+  ///    collision; stale-size masks age out via the normal per-frame TTL
+  ///    eviction in `render`), and
+  ///  - the **curve buffer cache** stays (glyph outlines are size-independent
+  ///    geometry; re-uploading them per frame was pure waste).
+  ///
+  /// It clears only the cheap per-glyph CPU memo caches (`fontCache`,
+  /// `glyphIDCache`, `descriptorCache`) because those return *size-specific*
+  /// results — keeping them would resolve glyphs at the previous size. Clearing
+  /// them costs nothing extra mid-gesture: each frame's new size misses them
+  /// anyway. The font is retained in `zoomRetainedFonts` so the preserved
+  /// mask/curve entries' identifier keys stay unique for the gesture's duration.
+  ///
+  /// It does **not** rebuild the raster/color fallback atlases. Those keep their
+  /// previous-size geometry during the gesture, which is harmless for the
+  /// monochrome text that dominates (the ~100 visible glyphs bake to vector
+  /// masks within the per-frame budget and do not hit the fallback when not
+  /// scrolling). Color emoji render at the stale size mid-gesture and snap to the
+  /// settled size when `reconcileFallbackAtlasesForSettledSize` runs on gesture
+  /// end. The family-change path (font panel) still calls the full
+  /// `reconfigureFonts`.
+  public func applyLiveZoomFonts(fontAtlas: FontAtlas, sidebarFontAtlas: FontAtlas? = nil) {
+    // Tripwire (see `liveZoomWhileScrollPhaseActiveCount`): the live-zoom size
+    // path must never run on a scroll frame, or it would defeat the
+    // bake-once-reuse model the scroll budget depends on. Record any violation
+    // so a future mis-wiring is caught loudly instead of silently regressing
+    // scroll.
+    if scrollPhaseOffset != .zero {
+      liveZoomWhileScrollPhaseActiveCount += 1
+    }
+    self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
+    zoomRetainedFonts.append(fontAtlas.font)
+    if let sidebar = sidebarFontAtlas { zoomRetainedFonts.append(sidebar.font) }
+    fontCache.removeAll(keepingCapacity: true)
+    glyphIDCache.removeAll(keepingCapacity: true)
+    descriptorCache.removeAll(keepingCapacity: true)
+    // Intentionally keep: maskAtlas (+ atlasTexture/accumTexture), the curve
+    // buffer cache, and the raster/color fallback atlases. See doc comment.
+  }
+
+  /// Rebuild the raster/color fallback atlases to match the current (settled)
+  /// font size, and release the gesture's retained fonts. Called once when a
+  /// continuous zoom ends so emoji and the raster fallback render at the final
+  /// size at rest.
+  public func reconcileFallbackAtlasesForSettledSize() {
+    rebuildFallbackAtlases()
+    zoomRetainedFonts.removeAll(keepingCapacity: true)
   }
 
   public func setSubpixelLayout(_ layout: VectorSubpixelLayout) {
@@ -848,6 +945,12 @@ public final class VectorGlyphRenderer: RendererBackend {
     }
     commandBuffer.commit()
     lastCommandBuffer = commandBuffer
+    if waitForFrameCompletion {
+      // Block until this frame's bakes + present complete, so the next
+      // reconfigure/atlas-reset cannot race in-flight GPU work into the shared
+      // target (the source of the pinch-zoom two-sizes-in-one-frame defect).
+      commandBuffer.waitUntilCompleted()
+    }
     return true
   }
 

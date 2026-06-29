@@ -1019,6 +1019,41 @@ timing, metrics, and screenshot metadata.
 }
 ```
 
+### Scroll & Zoom Debug Surface
+
+A second, headful-only loopback server (`ScrollDebugServer`, default port 8787)
+is opted into with `--scroll-debug[=PORT]` or `LABAN_SCROLL_DEBUG=1`. It drives a
+real on-screen window for behaviors the offscreen `laban-agent` cannot reproduce.
+Beyond the scroll routes (self-documented at `GET /`), it exposes pinch-zoom:
+
+`POST /zoom/pinch?magnification=<delta>&phase=<began|changed|ended|cancelled>`
+
+Feeds a synthetic pinch through the same accumulate/apply path as the real
+`magnify(with:)` trackpad gesture (and the Cmd+scroll laptop path). The
+magnification is multiplicative: target size is `base * (1 + sumOfDeltas)`,
+clamped to [8, 40]. A `phase=ended` (or `cancelled`) call persists the final
+size to `UserDefaults`.
+
+`GET /zoom/state`
+
+Reports the live zoom state. `effectivePointSize` is fractional only when the
+vector renderer is active (`POST /config/renderer?name=vectorGlyph`); the
+classic/software backends round to an integer ladder size. `gridReflowCount`
+advances once per distinct `(cols, rows)` pair a gesture sweeps, not once per
+event: the grid (and its `SIGWINCH`) re-fits only on integer column/row
+boundary crossings.
+
+```json
+{
+  "effectivePointSize": 17.5,
+  "cols": 96,
+  "rows": 30,
+  "backend": "vectorGlyph",
+  "fractional": true,
+  "gridReflowCount": 4
+}
+```
+
 ## Headless Rendering Contract
 
 Headless mode must render into an offscreen surface that can be captured as a

@@ -317,6 +317,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var lastAppliedCols: Int = 0
   private var lastAppliedRows: Int = 0
 
+  /// Continuous-zoom gesture state (trackpad pinch and Cmd+scroll). `base` is
+  /// the point size captured when the gesture began; `accumulated` is the
+  /// summed magnification delta. Multiplicative tracking
+  /// (`base * (1 + accumulated)`) matches how pinch feels everywhere on macOS:
+  /// a given finger spread is the same ratio regardless of starting size. Nil
+  /// base means no gesture is in flight.
+  private var zoomGestureBasePointSize: CGFloat?
+  private var zoomGestureAccumulatedMagnification: CGFloat = 0
+
+  /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
+  /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
+  /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
+  /// frame. Test/debug seam only.
+  private(set) var debugGridReflowCount: Int = 0
+
   // Smooth-scroll animation state. Wheel input adds to `targetScrollRows`
   // (cumulative target). A critically-damped PD controller advances
   // `displayedScrollRows` toward the target each frame, applying the
@@ -3697,16 +3712,36 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// TIOCSWINSZ (SIGWINCH), exactly like a window-resize reflow. The sidebar
   /// font scales together with the terminal (same 11/14 ratio the restart
   /// path applies). The chosen size persists to UserDefaults on every step.
-  func applyFontSize(_ requested: CGFloat) {
-    let clamped = FontAtlas.clampedZoomPointSize(requested)
+  /// Apply a new terminal point size live.
+  ///
+  /// - `quantize`: round to the integer atlas-ladder grid (`true`, the keyboard
+  ///   and menu path) or honor a fractional size (`false`, the vector
+  ///   pinch / Cmd+scroll zoom path).
+  /// - `persist`: write the size to `UserDefaults` and post
+  ///   `didChangeNotification`. Live gesture frames pass `false` and persist
+  ///   once on gesture end via `commitZoomFontSize`.
+  /// - `throttleReflow`: deliver `SIGWINCH` (the `model.resize` /
+  ///   `sessionCoordinator.resize` step) only when the integer `cols`/`rows`
+  ///   actually change. The keyboard/menu path leaves this `false`, reflowing
+  ///   on every call exactly as before.
+  func applyFontSize(
+    _ requested: CGFloat, quantize: Bool = true, persist: Bool = true, throttleReflow: Bool = false,
+    liveZoom: Bool = false
+  ) {
+    let clamped =
+      quantize
+      ? FontAtlas.clampedZoomPointSize(requested)
+      : FontAtlas.clampedFractionalZoomPointSize(requested)
     guard clamped != fontAtlas.pointSize else { return }
 
     // Prefer prebuilt ladder atlases — a pure pointer swap. Fall back to a
     // synchronous build (a few ms) when the ladder is absent, still warming,
     // or stale against the active font family; correctness never depends
-    // on the ladder.
+    // on the ladder. A fractional (non-quantized) size never hits the ladder:
+    // the ladder is integer-only, so the vector renderer bakes on demand.
     let ladderEntry: GlyphAtlasLadder.Entry? = {
-      guard let ladder = atlasLadder,
+      guard quantize,
+        let ladder = atlasLadder,
         ladder.fontName == fontAtlas.fontPostScriptName,
         ladder.sidebarFontName == sidebarFontAtlas.fontPostScriptName
       else { return nil }
@@ -3733,7 +3768,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         prebuiltTerminalAtlas: ladderEntry?.terminalAtlas,
         prebuiltSidebarAtlas: ladderEntry?.sidebarAtlas)
     } else if let vector = backend as? VectorGlyphRenderer {
-      vector.reconfigureFonts(fontAtlas: newFontAtlas, sidebarFontAtlas: newSidebarFontAtlas)
+      if liveZoom {
+        // Continuous pinch / Cmd+scroll: change size without rebuilding the
+        // mask/curve/fallback atlases every frame (the per-event rebuild is the
+        // jank). The gesture-end commit reconciles the fallback atlases to the
+        // settled size (see `applyZoomMagnification`).
+        vector.applyLiveZoomFonts(fontAtlas: newFontAtlas, sidebarFontAtlas: newSidebarFontAtlas)
+      } else {
+        vector.reconfigureFonts(fontAtlas: newFontAtlas, sidebarFontAtlas: newSidebarFontAtlas)
+      }
       vector.resize(
         pixelWidth: lastPixelWidth,
         pixelHeight: lastPixelHeight,
@@ -3769,39 +3812,196 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let termH = max(1, h - Int(insets.top) - Int(insets.bottom))
       let cols = max(1, termW / cellWidth)
       let rows = max(1, termH / cellHeight)
-      if lastAppliedCols != 0, lastAppliedRows != 0,
-        cols != lastAppliedCols || rows != lastAppliedRows
-      {
+      let gridChanged = cols != lastAppliedCols || rows != lastAppliedRows
+      if lastAppliedCols != 0, lastAppliedRows != 0, gridChanged {
         clearAllSelectionState()
       }
       lastAppliedCols = cols
       lastAppliedRows = rows
-      model.resize(
-        viewportWidth: termW, viewportHeight: termH,
-        cellWidth: cellWidth, cellHeight: cellHeight,
-        deferFindRescan: false)
-      sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalSize)
+      // The reflow carries SIGWINCH. During a continuous gesture the cell size
+      // changes every frame but the integer grid crosses a boundary only at
+      // discrete sizes, so throttle the reflow to actual grid changes; a pure
+      // atlas-swap frame still swaps + redraws below but spares the shell a
+      // resize it would just reflow on.
+      if !throttleReflow || gridChanged {
+        debugGridReflowCount += 1
+        model.resize(
+          viewportWidth: termW, viewportHeight: termH,
+          cellWidth: cellWidth, cellHeight: cellHeight,
+          deferFindRescan: false)
+        sessionCoordinator?.resize(tabs: model.tabs, in: model, size: model.terminalSize)
+      }
     }
 
-    UserDefaults.standard.set(Double(clamped), forKey: FontAtlas.userFontSizeKey)
-    lastObservedPersistedFontName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
-    NotificationCenter.default.post(name: FontAtlas.didChangeNotification, object: nil)
+    if persist {
+      persistFontSize(clamped)
+    }
 
-    // One synchronous frame so no presented frame mixes the old atlas with
-    // the new grid (the live-resize pattern).
+    // One synchronous frame so no presented frame mixes the old atlas with the
+    // new grid or with glyphs at the previous size (the live-resize pattern).
+    // The flag is backend-agnostic: the classic GPU renderer and the
+    // self-presenting vector renderer both block until the frame completes; the
+    // software backend renders synchronously and ignores it. Gating this on
+    // `as? MetalRenderer` (as before) skipped the guarantee for the vector
+    // backend, which self-presents async frames and so showed the pinch-zoom
+    // two-sizes-in-one-frame defect.
     renderInvalidated = true
     renderingResizeFrame = true
-    let metal = backend as? MetalRenderer
-    let previousWaitForFrameCompletion = metal?.waitForFrameCompletion ?? false
-    metal?.waitForFrameCompletion = true
+    let previousWaitForFrameCompletion = backend.waitForFrameCompletion
+    backend.waitForFrameCompletion = true
     defer {
-      metal?.waitForFrameCompletion = previousWaitForFrameCompletion
+      backend.waitForFrameCompletion = previousWaitForFrameCompletion
       renderingResizeFrame = false
     }
     advanceFrame()
     if !backendSelfPresents {
       needsDisplay = true
     }
+  }
+
+  /// Write the terminal point size to `UserDefaults` and notify observers.
+  /// Split out of `applyFontSize` so a gesture can persist its final size once
+  /// on lift even when the last live frame already moved `fontAtlas.pointSize`
+  /// there (where `applyFontSize`'s no-op-size guard would early-return).
+  private func persistFontSize(_ size: CGFloat) {
+    UserDefaults.standard.set(Double(size), forKey: FontAtlas.userFontSizeKey)
+    lastObservedPersistedFontName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
+    NotificationCenter.default.post(name: FontAtlas.didChangeNotification, object: nil)
+  }
+
+  enum ZoomGesturePhase {
+    case began
+    case changed
+    case ended
+    case cancelled
+  }
+
+  /// Pure size-mapping: a pinch scales *relative* size, so the target is
+  /// `base * (1 + accumulatedMagnification)`, clamped to the zoom range.
+  /// Fractional for the vector backend (`fractional == true`); rounded to the
+  /// integer ladder otherwise. No AppKit dependency, so it is unit-testable
+  /// headlessly and is the one function both the gesture and the debug route use.
+  static func zoomPointSize(
+    base: CGFloat, accumulatedMagnification: CGFloat, fractional: Bool
+  ) -> CGFloat {
+    let target = base * (1 + accumulatedMagnification)
+    return fractional
+      ? FontAtlas.clampedFractionalZoomPointSize(target)
+      : FontAtlas.clampedZoomPointSize(target)
+  }
+
+  /// Drive a continuous-zoom gesture (trackpad pinch and Cmd+scroll share this
+  /// one body). `delta` is the per-event magnification increment; `phase` is the
+  /// gesture envelope. The live frames apply without persisting; the terminating
+  /// frame persists the final size once. Reflow is throttled to integer
+  /// grid-boundary crossings so a continuous gesture does not spam SIGWINCH.
+  func applyZoomMagnification(delta: CGFloat, phase: ZoomGesturePhase) {
+    if phase == .began || zoomGestureBasePointSize == nil {
+      // Capture the base on `.began`, or tolerate an event stream that opens
+      // mid-gesture (`.changed` first) by seizing the current size as the base.
+      zoomGestureBasePointSize = fontAtlas.pointSize
+      zoomGestureAccumulatedMagnification = 0
+    }
+    zoomGestureAccumulatedMagnification += delta
+
+    let fractional = backend is VectorGlyphRenderer
+    let target = Self.zoomPointSize(
+      base: zoomGestureBasePointSize ?? fontAtlas.pointSize,
+      accumulatedMagnification: zoomGestureAccumulatedMagnification,
+      fractional: fractional)
+    applyFontSize(
+      target, quantize: !fractional, persist: false, throttleReflow: true, liveZoom: true)
+
+    if phase == .ended || phase == .cancelled {
+      // Reconcile the vector backend's raster/color fallback atlases to the
+      // settled size once (the live frames skipped that rebuild to stay smooth),
+      // so emoji and any raster-fallback glyphs render at the final size at rest.
+      (backend as? VectorGlyphRenderer)?.reconcileFallbackAtlasesForSettledSize()
+      // Persist the live size once on lift. `applyFontSize` already moved
+      // `fontAtlas.pointSize` to the final value (and its no-op-size guard would
+      // early-return a redundant terminating apply), so persist directly.
+      persistFontSize(fontAtlas.pointSize)
+      zoomGestureBasePointSize = nil
+      zoomGestureAccumulatedMagnification = 0
+    }
+  }
+
+  override func magnify(with event: NSEvent) {
+    let phase: ZoomGesturePhase
+    switch event.phase {
+    case .began: phase = .began
+    case .ended: phase = .ended
+    case .cancelled: phase = .cancelled
+    default: phase = .changed
+    }
+    applyZoomMagnification(delta: event.magnification, phase: phase)
+  }
+
+  /// Magnification per point of scroll travel for the laptop-friendly
+  /// Cmd+scroll zoom (precise/trackpad deltas).
+  private static let zoomScrollMagnificationPerPoint: CGFloat = 0.004
+  /// Per-notch magnification for a discrete (classic mouse) wheel, sized to
+  /// roughly match the keyboard's whole-point step at the default size.
+  private static let zoomScrollDiscreteStep: CGFloat = 0.07
+
+  /// Cmd+scroll zoom: the trackpad-pinch-free path for laptops. Vertical scroll
+  /// up zooms in; the gesture envelope mirrors the trackpad scroll phases so it
+  /// reuses the same accumulate/commit machinery as `magnify(with:)`.
+  private func handleZoomScroll(_ event: NSEvent) {
+    // Ignore inertial momentum so the zoom stops the instant the fingers lift.
+    guard event.momentumPhase == [] else { return }
+
+    let precise = event.hasPreciseScrollingDeltas
+    let raw = precise ? event.scrollingDeltaY : event.deltaY
+
+    if event.phase == [] && event.momentumPhase == [] && !precise {
+      // Discrete mouse wheel: no began/ended envelope. Treat each notch as a
+      // self-contained gesture so the size commits per notch.
+      let delta = (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep
+      applyZoomMagnification(delta: delta, phase: .began)
+      applyZoomMagnification(delta: 0, phase: .ended)
+      return
+    }
+
+    let delta = CGFloat(raw) * Self.zoomScrollMagnificationPerPoint
+    let phase: ZoomGesturePhase
+    switch event.phase {
+    case .began: phase = .began
+    case .ended: phase = .ended
+    case .cancelled: phase = .cancelled
+    default: phase = .changed
+    }
+    applyZoomMagnification(delta: delta, phase: phase)
+  }
+
+  /// Debug seam: drive a synthetic pinch from the headless HTTP surface. Shares
+  /// `applyZoomMagnification` with the real gesture so the route exercises the
+  /// production path. Returns the post-apply zoom state.
+  @discardableResult
+  func debugApplyPinch(magnification: CGFloat, phase: String) -> [String: Any] {
+    let parsed: ZoomGesturePhase
+    switch phase.lowercased() {
+    case "began": parsed = .began
+    case "ended": parsed = .ended
+    case "cancelled", "canceled": parsed = .cancelled
+    default: parsed = .changed
+    }
+    applyZoomMagnification(delta: magnification, phase: parsed)
+    return debugZoomState()
+  }
+
+  /// Debug seam: the live effective point size (fractional for vector), grid
+  /// metrics, and active backend name.
+  func debugZoomState() -> [String: Any] {
+    [
+      "effectivePointSize": Double(fontAtlas.pointSize),
+      "cols": lastAppliedCols,
+      "rows": lastAppliedRows,
+      "backend": backend is VectorGlyphRenderer
+        ? RendererSelection.vectorGlyph.rawValue : rendererSelection.rawValue,
+      "fractional": backend is VectorGlyphRenderer,
+      "gridReflowCount": debugGridReflowCount,
+    ]
   }
 
   // MARK: - Responder
@@ -4785,6 +4985,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   override func scrollWheel(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
     guard pt.y <= bounds.height - Self.titlebarReservedHeight else { return }
+
+    // Cmd+scroll zooms (the laptop-friendly path: no pinch needed). Intercept
+    // before sidebar/scrollback routing so it works over the whole terminal.
+    if event.modifierFlags.contains(.command) {
+      handleZoomScroll(event)
+      return
+    }
+
     if pt.x < sidebarWidth {
       scrollSidebar(with: event)
       return

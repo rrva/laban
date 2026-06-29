@@ -109,12 +109,28 @@ public protocol RendererBackend: AnyObject {
   /// their synchronous render.
   var onFrameCompleted: (() -> Void)? { get set }
 
+  /// When true, `render` blocks until the committed frame has fully completed
+  /// before returning, instead of presenting asynchronously. Off for normal
+  /// display-link frames. The live resize / font-size apply path turns it on
+  /// for one frame so a self-presenting GPU backend never presents a frame that
+  /// mixes old and new atlas state (e.g. glyphs at two sizes during a continuous
+  /// pinch-zoom). Backends that render synchronously (software) ignore it via
+  /// the default no-op below.
+  var waitForFrameCompletion: Bool { get set }
+
   var rendererStatus: RendererStatus { get }
 }
 
 extension RendererBackend {
   public var rendererStatus: RendererStatus {
     RendererStatus(configuredRenderer: "software", effectiveRenderer: "software")
+  }
+
+  /// Default for backends that render synchronously (software): nothing is ever
+  /// in flight, so the flag is a no-op. GPU backends store a real flag.
+  public var waitForFrameCompletion: Bool {
+    get { false }
+    set {}
   }
 
   @discardableResult

@@ -31,6 +31,14 @@ public final class FontAtlas {
     min(max(size.rounded(), zoomMinimumPointSize), zoomMaximumPointSize)
   }
 
+  /// Clamp into the zoom range *without* rounding. The vector renderer bakes
+  /// glyph masks on demand at any size, so it can honor fractional point sizes
+  /// (continuous pinch / Cmd+scroll zoom); the integer-ladder renderers use
+  /// `clampedZoomPointSize` instead.
+  public static func clampedFractionalZoomPointSize(_ size: CGFloat) -> CGFloat {
+    min(max(size, zoomMinimumPointSize), zoomMaximumPointSize)
+  }
+
   /// Sidebar point size derived from a terminal point size, preserving the
   /// default 11/14 ratio (same derivation as `persistedSidebarPointSize`).
   public static func sidebarPointSize(forTerminalPointSize size: CGFloat) -> CGFloat {
