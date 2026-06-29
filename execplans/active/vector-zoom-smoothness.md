@@ -317,7 +317,21 @@ Discard if M1's smoothness is sufficient (expected).
   naive per-frame analytic path holds budget at 160x48 — the SOTA path must bake
   far less per frame, not differently. Next: M3b reconsidered (scale-cached-masks
   during gesture is now the leading approach, not per-frame analytic).
-- [ ] M3b — MSDF gesture path. M3b-1 (feasibility): CPU MSDF/SDF generator from
+- [x] (2026-06-29) M3b-2 — OSOR-hybrid gesture path IMPLEMENTED. The gesture
+  snaps its fractional target to a 0.5 pt bucket
+  (`TerminalBitmapView.zoomBucketPointSize`) and re-applies fonts only on bucket
+  crossings (`zoomGestureLastAppliedBucketSize`), so consecutive frames reuse the
+  resident masks instead of re-baking the whole screen at a new size; the
+  per-frame `waitForFrameCompletion` is now skipped during `liveZoom` (it was the
+  ~835 ms "super slow"); on gesture end the exact fractional size is applied once
+  (crisp settle) under the synchronous guarantee. `zoomFirstPaintSampleCap` caps
+  bucket-crossing first paints. Measured at 160x48@2x, M2 Max, release
+  (`VectorZoomFrameTimeBench`): **OLD sync 836 ms → NEW 15.7 ms p50 (53x)**,
+  async, single-size-per-frame. Unit gates for bucketing added to
+  `ContinuousZoomTests`; vector/scroll suites green (scroll path untouched).
+  Remaining: 15.7 ms is ~60 fps not 120; the residual is full-screen encode +
+  bench per-frame atlas alloc, addressed by damage tracking in M3c, not baking.
+- [ ] M3b — (superseded; MSDF shelved) M3b-1 (feasibility): CPU MSDF/SDF generator from
   the existing quadratic outlines; compare quality vs the supersampled coverage
   oracle across the 8→40 pt zoom range; measure generation + sampling cost.
   Promote/discard on quality at terminal sizes (thin strokes). M3b-2 (build): if

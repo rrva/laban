@@ -326,6 +326,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomGestureBasePointSize: CGFloat?
   private var zoomGestureAccumulatedMagnification: CGFloat = 0
 
+  /// The bucket-snapped point size last applied during the active gesture, so a
+  /// frame whose fractional target lands in the same bucket skips re-applying
+  /// fonts entirely (a cache hit on the resident masks — the smoothness lever:
+  /// every fractional size is otherwise a new mask key and a full-screen rebake).
+  /// Nil when no gesture is in flight. See `Self.zoomBucketPointSize`.
+  private var zoomGestureLastAppliedBucketSize: CGFloat?
+
+  /// Point-size quantization bucket used *during* a continuous zoom gesture. The
+  /// gesture snaps the fractional target to this grid so consecutive frames reuse
+  /// the same baked masks; on gesture end the exact fractional size is applied
+  /// and the masks converge crisp. 0.5 pt is below the perceptual threshold while
+  /// sliding (you cannot read a moving glyph that precisely) yet coarse enough
+  /// that a 14→28 pt slide reuses masks across ~28 buckets instead of missing
+  /// every frame.
+  static let zoomGestureBucketPointSize: CGFloat = 0.5
+
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -3843,12 +3859,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // self-presenting vector renderer both block until the frame completes; the
     // software backend renders synchronously and ignores it. Gating this on
     // `as? MetalRenderer` (as before) skipped the guarantee for the vector
-    // backend, which self-presents async frames and so showed the pinch-zoom
+    // backend, which self-presents async frames and so showed the discrete-zoom
     // two-sizes-in-one-frame defect.
+    //
+    // A *continuous* zoom gesture (`liveZoom`) must NOT block per frame: at live
+    // terminal scale the per-frame `waitForFrameCompletion` serializes CPU+GPU
+    // and costs ~835 ms/frame (measured, VectorZoomFrameTimeBench) — the
+    // "super slow" pinch. The gesture avoids mixing a different way instead: each
+    // frame applies exactly one (bucket-snapped) size to the whole screen, so a
+    // frame is internally single-size by construction; nothing to mix.
     renderInvalidated = true
     renderingResizeFrame = true
     let previousWaitForFrameCompletion = backend.waitForFrameCompletion
-    backend.waitForFrameCompletion = true
+    if !liveZoom {
+      backend.waitForFrameCompletion = true
+    }
     defer {
       backend.waitForFrameCompletion = previousWaitForFrameCompletion
       renderingResizeFrame = false
@@ -3890,6 +3915,21 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       : FontAtlas.clampedZoomPointSize(target)
   }
 
+  /// Snap a fractional point size to the gesture quantization grid (pure,
+  /// testable). During a continuous zoom the vector backend renders at these
+  /// snapped sizes so consecutive frames reuse the same baked glyph masks (a
+  /// cache hit) instead of baking the whole screen anew at every fractional
+  /// size; the small sub-bucket error is imperceptible on a moving glyph and is
+  /// erased when the exact size is applied on gesture end. Always clamped into
+  /// the zoom range.
+  static func zoomBucketPointSize(_ size: CGFloat, bucket: CGFloat = zoomGestureBucketPointSize)
+    -> CGFloat
+  {
+    let grid = max(bucket, 0.01)
+    let snapped = (size / grid).rounded() * grid
+    return FontAtlas.clampedFractionalZoomPointSize(snapped)
+  }
+
   /// Drive a continuous-zoom gesture (trackpad pinch and Cmd+scroll share this
   /// one body). `delta` is the per-event magnification increment; `phase` is the
   /// gesture envelope. The live frames apply without persisting; the terminating
@@ -3909,10 +3949,34 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       base: zoomGestureBasePointSize ?? fontAtlas.pointSize,
       accumulatedMagnification: zoomGestureAccumulatedMagnification,
       fractional: fractional)
-    applyFontSize(
-      target, quantize: !fractional, persist: false, throttleReflow: true, liveZoom: true)
+    let ending = phase == .ended || phase == .cancelled
 
-    if phase == .ended || phase == .cancelled {
+    if fractional && !ending {
+      // Live gesture frame on the vector backend: render at a bucket-snapped
+      // size so consecutive frames reuse the resident masks (the smoothness
+      // lever — an unbucketed fractional size is a new mask key every frame and
+      // re-bakes the whole screen, ~20 ms/frame measured). Within a bucket the
+      // size is unchanged, so skip re-applying fonts entirely: the masks are
+      // already resident and the frame is a plain cache-hit render.
+      let bucketSize = Self.zoomBucketPointSize(target)
+      if bucketSize != zoomGestureLastAppliedBucketSize {
+        zoomGestureLastAppliedBucketSize = bucketSize
+        applyFontSize(
+          bucketSize, quantize: false, persist: false, throttleReflow: true, liveZoom: true)
+      }
+    } else {
+      applyFontSize(
+        target, quantize: !fractional, persist: false, throttleReflow: true, liveZoom: true)
+    }
+
+    if ending {
+      // Settle: apply the exact (unbucketed) fractional size so the resting
+      // image is crisp at the true size, not the last 0.5 pt bucket. liveZoom is
+      // false here, so this terminating frame takes the synchronous no-mixed-
+      // frame guarantee.
+      if fractional && target != fontAtlas.pointSize {
+        applyFontSize(target, quantize: false, persist: false, throttleReflow: true)
+      }
       // Reconcile the vector backend's raster/color fallback atlases to the
       // settled size once (the live frames skipped that rebuild to stay smooth),
       // so emoji and any raster-fallback glyphs render at the final size at rest.
@@ -3923,6 +3987,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       persistFontSize(fontAtlas.pointSize)
       zoomGestureBasePointSize = nil
       zoomGestureAccumulatedMagnification = 0
+      zoomGestureLastAppliedBucketSize = nil
     }
   }
 

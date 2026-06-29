@@ -54,6 +54,50 @@ final class ContinuousZoomTests: XCTestCase {
     }
   }
 
+  // MARK: - M3: gesture size bucketing (smoothness lever)
+
+  func testZoomBucketSnapsToGrid() {
+    // 0.5 pt grid: 17.3 -> 17.5, 17.24 -> 17.0, 21.74 -> 21.5.
+    XCTAssertEqual(TerminalBitmapView.zoomBucketPointSize(17.3, bucket: 0.5), 17.5, accuracy: 1e-9)
+    XCTAssertEqual(TerminalBitmapView.zoomBucketPointSize(17.24, bucket: 0.5), 17.0, accuracy: 1e-9)
+    XCTAssertEqual(TerminalBitmapView.zoomBucketPointSize(21.74, bucket: 0.5), 21.5, accuracy: 1e-9)
+  }
+
+  func testZoomBucketIsStableWithinABucket() {
+    // The smoothness lever: many distinct fractional sizes inside one bucket all
+    // snap to the SAME value, so the gesture re-applies fonts (and re-bakes) only
+    // on bucket crossings, not every frame.
+    // Round-to-nearest 0.5: [17.25, 17.75) all snap to 17.5.
+    let a = TerminalBitmapView.zoomBucketPointSize(17.26, bucket: 0.5)
+    let b = TerminalBitmapView.zoomBucketPointSize(17.49, bucket: 0.5)
+    let c = TerminalBitmapView.zoomBucketPointSize(17.80, bucket: 0.5)
+    XCTAssertEqual(a, 17.5, accuracy: 1e-9)
+    XCTAssertEqual(a, b, accuracy: 1e-9)
+    XCTAssertNotEqual(b, c)  // 17.80 crosses into the next bucket (18.0)
+  }
+
+  func testZoomBucketClampsIntoZoomRange() {
+    XCTAssertEqual(
+      TerminalBitmapView.zoomBucketPointSize(1000, bucket: 0.5),
+      FontAtlas.zoomMaximumPointSize, accuracy: 1e-9)
+    XCTAssertEqual(
+      TerminalBitmapView.zoomBucketPointSize(0.1, bucket: 0.5),
+      FontAtlas.zoomMinimumPointSize, accuracy: 1e-9)
+  }
+
+  func testZoomBucketCountAcrossSweepIsBounded() {
+    // A 14->28 pt sweep at 0.5 pt buckets crosses ~28 distinct buckets, far
+    // fewer than the number of gesture frames — that ratio is the re-bake saving.
+    var buckets = Set<Double>()
+    for hundredths in stride(from: 1400, through: 2800, by: 1) {
+      let size = CGFloat(hundredths) / 100
+      buckets.insert(Double(TerminalBitmapView.zoomBucketPointSize(size, bucket: 0.5)))
+    }
+    // 1400 frames, ~29 buckets.
+    XCTAssertLessThanOrEqual(buckets.count, 30)
+    XCTAssertGreaterThanOrEqual(buckets.count, 27)
+  }
+
   // MARK: - M1: gesture accumulation + persist-on-end
 
   func testPinchGesturePersistsOnlyOnEnd() throws {

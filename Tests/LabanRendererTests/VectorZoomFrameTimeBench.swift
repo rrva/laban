@@ -59,36 +59,31 @@ final class VectorZoomFrameTimeBench: XCTestCase {
 
     let budget = 1000.0 / 120.0
 
-    // Full-quality re-bake (M3a's original measurement): the upper bound.
-    let async = try measureZoom(
-      waitForCompletion: false, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH)
-    printRow("re-bake 512, async", async)
+    // Baselines: the two broken behaviors this milestone removes.
+    printRow(
+      "OLD naive 512, sync (M0)",
+      try measureZoom(
+        waitForCompletion: true, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH))
+    printRow(
+      "OLD naive 512, async",
+      try measureZoom(
+        waitForCompletion: false, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH))
 
-    let sync = try measureZoom(
-      waitForCompletion: true, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH)
-    printRow("re-bake 512, sync (M0)", sync)
-
-    // The operating point M3a missed: cap the per-frame first paint low
-    // (OSOR-style) so the gesture holds budget. Sweep caps.
-    print("  --- low-sample-per-frame (cache still misses every frame) ---")
-    for cap in [1, 8] {
-      let r = try measureZoom(
-        waitForCompletion: false, sampleCap: cap, bucketPt: nil, pixelW: pixelW, pixelH: pixelH)
-      printRow("re-bake \(cap)/frame, async", r)
-    }
-
-    // The real lever (OSOR-style size bucketing): quantize the size during the
-    // gesture so consecutive frames hit the SAME cached masks (the per-bucket
-    // FontAtlas is reused, so mask keys repeat -> cache hits). The fractional
-    // remainder would be applied as a scale at draw time for continuity.
-    print("  --- size-bucketed (cache HITS within a bucket) ---")
-    for bucket in [2.0, 1.0, 0.5] as [CGFloat] {
-      let r = try measureZoom(
-        waitForCompletion: false, sampleCap: nil, bucketPt: bucket, pixelW: pixelW, pixelH: pixelH)
-      printRow(String(format: "bucket %.1f pt, async", Double(bucket)), r)
-    }
+    // The production gesture config: bucket the size (cuts re-bake FREQUENCY)
+    // AND cap the per-frame first paint low (cuts re-bake COST on the frames
+    // that do cross a bucket). Together these are the OSOR-style smooth path.
+    print("  --- NEW gesture path: bucket + low sample cap, async ---")
+    // bucket 0.5 pt mirrors TerminalBitmapView.zoomGestureBucketPointSize.
+    let prod = try measureZoom(
+      waitForCompletion: false, sampleCap: 8, bucketPt: 0.5,
+      pixelW: pixelW, pixelH: pixelH)
+    printRow("bucket 0.5 + 8/frame", prod)
 
     print(String(format: "  budget @120Hz = %.2f ms", budget))
+    print(
+      String(
+        format: "  NEW p95 %@ budget (%.2f ms);  OLD sync p50 was the ~835ms 'super slow'",
+        prod.p95 <= budget ? "WITHIN" : "OVER", prod.p95))
   }
 
   private func measureZoom(
