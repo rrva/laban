@@ -307,7 +307,24 @@ Discard if M1's smoothness is sufficient (expected).
   `analyze-metal-trace` capture was unnecessary because the scroll render path is
   byte-for-byte unchanged by M0/M1 — the benches already measure it directly and
   show no regression.)
-- [ ] M3 — (deferred prototype) not started; documented boundary only.
+- [~] (2026-06-29) M3a — feasibility prototype done
+  (`Tests/LabanRendererTests/VectorZoomFrameTimeBench.swift`). Two findings, one
+  of them critical (see Surprises & Discoveries): (1) the M0 synchronous
+  `waitForFrameCompletion` on every gesture frame costs **~835 ms p50** at live
+  scale — that is the reported "super slow", and it must not be applied per
+  gesture frame; (2) even async, re-baking the full screen every frame is
+  ~20 ms p50, over the 8.33 ms / 120 Hz budget. So neither the current path nor a
+  naive per-frame analytic path holds budget at 160x48 — the SOTA path must bake
+  far less per frame, not differently. Next: M3b reconsidered (scale-cached-masks
+  during gesture is now the leading approach, not per-frame analytic).
+- [ ] M3b — MSDF gesture path. M3b-1 (feasibility): CPU MSDF/SDF generator from
+  the existing quadratic outlines; compare quality vs the supersampled coverage
+  oracle across the 8→40 pt zoom range; measure generation + sampling cost.
+  Promote/discard on quality at terminal sizes (thin strokes). M3b-2 (build): if
+  promoted, GPU MSDF atlas baked once at gesture start + median-of-3 sampling
+  shader scaled per frame; gesture path drops the per-frame `waitForFrameCompletion`.
+- [ ] M3c — prove no scroll regression (scroll path untouched, benches vs M0
+  baseline) + crisp/no-mix gates (single-size-per-frame; MSDF parity vs oracle).
 
 ## Artifacts and Notes
 
@@ -339,6 +356,54 @@ crisp); p95/p99 within run-to-run variance. No regression — expected, since
 M0/M1 do not touch the scroll render path (the live-zoom size path is mutually
 exclusive with the scroll-phase path, enforced by the M2 tripwire).
 
+## Surprises & Discoveries
+
+- Observation: The M0 synchronous-frame guarantee (`waitForFrameCompletion`) is
+  catastrophic when applied **per gesture frame** — it is the dominant cause of
+  the reported "super slow" resize, not the bake throughput.
+  Evidence: `VectorZoomFrameTimeBench`, 160x48 @2x (2880x1824 px), continuous
+  14→28 pt fractional sweep, 200 timed frames, Apple M2 Max, release:
+
+        path                         cpu p50/p95/p99 ms
+        re-bake, async present       20.127 / 20.314 / 20.994
+        re-bake, sync (M0 wait)     835.426 / 879.038 / 897.247
+        budget @120Hz = 8.33 ms
+
+  The M0 wait was designed for **one** discrete apply (keyboard zoom / resize),
+  where blocking one frame is fine. The gesture path calls `applyFontSize` every
+  event, so it pays a full CPU+GPU serialization 60+ times a second → ~835 ms per
+  frame. The gesture path must NOT set `waitForFrameCompletion`; the size-mixing
+  it was meant to prevent has to be solved a different way for the continuous
+  case (single-size-per-frame by construction, see revised M3b).
+- Observation: Even async, re-baking the whole screen every frame is ~20 ms p50
+  — 2.4x over the 120 Hz budget. So the smoothness problem is not "bake
+  differently" (analytic vs atlas); it is "bake far less per frame." A naive
+  per-frame analytic path would pay the same ~20 ms coverage cost (the analytic
+  evaluation IS the `encodeAccumulate` winding work), so it does not by itself
+  fix budget. The win has to come from not re-rasterizing every glyph every
+  frame.
+  Evidence: same bench, async row above; the analytic kernel and the bake kernel
+  are the same `encodeAccumulate` coverage evaluation (read of
+  `VectorGlyphScratchRasterizer.encodeAccumulate`).
+
+- Observation: (M3b-1) A single-channel SDF baked once at 32 pt and reconstructed
+  to coverage across the whole 8→40 pt zoom range stays **visually clean** vs the
+  supersampled oracle — worst per-size mean absolute coverage error 0.0246 (at
+  8 pt), falling to 0.0088 at 40 pt; clean (<0.02) from 10 pt up. The known
+  single-channel weakness shows only as occasional `maxErr ≈ 1.0` texels (sharp
+  corners flip), which is exactly what multi-channel MSDF's median-of-3 fixes.
+  Verdict: PROMOTE MSDF — the conservative single-channel baseline already clears
+  the acceptable bar everywhere, and MSDF's added channels target the precise
+  failure (corners) the baseline still shows.
+  Evidence: `MSDFZoomQualityProto`, Menlo printable ASCII, bake 32 pt:
+
+        size   meanAbsCovErr   p95AbsCovErr   maxAbsCovErr
+           8         0.0246         0.1211         1.0000
+          10         0.0190         0.0942         0.3916
+          14         0.0170         0.0932         0.4241
+          24         0.0121         0.0781         1.0000
+          40         0.0088         0.0625         1.0000
+
 ## Decision Log
 
 - Decision: Fix the size-mixing as a backend-agnostic synchronous-frame guarantee
@@ -356,6 +421,21 @@ exclusive with the scroll-phase path, enforced by the M2 tripwire).
   work and the source of the jank; lazy bake reuses the proven scroll budget and
   keeps "crisp at every size".
   Date/Author: 2026-06-29 / this plan.
+- Decision: (2026-06-29, revised after M3a) The gesture-time path is an **MSDF
+  atlas baked once at gesture start**, sampled with median-of-3 and scaled per
+  frame — NOT per-frame analytic coverage, and NOT the per-frame M0 synchronous
+  wait.
+  Rationale: M3a measured per-frame full-screen coverage at ~20 ms (2.4x over the
+  8.33 ms budget) and the per-frame `waitForFrameCompletion` at ~835 ms (the
+  reported "super slow"). Both per-frame analytic and per-frame re-bake are
+  budget-infeasible because the cost is re-rasterizing every glyph every frame.
+  The only budget-holding shapes bake once and then only *sample*. MSDF is chosen
+  over plain bitmap scaling because it stays crisp across the bounded terminal
+  zoom range (8→40 pt) where a fixed bitmap would blur. The risk MSDF carries —
+  thin-stroke/small-size artifacts — is the one terminal text is most exposed to,
+  so M3b-1 prototypes generation + quality vs the supersampled oracle before any
+  production subsystem is built.
+  Date/Author: 2026-06-29 / user choice after M3a feasibility.
 - Decision: Defer resolution-independent (per-frame curve) rendering; if ever done,
   it must be gesture-scoped and flag-gated.
   Rationale: per-frame curve evaluation runs during scroll too and defeats the
