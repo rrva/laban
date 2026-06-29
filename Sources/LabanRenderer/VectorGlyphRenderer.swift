@@ -135,7 +135,8 @@ public final class VectorGlyphRenderer: RendererBackend {
   }
   public private(set) var lastRasterFallbackGlyphs = 0
   private var lastCommandBuffer: MTLCommandBuffer?
-  private var fontCache: [UInt32: (font: CTFont, boldFallback: Bool, italicFallback: Bool)] = [:]
+  private var fontCache:
+    [UInt32: (font: CTFont, boldFallback: Bool, italicFallback: Bool, hasColorTrait: Bool)] = [:]
   private var maskAtlas = VectorGlyphMaskAtlas()
   /// Memoized pre-raster geometry (outline/bounds/key) keyed by glyph + phase.
   /// Sits above the atlas: the atlas holds baked pixels, this holds the input to
@@ -973,7 +974,8 @@ public final class VectorGlyphRenderer: RendererBackend {
       let font = variant.font
       let runWantsColor =
         source != .sidebar && emojiRenderingMode == .color
-        && ColorGlyphSupport.mayContainColorGlyph(text: text, font: font)
+        && ColorGlyphSupport.textMayContainColor(
+          text: text, fontHasColorTrait: variant.hasColorTrait)
       for cluster in text {
         if runWantsColor,
           ColorGlyphSupport.clusterMayBeColor(cluster),
@@ -1047,7 +1049,8 @@ public final class VectorGlyphRenderer: RendererBackend {
       foreground: foreground, background: background, weight: textWeight)
     let runWantsColor =
       source != .sidebar && emojiRenderingMode == .color
-      && ColorGlyphSupport.mayContainColorGlyph(text: text, font: font)
+      && ColorGlyphSupport.textMayContainColor(
+        text: text, fontHasColorTrait: variant.hasColorTrait)
     for (cellIndex, cluster) in text.enumerated() {
       let position = CGPoint(
         x: origin.x + CGFloat(cellIndex) * cellAdvance,
@@ -1888,14 +1891,22 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func styledFontVariant(
     for attributes: TextAttributes,
     in atlas: FontAtlas
-  ) -> (font: CTFont, boldFallback: Bool, italicFallback: Bool) {
+  ) -> (font: CTFont, boldFallback: Bool, italicFallback: Bool, hasColorTrait: Bool) {
     let attrKey = UInt32(attributes.intersection([.bold, .italic]).rawValue)
     let atlasBit: UInt32 = (atlas === fontAtlas) ? 0 : 0x1_0000
     let key = attrKey | atlasBit
     if let cached = fontCache[key] { return cached }
-    let variant = atlas.styledFontVariant(
+    let base = atlas.styledFontVariant(
       bold: attributes.contains(.bold),
       italic: attributes.contains(.italic)
+    )
+    // The font's color-glyph trait is invariant; resolve it once here so the
+    // per-frame encode path never re-probes CTFontGetSymbolicTraits per run.
+    let variant = (
+      font: base.font,
+      boldFallback: base.boldFallback,
+      italicFallback: base.italicFallback,
+      hasColorTrait: ColorGlyphSupport.fontHasColorGlyphTrait(base.font)
     )
     fontCache[key] = variant
     return variant

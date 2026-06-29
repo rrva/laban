@@ -49,14 +49,31 @@ enum ColorGlyphSupport {
     return false
   }
 
+  /// Whether `font` is itself a color-glyph font (e.g. Apple Color Emoji). This
+  /// is invariant for a given font, so callers that resolve the same styled font
+  /// every frame should cache it rather than re-probe CoreText per run.
+  @inline(__always)
+  static func fontHasColorGlyphTrait(_ font: CTFont) -> Bool {
+    CTFontGetSymbolicTraits(font).contains(.traitColorGlyphs)
+  }
+
+  /// Per-run color gate when the font's color-glyph trait is already known (e.g.
+  /// cached alongside the styled font variant), so the per-frame encode path
+  /// needs no `CTFontGetSymbolicTraits` probe. Same result as
+  /// `mayContainColorGlyph` for that font.
+  @inline(__always)
+  static func textMayContainColor(text: String, fontHasColorTrait: Bool) -> Bool {
+    if fontHasColorTrait { return true }
+    for s in text.unicodeScalars where scalarMayBeColor(s) { return true }
+    return false
+  }
+
   /// Cheap per-run gate: true if any cluster in the run could be a color glyph.
   /// Superset of `containsColorGlyph`, so a false result safely skips the
   /// per-cluster CoreText decision for the whole run.
   @inline(__always)
   static func mayContainColorGlyph(text: String, font: CTFont) -> Bool {
-    if CTFontGetSymbolicTraits(font).contains(.traitColorGlyphs) { return true }
-    for s in text.unicodeScalars where scalarMayBeColor(s) { return true }
-    return false
+    textMayContainColor(text: text, fontHasColorTrait: fontHasColorGlyphTrait(font))
   }
 
   static func logicalTileWidth(
