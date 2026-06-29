@@ -120,7 +120,9 @@ final class VectorGlyphScratchRasterizerTests: XCTestCase {
     let regionA = rasterRegion(for: glyphA, font: font)
     let regionB = rasterRegion(for: glyphB, font: font)
 
-    func rasterize(_ outline: GlyphCurveOutline, _ region: (origin: CGPoint, width: Int, height: Int)) {
+    func rasterize(
+      _ outline: GlyphCurveOutline, _ region: (origin: CGPoint, width: Int, height: Int)
+    ) {
       _ = rasterizer.rasterize(
         outline: outline,
         width: region.width,

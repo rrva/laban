@@ -188,7 +188,6 @@ final class VectorSmoothScrollTests: XCTestCase {
     return weightedSum / total
   }
 
-
   /// Vertical centroid (in device pixels, top-down) of ink — luminance above the
   /// black background — in the presented frame.
   private func inkCentroidY(png: Data) throws -> Double {

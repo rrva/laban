@@ -1110,7 +1110,8 @@ final class GPUCellParityTests: XCTestCase {
         commands: [],
         damage: .full,
         surfacePxH: Int(CGFloat(rows) * cellH * scale)),
-      "a glyph whose logical width is in (2.5, 2.6] cells must fall back as it did before the cutoff widened to 2.6")
+      "a glyph whose logical width is in (2.5, 2.6] cells must fall back as it did before the cutoff widened to 2.6"
+    )
     let failure = try XCTUnwrap(renderer.lastGPUCellPayloadBuildFailure)
     XCTAssertEqual(failure.reason, "logicalWidthTooWide")
     let maxLogicalWidth = try XCTUnwrap(failure.maxLogicalWidth)

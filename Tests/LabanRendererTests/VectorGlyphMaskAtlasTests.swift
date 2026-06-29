@@ -90,14 +90,16 @@ final class VectorGlyphMaskAtlasTests: XCTestCase {
     let atlas = VectorGlyphMaskAtlas(width: 64, height: 16)  // 4 slots wide, 1 tall
     let font = ObjectIdentifier(NSObject())
     func slotKey(_ glyph: CGGlyph) -> VectorGlyphMaskAtlas.Key {
-      VectorGlyphMaskAtlas.Key(font: font, glyph: glyph, width: 16, height: 16, originX: 0, originY: 0)
+      VectorGlyphMaskAtlas.Key(
+        font: font, glyph: glyph, width: 16, height: 16, originX: 0, originY: 0)
     }
 
     atlas.beginFrame()
     var entries: [VectorGlyphMaskAtlas.Entry] = []
     for i in 0..<4 {
       entries.append(
-        try XCTUnwrap(atlas.reserve(key: slotKey(CGGlyph(i)), width: 16, height: 16, origin: .zero)))
+        try XCTUnwrap(atlas.reserve(key: slotKey(CGGlyph(i)), width: 16, height: 16, origin: .zero))
+      )
     }
 
     // Free the middle two slots, then pin the outer two in the current frame so
