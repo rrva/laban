@@ -404,6 +404,28 @@ exclusive with the scroll-phase path, enforced by the M2 tripwire).
           24         0.0121         0.0781         1.0000
           40         0.0088         0.0625         1.0000
 
+- Observation: (research + M3a/M3b benches, 2026-06-29) The smoothness lever is
+  **cache hits, not sample count, and definitely not the M0 sync wait.** Three
+  measured facts at 160x48@2x, M2 Max, release (`VectorZoomFrameTimeBench`):
+  (1) per-frame `waitForFrameCompletion` = ~835 ms — the reported "super slow";
+  the gesture path must never set it. (2) Lowering samples/frame made it *worse*
+  (1/frame = 38 ms vs 512/frame = 20 ms) because every fractional size is a new
+  mask key, so the cost is reserve/evict/dispatch of ~100 fresh atlas slots, not
+  sampling. (3) The fix is OSOR-style **size bucketing**: quantize size during
+  the gesture so consecutive frames reuse the same cached masks, apply the
+  sub-bucket fractional remainder as a draw-time scale, snap to exact size and
+  converge at rest. Web research (osor.io/text, the technique this renderer is
+  named after; plus Slug now public-domain, Rive, Vello) ranks this #1 over MSDF
+  (#2, "dated for extreme zoom", a sampled approximation + parallel pipeline) and
+  a Slug rewrite (#3). MSDF (M3b-1) is therefore shelved despite passing its
+  quality probe: it solves a problem (resolution independence) that the analytic
+  outline already solves without a second pipeline.
+  Open question: a warm full-screen render in the synthetic bench still shows
+  ~20 ms even bucketed; this is likely bench artifact (eviction thrash across 14
+  buckets + transition frames in the median + full-damage every frame) versus the
+  ~8 ms the scroll bench shows for the same grid. Resolve during real integration
+  (damage tracking + resident atlas) rather than more synthetic benching.
+
 ## Decision Log
 
 - Decision: Fix the size-mixing as a backend-agnostic synchronous-frame guarantee

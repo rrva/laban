@@ -57,23 +57,42 @@ final class VectorZoomFrameTimeBench: XCTestCase {
     print("  sweep \(baseSize)->\(peakSize) pt, new fractional size every frame")
     print("  path                         cpu p50/p95/p99 ms")
 
-    let async = try measureZoom(waitForCompletion: false, pixelW: pixelW, pixelH: pixelH)
-    printRow("re-bake, async present", async)
-
-    let sync = try measureZoom(waitForCompletion: true, pixelW: pixelW, pixelH: pixelH)
-    printRow("re-bake, sync (M0 wait)", sync)
-
-    // Feasibility verdict against a 120 Hz budget (8.33 ms/frame).
     let budget = 1000.0 / 120.0
+
+    // Full-quality re-bake (M3a's original measurement): the upper bound.
+    let async = try measureZoom(
+      waitForCompletion: false, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH)
+    printRow("re-bake 512, async", async)
+
+    let sync = try measureZoom(
+      waitForCompletion: true, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH)
+    printRow("re-bake 512, sync (M0)", sync)
+
+    // The operating point M3a missed: cap the per-frame first paint low
+    // (OSOR-style) so the gesture holds budget. Sweep caps.
+    print("  --- low-sample-per-frame (cache still misses every frame) ---")
+    for cap in [1, 8] {
+      let r = try measureZoom(
+        waitForCompletion: false, sampleCap: cap, bucketPt: nil, pixelW: pixelW, pixelH: pixelH)
+      printRow("re-bake \(cap)/frame, async", r)
+    }
+
+    // The real lever (OSOR-style size bucketing): quantize the size during the
+    // gesture so consecutive frames hit the SAME cached masks (the per-bucket
+    // FontAtlas is reused, so mask keys repeat -> cache hits). The fractional
+    // remainder would be applied as a scale at draw time for continuity.
+    print("  --- size-bucketed (cache HITS within a bucket) ---")
+    for bucket in [2.0, 1.0, 0.5] as [CGFloat] {
+      let r = try measureZoom(
+        waitForCompletion: false, sampleCap: nil, bucketPt: bucket, pixelW: pixelW, pixelH: pixelH)
+      printRow(String(format: "bucket %.1f pt, async", Double(bucket)), r)
+    }
+
     print(String(format: "  budget @120Hz = %.2f ms", budget))
-    print(
-      String(
-        format: "  async p95 %@ budget (%.2f ms)",
-        async.p95 <= budget ? "WITHIN" : "OVER", async.p95))
   }
 
   private func measureZoom(
-    waitForCompletion: Bool, pixelW: Int, pixelH: Int
+    waitForCompletion: Bool, sampleCap: Int?, bucketPt: CGFloat?, pixelW: Int, pixelH: Int
   ) throws -> (p50: Double, p95: Double, p99: Double) {
     let base = FontAtlas(pointSize: baseSize)
     guard
@@ -82,6 +101,21 @@ final class VectorZoomFrameTimeBench: XCTestCase {
         pixelWidth: pixelW, pixelHeight: pixelH, scale: scale)
     else { throw XCTSkip("VectorGlyphRenderer unavailable") }
     renderer.waitForFrameCompletion = waitForCompletion
+    renderer.zoomFirstPaintSampleCap = sampleCap
+
+    // Per-bucket FontAtlas cache: reusing the SAME atlas instance for sizes in a
+    // bucket makes the renderer's ObjectIdentifier(font)-keyed mask entries
+    // repeat across frames, i.e. cache hits (the whole point of bucketing).
+    var bucketAtlases: [Int: FontAtlas] = [:]
+    func atlasFor(_ size: CGFloat) -> FontAtlas {
+      guard let bucketPt else { return FontAtlas(pointSize: size) }
+      let bucketIndex = Int((size / bucketPt).rounded())
+      if let cached = bucketAtlases[bucketIndex] { return cached }
+      let snapped = max(baseSize, CGFloat(bucketIndex) * bucketPt)
+      let atlas = FontAtlas(pointSize: snapped)
+      bucketAtlases[bucketIndex] = atlas
+      return atlas
+    }
 
     func sizeFor(_ i: Int) -> CGFloat {
       // Triangle wave base->peak->base over a 0.37 pt step, like a slide.
@@ -90,10 +124,18 @@ final class VectorZoomFrameTimeBench: XCTestCase {
       return baseSize + (stepped <= span ? stepped : 2 * span - stepped)
     }
 
+    // Only re-apply fonts when the bucket actually changes. Within a bucket the
+    // size is snapped, so nothing changes and the frame is a plain render that
+    // hits the resident masks (the OSOR operating point). The sub-bucket
+    // fractional remainder would be a draw-time uniform scale (~free), not a
+    // re-bake. Unbucketed (bucketPt == nil) re-applies every frame, the naive path.
+    var lastAtlas: FontAtlas?
     func frame(_ i: Int) {
-      let size = sizeFor(i)
-      let atlas = FontAtlas(pointSize: size)
-      renderer.applyLiveZoomFonts(fontAtlas: atlas, sidebarFontAtlas: atlas)
+      let atlas = atlasFor(sizeFor(i))
+      if atlas !== lastAtlas {
+        renderer.applyLiveZoomFonts(fontAtlas: atlas, sidebarFontAtlas: atlas)
+        lastAtlas = atlas
+      }
       _ = renderer.render(commands(), damage: .full)
     }
 
