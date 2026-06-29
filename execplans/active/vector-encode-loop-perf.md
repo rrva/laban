@@ -1,0 +1,469 @@
+# Cut the vector renderer's per-cell encode-loop CPU cost
+
+This ExecPlan is a living document maintained in accordance with `PLANS.md` (at
+the repository root). Keep `Progress` and `Validation and Acceptance` current as
+work proceeds. Add optional sections only when they contain information that will
+help a fresh contributor.
+
+## Purpose / Big Picture
+
+When the user scrolls a terminal while the **vector glyph renderer** is selected
+(Settings ▸ Renderer ▸ "Vector Glyph", stored under the `UserDefaults` key
+`LabanRendererMode` with value `vectorGlyph`), the app rebuilds the on-screen
+text on the CPU every frame. A CPU System Trace of heavy scrolling
+(`~/Downloads/Untitled7.trace`, analyzed with `./scripts/analyze-metal-trace
+--cpu-only`) showed a single function, `VectorGlyphRenderer.encode`, consuming
+**25.9% of all CPU samples** (1021 ms of 3940 ms), roughly five times any other
+frame. The CoreText calls *underneath* it are already cached and cost ~2%
+combined; the remaining ~24% is the straight-line per-cell work the encode loop
+does for every visible cell, every frame.
+
+After this change, that per-cell work shrinks measurably: the renderer builds GPU
+instance data with less work per cell and one fewer full copy, so the same heavy
+scroll spends materially less CPU time in `encode`. You can see it working by
+running the existing benchmark `VectorScrollFrameTimeBench` (it prints CPU encode
+p50/p95/p99 milliseconds per renderer at a realistic 80×50 grid) before and after
+each milestone and comparing the "vector" rows — they must drop, and the
+pixel-output parity tests must stay at zero diff so the optimization changes cost,
+not appearance.
+
+This plan is **pure performance refactoring of a post-MVP renderer**. It changes
+no product behavior and needs no `spec.md` approval (see `AGENTS.md` ▸ Source Of
+Truth: "performance, and refactors that preserve MVP behavior do not need spec.md
+approval"). It must not break any behavior required by `docs/product/mvp.md`.
+
+## Definitions (plain language)
+
+- **Vector glyph renderer**: the rendering backend in
+  `Sources/LabanRenderer/VectorGlyphRenderer.swift` that draws terminal text by
+  rasterizing font outlines (curves) into coverage masks on the GPU, rather than
+  using a pre-baked bitmap atlas. It is one of four selectable backends
+  (`software`, `classic`, `gpuDriven`, `vectorGlyph`) in
+  `Sources/LabanRenderer/RendererSelection.swift`.
+- **FrameCommand**: a value in `Sources/LabanRenderer/FrameCommand.swift`
+  describing one drawing primitive for a frame. The relevant case is
+  `.glyphRun(origin, text, foreground, background, attributes, source,
+  underlineStyle, underlineColor, _)`: a horizontal run of terminal cells that
+  all share the same text attributes (color, bold, italic). One terminal row
+  becomes one or more glyph runs.
+- **Glyph run / run**: the `text` string inside a `.glyphRun`. The upstream
+  producer `Sources/LabanCore/FrameProducer.swift` coalesces adjacent same-style
+  cells into one run, so a run is typically many cells of one row.
+- **Instance**: one GPU draw record. `VectorGlyphInstance` (a `struct` in
+  `VectorGlyphRenderer.swift`, 52 bytes) holds a glyph's screen rectangle, its
+  texture-atlas rectangle, color, and a coverage exponent. The vertex shader
+  draws one textured quad per instance. `VectorSolidInstance` (40 bytes) is the
+  analogous record for solid rectangles (cursor, selection, underlines).
+- **Encode**: the method `VectorGlyphRenderer.encode(commands:into:commandBuffer:
+  retainedInstanceBuffers:)`. It walks every `FrameCommand`, builds the instance
+  arrays, and issues the Metal draw calls. "Per-cell encode loop" means the inner
+  `for` loop inside `appendGlyphRun` that runs once per terminal cell.
+- **`setVertexBytes` 4 KB limit**: Metal's API for handing a small array straight
+  to the GPU inline accepts at most 4096 bytes. Above that, the data must live in
+  an `MTLBuffer`. The renderer's constant `maxInlineInstanceBytes = 4096`
+  encodes this. A full-screen scroll produces far more than 4 KB of instances, so
+  it always takes the buffer path — which is the path this plan optimizes and the
+  path the tests must exercise (see `AGENTS.md` Hard Rule on buffer-backed
+  uploads).
+
+## Progress
+
+- [x] (2026-06-29) Analysis complete: `encode` self-time is 25.9% of CPU on the
+  heavy-scroll trace; callees (CoreText, arrays) are ~4%; the residual ~24% is
+  the inlined per-cell loop body. Prior commit `a407c6f` already collapsed the
+  *prepare* pass's per-cell mask resolution to per-glyph; this plan targets the
+  *encode* pass and the array→buffer copy, which `a407c6f` did not touch.
+- [ ] Milestone 0: capture a reproducible baseline from `VectorScrollFrameTimeBench`.
+- [ ] Milestone 1: write instances straight into the pooled `MTLBuffer`, removing
+  the array→buffer `memcpy` and the Swift `Array` churn.
+- [ ] Milestone 2: hoist per-frame/per-run constants out of the per-cell body and
+  cut redundant float work in `glyphInstance`.
+- [ ] Milestone 3: stride the run by cell index instead of re-segmenting `text`
+  as `Character`s every cell.
+- [ ] Review Gate passed.
+
+## Context and Orientation
+
+All paths are relative to the repository root
+(`/Users/rrj/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine` in the
+current working tree; a fresh clone uses its own root).
+
+### The two per-cell passes
+
+`VectorGlyphRenderer.render(_:damage:)` (around line 631) drives one frame. For
+the text, it calls two methods in sequence, **each of which walks every command
+and every cell**:
+
+1. `prepareGlyphResources(commands:commandBuffer:)` (around line 949): per cell,
+   ensures the glyph's coverage mask is resident in the GPU mask atlas (baking it
+   if needed). Commit `a407c6f` added a per-frame `Set<FrameGlyphKey>`
+   (`framePreparedGlyphs`) so a glyph that repeats across cells is only *baked*
+   once — but the loop still *visits* every cell.
+2. `encode(commands:into:commandBuffer:retainedInstanceBuffers:)` (around line
+   717): per cell, builds a `VectorGlyphInstance` and appends it to a Swift
+   array; at run boundaries (`flush()`) it uploads the arrays and draws.
+
+This plan focuses on pass 2 (`encode`), where the trace cost lives. The per-cell
+work is in the private helper it calls:
+
+`appendGlyphRun(_:origin:foreground:background:attributes:underlineStyle:
+underlineColor:atlas:source:solids:glyphs:rasterGlyphs:sidebarRasterGlyphs:
+colorGlyphs:)` (around line 1025). Its inner loop, abbreviated:
+
+```swift
+let variant = styledFontVariant(for: attributes, in: atlas)   // cached, per run
+let font = variant.font
+let cellAdvance = atlas.cellSize.width
+let baseline = origin.y + atlas.descent
+let coverageExponent = Self.coverageExponent(...)             // per run
+let runWantsColor = ... && ColorGlyphSupport.textMayContainColor(...)  // per run
+for (cellIndex, cluster) in text.enumerated() {              // <-- per CELL
+  let position = CGPoint(x: origin.x + CGFloat(cellIndex) * cellAdvance, y: baseline)
+  if runWantsColor, ColorGlyphSupport.clusterMayBeColor(cluster), let colorFallback = ... {
+    colorGlyphs.append(colorFallback); continue
+  }
+  if let glyph = vectorGlyph(for: cluster, font: font, ...),         // cached lookup
+     let resolved = resolveDrawMask(for: glyph, font: font, ...) {   // per-frame memo
+    glyphs.append(glyphInstance(mask: resolved.mask, position: position,
+                                color: foreground,
+                                coverageExponent: coverageExponent,
+                                slide: resolved.slide))
+  } else if let fallback = rasterFallbackInstance(...) {
+    ... append to rasterGlyphs / sidebarRasterGlyphs
+  }
+}
+appendDecorations(...)   // underline/strikethrough/overline, per run
+```
+
+`glyphInstance(mask:position:color:coverageExponent:slide:)` (around line 1600)
+builds the 52-byte struct. It currently recomputes, **per cell**: four divisions
+by `maskAtlas.width`/`maskAtlas.height` (frame-constant), the `* scale` factors,
+and the fluid scroll offset.
+
+### The upload path (the second copy)
+
+`flush()` inside `encode` calls `setVertexInstances(_:encoder:retainedBuffers:)`
+(around line 898):
+
+```swift
+return instances.withUnsafeBytes { raw in
+  if raw.count <= Self.maxInlineInstanceBytes {           // small frame: inline
+    encoder.setVertexBytes(base, length: raw.count, index: 0); return true
+  }
+  guard let buffer = nextInstanceBuffer(minimumLength: raw.count) else { return false }
+  memcpy(buffer.contents(), base, raw.count)              // <-- second full copy
+  encoder.setVertexBuffer(buffer, offset: 0, index: 0); return true
+}
+```
+
+So for any real scroll (>4 KB of instances) each cell's instance is written
+*twice*: once into the Swift `Array` (`glyphs.append`), then the whole array is
+`memcpy`'d into the pooled `MTLBuffer`. `nextInstanceBuffer(minimumLength:)`
+(around line 927) already pools buffers per frame via `instanceBufferPool` /
+`instanceBufferPoolCursor`, reset to 0 at the top of `encode`.
+
+### Why the array exists today
+
+`encode` accumulates *all* glyphs for a clip region into one array and draws them
+in one `drawPrimitives(instanceCount:)`. The array also lets `flush()` decide
+inline-vs-buffer by total size. Milestone 1 keeps the single-draw-per-flush shape
+but changes the *accumulator* from a Swift `Array` to a directly-written pooled
+buffer.
+
+### The existing test and benchmark anchors
+
+- `Tests/LabanRendererTests/VectorScrollFrameTimeBench.swift`: builds an 80×50
+  cell grid at scale 2, warms up, then times 200 frames while sweeping the scroll
+  offset, and prints **CPU encode p50/p95/p99 ms** for three paths labeled
+  `gpu/classic`, `vector/fluid`, and `vector/crisp`. This is the headline
+  measurement for this plan. It is a `print`-only bench (no hard assertion) and
+  **only runs when the environment variable `LABAN_RUN_PERF_BENCH=1` is set**
+  (otherwise `enabled()` returns false and the test is a no-op); it is meant to be
+  run in a release build (`-c release`) for representative numbers.
+- `Tests/LabanRendererTests/VectorGlyphParityTests.swift`: rasterizes the
+  renderer's glyph output and compares pixels against a CPU oracle and snapshot
+  baselines. `testRendererHandlesLiveSizedInstanceBatches` exercises a grid large
+  enough to exceed the 4 KB inline limit (pixelWidth 1640), i.e. the buffer path.
+  This is the correctness guard: its pixel diffs must not change.
+- `Tests/LabanRendererTests/ColorGlyphScrollBench.swift`: guards the
+  CoreText-per-cell regression class called out in `AGENTS.md` (the `bed1a2b`
+  regression). Keep it green.
+
+### Coordination note (read before starting)
+
+A parallel effort already landed `a407c6f` ("Vector scroll jank dies when
+per-cell glyph work collapses to per-glyph") and several neighbouring commits
+(`5246099`, `9d9e40a`). Those changed `prepareGlyphResources` and the drawable
+scheduler, **not** the `encode` instance-building path this plan targets, so the
+areas are disjoint. Before editing, run `git log --oneline -5 --
+Sources/LabanRenderer/VectorGlyphRenderer.swift` and confirm no newer commit has
+already rewritten `encode`/`setVertexInstances`; if one has, re-baseline
+(Milestone 0) against current `main` before proceeding.
+
+## Plan of Work
+
+The work is three additive, independently measurable milestones, smallest and
+safest first. Each milestone is committed separately so a regression can be
+bisected to one change (the `AGENTS.md` "one behavioral reason per changeset"
+rule, and the bench's "one change per trace" attribution rule).
+
+### Milestone 0 — Baseline
+
+Record the current numbers so every later milestone has a before/after. No code
+change.
+
+### Milestone 1 — Write instances into the pooled buffer (remove the second copy)
+
+Replace the per-flush "append to Swift array, then `memcpy` the array into a
+buffer" with "write each instance directly into a pooled, mapped `MTLBuffer`".
+
+Concretely, introduce a small helper type — call it `InstanceWriter` — that wraps
+a pooled `MTLBuffer` and a running element count, exposing `append(_ instance:)`
+that writes one POD struct at the current offset via
+`UnsafeMutableRawPointer.storeBytes(of:as:)`, growing by requesting a larger
+pooled buffer (reusing `nextInstanceBuffer`) when full. `flush()` then sets the
+buffer on the encoder and draws `count` instances, with no intermediate array and
+no second `memcpy`. Keep the existing inline `setVertexBytes` fast path for the
+small (<4 KB) case so static, non-scrolling frames are unchanged.
+
+This removes: (a) the whole-array `memcpy` in `setVertexInstances`, (b) the Swift
+`Array` growth/realloc and per-element retain/release churn the trace attributed
+to `swift_arrayDestroy` and `compiler_rt.memcpy`. The five accumulators
+(`solids`, `glyphs`, `rasterGlyphs`, `sidebarRasterGlyphs`, `colorGlyphs`) each
+become an `InstanceWriter`.
+
+Because Metal requires the buffer not be mutated while the GPU reads it, the
+writers must draw-then-reset within `flush()` and the underlying pooled buffers
+are already retained for the frame's lifetime via `retainedInstanceBuffers` and
+the `instanceBufferPool`. Preserve that retention.
+
+### Milestone 2 — Hoist constants and trim `glyphInstance`
+
+In `appendGlyphRun`/`glyphInstance`, compute once per frame (or per run) the
+values currently recomputed per cell:
+
+- `1.0 / Float(maskAtlas.width)` and `1.0 / Float(maskAtlas.height)` — the uv
+  divisors are frame-constant; multiply instead of divide per cell.
+- `Float(scale)` and the fluid device offsets — constant per frame; the per-cell
+  `slide` branch only chooses whether to add the (precomputed) offset.
+- `vectorColor(color)` is per *run* (foreground is constant within a glyph run),
+  so resolve the packed color once per run instead of once per cell.
+
+These are arithmetic-only changes with identical output. They shrink the
+per-cell instruction count that dominates `encode` self-time.
+
+### Milestone 3 — Stride instead of re-segmenting `text`
+
+`for (cellIndex, cluster) in text.enumerated()` iterates a Swift `String` as
+`Character`s, which performs Unicode grapheme-cluster segmentation per cell. The
+upstream `FrameProducer` already segmented these bytes when it built the run (see
+`appendFastTerminalGlyphRuns` and `graphemeClusterCount` in
+`Sources/LabanCore/FrameProducer.swift`). `cellIndex` is used only as a stride
+multiplier for `position.x`.
+
+The minimal, self-contained version that does **not** change the `FrameCommand`
+contract: iterate the run's clusters once while tracking an integer `cellIndex`
+incremented per cluster (the loop already gets `cellIndex` from `enumerated()`;
+the cost is the `Character` materialization, not the counter). The real saving
+requires the cluster set to arrive pre-segmented. Evaluate, with a measurement,
+whether `String.unicodeScalars`-based fast paths for the common single-scalar
+case (already used in `simpleGlyph`) can drive the loop without `Character`
+allocation for ASCII/Latin runs (the overwhelming majority of terminal text),
+falling back to `Character` iteration only for runs containing multi-scalar
+clusters. If the measured win is small or the complexity is high, this milestone
+may be deferred — record that decision in the Decision Log. Milestones 1 and 2
+are the committed targets; Milestone 3 is gated on its own measurement.
+
+## Concrete Steps
+
+Run everything from the repository root. The working directory in the current
+tree is
+`/Users/rrj/wrk/laban/.claude/worktrees/adaptive-tickling-porcupine`.
+
+### Milestone 0: baseline
+
+    LABAN_RUN_PERF_BENCH=1 swift test -c release --filter VectorScrollFrameTimeBench 2>&1 \
+      | rg "path|vector/|gpu/"
+
+Expected shape (numbers will differ per machine; record yours):
+
+    path           cpu p50/p95/p99 ms
+    gpu/classic    <a>/<b>/<c>
+    vector/fluid   <d>/<e>/<f>
+    vector/crisp   <g>/<h>/<i>
+
+Save the two `vector/*` and the `gpu/classic` rows into the `Artifacts and Notes`
+section as the baseline. Confirm the bench builds and the vector rows are
+non-trivially above the `gpu/classic` row (the gap this plan narrows). If the
+output is empty, you forgot `LABAN_RUN_PERF_BENCH=1` — the test no-ops without it.
+
+### Milestone 1: direct-to-buffer instances
+
+1. Add the `InstanceWriter` helper in `VectorGlyphRenderer.swift` (a `private`
+   nested type or file-private struct).
+2. Change the five accumulators in `encode` from `[VectorSolidInstance]` /
+   `[VectorGlyphInstance]` to `InstanceWriter` instances bound to pooled buffers.
+3. Update `flush()` and `drawRasterGlyphs`/`drawColorGlyphs` to draw from the
+   writer's buffer + count instead of an array; keep the `<= 4096` inline
+   `setVertexBytes` path for small frames.
+4. Build and run the correctness + perf gates:
+
+       swift build --target LabanRenderer 2>&1 | tail -3
+       swift test --filter VectorGlyphParityTests 2>&1 | rg "passed|failed|Executed"
+       LABAN_RUN_PERF_BENCH=1 swift test -c release --filter VectorScrollFrameTimeBench 2>&1 \
+         | rg "path|vector/|gpu/"
+
+   Expected: all parity tests pass (zero pixel-diff change), and the `vector/*`
+   p50/p95 rows are lower than the Milestone 0 baseline.
+5. Lint and commit:
+
+       swift-format lint --configuration .swift-format Sources/LabanRenderer/VectorGlyphRenderer.swift
+       # commit message (reason-style, single line):
+       # "Vector encode must write instances straight to the pooled buffer, not array-then-copy"
+
+### Milestone 2: hoist constants
+
+1. Edit `appendGlyphRun` and `glyphInstance` per the Plan of Work.
+2. Re-run the same three commands as Milestone 1 step 4. Parity must stay green;
+   `vector/*` rows should drop further (or hold).
+3. Lint and commit: "Vector encode must hoist frame-constant glyph math out of
+   the per-cell loop".
+
+### Milestone 3: stride/segmentation (measurement-gated)
+
+1. Implement the scalar fast-path loop.
+2. Run the gates. **Only keep this milestone if** the `vector/*` p50 drops
+   measurably beyond Milestone 2 with parity still green. Otherwise revert and
+   record the decision.
+3. Lint and commit: "Vector encode must stride coalesced runs instead of
+   re-segmenting per cell".
+
+## Validation and Acceptance
+
+Acceptance is behavioral and measurable, not "code changed":
+
+1. **Performance (the point of the plan):** `LABAN_RUN_PERF_BENCH=1 swift test -c
+   release --filter VectorScrollFrameTimeBench` prints lower CPU encode p50 and
+   p95 for both `vector/fluid` and `vector/crisp` after Milestones 1–2 than the
+   Milestone 0 baseline recorded in `Artifacts and Notes`. Record the
+   before/after table. Target: a meaningful reduction in `vector/*` p50 (the
+   plan's analysis implies the encode self-time has substantial removable
+   overhead; set the concrete numeric target from the Milestone 0 baseline once
+   measured, and state it here).
+2. **Correctness (must not regress):** `swift test --filter VectorGlyphParityTests`
+   passes with no change in pixel diffs, including
+   `testRendererHandlesLiveSizedInstanceBatches` which exercises the >4 KB buffer
+   path this plan rewrites. `swift test --filter ColorGlyphScrollBench` stays
+   green (no CoreText-per-cell regression).
+3. **Full renderer suite:** `swift test --filter Vector` is all-green (it was 36
+   tests at plan authoring; the count may grow).
+4. **End-to-end sanity:** build and install the app
+   (`scripts/install-app`), select the Vector Glyph renderer, and scroll a
+   full-screen `seq 1 100000`-style stream. Text renders identically to before
+   (no missing glyphs, correct colors, correct underlines/cursor/selection). This
+   is the human-visible proof that the refactor preserved behavior.
+
+Each test command's pass/fail is unambiguous: XCTest prints
+`Executed N tests, with 0 failures` on success.
+
+## Idempotence and Recovery
+
+Every step is a normal source edit plus `swift build`/`swift test`; rerunning is
+safe and produces the same result. If a milestone regresses parity, `git revert`
+that single commit (milestones are committed separately precisely so they bisect
+and revert cleanly) and re-baseline. No migrations, no destructive operations, no
+state outside the git tree. The `.build/` directory holds only caches and can be
+deleted to force a clean rebuild.
+
+## Review Gate
+
+A separate agent with fresh state must verify the following before this ExecPlan
+is considered complete. The executing agent must not mark the plan as done until
+this gate has passed. See "Review gate and review-fix loop" in `PLANS.md`.
+
+- [ ] `git log --oneline` shows one commit per implemented milestone, each with a
+      single-line reason-style message naming the encode/instance change.
+- [ ] `swift test --filter VectorGlyphParityTests` exits 0 and stdout contains
+      `0 failures`. Run it; paste the `Executed N tests` line into Review findings.
+- [ ] `swift test --filter ColorGlyphScrollBench` exits 0 with `0 failures`.
+- [ ] `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter
+      VectorScrollFrameTimeBench` runs; capture its printed `vector/fluid` and
+      `vector/crisp` p50/p95 rows and confirm both p50 values are numerically
+      lower than the Milestone 0 baseline rows recorded in `Artifacts and Notes`.
+      If not lower, the gate fails.
+- [ ] Buffer-path coverage: confirm `VectorGlyphParityTests` still contains a case
+      whose instance batch exceeds 4096 bytes (grep `testRendererHandlesLiveSizedInstanceBatches`
+      in `Tests/LabanRendererTests/VectorGlyphParityTests.swift`; expect one hit).
+      This enforces the `AGENTS.md` Hard Rule that batched instance data is tested
+      beyond Metal's 4 KB inline limit.
+- [ ] No new per-frame CoreText-per-cell call was introduced: grep the per-cell
+      loop body in `appendGlyphRun` for `CTFont`/`CTLine`; expect zero direct
+      CoreText calls inside the `for` loop (lookups must go through the existing
+      caches).
+- [ ] `swift-format lint --configuration .swift-format
+      Sources/LabanRenderer/VectorGlyphRenderer.swift` exits 0.
+
+Review status: NOT REVIEWED
+
+Review findings (filled in by the review agent):
+
+(none yet)
+
+## Decision Log
+
+- Decision: Target the `encode` pass and the array→buffer copy, not the
+  `prepareGlyphResources` pass.
+  Rationale: The heavy-scroll trace (`~/Downloads/Untitled7.trace`) was captured
+  *after* commit `a407c6f` already collapsed the prepare pass to per-glyph; the
+  residual 25.9% is `encode` self-time, where the per-cell instance building and
+  the whole-array `memcpy` live.
+  Date/Author: 2026-06-29 / analysis session.
+
+- Decision: Keep Milestone 3 (segmentation) gated on its own measurement rather
+  than committing it unconditionally.
+  Rationale: It is the only milestone that risks touching the `FrameProducer`
+  contract or adding fast-path complexity; the trace attributes ~1% to
+  String/Character iteration, so the win may not justify the complexity. Measure
+  before keeping.
+  Date/Author: 2026-06-29 / analysis session.
+
+## Surprises & Discoveries
+
+- Observation: The CoreText calls under `encode` are already cached; the cost is
+  the loop body, not the callees.
+  Evidence: `./scripts/analyze-metal-trace ~/Downloads/Untitled7.trace --cpu-only`
+  → `encode` self 1021.5 ms (25.9%); `CTFontGetGlyphsForCharacters` 39.4 ms
+  (1.0%), `GetAdvancesForGlyphs` 27.4 ms (0.7%), `CTFontGetSymbolicTraits`
+  ~0.05%. Bucketed leaves under `encode` total ~4%.
+
+## Artifacts and Notes
+
+Milestone 0 baseline (fill in when measured):
+
+    # LABAN_RUN_PERF_BENCH=1 swift test -c release --filter VectorScrollFrameTimeBench
+    path           cpu p50/p95/p99 ms
+    gpu/classic    __/__/__
+    vector/fluid   __/__/__
+    vector/crisp   __/__/__
+
+After Milestone 1 / 2 (fill in):
+
+    vector/fluid   __/__/__   (Δ p50 vs baseline: __)
+    vector/crisp   __/__/__   (Δ p50 vs baseline: __)
+
+## Interfaces and Dependencies
+
+- New file-private type `InstanceWriter` in
+  `Sources/LabanRenderer/VectorGlyphRenderer.swift`. Minimum surface:
+  - `init(buffer: MTLBuffer, stride: Int)` or a factory bound to the pool.
+  - `mutating func append<Element>(_ instance: Element)` writing one POD element
+    via `storeBytes`, requesting a larger pooled buffer through the existing
+    `nextInstanceBuffer(minimumLength:)` when capacity is exceeded.
+  - `var count: Int` and `var buffer: MTLBuffer` for `flush()` to draw from.
+- Reuses, unchanged: `nextInstanceBuffer(minimumLength:)`, `instanceBufferPool`,
+  `instanceBufferPoolCursor`, `retainedInstanceBuffers`, `maxInlineInstanceBytes`,
+  and the existing `VectorGlyphInstance` / `VectorSolidInstance` layouts (which
+  must remain byte-compatible with the shader structs in
+  `Sources/LabanRenderer/VectorGlyphShaders.metal`).
+- No dependency or product-doc changes. Metal and CoreText are already linked by
+  `LabanRenderer`.
