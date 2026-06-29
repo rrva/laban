@@ -115,6 +115,41 @@ final class ContinuousZoomTests: XCTestCase {
     XCTAssertGreaterThan(size, 14.0, "Cmd+scroll up must zoom in past the base size")
   }
 
+  /// Regression for the review's finding #1: a precise scrolling device that
+  /// streams `phase == []` (no began/ended envelope, e.g. some Magic Mouse
+  /// configs) must commit + persist each Cmd+scroll event as a self-contained
+  /// gesture, not leave a perpetual `.changed` that never resets/persists.
+  func testCmdScrollWithoutPhaseEnvelopeCommitsAndPersists() throws {
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    let defaults = UserDefaults.standard
+    let savedSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
+    defer {
+      if let savedSize {
+        defaults.set(savedSize, forKey: FontAtlas.userFontSizeKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+      }
+    }
+    defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+
+    let location = NSPoint(x: SidebarLayout.defaultWidth + 20, y: 5)
+    // Precise deltas, Cmd held, but NO phase (phase: []), repeated.
+    for _ in 0..<5 {
+      harness.view.scrollWheel(
+        with: TestScrollWheelEvent(
+          locationInWindow: location, deltaY: 0, scrollingDeltaY: 40,
+          hasPreciseScrollingDeltas: true, modifierFlags: .command, phase: []))
+    }
+
+    // Each phase-less event self-commits, so the size both grew and PERSISTED
+    // (a perpetual `.changed` would never write UserDefaults).
+    let size = try XCTUnwrap(harness.view.debugZoomState()["effectivePointSize"] as? Double)
+    XCTAssertGreaterThan(size, 14.0, "phase-less Cmd+scroll must still zoom")
+    let persisted = try XCTUnwrap(defaults.object(forKey: FontAtlas.userFontSizeKey) as? Double)
+    XCTAssertEqual(persisted, size, accuracy: 1e-9, "each phase-less event must persist its size")
+  }
+
   // MARK: - M2: reflow throttling
 
   func testFractionalSweepReflowsOnlyOnGridBoundaryCrossings() throws {

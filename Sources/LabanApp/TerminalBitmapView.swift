@@ -326,6 +326,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomGestureBasePointSize: CGFloat?
   private var zoomGestureAccumulatedMagnification: CGFloat = 0
 
+  /// Saved presentation-layer state while a gesture zoom scale is active, so the
+  /// edge-clip + background fill (which hide pixels the scaled surface exposes)
+  /// can be restored exactly when the scale returns to identity. Nil when no
+  /// scale is applied.
+  private var gestureZoomPreviousMasksToBounds: Bool?
+  private var gestureZoomPreviousLayerBackground: CGColor?
+
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -968,27 +975,45 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
-  /// Apply a transient sub-bucket zoom scale to the presented layer (the
-  /// osor.io-style continuous-zoom trick). During a pinch the glyph masks are
-  /// re-baked only when the size crosses a 0.5 pt bucket; *between* crossings the
-  /// presented surface is scaled by the live fractional remainder
-  /// (`target / bucketSize`) via a compositor transform — free, runs at the
-  /// display's full refresh rate, and gives continuous motion instead of 0.5 pt
-  /// steps. The scale stays within ~±1.8% (half a bucket over the smallest size),
-  /// so it is visually a gentle in-between, and the gesture-end exact re-bake +
-  /// identity reset lands the crisp final image. Anchored at the layer centre
-  /// (the default), matching a natural pinch-from-centre feel.
+  /// Scale the presented layer by `scale` for the duration of a continuous zoom
+  /// gesture (the osor.io-style trick). The glyph atlas is NOT re-rasterized
+  /// during the gesture; instead the whole presented surface is scaled by the
+  /// live ratio `target / startSize` via a compositor transform — free, runs at
+  /// the display's full refresh rate, and gives continuous motion. The real
+  /// font size + grid are committed once on gesture end, which resets this to
+  /// identity and lands the crisp final image.
+  ///
+  /// `scale` is multiplicative over the whole zoom range, so it spans roughly
+  /// `[8/startSize, 40/startSize]` — well below 1 on a pinch-out. Scaling a
+  /// `CAMetalLayer` below 1 about its centre shrinks the drawn surface and would
+  /// otherwise expose whatever sits behind it at the edges; paint the superview's
+  /// backing layer with the terminal background and clip to bounds while a
+  /// non-identity scale is active so the exposed border reads as background, not
+  /// stale pixels. Restored when the scale returns to identity.
   ///
   /// `scale == 1` (or gesture end) restores identity. Implicit layer animation is
   /// disabled so the transform tracks the finger 1:1 with no easing lag.
   func setGestureZoomPresentationScale(_ scale: CGFloat) {
     guard backendSelfPresents, let layer = self.layer else { return }
     let resolved = scale.isFinite && scale > 0 ? scale : 1
+    let identity = abs(resolved - 1) < 1e-4
     CATransaction.begin()
     CATransaction.setDisableActions(true)
-    if abs(resolved - 1) < 1e-4 {
+    if identity {
       layer.transform = CATransform3DIdentity
+      layer.masksToBounds = gestureZoomPreviousMasksToBounds ?? layer.masksToBounds
+      layer.backgroundColor = gestureZoomPreviousLayerBackground ?? layer.backgroundColor
+      gestureZoomPreviousMasksToBounds = nil
+      gestureZoomPreviousLayerBackground = nil
     } else {
+      if gestureZoomPreviousMasksToBounds == nil {
+        gestureZoomPreviousMasksToBounds = layer.masksToBounds
+        gestureZoomPreviousLayerBackground = layer.backgroundColor
+      }
+      // Fill any edge the shrunk/grown surface exposes with the terminal
+      // background, and clip a grown surface to the view bounds.
+      layer.backgroundColor = cgColorFrom(Theme.current.bg0)
+      layer.masksToBounds = true
       // Scale about the layer's centre regardless of anchorPoint by translating
       // to centre, scaling, translating back.
       let w = layer.bounds.width
@@ -1048,6 +1073,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
     RendererSelection.set(resolved)
     if rendererSelection == resolved { return }
+
+    // Abandon any in-flight zoom gesture before swapping the backend/layer:
+    // reset the presentation scale to identity and clear the gesture state so a
+    // later stray `.ended` cannot commit against the new backend and the old
+    // layer's transform/clip is not left applied.
+    if zoomGestureBasePointSize != nil {
+      setGestureZoomPresentationScale(1)
+      zoomGestureBasePointSize = nil
+      zoomGestureAccumulatedMagnification = 0
+    }
 
     gpuFreezeDetector.reset()
     gpuFrameCompletionCount = 0
@@ -3762,8 +3797,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   ///   and menu path) or honor a fractional size (`false`, the vector
   ///   pinch / Cmd+scroll zoom path).
   /// - `persist`: write the size to `UserDefaults` and post
-  ///   `didChangeNotification`. Live gesture frames pass `false` and persist
-  ///   once on gesture end via `commitZoomFontSize`.
+  ///   `didChangeNotification`. Live gesture frames pass `false`; the size is
+  ///   persisted once on gesture end via `persistFontSize` in the `.ended` branch
+  ///   of `applyZoomMagnification`.
   /// - `throttleReflow`: deliver `SIGWINCH` (the `model.resize` /
   ///   `sessionCoordinator.resize` step) only when the integer `cols`/`rows`
   ///   actually change. The keyboard/menu path leaves this `false`, reflowing
@@ -3949,6 +3985,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// frame persists the final size once. Reflow is throttled to integer
   /// grid-boundary crossings so a continuous gesture does not spam SIGWINCH.
   func applyZoomMagnification(delta: CGFloat, phase: ZoomGesturePhase) {
+    let terminating = phase == .ended || phase == .cancelled
+    // A terminating event with no gesture in flight (e.g. a duplicate `.ended`,
+    // or `.ended` after the renderer was switched away) is a no-op: committing
+    // would run a full fallback-atlas rebuild + persist for nothing.
+    if terminating && zoomGestureBasePointSize == nil { return }
+
     if phase == .began || zoomGestureBasePointSize == nil {
       // Capture the base on `.began`, or tolerate an event stream that opens
       // mid-gesture (`.changed` first) by seizing the current size as the base.
@@ -3965,7 +4007,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       base: base,
       accumulatedMagnification: zoomGestureAccumulatedMagnification,
       fractional: fractional)
-    let ending = phase == .ended || phase == .cancelled
+    let ending = terminating
 
     if fractional && !ending {
       // DURING the gesture, do NOT re-rasterize or reflow the grid at all. The
@@ -4037,10 +4079,19 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let precise = event.hasPreciseScrollingDeltas
     let raw = precise ? event.scrollingDeltaY : event.deltaY
 
-    if event.phase == [] && event.momentumPhase == [] && !precise {
-      // Discrete mouse wheel: no began/ended envelope. Treat each notch as a
-      // self-contained gesture so the size commits per notch.
-      let delta = (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep
+    // No phase envelope at all → a self-contained event with no `.began`/`.ended`
+    // bookends. This is the discrete mouse wheel, but ALSO some precise devices
+    // (e.g. certain Magic Mouse configs) that stream `phase == []` throughout.
+    // Commit each such event as its own began+ended so the presentation scale is
+    // always reset to identity and the size persists — otherwise a phase-less
+    // precise stream would be a perpetual `.changed` that leaves the terminal
+    // stuck scaled and never saved.
+    if event.phase == [] {
+      let delta =
+        precise
+        ? CGFloat(raw) * Self.zoomScrollMagnificationPerPoint
+        : (raw >= 0 ? 1 : -1) * Self.zoomScrollDiscreteStep
+      guard delta != 0 else { return }
       applyZoomMagnification(delta: delta, phase: .began)
       applyZoomMagnification(delta: 0, phase: .ended)
       return

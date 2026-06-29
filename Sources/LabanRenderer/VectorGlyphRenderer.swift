@@ -657,14 +657,6 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// scroll phase is forced active. Test seam.
   public private(set) var liveZoomWhileScrollPhaseActiveCount = 0
 
-  /// When set, caps the per-frame first-paint sample count for fresh masks on
-  /// the non-scrolling path (the continuous-zoom gesture). Nil = normal 512
-  /// first paint. The gesture sets a small value (e.g. 8) so a frame that
-  /// re-bakes the whole screen at a new size stays within the frame budget;
-  /// cleared on gesture end so the settle frame paints crisp. Also drives
-  /// `VectorZoomFrameTimeBench`'s low-sample measurement.
-  public var zoomFirstPaintSampleCap: Int?
-
   private func rebuildFallbackAtlases() {
     rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: scale)
     sidebarRasterAtlas = Self.makeRasterAtlas(
@@ -1616,16 +1608,6 @@ public final class VectorGlyphRenderer: RendererBackend {
       // row of bursts), so the bake doesn't slip this scroll frame's present.
       scheduled = Self.scrollingBaseSamplesThisFrame(
         sampleStart: sampleStart, budgetRemaining: remainingBaseFirstPaintBudget)
-    } else if let zoomCap = zoomFirstPaintSampleCap {
-      // Continuous-zoom gesture: every glyph is a fresh mask every frame (new
-      // size = new key), so the normal 512-sample first paint would re-bake the
-      // whole screen at full quality each frame (~20 ms at live scale, measured
-      // in VectorZoomFrameTimeBench). Cap the per-frame first paint to a small
-      // count so the gesture holds budget; motion hides the coarser AA and the
-      // gesture-end settle re-bakes crisp. Mirrors the OSOR progressive idea, but
-      // bounded per *frame* rather than converging per *glyph* (a zoom never
-      // re-samples the same size twice, so there is nothing to converge into).
-      scheduled = min(zoomCap, Self.accumulationSampleCap)
     } else {
       scheduled = Self.accumulationSamplesThisFrame(
         sampleStart: sampleStart, maskPixels: descriptor.width * descriptor.height)

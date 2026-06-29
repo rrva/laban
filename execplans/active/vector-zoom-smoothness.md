@@ -387,6 +387,18 @@ exclusive with the scroll-phase path, enforced by the M2 tripwire).
 
 ## Surprises & Discoveries
 
+- Observation: Independent fresh-state review (2026-06-29) verdict SHIP after
+  fixes. Addressed: (#1) a precise scrolling device streaming `phase == []`
+  (e.g. some Magic Mouse configs) left the presentation scale stuck and never
+  persisted — Cmd+scroll now self-commits any phase-less event
+  (`handleZoomScroll`), regression-tested; (#2) scaling the `CAMetalLayer` below
+  1 on pinch-out exposed pixels behind it — the gesture now clips to bounds and
+  fills the exposed border with the terminal background, restored on settle;
+  (#7) gesture state + presentation scale are reset on renderer switch, and a
+  terminating event with no gesture in flight is a no-op (no spurious
+  rebuild/persist); plus removed dead scaffolding (`zoomFirstPaintSampleCap`,
+  the MSDF quality proto) and stale doc references. No force-unwraps or
+  divide-by-zero in the new code (`base` ≥ 8 pt, scale guards non-finite/≤0).
 - Observation: The M0 synchronous-frame guarantee (`waitForFrameCompletion`) is
   catastrophic when applied **per gesture frame** — it is the dominant cause of
   the reported "super slow" resize, not the bake throughput.

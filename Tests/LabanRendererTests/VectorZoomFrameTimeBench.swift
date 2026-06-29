@@ -54,103 +54,74 @@ final class VectorZoomFrameTimeBench: XCTestCase {
 
     print("\n=== Continuous fractional zoom frame-time (vector backend) ===")
     print("  grid \(cols)x\(rows) @ scale \(scale)  (\(pixelW)x\(pixelH) px), 200 timed frames")
-    print("  sweep \(baseSize)->\(peakSize) pt, new fractional size every frame")
     print("  path                         cpu p50/p95/p99 ms")
 
     let budget = 1000.0 / 120.0
 
-    // Baselines: the two broken behaviors this milestone removes.
-    printRow(
-      "OLD naive 512, sync (M0)",
-      try measureZoom(
-        waitForCompletion: true, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH))
-    printRow(
-      "OLD naive 512, async",
-      try measureZoom(
-        waitForCompletion: false, sampleCap: nil, bucketPt: nil, pixelW: pixelW, pixelH: pixelH))
+    // Why the production gesture does NOT re-bake per frame. Re-applying the font
+    // (a new fractional size every frame) re-bakes the whole screen: this is the
+    // cost the final compositor-scale design avoids by scaling the resident
+    // surface during motion and re-baking only ONCE on gesture end.
+    //   - sync (per-frame waitForFrameCompletion): the ~835 ms "super slow".
+    //   - async: still ~20 ms/frame, over the 8.33 ms / 120 Hz budget.
+    printRow("rebake/frame, sync", try measureRebakePerFrame(wait: true, pw: pixelW, ph: pixelH))
+    printRow("rebake/frame, async", try measureRebakePerFrame(wait: false, pw: pixelW, ph: pixelH))
 
-    // The production gesture config: bucket the size (cuts re-bake FREQUENCY)
-    // AND cap the per-frame first paint low (cuts re-bake COST on the frames
-    // that do cross a bucket). Together these are the OSOR-style smooth path.
-    print("  --- NEW gesture path: bucket + low sample cap, async ---")
-    // bucket 0.5 pt mirrors TerminalBitmapView.zoomGestureBucketPointSize.
-    let prod = try measureZoom(
-      waitForCompletion: false, sampleCap: 8, bucketPt: 0.5,
-      pixelW: pixelW, pixelH: pixelH)
-    printRow("bucket 0.5 + 8/frame", prod)
-
-    // Within-bucket floor: same size every frame (pure cache hit, no re-apply),
-    // the steady state between bucket crossings. Isolates the full-screen ENCODE
-    // cost from the bucket-crossing bake cost — shows how much of `prod` is the
-    // crossing, and what the continuous sub-bucket-scale frames cost.
-    let hold = try measureZoom(
-      waitForCompletion: false, sampleCap: 8, bucketPt: 0.5, holdSize: true,
-      pixelW: pixelW, pixelH: pixelH)
-    printRow("within-bucket hold (floor)", hold)
+    // The cost the final design DOES pay: one steady cache-hit render (the single
+    // settle frame on gesture end, and what a scroll frame costs at this grid).
+    printRow("steady render (settle)", try measureSteadyRender(pw: pixelW, ph: pixelH))
 
     print(String(format: "  budget @120Hz = %.2f ms", budget))
-    print(
-      String(
-        format: "  NEW p95 %@ budget (%.2f ms);  OLD sync p50 was the ~835ms 'super slow'",
-        prod.p95 <= budget ? "WITHIN" : "OVER", prod.p95))
   }
 
-  private func measureZoom(
-    waitForCompletion: Bool, sampleCap: Int?, bucketPt: CGFloat?, holdSize: Bool = false,
-    pixelW: Int, pixelH: Int
-  ) throws -> (p50: Double, p95: Double, p99: Double) {
+  /// Re-apply a new fractional size + render every frame (the rejected naive
+  /// path): an upper bound that justifies the compositor-scale design.
+  private func measureRebakePerFrame(wait: Bool, pw: Int, ph: Int) throws -> (
+    p50: Double, p95: Double, p99: Double
+  ) {
     let base = FontAtlas(pointSize: baseSize)
     guard
       let renderer = VectorGlyphRenderer(
-        fontAtlas: base, sidebarFontAtlas: base,
-        pixelWidth: pixelW, pixelHeight: pixelH, scale: scale)
+        fontAtlas: base, sidebarFontAtlas: base, pixelWidth: pw, pixelHeight: ph, scale: scale)
     else { throw XCTSkip("VectorGlyphRenderer unavailable") }
-    renderer.waitForFrameCompletion = waitForCompletion
-    renderer.zoomFirstPaintSampleCap = sampleCap
-
-    // Per-bucket FontAtlas cache: reusing the SAME atlas instance for sizes in a
-    // bucket makes the renderer's ObjectIdentifier(font)-keyed mask entries
-    // repeat across frames, i.e. cache hits (the whole point of bucketing).
-    var bucketAtlases: [Int: FontAtlas] = [:]
-    func atlasFor(_ size: CGFloat) -> FontAtlas {
-      guard let bucketPt else { return FontAtlas(pointSize: size) }
-      let bucketIndex = Int((size / bucketPt).rounded())
-      if let cached = bucketAtlases[bucketIndex] { return cached }
-      let snapped = max(baseSize, CGFloat(bucketIndex) * bucketPt)
-      let atlas = FontAtlas(pointSize: snapped)
-      bucketAtlases[bucketIndex] = atlas
-      return atlas
-    }
+    renderer.waitForFrameCompletion = wait
 
     func sizeFor(_ i: Int) -> CGFloat {
-      if holdSize { return (baseSize + peakSize) / 2 }  // steady within-bucket hold
-      // Triangle wave base->peak->base over a 0.37 pt step, like a slide.
       let span = peakSize - baseSize
       let stepped = CGFloat((i % 80)) * (span / 40)
       return baseSize + (stepped <= span ? stepped : 2 * span - stepped)
     }
-
-    // Only re-apply fonts when the bucket actually changes. Within a bucket the
-    // size is snapped, so nothing changes and the frame is a plain render that
-    // hits the resident masks (the OSOR operating point). The sub-bucket
-    // fractional remainder would be a draw-time uniform scale (~free), not a
-    // re-bake. Unbucketed (bucketPt == nil) re-applies every frame, the naive path.
-    var lastAtlas: FontAtlas?
     func frame(_ i: Int) {
-      let atlas = atlasFor(sizeFor(i))
-      if atlas !== lastAtlas {
-        renderer.applyLiveZoomFonts(fontAtlas: atlas, sidebarFontAtlas: atlas)
-        lastAtlas = atlas
-      }
+      let atlas = FontAtlas(pointSize: sizeFor(i))
+      renderer.applyLiveZoomFonts(fontAtlas: atlas, sidebarFontAtlas: atlas)
       _ = renderer.render(commands(), damage: .full)
     }
+    return timeFrames(warmup: frame, timed: frame)
+  }
 
-    for i in 0..<40 { frame(i) }  // warm up
+  /// Render the same size every frame (pure cache hit) — the steady-state cost
+  /// the gesture pays only on its single settle frame.
+  private func measureSteadyRender(pw: Int, ph: Int) throws -> (
+    p50: Double, p95: Double, p99: Double
+  ) {
+    let atlas = FontAtlas(pointSize: (baseSize + peakSize) / 2)
+    guard
+      let renderer = VectorGlyphRenderer(
+        fontAtlas: atlas, sidebarFontAtlas: atlas, pixelWidth: pw, pixelHeight: ph, scale: scale)
+    else { throw XCTSkip("VectorGlyphRenderer unavailable") }
+    let frame: (Int) -> Void = { _ in _ = renderer.render(self.commands(), damage: .full) }
+    return timeFrames(warmup: frame, timed: frame)
+  }
+
+  private func timeFrames(warmup: (Int) -> Void, timed: (Int) -> Void) -> (
+    p50: Double, p95: Double, p99: Double
+  ) {
+    for i in 0..<40 { warmup(i) }
     var samples: [Double] = []
     samples.reserveCapacity(200)
     for i in 40..<240 {
       let start = DispatchTime.now().uptimeNanoseconds
-      frame(i)
+      timed(i)
       let end = DispatchTime.now().uptimeNanoseconds
       samples.append(Double(end - start) / 1_000_000.0)
     }
