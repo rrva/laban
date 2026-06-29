@@ -90,8 +90,14 @@ approval"). It must not break any behavior required by `docs/product/mvp.md`.
   that copy, and `removeAll(keepingCapacity:)` avoids realloc. Landing the
   direct-to-buffer rewrite would add CPU↔GPU shared-buffer hazard surface to the
   hottest GPU path for an unmeasurable gain. Not landed. See Decision Log.
-- [ ] Milestone 3: stride the run by cell index instead of re-segmenting `text`
-  as `Character`s every cell.
+- [x] (2026-06-29) Milestone 3: implemented an ASCII-run scalar fast path
+  (1 byte = 1 cell), parity 8/8 + full 79-test vector suite green — then
+  **reverted** by its gate. Two release bench runs showed vector p95 did not drop
+  below M2 (fluid 16.07/16.76, crisp 16.08/16.15 vs M2 16.32/14.97) and crisp p50
+  drifted up. A standalone microbench confirmed the CPU iteration saving is real
+  (~285 µs/frame: Character enumerate 616 µs → scalar-direct 300 µs) but it is
+  below the integrated bench's p95 noise floor (~0.4–0.5 ms, GPU-bake-tail bound).
+  Not landed. See Decision Log.
 - [ ] Review Gate passed.
 
 ## Context and Orientation
@@ -467,6 +473,23 @@ Review findings (filled in by the review agent):
   before keeping.
   Date/Author: 2026-06-29 / analysis session.
 
+- Decision: Do not land Milestone 3 (ASCII scalar fast path).
+  Rationale: Implemented a within-`VectorGlyphRenderer` scalar fast path (no
+  `FrameProducer` contract change): for runs whose UTF-8 is all printable ASCII
+  (0x20–0x7E) and which cannot be color, stride by byte index and resolve glyphs
+  via a new scalar overload of `simpleGlyph` (the `Character` overload delegates
+  to it, so one cache and one CoreText probe, no divergence). Correctness held
+  (parity 8/8, full 79-test vector suite green). But the gate metric did not move:
+  two release bench runs gave vector p95 fluid 16.07/16.76 and crisp 16.08/16.15
+  vs M2's 16.32/14.97 — flat-to-worse, with crisp p50 drifting up. A standalone
+  microbench (`/tmp/m3_real_bench.swift`) confirmed the CPU iteration win is real
+  (Character enumerate 616 µs/frame → scalar-direct 300 µs, ~285 µs saved) but the
+  integrated bench is GPU-bake-tail-bound at p95/p99 with a ~0.4–0.5 ms noise
+  floor that swamps a 0.28 ms CPU delta. Per the gate ("keep only if it lowers
+  vector p95 on top of M2"), reverted. The fast path remains a valid future change
+  if a CPU-bound workload (no GPU bake tail) or a tighter bench can attribute it.
+  Date/Author: 2026-06-29 / execution session.
+
 ## Surprises & Discoveries
 
 - Observation: The CoreText calls under `encode` are already cached; the cost is
@@ -485,6 +508,37 @@ Review findings (filled in by the review agent):
   16.711→14.970, −10%) came entirely from removing per-cell divides, the
   per-cell `vectorColor` sRGB-linearize (4 transcendental-ish ops × ~7680 cells),
   and the redundant size divide-then-multiply.
+
+- Observation: `VectorScrollFrameTimeBench` p95/p99 is GPU-bake-tail bound, not
+  pure CPU encode, so it has a ~0.4–0.5 ms run-to-run noise floor. CPU-only wins
+  smaller than that (M1 ~0.02 ms, M3 ~0.28 ms) cannot be attributed through it,
+  even when a standalone microbench proves the CPU saving is real. M2 (~1.7 ms on
+  crisp p95) cleared the floor; M1 and M3 did not.
+  Evidence: gpu/classic p95 alone varied 8.826→9.144→9.348 across three otherwise
+  identical runs.
+
+## Outcomes & Retrospective
+
+Of the three candidate optimizations, **one landed** (M2) and two were correctly
+declined by their own measurement gates (M1, M3). The plan's value was as much in
+*not* shipping unmeasurable complexity onto the hottest GPU path as in shipping M2.
+
+- **M2 (landed, commit `8f6d15e`):** hoisting per-cell constant math out of
+  `glyphInstance` — uv reciprocals, the fluid device offset, the per-run
+  foreground sRGB-linearize, and a redundant divide-then-multiply — cut vector
+  crisp p95 ~10% (16.711 → 14.970 ms) and p50 ~0.46 ms, parity unchanged. This was
+  the real cost the trace pointed at (per-cell arithmetic, ~24% of `encode`
+  self-time), and the lowest-risk change (pure arithmetic, no GPU hazard surface).
+- **M1 (declined):** the array→buffer copy it removed measured ~19 µs/frame, ~0.13%
+  of vector p95 — below noise, and the rewrite would add CPU↔GPU buffer-lifetime
+  hazards. Not worth it.
+- **M3 (declined):** the scalar fast path's CPU saving was real (~285 µs/frame in
+  isolation) but invisible through the GPU-bake-tail-bound p95 the gate measures.
+  Kept reversible; revisit if a CPU-bound bench can attribute it.
+
+Net: the vector renderer's heavy-scroll encode cost is now lower (crisp p95 −10%),
+the per-cell loop does strictly less arithmetic, and the codebase did not absorb
+two speculative changes that the numbers did not justify.
 
 ## Artifacts and Notes
 
