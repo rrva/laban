@@ -244,9 +244,6 @@ final class VectorGlyphMaskAtlas {
       guard origin.x + slotWidth <= slotsWide, origin.y + slotHeight <= slotsHigh else {
         continue
       }
-      guard origin.x.isMultiple(of: slotWidth), origin.y.isMultiple(of: slotHeight) else {
-        continue
-      }
       if regionIsFree(origin, slotWidth: slotWidth, slotHeight: slotHeight) {
         return origin
       }
