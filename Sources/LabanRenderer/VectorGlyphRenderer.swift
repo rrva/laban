@@ -386,6 +386,15 @@ public final class VectorGlyphRenderer: RendererBackend {
   private var framePreparedGlyphs: Set<FrameGlyphKey> = []
   private var frameResolvedMasks: [FrameGlyphKey: (mask: VectorGlyphMaskAtlas.Entry, slide: Bool)] =
     [:]
+  // Per-frame constants the per-cell `glyphInstance` would otherwise recompute on
+  // every cell. The mask-atlas reciprocals turn a per-cell divide into a multiply
+  // (exact when the atlas dimension is a power of two, which the 2048 default is);
+  // the fluid device offset folds `CGFloat(scrollPhaseOffset.*) * scale` once per
+  // frame. Set at the top of `encode`, read only during that synchronous pass.
+  private var frameMaskInvWidth: Float = 0
+  private var frameMaskInvHeight: Float = 0
+  private var frameFluidDeviceOffsetX: CGFloat = 0
+  private var frameFluidDeviceOffsetY: CGFloat = 0
   /// Minimum present interval hinted to the compositor for smooth-scroll frames,
   /// so a ProMotion panel holds 120 Hz instead of dropping into the half-rate
   /// basin after a single missed frame (mirrors `MetalRenderer`).
@@ -736,6 +745,14 @@ public final class VectorGlyphRenderer: RendererBackend {
     // done on the GPU before this frame encodes.
     instanceBufferPoolCursor = 0
 
+    // Frame-constant glyph math, hoisted out of the per-cell loop in
+    // `glyphInstance`. maskAtlas dimensions and the scroll phase do not change
+    // within a frame.
+    frameMaskInvWidth = 1 / Float(maskAtlas.width)
+    frameMaskInvHeight = 1 / Float(maskAtlas.height)
+    frameFluidDeviceOffsetX = CGFloat(scrollPhaseOffset.x) * scale
+    frameFluidDeviceOffsetY = CGFloat(scrollPhaseOffset.y) * scale
+
     var solids: [VectorSolidInstance] = []
     var glyphs: [VectorGlyphInstance] = []
     var rasterGlyphs: [VectorGlyphInstance] = []
@@ -1047,6 +1064,8 @@ public final class VectorGlyphRenderer: RendererBackend {
     let baseline = origin.y + atlas.descent
     let coverageExponent = Self.coverageExponent(
       foreground: foreground, background: background, weight: textWeight)
+    // Foreground is constant across the run; linearize it once instead of per cell.
+    let foregroundColor = vectorColor(foreground)
     let runWantsColor =
       source != .sidebar && emojiRenderingMode == .color
       && ColorGlyphSupport.textMayContainColor(
@@ -1079,7 +1098,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       {
         glyphs.append(
           glyphInstance(
-            mask: resolved.mask, position: position, color: foreground,
+            mask: resolved.mask, position: position, color: foregroundColor,
             coverageExponent: coverageExponent, slide: resolved.slide))
       } else if let fallback = rasterFallbackInstance(
         cluster: cluster,
@@ -1601,33 +1620,31 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func glyphInstance(
     mask: VectorGlyphMaskAtlas.Entry,
     position: CGPoint,
-    color: UInt32,
+    color: SIMD4<Float>,
     coverageExponent: Float,
     slide: Bool
   ) -> VectorGlyphInstance {
-    let rect = CGRect(
-      x: position.x + mask.origin.x,
-      y: position.y + mask.origin.y,
-      width: CGFloat(mask.width) / scale,
-      height: CGFloat(mask.height) / scale)
-    // `slide` true: this is a phase-0 mask drawn at the true fractional position
-    // (fluid mode, or crisp's fallback when the per-phase mask isn't baked yet);
-    // the bilinear sampler interpolates so motion is continuous. `slide` false: a
-    // per-phase mask whose sub-pixel offset is baked in, kept pixel-aligned.
-    let fluidDeviceOffsetX = slide ? CGFloat(scrollPhaseOffset.x) * scale : 0
-    let fluidDeviceOffsetY = slide ? CGFloat(scrollPhaseOffset.y) * scale : 0
+    // Device-pixel origin is `(position + mask.origin) * scale`; the size in
+    // device pixels is just `mask.width/height` (the point-space rect is
+    // `mask.size / scale`, so multiplying back by `scale` cancels). Computing it
+    // directly avoids a per-cell divide-then-multiply round trip.
+    // `slide` true: phase-0 mask drawn at the true fractional position (fluid
+    // mode, or crisp's fallback when the per-phase mask isn't baked yet); the
+    // bilinear sampler interpolates so motion is continuous. `slide` false: a
+    // per-phase mask whose sub-pixel offset is baked in, kept pixel-aligned. The
+    // device offset is frame-constant (`frameFluidDeviceOffset*`), gated by slide.
+    let originX = (position.x + mask.origin.x) * scale + (slide ? frameFluidDeviceOffsetX : 0)
+    let originY = (position.y + mask.origin.y) * scale + (slide ? frameFluidDeviceOffsetY : 0)
     return VectorGlyphInstance(
-      origin: SIMD2<Float>(
-        Float(rect.minX * scale + fluidDeviceOffsetX),
-        Float(rect.minY * scale + fluidDeviceOffsetY)),
-      size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
+      origin: SIMD2<Float>(Float(originX), Float(originY)),
+      size: SIMD2<Float>(Float(mask.width), Float(mask.height)),
       uvOrigin: SIMD2<Float>(
-        Float(mask.x) / Float(maskAtlas.width),
-        Float(mask.y) / Float(maskAtlas.height)),
+        Float(mask.x) * frameMaskInvWidth,
+        Float(mask.y) * frameMaskInvHeight),
       uvSize: SIMD2<Float>(
-        Float(mask.width) / Float(maskAtlas.width),
-        Float(mask.height) / Float(maskAtlas.height)),
-      color: vectorColor(color),
+        Float(mask.width) * frameMaskInvWidth,
+        Float(mask.height) * frameMaskInvHeight),
+      color: color,
       coverageExponent: coverageExponent)
   }
 

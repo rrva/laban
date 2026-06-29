@@ -77,10 +77,14 @@ approval"). It must not break any behavior required by `docs/product/mvp.md`.
   gpu/classic 8.384/9.186/9.734, vector/fluid 8.347/16.755/20.064, vector/crisp
   8.874/16.711/20.050 (p50/p95/p99 ms). Cost is tail latency: vector p95/p99 ~2x
   classic. Target refined to p95/p99.
+- [x] (2026-06-29) Milestone 2: hoisted maskAtlas uv reciprocals, fluid device
+  offset, and per-run foreground color out of the per-cell `glyphInstance`;
+  removed the redundant divide-then-multiply for size. Parity 8/8 green. Bench:
+  vector/fluid p95 16.755→16.319, vector/crisp p95 16.711→14.970 (−10%), crisp
+  p50 8.874→8.418. (Done before M1 per Decision Log.)
 - [ ] Milestone 1: write instances straight into the pooled `MTLBuffer`, removing
-  the array→buffer `memcpy` and the Swift `Array` churn.
-- [ ] Milestone 2: hoist per-frame/per-run constants out of the per-cell body and
-  cut redundant float work in `glyphInstance`.
+  the array→buffer `memcpy` and the Swift `Array` churn. Gated: keep only if it
+  lowers vector p95 on top of M2.
 - [ ] Milestone 3: stride the run by cell index instead of re-segmenting `text`
   as `Character`s every cell.
 - [ ] Review Gate passed.
@@ -422,6 +426,19 @@ Review findings (filled in by the review agent):
   the whole-array `memcpy` live.
   Date/Author: 2026-06-29 / analysis session.
 
+- Decision: Execute Milestone 2 (hoist per-cell constants) before Milestone 1
+  (direct-to-buffer), and gate Milestone 1 on showing incremental p95 improvement.
+  Rationale: The M0 baseline showed the vector cost is tail latency (p95/p99 ~2x
+  the classic renderer, p50 comparable). The heavy-scroll trace attributes ~24%
+  of CPU to `encode` self-time (per-cell instance construction / float math in
+  `glyphInstance`) and only ~0.8% to the array→buffer `memcpy` that M1 removes.
+  M2 is therefore both the larger win and the lower risk (pure arithmetic, no GPU
+  buffer-hazard surface). PLANS.md permits documented course changes. Milestone
+  identities and the per-milestone commit discipline are preserved; only the
+  order changed. M1 is kept but gated like M3: keep only if it lowers vector p95
+  on top of M2 with parity green.
+  Date/Author: 2026-06-29 / execution session.
+
 - Decision: Keep Milestone 3 (segmentation) gated on its own measurement rather
   than committing it unconditionally.
   Rationale: It is the only milestone that risks touching the `FrameProducer`
@@ -455,10 +472,16 @@ the per-cell encode work shows up as tail latency on the heaviest frames. The
 primary acceptance target is therefore a drop in vector/* p95 and p99 (with p50
 holding or improving), not p50 alone.
 
-After Milestone 1 / 2 (fill in):
+After Milestone 2 (measured 2026-06-29, same grid/build):
 
-    vector/fluid   __/__/__   (Δ p95 vs baseline: __)
-    vector/crisp   __/__/__   (Δ p95 vs baseline: __)
+    gpu/classic    8.393 / 8.826 / 8.915
+    vector/fluid   8.382 / 16.319 / 20.049   (Δ p95 vs baseline: -0.44)
+    vector/crisp   8.418 / 14.970 / 20.062   (Δ p95 vs baseline: -1.74, Δ p50: -0.46)
+
+After Milestone 1 (fill in):
+
+    vector/fluid   __/__/__   (Δ p95 vs M2: __)
+    vector/crisp   __/__/__   (Δ p95 vs M2: __)
 
 ## Interfaces and Dependencies
 
