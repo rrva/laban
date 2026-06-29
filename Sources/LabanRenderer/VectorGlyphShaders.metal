@@ -19,6 +19,12 @@ struct VectorGlyphInstance {
 struct VectorRenderUniforms {
     float2 surfaceSizePixels;
     float scale;
+    // Continuous-zoom gesture factor applied in the projection so EVERY
+    // presented frame is consistently scaled (no CALayer transform racing the
+    // self-presenting render loop). 1.0 = no gesture zoom. The scale is about
+    // `gestureZoomAnchorPixels` (device px, y-up from bottom-left).
+    float gestureZoom;
+    float2 gestureZoomAnchorPixels;
     float _pad;
 };
 
@@ -81,6 +87,12 @@ inline float2 vector_to_ndc(float2 px, float2 surface) {
     );
 }
 
+// Apply the continuous-zoom gesture factor in device-pixel space, about the
+// anchor, before NDC projection. Identity when zoom == 1.
+inline float2 vector_apply_gesture_zoom(float2 px, constant VectorRenderUniforms &u) {
+    return (px - u.gestureZoomAnchorPixels) * u.gestureZoom + u.gestureZoomAnchorPixels;
+}
+
 vertex VectorVertexOut vectorSolidVertex(
     uint vertexId [[vertex_id]],
     uint instanceId [[instance_id]],
@@ -90,6 +102,7 @@ vertex VectorVertexOut vectorSolidVertex(
     VectorSolidInstance instance = instances[instanceId];
     float2 unit = kVectorQuadVertices[vertexId];
     float2 px = instance.origin + unit * instance.size;
+    px = vector_apply_gesture_zoom(px, uniforms);
 
     VectorVertexOut out;
     out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);
@@ -112,6 +125,7 @@ vertex VectorVertexOut vectorGlyphVertex(
     VectorGlyphInstance instance = instances[instanceId];
     float2 unit = kVectorQuadVertices[vertexId];
     float2 px = instance.origin + unit * instance.size;
+    px = vector_apply_gesture_zoom(px, uniforms);
 
     VectorVertexOut out;
     out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);

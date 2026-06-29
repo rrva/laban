@@ -33,6 +33,11 @@ private struct VectorGlyphInstance {
 private struct VectorUniforms {
   var surfaceSizePixels: SIMD2<Float>
   var scale: Float
+  // Continuous-zoom gesture factor applied in the vertex projection so every
+  // presented frame is consistently scaled (no CALayer transform racing the
+  // self-presenting render loop). 1 = none. Scaled about `gestureZoomAnchor`.
+  var gestureZoom: Float = 1
+  var gestureZoomAnchor: SIMD2<Float> = .zero
   var _pad: Float = 0
 }
 
@@ -543,6 +548,23 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// target texture.
   public var waitForFrameCompletion: Bool = false
 
+  /// Continuous-zoom gesture factor, applied in the vertex projection so the
+  /// whole canvas (background rect + every glyph) scales uniformly each frame.
+  /// 1 = no gesture zoom. Unlike a CALayer transform this rides every present,
+  /// so a streaming terminal that self-presents fresh frames during the gesture
+  /// stays consistently scaled (no unscaled-frame flicker / racing).
+  public private(set) var gestureZoom: CGFloat = 1
+  /// Anchor for `gestureZoom`, in device pixels (y-up from bottom-left).
+  public private(set) var gestureZoomAnchor: CGPoint = .zero
+
+  /// Set the gesture-zoom factor and its anchor (device pixels). Does not bake
+  /// or reflow — it only changes the projection for subsequent frames, so the
+  /// caller must request a redraw. Pass `factor == 1` to clear.
+  public func setGestureZoom(_ factor: CGFloat, anchor: CGPoint) {
+    gestureZoom = factor.isFinite && factor > 0 ? factor : 1
+    gestureZoomAnchor = anchor
+  }
+
   public var pngData: Data? {
     lastCommandBuffer?.waitUntilCompleted()
     guard let targetTexture else { return nil }
@@ -1028,7 +1050,9 @@ public final class VectorGlyphRenderer: RendererBackend {
       setScissor(currentClip, encoder: encoder)
       var uniforms = VectorUniforms(
         surfaceSizePixels: SIMD2<Float>(Float(pixelWidth), Float(pixelHeight)),
-        scale: Float(scale))
+        scale: Float(scale),
+        gestureZoom: Float(gestureZoom),
+        gestureZoomAnchor: SIMD2<Float>(Float(gestureZoomAnchor.x), Float(gestureZoomAnchor.y)))
       if !solids.isEmpty {
         encoder.setRenderPipelineState(solidPipeline)
         if setVertexInstances(solids, encoder: encoder, retainedBuffers: &retainedInstanceBuffers) {

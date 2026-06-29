@@ -326,13 +326,6 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var zoomGestureBasePointSize: CGFloat?
   private var zoomGestureAccumulatedMagnification: CGFloat = 0
 
-  /// Saved presentation-layer state while a gesture zoom scale is active, so the
-  /// edge-clip + background fill (which hide pixels the scaled surface exposes)
-  /// can be restored exactly when the scale returns to identity. Nil when no
-  /// scale is applied.
-  private var gestureZoomPreviousMasksToBounds: Bool?
-  private var gestureZoomPreviousLayerBackground: CGColor?
-
   /// The presentation-layer scale currently applied by the zoom gesture (1.0 =
   /// identity / none). Stored for the debug surface so a "stuck scaled" lock-up
   /// is observable: at rest this must be exactly 1.0.
@@ -995,58 +988,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
-  /// Scale the presented layer by `scale` for the duration of a continuous zoom
-  /// gesture (the osor.io-style trick). The glyph atlas is NOT re-rasterized
-  /// during the gesture; instead the whole presented surface is scaled by the
-  /// live ratio `target / startSize` via a compositor transform — free, runs at
-  /// the display's full refresh rate, and gives continuous motion. The real
-  /// font size + grid are committed once on gesture end, which resets this to
-  /// identity and lands the crisp final image.
+  /// Scale the whole vector canvas by `scale` for the duration of a continuous
+  /// zoom gesture. The glyph atlas is NOT re-rasterized during the gesture;
+  /// instead the renderer applies `scale` in its vertex projection so the
+  /// background rect and every glyph scale uniformly, and it rides EVERY
+  /// presented frame.
   ///
-  /// `scale` is multiplicative over the whole zoom range, so it spans roughly
-  /// `[8/startSize, 40/startSize]` — well below 1 on a pinch-out. Scaling a
-  /// `CAMetalLayer` below 1 about its centre shrinks the drawn surface and would
-  /// otherwise expose whatever sits behind it at the edges; paint the superview's
-  /// backing layer with the terminal background and clip to bounds while a
-  /// non-identity scale is active so the exposed border reads as background, not
-  /// stale pixels. Restored when the scale returns to identity.
+  /// This deliberately does not use a `CALayer.transform`: the vector backend
+  /// self-presents a fresh drawable on every tick (a streaming terminal keeps
+  /// rendering during the gesture), so a layer transform races those presents —
+  /// freshly-drawn base-size frames flash through unscaled and the pile-up
+  /// stalls the main thread. Baking the scale into the projection means the
+  /// canvas is already scaled when it presents, with nothing to race. Anchored
+  /// at the canvas centre, matching a natural pinch-from-centre feel.
   ///
-  /// `scale == 1` (or gesture end) restores identity. Implicit layer animation is
-  /// disabled so the transform tracks the finger 1:1 with no easing lag.
+  /// `scale == 1` (or gesture end) clears the zoom. Classic/software backends
+  /// have no projection hook and are unaffected (their pinch rounds per step).
   func setGestureZoomPresentationScale(_ scale: CGFloat) {
-    guard backendSelfPresents, let layer = self.layer else { return }
     let resolved = scale.isFinite && scale > 0 ? scale : 1
     debugGestureZoomScale = resolved
-    let identity = abs(resolved - 1) < 1e-4
-    CATransaction.begin()
-    CATransaction.setDisableActions(true)
-    if identity {
-      layer.transform = CATransform3DIdentity
-      layer.masksToBounds = gestureZoomPreviousMasksToBounds ?? layer.masksToBounds
-      layer.backgroundColor = gestureZoomPreviousLayerBackground ?? layer.backgroundColor
-      gestureZoomPreviousMasksToBounds = nil
-      gestureZoomPreviousLayerBackground = nil
-    } else {
-      if gestureZoomPreviousMasksToBounds == nil {
-        gestureZoomPreviousMasksToBounds = layer.masksToBounds
-        gestureZoomPreviousLayerBackground = layer.backgroundColor
-      }
-      // Fill any edge the shrunk/grown surface exposes with the terminal
-      // background, and clip a grown surface to the view bounds.
-      layer.backgroundColor = cgColorFrom(Theme.current.bg0)
-      layer.masksToBounds = true
-      // Scale about the layer's centre regardless of anchorPoint by translating
-      // to centre, scaling, translating back.
-      let w = layer.bounds.width
-      let h = layer.bounds.height
-      let cx = w / 2
-      let cy = h / 2
-      var t = CATransform3DMakeTranslation(cx, cy, 0)
-      t = CATransform3DScale(t, resolved, resolved, 1)
-      t = CATransform3DTranslate(t, -cx, -cy, 0)
-      layer.transform = t
-    }
-    CATransaction.commit()
+    guard let vector = backend as? VectorGlyphRenderer else { return }
+    // Anchor at the surface centre, in device pixels (y-up from bottom-left).
+    let anchor = CGPoint(x: CGFloat(lastPixelWidth) / 2, y: CGFloat(lastPixelHeight) / 2)
+    vector.setGestureZoom(resolved, anchor: anchor)
+    renderInvalidated = true
+    invalidateRenderAndWake()
   }
 
   private func installFrameCompletionHook() {
