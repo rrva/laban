@@ -101,6 +101,25 @@ final class VectorTextRasterizerTests: XCTestCase {
     XCTAssertGreaterThan(sample.r, sample.b, "red tint must dominate the blue channel")
   }
 
+  /// Regression: the scratch kernel writes hard 0/1 coverage, so a direct raster
+  /// is aliased (jagged edges, no antialiasing) and looks worse than CoreText.
+  /// Supersampling + box downsample must yield partial-coverage edge pixels —
+  /// alpha values strictly between fully transparent and fully opaque.
+  func testGlyphEdgesAreAntialiased() throws {
+    let rasterizer = try makeRasterizer()
+    let image = try XCTUnwrap(
+      rasterizer.image(for: "8", font: pillFont, color: black(), scale: 2))
+    let bytes = try XCTUnwrap(rgbaBytes(image))
+    var partial = 0
+    for index in stride(from: 3, to: bytes.count, by: 4) {
+      let alpha = bytes[index]
+      if alpha > 24, alpha < 231 { partial += 1 }
+    }
+    XCTAssertGreaterThan(
+      partial, 8,
+      "antialiased glyph edges must produce many partial-coverage pixels, not a hard 0/1 mask")
+  }
+
   // MARK: - Pixel helpers
 
   private func rgbaBytes(_ image: CGImage) -> [UInt8]? {

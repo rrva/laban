@@ -30,6 +30,11 @@ public final class VectorTextRasterizer {
     let scaleBits: UInt64
   }
 
+  // Supersampling factor per axis for antialiasing: the scratch kernel produces
+  // hard 0/1 coverage, so each device pixel is averaged over a 4×4 = 16-sample
+  // grid. 4× is the usual quality/cost knee for text-sized glyphs.
+  private static let supersample = 4
+
   private let store = GlyphCurveStore()
   private let rasterizer: VectorGlyphScratchRasterizer
   private var imageCache: [ImageKey: CGImage] = [:]
@@ -100,24 +105,38 @@ public final class VectorTextRasterizer {
 
     guard let combined = combinedOutline(line: line, fallback: font) else { return nil }
 
+    // The GPU scratch kernel is single-sample (one winding test per pixel center,
+    // hard 0/1 coverage), so a direct device-scale raster is aliased. Rasterize
+    // `Self.supersample`× denser and box-downsample, turning each device pixel
+    // into an average over an SS×SS sample grid — that is the antialiasing.
+    let ss = Self.supersample
+    let superWidth = pixelWidth * ss
+    let superHeight = pixelHeight * ss
     // One pass over the whole string: origin maps the bottom of the image to the
     // descent line, so the baseline (glyph-space y = 0) lands on the same row for
     // every glyph. The shader's per-pixel bounds early-out uses the outline's
     // tight ink bounds, so empty rows stay cheap despite the full-string extent.
     guard
-      let coverage = rasterizer.rasterize(
+      let superCoverage = rasterizer.rasterize(
         outline: combined,
-        width: pixelWidth,
-        height: pixelHeight,
+        width: superWidth,
+        height: superHeight,
         origin: CGPoint(x: 0, y: -descent),
-        rasterScale: scale)
+        rasterScale: scale * CGFloat(ss))
     else { return nil }
     rasterizePassCount += 1
+
+    let coverage = downsample(
+      superCoverage,
+      superWidth: superWidth,
+      width: pixelWidth,
+      height: pixelHeight,
+      factor: ss)
 
     var rgba = [UInt8](repeating: 0, count: pixelWidth * pixelHeight * 4)
     var covered = false
     for index in 0..<(pixelWidth * pixelHeight) {
-      let cov = Float(coverage[index]) / 255.0
+      let cov = coverage[index]
       guard cov > 0 else { continue }
       let srcA = tint.a * cov
       guard srcA > 0 else { continue }
@@ -205,6 +224,34 @@ public final class VectorTextRasterizer {
 
   private func translate(_ point: CGPoint, by offset: CGPoint) -> CGPoint {
     CGPoint(x: point.x + offset.x, y: point.y + offset.y)
+  }
+
+  /// Box-downsample a supersampled r8 coverage buffer to device resolution: each
+  /// output pixel is the mean of its `factor`×`factor` source samples, in [0, 1].
+  private func downsample(
+    _ source: [UInt8],
+    superWidth: Int,
+    width: Int,
+    height: Int,
+    factor: Int
+  ) -> [Float] {
+    var out = [Float](repeating: 0, count: width * height)
+    let inverse = 1.0 / Float(factor * factor)
+    for y in 0..<height {
+      let srcRowBase = y * factor * superWidth
+      for x in 0..<width {
+        let srcColBase = x * factor
+        var sum = 0
+        for sy in 0..<factor {
+          let rowBase = srcRowBase + sy * superWidth + srcColBase
+          for sx in 0..<factor {
+            sum += Int(source[rowBase + sx])
+          }
+        }
+        out[y * width + x] = Float(sum) * inverse / 255.0
+      }
+    }
+    return out
   }
 
   private func runFont(of run: CTRun, fallback: CTFont) -> CTFont {
