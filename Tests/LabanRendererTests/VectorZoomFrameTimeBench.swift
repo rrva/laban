@@ -79,6 +79,15 @@ final class VectorZoomFrameTimeBench: XCTestCase {
       pixelW: pixelW, pixelH: pixelH)
     printRow("bucket 0.5 + 8/frame", prod)
 
+    // Within-bucket floor: same size every frame (pure cache hit, no re-apply),
+    // the steady state between bucket crossings. Isolates the full-screen ENCODE
+    // cost from the bucket-crossing bake cost — shows how much of `prod` is the
+    // crossing, and what the continuous sub-bucket-scale frames cost.
+    let hold = try measureZoom(
+      waitForCompletion: false, sampleCap: 8, bucketPt: 0.5, holdSize: true,
+      pixelW: pixelW, pixelH: pixelH)
+    printRow("within-bucket hold (floor)", hold)
+
     print(String(format: "  budget @120Hz = %.2f ms", budget))
     print(
       String(
@@ -87,7 +96,8 @@ final class VectorZoomFrameTimeBench: XCTestCase {
   }
 
   private func measureZoom(
-    waitForCompletion: Bool, sampleCap: Int?, bucketPt: CGFloat?, pixelW: Int, pixelH: Int
+    waitForCompletion: Bool, sampleCap: Int?, bucketPt: CGFloat?, holdSize: Bool = false,
+    pixelW: Int, pixelH: Int
   ) throws -> (p50: Double, p95: Double, p99: Double) {
     let base = FontAtlas(pointSize: baseSize)
     guard
@@ -113,6 +123,7 @@ final class VectorZoomFrameTimeBench: XCTestCase {
     }
 
     func sizeFor(_ i: Int) -> CGFloat {
+      if holdSize { return (baseSize + peakSize) / 2 }  // steady within-bucket hold
       // Triangle wave base->peak->base over a 0.37 pt step, like a slide.
       let span = peakSize - baseSize
       let stepped = CGFloat((i % 80)) * (span / 40)

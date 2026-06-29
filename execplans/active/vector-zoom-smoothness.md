@@ -331,6 +331,12 @@ Discard if M1's smoothness is sufficient (expected).
   `ContinuousZoomTests`; vector/scroll suites green (scroll path untouched).
   Remaining: 15.7 ms is ~60 fps not 120; the residual is full-screen encode +
   bench per-frame atlas alloc, addressed by damage tracking in M3c, not baking.
+  Within-bucket floor measured at **8.5 ms p50** (pure cache-hit render, same
+  size every frame) — i.e. once masks are resident the gesture costs the SAME as
+  a scroll frame (~8.4 ms in VectorScrollFrameTimeBench at this grid); the
+  remaining headroom to 120 Hz is the renderer's full-screen encode cost shared
+  with scrolling, not anything zoom-specific. The bucket-crossing frames add bake
+  on top, which damage-tracking + the resident atlas amortize in the real app.
 - [ ] M3b — (superseded; MSDF shelved) M3b-1 (feasibility): CPU MSDF/SDF generator from
   the existing quadratic outlines; compare quality vs the supersampled coverage
   oracle across the 8→40 pt zoom range; measure generation + sampling cost.
