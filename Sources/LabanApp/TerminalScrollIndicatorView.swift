@@ -451,15 +451,26 @@ final class TerminalScrollIndicatorView: NSView {
       x: 8, y: 3,
       width: fittedSize.width - 16,
       height: fittedSize.height - 6)
+    let scale = window?.backingScaleFactor ?? 2
     if let rasterizer = vectorTextRasterizer,
       let image = rasterizer.image(
         for: text,
         font: pillFont as CTFont,
         color: pillTextColor.cgColor,
-        scale: window?.backingScaleFactor ?? 2)
+        scale: scale)
     {
+      // Display the baked image at its exact pixel density (natural point size,
+      // centered in the text area) so Core Animation maps image pixels 1:1 to
+      // device pixels and never resamples the glyphs into blur.
+      let naturalWidth = CGFloat(image.width) / scale
+      let naturalHeight = CGFloat(image.height) / scale
+      pillImageLayer.contentsScale = scale
       pillImageLayer.contents = image
-      pillImageLayer.frame = textFrame
+      pillImageLayer.frame = NSRect(
+        x: textFrame.midX - naturalWidth / 2,
+        y: textFrame.midY - naturalHeight / 2,
+        width: naturalWidth,
+        height: naturalHeight)
       pillImageLayer.isHidden = false
       pillTextLayer.isHidden = true
       pillTextLayer.string = nil

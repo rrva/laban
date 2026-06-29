@@ -9,38 +9,36 @@ import Metal
 /// text with the same curve-based glyphs as the on-screen text when the vector
 /// renderer is active, instead of CoreText/CATextLayer.
 ///
-/// Built for low-cardinality, frequently-repeated strings: the per-glyph
-/// coverage mask is memoized by `(font, glyph, device scale)`, so once each
-/// distinct glyph has been baked, steady-state re-rendering of a changing
-/// number (the pill's "<rows>/<total>") only pays CPU compositing — no GPU
-/// round-trip per tick. That keeps it within the overlay's existing
-/// update-on-text-change budget rather than regressing scroll cadence.
+/// The whole string is rasterized in a single coverage pass over one combined
+/// outline: every glyph is translated to its CoreText pen position and merged
+/// into one outline, then sampled once against a shared baseline grid. Baking
+/// glyphs independently (each into its own bounding box, composited with
+/// per-glyph rounding) made round digits anchor a pixel higher than flat-top
+/// ones and snapped each glyph to a different sub-pixel phase — visible as
+/// baseline wobble and blur. A single pass keeps the baseline straight and the
+/// sub-pixel positioning exact.
+///
+/// Built for low-cardinality, frequently-repeated strings: the finished image is
+/// memoized by `(text, font, color, scale)`, so the pill re-showing a number it
+/// rendered moments ago pays nothing. CoreText path extraction is itself cached
+/// per glyph in `GlyphCurveStore`.
 public final class VectorTextRasterizer {
-  private struct MaskKey: Hashable {
-    // A stable font identity (PostScript name + size), not ObjectIdentifier:
-    // each CTLine re-wraps the font as a distinct CTFont instance, so object
-    // identity would miss the cache on every re-render of the same text.
+  private struct ImageKey: Hashable {
+    let text: String
     let fontKey: String
-    let glyph: CGGlyph
+    let colorBits: UInt32
     let scaleBits: UInt64
-  }
-
-  private struct GlyphMask {
-    let bytes: [UInt8]
-    let width: Int
-    let height: Int
-    let boundsMin: CGPoint
-    let boundsMax: CGPoint
   }
 
   private let store = GlyphCurveStore()
   private let rasterizer: VectorGlyphScratchRasterizer
-  private var maskCache: [MaskKey: GlyphMask?] = [:]
+  private var imageCache: [ImageKey: CGImage] = [:]
+  private let imageCacheLimit = 256
   private let srgb = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
-  // Test seam: counts distinct glyph masks actually baked on the GPU (cache
-  // misses). A repeated glyph must stop incrementing this after its first bake.
-  private(set) var glyphBakeCount = 0
+  // Test seam: counts GPU rasterization passes actually run (cache misses). A
+  // repeated string must stop incrementing this after its first render.
+  private(set) var rasterizePassCount = 0
 
   public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
     guard let rasterizer = VectorGlyphScratchRasterizer(device: device) else { return nil }
@@ -61,10 +59,34 @@ public final class VectorTextRasterizer {
     let deviceScale = max(scale, 1)
     guard deviceScale.isFinite else { return nil }
 
+    let tint = srgbComponents(color)
+    let key = ImageKey(
+      text: text,
+      fontKey: fontIdentity(font),
+      colorBits: packColor(tint),
+      scaleBits: (deviceScale * 256).rounded().bitPattern)
+    if let cached = imageCache[key] { return cached }
+
+    guard let image = renderImage(text: text, font: font, scale: deviceScale, tint: tint) else {
+      return nil
+    }
+    if imageCache.count >= imageCacheLimit {
+      imageCache.removeAll(keepingCapacity: true)
+    }
+    imageCache[key] = image
+    return image
+  }
+
+  private func renderImage(
+    text: String,
+    font: CTFont,
+    scale: CGFloat,
+    tint: (r: Float, g: Float, b: Float, a: Float)
+  ) -> CGImage? {
     let attributes = [kCTFontAttributeName: font] as CFDictionary
-    guard
-      let attributed = CFAttributedStringCreate(nil, text as CFString, attributes)
-    else { return nil }
+    guard let attributed = CFAttributedStringCreate(nil, text as CFString, attributes) else {
+      return nil
+    }
     let line = CTLineCreateWithAttributedString(attributed)
 
     var ascent: CGFloat = 0
@@ -73,51 +95,43 @@ public final class VectorTextRasterizer {
     let typographicWidth = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
     let pointWidth = max(1, ceil(typographicWidth))
     let pointHeight = max(1, ceil(ascent + descent))
-    let pixelWidth = max(1, Int((pointWidth * deviceScale).rounded()))
-    let pixelHeight = max(1, Int((pointHeight * deviceScale).rounded()))
+    let pixelWidth = max(1, Int((pointWidth * scale).rounded()))
+    let pixelHeight = max(1, Int((pointHeight * scale).rounded()))
 
-    let tint = srgbComponents(color)
+    guard let combined = combinedOutline(line: line, fallback: font) else { return nil }
+
+    // One pass over the whole string: origin maps the bottom of the image to the
+    // descent line, so the baseline (glyph-space y = 0) lands on the same row for
+    // every glyph. The shader's per-pixel bounds early-out uses the outline's
+    // tight ink bounds, so empty rows stay cheap despite the full-string extent.
+    guard
+      let coverage = rasterizer.rasterize(
+        outline: combined,
+        width: pixelWidth,
+        height: pixelHeight,
+        origin: CGPoint(x: 0, y: -descent),
+        rasterScale: scale)
+    else { return nil }
+    rasterizePassCount += 1
+
     var rgba = [UInt8](repeating: 0, count: pixelWidth * pixelHeight * 4)
     var covered = false
-
-    guard let runs = CTLineGetGlyphRuns(line) as? [CTRun] else { return nil }
-    for run in runs {
-      let runFont = runFont(of: run, fallback: font)
-      let glyphCount = CTRunGetGlyphCount(run)
-      guard glyphCount > 0 else { continue }
-      var glyphs = [CGGlyph](repeating: 0, count: glyphCount)
-      var positions = [CGPoint](repeating: .zero, count: glyphCount)
-      CTRunGetGlyphs(run, CFRangeMake(0, glyphCount), &glyphs)
-      CTRunGetPositions(run, CFRangeMake(0, glyphCount), &positions)
-
-      for index in 0..<glyphCount {
-        guard let mask = mask(for: glyphs[index], font: runFont, scale: deviceScale) else {
-          continue
-        }
-        let position = positions[index]
-        // Baseline sits `descent` points above the image bottom. The mask's
-        // top-left in image point-space is the glyph's pen origin plus the
-        // outline's top-left corner; convert to top-down pixel rows.
-        let destLeft = (position.x + mask.boundsMin.x) * deviceScale
-        let destTop =
-          (pointHeight - (descent + position.y + mask.boundsMax.y)) * deviceScale
-        let destLeftPx = Int(destLeft.rounded())
-        let destTopPx = Int(destTop.rounded())
-        if composite(
-          mask: mask,
-          destLeftPx: destLeftPx,
-          destTopPx: destTopPx,
-          into: &rgba,
-          imageWidth: pixelWidth,
-          imageHeight: pixelHeight,
-          tint: tint)
-        {
-          covered = true
-        }
-      }
+    for index in 0..<(pixelWidth * pixelHeight) {
+      let cov = Float(coverage[index]) / 255.0
+      guard cov > 0 else { continue }
+      let srcA = tint.a * cov
+      guard srcA > 0 else { continue }
+      covered = true
+      // Destination starts transparent, so the source-over result is just the
+      // premultiplied source: rgb already folds in coverage via srcA.
+      let pixel = index * 4
+      rgba[pixel] = clampByte(tint.r * srcA * 255)
+      rgba[pixel + 1] = clampByte(tint.g * srcA * 255)
+      rgba[pixel + 2] = clampByte(tint.b * srcA * 255)
+      rgba[pixel + 3] = clampByte(srcA * 255)
     }
-
     guard covered else { return nil }
+
     guard
       let context = CGContext(
         data: &rgba,
@@ -131,21 +145,72 @@ public final class VectorTextRasterizer {
     return context.makeImage()
   }
 
+  /// Merge every glyph in the line into one outline, each translated to its pen
+  /// position, with a tight ink bounds union for the rasterizer's early-out.
+  /// Returns nil if no glyph contributed a fillable contour.
+  private func combinedOutline(line: CTLine, fallback: CTFont) -> GlyphCurveOutline? {
+    guard let runs = CTLineGetGlyphRuns(line) as? [CTRun] else { return nil }
+    var curves: [GlyphQuadraticCurve] = []
+    var contours: [GlyphContour] = []
+    var minX = CGFloat.infinity
+    var minY = CGFloat.infinity
+    var maxX = -CGFloat.infinity
+    var maxY = -CGFloat.infinity
+
+    for run in runs {
+      let runFont = runFont(of: run, fallback: fallback)
+      let glyphCount = CTRunGetGlyphCount(run)
+      guard glyphCount > 0 else { continue }
+      var glyphs = [CGGlyph](repeating: 0, count: glyphCount)
+      var positions = [CGPoint](repeating: .zero, count: glyphCount)
+      CTRunGetGlyphs(run, CFRangeMake(0, glyphCount), &glyphs)
+      CTRunGetPositions(run, CFRangeMake(0, glyphCount), &positions)
+
+      for index in 0..<glyphCount {
+        guard let outline = store.outline(for: glyphs[index], font: runFont) else { continue }
+        let offset = positions[index]
+        let base = curves.count
+        for curve in outline.curves {
+          let moved = GlyphQuadraticCurve(
+            p0: translate(curve.p0, by: offset),
+            p1: translate(curve.p1, by: offset),
+            p2: translate(curve.p2, by: offset))
+          curves.append(moved)
+          for point in [moved.p0, moved.p1, moved.p2] {
+            minX = min(minX, point.x)
+            minY = min(minY, point.y)
+            maxX = max(maxX, point.x)
+            maxY = max(maxY, point.y)
+          }
+        }
+        for contour in outline.contours {
+          contours.append(
+            GlyphContour(
+              seed: translate(contour.seed, by: offset),
+              curveStart: base + contour.curveStart,
+              curveCount: contour.curveCount))
+        }
+      }
+    }
+
+    guard !curves.isEmpty, !contours.isEmpty, minX.isFinite, maxX > minX, maxY > minY else {
+      return nil
+    }
+    return GlyphCurveOutline(
+      glyph: 0,
+      bounds: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+      curves: curves,
+      contours: contours)
+  }
+
+  private func translate(_ point: CGPoint, by offset: CGPoint) -> CGPoint {
+    CGPoint(x: point.x + offset.x, y: point.y + offset.y)
+  }
+
   private func runFont(of run: CTRun, fallback: CTFont) -> CTFont {
     let attributes = CTRunGetAttributes(run) as NSDictionary
     guard let raw = attributes[kCTFontAttributeName as String] else { return fallback }
     return raw as! CTFont
-  }
-
-  private func mask(for glyph: CGGlyph, font: CTFont, scale: CGFloat) -> GlyphMask? {
-    let key = MaskKey(
-      fontKey: fontIdentity(font),
-      glyph: glyph,
-      scaleBits: (scale * 256).rounded().bitPattern)
-    if let cached = maskCache[key] { return cached }
-    let built = bake(glyph: glyph, font: font, scale: scale)
-    maskCache[key] = built
-    return built
   }
 
   private func fontIdentity(_ font: CTFont) -> String {
@@ -154,69 +219,16 @@ public final class VectorTextRasterizer {
     return "\(name)@\(size)"
   }
 
-  private func bake(glyph: CGGlyph, font: CTFont, scale: CGFloat) -> GlyphMask? {
-    guard let outline = store.outline(for: glyph, font: font) else { return nil }
-    let bounds = outline.bounds
-    guard bounds.width > 0, bounds.height > 0 else { return nil }
-    let width = max(1, Int(ceil(bounds.width * scale)))
-    let height = max(1, Int(ceil(bounds.height * scale)))
-    guard
-      let bytes = rasterizer.rasterize(
-        outline: outline,
-        width: width,
-        height: height,
-        origin: CGPoint(x: bounds.minX, y: bounds.minY),
-        rasterScale: scale)
-    else { return nil }
-    glyphBakeCount += 1
-    return GlyphMask(
-      bytes: bytes,
-      width: width,
-      height: height,
-      boundsMin: CGPoint(x: bounds.minX, y: bounds.minY),
-      boundsMax: CGPoint(x: bounds.maxX, y: bounds.maxY))
-  }
-
-  /// Source-over composite a coverage mask into the premultiplied destination.
-  /// Returns true if any pixel received non-zero coverage.
-  private func composite(
-    mask: GlyphMask,
-    destLeftPx: Int,
-    destTopPx: Int,
-    into rgba: inout [UInt8],
-    imageWidth: Int,
-    imageHeight: Int,
-    tint: (r: Float, g: Float, b: Float, a: Float)
-  ) -> Bool {
-    var touched = false
-    for my in 0..<mask.height {
-      let destY = destTopPx + my
-      guard destY >= 0, destY < imageHeight else { continue }
-      let rowBase = destY * imageWidth * 4
-      let maskRowBase = my * mask.width
-      for mx in 0..<mask.width {
-        let coverage = Float(mask.bytes[maskRowBase + mx]) / 255.0
-        guard coverage > 0 else { continue }
-        let destX = destLeftPx + mx
-        guard destX >= 0, destX < imageWidth else { continue }
-        let srcA = tint.a * coverage
-        guard srcA > 0 else { continue }
-        touched = true
-        let inv = 1 - srcA
-        let pixel = rowBase + destX * 4
-        // Premultiplied over: out = src*1 + dst*(1 - srcA); src is already
-        // premultiplied because srcA folds the coverage into the alpha.
-        rgba[pixel] = clampByte(tint.r * srcA * 255 + Float(rgba[pixel]) * inv)
-        rgba[pixel + 1] = clampByte(tint.g * srcA * 255 + Float(rgba[pixel + 1]) * inv)
-        rgba[pixel + 2] = clampByte(tint.b * srcA * 255 + Float(rgba[pixel + 2]) * inv)
-        rgba[pixel + 3] = clampByte(srcA * 255 + Float(rgba[pixel + 3]) * inv)
-      }
-    }
-    return touched
-  }
-
   private func clampByte(_ value: Float) -> UInt8 {
     UInt8(max(0, min(255, value.rounded())))
+  }
+
+  private func packColor(_ tint: (r: Float, g: Float, b: Float, a: Float)) -> UInt32 {
+    func channel(_ value: Float) -> UInt32 {
+      UInt32(max(0, min(255, (value * 255).rounded())))
+    }
+    return (channel(tint.a) << 24) | (channel(tint.r) << 16) | (channel(tint.g) << 8)
+      | channel(tint.b)
   }
 
   private func srgbComponents(_ color: CGColor) -> (r: Float, g: Float, b: Float, a: Float) {

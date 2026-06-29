@@ -56,20 +56,38 @@ final class VectorTextRasterizerTests: XCTestCase {
     XCTAssertTrue(hasOpaquePixel(image), "a rendered digit must leave visible ink")
   }
 
-  func testRepeatedGlyphsReuseCachedBake() throws {
+  func testRepeatedStringReusesCachedImage() throws {
     let rasterizer = try makeRasterizer()
-    // "11" repeats the same glyph; a length-2 same-digit string must bake one
-    // distinct glyph mask, and re-rendering the same digits bakes nothing new.
-    _ = rasterizer.image(for: "1", font: pillFont, color: black(), scale: 2)
-    let afterFirst = rasterizer.glyphBakeCount
-    XCTAssertEqual(afterFirst, 1, "the first distinct glyph bakes exactly one mask")
-    _ = rasterizer.image(for: "111", font: pillFont, color: black(), scale: 2)
+    _ = rasterizer.image(for: "12/340", font: pillFont, color: black(), scale: 2)
+    let afterFirst = rasterizer.rasterizePassCount
+    XCTAssertEqual(afterFirst, 1, "the first render runs exactly one rasterization pass")
+    _ = rasterizer.image(for: "12/340", font: pillFont, color: black(), scale: 2)
     XCTAssertEqual(
-      rasterizer.glyphBakeCount, afterFirst,
-      "repeating an already-baked glyph must reuse the cached mask")
-    // A new digit is a genuine miss: exactly one more bake.
-    _ = rasterizer.image(for: "2", font: pillFont, color: black(), scale: 2)
-    XCTAssertEqual(rasterizer.glyphBakeCount, afterFirst + 1)
+      rasterizer.rasterizePassCount, afterFirst,
+      "re-rendering the same string must reuse the cached image, no new pass")
+    // A different string is a genuine miss: exactly one more pass.
+    _ = rasterizer.image(for: "13/340", font: pillFont, color: black(), scale: 2)
+    XCTAssertEqual(rasterizer.rasterizePassCount, afterFirst + 1)
+  }
+
+  /// Regression: baking each glyph into its own tight box and compositing with
+  /// per-glyph rounding made round digits (8, 0) anchor a pixel higher than
+  /// flat-top ones, so the baseline visibly wobbled. A single-pass render over
+  /// one combined outline shares one baseline grid: the bottom-most ink row of a
+  /// string of mixed digits must be within one device pixel across the run.
+  func testDigitsShareACommonBaseline() throws {
+    let rasterizer = try makeRasterizer()
+    let image = try XCTUnwrap(
+      rasterizer.image(for: "1807", font: pillFont, color: black(), scale: 2))
+    let bottoms = perColumnBlockBottomRows(image)
+    // Sample the bottom of each digit's ink. Flat-bottom (1, 7) and round-bottom
+    // (8, 0) digits sit on the same baseline, so the lowest inked row must barely
+    // vary; the old per-glyph path produced multi-pixel steps here.
+    let low = try XCTUnwrap(bottoms.min())
+    let high = try XCTUnwrap(bottoms.max())
+    XCTAssertLessThanOrEqual(
+      high - low, 2,
+      "digit baselines must align within a device pixel or two, not wobble")
   }
 
   func testTintColorChannelsAppearInOutput() throws {
@@ -101,6 +119,30 @@ final class VectorTextRasterizerTests: XCTestCase {
     else { return nil }
     context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
     return bytes
+  }
+
+  /// For a string of N evenly-spaced glyphs, split the image into N vertical
+  /// bands and return the lowest inked row (largest y, top-down) in each band —
+  /// i.e. each digit's visual bottom. Bands with no ink are skipped.
+  private func perColumnBlockBottomRows(_ image: CGImage, bands: Int = 4) -> [Int] {
+    guard let bytes = rgbaBytes(image) else { return [] }
+    let width = image.width
+    let height = image.height
+    let bandWidth = max(1, width / bands)
+    var bottoms: [Int] = []
+    for band in 0..<bands {
+      let xStart = band * bandWidth
+      let xEnd = min(width, xStart + bandWidth)
+      var bottom = -1
+      for y in 0..<height {
+        for x in xStart..<xEnd where bytes[(y * width + x) * 4 + 3] > 64 {
+          bottom = y
+          break
+        }
+      }
+      if bottom >= 0 { bottoms.append(bottom) }
+    }
+    return bottoms
   }
 
   private func hasOpaquePixel(_ image: CGImage) -> Bool {
