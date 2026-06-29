@@ -18,17 +18,22 @@ bug) raised two follow-ups, addressed as follows:
   thread captured its run loop, `CFRunLoopStop` was skipped and `cancel()` cannot
   break `CFRunLoopRun()`, leaking the thread. Added a `stopRequested` flag the
   thread checks before entering `CFRunLoopRun()`.
-- **Idle-park is dead code (DEFERRED, documented):** while the window is visible the
-  present link re-presents the latest target every vsync and never parks, because
-  the present callback always reports a present. This is a power/thermal cost on a
-  visible-idle terminal, NOT a correctness bug. A fix attempt (freshness gate, then
-  time-based idle) regressed the active 120 Hz present rate in shell-harness testing
-  — though that regression could not be cleanly separated from a
-  window-focus/visibility artifact of the `open`/quit test loop (`CAMetalDisplayLink`
-  throttles when its window is not frontmost, which the headless driver can't
-  guarantee). Reverted to the verified-working always-present code. A correct idle
-  fix needs a reliable on-device active/idle A/B (real window focus) before
-  shipping; tracked here, left out of the merged change.
+- **Idle-park (RESOLVED):** the present link now rides the host's existing
+  animate-or-park policy (`TerminalIdlePolicy.displayLinkShouldRun`) instead of
+  self-detecting idle. `updateDisplayLinkRunState()` calls
+  `VectorGlyphRenderer.setPresentLinkRunning(policy.shouldRun)` every frame, so the
+  present thread parks (zero CPU) whenever the main tick parks — unfocused, occluded,
+  OR focused-and-idle — and resumes 120 Hz on the next wake. This reuses the
+  battle-tested ADR 0018 idle policy rather than inventing new idle logic (the
+  earlier self-park attempts that regressed the active rate). Verified live: active
+  fps 119.9 / p99 8.33, focused-idle parks in ~8 vsyncs, scroll-resume back to
+  fps 119.6 immediately.
+- **Latent crash fixed:** a test (`LabanDebugSmokeTests`) caught that calling
+  `nextDrawable()` on a layer with a `CAMetalDisplayLink` attached raises
+  `CAMetalLayerInvalidOperation`. The fix made the present link the SOLE presenter
+  (no per-frame fallback to the legacy `nextDrawable()` path while the link exists);
+  the legacy path is reachable only when the link was never created (macOS 13 / opt-
+  out). This was a real hazard latent in the originally-merged code.
 
 ## Purpose / Big Picture
 

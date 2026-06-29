@@ -372,6 +372,19 @@ public final class VectorGlyphRenderer: RendererBackend {
     }
   }
 
+  /// Drive the macOS-14+ present display link's run state from the host's
+  /// animate-or-park policy: `true` while the terminal is active (focused +
+  /// visible + animating/output/blink), `false` when it parks (unfocused,
+  /// occluded, or focused-and-idle). Parking stops the present thread so an idle
+  /// terminal costs ~zero CPU. No-op on the legacy path. Call whenever the policy
+  /// is reconciled (the view already does this each frame via its display-link
+  /// run-state update).
+  public func setPresentLinkRunning(_ running: Bool) {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.setRunning(running)
+    }
+  }
+
   /// Present-side cadence stats from the display-link path (the actual
   /// presented-frame intervals), or nil if the legacy path is active. Unlike the
   /// view's display-link TICK stats, this reflects whether every vsync got a
@@ -772,15 +785,25 @@ public final class VectorGlyphRenderer: RendererBackend {
     // never calls `nextDrawable()`, so the main thread never blocks on drawable
     // acquisition (the ~6.5 ms per-frame stall; ADR 0026). The present link blits
     // the latest committed target into its ready drawable each vsync.
-    if #available(macOS 14.0, *), let presentLink = presentDisplayLink {
+    // Fast path (macOS 14+): the `CAMetalDisplayLink` is the SOLE presenter for the
+    // layer. Once a `CAMetalDisplayLink` is attached, Core Animation forbids calling
+    // `nextDrawable()` on that layer (it raises `CAMetalLayerInvalidOperation`), so
+    // there is no per-frame fallback to the legacy `nextDrawable()` path while the
+    // link exists. `render()` only commits the offscreen content render and
+    // publishes the target; the present link blits+presents it on its own thread.
+    // Idle/unfocused cost is handled by parking the link (`setPresentLinkRunning`),
+    // not by switching presenters. A frame rendered while the link is briefly
+    // parked still publishes its target, which the link shows when it resumes.
+    if #available(macOS 14.0, *), presentDisplayLink != nil {
       let completion = onFrameCompleted
       let buffersToRetain = retainedInstanceBuffers
       commandBuffer.addCompletedHandler { [weak self] _ in
         _ = buffersToRetain
         // Publish only after the GPU finished writing this target, so the present
-        // thread never blits a half-rendered texture. Then wake the link.
+        // thread never blits a half-rendered texture. The present link reads it on
+        // its next vsync callback; its run state is driven by the host policy via
+        // `setPresentLinkRunning(_:)`, not woken per frame here.
         self?.publishLatestTarget(target)
-        presentLink.notifyContentUpdated()
         completion?()
         scheduledFrame.finish()
       }

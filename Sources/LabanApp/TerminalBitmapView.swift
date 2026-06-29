@@ -1517,6 +1517,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       preferred: Float(policy.preferredFramesPerSecond))
     link.isPaused = !policy.shouldRun
     setSafetyNetArmed(!policy.shouldRun)
+    // The vector renderer's CAMetalDisplayLink present thread rides the SAME
+    // animate-or-park policy as the main tick, so it spins only while the terminal
+    // is active and parks (zero CPU) when unfocused, occluded, or focused-and-idle.
+    (backend as? VectorGlyphRenderer)?.setPresentLinkRunning(policy.shouldRun)
   }
 
   /// Arm (parked) or cancel (running) the temporary missed-wake safety net.

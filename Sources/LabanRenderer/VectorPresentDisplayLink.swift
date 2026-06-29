@@ -11,15 +11,19 @@ import QuartzCore
 ///
 /// The owner supplies `onPresent`, invoked once per vsync with the ready
 /// drawable; it blits the renderer's latest offscreen target into the drawable
-/// and presents. Idle is handled by the owner returning `false` from `onPresent`
-/// when it has nothing new to show for a while, which pauses the link until
-/// `notifyContentUpdated()` wakes it — so a quiescent terminal stops presenting
-/// (preserving the event-driven, park-when-idle contract of ADR 0018).
+/// and presents. Run state is driven EXTERNALLY via `setRunning(_:)`: the host
+/// view already computes a unified animate-or-park policy (`displayLinkShouldRun`
+/// — false when the window is unfocused, occluded, or focused-but-idle, with
+/// hysteresis that keeps the link running long enough to present the last visible
+/// frame) and drives its main `CADisplayLink` from it. This present link rides the
+/// same signal, so when the terminal parks the present thread stops firing and
+/// costs ~zero CPU (the previous self-detected idle never actually parked).
+/// Preserves the event-driven park-when-idle contract of ADR 0018.
 @available(macOS 14.0, *)
 final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
-  /// Called on the dedicated present thread with a ready drawable. Return true if
-  /// a frame was presented (content was fresh), false if nothing new was shown.
-  /// After `idlePauseThreshold` consecutive false returns the link pauses itself.
+  /// Called on the dedicated present thread with a ready drawable; blits the
+  /// latest target and presents. Return value is advisory (stats only): the link's
+  /// run state is controlled externally via `setRunning(_:)`, not by this result.
   var onPresent: ((any CAMetalDrawable) -> Bool)?
 
   /// Present-side cadence stats: intervals (ms) between successive callbacks that
@@ -91,11 +95,6 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   private var runLoop: CFRunLoop?
   private var started = false
   private var stopRequested = false
-  private var idleCallbacks = 0
-  /// Consecutive no-new-content callbacks before the link parks. ~8 vsyncs at
-  /// 120 Hz ≈ 67 ms: long enough to ride out a brief gap between scroll bursts,
-  /// short enough that a truly idle terminal stops blitting promptly.
-  private static let idlePauseThreshold = 8
 
   init(layer: CAMetalLayer) {
     link = CAMetalDisplayLink(metalLayer: layer)
@@ -147,15 +146,14 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     t.start()
   }
 
-  /// The renderer produced new content; ensure the link is running so it presents.
-  func notifyContentUpdated() {
-    lock.lock()
-    idleCallbacks = 0
-    lock.unlock()
-    // Setting isPaused is safe from any thread; a paused link won't fire to check
-    // a flag, so it must be unpaused directly here.
-    if link.isPaused {
-      link.isPaused = false
+  /// Drive the link's run state from the host's animate-or-park policy. `true`
+  /// (active: focused + visible + output/scroll/blink/idle-floor) runs the link at
+  /// the panel rate; `false` (parked: unfocused, occluded, or focused-and-idle)
+  /// pauses it so the present thread fires zero callbacks and costs ~zero CPU.
+  /// Idempotent and safe to call every frame from the main thread.
+  func setRunning(_ running: Bool) {
+    if link.isPaused == running {
+      link.isPaused = !running
     }
   }
 
@@ -178,24 +176,15 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   func metalDisplayLink(
     _ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update
   ) {
+    // Always re-present the latest target so the display holds the panel rate even
+    // on vsyncs where content did not re-render (a presented frame stays on screen
+    // until replaced; re-presenting is a ~0.05 ms blit). The link only fires while
+    // the host policy says active — `setRunning(false)` parks it when idle.
     let presented = onPresent?(update.drawable) ?? false
     statsLock.lock()
     callbackCount += 1
     if presented { presentedCount += 1 }
     statsLock.unlock()
-    if presented {
-      recordPresentInterval(update)
-      lock.lock()
-      idleCallbacks = 0
-      lock.unlock()
-      return
-    }
-    lock.lock()
-    idleCallbacks += 1
-    let shouldPause = idleCallbacks >= Self.idlePauseThreshold
-    lock.unlock()
-    if shouldPause {
-      link.isPaused = true
-    }
+    if presented { recordPresentInterval(update) }
   }
 }

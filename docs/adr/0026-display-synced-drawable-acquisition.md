@@ -105,15 +105,24 @@ path plus an untouched, pinned legacy fallback.
   dedicated thread's run loop must be driven by `CFRunLoopRun()`, not
   `RunLoop.run(mode:before:)`, or the link never fires (see the ExecPlan's
   Surprises).
-- KNOWN FOLLOW-UP (idle power): as shipped, while the layer's window is visible the
-  present link re-presents the latest target every vsync (a ~0.05 ms blit) and does
-  not actually park, because the present callback always reports a present — so the
-  `isPaused`-after-idle-callbacks path is effectively dead. This is a power/thermal
-  cost on a visible-but-idle terminal, not a correctness issue (an occluded/offscreen
-  layer gets 0 callbacks from the OS, and the main display-link tick still parks, so
-  no new content renders). A correct fix needs time-based idle detection that does
-  not regress the active present rate; a first attempt regressed 120 Hz and was
-  reverted. Tracked in `execplans/active/vector-drawable-pacing-120hz.md`.
+- Idle power: the present link's run state is driven by the host's existing
+  animate-or-park policy (`TerminalIdlePolicy.displayLinkShouldRun`, the same signal
+  that pauses the main `CADisplayLink`), via `setPresentLinkRunning(_:)` called from
+  `updateDisplayLinkRunState()`. So the present thread spins at the panel rate ONLY
+  while the terminal is active (focused + visible + output/scroll/blink), and parks
+  (zero callbacks, ~zero CPU) when unfocused, occluded, OR focused-and-idle. Verified
+  live: active 120 Hz (p99 8.33 ms), focused-idle parks within ~8 vsyncs, and a
+  scroll/refocus wake resumes 120 Hz on the next frame (the wake routes through
+  `advanceFrame → updateDisplayLinkRunState`). The policy's output/scroll/blink
+  hysteresis guarantees the last visible frame is presented before the link parks.
+- The `CAMetalDisplayLink` is the SOLE presenter for the layer. Core Animation
+  raises `CAMetalLayerInvalidOperation` ("-nextDrawable should not be called when
+  using CAMetalDisplayLink") if `nextDrawable()` is called on a layer that has a
+  `CAMetalDisplayLink` attached, so the renderer must NOT fall back to the legacy
+  `MetalDrawableScheduler.nextDrawable()` path while the present link exists. The
+  legacy path is used only when the present link was never created (macOS 13, or the
+  `LabanVectorPresentDisplayLink=NO` opt-out). Idle is handled by pausing the link,
+  never by switching presenters.
 - Frame-command contract (ADR 0017/0022) and MVP behavior are unchanged; this is a
   presentation/pacing change, not a rendering-semantics change.
 
