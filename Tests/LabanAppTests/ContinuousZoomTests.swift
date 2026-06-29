@@ -228,6 +228,93 @@ final class ContinuousZoomTests: XCTestCase {
       harness.view.debugGridReflowCount, 0, "the grid reflows once at the settled size")
   }
 
+  /// The invariant the user asked for: at EVERY continuous zoom step the visual
+  /// glyph size (`atlasPointSize * presentationScale`) must equal the gesture
+  /// target and never exceed it — glyphs must not suddenly become bigger than
+  /// the cells they sit in. Cmd+/- (discrete) always looks right; this proves
+  /// the continuous path matches at every fractional step.
+  func testContinuousZoomVisualSizeNeverExceedsTarget() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.applyRendererSelection(.vectorGlyph)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("vector backend not active (no GPU in this environment)")
+    }
+
+    func check(_ s: [String: Any], _ label: String) {
+      let visual = s["visualPointSize"] as! Double
+      let target = s["targetPointSize"] as! Double
+      let atlas = s["atlasPointSize"] as! Double
+      let scale = s["presentationScale"] as! Double
+      // Visual must match the target within a hair (float), and crucially never
+      // overshoot it (the "too big for the cell" symptom).
+      XCTAssertEqual(
+        visual, target, accuracy: 0.01,
+        "\(label): visual \(visual) != target \(target) [atlas=\(atlas) scale=\(scale)]")
+      XCTAssertLessThanOrEqual(
+        visual, target + 0.01,
+        "\(label): visual size \(visual) exceeds target \(target) — glyphs too big")
+      XCTAssertLessThanOrEqual(
+        visual, Double(FontAtlas.zoomMaximumPointSize) + 0.01,
+        "\(label): visual size \(visual) above zoom max")
+    }
+
+    check(harness.view.debugApplyPinch(magnification: 0, phase: "began"), "began")
+    // Sweep up to ~2x, then back down — both directions, fine steps.
+    for _ in 0..<140 {
+      check(harness.view.debugApplyPinch(magnification: 0.005, phase: "changed"), "up")
+    }
+    for _ in 0..<200 {
+      check(harness.view.debugApplyPinch(magnification: -0.005, phase: "changed"), "down")
+    }
+    check(harness.view.debugApplyPinch(magnification: 0, phase: "ended"), "ended")
+  }
+
+  /// The lock-up / "weird state" report: after a gesture ends (or is cancelled),
+  /// the presentation scale must return to exactly identity and no gesture may be
+  /// left in flight. A stuck scale is the terminal frozen visually zoomed.
+  func testGestureLeavesNoStuckScale() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.applyRendererSelection(.vectorGlyph)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("vector backend not active (no GPU in this environment)")
+    }
+
+    func assertResting(_ label: String) {
+      let s = harness.view.debugZoomState()
+      XCTAssertEqual(
+        s["presentationScale"] as! Double, 1.0, accuracy: 1e-6,
+        "\(label): presentation scale must be identity at rest")
+      XCTAssertEqual(s["gestureActive"] as! Bool, false, "\(label): no gesture in flight at rest")
+    }
+
+    // Normal gesture.
+    harness.view.applyZoomMagnification(delta: 0, phase: .began)
+    for _ in 0..<30 { harness.view.applyZoomMagnification(delta: 0.01, phase: .changed) }
+    harness.view.applyZoomMagnification(delta: 0, phase: .ended)
+    assertResting("after ended")
+
+    // Cancelled gesture must also reset.
+    harness.view.applyZoomMagnification(delta: 0, phase: .began)
+    for _ in 0..<30 { harness.view.applyZoomMagnification(delta: 0.01, phase: .changed) }
+    harness.view.applyZoomMagnification(delta: 0, phase: .cancelled)
+    assertResting("after cancelled")
+
+    // Gesture interrupted by a renderer switch must not leave a stuck scale.
+    harness.view.applyZoomMagnification(delta: 0, phase: .began)
+    for _ in 0..<30 { harness.view.applyZoomMagnification(delta: 0.01, phase: .changed) }
+    harness.view.applyRendererSelection(.classic)
+    harness.view.applyRendererSelection(.vectorGlyph)
+    assertResting("after renderer switch mid-gesture")
+  }
+
   // MARK: - Harness
 
   private struct Harness {

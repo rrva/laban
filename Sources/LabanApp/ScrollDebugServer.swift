@@ -337,6 +337,16 @@ final class ScrollDebugServer {
       return onMain { tv, _, _ in
         Response.json(tv.debugZoomState())
       }
+    case ("POST", "/zoom/sweep"):
+      // Drive a full synthetic gesture (began → N changed → ended) from `from`
+      // to `to` pt and report the worst visual-vs-target overshoot seen at any
+      // step — the autonomous probe for "glyphs suddenly bigger than the cell".
+      let from = Double(query["from"] ?? "14") ?? 14
+      let to = Double(query["to"] ?? "28") ?? 28
+      let steps = Int(query["steps"] ?? "120") ?? 120
+      return onMain { tv, _, _ in
+        Response.json(tv.debugZoomSweep(fromPt: CGFloat(from), toPt: CGFloat(to), steps: steps))
+      }
     case ("GET", "/scroll/frame-stats"):
       let reset = query["reset"] == "1"
       return onMain { tv, _, _ in
@@ -473,9 +483,14 @@ final class ScrollDebugServer {
                                       stddev/jankFrames over the display-link ring)
     POST /zoom/pinch?magnification=D&phase=P  drive a synthetic pinch (phase:
                                       began|changed|ended|cancelled); shares the
-                                      real gesture path. Fractional on vectorGlyph
-    GET  /zoom/state                  effectivePointSize (fractional for vector),
-                                      cols, rows, backend, gridReflowCount
+                                      real gesture path. Returns visualPointSize,
+                                      targetPointSize, atlasPointSize,
+                                      presentationScale, cellWidth/Height
+    GET  /zoom/state                  live zoom state: visual/atlas point size,
+                                      presentationScale, cell metrics, gestureActive
+    POST /zoom/sweep?from=A&to=B&steps=N  drive a whole gesture A→B pt; returns
+                                      maxOvershootPt (>0 = glyphs bigger than the
+                                      cell), restedPresentationScale, final size
     GET  /scroll/screenshot.png       PNG of the live render surface
     """
 }

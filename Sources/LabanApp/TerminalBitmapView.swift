@@ -333,6 +333,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   private var gestureZoomPreviousMasksToBounds: Bool?
   private var gestureZoomPreviousLayerBackground: CGColor?
 
+  /// The presentation-layer scale currently applied by the zoom gesture (1.0 =
+  /// identity / none). Stored for the debug surface so a "stuck scaled" lock-up
+  /// is observable: at rest this must be exactly 1.0.
+  private(set) var debugGestureZoomScale: CGFloat = 1
+
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -747,7 +752,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard let self else { return }
       let persistedName = UserDefaults.standard.string(forKey: FontAtlas.userFontKey)
       if self.persistedFontNameMatchesActive(persistedName) {
-        self.applyFontSize(FontAtlas.persistedTerminalPointSize)
+        // Honor a fractional persisted size on the vector backend. The default
+        // `quantize: true` rounds to the integer ladder, which would undo a
+        // continuous pinch-zoom: the gesture persists e.g. 17.3 pt, this observer
+        // fires (we posted `didChangeNotification`), and a quantizing re-apply
+        // would snap it back to 17 — leaving the committed size off from what the
+        // user released at. Classic/software still round (they need the ladder).
+        let fractional = self.backend is VectorGlyphRenderer
+        self.applyFontSize(FontAtlas.persistedTerminalPointSize, quantize: !fractional)
       } else {
         self.lastObservedPersistedFontName = persistedName
       }
@@ -996,6 +1008,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func setGestureZoomPresentationScale(_ scale: CGFloat) {
     guard backendSelfPresents, let layer = self.layer else { return }
     let resolved = scale.isFinite && scale > 0 ? scale : 1
+    debugGestureZoomScale = resolved
     let identity = abs(resolved - 1) < 1e-4
     CATransaction.begin()
     CATransaction.setDisableActions(true)
@@ -4120,20 +4133,94 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     case "cancelled", "canceled": parsed = .cancelled
     default: parsed = .changed
     }
+    // Compute the size this event TARGETS (same math the gesture uses), so the
+    // harness can assert the visual size matches it and never overshoots.
+    let fractional = backend is VectorGlyphRenderer
+    let base = zoomGestureBasePointSize ?? fontAtlas.pointSize
+    let target = Self.zoomPointSize(
+      base: base, accumulatedMagnification: zoomGestureAccumulatedMagnification + magnification,
+      fractional: fractional)
     applyZoomMagnification(delta: magnification, phase: parsed)
-    return debugZoomState()
+    var state = debugZoomState()
+    state["targetPointSize"] = Double(target)
+    return state
   }
 
-  /// Debug seam: the live effective point size (fractional for vector), grid
-  /// metrics, and active backend name.
+  /// Debug seam: drive a complete synthetic gesture from `fromPt` to `toPt` over
+  /// `steps` `.changed` events (plus `.began`/`.ended`) and report the worst
+  /// overshoot of the visual glyph size beyond the gesture target across every
+  /// step. `maxOvershootPt > ~0` is the "glyphs too big for the cell" bug; the
+  /// gesture must hold `visual == target` at every step. Also reports the rested
+  /// presentation scale (must be 1) and final size.
+  func debugZoomSweep(fromPt: CGFloat, toPt: CGFloat, steps: Int) -> [String: Any] {
+    let from = max(FontAtlas.zoomMinimumPointSize, min(FontAtlas.zoomMaximumPointSize, fromPt))
+    let to = max(FontAtlas.zoomMinimumPointSize, min(FontAtlas.zoomMaximumPointSize, toPt))
+    let n = max(1, min(steps, 2000))
+
+    // Start the gesture from `from`: apply it as the resting size first.
+    applyFontSize(from, quantize: !(backend is VectorGlyphRenderer), persist: false)
+
+    var maxOvershoot = 0.0
+    var maxAbsError = 0.0
+    func record(_ s: [String: Any]) {
+      guard let visual = s["visualPointSize"] as? Double,
+        let target = s["targetPointSize"] as? Double
+      else { return }
+      maxOvershoot = max(maxOvershoot, visual - target)
+      maxAbsError = max(maxAbsError, abs(visual - target))
+    }
+
+    record(debugApplyPinch(magnification: 0, phase: "began"))
+    // Multiplicative per-step delta to go from `from` to `to` over n steps.
+    let ratio = Double(to / from)
+    let perStep = CGFloat(pow(ratio, 1.0 / Double(n)) - 1)
+    for _ in 0..<n {
+      record(debugApplyPinch(magnification: perStep, phase: "changed"))
+    }
+    let end = debugApplyPinch(magnification: 0, phase: "ended")
+    record(end)
+
+    return [
+      "fromPt": Double(from),
+      "toPt": Double(to),
+      "steps": n,
+      "maxOvershootPt": maxOvershoot,
+      "maxAbsErrorPt": maxAbsError,
+      "restedPresentationScale": Double(debugGestureZoomScale),
+      "finalVisualPointSize": end["visualPointSize"] as? Double ?? 0,
+      "finalAtlasPointSize": end["atlasPointSize"] as? Double ?? 0,
+      "gestureActive": end["gestureActive"] as? Bool ?? true,
+    ]
+  }
+
+  /// Debug seam: the live zoom state, with enough to assert the two reported
+  /// failure modes without a trackpad.
+  ///
+  /// Key distinction the earlier version got wrong: during a gesture the baked
+  /// atlas stays at `atlasPointSize` (the gesture-start size) and the *visual*
+  /// size is `atlasPointSize * presentationScale`. So `visualPointSize` is the
+  /// size the user actually sees this frame; it must track the gesture target
+  /// and must never exceed it (the "glyphs suddenly bigger than the cell" bug).
+  /// `cellWidth`/`cellHeight` are the integer grid the renderer lays glyphs into;
+  /// a glyph baked for `visualPointSize` that overflows the cell baked for
+  /// `atlasPointSize` is exactly the overflow symptom.
   func debugZoomState() -> [String: Any] {
-    [
-      "effectivePointSize": Double(fontAtlas.pointSize),
+    let atlasPointSize = Double(fontAtlas.pointSize)
+    let scale = Double(debugGestureZoomScale)
+    return [
+      "atlasPointSize": atlasPointSize,
+      "presentationScale": scale,
+      "visualPointSize": atlasPointSize * scale,
+      // Back-compat alias (older harness reads this); now the VISUAL size.
+      "effectivePointSize": atlasPointSize * scale,
+      "cellWidth": cellWidth,
+      "cellHeight": cellHeight,
       "cols": lastAppliedCols,
       "rows": lastAppliedRows,
       "backend": backend is VectorGlyphRenderer
         ? RendererSelection.vectorGlyph.rawValue : rendererSelection.rawValue,
       "fractional": backend is VectorGlyphRenderer,
+      "gestureActive": zoomGestureBasePointSize != nil,
       "gridReflowCount": debugGridReflowCount,
     ]
   }
