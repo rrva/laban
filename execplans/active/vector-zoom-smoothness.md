@@ -337,6 +337,15 @@ Discard if M1's smoothness is sufficient (expected).
   remaining headroom to 120 Hz is the renderer's full-screen encode cost shared
   with scrolling, not anything zoom-specific. The bucket-crossing frames add bake
   on top, which damage-tracking + the resident atlas amortize in the real app.
+  RESOLVED via continuous sub-bucket presentation scaling (the osor.io trick,
+  `setGestureZoomPresentationScale`): between bucket crossings the presented
+  CALayer is scaled by the live fractional remainder — a free compositor
+  transform at the display's full refresh rate, no re-rasterization. So a frame
+  re-bakes ONLY on a 0.5 pt bucket crossing and is otherwise a ~microsecond
+  transform. End-to-end gate `testVectorGestureRebakesOncePerBucketNotPerFrame`:
+  a real 120-step (~1 s) pinch tracks the finger every frame but re-bakes <40
+  times (≈once/bucket), the rest free. That is the osor.io smoothness shape:
+  cheap during motion, crisp exact size on settle.
 - [ ] M3b — (superseded; MSDF shelved) M3b-1 (feasibility): CPU MSDF/SDF generator from
   the existing quadratic outlines; compare quality vs the supersampled coverage
   oracle across the 8→40 pt zoom range; measure generation + sampling cost.

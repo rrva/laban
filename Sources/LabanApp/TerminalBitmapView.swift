@@ -348,6 +348,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// frame. Test/debug seam only.
   private(set) var debugGridReflowCount: Int = 0
 
+  /// Gesture-frame accounting for the continuous-zoom smoothness gate. A "frame"
+  /// is one `applyZoomMagnification` call; a "bake" is a frame that crossed a
+  /// bucket and re-applied fonts (the only frames that re-rasterize). The
+  /// remaining frames are compositor-only (a free presentation-scale transform),
+  /// which is what makes the gesture track the finger at full refresh rate. The
+  /// gate asserts bakes << frames over a slide. Test/debug seam only.
+  private(set) var debugZoomGestureFrameCount: Int = 0
+  private(set) var debugZoomGestureBakeCount: Int = 0
+
   // Smooth-scroll animation state. Wheel input adds to `targetScrollRows`
   // (cumulative target). A critically-damped PD controller advances
   // `displayedScrollRows` toward the target each frame, applying the
@@ -973,6 +982,41 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       self.layer = nil
       wantsLayer = false
     }
+  }
+
+  /// Apply a transient sub-bucket zoom scale to the presented layer (the
+  /// osor.io-style continuous-zoom trick). During a pinch the glyph masks are
+  /// re-baked only when the size crosses a 0.5 pt bucket; *between* crossings the
+  /// presented surface is scaled by the live fractional remainder
+  /// (`target / bucketSize`) via a compositor transform — free, runs at the
+  /// display's full refresh rate, and gives continuous motion instead of 0.5 pt
+  /// steps. The scale stays within ~±1.8% (half a bucket over the smallest size),
+  /// so it is visually a gentle in-between, and the gesture-end exact re-bake +
+  /// identity reset lands the crisp final image. Anchored at the layer centre
+  /// (the default), matching a natural pinch-from-centre feel.
+  ///
+  /// `scale == 1` (or gesture end) restores identity. Implicit layer animation is
+  /// disabled so the transform tracks the finger 1:1 with no easing lag.
+  func setGestureZoomPresentationScale(_ scale: CGFloat) {
+    guard backendSelfPresents, let layer = self.layer else { return }
+    let resolved = scale.isFinite && scale > 0 ? scale : 1
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    if abs(resolved - 1) < 1e-4 {
+      layer.transform = CATransform3DIdentity
+    } else {
+      // Scale about the layer's centre regardless of anchorPoint by translating
+      // to centre, scaling, translating back.
+      let w = layer.bounds.width
+      let h = layer.bounds.height
+      let cx = w / 2
+      let cy = h / 2
+      var t = CATransform3DMakeTranslation(cx, cy, 0)
+      t = CATransform3DScale(t, resolved, resolved, 1)
+      t = CATransform3DTranslate(t, -cx, -cy, 0)
+      layer.transform = t
+    }
+    CATransaction.commit()
   }
 
   private func installFrameCompletionHook() {
@@ -3941,6 +3985,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // mid-gesture (`.changed` first) by seizing the current size as the base.
       zoomGestureBasePointSize = fontAtlas.pointSize
       zoomGestureAccumulatedMagnification = 0
+      debugZoomGestureFrameCount = 0
+      debugZoomGestureBakeCount = 0
     }
     zoomGestureAccumulatedMagnification += delta
 
@@ -3952,28 +3998,38 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let ending = phase == .ended || phase == .cancelled
 
     if fractional && !ending {
-      // Live gesture frame on the vector backend: render at a bucket-snapped
-      // size so consecutive frames reuse the resident masks (the smoothness
-      // lever — an unbucketed fractional size is a new mask key every frame and
-      // re-bakes the whole screen, ~20 ms/frame measured). Within a bucket the
-      // size is unchanged, so skip re-applying fonts entirely: the masks are
-      // already resident and the frame is a plain cache-hit render.
+      // Live gesture frame on the vector backend. Two layers of smoothness:
+      //  1. Re-bake only on bucket crossings: snap to a 0.5 pt bucket so
+      //     consecutive frames reuse the resident masks (an unbucketed fractional
+      //     size is a new mask key every frame and re-bakes the whole screen,
+      //     ~20 ms/frame measured). Within a bucket, skip re-applying fonts.
+      //  2. Continuous sub-bucket scaling (the osor.io trick): between crossings
+      //     the presented layer is scaled by the live fractional remainder so the
+      //     image tracks the finger at the display's full refresh rate, free, with
+      //     no re-rasterization. Without this the gesture would visibly STEP at
+      //     0.5 pt; with it, motion is continuous and bake cost is paid ~28x over
+      //     a 14→28 pt slide instead of every frame.
+      debugZoomGestureFrameCount += 1
       let bucketSize = Self.zoomBucketPointSize(target)
       if bucketSize != zoomGestureLastAppliedBucketSize {
         zoomGestureLastAppliedBucketSize = bucketSize
+        debugZoomGestureBakeCount += 1
         applyFontSize(
           bucketSize, quantize: false, persist: false, throttleReflow: true, liveZoom: true)
       }
+      // Scale the presented surface by target/bucket for the in-between motion.
+      setGestureZoomPresentationScale(target / bucketSize)
     } else {
       applyFontSize(
         target, quantize: !fractional, persist: false, throttleReflow: true, liveZoom: true)
     }
 
     if ending {
-      // Settle: apply the exact (unbucketed) fractional size so the resting
-      // image is crisp at the true size, not the last 0.5 pt bucket. liveZoom is
-      // false here, so this terminating frame takes the synchronous no-mixed-
-      // frame guarantee.
+      // Settle: drop the transient presentation scale to identity and apply the
+      // exact (unbucketed) fractional size so the resting image is crisp at the
+      // true size, not the last 0.5 pt bucket scaled. liveZoom is false here, so
+      // this terminating frame takes the synchronous no-mixed-frame guarantee.
+      setGestureZoomPresentationScale(1)
       if fractional && target != fontAtlas.pointSize {
         applyFontSize(target, quantize: false, persist: false, throttleReflow: true)
       }
