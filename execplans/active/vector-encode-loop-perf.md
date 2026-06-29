@@ -82,9 +82,14 @@ approval"). It must not break any behavior required by `docs/product/mvp.md`.
   removed the redundant divide-then-multiply for size. Parity 8/8 green. Bench:
   vector/fluid p95 16.755→16.319, vector/crisp p95 16.711→14.970 (−10%), crisp
   p50 8.874→8.418. (Done before M1 per Decision Log.)
-- [ ] Milestone 1: write instances straight into the pooled `MTLBuffer`, removing
-  the array→buffer `memcpy` and the Swift `Array` churn. Gated: keep only if it
-  lowers vector p95 on top of M2.
+- [x] (2026-06-29) Milestone 1: evaluated and **declined** by its own gate. A
+  microbenchmark of the exact operation (build 160×48 POD instances + bulk copy
+  into a buffer, steady state) measured the array→buffer copy M1 removes at ~19 µs
+  p50 / 23 µs p95 per frame — ~0.13% of the ~15 ms vector p95, below bench noise.
+  The instances are trivial PODs (no ARC), so there is no array "churn" beyond
+  that copy, and `removeAll(keepingCapacity:)` avoids realloc. Landing the
+  direct-to-buffer rewrite would add CPU↔GPU shared-buffer hazard surface to the
+  hottest GPU path for an unmeasurable gain. Not landed. See Decision Log.
 - [ ] Milestone 3: stride the run by cell index instead of re-segmenting `text`
   as `Character`s every cell.
 - [ ] Review Gate passed.
@@ -439,6 +444,21 @@ Review findings (filled in by the review agent):
   on top of M2 with parity green.
   Date/Author: 2026-06-29 / execution session.
 
+- Decision: Do not land Milestone 1 (direct-to-buffer instances).
+  Rationale: A standalone microbenchmark modeling the exact operation (build
+  160×48 `VectorGlyphInstance`/`VectorSolidInstance` POD records into a Swift
+  array with `removeAll(keepingCapacity:)`, then bulk-`memcpy` into a buffer,
+  steady state, `-O`) measured the copy M1 removes at ~19 µs p50 / 23 µs p95 per
+  frame. Against the post-M2 vector p95 of ~15 ms that is ~0.13%, below the
+  bench's run-to-run noise (±0.4 ms). The structs are trivial PODs, so there is no
+  ARC/retain churn and the only removable cost is that copy. M1's gate ("keep only
+  if it lowers vector p95 on top of M2") therefore cannot be met, while the
+  rewrite would introduce CPU↔GPU shared-buffer lifetime hazards (the current code
+  deliberately hands each draw a fresh pooled buffer so the CPU never rewrites a
+  region the GPU is still reading; direct accumulation-time writes complicate that
+  invariant). Not worth the risk for an unmeasurable gain. Evidence in Surprises.
+  Date/Author: 2026-06-29 / execution session.
+
 - Decision: Keep Milestone 3 (segmentation) gated on its own measurement rather
   than committing it unconditionally.
   Rationale: It is the only milestone that risks touching the `FrameProducer`
@@ -455,6 +475,16 @@ Review findings (filled in by the review agent):
   → `encode` self 1021.5 ms (25.9%); `CTFontGetGlyphsForCharacters` 39.4 ms
   (1.0%), `GetAdvancesForGlyphs` 27.4 ms (0.7%), `CTFontGetSymbolicTraits`
   ~0.05%. Bucketed leaves under `encode` total ~4%.
+
+- Observation: The array→buffer copy (M1's target) is negligible; the per-cell
+  arithmetic (M2's target) was the removable cost. This is why M2 moved p95 and
+  M1 was declined.
+  Evidence: Standalone microbench (`/tmp/m1_memcpy_bench.swift`, `-O`): array
+  build 23.8 µs p50, bulk memcpy 19.0 µs p50 / 22.9 µs p95 per frame for a 160×48
+  grid — ~0.13% of the ~15 ms vector p95. The M2 bench delta (crisp p95
+  16.711→14.970, −10%) came entirely from removing per-cell divides, the
+  per-cell `vectorColor` sRGB-linearize (4 transcendental-ish ops × ~7680 cells),
+  and the redundant size divide-then-multiply.
 
 ## Artifacts and Notes
 
