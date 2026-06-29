@@ -431,6 +431,26 @@ migration. No destructive operations. Re-running the measurement driver is safe.
   2 drawables + 1 in flight; recommends `CAMetalDisplayLink` and ≥2 in flight.
   Matches `MetalDrawableScheduler.swift:38` (`frameInFlight` value 1) exactly.
 
+- Observation (LOAD-BEARING GOTCHA): `CAMetalDisplayLink` on a dedicated thread
+  fires ZERO callbacks if the run loop is pumped with
+  `RunLoop.run(mode:before:)` in a `while` loop — the link's source is never
+  serviced and nothing ever presents. It must block in `CFRunLoopRun()` (stop via
+  `CFRunLoopStop` from another thread). Isolated test: `run(before:)` → 0
+  callbacks; `CFRunLoopRun()` → 235 callbacks in 2 s (~118 Hz). Also: the link only
+  fires when its layer is hosted in a visible, activated on-screen window; an
+  offscreen/headless layer yields 0 callbacks (so headless tests cannot exercise
+  the present cadence — it must be measured in the live app).
+
+- Observation: The tick-interval `frame-stats` metric actively MISLEADS for this
+  work. It records the main-thread display-link TICK interval, which stays ~120 Hz
+  even when content is late or nothing presents. The first "success" reading
+  (drawable-wait eliminated, jank 0.07%) hid a real bug: the present link was
+  firing 0 callbacks, so NOTHING was presenting via the fast path — the screen was
+  only updating because... it wasn't, on tab 7 (the agent can't see that tab). Only
+  after adding a present-side counter (`callbacks`/`presented`, GPU trace showing
+  884 content renders / 0 present-blits) did the bug surface. Acceptance MUST use
+  the present-side cadence (`GET /scroll/present-stats`), not `frame-stats`.
+
 ## Interfaces and Dependencies
 
 - New renderer entry point (vector, and optionally classic for symmetry):
@@ -535,5 +555,20 @@ driver):
 
 The "never wait for drawables" goal is met: the synchronous `nextDrawable()` block
 is gone from both the main thread and the present thread (no `ca-client-buffer-wait`
-intervals at all). The "never miss a frame" goal is nearly met (jank 0.07%, 1 frame
-in 1450); the residual is under investigation (M3 candidate or measurement noise).
+intervals at all).
+
+CORRECTION (later same day): that first reading was measured with the wrong metric
+(`frame-stats` tick interval) and the present link was actually firing 0 callbacks
+(CFRunLoopRun gotcha — see Surprises), so nothing presented via the fast path. After
+fixing the run loop and adding the present-side metric:
+
+After M2 FIXED (build 14befd4, present-side `GET /scroll/present-stats`, tab 7,
+aggressive driver ±60 rows):
+
+    [steady] present fps 119.7  p50/p95/p99 8.33/8.33/8.33  max 16.7  jank 3/1187 (0.25%)  cb 1192 / pres 1188
+    [fast]   present fps 119.8  p50/p95/p99 8.33/8.33/8.33  max 16.7  jank 2/1202 (0.17%)  cb 1203 / pres 1203
+
+Present p99 = 8.33 ms exactly: every vsync presents at 120 Hz. callbacks ≈ presented
+(every link callback shows a frame). The display refreshes at 120 Hz independent of
+content-render timing — when content is briefly late, the last good target is
+re-presented, so the user never sees a stutter. Goal met on the present side.
