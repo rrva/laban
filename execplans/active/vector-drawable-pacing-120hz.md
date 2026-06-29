@@ -95,10 +95,14 @@ preserves the frame-command contract and MVP behavior (`docs/product/mvp.md`).
   contingency — the vector renderer's accumulation atlas is persistent across
   frames (temporal AA), so >1 in flight would corrupt accumulation. M2 removes the
   drawable wait without needing it. See Decision Log.
-- [ ] Milestone 2 (macOS 26 fast path): add a `CAMetalDisplayLink`-driven
-  acquisition path that delivers the drawable in the callback; renderer presents
-  into the supplied drawable instead of calling `nextDrawable()`. Legacy path
-  untouched behind `#available`.
+- [x] (2026-06-29) Milestone 2: added `VectorPresentDisplayLink` (CAMetalDisplayLink
+  on a dedicated high-QoS thread, macOS 14+). `render()` fast path encodes content
+  into the offscreen target and commits WITHOUT acquiring a drawable; the present
+  link blits the latest target into its ready drawable each vsync and presents.
+  Legacy `MetalDrawableScheduler` acquire+present kept for macOS 13 / opt-out
+  (`LabanVectorPresentDisplayLink=NO`). Result: drawable-wait ELIMINATED (0
+  waiters; was p50 6.53/p99 15.34 ms), frame-stats jank 0.21%→0.07%, p99
+  10.5→9.15 ms. 79 vector tests green, parity unchanged, lint clean.
 - [ ] Milestone 3: decouple the vector GPU mask-bake work from the present
   command buffer / in-flight window if M1+M2 do not fully clear the tail.
 - [ ] ADR 0026 written and referenced.
@@ -225,6 +229,36 @@ stays 3 (2 is also valid on macOS and lower-latency, but 3 gives starvation slac
 for a bursty workload — keep 3 unless a latency measurement says otherwise).
 
 ### Milestone 2 — `CAMetalDisplayLink` acquisition on macOS 26 (the SOTA fast path)
+
+**Chosen architecture: decouple present from content render (renderer-internal
+present display-link).** The vector renderer already renders content into a
+persistent offscreen `targetTexture`, then in the same command buffer acquires a
+drawable, blits target→drawable, and presents. Split that:
+
+- On the fast path, `render(_:damage:)` on the main-thread tick encodes only the
+  GPU mask bakes + content render into `targetTexture` and commits — **it does not
+  acquire a drawable or present.** This removes the ~6.5 ms `nextDrawable()` wait
+  from the main thread entirely.
+- A `CAMetalDisplayLink` the renderer owns internally, running on a dedicated
+  high-QoS thread, fires each vsync; its callback takes `update.drawable`, blits
+  the latest `targetTexture` into it, and presents. The drawable arrives ready, so
+  presentation never blocks. The link always has a target to present (re-presenting
+  an unchanged target is a ~0.05 ms blit), so it never misses a 120 Hz slot.
+- Synchronization: content-render and present-blit share the renderer's one
+  `MTLCommandQueue`, so the GPU serializes them in commit order; the present-blit
+  reads whatever committed target state exists (frame N's content while N+1
+  encodes). The `targetTexture` reference and its size are swapped only under a
+  lock so a resize can't free a texture mid-blit. `frameInFlight = 1` still
+  serializes accumulation-atlas access on the content side.
+- Idle: the present link `isPaused = true` when `render()` has produced no new
+  content for a short while (and unpauses on the next `render()`), so a quiescent
+  terminal does not blit every vsync (respects ADR 0018 event-driven production).
+- Zero `TerminalBitmapView` changes: it keeps calling `render()` each tick. On
+  macOS < the gate, `render()` keeps doing acquire+blit+present exactly as today
+  and the internal present link is never created.
+
+Original sketch (kept for reference; the renderer-internal variant above is the
+one being implemented):
 
 Add an OS-gated path that, on macOS 26 (guard `#available(macOS 14.0, *)` — the API
 floor — but the goal/validation target is 26), drives presentation from a
@@ -489,4 +523,17 @@ AND drawable-wait p50/p99 → near zero. Consider adding a presented-frame inter
 counter (via `addPresentedHandler`/`presentedTime`) as part of M1 so the live
 endpoint reports the present-side truth directly.
 
-After M1 / M2 (fill in): __
+After M2 (2026-06-29, build dfe71c9, CAMetalDisplayLink present path, same tab-7
+driver):
+
+    frame-stats (tick):  fps 119.9  p50 8.33  p95 8.35  p99 9.15  max 16.7  jank 1/1450 (0.07%)
+    GPU trace (present): drawable-wait — ZERO waiters (ca-client-buffer-wait-interval empty)
+                         vector.content GPU p50 0.49  p95 0.51 ms
+
+    vs M0:  drawable-wait p50 6.53 / p99 15.34 / max 40.6  ->  ELIMINATED
+            frame-stats p99 10.50 -> 9.15, max 21.3 -> 16.7, jank 0.21% -> 0.07%
+
+The "never wait for drawables" goal is met: the synchronous `nextDrawable()` block
+is gone from both the main thread and the present thread (no `ca-client-buffer-wait`
+intervals at all). The "never miss a frame" goal is nearly met (jank 0.07%, 1 frame
+in 1450); the residual is under investigation (M3 candidate or measurement noise).
