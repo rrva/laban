@@ -79,9 +79,12 @@ approval"). It must not break any behavior required by `docs/product/mvp.md`.
   classic. Target refined to p95/p99.
 - [x] (2026-06-29) Milestone 2: hoisted maskAtlas uv reciprocals, fluid device
   offset, and per-run foreground color out of the per-cell `glyphInstance`;
-  removed the redundant divide-then-multiply for size. Parity 8/8 green. Bench:
-  vector/fluid p95 16.755→16.319, vector/crisp p95 16.711→14.970 (−10%), crisp
-  p50 8.874→8.418. (Done before M1 per Decision Log.)
+  removed the redundant divide-then-multiply for size. Parity 8/8 green. Bench
+  (representative across runs, incl. independent Review Gate): vector p95 improves
+  modestly below the M0 baseline (crisp ~16.7→~16.1; a single best-case run hit
+  14.970 but that is an outlier — see Artifacts note), crisp p50 8.874→~8.5. The
+  durable win is the reproducible p50 drop + parity-preserving arithmetic
+  reduction. (Done before M1 per Decision Log.)
 - [x] (2026-06-29) Milestone 1: evaluated and **declined** by its own gate. A
   microbenchmark of the exact operation (build 160×48 POD instances + bulk copy
   into a buffer, steady state) measured the array→buffer copy M1 removes at ~19 µs
@@ -98,7 +101,10 @@ approval"). It must not break any behavior required by `docs/product/mvp.md`.
   (~285 µs/frame: Character enumerate 616 µs → scalar-direct 300 µs) but it is
   below the integrated bench's p95 noise floor (~0.4–0.5 ms, GPU-bake-tail bound).
   Not landed. See Decision Log.
-- [ ] Review Gate passed.
+- [x] (2026-06-29) Review Gate passed by a fresh-state agent against `c156a01`:
+  all 7 mechanical checks PASS, M1/M3 confirmed absent, M2 verified bit-exact.
+  Artifacts table corrected per the reviewer's advisory (M2 crisp p95
+  representative ~16.1, not the 14.970 outlier).
 
 ## Context and Orientation
 
@@ -398,34 +404,52 @@ A separate agent with fresh state must verify the following before this ExecPlan
 is considered complete. The executing agent must not mark the plan as done until
 this gate has passed. See "Review gate and review-fix loop" in `PLANS.md`.
 
-- [ ] `git log --oneline` shows one commit per implemented milestone, each with a
+- [x] `git log --oneline` shows one commit per implemented milestone, each with a
       single-line reason-style message naming the encode/instance change.
-- [ ] `swift test --filter VectorGlyphParityTests` exits 0 and stdout contains
+- [x] `swift test --filter VectorGlyphParityTests` exits 0 and stdout contains
       `0 failures`. Run it; paste the `Executed N tests` line into Review findings.
-- [ ] `swift test --filter ColorGlyphScrollBench` exits 0 with `0 failures`.
-- [ ] `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter
+- [x] `swift test --filter ColorGlyphScrollBench` exits 0 with `0 failures`.
+- [x] `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter
       VectorScrollFrameTimeBench` runs; capture its printed `vector/fluid` and
       `vector/crisp` p95 values and confirm both are numerically lower than the
       Milestone 0 baseline rows recorded in `Artifacts and Notes` (baseline
       vector/fluid p95 16.755, vector/crisp p95 16.711). If not lower, the gate
       fails.
-- [ ] Buffer-path coverage: confirm `VectorGlyphParityTests` still contains a case
+- [x] Buffer-path coverage: confirm `VectorGlyphParityTests` still contains a case
       whose instance batch exceeds 4096 bytes (grep `testRendererHandlesLiveSizedInstanceBatches`
       in `Tests/LabanRendererTests/VectorGlyphParityTests.swift`; expect one hit).
       This enforces the `AGENTS.md` Hard Rule that batched instance data is tested
       beyond Metal's 4 KB inline limit.
-- [ ] No new per-frame CoreText-per-cell call was introduced: grep the per-cell
+- [x] No new per-frame CoreText-per-cell call was introduced: grep the per-cell
       loop body in `appendGlyphRun` for `CTFont`/`CTLine`; expect zero direct
       CoreText calls inside the `for` loop (lookups must go through the existing
       caches).
-- [ ] `swift-format lint --configuration .swift-format
+- [x] `swift-format lint --configuration .swift-format
       Sources/LabanRenderer/VectorGlyphRenderer.swift` exits 0.
 
-Review status: NOT REVIEWED
+Review status: PASSED (2026-06-29) by a fresh-state Review Gate agent against
+commit `c156a01`. All 7 gate checks PASS; M1 and M3 confirmed genuinely absent
+from `Sources/` (not half-applied); the single landed M2 change verified
+algebraically equivalent (bit-exact at scale 2 and for the power-of-two 2048
+mask atlas), parity 8/8 and color-scroll 2/2 green, lint and build clean.
 
 Review findings (filled in by the review agent):
 
-(none yet)
+- Gates 1–3, 5–7: PASS (parity `Executed 8 tests, with 0 failures`; color-scroll
+  `Executed 2 tests, with 0 failures`; buffer-path grep = 1; zero CoreText calls
+  in the per-cell loop; lint exit 0; build clean).
+- Gate 4 (bench p95 vs M0): PASS. Two release runs — vector/fluid p95 16.482,
+  16.121; vector/crisp p95 16.416, 16.155 — both below the M0 baseline (16.755 /
+  16.711) on both runs. Advisory: neither reproduced the recorded M2 crisp p95 of
+  14.970; representative is ~16.1, consistent with the M3 decision-log's M2-code
+  measurement. The Artifacts table has been corrected to record ~16.1 as
+  representative and flag 14.970 as an outlier.
+- Independent correctness (a)–(d): all PASS. (a) constants set at encode top
+  (`VectorGlyphRenderer.swift:751–754`) before any glyph, mutated nowhere else;
+  (b) `(mask.width/scale)*scale == mask.width` bit-exact at scale 2 and more
+  accurate generally; (c) `1/2048` is an exactly representable Float so the uv
+  reciprocal-multiply is bit-identical to the old divide; (d) `foreground` is
+  constant per run, so the per-run `vectorColor` hoist cannot change output.
 
 ## Decision Log
 
@@ -525,10 +549,14 @@ declined by their own measurement gates (M1, M3). The plan's value was as much i
 
 - **M2 (landed, commit `8f6d15e`):** hoisting per-cell constant math out of
   `glyphInstance` — uv reciprocals, the fluid device offset, the per-run
-  foreground sRGB-linearize, and a redundant divide-then-multiply — cut vector
-  crisp p95 ~10% (16.711 → 14.970 ms) and p50 ~0.46 ms, parity unchanged. This was
-  the real cost the trace pointed at (per-cell arithmetic, ~24% of `encode`
-  self-time), and the lowest-risk change (pure arithmetic, no GPU hazard surface).
+  foreground sRGB-linearize, and a redundant divide-then-multiply — lowered vector
+  crisp p95 below the M0 baseline (representative ~16.7 → ~16.1 ms; one best-case
+  run hit 14.970 but that is an outlier of a noisy metric) and crisp p50 ~0.46 ms,
+  parity unchanged. This was the real cost the trace pointed at (per-cell
+  arithmetic, ~24% of `encode` self-time), and the lowest-risk change (pure
+  arithmetic, no GPU hazard surface). The p50 drop and the algebraic reduction are
+  the durable, reproducible wins; the p95 figure is GPU-bake-tail-bound and varies
+  run to run.
 - **M1 (declined):** the array→buffer copy it removed measured ~19 µs/frame, ~0.13%
   of vector p95 — below noise, and the rewrite would add CPU↔GPU buffer-lifetime
   hazards. Not worth it.
@@ -560,7 +588,17 @@ After Milestone 2 (measured 2026-06-29, same grid/build):
 
     gpu/classic    8.393 / 8.826 / 8.915
     vector/fluid   8.382 / 16.319 / 20.049   (Δ p95 vs baseline: -0.44)
-    vector/crisp   8.418 / 14.970 / 20.062   (Δ p95 vs baseline: -1.74, Δ p50: -0.46)
+    vector/crisp   8.418 / 14.970 / 20.062   (this run; see note)
+
+    Note: the 14.970 crisp p95 above was a favorable outlier. Across repeated
+    runs of the M2 code (and confirmed by the independent Review Gate's two runs:
+    crisp p95 16.416, 16.155; fluid p95 16.482, 16.121), the representative M2
+    crisp p95 is ~16.1, i.e. a modest improvement over the M0 baseline of 16.711
+    rather than the −1.74 ms a single best-case run suggested. The p50 improvement
+    (crisp 8.874→~8.5) and the parity-preserving arithmetic reduction are the
+    durable, reproducible wins; the p95 metric is GPU-bake-tail-bound and noisy
+    (see Surprises). The Review Gate criterion (M2 p95 below the M0 baseline) holds
+    on every run.
 
 After Milestone 1 (fill in):
 
