@@ -3793,7 +3793,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   ///   on every call exactly as before.
   func applyFontSize(
     _ requested: CGFloat, quantize: Bool = true, persist: Bool = true, throttleReflow: Bool = false,
-    liveZoom: Bool = false
+    liveZoom: Bool = false, forceSynchronousFrame: Bool? = nil
   ) {
     let clamped =
       quantize
@@ -3922,7 +3922,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     renderInvalidated = true
     renderingResizeFrame = true
     let previousWaitForFrameCompletion = backend.waitForFrameCompletion
-    if !liveZoom {
+    // Block on the frame for discrete applies (keyboard/menu/resize). Live-zoom
+    // frames never block. The gesture-end commit passes `forceSynchronousFrame:
+    // false` explicitly: it needs a *full* reconfigure (rebuild the size-matched
+    // fallback atlases) but must NOT block the main thread on the whole-screen
+    // bake — that synchronous wait is the release "freeze".
+    let blockFrame = forceSynchronousFrame ?? !liveZoom
+    if blockFrame {
       backend.waitForFrameCompletion = true
     }
     defer {
@@ -4024,26 +4030,49 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
 
     if ending {
-      // Settle: drop the transient presentation scale to identity, then commit
-      // the real font size + grid ONCE (the single rebake/reflow of the whole
-      // gesture). liveZoom is false here so the terminating frame takes the
-      // synchronous no-mixed-frame guarantee and lands crisp at the true size.
-      setGestureZoomPresentationScale(1)
-      if target != fontAtlas.pointSize {
-        debugZoomGestureBakeCount += 1
-        applyFontSize(target, quantize: !fractional, persist: false, throttleReflow: false)
-      }
-      // Reconcile the vector backend's raster/color fallback atlases to the
-      // settled size once, so emoji and any raster-fallback glyphs render at the
-      // final size at rest.
-      (backend as? VectorGlyphRenderer)?.reconcileFallbackAtlasesForSettledSize()
-      // Persist the live size once on lift. `applyFontSize` already moved
-      // `fontAtlas.pointSize` to the final value (and its no-op-size guard would
-      // early-return a redundant terminating apply), so persist directly.
-      persistFontSize(fontAtlas.pointSize)
+      commitZoomGestureEnd(target: target, fractional: fractional)
       zoomGestureBasePointSize = nil
       zoomGestureAccumulatedMagnification = 0
     }
+  }
+
+  /// Commit a continuous-zoom gesture to its final size in ONE atomic, non-
+  /// blocking frame. Ordering matters — getting it wrong produced the three
+  /// release symptoms the user reported:
+  ///  - SNAP: if the projection zoom is reset to identity while the atlas is
+  ///    still the gesture-start (small) size, an async frame can present tiny
+  ///    unscaled text for a beat. So the zoom reset and the atlas swap to the
+  ///    target size must land in the SAME frame.
+  ///  - FREEZE: a synchronous `waitForFrameCompletion` on the full-screen bake
+  ///    blocks the main thread. The commit must not block.
+  ///  - PER-GLYPH SIZE MIX: if the raster/color fallback atlases are still the
+  ///    old size when the commit frame renders, the glyphs that fall back to the
+  ///    raster atlas (the ones the per-frame vector bake budget can't cover yet)
+  ///    draw at the old size while freshly-baked ones draw at the new size. So
+  ///    the fallback atlases must be rebuilt to the target size BEFORE the frame.
+  private func commitZoomGestureEnd(target: CGFloat, fractional: Bool) {
+    guard target != fontAtlas.pointSize || debugGestureZoomScale != 1 else {
+      // Nothing moved (no-op gesture): just drop any residual scale.
+      setGestureZoomPresentationScale(1)
+      persistFontSize(fontAtlas.pointSize)
+      return
+    }
+    debugZoomGestureBakeCount += 1
+    // Clear the projection zoom WITHOUT waking a render — `applyFontSize` below
+    // produces the single commit frame, so the reset and the atlas swap are
+    // atomic (no intermediate small-text frame).
+    (backend as? VectorGlyphRenderer)?.setGestureZoom(1, anchor: .zero)
+    debugGestureZoomScale = 1
+    // Apply the real size + grid. Pass liveZoom:false so it does a FULL
+    // reconfigure (the size-matched fallback atlases get rebuilt inside, before
+    // its frame renders), but forceSynchronousFrame:false so the whole-screen
+    // bake does not block the main thread (no freeze). The raster fallback
+    // covers any not-yet-baked glyph at the correct size this frame; vector
+    // masks upgrade over the next few frames.
+    applyFontSize(
+      target, quantize: !fractional, persist: false, throttleReflow: false,
+      forceSynchronousFrame: false)
+    persistFontSize(fontAtlas.pointSize)
   }
 
   override func magnify(with event: NSEvent) {
