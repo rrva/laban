@@ -517,6 +517,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     accumTexture = nil
     // New fonts produce new outlines/dims; drop the geometry memo with the atlas.
     descriptorCache.removeAll(keepingCapacity: true)
+    scratchRasterizer.invalidateCurveBufferCache()
     rasterAtlas = Self.makeRasterAtlas(device: device, fontAtlas: fontAtlas, scale: scale)
     sidebarRasterAtlas = Self.makeRasterAtlas(
       device: device,

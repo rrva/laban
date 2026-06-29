@@ -105,6 +105,49 @@ final class VectorGlyphScratchRasterizerTests: XCTestCase {
     XCTAssertGreaterThan(checked, 80, "printable ASCII should exercise most outline glyphs")
   }
 
+  func testRepeatedGlyphReusesCachedCurveBuffer() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+      throw XCTSkip("no Metal device available")
+    }
+    let rasterizer = try XCTUnwrap(VectorGlyphScratchRasterizer(device: device))
+    let store = GlyphCurveStore()
+    let font = FontAtlas(pointSize: 24, fontName: nil).font
+
+    let glyphA = try XCTUnwrap(glyph(for: "A", font: font))
+    let glyphB = try XCTUnwrap(glyph(for: "B", font: font))
+    let outlineA = try XCTUnwrap(store.outline(for: glyphA, font: font))
+    let outlineB = try XCTUnwrap(store.outline(for: glyphB, font: font))
+    let regionA = rasterRegion(for: glyphA, font: font)
+    let regionB = rasterRegion(for: glyphB, font: font)
+
+    func rasterize(_ outline: GlyphCurveOutline, _ region: (origin: CGPoint, width: Int, height: Int)) {
+      _ = rasterizer.rasterize(
+        outline: outline,
+        width: region.width,
+        height: region.height,
+        origin: region.origin)
+    }
+
+    // First bake of A allocates exactly one curve buffer.
+    rasterize(outlineA, regionA)
+    XCTAssertEqual(rasterizer.curveBufferAllocations, 1)
+
+    // Re-baking the same glyph across several frames (the resident-mask
+    // refinement / per-phase path) must reuse the cached buffer, not reallocate.
+    for _ in 0..<8 { rasterize(outlineA, regionA) }
+    XCTAssertEqual(
+      rasterizer.curveBufferAllocations,
+      1,
+      "repeated glyph must reuse the memoized GPU curve buffer")
+
+    // A distinct glyph is a genuine cache miss: exactly one more allocation,
+    // and it too stops growing once resident.
+    rasterize(outlineB, regionB)
+    XCTAssertEqual(rasterizer.curveBufferAllocations, 2)
+    for _ in 0..<8 { rasterize(outlineB, regionB) }
+    XCTAssertEqual(rasterizer.curveBufferAllocations, 2)
+  }
+
   private func glyph(for scalar: Unicode.Scalar, font: CTFont) -> CGGlyph? {
     guard scalar.value <= UInt32(UInt16.max) else { return nil }
     var unit = UniChar(scalar.value)

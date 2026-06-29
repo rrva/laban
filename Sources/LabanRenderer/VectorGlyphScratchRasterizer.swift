@@ -45,6 +45,24 @@ public final class VectorGlyphScratchRasterizer {
   private let scratchPipeline: MTLComputePipelineState
   private let accumPipeline: MTLComputePipelineState
 
+  // Curve geometry is point-space and invariant for a given (font, glyph,
+  // syntheticItalic): phase, sample count, subpixel layout, raster scale and the
+  // target atlas slot never touch the curve buffer. Memoize the uploaded
+  // MTLBuffer keyed by the outline content so resident-mask refinement and
+  // per-phase bakes of the same glyph stop reallocating + re-uploading the same
+  // bytes every frame (M7 memoization carried into the GPU buffer). The outline
+  // value already encodes the syntheticItalic shear and the per-font geometry,
+  // so content equality is exactly the (font, glyph, syntheticItalic) key here.
+  private var curveBufferCache: [GlyphCurveOutline: MTLBuffer] = [:]
+  // Safety bound: a long session with many distinct glyphs (or font reconfigs
+  // that the owner did not invalidate) must not grow this without limit. Drop
+  // the whole memo on overflow; the next frame rebuilds only the visible set,
+  // which is exactly the pre-cache behavior for one frame.
+  private let curveBufferCacheLimit = 8192
+  // Test-only: counts distinct curve buffers actually built (cache misses). A
+  // repeated glyph must stop incrementing this after its first allocation.
+  private(set) var curveBufferAllocations = 0
+
   public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
     guard let device else { return nil }
     guard let queue = device.makeCommandQueue() else { return nil }
@@ -237,7 +255,25 @@ public final class VectorGlyphScratchRasterizer {
     return true
   }
 
+  /// Drop the memoized curve buffers. The owning renderer must call this when it
+  /// reconfigures fonts (new fonts produce new outlines); content-keying keeps
+  /// reuse correct even if a stale entry lingers, so this is memory hygiene.
+  public func invalidateCurveBufferCache() {
+    curveBufferCache.removeAll(keepingCapacity: true)
+  }
+
   private func makeCurveBuffer(outline: GlyphCurveOutline) -> MTLBuffer? {
+    if let cached = curveBufferCache[outline] { return cached }
+    guard let buffer = buildCurveBuffer(outline: outline) else { return nil }
+    if curveBufferCache.count >= curveBufferCacheLimit {
+      curveBufferCache.removeAll(keepingCapacity: true)
+    }
+    curveBufferCache[outline] = buffer
+    curveBufferAllocations += 1
+    return buffer
+  }
+
+  private func buildCurveBuffer(outline: GlyphCurveOutline) -> MTLBuffer? {
     let gpuCurves = outline.curves.map { curve in
       GPUCurve(
         p0: SIMD2<Float>(Float(curve.p0.x), Float(curve.p0.y)),
@@ -249,5 +285,22 @@ public final class VectorGlyphScratchRasterizer {
       guard let base = $0.baseAddress else { return nil }
       return device.makeBuffer(bytes: base, length: curveBytes, options: .storageModeShared)
     }
+  }
+}
+
+// Content-based key for the curve-buffer memo. `GlyphCurveOutline` is already
+// Equatable (full geometry compare); a subset hash keeps equal outlines in the
+// same bucket while staying cheap per lookup. Equal outlines imply identical
+// point-space curves, so reuse is geometry-correct across fonts/glyphs/italics.
+extension GlyphCurveOutline: Hashable {
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(glyph)
+    // Hash CGRect's CGFloat components directly: `CGRect: Hashable` is only
+    // available on macOS 15+, and this package deploys to macOS 13.
+    hasher.combine(bounds.origin.x)
+    hasher.combine(bounds.origin.y)
+    hasher.combine(bounds.size.width)
+    hasher.combine(bounds.size.height)
+    hasher.combine(curves.count)
   }
 }
