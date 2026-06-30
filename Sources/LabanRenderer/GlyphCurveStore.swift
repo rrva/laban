@@ -73,9 +73,21 @@ public struct GlyphCurveOutline: Equatable {
 }
 
 public final class GlyphCurveStore {
+  /// Outline geometry is a pure function of the font's *visual* identity: its
+  /// PostScript name, point size, the glyph, and the text matrix (transformed
+  /// fonts shear/scale the path). Keying on those — NOT `ObjectIdentifier(font)`,
+  /// the bare object address — makes the cache immune to CTFont address reuse: a
+  /// freed transient zoom font cannot alias a new font at a different size, which
+  /// was the mixed-glyph-size zoom bug. It also lets distinct CTFont objects that
+  /// describe the same rendered glyph share an entry.
   private struct Key: Hashable {
-    let font: ObjectIdentifier
+    let postScriptName: String
+    let pointSize: CGFloat
     let glyph: CGGlyph
+    let m11: CGFloat
+    let m12: CGFloat
+    let m21: CGFloat
+    let m22: CGFloat
   }
 
   private var outlines: [Key: GlyphCurveOutline] = [:]
@@ -83,20 +95,25 @@ public final class GlyphCurveStore {
 
   public init() {}
 
-  /// Drop all cached outlines. Entries are keyed by `ObjectIdentifier(font)`,
-  /// which is only the font object's address — when a font at one point size is
-  /// released (e.g. a transient zoom size) and a new font at a DIFFERENT size is
-  /// allocated at the reused address, a lookup would return the stale, wrong-size
-  /// outline (outlines are baked at the font's point size). The owning renderer
-  /// must call this whenever it swaps fonts so a size change cannot alias a freed
-  /// font's geometry.
+  private func key(for glyph: CGGlyph, font: CTFont) -> Key {
+    let m = CTFontGetMatrix(font)
+    return Key(
+      postScriptName: CTFontCopyPostScriptName(font) as String,
+      pointSize: CTFontGetSize(font),
+      glyph: glyph,
+      m11: m.a, m12: m.b, m21: m.c, m22: m.d)
+  }
+
+  /// Drop all cached outlines. With the visual-identity key above this is only
+  /// memory hygiene (e.g. a font-family change), not a correctness requirement —
+  /// a reused CTFont address can no longer alias a stale entry.
   public func invalidate() {
     outlines.removeAll(keepingCapacity: true)
     missingOutlines.removeAll(keepingCapacity: true)
   }
 
   public func outline(for glyph: CGGlyph, font: CTFont) -> GlyphCurveOutline? {
-    let key = Key(font: ObjectIdentifier(font), glyph: glyph)
+    let key = key(for: glyph, font: font)
     if let cached = outlines[key] { return cached }
     if missingOutlines.contains(key) { return nil }
 
