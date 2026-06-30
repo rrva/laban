@@ -84,6 +84,63 @@ final class VectorGestureZoomProjectionTests: XCTestCase {
       "zoom must clear back to identity coverage")
   }
 
+  /// The zoom-out margin clear must match the terminal background under any
+  /// theme. The vector target is sRGB, so the clear color must be linearized the
+  /// same way the background rect's color is (via vectorColor/srgbToLinear) — a
+  /// raw sRGB value double-encodes a light theme (e.g. selenized-light cream)
+  /// toward white. Probe the actually-cleared corner pixel against the bg rect's
+  /// own rendered color.
+  func testZoomOutMarginMatchesThemeBackground() throws {
+    let pw = 300
+    let ph = 300
+    let renderer = try makeRenderer(pw: pw, ph: ph)
+    // selenized-light background: cream 0xFB_F3_DB.
+    let bg: UInt32 = 0xFB_F3_DB_FF
+    // Full-surface bg rect (covers everything at zoom 1) so a corner pixel is the
+    // rendered background; the clear color must produce the SAME corner pixel.
+    let full: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 300, height: 300), color: bg, source: .terminal)
+    ]
+    XCTAssertTrue(renderer.render(full, damage: .full))
+    let rendered = try cornerPixel(renderer)
+
+    // Now zoom out so the bg rect shrinks and the corner shows the CLEAR color.
+    renderer.setGestureZoom(0.5, anchor: CGPoint(x: pw / 2, y: ph / 2))
+    XCTAssertTrue(renderer.render(full, damage: .full))
+    let cleared = try cornerPixel(renderer)
+
+    // The clear margin must match the rendered background (the actual bug: a
+    // double-encoded clear would NOT match the correctly-linearized rect). The
+    // double-encode bug specifically crushes the blue channel toward 255 (cream
+    // 0xFB_F3_DB has B=0xDB=219, well below 255); a raw-sRGB clear would push it
+    // up. So assert per-channel equality AND that blue stays cream, not white.
+    for (a, b) in zip(cleared, rendered) {
+      XCTAssertEqual(Int(a), Int(b), accuracy: 4, "zoom-out margin must match theme background")
+    }
+    XCTAssertEqual(Int(cleared[2]), 0xDB, accuracy: 6, "cream blue channel must not blow to white")
+  }
+
+  /// Top-left corner pixel (R,G,B) of the rendered surface.
+  private func cornerPixel(_ renderer: VectorGlyphRenderer) throws -> [UInt8] {
+    let png = try XCTUnwrap(renderer.pngData)
+    guard let src = CGImageSourceCreateWithData(png as CFData, nil),
+      let image = CGImageSourceCreateImageAtIndex(src, 0, nil)
+    else { throw XCTSkip("failed to decode PNG") }
+    let w = image.width
+    let h = image.height
+    var bytes = [UInt8](repeating: 0, count: w * h * 4)
+    let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+    bytes.withUnsafeMutableBytes { raw in
+      guard
+        let ctx = CGContext(
+          data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info)
+      else { return }
+      ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    }
+    return [bytes[0], bytes[1], bytes[2]]
+  }
+
   func testGestureZoomGuardsAgainstInvalidFactors() throws {
     let renderer = try makeRenderer(pw: 100, ph: 100)
     renderer.setGestureZoom(0, anchor: .zero)

@@ -1068,9 +1068,15 @@ public final class VectorGlyphRenderer: RendererBackend {
     // zoom-OUT the whole canvas (background rect included) scales toward the
     // anchor, so the margin it no longer covers shows the clear color. Black
     // there reads as a void; the terminal background reads as intentional empty
-    // space until the gesture-end SIGWINCH reflow fills the new cells. Reuses the
-    // same derivation MetalRenderer uses to avoid resize/alt-screen black flashes.
-    descriptor.colorAttachments[0].clearColor = MetalRenderer.fullRedrawClearColor(commands)
+    // space until the gesture-end SIGWINCH reflow fills the new cells.
+    //
+    // The target is an sRGB texture, so a clear-color component is treated as
+    // LINEAR and hardware-encoded to sRGB on store — the same convention the
+    // solid background rect honors by running its color through `vectorColor`'s
+    // `srgbToLinear`. The shared `fullRedrawClearColor` returns the raw sRGB
+    // value (correct for MetalRenderer's non-sRGB target); linearize it here or a
+    // themed background (e.g. selenized-light cream) double-encodes toward white.
+    descriptor.colorAttachments[0].clearColor = Self.linearizedClearColor(commands)
     guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
       return
     }
@@ -2341,6 +2347,19 @@ public final class VectorGlyphRenderer: RendererBackend {
 
   private static func srgbToLinear(_ c: Float) -> Float {
     c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+  }
+
+  /// The terminal-background clear color for the sRGB target: the same sRGB value
+  /// `MetalRenderer.fullRedrawClearColor` derives, but linearized (the sRGB
+  /// texture re-encodes the clear on store, so a raw sRGB value would
+  /// double-encode). Alpha stays linear.
+  static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
+    let c = MetalRenderer.fullRedrawClearColor(commands)
+    return MTLClearColor(
+      red: Double(srgbToLinear(Float(c.red))),
+      green: Double(srgbToLinear(Float(c.green))),
+      blue: Double(srgbToLinear(Float(c.blue))),
+      alpha: c.alpha)
   }
 }
 
