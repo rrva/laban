@@ -614,6 +614,33 @@ final class LabanDebugSmokeTests: XCTestCase {
     }
   }
 
+  func testRuntimeRenderStateReportsSlugGlyphRendererStatus() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-slug-render-status",
+      rendererSelection: .slugGlyph
+    )
+
+    let resp = runtime.renderState()
+    XCTAssertEqual(resp.status, 200)
+    let obj = try JSONSerialization.jsonObject(with: resp.body) as! [String: Any]
+    XCTAssertEqual(obj["configuredRenderer"] as? String, "slugGlyph")
+    if MTLCreateSystemDefaultDevice() == nil {
+      XCTAssertEqual(obj["effectiveRenderer"] as? String, "software")
+      XCTAssertEqual(obj["fallbackReason"] as? String, "noMetalDevice")
+    } else {
+      XCTAssertEqual(obj["effectiveRenderer"] as? String, "slugGlyph")
+      XCTAssertNil(obj["fallbackReason"])
+    }
+  }
+
   func testRuntimeSetRendererPreservesActiveSessionIdentity() throws {
     let artifacts = FileManager.default.temporaryDirectory
       .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
@@ -656,6 +683,42 @@ final class LabanDebugSmokeTests: XCTestCase {
     let backObject = try JSONSerialization.jsonObject(with: back.body) as! [String: Any]
     XCTAssertEqual(backObject["activeSessionId"] as? String, sessionBefore)
     XCTAssertEqual(backObject["activeTabId"] as? String, tabBefore)
+  }
+
+  func testRuntimeSetRendererAcceptsSlugGlyph() throws {
+    let artifacts = FileManager.default.temporaryDirectory
+      .appendingPathComponent("laban-debug-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: artifacts) }
+
+    let runtime = try HeadlessDebugRuntime(
+      fixtureURL: nil,
+      artifactsURL: artifacts,
+      tempURL: nil,
+      deterministic: true,
+      runId: "smoke-set-slug-renderer"
+    )
+
+    let stateBefore = try JSONSerialization.jsonObject(with: runtime.state().body) as! [String: Any]
+    let sessionBefore = stateBefore["activeSessionId"] as? String
+    let tabBefore = stateBefore["activeTabId"] as? String
+
+    let action = runtime.applyAction(
+      Data(#"{"action":"setRenderer","renderer":"slugGlyph"}"#.utf8))
+    XCTAssertEqual(action.status, 200)
+    let actionObject = try JSONSerialization.jsonObject(with: action.body) as! [String: Any]
+    XCTAssertEqual(actionObject["activeSessionId"] as? String, sessionBefore)
+    XCTAssertEqual(actionObject["activeTabId"] as? String, tabBefore)
+
+    let render =
+      try JSONSerialization.jsonObject(with: runtime.renderState().body) as! [String: Any]
+    XCTAssertEqual(render["configuredRenderer"] as? String, "slugGlyph")
+    if MTLCreateSystemDefaultDevice() == nil {
+      XCTAssertEqual(render["effectiveRenderer"] as? String, "software")
+      XCTAssertEqual(render["fallbackReason"] as? String, "noMetalDevice")
+    } else {
+      XCTAssertEqual(render["effectiveRenderer"] as? String, "slugGlyph")
+      XCTAssertNil(render["fallbackReason"])
+    }
   }
 
   func testRuntimeRenderTraceHasRequiredFields() throws {

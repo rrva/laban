@@ -5,8 +5,8 @@ import LabanRenderer
 /// Detects whether the display a window lives on is in a macOS "scaled"
 /// (downsampled) mode, where the framebuffer is rendered larger than the panel
 /// and resampled down. Subpixel AA cannot survive that resample, so the result
-/// feeds `VectorGlyphRenderer.setDisplayDownsampled` and the subpixel
-/// auto-policy falls back to grayscale (see `VectorSubpixelLayout.effective`).
+/// feeds analytic text renderers and their subpixel auto-policy falls back to
+/// grayscale (see `VectorSubpixelLayout.effective`).
 ///
 /// The signal is the panel's *native* display mode: macOS tags the 1:1 mode(s)
 /// with `kDisplayModeNativeFlag`. Comparing the current mode's pixel size to the

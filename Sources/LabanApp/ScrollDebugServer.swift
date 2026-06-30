@@ -474,7 +474,7 @@ final class ScrollDebugServer {
     POST /scroll/smooth?rows=N&velocity=V  smooth (PD-animated) scroll producing
                                       sub-cell offsets; optional fling velocity
     POST /scroll/snap-bottom          pin viewport to the active bottom
-    POST /config/renderer?name=R      switch renderer (e.g. classic, gpuDriven, vectorGlyph)
+    POST /config/renderer?name=R      switch renderer (e.g. classic, gpuDriven, vectorGlyph, slugGlyph)
     POST /config/smooth-scroll?mode=M switch vector smooth-scroll mode (fluid|perPhase)
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
                                       shell tab so scroll bursts hit Laban scrollback

@@ -43,6 +43,38 @@ final class ContinuousZoomTests: XCTestCase {
       FontAtlas.zoomMinimumPointSize, accuracy: 1e-9)
   }
 
+  func testZoomPointSizeFractionalRubberBandsNearMinimum() {
+    let rawTarget: CGFloat = 8.5
+    let size = TerminalBitmapView.zoomPointSize(
+      base: 14,
+      accumulatedMagnification: rawTarget / 14 - 1,
+      fractional: true)
+    XCTAssertGreaterThan(size, FontAtlas.zoomMinimumPointSize)
+    XCTAssertLessThan(size, rawTarget)
+  }
+
+  func testZoomPointSizeFractionalRubberBandsNearMaximum() {
+    let rawTarget: CGFloat = 39.5
+    let size = TerminalBitmapView.zoomPointSize(
+      base: 14,
+      accumulatedMagnification: rawTarget / 14 - 1,
+      fractional: true)
+    XCTAssertLessThan(size, FontAtlas.zoomMaximumPointSize)
+    XCTAssertLessThan(size, rawTarget)
+  }
+
+  func testZoomPointSizeRubberBandResistanceGrowsTowardMinimum() {
+    func mapped(_ raw: CGFloat) -> CGFloat {
+      TerminalBitmapView.zoomPointSize(
+        base: 14,
+        accumulatedMagnification: raw / 14 - 1,
+        fractional: true)
+    }
+    let upperStep = mapped(9.5) - mapped(9.0)
+    let lowerStep = mapped(9.0) - mapped(8.5)
+    XCTAssertGreaterThan(upperStep, lowerStep)
+  }
+
   func testZoomPointSizeIsMonotonicInAccumulator() {
     var previous = -Double.greatestFiniteMagnitude
     for hundredths in stride(from: -50, through: 200, by: 1) {
@@ -423,12 +455,140 @@ final class ContinuousZoomTests: XCTestCase {
     assertResting("after stray changed/ended with no gesture")
   }
 
+  func testSlugGestureUsesFractionalProjectionPath() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    let defaults = UserDefaults.standard
+    let savedSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
+    defer {
+      if let savedSize {
+        defaults.set(savedSize, forKey: FontAtlas.userFontSizeKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+      }
+    }
+    defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+
+    harness.view.applyRendererSelection(.slugGlyph)
+    let initial = harness.view.debugZoomState()
+    guard initial["backend"] as? String == RendererSelection.slugGlyph.rawValue,
+      initial["fractional"] as? Bool == true
+    else {
+      throw XCTSkip("slug backend not active (no GPU or pipeline unavailable)")
+    }
+    let reflowsBefore = harness.view.debugGridReflowCount
+
+    _ = harness.view.debugApplyPinch(magnification: 0, phase: "began")
+    let changed = harness.view.debugApplyPinch(magnification: 0.125, phase: "changed")
+    let target = try XCTUnwrap(changed["targetPointSize"] as? Double)
+    let atlasPointSize = try XCTUnwrap(changed["atlasPointSize"] as? Double)
+    let visualPointSize = try XCTUnwrap(changed["visualPointSize"] as? Double)
+    let presentationScale = try XCTUnwrap(changed["presentationScale"] as? Double)
+    XCTAssertEqual(changed["backend"] as? String, RendererSelection.slugGlyph.rawValue)
+    XCTAssertEqual(changed["fractional"] as? Bool, true)
+    XCTAssertEqual(atlasPointSize, 14.0, accuracy: 1e-9)
+    XCTAssertEqual(visualPointSize, target, accuracy: 0.01)
+    XCTAssertEqual(presentationScale, target / 14.0, accuracy: 0.01)
+    XCTAssertEqual(
+      harness.view.debugGridReflowCount,
+      reflowsBefore,
+      "Slug continuous motion must not reflow the grid per event")
+
+    _ = harness.view.debugApplyPinch(magnification: 0, phase: "ended")
+    XCTAssertTrue(harness.view.debugZoomCommitPending)
+    harness.view.debugFlushZoomCommit()
+
+    let rested = harness.view.debugZoomState()
+    let restedPresentationScale = try XCTUnwrap(rested["presentationScale"] as? Double)
+    let restedAtlasPointSize = try XCTUnwrap(rested["atlasPointSize"] as? Double)
+    let restedVisualPointSize = try XCTUnwrap(rested["visualPointSize"] as? Double)
+    XCTAssertEqual(rested["backend"] as? String, RendererSelection.slugGlyph.rawValue)
+    XCTAssertEqual(rested["fractional"] as? Bool, true)
+    XCTAssertEqual(restedPresentationScale, 1.0, accuracy: 1e-9)
+    XCTAssertEqual(rested["gestureActive"] as? Bool, false)
+    XCTAssertEqual(restedAtlasPointSize, target, accuracy: 0.05)
+    XCTAssertEqual(restedVisualPointSize, target, accuracy: 0.05)
+  }
+
+  func testSlugZoomDebugStateReportsNoGeometryUploadStormDuringSweep() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    let defaults = UserDefaults.standard
+    let savedSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
+    defer {
+      if let savedSize {
+        defaults.set(savedSize, forKey: FontAtlas.userFontSizeKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+      }
+    }
+    defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+
+    harness.view.applyRendererSelection(.slugGlyph)
+    harness.write("Slug zoom debug glyphs 0123456789 abcdefghijklmnopqrstuvwxyz\r\n")
+    let rendered = harness.view.debugZoomState()
+    guard rendered["backend"] as? String == RendererSelection.slugGlyph.rawValue,
+      rendered["fractional"] as? Bool == true
+    else {
+      throw XCTSkip("slug backend not active (no GPU or pipeline unavailable)")
+    }
+    let uploadsBefore = try XCTUnwrap(rendered["geometryBufferUploadCount"] as? Int)
+    let buildsBefore = try XCTUnwrap(rendered["curveBufferBuildCount"] as? Int)
+    XCTAssertGreaterThan(uploadsBefore, 0, "the setup frame must exercise Slug glyph geometry")
+    XCTAssertGreaterThan(buildsBefore, 0, "the setup frame must build Slug glyph geometry")
+
+    _ = harness.view.debugApplyPinch(magnification: 0, phase: "began")
+    harness.view.advanceFrame()
+    let start = ContinuousClock.now
+    var lastState = harness.view.debugZoomState()
+    for _ in 0..<30 {
+      lastState = harness.view.debugApplyPinch(magnification: 0.006, phase: "changed")
+      harness.view.advanceFrame()
+      XCTAssertEqual(lastState["backend"] as? String, RendererSelection.slugGlyph.rawValue)
+      XCTAssertEqual(lastState["fractional"] as? Bool, true)
+      XCTAssertEqual(
+        lastState["geometryBufferUploadCount"] as? Int,
+        uploadsBefore,
+        "Slug zoom frames must not upload per-size glyph geometry")
+      XCTAssertEqual(
+        lastState["curveBufferBuildCount"] as? Int,
+        buildsBefore,
+        "Slug zoom frames must not rebuild per-size glyph curves")
+    }
+    let elapsed = (ContinuousClock.now - start).components
+    let elapsedMs = Double(elapsed.seconds) * 1_000 + Double(elapsed.attoseconds) / 1e15
+    XCTAssertLessThan(elapsedMs, 500, "debug Slug sweep should not stall the test harness")
+    XCTAssertEqual(lastState["gestureActive"] as? Bool, true)
+    XCTAssertGreaterThan(try XCTUnwrap(lastState["visualPointSize"] as? Double), 14.0)
+    let png = try XCTUnwrap(harness.view.debugFramePNG())
+    XCTAssertEqual(
+      Array(png.prefix(8)),
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      "scroll-debug screenshot seam must return a PNG for Slug")
+    try writeSlugZoomArtifactIfRequested(png: png, state: lastState)
+
+    _ = harness.view.debugApplyPinch(magnification: 0, phase: "ended")
+    harness.view.debugFlushZoomCommit()
+  }
+
   // MARK: - Harness
 
   private struct Harness {
     var model: AppModel
+    var session: Session
     var view: TerminalBitmapView
     var oldRenderer: String?
+
+    func write(_ raw: String) {
+      session.write(Array(raw.utf8))
+      view.advanceFrame()
+    }
 
     func restoreRenderer() {
       if let oldRenderer {
@@ -465,7 +625,30 @@ final class ContinuousZoomTests: XCTestCase {
       cellWidth: cellWidth,
       cellHeight: cellHeight)
     view.frame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
+    let activeTab = try XCTUnwrap(model.activeTab)
+    let session = try XCTUnwrap(model.session(forTab: activeTab.id))
 
-    return Harness(model: model, view: view, oldRenderer: oldRenderer)
+    return Harness(model: model, session: session, view: view, oldRenderer: oldRenderer)
+  }
+
+  private func writeSlugZoomArtifactIfRequested(png: Data, state: [String: Any]) throws {
+    guard let root = ProcessInfo.processInfo.environment["LABAN_SLUG_GLYPH_ARTIFACTS"],
+      !root.isEmpty
+    else { return }
+    let rootURL = URL(fileURLWithPath: root, isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    let pngURL = rootURL.appendingPathComponent("slug-glyph-m3-zoom-sweep.png")
+    try png.write(to: pngURL, options: .atomic)
+    let manifest = try JSONSerialization.data(
+      withJSONObject: [
+        "artifact": pngURL.path,
+        "backend": state["backend"] ?? "",
+        "fractional": state["fractional"] ?? false,
+        "visualPointSize": state["visualPointSize"] ?? 0,
+        "geometryBufferUploadCount": state["geometryBufferUploadCount"] ?? 0,
+        "curveBufferBuildCount": state["curveBufferBuildCount"] ?? 0,
+      ],
+      options: [.prettyPrinted, .sortedKeys])
+    try manifest.write(to: rootURL.appendingPathComponent("slug-glyph-m3-manifest.json"))
   }
 }

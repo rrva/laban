@@ -95,7 +95,7 @@ func usage() -> String {
     --temp-dir=PATH                 Use an isolated temp directory.
     --capture=NAME                  Start full capture recording immediately.
     --capture-screenshots=POLICY    final, all, none, or marked.
-    --renderer=NAME                 software, classic, gpuDriven, or vectorGlyph
+    --renderer=NAME                 software, classic, gpuDriven, vectorGlyph, or slugGlyph
                                     for the debug/headless renderer backend.
     --emoji-rendering=MODE          monochrome or color. Process-local override
                                     for autonomous renderer verification.

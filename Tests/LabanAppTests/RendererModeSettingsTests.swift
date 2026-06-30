@@ -52,6 +52,7 @@ final class RendererModeSettingsTests: XCTestCase {
         RendererMode.gpuDriven.isAvailableOnCurrentOS
           ? "GPU-driven Renderer" : "GPU-driven Renderer (requires macOS 26)",
         "Vector Glyph Renderer",
+        "Slug Glyph Renderer",
       ])
     XCTAssertEqual(submenu.items[0].state, .off)
     if RendererMode.gpuDriven.isAvailableOnCurrentOS {
@@ -62,6 +63,7 @@ final class RendererModeSettingsTests: XCTestCase {
       XCTAssertEqual(submenu.items[2].state, .off)
     }
     XCTAssertEqual(submenu.items[3].state, .off)
+    XCTAssertEqual(submenu.items[4].state, .off)
 
     controller.selectSoftware(nil)
 
@@ -70,6 +72,7 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertEqual(submenu.items[0].state, .on)
     XCTAssertEqual(submenu.items[1].state, .off)
     XCTAssertEqual(submenu.items[3].state, .off)
+    XCTAssertEqual(submenu.items[4].state, .off)
 
     let gpuItem = submenu.items[2]
     if #available(macOS 26, *) {
@@ -84,6 +87,7 @@ final class RendererModeSettingsTests: XCTestCase {
       XCTAssertEqual(submenu.items[1].state, .off)
       XCTAssertEqual(gpuItem.state, .on)
       XCTAssertEqual(submenu.items[3].state, .off)
+      XCTAssertEqual(submenu.items[4].state, .off)
 
       controller.selectClassic(nil)
 
@@ -93,6 +97,7 @@ final class RendererModeSettingsTests: XCTestCase {
       XCTAssertEqual(submenu.items[1].state, .on)
       XCTAssertEqual(gpuItem.state, .off)
       XCTAssertEqual(submenu.items[3].state, .off)
+      XCTAssertEqual(submenu.items[4].state, .off)
     } else {
       XCTAssertEqual(gpuItem.title, "GPU-driven Renderer (requires macOS 26)")
       XCTAssertFalse(gpuItem.isEnabled)
@@ -107,6 +112,17 @@ final class RendererModeSettingsTests: XCTestCase {
     XCTAssertEqual(submenu.items[1].state, .off)
     XCTAssertEqual(submenu.items[2].state, .off)
     XCTAssertEqual(submenu.items[3].state, .on)
+    XCTAssertEqual(submenu.items[4].state, .off)
+
+    controller.selectSlugGlyph(nil)
+
+    XCTAssertEqual(RendererSelection.persisted(defaults: defaults), .slugGlyph)
+    XCTAssertEqual(applied.last, .slugGlyph)
+    XCTAssertEqual(submenu.items[0].state, .off)
+    XCTAssertEqual(submenu.items[1].state, .off)
+    XCTAssertEqual(submenu.items[2].state, .off)
+    XCTAssertEqual(submenu.items[3].state, .off)
+    XCTAssertEqual(submenu.items[4].state, .on)
   }
 
   func testRendererSelectionSoftwarePersistsAndUsesSoftwareBackend() throws {

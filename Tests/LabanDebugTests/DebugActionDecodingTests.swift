@@ -68,6 +68,14 @@ final class DebugActionDecodingTests: XCTestCase {
     XCTAssertEqual(request.renderer, "vectorGlyph")
   }
 
+  func testSetRendererSchemaIncludesSlugGlyph() throws {
+    let schema = SetRendererActionRequest.jsonSchema.toJSONSchema()
+    let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+    let renderer = try XCTUnwrap(properties["renderer"] as? [String: Any])
+    let values = try XCTUnwrap(renderer["enum"] as? [String])
+    XCTAssertTrue(values.contains("slugGlyph"))
+  }
+
   func testDecodesSetPreeditPayloadFromFlatWireShape() throws {
     guard
       case .setPreedit(let request) = try decode(

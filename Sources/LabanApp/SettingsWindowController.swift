@@ -691,6 +691,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         ? "GPU-driven (Metal)" : "GPU-driven (requires macOS 26)"
     case .vectorGlyph:
       return "Vector Glyph"
+    case .slugGlyph:
+      return "Slug Glyph"
     }
   }
 

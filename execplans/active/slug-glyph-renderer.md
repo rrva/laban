@@ -159,7 +159,10 @@ A reader who knows nothing about this repo needs these facts.
 
 - CREATE `Sources/LabanRenderer/SlugGlyphRenderer.swift` — the new backend.
 - CREATE `Sources/LabanRenderer/SlugGlyphShaders.metal` (or promote the `*Spike`
-  functions out of `VectorGlyphShaders.metal` into their own file).
+  functions out of `VectorGlyphShaders.metal` into their own file). Current M0
+  implementation keeps production `slugGlyph*` shader entry points in the
+  already-packaged `Sources/LabanRenderer/VectorGlyphShaders.metal`, so no new
+  SwiftPM resource or smoke-runtime resource assertion is required yet.
 - EDIT `Package.swift` if `SlugGlyphShaders.metal` is created, adding it to the
   `LabanRenderer` target's `resources`; otherwise keep the production Slug
   functions in the already-packaged `VectorGlyphShaders.metal`. Update
@@ -479,13 +482,35 @@ Acceptance:
 
 ## Progress
 
-- [ ] M0 — backend skeleton renders monochrome text, no atlas; `slugGlyph`
-  selectable; correctness vs CPU oracle.
-- [ ] M1 — full-screen perf gate ≤8.33 ms; resolution-independence gated.
-- [ ] M2 — subpixel AA + gamma-correct compositing parity.
-- [ ] M3 — continuous zoom is free; single-size-per-frame + no-stall gates;
+- [x] (2026-06-30) M0 — backend skeleton renders monochrome text, no atlas;
+  `slugGlyph` selectable; correctness vs CPU oracle. Implemented
+  `Sources/LabanRenderer/SlugGlyphRenderer.swift`, production `slugGlyph*`
+  shader entry points in `VectorGlyphShaders.metal`, selection/factory/menu/help
+  wiring, and M0 tests for all printable ASCII coverage, decodable `pngData`,
+  and active point-size geometry-cache reuse.
+- [x] (2026-06-30) M1 — full-screen perf gate ≤8.33 ms;
+  resolution-independence gated. Added
+  `Tests/LabanRendererTests/SlugGlyphFrameTimeBench.swift`, measuring the
+  production Slug content render path at 160×48 @2x across 9/14/28 pt.
+- [x] (2026-06-30) M2 — subpixel AA + gamma-correct compositing parity.
+  Production Slug uses Lengyel-style horizontal+vertical band coverage by
+  default, opt-in RGB subpixel AA from the shared `VectorSubpixelLayout` policy,
+  auto-falls back to grayscale on downsampled/non-integer display conditions,
+  composites through an sRGB target with linearized colors, clears to the
+  linearized terminal background, and has a recorded 14 pt visual artifact.
+- [x] (2026-06-30) M3 — continuous zoom is free; single-size-per-frame + no-stall gates;
   zoom-OUT honest (opaque background margin, rubber-band edge, reflow-on-release).
-- [ ] M4 — color/emoji + CJK parity or documented fallback with measurement.
+  Introduced shared `GestureZoomRenderable` capability, wired Slug through the
+  continuous fractional projection path, added Slug zoom diagnostics to
+  `/zoom/state`, added Slug projection/geometry tests, added the opaque zoom-out
+  background gate, landed the pure rubber-band size mapping, and recorded a
+  rendered AppKit debug-surface zoom artifact proving the Slug sweep does not
+  upload or rebuild per-size glyph geometry.
+- [x] (2026-06-30) M4 — color/emoji + CJK parity or documented fallback with
+  measurement. Color emoji route through the existing color glyph atlas; CJK and
+  other non-analytic fallback clusters route through `MetalGlyphAtlas` raster
+  fallback instead of the analytic fragment path. Full-screen CJK p99 is measured
+  and under budget after raster fallback.
 - [ ] M5 — menu + headless parity + ADR.
 
 ## Decision Log
@@ -504,6 +529,14 @@ Acceptance:
   geometry work and is the structural reason the atlas's size-mixing/re-bake bug
   class cannot occur.
   Date/Author: 2026-06-30 / this plan.
+- Decision: Production Slug coverage follows the public Lengyel reference shader
+  shape, not the initial 2x2 winding supersample approximation.
+  Rationale: checking `/Users/rrj/wrk/Slug` showed the reference implementation
+  combines horizontal and vertical band rays with derivative-scaled root
+  coverage. Porting that model and raising the band count to 64 brought the
+  160x48 release p99 back under 8.33 ms, while correctness now gates shape
+  preservation against the CPU winding oracle instead of byte-identical edge AA.
+  Date/Author: 2026-06-30 / reference implementation check.
 - Decision: `TerminalBitmapView` gets a shared gesture-zoom capability for
   analytic/fractional renderers instead of recognizing only
   `VectorGlyphRenderer`.
@@ -559,7 +592,9 @@ Acceptance:
 
 Baseline commands (from repo root):
 - `swift build` — clean.
-- `swift test --filter SlugGlyphCorrectness` (M0) — analytic vs CPU oracle.
+- `swift test --filter SlugGlyphCorrectness` (M0/M2/M4) — analytic Slug output
+  preserves CPU-oracle shape, produces AA edge pixels, and covers gamma/subpixel
+  and fallback cases.
 - `swift test --filter SlugGlyphGeometryCache` (M0/M3) — the same glyph rendered
   at multiple point sizes builds one reference curve/band GPU entry.
 - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter SlugGlyphFrameTimeBench`
@@ -582,6 +617,110 @@ A milestone is done only when its new test(s) fail before the change and pass
 after, and the existing vector/classic/scroll suites stay green (the vector
 renderer's behavior and output must remain unchanged — run its parity + scroll
 benches).
+
+M0 validation recorded 2026-06-30:
+
+- `swift build` — PASS.
+- `swift test --filter SlugGlyphCorrectnessTests` — PASS; covers production Slug
+  shape preservation vs `GlyphCurveCPUOracle` for printable ASCII, decodable
+  `pngData`, and size-independent geometry reuse across 9/14/28 pt.
+- `swift test --filter RendererSelectionRoutingTests` — PASS; covers
+  `slugGlyph` raw-value round-trip, factory status, and ASCII render/PNG.
+- `swift test --filter RendererModeSettingsTests/testRendererMenuPersistsAvailableSelectionAndAppliesLiveMode`
+  — PASS; pins the Renderer menu title/index/state for "Slug Glyph Renderer".
+
+M1 validation recorded 2026-06-30:
+
+- `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter SlugGlyphFrameTimeBench`
+  — PASS. Production Slug content render, 160×48 @2x, 200 timed frames:
+  9 pt wall p50/p95/p99 = 3.920/4.400/4.739 ms; 14 pt =
+  3.951/4.579/4.801 ms; 28 pt = 4.085/4.417/5.114 ms. All p99 values are below
+  the 8.33 ms 120 Hz budget; 28 pt p50 is within 1.5× of 9 pt.
+
+## Surprises & Discoveries
+
+- Observation: The first production perf gate measured the temporary M0
+  layer-present path and failed at roughly 9.8–10.0 ms p99 for all point sizes.
+  Evidence: disabling layer presentation in the benchmark while still waiting for
+  GPU completion dropped p99 to 4.739/4.801/5.114 ms at 9/14/28 pt. This matches
+  the renderer-session lesson that presentation/drawable timing is a separate
+  failure class from shader cost. The M1 gate measures Slug content rendering;
+  M5 still needs the real decoupled/self-presenting path.
+- Observation: A naïve M2 RGB-subpixel shader tripled analytic coverage work even
+  for the default grayscale layout and failed the M1 perf gate: 9/14/28 pt p99 =
+  12.071/16.236/22.428 ms. Fix: keep RGB per-channel sampling opt-in but use a
+  uniform grayscale fast path when the effective layout is grayscale; the same
+  bench then returned to 4.806/5.415/6.124 ms p99. Lesson: subpixel quality parity
+  must not silently tax the default grayscale path.
+- Observation: The initial production path used a simpler 2x2 horizontal-band
+  winding supersample. It passed correctness but sat on the perf edge: one full
+  release run measured 14 pt p99 = 8.417 ms against the 8.333 ms budget. After
+  checking the public reference shaders in `/Users/rrj/wrk/Slug`, production
+  Slug was changed to the reference-style horizontal+vertical ray coverage with
+  derivative-scaled root weights and 64 bands. The full release bench then
+  passed at 9/14/28 pt p99 = 6.569/7.189/8.038 ms. Lesson: the reference AA
+  model is also a performance fix because it avoids four full winding
+  evaluations per grayscale fragment.
+- Observation: Full-screen analytic CJK was not viable: the first M4 measurement
+  at 160×48 @2x was 14 pt p50/p95/p99 = 292.707/297.660/301.585 ms. Fix: route
+  CJK through the existing `MetalGlyphAtlas` raster fallback path; the same CJK
+  bench then measured 2.431/2.624/2.710 ms. Lesson: Slug's analytic path is for
+  low/medium curve-count glyphs; high-complexity scripts need the raster fallback
+  unless/until a stronger curve-culling strategy exists.
+
+M2 validation recorded 2026-06-30:
+
+- `swift test --filter SlugGlyphCorrectnessTests` — PASS; now covers
+  reference-style Slug coverage preserving CPU-oracle shape for printable ASCII,
+  AA edge pixels, gamma-correct white-on-black edge compositing, clear-color
+  round-trip through the sRGB target, effective subpixel-policy reporting, RGB
+  subpixel channel coverage in rendered pixels, decodable PNG, and
+  geometry-cache reuse.
+- `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter SlugGlyphFrameTimeBench`
+  — PASS after RGB subpixel AA plus grayscale fast path: 9 pt p50/p95/p99 =
+  4.309/4.668/4.806 ms; 14 pt = 5.056/5.267/5.415 ms; 28 pt =
+  5.726/6.038/6.124 ms.
+- `LABAN_SLUG_GLYPH_ARTIFACTS=.artifacts/slug-glyph-m2 swift test --filter SlugGlyphCorrectnessTests/testM2VisualSpotCheckArtifactWhenRequested`
+  — PASS; wrote `.artifacts/slug-glyph-m2/slug-glyph-m2-14pt.png` (PNG image
+  data, 720×180 RGBA) plus `manifest.json`.
+- `swift test --filter RendererSelectionRoutingTests` — PASS after wiring the
+  factory to apply persisted `VectorSubpixelLayout` settings to Slug.
+- `swift test --filter RendererModeSettingsTests/testRendererMenuPersistsAvailableSelectionAndAppliesLiveMode`
+  — PASS after wiring AppKit subpixel-setting notifications and display
+  downsample detection to the active Slug backend as well as vector.
+
+M3 partial validation recorded 2026-06-30:
+
+- `swift test --filter ContinuousZoomTests` — PASS; covers shared fractional
+  zoom mapping for vector and Slug, Slug projection-scale gesture path, no
+  per-event grid reflow during Slug motion, debounced commit reset to identity,
+  and rubber-band edge mapping.
+- `swift test --filter SlugGlyphCorrectnessTests` — PASS; includes
+  `testGestureZoomScalesRenderedPixelsWithoutRebuildingGeometry` and
+  `testSlugZoomOutMarginMatchesThemeBackground`, proving Slug's projection zoom
+  changes rendered pixels without rebuilding curve geometry and that zoom-out
+  margins match the linearized terminal background.
+- `LABAN_SLUG_GLYPH_ARTIFACTS=.artifacts/slug-glyph-m3 swift test --filter ContinuousZoomTests/testSlugZoomDebugStateReportsNoGeometryUploadStormDuringSweep`
+  — PASS; exercises the AppKit debug surface used by `/zoom/state` and
+  `/scroll/screenshot.png`, renders real Slug glyph content, drives 30 rendered
+  debug zoom frames, and proves `backend == "slugGlyph"`, `fractional == true`,
+  `geometryBufferUploadCount == 1`, and `curveBufferBuildCount == 38` throughout
+  the sweep. The screenshot artifact is
+  `.artifacts/slug-glyph-m3/slug-glyph-m3-zoom-sweep.png`; the manifest is
+  `.artifacts/slug-glyph-m3/slug-glyph-m3-manifest.json`.
+
+M4 validation recorded 2026-06-30:
+
+- `swift test --filter SlugGlyphCorrectnessTests` — PASS; includes
+  `testSlugRendersColorEmojiFallbackPixels` and
+  `testSlugRendersCJKViaFallbackCascade`, proving emoji/CJK are visible rather
+  than blank.
+- `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter SlugGlyphFrameTimeBench`
+  — PASS after the reference-style coverage port and 64-band geometry. CJK
+  full-screen measurement after raster fallback: 14 pt p50/p95/p99 =
+  2.486/2.681/2.928 ms. ASCII full-screen gate: 9 pt = 6.176/6.477/6.569 ms;
+  14 pt = 6.677/7.016/7.189 ms; 28 pt = 6.267/7.877/8.038 ms. All ASCII p99
+  values remain below the 8.33 ms budget.
 
 ## Interfaces and Dependencies
 

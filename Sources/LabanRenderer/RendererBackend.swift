@@ -47,6 +47,42 @@ public struct RendererStatus: Equatable, Sendable, Encodable {
   }
 }
 
+public struct RendererZoomDiagnostics: Equatable, Sendable {
+  public var glyphFontSizes: [Double]
+  public var rasterAtlasCellHeight: Double
+  public var quadHeights: [Int]
+  public var curveBufferBuildCount: Int?
+  public var geometryBufferUploadCount: Int?
+
+  public init(
+    glyphFontSizes: [Double] = [],
+    rasterAtlasCellHeight: Double = 0,
+    quadHeights: [Int] = [],
+    curveBufferBuildCount: Int? = nil,
+    geometryBufferUploadCount: Int? = nil
+  ) {
+    self.glyphFontSizes = glyphFontSizes
+    self.rasterAtlasCellHeight = rasterAtlasCellHeight
+    self.quadHeights = quadHeights
+    self.curveBufferBuildCount = curveBufferBuildCount
+    self.geometryBufferUploadCount = geometryBufferUploadCount
+  }
+}
+
+/// Optional capability for renderers that can scale the whole terminal surface
+/// during a continuous zoom gesture without rebuilding font resources per
+/// frame. The gesture scale is applied in the renderer's projection, not via a
+/// layer transform, so every presented frame uses the same transform.
+public protocol GestureZoomRenderable: AnyObject {
+  var supportsFractionalLiveZoom: Bool { get }
+  func setGestureZoom(_ factor: CGFloat, anchor: CGPoint)
+  var zoomDiagnostics: RendererZoomDiagnostics { get }
+}
+
+extension GestureZoomRenderable {
+  public var supportsFractionalLiveZoom: Bool { true }
+}
+
 /// Common surface contract for swappable rendering backends.
 ///
 /// Two backends ship today:

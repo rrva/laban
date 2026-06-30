@@ -10,6 +10,7 @@ final class RendererModeMenuController: NSObject {
   private var classicItem: NSMenuItem?
   private var gpuDrivenItem: NSMenuItem?
   private var vectorGlyphItem: NSMenuItem?
+  private var slugGlyphItem: NSMenuItem?
 
   init(
     defaults: UserDefaults = .standard,
@@ -57,6 +58,14 @@ final class RendererModeMenuController: NSObject {
     submenu.addItem(vectorGlyph)
     vectorGlyphItem = vectorGlyph
 
+    let slugGlyph = NSMenuItem(
+      title: "Slug Glyph Renderer",
+      action: #selector(selectSlugGlyph(_:)),
+      keyEquivalent: "")
+    slugGlyph.target = self
+    submenu.addItem(slugGlyph)
+    slugGlyphItem = slugGlyph
+
     syncMenuState()
     return parent
   }
@@ -75,6 +84,10 @@ final class RendererModeMenuController: NSObject {
 
   @objc func selectVectorGlyph(_ sender: Any?) {
     select(.vectorGlyph)
+  }
+
+  @objc func selectSlugGlyph(_ sender: Any?) {
+    select(.slugGlyph)
   }
 
   private var gpuDrivenTitle: String {
@@ -110,6 +123,7 @@ final class RendererModeMenuController: NSObject {
     classicItem?.state = selected == .classic ? .on : .off
     gpuDrivenItem?.state = selected == .gpuDriven ? .on : .off
     vectorGlyphItem?.state = selected == .vectorGlyph ? .on : .off
+    slugGlyphItem?.state = selected == .slugGlyph ? .on : .off
     gpuDrivenItem?.isEnabled = RendererMode.gpuDriven.isAvailableOnCurrentOS
     gpuDrivenItem?.title = gpuDrivenTitle
   }

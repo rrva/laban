@@ -7,12 +7,13 @@ public enum RendererSelection: String, Codable, CaseIterable, Sendable {
   case classic
   case gpuDriven
   case vectorGlyph
+  case slugGlyph
 
   public static let defaultsKey = RendererMode.defaultsKey
 
   public var isAvailableOnCurrentOS: Bool {
     switch self {
-    case .software, .classic, .vectorGlyph:
+    case .software, .classic, .vectorGlyph, .slugGlyph:
       return true
     case .gpuDriven:
       return RendererMode.gpuDriven.isAvailableOnCurrentOS
@@ -21,7 +22,7 @@ public enum RendererSelection: String, Codable, CaseIterable, Sendable {
 
   public var metalMode: RendererMode? {
     switch self {
-    case .software, .vectorGlyph:
+    case .software, .vectorGlyph, .slugGlyph:
       return nil
     case .classic:
       return .classic
@@ -156,5 +157,53 @@ public func makeRendererBackend(
         configuredRenderer: RendererSelection.vectorGlyph.rawValue,
         effectiveRenderer: RendererSelection.software.rawValue,
         fallbackReason: "vectorPipelineUnavailable"))
+
+  case .slugGlyph:
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      return SoftwareBackend(
+        fontAtlas: fontAtlas,
+        sidebarFontAtlas: sidebar,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: scale,
+        rendererStatus: RendererStatus(
+          configuredRenderer: RendererSelection.slugGlyph.rawValue,
+          effectiveRenderer: RendererSelection.software.rawValue,
+          fallbackReason: "noMetalDevice"))
+    }
+    if let slug = SlugGlyphRenderer(
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebar,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale)
+    {
+      slug.setSubpixelLayout(VectorSubpixelLayout.persisted())
+      return slug
+    }
+    if let classic = MetalRenderer(
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebar,
+      scale: scale,
+      rendererMode: .classic)
+    {
+      classic.resize(pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale)
+      classic.overrideRendererStatus(
+        RendererStatus(
+          configuredRenderer: RendererSelection.slugGlyph.rawValue,
+          effectiveRenderer: RendererSelection.classic.rawValue,
+          fallbackReason: "slugPipelineUnavailable"))
+      return classic
+    }
+    return SoftwareBackend(
+      fontAtlas: fontAtlas,
+      sidebarFontAtlas: sidebar,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      rendererStatus: RendererStatus(
+        configuredRenderer: RendererSelection.slugGlyph.rawValue,
+        effectiveRenderer: RendererSelection.software.rawValue,
+        fallbackReason: "slugPipelineUnavailable"))
   }
 }

@@ -2416,3 +2416,12 @@ private func configureAdditiveRGBPreserveAlphaBlend(
   attachment.sourceAlphaBlendFactor = .zero
   attachment.destinationAlphaBlendFactor = .one
 }
+
+extension VectorGlyphRenderer: GestureZoomRenderable {
+  public var zoomDiagnostics: RendererZoomDiagnostics {
+    RendererZoomDiagnostics(
+      glyphFontSizes: lastFrameGlyphFontSizes,
+      rasterAtlasCellHeight: lastFrameRasterAtlasCellHeight,
+      quadHeights: lastFrameQuadHeights)
+  }
+}

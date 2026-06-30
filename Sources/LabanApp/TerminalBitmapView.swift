@@ -733,15 +733,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     vectorSubpixelLayoutObserver = NotificationCenter.default.addObserver(
       forName: VectorSubpixelLayout.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
-      vector.setSubpixelLayout(VectorSubpixelLayout.persisted())
+      guard let self else { return }
+      let layout = VectorSubpixelLayout.persisted()
+      if let vector = self.backend as? VectorGlyphRenderer {
+        vector.setSubpixelLayout(layout)
+      } else if let slug = self.backend as? SlugGlyphRenderer {
+        slug.setSubpixelLayout(layout)
+      } else {
+        return
+      }
       // Confirm the live change landed: log the configured choice and the layout
       // actually rendered (the auto-policy may force grayscale). The visual delta
       // is sub-perceptual at small sizes on a 2x Retina panel, so this is the
       // reliable way to see the setting took effect.
       AppLog.render.info(
-        "vector subpixel layout configured=\(vector.subpixelLayout.name) "
-          + "effective=\(vector.rendererStatus.vectorSubpixelLayout ?? "?")")
+        "text subpixel layout configured=\(layout.name) "
+          + "effective=\(self.backend.rendererStatus.vectorSubpixelLayout ?? "?")")
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()
@@ -802,7 +809,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         // fires (we posted `didChangeNotification`), and a quantizing re-apply
         // would snap it back to 17 — leaving the committed size off from what the
         // user released at. Classic/software still round (they need the ladder).
-        let fractional = self.backend is VectorGlyphRenderer
+        let fractional = self.backendSupportsFractionalLiveZoom
         self.applyFontSize(FontAtlas.persistedTerminalPointSize, quantize: !fractional)
       } else {
         self.lastObservedPersistedFontName = persistedName
@@ -1031,11 +1038,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
   }
 
-  /// Scale the whole vector canvas by `scale` for the duration of a continuous
-  /// zoom gesture. The glyph atlas is NOT re-rasterized during the gesture;
-  /// instead the renderer applies `scale` in its vertex projection so the
+  private var fractionalZoomBackend: (any GestureZoomRenderable)? {
+    backend as? any GestureZoomRenderable
+  }
+
+  private var backendSupportsFractionalLiveZoom: Bool {
+    fractionalZoomBackend?.supportsFractionalLiveZoom == true
+  }
+
+  /// Scale the whole analytic canvas by `scale` for the duration of a continuous
+  /// zoom gesture. The renderer applies `scale` in its vertex projection so the
   /// background rect and every glyph scale uniformly, and it rides EVERY
-  /// presented frame.
+  /// presented frame without per-event font-resource rebuilds.
   ///
   /// This deliberately does not use a `CALayer.transform`: the vector backend
   /// self-presents a fresh drawable on every tick (a streaming terminal keeps
@@ -1050,10 +1064,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func setGestureZoomPresentationScale(_ scale: CGFloat) {
     let resolved = scale.isFinite && scale > 0 ? scale : 1
     debugGestureZoomScale = resolved
-    guard let vector = backend as? VectorGlyphRenderer else { return }
+    guard let zoomable = fractionalZoomBackend else { return }
     // Anchor at the surface centre, in device pixels (y-up from bottom-left).
     let anchor = CGPoint(x: CGFloat(lastPixelWidth) / 2, y: CGFloat(lastPixelHeight) / 2)
-    vector.setGestureZoom(resolved, anchor: anchor)
+    zoomable.setGestureZoom(resolved, anchor: anchor)
     renderInvalidated = true
     invalidateRenderAndWake()
   }
@@ -1867,18 +1881,27 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   /// Detect whether the window's display is in a scaled (downsampled) mode and
-  /// push it to the vector backend, whose subpixel auto-policy falls back to
+  /// push it to analytic text backends, whose subpixel auto-policy falls back to
   /// grayscale when downsampled. Returns whether the backend's effective layout
-  /// changed (the backend no-ops an unchanged value). Non-vector backends ignore
-  /// this — they have no subpixel path.
+  /// changed (the backend no-ops an unchanged value). Other backends ignore this
+  /// because they have no subpixel path.
   @discardableResult
   private func updateDisplayDownsampledState() -> Bool {
-    guard let vector = backend as? VectorGlyphRenderer else { return false }
     let downsampled = DisplayDownsampleDetector.isDownsampled(for: window)
-    let changed = vector.setDisplayDownsampled(downsampled)
+    let rendererName: String
+    let changed: Bool
+    if let vector = backend as? VectorGlyphRenderer {
+      rendererName = "vector"
+      changed = vector.setDisplayDownsampled(downsampled)
+    } else if let slug = backend as? SlugGlyphRenderer {
+      rendererName = "slug"
+      changed = slug.setDisplayDownsampled(downsampled)
+    } else {
+      return false
+    }
     if changed {
       AppLog.render.info(
-        "vector subpixel layout -> \(vector.rendererStatus.vectorSubpixelLayout ?? "?") "
+        "\(rendererName) subpixel layout -> \(backend.rendererStatus.vectorSubpixelLayout ?? "?") "
           + "(displayDownsampled=\(downsampled))")
     }
     return changed
@@ -3904,6 +3927,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         pixelWidth: lastPixelWidth,
         pixelHeight: lastPixelHeight,
         scale: lastSurfaceScale)
+    } else if let slug = backend as? SlugGlyphRenderer {
+      slug.reconfigureFonts(fontAtlas: newFontAtlas, sidebarFontAtlas: newSidebarFontAtlas)
+      slug.resize(
+        pixelWidth: lastPixelWidth,
+        pixelHeight: lastPixelHeight,
+        scale: lastSurfaceScale)
     } else {
       // SoftwareRenderer rasterizes from its FontAtlas every frame and is
       // wired to one surface; recreate the backend with the new atlases at
@@ -4024,8 +4053,33 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   ) -> CGFloat {
     let target = base * (1 + accumulatedMagnification)
     return fractional
-      ? FontAtlas.clampedFractionalZoomPointSize(target)
+      ? rubberBandedFractionalZoomPointSize(target)
       : FontAtlas.clampedZoomPointSize(target)
+  }
+
+  private static let zoomRubberBandRange: CGFloat = 2
+
+  private static func rubberBandedFractionalZoomPointSize(_ target: CGFloat) -> CGFloat {
+    let minimum = FontAtlas.zoomMinimumPointSize
+    let maximum = FontAtlas.zoomMaximumPointSize
+    let range = min(zoomRubberBandRange, (maximum - minimum) / 2)
+    guard range > 0 else { return FontAtlas.clampedFractionalZoomPointSize(target) }
+    if target <= minimum { return minimum }
+    if target >= maximum { return maximum }
+
+    let lowOnset = minimum + range
+    if target < lowOnset {
+      let t = (target - minimum) / range
+      return minimum + range * t * t
+    }
+
+    let highOnset = maximum - range
+    if target > highOnset {
+      let t = (target - highOnset) / range
+      return highOnset + range * t * t
+    }
+
+    return target
   }
 
   /// Drive a continuous-zoom gesture (trackpad pinch and Cmd+scroll share this
@@ -4073,7 +4127,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     zoomGestureAccumulatedMagnification += delta
 
-    let fractional = backend is VectorGlyphRenderer
+    let fractional = backendSupportsFractionalLiveZoom
     let base = zoomGestureBasePointSize ?? fontAtlas.pointSize
     let target = Self.zoomPointSize(
       base: base,
@@ -4154,7 +4208,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // Clear the projection zoom WITHOUT waking a render — `applyFontSize` below
     // produces the single commit frame, so the reset and the atlas swap are
     // atomic (no intermediate small-text frame).
-    (backend as? VectorGlyphRenderer)?.setGestureZoom(1, anchor: .zero)
+    fractionalZoomBackend?.setGestureZoom(1, anchor: .zero)
     debugGestureZoomScale = 1
     // Apply the real size + grid with a SYNCHRONOUS commit frame
     // (forceSynchronousFrame:true). The self-presenting vector renderer drives
@@ -4274,7 +4328,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     // Compute the size this event TARGETS (same math the gesture uses), so the
     // harness can assert the visual size matches it and never overshoots.
-    let fractional = backend is VectorGlyphRenderer
+    let fractional = backendSupportsFractionalLiveZoom
     let base = zoomGestureBasePointSize ?? fontAtlas.pointSize
     let target = Self.zoomPointSize(
       base: base, accumulatedMagnification: zoomGestureAccumulatedMagnification + magnification,
@@ -4297,7 +4351,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     let n = max(1, min(steps, 2000))
 
     // Start the gesture from `from`: apply it as the resting size first.
-    applyFontSize(from, quantize: !(backend is VectorGlyphRenderer), persist: false)
+    applyFontSize(from, quantize: !backendSupportsFractionalLiveZoom, persist: false)
 
     var maxOvershoot = 0.0
     var maxAbsError = 0.0
@@ -4346,6 +4400,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func debugZoomState() -> [String: Any] {
     let atlasPointSize = Double(fontAtlas.pointSize)
     let scale = Double(debugGestureZoomScale)
+    let zoomDiagnostics = fractionalZoomBackend?.zoomDiagnostics
     return [
       "atlasPointSize": atlasPointSize,
       "presentationScale": scale,
@@ -4356,22 +4411,23 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       "cellHeight": cellHeight,
       "cols": lastAppliedCols,
       "rows": lastAppliedRows,
-      "backend": backend is VectorGlyphRenderer
-        ? RendererSelection.vectorGlyph.rawValue : rendererSelection.rawValue,
-      "fractional": backend is VectorGlyphRenderer,
+      "backend": backend.rendererStatus.effectiveRenderer,
+      "fractional": backendSupportsFractionalLiveZoom,
       "gestureActive": zoomGestureBasePointSize != nil,
       "gridReflowCount": debugGridReflowCount,
       // Diagnostic for the "some glyphs wrong size" bug: the distinct font point
       // sizes drawn in the last frame (should be one terminal size, plus the
       // sidebar size), and the raster fallback atlas's built cell height. A
       // stray size here is the bug caught red-handed.
-      "lastFrameGlyphFontSizes": (backend as? VectorGlyphRenderer)?.lastFrameGlyphFontSizes ?? [],
+      "lastFrameGlyphFontSizes": zoomDiagnostics?.glyphFontSizes ?? [],
       "lastFrameRasterAtlasCellHeight":
-        (backend as? VectorGlyphRenderer)?.lastFrameRasterAtlasCellHeight ?? 0,
+        zoomDiagnostics?.rasterAtlasCellHeight ?? 0,
       // The actually-DRAWN glyph quad heights (device px). A stale large mask
       // reused for a small-font glyph shows here as an extra large height — the
       // double-image artifact the font-size list cannot detect.
-      "lastFrameQuadHeights": (backend as? VectorGlyphRenderer)?.lastFrameQuadHeights ?? [],
+      "lastFrameQuadHeights": zoomDiagnostics?.quadHeights ?? [],
+      "curveBufferBuildCount": zoomDiagnostics?.curveBufferBuildCount ?? 0,
+      "geometryBufferUploadCount": zoomDiagnostics?.geometryBufferUploadCount ?? 0,
     ]
   }
 

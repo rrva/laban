@@ -424,7 +424,7 @@ public struct SetRendererActionRequest: Codable, Sendable, Equatable, JSONSchema
     DebugPayloadSchema.object(
       [
         "renderer": SchemaNode.string(
-          enumValues: ["software", "classic", "gpuDriven", "vectorGlyph"],
+          enumValues: ["software", "classic", "gpuDriven", "vectorGlyph", "slugGlyph"],
           const: nil,
           format: nil,
           pattern: nil)

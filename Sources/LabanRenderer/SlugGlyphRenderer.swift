@@ -1,0 +1,1202 @@
+import CoreGraphics
+import CoreText
+import Foundation
+import Metal
+import QuartzCore
+
+private struct SlugSolidInstance {
+  var origin: SIMD2<Float>
+  var size: SIMD2<Float>
+  var color: SIMD4<Float>
+}
+
+private struct SlugTextureInstance {
+  var origin: SIMD2<Float>
+  var size: SIMD2<Float>
+  var uvOrigin: SIMD2<Float>
+  var uvSize: SIMD2<Float>
+  var color: SIMD4<Float>
+  var coverageExponent: Float
+}
+
+private struct SlugVectorUniforms {
+  var surfaceSizePixels: SIMD2<Float>
+  var scale: Float
+  var gestureZoom: Float = 1
+  var gestureZoomAnchor: SIMD2<Float> = .zero
+  var _pad: Float = 0
+}
+
+private struct SlugGlyphGPUCurve {
+  var p0: SIMD2<Float>
+  var p1: SIMD2<Float>
+  var p2: SIMD2<Float>
+}
+
+private struct SlugGlyphGPUGlyph {
+  var boundsMin: SIMD2<Float>
+  var boundsMax: SIMD2<Float>
+  var curveStart: UInt32
+  var curveCount: UInt32
+  var horizontalBandStart: UInt32
+  var horizontalBandCount: UInt32
+  var verticalBandStart: UInt32
+  var verticalBandCount: UInt32
+}
+
+private struct SlugGlyphGPUBand {
+  var indexStart: UInt32
+  var indexCount: UInt32
+}
+
+private struct SlugGlyphGPUInstance {
+  var originPx: SIMD2<Float>
+  var sizePx: SIMD2<Float>
+  var localMin: SIMD2<Float>
+  var localMax: SIMD2<Float>
+  var color: SIMD4<Float>
+  var glyphIndex: UInt32
+  var pad0: UInt32 = 0
+  var pad1: UInt32 = 0
+  var pad2: UInt32 = 0
+}
+
+private struct SlugGlyphGPUUniforms {
+  var surfaceSizePixels: SIMD2<Float>
+  var scale: Float
+  var gestureZoom: Float
+  var gestureZoomAnchor: SIMD2<Float>
+  var pad0: SIMD2<Float> = .zero
+  var subpixelRBounds: SIMD4<Float>
+  var subpixelGBounds: SIMD4<Float>
+  var subpixelBBounds: SIMD4<Float>
+  var subpixelMode: UInt32
+  var pad1: UInt32 = 0
+  var pad2: UInt32 = 0
+  var pad3: UInt32 = 0
+}
+
+private struct SlugGlyphGeometryKey: Hashable {
+  var postScriptName: String
+  var glyph: CGGlyph
+}
+
+private struct SlugGlyphEntry {
+  var key: SlugGlyphGeometryKey
+  var outline: GlyphCurveOutline
+  var glyphIndex: Int
+}
+
+/// Analytic, atlas-free glyph renderer based on Lengyel's Slug fragment path.
+///
+/// Ordinary outline glyphs use reference-size curve geometry plus horizontal and
+/// vertical band lists; color emoji and high-complexity CJK cells fall back to
+/// the existing raster atlas paths.
+public final class SlugGlyphRenderer: RendererBackend {
+  public static let referencePointSize: CGFloat = 14
+
+  private static let bandCount = 64
+
+  private let device: MTLDevice
+  private let queue: MTLCommandQueue
+  private let solidPipeline: MTLRenderPipelineState
+  private let glyphPipeline: MTLRenderPipelineState
+  private let rasterGlyphPipeline: MTLRenderPipelineState
+  private let colorGlyphPipeline: MTLRenderPipelineState
+  private let sampler: MTLSamplerState
+  public let layer: CAMetalLayer
+
+  public private(set) var fontAtlas: FontAtlas
+  public private(set) var sidebarFontAtlas: FontAtlas
+  private var referenceFontAtlas: FontAtlas
+  private var sidebarReferenceFontAtlas: FontAtlas
+
+  private let curveStore = GlyphCurveStore()
+  private var entriesByKey: [SlugGlyphGeometryKey: SlugGlyphEntry] = [:]
+  private var curves: [SlugGlyphGPUCurve] = []
+  private var glyphs: [SlugGlyphGPUGlyph] = []
+  private var bands: [SlugGlyphGPUBand] = []
+  private var bandIndices: [UInt32] = []
+  private var curveBuffer: MTLBuffer?
+  private var glyphBuffer: MTLBuffer?
+  private var bandBuffer: MTLBuffer?
+  private var bandIndexBuffer: MTLBuffer?
+  private var geometryBuffersDirty = false
+
+  private var targetTexture: MTLTexture?
+  private var lastCommandBuffer: MTLCommandBuffer?
+  private var rasterAtlas: MetalGlyphAtlas?
+  private var colorGlyphAtlas: ColorGlyphAtlas?
+  private var pixelWidth: Int
+  private var pixelHeight: Int
+  private var scale: CGFloat
+  public private(set) var gestureZoom: CGFloat = 1
+  public private(set) var gestureZoomAnchor: CGPoint = .zero
+  public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
+  private var displayDownsampled = false
+  public var effectiveSubpixelLayout: VectorSubpixelLayout {
+    VectorSubpixelLayout.effective(
+      configured: subpixelLayout,
+      scale: Double(scale),
+      downsampled: displayDownsampled)
+  }
+
+  public var onFrameCompleted: (() -> Void)?
+  public var waitForFrameCompletion: Bool = false
+  public var presentsToLayer: Bool = true
+
+  /// Number of size-independent glyph geometry entries built by this renderer.
+  /// Used by tests to prove active point-size changes do not rebuild curves/bands.
+  public private(set) var geometryEntryBuildCount = 0
+
+  /// Number of times the accumulated curve/band arrays were uploaded to GPU
+  /// buffers. This may advance when a new glyph appears, but not merely because
+  /// the same glyph is rendered at a different active point size.
+  public private(set) var geometryBufferUploadCount = 0
+  public private(set) var lastFrameGlyphFontSizes: [Double] = []
+  public private(set) var lastFrameQuadHeights: [Int] = []
+  private var frameGlyphFontSizes = Set<Double>()
+  private var frameQuadHeights = Set<Int>()
+  private var lastRasterFallbackGlyphs = 0
+
+  public var rendererStatus: RendererStatus {
+    RendererStatus(
+      configuredRenderer: RendererSelection.slugGlyph.rawValue,
+      effectiveRenderer: RendererSelection.slugGlyph.rawValue,
+      rasterFallbackGlyphs: lastRasterFallbackGlyphs,
+      vectorSubpixelLayout: effectiveSubpixelLayout.name)
+  }
+
+  public init?(
+    fontAtlas: FontAtlas,
+    sidebarFontAtlas: FontAtlas? = nil,
+    pixelWidth: Int = 1,
+    pixelHeight: Int = 1,
+    scale: CGFloat = 1
+  ) {
+    guard let device = MTLCreateSystemDefaultDevice(),
+      let queue = device.makeCommandQueue()
+    else { return nil }
+
+    let options = MTLCompileOptions()
+    if #available(macOS 15.0, *) {
+      options.mathMode = .safe
+    } else {
+      options.fastMathEnabled = false
+    }
+    guard
+      let url = LabanRendererResources.bundle?.url(
+        forResource: "VectorGlyphShaders",
+        withExtension: "metal"),
+      let source = try? String(contentsOf: url, encoding: .utf8),
+      let library = try? device.makeLibrary(source: source, options: options),
+      let solidVertex = library.makeFunction(name: "vectorSolidVertex"),
+      let solidFragment = library.makeFunction(name: "vectorSolidFragment"),
+      let textureVertex = library.makeFunction(name: "vectorGlyphVertex"),
+      let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
+      let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment"),
+      let glyphVertex = library.makeFunction(name: "slugGlyphVertex"),
+      let glyphFragment = library.makeFunction(name: "slugGlyphBandFragment")
+    else { return nil }
+
+    let layer = CAMetalLayer()
+    layer.device = device
+    layer.pixelFormat = .bgra8Unorm_srgb
+    layer.framebufferOnly = false
+    layer.contentsScale = max(scale, 1)
+    layer.drawableSize = CGSize(width: max(1, pixelWidth), height: max(1, pixelHeight))
+    layer.isOpaque = true
+    layer.maximumDrawableCount = 3
+    layer.allowsNextDrawableTimeout = true
+    layer.contentsGravity = .topLeft
+
+    let solidDescriptor = MTLRenderPipelineDescriptor()
+    solidDescriptor.label = "laban.slug.solid"
+    solidDescriptor.vertexFunction = solidVertex
+    solidDescriptor.fragmentFunction = solidFragment
+    solidDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSlugAlphaBlend(solidDescriptor.colorAttachments[0])
+
+    let glyphDescriptor = MTLRenderPipelineDescriptor()
+    glyphDescriptor.label = "laban.slug.glyph"
+    glyphDescriptor.vertexFunction = glyphVertex
+    glyphDescriptor.fragmentFunction = glyphFragment
+    glyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSlugAlphaBlend(glyphDescriptor.colorAttachments[0])
+
+    let rasterGlyphDescriptor = MTLRenderPipelineDescriptor()
+    rasterGlyphDescriptor.label = "laban.slug.raster-glyph"
+    rasterGlyphDescriptor.vertexFunction = textureVertex
+    rasterGlyphDescriptor.fragmentFunction = rasterGlyphFragment
+    rasterGlyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSlugAlphaBlend(rasterGlyphDescriptor.colorAttachments[0])
+
+    let colorGlyphDescriptor = MTLRenderPipelineDescriptor()
+    colorGlyphDescriptor.label = "laban.slug.color-glyph"
+    colorGlyphDescriptor.vertexFunction = textureVertex
+    colorGlyphDescriptor.fragmentFunction = colorGlyphFragment
+    colorGlyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSlugAlphaBlend(colorGlyphDescriptor.colorAttachments[0])
+
+    let samplerDescriptor = MTLSamplerDescriptor()
+    samplerDescriptor.minFilter = .nearest
+    samplerDescriptor.magFilter = .nearest
+    samplerDescriptor.sAddressMode = .clampToEdge
+    samplerDescriptor.tAddressMode = .clampToEdge
+
+    guard
+      let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
+      let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDescriptor),
+      let rasterGlyphPipeline = try? device.makeRenderPipelineState(descriptor: rasterGlyphDescriptor),
+      let colorGlyphPipeline = try? device.makeRenderPipelineState(descriptor: colorGlyphDescriptor),
+      let sampler = device.makeSamplerState(descriptor: samplerDescriptor)
+    else { return nil }
+
+    self.device = device
+    self.queue = queue
+    self.solidPipeline = solidPipeline
+    self.glyphPipeline = glyphPipeline
+    self.rasterGlyphPipeline = rasterGlyphPipeline
+    self.colorGlyphPipeline = colorGlyphPipeline
+    self.sampler = sampler
+    self.layer = layer
+    self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
+    self.referenceFontAtlas = fontAtlas.withPointSize(Self.referencePointSize)
+    self.sidebarReferenceFontAtlas = (sidebarFontAtlas ?? fontAtlas).withPointSize(
+      Self.referencePointSize)
+    self.pixelWidth = max(1, pixelWidth)
+    self.pixelHeight = max(1, pixelHeight)
+    self.scale = max(scale, 1)
+    self.colorGlyphAtlas = Self.makeColorGlyphAtlas(
+      device: device,
+      fontAtlas: fontAtlas,
+      scale: self.scale)
+    self.rasterAtlas = Self.makeRasterGlyphAtlas(
+      device: device,
+      fontAtlas: fontAtlas,
+      scale: self.scale)
+  }
+
+  public var surfaceWidth: Int { pixelWidth }
+  public var surfaceHeight: Int { pixelHeight }
+  public var surfaceScale: CGFloat { scale }
+  public var presentationLayer: CALayer? { layer }
+  public var presentationImage: CGImage? { nil }
+
+  public var pngData: Data? {
+    lastCommandBuffer?.waitUntilCompleted()
+    guard let targetTexture else { return nil }
+    let bytesPerRow = targetTexture.width * 4
+    var bytes = [UInt8](repeating: 0, count: bytesPerRow * targetTexture.height)
+    bytes.withUnsafeMutableBytes { raw in
+      guard let base = raw.baseAddress else { return }
+      targetTexture.getBytes(
+        base,
+        bytesPerRow: bytesPerRow,
+        from: MTLRegionMake2D(0, 0, targetTexture.width, targetTexture.height),
+        mipmapLevel: 0)
+    }
+
+    let bitmapInfo =
+      CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+      let image = CGImage(
+        width: targetTexture.width,
+        height: targetTexture.height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 32,
+        bytesPerRow: bytesPerRow,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent)
+    else { return nil }
+    return PNGEncoder.encode(image)
+  }
+
+  public func reconfigureFonts(fontAtlas: FontAtlas, sidebarFontAtlas: FontAtlas? = nil) {
+    self.fontAtlas = fontAtlas
+    self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
+    self.referenceFontAtlas = fontAtlas.withPointSize(Self.referencePointSize)
+    self.sidebarReferenceFontAtlas = (sidebarFontAtlas ?? fontAtlas).withPointSize(
+      Self.referencePointSize)
+    colorGlyphAtlas = Self.makeColorGlyphAtlas(
+      device: device,
+      fontAtlas: fontAtlas,
+      scale: scale)
+    rasterAtlas = Self.makeRasterGlyphAtlas(
+      device: device,
+      fontAtlas: fontAtlas,
+      scale: scale)
+  }
+
+  public func setSubpixelLayout(_ layout: VectorSubpixelLayout) {
+    subpixelLayout = layout
+  }
+
+  @discardableResult
+  public func setDisplayDownsampled(_ downsampled: Bool) -> Bool {
+    guard downsampled != displayDownsampled else { return false }
+    let previousEffective = effectiveSubpixelLayout
+    displayDownsampled = downsampled
+    return effectiveSubpixelLayout != previousEffective
+  }
+
+  public func setGestureZoom(_ factor: CGFloat, anchor: CGPoint) {
+    gestureZoom = factor.isFinite && factor > 0 ? factor : 1
+    gestureZoomAnchor = anchor
+  }
+
+  @discardableResult
+  public func resize(pixelWidth: Int, pixelHeight: Int, scale: CGFloat) -> Bool {
+    let pw = max(1, pixelWidth)
+    let ph = max(1, pixelHeight)
+    let newScale = max(scale, 1)
+    let changed = pw != self.pixelWidth || ph != self.pixelHeight || newScale != self.scale
+    let scaleChanged = newScale != self.scale
+    guard changed else { return false }
+    self.pixelWidth = pw
+    self.pixelHeight = ph
+    self.scale = newScale
+    layer.contentsScale = newScale
+    layer.drawableSize = CGSize(width: pw, height: ph)
+    targetTexture = nil
+    if scaleChanged {
+      colorGlyphAtlas = Self.makeColorGlyphAtlas(
+        device: device,
+        fontAtlas: fontAtlas,
+        scale: newScale)
+      rasterAtlas = Self.makeRasterGlyphAtlas(
+        device: device,
+        fontAtlas: fontAtlas,
+        scale: newScale)
+    }
+    return true
+  }
+
+  @discardableResult
+  public func render(_ commands: [FrameCommand], damage: RenderDamage) -> Bool {
+    guard let target = ensureTargetTexture(), let commandBuffer = queue.makeCommandBuffer()
+    else { return false }
+
+    var solids: [SlugSolidInstance] = []
+    var slugGlyphs: [SlugGlyphGPUInstance] = []
+    var rasterGlyphs: [SlugTextureInstance] = []
+    var colorGlyphs: [SlugTextureInstance] = []
+    frameGlyphFontSizes.removeAll(keepingCapacity: true)
+    frameQuadHeights.removeAll(keepingCapacity: true)
+    buildInstances(
+      commands: commands,
+      solids: &solids,
+      glyphs: &slugGlyphs,
+      rasterGlyphs: &rasterGlyphs,
+      colorGlyphs: &colorGlyphs)
+    lastFrameGlyphFontSizes = frameGlyphFontSizes.sorted()
+    lastFrameQuadHeights = frameQuadHeights.sorted()
+    lastRasterFallbackGlyphs = rasterGlyphs.count + colorGlyphs.count
+    guard ensureGeometryBuffersIfNeeded(glyphsNeeded: !slugGlyphs.isEmpty) else { return false }
+
+    let descriptor = MTLRenderPassDescriptor()
+    descriptor.colorAttachments[0].texture = target
+    descriptor.colorAttachments[0].loadAction = .clear
+    descriptor.colorAttachments[0].storeAction = .store
+    descriptor.colorAttachments[0].clearColor = Self.linearizedClearColor(commands)
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+      return false
+    }
+    encoder.label = "laban.slug.content"
+
+    var retainedBuffers: [MTLBuffer] = []
+    var vectorUniforms = SlugVectorUniforms(
+      surfaceSizePixels: SIMD2<Float>(Float(pixelWidth), Float(pixelHeight)),
+      scale: Float(scale),
+      gestureZoom: Float(gestureZoom),
+      gestureZoomAnchor: SIMD2<Float>(
+        Float(gestureZoomAnchor.x),
+        Float(gestureZoomAnchor.y)))
+
+    if !solids.isEmpty, let solidBuffer = makeBuffer(solids) {
+      retainedBuffers.append(solidBuffer)
+      encoder.setRenderPipelineState(solidPipeline)
+      encoder.setVertexBuffer(solidBuffer, offset: 0, index: 0)
+      encoder.setVertexBytes(
+        &vectorUniforms,
+        length: MemoryLayout<SlugVectorUniforms>.stride,
+        index: 1)
+      encoder.drawPrimitives(
+        type: .triangle,
+        vertexStart: 0,
+        vertexCount: 6,
+        instanceCount: solids.count)
+    }
+
+    if !slugGlyphs.isEmpty,
+      let instanceBuffer = makeBuffer(slugGlyphs),
+      let curveBuffer,
+      let glyphBuffer,
+      let bandBuffer,
+      let bandIndexBuffer
+    {
+      retainedBuffers.append(instanceBuffer)
+      encoder.setRenderPipelineState(glyphPipeline)
+      encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
+      var uniforms = glyphUniforms(width: pixelWidth, height: pixelHeight)
+      encoder.setVertexBytes(&uniforms, length: MemoryLayout<SlugGlyphGPUUniforms>.stride, index: 1)
+      encoder.setFragmentBytes(
+        &uniforms,
+        length: MemoryLayout<SlugGlyphGPUUniforms>.stride,
+        index: 4)
+      encoder.setFragmentBuffer(curveBuffer, offset: 0, index: 0)
+      encoder.setFragmentBuffer(glyphBuffer, offset: 0, index: 1)
+      encoder.setFragmentBuffer(bandBuffer, offset: 0, index: 2)
+      encoder.setFragmentBuffer(bandIndexBuffer, offset: 0, index: 3)
+      encoder.drawPrimitives(
+        type: .triangle,
+        vertexStart: 0,
+        vertexCount: 6,
+        instanceCount: slugGlyphs.count)
+    }
+
+    if !rasterGlyphs.isEmpty,
+      let rasterAtlas,
+      let rasterBuffer = makeBuffer(rasterGlyphs)
+    {
+      retainedBuffers.append(rasterBuffer)
+      encoder.setRenderPipelineState(rasterGlyphPipeline)
+      encoder.setVertexBuffer(rasterBuffer, offset: 0, index: 0)
+      encoder.setVertexBytes(
+        &vectorUniforms,
+        length: MemoryLayout<SlugVectorUniforms>.stride,
+        index: 1)
+      encoder.setFragmentTexture(rasterAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle,
+        vertexStart: 0,
+        vertexCount: 6,
+        instanceCount: rasterGlyphs.count)
+    }
+
+    if !colorGlyphs.isEmpty,
+      let colorGlyphAtlas,
+      let colorBuffer = makeBuffer(colorGlyphs)
+    {
+      retainedBuffers.append(colorBuffer)
+      encoder.setRenderPipelineState(colorGlyphPipeline)
+      encoder.setVertexBuffer(colorBuffer, offset: 0, index: 0)
+      encoder.setVertexBytes(
+        &vectorUniforms,
+        length: MemoryLayout<SlugVectorUniforms>.stride,
+        index: 1)
+      encoder.setFragmentTexture(colorGlyphAtlas.texture, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.drawPrimitives(
+        type: .triangle,
+        vertexStart: 0,
+        vertexCount: 6,
+        instanceCount: colorGlyphs.count)
+    }
+
+    encoder.endEncoding()
+
+    if presentsToLayer,
+      let drawable = layer.nextDrawable(),
+      drawable.texture.width == target.width,
+      drawable.texture.height == target.height,
+      let blit = commandBuffer.makeBlitCommandEncoder()
+    {
+      blit.label = "laban.slug.present-blit"
+      blit.copy(
+        from: target,
+        sourceSlice: 0,
+        sourceLevel: 0,
+        sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+        sourceSize: MTLSize(width: target.width, height: target.height, depth: 1),
+        to: drawable.texture,
+        destinationSlice: 0,
+        destinationLevel: 0,
+        destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+      blit.endEncoding()
+      commandBuffer.present(drawable)
+    }
+
+    let completion = onFrameCompleted
+    commandBuffer.addCompletedHandler { _ in
+      _ = retainedBuffers
+      completion?()
+    }
+    commandBuffer.commit()
+    lastCommandBuffer = commandBuffer
+    if waitForFrameCompletion {
+      commandBuffer.waitUntilCompleted()
+    }
+    return true
+  }
+
+  public func referenceOutline(for scalar: Unicode.Scalar) -> GlyphCurveOutline? {
+    ensureGlyph(for: Character(String(scalar)), referenceAtlas: referenceFontAtlas)?.outline
+  }
+
+  public func coverageMask(
+    for scalar: Unicode.Scalar,
+    origin: CGPoint,
+    width: Int,
+    height: Int
+  ) -> [UInt8]? {
+    guard width > 0, height > 0 else { return nil }
+    guard let entry = ensureGlyph(
+      for: Character(String(scalar)),
+      referenceAtlas: referenceFontAtlas)
+    else { return nil }
+    guard ensureGeometryBuffersIfNeeded(glyphsNeeded: true) else { return nil }
+    guard let texture = makeTexture(pixelWidth: width, pixelHeight: height, storageMode: .shared)
+    else { return nil }
+    guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
+
+    let instance = SlugGlyphGPUInstance(
+      originPx: .zero,
+      sizePx: SIMD2<Float>(Float(width), Float(height)),
+      localMin: SIMD2<Float>(Float(origin.x), Float(origin.y)),
+      localMax: SIMD2<Float>(Float(origin.x + CGFloat(width)), Float(origin.y + CGFloat(height))),
+      color: SIMD4<Float>(1, 1, 1, 1),
+      glyphIndex: UInt32(entry.glyphIndex))
+    guard let instanceBuffer = makeBuffer([instance]) else { return nil }
+
+    let pass = MTLRenderPassDescriptor()
+    pass.colorAttachments[0].texture = texture
+    pass.colorAttachments[0].loadAction = .clear
+    pass.colorAttachments[0].storeAction = .store
+    pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass),
+      let curveBuffer,
+      let glyphBuffer,
+      let bandBuffer,
+      let bandIndexBuffer
+    else { return nil }
+    encoder.setRenderPipelineState(glyphPipeline)
+    encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
+    var uniforms = glyphUniforms(
+      width: width,
+      height: height,
+      layout: .grayscale,
+      gestureZoomFactor: 1,
+      gestureZoomAnchorPoint: .zero)
+    encoder.setVertexBytes(&uniforms, length: MemoryLayout<SlugGlyphGPUUniforms>.stride, index: 1)
+    encoder.setFragmentBytes(
+      &uniforms,
+      length: MemoryLayout<SlugGlyphGPUUniforms>.stride,
+      index: 4)
+    encoder.setFragmentBuffer(curveBuffer, offset: 0, index: 0)
+    encoder.setFragmentBuffer(glyphBuffer, offset: 0, index: 1)
+    encoder.setFragmentBuffer(bandBuffer, offset: 0, index: 2)
+    encoder.setFragmentBuffer(bandIndexBuffer, offset: 0, index: 3)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: 1)
+    encoder.endEncoding()
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
+    guard commandBuffer.error == nil else { return nil }
+
+    var bytes = [UInt8](repeating: 0, count: width * height * 4)
+    bytes.withUnsafeMutableBytes { raw in
+      if let base = raw.baseAddress {
+        texture.getBytes(
+          base,
+          bytesPerRow: width * 4,
+          from: MTLRegionMake2D(0, 0, width, height),
+          mipmapLevel: 0)
+      }
+    }
+    var alpha = [UInt8](repeating: 0, count: width * height)
+    for index in alpha.indices {
+      alpha[index] = bytes[index * 4 + 3]
+    }
+    return alpha
+  }
+
+  private func buildInstances(
+    commands: [FrameCommand],
+    solids: inout [SlugSolidInstance],
+    glyphs: inout [SlugGlyphGPUInstance],
+    rasterGlyphs: inout [SlugTextureInstance],
+    colorGlyphs: inout [SlugTextureInstance]
+  ) {
+    for command in commands {
+      switch command {
+      case .rect(let rect, let color, _),
+        .cursor(let rect, let color),
+        .selection(let rect, let color),
+        .findMatch(let rect, let color),
+        .findSelected(let rect, let color):
+        solids.append(solid(rect: rect, color: color))
+
+      case .glyphRun(
+        let origin, let text, let foreground, let background, let attributes, let source,
+        let underlineStyle, let underlineColor, _
+      ):
+        appendGlyphRun(
+          text,
+          origin: origin,
+          foreground: foreground,
+          background: background,
+          attributes: attributes,
+          underlineStyle: underlineStyle,
+          underlineColor: underlineColor,
+          source: source,
+          solids: &solids,
+          glyphs: &glyphs,
+          rasterGlyphs: &rasterGlyphs,
+          colorGlyphs: &colorGlyphs)
+
+      case .clip, .texturedQuad:
+        break
+      }
+    }
+  }
+
+  private func appendGlyphRun(
+    _ text: String,
+    origin: CGPoint,
+    foreground: UInt32,
+    background: UInt32,
+    attributes: TextAttributes,
+    underlineStyle: UnderlineStyle,
+    underlineColor: UInt32?,
+    source: FrameSource,
+    solids: inout [SlugSolidInstance],
+    glyphs: inout [SlugGlyphGPUInstance],
+    rasterGlyphs: inout [SlugTextureInstance],
+    colorGlyphs: inout [SlugTextureInstance]
+  ) {
+    guard !attributes.contains(.invisible) else { return }
+    let activeAtlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
+    let referenceAtlas = source == .sidebar ? sidebarReferenceFontAtlas : referenceFontAtlas
+    let cellAdvance = activeAtlas.cellSize.width
+    let baseline = origin.y + activeAtlas.descent
+    if (background & 0xFF) > 0 {
+      solids.append(
+        solid(
+          rect: CGRect(
+            x: origin.x,
+            y: origin.y,
+            width: CGFloat(text.count) * cellAdvance,
+            height: activeAtlas.cellSize.height),
+          color: background))
+    }
+
+    let pointScale = activeAtlas.pointSize / Self.referencePointSize
+    let foregroundColor = slugColor(foreground)
+    frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
+    for (cellIndex, cluster) in text.enumerated() {
+      let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
+      let variant = activeAtlas.styledFontVariant(
+        bold: attributes.contains(.bold),
+        italic: attributes.contains(.italic))
+      if source != .sidebar,
+        ColorGlyphSupport.clusterMayBeColor(cluster),
+        let colorFallback = colorGlyphInstance(
+          cluster: cluster,
+          font: variant.font,
+          boldFallback: variant.boldFallback,
+          italicFallback: variant.italicFallback,
+          position: CGPoint(x: cellOriginX, y: origin.y))
+      {
+        colorGlyphs.append(colorFallback)
+        continue
+      }
+      if TerminalCJKFontPolicy.containsCJK(String(cluster)),
+        let fallback = rasterGlyphInstance(
+          cluster: cluster,
+          font: variant.font,
+          boldFallback: variant.boldFallback,
+          italicFallback: variant.italicFallback,
+          position: CGPoint(x: cellOriginX, y: origin.y),
+          color: foreground)
+      {
+        rasterGlyphs.append(fallback)
+        continue
+      }
+      guard let entry = ensureGlyph(
+        for: cluster,
+        referenceAtlas: referenceAtlas,
+        attributes: attributes)
+      else {
+        if let fallback = rasterGlyphInstance(
+          cluster: cluster,
+          font: variant.font,
+          boldFallback: variant.boldFallback,
+          italicFallback: variant.italicFallback,
+          position: CGPoint(x: cellOriginX, y: origin.y),
+          color: foreground)
+        {
+          rasterGlyphs.append(fallback)
+        }
+        continue
+      }
+      let bounds = entry.outline.bounds
+      let localPixelPad = CGFloat(1) / max(pointScale * scale, .ulpOfOne)
+      let localMin = SIMD2<Float>(
+        Float(bounds.minX - localPixelPad),
+        Float(bounds.minY - localPixelPad))
+      let localMax = SIMD2<Float>(
+        Float(bounds.maxX + localPixelPad),
+        Float(bounds.maxY + localPixelPad))
+      let instanceOrigin = SIMD2<Float>(
+        Float((cellOriginX + (bounds.minX - localPixelPad) * pointScale) * scale),
+        Float((baseline + (bounds.minY - localPixelPad) * pointScale) * scale))
+      let instanceSize = SIMD2<Float>(
+        max(0, Float((bounds.width + localPixelPad * 2) * pointScale * scale)),
+        max(0, Float((bounds.height + localPixelPad * 2) * pointScale * scale)))
+      guard instanceSize.x > 0, instanceSize.y > 0 else { continue }
+      frameQuadHeights.insert(Int((CGFloat(instanceSize.y) * gestureZoom).rounded()))
+      glyphs.append(
+        SlugGlyphGPUInstance(
+          originPx: instanceOrigin,
+          sizePx: instanceSize,
+          localMin: localMin,
+          localMax: localMax,
+          color: foregroundColor,
+          glyphIndex: UInt32(entry.glyphIndex)))
+    }
+
+    appendDecorations(
+      text: text,
+      origin: origin,
+      attributes: attributes,
+      underlineStyle: underlineStyle,
+      underlineColor: underlineColor,
+      atlas: activeAtlas,
+      foreground: foreground,
+      solids: &solids)
+  }
+
+  private func appendDecorations(
+    text: String,
+    origin: CGPoint,
+    attributes: TextAttributes,
+    underlineStyle: UnderlineStyle,
+    underlineColor: UInt32?,
+    atlas: FontAtlas,
+    foreground: UInt32,
+    solids: inout [SlugSolidInstance]
+  ) {
+    guard
+      let layout = TextDecorationLayout.make(
+        origin: origin,
+        cellCount: text.count,
+        attributes: attributes,
+        underlineStyle: underlineStyle,
+        cellAdvance: atlas.cellSize.width,
+        cellHeight: atlas.cellSize.height,
+        descent: atlas.descent,
+        scale: scale)
+    else { return }
+
+    let underlineRGBA = underlineColor ?? foreground
+    for rect in layout.underlineRects {
+      solids.append(solid(rect: rect, color: underlineRGBA))
+    }
+    if !layout.curlyUnderlinePoints.isEmpty {
+      for (start, end) in zip(
+        layout.curlyUnderlinePoints,
+        layout.curlyUnderlinePoints.dropFirst())
+      {
+        solids.append(
+          solid(
+            rect: CGRect(
+              x: start.x,
+              y: min(start.y, end.y),
+              width: max(end.x - start.x, layout.thickness),
+              height: max(layout.thickness, abs(end.y - start.y))),
+            color: underlineRGBA))
+      }
+    }
+    if let rect = layout.strikethroughRect {
+      solids.append(solid(rect: rect, color: foreground))
+    }
+    if let rect = layout.overlineRect {
+      solids.append(solid(rect: rect, color: foreground))
+    }
+  }
+
+  private func ensureGlyph(
+    for cluster: Character,
+    referenceAtlas: FontAtlas,
+    attributes: TextAttributes = []
+  ) -> SlugGlyphEntry? {
+    guard
+      let resolved = resolveGlyph(
+        for: cluster,
+        referenceAtlas: referenceAtlas,
+        attributes: attributes)
+    else { return nil }
+    let key = SlugGlyphGeometryKey(
+      postScriptName: FontAtlas.postScriptName(of: resolved.font),
+      glyph: resolved.glyph)
+    if let cached = entriesByKey[key] { return cached }
+    guard let outline = curveStore.outline(for: resolved.glyph, font: resolved.font) else {
+      return nil
+    }
+    guard !outline.curves.isEmpty else { return nil }
+
+    let glyphIndex = glyphs.count
+    let curveStart = curves.count
+    for curve in outline.curves {
+      curves.append(
+        SlugGlyphGPUCurve(
+          p0: SIMD2<Float>(Float(curve.p0.x), Float(curve.p0.y)),
+          p1: SIMD2<Float>(Float(curve.p1.x), Float(curve.p1.y)),
+          p2: SIMD2<Float>(Float(curve.p2.x), Float(curve.p2.y))))
+    }
+
+    let horizontalBandStart = bands.count
+    appendBands(outline: outline, curveStart: curveStart, axis: .horizontal)
+    let verticalBandStart = bands.count
+    appendBands(outline: outline, curveStart: curveStart, axis: .vertical)
+    glyphs.append(
+      SlugGlyphGPUGlyph(
+        boundsMin: SIMD2<Float>(Float(outline.bounds.minX), Float(outline.bounds.minY)),
+        boundsMax: SIMD2<Float>(Float(outline.bounds.maxX), Float(outline.bounds.maxY)),
+        curveStart: UInt32(curveStart),
+        curveCount: UInt32(outline.curves.count),
+        horizontalBandStart: UInt32(horizontalBandStart),
+        horizontalBandCount: UInt32(Self.bandCount),
+        verticalBandStart: UInt32(verticalBandStart),
+        verticalBandCount: UInt32(Self.bandCount)))
+
+    let entry = SlugGlyphEntry(key: key, outline: outline, glyphIndex: glyphIndex)
+    entriesByKey[key] = entry
+    geometryEntryBuildCount += 1
+    geometryBuffersDirty = true
+    return entry
+  }
+
+  private func resolveGlyph(
+    for cluster: Character,
+    referenceAtlas: FontAtlas,
+    attributes: TextAttributes
+  ) -> (font: CTFont, glyph: CGGlyph)? {
+    let text = String(cluster)
+    let variant = referenceAtlas.styledFontVariant(
+      bold: attributes.contains(.bold),
+      italic: attributes.contains(.italic))
+    if text.unicodeScalars.count == 1,
+      let scalar = text.unicodeScalars.first,
+      scalar.value <= UInt32(UInt16.max),
+      !TerminalCJKFontPolicy.containsCJK(text)
+    {
+      var unit = UniChar(scalar.value)
+      var glyph = CGGlyph()
+      if CTFontGetGlyphsForCharacters(variant.font, &unit, &glyph, 1), glyph != 0 {
+        return (variant.font, glyph)
+      }
+    }
+    return fallbackResolvedGlyph(
+      text: text,
+      baseFont: variant.font,
+      cellAdvance: referenceAtlas.cellSize.width)
+  }
+
+  private func fallbackResolvedGlyph(
+    text: String,
+    baseFont: CTFont,
+    cellAdvance: CGFloat
+  ) -> (font: CTFont, glyph: CGGlyph)? {
+    let line = TerminalGlyphFallback.fallbackLine(
+      text: text,
+      font: baseFont,
+      cellAdvance: cellAdvance)
+    let runs = CTLineGetGlyphRuns(line) as NSArray
+    for case let run as CTRun in runs {
+      guard CTRunGetGlyphCount(run) > 0 else { continue }
+      var glyph = CGGlyph()
+      CTRunGetGlyphs(run, CFRange(location: 0, length: 1), &glyph)
+      guard glyph != 0 else { continue }
+      let attributes = CTRunGetAttributes(run) as NSDictionary
+      let font =
+        attributes[kCTFontAttributeName].map { $0 as! CTFont }
+        ?? baseFont
+      return (font, glyph)
+    }
+    return nil
+  }
+
+  private func colorGlyphInstance(
+    cluster: Character,
+    font: CTFont,
+    boldFallback: Bool,
+    italicFallback: Bool,
+    position: CGPoint
+  ) -> SlugTextureInstance? {
+    guard let colorGlyphAtlas,
+      let entry = colorGlyphAtlas.entry(
+        character: cluster,
+        font: font,
+        boldFallback: boldFallback,
+        italicFallback: italicFallback)
+    else { return nil }
+    let atlasSize = Float(colorGlyphAtlas.textureSize)
+    return SlugTextureInstance(
+      origin: SIMD2<Float>(
+        Float((position.x + entry.logicalOriginX) * scale),
+        Float(position.y * scale)),
+      size: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+      uvOrigin: SIMD2<Float>(
+        Float(entry.originX) / atlasSize,
+        Float(entry.originY) / atlasSize),
+      uvSize: SIMD2<Float>(
+        Float(entry.pixelWidth) / atlasSize,
+        Float(entry.pixelHeight) / atlasSize),
+      color: SIMD4<Float>(1, 1, 1, 1),
+      coverageExponent: 1)
+  }
+
+  private func rasterGlyphInstance(
+    cluster: Character,
+    font: CTFont,
+    boldFallback: Bool,
+    italicFallback: Bool,
+    position: CGPoint,
+    color: UInt32
+  ) -> SlugTextureInstance? {
+    guard let rasterAtlas,
+      let entry = rasterAtlas.entry(
+        character: cluster,
+        font: font,
+        boldFallback: boldFallback,
+        italicFallback: italicFallback)
+    else { return nil }
+    let atlasSize = Float(rasterAtlas.textureSize)
+    return SlugTextureInstance(
+      origin: SIMD2<Float>(
+        Float((position.x + entry.logicalOriginX) * scale),
+        Float(position.y * scale)),
+      size: SIMD2<Float>(Float(entry.pixelWidth), Float(entry.pixelHeight)),
+      uvOrigin: SIMD2<Float>(
+        Float(entry.originX) / atlasSize,
+        Float(entry.originY) / atlasSize),
+      uvSize: SIMD2<Float>(
+        Float(entry.pixelWidth) / atlasSize,
+        Float(entry.pixelHeight) / atlasSize),
+      color: slugColor(color),
+      coverageExponent: 1)
+  }
+
+  private enum SlugBandAxis {
+    case horizontal
+    case vertical
+  }
+
+  private func appendBands(outline: GlyphCurveOutline, curveStart: Int, axis: SlugBandAxis) {
+    let minValue = axis == .horizontal ? outline.bounds.minY : outline.bounds.minX
+    let extent = max(axis == .horizontal ? outline.bounds.height : outline.bounds.width, .ulpOfOne)
+    for band in 0..<Self.bandCount {
+      let bandMin = minValue + extent * CGFloat(band) / CGFloat(Self.bandCount)
+      let bandMax = minValue + extent * CGFloat(band + 1) / CGFloat(Self.bandCount)
+      let indexStart = bandIndices.count
+      let intersecting = outline.curves.enumerated()
+        .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
+        .sorted { lhs, rhs in
+          curveBreakCoordinate(lhs.element, axis: axis) > curveBreakCoordinate(rhs.element, axis: axis)
+        }
+      for (localIndex, _) in intersecting {
+        bandIndices.append(UInt32(curveStart + localIndex))
+      }
+      bands.append(
+        SlugGlyphGPUBand(
+          indexStart: UInt32(indexStart),
+          indexCount: UInt32(bandIndices.count - indexStart)))
+    }
+  }
+
+  private func curveIntersectsBand(
+    _ curve: GlyphQuadraticCurve,
+    min: CGFloat,
+    max: CGFloat,
+    axis: SlugBandAxis
+  )
+    -> Bool
+  {
+    let epsilon = CGFloat(1.0 / 1024.0)
+    switch axis {
+    case .horizontal:
+      if abs(curve.p0.y - curve.p1.y) < epsilon && abs(curve.p1.y - curve.p2.y) < epsilon {
+        return false
+      }
+      let curveMinY = Swift.min(curve.p0.y, curve.p1.y, curve.p2.y)
+      let curveMaxY = Swift.max(curve.p0.y, curve.p1.y, curve.p2.y)
+      return curveMinY <= max + epsilon && curveMaxY >= min - epsilon
+    case .vertical:
+      if abs(curve.p0.x - curve.p1.x) < epsilon && abs(curve.p1.x - curve.p2.x) < epsilon {
+        return false
+      }
+      let curveMinX = Swift.min(curve.p0.x, curve.p1.x, curve.p2.x)
+      let curveMaxX = Swift.max(curve.p0.x, curve.p1.x, curve.p2.x)
+      return curveMinX <= max + epsilon && curveMaxX >= min - epsilon
+    }
+  }
+
+  private func curveBreakCoordinate(_ curve: GlyphQuadraticCurve, axis: SlugBandAxis) -> CGFloat {
+    switch axis {
+    case .horizontal:
+      return Swift.max(curve.p0.x, curve.p1.x, curve.p2.x)
+    case .vertical:
+      return Swift.max(curve.p0.y, curve.p1.y, curve.p2.y)
+    }
+  }
+
+  private func ensureGeometryBuffersIfNeeded(glyphsNeeded: Bool) -> Bool {
+    guard glyphsNeeded else { return true }
+    guard geometryBuffersDirty || curveBuffer == nil else { return true }
+    guard !curves.isEmpty, !glyphs.isEmpty else { return false }
+    guard let curveBuffer = makeBuffer(curves),
+      let glyphBuffer = makeBuffer(glyphs),
+      let bandBuffer = makeBuffer(bands),
+      let bandIndexBuffer = makeBuffer(bandIndices.isEmpty ? [UInt32(0)] : bandIndices)
+    else { return false }
+    self.curveBuffer = curveBuffer
+    self.glyphBuffer = glyphBuffer
+    self.bandBuffer = bandBuffer
+    self.bandIndexBuffer = bandIndexBuffer
+    geometryBuffersDirty = false
+    geometryBufferUploadCount += 1
+    return true
+  }
+
+  private func solid(rect: CGRect, color: UInt32) -> SlugSolidInstance {
+    SlugSolidInstance(
+      origin: SIMD2<Float>(Float(rect.minX * scale), Float(rect.minY * scale)),
+      size: SIMD2<Float>(Float(rect.width * scale), Float(rect.height * scale)),
+      color: slugColor(color))
+  }
+
+  private func slugColor(_ rgba: UInt32) -> SIMD4<Float> {
+    SIMD4<Float>(
+      Self.srgbToLinear(Float((rgba >> 24) & 0xFF) / 255),
+      Self.srgbToLinear(Float((rgba >> 16) & 0xFF) / 255),
+      Self.srgbToLinear(Float((rgba >> 8) & 0xFF) / 255),
+      Float(rgba & 0xFF) / 255)
+  }
+
+  private static func linearizedClearColor(_ commands: [FrameCommand]) -> MTLClearColor {
+    let c = MetalRenderer.fullRedrawClearColor(commands)
+    return MTLClearColor(
+      red: Double(srgbToLinear(Float(c.red))),
+      green: Double(srgbToLinear(Float(c.green))),
+      blue: Double(srgbToLinear(Float(c.blue))),
+      alpha: c.alpha)
+  }
+
+  private static func makeColorGlyphAtlas(
+    device: MTLDevice,
+    fontAtlas: FontAtlas,
+    scale: CGFloat
+  ) -> ColorGlyphAtlas? {
+    ColorGlyphAtlas(
+      device: device,
+      cellWidth: fontAtlas.cellSize.width,
+      cellHeight: fontAtlas.cellSize.height,
+      descent: fontAtlas.descent,
+      scale: scale)
+  }
+
+  private static func makeRasterGlyphAtlas(
+    device: MTLDevice,
+    fontAtlas: FontAtlas,
+    scale: CGFloat
+  ) -> MetalGlyphAtlas? {
+    MetalGlyphAtlas(
+      device: device,
+      cellWidth: fontAtlas.cellSize.width,
+      cellHeight: fontAtlas.cellSize.height,
+      descent: fontAtlas.descent,
+      scale: scale)
+  }
+
+  private static func srgbToLinear(_ c: Float) -> Float {
+    c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+  }
+
+  private func glyphUniforms(
+    width: Int,
+    height: Int,
+    layout: VectorSubpixelLayout? = nil,
+    gestureZoomFactor: CGFloat? = nil,
+    gestureZoomAnchorPoint: CGPoint? = nil
+  ) -> SlugGlyphGPUUniforms {
+    let resolved = layout ?? effectiveSubpixelLayout
+    let zoom = gestureZoomFactor ?? gestureZoom
+    let anchor = gestureZoomAnchorPoint ?? gestureZoomAnchor
+    return SlugGlyphGPUUniforms(
+      surfaceSizePixels: SIMD2<Float>(Float(width), Float(height)),
+      scale: Float(scale),
+      gestureZoom: Float(zoom),
+      gestureZoomAnchor: SIMD2<Float>(Float(anchor.x), Float(anchor.y)),
+      subpixelRBounds: resolved.rBounds,
+      subpixelGBounds: resolved.gBounds,
+      subpixelBBounds: resolved.bBounds,
+      subpixelMode: resolved == .grayscale ? 0 : 1)
+  }
+
+  private func ensureTargetTexture() -> MTLTexture? {
+    if let targetTexture,
+      targetTexture.width == pixelWidth,
+      targetTexture.height == pixelHeight
+    {
+      return targetTexture
+    }
+    let texture = makeTexture(pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
+    texture?.label = "laban.slug.target"
+    targetTexture = texture
+    return texture
+  }
+
+  private func makeTexture(
+    pixelWidth: Int,
+    pixelHeight: Int,
+    storageMode: MTLStorageMode
+  ) -> MTLTexture? {
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: layer.pixelFormat,
+      width: pixelWidth,
+      height: pixelHeight,
+      mipmapped: false)
+    descriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
+    descriptor.storageMode = storageMode
+    return device.makeTexture(descriptor: descriptor)
+  }
+
+  private func makeBuffer<T>(_ values: [T]) -> MTLBuffer? {
+    guard !values.isEmpty else { return nil }
+    var copy = values
+    let length = copy.count * MemoryLayout<T>.stride
+    return copy.withUnsafeMutableBytes { raw in
+      guard let base = raw.baseAddress else { return nil }
+      return device.makeBuffer(bytes: base, length: length, options: .storageModeShared)
+    }
+  }
+}
+
+private func configureSlugAlphaBlend(_ attachment: MTLRenderPipelineColorAttachmentDescriptor?) {
+  guard let attachment else { return }
+  attachment.isBlendingEnabled = true
+  attachment.rgbBlendOperation = .add
+  attachment.alphaBlendOperation = .add
+  attachment.sourceRGBBlendFactor = .one
+  attachment.sourceAlphaBlendFactor = .one
+  attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+  attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+}
+
+extension SlugGlyphRenderer: GestureZoomRenderable {
+  public var zoomDiagnostics: RendererZoomDiagnostics {
+    RendererZoomDiagnostics(
+      glyphFontSizes: lastFrameGlyphFontSizes,
+      rasterAtlasCellHeight: 0,
+      quadHeights: lastFrameQuadHeights,
+      curveBufferBuildCount: geometryEntryBuildCount,
+      geometryBufferUploadCount: geometryBufferUploadCount)
+  }
+}
