@@ -112,22 +112,9 @@ commit); `main` owns semantic refreshes (lifting). See
 - `HeadlessDebugRuntime` stays in feature parity with `MainWindowController.makeAndShow`. Wire new subsystems into both and expose HTTP endpoints. Move shared types from `LabanApp` down to `LabanCore` (no AppKit deps) so `LabanDebug` can reach them.
 - Terminal session identity must survive tab selection, view rebuilds, resize, and UI refresh.
 - Native text input wins over raw modifier interpretation.
-- A new renderer backend must be wired into **every** live-settings observer in
-  `TerminalBitmapView`, not just `VectorGlyphRenderer`. Those observers gate on
-  `as? VectorGlyphRenderer` and silently drop the change for any other backend,
-  so a setting "has no effect" on the new backend with no error. The slug backend
-  shipped without text-weight wiring this way: the observer bailed and slug also
-  applied no stem-darkening at all (raw geometric coverage, too thin). Reuse the
-  vector renderer's CoreText-calibrated `coverageExponent` so weight 1.0 matches
-  CoreText across backends; guard cross-backend parity with
-  `SlugWeightCoreTextParityTests` (slug@1.0 ink within ~15% of the vector
-  reference). Weight range is 0–2 (`VectorTextWeightSettings.maxWeight`): 1.0 =
-  CoreText, 2.0 = extra heavy.
+- A new renderer backend must be wired into **every** live-settings observer in `TerminalBitmapView` (they gate on `as? VectorGlyphRenderer` and silently drop other backends, so a setting "has no effect" with no error): slug shipped unwired and with no stem-darkening (raw geometric coverage, too thin). Slug now reuses the vector renderer's CoreText-calibrated `coverageExponent` (weight 0..2: 1.0 = CoreText, 2.0 = heavy); guard cross-backend parity with `SlugWeightCoreTextParityTests`.
 - The renderer's per-frame encode/glyph-build path must not read `UserDefaults` or run CoreText/`CTLine` work per cell. Static glyph properties (e.g. color-ness) are decided once at rasterization and cached on the atlas entry; settings are cached and refreshed via their change notification, never polled per frame. (Regression bed1a2b: a per-cluster `CTLine` color scan cost +60–105 ms/frame while scrolling — guard it with `ColorGlyphScrollBench`.)
-- Metal renderer instance data must be tested at live terminal scale, not only
-  small/headless fixtures. Any renderer path that batches rect/glyph instances
-  needs a regression exceeding Metal's 4 KB `setVertexBytes` inline limit and
-  must use buffer-backed uploads when the batch is larger.
+- Metal renderer instance data must be tested at live terminal scale, not only small/headless fixtures: any path batching rect/glyph instances needs a regression exceeding Metal's 4 KB `setVertexBytes` inline limit and must use buffer-backed uploads when larger.
 - Glyph/outline/atlas caches must key on **visual font identity** (PostScript
   name + point size + matrix + glyph), never `ObjectIdentifier(font)` — a CTFont
   address is reused, so address keys alias stale wrong-size entries. This was the
