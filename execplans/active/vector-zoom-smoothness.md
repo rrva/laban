@@ -554,3 +554,94 @@ Must exist at completion:
   gate).
 - Scroll non-regression evidence (M2): bench numbers + `analyze-metal-trace` compare,
   recorded in this file's Artifacts, plus the scroll-leak guard test.
+
+## Heavy-Zoom Profiling (2026-06-30)
+
+Source: real `~/laban-watchdog/inproc-stall-*.txt` captures during hand-driven
+heavy in-out-in-out zooming (the watchdog samples the main thread at 1 ms when
+it stalls).
+
+Findings:
+- Stalls of 457–818 ms occur during frantic in-out zooming. Aggregated by phase,
+  the time is **entirely** in `VectorGlyphRenderer.render → encode →
+  appendGlyphRun → prepareGlyphResources` — i.e. the synchronous glyph bake of
+  the full screen. Not font resolution, not the curve store, not atlas rebuilds.
+- The 818 ms stall contained **6 distinct `render()` calls on the main thread** —
+  six synchronous commit frames stacked back-to-back. So the cost is not one
+  expensive settle; it is *many settles stacking*.
+
+Cost of "settle to rest on a zoom level":
+- A single gesture-end commit is ~130 ms of main-thread work at live scale (818 ÷
+  6), dominated by the capped synchronous first-paint bake of every visible glyph
+  at the final size (`commitFramePaintSampleCap = 24`). One clean zoom+release is
+  a single ~130 ms hitch; the display link then refines to full quality over the
+  next frames.
+- Heavy in-out-in-out stacks these because macOS emits an `.ended` at every pause
+  / scroll-direction reversal, and each `.ended` runs a full synchronous commit.
+
+Implied next optimization (not yet done): **coalesce commits**. During a
+continuous gesture, debounce mid-gesture `.ended` events — keep scaling via the
+projection and commit the real font size only once the gesture has been quiet
+for ~150 ms (or on Cmd-release, already wired). That collapses N stacked ~130 ms
+commits into one.
+
+## Theory: The Terminal As Canvas, The App As Painter
+
+What zoom-OUT *means* is fundamentally different for a terminal than for a
+browser, and the vector renderer makes the distinction sharp.
+
+A **browser owns its document**. It has the full DOM/layout; at any zoom level it
+can render exactly what would be visible, including content that was off-screen
+before. Zoom-out reveals more *because the browser already has that content*.
+
+A **terminal does not own its content**. It owns only a grid of cells (e.g.
+100×50) and the bytes the running program has already painted into them. The
+*painter* is the child process (shell, vim, tmux), and it only paints in response
+to being told the canvas size — via `SIGWINCH`. So:
+
+- **Zoom-IN** is honest and local: every visible cell already has content; we just
+  magnify. The projection scale is exactly right, and crisp re-bake on release is
+  pure win. No cooperation needed.
+- **Zoom-OUT** asks for content that *does not exist yet*. Smaller cells mean more
+  rows/cols would fit, but those cells are empty until the grid reflows and the
+  app repaints. We cannot render what the painter has not painted. Scaling the
+  canvas down therefore leaves a genuinely empty margin — not a bug, an honest
+  reflection of "the painter has not been asked for more yet."
+
+This reframes the three zoom-out options:
+1. **Background-fill margin** (shipped): clear to the terminal background so the
+   not-yet-painted space reads as intentional empty canvas until release commits
+   the reflow. Honest and cheap. The "right now" answer.
+2. **Live throttled reflow on zoom-out**: deliver `SIGWINCH` as the grid grows so
+   the painter fills the new cells *during* the gesture. Truthful (no empty
+   margin) but reintroduces per-step reflow cost and makes TUIs reflow many times
+   a second.
+3. **Clamp at 1.0**: forbid shrinking below the committed size mid-gesture. Loses
+   continuous zoom-out.
+
+### What zoom-out could BECOME (UX this enables)
+
+Because the vector renderer can draw glyphs at any fractional size with no atlas
+ladder, "zoom out" need not mean only "smaller font". It can mean **see more at
+once** — which, for a terminal, is a different and arguably more useful gesture:
+
+- **Overview / minimap zoom**: pinch out past a threshold and instead of empty
+  margin, request a *larger grid* (more rows/cols) and let the app reflow — a
+  bird's-eye of a long log or a wide diff, text shrinking to fit. Pinch back in to
+  return. This is the terminal-native analogue of a map zoom: the painter
+  cooperates to fill the bigger canvas.
+- **Reflow-preview**: during zoom-out, show the *current* content scaled (cheap,
+  no cooperation) and commit the real reflow on release — so the gesture previews
+  "how much would fit" and the release makes it real.
+- **Semantic zoom (future)**: at extreme zoom-out, the renderer could draw a
+  density/structure view (line lengths, prompt boundaries, error highlights)
+  rather than unreadable 2 px text — because it owns the glyph geometry and can
+  choose a different representation per zoom band. This is only possible with a
+  vector renderer that decides what to draw at each scale.
+
+The throughline: zoom-IN is a pure rendering operation the terminal can do alone;
+zoom-OUT is a *negotiation with the painter* for more canvas. The honest designs
+either (a) fill the un-negotiated space with background until release, or (b)
+negotiate live via SIGWINCH. The interesting product space is treating big
+zoom-out as an explicit "show me more / overview" request rather than merely
+"tiny font".
