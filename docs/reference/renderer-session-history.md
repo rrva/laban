@@ -116,6 +116,112 @@ ADR 0022 before implementation. Decisions that still bind:
   geometry each frame.
 - **f4b42956 — mostly NOT renderer** (agent-notification/title-timing work).
 
+## Hard-won lessons (the non-obvious traps, symptom → wrong guess → real cause → rule)
+
+Mined specifically for the *surprising / wrong-the-first-time* discoveries. Each
+cost real debugging; the "wrong assumption" column is the trap to not re-enter.
+
+**Cadence / present / drawable (the 120 Hz machinery):**
+- **Per-event wheel rendering halves the panel.** Smooth synthetic scroll hit
+  120 fps but real flicks stuttered at 60. Wrong guess: GPU/display link too slow.
+  Cause: each `scrollWheel` did a synchronous full render, sampling an irregular
+  3–12 ms event stream instead of vsync. Rule: drive frames from the display link;
+  wheel events only mutate state. Render samples the model at vsync, never chases
+  input.
+- **The half-rate basin is a VRR inference trap, not GPU overload.** After one
+  missed frame, scrolling locked to 60 Hz with GPU headroom to spare; catch-up
+  wakes couldn't break out. Wrong guess: `nextDrawable` latency / pool exhaustion.
+  Cause: ProMotion VRR follows the *observed* present cadence; with no declared
+  cadence it inferred 60 Hz from the miss. Rule: `present(drawable,
+  afterMinimumDuration: 1/120)` for scroll frames to *declare* the rate.
+- **A consumed drawable must prefetch its successor.** Even after pacing, 120 Hz
+  wasn't self-sustaining — ticks alternated hit/miss. Cause: consuming the parked
+  drawable didn't request the next, so the following tick found the pool empty
+  (carry ticks never request, request ticks never have one → stable 60 Hz). Rule:
+  on every present, immediately post the next async acquire; carry a late drawable
+  forward in `pendingDrawable`, don't drop it (dropping poisons a pool slot).
+- **Vector scroll jank was drawable-blocking, not shader cost.** The vector
+  renderer felt less smooth; first theory "the vector shader is expensive" was
+  wrong. Cause: a blocking `layer.nextDrawable()` in `render()` stalled the main
+  thread p99 ~10 ms / max ~51 ms. Rule: give every self-presenting renderer the
+  non-blocking `MetalDrawableScheduler` (drop-don't-block + miss-recovery wake)
+  BEFORE optimizing its pipeline. Use `lastRequestLatencyMs` to tell the classes
+  apart: ~16.7 ms = recycling locked at half rate; ~9–12 ms = GPU frame is the
+  bottleneck.
+
+**Partial damage on a persistent target (every pass must agree):**
+- **A spinner made the whole screen shimmer.** Wrong guess: persistent-target
+  optimization broken. Cause: the *background* pass was scissored to dirty rows
+  but the *glyph* pass still drew the entire grid, so clean rows' AA edges
+  re-blended over an uncleared background and accumulated. Rule: if ONE pass is
+  damage-scoped, ALL passes must be — and scissor to each contiguous dirty *run*,
+  not the bounding union (clean rows between two dirty blocks flicker otherwise).
+- **A command buffer completing in `.error` leaves a half-painted target.**
+  Partial damage then composites over garbage → persistent corruption. Rule:
+  record completion status off-main; after any `.error`, force the next frame to
+  full `.clear` before trusting damage again.
+
+**Idle / wake ordering (parked link + dirty state = frozen screen):**
+- **"Stalls that only clear on scroll" = the link parked while dirty.** Wrong
+  guess: drawable timeout / GPU / stale glyph cache. Cause: `terminalOutputActive`
+  was gated on `windowVisibleToUser`; on blur/occlusion the link parked while
+  `terminalDirty` stayed true, and a scroll wake un-parked it to flush. Rule:
+  separate "has new output" from "link should run"; every output-affecting state
+  change must announce itself so the link can unpark and drain.
+- **Synchronized-output defer must re-wake the link itself.** Claude progress
+  bars (`?2026h/l`) froze until scroll: the defer held a frame but the idle policy
+  had already parked the link, so the settle-wake never reached `advanceFrame`.
+  Rule: any defer that *holds* a frame must schedule its own wake; a parked link
+  is the default quiescent state, not an edge case.
+- **A model-mutation wake must invalidate BEFORE it advances.** Tab open/close/
+  select coalesced into an `advanceFrame()` without setting `renderInvalidated`
+  first; those mutations bump no dirty generation, so the gated render
+  early-returned and painted stale state — a wake that never repaints. Rule: the
+  first tick after a model mutation must carry an invalidation flag.
+
+**Cost hides where you don't look:**
+- **Scroll's worst CPU was the lines-back PILL, not the GPU.** `setStringValue:` +
+  `systemLayoutSizeFittingSize` on an `NSTextField` ran every tick, dragging a
+  window-wide Auto Layout pass into each CA commit (~10% of scroll CPU vs the
+  renderer's ~12%). Rule: cosmetic overlays must be out of Auto Layout
+  (`CATextLayer`, cached size, set text only on change) and rate-limited to their
+  design rate; animation state mutates cached output in place, never bypasses the
+  memo (a pulsing sidebar dot forced full sidebar rebuilds at 120 fps).
+- **Full-frame GPU builds can be CPU-bound on atlas lookups.** Re-hashing atlas
+  entries per cell per frame dominated GPU work. Rule: cache atlas lookups within
+  a single frame build, even on GPU paths.
+
+**Instrumentation is not free, and can BE the bug:**
+- **A "regression" was a stale armed debug env var.** Smooth for a day, then all
+  tabs lagged — not a code change: `LABAN_SCROLL_DEBUG`/render-journal flags
+  survive relaunches and sat in the PTY-reader path multiplying per-frame load.
+  Rule: verify a suspected regression against a fully clean process (no armed
+  debug surfaces) before profiling code. (Mirrors the build-stamp rule.)
+- **Diagnostics traced intent, masking an inverted-sign bug.** A two-row
+  scroll sawtooth persisted because `contentYOffset` had the wrong sign, but the
+  trace logged the *intended* position so the state looked correct while the glass
+  was wrong. Rule: test rendering invariants on the actual framebuffer, not only
+  the state model.
+- **Render-journal forensics need the *why*, parsed by collapsing runs.** Raw
+  frame lists hide the stall; the signal is the distribution of `wakeSource` /
+  `displayLink.reason`. Rule: each entry records decision inputs (modelChanged,
+  metadata signature, visibility/occlusion, drop-type); parse in a sandbox and
+  collapse consecutive identical `(terminalDirty, snapshotDirty, visibleTextHash,
+  wakeSource)` frames — look for `parked` while dirty.
+
+**Test at live scale, with closed-form math:**
+- **Headless fixtures miss Metal-scale and address-aliasing bugs.** The 4 KB
+  `setVertexBytes` inline limit is only exceeded at live terminal scale, and
+  address-keyed caches only alias when real `CTFont`s recycle at varying sizes.
+  Rule: replay real PTY output through the live Metal path; buffer-back any batch
+  >4 KB; key glyph caches on visual identity. The regression gate verifies the
+  *mechanism* headlessly; the *result* (≈0% jank) needs `profile-scroll-renderers`
+  on real ProMotion hardware — both are required.
+- **A naive Euler scroll follower diverges; use closed-form.** High-stiffness PD
+  resamplers "exploded positions." Rule: prefer an exact critically-damped
+  closed-form integrator for timing-critical followers; add tests that
+  intentionally trap divergence.
+
 ## Cross-session durable lessons (now also in AGENTS.md Hard Rules)
 
 - Cache on visual font identity, never `ObjectIdentifier(font)` (address aliasing
