@@ -190,8 +190,9 @@ differs by case; aim for the best single color-independent fit.
 
 ## Context and Orientation
 
-You are working in a git **worktree** at
-`/Users/rrj/wrk/laban.worktrees/slugger`. Two repository rules matter here:
+You are working in a git **worktree** (a separate working directory checked out
+from this repository, with its own `.build/` directory but sharing the same git
+history as the main checkout). Two repository rules matter here:
 
 1. The Serena editing MCP tools write to the wrong checkout inside a worktree and
    can corrupt it. **Edit files only with the native file Read/Edit/Write tools.**
@@ -202,8 +203,8 @@ You are working in a git **worktree** at
    `swift test`, run `pgrep -fl "swift build"` and proceed only when it prints
    nothing (or only your own just-launched process).
 
-Build and test commands (run from the worktree root
-`/Users/rrj/wrk/laban.worktrees/slugger`):
+Build and test commands (run from the worktree root, i.e. the working directory
+of the worktree you are executing this plan in):
 
 - Compile a module: `swift build --target LabanRenderer` and
   `swift build --target LabanApp`. You do not need `scripts/build-app` for this
@@ -430,7 +431,7 @@ vector renderer still uses `coverageExponent`. No em-dashes.
 
 ## Concrete Steps
 
-Run all commands from `/Users/rrj/wrk/laban.worktrees/slugger`.
+Run all commands from the worktree root described in Context and Orientation.
 
 1. Confirm no concurrent build, then compile after each edit batch:
 
