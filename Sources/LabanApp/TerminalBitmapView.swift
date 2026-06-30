@@ -339,6 +339,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// stream goes quiet. Each new event reschedules this; it fires `.ended`.
   private var coalescedZoomScrollSettle: DispatchWorkItem?
 
+  /// Pending debounced commit for a trackpad-pinch zoom (vector backend). macOS
+  /// fires a fresh `.ended` at every finger lift / direction reversal, and each
+  /// vector commit is a ~130 ms synchronous re-bake; a frantic in-out-in-out
+  /// pinch stacks them into a multi-hundred-ms freeze (the heavy-zoom profiling
+  /// in `vector-zoom-smoothness.md`). So a fractional `.ended` does not commit
+  /// immediately — it schedules this after a short quiet window, and any further
+  /// gesture event cancels it. A re-pinch within the window CONTINUES the same
+  /// session (base + accumulator preserved, no snap, no intermediate bake); the
+  /// single commit fires only when the whole interaction truly settles.
+  private var zoomGestureCommitSettle: DispatchWorkItem?
+  private static let zoomGestureCommitQuietSeconds: TimeInterval = 0.1
+
   /// Count of grid renegotiations (SIGWINCH-bearing `model.resize`) performed by
   /// `applyFontSize`. The reflow-throttling gate asserts this advances once per
   /// distinct `(cols, rows)` pair a continuous gesture sweeps, not once per
@@ -353,6 +365,37 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// gate asserts bakes << frames over a slide. Test/debug seam only.
   private(set) var debugZoomGestureFrameCount: Int = 0
   private(set) var debugZoomGestureBakeCount: Int = 0
+
+  /// True while a fractional `.ended` has scheduled but not yet run its debounced
+  /// commit. Test/debug seam: lets a gate observe that an in-out-in-out flurry is
+  /// coalescing rather than baking per `.ended`.
+  var debugZoomCommitPending: Bool { zoomGestureCommitSettle != nil }
+
+  /// Run a pending debounced zoom commit synchronously now, instead of waiting
+  /// out the quiet timer. Test/debug seam so the smoothness/coalescing gates stay
+  /// deterministic without sleeping. Returns true if a commit was flushed.
+  @discardableResult
+  func debugFlushZoomCommit() -> Bool {
+    guard zoomGestureCommitSettle != nil else { return false }
+    zoomGestureCommitSettle?.cancel()
+    zoomGestureCommitSettle = nil
+    fireDebouncedZoomCommit()
+    return true
+  }
+
+  /// The single debounced fractional-zoom commit body: bake the final size once
+  /// and clear the gesture session. Called either by the quiet timer or by
+  /// `debugFlushZoomCommit`. Caller has already cleared `zoomGestureCommitSettle`.
+  private func fireDebouncedZoomCommit() {
+    guard let base = zoomGestureBasePointSize else { return }
+    let finalTarget = Self.zoomPointSize(
+      base: base,
+      accumulatedMagnification: zoomGestureAccumulatedMagnification,
+      fractional: true)
+    commitZoomGestureEnd(target: finalTarget, fractional: true)
+    zoomGestureBasePointSize = nil
+    zoomGestureAccumulatedMagnification = 0
+  }
 
   // Smooth-scroll animation state. Wheel input adds to `targetScrollRows`
   // (cumulative target). A critically-damped PD controller advances
@@ -1062,9 +1105,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if rendererSelection == resolved { return }
 
     // Abandon any in-flight zoom gesture before swapping the backend/layer:
-    // reset the presentation scale to identity and clear the gesture state so a
-    // later stray `.ended` cannot commit against the new backend and the old
-    // layer's transform/clip is not left applied.
+    // cancel a pending debounced commit, reset the presentation scale to identity
+    // and clear the gesture state so a later stray `.ended` (or a pending commit
+    // timer) cannot commit against the new backend and the old layer's transform/
+    // clip is not left applied.
+    zoomGestureCommitSettle?.cancel()
+    zoomGestureCommitSettle = nil
     if zoomGestureBasePointSize != nil {
       setGestureZoomPresentationScale(1)
       zoomGestureBasePointSize = nil
@@ -4000,7 +4046,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // state" lock-up). A real gesture always opens with `.began`.
     if phase == .changed && zoomGestureBasePointSize == nil { return }
 
-    if phase == .began {
+    // A new gesture event cancels any pending debounced commit. If a commit is
+    // still pending, the previous `.ended` has NOT yet baked, so the session is
+    // logically still open: continue it (keep base + accumulator) instead of
+    // snapping back to identity and re-seizing a base. This is what turns a
+    // frantic in-out-in-out pinch — which macOS delivers as several
+    // began/changed/ended bursts — into ONE gesture with ONE final bake.
+    let resumingDebouncedSession = zoomGestureCommitSettle != nil
+    zoomGestureCommitSettle?.cancel()
+    zoomGestureCommitSettle = nil
+
+    if phase == .began && !resumingDebouncedSession {
       // Clear any scale left by a prior gesture that did not deliver `.ended`
       // (rare, but a back-to-back `.began` must start from identity, not stack
       // transforms).
@@ -4009,6 +4065,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       zoomGestureAccumulatedMagnification = 0
       debugZoomGestureFrameCount = 0
       debugZoomGestureBakeCount = 0
+    } else if resumingDebouncedSession && zoomGestureBasePointSize == nil {
+      // Defensive: the pending commit had already cleared the base (it ran the
+      // first line of its work) but we caught it before the bake. Re-seize so the
+      // continued session has a valid base.
+      zoomGestureBasePointSize = fontAtlas.pointSize
     }
     zoomGestureAccumulatedMagnification += delta
 
@@ -4040,9 +4101,31 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
 
     if ending {
-      commitZoomGestureEnd(target: target, fractional: fractional)
-      zoomGestureBasePointSize = nil
-      zoomGestureAccumulatedMagnification = 0
+      // `.cancelled` is a one-shot abort (it never flurries) and must not leave a
+      // held compositor scale during a debounce window — commit it immediately.
+      // Only a fractional `.ended` debounces.
+      if fractional && phase == .ended {
+        // Do NOT bake now. macOS may deliver another began/changed/ended burst
+        // milliseconds later (a finger re-press, a direction reversal). Debounce
+        // the single expensive commit to after the interaction truly goes quiet,
+        // so an in-out-in-out flurry costs ONE bake, not one per `.ended`. The
+        // compositor scale already shows the final size; the bake only sharpens
+        // it. A new gesture event before the timer fires cancels it and resumes
+        // the same session (see the top of this function).
+        let work = DispatchWorkItem { [weak self] in
+          guard let self else { return }
+          self.zoomGestureCommitSettle = nil
+          self.fireDebouncedZoomCommit()
+        }
+        zoomGestureCommitSettle = work
+        DispatchQueue.main.asyncAfter(
+          deadline: .now() + Self.zoomGestureCommitQuietSeconds, execute: work)
+      } else {
+        // Non-vector (cheap ladder pointer-swap) or `.cancelled` — apply now.
+        commitZoomGestureEnd(target: target, fractional: fractional)
+        zoomGestureBasePointSize = nil
+        zoomGestureAccumulatedMagnification = 0
+      }
     }
   }
 

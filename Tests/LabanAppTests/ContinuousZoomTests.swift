@@ -266,12 +266,64 @@ final class ContinuousZoomTests: XCTestCase {
       "the gesture must not reflow the grid / send SIGWINCH during motion "
         + "(reflows=\(reflowsDuringMotion))")
 
-    // Exactly one rebake + reflow on settle, landing the true size crisp.
+    // Gesture end debounces the commit (so an in-out-in flurry coalesces); the
+    // bake has not happened yet at this instant.
     harness.view.applyZoomMagnification(delta: 0, phase: .ended)
     XCTAssertEqual(
-      harness.view.debugZoomGestureBakeCount, 1, "exactly one rebake commits on gesture end")
+      harness.view.debugZoomGestureBakeCount, 0, "the commit is deferred, not baked inline")
+    XCTAssertTrue(harness.view.debugZoomCommitPending, "a debounced commit is pending after .ended")
+    // Flush the debounce (the quiet timer, run synchronously): exactly one rebake
+    // + reflow lands the true size crisp.
+    harness.view.debugFlushZoomCommit()
+    XCTAssertEqual(
+      harness.view.debugZoomGestureBakeCount, 1, "exactly one rebake commits on gesture settle")
     XCTAssertGreaterThan(
       harness.view.debugGridReflowCount, 0, "the grid reflows once at the settled size")
+  }
+
+  /// The freeze fix: a frantic in-out-in-out pinch is delivered by macOS as
+  /// SEVERAL began/changed/ended bursts in quick succession. Each fractional
+  /// `.ended` used to bake synchronously (~130 ms), stacking into a
+  /// multi-hundred-ms freeze. With commit-coalescing, every `.ended` that is
+  /// followed by more gesture activity within the quiet window is cancelled, so
+  /// the whole flurry costs exactly ONE bake at the final size.
+  func testRapidInOutPinchFlurryCoalescesToOneCommit() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    harness.view.applyRendererSelection(.vectorGlyph)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("vector backend not active (no GPU in this environment)")
+    }
+
+    // Five bursts: in, out, in, out, in — each a tiny began/changed/ended that
+    // macOS would deliver as the user reverses direction without lifting cleanly.
+    let bursts: [CGFloat] = [0.3, -0.2, 0.25, -0.15, 0.2]
+    for delta in bursts {
+      harness.view.applyZoomMagnification(delta: 0, phase: .began)
+      harness.view.applyZoomMagnification(delta: delta, phase: .changed)
+      harness.view.applyZoomMagnification(delta: 0, phase: .ended)
+      // No flush between bursts: the next burst arrives within the quiet window
+      // and must cancel the prior pending commit.
+      XCTAssertTrue(
+        harness.view.debugZoomCommitPending,
+        "each .ended schedules a pending commit that the next burst cancels")
+    }
+
+    // Across five in/out bursts, not a single bake has happened yet.
+    XCTAssertEqual(
+      harness.view.debugZoomGestureBakeCount, 0,
+      "no commit may bake while the flurry is still active "
+        + "(got \(harness.view.debugZoomGestureBakeCount))")
+
+    // The interaction settles: one flush, one bake — for the whole flurry.
+    harness.view.debugFlushZoomCommit()
+    XCTAssertEqual(
+      harness.view.debugZoomGestureBakeCount, 1,
+      "the entire in-out-in-out flurry must coalesce to exactly ONE bake")
+    XCTAssertFalse(harness.view.debugZoomCommitPending, "no commit pending after settle")
   }
 
   /// The invariant the user asked for: at EVERY continuous zoom step the visual
@@ -341,10 +393,12 @@ final class ContinuousZoomTests: XCTestCase {
       XCTAssertEqual(s["gestureActive"] as! Bool, false, "\(label): no gesture in flight at rest")
     }
 
-    // Normal gesture.
+    // Normal gesture. `.ended` debounces the commit, so flush it before asserting
+    // the scale has returned to identity (the commit resets it).
     harness.view.applyZoomMagnification(delta: 0, phase: .began)
     for _ in 0..<30 { harness.view.applyZoomMagnification(delta: 0.01, phase: .changed) }
     harness.view.applyZoomMagnification(delta: 0, phase: .ended)
+    harness.view.debugFlushZoomCommit()
     assertResting("after ended")
 
     // Cancelled gesture must also reset.
