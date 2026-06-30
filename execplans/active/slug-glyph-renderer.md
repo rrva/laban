@@ -316,13 +316,58 @@ Acceptance:
   zoom-out margin are correct (reuse the same derivation).
 - Visual spot-check artifact (a `pngData` screenshot at 14 pt) recorded.
 
-### M3 — Continuous zoom is free (the payoff)
+### M3 — Continuous zoom is free, and zoom-OUT is honest (the payoff)
 
 Scope: wire Slug into the zoom gesture. Zoom should be a per-frame `gestureZoom`
 projection scale with no bake; gesture-end commit is just a font-size + grid
 change (cheap, since nothing rebakes). Reuse the existing `TerminalBitmapView`
 gesture machinery; ensure the Slug backend path does not trigger the vector
 renderer's reconfigure/bake.
+
+This milestone must also get **zoom-OUT** right, which is a genuinely different
+problem from zoom-in. It is grounded in research recorded at
+`docs/reference/continuous-zoom-research.md` (read it). Key facts:
+
+- **No GPU terminal does continuous fractional zoom** (Kitty, Ghostty, WezTerm,
+  iTerm2, Alacritty all discrete-step + reflow). This is novel; there is no prior
+  art to copy. SDF/analytic glyph rendering is specifically what makes a transient
+  projection scale *visually safe* — edges stay ~1 px sharp at any scale-up/down.
+  That is the research basis for building Slug at all: it is the renderer that
+  makes continuous zoom viable.
+- **A terminal does not own content for the revealed area** (the canvas/painter
+  asymmetry). Zoom-IN magnifies cells that already have content — local, honest,
+  free. Zoom-OUT shrinks cells so *more* rows/cols would fit, but the grid is
+  still the old size and the child program has not been told to fill the new
+  space (no `SIGWINCH` yet). So the margin the shrunk canvas no longer covers has
+  *no content to show*. This is not a bug to hide; it is the reality.
+- **The canonical answer (tile renderers / VNC, per the research):** never show
+  empty/black gaps — fill the revealed region with the **opaque terminal
+  background** until release commits a real reflow. Do NOT fake content; do NOT
+  `SIGWINCH` every frame. Commit one real font-size + `SIGWINCH` reflow on gesture
+  release. Apply a **soft clamp / rubber-band** at the zoom-out edge. A **hard
+  clamp at 1.0 is rejected** — it defeats continuous zoom-out entirely.
+
+Zoom-out implementation requirements:
+1. **Opaque background margin** (already proven for the vector renderer; mirror
+   for Slug): clear the Slug target to the *terminal background* color,
+   linearized for the sRGB target — the vector renderer does this via
+   `linearizedClearColor`, which M2 already requires Slug to match. The zoom-out
+   margin must read as theme background, never black and never an sRGB
+   double-encoded near-white.
+2. **Rubber-band / soft clamp at the zoom edges** (research recommendation #3,
+   not yet built for the vector renderer either — this plan is where it lands):
+   below a minimum effective point size (floor at `FontAtlas.zoomMinimumPointSize`,
+   rubber-band onset a little above it) the gesture's effective scale RESISTS
+   further shrink — additional pinch-in past the threshold maps through a
+   diminishing/eased function so the canvas slows and stops rather than shrinking
+   to a dot in a sea of background, and snaps back to the floor on release. Same
+   easing at the zoom-IN maximum (`zoomMaximumPointSize`). Implement it as a PURE,
+   testable mapping (inputs: base size + accumulated gesture magnification;
+   output: eased, clamped effective scale), unit-tested like `zoomPointSize` in
+   `Tests/LabanAppTests/ContinuousZoomTests.swift`. Do NOT hard-clamp at 1.0.
+3. **Reflow on release, not per frame:** the gesture-end commit applies the real
+   font size and the grid reflow once (SIGWINCH), filling the previously-empty
+   margin with real cells. No per-frame SIGWINCH during the gesture.
 
 Acceptance (autonomous, via `--scroll-debug` + `/zoom/*` routes that already
 exist):
@@ -341,7 +386,17 @@ exist):
   during a changed event `TerminalBitmapView` calls Slug's `setGestureZoom` and
   does not execute the rounded non-vector `applyFontSize(... quantize: true)`
   path.
-- Manual (artifact): pinch-zoom over Slug is smooth and crisp at every size.
+- **Zoom-out margin** gate: drive a zoom-OUT sweep on Slug and assert (via a
+  `pngData`/`/scroll/screenshot.png` corner-pixel probe) the revealed margin is
+  the terminal background, not black and not near-white — mirror
+  `VectorGestureZoomProjectionTests.testZoomOutMarginMatchesThemeBackground`.
+- **Rubber-band** gate: a pure unit test of the eased-scale mapping —
+  monotonic, never produces an effective size below `zoomMinimumPointSize` or
+  above `zoomMaximumPointSize`, resistance grows past the threshold (equal raw
+  magnification past the edge yields progressively less effective change), and it
+  is NOT a hard clamp at 1.0 (a small pinch past the edge still moves a little).
+- Manual (artifact): pinch-zoom over Slug is smooth and crisp at every size; the
+  zoom-out edge resists and snaps back rather than shrinking text to a dot.
 
 ### M4 — Color/emoji + CJK: parity or honest limitation
 
@@ -395,7 +450,8 @@ Acceptance:
   selectable; correctness vs CPU oracle.
 - [ ] M1 — full-screen perf gate ≤8.33 ms; resolution-independence gated.
 - [ ] M2 — subpixel AA + gamma-correct compositing parity.
-- [ ] M3 — continuous zoom is free; single-size-per-frame + no-stall gates.
+- [ ] M3 — continuous zoom is free; single-size-per-frame + no-stall gates;
+  zoom-OUT honest (opaque background margin, rubber-band edge, reflow-on-release).
 - [ ] M4 — color/emoji + CJK parity or documented fallback with measurement.
 - [ ] M5 — menu + headless parity + ADR.
 
@@ -423,6 +479,17 @@ Acceptance:
   `SlugGlyphRenderer` would take the rounded non-vector zoom path and fail the
   plan's purpose.
   Date/Author: 2026-06-30 / plan review fix.
+- Decision: Zoom-OUT fills the revealed margin with the opaque terminal
+  background and commits one real reflow on release; it applies a soft rubber-band
+  at the zoom edges and is NOT hard-clamped at 1.0.
+  Rationale: a terminal does not own content for the area revealed by zoom-out
+  until the child process is reflowed via SIGWINCH (canvas/painter asymmetry).
+  Cited research (`docs/reference/continuous-zoom-research.md`): no terminal does
+  continuous fractional zoom; tile renderers / VNC answer the "no content for
+  revealed area" problem with an opaque fallback fill + reflow-on-pause, and a
+  hard clamp is rejected because it defeats zoom-out. SDF/analytic rendering is
+  what makes the transient scale visually safe — the basis for choosing Slug.
+  Date/Author: 2026-06-30 / zoom-out research applied.
 
 ## Validation and Acceptance
 
@@ -479,8 +546,10 @@ Must exist at completion:
   `RendererBackend` shape, present-link wiring, `gestureZoom`, linearized clear,
   subpixel/gamma policy to mirror); `RendererSelection.swift`;
   `TerminalBitmapView.swift`'s `applyZoomMagnification` and `debugZoomState`
-  paths; `Package.swift`'s `LabanRenderer` resources; and
-  `execplans/active/vector-zoom-smoothness.md` (why this exists + the profiling).
+  paths; `Package.swift`'s `LabanRenderer` resources;
+  `execplans/active/vector-zoom-smoothness.md` (why this exists + the profiling);
+  and `docs/reference/continuous-zoom-research.md` (cited zoom-out UX research —
+  governs M3 zoom-out: opaque margin, rubber-band, reflow-on-release).
 - The vector renderer is OFF LIMITS for behavior changes. If you must move shared
   helpers (e.g. a clear-color derivation), keep the vector renderer's behavior
   identical and covered by its existing tests.
