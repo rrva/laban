@@ -669,6 +669,10 @@ public final class VectorGlyphRenderer: RendererBackend {
     accumTexture = nil
     // New fonts produce new outlines/dims; drop the geometry memo with the atlas.
     descriptorCache.removeAll(keepingCapacity: true)
+    // Outlines are point-size-specific and keyed only on the font's address; a
+    // size change must drop them so a reused address cannot alias a freed font's
+    // larger/smaller geometry (the mixed-glyph-size zoom bug).
+    curveStore.invalidate()
     scratchRasterizer.invalidateCurveBufferCache()
     zoomRetainedFonts.removeAll(keepingCapacity: true)
     rebuildFallbackAtlases()
@@ -764,6 +768,10 @@ public final class VectorGlyphRenderer: RendererBackend {
     fontCache.removeAll(keepingCapacity: true)
     glyphIDCache.removeAll(keepingCapacity: true)
     descriptorCache.removeAll(keepingCapacity: true)
+    // Outlines are point-size-specific and keyed only on the font's address; a
+    // size change must drop them so a reused address cannot alias a freed font's
+    // geometry (the mixed-glyph-size zoom bug). Cheap CPU-side dict clear.
+    curveStore.invalidate()
     // Intentionally keep: maskAtlas (+ atlasTexture/accumTexture), the curve
     // buffer cache, and the raster/color fallback atlases. See doc comment.
   }

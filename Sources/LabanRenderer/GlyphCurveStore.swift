@@ -83,6 +83,18 @@ public final class GlyphCurveStore {
 
   public init() {}
 
+  /// Drop all cached outlines. Entries are keyed by `ObjectIdentifier(font)`,
+  /// which is only the font object's address — when a font at one point size is
+  /// released (e.g. a transient zoom size) and a new font at a DIFFERENT size is
+  /// allocated at the reused address, a lookup would return the stale, wrong-size
+  /// outline (outlines are baked at the font's point size). The owning renderer
+  /// must call this whenever it swaps fonts so a size change cannot alias a freed
+  /// font's geometry.
+  public func invalidate() {
+    outlines.removeAll(keepingCapacity: true)
+    missingOutlines.removeAll(keepingCapacity: true)
+  }
+
   public func outline(for glyph: CGGlyph, font: CTFont) -> GlyphCurveOutline? {
     let key = Key(font: ObjectIdentifier(font), glyph: glyph)
     if let cached = outlines[key] { return cached }
