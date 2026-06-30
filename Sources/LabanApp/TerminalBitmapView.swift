@@ -4275,6 +4275,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       "lastFrameGlyphFontSizes": (backend as? VectorGlyphRenderer)?.lastFrameGlyphFontSizes ?? [],
       "lastFrameRasterAtlasCellHeight":
         (backend as? VectorGlyphRenderer)?.lastFrameRasterAtlasCellHeight ?? 0,
+      // The actually-DRAWN glyph quad heights (device px). A stale large mask
+      // reused for a small-font glyph shows here as an extra large height — the
+      // double-image artifact the font-size list cannot detect.
+      "lastFrameQuadHeights": (backend as? VectorGlyphRenderer)?.lastFrameQuadHeights ?? [],
     ]
   }
 

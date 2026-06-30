@@ -178,6 +178,14 @@ public final class VectorGlyphRenderer: RendererBackend {
   public private(set) var lastFrameRasterAtlasCellHeight: Double = 0
   private var frameGlyphFontSizes: Set<Double> = []
 
+  /// Diagnostic: the distinct DRAWN glyph quad heights (device px) in the most
+  /// recent frame. The quad size comes from the baked mask's pixel dims, so a
+  /// stale mask baked at an old size draws a too-large quad even when the font is
+  /// the new size — exactly the "double image / wrong size" zoom artifact, which
+  /// the font-size diagnostic cannot see. Bucketed to whole px. Test/debug seam.
+  public private(set) var lastFrameQuadHeights: [Int] = []
+  private var frameQuadHeights: Set<Int> = []
+
   private var lastCommandBuffer: MTLCommandBuffer?
   private var fontCache:
     [UInt32: (font: CTFont, boldFallback: Bool, italicFallback: Bool, hasColorTrait: Bool)] = [:]
@@ -906,6 +914,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     activeCommitFramePaintSampleCap = commitFramePaintSampleCap
     commitFramePaintSampleCap = nil
     frameGlyphFontSizes.removeAll(keepingCapacity: true)
+    frameQuadHeights.removeAll(keepingCapacity: true)
     remainingPhasedSampleBudget = Self.phasedSampleBudgetPerFrame
     remainingBaseFirstPaintBudget = Self.baseFirstPaintBudgetPerFrame
     remainingMaskBakeDispatches = Self.maxMaskBakeDispatchesPerFrame
@@ -926,6 +935,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       into: target,
       commandBuffer: commandBuffer,
       retainedInstanceBuffers: &retainedInstanceBuffers)
+    lastFrameQuadHeights = frameQuadHeights.sorted()
 
     // Fast path (macOS 14+): presentation is owned by an internal
     // `CAMetalDisplayLink` that acquires the drawable in its own callback on a
@@ -1946,6 +1956,10 @@ public final class VectorGlyphRenderer: RendererBackend {
     coverageExponent: Float,
     slide: Bool
   ) -> VectorGlyphInstance {
+    // Diagnostic: the actually-drawn glyph quad height (device px). A stale mask
+    // baked at an old size draws a too-large quad even when the font is the new
+    // size — the "double image / wrong size" zoom artifact.
+    frameQuadHeights.insert(mask.height)
     // Device-pixel origin is `(position + mask.origin) * scale`; the size in
     // device pixels is just `mask.width/height` (the point-space rect is
     // `mask.size / scale`, so multiplying back by `scale` cancels). Computing it
