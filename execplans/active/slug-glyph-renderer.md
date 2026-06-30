@@ -44,8 +44,10 @@ left **completely untouched** and remain the default.
   zoom. Text stays crisp at every intermediate fractional size with no freeze.
 - Autonomous gates: a perf bench proving full-screen frame time holds the
   120 Hz budget, a correctness gate proving analytic coverage matches the CPU
-  oracle, and a headless `/zoom/state` check proving zoom is free (no mask bakes,
-  no stale sizes) — all without a human hand on the trackpad.
+  oracle, an AppKit scroll-debug `/zoom/state` check proving zoom is free (no
+  mask bakes, no stale sizes), and a true headless `laban-agent` check proving
+  the backend can be selected and reported without the AppKit window — all
+  without a human hand on the trackpad.
 
 ### Feasibility is already proven (do not re-litigate)
 
@@ -76,14 +78,20 @@ oracle. **The spike's job is done; this plan promotes it to a real backend.**
   Renderer menu, and the debug/headless harness; subpixel-AA + gamma-correct
   compositing to reach parity with the vector renderer's quality; the band
   index built per glyph on the CPU and uploaded once; promoting the spike's
-  shaders/structs from `*Spike` names into the production renderer; perf +
+  shaders/structs from `*Spike` names into the production renderer; package
+  resource wiring for any new `.metal` file; renderer-menu, Settings popup,
+  debug action schema, and `laban-agent --renderer` help updates; perf +
   correctness + zoom-is-free autonomous gates.
-- **Non-goals (do NOT touch):** the `VectorGlyphRenderer`, `MetalRenderer`
-  (classic/gpuDriven), and `SoftwareBackend` stay byte-for-byte as they are.
-  This plan does NOT make Slug the default, does NOT delete the atlas, and does
-  NOT change scroll behavior. Whether Slug eventually *replaces* the vector
-  renderer is a separate future decision gated on this renderer shipping and
-  proving itself; this plan only makes it a coexisting, selectable option.
+- **Non-goals (do NOT change behavior):** the `VectorGlyphRenderer`,
+  `MetalRenderer` (classic/gpuDriven), and `SoftwareBackend` keep their current
+  rendering behavior, defaults, and performance gates. Additive shared-protocol
+  conformance or diagnostic extraction is allowed only where M3 needs it to make
+  vector and Slug use the same zoom interface, and must be covered by existing
+  vector tests. This plan does NOT make Slug the default, does NOT delete the
+  atlas, and does NOT change scroll behavior. Whether Slug eventually *replaces*
+  the vector renderer is a separate future decision gated on this renderer
+  shipping and proving itself; this plan only makes it a coexisting, selectable
+  option.
 - **Deferred within this plan (call out, do not silently skip):** color/emoji
   glyphs and CJK. The fragment evaluates monochrome outline coverage; color
   emoji and very-high-curve-count CJK glyphs fall back to the existing raster
@@ -120,6 +128,16 @@ A reader who knows nothing about this repo needs these facts.
   the object address — so it is safe across transient fonts. Also exposes
   `GlyphCurveCPUOracle` (a CPU winding-number coverage rasterizer) used as the
   ground-truth oracle in correctness tests.
+- **Slug geometry cache** (new, inside `SlugGlyphRenderer.swift`, unless it
+  grows large enough for its own file): this is NOT the same cache key as
+  `GlyphCurveStore`. `GlyphCurveStore` deliberately includes `pointSize`
+  because CoreText outline coordinates are size-scaled. Slug's GPU cache must
+  exclude point size: create outlines from a fixed reference size (use the
+  spike's 14 pt reference unless a better constant is measured), store
+  reference-size curves/bands, and pass the active point-size scale in instance
+  data or uniforms. The cache key is `postScriptName + glyph + normalized font
+  matrix/style identity`, never `CTFont` object identity and never active point
+  size. This is the structural gate for "zoom is free."
 - **Winding-number coverage:** a point is inside a glyph if a horizontal ray from
   it crosses the outline an odd/non-zero number of times. The existing vector
   shader already implements this analytically (`winding_contribution`,
@@ -142,13 +160,29 @@ A reader who knows nothing about this repo needs these facts.
 - CREATE `Sources/LabanRenderer/SlugGlyphRenderer.swift` — the new backend.
 - CREATE `Sources/LabanRenderer/SlugGlyphShaders.metal` (or promote the `*Spike`
   functions out of `VectorGlyphShaders.metal` into their own file).
+- EDIT `Package.swift` if `SlugGlyphShaders.metal` is created, adding it to the
+  `LabanRenderer` target's `resources`; otherwise keep the production Slug
+  functions in the already-packaged `VectorGlyphShaders.metal`. Update
+  `scripts/smoke-runtime` to assert the shipped `.app` contains whichever shader
+  resource the production renderer loads.
 - EDIT `Sources/LabanRenderer/RendererSelection.swift` — add `case slugGlyph` and
   a `makeRendererBackend` branch.
-- EDIT the Renderer menu wiring in `Sources/LabanApp/` (search for where
-  `vectorGlyph` appears in menu construction / `applyRendererSelection`).
-- EDIT `Sources/LabanApp/ScrollDebugServer.swift` if the `/config/renderer` route
-  needs the new name (it parses `RendererSelection(rawValue:)`, so it likely
-  works for free — verify).
+- EDIT the Renderer menu and Settings wiring in `Sources/LabanApp/`:
+  `RendererModeMenuController.swift`, `SettingsWindowController.swift`,
+  `TerminalBitmapView.swift`, and the exact-title/index assertions in
+  `Tests/LabanAppTests/RendererModeSettingsTests.swift`.
+- EDIT `Sources/LabanApp/ScrollDebugServer.swift` help text if needed. The
+  `/config/renderer` route parses `RendererSelection(rawValue:)` and should
+  accept `slugGlyph` once the enum exists, but the `/zoom/*` routes only exercise
+  the AppKit scroll-debug server, not true `laban-agent --headless`.
+- EDIT headless/automation surfaces:
+  `Sources/LabanCore/Intents/DebugRequestPayloads.swift` (`setRenderer` schema
+  enum values), `Sources/LabanAgent/main.swift` (`--renderer` help text), and
+  `Sources/LabanDebug/DebugWindowActions.swift`/`HeadlessDebugRuntime.swift` only
+  if the generic renderer rebuild/reporting path needs slug-specific status.
+- EDIT `Sources/LabanApp/TerminalBitmapView.swift` to replace vector-only zoom
+  type checks with a shared Slug/vector zoom capability (see M3). Do not leave
+  `backend is VectorGlyphRenderer` as the definition of fractional/free zoom.
 - CREATE tests under `Tests/LabanRendererTests/` (perf, correctness, zoom-free)
   and possibly `Tests/LabanAppTests/` (selection round-trip).
 - WRITE an ADR under `docs/adr/` (see M5) recording the analytic-vs-atlas
@@ -171,13 +205,17 @@ A reader who knows nothing about this repo needs these facts.
    only where its Metal feature set is supported (match the vector renderer's
    floor; fall back to classic otherwise).
 
-3. **Upload curves + band index once per glyph, keyed on visual identity.** The
-   per-glyph GPU buffers (curves, bands) are size-INDEPENDENT geometry: build
-   them once and reuse across all sizes (this is the whole point — zoom touches
-   no per-glyph CPU/GPU work). Cache them keyed the same way `GlyphCurveStore`
-   keys outlines (PostScript name + glyph + matrix; NOT point size, since the
-   shader scales analytically; NOT object address). A glyph's curve buffer is
-   built on first sight and never rebuilt for a size change.
+3. **Upload curves + band index once per glyph, keyed by size-independent
+   geometry.** `GlyphCurveStore` is safe but size-keyed today: its key includes
+   `pointSize` because CoreText path coordinates are scaled by the `CTFont`
+   size. Slug must not reuse that key for GPU buffers. Build Slug geometry from
+   a fixed reference `CTFont` size (14 pt, matching the spike, unless M0 records
+   a better constant), store reference-size curves and bands, and scale those
+   curves in the shader/instance data for the active `FontAtlas.pointSize`. The
+   Slug cache key includes font PostScript name, glyph id, and normalized
+   style/matrix identity; it excludes active point size and CTFont object
+   identity. Acceptance must include a counter or trace proving that rendering
+   the same glyph at 9, 14, and 28 pt builds one curve/band GPU entry, not three.
 
 4. **Reach quality parity before claiming done.** The spike cut subpixel AA and
    gamma-correct compositing. The vector renderer composites coverage in linear
@@ -197,11 +235,25 @@ A reader who knows nothing about this repo needs these facts.
 6. **Zoom is just a transform.** Because coverage is analytic, a continuous zoom
    is a per-frame projection scale (same `gestureZoom` uniform the vector
    renderer already uses) with NO re-bake, NO atlas reset, NO font reconfigure.
-   The entire `applyZoomMagnification` gesture machinery in `TerminalBitmapView`
-   should work for Slug with the gesture-end commit being a trivial size change
-   (the renderer does not bake, so "commit" is just updating the font size and
-   reflowing the grid — no expensive frame). Verify and simplify the gesture path
-   for the Slug backend accordingly, without regressing the vector path.
+   The current gesture machinery is vector-specific (`backend is
+   VectorGlyphRenderer`, vector-only `setGestureZoom`, and vector-only debug
+   fields). M3 must introduce a small shared capability instead of adding more
+   type checks:
+
+   ```swift
+   protocol GestureZoomRenderable {
+     var supportsFractionalLiveZoom: Bool { get }
+     func setGestureZoom(_ factor: CGFloat, anchor: CGPoint)
+     var zoomDiagnostics: RendererZoomDiagnostics { get }
+   }
+   ```
+
+   Exact names may differ. `VectorGlyphRenderer` and `SlugGlyphRenderer`
+   conform; classic, gpuDriven, and software do not. `TerminalBitmapView`
+   `applyZoomMagnification`, `debugApplyPinch`, `debugZoomSweep`, and
+   `debugZoomState` use that capability so Slug does not fall back to the rounded
+   non-vector zoom path. Gesture-end commit for Slug is just updating font
+   metrics and grid size; it must not run vector mask reconfigure/bake code.
 
 ## Milestones
 
@@ -222,11 +274,20 @@ be subpixel/gamma-perfect yet.
 Acceptance:
 - `swift build` clean. `RendererSelection.slugGlyph` round-trips
   (`RendererSelection(rawValue: "slugGlyph") == .slugGlyph`,
-  `isAvailableOnCurrentOS` correct).
+  `isAvailableOnCurrentOS` correct), and `RendererSelection.allCases`-driven
+  UI/tests include the new case without index/title drift.
 - A new correctness test: analytic coverage from the production renderer matches
   `GlyphCurveCPUOracle` for printable ASCII within tolerance (port the spike's
   `SlugSpikeCorrectness`).
 - `pngData` returns a decodable image of rendered text (a headless render test).
+- A new geometry-cache test renders the same glyph at 9, 14, and 28 pt and
+  asserts the Slug curve/band GPU-entry build count does not increase after the
+  first size. This test fails if the implementation keys GPU geometry on active
+  `pointSize`.
+- If `SlugGlyphShaders.metal` exists, `Package.swift` includes it as a
+  `LabanRenderer` resource and `scripts/smoke-runtime` asserts the app bundle
+  contains it. If Slug stays in `VectorGlyphShaders.metal`, the plan's file list
+  and smoke check say so explicitly.
 
 ### M1 — Perf gate at full screen, resolution-independence proven
 
@@ -267,13 +328,19 @@ Acceptance (autonomous, via `--scroll-debug` + `/zoom/*` routes that already
 exist):
 - Select Slug (`POST /config/renderer?name=slugGlyph`), drive a continuous
   in/out sweep (`/zoom/pinch` or `/zoom/sweep`), and assert via `/zoom/state`
-  that `lastFrameQuadHeights` (or the Slug equivalent) shows a SINGLE consistent
-  size at every step — no mixed sizes, ever — and that no mask bake/reflow storm
-  occurs. The mixed-size and re-bake-freeze classes are impossible by
-  construction; the gate proves it.
+  that `backend == "slugGlyph"`, `fractional == true`,
+  `lastFrameQuadHeights` (or the shared `zoomDiagnostics.quadHeights`) shows a
+  SINGLE consistent size at every step, `curveBufferBuildCount` is unchanged
+  across the sweep, and `gridReflowCount` changes only when integer rows/cols
+  change. No mixed sizes, ever; no per-frame geometry rebuild storm.
 - A frame-time measurement during the sweep shows NO commit stall (contrast with
   the vector renderer's ~130 ms settle and stacked-commit stalls recorded in
   `vector-zoom-smoothness.md`).
+- Unit coverage in `Tests/LabanAppTests/ContinuousZoomTests.swift` (or a new
+  Slug-specific test file) proves the shared zoom capability path is used:
+  during a changed event `TerminalBitmapView` calls Slug's `setGestureZoom` and
+  does not execute the rounded non-vector `applyFontSize(... quantize: true)`
+  path.
 - Manual (artifact): pinch-zoom over Slug is smooth and crisp at every size.
 
 ### M4 — Color/emoji + CJK: parity or honest limitation
@@ -300,8 +367,22 @@ Acceptance:
 - Renderer menu shows "Slug glyph"; selecting it swaps the backend live
   (mirrors `applyRendererSelection` for `vectorGlyph`) and survives tab
   switch/resize.
-- Headless `/config/renderer?name=slugGlyph` works and `/debug` + `/zoom/state`
-  report it.
+- Settings popup shows "Slug Glyph" and persists it. Update
+  `Tests/LabanAppTests/RendererModeSettingsTests.swift`, whose current menu test
+  asserts the exact renderer titles and item indexes.
+- AppKit scroll-debug validation: `POST /config/renderer?name=slugGlyph` works,
+  `GET /zoom/state` reports `backend == "slugGlyph"` and the shared zoom
+  diagnostics, and `GET /scroll/screenshot.png` returns a non-empty PNG after a
+  Slug render. Renderer status for true headless runs is checked separately
+  below; do not assume the AppKit scroll-debug server exposes `/debug/render`.
+- True headless validation: `.build/debug/laban-agent --headless
+  --debug-server=127.0.0.1:0 --renderer=slugGlyph ...` starts, `GET
+  /debug/render` reports `configuredRenderer == "slugGlyph"` and either
+  `effectiveRenderer == "slugGlyph"` or a documented fallback reason, and debug
+  action schema discovery lists `slugGlyph` in `setRenderer` enum values. Do not
+  cite `/zoom/state` as a headless route unless an implementation adds that route
+  to `LabanControl`/`HeadlessDebugRuntime`.
+- `Sources/LabanAgent/main.swift` help text lists `slugGlyph` for `--renderer`.
 - An ADR in `docs/adr/` (next number; update `docs/adr/README.md`) records:
   analytic-coverage Slug renderer added as a coexisting opt-in backend; why
   (atlas is size-keyed → zoom re-bake); that it does NOT replace the vector
@@ -327,28 +408,49 @@ Acceptance:
   itself before any default/replace decision.
   Date/Author: 2026-06-30 / this plan.
 - Decision: Outline/curve/band GPU buffers are keyed on visual font identity and
-  built once per glyph, never per size.
-  Rationale: the geometry is size-independent; the shader scales analytically.
-  This is what makes zoom touch zero per-glyph work and is the structural reason
-  the atlas's size-mixing/re-bake bug class cannot occur.
+  built once per glyph, never per active point size.
+  Rationale: `GlyphCurveStore` itself is size-keyed, so Slug needs its own
+  reference-size geometry cache rather than reusing that key. The shader scales
+  the reference curves analytically. This is what makes zoom touch zero per-glyph
+  geometry work and is the structural reason the atlas's size-mixing/re-bake bug
+  class cannot occur.
   Date/Author: 2026-06-30 / this plan.
+- Decision: `TerminalBitmapView` gets a shared gesture-zoom capability for
+  analytic/fractional renderers instead of recognizing only
+  `VectorGlyphRenderer`.
+  Rationale: the live source currently treats `backend is VectorGlyphRenderer`
+  as the only fractional/free-zoom backend. Without a shared interface,
+  `SlugGlyphRenderer` would take the rounded non-vector zoom path and fail the
+  plan's purpose.
+  Date/Author: 2026-06-30 / plan review fix.
 
 ## Validation and Acceptance
 
 Baseline commands (from repo root):
 - `swift build` — clean.
 - `swift test --filter SlugGlyphCorrectness` (M0) — analytic vs CPU oracle.
+- `swift test --filter SlugGlyphGeometryCache` (M0/M3) — the same glyph rendered
+  at multiple point sizes builds one reference curve/band GPU entry.
 - `LABAN_RUN_PERF_BENCH=1 swift test -c release --filter SlugGlyphFrameTimeBench`
   (M1/M4) — full-screen p99 ≤ 8.33 ms; flat across size.
 - `swift test --filter VectorGlyphGamma`-equivalent for Slug (M2).
-- Headless per `docs/process/dev-process.md`: `--scroll-debug`, then
-  `POST /config/renderer?name=slugGlyph`, `/zoom/sweep`, `/zoom/state` — assert
-  single-size-per-frame and no stall (M3).
+- AppKit scroll-debug per `docs/process/dev-process.md`: start Laban with
+  `--scroll-debug`, then `POST /config/renderer?name=slugGlyph`, `POST
+  /zoom/sweep`, `GET /zoom/state`, and `GET /scroll/screenshot.png`; assert
+  single-size-per-frame, no geometry rebuild storm, no stall, and slug renderer
+  status (M3/M5).
+- True headless: build `laban-agent`, start with `--headless
+  --debug-server=127.0.0.1:0 --renderer=slugGlyph`, then `GET /debug/render`;
+  assert configured/effective/fallback status and renderer schema/help coverage
+  (M5).
+- `./scripts/build-app` — clean and the app bundle contains every shader resource
+  the Slug renderer loads.
 - `scripts/lint` clean; `scripts/check` if present.
 
 A milestone is done only when its new test(s) fail before the change and pass
 after, and the existing vector/classic/scroll suites stay green (the vector
-renderer must remain byte-for-byte unaffected — run its parity + scroll benches).
+renderer's behavior and output must remain unchanged — run its parity + scroll
+benches).
 
 ## Interfaces and Dependencies
 
@@ -357,8 +459,17 @@ Must exist at completion:
   `SlugGlyphRenderer` (or software fallback when no Metal device).
 - `SlugGlyphRenderer: RendererBackend` (self-presenting `CAMetalLayer`, honors
   `waitForFrameCompletion`, supports `pngData`, `resize`, `gestureZoom`).
-- Production Slug shaders (curves+bands fragment coverage, subpixel/gamma), a
-  per-glyph curve/band buffer cache keyed on visual identity.
+- A shared AppKit zoom capability used by both vector and Slug so
+  `TerminalBitmapView` does not special-case `VectorGlyphRenderer` as the only
+  fractional renderer.
+- Production Slug shaders (curves+bands fragment coverage, subpixel/gamma) and
+  package/smoke-runtime resource wiring for the shader file that is actually
+  loaded.
+- A per-glyph curve/band buffer cache keyed on size-independent visual identity,
+  with active point size excluded and tested.
+- Renderer menu, Settings popup, debug action schema, `laban-agent --renderer`
+  help, AppKit scroll-debug, and true headless debug reporting all know the
+  `slugGlyph` selection.
 - Perf + correctness + zoom-free gates as above; an ADR.
 
 ## Notes for the executor
@@ -367,6 +478,8 @@ Must exist at completion:
   and its `*Spike` shaders (your blueprint); `VectorGlyphRenderer.swift` (for the
   `RendererBackend` shape, present-link wiring, `gestureZoom`, linearized clear,
   subpixel/gamma policy to mirror); `RendererSelection.swift`;
+  `TerminalBitmapView.swift`'s `applyZoomMagnification` and `debugZoomState`
+  paths; `Package.swift`'s `LabanRenderer` resources; and
   `execplans/active/vector-zoom-smoothness.md` (why this exists + the profiling).
 - The vector renderer is OFF LIMITS for behavior changes. If you must move shared
   helpers (e.g. a clear-color derivation), keep the vector renderer's behavior
