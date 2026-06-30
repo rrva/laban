@@ -334,26 +334,59 @@ problem from zoom-in. It is grounded in research recorded at
   projection scale *visually safe* — edges stay ~1 px sharp at any scale-up/down.
   That is the research basis for building Slug at all: it is the renderer that
   makes continuous zoom viable.
-- **A terminal does not own content for the revealed area** (the canvas/painter
-  asymmetry). Zoom-IN magnifies cells that already have content — local, honest,
-  free. Zoom-OUT shrinks cells so *more* rows/cols would fit, but the grid is
-  still the old size and the child program has not been told to fill the new
-  space (no `SIGWINCH` yet). So the margin the shrunk canvas no longer covers has
-  *no content to show*. This is not a bug to hide; it is the reality.
-- **The canonical answer (tile renderers / VNC, per the research):** never show
-  empty/black gaps — fill the revealed region with the **opaque terminal
-  background** until release commits a real reflow. Do NOT fake content; do NOT
-  `SIGWINCH` every frame. Commit one real font-size + `SIGWINCH` reflow on gesture
-  release. Apply a **soft clamp / rubber-band** at the zoom-out edge. A **hard
-  clamp at 1.0 is rejected** — it defeats continuous zoom-out entirely.
+- **Whether the terminal owns content for the revealed area depends on the screen
+  mode** (this is a correction to an earlier, too-strong "the terminal owns
+  nothing" framing). Zoom-IN always magnifies cells that already have content —
+  local, honest, free. Zoom-OUT shrinks cells so *more* rows/cols would fit; what
+  can fill the revealed space differs:
+  - **Alt-screen** (vim, htop, fullscreen TUI; `viewportState().altScreen ==
+    true`): the app owns every cell and scrollback is suppressed. There is
+    genuinely nothing to reveal until the grid grows and the app repaints via
+    `SIGWINCH`. The empty-margin reality holds **here**.
+  - **Normal screen with scrollback** (the common case — a shell prompt;
+    `altScreen == false`, `scrollbackRows > 0`): the terminal DOES own more
+    content — the scrollback buffer. Zoom-out reveals room into which **older
+    scrollback lines scroll up**, exactly as a browser reveals off-screen DOM.
+    The terminal can fill the revealed space from content it already holds; it is
+    NOT empty. (Below the live bottom there is still nothing — the shell has not
+    produced it — but above, scrollback fills.)
+  - **Normal screen, no scrollback** (fresh shell): nothing above to reveal, so
+    the margin is genuinely empty until reflow — same as alt-screen.
+  In all cases the *authoritative* fill for a grown grid is the child program
+  reflowing to the new size on `SIGWINCH` (the app's job). Revealing scrollback is
+  a truthful *preview* using content the terminal already owns; the release-commit
+  reflow makes it real. The signals to drive this are on `viewportState()`:
+  `altScreen`, `scrollbackRows`, `totalRows`, `viewportRows`, `viewportOffset`.
+- **The fill strategy, by mode** (research-backed: tile renderers / VNC say
+  *never show empty/black gaps* — cover the revealed area with the best content
+  you already have, and reflow on pause):
+  - Normal screen with scrollback → **reveal scrollback** into the space above as
+    the canvas shrinks (real content the terminal owns). The bottom margin (below
+    the live prompt, which has no content yet) falls back to the opaque terminal
+    background.
+  - Alt-screen, or no scrollback → fill the revealed region with the **opaque
+    terminal background** (the M2 linearized clear), since there is nothing to
+    reveal.
+  In all modes: do NOT fake content, do NOT `SIGWINCH` every frame, and commit one
+  real font-size + `SIGWINCH` reflow on gesture release. Apply a **soft clamp /
+  rubber-band** at the zoom-out edge. A **hard clamp at 1.0 is rejected** — it
+  defeats continuous zoom-out entirely. (Scrollback-reveal-on-zoom-out may be
+  staged as a follow-up after the opaque-margin baseline ships; the baseline is
+  the minimum honest behavior, scrollback-reveal is the richer one. Sequence it
+  in Progress, do not silently drop it.)
 
 Zoom-out implementation requirements:
-1. **Opaque background margin** (already proven for the vector renderer; mirror
-   for Slug): clear the Slug target to the *terminal background* color,
-   linearized for the sRGB target — the vector renderer does this via
-   `linearizedClearColor`, which M2 already requires Slug to match. The zoom-out
-   margin must read as theme background, never black and never an sRGB
-   double-encoded near-white.
+1. **Opaque background margin (baseline) + scrollback reveal (richer).** Baseline:
+   clear the Slug target to the *terminal background* color, linearized for the
+   sRGB target — the vector renderer does this via `linearizedClearColor`, which
+   M2 already requires Slug to match; the zoom-out margin must read as theme
+   background, never black and never an sRGB double-encoded near-white. Richer
+   (normal screen, `scrollbackRows > 0`): as the canvas shrinks, reveal older
+   scrollback lines into the space above (the terminal owns them) so zoom-out
+   shows real content, not blank. Gate the scrollback path on `!altScreen`; the
+   opaque margin always covers the genuinely-empty region (below the live bottom,
+   or whenever there is no scrollback). Stage scrollback-reveal after the baseline
+   if needed (record in Progress).
 2. **Rubber-band / soft clamp at the zoom edges** (research recommendation #3,
    not yet built for the vector renderer either — this plan is where it lands):
    below a minimum effective point size (floor at `FontAtlas.zoomMinimumPointSize`,
@@ -490,6 +523,37 @@ Acceptance:
   hard clamp is rejected because it defeats zoom-out. SDF/analytic rendering is
   what makes the transient scale visually safe — the basis for choosing Slug.
   Date/Author: 2026-06-30 / zoom-out research applied.
+- Decision: Slug targets CONTINUOUS fractional zoom, which is the only zoom the
+  prebuilt atlas ladder cannot serve. Discrete Cmd+= / Cmd+- / Cmd+scroll on the
+  classic/gpu-driven renderer is already excellent and stays untouched.
+  Rationale: `MetalRenderer` has no zoom-specific code; discrete integer zoom is a
+  pointer-swap into the prebuilt `GlyphAtlasLadder` (one baked atlas per integer
+  8–40 pt) — instant, no re-bake. Fractional sizes are off the ladder, so every
+  frame is a cache miss; that is the sole reason the vector renderer struggled and
+  the reason Slug (analytic, size-flat) exists. Do not "improve" the gpu-driven
+  discrete path to match Slug — it is not the same gesture and is not broken.
+  Date/Author: 2026-06-30 / clarified after observing gpu-driven Cmd+/- feels good.
+
+### Future directions (not in scope; capture so they are not lost)
+
+- **Scrollback reveal needs reflow to be fully truthful.** Revealing older
+  scrollback into the zoom-out margin is a good preview, but those lines were
+  wrapped at the OLD column width; if zoom-out also changes columns they can
+  mis-wrap. So scrollback-reveal is an approximation; the authoritative fill is
+  still the child program reflowing at the new width. Treat reveal as preview,
+  reflow-on-release as truth.
+- **Speculative / predictive reflow (the "ask the painter in advance" idea).** As
+  a pinch crosses toward a candidate integer grid size, the terminal could fire a
+  `SIGWINCH` at that geometry AHEAD of release, let the child repaint into an
+  offscreen buffer, and present the real reflowed content the instant the user
+  settles there — no commit stall, and the closest a terminal can get to a
+  browser's "it already knows what's off-screen." This is the most promising path
+  to making zoom-out show *real* content live. Risks to weigh before building:
+  `SIGWINCH` has side effects (many TUIs clear/redraw on resize), it is not free,
+  and firing several candidate geometries speculatively could thrash a heavy app
+  (vim, a build TUI) — so gate it to the normal screen / a cheap painter (a shell
+  prompt) and debounce candidates. Out of scope for this plan; recorded as the
+  natural next step after the opaque-margin + reflow-on-release baseline.
 
 ## Validation and Acceptance
 
