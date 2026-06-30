@@ -117,6 +117,33 @@ commit); `main` owns semantic refreshes (lifting). See
   small/headless fixtures. Any renderer path that batches rect/glyph instances
   needs a regression exceeding Metal's 4 KB `setVertexBytes` inline limit and
   must use buffer-backed uploads when the batch is larger.
+- Glyph/outline/atlas caches must key on **visual font identity** (PostScript
+  name + point size + matrix + glyph), never `ObjectIdentifier(font)` — a CTFont
+  address is reused, so address keys alias stale wrong-size entries. This was the
+  "z is small, W is large" mixed-size zoom bug: `GlyphCurveStore` keyed on address
+  and returned size-stale outlines. Guard with `GlyphCurveStoreInvalidateTests` /
+  `VectorZoomGlyphSizeConsistencyTests`.
+- A **self-presenting / decoupled present link** (a `CAMetalDisplayLink` that
+  blits a published target on its own thread, ADR 0026) creates a "rendered but
+  not shown" failure class the synchronous `present(drawable)` renderers cannot
+  have. Two invariants: (1) every present path — including the fast/decoupled one
+  — must honor `waitForFrameCompletion` (the live-resize/zoom no-mixed-frame
+  guarantee silently no-ops otherwise); (2) the idle policy must not park the link
+  while a freshly published frame is unpresented (else the initial frame and tab
+  switches stay blank until the next keystroke — `PresentParkDecisionTests`). Do
+  not drive zoom via a CALayer transform that races a self-presenting link; scale
+  in the vertex projection instead.
+- Extract present/idle/zoom **decision logic into pure, GPU-free value types**
+  (e.g. `PresentParkDecision`) so the rule is unit-testable without a Metal
+  device; the renderer just applies the decision. Provide test-only synchronous
+  seams for debounced work (`debugFlushZoomCommit`) so timing-dependent gates stay
+  deterministic without sleeping.
+- For a renderer **visual artifact** ("glyphs wrong size", "blank", "mixed
+  sizes"), build the diagnostic seam and MEASURE before theorizing a cause: the
+  mixed-size bug was found only after adding `lastFrameQuadHeights` and reading it
+  live via `/zoom/state`, after several wrong code theories. Per-`.ended` zoom
+  commits stack into a multi-hundred-ms freeze — debounce to one bake on settle
+  (`ContinuousZoomTests.testRapidInOutPinchFlurryCoalescesToOneCommit`).
 - Keep changesets focused on one behavioral reason.
 - Git commits are atomic. Commit messages are single-line reason statements: why the change exists, not what changed. Bad: `Update plans`. Good: `Agents need bounded execution shards`.
 
