@@ -1061,6 +1061,14 @@ public final class VectorGlyphRenderer: RendererBackend {
     presentTargetLock.lock()
     latestPresentedTarget = target
     presentTargetLock.unlock()
+    // Ensure the present link runs long enough to actually show this frame even
+    // if the host idle policy is about to park it (the initial frame and tab
+    // switches publish a target with no follow-on scroll/output, so the policy
+    // would otherwise park before the frame ever presented — the blank-screen /
+    // stuck-tab bug). The link parks itself again once this frame presents.
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.notifyContentPublished()
+    }
   }
 
   private func encode(

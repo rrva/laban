@@ -19,6 +19,38 @@ import QuartzCore
 /// same signal, so when the terminal parks the present thread stops firing and
 /// costs ~zero CPU (the previous self-detected idle never actually parked).
 /// Preserves the event-driven park-when-idle contract of ADR 0018.
+/// Pure, GPU-free model of the present link's deferred-park decision, so the
+/// "don't park while a freshly published frame is unpresented" logic is unit
+/// testable without a Metal device. The link itself just applies `wantsPaused`.
+struct PresentParkDecision: Equatable {
+  /// The host idle policy's last intent (`setRunning(_:)`): true = run.
+  private(set) var hostWantsRunning = false
+  /// Vsync callbacks remaining to flush a published-but-unpresented frame even
+  /// though the host asked to park.
+  private(set) var pendingBudget = 0
+  let budgetCallbacks: Int
+
+  init(budgetCallbacks: Int) { self.budgetCallbacks = budgetCallbacks }
+
+  /// Should the underlying link be paused right now?
+  var wantsPaused: Bool { !hostWantsRunning && pendingBudget <= 0 }
+
+  /// Host idle policy update. Running clears any deferral; parking is deferred
+  /// while a frame is pending.
+  mutating func setHostRunning(_ running: Bool) { hostWantsRunning = running }
+
+  /// A new frame was published — keep presenting for up to `budgetCallbacks`
+  /// vsyncs so it reaches the screen even if the host wants to park.
+  mutating func contentPublished() { pendingBudget = budgetCallbacks }
+
+  /// A vsync callback fired. A successful present clears the deferral; otherwise
+  /// the budget decrements so a stuck pending cannot pin the link forever.
+  mutating func didCallback(presented: Bool) {
+    guard pendingBudget > 0 else { return }
+    pendingBudget = presented ? 0 : pendingBudget - 1
+  }
+}
+
 @available(macOS 14.0, *)
 final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// Called on the dedicated present thread with a ready drawable; blits the
@@ -42,6 +74,13 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// published target). Surfaced through `presentIntervalStats`.
   private var callbackCount = 0
   private var presentedCount = 0
+
+  /// Deferred-park decision state (host intent + pending-present budget). Guarded
+  /// by `statsLock`. See `PresentParkDecision`.
+  private var park: PresentParkDecision
+  /// Max vsyncs to keep the parked link alive waiting for a publish to present.
+  /// A frame normally presents on the very next callback; this is generous slack.
+  private static let pendingPresentBudgetCallbacks = 4
 
   /// Snapshot of present-interval percentiles, optionally clearing the ring.
   func presentIntervalStats(reset: Bool) -> [String: Double] {
@@ -98,6 +137,7 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
 
   init(layer: CAMetalLayer) {
     link = CAMetalDisplayLink(metalLayer: layer)
+    park = PresentParkDecision(budgetCallbacks: Self.pendingPresentBudgetCallbacks)
     super.init()
     link.delegate = self
     link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
@@ -151,10 +191,37 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
   /// the panel rate; `false` (parked: unfocused, occluded, or focused-and-idle)
   /// pauses it so the present thread fires zero callbacks and costs ~zero CPU.
   /// Idempotent and safe to call every frame from the main thread.
+  ///
+  /// A park request is DEFERRED while a freshly published frame has not yet
+  /// reached the screen (`pendingPresentBudget > 0`). The idle policy's inputs
+  /// (visibility/output/scroll/blink) do not include "rendered but not yet
+  /// presented", so a one-shot content change with no follow-on activity — the
+  /// initial frame, or a tab switch — would otherwise publish a target and then
+  /// park the link before it ever presented it, leaving the screen blank until
+  /// the next keystroke/scroll. Honoring the park only after the pending frame
+  /// presents fixes that without changing the idle policy.
   func setRunning(_ running: Bool) {
-    if link.isPaused == running {
-      link.isPaused = !running
-    }
+    statsLock.lock()
+    park.setHostRunning(running)
+    let pause = park.wantsPaused
+    statsLock.unlock()
+    // Pause only when the decision says so (host parked AND no pending frame).
+    // Otherwise keep running: the callback parks once the pending frame presents.
+    if link.isPaused != pause { link.isPaused = pause }
+  }
+
+  /// Tell the link a new frame was published into the shared target. Ensures the
+  /// link runs long enough to actually present it even if the host idle policy
+  /// has asked to park (tab switch / initial frame produce no scroll/output, so
+  /// the policy would otherwise park immediately). Safe to call from the render
+  /// completion handler on any thread.
+  func notifyContentPublished() {
+    statsLock.lock()
+    park.contentPublished()
+    statsLock.unlock()
+    // Unpause now so the next vsync presents the new frame; the callback parks
+    // again afterward if the host still wants idle.
+    if link.isPaused { link.isPaused = false }
   }
 
   func stop() {
@@ -184,7 +251,18 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     statsLock.lock()
     callbackCount += 1
     if presented { presentedCount += 1 }
+    // Resolve the deferred-park budget: a successful present clears it (the
+    // freshly published frame is now on screen); otherwise it decrements so a
+    // stuck pending (e.g. drawable-size mismatch after resize, onPresent always
+    // false) cannot keep the link spinning forever.
+    park.didCallback(presented: presented)
+    let parkNow = park.wantsPaused
     statsLock.unlock()
     if presented { recordPresentInterval(update) }
+    // Honor a host park request that was deferred while a frame was pending,
+    // now that the frame has presented (or the budget expired).
+    if parkNow, !link.isPaused {
+      link.isPaused = true
+    }
   }
 }
