@@ -401,3 +401,143 @@ kernel void vectorGlyphAccumulateAtlas(
     alpha = select(alpha, float3(1.0), alpha > 0.998);
     resolved.write(float4(alpha, 1.0), atlasPosition);
 }
+
+struct SlugSpikeGlyph {
+    float2 boundsMin;
+    float2 boundsMax;
+    uint curveStart;
+    uint curveCount;
+    uint bandStart;
+    uint bandCount;
+};
+
+struct SlugSpikeBand {
+    uint indexStart;
+    uint indexCount;
+};
+
+struct SlugSpikeInstance {
+    float2 originPx;
+    float2 sizePx;
+    float2 localMin;
+    float2 localMax;
+    float4 color;
+    uint glyphIndex;
+    uint pad0;
+    uint pad1;
+    uint pad2;
+};
+
+struct SlugSpikeUniforms {
+    float2 surfaceSizePixels;
+};
+
+struct SlugSpikeVertexOut {
+    float4 position [[position]];
+    float2 glyphPoint;
+    float4 color;
+    float glyphIndex;
+};
+
+vertex SlugSpikeVertexOut slugGlyphVertexSpike(
+    uint vertexId [[vertex_id]],
+    uint instanceId [[instance_id]],
+    constant SlugSpikeInstance *instances [[buffer(0)]],
+    constant SlugSpikeUniforms &uniforms [[buffer(1)]]
+) {
+    SlugSpikeInstance instance = instances[instanceId];
+    float2 unit = kVectorQuadVertices[vertexId];
+    float2 px = instance.originPx + unit * instance.sizePx;
+
+    SlugSpikeVertexOut out;
+    out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);
+    out.glyphPoint = mix(instance.localMin, instance.localMax, unit);
+    out.color = instance.color;
+    out.glyphIndex = float(instance.glyphIndex);
+    return out;
+}
+
+inline bool slugGlyphContainsPointSpike(SlugSpikeGlyph glyph, float2 point) {
+    constexpr float eps = 1.0e-6;
+    return point.x >= glyph.boundsMin.x - eps &&
+        point.x <= glyph.boundsMax.x + eps &&
+        point.y >= glyph.boundsMin.y - eps &&
+        point.y <= glyph.boundsMax.y + eps;
+}
+
+inline float slugGlyphCoverageFromCurveSpike(VectorGlyphCurve curve, float2 sample) {
+    curve.p0 -= sample;
+    curve.p1 -= sample;
+    curve.p2 -= sample;
+    return float(winding_contribution(curve));
+}
+
+inline float slugGlyphNoBandCoverageSpike(
+    constant VectorGlyphCurve *curves,
+    SlugSpikeGlyph glyph,
+    float2 sample
+) {
+    if (!slugGlyphContainsPointSpike(glyph, sample)) {
+        return 0.0;
+    }
+
+    int winding = 0;
+    for (uint i = 0; i < glyph.curveCount; i++) {
+        winding += int(slugGlyphCoverageFromCurveSpike(curves[glyph.curveStart + i], sample));
+    }
+    return clamp(float(abs(winding)), 0.0, 1.0);
+}
+
+inline float slugGlyphBandCoverageSpike(
+    constant VectorGlyphCurve *curves,
+    constant SlugSpikeBand *bands,
+    constant uint *bandIndices,
+    SlugSpikeGlyph glyph,
+    float2 sample
+) {
+    if (!slugGlyphContainsPointSpike(glyph, sample) || glyph.bandCount == 0) {
+        return 0.0;
+    }
+
+    float height = max(glyph.boundsMax.y - glyph.boundsMin.y, 1.0e-6);
+    float normalized = clamp((sample.y - glyph.boundsMin.y) / height, 0.0, 0.999999);
+    uint bandIndex = min(glyph.bandCount - 1, uint(floor(normalized * float(glyph.bandCount))));
+    SlugSpikeBand band = bands[glyph.bandStart + bandIndex];
+
+    int winding = 0;
+    for (uint i = 0; i < band.indexCount; i++) {
+        uint curveIndex = bandIndices[band.indexStart + i];
+        winding += int(slugGlyphCoverageFromCurveSpike(curves[curveIndex], sample));
+    }
+    return clamp(float(abs(winding)), 0.0, 1.0);
+}
+
+fragment float4 slugGlyphNoBandFragmentSpike(
+    SlugSpikeVertexOut in [[stage_in]],
+    constant VectorGlyphCurve *curves [[buffer(0)]],
+    constant SlugSpikeGlyph *glyphs [[buffer(1)]]
+) {
+    uint glyphIndex = uint(in.glyphIndex + 0.5);
+    float coverage = slugGlyphNoBandCoverageSpike(curves, glyphs[glyphIndex], in.glyphPoint);
+    float alpha = coverage * in.color.a;
+    return float4(in.color.rgb * alpha, alpha);
+}
+
+fragment float4 slugGlyphBandFragmentSpike(
+    SlugSpikeVertexOut in [[stage_in]],
+    constant VectorGlyphCurve *curves [[buffer(0)]],
+    constant SlugSpikeGlyph *glyphs [[buffer(1)]],
+    constant SlugSpikeBand *bands [[buffer(2)]],
+    constant uint *bandIndices [[buffer(3)]]
+) {
+    uint glyphIndex = uint(in.glyphIndex + 0.5);
+    float coverage = slugGlyphBandCoverageSpike(
+        curves,
+        bands,
+        bandIndices,
+        glyphs[glyphIndex],
+        in.glyphPoint
+    );
+    float alpha = coverage * in.color.a;
+    return float4(in.color.rgb * alpha, alpha);
+}
