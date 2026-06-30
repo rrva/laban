@@ -167,6 +167,17 @@ public final class VectorGlyphRenderer: RendererBackend {
       configured: subpixelLayout, scale: Double(scale), downsampled: displayDownsampled)
   }
   public private(set) var lastRasterFallbackGlyphs = 0
+
+  /// Diagnostic: the distinct font point sizes actually used to resolve glyphs in
+  /// the most recent frame, plus the raster fallback atlas's cell height. In a
+  /// correct settled frame this is exactly {terminalSize} (+ sidebar size if the
+  /// sidebar drew). A stray third size is the "some glyphs wrong size" bug caught
+  /// red-handed, and the value names which path leaked an old-size font. Test/
+  /// debug seam; populated every render.
+  public private(set) var lastFrameGlyphFontSizes: [Double] = []
+  public private(set) var lastFrameRasterAtlasCellHeight: Double = 0
+  private var frameGlyphFontSizes: Set<Double> = []
+
   private var lastCommandBuffer: MTLCommandBuffer?
   private var fontCache:
     [UInt32: (font: CTFont, boldFallback: Bool, italicFallback: Bool, hasColorTrait: Bool)] = [:]
@@ -894,6 +905,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     // stable for this whole frame and applies to exactly one frame.
     activeCommitFramePaintSampleCap = commitFramePaintSampleCap
     commitFramePaintSampleCap = nil
+    frameGlyphFontSizes.removeAll(keepingCapacity: true)
     remainingPhasedSampleBudget = Self.phasedSampleBudgetPerFrame
     remainingBaseFirstPaintBudget = Self.baseFirstPaintBudgetPerFrame
     remainingMaskBakeDispatches = Self.maxMaskBakeDispatchesPerFrame
@@ -904,6 +916,8 @@ public final class VectorGlyphRenderer: RendererBackend {
     lastRasterFallbackGlyphs = prepareGlyphResources(
       commands: commands,
       commandBuffer: commandBuffer)
+    lastFrameGlyphFontSizes = frameGlyphFontSizes.sorted()
+    lastFrameRasterAtlasCellHeight = Double(rasterAtlas?.cellHeightForDiagnostics ?? 0)
     // Free masks not referenced for a while (mostly scroll sub-pixel phases that
     // churn through the atlas); static glyphs are touched every frame and survive.
     maskAtlas.evictUnused(olderThan: Self.maskEvictionTTLFrames)
@@ -1288,6 +1302,9 @@ public final class VectorGlyphRenderer: RendererBackend {
       let atlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
       let variant = styledFontVariant(for: attributes, in: atlas)
       let font = variant.font
+      // Diagnostic: the actual point size of the font this run resolves to. A
+      // stale styled-variant or atlas would surface here as an unexpected size.
+      frameGlyphFontSizes.insert(Double(CTFontGetSize(font)))
       let runWantsColor =
         source != .sidebar && emojiRenderingMode == .color
         && ColorGlyphSupport.textMayContainColor(

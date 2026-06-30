@@ -85,6 +85,9 @@ public final class MetalGlyphAtlas {
   private let scale: CGFloat
   private let cellWidth: CGFloat
   private let cellHeight: CGFloat
+  /// Diagnostic: the cell height this fallback atlas was built for. Used to
+  /// detect a stale-size raster fallback during a zoom commit.
+  public var cellHeightForDiagnostics: CGFloat { cellHeight }
   private let descent: CGFloat
   private let colorSpace = CGColorSpaceCreateDeviceGray()
 

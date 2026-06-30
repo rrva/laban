@@ -4268,6 +4268,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       "fractional": backend is VectorGlyphRenderer,
       "gestureActive": zoomGestureBasePointSize != nil,
       "gridReflowCount": debugGridReflowCount,
+      // Diagnostic for the "some glyphs wrong size" bug: the distinct font point
+      // sizes drawn in the last frame (should be one terminal size, plus the
+      // sidebar size), and the raster fallback atlas's built cell height. A
+      // stray size here is the bug caught red-handed.
+      "lastFrameGlyphFontSizes": (backend as? VectorGlyphRenderer)?.lastFrameGlyphFontSizes ?? [],
+      "lastFrameRasterAtlasCellHeight":
+        (backend as? VectorGlyphRenderer)?.lastFrameRasterAtlasCellHeight ?? 0,
     ]
   }
 
