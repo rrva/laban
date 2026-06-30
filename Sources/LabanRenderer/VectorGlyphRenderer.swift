@@ -975,6 +975,15 @@ public final class VectorGlyphRenderer: RendererBackend {
       }
       commandBuffer.commit()
       lastCommandBuffer = commandBuffer
+      if waitForFrameCompletion {
+        // Block until the GPU finished this frame, so the next reconfigure/atlas
+        // reset cannot race in-flight work into the shared target (the pinch-zoom
+        // two-sizes-in-one-frame / stale-mask defect). The present link blits the
+        // published target on its own thread; we only need the content render to
+        // be complete before the caller swaps the atlas. The completion handler
+        // (which publishes the target) runs before `waitUntilCompleted` returns.
+        commandBuffer.waitUntilCompleted()
+      }
       return true
     }
 
