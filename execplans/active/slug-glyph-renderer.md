@@ -612,8 +612,12 @@ Must exist at completion:
   `TerminalBitmapView.swift`'s `applyZoomMagnification` and `debugZoomState`
   paths; `Package.swift`'s `LabanRenderer` resources;
   `execplans/active/vector-zoom-smoothness.md` (why this exists + the profiling);
-  and `docs/reference/continuous-zoom-research.md` (cited zoom-out UX research —
-  governs M3 zoom-out: opaque margin, rubber-band, reflow-on-release).
+  `docs/reference/continuous-zoom-research.md` (cited zoom-out UX research —
+  governs M3 zoom-out: opaque margin, rubber-band, reflow-on-release); and
+  `docs/reference/renderer-session-history.md` (hard-won traps from prior renderer
+  sessions — the half-rate VRR basin, drawable prefetch/carry, partial-damage
+  pass agreement, parked-link-while-dirty stalls, measure-before-theorizing). Read
+  its "Hard-won lessons" section before touching present/drawable/idle paths.
 - The vector renderer is OFF LIMITS for behavior changes. If you must move shared
   helpers (e.g. a clear-color derivation), keep the vector renderer's behavior
   identical and covered by its existing tests.
