@@ -238,27 +238,6 @@ public final class VectorGlyphRenderer: RendererBackend {
       let scratchRasterizer = VectorGlyphScratchRasterizer(device: device)
     else { return nil }
 
-    let options = MTLCompileOptions()
-    if #available(macOS 15.0, *) {
-      options.mathMode = .safe
-    } else {
-      options.fastMathEnabled = false
-    }
-    guard
-      let url = LabanRendererResources.bundle?.url(
-        forResource: "VectorGlyphShaders",
-        withExtension: "metal"),
-      let source = try? String(contentsOf: url, encoding: .utf8),
-      let library = try? device.makeLibrary(source: source, options: options),
-      let solidVertex = library.makeFunction(name: "vectorSolidVertex"),
-      let solidFragment = library.makeFunction(name: "vectorSolidFragment"),
-      let glyphVertex = library.makeFunction(name: "vectorGlyphVertex"),
-      let glyphCoverageFragment = library.makeFunction(name: "vectorGlyphCoverageFragment"),
-      let glyphColorFragment = library.makeFunction(name: "vectorGlyphColorFragment"),
-      let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
-      let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment")
-    else { return nil }
-
     let layer = CAMetalLayer()
     layer.device = device
     // sRGB target so the fixed-function blend composites coverage in linear
@@ -274,40 +253,20 @@ public final class VectorGlyphRenderer: RendererBackend {
     layer.allowsNextDrawableTimeout = true
     layer.contentsGravity = .topLeft
 
-    let solidDescriptor = MTLRenderPipelineDescriptor()
-    solidDescriptor.label = "laban.vector.solid"
-    solidDescriptor.vertexFunction = solidVertex
-    solidDescriptor.fragmentFunction = solidFragment
-    solidDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
-    configureAlphaBlend(solidDescriptor.colorAttachments[0])
-
-    let glyphCoverageDescriptor = MTLRenderPipelineDescriptor()
-    glyphCoverageDescriptor.label = "laban.vector.glyph-coverage"
-    glyphCoverageDescriptor.vertexFunction = glyphVertex
-    glyphCoverageDescriptor.fragmentFunction = glyphCoverageFragment
-    glyphCoverageDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
-    configureSubpixelCoverageBlend(glyphCoverageDescriptor.colorAttachments[0])
-
-    let glyphColorDescriptor = MTLRenderPipelineDescriptor()
-    glyphColorDescriptor.label = "laban.vector.glyph-color"
-    glyphColorDescriptor.vertexFunction = glyphVertex
-    glyphColorDescriptor.fragmentFunction = glyphColorFragment
-    glyphColorDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
-    configureAdditiveRGBPreserveAlphaBlend(glyphColorDescriptor.colorAttachments[0])
-
-    let rasterGlyphDescriptor = MTLRenderPipelineDescriptor()
-    rasterGlyphDescriptor.label = "laban.vector.raster-glyph"
-    rasterGlyphDescriptor.vertexFunction = glyphVertex
-    rasterGlyphDescriptor.fragmentFunction = rasterGlyphFragment
-    rasterGlyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
-    configureAlphaBlend(rasterGlyphDescriptor.colorAttachments[0])
-
-    let colorGlyphDescriptor = MTLRenderPipelineDescriptor()
-    colorGlyphDescriptor.label = "laban.vector.color-glyph"
-    colorGlyphDescriptor.vertexFunction = glyphVertex
-    colorGlyphDescriptor.fragmentFunction = colorGlyphFragment
-    colorGlyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
-    configureAlphaBlend(colorGlyphDescriptor.colorAttachments[0])
+    // Compiled once per process per device and reused across every renderer
+    // activation. Before `VectorGlyphShaderCache` existed, this was a
+    // synchronous shader-source compile + 5 `makeRenderPipelineState` calls on
+    // EVERY switch into the vector renderer (and the nested
+    // `VectorGlyphScratchRasterizer` above independently recompiled the exact
+    // same source a second time) — that double recompile, repeated on every
+    // toggle, is what made activation slow (see the renderer-init perf trace
+    // analysis). The pipeline descriptors are a pure function of the shader
+    // source plus `layer.pixelFormat`, neither of which vary per-activation, so
+    // caching them changes no rendered output.
+    guard
+      let pipelines = VectorGlyphShaderCache.renderPipelines(
+        device: device, pixelFormat: layer.pixelFormat)
+    else { return nil }
 
     let samplerDescriptor = MTLSamplerDescriptor()
     samplerDescriptor.minFilter = .nearest
@@ -322,15 +281,6 @@ public final class VectorGlyphRenderer: RendererBackend {
     linearSamplerDescriptor.tAddressMode = .clampToEdge
 
     guard
-      let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
-      let glyphCoveragePipeline = try? device.makeRenderPipelineState(
-        descriptor: glyphCoverageDescriptor),
-      let glyphColorPipeline = try? device.makeRenderPipelineState(
-        descriptor: glyphColorDescriptor),
-      let rasterGlyphPipeline = try? device.makeRenderPipelineState(
-        descriptor: rasterGlyphDescriptor),
-      let colorGlyphPipeline = try? device.makeRenderPipelineState(
-        descriptor: colorGlyphDescriptor),
       let sampler = device.makeSamplerState(descriptor: samplerDescriptor),
       let linearSampler = device.makeSamplerState(descriptor: linearSamplerDescriptor)
     else { return nil }
@@ -339,11 +289,11 @@ public final class VectorGlyphRenderer: RendererBackend {
     self.queue = queue
     self.layer = layer
     self.drawableScheduler = MetalDrawableScheduler(layer: layer)
-    self.solidPipeline = solidPipeline
-    self.glyphCoveragePipeline = glyphCoveragePipeline
-    self.glyphColorPipeline = glyphColorPipeline
-    self.rasterGlyphPipeline = rasterGlyphPipeline
-    self.colorGlyphPipeline = colorGlyphPipeline
+    self.solidPipeline = pipelines.solid
+    self.glyphCoveragePipeline = pipelines.glyphCoverage
+    self.glyphColorPipeline = pipelines.glyphColor
+    self.rasterGlyphPipeline = pipelines.rasterGlyph
+    self.colorGlyphPipeline = pipelines.colorGlyph
     self.sampler = sampler
     self.linearSampler = linearSampler
     self.scratchRasterizer = scratchRasterizer
@@ -2381,7 +2331,9 @@ public final class VectorGlyphRenderer: RendererBackend {
   }
 }
 
-private func configureAlphaBlend(_ attachment: MTLRenderPipelineColorAttachmentDescriptor?) {
+// Internal (not private): also used by `VectorGlyphShaderCache`, which builds
+// these same pipeline descriptors on behalf of `VectorGlyphRenderer.init`.
+func configureAlphaBlend(_ attachment: MTLRenderPipelineColorAttachmentDescriptor?) {
   guard let attachment else { return }
   attachment.isBlendingEnabled = true
   attachment.rgbBlendOperation = .add
@@ -2392,7 +2344,7 @@ private func configureAlphaBlend(_ attachment: MTLRenderPipelineColorAttachmentD
   attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 }
 
-private func configureSubpixelCoverageBlend(
+func configureSubpixelCoverageBlend(
   _ attachment: MTLRenderPipelineColorAttachmentDescriptor?
 ) {
   guard let attachment else { return }
@@ -2405,7 +2357,7 @@ private func configureSubpixelCoverageBlend(
   attachment.destinationAlphaBlendFactor = .one
 }
 
-private func configureAdditiveRGBPreserveAlphaBlend(
+func configureAdditiveRGBPreserveAlphaBlend(
   _ attachment: MTLRenderPipelineColorAttachmentDescriptor?
 ) {
   guard let attachment else { return }

@@ -66,28 +66,17 @@ public final class VectorGlyphScratchRasterizer {
   public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
     guard let device else { return nil }
     guard let queue = device.makeCommandQueue() else { return nil }
-    let options = MTLCompileOptions()
-    if #available(macOS 15.0, *) {
-      options.mathMode = .safe
-    } else {
-      options.fastMathEnabled = false
-    }
-    guard
-      let url = LabanRendererResources.bundle?.url(
-        forResource: "VectorGlyphShaders",
-        withExtension: "metal"),
-      let source = try? String(contentsOf: url, encoding: .utf8),
-      let library = try? device.makeLibrary(source: source, options: options),
-      let scratchFunction = library.makeFunction(name: "vectorGlyphRasterizeScratch"),
-      let accumFunction = library.makeFunction(name: "vectorGlyphAccumulateAtlas"),
-      let scratchPipeline = try? device.makeComputePipelineState(function: scratchFunction),
-      let accumPipeline = try? device.makeComputePipelineState(function: accumFunction)
+    // Shared with `VectorGlyphRenderer.init` via `VectorGlyphShaderCache`: both
+    // used to independently load+compile the same `VectorGlyphShaders.metal`
+    // source, so every vector-renderer activation paid for the shader compile
+    // twice. The cache compiles it at most once per device per process.
+    guard let pipelines = VectorGlyphShaderCache.computePipelines(device: device)
     else { return nil }
 
     self.device = device
     self.queue = queue
-    self.scratchPipeline = scratchPipeline
-    self.accumPipeline = accumPipeline
+    self.scratchPipeline = pipelines.scratch
+    self.accumPipeline = pipelines.accum
   }
 
   public func rasterize(
