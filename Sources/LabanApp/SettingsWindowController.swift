@@ -34,7 +34,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   private let vectorSubpixelWidthField = NSTextField(frame: .zero)
   private let vectorSubpixelApplyButton = NSButton(title: "Apply", target: nil, action: nil)
   private let vectorTextWeightSlider = NSSlider(
-    value: VectorTextWeightSettings.defaultWeight, minValue: 0, maxValue: 1,
+    value: VectorTextWeightSettings.defaultWeight, minValue: 0,
+    maxValue: VectorTextWeightSettings.maxWeight,
     target: nil, action: nil)
   private let vectorTextWeightValueLabel = NSTextField(labelWithString: "")
   private let vectorSmoothScrollPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -367,14 +368,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     vectorTextWeightSlider.action = #selector(vectorTextWeightChanged(_:))
     vectorTextWeightSlider.toolTip =
       "How much to thicken vector text (stem darkening). 0 = thin geometric outline; "
-      + "1 = matched to the classic/CoreText weight. Applies live."
+      + "1 = matched to the classic/CoreText weight; 2 = extra heavy. Applies live."
     vectorTextWeightSlider.widthAnchor.constraint(equalToConstant: 160).isActive = true
+    vectorTextWeightSlider.numberOfTickMarks = 3
+    vectorTextWeightSlider.allowsTickMarkValuesOnly = false
     vectorTextWeightValueLabel.font = .monospacedDigitSystemFont(
       ofSize: NSFont.smallSystemFontSize, weight: .regular)
     let row = NSStackView(views: [
       makeSmallLabel("Thin"),
       vectorTextWeightSlider,
-      makeSmallLabel("CoreText"),
+      makeSmallLabel("Heavy"),
       vectorTextWeightValueLabel,
     ])
     row.orientation = .horizontal

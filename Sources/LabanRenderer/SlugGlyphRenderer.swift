@@ -56,7 +56,7 @@ private struct SlugGlyphGPUInstance {
   var localMax: SIMD2<Float>
   var color: SIMD4<Float>
   var glyphIndex: UInt32
-  var pad0: UInt32 = 0
+  var coverageExponent: Float = 1
   var pad1: UInt32 = 0
   var pad2: UInt32 = 0
 }
@@ -133,6 +133,7 @@ public final class SlugGlyphRenderer: RendererBackend {
   public private(set) var gestureZoom: CGFloat = 1
   public private(set) var gestureZoomAnchor: CGPoint = .zero
   public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
+  private var textWeight: Double = VectorTextWeightSettings.current()
   private var displayDownsampled = false
   public var effectiveSubpixelLayout: VectorSubpixelLayout {
     VectorSubpixelLayout.effective(
@@ -335,6 +336,10 @@ public final class SlugGlyphRenderer: RendererBackend {
 
   public func setSubpixelLayout(_ layout: VectorSubpixelLayout) {
     subpixelLayout = layout
+  }
+
+  public func refreshTextWeight() {
+    textWeight = VectorTextWeightSettings.current()
   }
 
   @discardableResult
@@ -688,6 +693,8 @@ public final class SlugGlyphRenderer: RendererBackend {
 
     let pointScale = activeAtlas.pointSize / Self.referencePointSize
     let foregroundColor = slugColor(foreground)
+    let coverageExponent = VectorGlyphRenderer.coverageExponent(
+      foreground: foreground, background: background, weight: textWeight)
     frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
@@ -758,7 +765,8 @@ public final class SlugGlyphRenderer: RendererBackend {
           localMin: localMin,
           localMax: localMax,
           color: foregroundColor,
-          glyphIndex: UInt32(entry.glyphIndex)))
+          glyphIndex: UInt32(entry.glyphIndex),
+          coverageExponent: coverageExponent))
     }
 
     appendDecorations(

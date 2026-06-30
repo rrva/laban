@@ -45,13 +45,26 @@ final class VectorTextWeightTests: XCTestCase {
     XCTAssertLessThan(half, 1)
   }
 
+  func testWeightAboveOneThickensFurther() {
+    // Weight can exceed CoreText (1.0) up to 2.0 for an extra-heavy look.
+    let full = VectorGlyphRenderer.coverageExponent(
+      foreground: darkFg, background: lightBg, weight: 1)
+    let heavy = VectorGlyphRenderer.coverageExponent(
+      foreground: darkFg, background: lightBg, weight: 2)
+    XCTAssertLessThan(heavy, full)  // smaller exponent => thicker than CoreText
+  }
+
   func testSettingPersistsAndClamps() {
     let defaults = UserDefaults(suiteName: "VectorTextWeightTests-\(UUID().uuidString)")!
     XCTAssertEqual(VectorTextWeightSettings.current(defaults: defaults), 1.0, accuracy: 1e-9)
     VectorTextWeightSettings.setCurrent(0.3, defaults: defaults)
     XCTAssertEqual(VectorTextWeightSettings.current(defaults: defaults), 0.3, accuracy: 1e-9)
+    VectorTextWeightSettings.setCurrent(1.7, defaults: defaults)
+    XCTAssertEqual(VectorTextWeightSettings.current(defaults: defaults), 1.7, accuracy: 1e-9)
     VectorTextWeightSettings.setCurrent(5, defaults: defaults)
-    XCTAssertEqual(VectorTextWeightSettings.current(defaults: defaults), 1.0, accuracy: 1e-9)
+    XCTAssertEqual(
+      VectorTextWeightSettings.current(defaults: defaults),
+      VectorTextWeightSettings.maxWeight, accuracy: 1e-9)
     VectorTextWeightSettings.setCurrent(-1, defaults: defaults)
     XCTAssertEqual(VectorTextWeightSettings.current(defaults: defaults), 0.0, accuracy: 1e-9)
   }

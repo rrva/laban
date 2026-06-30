@@ -758,8 +758,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     vectorTextWeightObserver = NotificationCenter.default.addObserver(
       forName: VectorTextWeightSettings.didChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self, let vector = self.backend as? VectorGlyphRenderer else { return }
-      vector.refreshTextWeight()
+      guard let self else { return }
+      if let vector = self.backend as? VectorGlyphRenderer {
+        vector.refreshTextWeight()
+      } else if let slug = self.backend as? SlugGlyphRenderer {
+        slug.refreshTextWeight()
+      } else {
+        return
+      }
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()

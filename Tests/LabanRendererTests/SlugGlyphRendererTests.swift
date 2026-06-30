@@ -392,6 +392,71 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       "rgbStripe should materially differ from grayscale channel coverage")
   }
 
+  func testSlugTextWeightThickensRenderedInk() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let key = VectorTextWeightSettings.defaultsKey
+    let saved = UserDefaults.standard.object(forKey: key)
+    defer {
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+
+    let lightInk = try renderWeightProbeInk(weight: 0)
+    let heavyInk = try renderWeightProbeInk(weight: 1)
+    XCTAssertGreaterThan(
+      heavyInk,
+      lightInk * 1.05,
+      "text weight 1 must lay down more ink than weight 0 (light \(lightInk), heavy \(heavyInk))")
+  }
+
+  /// Renders dark-on-light text at the given weight and returns total ink
+  /// (how far the foreground pixels darken below the background). The weight
+  /// setting drives the Slug stem-darkening exponent, so a higher weight must
+  /// produce more ink.
+  private func renderWeightProbeInk(weight: Double) throws -> Double {
+    let lightBg: UInt32 = 0xF6_EE_DB_FF
+    let darkFg: UInt32 = 0x18_22_2A_FF
+    VectorTextWeightSettings.setCurrent(weight)
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: 16),
+        pixelWidth: 360,
+        pixelHeight: 120,
+        scale: 2))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    renderer.refreshTextWeight()
+    XCTAssertTrue(
+      renderer.render(
+        [
+          .rect(CGRect(x: 0, y: 0, width: 180, height: 60), color: lightBg, source: .terminal),
+          .glyphRun(
+            origin: CGPoint(x: 10, y: 16),
+            text: "weight",
+            foreground: darkFg,
+            background: lightBg,
+            attributes: [],
+            source: .terminal),
+        ],
+        damage: .full))
+    let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+    let bgLuma = (Int(0xF6) + Int(0xEE) + Int(0xDB)) / 3
+    var ink = 0
+    for y in 0..<image.height {
+      for x in 0..<image.width {
+        let pixel = image.pixel(x: x, y: y)
+        let luma = (Int(pixel.r) + Int(pixel.g) + Int(pixel.b)) / 3
+        ink += max(0, bgLuma - luma)
+      }
+    }
+    return Double(ink)
+  }
+
   func testSlugDecorationStylesChangeOutput() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")

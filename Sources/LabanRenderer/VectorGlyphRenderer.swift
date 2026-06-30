@@ -2026,13 +2026,14 @@ public final class VectorGlyphRenderer: RendererBackend {
   /// otherwise too thin, especially for dark text on a light background where
   /// thin strokes wash out. Returns an exponent `e` for `coverage^e`; `e < 1`
   /// thickens. A base boost applies to all text; an extra boost applies when the
-  /// foreground is darker than the background (dark-on-light).
+  /// foreground is darker than the background (dark-on-light). Weight 1.0 matches
+  /// CoreText; weight 2.0 doubles the darkening for an extra-heavy look.
   static func coverageExponent(
     foreground: UInt32,
     background: UInt32,
     weight: Double
   ) -> Float {
-    let w = Float(min(max(weight, 0), 1))
+    let w = Float(min(max(weight, 0), VectorTextWeightSettings.maxWeight))
     guard w > 0 else { return 1 }
     let lf = relativeLuma(foreground)
     let lb = relativeLuma(background)
