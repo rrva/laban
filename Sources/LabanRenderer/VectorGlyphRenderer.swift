@@ -1064,7 +1064,13 @@ public final class VectorGlyphRenderer: RendererBackend {
     descriptor.colorAttachments[0].texture = target
     descriptor.colorAttachments[0].loadAction = .clear
     descriptor.colorAttachments[0].storeAction = .store
-    descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+    // Clear to the terminal's own background, not black. During a continuous
+    // zoom-OUT the whole canvas (background rect included) scales toward the
+    // anchor, so the margin it no longer covers shows the clear color. Black
+    // there reads as a void; the terminal background reads as intentional empty
+    // space until the gesture-end SIGWINCH reflow fills the new cells. Reuses the
+    // same derivation MetalRenderer uses to avoid resize/alt-screen black flashes.
+    descriptor.colorAttachments[0].clearColor = MetalRenderer.fullRedrawClearColor(commands)
     guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
       return
     }

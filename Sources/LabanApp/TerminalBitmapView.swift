@@ -3177,6 +3177,16 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   override func flagsChanged(with event: NSEvent) {
     let pt = convert(event.locationInWindow, from: nil)
     updateHoverCursor(at: pt, modifierFlags: event.modifierFlags)
+    // Releasing Command ends a Cmd+scroll zoom. A phase-less scroll stream has no
+    // `.ended` event, so without this the gesture only commits on the quiet
+    // timer — and if the stream stalled mid-gesture the canvas is left scaled
+    // (the "stuck small rectangle in a black field"). Committing on Cmd-up is the
+    // real end signal; the quiet timer remains a fallback.
+    if zoomGestureBasePointSize != nil, !event.modifierFlags.contains(.command) {
+      coalescedZoomScrollSettle?.cancel()
+      coalescedZoomScrollSettle = nil
+      applyZoomMagnification(delta: 0, phase: .ended)
+    }
   }
 
   private func updateHoverCursor(at pt: NSPoint, modifierFlags: NSEvent.ModifierFlags = []) {

@@ -51,9 +51,13 @@ final class VectorGestureZoomProjectionTests: XCTestCase {
 
     // A red rect centered ON the surface centre (the zoom anchor) so a 2x zoom
     // grows it symmetrically (150..250 -> 100..300) and stays within bounds.
+    // A black full-surface terminal background (so the frame clears to black via
+    // fullRedrawClearColor — the FIRST terminal rect), then a centered red marker
+    // rect whose covered area we measure as it scales.
     let commands: [FrameCommand] = [
+      .rect(CGRect(x: 0, y: 0, width: 400, height: 400), color: 0x00_00_00_FF, source: .terminal),
       .rect(
-        CGRect(x: 150, y: 150, width: 100, height: 100), color: 0xFF_00_00_FF, source: .terminal)
+        CGRect(x: 150, y: 150, width: 100, height: 100), color: 0xFF_00_00_FF, source: .terminal),
     ]
 
     renderer.setGestureZoom(1, anchor: CGPoint(x: pw / 2, y: ph / 2))
