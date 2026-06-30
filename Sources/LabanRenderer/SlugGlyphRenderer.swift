@@ -248,8 +248,10 @@ public final class SlugGlyphRenderer: RendererBackend {
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
       let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDescriptor),
-      let rasterGlyphPipeline = try? device.makeRenderPipelineState(descriptor: rasterGlyphDescriptor),
-      let colorGlyphPipeline = try? device.makeRenderPipelineState(descriptor: colorGlyphDescriptor),
+      let rasterGlyphPipeline = try? device.makeRenderPipelineState(
+        descriptor: rasterGlyphDescriptor),
+      let colorGlyphPipeline = try? device.makeRenderPipelineState(
+        descriptor: colorGlyphDescriptor),
       let sampler = device.makeSamplerState(descriptor: samplerDescriptor)
     else { return nil }
 
@@ -552,9 +554,10 @@ public final class SlugGlyphRenderer: RendererBackend {
     height: Int
   ) -> [UInt8]? {
     guard width > 0, height > 0 else { return nil }
-    guard let entry = ensureGlyph(
-      for: Character(String(scalar)),
-      referenceAtlas: referenceFontAtlas)
+    guard
+      let entry = ensureGlyph(
+        for: Character(String(scalar)),
+        referenceAtlas: referenceFontAtlas)
     else { return nil }
     guard ensureGeometryBuffersIfNeeded(glyphsNeeded: true) else { return nil }
     guard let texture = makeTexture(pixelWidth: width, pixelHeight: height, storageMode: .shared)
@@ -725,10 +728,11 @@ public final class SlugGlyphRenderer: RendererBackend {
         rasterGlyphs.append(fallback)
         continue
       }
-      guard let entry = ensureGlyph(
-        for: cluster,
-        referenceAtlas: referenceAtlas,
-        attributes: attributes)
+      guard
+        let entry = ensureGlyph(
+          for: cluster,
+          referenceAtlas: referenceAtlas,
+          attributes: attributes)
       else {
         if let fallback = rasterGlyphInstance(
           cluster: cluster,
@@ -1007,7 +1011,8 @@ public final class SlugGlyphRenderer: RendererBackend {
       let intersecting = outline.curves.enumerated()
         .filter { _, curve in curveIntersectsBand(curve, min: bandMin, max: bandMax, axis: axis) }
         .sorted { lhs, rhs in
-          curveBreakCoordinate(lhs.element, axis: axis) > curveBreakCoordinate(rhs.element, axis: axis)
+          curveBreakCoordinate(lhs.element, axis: axis)
+            > curveBreakCoordinate(rhs.element, axis: axis)
         }
       for (localIndex, _) in intersecting {
         bandIndices.append(UInt32(curveStart + localIndex))
@@ -1155,7 +1160,8 @@ public final class SlugGlyphRenderer: RendererBackend {
     {
       return targetTexture
     }
-    let texture = makeTexture(pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
+    let texture = makeTexture(
+      pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
     texture?.label = "laban.slug.target"
     targetTexture = texture
     return texture

@@ -82,7 +82,8 @@ final class SlugGlyphFrameTimeBench: XCTestCase {
         scale: scale))
     renderer.waitForFrameCompletion = true
     renderer.presentsToLayer = false
-    let commands = frameCommands(text: cjkText(cols: cols, rows: rows), pixelW: pixelW, pixelH: pixelH)
+    let commands = frameCommands(
+      text: cjkText(cols: cols, rows: rows), pixelW: pixelW, pixelH: pixelH)
     let result = try timeFrames(renderer: renderer, commands: commands)
 
     print("\n=== Slug glyph renderer CJK frame-time ===")

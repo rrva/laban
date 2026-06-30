@@ -9,7 +9,7 @@ import XCTest
 /// Measurement probe: compare ink across software (true CoreText), vector@1.0,
 /// and slug at weights 0/1/2, for several fg/bg pairs. Tells us empirically which
 /// slug weight matches the software renderer and whether the vector base is
-/// under-tuned. Not an assertion test — prints ratios for tuning.
+/// under-tuned. Not an assertion test; it prints ratios for tuning.
 final class SlugWeightSoftwareProbe: XCTestCase {
   private let probe = "Hglo08B/N weight"
   private let cases: [(name: String, fg: UInt32, bg: UInt32)] = [
@@ -25,8 +25,11 @@ final class SlugWeightSoftwareProbe: XCTestCase {
     let key = VectorTextWeightSettings.defaultsKey
     let saved = UserDefaults.standard.object(forKey: key)
     defer {
-      if let saved { UserDefaults.standard.set(saved, forKey: key) }
-      else { UserDefaults.standard.removeObject(forKey: key) }
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
     }
 
     for c in cases {

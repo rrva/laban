@@ -10,7 +10,7 @@ import XCTest
 /// The vector renderer is the project's CoreText-calibrated reference (its
 /// `coverageExponent` doc and `VectorTextWeightTests` lock that calibration), and
 /// Slug reuses the same stem-darkening exponent. This proves Slug tracks that
-/// reference at weight 1.0 — and that weight 1.0 lands closer to it than the
+/// reference at weight 1.0, and that weight 1.0 lands closer to it than the
 /// un-darkened weight 0, i.e. the darkening pulls Slug toward CoreText rather
 /// than away.
 final class SlugWeightCoreTextParityTests: XCTestCase {
@@ -28,8 +28,11 @@ final class SlugWeightCoreTextParityTests: XCTestCase {
     let key = VectorTextWeightSettings.defaultsKey
     let saved = UserDefaults.standard.object(forKey: key)
     defer {
-      if let saved { UserDefaults.standard.set(saved, forKey: key) }
-      else { UserDefaults.standard.removeObject(forKey: key) }
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
     }
 
     for c in cases {
@@ -51,7 +54,7 @@ final class SlugWeightCoreTextParityTests: XCTestCase {
           + "\(Int(reference)) (ratio \(ratio))")
 
       // Weight 1.0 must be at least as close to the reference as un-darkened
-      // weight 0 — the stem-darkening pulls Slug toward CoreText, not away.
+      // weight 0 (the stem-darkening pulls Slug toward CoreText, not away).
       let weightedGap = abs(slugWeighted - reference)
       let neutralGap = abs(slugNeutral - reference)
       XCTAssertLessThanOrEqual(
