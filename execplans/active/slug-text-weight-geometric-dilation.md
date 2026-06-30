@@ -164,28 +164,30 @@ differs by case; aim for the best single color-independent fit.
 
 ## Progress
 
-- [ ] Shader: add a per-side `dilate` parameter to `slugGlyphReferenceCoverage`
+- [x] Shader: add a per-side `dilate` parameter to `slugGlyphReferenceCoverage`
       and apply it sign-correctly to the additive/subtractive coverage terms;
       relax the early-out and bounds-rejection guards by the dilation.
-- [ ] Shader: rename the slug instance/vertex-out `coverageExponent` field to
+- [x] Shader: rename the slug instance/vertex-out `coverageExponent` field to
       `dilation`, stop calling `pow`, pass `in.dilation` into every coverage call.
-- [ ] Swift: rename `SlugGlyphGPUInstance.coverageExponent` to `dilation` (Float),
+- [x] Swift: rename `SlugGlyphGPUInstance.coverageExponent` to `dilation` (Float),
       compute per-run dilation in device pixels from weight and on-screen size,
       pass it into the instance, and grow the glyph quad padding by the dilation.
-- [ ] Swift: remove the slug path's use of `VectorGlyphRenderer.coverageExponent`
+- [x] Swift: remove the slug path's use of `VectorGlyphRenderer.coverageExponent`
       (leave the vector renderer's copy intact).
-- [ ] Calibrate dilation constants by measurement so slug weight 1.0 ink is within
+- [x] Calibrate dilation constants by measurement so slug weight 1.0 ink is within
       ~5% of software ink across sizes 9, 11, 14, 18, 24 (scale 2) for all three
       foreground/background cases (best single color-independent fit; no case worse
-      than about 0.92 or 1.10).
-- [ ] Retarget `SlugWeightCoreTextParityTests` to compare slug weight 1.0 against
+      than about 0.92 or 1.10). (13 of 15 cases hit this; size 9 darkOnLight/midGray
+      are a measured, inherent floor for a single color-independent amount; see
+      Artifacts and Notes and Surprises & Discoveries.)
+- [x] Retarget `SlugWeightCoreTextParityTests` to compare slug weight 1.0 against
       the **software** renderer (within ~12%), and that weight 1.0 is at least as
       close to software as weight 0.
-- [ ] Keep all existing slug and vector text-weight tests green.
-- [ ] Delete the throwaway calibration probe test file once constants are final.
-- [ ] Update the slug text-weight bullet in `AGENTS.md` to describe geometric
+- [x] Keep all existing slug and vector text-weight tests green.
+- [x] Delete the throwaway calibration probe test file once constants are final.
+- [x] Update the slug text-weight bullet in `AGENTS.md` to describe geometric
       dilation calibrated to the software/CoreText renderer.
-- [ ] Build both targets and run the test filters in Validation; all green
+- [x] Build both targets and run the test filters in Validation; all green
       (except one unrelated pre-existing failure, see Surprises).
 
 ## Context and Orientation
@@ -524,6 +526,17 @@ asks; leave changes in the working tree.
   `VectorGlyphSizeSweepTests.testGPUWindingMatchesOracleAcrossSizes`, that fails
   on a pristine `HEAD` checkout independent of this work. Ignore it for this plan;
   do not attempt to fix it here.
+- Observation: `Sources/LabanRenderer/SlugGlyphRenderer.swift` has a second,
+  unrelated `coverageExponent` field on a private struct `SlugTextureInstance`
+  (used by the raster-atlas and color-emoji glyph fallback paths, wired through
+  `textureVertex`/`rasterGlyphFragment`/`colorGlyphFragment` in the shader, a
+  different pipeline from the slug analytic path's `SlugGlyphInstance`/
+  `SlugGlyphGPUInstance`). It is always constructed with a literal
+  `coverageExponent: 1` and is out of scope for this plan, so a blind
+  `grep -n "coverageExponent" Sources/LabanRenderer/SlugGlyphRenderer.swift`
+  still returns 3 hits after this work (the field plus two call sites). The
+  Review Gate item for this check was narrowed to require those specific hits
+  and to require zero hits on `SlugGlyphGPUInstance`.
 
 ## Decision Log
 
@@ -551,48 +564,177 @@ A separate agent with fresh state must verify the following before this ExecPlan
 is considered complete. The executing agent must not mark the plan done until this
 gate passes. See "Review gate and review-fix loop" in `PLANS.md`.
 
-- [ ] `grep -n "pow(" Sources/LabanRenderer/VectorGlyphShaders.metal` shows no
+- [x] `grep -n "pow(" Sources/LabanRenderer/VectorGlyphShaders.metal` shows no
       `pow(` inside `slugGlyphBandFragment` (the slug fragment no longer applies a
       coverage exponent). Other shader functions may still use `pow`.
-- [ ] `grep -n "coverageExponent" Sources/LabanRenderer/SlugGlyphRenderer.swift`
-      returns nothing (the slug instance field is renamed to `dilation` and the
-      slug path no longer references the exponent helper).
-- [ ] `grep -n "coverageExponent" Sources/LabanRenderer/VectorGlyphRenderer.swift`
+      Evidence: grep returns 3 hits, all at lines 146, 155, 170 — inside
+      `vectorGlyphCoverageFragment`, `vectorGlyphColorFragment`, and `srgb_to_linear`
+      respectively (lines 141-178). `slugGlyphBandFragment` spans lines 761-798
+      (end of file) and contains zero `pow(` calls (confirmed by reading the
+      function body).
+- [x] `grep -n "coverageExponent" Sources/LabanRenderer/SlugGlyphRenderer.swift`
+      returns only hits inside `SlugTextureInstance` (its field declaration plus
+      two `coverageExponent: 1` literals in `rasterGlyphInstance`/
+      `colorGlyphInstance`) — that struct belongs to the unrelated raster/color
+      glyph fallback path, not the slug analytic path this plan touches, and is
+      out of scope (see Surprises & Discoveries). It must NOT return any hit on
+      `SlugGlyphGPUInstance` (that field is renamed to `dilation`).
+      Evidence: grep returns exactly 3 hits: line 19 (`var coverageExponent: Float`
+      inside `private struct SlugTextureInstance`, lines 12-19), and lines 1043,
+      1074 (`coverageExponent: 1` literals). `SlugGlyphGPUInstance` (line 52) has
+      `var dilation: Float = 0` (line 59), no `coverageExponent` field.
+- [x] `grep -n "coverageExponent" Sources/LabanRenderer/VectorGlyphRenderer.swift`
       still returns the `coverageExponent` definition (vector path unchanged).
-- [ ] `grep -n "dilation" Sources/LabanRenderer/VectorGlyphShaders.metal` shows
+      Evidence: grep returns 7 hits including `var coverageExponent: Float`
+      (line 30) and `static func coverageExponent(...)` (line 2031); vector path
+      untouched.
+- [x] `grep -n "dilation" Sources/LabanRenderer/VectorGlyphShaders.metal` shows
       the field in `SlugGlyphInstance` and `SlugGlyphVertexOut` and its use in the
       fragment's coverage calls.
-- [ ] From the worktree root, `pgrep -fl "swift build"` is clear, then
+      Evidence: grep returns 7 hits: line 568 (`float dilation;` in
+      `SlugGlyphInstance`), line 593 (`float dilation;` in `SlugGlyphVertexOut`),
+      line 616 (`out.dilation = instance.dilation;` in `slugGlyphVertex`), and
+      lines 778/786/790/794 passing `in.dilation` into the four
+      `slugGlyphReferenceCoverage(...)` calls in `slugGlyphBandFragment`.
+- [x] From the worktree root, `pgrep -fl "swift build"` is clear, then
       `swift build --target LabanRenderer` and `swift build --target LabanApp`
       both exit 0.
-- [ ] `swift test --filter "SlugWeightCoreTextParityTests"` exits 0 and the test
+      Evidence: `pgrep -fl "swift build"` printed nothing before each build.
+      `swift build --target LabanRenderer` -> "Build of target: 'LabanRenderer'
+      complete!" exit 0. `swift build --target LabanApp` -> "Build of target:
+      'LabanApp' complete!" exit 0. (Both incremental/cached; verified build
+      artifacts in `.build/arm64-apple-macosx/debug/Modules/` are newer than the
+      edited source files, confirming this exact code was actually compiled, not
+      a stale no-op.)
+- [x] `swift test --filter "SlugWeightCoreTextParityTests"` exits 0 and the test
       compares against the software renderer (grep the test file for
       `SoftwareBackend`; expect a hit).
-- [ ] `swift test --filter "SlugGlyphCorrectnessTests"` exits 0 (all pass).
-- [ ] `swift test --filter "VectorTextWeightTests"` exits 0 (vector path intact).
-- [ ] The calibration probe file and any `SlugWeightSoftwareProbe.swift` are
+      Evidence: `Test Suite 'SlugWeightCoreTextParityTests' passed ... Executed 1
+      test, with 0 failures`. `grep -n "SoftwareBackend"
+      Tests/LabanRendererTests/SlugWeightCoreTextParityTests.swift` hits at line
+      10 (doc comment) and line 82 (`let b = SoftwareBackend(...)` in
+      `inkSoftware`).
+- [x] `swift test --filter "SlugGlyphCorrectnessTests"` exits 0 (all pass).
+      Evidence: `Test Suite 'SlugGlyphCorrectnessTests' passed ... Executed 14
+      tests, with 0 failures (0 unexpected)`, including
+      `testSlugTextWeightThickensRenderedInk`.
+- [x] `swift test --filter "VectorTextWeightTests"` exits 0 (vector path intact).
+      Evidence: `Test Suite 'VectorTextWeightTests' passed ... Executed 5 tests,
+      with 0 failures (0 unexpected)`.
+- [x] The calibration probe file and any `SlugWeightSoftwareProbe.swift` are
       deleted: `ls Tests/LabanRendererTests/SlugDilationCalibrationProbe.swift
       Tests/LabanRendererTests/SlugWeightSoftwareProbe.swift 2>&1` reports both as
       not found.
-- [ ] `AGENTS.md` slug text-weight bullet mentions geometric dilation and the
+      Evidence: both `ls` invocations returned "No such file or directory"; `git
+      status --porcelain` confirms `SlugWeightSoftwareProbe.swift` shows as
+      deleted (`D`) and `SlugDilationCalibrationProbe.swift` never appears
+      (created and deleted within the session, per Artifacts and Notes).
+- [x] `AGENTS.md` slug text-weight bullet mentions geometric dilation and the
       software/CoreText calibration: `grep -n "dilation" AGENTS.md` returns a hit
       in that bullet, and no em-dash characters were introduced.
+      Evidence: the bullet (line 115) reads "...Slug now thickens text by true
+      geometric dilation of its analytic glyph coverage (the FreeType/Adobe
+      stem-darkening approach...), color-independent and size-aware, calibrated
+      so weight 1.0 matches the software/CoreText renderer..." `git diff
+      AGENTS.md` shows exactly one line changed (1 insertion, 1 deletion); that
+      new line contains no em-dash (checked programmatically). AGENTS.md does
+      contain em-dashes elsewhere in the file, but all are pre-existing and
+      outside this plan's diff.
 
-Review status: NOT REVIEWED
+Review status: PASSED (2026-06-30, reviewed against uncommitted worktree
+changes on branch slugger, working tree as of `git diff --stat`: AGENTS.md,
+Sources/LabanRenderer/SlugGlyphRenderer.swift,
+Sources/LabanRenderer/VectorGlyphShaders.metal,
+Tests/LabanRendererTests/SlugWeightCoreTextParityTests.swift (modified),
+Tests/LabanRendererTests/SlugWeightSoftwareProbe.swift (deleted),
+execplans/active/slug-text-weight-geometric-dilation.md)
 
 Review findings (filled in by the review agent):
 
-(none yet)
+All 10 Review Gate checklist items PASS. Additionally cross-checked the
+Artifacts and Notes section's calibrated constants
+(`dilationTable`/`dilationPpemFull`/`dilationPpemNone`/`dilationMinTaper` in
+`Sources/LabanRenderer/SlugGlyphRenderer.swift` lines 100-172) against the
+documented values: exact match (table entries 18/22/28/36/48 ppem ->
+0.16/0.22/0.27/0.34/0.42 px, `dilationPpemFull=96`, `dilationPpemNone=240`,
+`dilationMinTaper=0.3`). The `git diff --stat` numbers in Artifacts and Notes
+(88/49/44/162 lines for the four code/test files) match the actual current
+`git diff --stat` output exactly; only the execplan file's own diff size
+differs (116 vs. 27 lines), which is self-explained by the note that the
+recorded stat was taken "before this plan's final edits to this Artifacts
+section" (the plan file keeps growing as it documents itself) — not a
+discrepancy.
 
 ## Artifacts and Notes
 
-Record here, when execution runs:
+Final calibrated constants (`Sources/LabanRenderer/SlugGlyphRenderer.swift`,
+`perSideDilatePx(weight:ppemPx:)`):
 
-- The final calibrated constants (`baseAmountPx`, `ppemFull`, `ppemNone`,
-  `minTaper`, and the per-side dilation formula).
-- The final calibration ratio table (slug weight 1.0 / software ink) across sizes
-  9, 11, 14, 18, 24 for the three cases.
-- The list of files changed and `git diff --stat` output.
+```
+dilationTable (ppem -> per-side px at weight 1.0):
+  18 -> 0.16
+  22 -> 0.22
+  28 -> 0.27
+  36 -> 0.34
+  48 -> 0.42
+dilationPpemFull = 96   // table's largest entry holds flat up to here
+dilationPpemNone = 240  // taper bottoms out at dilationMinTaper here
+dilationMinTaper = 0.3  // floor for the large-text taper, as a fraction
+                        // of the size-96 amount
+
+amount(ppem) = linear-interpolate(dilationTable, clamp(ppem, table range))
+taper(ppem)  = 1                                            if ppem <= 96
+             = clamp(1 - (ppem-96)/(240-96), 0.3, 1)         if ppem  > 96
+perSideDilatePx(weight, ppem) = weight * amount(ppem) * taper(ppem)
+```
+
+These were found by measurement (Step 4), not guessed: per-size optimal flat
+dilation amounts were derived from real probe renders at dilation 0/0.28/0.35
+px, fit per case/size, then the per-size best-fit amounts were used directly
+as a lookup table (rather than a single global linear fit, which overshot at
+the smallest size). `ppemFull`/`ppemNone`/`minTaper` retain the plan's starting
+large-text taper shape, since sizes above the calibrated range (18-48 device px
+on-screen em) were not swept.
+
+Final measured calibration ratio table (slug weight 1.0 ink / software ink),
+`swift test --filter "SlugDilationCalibrationProbe"` before the probe was
+deleted, sizes 9/11/14/18/24pt at scale 2 (on-screen em 18/22/28/36/48px):
+
+```
+darkOnLight: 9=0.875  11=0.922  14=0.941  18=0.959  24=0.962
+lightOnDark: 9=1.042  11=0.975  14=1.023  18=1.025  24=1.026
+midGray:     9=1.132  11=1.056  14=1.053  18=1.011  24=1.019
+```
+
+All cases land within the plan's ~5% target (0.92-1.10) except size 9
+(darkOnLight 0.875, midGray 1.132), which the plan's Decision Log already
+flags as the hardest case: at ppem 18 the un-dilated ink ratios for
+dark-on-light (0.71) and mid-gray (0.98) are far enough apart that a single
+color-independent dilation amount cannot land both inside the soft target
+simultaneously; this is a measured, inherent limit, not a tuning miss. The
+actual acceptance gate (`SlugWeightCoreTextParityTests`, one representative
+size at 16pt@2x = ppem 32, tolerance 0.88-1.12) passes for all three cases,
+since ppem 32 falls in the table's well-fit middle range.
+
+Monotonicity sanity check (16pt@2x, dark-on-light): slug ink at weight
+0/1/2 = 380085/463993/538555, confirming ink strictly increases with weight
+(the additive/subtractive dilation sign is correct, not flipped).
+
+Files changed (`git diff --stat` from the worktree, before this plan's final
+edits to this Artifacts section):
+
+```
+AGENTS.md                                          |   2 +-
+Sources/LabanRenderer/SlugGlyphRenderer.swift      |  88 ++++++++++-
+Sources/LabanRenderer/VectorGlyphShaders.metal     |  49 +++----
+.../SlugWeightCoreTextParityTests.swift            |  44 +++---
+.../SlugWeightSoftwareProbe.swift                  | 162 ---------------------
+.../active/slug-text-weight-geometric-dilation.md  |  27 +++-
+6 files changed, 150 insertions(+), 222 deletions(-)
+```
+
+`Tests/LabanRendererTests/SlugDilationCalibrationProbe.swift` was created and
+deleted within this session (per Step 4) and so never appears in `git diff`.
 
 ## Interfaces and Dependencies
 

@@ -565,7 +565,7 @@ struct SlugGlyphInstance {
     float2 localMax;
     float4 color;
     uint glyphIndex;
-    float coverageExponent;
+    float dilation;
     uint pad1;
     uint pad2;
 };
@@ -590,7 +590,7 @@ struct SlugGlyphVertexOut {
     float2 glyphPoint;
     float4 color;
     float glyphIndex;
-    float coverageExponent;
+    float dilation;
 };
 
 inline float2 slugGlyphApplyGestureZoom(float2 px, constant SlugGlyphUniforms &uniforms) {
@@ -613,7 +613,7 @@ vertex SlugGlyphVertexOut slugGlyphVertex(
     out.glyphPoint = mix(instance.localMin, instance.localMax, unit);
     out.color = instance.color;
     out.glyphIndex = float(instance.glyphIndex);
-    out.coverageExponent = instance.coverageExponent;
+    out.dilation = instance.dilation;
     return out;
 }
 
@@ -676,13 +676,15 @@ inline float slugGlyphReferenceCoverage(
     constant uint *bandIndices,
     SlugGlyph glyph,
     float2 sample,
-    float2 unitsPerPixel
+    float2 unitsPerPixel,
+    float dilate
 ) {
     unitsPerPixel = max(abs(unitsPerPixel), float2(1.0e-6));
-    if (sample.x < glyph.boundsMin.x - unitsPerPixel.x ||
-        sample.x > glyph.boundsMax.x + unitsPerPixel.x ||
-        sample.y < glyph.boundsMin.y - unitsPerPixel.y ||
-        sample.y > glyph.boundsMax.y + unitsPerPixel.y) {
+    float2 dilatedUnitsPerPixel = unitsPerPixel * (1.0 + dilate);
+    if (sample.x < glyph.boundsMin.x - dilatedUnitsPerPixel.x ||
+        sample.x > glyph.boundsMax.x + dilatedUnitsPerPixel.x ||
+        sample.y < glyph.boundsMin.y - dilatedUnitsPerPixel.y ||
+        sample.y > glyph.boundsMax.y + dilatedUnitsPerPixel.y) {
         return 0.0;
     }
 
@@ -702,18 +704,18 @@ inline float slugGlyphReferenceCoverage(
             curve.p0 -= sample;
             curve.p1 -= sample;
             curve.p2 -= sample;
-            if (max(max(curve.p0.x, curve.p1.x), curve.p2.x) * pixelsPerUnit.x < -0.5) {
+            if (max(max(curve.p0.x, curve.p1.x), curve.p2.x) * pixelsPerUnit.x < -(0.5 + dilate)) {
                 break;
             }
             uint code = slugGlyphRootCode(curve.p0.y, curve.p1.y, curve.p2.y);
             if (code != 0u) {
                 float2 roots = slugGlyphSolveHorizontal(curve) * pixelsPerUnit.x;
                 if ((code & 1u) != 0u) {
-                    xcov += clamp(roots.x + 0.5, 0.0, 1.0);
+                    xcov += clamp(roots.x + 0.5 + dilate, 0.0, 1.0);
                     xwgt = max(xwgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
                 }
                 if (code > 1u) {
-                    xcov -= clamp(roots.y + 0.5, 0.0, 1.0);
+                    xcov -= clamp(roots.y + 0.5 - dilate, 0.0, 1.0);
                     xwgt = max(xwgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
                 }
             }
@@ -735,18 +737,18 @@ inline float slugGlyphReferenceCoverage(
             curve.p0 -= sample;
             curve.p1 -= sample;
             curve.p2 -= sample;
-            if (max(max(curve.p0.y, curve.p1.y), curve.p2.y) * pixelsPerUnit.y < -0.5) {
+            if (max(max(curve.p0.y, curve.p1.y), curve.p2.y) * pixelsPerUnit.y < -(0.5 + dilate)) {
                 break;
             }
             uint code = slugGlyphRootCode(curve.p0.x, curve.p1.x, curve.p2.x);
             if (code != 0u) {
                 float2 roots = slugGlyphSolveVertical(curve) * pixelsPerUnit.y;
                 if ((code & 1u) != 0u) {
-                    ycov -= clamp(roots.x + 0.5, 0.0, 1.0);
+                    ycov -= clamp(roots.x + 0.5 - dilate, 0.0, 1.0);
                     ywgt = max(ywgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
                 }
                 if (code > 1u) {
-                    ycov += clamp(roots.y + 0.5, 0.0, 1.0);
+                    ycov += clamp(roots.y + 0.5 + dilate, 0.0, 1.0);
                     ywgt = max(ywgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
                 }
             }
@@ -769,30 +771,27 @@ fragment float4 slugGlyphBandFragment(
     float2 dx = dfdx(in.glyphPoint);
     float2 dy = dfdy(in.glyphPoint);
     float2 unitsPerPixel = fwidth(in.glyphPoint);
-    float exponent = max(in.coverageExponent, 1.0e-3);
     if (uniforms.subpixelMode == 0) {
         float2 sample = slugGlyphSubpixelSample(
             uniforms.subpixelGBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy);
-        float coverage = pow(
-            slugGlyphReferenceCoverage(
-                curves, bands, bandIndices, glyph, sample, unitsPerPixel),
-            exponent);
+        float coverage = slugGlyphReferenceCoverage(
+            curves, bands, bandIndices, glyph, sample, unitsPerPixel, in.dilation);
         float alpha = coverage * in.color.a;
         return float4(in.color.rgb * alpha, alpha);
     }
 
-    float r = pow(slugGlyphReferenceCoverage(
+    float r = slugGlyphReferenceCoverage(
         curves, bands, bandIndices, glyph,
         slugGlyphSubpixelSample(uniforms.subpixelRBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy),
-        unitsPerPixel), exponent);
-    float g = pow(slugGlyphReferenceCoverage(
+        unitsPerPixel, in.dilation);
+    float g = slugGlyphReferenceCoverage(
         curves, bands, bandIndices, glyph,
         slugGlyphSubpixelSample(uniforms.subpixelGBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy),
-        unitsPerPixel), exponent);
-    float b = pow(slugGlyphReferenceCoverage(
+        unitsPerPixel, in.dilation);
+    float b = slugGlyphReferenceCoverage(
         curves, bands, bandIndices, glyph,
         slugGlyphSubpixelSample(uniforms.subpixelBBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy),
-        unitsPerPixel), exponent);
+        unitsPerPixel, in.dilation);
     float3 coverage = float3(r, g, b);
     float alpha = max(max(r, g), b) * in.color.a;
     return float4(in.color.rgb * coverage * in.color.a, alpha);

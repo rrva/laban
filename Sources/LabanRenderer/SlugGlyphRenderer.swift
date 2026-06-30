@@ -56,7 +56,7 @@ private struct SlugGlyphGPUInstance {
   var localMax: SIMD2<Float>
   var color: SIMD4<Float>
   var glyphIndex: UInt32
-  var coverageExponent: Float = 1
+  var dilation: Float = 0
   var pad1: UInt32 = 0
   var pad2: UInt32 = 0
 }
@@ -96,6 +96,83 @@ public final class SlugGlyphRenderer: RendererBackend {
   public static let referencePointSize: CGFloat = 14
 
   private static let bandCount = 64
+
+  /// Geometric dilation (stem darkening) constants, calibrated so slug text
+  /// weight 1.0 matches the software/CoreText renderer's ink. This approximates
+  /// the FreeType/Adobe approach of thickening stems by an amount that depends
+  /// on on-screen size; see Step 4 calibration in
+  /// execplans/active/slug-text-weight-geometric-dilation.md.
+  ///
+  /// Per-side dilation in device pixels at text weight 1.0, keyed by on-screen
+  /// em size (points-per-em times backing scale). Found by measurement: the
+  /// calibration probe rendered the same probe string with the software
+  /// (CoreText) renderer and the slug renderer at several dilation amounts
+  /// for sizes 9/11/14/18/24pt at scale 2 (on-screen em size 18/22/28/36/48
+  /// device pixels), for three foreground/background cases, and these are the
+  /// per-size amounts that minimize the worst-case ratio error across all
+  /// three cases. Growing dilation with size (the opposite of FreeType's
+  /// large-text taper) is the measured best fit here, not a guess: CoreText's
+  /// own extra stem-darkening ink, as a fraction of total ink, grows faster
+  /// for dark-on-light text than a constant-pixel dilation would supply.
+  /// Even at each size's optimum, dark-on-light wants more dilation while
+  /// mid-gray/light-on-dark want less, especially at the smallest size (9pt);
+  /// a single color-independent dilation cannot satisfy both exactly (see
+  /// Artifacts and Notes for the measured ratios). Sizes between table entries
+  /// use linear interpolation; below the smallest entry the smallest amount is
+  /// used; above `dilationPpemFull` (outside the calibrated range) dilation
+  /// tapers down toward `dilationMinTaper` of the largest table amount, since
+  /// FreeType/Adobe do not bother thickening already-thick stems.
+  private static let dilationTable: [(ppem: Float, amountPx: Float)] = [
+    (18, 0.16),
+    (22, 0.22),
+    (28, 0.27),
+    (36, 0.34),
+    (48, 0.42),
+  ]
+  /// On-screen em size at and above which the table's largest amount stops
+  /// growing and the large-text taper begins (outside the calibrated range).
+  private static let dilationPpemFull: Float = 96
+  /// On-screen em size at and above which the dilation taper bottoms out at
+  /// `dilationMinTaper` of the largest table amount.
+  private static let dilationPpemNone: Float = 240
+  /// Floor for the large-text taper curve, as a fraction of the largest
+  /// table amount.
+  private static let dilationMinTaper: Float = 0.3
+
+  /// Linearly interpolates `dilationTable` at `ppem`, clamping to the first
+  /// and last entries outside the table's range.
+  private static func dilationTableAmountPx(ppem: Float) -> Float {
+    guard let first = dilationTable.first, let last = dilationTable.last else { return 0 }
+    if ppem <= first.ppem { return first.amountPx }
+    if ppem >= last.ppem { return last.amountPx }
+    for index in 1..<dilationTable.count {
+      let lo = dilationTable[index - 1]
+      let hi = dilationTable[index]
+      if ppem <= hi.ppem {
+        let span = max(hi.ppem - lo.ppem, .ulpOfOne)
+        let fraction = (ppem - lo.ppem) / span
+        return lo.amountPx + fraction * (hi.amountPx - lo.amountPx)
+      }
+    }
+    return last.amountPx
+  }
+
+  /// Maps text weight and on-screen em size to a per-side device-pixel
+  /// dilation amount for the slug shader's `dilate` parameter. Color-independent:
+  /// the same geometry applies regardless of foreground/background.
+  private static func perSideDilatePx(weight: Double, ppemPx: Double) -> Float {
+    guard weight > 0 else { return 0 }
+    let ppem = Float(ppemPx)
+    let amount = dilationTableAmountPx(ppem: min(ppem, dilationPpemFull))
+    let taper: Float
+    if ppem <= dilationPpemFull {
+      taper = 1
+    } else {
+      let span = max(dilationPpemNone - dilationPpemFull, .ulpOfOne)
+      taper = min(1, max(dilationMinTaper, 1 - (ppem - dilationPpemFull) / span))
+    }
+    return Float(weight) * amount * taper
+  }
 
   private let device: MTLDevice
   private let queue: MTLCommandQueue
@@ -696,8 +773,8 @@ public final class SlugGlyphRenderer: RendererBackend {
 
     let pointScale = activeAtlas.pointSize / Self.referencePointSize
     let foregroundColor = slugColor(foreground)
-    let coverageExponent = VectorGlyphRenderer.coverageExponent(
-      foreground: foreground, background: background, weight: textWeight)
+    let ppemPx = Double(activeAtlas.pointSize) * Double(scale)
+    let perSideDilatePx = Self.perSideDilatePx(weight: textWeight, ppemPx: ppemPx)
     frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
@@ -747,7 +824,8 @@ public final class SlugGlyphRenderer: RendererBackend {
         continue
       }
       let bounds = entry.outline.bounds
-      let localPixelPad = CGFloat(1) / max(pointScale * scale, .ulpOfOne)
+      let localPixelPad =
+        CGFloat(1 + perSideDilatePx) / max(pointScale * scale, .ulpOfOne)
       let localMin = SIMD2<Float>(
         Float(bounds.minX - localPixelPad),
         Float(bounds.minY - localPixelPad))
@@ -770,7 +848,7 @@ public final class SlugGlyphRenderer: RendererBackend {
           localMax: localMax,
           color: foregroundColor,
           glyphIndex: UInt32(entry.glyphIndex),
-          coverageExponent: coverageExponent))
+          dilation: perSideDilatePx))
     }
 
     appendDecorations(

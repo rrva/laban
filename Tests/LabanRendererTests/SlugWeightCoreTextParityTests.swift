@@ -7,12 +7,14 @@ import XCTest
 @testable import LabanRenderer
 
 /// At text weight 1.0 the Slug renderer must lay down ink that matches CoreText.
-/// The vector renderer is the project's CoreText-calibrated reference (its
-/// `coverageExponent` doc and `VectorTextWeightTests` lock that calibration), and
-/// Slug reuses the same stem-darkening exponent. This proves Slug tracks that
-/// reference at weight 1.0, and that weight 1.0 lands closer to it than the
-/// un-darkened weight 0, i.e. the darkening pulls Slug toward CoreText rather
-/// than away.
+/// The software renderer (`SoftwareBackend`) renders via CoreText directly and is
+/// the project's ground-truth reference. Slug reaches weight 1.0 by geometric
+/// dilation of its analytic glyph coverage (stem darkening), calibrated against
+/// this software reference; see
+/// execplans/active/slug-text-weight-geometric-dilation.md. This proves Slug
+/// tracks that reference at weight 1.0, and that weight 1.0 lands closer to it
+/// than the un-dilated weight 0, i.e. the dilation pulls Slug toward CoreText
+/// rather than away.
 final class SlugWeightCoreTextParityTests: XCTestCase {
   private let probe = "Hglo08B/N weight"
   private let cases: [(name: String, fg: UInt32, bg: UInt32)] = [
@@ -36,25 +38,25 @@ final class SlugWeightCoreTextParityTests: XCTestCase {
     }
 
     for c in cases {
+      let reference = try inkSoftware(fg: c.fg, bg: c.bg)
       VectorTextWeightSettings.setCurrent(1.0)
-      let reference = try inkVector(fg: c.fg, bg: c.bg)
       let slugWeighted = try inkSlug(fg: c.fg, bg: c.bg)
       VectorTextWeightSettings.setCurrent(0.0)
       let slugNeutral = try inkSlug(fg: c.fg, bg: c.bg)
 
-      // Slug@1.0 ink must be within ~15% of the CoreText-matched reference.
+      // Slug@1.0 ink must be within ~12% of the software (CoreText) reference.
       let ratio = slugWeighted / max(reference, 1)
       XCTAssertGreaterThan(
-        ratio, 0.85,
-        "\(c.name): slug@1.0 ink \(Int(slugWeighted)) far below CoreText reference "
+        ratio, 0.88,
+        "\(c.name): slug@1.0 ink \(Int(slugWeighted)) far below software reference "
           + "\(Int(reference)) (ratio \(ratio))")
       XCTAssertLessThan(
-        ratio, 1.15,
-        "\(c.name): slug@1.0 ink \(Int(slugWeighted)) far above CoreText reference "
+        ratio, 1.12,
+        "\(c.name): slug@1.0 ink \(Int(slugWeighted)) far above software reference "
           + "\(Int(reference)) (ratio \(ratio))")
 
-      // Weight 1.0 must be at least as close to the reference as un-darkened
-      // weight 0 (the stem-darkening pulls Slug toward CoreText, not away).
+      // Weight 1.0 must be at least as close to the reference as un-dilated
+      // weight 0 (the dilation pulls Slug toward CoreText, not away).
       let weightedGap = abs(slugWeighted - reference)
       let neutralGap = abs(slugNeutral - reference)
       XCTAssertLessThanOrEqual(
@@ -76,15 +78,11 @@ final class SlugWeightCoreTextParityTests: XCTestCase {
     return ink(try decodeRGBA(try XCTUnwrap(r.pngData)), bg: bg)
   }
 
-  private func inkVector(fg: UInt32, bg: UInt32) throws -> Double {
-    let r = try XCTUnwrap(
-      VectorGlyphRenderer(
-        fontAtlas: FontAtlas(pointSize: 16), pixelWidth: 420, pixelHeight: 120, scale: 2))
-    r.waitForFrameCompletion = true
-    r.setSubpixelLayout(.grayscale)
-    r.refreshTextWeight()
-    XCTAssertTrue(r.render(commands(fg: fg, bg: bg), damage: .full))
-    return ink(try decodeRGBA(try XCTUnwrap(r.pngData)), bg: bg)
+  private func inkSoftware(fg: UInt32, bg: UInt32) throws -> Double {
+    let b = SoftwareBackend(
+      fontAtlas: FontAtlas(pointSize: 16), pixelWidth: 420, pixelHeight: 120, scale: 2)
+    XCTAssertTrue(b.render(commands(fg: fg, bg: bg), damage: .full))
+    return ink(try decodeRGBA(try XCTUnwrap(b.pngData)), bg: bg)
   }
 
   private func commands(fg: UInt32, bg: UInt32) -> [FrameCommand] {
