@@ -55,6 +55,86 @@ final class ContinuousZoomTests: XCTestCase {
     }
   }
 
+  func testLiveRubberBandZoomPointSizeMatchesLinearInMidRange() {
+    let size = TerminalBitmapView.liveRubberBandZoomPointSize(
+      base: 14,
+      accumulatedMagnification: 0.25,
+      minimum: FontAtlas.zoomMinimumPointSize,
+      maximum: FontAtlas.zoomMaximumPointSize)
+
+    XCTAssertEqual(size, 17.5, accuracy: 1e-9)
+    XCTAssertEqual(
+      size,
+      TerminalBitmapView.zoomPointSize(
+        base: 14, accumulatedMagnification: 0.25, fractional: true),
+      accuracy: 1e-9)
+  }
+
+  func testLiveRubberBandZoomPointSizeEasesAndBoundsMaxOvershoot() {
+    let base: CGFloat = 14
+    func size(forRawPointSize raw: CGFloat) -> CGFloat {
+      TerminalBitmapView.liveRubberBandZoomPointSize(
+        base: base,
+        accumulatedMagnification: raw / base - 1,
+        minimum: FontAtlas.zoomMinimumPointSize,
+        maximum: FontAtlas.zoomMaximumPointSize)
+    }
+
+    let first = size(forRawPointSize: 46)
+    let second = size(forRawPointSize: 52)
+    let third = size(forRawPointSize: 58)
+    let upperCap =
+      FontAtlas.zoomMaximumPointSize
+      * (1 + TerminalBitmapView.zoomRubberBandOvershootFraction)
+
+    XCTAssertGreaterThan(first, FontAtlas.zoomMaximumPointSize)
+    XCTAssertLessThanOrEqual(third, upperCap)
+    XCTAssertGreaterThan(second - first, 0)
+    XCTAssertGreaterThan(third - second, 0)
+    XCTAssertLessThan(third - second, second - first)
+  }
+
+  func testLiveRubberBandZoomPointSizeEasesAndBoundsMinOvershoot() {
+    let base: CGFloat = 14
+    func size(forRawPointSize raw: CGFloat) -> CGFloat {
+      TerminalBitmapView.liveRubberBandZoomPointSize(
+        base: base,
+        accumulatedMagnification: raw / base - 1,
+        minimum: FontAtlas.zoomMinimumPointSize,
+        maximum: FontAtlas.zoomMaximumPointSize)
+    }
+
+    let first = size(forRawPointSize: -4)
+    let second = size(forRawPointSize: -10)
+    let third = size(forRawPointSize: -16)
+    let lowerCap =
+      FontAtlas.zoomMinimumPointSize
+      * (1 - TerminalBitmapView.zoomRubberBandOvershootFraction)
+
+    XCTAssertLessThan(first, FontAtlas.zoomMinimumPointSize)
+    XCTAssertGreaterThanOrEqual(third, lowerCap)
+    XCTAssertGreaterThan(third, 0)
+    XCTAssertGreaterThan(first - second, 0)
+    XCTAssertGreaterThan(second - third, 0)
+    XCTAssertLessThan(second - third, first - second)
+  }
+
+  func testLiveRubberBandZoomPointSizeIsMonotonicInAccumulator() {
+    var previous = -Double.greatestFiniteMagnitude
+    for hundredths in stride(from: -300, through: 600, by: 1) {
+      let acc = CGFloat(hundredths) / 100
+      let size = Double(
+        TerminalBitmapView.liveRubberBandZoomPointSize(
+          base: 14,
+          accumulatedMagnification: acc,
+          minimum: FontAtlas.zoomMinimumPointSize,
+          maximum: FontAtlas.zoomMaximumPointSize))
+      XCTAssertGreaterThan(size, 0)
+      XCTAssertGreaterThanOrEqual(size + 1e-9, previous)
+      previous = size
+    }
+  }
+
   // MARK: - M1: gesture accumulation + persist-on-end
 
   func testPinchGesturePersistsOnlyOnEnd() throws {
@@ -279,6 +359,53 @@ final class ContinuousZoomTests: XCTestCase {
       harness.view.debugZoomGestureBakeCount, 1, "exactly one rebake commits on gesture settle")
     XCTAssertGreaterThan(
       harness.view.debugGridReflowCount, 0, "the grid reflows once at the settled size")
+  }
+
+  func testVectorGestureRubberBandOvershootSnapsToHardClampOnRelease() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let harness = try makeHarness(rows: 24, cols: 80)
+    defer { harness.restoreRenderer() }
+    let defaults = UserDefaults.standard
+    let savedSize = defaults.object(forKey: FontAtlas.userFontSizeKey)
+    defer {
+      if let savedSize {
+        defaults.set(savedSize, forKey: FontAtlas.userFontSizeKey)
+      } else {
+        defaults.removeObject(forKey: FontAtlas.userFontSizeKey)
+      }
+    }
+    harness.view.applyRendererSelection(.vectorGlyph)
+    guard harness.view.debugZoomState()["fractional"] as? Bool == true else {
+      throw XCTSkip("vector backend not active (no GPU in this environment)")
+    }
+
+    harness.view.applyZoomMagnification(delta: 0, phase: .began)
+    harness.view.applyZoomMagnification(delta: 4.0, phase: .changed)
+
+    let liveState = harness.view.debugZoomState()
+    let liveSize = try XCTUnwrap(liveState["visualPointSize"] as? Double)
+    let upperCap =
+      Double(FontAtlas.zoomMaximumPointSize)
+      * Double(1 + TerminalBitmapView.zoomRubberBandOvershootFraction)
+    XCTAssertGreaterThan(liveSize, Double(FontAtlas.zoomMaximumPointSize))
+    XCTAssertLessThanOrEqual(liveSize, upperCap + 1e-9)
+    XCTAssertEqual(harness.view.debugZoomGestureBakeCount, 0)
+
+    harness.view.applyZoomMagnification(delta: 0, phase: .ended)
+    XCTAssertTrue(harness.view.debugZoomCommitPending)
+    XCTAssertTrue(harness.view.debugFlushZoomCommit())
+
+    let committedState = harness.view.debugZoomState()
+    let committedSize = try XCTUnwrap(committedState["effectivePointSize"] as? Double)
+    let committedScale = try XCTUnwrap(committedState["presentationScale"] as? Double)
+    XCTAssertEqual(
+      committedSize,
+      Double(FontAtlas.zoomMaximumPointSize),
+      accuracy: 1e-9)
+    XCTAssertEqual(committedScale, 1.0, accuracy: 1e-9)
+    XCTAssertEqual(committedState["gestureActive"] as? Bool, false)
   }
 
   /// The freeze fix: a frantic in-out-in-out pinch is delivered by macOS as

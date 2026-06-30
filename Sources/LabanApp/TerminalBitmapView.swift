@@ -4028,6 +4028,78 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       : FontAtlas.clampedZoomPointSize(target)
   }
 
+  /// Resistance engages only within this many points of either hard limit, so
+  /// normal sizes stay EXACTLY linear and the elastic feel is confined to the
+  /// immediate approach to the 8/40 pt wall. (Kept small on purpose: a wide onset
+  /// made ordinary zoom-out feel sticky and let live glyphs read larger than the
+  /// linear target well before the floor — the "bigger than expected" symptom.)
+  static let zoomRubberBandOnsetPoints: CGFloat = 1.5
+  /// Live overtravel is visible but bounded: 40 pt can stretch to 46 pt, and
+  /// 8 pt can compress to 6.8 pt. Committed sizes still hard-clamp.
+  static let zoomRubberBandOvershootFraction: CGFloat = 0.15
+  /// A rational curve with strength 1 is tangent to the linear mapping at onset
+  /// and then decelerates smoothly toward the overtravel cap.
+  static let zoomRubberBandCurveConstant: CGFloat = 1.0
+
+  /// Live-gesture-only size mapping for the vector renderer. It keeps the normal
+  /// zoom range linear until the edge margin, then applies a bounded rubber-band
+  /// curve. This must never be used for committed font sizes.
+  static func liveRubberBandZoomPointSize(
+    base: CGFloat,
+    accumulatedMagnification: CGFloat,
+    minimum: CGFloat,
+    maximum: CGFloat
+  ) -> CGFloat {
+    let lowerLimit = min(minimum, maximum)
+    let upperLimit = max(minimum, maximum)
+    let range = upperLimit - lowerLimit
+    guard range > 0 else { return max(lowerLimit, .leastNonzeroMagnitude) }
+
+    let upperOvershoot = upperLimit * zoomRubberBandOvershootFraction
+    let lowerOvershoot = lowerLimit * zoomRubberBandOvershootFraction
+    let lowerCap = max(lowerLimit - lowerOvershoot, .leastNonzeroMagnitude)
+    let upperCap = upperLimit + upperOvershoot
+    let raw = base * (1 + accumulatedMagnification)
+    guard raw.isFinite else {
+      return raw.sign == .minus ? lowerCap : upperCap
+    }
+
+    let margin = min(zoomRubberBandOnsetPoints, range / 2)
+    let lowerOnset = lowerLimit + margin
+    let upperOnset = upperLimit - margin
+    if raw >= lowerOnset && raw <= upperOnset {
+      return raw
+    }
+
+    if raw > upperOnset {
+      return rubberBand(
+        raw: raw,
+        onset: upperOnset,
+        cap: upperCap,
+        direction: 1)
+    }
+
+    return rubberBand(
+      raw: raw,
+      onset: lowerOnset,
+      cap: lowerCap,
+      direction: -1)
+  }
+
+  private static func rubberBand(
+    raw: CGFloat,
+    onset: CGFloat,
+    cap: CGFloat,
+    direction: CGFloat
+  ) -> CGFloat {
+    let travel = abs(cap - onset)
+    guard travel > 0 else { return onset }
+    let excess = max(0, direction * (raw - onset))
+    let normalized = zoomRubberBandCurveConstant * excess / travel
+    let progress = 1 - (1 / (1 + normalized))
+    return onset + direction * travel * progress
+  }
+
   /// Drive a continuous-zoom gesture (trackpad pinch and Cmd+scroll share this
   /// one body). `delta` is the per-event magnification increment; `phase` is the
   /// gesture envelope. The live frames apply without persisting; the terminating
@@ -4092,7 +4164,12 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       // bitmap is invisible under motion and is erased by the crisp re-bake on
       // release.
       debugZoomGestureFrameCount += 1
-      setGestureZoomPresentationScale(target / base)
+      let liveTarget = Self.liveRubberBandZoomPointSize(
+        base: base,
+        accumulatedMagnification: zoomGestureAccumulatedMagnification,
+        minimum: FontAtlas.zoomMinimumPointSize,
+        maximum: FontAtlas.zoomMaximumPointSize)
+      setGestureZoomPresentationScale(liveTarget / base)
     } else if !fractional {
       // Non-vector backends have no resident atlas to scale; keep the prior
       // behavior (apply the rounded ladder size live).
@@ -4276,9 +4353,17 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // harness can assert the visual size matches it and never overshoots.
     let fractional = backend is VectorGlyphRenderer
     let base = zoomGestureBasePointSize ?? fontAtlas.pointSize
-    let target = Self.zoomPointSize(
-      base: base, accumulatedMagnification: zoomGestureAccumulatedMagnification + magnification,
-      fractional: fractional)
+    let accumulated = zoomGestureAccumulatedMagnification + magnification
+    let target =
+      fractional && parsed != .ended && parsed != .cancelled
+      ? Self.liveRubberBandZoomPointSize(
+        base: base,
+        accumulatedMagnification: accumulated,
+        minimum: FontAtlas.zoomMinimumPointSize,
+        maximum: FontAtlas.zoomMaximumPointSize)
+      : Self.zoomPointSize(
+        base: base, accumulatedMagnification: accumulated,
+        fractional: fractional)
     applyZoomMagnification(delta: magnification, phase: parsed)
     var state = debugZoomState()
     state["targetPointSize"] = Double(target)
