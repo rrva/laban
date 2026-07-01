@@ -103,6 +103,14 @@ extension GestureZoomRenderable {
   public var supportsFractionalLiveZoom: Bool { true }
 }
 
+/// Optional capability for GPU backends whose CAMetalLayer is presented by an
+/// internal CAMetalDisplayLink. The host view drives this from the same
+/// animate-or-park policy as its frame-production display link.
+public protocol DisplayLinkPresentingRenderer: AnyObject {
+  func setPresentLinkRunning(_ running: Bool)
+  func presentDisplayLinkStats(reset: Bool) -> [String: Double]?
+}
+
 /// Common surface contract for swappable rendering backends.
 ///
 /// Two backends ship today:

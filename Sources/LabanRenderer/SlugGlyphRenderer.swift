@@ -91,10 +91,11 @@ private struct SlugGlyphEntry {
 /// Ordinary outline glyphs use reference-size curve geometry plus horizontal and
 /// vertical band lists; color emoji and high-complexity CJK cells fall back to
 /// the existing raster atlas paths.
-public final class SlugGlyphRenderer: RendererBackend {
+public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRenderer {
   public static let referencePointSize: CGFloat = 14
 
   private static let bandCount = 64
+  private static let targetRingDepth = 3
 
   /// Geometric dilation (stem darkening) constants, calibrated so slug text
   /// weight 1.0 matches the software/CoreText renderer's ink. This approximates
@@ -200,6 +201,20 @@ public final class SlugGlyphRenderer: RendererBackend {
   private var bandBuffer: MTLBuffer?
   private var bandIndexBuffer: MTLBuffer?
   private var geometryBuffersDirty = false
+
+  /// macOS 14+ fast path: when present, Slug mirrors VectorGlyphRenderer's
+  /// CAMetalDisplayLink presenter. `render()` publishes completed offscreen
+  /// targets and never calls `nextDrawable()` while this link exists.
+  private var presentDisplayLinkStorage: AnyObject?
+  @available(macOS 14.0, *)
+  private var presentDisplayLink: VectorPresentDisplayLink? {
+    presentDisplayLinkStorage as? VectorPresentDisplayLink
+  }
+  private var latestPresentedTarget: MTLTexture?
+  private let presentTargetLock = NSLock()
+  private var presentQueue: MTLCommandQueue?
+  private var targetRing: [MTLTexture] = []
+  private var targetRingCursor = 0
 
   private var targetTexture: MTLTexture?
   private var lastCommandBuffer: MTLCommandBuffer?
@@ -381,6 +396,52 @@ public final class SlugGlyphRenderer: RendererBackend {
       device: device,
       fontAtlas: fontAtlas,
       scale: self.scale)
+
+    if #available(macOS 14.0, *), Self.presentDisplayLinkEnabled,
+      let presentQueue = device.makeCommandQueue()
+    {
+      presentQueue.label = "laban.slug.present"
+      self.presentQueue = presentQueue
+      let presentLink = VectorPresentDisplayLink(layer: layer)
+      presentLink.onPresent = { [weak self] drawable in
+        self?.presentLatestTarget(into: drawable) ?? false
+      }
+      presentLink.start()
+      self.presentDisplayLinkStorage = presentLink
+    }
+  }
+
+  /// Default true. `LabanSlugPresentDisplayLink` can opt Slug out alone; if it is
+  /// unset, the existing vector opt-out key disables the shared ADR 0026 fast path
+  /// for both curve renderers.
+  private static var presentDisplayLinkEnabled: Bool {
+    let defaults = UserDefaults.standard
+    if defaults.object(forKey: "LabanSlugPresentDisplayLink") != nil {
+      return defaults.bool(forKey: "LabanSlugPresentDisplayLink")
+    }
+    if defaults.object(forKey: "LabanVectorPresentDisplayLink") != nil {
+      return defaults.bool(forKey: "LabanVectorPresentDisplayLink")
+    }
+    return true
+  }
+
+  deinit {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.stop()
+    }
+  }
+
+  public func setPresentLinkRunning(_ running: Bool) {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.setRunning(running)
+    }
+  }
+
+  public func presentDisplayLinkStats(reset: Bool) -> [String: Double]? {
+    if #available(macOS 14.0, *) {
+      return presentDisplayLink?.presentIntervalStats(reset: reset)
+    }
+    return nil
   }
 
   public var surfaceWidth: Int { pixelWidth }
@@ -473,6 +534,11 @@ public final class SlugGlyphRenderer: RendererBackend {
     layer.contentsScale = newScale
     layer.drawableSize = CGSize(width: pw, height: ph)
     targetTexture = nil
+    targetRing.removeAll(keepingCapacity: true)
+    targetRingCursor = 0
+    presentTargetLock.lock()
+    latestPresentedTarget = nil
+    presentTargetLock.unlock()
     if scaleChanged {
       colorGlyphAtlas = Self.makeColorGlyphAtlas(
         device: device,
@@ -628,28 +694,32 @@ public final class SlugGlyphRenderer: RendererBackend {
 
     encoder.endEncoding()
 
+    let completion = onFrameCompleted
+    if #available(macOS 14.0, *), presentDisplayLink != nil {
+      commandBuffer.addCompletedHandler { [weak self] _ in
+        _ = retainedBuffers
+        if self?.presentsToLayer == true {
+          self?.publishLatestTarget(target)
+        }
+        completion?()
+      }
+      commandBuffer.commit()
+      lastCommandBuffer = commandBuffer
+      if waitForFrameCompletion {
+        commandBuffer.waitUntilCompleted()
+      }
+      return true
+    }
+
     if presentsToLayer,
       let drawable = layer.nextDrawable(),
       drawable.texture.width == target.width,
-      drawable.texture.height == target.height,
-      let blit = commandBuffer.makeBlitCommandEncoder()
+      drawable.texture.height == target.height
     {
-      blit.label = "laban.slug.present-blit"
-      blit.copy(
-        from: target,
-        sourceSlice: 0,
-        sourceLevel: 0,
-        sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-        sourceSize: MTLSize(width: target.width, height: target.height, depth: 1),
-        to: drawable.texture,
-        destinationSlice: 0,
-        destinationLevel: 0,
-        destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-      blit.endEncoding()
+      encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
       commandBuffer.present(drawable)
     }
 
-    let completion = onFrameCompleted
     commandBuffer.addCompletedHandler { _ in
       _ = retainedBuffers
       completion?()
@@ -1261,7 +1331,77 @@ public final class SlugGlyphRenderer: RendererBackend {
       subpixelMode: resolved == .grayscale ? 0 : 1)
   }
 
+  private func encodeBlit(
+    from source: MTLTexture,
+    to destination: MTLTexture,
+    commandBuffer: MTLCommandBuffer
+  ) {
+    guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+    blit.label = "laban.slug.present-blit"
+    blit.copy(
+      from: source,
+      sourceSlice: 0,
+      sourceLevel: 0,
+      sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+      sourceSize: MTLSize(width: source.width, height: source.height, depth: 1),
+      to: destination,
+      destinationSlice: 0,
+      destinationLevel: 0,
+      destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+    blit.endEncoding()
+  }
+
+  private func presentLatestTarget(into drawable: any CAMetalDrawable) -> Bool {
+    presentTargetLock.lock()
+    let target = latestPresentedTarget
+    presentTargetLock.unlock()
+    guard let target,
+      target.width == drawable.texture.width,
+      target.height == drawable.texture.height
+    else { return false }
+    guard let presentQueue,
+      let commandBuffer = presentQueue.makeCommandBuffer()
+    else { return false }
+    encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
+    commandBuffer.present(drawable)
+    commandBuffer.commit()
+    return true
+  }
+
+  private func publishLatestTarget(_ target: MTLTexture) {
+    presentTargetLock.lock()
+    latestPresentedTarget = target
+    presentTargetLock.unlock()
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.notifyContentPublished()
+    }
+  }
+
   private func ensureTargetTexture() -> MTLTexture? {
+    if presentQueue != nil {
+      if targetRing.count == Self.targetRingDepth,
+        targetRing[0].width == pixelWidth,
+        targetRing[0].height == pixelHeight
+      {
+        targetRingCursor = (targetRingCursor + 1) % Self.targetRingDepth
+        let texture = targetRing[targetRingCursor]
+        targetTexture = texture
+        return texture
+      }
+      targetRing.removeAll(keepingCapacity: true)
+      for i in 0..<Self.targetRingDepth {
+        guard
+          let texture = makeTexture(
+            pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
+        else { return nil }
+        texture.label = "laban.slug.target.\(i)"
+        targetRing.append(texture)
+      }
+      targetRingCursor = 0
+      targetTexture = targetRing[0]
+      return targetRing[0]
+    }
+
     if let targetTexture,
       targetTexture.width == pixelWidth,
       targetTexture.height == pixelHeight

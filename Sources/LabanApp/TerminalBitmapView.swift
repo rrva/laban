@@ -1688,13 +1688,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
   /// Frame-interval statistics over the recent ring (ms), for jank profiling.
   /// `reset` clears the ring after sampling so the next config measures clean.
-  /// Present-side cadence from the vector display-link path (actual presented
-  /// frame intervals), or `{present: false}` on the legacy/non-vector path. This
-  /// is the true "did every vsync present" metric; `debugFrameStats` only sees the
-  /// display-link TICK interval, which keeps ticking even when content is late.
+  /// Present-side cadence from a renderer-owned CAMetalDisplayLink path (actual
+  /// presented frame intervals), or `{present: false}` on the legacy/non-linked
+  /// path. This is the true "did every vsync present" metric; `debugFrameStats`
+  /// only sees the display-link TICK interval, which keeps ticking even when
+  /// content is late.
   func debugPresentStats(reset: Bool) -> [String: Any] {
-    guard let vector = backend as? VectorGlyphRenderer,
-      let stats = vector.presentDisplayLinkStats(reset: reset)
+    guard let displayLinked = backend as? DisplayLinkPresentingRenderer,
+      let stats = displayLinked.presentDisplayLinkStats(reset: reset)
     else {
       return ["present": false]
     }
@@ -1911,10 +1912,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       preferred: Float(policy.preferredFramesPerSecond))
     link.isPaused = !policy.shouldRun
     setSafetyNetArmed(!policy.shouldRun)
-    // The vector renderer's CAMetalDisplayLink present thread rides the SAME
-    // animate-or-park policy as the main tick, so it spins only while the terminal
-    // is active and parks (zero CPU) when unfocused, occluded, or focused-and-idle.
-    (backend as? VectorGlyphRenderer)?.setPresentLinkRunning(policy.shouldRun)
+    // Renderer-owned CAMetalDisplayLink present threads ride the SAME
+    // animate-or-park policy as the main tick, so they spin only while the
+    // terminal is active and park (zero CPU) when unfocused, occluded, or
+    // focused-and-idle.
+    (backend as? DisplayLinkPresentingRenderer)?.setPresentLinkRunning(policy.shouldRun)
   }
 
   /// Arm (parked) or cancel (running) the temporary missed-wake safety net.

@@ -114,6 +114,47 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     }
   }
 
+  func testSlugRendererUsesDisplayLinkPresentPathWhenAvailable() throws {
+    guard #available(macOS 14.0, *) else {
+      throw XCTSkip("CAMetalDisplayLink unavailable before macOS 14")
+    }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    try withTemporaryUserDefault("LabanSlugPresentDisplayLink", value: true) {
+      let renderer = try XCTUnwrap(
+        SlugGlyphRenderer(
+          fontAtlas: FontAtlas(pointSize: 14),
+          pixelWidth: 160,
+          pixelHeight: 96,
+          scale: 1))
+      renderer.waitForFrameCompletion = true
+
+      let displayLinked = renderer as DisplayLinkPresentingRenderer
+      XCTAssertNotNil(displayLinked.presentDisplayLinkStats(reset: true))
+      displayLinked.setPresentLinkRunning(false)
+
+      XCTAssertTrue(
+        renderer.render(
+          [
+            .rect(
+              CGRect(x: 0, y: 0, width: 160, height: 96),
+              color: 0x1010_10ff,
+              source: .terminal),
+            .glyphRun(
+              origin: CGPoint(x: 20, y: 36),
+              text: "Slug",
+              foreground: 0xffff_ffff,
+              background: 0x0000_0000,
+              attributes: [],
+              source: .terminal),
+          ],
+          damage: .full))
+      XCTAssertNotNil(renderer.pngData)
+    }
+  }
+
   func testGestureZoomScalesRenderedPixelsWithoutRebuildingGeometry() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -892,6 +933,24 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       abs(Int(actual.g) - Int(expected.g)),
       abs(Int(actual.b) - Int(expected.b)))
     XCTAssertGreaterThan(maxDelta, tolerance, file: file, line: line)
+  }
+
+  private func withTemporaryUserDefault(
+    _ key: String,
+    value: Bool,
+    run: () throws -> Void
+  ) throws {
+    let defaults = UserDefaults.standard
+    let previous = defaults.object(forKey: key)
+    defaults.set(value, forKey: key)
+    defer {
+      if let previous {
+        defaults.set(previous, forKey: key)
+      } else {
+        defaults.removeObject(forKey: key)
+      }
+    }
+    try run()
   }
 
   private struct RGBAImage {

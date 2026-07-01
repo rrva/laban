@@ -64,7 +64,7 @@ private struct VectorMaskDescriptorKey: Hashable {
   var dilateQ: Int = 0
 }
 
-public final class VectorGlyphRenderer: RendererBackend {
+public final class VectorGlyphRenderer: RendererBackend, DisplayLinkPresentingRenderer {
   private static let syntheticItalicShear: CGFloat = 0.18
   private static let maxInlineInstanceBytes = 4096
   // Per-side stem dilation in device pixels at text weight 1.0, keyed by

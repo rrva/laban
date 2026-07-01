@@ -511,7 +511,14 @@ Acceptance:
   other non-analytic fallback clusters route through `MetalGlyphAtlas` raster
   fallback instead of the analytic fragment path. Full-screen CJK p99 is measured
   and under budget after raster fallback.
-- [ ] M5 — menu + headless parity + ADR.
+- [ ] M5 — menu + headless parity + ADR. Partial progress recorded 2026-07-01:
+  Slug now shares the ADR 0026 `CAMetalDisplayLink` presenter with vector via a
+  `DisplayLinkPresentingRenderer` host capability. `render()` publishes completed
+  offscreen targets to the present link and uses the legacy `nextDrawable()` path
+  only when no present link was created; `TerminalBitmapView` drives Slug's
+  present thread with the same idle/active policy and exposes the same
+  present-side stats route. Remaining M5 work is the broader menu/headless/ship
+  parity called out below.
 
 ## Decision Log
 
@@ -566,6 +573,16 @@ Acceptance:
   the reason Slug (analytic, size-flat) exists. Do not "improve" the gpu-driven
   discrete path to match Slug — it is not the same gesture and is not broken.
   Date/Author: 2026-06-30 / clarified after observing gpu-driven Cmd+/- feels good.
+- Decision: Slug uses the same `CAMetalDisplayLink` presenter and idle parking
+  capability as vector, not a Slug-specific present loop.
+  Rationale: ADR 0026's failure class and fix are renderer-agnostic for
+  self-presenting CAMetalLayer backends: `render()` must not call
+  `nextDrawable()` once a `CAMetalDisplayLink` is attached, completed targets
+  must be published from the content command buffer completion handler, and the
+  host idle policy must defer parking while a newly published frame is
+  unpresented. A small `DisplayLinkPresentingRenderer` protocol lets
+  `TerminalBitmapView` drive vector and Slug identically.
+  Date/Author: 2026-07-01 / present-link parity implementation.
 
 ### Future directions (not in scope; capture so they are not lost)
 
@@ -721,6 +738,21 @@ M4 validation recorded 2026-06-30:
   2.486/2.681/2.928 ms. ASCII full-screen gate: 9 pt = 6.176/6.477/6.569 ms;
   14 pt = 6.677/7.016/7.189 ms; 28 pt = 6.267/7.877/8.038 ms. All ASCII p99
   values remain below the 8.33 ms budget.
+
+M5 partial validation recorded 2026-07-01:
+
+- `swift test --filter SlugGlyphCorrectnessTests.testSlugRendererUsesDisplayLinkPresentPathWhenAvailable`
+  — PASS; constructs `SlugGlyphRenderer` with `LabanSlugPresentDisplayLink`
+  enabled, verifies it exposes `DisplayLinkPresentingRenderer` stats/idle
+  controls, renders with layer presentation enabled, waits for completion, and
+  reads back non-nil `pngData`. This would trip Core Animation's
+  `nextDrawable()`-while-CAMetalDisplayLink-attached failure if Slug still used
+  the legacy presenter on the fast path.
+- `swift test --filter 'SlugGlyphCorrectnessTests|PresentParkDecisionTests'` —
+  PASS; covers Slug's existing render/readback/fallback/zoom correctness suite
+  plus the pure idle-park decision logic that defers parking until a freshly
+  published frame presents and bounds the deferral if presentation never
+  succeeds.
 
 ## Interfaces and Dependencies
 

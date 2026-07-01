@@ -52,6 +52,12 @@ beside `software`, `classic`, `gpuDriven`, and `vectorGlyph`.
 - Continuous zoom is handled through the shared gesture-zoom capability used by
   vector and Slug renderers: per-frame zoom is a projection/instance transform,
   not a font reconfigure or atlas bake.
+- Slug presents its `CAMetalLayer` through the same ADR 0026
+  `CAMetalDisplayLink` path used by the vector glyph renderer when available:
+  content rendering writes an offscreen target, publishes the completed target
+  from the command-buffer completion handler, and the host's existing idle/active
+  display-link policy drives the present thread. The legacy `nextDrawable()` path
+  remains only for systems or settings where the present link was never created.
 - Slug ships default-off. `classic`/`gpuDriven`/`vectorGlyph` behavior and
   defaults are unchanged.
 - Color emoji and very high-complexity CJK glyphs use the existing color/R8
@@ -72,7 +78,8 @@ beside `software`, `classic`, `gpuDriven`, and `vectorGlyph`.
   size-independent geometry.
 - Slug must honor the same renderer contracts as the other GPU backends:
   `waitForFrameCompletion`, screenshot/readback, renderer status reporting, menu
-  and settings selection, headless selection, and debug observability.
+  and settings selection, headless selection, debug observability, and the
+  presenter/idle guarantees of the vector glyph renderer.
 - Default-enable is a later decision. It requires live AppKit evidence, release
   timing evidence, fallback coverage for real-world Unicode, and parity with the
   current presenter/idle guarantees. This ADR only records the opt-in backend
