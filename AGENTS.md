@@ -34,6 +34,7 @@ task matches them.
 | `docs/product/mvp.md` | You are checking whether a change risks breaking shipped behavior. |
 | `docs/product/spec.md` | You are expanding product scope or need long-term direction. |
 | `docs/process/dev-process.md` | You are implementing or changing debug hooks, headless mode, screenshots, capture/replay artifacts, fixtures, CI E2E tests, or autonomous verification — or iterating on renderer perf with Instruments traces (§Metal Trace Perf Loop, `scripts/analyze-metal-trace`). |
+| `docs/process/profiling-hiccups.md` | You are capturing/analyzing Metal System Traces and hit empty shader-profiler schemas, xctrace log-archive warnings, or other profiling gotchas. |
 | `docs/process/worktree-isolation.md` | You are adding run commands, artifact directories, temp dirs, debug ports, or multi-worktree execution support. |
 | `docs/process/observability.md` | You are adding logs, debug events, metrics, traces, or failure artifacts. |
 | `docs/reference/prototype-implementation-notes.md` | You need prototype lessons, known pitfalls, or reusable terminal-core behavior. |
@@ -86,13 +87,6 @@ Under `~/Library/Logs/Laban/`:
 - **Asciinema cast** — `casts/laban-<UTC>-lastNs.cast` (`LABAN_CAST_DIR` overrides).
 - **Tab-state journal** — always-on in-memory history of what each tab showed (title/status/selection/badge + banner notes), capture-clock timestamps. Query `GET /debug/tab-journal`, dump via Debug ▸ Dump Tab Journal (`tab-journal/` here), mirrored into capture `timeline.ndjson` as `tab.metadata`. First stop for "the badge/banner came late" questions.
 - **Main-thread stall stacks** — `~/laban-watchdog/inproc-stall-*.txt`.
-
-## Decision Index
-
-Architecture decisions are catalogued in `docs/adr/README.md` — every ADR with a
-one-line summary, plus when to write a new one. Read it before touching the
-terminal library, PTY ownership, rendering architecture, SwiftPM target
-boundaries, or any decision that looks previously settled.
 
 ## Worktree Setup
 
