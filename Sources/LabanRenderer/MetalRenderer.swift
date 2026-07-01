@@ -89,7 +89,7 @@ private final class FrameCompletion: @unchecked Sendable {
 /// GPU renderer backed by `CAMetalLayer`. One device, one queue, one library.
 /// Two pipelines (solid quad + textured glyph quad). Two draw calls per
 /// "scissor span" — clip changes flush, everything else batches.
-public final class MetalRenderer: RendererBackend {
+public final class MetalRenderer: RendererBackend, DisplayLinkPresentingRenderer {
   private static let maxGlyphAtlasTextureSize = 16_384
 
   /// A/B override for the classic damage-scoped instance rebuild. Kept
@@ -446,6 +446,21 @@ public final class MetalRenderer: RendererBackend {
   /// first frame, and whenever a damage hint can't be honoured (e.g.,
   /// caller passed `.partial(empty)` but the surface size changed).
   private var targetTexture: MTLTexture?
+  /// macOS 14+ fast path: an internal CAMetalDisplayLink presents completed
+  /// snapshots on its own thread. The persistent `targetTexture` remains the
+  /// damage-scoped content surface; these textures are full-frame presentation
+  /// snapshots that also receive cursor overlay and optional readback.
+  private var presentDisplayLinkStorage: AnyObject?
+  @available(macOS 14.0, *)
+  private var presentDisplayLink: VectorPresentDisplayLink? {
+    presentDisplayLinkStorage as? VectorPresentDisplayLink
+  }
+  private var latestPresentedTarget: MTLTexture?
+  private let presentTargetLock = NSLock()
+  private var presentQueue: MTLCommandQueue?
+  private var presentationTargetRing: [MTLTexture] = []
+  private var presentationTargetRingCursor = 0
+  private static let presentationTargetRingDepth = 3
   private var targetNeedsFullRedraw: Bool = true
   private var lastRenderedThemeRevision: UInt64 = Theme.revision
   /// Set by the command-fed GPU-cell build when a partial update arrives after
@@ -839,6 +854,52 @@ public final class MetalRenderer: RendererBackend {
 
     setupCounterSampling()
     rendererStatus = resolvedRendererStatus(rendererFallbackReason: nil).status
+
+    if #available(macOS 14.0, *), Self.presentDisplayLinkEnabled,
+      let presentQueue = device.makeCommandQueue()
+    {
+      presentQueue.label = "laban.metal.present"
+      self.presentQueue = presentQueue
+      let presentLink = VectorPresentDisplayLink(layer: layer)
+      presentLink.onPresent = { [weak self] drawable in
+        self?.presentLatestTarget(into: drawable) ?? false
+      }
+      presentLink.start()
+      self.presentDisplayLinkStorage = presentLink
+    }
+  }
+
+  /// Default true. `LabanMetalPresentDisplayLink` opts classic/gpuDriven out
+  /// without changing vector/slug; if unset, `LabanVectorPresentDisplayLink`
+  /// acts as the shared curve/metal presenter kill switch.
+  private static var presentDisplayLinkEnabled: Bool {
+    let defaults = UserDefaults.standard
+    if defaults.object(forKey: "LabanMetalPresentDisplayLink") != nil {
+      return defaults.bool(forKey: "LabanMetalPresentDisplayLink")
+    }
+    if defaults.object(forKey: "LabanVectorPresentDisplayLink") != nil {
+      return defaults.bool(forKey: "LabanVectorPresentDisplayLink")
+    }
+    return true
+  }
+
+  deinit {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.stop()
+    }
+  }
+
+  public func setPresentLinkRunning(_ running: Bool) {
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.setRunning(running)
+    }
+  }
+
+  public func presentDisplayLinkStats(reset: Bool) -> [String: Double]? {
+    if #available(macOS 14.0, *) {
+      return presentDisplayLink?.presentIntervalStats(reset: reset)
+    }
+    return nil
   }
 
   public func overrideRendererStatus(_ status: RendererStatus) {
@@ -945,6 +1006,7 @@ public final class MetalRenderer: RendererBackend {
       layer.drawableSize = CGSize(width: pw, height: ph)
       readback.invalidate()
       targetTexture = nil
+      clearPresentationTargets()
       targetNeedsFullRedraw = true
     }
     return scaleChanged || sizeChanged
@@ -1190,26 +1252,43 @@ public final class MetalRenderer: RendererBackend {
         cmdBuf: cmdBuf)
     }
 
-    let drawable = scheduledFrame.acquireDrawable(nonBlocking: dropIfBusy)
-    lastDrawableAcquireDiagnostic = scheduledFrame.lastDrawableAcquireDiagnostic
-    guard let drawable else {
-      lastRenderFailureReason = .drawableUnavailable
-      scheduledFrame.finish()
-      return false
-    }
-    let drawableTex = drawable.texture
-    guard drawableTex.width == surfaceWPx, drawableTex.height == surfaceHPx else {
-      // The layer resized between target allocation and drawable acquisition.
-      // Drop the uncommitted command buffer and force the retry to repaint a
-      // correctly-sized target.
-      targetTexture = nil
-      targetNeedsFullRedraw = true
-      lastRenderFailureReason = .drawableSizeMismatch
-      scheduledFrame.finish()
-      return false
+    let usesDisplayLinkPresent = presentQueue != nil
+    let outputTexture: MTLTexture
+    let drawableToPresent: (any CAMetalDrawable)?
+    if usesDisplayLinkPresent {
+      guard let presentationTarget = ensurePresentationTargetTexture(
+        width: surfaceWPx, height: surfaceHPx)
+      else {
+        lastRenderFailureReason = .targetTextureUnavailable
+        scheduledFrame.finish()
+        return false
+      }
+      outputTexture = presentationTarget
+      drawableToPresent = nil
+    } else {
+      let drawable = scheduledFrame.acquireDrawable(nonBlocking: dropIfBusy)
+      lastDrawableAcquireDiagnostic = scheduledFrame.lastDrawableAcquireDiagnostic
+      guard let drawable else {
+        lastRenderFailureReason = .drawableUnavailable
+        scheduledFrame.finish()
+        return false
+      }
+      let drawableTex = drawable.texture
+      guard drawableTex.width == surfaceWPx, drawableTex.height == surfaceHPx else {
+        // The layer resized between target allocation and drawable acquisition.
+        // Drop the uncommitted command buffer and force the retry to repaint a
+        // correctly-sized target.
+        targetTexture = nil
+        targetNeedsFullRedraw = true
+        lastRenderFailureReason = .drawableSizeMismatch
+        scheduledFrame.finish()
+        return false
+      }
+      outputTexture = drawableTex
+      drawableToPresent = drawable
     }
 
-    // ---------- Pass 2: blit persistent target → drawable ----------
+    // ---------- Pass 2: blit persistent target → presentation texture ----------
     let presentBlitDesc = MTLBlitPassDescriptor()
     if counterBlitSupported, let cb = counterSampleBuffer,
       let attach = presentBlitDesc.sampleBufferAttachments[0]
@@ -1224,7 +1303,7 @@ public final class MetalRenderer: RendererBackend {
         from: target, sourceSlice: 0, sourceLevel: 0,
         sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
         sourceSize: MTLSize(width: surfaceWPx, height: surfaceHPx, depth: 1),
-        to: drawableTex, destinationSlice: 0, destinationLevel: 0,
+        to: outputTexture, destinationSlice: 0, destinationLevel: 0,
         destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
       blit.endEncoding()
       passSlots.presentActive = true
@@ -1237,7 +1316,7 @@ public final class MetalRenderer: RendererBackend {
       let cursorPass = MTLRenderPassDescriptor()
       // Metal render pass descriptors always provide color attachment slot 0.
       let attach = cursorPass.colorAttachments[0]!
-      attach.texture = drawableTex
+      attach.texture = outputTexture
       attach.loadAction = .load
       attach.storeAction = .store
       if counterRenderSupported, let cb = counterSampleBuffer,
@@ -1265,15 +1344,15 @@ public final class MetalRenderer: RendererBackend {
     // Only run this when something is actually consuming pngData. With a
     // ProMotion display ticking at 120 Hz, dropping the no-op blit on
     // cursor-blink frames saves measurable wall time and a memory copy
-    // of the whole drawable.
+    // of the whole presented surface.
     passSlots.readbackActive = readback.encodeIfNeeded(
-      from: drawableTex,
+      from: outputTexture,
       commandBuffer: cmdBuf,
       counterSampleBuffer: counterSampleBuffer,
       counterBlitSupported: counterBlitSupported)
 
     self.lastFramePassSlots = passSlots
-    if dropIfBusy {
+    if let drawable = drawableToPresent, dropIfBusy {
       // Paced present for scroll-animation frames: declare the intended
       // 120 Hz cadence to the compositor so a ProMotion panel holds its
       // refresh rate instead of inferring a lower one from observed
@@ -1283,15 +1362,19 @@ public final class MetalRenderer: RendererBackend {
       // see the smooth-scroll ExecPlan). On non-VRR panels a 1/120 minimum
       // is weaker than vsync and changes nothing.
       cmdBuf.present(drawable, afterMinimumDuration: Self.scrollPresentMinimumDuration)
-    } else {
+    } else if let drawable = drawableToPresent {
       cmdBuf.present(drawable)
     }
     let cpuEncodeMs = msSince(cpuStart)
+    let publishedTarget = usesDisplayLinkPresent ? outputTexture : nil
     // Strong-self capture keeps the renderer alive until the GPU work
     // completes. The same handler closes out per-frame timing and releases
     // the scheduled frame once the GPU has reported gpuStartTime/gpuEndTime.
     cmdBuf.addCompletedHandler { [self] buffer in
       self.noteCommandBufferCompletion(status: buffer.status, error: buffer.error)
+      if buffer.status != .error, let publishedTarget {
+        self.publishLatestTarget(publishedTarget)
+      }
       let gpuMs = max(0.0, (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0)
       // Resolve per-pass GPU times BEFORE signalling the next frame in
       // (otherwise frame N+1 could overwrite the sample buffer slots).
@@ -1398,6 +1481,90 @@ public final class MetalRenderer: RendererBackend {
   /// Slots in flight for the most recent frame. Read by the completion
   /// handler so we know which sample-buffer ranges contain valid data.
   private var lastFramePassSlots = PassSlots()
+
+  private func clearPresentationTargets() {
+    presentationTargetRing.removeAll(keepingCapacity: true)
+    presentationTargetRingCursor = 0
+    presentTargetLock.lock()
+    latestPresentedTarget = nil
+    presentTargetLock.unlock()
+  }
+
+  private func ensurePresentationTargetTexture(width: Int, height: Int) -> MTLTexture? {
+    if presentationTargetRing.count == Self.presentationTargetRingDepth,
+      presentationTargetRing[0].width == width,
+      presentationTargetRing[0].height == height
+    {
+      presentationTargetRingCursor =
+        (presentationTargetRingCursor + 1) % Self.presentationTargetRingDepth
+      return presentationTargetRing[presentationTargetRingCursor]
+    }
+
+    presentTargetLock.lock()
+    latestPresentedTarget = nil
+    presentTargetLock.unlock()
+    presentationTargetRing.removeAll(keepingCapacity: true)
+    for i in 0..<Self.presentationTargetRingDepth {
+      let desc = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: layer.pixelFormat,
+        width: width,
+        height: height,
+        mipmapped: false)
+      desc.usage = [.renderTarget, .shaderRead]
+      desc.storageMode = .private
+      guard let texture = device.makeTexture(descriptor: desc) else { return nil }
+      texture.label = "laban.metal.present-target.\(i)"
+      presentationTargetRing.append(texture)
+    }
+    presentationTargetRingCursor = 0
+    return presentationTargetRing[0]
+  }
+
+  private func encodeBlit(
+    from source: MTLTexture,
+    to destination: MTLTexture,
+    commandBuffer: MTLCommandBuffer
+  ) {
+    guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+    blit.label = "laban.metal.displaylink-present-blit"
+    blit.copy(
+      from: source,
+      sourceSlice: 0,
+      sourceLevel: 0,
+      sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+      sourceSize: MTLSize(width: source.width, height: source.height, depth: 1),
+      to: destination,
+      destinationSlice: 0,
+      destinationLevel: 0,
+      destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+    blit.endEncoding()
+  }
+
+  private func presentLatestTarget(into drawable: any CAMetalDrawable) -> Bool {
+    presentTargetLock.lock()
+    let target = latestPresentedTarget
+    presentTargetLock.unlock()
+    guard let target,
+      target.width == drawable.texture.width,
+      target.height == drawable.texture.height
+    else { return false }
+    guard let presentQueue,
+      let commandBuffer = presentQueue.makeCommandBuffer()
+    else { return false }
+    encodeBlit(from: target, to: drawable.texture, commandBuffer: commandBuffer)
+    commandBuffer.present(drawable)
+    commandBuffer.commit()
+    return true
+  }
+
+  private func publishLatestTarget(_ target: MTLTexture) {
+    presentTargetLock.lock()
+    latestPresentedTarget = target
+    presentTargetLock.unlock()
+    if #available(macOS 14.0, *) {
+      presentDisplayLink?.notifyContentPublished()
+    }
+  }
 
   /// Allocate (or reallocate) the persistent render target to match the
   /// layer's drawable size. Same pixel format so the end-of-frame blit is a

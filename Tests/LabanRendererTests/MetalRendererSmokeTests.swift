@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreText
+import Foundation
 import Metal
 import QuartzCore
 import XCTest
@@ -369,6 +370,56 @@ final class MetalRendererSmokeTests: XCTestCase {
     XCTAssertFalse(renderer.waitForFrameCompletion)
   }
 
+  func testMetalRendererUsesDisplayLinkPresentPathWhenAvailable() throws {
+    guard #available(macOS 14.0, *) else {
+      throw XCTSkip("CAMetalDisplayLink unavailable before macOS 14")
+    }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    try withTemporaryUserDefault("LabanMetalPresentDisplayLink", value: true) {
+      let renderer = try XCTUnwrap(MetalRenderer(fontAtlas: FontAtlas(pointSize: 14), scale: 1))
+      renderer.captureMode = true
+      renderer.waitForFrameCompletion = true
+      renderer.resize(pixelWidth: 240, pixelHeight: 120, scale: 1)
+
+      let displayLinked = renderer as DisplayLinkPresentingRenderer
+      XCTAssertNotNil(displayLinked.presentDisplayLinkStats(reset: true))
+      displayLinked.setPresentLinkRunning(false)
+
+      XCTAssertTrue(
+        renderer.render(
+          [
+            .rect(
+              CGRect(x: 0, y: 0, width: 240, height: 120),
+              color: 0x103C_48FF,
+              source: .terminal),
+            .cursor(CGRect(x: 72, y: 38, width: 9, height: 19), color: 0xFF_00_00_FF),
+          ],
+          damage: .full))
+      XCTAssertNotNil(renderer.pngData)
+      XCTAssertNil(
+        renderer.lastDrawableAcquireDiagnostic,
+        "display-link presenter must not acquire a drawable on the render path")
+    }
+  }
+
+  func testMetalRendererPresentDisplayLinkCanBeDisabledForLegacyFallback() throws {
+    guard #available(macOS 14.0, *) else {
+      throw XCTSkip("CAMetalDisplayLink unavailable before macOS 14")
+    }
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+
+    try withTemporaryUserDefault("LabanMetalPresentDisplayLink", value: false) {
+      let renderer = try XCTUnwrap(MetalRenderer(fontAtlas: FontAtlas(pointSize: 14), scale: 1))
+      let displayLinked = renderer as DisplayLinkPresentingRenderer
+      XCTAssertNil(displayLinked.presentDisplayLinkStats(reset: true))
+    }
+  }
+
   func testMetalRendererDrawsFallbackArabicAndHangulGlyphs() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -576,5 +627,23 @@ final class MetalRendererSmokeTests: XCTestCase {
     var descent: CGFloat = 0
     var leading: CGFloat = 0
     return CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+  }
+
+  private func withTemporaryUserDefault(
+    _ key: String,
+    value: Bool,
+    run: () throws -> Void
+  ) throws {
+    let defaults = UserDefaults.standard
+    let previous = defaults.object(forKey: key)
+    defaults.set(value, forKey: key)
+    defer {
+      if let previous {
+        defaults.set(previous, forKey: key)
+      } else {
+        defaults.removeObject(forKey: key)
+      }
+    }
+    try run()
   }
 }
