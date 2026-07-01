@@ -23,7 +23,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
         outline: outline,
         width: region.width,
         height: region.height,
-        samplesPerAxis: 2
+        samplesPerAxis: 4
       ) { x, row, fx, fy in
         CGPoint(
           x: Double(region.origin.x) + Double(x) + fx,
@@ -392,6 +392,35 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       "rgbStripe should materially differ from grayscale channel coverage")
   }
 
+  func testSlugSubpixelAreaWidthAffectsRenderedAA() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let centers = SIMD3<Float>(-0.15, 0, 0.15)
+    let narrow = VectorSubpixelLayout(
+      name: "narrowOverlap",
+      areas: .horizontalOverlap(centerOffsets: centers, width: 0.36))
+    let wide = VectorSubpixelLayout(
+      name: "wideOverlap",
+      areas: .horizontalOverlap(centerOffsets: centers, width: 0.92))
+
+    let narrowImage = try renderSubpixelProbe(layout: narrow)
+    let wideImage = try renderSubpixelProbe(layout: wide)
+    let narrowSpread = channelSpreadStats(narrowImage)
+    let wideSpread = channelSpreadStats(wideImage)
+    let meanDiff = meanAbsoluteRGBDiff(narrowImage, wideImage)
+
+    XCTAssertGreaterThan(
+      meanDiff,
+      0.01,
+      "layouts with identical centers but different sample-area widths must not render identically")
+    XCTAssertLessThan(
+      wideSpread.meanSpread,
+      narrowSpread.meanSpread,
+      "wider overlapping sample areas should reduce color spread "
+        + "(wide \(wideSpread.meanSpread), narrow \(narrowSpread.meanSpread))")
+  }
+
   func testSlugTextWeightThickensRenderedInk() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -674,6 +703,20 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       fringePixels,
       edgePixels == 0 ? 0 : Double(spreadSum) / Double(edgePixels)
     )
+  }
+
+  private func meanAbsoluteRGBDiff(_ lhs: RGBAImage, _ rhs: RGBAImage) -> Double {
+    guard lhs.width == rhs.width, lhs.height == rhs.height, lhs.bytes.count == rhs.bytes.count
+    else { return 0 }
+    var total = 0
+    var samples = 0
+    for i in stride(from: 0, to: lhs.bytes.count, by: 4) {
+      total += abs(Int(lhs.bytes[i]) - Int(rhs.bytes[i]))
+      total += abs(Int(lhs.bytes[i + 1]) - Int(rhs.bytes[i + 1]))
+      total += abs(Int(lhs.bytes[i + 2]) - Int(rhs.bytes[i + 2]))
+      samples += 3
+    }
+    return samples == 0 ? 0 : Double(total) / Double(samples)
   }
 
   private func nonBackgroundBounds(_ image: RGBAImage) -> CGRect? {

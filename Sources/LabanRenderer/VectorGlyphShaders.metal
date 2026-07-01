@@ -623,6 +623,12 @@ inline float2 slugGlyphSubpixelSample(float4 bounds, float2 uv, float2 center, f
     return center + x * dx + y * dy;
 }
 
+#define kSlugAreaAASampleCount 2
+constant float2 kSlugAreaAASamples[kSlugAreaAASampleCount] = {
+    float2(0.25, 0.75),
+    float2(0.75, 0.25),
+};
+
 inline uint slugGlyphRootCode(float y1, float y2, float y3) {
     uint i1 = as_type<uint>(y1) >> 31u;
     uint i2 = as_type<uint>(y2) >> 30u;
@@ -758,6 +764,51 @@ inline float slugGlyphReferenceCoverage(
     return slugGlyphCombineCoverage(xcov, ycov, xwgt, ywgt);
 }
 
+inline float slugGlyphAreaCoverage(
+    constant VectorGlyphCurve *curves,
+    constant SlugGlyphBand *bands,
+    constant uint *bandIndices,
+    SlugGlyph glyph,
+    float4 sampleBounds,
+    float2 center,
+    float2 dx,
+    float2 dy,
+    float2 unitsPerPixel,
+    float dilate
+) {
+    float coverage = slugGlyphReferenceCoverage(
+        curves,
+        bands,
+        bandIndices,
+        glyph,
+        slugGlyphSubpixelSample(sampleBounds, float2(0.5, 0.5), center, dx, dy),
+        unitsPerPixel,
+        dilate
+    );
+
+    // Slug's analytic coverage gives a high-quality single-sample answer for
+    // hard interior/exterior pixels. Only integrate subpixel sample areas near
+    // edges, where point sampling of the vector text AA bounds would otherwise
+    // leave jagged curves and ignore overlap width.
+    if (coverage <= 1.0 / 255.0 || coverage >= 254.0 / 255.0) {
+        return coverage;
+    }
+
+    float sum = coverage;
+    for (uint i = 0; i < kSlugAreaAASampleCount; i++) {
+        sum += slugGlyphReferenceCoverage(
+            curves,
+            bands,
+            bandIndices,
+            glyph,
+            slugGlyphSubpixelSample(sampleBounds, kSlugAreaAASamples[i], center, dx, dy),
+            unitsPerPixel,
+            dilate
+        );
+    }
+    return clamp(sum / float(kSlugAreaAASampleCount + 1), 0.0, 1.0);
+}
+
 fragment float4 slugGlyphBandFragment(
     SlugGlyphVertexOut in [[stage_in]],
     constant SlugGlyphUniforms &uniforms [[buffer(4)]],
@@ -772,26 +823,25 @@ fragment float4 slugGlyphBandFragment(
     float2 dy = dfdy(in.glyphPoint);
     float2 unitsPerPixel = fwidth(in.glyphPoint);
     if (uniforms.subpixelMode == 0) {
-        float2 sample = slugGlyphSubpixelSample(
-            uniforms.subpixelGBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy);
         float coverage = slugGlyphReferenceCoverage(
-            curves, bands, bandIndices, glyph, sample, unitsPerPixel, in.dilation);
+            curves, bands, bandIndices, glyph,
+            in.glyphPoint, unitsPerPixel, in.dilation);
         float alpha = coverage * in.color.a;
         return float4(in.color.rgb * alpha, alpha);
     }
 
-    float r = slugGlyphReferenceCoverage(
+    float r = slugGlyphAreaCoverage(
         curves, bands, bandIndices, glyph,
-        slugGlyphSubpixelSample(uniforms.subpixelRBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy),
-        unitsPerPixel, in.dilation);
-    float g = slugGlyphReferenceCoverage(
+        uniforms.subpixelRBounds,
+        in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
+    float g = slugGlyphAreaCoverage(
         curves, bands, bandIndices, glyph,
-        slugGlyphSubpixelSample(uniforms.subpixelGBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy),
-        unitsPerPixel, in.dilation);
-    float b = slugGlyphReferenceCoverage(
+        uniforms.subpixelGBounds,
+        in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
+    float b = slugGlyphAreaCoverage(
         curves, bands, bandIndices, glyph,
-        slugGlyphSubpixelSample(uniforms.subpixelBBounds, float2(0.5, 0.5), in.glyphPoint, dx, dy),
-        unitsPerPixel, in.dilation);
+        uniforms.subpixelBBounds,
+        in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
     float3 coverage = float3(r, g, b);
     float alpha = max(max(r, g), b) * in.color.a;
     return float4(in.color.rgb * coverage * in.color.a, alpha);
