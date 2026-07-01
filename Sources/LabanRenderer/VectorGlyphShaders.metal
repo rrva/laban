@@ -837,7 +837,38 @@ inline float slugGlyphAreaCoverage(
     return clamp(sum / float(kSlugAreaAASampleCount + 1), 0.0, 1.0);
 }
 
-fragment float4 slugGlyphBandFragment(
+inline float3 slugGlyphCoverageRGB(
+    SlugGlyphVertexOut in,
+    constant SlugGlyphUniforms &uniforms,
+    constant VectorGlyphCurve *curves,
+    constant SlugGlyph *glyphs,
+    constant SlugGlyphBand *bands,
+    constant uint *bandIndices
+) {
+    uint glyphIndex = uint(in.glyphIndex + 0.5);
+    SlugGlyph glyph = glyphs[glyphIndex];
+    float2 dx = dfdx(in.glyphPoint);
+    float2 dy = dfdy(in.glyphPoint);
+    float2 unitsPerPixel = fwidth(in.glyphPoint);
+
+    if (uniforms.subpixelMode == 0) {
+        float coverage = slugGlyphAreaCoverage(
+            curves, bands, bandIndices, glyph,
+            float4(0.0, 0.0, 1.0, 1.0),
+            in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
+        return float3(coverage);
+    }
+
+    return float3(
+        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
+            uniforms.subpixelRBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
+        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
+            uniforms.subpixelGBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
+        slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
+            uniforms.subpixelBBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation));
+}
+
+fragment float4 slugGlyphAlphaFragment(
     SlugGlyphVertexOut in [[stage_in]],
     constant SlugGlyphUniforms &uniforms [[buffer(4)]],
     constant VectorGlyphCurve *curves [[buffer(0)]],
@@ -845,32 +876,31 @@ fragment float4 slugGlyphBandFragment(
     constant SlugGlyphBand *bands [[buffer(2)]],
     constant uint *bandIndices [[buffer(3)]]
 ) {
-    uint glyphIndex = uint(in.glyphIndex + 0.5);
-    SlugGlyph glyph = glyphs[glyphIndex];
-    float2 dx = dfdx(in.glyphPoint);
-    float2 dy = dfdy(in.glyphPoint);
-    float2 unitsPerPixel = fwidth(in.glyphPoint);
-    if (uniforms.subpixelMode == 0) {
-        float coverage = slugGlyphReferenceCoverage(
-            curves, bands, bandIndices, glyph,
-            in.glyphPoint, unitsPerPixel, in.dilation);
-        float alpha = coverage * in.color.a;
-        return float4(in.color.rgb * alpha, alpha);
-    }
+    float coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices).g;
+    float alpha = coverage * in.color.a;
+    return float4(in.color.rgb * alpha, alpha);
+}
 
-    float r = slugGlyphAreaCoverage(
-        curves, bands, bandIndices, glyph,
-        uniforms.subpixelRBounds,
-        in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
-    float g = slugGlyphAreaCoverage(
-        curves, bands, bandIndices, glyph,
-        uniforms.subpixelGBounds,
-        in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
-    float b = slugGlyphAreaCoverage(
-        curves, bands, bandIndices, glyph,
-        uniforms.subpixelBBounds,
-        in.glyphPoint, dx, dy, unitsPerPixel, in.dilation);
-    float3 coverage = float3(r, g, b);
-    float alpha = max(max(r, g), b) * in.color.a;
-    return float4(in.color.rgb * coverage * in.color.a, alpha);
+fragment float4 slugGlyphCoverageFragment(
+    SlugGlyphVertexOut in [[stage_in]],
+    constant SlugGlyphUniforms &uniforms [[buffer(4)]],
+    constant VectorGlyphCurve *curves [[buffer(0)]],
+    constant SlugGlyph *glyphs [[buffer(1)]],
+    constant SlugGlyphBand *bands [[buffer(2)]],
+    constant uint *bandIndices [[buffer(3)]]
+) {
+    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices);
+    return float4(coverage * in.color.a, 0.0);
+}
+
+fragment float4 slugGlyphColorFragment(
+    SlugGlyphVertexOut in [[stage_in]],
+    constant SlugGlyphUniforms &uniforms [[buffer(4)]],
+    constant VectorGlyphCurve *curves [[buffer(0)]],
+    constant SlugGlyph *glyphs [[buffer(1)]],
+    constant SlugGlyphBand *bands [[buffer(2)]],
+    constant uint *bandIndices [[buffer(3)]]
+) {
+    float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices);
+    return float4(in.color.rgb * coverage * in.color.a, 0.0);
 }

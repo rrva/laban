@@ -177,7 +177,9 @@ public final class SlugGlyphRenderer: RendererBackend {
   private let device: MTLDevice
   private let queue: MTLCommandQueue
   private let solidPipeline: MTLRenderPipelineState
-  private let glyphPipeline: MTLRenderPipelineState
+  private let glyphAlphaPipeline: MTLRenderPipelineState
+  private let glyphCoveragePipeline: MTLRenderPipelineState
+  private let glyphColorPipeline: MTLRenderPipelineState
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
@@ -274,7 +276,9 @@ public final class SlugGlyphRenderer: RendererBackend {
       let rasterGlyphFragment = library.makeFunction(name: "vectorRasterGlyphFragment"),
       let colorGlyphFragment = library.makeFunction(name: "vectorColorGlyphFragment"),
       let glyphVertex = library.makeFunction(name: "slugGlyphVertex"),
-      let glyphFragment = library.makeFunction(name: "slugGlyphBandFragment")
+      let glyphAlphaFragment = library.makeFunction(name: "slugGlyphAlphaFragment"),
+      let glyphCoverageFragment = library.makeFunction(name: "slugGlyphCoverageFragment"),
+      let glyphColorFragment = library.makeFunction(name: "slugGlyphColorFragment")
     else { return nil }
 
     let layer = CAMetalLayer()
@@ -295,12 +299,26 @@ public final class SlugGlyphRenderer: RendererBackend {
     solidDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
     configureSlugAlphaBlend(solidDescriptor.colorAttachments[0])
 
-    let glyphDescriptor = MTLRenderPipelineDescriptor()
-    glyphDescriptor.label = "laban.slug.glyph"
-    glyphDescriptor.vertexFunction = glyphVertex
-    glyphDescriptor.fragmentFunction = glyphFragment
-    glyphDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
-    configureSlugAlphaBlend(glyphDescriptor.colorAttachments[0])
+    let glyphAlphaDescriptor = MTLRenderPipelineDescriptor()
+    glyphAlphaDescriptor.label = "laban.slug.glyph-alpha"
+    glyphAlphaDescriptor.vertexFunction = glyphVertex
+    glyphAlphaDescriptor.fragmentFunction = glyphAlphaFragment
+    glyphAlphaDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSlugAlphaBlend(glyphAlphaDescriptor.colorAttachments[0])
+
+    let glyphCoverageDescriptor = MTLRenderPipelineDescriptor()
+    glyphCoverageDescriptor.label = "laban.slug.glyph-coverage"
+    glyphCoverageDescriptor.vertexFunction = glyphVertex
+    glyphCoverageDescriptor.fragmentFunction = glyphCoverageFragment
+    glyphCoverageDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSubpixelCoverageBlend(glyphCoverageDescriptor.colorAttachments[0])
+
+    let glyphColorDescriptor = MTLRenderPipelineDescriptor()
+    glyphColorDescriptor.label = "laban.slug.glyph-color"
+    glyphColorDescriptor.vertexFunction = glyphVertex
+    glyphColorDescriptor.fragmentFunction = glyphColorFragment
+    glyphColorDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureAdditiveRGBPreserveAlphaBlend(glyphColorDescriptor.colorAttachments[0])
 
     let rasterGlyphDescriptor = MTLRenderPipelineDescriptor()
     rasterGlyphDescriptor.label = "laban.slug.raster-glyph"
@@ -324,7 +342,12 @@ public final class SlugGlyphRenderer: RendererBackend {
 
     guard
       let solidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor),
-      let glyphPipeline = try? device.makeRenderPipelineState(descriptor: glyphDescriptor),
+      let glyphAlphaPipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphAlphaDescriptor),
+      let glyphCoveragePipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphCoverageDescriptor),
+      let glyphColorPipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphColorDescriptor),
       let rasterGlyphPipeline = try? device.makeRenderPipelineState(
         descriptor: rasterGlyphDescriptor),
       let colorGlyphPipeline = try? device.makeRenderPipelineState(
@@ -335,7 +358,9 @@ public final class SlugGlyphRenderer: RendererBackend {
     self.device = device
     self.queue = queue
     self.solidPipeline = solidPipeline
-    self.glyphPipeline = glyphPipeline
+    self.glyphAlphaPipeline = glyphAlphaPipeline
+    self.glyphCoveragePipeline = glyphCoveragePipeline
+    self.glyphColorPipeline = glyphColorPipeline
     self.rasterGlyphPipeline = rasterGlyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
     self.sampler = sampler
@@ -525,7 +550,6 @@ public final class SlugGlyphRenderer: RendererBackend {
       let bandIndexBuffer
     {
       retainedBuffers.append(instanceBuffer)
-      encoder.setRenderPipelineState(glyphPipeline)
       encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
       var uniforms = glyphUniforms(width: pixelWidth, height: pixelHeight)
       encoder.setVertexBytes(&uniforms, length: MemoryLayout<SlugGlyphGPUUniforms>.stride, index: 1)
@@ -537,11 +561,29 @@ public final class SlugGlyphRenderer: RendererBackend {
       encoder.setFragmentBuffer(glyphBuffer, offset: 0, index: 1)
       encoder.setFragmentBuffer(bandBuffer, offset: 0, index: 2)
       encoder.setFragmentBuffer(bandIndexBuffer, offset: 0, index: 3)
-      encoder.drawPrimitives(
-        type: .triangle,
-        vertexStart: 0,
-        vertexCount: 6,
-        instanceCount: slugGlyphs.count)
+
+      let useSubpixel = effectiveSubpixelLayout != .grayscale
+      if useSubpixel {
+        encoder.setRenderPipelineState(glyphCoveragePipeline)
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: slugGlyphs.count)
+        encoder.setRenderPipelineState(glyphColorPipeline)
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: slugGlyphs.count)
+      } else {
+        encoder.setRenderPipelineState(glyphAlphaPipeline)
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: slugGlyphs.count)
+      }
     }
 
     if !rasterGlyphs.isEmpty,
@@ -661,7 +703,7 @@ public final class SlugGlyphRenderer: RendererBackend {
       let bandBuffer,
       let bandIndexBuffer
     else { return nil }
-    encoder.setRenderPipelineState(glyphPipeline)
+    encoder.setRenderPipelineState(glyphAlphaPipeline)
     encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
     var uniforms = glyphUniforms(
       width: width,

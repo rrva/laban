@@ -67,6 +67,14 @@ final class RendererFidelityReportTests: XCTestCase {
       ("vector-rgbStripe-vs-bgrStripe", "vector-rgbStripe", "vector-bgrStripe"),
       ("vector-rgbQuarter-vs-rgbStripe", "vector-rgbQuarter", "vector-rgbStripe"),
       ("vector-rgbStripe-vs-rgbHalf", "vector-rgbStripe", "vector-rgbHalf"),
+      ("software-vs-slug-grayscale", "software-coretext", "slug-grayscale"),
+      ("software-vs-gpuDriven", "software-coretext", "metal-gpuDriven"),
+      ("software-vs-vector-grayscale", "software-coretext", "vector-grayscale"),
+      ("gpuDriven-vs-slug-grayscale", "metal-gpuDriven", "slug-grayscale"),
+      ("vector-grayscale-vs-slug-grayscale", "vector-grayscale", "slug-grayscale"),
+      ("vector-calibrated-vs-slug-calibrated", "vector-calibrated", "slug-calibrated"),
+      ("slug-grayscale-vs-calibrated", "slug-grayscale", "slug-calibrated"),
+      ("slug-calibrated-vs-rgbStripe", "slug-calibrated", "slug-rgbStripe"),
     ]
     for (label, lhsLabel, rhsLabel) in pairLabels {
       guard
@@ -89,6 +97,8 @@ final class RendererFidelityReportTests: XCTestCase {
       fractionalStability(prefix: "vector-grayscale", variants: variants),
       fractionalStability(prefix: "vector-calibrated", variants: variants),
       fractionalStability(prefix: "vector-rgbStripe", variants: variants),
+      fractionalStability(prefix: "slug-grayscale", variants: variants),
+      fractionalStability(prefix: "slug-calibrated", variants: variants),
     ]
     let sweep = try calibrationSweep(imageRoot: imageRoot, crop: crop)
 
@@ -153,6 +163,14 @@ final class RendererFidelityReportTests: XCTestCase {
         imageRoot: imageRoot,
         crop: crop))
 
+    variants.append(
+      try renderSoftware(
+        label: "software-coretext",
+        atlas: atlas,
+        commands: baseCommands,
+        imageRoot: imageRoot,
+        crop: crop))
+
     let layouts: [(label: String, layout: VectorSubpixelLayout)] = [
       ("vector-grayscale", .grayscale),
       ("vector-calibrated", .calibratedRGB),
@@ -176,6 +194,23 @@ final class RendererFidelityReportTests: XCTestCase {
           crop: crop))
     }
 
+    let slugLayouts: [(label: String, layout: VectorSubpixelLayout)] = [
+      ("slug-grayscale", .grayscale),
+      ("slug-calibrated", .calibratedRGB),
+      ("slug-rgbStripe", .rgbStripe),
+    ]
+    for (label, layout) in slugLayouts {
+      variants.append(
+        try renderSlug(
+          label: label,
+          layout: layout,
+          atlas: atlas,
+          commands: baseCommands,
+          xShiftPixels: 0,
+          imageRoot: imageRoot,
+          crop: crop))
+    }
+
     let shiftedLayouts: [(prefix: String, layout: VectorSubpixelLayout)] = [
       ("vector-grayscale", .grayscale),
       ("vector-calibrated", .calibratedRGB),
@@ -186,6 +221,25 @@ final class RendererFidelityReportTests: XCTestCase {
         let commands = probeCommands(xShiftPoints: CGFloat(shiftPixels) / scale)
         variants.append(
           try renderVector(
+            label: "\(prefix)-shift-\(shiftLabel(shiftPixels))px",
+            layout: layout,
+            atlas: atlas,
+            commands: commands,
+            xShiftPixels: shiftPixels,
+            imageRoot: imageRoot,
+            crop: crop))
+      }
+    }
+
+    let shiftedSlugLayouts: [(prefix: String, layout: VectorSubpixelLayout)] = [
+      ("slug-grayscale", .grayscale),
+      ("slug-calibrated", .calibratedRGB),
+    ]
+    for (prefix, layout) in shiftedSlugLayouts {
+      for shiftPixels in [0.25, 0.50, 0.75] {
+        let commands = probeCommands(xShiftPoints: CGFloat(shiftPixels) / scale)
+        variants.append(
+          try renderSlug(
             label: "\(prefix)-shift-\(shiftLabel(shiftPixels))px",
             layout: layout,
             atlas: atlas,
@@ -289,6 +343,7 @@ final class RendererFidelityReportTests: XCTestCase {
         scale: scale),
       "\(label): VectorGlyphRenderer.init returned nil")
     renderer.setSubpixelLayout(layout)
+    renderer.waitForFrameCompletion = true
     for frame in 0..<vectorConvergenceFrames {
       XCTAssertTrue(renderer.render(commands, damage: .full), "\(label): frame \(frame) failed")
     }
@@ -299,6 +354,72 @@ final class RendererFidelityReportTests: XCTestCase {
     return RenderedVariant(
       label: label,
       rendererKind: "vectorGlyph",
+      subpixelLayout: layout.name,
+      xShiftPixels: xShiftPixels,
+      status: renderer.rendererStatus,
+      instanceCounts: nil,
+      imagePath: url,
+      image: image,
+      metrics: textMetrics(image: image, crop: crop))
+  }
+
+  private func renderSoftware(
+    label: String,
+    atlas: FontAtlas,
+    commands: [FrameCommand],
+    imageRoot: URL,
+    crop: CGRect
+  ) throws -> RenderedVariant {
+    let renderer = SoftwareBackend(
+      fontAtlas: atlas,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale)
+    XCTAssertTrue(renderer.render(commands, damage: .full), "\(label): render failed")
+    let png = try XCTUnwrap(renderer.pngData, "\(label): renderer did not produce pngData")
+    let image = try decodeRGBA(png)
+    let url = imageRoot.appendingPathComponent("\(label).png")
+    try png.write(to: url)
+    return RenderedVariant(
+      label: label,
+      rendererKind: "software",
+      subpixelLayout: nil,
+      xShiftPixels: 0,
+      status: renderer.rendererStatus,
+      instanceCounts: nil,
+      imagePath: url,
+      image: image,
+      metrics: textMetrics(image: image, crop: crop))
+  }
+
+  private func renderSlug(
+    label: String,
+    layout: VectorSubpixelLayout,
+    atlas: FontAtlas,
+    commands: [FrameCommand],
+    xShiftPixels: Double,
+    imageRoot: URL,
+    crop: CGRect
+  ) throws -> RenderedVariant {
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: atlas,
+        sidebarFontAtlas: atlas,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: scale),
+      "\(label): SlugGlyphRenderer.init returned nil")
+    renderer.setSubpixelLayout(layout)
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    XCTAssertTrue(renderer.render(commands, damage: .full), "\(label): render failed")
+    let png = try XCTUnwrap(renderer.pngData, "\(label): renderer did not produce pngData")
+    let image = try decodeRGBA(png)
+    let url = imageRoot.appendingPathComponent("\(label).png")
+    try png.write(to: url)
+    return RenderedVariant(
+      label: label,
+      rendererKind: "slugGlyph",
       subpixelLayout: layout.name,
       xShiftPixels: xShiftPixels,
       status: renderer.rendererStatus,
