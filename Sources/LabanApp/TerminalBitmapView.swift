@@ -88,6 +88,24 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     var reduceTransparency: Bool
   }
 
+  private struct RendererSurfaceMetrics: Equatable {
+    var pixelWidth: Int
+    var pixelHeight: Int
+    var scale: CGFloat
+  }
+
+  private struct PendingBackendSwap {
+    var token: UInt64
+    var selection: RendererSelection
+    var backend: RendererBackend
+    var metrics: RendererSurfaceMetrics
+    var retriedAfterResize: Bool
+  }
+
+  typealias BackendFactoryForTesting =
+    (RendererSelection, FontAtlas, FontAtlas) -> RendererBackend
+  static var backendFactoryForTesting: BackendFactoryForTesting?
+
   /// Reserved strip at the top of the contentView that sits behind the
   /// transparent full-size titlebar. Picked to clear the standard window
   /// traffic-light cluster (~22 pt visually + breathing room).
@@ -116,6 +134,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// can swap this live; LABAN_RENDERER=software/cpu still forces the initial
   /// backend for debug recovery.
   private var backend: RendererBackend
+  private var activeRendererSelection: RendererSelection
+  private var intendedRendererSelection: RendererSelection
+  private var pendingBackendSwap: PendingBackendSwap?
+  private var nextBackendSwapToken: UInt64 = 0
   /// True when `backend` self-presents — TerminalBitmapView skips its own
   /// draw() blit and lets the layer composite directly.
   private var backendSelfPresents: Bool
@@ -656,8 +678,11 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
 
     let selection =
       Self.launchForcesSoftwareRenderer ? .software : RendererSelection.persisted()
+    let resolvedSelection = selection.isAvailableOnCurrentOS ? selection : .classic
+    self.activeRendererSelection = resolvedSelection
+    self.intendedRendererSelection = resolvedSelection
     self.backend = Self.makeBackend(
-      selection: selection,
+      selection: resolvedSelection,
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas)
     self.backendSelfPresents = backend.presentationLayer != nil
@@ -1025,7 +1050,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     fontAtlas: FontAtlas,
     sidebarFontAtlas: FontAtlas
   ) -> RendererBackend {
-    makeRendererBackend(
+    if let backendFactoryForTesting {
+      return backendFactoryForTesting(selection, fontAtlas, sidebarFontAtlas)
+    }
+    return makeRendererBackend(
       selection: selection,
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas)
@@ -1094,16 +1122,15 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   }
 
   var rendererMode: RendererMode {
-    backend.rendererStatus.configuredRenderer == RendererMode.gpuDriven.rawValue
-      ? .gpuDriven : .classic
+    rendererSelection == .gpuDriven ? .gpuDriven : .classic
   }
 
   var rendererSelection: RendererSelection {
-    RendererSelection(rawValue: backend.rendererStatus.configuredRenderer) ?? .software
+    intendedRendererSelection
   }
 
   var usesMetalBackend: Bool {
-    backend is MetalRenderer
+    (pendingBackendSwap?.backend ?? backend) is MetalRenderer
   }
 
   var terminalFontPostScriptName: String {
@@ -1122,7 +1149,14 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   func applyRendererSelection(_ selection: RendererSelection) {
     let resolved = selection.isAvailableOnCurrentOS ? selection : .classic
     RendererSelection.set(resolved)
-    if rendererSelection == resolved { return }
+    intendedRendererSelection = resolved
+
+    if let pending = pendingBackendSwap {
+      if pending.selection == resolved { return }
+      abandonPendingBackendSwap()
+    }
+
+    if activeRendererSelection == resolved { return }
 
     // Abandon any in-flight zoom gesture before swapping the backend/layer:
     // cancel a pending debounced commit, reset the presentation scale to identity
@@ -1144,9 +1178,13 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       let metal = backend as? MetalRenderer
     {
       metal.clearRendererStatusOverride()
-      guard metal.configuredRendererMode != metalMode else { return }
+      guard metal.configuredRendererMode != metalMode else {
+        activeRendererSelection = resolved
+        return
+      }
       metal.configuredRendererMode = metalMode
       metal.clearRendererStatusOverride()
+      activeRendererSelection = resolved
       markRenderConfigForProfiling()
       renderInvalidated = true
       if window != nil {
@@ -1155,11 +1193,89 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       return
     }
 
-    backend.onFrameCompleted = nil
-    backend = Self.makeBackend(
+    beginPendingBackendSwap(to: resolved)
+  }
+
+  private func beginPendingBackendSwap(to resolved: RendererSelection) {
+    let newBackend = Self.makeBackend(
       selection: resolved,
       fontAtlas: fontAtlas,
       sidebarFontAtlas: sidebarFontAtlas)
+    nextBackendSwapToken &+= 1
+    let token = nextBackendSwapToken
+    let metrics = currentSurfaceMetrics()
+    preparePendingBackend(newBackend, metrics: metrics)
+    pendingBackendSwap = PendingBackendSwap(
+      token: token,
+      selection: resolved,
+      backend: newBackend,
+      metrics: metrics,
+      retriedAfterResize: false)
+    newBackend.onFrameCompleted = { [weak self] in
+      DispatchQueue.main.async {
+        self?.completePendingBackendSwap(token: token)
+      }
+    }
+
+    let previousWait = newBackend.waitForFrameCompletion
+    newBackend.waitForFrameCompletion = false
+    let didRender = renderCurrentFrame(into: newBackend, damage: .full)
+    newBackend.waitForFrameCompletion = previousWait
+    if !didRender {
+      installPendingBackendSwap(token: token)
+    }
+  }
+
+  private func abandonPendingBackendSwap() {
+    pendingBackendSwap?.backend.onFrameCompleted = nil
+    pendingBackendSwap = nil
+  }
+
+  private func preparePendingBackend(
+    _ pendingBackend: RendererBackend,
+    metrics: RendererSurfaceMetrics
+  ) {
+    pendingBackend.resize(
+      pixelWidth: metrics.pixelWidth,
+      pixelHeight: metrics.pixelHeight,
+      scale: metrics.scale)
+    _ = updateDisplayDownsampledState(for: pendingBackend)
+  }
+
+  private func completePendingBackendSwap(token: UInt64) {
+    guard var pending = pendingBackendSwap, pending.token == token else { return }
+
+    let metrics = currentSurfaceMetrics()
+    if metrics != pending.metrics {
+      preparePendingBackend(pending.backend, metrics: metrics)
+      if !pending.retriedAfterResize {
+        pending.metrics = metrics
+        pending.retriedAfterResize = true
+        pendingBackendSwap = pending
+        let previousWait = pending.backend.waitForFrameCompletion
+        pending.backend.waitForFrameCompletion = false
+        let didRender = renderCurrentFrame(into: pending.backend, damage: .full)
+        pending.backend.waitForFrameCompletion = previousWait
+        if didRender {
+          return
+        }
+      }
+    }
+
+    installPendingBackendSwap(token: token)
+  }
+
+  private func installPendingBackendSwap(token: UInt64) {
+    guard let pending = pendingBackendSwap, pending.token == token else { return }
+    installPendingBackendSwap(pending)
+  }
+
+  private func installPendingBackendSwap(_ pending: PendingBackendSwap) {
+    pendingBackendSwap = nil
+    backend.onFrameCompleted = nil
+    pending.backend.onFrameCompleted = nil
+    backend = pending.backend
+    activeRendererSelection = pending.selection
     configurePresentationForCurrentBackend()
     installFrameCompletionHook()
     lastPixelWidth = 0
@@ -1174,6 +1290,136 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     if !backendSelfPresents {
       needsDisplay = true
     }
+  }
+
+  var debugPendingRendererSwapSelection: RendererSelection? {
+    pendingBackendSwap?.selection
+  }
+
+  @discardableResult
+  func debugFlushPendingRendererSwap() -> Bool {
+    guard let pendingBackendSwap else { return false }
+    completePendingBackendSwap(token: pendingBackendSwap.token)
+    return true
+  }
+
+  @discardableResult
+  private func renderCurrentFrame(into targetBackend: RendererBackend, damage: RenderDamage)
+    -> Bool
+  {
+    guard let activeTab = model.activeTab,
+      let session = model.session(forTab: activeTab.id)
+    else {
+      return false
+    }
+
+    let usingRemoteSessions = sessionCoordinator?.usesRemoteSnapshots == true
+    var remoteFrame: LabandSnapshotFrame?
+    if usingRemoteSessions {
+      guard let sessionCoordinator else { return false }
+      do {
+        remoteFrame = try sessionCoordinator.snapshotFrame(for: activeTab, size: model.terminalSize)
+        if let snapshot = remoteFrame?.snapshot {
+          cacheRemoteMouseEncoding(snapshot, for: activeTab.id)
+        }
+      } catch {
+        remoteMouseEncodingByTab.removeValue(forKey: activeTab.id)
+        AppLog.app.error("laband snapshot failed during renderer warm-up: \(String(describing: error))")
+        return false
+      }
+    }
+
+    let targetScale = max(1, CGFloat(targetBackend.surfaceScale))
+    let subCellRows = displayedScrollRows - Double(appliedScrollRows)
+    let scrollContentYDevicePixels = CGFloat(subCellRows) * CGFloat(cellHeight) * targetScale
+    let scrollContentYDeviceSnapped = scrollContentYDevicePixels.rounded()
+    let scrollContentYOffset = scrollContentYDeviceSnapped / targetScale
+    let scrollSubpixelRemainderPoints =
+      (scrollContentYDevicePixels - scrollContentYDeviceSnapped) / targetScale
+    (targetBackend as? VectorGlyphRenderer)?.setScrollPhaseOffset(
+      CGPoint(x: 0, y: scrollSubpixelRemainderPoints))
+
+    let metalRenderer = targetBackend as? MetalRenderer
+    let gpuCellRequested = metalRenderer?.requestedRendererMode == .gpuDriven
+    let rendererFallbackReason =
+      usingRemoteSessions && gpuCellRequested ? "remoteSnapshotPayloadIncomplete" : nil
+    let canRequestCellPayload =
+      !usingRemoteSessions
+      && captureRecorder == nil
+      && frameProbe == nil
+      && metalRenderer?.effectiveRendererMode == .gpuDriven
+      && !gpuCellCommandFallbackPending
+    let sidebarScrollOffset =
+      (currentSidebarScrollOffsetForHitTesting() * targetScale).rounded() / targetScale
+    let request = TerminalSurfaceFrameRequest(
+      frame: renderedFrameCount + 1,
+      viewportWidth: bounds.width,
+      viewportHeight: bounds.height,
+      insets: TerminalSurfaceInsets(
+        top: Self.contentInsets.top,
+        left: Self.contentInsets.left,
+        bottom: Self.contentInsets.bottom,
+        right: Self.contentInsets.right),
+      sidebarTopInset: Self.titlebarReservedHeight,
+      sidebarScrollOffset: sidebarScrollOffset,
+      hoveredSidebarTabId: hoveredSidebarTabId,
+      sidebarDragIndicator: sidebarDragIndicator,
+      contentYOffset: scrollContentYOffset,
+      cursorBlinkVisible: blinkDriver.phaseVisible,
+      now: Date(),
+      reduceMotion: reduceMotion,
+      accessibilityVisualOptions: TerminalAccessibilityVisualOptions(
+        increaseContrast: accessibilityDisplayOptions.increaseContrast,
+        differentiateWithoutColor: accessibilityDisplayOptions.differentiateWithoutColor,
+        reduceTransparency: accessibilityDisplayOptions.reduceTransparency),
+      selection: currentTerminalSelection(sessionId: session.id),
+      includeTerminalAreaBackground: true,
+      requireActiveSnapshot: true,
+      forceFullDamage: true,
+      surfaceWidth: targetBackend.surfaceWidth,
+      surfaceHeight: targetBackend.surfaceHeight,
+      surfaceScale: Double(targetBackend.surfaceScale),
+      contentMode: canRequestCellPayload ? .cellPayloadPreferred : .commands,
+      preedit: hasMarkedText() ? markedText.string : nil,
+      preeditCaretCells: hasMarkedText() ? markedTextCaretCells : 0,
+      userCursorStyle: CursorSettings.style,
+      userCursorBlinkEnabled: CursorSettings.blinkEnabled)
+
+    let surfaceFrame: TerminalSurfaceFrame?
+    if let remoteFrame {
+      surfaceFrame = surfaceController.makeFrame(
+        request,
+        remoteSnapshot: remoteFrame.snapshot,
+        sessionId: session.id,
+        dirtyRanges: remoteFrame.dirtyRanges)
+    } else {
+      surfaceFrame = surfaceController.makeFrame(
+        request,
+        snapshotCommandsHook: snapshotCommandsHook(captureFrame: renderedFrameCount + 1))
+    }
+    guard let surfaceFrame else { return false }
+    let commands = surfaceFrame.commands + surfaceFrame.overlayCommands
+    return renderSurfaceFrame(
+      surfaceFrame,
+      commands: commands,
+      into: targetBackend,
+      damage: damage,
+      rendererFallbackReason: rendererFallbackReason)
+  }
+
+  @discardableResult
+  private func renderSurfaceFrame(
+    _ surfaceFrame: TerminalSurfaceFrame,
+    commands: [FrameCommand],
+    into targetBackend: RendererBackend,
+    damage: RenderDamage,
+    rendererFallbackReason: String?
+  ) -> Bool {
+    targetBackend.render(
+      commands,
+      cellPayload: surfaceFrame.cellPayload,
+      damage: damage,
+      rendererFallbackReason: rendererFallbackReason)
   }
 
   /// Emit a Points-of-Interest signpost segment for the active renderer config,
@@ -1858,26 +2104,37 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     applyTransientResizeBackground()
   }
 
+  private func currentSurfaceMetrics() -> RendererSurfaceMetrics {
+    let scale = window?.backingScaleFactor ?? 1.0
+    return RendererSurfaceMetrics(
+      pixelWidth: max(1, Int(ceil(bounds.width * scale))),
+      pixelHeight: max(1, Int(ceil(bounds.height * scale))),
+      scale: scale)
+  }
+
   /// Returns true if the surface was actually recreated.
   @discardableResult
   private func recreateSurface() -> Bool {
-    let scale = window?.backingScaleFactor ?? 1.0
-    let pixW = max(1, Int(ceil(bounds.width * scale)))
-    let pixH = max(1, Int(ceil(bounds.height * scale)))
-    guard pixW != lastPixelWidth || pixH != lastPixelHeight || scale != lastSurfaceScale else {
+    let metrics = currentSurfaceMetrics()
+    guard metrics.pixelWidth != lastPixelWidth || metrics.pixelHeight != lastPixelHeight
+      || metrics.scale != lastSurfaceScale
+    else {
       return false
     }
-    lastPixelWidth = pixW
-    lastPixelHeight = pixH
-    lastSurfaceScale = scale
-    backend.resize(pixelWidth: pixW, pixelHeight: pixH, scale: scale)
+    lastPixelWidth = metrics.pixelWidth
+    lastPixelHeight = metrics.pixelHeight
+    lastSurfaceScale = metrics.scale
+    backend.resize(
+      pixelWidth: metrics.pixelWidth,
+      pixelHeight: metrics.pixelHeight,
+      scale: metrics.scale)
     // Re-evaluate downsample state on every surface change: a backing-scale or
     // screen change can flip whether the framebuffer maps 1:1 onto the panel.
     _ = updateDisplayDownsampledState()
     // Ladder textures were rasterized for the old backing scale; discard and
     // rebuild for the new one (the renderer's own scale-change branch already
     // rebuilt the active size synchronously above).
-    if let ladder = atlasLadder, abs(ladder.scale - scale) > 0.0001 {
+    if let ladder = atlasLadder, abs(ladder.scale - metrics.scale) > 0.0001 {
       atlasLadder = nil
       DispatchQueue.main.async { [weak self] in
         self?.ensureAtlasLadder()
@@ -1893,13 +2150,18 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   /// because they have no subpixel path.
   @discardableResult
   private func updateDisplayDownsampledState() -> Bool {
+    updateDisplayDownsampledState(for: backend)
+  }
+
+  @discardableResult
+  private func updateDisplayDownsampledState(for targetBackend: RendererBackend) -> Bool {
     let downsampled = DisplayDownsampleDetector.isDownsampled(for: window)
     let rendererName: String
     let changed: Bool
-    if let vector = backend as? VectorGlyphRenderer {
+    if let vector = targetBackend as? VectorGlyphRenderer {
       rendererName = "vector"
       changed = vector.setDisplayDownsampled(downsampled)
-    } else if let slug = backend as? SlugGlyphRenderer {
+    } else if let slug = targetBackend as? SlugGlyphRenderer {
       rendererName = "slug"
       changed = slug.setDisplayDownsampled(downsampled)
     } else {
@@ -1907,7 +2169,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     }
     if changed {
       AppLog.render.info(
-        "\(rendererName) subpixel layout -> \(backend.rendererStatus.vectorSubpixelLayout ?? "?") "
+        "\(rendererName) subpixel layout -> \(targetBackend.rendererStatus.vectorSubpixelLayout ?? "?") "
           + "(displayDownsampled=\(downsampled))")
     }
     return changed
@@ -2524,9 +2786,10 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     // holds last frame's pixels at the previous fractional position, so
     // partial damage would leave stale pixels at the new sub-cell offset.
     guard
-      backend.render(
-        cmds,
-        cellPayload: surfaceFrame.cellPayload,
+      renderSurfaceFrame(
+        surfaceFrame,
+        commands: cmds,
+        into: backend,
         damage: surfaceFrame.damage,
         rendererFallbackReason: rendererFallbackReason)
     else {
