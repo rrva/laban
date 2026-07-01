@@ -364,8 +364,8 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     let unselectedBackground = image.pixel(
       x: min(pixelWidth - 1, Int(cellWidth * 2.5)), y: pixelHeight / 2)
 
-    XCTAssertPixel(selectedTextBackground, matches: selectedEmpty, tolerance: 4)
-    XCTAssertPixel(selectedTextBackground, differsFrom: unselectedBackground, tolerance: 12)
+    assertPixel(selectedTextBackground, matches: selectedEmpty, tolerance: 4)
+    assertPixel(selectedTextBackground, differsFrom: unselectedBackground, tolerance: 12)
   }
 
   func testSlugRendersColorEmojiFallbackPixels() throws {
@@ -806,7 +806,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     return count
   }
 
-  private func XCTAssertPixel(
+  private func assertPixel(
     _ actual: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
     matches expected: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
     tolerance: Int,
@@ -818,7 +818,7 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     XCTAssertEqual(Int(actual.b), Int(expected.b), accuracy: tolerance, file: file, line: line)
   }
 
-  private func XCTAssertPixel(
+  private func assertPixel(
     _ actual: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
     differsFrom expected: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
     tolerance: Int,
