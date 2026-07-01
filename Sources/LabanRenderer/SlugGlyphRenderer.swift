@@ -16,7 +16,6 @@ private struct SlugTextureInstance {
   var uvOrigin: SIMD2<Float>
   var uvSize: SIMD2<Float>
   var color: SIMD4<Float>
-  var coverageExponent: Float
 }
 
 private struct SlugVectorUniforms {
@@ -1072,8 +1071,7 @@ public final class SlugGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(entry.pixelWidth) / atlasSize,
         Float(entry.pixelHeight) / atlasSize),
-      color: SIMD4<Float>(1, 1, 1, 1),
-      coverageExponent: 1)
+      color: SIMD4<Float>(1, 1, 1, 1))
   }
 
   private func rasterGlyphInstance(
@@ -1103,8 +1101,7 @@ public final class SlugGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(entry.pixelWidth) / atlasSize,
         Float(entry.pixelHeight) / atlasSize),
-      color: slugColor(color),
-      coverageExponent: 1)
+      color: slugColor(color))
   }
 
   private enum SlugBandAxis {

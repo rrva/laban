@@ -115,6 +115,11 @@ commit); `main` owns semantic refreshes (lifting). See
 - A new renderer backend must be wired into **every** live-settings observer in `TerminalBitmapView` (they gate on `as? VectorGlyphRenderer` and silently drop other backends, so a setting "has no effect" with no error): slug shipped unwired and with no stem-darkening (raw geometric coverage, too thin). Slug thickens text by analytic dilation of its glyph coverage. Vector thickens text by bake-time geometric dilation of its mask: the supersampler grows the winding test by a calibrated per-side amount. Both are color-independent and size-aware, with weight 1.0 calibrated toward the software/CoreText renderer and weight 2.0 extra heavy (weight 0..2). Neither live path uses a coverage exponent for weight; `VectorGlyphRenderer.coverageExponent` is retained only for compatibility tests. Guard parity with `SlugWeightCoreTextParityTests` and `VectorWeightCoreTextParityTests`.
 - The renderer's per-frame encode/glyph-build path must not read `UserDefaults` or run CoreText/`CTLine` work per cell. Static glyph properties (e.g. color-ness) are decided once at rasterization and cached on the atlas entry; settings are cached and refreshed via their change notification, never polled per frame. (Regression bed1a2b: a per-cluster `CTLine` color scan cost +60–105 ms/frame while scrolling — guard it with `ColorGlyphScrollBench`.)
 - Metal renderer instance data must be tested at live terminal scale, not only small/headless fixtures: any path batching rect/glyph instances needs a regression exceeding Metal's 4 KB `setVertexBytes` inline limit and must use buffer-backed uploads when larger.
+- Slug raster/color fallback texture instances are consumed by `vectorGlyphVertex`;
+  their Swift layout must stay byte-for-byte compatible with Metal's
+  `VectorGlyphInstance`. Guard adjacent fallback glyphs, not only "some ink
+  exists": a two-Hanzi run caught the second instance going blank when the CPU
+  stride diverged from the shader struct.
 - Glyph/outline/atlas caches must key on **visual font identity** (PostScript
   name + point size + matrix + glyph), never `ObjectIdentifier(font)` — a CTFont
   address is reused, so address keys alias stale wrong-size entries. This was the

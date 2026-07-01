@@ -388,6 +388,51 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     XCTAssertGreaterThan(bounds.height, 10)
   }
 
+  func testSlugRendersAdjacentCJKRasterFallbackGlyphsInSeparateCells() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let atlas = FontAtlas(pointSize: 18)
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: atlas,
+        pixelWidth: 220,
+        pixelHeight: 120,
+        scale: 1))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+
+    let origin = CGPoint(x: 12, y: 32)
+    XCTAssertTrue(
+      renderer.render(
+        [
+          .rect(
+            CGRect(x: 0, y: 0, width: 220, height: 120),
+            color: 0x0000_00FF,
+            source: .terminal),
+          .glyphRun(
+            origin: origin,
+            text: "中文",
+            foreground: 0xFFFF_FFFF,
+            background: 0x0000_00FF,
+            attributes: [],
+            source: .terminal),
+        ],
+        damage: .full))
+    XCTAssertEqual(renderer.rendererStatus.rasterFallbackGlyphs, 2)
+
+    let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+    let firstGlyphStart = Int(floor(origin.x))
+    let firstGlyphEnd = Int(ceil(origin.x + atlas.cellSize.width * 2))
+    let secondGlyphStart = firstGlyphEnd
+    let secondGlyphEnd = Int(ceil(origin.x + atlas.cellSize.width * 4))
+    let firstInk = brightPixelCount(image, xRange: firstGlyphStart..<firstGlyphEnd)
+    let secondInk = brightPixelCount(image, xRange: secondGlyphStart..<secondGlyphEnd)
+
+    XCTAssertGreaterThan(firstInk, 40, "first CJK fallback glyph must render visible ink")
+    XCTAssertGreaterThan(secondInk, 40, "second CJK fallback glyph must render visible ink")
+  }
+
   func testSlugRendererReportsEffectiveSubpixelLayout() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -799,6 +844,23 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
         let high = max(Int(pixel.r), Int(pixel.g), Int(pixel.b))
         let low = min(Int(pixel.r), Int(pixel.g), Int(pixel.b))
         if high > 20, high - low > 20 {
+          count += 1
+        }
+      }
+    }
+    return count
+  }
+
+  private func brightPixelCount(_ image: RGBAImage, xRange: Range<Int>) -> Int {
+    var count = 0
+    let lower = max(0, xRange.lowerBound)
+    let upper = min(image.width, xRange.upperBound)
+    guard lower < upper else { return 0 }
+    for y in 0..<image.height {
+      for x in lower..<upper {
+        let pixel = image.pixel(x: x, y: y)
+        let luminance = (Int(pixel.r) + Int(pixel.g) + Int(pixel.b)) / 3
+        if luminance > 8 {
           count += 1
         }
       }
