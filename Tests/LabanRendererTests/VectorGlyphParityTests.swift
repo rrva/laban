@@ -36,6 +36,16 @@ final class VectorGlyphParityTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
+    let key = VectorTextWeightSettings.defaultsKey
+    let saved = UserDefaults.standard.object(forKey: key)
+    VectorTextWeightSettings.setCurrent(0)
+    defer {
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
 
     let atlas = FontAtlas(pointSize: 24, fontName: nil)
     let renderer = try XCTUnwrap(
@@ -45,6 +55,7 @@ final class VectorGlyphParityTests: XCTestCase {
         pixelWidth: 512,
         pixelHeight: 256,
         scale: 1))
+    renderer.refreshTextWeight()
     let store = GlyphCurveStore()
 
     var checked = 0

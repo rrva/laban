@@ -33,7 +33,7 @@ public final class VectorGlyphScratchRasterizer {
     var boundsMin: SIMD2<Float>
     var boundsMax: SIMD2<Float>
     var rasterScale: Float
-    var _pad0: Float = 0
+    var dilatePx: Float = 0
     var subpixelRBounds: SIMD4<Float>
     var subpixelGBounds: SIMD4<Float>
     var subpixelBBounds: SIMD4<Float>
@@ -182,6 +182,7 @@ public final class VectorGlyphScratchRasterizer {
     height: Int,
     origin: CGPoint,
     rasterScale: CGFloat = 1,
+    dilatePx: Float = 0,
     targetX: Int,
     targetY: Int,
     sampleStart: Int,
@@ -221,6 +222,7 @@ public final class VectorGlyphScratchRasterizer {
       boundsMin: SIMD2<Float>(Float(outline.bounds.minX), Float(outline.bounds.minY)),
       boundsMax: SIMD2<Float>(Float(outline.bounds.maxX), Float(outline.bounds.maxY)),
       rasterScale: Float(resolvedScale),
+      dilatePx: max(0, dilatePx.isFinite ? dilatePx : 0),
       subpixelRBounds: subpixelLayout.rBounds,
       subpixelGBounds: subpixelLayout.gBounds,
       subpixelBBounds: subpixelLayout.bBounds,

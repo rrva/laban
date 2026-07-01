@@ -13,7 +13,6 @@ struct VectorGlyphInstance {
     float2 uvOrigin;
     float2 uvSize;
     float4 color;
-    float coverageExponent;
 };
 
 struct VectorRenderUniforms {
@@ -32,7 +31,6 @@ struct VectorVertexOut {
     float4 position [[position]];
     float4 color;
     float2 uv;
-    float coverageExponent;
 };
 
 struct VectorGlyphCurve {
@@ -65,7 +63,7 @@ struct VectorGlyphAccumParams {
     float2 boundsMin;
     float2 boundsMax;
     float rasterScale;
-    float _pad0;
+    float dilatePx;
     float4 subpixelRBounds;
     float4 subpixelGBounds;
     float4 subpixelBBounds;
@@ -108,7 +106,6 @@ vertex VectorVertexOut vectorSolidVertex(
     out.position = float4(vector_to_ndc(px, uniforms.surfaceSizePixels), 0.0, 1.0);
     out.color = instance.color;
     out.uv = float2(0.0, 0.0);
-    out.coverageExponent = 1.0;
     return out;
 }
 
@@ -134,7 +131,6 @@ vertex VectorVertexOut vectorGlyphVertex(
         instance.uvOrigin.x + unit.x * instance.uvSize.x,
         instance.uvOrigin.y + (1.0 - unit.y) * instance.uvSize.y
     );
-    out.coverageExponent = instance.coverageExponent;
     return out;
 }
 
@@ -143,7 +139,7 @@ fragment float4 vectorGlyphCoverageFragment(
     texture2d<float> atlas [[texture(0)]],
     sampler atlasSampler [[sampler(0)]]
 ) {
-    float3 coverage = pow(atlas.sample(atlasSampler, in.uv).rgb, float3(in.coverageExponent));
+    float3 coverage = atlas.sample(atlasSampler, in.uv).rgb;
     return float4(coverage * in.color.a, 0.0);
 }
 
@@ -152,7 +148,7 @@ fragment float4 vectorGlyphColorFragment(
     texture2d<float> atlas [[texture(0)]],
     sampler atlasSampler [[sampler(0)]]
 ) {
-    float3 coverage = pow(atlas.sample(atlasSampler, in.uv).rgb, float3(in.coverageExponent));
+    float3 coverage = atlas.sample(atlasSampler, in.uv).rgb;
     return float4(in.color.rgb * coverage * in.color.a, 0.0);
 }
 
@@ -284,6 +280,34 @@ inline float vector_point_coverage_at(
     return clamp(float(abs(winding)), 0.0, 1.0);
 }
 
+inline float vector_point_coverage_dilated(
+    constant VectorGlyphCurve *curves,
+    uint curveCount,
+    float2 sample,
+    float2 boundsMin,
+    float2 boundsMax,
+    float dilatePt
+) {
+    float c = vector_point_coverage_at(curves, curveCount, sample, boundsMin, boundsMax);
+    if (dilatePt <= 1.0e-7 || c >= 1.0) {
+        return c;
+    }
+    float2 dx = float2(dilatePt, 0.0);
+    float2 dy = float2(0.0, dilatePt);
+    float dg = dilatePt * 0.7071;
+    float2 da = float2(dg, dg);
+    float2 db = float2(dg, -dg);
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample + dx, boundsMin, boundsMax));
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample - dx, boundsMin, boundsMax));
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample + dy, boundsMin, boundsMax));
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample - dy, boundsMin, boundsMax));
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample + da, boundsMin, boundsMax));
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample - da, boundsMin, boundsMax));
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample + db, boundsMin, boundsMax));
+    c = max(c, vector_point_coverage_at(curves, curveCount, sample - db, boundsMin, boundsMax));
+    return c;
+}
+
 inline float2 vector_sample_in_bounds(float4 bounds, float2 unit) {
     return mix(bounds.xy, bounds.zw, unit);
 }
@@ -343,6 +367,7 @@ kernel void vectorGlyphAccumulateAtlas(
         float(gid.x),
         float(params.height - 1 - gid.y)
     ) + params.subpixelOffset;
+    float dilatePt = params.dilatePx / max(params.rasterScale, 1.0e-6);
     for (uint sampleIndex = 0; sampleIndex < params.sampleCount; sampleIndex++) {
         uint absoluteSample = params.sampleStart + sampleIndex;
         float2 jitter = float2(
@@ -358,26 +383,29 @@ kernel void vectorGlyphAccumulateAtlas(
         float2 sampleB = params.origin
             + (pixelBase + vector_sample_in_bounds(params.subpixelBBounds, jitter))
                 / params.rasterScale;
-        float coverageR = vector_point_coverage_at(
+        float coverageR = vector_point_coverage_dilated(
             curves,
             params.curveCount,
             sampleR,
             params.boundsMin,
-            params.boundsMax
+            params.boundsMax,
+            dilatePt
         );
-        float coverageG = vector_point_coverage_at(
+        float coverageG = vector_point_coverage_dilated(
             curves,
             params.curveCount,
             sampleG,
             params.boundsMin,
-            params.boundsMax
+            params.boundsMax,
+            dilatePt
         );
-        float coverageB = vector_point_coverage_at(
+        float coverageB = vector_point_coverage_dilated(
             curves,
             params.curveCount,
             sampleB,
             params.boundsMin,
-            params.boundsMax
+            params.boundsMax,
+            dilatePt
         );
         sum += uint3(
             uint(round(coverageR * 65535.0)),

@@ -24,10 +24,6 @@ private struct VectorGlyphInstance {
   var uvOrigin: SIMD2<Float>
   var uvSize: SIMD2<Float>
   var color: SIMD4<Float>
-  // Exponent applied to vector coverage (c^e) for stem-darkening: e<1 thickens.
-  // 1.0 = no change (used by raster/emoji fallbacks whose masks are already
-  // weighted by CoreText).
-  var coverageExponent: Float
 }
 
 private struct VectorUniforms {
@@ -47,6 +43,7 @@ private struct VectorMaskDescriptor {
   var width: Int
   var height: Int
   var origin: CGPoint
+  var dilatePx: Float = 0
   // Signed device-pixel sub-pixel phase baked into this mask (the accumulate
   // kernel biases its sample grid by this). Zero for static (integer-cell) text.
   var subpixelSampleOffset: CGPoint = .zero
@@ -64,11 +61,28 @@ private struct VectorMaskDescriptorKey: Hashable {
   var syntheticItalic: Bool
   var quantizedOffsetX: Int
   var quantizedOffsetY: Int
+  var dilateQ: Int = 0
 }
 
 public final class VectorGlyphRenderer: RendererBackend {
   private static let syntheticItalicShear: CGFloat = 0.18
   private static let maxInlineInstanceBytes = 4096
+  // Per-side stem dilation in device pixels at text weight 1.0, keyed by
+  // on-screen em size (point size times backing scale). Calibrated so the
+  // bake-time grown winding test makes vector weight 1.0 ink match the software
+  // (CoreText) renderer. These start from the slug renderer's analytic-dilation
+  // table and are re-measured here because the supersampler grow is not
+  // identical to slug's analytic ramp shift.
+  private static let dilationTable: [(ppem: Float, amountPx: Float)] = [
+    (18, 0.14),
+    (22, 0.19),
+    (28, 0.23),
+    (36, 0.26),
+    (48, 0.29),
+  ]
+  private static let dilationPpemFull: Float = 96
+  private static let dilationPpemNone: Float = 240
+  private static let dilationMinTaper: Float = 0.3
 
   public private(set) var fontAtlas: FontAtlas
   public private(set) var sidebarFontAtlas: FontAtlas
@@ -806,6 +820,7 @@ public final class VectorGlyphRenderer: RendererBackend {
 
   public func refreshTextWeight() {
     textWeight = VectorTextWeightSettings.current()
+    resetMaskCaches()
   }
 
   public func refreshSmoothScrollMode() {
@@ -1299,6 +1314,9 @@ public final class VectorGlyphRenderer: RendererBackend {
       let atlas = source == .sidebar ? sidebarFontAtlas : fontAtlas
       let variant = styledFontVariant(for: attributes, in: atlas)
       let font = variant.font
+      let dilatePx = Self.perSideDilatePx(
+        weight: textWeight,
+        ppemPx: Double(CTFontGetSize(font) * scale))
       // Diagnostic: the actual point size of the font this run resolves to. A
       // stale styled-variant or atlas would surface here as an unexpected size.
       frameGlyphFontSizes.insert(Double(CTFontGetSize(font)))
@@ -1333,6 +1351,7 @@ public final class VectorGlyphRenderer: RendererBackend {
             for: glyph,
             font: font,
             syntheticItalic: variant.italicFallback,
+            dilatePx: dilatePx,
             commandBuffer: commandBuffer) != nil
           {
             framePreparedGlyphs.insert(key)
@@ -1375,8 +1394,9 @@ public final class VectorGlyphRenderer: RendererBackend {
     let font = variant.font
     let cellAdvance = atlas.cellSize.width
     let baseline = origin.y + atlas.descent
-    let coverageExponent = Self.coverageExponent(
-      foreground: foreground, background: background, weight: textWeight)
+    let dilatePx = Self.perSideDilatePx(
+      weight: textWeight,
+      ppemPx: Double(CTFontGetSize(font) * scale))
     // Foreground is constant across the run; linearize it once instead of per cell.
     let foregroundColor = vectorColor(foreground)
     let runWantsColor =
@@ -1407,12 +1427,13 @@ public final class VectorGlyphRenderer: RendererBackend {
         let resolved = resolveDrawMask(
           for: glyph,
           font: font,
-          syntheticItalic: variant.italicFallback)
+          syntheticItalic: variant.italicFallback,
+          dilatePx: dilatePx)
       {
         glyphs.append(
           glyphInstance(
             mask: resolved.mask, position: position, color: foregroundColor,
-            coverageExponent: coverageExponent, slide: resolved.slide))
+            slide: resolved.slide))
       } else if let fallback = rasterFallbackInstance(
         cluster: cluster,
         font: font,
@@ -1494,19 +1515,22 @@ public final class VectorGlyphRenderer: RendererBackend {
     for glyph: CGGlyph,
     font: CTFont,
     syntheticItalic: Bool = false,
-    phaseOffset: CGPoint = .zero
+    phaseOffset: CGPoint = .zero,
+    dilatePx: Float = 0
   ) -> VectorMaskDescriptor? {
     // `phaseOffset` selects which mask this descriptor addresses: `.zero` is the
     // single phase-0 mask (used by fluid mode and as crisp's always-resident
     // fallback); a non-zero offset is a per-phase mask (crisp mode bakes the
     // sub-cell scroll offset into the coverage). Static frames pass `.zero`.
     let phase = Self.quantizedPhase(pointOffset: phaseOffset, scale: scale)
+    let dilateQ = Self.quantizedDilate(dilatePx)
     let cacheKey = VectorMaskDescriptorKey(
       font: ObjectIdentifier(font),
       glyph: glyph,
       syntheticItalic: syntheticItalic,
       quantizedOffsetX: phase.qx,
-      quantizedOffsetY: phase.qy)
+      quantizedOffsetY: phase.qy,
+      dilateQ: dilateQ)
     if let cached = descriptorCache[cacheKey] { return cached }
 
     guard var outline = curveStore.outline(for: glyph, font: font) else { return nil }
@@ -1527,16 +1551,57 @@ public final class VectorGlyphRenderer: RendererBackend {
       originY: Int(origin.y),
       syntheticItalic: syntheticItalic,
       quantizedOffsetX: phase.qx,
-      quantizedOffsetY: phase.qy)
+      quantizedOffsetY: phase.qy,
+      dilateQ: dilateQ)
     let descriptor = VectorMaskDescriptor(
       outline: outline,
       key: key,
       width: width,
       height: height,
       origin: origin,
+      dilatePx: dilatePx,
       subpixelSampleOffset: phase.sampleOffset)
     descriptorCache[cacheKey] = descriptor
     return descriptor
+  }
+
+  /// Linearly interpolates `dilationTable` at `ppem`, clamping outside the table.
+  private static func dilationTableAmountPx(ppem: Float) -> Float {
+    guard let first = dilationTable.first, let last = dilationTable.last else { return 0 }
+    if ppem <= first.ppem { return first.amountPx }
+    if ppem >= last.ppem { return last.amountPx }
+    for index in 1..<dilationTable.count {
+      let lo = dilationTable[index - 1]
+      let hi = dilationTable[index]
+      if ppem <= hi.ppem {
+        let span = max(hi.ppem - lo.ppem, .ulpOfOne)
+        let fraction = (ppem - lo.ppem) / span
+        return lo.amountPx + fraction * (hi.amountPx - lo.amountPx)
+      }
+    }
+    return last.amountPx
+  }
+
+  /// Maps text weight and on-screen em size to per-side device-pixel dilation.
+  /// The same geometry applies regardless of foreground and background color.
+  private static func perSideDilatePx(weight: Double, ppemPx: Double) -> Float {
+    guard weight > 0 else { return 0 }
+    let ppem = Float(ppemPx)
+    guard ppem.isFinite else { return 0 }
+    let amount = dilationTableAmountPx(ppem: min(ppem, dilationPpemFull))
+    let taper: Float
+    if ppem <= dilationPpemFull {
+      taper = 1
+    } else {
+      let span = max(dilationPpemNone - dilationPpemFull, .ulpOfOne)
+      taper = min(1, max(dilationMinTaper, 1 - (ppem - dilationPpemFull) / span))
+    }
+    return max(0, Float(weight) * amount * taper)
+  }
+
+  private static func quantizedDilate(_ perSidePx: Float) -> Int {
+    guard perSidePx.isFinite else { return 0 }
+    return Int((max(0, perSidePx) * 16).rounded())
   }
 
   /// Quantize a point-space sub-cell offset to a device-pixel u0.8 phase. Returns
@@ -1577,14 +1642,16 @@ public final class VectorGlyphRenderer: RendererBackend {
     for glyph: CGGlyph,
     font: CTFont,
     syntheticItalic: Bool = false,
-    phaseOffset: CGPoint = .zero
+    phaseOffset: CGPoint = .zero,
+    dilatePx: Float = 0
   ) -> VectorGlyphMaskAtlas.Entry? {
     guard
       let descriptor = maskDescriptor(
         for: glyph,
         font: font,
         syntheticItalic: syntheticItalic,
-        phaseOffset: phaseOffset)
+        phaseOffset: phaseOffset,
+        dilatePx: dilatePx)
     else { return nil }
     return maskAtlas.entry(for: descriptor.key)
   }
@@ -1598,7 +1665,8 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func resolveDrawMask(
     for glyph: CGGlyph,
     font: CTFont,
-    syntheticItalic: Bool
+    syntheticItalic: Bool,
+    dilatePx: Float
   ) -> (mask: VectorGlyphMaskAtlas.Entry, slide: Bool)? {
     // The same glyph draws into many cells; its resolved mask + slide is identical
     // for every occurrence this frame (mode and phase are frame-constant). Memoize
@@ -1606,7 +1674,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     let key = FrameGlyphKey(font: ObjectIdentifier(font), glyph: glyph, italic: syntheticItalic)
     if let memo = frameResolvedMasks[key] { return memo }
     let resolved = resolveDrawMaskUncached(
-      for: glyph, font: font, syntheticItalic: syntheticItalic)
+      for: glyph, font: font, syntheticItalic: syntheticItalic, dilatePx: dilatePx)
     if let resolved { frameResolvedMasks[key] = resolved }
     return resolved
   }
@@ -1614,16 +1682,22 @@ public final class VectorGlyphRenderer: RendererBackend {
   private func resolveDrawMaskUncached(
     for glyph: CGGlyph,
     font: CTFont,
-    syntheticItalic: Bool
+    syntheticItalic: Bool,
+    dilatePx: Float
   ) -> (mask: VectorGlyphMaskAtlas.Entry, slide: Bool)? {
     if smoothScrollMode == .perPhase, scrollPhaseOffset != .zero,
       let phased = cachedMask(
-        for: glyph, font: font, syntheticItalic: syntheticItalic, phaseOffset: scrollPhaseOffset)
+        for: glyph,
+        font: font,
+        syntheticItalic: syntheticItalic,
+        phaseOffset: scrollPhaseOffset,
+        dilatePx: dilatePx)
     {
       return (phased, false)
     }
     guard
-      let base = cachedMask(for: glyph, font: font, syntheticItalic: syntheticItalic)
+      let base = cachedMask(
+        for: glyph, font: font, syntheticItalic: syntheticItalic, dilatePx: dilatePx)
     else { return nil }
     return (base, true)
   }
@@ -1633,6 +1707,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     font: CTFont,
     syntheticItalic: Bool = false,
     phaseOffset: CGPoint = .zero,
+    dilatePx: Float,
     budgetGated: Bool = false,
     scrolling: Bool = false,
     commandBuffer: MTLCommandBuffer
@@ -1642,7 +1717,8 @@ public final class VectorGlyphRenderer: RendererBackend {
         for: glyph,
         font: font,
         syntheticItalic: syntheticItalic,
-        phaseOffset: phaseOffset)
+        phaseOffset: phaseOffset,
+        dilatePx: dilatePx)
     else { return nil }
     guard
       let resolvedTexture = ensureAtlasTexture(),
@@ -1721,6 +1797,7 @@ public final class VectorGlyphRenderer: RendererBackend {
         height: descriptor.height,
         origin: descriptor.origin,
         rasterScale: scale,
+        dilatePx: descriptor.dilatePx,
         targetX: entry.x,
         targetY: entry.y,
         sampleStart: sampleStart,
@@ -1759,6 +1836,7 @@ public final class VectorGlyphRenderer: RendererBackend {
     for glyph: CGGlyph,
     font: CTFont,
     syntheticItalic: Bool = false,
+    dilatePx: Float,
     commandBuffer: MTLCommandBuffer
   ) -> VectorGlyphMaskAtlas.Entry? {
     // While scrolling (any non-zero phase), a base mask that is first becoming
@@ -1772,6 +1850,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       font: font,
       syntheticItalic: syntheticItalic,
       phaseOffset: .zero,
+      dilatePx: dilatePx,
       budgetGated: false,
       scrolling: scrolling,
       commandBuffer: commandBuffer)
@@ -1790,6 +1869,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       font: font,
       syntheticItalic: syntheticItalic,
       phaseOffset: scrollPhaseOffset,
+      dilatePx: dilatePx,
       budgetGated: true,
       commandBuffer: commandBuffer)
     return base
@@ -1940,7 +2020,6 @@ public final class VectorGlyphRenderer: RendererBackend {
     mask: VectorGlyphMaskAtlas.Entry,
     position: CGPoint,
     color: SIMD4<Float>,
-    coverageExponent: Float,
     slide: Bool
   ) -> VectorGlyphInstance {
     // Diagnostic: the actually-drawn glyph quad height (device px). A stale mask
@@ -1967,17 +2046,11 @@ public final class VectorGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(mask.width) * frameMaskInvWidth,
         Float(mask.height) * frameMaskInvHeight),
-      color: color,
-      coverageExponent: coverageExponent)
+      color: color)
   }
 
-  /// Stem-darkening exponent for vector coverage so weight matches CoreText-based
-  /// renderers (whose glyph masks bake in stem darkening). Geometric coverage is
-  /// otherwise too thin, especially for dark text on a light background where
-  /// thin strokes wash out. Returns an exponent `e` for `coverage^e`; `e < 1`
-  /// thickens. A base boost applies to all text; an extra boost applies when the
-  /// foreground is darker than the background (dark-on-light). Weight 1.0 matches
-  /// CoreText; weight 2.0 doubles the darkening for an extra-heavy look.
+  /// Reference stem-darkening exponent kept for compatibility tests. The live
+  /// render path now uses bake-time geometric dilation of vector masks.
   static func coverageExponent(
     foreground: UInt32,
     background: UInt32,
@@ -2030,8 +2103,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(entry.pixelWidth) / atlasSize,
         Float(entry.pixelHeight) / atlasSize),
-      color: vectorColor(color),
-      coverageExponent: 1)
+      color: vectorColor(color))
   }
 
   private func colorGlyphInstance(
@@ -2061,8 +2133,7 @@ public final class VectorGlyphRenderer: RendererBackend {
       uvSize: SIMD2<Float>(
         Float(entry.pixelWidth) / atlasSize,
         Float(entry.pixelHeight) / atlasSize),
-      color: SIMD4<Float>(1, 1, 1, 1),
-      coverageExponent: 1)
+      color: SIMD4<Float>(1, 1, 1, 1))
   }
 
   private func colorGlyphFallbackEntry(

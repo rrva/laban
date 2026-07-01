@@ -20,6 +20,16 @@ final class VectorGlyphGammaTests: XCTestCase {
     else {
       throw XCTSkip("no Metal device available")
     }
+    let key = VectorTextWeightSettings.defaultsKey
+    let saved = UserDefaults.standard.object(forKey: key)
+    VectorTextWeightSettings.setCurrent(0)
+    defer {
+      if let saved {
+        UserDefaults.standard.set(saved, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
 
     let scale: CGFloat = 2
     let atlas = FontAtlas(pointSize: 32, fontName: nil)
@@ -31,6 +41,7 @@ final class VectorGlyphGammaTests: XCTestCase {
         pixelHeight: 200,
         scale: scale))
     renderer.setSubpixelLayout(.grayscale)
+    renderer.refreshTextWeight()
 
     let commands: [FrameCommand] = [
       .rect(CGRect(x: 0, y: 0, width: 450, height: 100), color: 0x00_00_00_FF, source: .terminal),

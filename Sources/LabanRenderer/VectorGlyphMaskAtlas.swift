@@ -15,6 +15,8 @@ final class VectorGlyphMaskAtlas {
     // fractional on-screen position selects a distinct mask baked for that phase.
     var quantizedOffsetX: Int = 0
     var quantizedOffsetY: Int = 0
+    // Quantized per-side dilation in device pixels. 0 means undilated coverage.
+    var dilateQ: Int = 0
   }
 
   struct Entry: Equatable {
