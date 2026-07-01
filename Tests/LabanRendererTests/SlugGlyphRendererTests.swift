@@ -320,6 +320,52 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     XCTAssertEqual(Int(cleared.b), 0xDB, accuracy: 6)
   }
 
+  func testSlugSelectionBackgroundSurvivesTextCellBackground() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let atlas = FontAtlas(pointSize: 18)
+    let cellWidth = atlas.cellSize.width
+    let cellHeight = atlas.cellSize.height
+    let pixelWidth = Int(ceil(cellWidth * 3))
+    let pixelHeight = Int(ceil(cellHeight))
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: atlas,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: 1))
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    let base: UInt32 = 0x1010_10FF
+    let selection: UInt32 = 0xF080_2080
+
+    XCTAssertTrue(
+      renderer.render(
+        [
+          .rect(
+            CGRect(x: 0, y: 0, width: CGFloat(pixelWidth), height: CGFloat(pixelHeight)),
+            color: base,
+            source: .terminal),
+          .selection(CGRect(x: 0, y: 0, width: cellWidth * 2, height: cellHeight), color: selection),
+          .glyphRun(
+            origin: .zero,
+            text: "i",
+            foreground: 0xFFFF_FFFF,
+            background: base,
+            attributes: [],
+            source: .terminal),
+        ],
+        damage: .full))
+    let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
+    let selectedEmpty = image.pixel(x: Int(cellWidth * 1.5), y: pixelHeight / 2)
+    let selectedTextBackground = image.pixel(x: Int(cellWidth * 0.85), y: pixelHeight / 2)
+    let unselectedBackground = image.pixel(x: min(pixelWidth - 1, Int(cellWidth * 2.5)), y: pixelHeight / 2)
+
+    XCTAssertPixel(selectedTextBackground, matches: selectedEmpty, tolerance: 4)
+    XCTAssertPixel(selectedTextBackground, differsFrom: unselectedBackground, tolerance: 12)
+  }
+
   func testSlugRendersColorEmojiFallbackPixels() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -713,6 +759,32 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
       }
     }
     return count
+  }
+
+  private func XCTAssertPixel(
+    _ actual: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
+    matches expected: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
+    tolerance: Int,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertEqual(Int(actual.r), Int(expected.r), accuracy: tolerance, file: file, line: line)
+    XCTAssertEqual(Int(actual.g), Int(expected.g), accuracy: tolerance, file: file, line: line)
+    XCTAssertEqual(Int(actual.b), Int(expected.b), accuracy: tolerance, file: file, line: line)
+  }
+
+  private func XCTAssertPixel(
+    _ actual: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
+    differsFrom expected: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
+    tolerance: Int,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let maxDelta = max(
+      abs(Int(actual.r) - Int(expected.r)),
+      abs(Int(actual.g) - Int(expected.g)),
+      abs(Int(actual.b) - Int(expected.b)))
+    XCTAssertGreaterThan(maxDelta, tolerance, file: file, line: line)
   }
 
   private struct RGBAImage {

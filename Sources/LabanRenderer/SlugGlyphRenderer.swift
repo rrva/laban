@@ -745,7 +745,7 @@ public final class SlugGlyphRenderer: RendererBackend {
     _ text: String,
     origin: CGPoint,
     foreground: UInt32,
-    background: UInt32,
+    background _: UInt32,
     attributes: TextAttributes,
     underlineStyle: UnderlineStyle,
     underlineColor: UInt32?,
@@ -760,16 +760,6 @@ public final class SlugGlyphRenderer: RendererBackend {
     let referenceAtlas = source == .sidebar ? sidebarReferenceFontAtlas : referenceFontAtlas
     let cellAdvance = activeAtlas.cellSize.width
     let baseline = origin.y + activeAtlas.descent
-    if (background & 0xFF) > 0 {
-      solids.append(
-        solid(
-          rect: CGRect(
-            x: origin.x,
-            y: origin.y,
-            width: CGFloat(text.count) * cellAdvance,
-            height: activeAtlas.cellSize.height),
-          color: background))
-    }
 
     let pointScale = activeAtlas.pointSize / Self.referencePointSize
     let foregroundColor = slugColor(foreground)
