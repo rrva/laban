@@ -1324,7 +1324,8 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
         }
       } catch {
         remoteMouseEncodingByTab.removeValue(forKey: activeTab.id)
-        AppLog.app.error("laband snapshot failed during renderer warm-up: \(String(describing: error))")
+        AppLog.app.error(
+          "laband snapshot failed during renderer warm-up: \(String(describing: error))")
         return false
       }
     }
@@ -2116,8 +2117,9 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
   @discardableResult
   private func recreateSurface() -> Bool {
     let metrics = currentSurfaceMetrics()
-    guard metrics.pixelWidth != lastPixelWidth || metrics.pixelHeight != lastPixelHeight
-      || metrics.scale != lastSurfaceScale
+    guard
+      metrics.pixelWidth != lastPixelWidth || metrics.pixelHeight != lastPixelHeight
+        || metrics.scale != lastSurfaceScale
     else {
       return false
     }

@@ -347,7 +347,8 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
             CGRect(x: 0, y: 0, width: CGFloat(pixelWidth), height: CGFloat(pixelHeight)),
             color: base,
             source: .terminal),
-          .selection(CGRect(x: 0, y: 0, width: cellWidth * 2, height: cellHeight), color: selection),
+          .selection(
+            CGRect(x: 0, y: 0, width: cellWidth * 2, height: cellHeight), color: selection),
           .glyphRun(
             origin: .zero,
             text: "i",
@@ -360,7 +361,8 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     let image = try decodeRGBA(try XCTUnwrap(renderer.pngData))
     let selectedEmpty = image.pixel(x: Int(cellWidth * 1.5), y: pixelHeight / 2)
     let selectedTextBackground = image.pixel(x: Int(cellWidth * 0.85), y: pixelHeight / 2)
-    let unselectedBackground = image.pixel(x: min(pixelWidth - 1, Int(cellWidth * 2.5)), y: pixelHeight / 2)
+    let unselectedBackground = image.pixel(
+      x: min(pixelWidth - 1, Int(cellWidth * 2.5)), y: pixelHeight / 2)
 
     XCTAssertPixel(selectedTextBackground, matches: selectedEmpty, tolerance: 4)
     XCTAssertPixel(selectedTextBackground, differsFrom: unselectedBackground, tolerance: 12)
