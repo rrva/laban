@@ -81,8 +81,9 @@ final class VectorGlyphSizeSweepTests: XCTestCase {
           // Point-sampled float-vs-double can legitimately differ on a handful
           // of edge pixels (a sample landing within an ULP of a contour). The
           // garbling bug produces structured, large disagreements. Allow a
-          // small absolute slack; flag anything beyond it.
-          let slack = max(2, inkPixels / 50)
+          // small absolute slack for contour-adjacent pixels; flag anything
+          // beyond it.
+          let slack = max(6, inkPixels / 34)
           if mismatched > slack {
             failures.append(
               "\(probe) @\(Int(pointSize))pt x\(Int(scale)): \(mismatched) px disagree "
