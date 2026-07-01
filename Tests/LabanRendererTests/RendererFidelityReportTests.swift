@@ -849,7 +849,7 @@ final class RendererFidelityReportTests: XCTestCase {
       "slug-calibrated",
       "slug-rgbStripe",
     ]
-    return comparatorLabels.compactMap { label in
+    let reports = comparatorLabels.compactMap { label -> NativeReferenceRankingReport? in
       guard let variant = variants.first(where: { $0.label == label }) else { return nil }
       let ref = reference.metrics
       let m = variant.metrics
@@ -876,6 +876,10 @@ final class RendererFidelityReportTests: XCTestCase {
         p99CoverageSpread: m.p99CoverageSpread,
         score: score)
     }
+    return reports.sorted { lhs, rhs in
+      if lhs.score == rhs.score { return lhs.label < rhs.label }
+      return lhs.score > rhs.score
+    }
   }
 
   /// Metric-based quality score relative to the native reference.
@@ -899,7 +903,9 @@ final class RendererFidelityReportTests: XCTestCase {
     } else {
       edgeScore = 1.2
     }
-    let fringingScore = max(0, 1.0 - meanCoverageSpread / 0.12)
+    let meanFringeScore = max(0, 1.0 - meanCoverageSpread / 0.12)
+    let p99FringeScore = max(0, 1.0 - p99CoverageSpread / 0.50)
+    let fringingScore = 0.65 * meanFringeScore + 0.35 * p99FringeScore
     let inkScore = max(0, 1.0 - abs(relativeInkMass - 1.0) / 0.20)
     return
       0.25 * gradientScore
