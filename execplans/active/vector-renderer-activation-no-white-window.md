@@ -419,16 +419,37 @@ attempt also races, fall back to Step 3's immediate-install behavior).
   address the *first*-activation-in-a-process blank window, and traced the
   exact code path responsible (`applyRendererSelection` swapping the
   presentation layer before the new backend has rendered anything).
-- [ ] Not yet started: Step 1 (defer backend install until first frame
-  completes).
-- [ ] Not yet started: Step 2 (keep `rendererSelection` reporting the intended
-  renderer immediately, so existing tests/observers see no timing change).
-- [ ] Not yet started: Step 3 (bounded fallback so a construction/render
-  failure cannot hang the swap forever).
-- [ ] Not yet started: Step 4 (verify no race with live-resize/zoom's
-  `waitForFrameCompletion` no-mixed-frame guarantee).
-- [ ] Not yet started: new automated test(s) proving no blank frame is ever
-  installed, plus a manual verification transcript using `--scroll-debug`.
+- [x] (2026-07-01) Implemented Step 1 in
+  `Sources/LabanApp/TerminalBitmapView.swift`: backend swaps now build a
+  pending backend, resize it to the current surface, force one full-damage
+  render into it, and keep the old visible layer installed until the pending
+  backend's one-shot `onFrameCompleted` callback fires. The old backend's
+  steady-state completion hook stays installed while it is still the visible
+  backend.
+- [x] (2026-07-01) Implemented Step 2 with explicit
+  `intendedRendererSelection` and `activeRendererSelection` state:
+  `rendererSelection` reports the intended/persisted renderer immediately,
+  while no-op checks and layer installation track the actually active backend.
+  Existing immediate observer behavior is preserved.
+- [x] (2026-07-01) Implemented Step 3: if the pending backend's first
+  full-damage render returns `false`, the code installs that backend
+  immediately instead of waiting forever for a completion callback.
+- [x] (2026-07-01) Implemented Step 4's sizing retry: pending backends record
+  the surface metrics used for warm-up; when completion fires, the view
+  re-reads current metrics and, if they changed, resizes and re-renders the
+  pending backend once before installation. If that retry cannot render, the
+  code falls back to immediate installation.
+- [x] (2026-07-01) Added
+  `Tests/LabanAppTests/RendererActivationNoBlankWindowTests.swift` covering
+  delayed layer installation, stale pending-swap abandonment, and immediate
+  fallback when the first pending render fails.
+- [x] (2026-07-01) Completed live `--scroll-debug` manual verification using
+  an isolated bundle on port 8797. The user already had `~/Laban.app` running,
+  so the isolated validation copy was temporarily re-identified and re-signed
+  before launch; the user's installed app was not touched. Immediate
+  post-switch screenshot was nonblank (`2400x1576`, all pixels below the
+  blank-white threshold, average RGB `(242.02, 234.67, 211.69)`), matching the
+  pre-switch screenshot profile.
 
 ## Decision Log
 
@@ -457,6 +478,26 @@ attempt also races, fall back to Step 3's immediate-install behavior).
   is out of scope for this plan; note it in "Future directions" if a later
   contributor wants to pick it up.
   Date/Author: 2026-07-01, follow-up planning for the vector-cache work.
+
+- Decision: keep `rendererSelection` optimistic by introducing separate
+  `intendedRendererSelection` and `activeRendererSelection` fields instead of
+  deriving selection directly from `backend.rendererStatus`.
+  Rationale: `RendererSelection.set(resolved)` persists the user's requested
+  renderer synchronously, and existing observers/tests expect
+  `view.rendererSelection` to reflect that request immediately after
+  `applyRendererSelection(_:)` returns. Separate fields preserve that API
+  behavior while still letting the view keep the old backend/layer active
+  until the pending backend finishes its first frame.
+  Date/Author: 2026-07-01, implementation.
+
+- Decision: keep the old backend's `onFrameCompleted` hook installed while a
+  pending backend warms up, and clear it only when the pending backend is
+  actually installed.
+  Rationale: during the pending-swap window the old backend is still the
+  visible renderer and may still receive normal render work; clearing its
+  completion hook early would drop input-latency and freeze-detector signals
+  for the renderer that remains on screen.
+  Date/Author: 2026-07-01, implementation.
 
 ## Validation and Acceptance
 
@@ -514,6 +555,36 @@ the construction pattern in
   that preceded this plan — do not treat that one failure as a regression,
   but do not let this plan introduce any *new* failures alongside it).
 
+Automated validation run on 2026-07-01 from
+`/Users/rrj/wrk/laban.worktrees/no-white`:
+
+```sh
+swift test --filter RendererActivationNoBlankWindowTests
+# Executed 3 tests, 0 failures.
+
+swift test --filter RendererModeSettingsTests
+# Executed 6 tests, 0 failures.
+
+swift test --filter VectorZoomSizeMixingTests
+# Executed 5 tests, 0 failures.
+
+swift test --filter VectorGlyph
+# Executed 40 tests, 1 known pre-existing failure:
+# VectorGlyphSizeSweepTests.testGPUWindingMatchesOracleAcrossSizes.
+# All other VectorGlyph-filtered tests passed.
+
+./scripts/check
+# Blocked before code validation by unrelated plan hygiene:
+# execplans/active/vector-osor-handoff.md missing Progress section.
+
+rpg update_rpg + scoped lift/routing
+# .rpg/graph.json updated structurally.
+# New renderer-swap production entities in TerminalBitmapView were lifted and
+# kept in TerminalUserInterface/render terminal view/drive draw input and scroll.
+# A broader pre-existing/stale RPG backlog remains reported by lifting_status
+# (coverage 6224/7338, 106 unlifted files); not resolved by this plan.
+```
+
 ### Manual, using the live app
 
 From the repository root (`/Users/rrj/wrk/laban` or whichever worktree holds
@@ -569,6 +640,66 @@ Clean up afterward: kill the launched process, remove the
 `$HOME/laban-debug-<short-task-name>` directory, and confirm with `ps aux |
 grep -i laban` that no stray debug-build processes remain and the user's own
 `~/Laban.app` (if running) was never touched.
+
+Manual validation run on 2026-07-01 from
+`/Users/rrj/wrk/laban.worktrees/no-white`:
+
+```sh
+mkdir -p "$HOME/laban-debug-no-white"
+LABAN_INSTALL_DIR="$HOME/laban-debug-no-white" scripts/install-app
+# Installed profilable release build c07810b+dirty -> /Users/rrj/laban-debug-no-white/Laban.app
+
+# The user's normal /Users/rrj/Laban.app was already running, so for this
+# isolated validation copy only:
+plutil -replace CFBundleIdentifier -string com.laban.LabanApp.no-white \
+  "$HOME/laban-debug-no-white/Laban.app/Contents/Info.plist"
+plutil -replace LSMultipleInstancesProhibited -bool NO \
+  "$HOME/laban-debug-no-white/Laban.app/Contents/Info.plist"
+codesign --force --deep --sign - "$HOME/laban-debug-no-white/Laban.app"
+open -n "$HOME/laban-debug-no-white/Laban.app" --args --scroll-debug=8797 --no-persistence
+# Debug server listened on 127.0.0.1:8797 as PID 15790.
+
+# HTTP sequence:
+# POST /config/renderer?name=classic
+# wait 0.5s so the known starting frame is settled
+# GET /scroll/screenshot.png -> /tmp/laban-no-white-before.png
+# POST /config/renderer?name=vectorGlyph
+# GET /scroll/screenshot.png immediately -> /tmp/laban-no-white-after-vector.png
+
+# PNG metrics:
+# before_classic:
+#   bytes=328571, size=2400x1576, sampled_unique_rgb=260,
+#   nonwhite=3782400/3782400, avg_rgb=(242.02, 234.67, 211.69)
+# after_vector_immediate:
+#   bytes=328322, size=2400x1576, sampled_unique_rgb=261,
+#   nonwhite=3782400/3782400, avg_rgb=(242.02, 234.67, 211.69)
+# pixel_diff:
+#   changed=606/3782400, max_channel_delta=155,
+#   mean_delta=(0.007, 0.0058, 0.0045), bbox=(69, 255, 732, 1362)
+
+kill 15790
+rm -rf "$HOME/laban-debug-no-white"
+# Confirmed port 8797 closed and no /Users/rrj/laban-debug-no-white process
+# remained. The only remaining LabanApp process was the user's original
+# /Users/rrj/Laban.app.
+```
+
+## Surprises & Discoveries
+
+- Observation: this worktree initially lacked `.external`, so Swift builds
+  could not find `ghostty/vt/terminal.h`.
+  Evidence: `swift test --filter RendererActivationNoBlankWindowTests` failed
+  before compilation with the missing header; adding the documented symlink
+  `.external -> /Users/rrj/wrk/laban/.external` fixed the worktree setup.
+- Observation: a normal user `~/Laban.app` instance was already running during
+  live validation. Directly launching the isolated bundle exited before the
+  scroll-debug server started, so the manual check used a temporary bundle-id
+  change and ad-hoc re-sign on the isolated copy only, then launched that copy
+  with `open -n`.
+  Evidence: after the isolated copy was re-identified as
+  `com.laban.LabanApp.no-white`, port 8797 listened and the screenshot
+  sequence completed while the user's original `/Users/rrj/Laban.app` process
+  remained running.
 
 ## Idempotence and Recovery
 
