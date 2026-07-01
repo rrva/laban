@@ -11,10 +11,9 @@ import LabanRenderer
 /// lives in the labpty background-timer byte-ring feed racing the main-thread
 /// viewport sample.
 ///
-/// Opt-in only: created from `--scroll-debug[=port]` / `LABAN_SCROLL_DEBUG=1`. It
-/// holds weak references to the live `AppModel`, `TerminalBitmapView`, and
-/// `TerminalScrollIndicatorView`, hops to the main thread to read/drive them, and
-/// exposes:
+/// Opt-in only: created from `--scroll-debug[=port]`. It holds weak references to
+/// the live `AppModel`, `TerminalBitmapView`, and `TerminalScrollIndicatorView`,
+/// hops to the main thread to read/drive them, and exposes:
 ///
 ///   GET  /scroll/state              current viewport numbers, view-internal
 ///                                   scroll belief, window focus, the overlay's
@@ -36,27 +35,20 @@ final class ScrollDebugServer {
     var port: UInt16
     var traceFilePath: String?
 
-    /// Parse `--scroll-debug`, `--scroll-debug=PORT`, or `LABAN_SCROLL_DEBUG`.
-    /// `LABAN_SCROLL_DEBUG` accepts `1`/`true` (default port) or a bare port.
+    /// Parse `--scroll-debug` or `--scroll-debug=PORT`.
     /// Returns nil when the launch did not ask for the surface.
-    static func fromLaunchEnvironment() -> Config? {
+    static func fromLaunchArguments(_ arguments: [String] = CommandLine.arguments) -> Config? {
       let defaultPort: UInt16 = 8787
       var requested = false
       var port = defaultPort
 
-      for arg in CommandLine.arguments {
+      for arg in arguments {
         if arg == "--scroll-debug" {
           requested = true
         } else if arg.hasPrefix("--scroll-debug=") {
           requested = true
           if let p = UInt16(arg.dropFirst("--scroll-debug=".count)) { port = p }
         }
-      }
-      if let env = ProcessInfo.processInfo.environment["LABAN_SCROLL_DEBUG"],
-        !env.isEmpty, env != "0", env.lowercased() != "false"
-      {
-        requested = true
-        if let p = UInt16(env) { port = p }
       }
       guard requested else { return nil }
 
@@ -85,11 +77,13 @@ final class ScrollDebugServer {
 
   func start(config: Config) {
     let path = ScrollDiagnostics.shared.enable(filePath: config.traceFilePath)
+    recordStartupDiagnostic("requested port \(config.port) trace=\(path ?? "ring")")
     DispatchQueue.main.async { [weak termView] in
       termView?.debugEnableScreenshotReadback()
     }
     do {
       let port = try bind(port: config.port)
+      recordStartupDiagnostic("listening on 127.0.0.1:\(port) fd=\(serverFD)")
       let thread = Thread { self.acceptLoop() }
       thread.name = "scroll-debug-accept"
       thread.start()
@@ -98,20 +92,30 @@ final class ScrollDebugServer {
         Data("laban: scroll-debug http://127.0.0.1:\(port) (trace: \(path ?? "ring"))\n".utf8))
     } catch {
       NSLog("[scroll-debug] failed to start: \(error)")
+      let message = "laban: scroll-debug failed to start: \(error)\n"
+      FileHandle.standardError.write(Data(message.utf8))
+      recordStartupDiagnostic(message.trimmingCharacters(in: .newlines))
     }
   }
 
   func stop() {
     let fd = serverFD
     serverFD = -1
-    if fd >= 0 { Darwin.close(fd) }
+    if fd >= 0 {
+      recordStartupDiagnostic("stopping fd=\(fd)")
+      Darwin.close(fd)
+    }
+  }
+
+  deinit {
+    stop()
   }
 
   // MARK: - Socket
 
   private func bind(port: UInt16) throws -> UInt16 {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
-    guard fd >= 0 else { throw ServerError.socketFailed }
+    guard fd >= 0 else { throw ServerError.socketFailed(errno) }
     var one: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
 
@@ -125,12 +129,14 @@ final class ScrollDebugServer {
         socklen_t(MemoryLayout<sockaddr_in>.size))
     }
     guard bindResult == 0 else {
+      let err = errno
       Darwin.close(fd)
-      throw ServerError.bindFailed
+      throw ServerError.bindFailed(port: port, errno: err)
     }
     guard listen(fd, 16) == 0 else {
+      let err = errno
       Darwin.close(fd)
-      throw ServerError.listenFailed
+      throw ServerError.listenFailed(errno: err)
     }
     var bound = sockaddr_in()
     var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
@@ -141,9 +147,30 @@ final class ScrollDebugServer {
     return CFSwapInt16BigToHost(bound.sin_port)
   }
 
-  private enum ServerError: Error { case socketFailed, bindFailed, listenFailed }
+  private enum ServerError: Error, CustomStringConvertible {
+    case socketFailed(Int32)
+    case bindFailed(port: UInt16, errno: Int32)
+    case listenFailed(errno: Int32)
+
+    var description: String {
+      switch self {
+      case .socketFailed(let errnoValue):
+        return "socket failed: \(String(cString: strerror(errnoValue)))"
+      case .bindFailed(let port, let errnoValue):
+        return "bind 127.0.0.1:\(port) failed: \(String(cString: strerror(errnoValue)))"
+      case .listenFailed(let errnoValue):
+        return "listen failed: \(String(cString: strerror(errnoValue)))"
+      }
+    }
+  }
+
+  private func recordStartupDiagnostic(_ message: String) {
+    ScrollDiagnostics.shared.mark(kind: "startup", note: message)
+  }
 
   private func acceptLoop() {
+    recordStartupDiagnostic("accept loop started fd=\(serverFD)")
+    defer { recordStartupDiagnostic("accept loop exited fd=\(serverFD)") }
     while true {
       let listenFD = serverFD
       guard listenFD >= 0 else { break }
@@ -163,6 +190,8 @@ final class ScrollDebugServer {
         usleep(100_000)
         continue
       }
+      recordStartupDiagnostic(
+        "accept failed fd=\(listenFD) errno=\(err) \(String(cString: strerror(err)))")
       break
     }
   }

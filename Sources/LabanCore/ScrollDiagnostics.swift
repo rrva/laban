@@ -14,8 +14,8 @@ import Foundation
 /// for capture/replay parity) and, optionally, to a JSONL file under
 /// `~/Library/Logs/Laban/scroll-trace/`. It is disabled by default and a single
 /// relaxed `Bool` read in that state, so the hot feed/sample paths pay nothing
-/// until an explicit `--scroll-debug` launch flag / `LABAN_SCROLL_DEBUG=1`
-/// enables it before any session starts streaming.
+/// until an explicit `--scroll-debug` launch flag enables it before any session
+/// starts streaming.
 public final class ScrollDiagnostics: @unchecked Sendable {
   public static let shared = ScrollDiagnostics()
 

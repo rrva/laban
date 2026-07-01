@@ -1022,8 +1022,8 @@ timing, metrics, and screenshot metadata.
 ### Scroll & Zoom Debug Surface
 
 A second, headful-only loopback server (`ScrollDebugServer`, default port 8787)
-is opted into with `--scroll-debug[=PORT]` or `LABAN_SCROLL_DEBUG=1`. It drives a
-real on-screen window for behaviors the offscreen `laban-agent` cannot reproduce.
+is opted into with `--scroll-debug[=PORT]`. It drives a real on-screen window for
+behaviors the offscreen `laban-agent` cannot reproduce.
 Beyond the scroll routes (self-documented at `GET /`), it exposes pinch-zoom:
 
 `POST /zoom/pinch?magnification=<delta>&phase=<began|changed|ended|cancelled>`

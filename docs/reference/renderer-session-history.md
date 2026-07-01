@@ -192,11 +192,11 @@ cost real debugging; the "wrong assumption" column is the trap to not re-enter.
   a single frame build, even on GPU paths.
 
 **Instrumentation is not free, and can BE the bug:**
-- **A "regression" was a stale armed debug env var.** Smooth for a day, then all
-  tabs lagged — not a code change: `LABAN_SCROLL_DEBUG`/render-journal flags
-  survive relaunches and sat in the PTY-reader path multiplying per-frame load.
-  Rule: verify a suspected regression against a fully clean process (no armed
-  debug surfaces) before profiling code. (Mirrors the build-stamp rule.)
+- **A "regression" was stale armed debug state.** Smooth for a day, then all
+  tabs lagged — not a code change: older `LABAN_SCROLL_DEBUG`/render-journal
+  flags survived relaunches and sat in the PTY-reader path multiplying per-frame
+  load. Rule: verify a suspected regression against a fully clean process (no
+  armed debug surfaces) before profiling code. (Mirrors the build-stamp rule.)
 - **Diagnostics traced intent, masking an inverted-sign bug.** A two-row
   scroll sawtooth persisted because `contentYOffset` had the wrong sign, but the
   trace logged the *intended* position so the state looked correct while the glass

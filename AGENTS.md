@@ -65,13 +65,17 @@ Debug contracts and data: `schemas/`, `fixtures/`.
   *tracked* tree stamps `+dirty` — note that a regenerated `.rpg/graph.json` alone
   trips it. When a just-shipped fix "doesn't work", verify the running bundle's
   stamp matches HEAD before debugging source.
-- Never `open`/launch the bundle from the shell: a windowless launch grabs the
-  single-instance lock. Quit and relaunch Laban yourself to pick up a new build.
 - The bundle sets `Info.plist:LSMultipleInstancesProhibited` (single-instance).
   So any relaunch that `open`s the bundle while the old process is still alive
   is a no-op — Launch Services re-activates the dying instance, then it quits and
   nothing respawns (the app "just quits"). In-process relaunch must wait for the
   current pid to exit *before* `open` (see `AppDelegate.relaunchCommand`).
+- To restart Laban from a shell, use `scripts/restart-app --scroll-debug` (or
+  other app args). It mirrors the menu action: submit a launchd helper first,
+  terminate the current app, then have the helper wait for the current pid to
+  exit before it runs `open ~/Laban.app --args ...`. Do not kill first and start
+  the helper second — if the terminal session is inside Laban, that can pause
+  the restart helper.
 - Don't run two builds (or two `scripts/check`/`build-app`) concurrently against
   the same worktree `.build/`: a competing `swift build` relinks the bundle binary
   *after* `build-app` ad-hoc-signs it, invalidating the signature so the

@@ -19,8 +19,7 @@ func usage() -> String {
     --scroll-debug[=port]      Start the loopback scroll-indicator diagnostics
                                control surface (default port 8787) and write a
                                viewport trace under
-                               ~/Library/Logs/Laban/scroll-trace/. Also enabled
-                               by LABAN_SCROLL_DEBUG=1. Debug-only.
+                               ~/Library/Logs/Laban/scroll-trace/. Debug-only.
     --smoke                    Print a startup smoke line and exit.
     --help, -h                 Show this help.
   """

@@ -55,7 +55,7 @@ Goal: drive heavy smooth scroll and read the built-in jank counters until they s
 ### 1. Launch with scroll-debug
 
 ```sh
-open ~/Laban.app --args --scroll-debug
+scripts/restart-app --scroll-debug
 ```
 
 Wait for `http://127.0.0.1:8787/scroll/state` to respond.

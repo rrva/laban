@@ -6,9 +6,8 @@
 # VARIANCE, not average FPS) and needs no Instruments/xctrace/HUD capture — those
 # all proved flaky for custom signposts and cross-architecture comparison.
 #
-# PREREQUISITE: launch Laban yourself with the scroll-debug server enabled:
-#   open ~/Laban.app --args --scroll-debug
-# This script never launches the app (single-instance ghost risk).
+# PREREQUISITE: restart Laban with the scroll-debug server enabled:
+#   scripts/restart-app --scroll-debug
 #
 # IMPORTANT: pass --tab pointing at a NORMAL-BUFFER shell tab (with scrollback),
 # not a fullscreen alt-screen TUI (Claude Code / vim) — alt-screen has no
@@ -52,7 +51,7 @@ speak() { [ -n "${voice}" ] && say -v "${voice}" "$1" >/dev/null 2>&1 & }
 
 if ! curl -fsS "${base}/scroll/state" >/dev/null 2>&1; then
   echo "scroll-debug server not reachable at ${base}." >&2
-  echo "Launch Laban with: open ~/Laban.app --args --scroll-debug" >&2
+  echo "Restart Laban with: scripts/restart-app --scroll-debug" >&2
   exit 1
 fi
 

@@ -467,13 +467,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   /// There is a brief gap where no window is visible, which is acceptable
   /// for an explicit user action.
   ///
-  /// No flags are forwarded: the restart shortcut is ⌘⌥R (no Shift), so
-  /// the successor can never trip the Shift-to-skip-restore archive
-  /// hatch and there is nothing to signal across the relaunch.
-  static func restartApp() {
+  /// The original argv is forwarded so explicit launch modes such as
+  /// `--scroll-debug`, `--terminal-backend`, or `--no-persistence` survive a menu
+  /// restart. The restart shortcut is ⌘⌥R (no Shift), so forwarding argv cannot
+  /// trip the Shift-to-skip-restore archive hatch.
+  static func restartApp(
+    launchArguments: [String] = Array(CommandLine.arguments.dropFirst())
+  ) {
     let command = relaunchCommand(
       pid: ProcessInfo.processInfo.processIdentifier,
-      bundlePath: Bundle.main.bundleURL.path
+      bundlePath: Bundle.main.bundleURL.path,
+      launchArguments: launchArguments
     )
     let task = Process()
     task.executableURL = URL(fileURLWithPath: command.executable)
@@ -496,13 +500,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation,
   /// bounded (~10s) so a stuck termination cannot hang the relaunch.
   static func relaunchCommand(
     pid: Int32,
-    bundlePath: String
+    bundlePath: String,
+    launchArguments: [String] = []
   ) -> (executable: String, arguments: [String]) {
-    let quoted = "'" + bundlePath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    let openArguments = launchArguments.isEmpty ? [] : ["--args"] + launchArguments
     let script =
-      "n=0; while /bin/kill -0 \(pid) 2>/dev/null && [ $n -lt 100 ]; do "
-      + "/bin/sleep 0.1; n=$((n+1)); done; exec /usr/bin/open \(quoted)"
-    return ("/bin/sh", ["-c", script])
+      "old_pid=$1; app_path=$2; shift 2; "
+      + "n=0; while /bin/kill -0 \"$old_pid\" 2>/dev/null && [ $n -lt 100 ]; do "
+      + "/bin/sleep 0.1; n=$((n+1)); done; exec /usr/bin/open \"$app_path\" \"$@\""
+    return ("/bin/sh", ["-c", script, "laban-relaunch", "\(pid)", bundlePath] + openArguments)
   }
 
   private func handleUpdateCheck(_ result: Result<UpdateCheckResult, Error>) {

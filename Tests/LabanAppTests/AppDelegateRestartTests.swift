@@ -12,9 +12,9 @@ final class AppDelegateRestartTests: XCTestCase {
     let command = AppDelegate.relaunchCommand(pid: 4242, bundlePath: "/Applications/Laban.app")
     XCTAssertEqual(command.executable, "/bin/sh")
     XCTAssertEqual(command.arguments.first, "-c")
-    let script = command.arguments.last ?? ""
+    let script = command.arguments.dropFirst().first ?? ""
     // Waits on the old pid before relaunching, so the successor never overlaps.
-    XCTAssertTrue(script.contains("kill -0 4242"), script)
+    XCTAssertTrue(script.contains("kill -0 \"$old_pid\""), script)
     XCTAssertTrue(script.contains("/usr/bin/open"), script)
     // The wait is bounded so a stuck termination cannot hang the relaunch.
     XCTAssertTrue(script.contains("-lt 100"), script)
@@ -22,31 +22,43 @@ final class AppDelegateRestartTests: XCTestCase {
     // and fight over the daemon socket / workspace.json (BUG-04). Must stay gone.
     XCTAssertFalse(script.contains(" -n "), script)
     // The open must run only after the wait loop, not concurrently.
-    let killIndex = script.range(of: "kill -0 4242")?.lowerBound
+    let killIndex = script.range(of: "kill -0 \"$old_pid\"")?.lowerBound
     let openIndex = script.range(of: "/usr/bin/open")?.lowerBound
     XCTAssertNotNil(killIndex)
     XCTAssertNotNil(openIndex)
     if let killIndex, let openIndex {
       XCTAssertTrue(killIndex < openIndex, "open must follow the wait loop")
     }
+    XCTAssertEqual(command.arguments.dropFirst(2).first, "laban-relaunch")
+    XCTAssertEqual(command.arguments.dropFirst(3).first, "4242")
+    XCTAssertEqual(command.arguments.dropFirst(4).first, "/Applications/Laban.app")
   }
 
-  func testRelaunchQuotesBundlePathWithSpaces() {
+  func testRelaunchPassesBundlePathWithSpacesAsArgument() {
     let command = AppDelegate.relaunchCommand(
       pid: 1,
       bundlePath: "/Users/rrj/My Apps/Laban.app"
     )
-    let script = command.arguments.last ?? ""
-    XCTAssertTrue(script.contains("'/Users/rrj/My Apps/Laban.app'"), script)
+    XCTAssertEqual(command.arguments.dropFirst(4).first, "/Users/rrj/My Apps/Laban.app")
   }
 
-  func testRelaunchEscapesSingleQuoteInBundlePath() {
+  func testRelaunchPassesSingleQuoteInBundlePathAsArgument() {
     let command = AppDelegate.relaunchCommand(
       pid: 1,
       bundlePath: "/Users/rrj/o'brien/Laban.app"
     )
-    let script = command.arguments.last ?? ""
-    // The lone quote is closed, escaped, and reopened so /bin/sh sees the literal path.
-    XCTAssertTrue(script.contains("'/Users/rrj/o'\\''brien/Laban.app'"), script)
+    XCTAssertEqual(command.arguments.dropFirst(4).first, "/Users/rrj/o'brien/Laban.app")
+  }
+
+  func testRelaunchForwardsLaunchArgumentsAfterBundlePath() {
+    let command = AppDelegate.relaunchCommand(
+      pid: 1,
+      bundlePath: "/Applications/Laban.app",
+      launchArguments: ["--scroll-debug", "--terminal-backend", "detached", "--name=has spaces"]
+    )
+
+    XCTAssertEqual(
+      Array(command.arguments.dropFirst(5)),
+      ["--args", "--scroll-debug", "--terminal-backend", "detached", "--name=has spaces"])
   }
 }

@@ -80,6 +80,13 @@ private struct SlugGlyphGeometryKey: Hashable {
   var glyph: CGGlyph
 }
 
+private struct SlugGlyphResolveKey: Hashable {
+  var postScriptName: String
+  var cluster: Character
+  var bold: Bool
+  var italic: Bool
+}
+
 private struct SlugGlyphEntry {
   var key: SlugGlyphGeometryKey
   var outline: GlyphCurveOutline
@@ -192,6 +199,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   private let curveStore = GlyphCurveStore()
   private var entriesByKey: [SlugGlyphGeometryKey: SlugGlyphEntry] = [:]
+  private var entriesByResolveKey: [SlugGlyphResolveKey: SlugGlyphEntry] = [:]
   private var curves: [SlugGlyphGPUCurve] = []
   private var glyphs: [SlugGlyphGPUGlyph] = []
   private var bands: [SlugGlyphGPUBand] = []
@@ -877,19 +885,21 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     let foregroundColor = slugColor(foreground)
     let ppemPx = Double(activeAtlas.pointSize) * Double(scale)
     let perSideDilatePx = Self.perSideDilatePx(weight: textWeight, ppemPx: ppemPx)
+    let bold = attributes.contains(.bold)
+    let italic = attributes.contains(.italic)
+    let activeVariant = activeAtlas.styledFontVariant(bold: bold, italic: italic)
+    let referenceVariant = referenceAtlas.styledFontVariant(bold: bold, italic: italic)
+    let referencePostScriptName = FontAtlas.postScriptName(of: referenceVariant.font)
     frameGlyphFontSizes.insert(Double(activeAtlas.pointSize))
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
-      let variant = activeAtlas.styledFontVariant(
-        bold: attributes.contains(.bold),
-        italic: attributes.contains(.italic))
       if source != .sidebar,
         ColorGlyphSupport.clusterMayBeColor(cluster),
         let colorFallback = colorGlyphInstance(
           cluster: cluster,
-          font: variant.font,
-          boldFallback: variant.boldFallback,
-          italicFallback: variant.italicFallback,
+          font: activeVariant.font,
+          boldFallback: activeVariant.boldFallback,
+          italicFallback: activeVariant.italicFallback,
           position: CGPoint(x: cellOriginX, y: origin.y))
       {
         colorGlyphs.append(colorFallback)
@@ -898,9 +908,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       if TerminalCJKFontPolicy.containsCJK(String(cluster)),
         let fallback = rasterGlyphInstance(
           cluster: cluster,
-          font: variant.font,
-          boldFallback: variant.boldFallback,
-          italicFallback: variant.italicFallback,
+          font: activeVariant.font,
+          boldFallback: activeVariant.boldFallback,
+          italicFallback: activeVariant.italicFallback,
           position: CGPoint(x: cellOriginX, y: origin.y),
           color: foreground)
       {
@@ -911,13 +921,17 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         let entry = ensureGlyph(
           for: cluster,
           referenceAtlas: referenceAtlas,
+          referenceVariant: referenceVariant,
+          referencePostScriptName: referencePostScriptName,
+          bold: bold,
+          italic: italic,
           attributes: attributes)
       else {
         if let fallback = rasterGlyphInstance(
           cluster: cluster,
-          font: variant.font,
-          boldFallback: variant.boldFallback,
-          italicFallback: variant.italicFallback,
+          font: activeVariant.font,
+          boldFallback: activeVariant.boldFallback,
+          italicFallback: activeVariant.italicFallback,
           position: CGPoint(x: cellOriginX, y: origin.y),
           color: foreground)
         {
@@ -1018,16 +1032,48 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     referenceAtlas: FontAtlas,
     attributes: TextAttributes = []
   ) -> SlugGlyphEntry? {
+    let bold = attributes.contains(.bold)
+    let italic = attributes.contains(.italic)
+    let referenceVariant = referenceAtlas.styledFontVariant(bold: bold, italic: italic)
+    return ensureGlyph(
+      for: cluster,
+      referenceAtlas: referenceAtlas,
+      referenceVariant: referenceVariant,
+      referencePostScriptName: FontAtlas.postScriptName(of: referenceVariant.font),
+      bold: bold,
+      italic: italic,
+      attributes: attributes)
+  }
+
+  private func ensureGlyph(
+    for cluster: Character,
+    referenceAtlas: FontAtlas,
+    referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool),
+    referencePostScriptName: String,
+    bold: Bool,
+    italic: Bool,
+    attributes: TextAttributes
+  ) -> SlugGlyphEntry? {
+    let resolveKey = SlugGlyphResolveKey(
+      postScriptName: referencePostScriptName,
+      cluster: cluster,
+      bold: bold,
+      italic: italic)
+    if let cached = entriesByResolveKey[resolveKey] { return cached }
     guard
       let resolved = resolveGlyph(
         for: cluster,
         referenceAtlas: referenceAtlas,
+        referenceVariant: referenceVariant,
         attributes: attributes)
     else { return nil }
     let key = SlugGlyphGeometryKey(
       postScriptName: FontAtlas.postScriptName(of: resolved.font),
       glyph: resolved.glyph)
-    if let cached = entriesByKey[key] { return cached }
+    if let cached = entriesByKey[key] {
+      entriesByResolveKey[resolveKey] = cached
+      return cached
+    }
     guard let outline = curveStore.outline(for: resolved.glyph, font: resolved.font) else {
       return nil
     }
@@ -1060,6 +1106,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let entry = SlugGlyphEntry(key: key, outline: outline, glyphIndex: glyphIndex)
     entriesByKey[key] = entry
+    entriesByResolveKey[resolveKey] = entry
     geometryEntryBuildCount += 1
     geometryBuffersDirty = true
     return entry
@@ -1068,12 +1115,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private func resolveGlyph(
     for cluster: Character,
     referenceAtlas: FontAtlas,
+    referenceVariant: (font: CTFont, boldFallback: Bool, italicFallback: Bool),
     attributes: TextAttributes
   ) -> (font: CTFont, glyph: CGGlyph)? {
     let text = String(cluster)
-    let variant = referenceAtlas.styledFontVariant(
-      bold: attributes.contains(.bold),
-      italic: attributes.contains(.italic))
     if text.unicodeScalars.count == 1,
       let scalar = text.unicodeScalars.first,
       scalar.value <= UInt32(UInt16.max),
@@ -1081,13 +1126,13 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     {
       var unit = UniChar(scalar.value)
       var glyph = CGGlyph()
-      if CTFontGetGlyphsForCharacters(variant.font, &unit, &glyph, 1), glyph != 0 {
-        return (variant.font, glyph)
+      if CTFontGetGlyphsForCharacters(referenceVariant.font, &unit, &glyph, 1), glyph != 0 {
+        return (referenceVariant.font, glyph)
       }
     }
     return fallbackResolvedGlyph(
       text: text,
-      baseFont: variant.font,
+      baseFont: referenceVariant.font,
       cellAdvance: referenceAtlas.cellSize.width)
   }
 

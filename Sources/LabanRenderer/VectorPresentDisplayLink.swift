@@ -103,12 +103,23 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     let mean = s.reduce(0, +) / Double(n)
     func pct(_ p: Double) -> Double { s[min(n - 1, max(0, Int((Double(n) * p).rounded()) - 1))] }
     let median = pct(0.50)
-    let jank = s.filter { $0 > median * 1.5 }.count
+    let jankIntervals = s.filter { $0 > median * 1.5 }
+    let jank = jankIntervals.count
+    let twoVsyncGaps = jankIntervals.filter { $0 <= median * 2.5 }.count
+    let longerGaps = jank - twoVsyncGaps
+    let estimatedMissedVsyncs =
+      median > 0
+      ? jankIntervals.reduce(0) { total, interval in
+        total + max(0, Int((interval / median).rounded()) - 1)
+      }
+      : 0
     return [
       "count": Double(n), "fps": mean > 0 ? 1000.0 / mean : 0, "meanMs": mean,
       "p50Ms": median, "p95Ms": pct(0.95), "p99Ms": pct(0.99), "maxMs": s[n - 1],
       "jankFrames": Double(jank), "jankPercent": Double(jank) / Double(n) * 100.0,
       "callbacks": Double(callbacks), "presented": Double(presented),
+      "twoVsyncGaps": Double(twoVsyncGaps), "longerGaps": Double(longerGaps),
+      "estimatedMissedVsyncs": Double(estimatedMissedVsyncs),
     ]
   }
 
@@ -141,9 +152,10 @@ final class VectorPresentDisplayLink: NSObject, CAMetalDisplayLinkDelegate {
     super.init()
     link.delegate = self
     link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
-    // A terminal finishes a frame in ~1–2 ms, so request minimal render lead time
-    // for lowest latency; raise toward 2 only if starvation reappears.
-    link.preferredFrameLatency = 1
+    // A terminal finishes a frame in ~1–2 ms, but live scroll traces can still
+    // miss whole present callbacks with latency 1. Give Core Animation one more
+    // frame of scheduling slack so the display-link presenter holds 120 Hz.
+    link.preferredFrameLatency = 2
     // Start paused; `notifyContentUpdated()` unpauses on the first rendered frame.
     link.isPaused = true
   }

@@ -194,7 +194,7 @@ public enum ControlRouteCatalog {
       path: "/debug/scroll-trace",
       category: "state",
       summary:
-        "Return the ScrollDiagnostics event ring (viewport samples, labpty feeds, scroll/snap events) recorded since --scroll-debug / LABAN_SCROLL_DEBUG armed it. Accepts clear=1 to drain the ring after reading.",
+        "Return the ScrollDiagnostics event ring (viewport samples, labpty feeds, scroll/snap events) recorded since --scroll-debug armed it. Accepts clear=1 to drain the ring after reading.",
       queryParameters: ["clear"],
       intentID: "scrollTrace"),
     endpoint(

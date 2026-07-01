@@ -24,9 +24,9 @@ final class MainWindowController: NSWindowController {
   /// outlive `makeAndShow`'s local scope.
   private(set) var updateAutoChecker: UpdateAutoChecker?
   /// Loopback HTTP control surface for diagnosing the overlay scroll-indicator
-  /// bug on a live headful instance. Only created when `--scroll-debug` /
-  /// `LABAN_SCROLL_DEBUG` is set; strong ref so its accept thread outlives
-  /// `makeAndShow`'s local scope. See `ScrollDebugServer`.
+  /// bug on a live headful instance. Only created when `--scroll-debug` is set;
+  /// strong ref so its accept thread outlives `makeAndShow`'s local scope. See
+  /// `ScrollDebugServer`.
   private(set) var scrollDebugServer: ScrollDebugServer?
   /// The overlay scroll indicator (scrollback pill + thumb). Held so the pill's
   /// text source can be re-pointed at the vector glyph renderer when that
@@ -518,13 +518,13 @@ final class MainWindowController: NSWindowController {
       coordinator.scheduleSave()
     }
 
-    // Live scroll-indicator diagnostics. Opt-in via `--scroll-debug[=port]` or
-    // `LABAN_SCROLL_DEBUG=1` (default port 8787). Arms the ScrollDiagnostics
-    // trace (in-memory ring + JSONL under ~/Library/Logs/Laban/scroll-trace/)
-    // and starts a loopback HTTP control surface so the bug can be driven and
-    // inspected on a real window: feed a streaming program, read the viewport
-    // time-series, snap to bottom, screenshot. Never started on a normal launch.
-    if let config = ScrollDebugServer.Config.fromLaunchEnvironment() {
+    // Live scroll-indicator diagnostics. Opt-in via `--scroll-debug[=port]`
+    // (default port 8787). Arms the ScrollDiagnostics trace (in-memory ring +
+    // JSONL under ~/Library/Logs/Laban/scroll-trace/) and starts a loopback HTTP
+    // control surface so the bug can be driven and inspected on a real window:
+    // feed a streaming program, read the viewport time-series, snap to bottom,
+    // screenshot. Never started on a normal launch.
+    if let config = ScrollDebugServer.Config.fromLaunchArguments() {
       let server = ScrollDebugServer(model: model, termView: termView, indicator: scrollIndicator)
       server.start(config: config)
       controller.scrollDebugServer = server
