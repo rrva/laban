@@ -87,7 +87,8 @@ public func makeRendererBackend(
         rendererStatus: RendererStatus(
           configuredRenderer: resolved.rawValue,
           effectiveRenderer: RendererSelection.software.rawValue,
-          fallbackReason: "noMetalDevice"))
+          fallbackReason: "noMetalDevice",
+          textCompositeModel: .nativePlatformReference))
     }
     if let metalMode = resolved.metalMode,
       let metal = MetalRenderer(
@@ -108,7 +109,8 @@ public func makeRendererBackend(
       rendererStatus: RendererStatus(
         configuredRenderer: resolved.rawValue,
         effectiveRenderer: RendererSelection.software.rawValue,
-        fallbackReason: "metalPipelineUnavailable"))
+        fallbackReason: "metalPipelineUnavailable",
+        textCompositeModel: .nativePlatformReference))
 
   case .vectorGlyph:
     guard MTLCreateSystemDefaultDevice() != nil else {
@@ -121,7 +123,8 @@ public func makeRendererBackend(
         rendererStatus: RendererStatus(
           configuredRenderer: RendererSelection.vectorGlyph.rawValue,
           effectiveRenderer: RendererSelection.software.rawValue,
-          fallbackReason: "noMetalDevice"))
+          fallbackReason: "noMetalDevice",
+          textCompositeModel: .nativePlatformReference))
     }
     if let vector = VectorGlyphRenderer(
       fontAtlas: fontAtlas,
@@ -144,7 +147,8 @@ public func makeRendererBackend(
         RendererStatus(
           configuredRenderer: RendererSelection.vectorGlyph.rawValue,
           effectiveRenderer: RendererSelection.classic.rawValue,
-          fallbackReason: "vectorPipelineUnavailable"))
+          fallbackReason: "vectorPipelineUnavailable",
+          textCompositeModel: .encodedSRGBCompatibility))
       return classic
     }
     return SoftwareBackend(
@@ -156,7 +160,8 @@ public func makeRendererBackend(
       rendererStatus: RendererStatus(
         configuredRenderer: RendererSelection.vectorGlyph.rawValue,
         effectiveRenderer: RendererSelection.software.rawValue,
-        fallbackReason: "vectorPipelineUnavailable"))
+        fallbackReason: "vectorPipelineUnavailable",
+        textCompositeModel: .nativePlatformReference))
 
   case .slugGlyph:
     guard MTLCreateSystemDefaultDevice() != nil else {
@@ -169,7 +174,8 @@ public func makeRendererBackend(
         rendererStatus: RendererStatus(
           configuredRenderer: RendererSelection.slugGlyph.rawValue,
           effectiveRenderer: RendererSelection.software.rawValue,
-          fallbackReason: "noMetalDevice"))
+          fallbackReason: "noMetalDevice",
+          textCompositeModel: .nativePlatformReference))
     }
     if let slug = SlugGlyphRenderer(
       fontAtlas: fontAtlas,
@@ -192,7 +198,8 @@ public func makeRendererBackend(
         RendererStatus(
           configuredRenderer: RendererSelection.slugGlyph.rawValue,
           effectiveRenderer: RendererSelection.classic.rawValue,
-          fallbackReason: "slugPipelineUnavailable"))
+          fallbackReason: "slugPipelineUnavailable",
+          textCompositeModel: .encodedSRGBCompatibility))
       return classic
     }
     return SoftwareBackend(
@@ -204,6 +211,7 @@ public func makeRendererBackend(
       rendererStatus: RendererStatus(
         configuredRenderer: RendererSelection.slugGlyph.rawValue,
         effectiveRenderer: RendererSelection.software.rawValue,
-        fallbackReason: "slugPipelineUnavailable"))
+        fallbackReason: "slugPipelineUnavailable",
+        textCompositeModel: .nativePlatformReference))
   }
 }

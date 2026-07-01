@@ -244,7 +244,8 @@ public final class SlugGlyphRenderer: RendererBackend {
       configuredRenderer: RendererSelection.slugGlyph.rawValue,
       effectiveRenderer: RendererSelection.slugGlyph.rawValue,
       rasterFallbackGlyphs: lastRasterFallbackGlyphs,
-      vectorSubpixelLayout: effectiveSubpixelLayout.name)
+      vectorSubpixelLayout: effectiveSubpixelLayout.name,
+      textCompositeModel: .linearLight)
   }
 
   public init?(

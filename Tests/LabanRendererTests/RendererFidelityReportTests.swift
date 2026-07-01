@@ -123,6 +123,7 @@ final class RendererFidelityReportTests: XCTestCase {
       variants: variants.map { $0.report(relativeTo: root) },
       pairs: pairReports,
       fractionalStability: fractional,
+      nativeReferenceRankings: nativeReferenceRankings(variants: variants),
       calibration: calibrationReport(from: sweep, root: root))
 
     let encoder = JSONEncoder()
@@ -490,11 +491,16 @@ final class RendererFidelityReportTests: XCTestCase {
     let bgLum = luminance(background)
     let fgLum = luminance(foreground)
     let maxInk = max(1, bgLum - fgLum)
+    let bgLumLinear = linearLuminance(background)
+    let fgLumLinear = linearLuminance(foreground)
+    let maxInkLinear = max(1, bgLumLinear - fgLumLinear)
     var inkMass = 0.0
+    var inkMassLinear = 0.0
     var inkPixels = 0
     var edgePixels = 0
     var solidPixels = 0
     var gradients: [Double] = []
+    var gradientsLinear: [Double] = []
     var channelGradients: [Double] = []
     var spreads: [Double] = []
 
@@ -503,12 +509,18 @@ final class RendererFidelityReportTests: XCTestCase {
       return max(0, min(maxInk, bgLum - luminance(pixel)))
     }
 
+    func inkAtLinear(x: Int, y: Int) -> Double {
+      let pixel = image.pixel(x: x, y: y)
+      return max(0, min(maxInkLinear, bgLumLinear - linearLuminance(pixel)))
+    }
+
     for y in bounds.minY..<bounds.maxY {
       for x in bounds.minX..<bounds.maxX {
         let pixel = image.pixel(x: x, y: y)
         let ink = inkAt(x: x, y: y)
         let coverage = ink / maxInk
         inkMass += ink
+        inkMassLinear += inkAtLinear(x: x, y: y)
         if coverage > 0.01 {
           inkPixels += 1
           let spread = coverageSpread(pixel)
@@ -524,6 +536,11 @@ final class RendererFidelityReportTests: XCTestCase {
           if gradient > 1 {
             gradients.append(gradient)
           }
+          let gradientLinear = abs(
+            inkAtLinear(x: x, y: y) - inkAtLinear(x: x + 1, y: y))
+          if gradientLinear > 1 {
+            gradientsLinear.append(gradientLinear)
+          }
           let channelGradient = maxChannelCoverageGradient(
             lhs: pixel,
             rhs: image.pixel(x: x + 1, y: y))
@@ -536,6 +553,7 @@ final class RendererFidelityReportTests: XCTestCase {
 
     return TextMetrics(
       inkMass: inkMass,
+      inkMassLinear: inkMassLinear,
       inkPixels: inkPixels,
       edgePixels: edgePixels,
       edgePixelRatio: inkPixels == 0 ? 0 : Double(edgePixels) / Double(inkPixels),
@@ -543,6 +561,9 @@ final class RendererFidelityReportTests: XCTestCase {
       meanGradient: mean(gradients),
       p95Gradient: percentile(gradients, 0.95),
       p99Gradient: percentile(gradients, 0.99),
+      meanGradientLinear: mean(gradientsLinear),
+      p95GradientLinear: percentile(gradientsLinear, 0.95),
+      p99GradientLinear: percentile(gradientsLinear, 0.99),
       meanMaxChannelGradient: mean(channelGradients),
       p95MaxChannelGradient: percentile(channelGradients, 0.95),
       p99MaxChannelGradient: percentile(channelGradients, 0.99),
@@ -813,6 +834,81 @@ final class RendererFidelityReportTests: XCTestCase {
       maxRelativeP99GradientDelta: sampleReports.map(\.relativeP99GradientDelta).max() ?? 0)
   }
 
+  private func nativeReferenceRankings(
+    variants: [RenderedVariant]
+  ) -> [NativeReferenceRankingReport] {
+    guard let reference = variants.first(where: { $0.label == "software-coretext" }) else {
+      return []
+    }
+    let comparatorLabels = [
+      "metal-classic",
+      "metal-gpuDriven",
+      "vector-grayscale",
+      "vector-calibrated",
+      "slug-grayscale",
+      "slug-calibrated",
+      "slug-rgbStripe",
+    ]
+    return comparatorLabels.compactMap { label in
+      guard let variant = variants.first(where: { $0.label == label }) else { return nil }
+      let ref = reference.metrics
+      let m = variant.metrics
+      let relInk = relativeRatio(m.inkMass, ref.inkMass)
+      let relMean = relativeRatio(m.meanGradient, ref.meanGradient)
+      let relP99 = relativeRatio(m.p99Gradient, ref.p99Gradient)
+      let relEdge = relativeRatio(m.edgePixelRatio, ref.edgePixelRatio)
+      let score = nativeReferenceScore(
+        relativeInkMass: relInk,
+        relativeMeanGradient: relMean,
+        relativeP99Gradient: relP99,
+        relativeEdgePixelRatio: relEdge,
+        meanCoverageSpread: m.meanCoverageSpread,
+        p99CoverageSpread: m.p99CoverageSpread)
+      return NativeReferenceRankingReport(
+        label: variant.label,
+        rendererKind: variant.rendererKind,
+        textCompositeModel: variant.status.textCompositeModel?.rawValue,
+        relativeInkMass: relInk,
+        relativeMeanGradient: relMean,
+        relativeP99Gradient: relP99,
+        relativeEdgePixelRatio: relEdge,
+        meanCoverageSpread: m.meanCoverageSpread,
+        p99CoverageSpread: m.p99CoverageSpread,
+        score: score)
+    }
+  }
+
+  /// Metric-based quality score relative to the native reference.
+  /// Higher is better. Gradients above the reference are capped so extreme
+  /// values are not blindly rewarded; fringing and ink-mass deviation are
+  /// penalized. This is intentionally loose until more Mac artifacts are
+  /// collected.
+  private func nativeReferenceScore(
+    relativeInkMass: Double,
+    relativeMeanGradient: Double,
+    relativeP99Gradient: Double,
+    relativeEdgePixelRatio: Double,
+    meanCoverageSpread: Double,
+    p99CoverageSpread: Double
+  ) -> Double {
+    let gradientScore = min(relativeMeanGradient, 1.2)
+    let p99Score = min(relativeP99Gradient, 1.2)
+    let edgeScore: Double
+    if relativeEdgePixelRatio > 0.0001 {
+      edgeScore = min(1.2, 1.0 / relativeEdgePixelRatio)
+    } else {
+      edgeScore = 1.2
+    }
+    let fringingScore = max(0, 1.0 - meanCoverageSpread / 0.12)
+    let inkScore = max(0, 1.0 - abs(relativeInkMass - 1.0) / 0.20)
+    return
+      0.25 * gradientScore
+      + 0.20 * p99Score
+      + 0.20 * edgeScore
+      + 0.20 * fringingScore
+      + 0.15 * inkScore
+  }
+
   private func coverageSpread(_ pixel: RGB) -> Double {
     let coverages = [
       channelCoverage(value: pixel.r, background: background.r, foreground: foreground.r),
@@ -968,7 +1064,7 @@ final class RendererFidelityReportTests: XCTestCase {
     )
     lines.append("")
     lines.append(
-      "The classic and GPU-driven renderers are comparators, not golden references. Use the numbers to make tradeoffs explicit: high gradients indicate edge acuity, low edge-pixel ratio indicates less blur spread, and high RGB coverage spread indicates more potential color fringing."
+      "`software-coretext` is the native macOS result reference (CoreText/CoreGraphics). The classic, GPU-driven, vector, and slug renderers are implementation comparators, not golden references or pixel oracles. Use the numbers to make tradeoffs explicit: high gradients indicate edge acuity, low edge-pixel ratio indicates less blur spread, and high RGB coverage spread indicates more potential color fringing."
     )
     lines.append("")
     lines.append("## Variant Metrics")
@@ -980,6 +1076,22 @@ final class RendererFidelityReportTests: XCTestCase {
     for variant in report.variants {
       lines.append(
         "| \(variant.label) | \(format(variant.metrics.inkMass)) | \(format(variant.metrics.edgePixelRatio)) | \(format(variant.metrics.meanGradient)) | \(format(variant.metrics.p99Gradient)) | \(format(variant.metrics.meanCoverageSpread)) | \(format(variant.metrics.p99CoverageSpread)) | \(variant.imagePath) |"
+      )
+    }
+    lines.append("")
+    lines.append("## Native Reference Rankings")
+    lines.append("")
+    lines.append(
+      "Ranked against `software-coretext` (CoreText/CoreGraphics). The score is a metric-based quality heuristic, not pixel identity: it rewards matching or exceeding the native reference's luma acutance and ink mass while penalizing edge spread and color fringing."
+    )
+    lines.append("")
+    lines.append(
+      "| Variant | Composite model | Rel ink | Rel mean grad | Rel P99 grad | Rel edge ratio | Mean spread | P99 spread | Score |"
+    )
+    lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for ranking in report.nativeReferenceRankings {
+      lines.append(
+        "| \(ranking.label) | \(ranking.textCompositeModel ?? "-") | \(format(ranking.relativeInkMass)) | \(format(ranking.relativeMeanGradient)) | \(format(ranking.relativeP99Gradient)) | \(format(ranking.relativeEdgePixelRatio)) | \(format(ranking.meanCoverageSpread)) | \(format(ranking.p99CoverageSpread)) | \(format(ranking.score)) |"
       )
     }
     lines.append("")
@@ -1072,6 +1184,20 @@ final class RendererFidelityReportTests: XCTestCase {
     0.2126 * Double(rgb.r) + 0.7152 * Double(rgb.g) + 0.0722 * Double(rgb.b)
   }
 
+  private func linearLuminance(_ rgb: RGB) -> Double {
+    0.2126 * srgbToLinearByte(rgb.r)
+      + 0.7152 * srgbToLinearByte(rgb.g)
+      + 0.0722 * srgbToLinearByte(rgb.b)
+  }
+
+  private func srgbToLinearByte(_ value: UInt8) -> Double {
+    srgbToLinear(Double(value) / 255.0) * 255.0
+  }
+
+  private func srgbToLinear(_ c: Double) -> Double {
+    c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+  }
+
   private func mean(_ values: [Double]) -> Double {
     guard !values.isEmpty else { return 0 }
     return values.reduce(0, +) / Double(values.count)
@@ -1144,6 +1270,7 @@ final class RendererFidelityReportTests: XCTestCase {
         label: label,
         rendererKind: rendererKind,
         subpixelLayout: subpixelLayout,
+        textCompositeModel: status.textCompositeModel?.rawValue,
         xShiftPixels: xShiftPixels,
         status: status,
         instanceCounts: instanceCounts,
@@ -1200,6 +1327,7 @@ final class RendererFidelityReportTests: XCTestCase {
     var variants: [VariantReport]
     var pairs: [PairReport]
     var fractionalStability: [FractionalStabilityReport]
+    var nativeReferenceRankings: [NativeReferenceRankingReport]
     var calibration: CalibrationReport
   }
 
@@ -1242,6 +1370,7 @@ final class RendererFidelityReportTests: XCTestCase {
     var label: String
     var rendererKind: String
     var subpixelLayout: String?
+    var textCompositeModel: String?
     var xShiftPixels: Double
     var status: RendererStatus
     var instanceCounts: InstanceCounts?
@@ -1267,6 +1396,7 @@ final class RendererFidelityReportTests: XCTestCase {
 
   private struct TextMetrics: Encodable {
     var inkMass: Double
+    var inkMassLinear: Double
     var inkPixels: Int
     var edgePixels: Int
     var edgePixelRatio: Double
@@ -1274,6 +1404,9 @@ final class RendererFidelityReportTests: XCTestCase {
     var meanGradient: Double
     var p95Gradient: Double
     var p99Gradient: Double
+    var meanGradientLinear: Double
+    var p95GradientLinear: Double
+    var p99GradientLinear: Double
     var meanMaxChannelGradient: Double
     var p95MaxChannelGradient: Double
     var p99MaxChannelGradient: Double
@@ -1344,6 +1477,23 @@ final class RendererFidelityReportTests: XCTestCase {
     var p99CoverageSpread: Double
     var relativeLumaGradient: Double
     var relativeMaxChannelGradient: Double
+  }
+
+  /// A software/CoreText-centered ranking of implementation comparators.
+  /// The score rewards matching or exceeding the native reference's luma
+  /// acutance and ink mass while staying within a fringing/edge-spread budget.
+  /// It is a metric-based quality heuristic, not a pixel-equality measure.
+  private struct NativeReferenceRankingReport: Encodable {
+    var label: String
+    var rendererKind: String
+    var textCompositeModel: String?
+    var relativeInkMass: Double
+    var relativeMeanGradient: Double
+    var relativeP99Gradient: Double
+    var relativeEdgePixelRatio: Double
+    var meanCoverageSpread: Double
+    var p99CoverageSpread: Double
+    var score: Double
   }
 
   private struct CalibrationCandidateReport: Encodable {

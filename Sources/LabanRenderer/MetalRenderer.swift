@@ -266,7 +266,8 @@ public final class MetalRenderer: RendererBackend {
   public private(set) var lastCommandBufferError: CommandBufferFailure?
   public private(set) var rendererStatus = RendererStatus(
     configuredRenderer: RendererMode.classic.rawValue,
-    effectiveRenderer: RendererMode.classic.rawValue)
+    effectiveRenderer: RendererMode.classic.rawValue,
+    textCompositeModel: .encodedSRGBCompatibility)
   private var rendererStatusOverride: RendererStatus?
 
   /// Rolling per-frame stats. p50/p99 in milliseconds. CPU = wall time spent
@@ -1361,7 +1362,8 @@ public final class MetalRenderer: RendererBackend {
         .classic,
         RendererStatus(
           configuredRenderer: requested.rawValue,
-          effectiveRenderer: RendererMode.classic.rawValue)
+          effectiveRenderer: RendererMode.classic.rawValue,
+          textCompositeModel: .encodedSRGBCompatibility)
       )
     }
     if let rendererFallbackReason {
@@ -1370,7 +1372,8 @@ public final class MetalRenderer: RendererBackend {
         RendererStatus(
           configuredRenderer: requested.rawValue,
           effectiveRenderer: RendererMode.classic.rawValue,
-          fallbackReason: rendererFallbackReason)
+          fallbackReason: rendererFallbackReason,
+          textCompositeModel: .encodedSRGBCompatibility)
       )
     }
     if #available(macOS 26, *) {
@@ -1378,7 +1381,8 @@ public final class MetalRenderer: RendererBackend {
         .gpuDriven,
         RendererStatus(
           configuredRenderer: requested.rawValue,
-          effectiveRenderer: RendererMode.gpuDriven.rawValue)
+          effectiveRenderer: RendererMode.gpuDriven.rawValue,
+          textCompositeModel: .encodedSRGBCompatibility)
       )
     }
     return (
@@ -1386,7 +1390,8 @@ public final class MetalRenderer: RendererBackend {
       RendererStatus(
         configuredRenderer: requested.rawValue,
         effectiveRenderer: RendererMode.classic.rawValue,
-        fallbackReason: "gpuDrivenUnavailableOnCurrentOS")
+        fallbackReason: "gpuDrivenUnavailableOnCurrentOS",
+        textCompositeModel: .encodedSRGBCompatibility)
     )
   }
 

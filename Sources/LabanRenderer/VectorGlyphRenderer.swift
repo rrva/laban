@@ -237,7 +237,8 @@ public final class VectorGlyphRenderer: RendererBackend {
       configuredRenderer: RendererSelection.vectorGlyph.rawValue,
       effectiveRenderer: RendererSelection.vectorGlyph.rawValue,
       rasterFallbackGlyphs: lastRasterFallbackGlyphs,
-      vectorSubpixelLayout: effectiveSubpixelLayout.name)
+      vectorSubpixelLayout: effectiveSubpixelLayout.name,
+      textCompositeModel: .linearLight)
   }
 
   public init?(

@@ -881,6 +881,11 @@ fragment float4 slugGlyphAlphaFragment(
     return float4(in.color.rgb * alpha, alpha);
 }
 
+// Subpixel text preserves destination alpha. The two-pass path first writes
+// per-channel coverage with alpha = 0, then adds weighted color with alpha = 0.
+// This is only valid after an opaque background/solid pass has established
+// alpha = 1 in the target. It is not suitable for transparent render targets or
+// for PNGs where the alpha channel is expected to encode text opacity.
 fragment float4 slugGlyphCoverageFragment(
     SlugGlyphVertexOut in [[stage_in]],
     constant SlugGlyphUniforms &uniforms [[buffer(4)]],

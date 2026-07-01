@@ -25,25 +25,45 @@ public struct DirtyYRange: Equatable, Sendable {
   }
 }
 
+/// Explicit gamma / color-space compositing model used by a renderer.
+///
+/// - `nativePlatformReference` — the platform's own text rasterizer
+///   (CoreText/CoreGraphics on macOS). It is the result reference, not an
+///   implementation choice.
+/// - `linearLight` — compositing performed in linear light, typically by
+///   linearizing sRGB inputs and writing to an sRGB-encoded surface so the
+///   display sees correct gamma. Slug and vector use this path.
+/// - `encodedSRGBCompatibility` — compositing performed directly in encoded
+///   sRGB values without linearization. Used by the legacy Metal glyph paths
+///   for compatibility with existing atlas and blend behavior.
+public enum TextCompositeModel: String, Equatable, Sendable, Encodable {
+  case nativePlatformReference
+  case linearLight
+  case encodedSRGBCompatibility
+}
+
 public struct RendererStatus: Equatable, Sendable, Encodable {
   public var configuredRenderer: String
   public var effectiveRenderer: String
   public var fallbackReason: String?
   public var rasterFallbackGlyphs: Int?
   public var vectorSubpixelLayout: String?
+  public var textCompositeModel: TextCompositeModel?
 
   public init(
     configuredRenderer: String,
     effectiveRenderer: String,
     fallbackReason: String? = nil,
     rasterFallbackGlyphs: Int? = nil,
-    vectorSubpixelLayout: String? = nil
+    vectorSubpixelLayout: String? = nil,
+    textCompositeModel: TextCompositeModel? = nil
   ) {
     self.configuredRenderer = configuredRenderer
     self.effectiveRenderer = effectiveRenderer
     self.fallbackReason = fallbackReason
     self.rasterFallbackGlyphs = rasterFallbackGlyphs
     self.vectorSubpixelLayout = vectorSubpixelLayout
+    self.textCompositeModel = textCompositeModel
   }
 }
 

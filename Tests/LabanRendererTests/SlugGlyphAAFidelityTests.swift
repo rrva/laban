@@ -78,6 +78,63 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
     XCTAssertLessThanOrEqual(slugMetrics.meanEdgeChroma, 1.0)
   }
 
+  func testSlugGrayscaleMatchesSoftwareCoreTextOnThemeProbe() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pointSize: CGFloat = 18
+    let scale: CGFloat = 2
+    let pixelWidth = 920
+    let pixelHeight = 228
+    let crop = CGRect(x: 24, y: 18, width: 872, height: 188)
+    let commands = probeCommands(
+      x: 12,
+      y: 16,
+      lineSpacing: 24,
+      background: themeBackground,
+      foreground: themeForeground)
+
+    let software = SoftwareBackend(
+      fontAtlas: FontAtlas(pointSize: pointSize),
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale)
+    XCTAssertTrue(software.render(commands, damage: .full))
+    let softwareImage = try decodePNGToRGBA(try XCTUnwrap(software.pngData))
+    let softwareMetrics = computeTextAAMetrics(
+      image: softwareImage,
+      crop: crop,
+      background: themeBackground,
+      foreground: themeForeground)
+
+    let slug = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: pointSize),
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: scale))
+    slug.waitForFrameCompletion = true
+    slug.presentsToLayer = false
+    slug.setSubpixelLayout(.grayscale)
+    XCTAssertTrue(slug.render(commands, damage: .full))
+    let slugImage = try decodePNGToRGBA(try XCTUnwrap(slug.pngData))
+    let slugMetrics = computeTextAAMetrics(
+      image: slugImage,
+      crop: crop,
+      background: themeBackground,
+      foreground: themeForeground)
+
+    XCTAssertGreaterThan(slugMetrics.edgePixels, 600)
+    XCTAssertLessThan(
+      abs(slugMetrics.inkMass - softwareMetrics.inkMass) / max(softwareMetrics.inkMass, 1),
+      0.18)
+    XCTAssertGreaterThanOrEqual(slugMetrics.meanGradient, softwareMetrics.meanGradient * 0.75)
+    XCTAssertLessThanOrEqual(
+      slugMetrics.edgePixelRatio,
+      softwareMetrics.edgePixelRatio + 0.15)
+    XCTAssertLessThanOrEqual(slugMetrics.meanCoverageSpread, 0.05)
+  }
+
   // MARK: - Gamma / linear-light behavior
 
   func testSlugGammaBehaviorStaysOnSoftwareAndLinearLightSide() throws {
@@ -247,6 +304,298 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(slugMetrics.meanGradient, vectorMetrics.meanGradient * 0.80)
   }
 
+  // MARK: - Slug subpixel acutance / fringing budget gates
+
+  func testSlugCalibratedSubpixelImprovesAcutanceWithinFringingBudget() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pointSize: CGFloat = 18
+    let scale: CGFloat = 2
+    let pixelWidth = 920
+    let pixelHeight = 228
+    let crop = CGRect(x: 24, y: 18, width: 872, height: 188)
+    let commands = probeCommands(
+      x: 12,
+      y: 16,
+      lineSpacing: 24,
+      background: themeBackground,
+      foreground: themeForeground)
+
+    let grayscaleMetrics = try slugMetrics(
+      layout: .grayscale,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+    let calibratedMetrics = try slugMetrics(
+      layout: .calibratedRGB,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+
+    XCTAssertGreaterThan(
+      calibratedMetrics.meanMaxChannelGradient,
+      grayscaleMetrics.meanMaxChannelGradient * 1.05,
+      "calibrated subpixel must improve channel acutance over grayscale")
+    XCTAssertLessThanOrEqual(
+      calibratedMetrics.meanCoverageSpread,
+      max(0.14, grayscaleMetrics.meanCoverageSpread * 10.0),
+      "calibrated subpixel must stay within fringing budget")
+  }
+
+  func testSlugRGBStripeSubpixelImprovesAcutanceWithinFringingBudget() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pointSize: CGFloat = 18
+    let scale: CGFloat = 2
+    let pixelWidth = 920
+    let pixelHeight = 228
+    let crop = CGRect(x: 24, y: 18, width: 872, height: 188)
+    let commands = probeCommands(
+      x: 12,
+      y: 16,
+      lineSpacing: 24,
+      background: themeBackground,
+      foreground: themeForeground)
+
+    let calibratedMetrics = try slugMetrics(
+      layout: .calibratedRGB,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+    let rgbStripeMetrics = try slugMetrics(
+      layout: .rgbStripe,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+
+    XCTAssertGreaterThan(
+      rgbStripeMetrics.meanMaxChannelGradient,
+      calibratedMetrics.meanMaxChannelGradient * 1.02,
+      "rgbStripe subpixel must improve channel acutance over calibrated")
+    XCTAssertLessThanOrEqual(
+      rgbStripeMetrics.meanCoverageSpread,
+      max(0.24, calibratedMetrics.meanCoverageSpread * 1.60 + 0.04),
+      "rgbStripe subpixel must stay within fringing budget")
+  }
+
+  // MARK: - Native fidelity / fringing / phase regression gates
+
+  /// Hard CI gate: slug grayscale must stay within a loose budget of the
+  /// native macOS reference on a realistic terminal theme.
+  func testSlugGrayscaleMeetsNativeFidelityBudget() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pointSize: CGFloat = 18
+    let scale: CGFloat = 2
+    let pixelWidth = 920
+    let pixelHeight = 228
+    let crop = CGRect(x: 24, y: 18, width: 872, height: 188)
+
+    let software = SoftwareBackend(
+      fontAtlas: FontAtlas(pointSize: pointSize),
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale)
+    XCTAssertTrue(software.render(probeCommands(
+      x: 12,
+      y: 16,
+      lineSpacing: 24,
+      background: themeBackground,
+      foreground: themeForeground), damage: .full))
+    let softwareImage = try decodePNGToRGBA(try XCTUnwrap(software.pngData))
+    let softwareMetrics = computeTextAAMetrics(
+      image: softwareImage,
+      crop: crop,
+      background: themeBackground,
+      foreground: themeForeground)
+
+    let slugMetrics = try slugMetrics(
+      layout: .grayscale,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+
+    let inkDelta = abs(slugMetrics.inkMass - softwareMetrics.inkMass)
+      / max(softwareMetrics.inkMass, 1)
+    XCTAssertLessThanOrEqual(inkDelta, 0.10, "ink mass delta vs native reference")
+    XCTAssertGreaterThanOrEqual(
+      slugMetrics.meanGradient,
+      softwareMetrics.meanGradient * 0.90,
+      "mean luma gradient vs native reference")
+    XCTAssertGreaterThanOrEqual(
+      slugMetrics.p99Gradient,
+      softwareMetrics.p99Gradient * 0.85,
+      "p99 luma gradient vs native reference")
+    XCTAssertLessThanOrEqual(
+      slugMetrics.edgePixelRatio,
+      softwareMetrics.edgePixelRatio * 1.20,
+      "edge pixel ratio vs native reference")
+    XCTAssertLessThanOrEqual(
+      slugMetrics.meanCoverageSpread,
+      0.015,
+      "grayscale must not introduce measurable color fringing")
+  }
+
+  /// Hard CI gate: slug calibrated subpixel must improve acutance over its own
+  /// grayscale and stay inside a fringing budget. Phase-sweep ink mass must be
+  /// stable because subpixel layout should not depend on fractional origin.
+  func testSlugCalibratedHasLowFringingBudget() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pointSize: CGFloat = 18
+    let scale: CGFloat = 2
+    let pixelWidth = 920
+    let pixelHeight = 228
+    let crop = CGRect(x: 24, y: 18, width: 872, height: 188)
+
+    let grayscaleMetrics = try slugMetrics(
+      layout: .grayscale,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+    let calibratedMetrics = try slugMetrics(
+      layout: .calibratedRGB,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+
+    XCTAssertGreaterThanOrEqual(
+      calibratedMetrics.meanMaxChannelGradient,
+      grayscaleMetrics.meanMaxChannelGradient * 1.05,
+      "calibrated subpixel must improve channel acutance over grayscale")
+    XCTAssertLessThanOrEqual(
+      calibratedMetrics.meanCoverageSpread,
+      0.12,
+      "calibrated subpixel mean fringing budget")
+    XCTAssertLessThanOrEqual(
+      calibratedMetrics.p95CoverageSpread,
+      0.50,
+      "calibrated subpixel p95 fringing budget (loose; target 0.36)")
+
+    var maxInkDelta = 0.0
+    for shift in [0.25, 0.50, 0.75] {
+      let shifted = try slugMetrics(
+        layout: .calibratedRGB,
+        pointSize: pointSize,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: scale,
+        xShiftPixels: shift,
+        background: themeBackground,
+        foreground: themeForeground,
+        crop: crop)
+      let inkDelta = abs(shifted.inkMass - calibratedMetrics.inkMass)
+        / max(calibratedMetrics.inkMass, 1)
+      maxInkDelta = max(maxInkDelta, inkDelta)
+    }
+    XCTAssertLessThanOrEqual(
+      maxInkDelta,
+      0.08,
+      "calibrated subpixel ink mass must be stable across fractional phase")
+  }
+
+  /// Hard CI gate: grayscale rendering must not change shape metrics when the
+  /// glyph origin is shifted by fractional pixels.
+  func testSlugFractionalPhaseStability() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let pointSize: CGFloat = 18
+    let scale: CGFloat = 2
+    let pixelWidth = 920
+    let pixelHeight = 228
+    let crop = CGRect(x: 24, y: 18, width: 872, height: 188)
+
+    let base = try slugMetrics(
+      layout: .grayscale,
+      pointSize: pointSize,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      background: themeBackground,
+      foreground: themeForeground,
+      crop: crop)
+
+    var maxInkDelta = 0.0
+    var maxMeanGradientDelta = 0.0
+    var maxP99GradientDelta = 0.0
+    for shift in [0.25, 0.50, 0.75] {
+      let shifted = try slugMetrics(
+        layout: .grayscale,
+        pointSize: pointSize,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: scale,
+        xShiftPixels: shift,
+        background: themeBackground,
+        foreground: themeForeground,
+        crop: crop)
+      maxInkDelta = max(
+        maxInkDelta,
+        abs(shifted.inkMass - base.inkMass) / max(base.inkMass, 1))
+      maxMeanGradientDelta = max(
+        maxMeanGradientDelta,
+        abs(shifted.meanGradient - base.meanGradient) / max(base.meanGradient, 1))
+      maxP99GradientDelta = max(
+        maxP99GradientDelta,
+        abs(shifted.p99Gradient - base.p99Gradient) / max(base.p99Gradient, 1))
+    }
+    XCTAssertLessThanOrEqual(maxInkDelta, 0.08, "ink mass stable across fractional phase")
+    XCTAssertLessThanOrEqual(
+      maxMeanGradientDelta,
+      0.10,
+      "mean gradient stable across fractional phase")
+    XCTAssertLessThanOrEqual(
+      maxP99GradientDelta,
+      0.10,
+      "p99 gradient stable across fractional phase")
+  }
+
+  /// Hard CI gate: every renderer must report its gamma/composite model so the
+  /// fidelity report can normalize comparisons.
+  func testSlugGammaPolicyIsReported() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    let renderer = try XCTUnwrap(SlugGlyphRenderer(fontAtlas: FontAtlas(pointSize: 14)))
+    XCTAssertEqual(
+      renderer.rendererStatus.textCompositeModel,
+      .linearLight,
+      "slug renderer must report linear-light compositing")
+  }
+
   // MARK: - Shape fidelity vs CPU oracle
 
   func testSlugCanDifferFromSoftwareWhenOutlineOracleIsBetter() throws {
@@ -370,6 +719,42 @@ final class SlugGlyphAAFidelityTests: XCTestCase {
   }
 
   // MARK: - Helpers
+
+  private func slugMetrics(
+    layout: VectorSubpixelLayout,
+    pointSize: CGFloat,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    scale: CGFloat,
+    xShiftPixels: Double = 0,
+    background: UInt32,
+    foreground: UInt32,
+    crop: CGRect
+  ) throws -> TestTextAAMetrics {
+    let commands = probeCommands(
+      x: 12 + CGFloat(xShiftPixels) / scale,
+      y: 16,
+      lineSpacing: 24,
+      background: background,
+      foreground: foreground)
+    let renderer = try XCTUnwrap(
+      SlugGlyphRenderer(
+        fontAtlas: FontAtlas(pointSize: pointSize),
+        sidebarFontAtlas: FontAtlas(pointSize: pointSize),
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: scale))
+    renderer.setSubpixelLayout(layout)
+    renderer.waitForFrameCompletion = true
+    renderer.presentsToLayer = false
+    XCTAssertTrue(renderer.render(commands, damage: .full))
+    let image = try decodePNGToRGBA(try XCTUnwrap(renderer.pngData))
+    return computeTextAAMetrics(
+      image: image,
+      crop: crop,
+      background: background,
+      foreground: foreground)
+  }
 
   private func probeCommands(
     x: CGFloat,

@@ -27,8 +27,12 @@ struct TestTextAAMetrics {
   var edgePixelRatio: Double
   var meanGradient: Double
   var p95Gradient: Double
+  var p99Gradient: Double
   var meanEdgeChroma: Double
   var p95EdgeChroma: Double
+  var meanCoverageSpread: Double
+  var p95CoverageSpread: Double
+  var meanMaxChannelGradient: Double
   var meanPartialLuma: Double
 }
 
@@ -98,20 +102,26 @@ func computeTextAAMetrics(
   var inkPixels = 0
   var edgePixels = 0
   var gradients: [Double] = []
+  var maxChannelGradients: [Double] = []
   var edgeChromas: [Double] = []
+  var coverageSpreads: [Double] = []
   var partialLumas: [Double] = []
 
   for y in bounds.minY..<bounds.maxY {
     for x in bounds.minX..<bounds.maxX {
+      let p = image.pixel(x: x, y: y)
       let ink = inkAt(x: x, y: y)
       let coverage = ink / maxInk
       inkMass += ink
       if coverage > 0.01 {
         inkPixels += 1
-        let p = image.pixel(x: x, y: y)
         partialLumas.append(Double((Int(p.r) + Int(p.g) + Int(p.b)) / 3))
         let rawChroma = max(Int(p.r), Int(p.g), Int(p.b)) - min(Int(p.r), Int(p.g), Int(p.b))
         edgeChromas.append(Double(rawChroma))
+        let coverages = channelCoverages(p)
+        let spread = max(coverages.r, coverages.g, coverages.b)
+          - min(coverages.r, coverages.g, coverages.b)
+        coverageSpreads.append(spread)
         if coverage < 0.85 {
           edgePixels += 1
         }
@@ -120,6 +130,16 @@ func computeTextAAMetrics(
         let gradient = abs(ink - inkAt(x: x + 1, y: y))
         if gradient > 1 {
           gradients.append(gradient)
+        }
+        let rhs = image.pixel(x: x + 1, y: y)
+        let lhsCoverages = channelCoverages(p)
+        let rhsCoverages = channelCoverages(rhs)
+        let maxChannelGradient = max(
+          abs(lhsCoverages.r - rhsCoverages.r),
+          abs(lhsCoverages.g - rhsCoverages.g),
+          abs(lhsCoverages.b - rhsCoverages.b))
+        if maxChannelGradient > 0.005 {
+          maxChannelGradients.append(maxChannelGradient * 255.0)
         }
       }
     }
@@ -132,8 +152,12 @@ func computeTextAAMetrics(
     edgePixelRatio: inkPixels == 0 ? 0 : Double(edgePixels) / Double(inkPixels),
     meanGradient: mean(gradients),
     p95Gradient: percentile(gradients, 0.95),
+    p99Gradient: percentile(gradients, 0.99),
     meanEdgeChroma: mean(edgeChromas),
     p95EdgeChroma: percentile(edgeChromas, 0.95),
+    meanCoverageSpread: mean(coverageSpreads),
+    p95CoverageSpread: percentile(coverageSpreads, 0.95),
+    meanMaxChannelGradient: mean(maxChannelGradients),
     meanPartialLuma: mean(partialLumas))
 }
 

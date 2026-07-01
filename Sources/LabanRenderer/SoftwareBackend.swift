@@ -23,7 +23,8 @@ public final class SoftwareBackend: RendererBackend {
     scale: CGFloat = 1,
     rendererStatus: RendererStatus = RendererStatus(
       configuredRenderer: RendererSelection.software.rawValue,
-      effectiveRenderer: RendererSelection.software.rawValue)
+      effectiveRenderer: RendererSelection.software.rawValue,
+      textCompositeModel: .nativePlatformReference)
   ) {
     self.fontAtlas = fontAtlas
     self.sidebarFontAtlas = sidebarFontAtlas ?? fontAtlas
