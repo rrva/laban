@@ -43,21 +43,30 @@ if [[ -z "$old_pid" ]]; then
   exec /usr/bin/open "$app" "${open_args[@]}"
 fi
 
+while IFS= read -r stale_label; do
+  [[ -n "$stale_label" ]] || continue
+  /bin/launchctl remove "$stale_label" 2>/dev/null || true
+done < <(/bin/launchctl list | /usr/bin/awk '/com\.rrva\.laban\.restart\./ {print $3}')
+
 label="com.rrva.laban.restart.${old_pid}.$$"
 helper_script='
-old_pid=$1
-app_path=$2
-shift 2
+label=$1
+old_pid=$2
+app_path=$3
+shift 3
 n=0
 while /bin/kill -0 "$old_pid" 2>/dev/null && [ "$n" -lt 100 ]; do
   /bin/sleep 0.1
   n=$((n+1))
 done
-exec /usr/bin/open "$app_path" "$@"
+/usr/bin/open "$app_path" "$@"
+status=$?
+/bin/launchctl remove "$label" >/dev/null 2>&1 || true
+exit "$status"
 '
 
 /bin/launchctl submit -l "$label" -o "$log" -e "$log" -- \
-  /bin/sh -c "$helper_script" sh "$old_pid" "$app" "${open_args[@]}"
+  /bin/sh -c "$helper_script" sh "$label" "$old_pid" "$app" "${open_args[@]}"
 
 /bin/kill "$old_pid" 2>/dev/null || true
 printf 'restart helper_label=%s old_pid=%s log=%s\n' "$label" "$old_pid" "$log"
