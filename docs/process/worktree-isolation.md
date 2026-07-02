@@ -79,3 +79,20 @@ suffix.
 The agent should stop the launched process before finishing. If a test fails,
 it should preserve the artifact directory and include the relevant paths in its
 report.
+
+## Laban Worktree Setup
+
+Git worktrees do not clone `.external/`. If it is missing, symlink it from the
+main repo:
+
+```sh
+ln -s "$LABAN_MAIN_REPO/.external" .external
+```
+
+`.external/` holds shared vendored libraries.
+
+`.rpg/graph.json` is a committed generated artifact. The pre-commit hook keeps
+its structure current on every branch, and `main` owns semantic refreshes
+(lifting). Do not strip those hunks from commits and do not set
+`skip-worktree`; that makes the hook's `git add` fail and blocks the commit.
+See `docs/process/rpg-graph-maintenance.md` for graph maintenance details.
