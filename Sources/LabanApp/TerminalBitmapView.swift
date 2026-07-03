@@ -1730,6 +1730,22 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
     ]
   }
 
+  /// Apply a vector subpixel layout to the active backend and report the
+  /// resolved effective layout (the auto-policy may force grayscale on scaled
+  /// displays). Scroll-debug mirror of `/config/renderer` so the slug/vector
+  /// subpixel path can be A/B measured live without restarting.
+  func debugApplySubpixelLayout(_ layout: VectorSubpixelLayout) -> [String: String] {
+    if let slug = backend as? SlugGlyphRenderer {
+      slug.setSubpixelLayout(layout)
+    } else if let vector = backend as? VectorGlyphRenderer {
+      vector.setSubpixelLayout(layout)
+    }
+    return [
+      "configured": layout.name,
+      "effective": backend.rendererStatus.vectorSubpixelLayout ?? "?"
+    ]
+  }
+
   /// Called from a per-session reader thread (off main) when the
   /// reader has drained bytes through the VT parser. Coalesces wake-
   /// ups via `pendingDisplayKick`: only the first dirty drain since

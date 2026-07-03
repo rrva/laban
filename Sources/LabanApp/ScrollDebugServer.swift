@@ -331,6 +331,26 @@ final class ScrollDebugServer {
         tv.applyRendererSelection(selection)
         return Response.json(["ok": true, "renderer": name])
       }
+    case ("POST", "/config/subpixel"):
+      let layoutName = query["layout"] ?? "grayscale"
+      let layout: VectorSubpixelLayout
+      switch layoutName {
+      case "grayscale", "gray", "greyscale", "grey": layout = .grayscale
+      case "calibratedRGB", "calibrated", "balanced": layout = .calibratedRGB
+      case "rgbStripe", "rgb": layout = .rgbStripe
+      case "bgrStripe", "bgr": layout = .bgrStripe
+      default:
+        return Response.json(
+          ["error": "unknown subpixel layout", "layout": layoutName], status: 400)
+      }
+      // Persist so a cold restart reflects the toggle; the live-settings
+      // observer also logs configured/effective and invalidates the frame.
+      VectorSubpixelLayout.setPersisted(layout)
+      return onMain { tv, _, _ in
+        var payload: [String: Any] = ["ok": true]
+        for (k, v) in tv.debugApplySubpixelLayout(layout) { payload[k] = v }
+        return Response.json(payload)
+      }
     case ("POST", "/config/smooth-scroll"):
       let mode = query["mode"] ?? ""
       guard let parsed = VectorSmoothScrollMode(rawValue: mode) else {
@@ -504,6 +524,9 @@ final class ScrollDebugServer {
                                       sub-cell offsets; optional fling velocity
     POST /scroll/snap-bottom          pin viewport to the active bottom
     POST /config/renderer?name=R      switch renderer (e.g. classic, gpuDriven, vectorGlyph, slugGlyph)
+    POST /config/subpixel?layout=L    switch vector subpixel layout (grayscale|calibratedRGB|
+                                      rgbStripe|bgrStripe); slug/vector only, reports the
+                                      effective layout after the auto-policy resolves
     POST /config/smooth-scroll?mode=M switch vector smooth-scroll mode (fluid|perPhase)
     POST /config/tab?index=N          select tab N (0-based); use a normal-buffer
                                       shell tab so scroll bursts hit Laban scrollback
