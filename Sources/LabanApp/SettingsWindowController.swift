@@ -39,6 +39,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     target: nil, action: nil)
   private let vectorTextWeightValueLabel = NSTextField(labelWithString: "")
   private let vectorSmoothScrollPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+  // Held as properties so refresh() can dim them when the active renderer does
+  // not consume vector-specific settings. The controls themselves get disabled
+  // too; dimming the label keeps the whole row reading as inactive.
+  private let vectorTextLabel = NSTextField(labelWithString: "Vector text AA:")
+  private let vectorOverlapLabel = NSTextField(labelWithString: "Overlap:")
+  private let vectorTextWeightLabel = NSTextField(labelWithString: "Text weight:")
+  private let vectorSmoothScrollLabel = NSTextField(labelWithString: "Smooth scroll:")
   private var vectorSubpixelCustomGridRow: NSGridRow?
   private let optionAsMetaCheckbox = NSButton(
     checkboxWithTitle: "Option as Meta", target: nil, action: nil)
@@ -280,10 +287,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     let renderingGrid = makeSettingsGrid([
       [makeLabel("Renderer:"), rendererPopUp],
       [makeLabel("Emoji rendering:"), emojiRenderingPopUp],
-      [makeLabel("Vector text AA:"), vectorSubpixelLayoutPopUp],
-      [makeLabel("Overlap:"), makeVectorSubpixelCustomRow()],
-      [makeLabel("Text weight:"), makeVectorTextWeightRow()],
-      [makeLabel("Smooth scroll:"), vectorSmoothScrollPopUp],
+      [vectorTextLabel, vectorSubpixelLayoutPopUp],
+      [vectorOverlapLabel, makeVectorSubpixelCustomRow()],
+      [vectorTextWeightLabel, makeVectorTextWeightRow()],
+      [vectorSmoothScrollLabel, vectorSmoothScrollPopUp],
     ])
     vectorSubpixelCustomGridRow = renderingGrid.row(at: 3)
     let notificationsGrid = makeSettingsGrid([
@@ -395,6 +402,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       format: "%.2f", VectorTextWeightSettings.current())
   }
 
+  /// Disable (and dim) the vector-only settings when the active renderer does
+  /// not consume them. Vector text AA, the custom overlap editor, and text
+  /// weight are read by both vector renderers. Smooth scroll is read only by
+  /// the atlas-based Vector Glyph renderer — Slug renders from curves every
+  /// frame, so the fluid/crisp mask-reuse choice has no effect there.
+  private func refreshVectorControlsForRenderer(_ selection: RendererSelection) {
+    let vectorAA = selection == .vectorGlyph || selection == .slugGlyph
+    let smoothScroll = selection == .vectorGlyph
+
+    vectorSubpixelLayoutPopUp.isEnabled = vectorAA
+    vectorTextLabel.textColor = vectorAA ? .labelColor : .secondaryLabelColor
+    for field in vectorSubpixelFields {
+      field.isEnabled = vectorAA
+    }
+    vectorSubpixelApplyButton.isEnabled = vectorAA
+    vectorOverlapLabel.textColor = vectorAA ? .labelColor : .secondaryLabelColor
+
+    vectorTextWeightSlider.isEnabled = vectorAA
+    vectorTextWeightLabel.textColor = vectorAA ? .labelColor : .secondaryLabelColor
+
+    vectorSmoothScrollPopUp.isEnabled = smoothScroll
+    vectorSmoothScrollLabel.textColor = smoothScroll ? .labelColor : .secondaryLabelColor
+  }
+
   private func makeVectorSubpixelCustomRow() -> NSStackView {
     let row = NSStackView(views: [
       makeSmallLabel("R"),
@@ -447,6 +478,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
   // MARK: Live values
 
   private func refresh() {
+    let rendererSelection = rendererController.currentSelection
+    let vectorAA = rendererSelection == .vectorGlyph || rendererSelection == .slugGlyph
     let current = themeController.currentThemeName
     if let row = themeRowIndices.firstIndex(where: {
       $0 >= 0 && themeController.orderedThemes[$0].name == current
@@ -455,7 +488,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     followSystemCheckbox.state = themeController.followsSystemAppearance ? .on : .off
     fontLabel.stringValue = currentFontDisplayName()
-    if let row = rendererOptions.firstIndex(of: rendererController.currentSelection) {
+    if let row = rendererOptions.firstIndex(of: rendererSelection) {
       rendererPopUp.selectItem(at: row)
     }
     if let row = backendOptions.firstIndex(of: backendController.currentSelection) {
@@ -485,12 +518,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
     refreshVectorSubpixelCustomFields(vectorLayout)
     vectorSubpixelCustomGridRow?.isHidden =
-      VectorSubpixelLayout.persistedPreset() != .customOverlap
+      !vectorAA || VectorSubpixelLayout.persistedPreset() != .customOverlap
     vectorTextWeightSlider.doubleValue = VectorTextWeightSettings.current()
     updateVectorTextWeightLabel()
     if let row = vectorSmoothScrollOptions.firstIndex(of: VectorSmoothScrollSettings.current()) {
       vectorSmoothScrollPopUp.selectItem(at: row)
     }
+    refreshVectorControlsForRenderer(rendererSelection)
     optionAsMetaCheckbox.state = OptionKeySettings.current() ? .on : .off
     needsActionNotificationsCheckbox.state =
       AttentionNotificationSettings.needsActionEnabled ? .on : .off
