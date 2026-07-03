@@ -164,7 +164,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       backendPopUp.addItem(withTitle: backendTitle(option))
       backendPopUp.lastItem?.toolTip = backendTooltip(option)
     }
-    backendPopUp.toolTip = "Where terminal sessions live. Applies to new sessions."
+    backendPopUp.toolTip =
+      "Where terminal sessions live. Takes effect on the next launch — tabs "
+      + "opened in this launch keep the current backend, so restart Laban to "
+      + "switch."
 
     identityPopUp.target = self
     identityPopUp.action = #selector(identityChanged(_:))
@@ -174,10 +177,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     identityPopUp.toolTip =
       "What new sessions report as TERM_PROGRAM. Some programs only enable "
       + "features like OSC 9;4 progress bars for terminals they recognize; "
-      + "the ghostty option claims that identity for compatibility."
+      + "the ghostty option claims that identity for compatibility. Applies "
+      + "to new sessions; a running program isn't affected until it restarts, "
+      + "though a fresh program launched in an idle tab (e.g. starting Claude "
+      + "Code at the prompt) picks it up."
 
     restoreCheckbox.target = self
     restoreCheckbox.action = #selector(restoreChanged(_:))
+    restoreCheckbox.toolTip =
+      "Reopens the tabs that were open when Laban last quit. Takes effect on "
+      + "the next launch — toggle it before quitting to control whether your "
+      + "tabs return."
 
     cursorStylePopUp.target = self
     cursorStylePopUp.action = #selector(cursorStyleChanged(_:))
@@ -207,7 +217,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
       "How new sessions start measuring Unicode width (DEC mode 2027). Auto "
       + "starts off and lets programs opt in; prefer grapheme width starts on "
       + "so emoji and clusters line up immediately. A program can still toggle "
-      + "it at runtime. Applies to new sessions."
+      + "it at runtime. Applies to new sessions; a running program isn't "
+      + "affected until it restarts, though a fresh program launched in an "
+      + "idle tab (e.g. starting Claude Code at the prompt) picks it up."
 
     emojiRenderingPopUp.target = self
     emojiRenderingPopUp.action = #selector(emojiRenderingChanged(_:))
