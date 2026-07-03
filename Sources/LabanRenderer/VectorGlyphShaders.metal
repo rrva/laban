@@ -859,6 +859,25 @@ inline float3 slugGlyphCoverageRGB(
         return float3(coverage);
     }
 
+    // Subpixel fast path. The three R/G/B sample areas each occupy a third of
+    // the pixel in X, so every subpixel sample point lies within half a pixel of
+    // the pixel center. slugGlyphReferenceCoverage only goes fractional when a
+    // curve is within the half-pixel-plus-dilate margin of the sample point, so
+    // a single full-pixel center sample that is deep (0 or 1) proves no curve is
+    // within that margin of the center — and therefore no curve is within the
+    // margin of any subpixel sample either. All three channels then equal the
+    // center value, identical to computing them separately. This skips three
+    // independent band walks for the interior/exterior pixels that dominate a
+    // glyph quad; edge pixels (center fractional) fall through unchanged.
+    float2 centerSample = slugGlyphSubpixelSample(
+        float4(0.0, 0.0, 1.0, 1.0), float2(0.5, 0.5), in.glyphPoint, dx, dy);
+    float centerCoverage = slugGlyphReferenceCoverage(
+        curves, bands, bandIndices, glyph,
+        centerSample, unitsPerPixel, in.dilation);
+    if (centerCoverage <= 1.0 / 255.0 || centerCoverage >= 254.0 / 255.0) {
+        return float3(centerCoverage);
+    }
+
     return float3(
         slugGlyphAreaCoverage(curves, bands, bandIndices, glyph,
             uniforms.subpixelRBounds, in.glyphPoint, dx, dy, unitsPerPixel, in.dilation),
@@ -908,4 +927,30 @@ fragment float4 slugGlyphColorFragment(
 ) {
     float3 coverage = slugGlyphCoverageRGB(in, uniforms, curves, glyphs, bands, bandIndices);
     return float4(in.color.rgb * coverage * in.color.a, 0.0);
+}
+
+// Coverage-cache sampling fragments. Per-channel coverage is computed once into
+// a GPU-private coverage texture (the laban.slug.glyph-coverage encoder) and
+// sampled here, so the subpixel two-pass path no longer recomputes the band
+// walks in both passes. The coverage texture stores coverage * in.color.a per
+// RGB channel: the darken pass emits it for the oneMinusSourceColor blend, and
+// the color pass multiplies it by the glyph color for the additive blend. Both
+// encoders rasterize the same glyph quads with the same projection, so the
+// framebuffer pixel coordinate (in.position) maps 1:1 to the coverage texel.
+fragment float4 slugGlyphCoverageSampleFragment(
+    SlugGlyphVertexOut in [[stage_in]],
+    texture2d<float, access::sample> coverageTex [[texture(0)]]
+) {
+    constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_edge);
+    float3 cov_a = coverageTex.sample(s, in.position.xy).rgb;
+    return float4(cov_a, 0.0);
+}
+
+fragment float4 slugGlyphColorSampleFragment(
+    SlugGlyphVertexOut in [[stage_in]],
+    texture2d<float, access::sample> coverageTex [[texture(0)]]
+) {
+    constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_edge);
+    float3 cov_a = coverageTex.sample(s, in.position.xy).rgb;
+    return float4(in.color.rgb * cov_a, 0.0);
 }

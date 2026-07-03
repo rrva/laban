@@ -187,6 +187,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private let glyphAlphaPipeline: MTLRenderPipelineState
   private let glyphCoveragePipeline: MTLRenderPipelineState
   private let glyphColorPipeline: MTLRenderPipelineState
+  private let glyphCoverageWritePipeline: MTLRenderPipelineState
+  private let glyphCoverageSamplePipeline: MTLRenderPipelineState
+  private let glyphColorSamplePipeline: MTLRenderPipelineState
   private let rasterGlyphPipeline: MTLRenderPipelineState
   private let colorGlyphPipeline: MTLRenderPipelineState
   private let sampler: MTLSamplerState
@@ -208,6 +211,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   private var glyphBuffer: MTLBuffer?
   private var bandBuffer: MTLBuffer?
   private var bandIndexBuffer: MTLBuffer?
+  private var coverageTexture: MTLTexture?
   private var geometryBuffersDirty = false
 
   /// macOS 14+ fast path: when present, Slug mirrors VectorGlyphRenderer's
@@ -301,7 +305,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       let glyphVertex = library.makeFunction(name: "slugGlyphVertex"),
       let glyphAlphaFragment = library.makeFunction(name: "slugGlyphAlphaFragment"),
       let glyphCoverageFragment = library.makeFunction(name: "slugGlyphCoverageFragment"),
-      let glyphColorFragment = library.makeFunction(name: "slugGlyphColorFragment")
+      let glyphColorFragment = library.makeFunction(name: "slugGlyphColorFragment"),
+      let glyphCoverageSampleFragment = library.makeFunction(name: "slugGlyphCoverageSampleFragment"),
+      let glyphColorSampleFragment = library.makeFunction(name: "slugGlyphColorSampleFragment")
     else { return nil }
 
     let layer = CAMetalLayer()
@@ -343,6 +349,32 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     glyphColorDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
     configureAdditiveRGBPreserveAlphaBlend(glyphColorDescriptor.colorAttachments[0])
 
+    // Coverage cache (subpixel fast path). The write pipeline computes
+    // per-channel coverage once into a GPU-private rgba16Float coverage
+    // texture (replace blend). The sample pipelines read that texture back
+    // for the darken and additive color passes, so coverage is not recomputed
+    // in both passes. The coverage texture is sized 1:1 with the render target
+    // and addressed by framebuffer pixel coordinate.
+    let glyphCoverageWriteDescriptor = MTLRenderPipelineDescriptor()
+    glyphCoverageWriteDescriptor.label = "laban.slug.glyph-coverage-write"
+    glyphCoverageWriteDescriptor.vertexFunction = glyphVertex
+    glyphCoverageWriteDescriptor.fragmentFunction = glyphCoverageFragment
+    glyphCoverageWriteDescriptor.colorAttachments[0]?.pixelFormat = .rgba16Float
+
+    let glyphCoverageSampleDescriptor = MTLRenderPipelineDescriptor()
+    glyphCoverageSampleDescriptor.label = "laban.slug.glyph-coverage-sample"
+    glyphCoverageSampleDescriptor.vertexFunction = glyphVertex
+    glyphCoverageSampleDescriptor.fragmentFunction = glyphCoverageSampleFragment
+    glyphCoverageSampleDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureSubpixelCoverageBlend(glyphCoverageSampleDescriptor.colorAttachments[0])
+
+    let glyphColorSampleDescriptor = MTLRenderPipelineDescriptor()
+    glyphColorSampleDescriptor.label = "laban.slug.glyph-color-sample"
+    glyphColorSampleDescriptor.vertexFunction = glyphVertex
+    glyphColorSampleDescriptor.fragmentFunction = glyphColorSampleFragment
+    glyphColorSampleDescriptor.colorAttachments[0]?.pixelFormat = layer.pixelFormat
+    configureAdditiveRGBPreserveAlphaBlend(glyphColorSampleDescriptor.colorAttachments[0])
+
     let rasterGlyphDescriptor = MTLRenderPipelineDescriptor()
     rasterGlyphDescriptor.label = "laban.slug.raster-glyph"
     rasterGlyphDescriptor.vertexFunction = textureVertex
@@ -371,6 +403,12 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         descriptor: glyphCoverageDescriptor),
       let glyphColorPipeline = try? device.makeRenderPipelineState(
         descriptor: glyphColorDescriptor),
+      let glyphCoverageWritePipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphCoverageWriteDescriptor),
+      let glyphCoverageSamplePipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphCoverageSampleDescriptor),
+      let glyphColorSamplePipeline = try? device.makeRenderPipelineState(
+        descriptor: glyphColorSampleDescriptor),
       let rasterGlyphPipeline = try? device.makeRenderPipelineState(
         descriptor: rasterGlyphDescriptor),
       let colorGlyphPipeline = try? device.makeRenderPipelineState(
@@ -384,6 +422,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     self.glyphAlphaPipeline = glyphAlphaPipeline
     self.glyphCoveragePipeline = glyphCoveragePipeline
     self.glyphColorPipeline = glyphColorPipeline
+    self.glyphCoverageWritePipeline = glyphCoverageWritePipeline
+    self.glyphCoverageSamplePipeline = glyphCoverageSamplePipeline
+    self.glyphColorSamplePipeline = glyphColorSamplePipeline
     self.rasterGlyphPipeline = rasterGlyphPipeline
     self.colorGlyphPipeline = colorGlyphPipeline
     self.sampler = sampler
@@ -544,6 +585,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     targetTexture = nil
     targetRing.removeAll(keepingCapacity: true)
     targetRingCursor = 0
+    coverageTexture = nil
     presentTargetLock.lock()
     latestPresentedTarget = nil
     presentTargetLock.unlock()
@@ -582,6 +624,61 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     lastRasterFallbackGlyphs = rasterGlyphs.count + colorGlyphs.count
     guard ensureGeometryBuffersIfNeeded(glyphsNeeded: !slugGlyphs.isEmpty) else { return false }
 
+    var retainedBuffers: [MTLBuffer] = []
+
+    let useSubpixel = effectiveSubpixelLayout != .grayscale
+    let slugInstanceBuffer = makeBuffer(slugGlyphs)
+    if let slugInstanceBuffer { retainedBuffers.append(slugInstanceBuffer) }
+    let slugCurveBuffer = curveBuffer
+    let slugGlyphBuffer = glyphBuffer
+    let slugBandBuffer = bandBuffer
+    let slugBandIndexBuffer = bandIndexBuffer
+    let slugBuffersReady = slugInstanceBuffer != nil
+      && slugCurveBuffer != nil
+      && slugGlyphBuffer != nil
+      && slugBandBuffer != nil
+      && slugBandIndexBuffer != nil
+    var glyphUniform = glyphUniforms(width: pixelWidth, height: pixelHeight)
+    let coverageTexture = ensureCoverageTexture()
+
+    // Subpixel coverage cache. Compute per-channel coverage once into a
+    // GPU-private coverage texture in its own encoder, then have the darken and
+    // color passes sample it. This encoder touches only the coverage texture,
+    // so the main target stays in tile memory across the two sampling draws
+    // (no TBDR round-trip) and the coverage band walks run once instead of in
+    // both passes. The grayscale path skips this encoder entirely.
+    if useSubpixel, slugBuffersReady, let coverageTexture {
+      let coverageDescriptor = MTLRenderPassDescriptor()
+      coverageDescriptor.colorAttachments[0].texture = coverageTexture
+      coverageDescriptor.colorAttachments[0].loadAction = .dontCare
+      coverageDescriptor.colorAttachments[0].storeAction = .store
+      if let coverageEncoder = commandBuffer.makeRenderCommandEncoder(
+        descriptor: coverageDescriptor)
+      {
+        coverageEncoder.label = "laban.slug.glyph-coverage"
+        coverageEncoder.setRenderPipelineState(glyphCoverageWritePipeline)
+        coverageEncoder.setVertexBuffer(slugInstanceBuffer, offset: 0, index: 0)
+        coverageEncoder.setVertexBytes(
+          &glyphUniform,
+          length: MemoryLayout<SlugGlyphGPUUniforms>.stride,
+          index: 1)
+        coverageEncoder.setFragmentBytes(
+          &glyphUniform,
+          length: MemoryLayout<SlugGlyphGPUUniforms>.stride,
+          index: 4)
+        coverageEncoder.setFragmentBuffer(slugCurveBuffer, offset: 0, index: 0)
+        coverageEncoder.setFragmentBuffer(slugGlyphBuffer, offset: 0, index: 1)
+        coverageEncoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
+        coverageEncoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
+        coverageEncoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: slugGlyphs.count)
+        coverageEncoder.endEncoding()
+      }
+    }
+
     let descriptor = MTLRenderPassDescriptor()
     descriptor.colorAttachments[0].texture = target
     descriptor.colorAttachments[0].loadAction = .clear
@@ -592,7 +689,6 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     }
     encoder.label = "laban.slug.content"
 
-    var retainedBuffers: [MTLBuffer] = []
     var vectorUniforms = SlugVectorUniforms(
       surfaceSizePixels: SIMD2<Float>(Float(pixelWidth), Float(pixelHeight)),
       scale: Float(scale),
@@ -616,28 +712,38 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         instanceCount: solids.count)
     }
 
-    if !slugGlyphs.isEmpty,
-      let instanceBuffer = makeBuffer(slugGlyphs),
-      let curveBuffer,
-      let glyphBuffer,
-      let bandBuffer,
-      let bandIndexBuffer
-    {
-      retainedBuffers.append(instanceBuffer)
-      encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
-      var uniforms = glyphUniforms(width: pixelWidth, height: pixelHeight)
-      encoder.setVertexBytes(&uniforms, length: MemoryLayout<SlugGlyphGPUUniforms>.stride, index: 1)
+    if slugBuffersReady {
+      encoder.setVertexBuffer(slugInstanceBuffer, offset: 0, index: 0)
+      encoder.setVertexBytes(
+        &glyphUniform,
+        length: MemoryLayout<SlugGlyphGPUUniforms>.stride,
+        index: 1)
       encoder.setFragmentBytes(
-        &uniforms,
+        &glyphUniform,
         length: MemoryLayout<SlugGlyphGPUUniforms>.stride,
         index: 4)
-      encoder.setFragmentBuffer(curveBuffer, offset: 0, index: 0)
-      encoder.setFragmentBuffer(glyphBuffer, offset: 0, index: 1)
-      encoder.setFragmentBuffer(bandBuffer, offset: 0, index: 2)
-      encoder.setFragmentBuffer(bandIndexBuffer, offset: 0, index: 3)
+      encoder.setFragmentBuffer(slugCurveBuffer, offset: 0, index: 0)
+      encoder.setFragmentBuffer(slugGlyphBuffer, offset: 0, index: 1)
+      encoder.setFragmentBuffer(slugBandBuffer, offset: 0, index: 2)
+      encoder.setFragmentBuffer(slugBandIndexBuffer, offset: 0, index: 3)
 
-      let useSubpixel = effectiveSubpixelLayout != .grayscale
-      if useSubpixel {
+      if useSubpixel, let coverageTexture {
+        encoder.setFragmentTexture(coverageTexture, index: 0)
+        encoder.setRenderPipelineState(glyphCoverageSamplePipeline)
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: slugGlyphs.count)
+        encoder.setRenderPipelineState(glyphColorSamplePipeline)
+        encoder.drawPrimitives(
+          type: .triangle,
+          vertexStart: 0,
+          vertexCount: 6,
+          instanceCount: slugGlyphs.count)
+      } else if useSubpixel {
+        // Fallback if the coverage texture could not be allocated: recompute
+        // coverage in both passes (the original two-pass cost).
         encoder.setRenderPipelineState(glyphCoveragePipeline)
         encoder.drawPrimitives(
           type: .triangle,
@@ -1457,6 +1563,29 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
       pixelWidth: pixelWidth, pixelHeight: pixelHeight, storageMode: .shared)
     texture?.label = "laban.slug.target"
     targetTexture = texture
+    return texture
+  }
+
+  /// GPU-private, 1:1 with the render target. Holds per-channel coverage
+  /// (coverage * alpha) computed once by the laban.slug.glyph-coverage encoder
+  /// and sampled by the subpixel darken/color passes. Recreated on resize.
+  private func ensureCoverageTexture() -> MTLTexture? {
+    if let coverageTexture,
+      coverageTexture.width == pixelWidth,
+      coverageTexture.height == pixelHeight
+    {
+      return coverageTexture
+    }
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba16Float,
+      width: pixelWidth,
+      height: pixelHeight,
+      mipmapped: false)
+    descriptor.usage = [.renderTarget, .shaderRead]
+    descriptor.storageMode = .private
+    let texture = device.makeTexture(descriptor: descriptor)
+    texture?.label = "laban.slug.coverage"
+    coverageTexture = texture
     return texture
   }
 
