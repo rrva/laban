@@ -239,6 +239,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
   public private(set) var gestureZoomAnchor: CGPoint = .zero
   public private(set) var subpixelLayout: VectorSubpixelLayout = .grayscale
   private var textWeight: Double = VectorTextWeightSettings.current()
+  private var emojiRenderingMode: EmojiRenderingMode = EmojiRenderingSettings.current()
   private var displayDownsampled = false
   public var effectiveSubpixelLayout: VectorSubpixelLayout {
     VectorSubpixelLayout.effective(
@@ -554,6 +555,10 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
   public func refreshTextWeight() {
     textWeight = VectorTextWeightSettings.current()
+  }
+
+  public func refreshEmojiRenderingMode() {
+    emojiRenderingMode = EmojiRenderingSettings.current()
   }
 
   @discardableResult
@@ -1000,6 +1005,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
     for (cellIndex, cluster) in text.enumerated() {
       let cellOriginX = origin.x + CGFloat(cellIndex) * cellAdvance
       if source != .sidebar,
+        emojiRenderingMode == .color,
         ColorGlyphSupport.clusterMayBeColor(cluster),
         let colorFallback = colorGlyphInstance(
           cluster: cluster,

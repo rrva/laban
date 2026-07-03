@@ -749,6 +749,7 @@ final class TerminalBitmapView: NSView, NSTextInputClient, NSMenuItemValidation,
       guard let self else { return }
       (self.backend as? MetalRenderer)?.invalidateContentForThemeChange()
       (self.backend as? VectorGlyphRenderer)?.refreshEmojiRenderingMode()
+      (self.backend as? SlugGlyphRenderer)?.refreshEmojiRenderingMode()
       self.renderInvalidated = true
       if self.window != nil {
         self.scheduleRenderRetry()

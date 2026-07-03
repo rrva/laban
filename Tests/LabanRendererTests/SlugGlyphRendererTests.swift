@@ -9,6 +9,19 @@ import XCTest
 final class SlugGlyphCorrectnessTests: XCTestCase {
   private let gammaProbe = "Hglo08B/N"
 
+  override func setUp() {
+    super.setUp()
+    // EmojiRenderingSettings lives in UserDefaults.standard, which is shared
+    // across the whole test process. Reset to the default (.monochrome) so a
+    // color/monochrome emoji test can't leak its choice into a later test.
+    UserDefaults.standard.removeObject(forKey: EmojiRenderingSettings.defaultsKey)
+  }
+
+  override func tearDown() {
+    UserDefaults.standard.removeObject(forKey: EmojiRenderingSettings.defaultsKey)
+    super.tearDown()
+  }
+
   func testReferenceCoveragePreservesCPUOracleShapeForPrintableASCII() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
@@ -413,10 +426,26 @@ final class SlugGlyphCorrectnessTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("no Metal device available")
     }
+    EmojiRenderingSettings.set(.color)
     let image = try renderProbeText("🙂", width: 160, height: 120)
     let bounds = try XCTUnwrap(nonBackgroundBounds(image))
     XCTAssertGreaterThan(bounds.width * bounds.height, CGFloat(100))
     XCTAssertGreaterThan(chromaticPixelCount(image), 10)
+  }
+
+  func testSlugMonochromeEmojiRendersTintedNotColor() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+      throw XCTSkip("no Metal device available")
+    }
+    EmojiRenderingSettings.set(.monochrome)
+    let image = try renderProbeText("🙂", width: 160, height: 120)
+    let bounds = try XCTUnwrap(nonBackgroundBounds(image))
+    XCTAssertGreaterThan(
+      bounds.width * bounds.height, CGFloat(100),
+      "monochrome emoji must still render visible tinted ink")
+    XCTAssertEqual(
+      chromaticPixelCount(image), 0,
+      "monochrome mode must route emoji through the tinted mask path, not the color bitmap")
   }
 
   func testSlugRendersCJKViaFallbackCascade() throws {
