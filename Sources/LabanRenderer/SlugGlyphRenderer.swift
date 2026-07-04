@@ -525,6 +525,9 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
 
     let bitmapInfo =
       CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    // Tag sRGB: the target texture is an sRGB-encoded surface (bgra8Unorm_srgb
+    // layer), so the readback bytes are sRGB. A deviceRGB tag mis-tags them as
+    // display-native and oversaturates the PNG/screenshot on wide-gamut panels.
     guard let provider = CGDataProvider(data: Data(bytes) as CFData),
       let image = CGImage(
         width: targetTexture.width,
@@ -532,7 +535,7 @@ public final class SlugGlyphRenderer: RendererBackend, DisplayLinkPresentingRend
         bitsPerComponent: 8,
         bitsPerPixel: 32,
         bytesPerRow: bytesPerRow,
-        space: CGColorSpaceCreateDeviceRGB(),
+        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
         provider: provider,
         decode: nil,

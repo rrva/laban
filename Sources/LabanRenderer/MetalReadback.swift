@@ -85,6 +85,10 @@ final class MetalReadback {
 
     let bitmapInfo: UInt32 =
       CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    // Tag sRGB: MetalRenderer composites in encoded-sRGB space (no
+    // linearization) into a bgra8Unorm target, so the readback bytes are
+    // sRGB-encoded. A deviceRGB tag mis-tags them as display-native and
+    // oversaturates the PNG/screenshot on wide-gamut panels.
     guard
       let provider = CGDataProvider(data: Data(bytes) as CFData),
       let image = CGImage(
@@ -93,7 +97,7 @@ final class MetalReadback {
         bitsPerComponent: 8,
         bitsPerPixel: 32,
         bytesPerRow: bytesPerRow,
-        space: CGColorSpaceCreateDeviceRGB(),
+        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
         provider: provider,
         decode: nil,

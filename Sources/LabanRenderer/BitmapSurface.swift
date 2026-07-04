@@ -64,6 +64,11 @@ public final class BitmapSurface {
     pixelData.initializeMemory(as: UInt8.self, repeating: 0, count: layout.byteCount)
     let bitmapInfo =
       CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    // sRGB (not deviceRGB) so the produced CGImage is tagged sRGB and the
+    // window server color-manages it to the display instead of treating the
+    // sRGB source values as display-native. deviceRGB oversaturates colors on
+    // wide-gamut (P3) panels — the terminal/theme colors are sRGB by
+    // definition, so an sRGB context is the colorimetrically correct target.
     guard
       let context = CGContext(
         data: pixelData,
@@ -71,7 +76,7 @@ public final class BitmapSurface {
         height: layout.height,
         bitsPerComponent: 8,
         bytesPerRow: layout.bytesPerRow,
-        space: CGColorSpaceCreateDeviceRGB(),
+        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: bitmapInfo
       )
     else {
@@ -116,9 +121,13 @@ public final class BitmapSurface {
   }
 }
 
-// Decompose 0xRRGGBBAA into a deviceRGB CGColor.
-// Using the same color space as the BitmapSurface context avoids sRGB→deviceRGB conversion
-// artifacts (e.g. pure blue components being silently discarded on some configurations).
+// Decompose 0xRRGGBBAA into an sRGB CGColor.
+// Terminal/theme colors are sRGB values, and the BitmapSurface context is sRGB,
+// so building the color in sRGB means no cross-space conversion at fill time
+// (which is what previously discarded pure-blue components on some configs when
+// the context and color spaces disagreed). Tagging the color sRGB also keeps
+// `view.layer?.backgroundColor` and the no-image `draw(_:)` fallback on the
+// same color-managed path as the bitmap blit.
 public func cgColorFrom(_ rgba: UInt32) -> CGColor {
   let components: [CGFloat] = [
     CGFloat((rgba >> 24) & 0xFF) / 255.0,
@@ -126,9 +135,11 @@ public func cgColorFrom(_ rgba: UInt32) -> CGColor {
     CGFloat((rgba >> 8) & 0xFF) / 255.0,
     CGFloat(rgba & 0xFF) / 255.0,
   ]
-  guard let color = CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: components)
+  guard let color = CGColor(
+    colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+    components: components)
   else {
-    assertionFailure("BitmapSurface could not create device RGB color")
+    assertionFailure("BitmapSurface could not create sRGB color")
     return CGColor(gray: 0, alpha: components[3])
   }
   return color
